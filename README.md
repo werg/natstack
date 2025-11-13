@@ -7,6 +7,7 @@ A horizontally stacked panel application built with Electron and TypeScript with
 - ⚡ Modern Electron with TypeScript
 - 🔒 Strict type checking and ESLint configuration
 - 🎨 Responsive two-panel layout with draggable divider
+- 🌓 Automatic dark/light mode support (respects system preferences)
 - 🛠️ esbuild for fast bundling
 - 📦 pnpm for package management
 - 🎯 Browser-like behavior with native context menus
@@ -86,3 +87,25 @@ ELECTRON_NO_SANDBOX=1 pnpm start
 pnpm build
 pnpm start
 ```
+
+## Dark Mode
+
+The application automatically respects your system's dark/light mode preference. The theme is:
+
+- **Automatically synchronized** with your OS theme settings
+- **Persistently stored** in localStorage for your preference
+- **Live updated** when you change your system theme
+- **Seamlessly integrated** with Electron's `nativeTheme` API
+
+### How It Works
+
+1. **System Preference Detection**: The app uses CSS media queries (`prefers-color-scheme`) and Electron's `nativeTheme` API to detect your system's theme preference
+2. **State Management**: Theme state is managed using Jotai atoms in [src/renderer/state/themeAtoms.ts](src/renderer/state/themeAtoms.ts)
+3. **IPC Communication**: The main process and renderer process communicate theme changes via IPC channels
+4. **CSS Variables**: All colors are defined as CSS custom properties that automatically switch based on the theme
+
+The implementation includes:
+- Dark mode CSS variables in [src/renderer/styles.css](src/renderer/styles.css#L102-L176)
+- Theme state management in [src/renderer/state/themeAtoms.ts](src/renderer/state/themeAtoms.ts)
+- IPC handlers in [src/main/index.ts](src/main/index.ts#L91-L105)
+- Theme synchronization hook in [src/renderer/components/PanelApp.tsx](src/renderer/components/PanelApp.tsx#L57-L119)

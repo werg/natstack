@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme, type IpcMainInvokeEvent } from "electron";
 import * as path from "path";
 import { isDev } from "./utils.js";
 
@@ -86,4 +86,20 @@ ipcMain.handle("get-app-info", async (_event: IpcMainInvokeEvent): Promise<{ ver
   return {
     version: app.getVersion(),
   };
+});
+
+// Theme IPC handlers
+ipcMain.handle("get-system-theme", async (): Promise<'light' | 'dark'> => {
+  return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+});
+
+ipcMain.handle("set-theme-mode", async (_event: IpcMainInvokeEvent, mode: 'light' | 'dark' | 'system'): Promise<void> => {
+  nativeTheme.themeSource = mode;
+});
+
+// Listen for system theme changes and notify renderer
+nativeTheme.on('updated', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('system-theme-changed', nativeTheme.shouldUseDarkColors ? 'dark' : 'light');
+  }
 });
