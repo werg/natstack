@@ -1,0 +1,36 @@
+{
+  "type": "module",
+  "name": "natstack",
+  "version": "0.1.0",
+  "description": "A horizontally stacked panel app built with Electron and TypeScript",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "NODE_ENV=production node build.mjs",
+    "dev": "NODE_ENV=development ELECTRON_NO_SANDBOX=1 node build.mjs --watch & sleep 2 && ELECTRON_NO_SANDBOX=1 node scripts/run-electron.mjs",
+    "dev:safe": "NODE_ENV=development node build.mjs --watch & sleep 2 && node scripts/run-electron.mjs",
+    "start": "node scripts/run-electron.mjs",
+    "lint": "eslint src --max-warnings 0",
+    "format": "prettier --write 'src/**/*.{ts,tsx,css,html,json}'",
+    "format:check": "prettier --check 'src/**/*.{ts,tsx,css,html,json}'",
+    "type-check": "tsc --noEmit"
+  },
+  "keywords": ["electron", "typescript", "panel"],
+  "author": "Gabriel Pickard",
+  "license": "MIT",
+  "packageManager": "pnpm@10.12.4",
+  "pnpm": {
+    "allowedBuilds": ["electron", "esbuild"]
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^24.10.1",
+    "@typescript-eslint/eslint-plugin": "^8.46.4",
+    "@typescript-eslint/parser": "^8.46.4",
+    "electron": "^39.1.2",
+    "esbuild": "^0.27.0",
+    "eslint": "^9.39.1",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.4"
+  }
+}

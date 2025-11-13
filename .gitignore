@@ -1,0 +1,43 @@
+# Dependencies
+node_modules
+pnpm-lock.yaml
+package-lock.json
+
+# Build outputs
+dist
+build
+out
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/settings.json
+.idea
+*.swp
+*.swo
+*~
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Electron
+dist_electron
+release
+
+# Temporary
+*.tmp
+.cache
+.parcel-cache
