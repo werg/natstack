@@ -1,62 +1,75 @@
+/**
+ * NatStack - Agentic Panel Platform
+ * Main renderer initialization
+ */
+
+import { PanelManager } from './components/PanelManager';
+
+let panelManager: PanelManager | null = null;
+
 async function initializeApp(): Promise<void> {
   try {
     // Get app info from main process
     const appInfo = await window.electronAPI.getAppInfo();
-    console.log("App version:", appInfo.version);
+    console.log('NatStack version:', appInfo.version);
 
-    // Initialize UI
-    initializeUI();
+    // Initialize panel system
+    initializePanelSystem();
   } catch (error) {
-    console.error("Failed to initialize app:", error);
+    console.error('Failed to initialize app:', error);
   }
 }
 
-function initializeUI(): void {
-  const appContainer = document.getElementById("app");
-  if (!appContainer) {
-    console.error("App container not found");
+function initializePanelSystem(): void {
+  // Get panel container
+  const container = document.getElementById('panel-container');
+  if (!container) {
+    console.error('Panel container not found');
     return;
   }
 
-  // Make divider draggable for panel resizing
-  const divider = document.querySelector(".divider");
-  if (!(divider instanceof HTMLElement)) {
-    console.error("Divider element not found");
-    return;
-  }
+  // Initialize PanelManager with default max visible panels
+  panelManager = new PanelManager(container, 3);
 
-  let isResizing = false;
+  // Set up controls
+  setupControls();
 
-  divider.addEventListener("mousedown", (): void => {
-    isResizing = true;
-  });
+  console.log('Panel system initialized successfully');
 
-  document.addEventListener("mousemove", (event: MouseEvent): void => {
-    if (!isResizing) {
-      return;
-    }
-
-    const leftPanel = document.querySelector(".panel-left");
-    const rightPanel = document.querySelector(".panel-right");
-
-    if (!(leftPanel instanceof HTMLElement) || !(rightPanel instanceof HTMLElement)) {
-      return;
-    }
-
-    const containerRect = appContainer.getBoundingClientRect();
-    const newLeftWidth = event.clientX - containerRect.left;
-
-    if (newLeftWidth > 100 && newLeftWidth < containerRect.width - 100) {
-      leftPanel.style.flex = `0 0 ${newLeftWidth}px`;
-      rightPanel.style.flex = "1";
-    }
-  });
-
-  document.addEventListener("mouseup", (): void => {
-    isResizing = false;
-  });
-
-  console.log("UI initialized successfully");
+  // Log initial state for debugging
+  console.log('Initial state:', panelManager.getState());
 }
 
+function setupControls(): void {
+  if (!panelManager) return;
+
+  const decreaseButton = document.getElementById('decrease-panels');
+  const increaseButton = document.getElementById('increase-panels');
+  const countDisplay = document.getElementById('panel-count');
+
+  if (!decreaseButton || !increaseButton || !countDisplay) {
+    console.error('Control elements not found');
+    return;
+  }
+
+  let currentMax = 3;
+
+  decreaseButton.addEventListener('click', () => {
+    if (currentMax > 1) {
+      currentMax--;
+      panelManager?.setMaxVisiblePanels(currentMax);
+      countDisplay.textContent = currentMax.toString();
+    }
+  });
+
+  increaseButton.addEventListener('click', () => {
+    if (currentMax < 6) {
+      currentMax++;
+      panelManager?.setMaxVisiblePanels(currentMax);
+      countDisplay.textContent = currentMax.toString();
+    }
+  });
+}
+
+// Initialize the app when DOM is ready
 void initializeApp();

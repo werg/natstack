@@ -3,20 +3,26 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Panel App</title>
+    <title>NatStack - Agentic Panel Platform</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div id="app" class="app-container">
-      <div class="panel-left">
-        <h2>Left Panel</h2>
-        <p>Panel content goes here</p>
+      <!-- Control Bar -->
+      <div class="control-bar">
+        <div class="control-group">
+          <span class="control-label">Max Visible Panels:</span>
+          <button id="decrease-panels" class="button button-secondary button-sm">-</button>
+          <span id="panel-count" class="control-label" style="min-width: 20px; text-align: center;">3</span>
+          <button id="increase-panels" class="button button-secondary button-sm">+</button>
+        </div>
+        <div class="control-group">
+          <span class="control-label">Stackable Panel Demo</span>
+        </div>
       </div>
-      <div class="divider"></div>
-      <div class="panel-right">
-        <h2>Right Panel</h2>
-        <p>Panel content goes here</p>
-      </div>
+
+      <!-- Panel Stack (will be populated by PanelManager) -->
+      <div id="panel-container"></div>
     </div>
     <script src="./renderer.js"></script>
   </body>

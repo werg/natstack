@@ -6,13 +6,14 @@
   "main": "dist/main.cjs",
   "scripts": {
     "build": "NODE_ENV=production node build.mjs",
-    "dev": "NODE_ENV=development ELECTRON_NO_SANDBOX=1 node build.mjs --watch & sleep 2 && ELECTRON_NO_SANDBOX=1 node scripts/run-electron.mjs",
+    "dev": "NODE_ENV=development ELECTRON_NO_SANDBOX=1 node build.mjs --watch & pnpm type-check:watch & sleep 2 && ELECTRON_NO_SANDBOX=1 node scripts/run-electron.mjs",
     "dev:safe": "NODE_ENV=development node build.mjs --watch & sleep 2 && node scripts/run-electron.mjs",
     "start": "node scripts/run-electron.mjs",
     "lint": "eslint src --max-warnings 0",
     "format": "prettier --write 'src/**/*.{ts,tsx,css,html,json}'",
     "format:check": "prettier --check 'src/**/*.{ts,tsx,css,html,json}'",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "type-check:watch": "tsc --noEmit --watch --preserveWatchOutput"
   },
   "keywords": ["electron", "typescript", "panel"],
   "author": "Gabriel Pickard",
