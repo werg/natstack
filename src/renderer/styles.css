@@ -344,6 +344,55 @@ body {
 }
 
 /* ========================================
+   Panel Tab Bars
+   ======================================== */
+
+.panel-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.panel-tabs--breadcrumbs {
+  border-bottom: none;
+  padding-top: var(--space-2);
+  padding-bottom: 0;
+  background: transparent;
+}
+
+.panel-tabs--siblings {
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.panel-tabs--children {
+  margin-top: auto;
+  border-top: 1px solid var(--color-border);
+  border-bottom: none;
+}
+
+.panel-target {
+  box-shadow: inset 0 0 0 2px var(--color-primary-light);
+}
+
+.panel-section {
+  margin-bottom: var(--space-3);
+}
+
+.panel-meta {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.control-count {
+  min-width: 28px;
+  text-align: center;
+  display: inline-block;
+}
+
+/* ========================================
    Buttons
    ======================================== */
 

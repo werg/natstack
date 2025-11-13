@@ -1,247 +1,159 @@
-/**
- * Panel Tree - manages the hierarchical structure of panels
- */
+import type { PanelId, PanelNode, PanelTree } from '../types/panel.types';
 
-import type {
-  PanelId,
-  PanelNode,
-  PanelTree,
-  PanelContentData,
-} from '../types/panel.types';
+export function createInitialPanelTree(): PanelTree {
+  const rootId: PanelId = 'panel-1';
+  const rootNode: PanelNode = {
+    id: rootId,
+    title: 'Root Panel',
+    parentId: null,
+    children: [],
+    content: { type: 'prototype' },
+  };
 
-export class PanelTreeManager {
-  private tree: PanelTree;
-  private idCounter = 0;
+  return {
+    root: rootId,
+    nodes: new Map([[rootId, rootNode]]),
+  };
+}
 
-  constructor() {
-    // Initialize with a root panel
-    const rootId = this.generateId();
-    const rootNode: PanelNode = {
-      id: rootId,
-      title: 'Root Panel',
-      parentId: null,
-      children: [],
-      content: { type: 'prototype' },
-    };
-
-    this.tree = {
-      root: rootId,
-      nodes: new Map([[rootId, rootNode]]),
-    };
+export function insertChildNode(
+  tree: PanelTree,
+  parentId: PanelId,
+  child: PanelNode
+): PanelTree {
+  const parent = tree.nodes.get(parentId);
+  if (!parent) {
+    return tree;
   }
 
-  /**
-   * Generate a unique panel ID
-   */
-  private generateId(): PanelId {
-    return `panel-${++this.idCounter}`;
+  const nodes = new Map(tree.nodes);
+  nodes.set(child.id, child);
+  nodes.set(parentId, {
+    ...parent,
+    children: [...parent.children, child.id],
+  });
+
+  return { ...tree, nodes };
+}
+
+export function removePanelSubtree(
+  tree: PanelTree,
+  panelId: PanelId
+): { tree: PanelTree; removedIds: PanelId[] } {
+  if (panelId === tree.root) {
+    console.warn('Cannot remove the root panel');
+    return { tree, removedIds: [] };
   }
 
-  /**
-   * Get the entire tree
-   */
-  getTree(): PanelTree {
-    return this.tree;
+  if (!tree.nodes.has(panelId)) {
+    return { tree, removedIds: [] };
   }
 
-  /**
-   * Get a specific panel node
-   */
-  getNode(id: PanelId): PanelNode | undefined {
-    return this.tree.nodes.get(id);
+  const nodes = new Map(tree.nodes);
+  const removedIds = collectDescendants(nodes, panelId);
+  removedIds.forEach((id) => nodes.delete(id));
+
+  const parentId = tree.nodes.get(panelId)?.parentId ?? null;
+  if (parentId) {
+    const parent = nodes.get(parentId);
+    if (parent) {
+      nodes.set(parentId, {
+        ...parent,
+        children: parent.children.filter((childId) => childId !== panelId),
+      });
+    }
   }
 
-  /**
-   * Get root panel ID
-   */
-  getRootId(): PanelId {
-    return this.tree.root;
-  }
+  return {
+    tree: { ...tree, nodes },
+    removedIds,
+  };
+}
 
-  /**
-   * Add a child panel to a parent
-   */
-  addChild(
-    parentId: PanelId,
-    title: string,
-    content?: PanelContentData
-  ): PanelId | null {
-    const parent = this.tree.nodes.get(parentId);
-    if (!parent) {
-      console.error(`Parent panel ${parentId} not found`);
-      return null;
+function collectDescendants(
+  nodes: Map<PanelId, PanelNode>,
+  startId: PanelId
+): PanelId[] {
+  const toRemove: PanelId[] = [];
+  const queue: PanelId[] = [startId];
+
+  while (queue.length > 0) {
+    const currentId = queue.shift()!;
+    const currentNode = nodes.get(currentId);
+    if (!currentNode) {
+      continue;
     }
 
-    const childId = this.generateId();
-    const childNode: PanelNode = {
-      id: childId,
-      title,
-      parentId,
-      children: [],
-      content: content || { type: 'prototype' },
-    };
-
-    // Add child to tree
-    this.tree.nodes.set(childId, childNode);
-
-    // Update parent's children array
-    parent.children.push(childId);
-
-    return childId;
+    toRemove.push(currentId);
+    queue.push(...currentNode.children);
   }
 
-  /**
-   * Remove a panel and all its descendants
-   */
-  removePanel(id: PanelId): boolean {
-    if (id === this.tree.root) {
-      console.error('Cannot remove root panel');
-      return false;
-    }
+  return toRemove;
+}
 
-    const node = this.tree.nodes.get(id);
-    if (!node) {
-      return false;
-    }
-
-    // Remove all descendants recursively
-    const toRemove = [id];
-    while (toRemove.length > 0) {
-      const currentId = toRemove.pop()!;
-      const currentNode = this.tree.nodes.get(currentId);
-
-      if (currentNode) {
-        // Add children to removal queue
-        toRemove.push(...currentNode.children);
-        // Remove from tree
-        this.tree.nodes.delete(currentId);
-      }
-    }
-
-    // Remove from parent's children array
-    if (node.parentId) {
-      const parent = this.tree.nodes.get(node.parentId);
-      if (parent) {
-        parent.children = parent.children.filter((childId) => childId !== id);
-      }
-    }
-
-    return true;
+export function getPathToPanel(tree: PanelTree, panelId: PanelId): PanelId[] {
+  const node = tree.nodes.get(panelId);
+  if (!node) {
+    return [tree.root];
   }
 
-  /**
-   * Get all ancestors of a panel (from root to parent)
-   */
-  getAncestors(id: PanelId): PanelId[] {
-    const ancestors: PanelId[] = [];
-    let currentId: PanelId | null = id;
+  const path: PanelId[] = [];
+  let current: PanelId | null = panelId;
 
-    while (currentId !== null) {
-      const node = this.tree.nodes.get(currentId);
-      if (!node) break;
-
-      if (node.parentId !== null) {
-        ancestors.unshift(node.parentId);
-      }
-      currentId = node.parentId;
+  while (current !== null) {
+    const currentNode = tree.nodes.get(current);
+    if (!currentNode) {
+      break;
     }
-
-    return ancestors;
+    path.unshift(currentNode.id);
+    current = currentNode.parentId;
   }
 
-  /**
-   * Get the path from root to a specific panel
-   */
-  getPathToPanel(id: PanelId): PanelId[] {
-    const ancestors = this.getAncestors(id);
-    return [...ancestors, id];
+  return path;
+}
+
+export function getAncestors(tree: PanelTree, panelId: PanelId): PanelId[] {
+  const ancestors: PanelId[] = [];
+  let current: PanelId | null = tree.nodes.get(panelId)?.parentId ?? null;
+
+  while (current !== null) {
+    ancestors.unshift(current);
+    current = tree.nodes.get(current)?.parentId ?? null;
   }
 
-  /**
-   * Get all descendants of a panel
-   */
-  getDescendants(id: PanelId): PanelId[] {
-    const descendants: PanelId[] = [];
-    const node = this.tree.nodes.get(id);
+  return ancestors;
+}
 
-    if (!node) return descendants;
-
-    const queue = [...node.children];
-    while (queue.length > 0) {
-      const currentId = queue.shift()!;
-      descendants.push(currentId);
-
-      const currentNode = this.tree.nodes.get(currentId);
-      if (currentNode) {
-        queue.push(...currentNode.children);
-      }
-    }
-
+export function getDescendants(tree: PanelTree, panelId: PanelId): PanelId[] {
+  const descendants: PanelId[] = [];
+  const startNode = tree.nodes.get(panelId);
+  if (!startNode) {
     return descendants;
   }
 
-  /**
-   * Check if a panel is an ancestor of another
-   */
-  isAncestor(ancestorId: PanelId, descendantId: PanelId): boolean {
-    const ancestors = this.getAncestors(descendantId);
-    return ancestors.includes(ancestorId);
-  }
-
-  /**
-   * Get siblings of a panel (other children of the same parent)
-   */
-  getSiblings(id: PanelId): PanelId[] {
-    const node = this.tree.nodes.get(id);
-    if (!node || !node.parentId) return [];
-
-    const parent = this.tree.nodes.get(node.parentId);
-    if (!parent) return [];
-
-    return parent.children.filter((childId) => childId !== id);
-  }
-
-  /**
-   * Update panel title
-   */
-  updateTitle(id: PanelId, title: string): boolean {
-    const node = this.tree.nodes.get(id);
-    if (!node) return false;
-
-    node.title = title;
-    return true;
-  }
-
-  /**
-   * Update panel content
-   */
-  updateContent(id: PanelId, content: PanelContentData): boolean {
-    const node = this.tree.nodes.get(id);
-    if (!node) return false;
-
-    node.content = content;
-    return true;
-  }
-
-  /**
-   * Get depth of a panel (distance from root)
-   */
-  getDepth(id: PanelId): number {
-    return this.getAncestors(id).length;
-  }
-
-  /**
-   * Get all leaf panels (panels with no children)
-   */
-  getLeafPanels(): PanelId[] {
-    const leaves: PanelId[] = [];
-
-    for (const [id, node] of this.tree.nodes) {
-      if (node.children.length === 0) {
-        leaves.push(id);
-      }
+  const queue = [...startNode.children];
+  while (queue.length > 0) {
+    const currentId = queue.shift()!;
+    descendants.push(currentId);
+    const currentNode = tree.nodes.get(currentId);
+    if (currentNode) {
+      queue.push(...currentNode.children);
     }
-
-    return leaves;
   }
+
+  return descendants;
+}
+
+export function getSiblings(tree: PanelTree, panelId: PanelId): PanelId[] {
+  const node = tree.nodes.get(panelId);
+  if (!node || !node.parentId) {
+    return [];
+  }
+
+  const parent = tree.nodes.get(node.parentId);
+  if (!parent) {
+    return [];
+  }
+
+  return parent.children.filter((childId) => childId !== panelId);
 }

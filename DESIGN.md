@@ -34,129 +34,52 @@ The panel tree is a hierarchical structure where:
 
 ### 2. State Management
 
-**File**: `src/renderer/state/PanelState.ts`
+**File**: `src/renderer/state/panelAtoms.ts`
 
-Manages the global state of the panel system:
+Global state is modelled with Jotai atoms so React renders only the parts of the UI that actually change:
 
-```typescript
-interface PanelState {
-  tree: PanelTree                       // The panel hierarchy
-  activePath: PanelId[]                 // Currently visible path (root to leaf)
-  activeChildMap: Map<PanelId, PanelId> // Which child is selected per parent
-  collapsedPanels: Set<PanelId>        // Manually collapsed panels
-  focusedPanel: PanelId | null         // Currently focused panel
-  maxVisiblePanels: number             // User-controlled limit
-}
-```
+- `panelTreeAtom` – immutable snapshot of the tree (root node + `Map` of `PanelNode`s).
+- `targetPanelAtom` – the panel that should anchor the visible path. Changing it automatically recomputes the path via `activePathAtom`.
+- `panelColumnCountAtom` – user-configurable limit of simultaneous columns.
+- `panelVisibilityStateAtom` – map of `PanelId → { visible, hiddenBecause }`. This is the persisted record of which parts of the active path were visible previously.
+- `panelLayoutAtom` – derived description used by the renderer (`columns`, breadcrumbs, sibling tabs, child slivers, etc.).
 
-**Key Methods**:
-- `launchChild(parentId, title)` - Create and navigate to a new child
-- `selectTab(parentId, childId)` - Switch to a different child branch
-- `navigateToPanel(id)` - Navigate back to an ancestor panel
-- `collapsePanel(id)` / `expandPanel(id)` - Manual collapse/expand
-- `closePanel(id)` - Remove a panel from the tree
+Actions exported from the same module (`launchChildAtom`, `closePanelAtom`, `navigateToAtom`, `selectSiblingAtom`, `adjustColumnCountAtom`) mutate the atoms in response to UI events. Because these actions only replace the pieces of state that changed, React + Jotai automatically re-render the affected panels while leaving the rest of the tree untouched.
 
 ### 3. Layout Engine
 
-**File**: `src/renderer/layout/LayoutEngine.ts`
+**Files**: `src/renderer/state/panelVisibility.ts`, `src/renderer/state/panelAtoms.ts`
 
-Calculates which panels should be visible and how they should be displayed:
+`reconcileVisibilityState()` is the new layout algorithm. It consumes four inputs—the active path, the requested column budget, the target panel, and the previous visibility map—and produces a stable sliding window of visible panels. The function:
 
-```typescript
-interface LayoutState {
-  visiblePanels: PanelId[]        // Panels to render
-  expandedPanels: PanelId[]       // Panels shown expanded (not collapsed)
-  tabEntries: TabEntry[]          // Unified breadcrumb + sibling tabs
-  panelWidths: Map<PanelId, number> // Width percentages
-}
+1. Clamps the column budget (minimum 1) and reuses the previous leftmost visible panel when possible so that the UI does not jump around.
+2. Forces the target panel into the window, shifting the window only as much as necessary.
+3. Writes a `Map<PanelId, PanelVisibilityRecord>` describing whether each panel on the path is visible or overflow-hidden. This map is persisted in Jotai, satisfying the requirement that hide/show decisions consider previous state.
 
-interface TabEntry {
-  id: PanelId
-  kind: 'path' | 'sibling'
-  parentId: PanelId | null
-}
-```
+`panelLayoutAtom` combines that visibility map with the tree to produce a `PanelLayoutDescription`:
 
-**Layout Logic**:
-1. All panels in `activePath` are visible
-2. If `activePath.length > maxVisiblePanels`, auto-collapse leftmost panels
-3. Collapsed panels are accessible via tabs / breadcrumbs
-4. Expanded panels split remaining width equally
-5. A single tab bar shows breadcrumbs plus sibling tabs for inactive branches
+- `columns`: ordered descriptors with node metadata, width allocations, and tab collections.
+- `visiblePanelIds`: ids currently rendered as columns.
+- `hiddenPanels`: ids that are reachable but hidden because they fell outside the active window.
+
+Tabs now follow three concrete rules:
+
+1. **Sibling tabs** – whenever a parent has multiple children, tabs appear directly above the visible child panel so users can flip between alternatives in-place.
+2. **Breadcrumb tabs** – when ancestors are hidden (because the window slid past them), their tabs appear above the descendant panel, acting as breadcrumb navigation.
+3. **Child sliver tabs** – if a panel’s children are all hidden, a compact tab bar appears at the bottom of the parent to keep those children reachable.
+
+All tab sets are generated inside the layout atom so React components stay dumb renderers.
 
 ### 4. UI Components
 
-#### Panel Component (`src/renderer/components/Panel.ts`)
+#### React component tree
 
-A Web Component representing a single panel:
+- **`PanelApp` (`src/renderer/components/PanelApp.tsx`)** – top-level React component. Mounts the control bar, panel stack, and a hook that keeps the visibility atom in sync with the latest path/column settings.
+- **`ControlBar`** – exposes column count controls and basic status (how many nodes are visible vs. total path length).
+- **`PanelStack` + `PanelColumn`** – render the horizontal stack. Each `PanelColumn` receives a descriptor from `panelLayoutAtom`, so it simply wires up buttons (`Launch Child`, `Close`) and injects the correct tab bars above/below its content.
+- **`TabBar`** – lightweight presenter used for breadcrumb tabs, sibling selectors, and child slivers. Styling is handled in CSS without prescribing hardcoded tokens in the design doc.
 
-```typescript
-class Panel extends HTMLElement {
-  - panelId: PanelId
-  - visibility: 'expanded' | 'collapsing' | 'collapsed' | 'hidden'
-
-  Methods:
-  - setTitle(title)
-  - setVisibility(visibility)
-  - setWidth(widthPercent)
-  - setFocused(focused)
-  - collapse() / expand()
-  - addActionButton(label, onClick)
-}
-```
-
-**Structure**:
-```
-<app-panel>
-  <div class="panel-header">
-    <h2 class="panel-title">Panel Title</h2>
-    <div class="panel-actions">
-      [Action Buttons]
-    </div>
-  </div>
-  <div class="panel-content">
-    [Panel Content]
-  </div>
-</app-panel>
-```
-
-#### TabStrip Component (`src/renderer/components/TabStrip.ts`)
-
-Manages tabs for collapsed panels or sibling selection:
-
-```typescript
-class TabStrip extends HTMLElement {
-  - position: 'top' | 'bottom' | 'vertical'
-  - tabs: Map<PanelId, HTMLElement>
-
-  Methods:
-  - addTab(data: {id, title, active})
-  - removeTab(panelId)
-  - setActiveTab(panelId)
-  - setOnTabClick(handler)
-}
-```
-
-#### PanelManager (`src/renderer/components/PanelManager.ts`)
-
-The orchestrator that ties everything together:
-
-```typescript
-class PanelManager {
-  - stateManager: PanelStateManager
-  - layoutEngine: LayoutEngine
-  - panels: Map<PanelId, Panel>
-  - topTabStrip: TabStrip
-  - bottomTabStrip: TabStrip
-
-  Main Loop:
-  1. State changes trigger re-render
-  2. Calculate layout from current state
-  3. Update panel visibility and widths
-  4. Update tab strips
-  5. Position tab strips dynamically
-}
-```
+UI interactions (button clicks, tab selection) call the action atoms described earlier, so React only concerns itself with rendering and event wiring.
 
 ## Interaction Patterns
 
@@ -318,43 +241,45 @@ When `activePath.length > maxVisiblePanels`:
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                     User Action                         │
-│  (Launch Child / Select Tab / Navigate / Close)        │
+│ (launch child / pick tab / navigate / close)            │
 └────────────────────┬────────────────────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────────────────────┐
-│                 PanelStateManager                       │
-│  • Update tree structure                                │
-│  • Update activePath                                    │
-│  • Update activeChildMap                                │
-│  • Notify listeners                                     │
+│         Jotai action atoms (panelAtoms.ts)              │
+│  • mutate panelTreeAtom                                 │
+│  • move targetPanelAtom                                 │
+│  • tweak column count                                   │
 └────────────────────┬────────────────────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────────────────────┐
-│                   LayoutEngine                          │
-│  • Calculate visible panels                             │
-│  • Determine expanded vs collapsed                      │
-│  • Generate tab lists                                   │
-│  • Calculate widths                                     │
+│         Atom graph recalculates derived state           │
+│  • activePathAtom                                       │
+│  • panelVisibilityStateAtom                             │
+│  • panelLayoutAtom                                      │
 └────────────────────┬────────────────────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────────────────────┐
-│                  PanelManager                           │
-│  • Update panel visibility                              │
-│  • Update panel widths                                  │
-│  • Update tab strips                                    │
-│  • Position tab strips                                  │
-│  • Reorder panels in DOM                                │
-└─────────────────────────────────────────────────────────┘
+│   reconcileVisibilityState + layout builder             │
+│  • keep prior window when possible                      │
+│  • generate breadcrumb / sibling / child tabs           │
+│  • assign widths                                        │
+└────────────────────┬────────────────────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────────────────────┐
-│                  DOM Update                             │
-│  • Panels slide/fade                                    │
-│  • Widths animate smoothly                              │
-│  • Tabs update                                          │
+│            React components (PanelApp tree)             │
+│  • Control bar reflects settings                        │
+│  • PanelColumn renders tabs + content                   │
+└────────────────────┬────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│                    DOM Update                           │
+│  • Columns animate width                                │
+│  • Tab bars move with their panels                      │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -428,16 +353,16 @@ NatStack is designed as a platform where autonomous agents can dynamically gener
 ### Adding a New Panel Type
 
 1. Extend `PanelContentData` type in `panel.types.ts`
-2. Create component in `src/renderer/components/`
-3. Update `renderPanelContent()` in `PanelManager.ts`
-4. Add styling to `styles.css`
+2. Add the rendering logic to `PanelColumn.tsx` (or compose a dedicated React component and mount it there)
+3. If the new panel type needs extra layout/state, add atoms or selectors in `panelAtoms.ts`
+4. Add or tweak styling in `styles.css`
 
 ### Adding a New State Method
 
-1. Add method to `PanelStateManager`
-2. Update state and notify listeners
-3. Document in this design doc
-4. Add UI trigger in `PanelManager`
+1. Create a new atom or action in `panelAtoms.ts`
+2. Update `panelLayoutAtom` (or supporting selectors) if the derived data should change
+3. Document the new state surface in this design doc
+4. Wire the relevant UI control to the action atom inside the React components
 
 ### Testing Scenarios
 
@@ -462,17 +387,18 @@ src/renderer/
 ├── types/
 │   └── panel.types.ts           # TypeScript interfaces
 ├── state/
-│   ├── PanelTree.ts            # Tree data structure
-│   └── PanelState.ts           # State management
-├── layout/
-│   └── LayoutEngine.ts         # Layout calculations
+│   ├── PanelTree.ts            # Tree helper utilities
+│   ├── panelAtoms.ts           # Jotai atoms + actions + layout derivations
+│   └── panelVisibility.ts      # Visibility reconciliation algorithm
 ├── components/
-│   ├── Panel.ts                # Panel Web Component
-│   ├── TabStrip.ts             # TabStrip Web Component
-│   └── PanelManager.ts         # Orchestrator
-├── index.ts                     # Entry point
-├── index.html                   # HTML shell
-└── styles.css                   # Design system + styles
+│   ├── PanelApp.tsx            # Root React tree + sync hook
+│   ├── ControlBar.tsx          # Column controls and status
+│   ├── PanelStack.tsx          # Container for horizontal panels
+│   ├── PanelColumn.tsx         # Individual column renderer
+│   └── TabBar.tsx              # Breadcrumb / sibling / child tabs
+├── index.ts                    # React renderer bootstrap
+├── index.html                  # HTML shell
+└── styles.css                  # Design system + layout styles
 ```
 
 ## Use Case Examples

@@ -15,16 +15,25 @@
     "type-check": "tsc --noEmit",
     "type-check:watch": "tsc --noEmit --watch --preserveWatchOutput"
   },
-  "keywords": ["electron", "typescript", "panel"],
+  "keywords": [
+    "electron",
+    "typescript",
+    "panel"
+  ],
   "author": "Gabriel Pickard",
   "license": "MIT",
   "packageManager": "pnpm@10.12.4",
   "pnpm": {
-    "allowedBuilds": ["electron", "esbuild"]
+    "allowedBuilds": [
+      "electron",
+      "esbuild"
+    ]
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
     "@types/node": "^24.10.1",
+    "@types/react": "^19.2.4",
+    "@types/react-dom": "^19.2.3",
     "@typescript-eslint/eslint-plugin": "^8.46.4",
     "@typescript-eslint/parser": "^8.46.4",
     "electron": "^39.1.2",
@@ -33,5 +42,10 @@
     "prettier": "^3.6.2",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.4"
+  },
+  "dependencies": {
+    "jotai": "^2.15.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
   }
 }

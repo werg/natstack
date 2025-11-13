@@ -29,7 +29,7 @@ const preloadConfig = {
 };
 
 const rendererConfig = {
-  entryPoints: ["src/renderer/index.ts"],
+  entryPoints: ["src/renderer/index.tsx"],
   bundle: true,
   platform: "browser",
   target: "es2020",
