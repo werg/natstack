@@ -154,17 +154,30 @@ const buildBreadcrumbTabs = (
     return [];
   }
 
-  const ancestors = activePath.slice(0, index);
-  const hiddenAncestors = ancestors.filter((id) => !visibleSet.has(id));
+  let lastVisibleAncestorIndex = -1;
+  for (let i = index - 1; i >= 0; i--) {
+    const ancestorId = activePath[i];
+    if (!ancestorId) {
+      continue;
+    }
+    if (visibleSet.has(ancestorId)) {
+      lastVisibleAncestorIndex = i;
+      break;
+    }
+  }
+
+  const hiddenAncestors = activePath.slice(
+    lastVisibleAncestorIndex + 1,
+    index
+  );
 
   return hiddenAncestors.map((ancestorId, idx) => {
-    const node = tree.nodes.get(ancestorId);
     // Mark the last breadcrumb (immediate hidden parent) as active
     const isActive = idx === hiddenAncestors.length - 1;
     return createTabModel(
       ancestorId,
       'breadcrumb',
-      node?.parentId ?? null,
+      tree.nodes.get(ancestorId)?.parentId ?? null,
       tree,
       isActive
     );

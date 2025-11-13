@@ -80,6 +80,13 @@ export function PanelColumn({ column }: PanelColumnProps) {
         onSelect={handleTabSelection}
       />
 
+      <TabBar
+        tabs={column.siblingTabs}
+        variant="siblings"
+        ariaLabel="Sibling panels"
+        onSelect={handleTabSelection}
+      />
+
       <header className="panel-header">
         <h2 className="panel-title">{column.node.title}</h2>
         <div className="panel-actions">
@@ -101,13 +108,6 @@ export function PanelColumn({ column }: PanelColumnProps) {
           )}
         </div>
       </header>
-
-      <TabBar
-        tabs={column.siblingTabs}
-        variant="siblings"
-        ariaLabel="Sibling panels"
-        onSelect={handleTabSelection}
-      />
 
       <div className="panel-content">
         <div className="panel-section">
