@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useRef, useCallback } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 
 import type { PanelColumnLayout, PanelTabModel } from '../types/panel.types';
@@ -6,8 +6,9 @@ import {
   closePanelAtom,
   launchChildAtom,
   navigateToAtom,
-  rootPanelIdAtom,
   selectSiblingAtom,
+  toggleMinimizeAtom,
+  setPanelWidthAtom,
 } from '../state/panelAtoms';
 import { TabBar } from './TabBar';
 
@@ -16,24 +17,26 @@ interface PanelColumnProps {
 }
 
 export function PanelColumn({ column }: PanelColumnProps) {
-  const rootPanelId = useAtomValue(rootPanelIdAtom);
   const launchChild = useSetAtom(launchChildAtom);
   const closePanel = useSetAtom(closePanelAtom);
   const navigateTo = useSetAtom(navigateToAtom);
   const selectSibling = useSetAtom(selectSiblingAtom);
+  const toggleMinimize = useSetAtom(toggleMinimizeAtom);
+  const setPanelWidth = useSetAtom(setPanelWidthAtom);
+
+  const panelRef = useRef<HTMLDivElement>(null);
+  const resizeStartX = useRef<number>(0);
+  const resizeStartWidth = useRef<number>(0);
 
   const panelClassName = useMemo(() => {
     const classes = ['panel'];
-    if (column.isTarget) {
-      classes.push('panel-target');
-    }
     return classes.join(' ');
-  }, [column.isTarget]);
+  }, []);
 
   const handleTabSelection = (tab: PanelTabModel): void => {
     switch (tab.kind) {
       case 'breadcrumb':
-        // Navigate to a hidden ancestor panel
+        // Navigate to a minimized ancestor panel
         navigateTo(tab.id);
         break;
 
@@ -44,11 +47,6 @@ export function PanelColumn({ column }: PanelColumnProps) {
           return;
         }
         selectSibling({ parentId: tab.parentId, childId: tab.id });
-        break;
-
-      case 'child':
-        // Navigate to a hidden child panel
-        navigateTo(tab.id);
         break;
 
       default:
@@ -67,25 +65,68 @@ export function PanelColumn({ column }: PanelColumnProps) {
     closePanel(column.id);
   };
 
+  const handleToggleMinimize = (): void => {
+    toggleMinimize(column.id);
+  };
+
+  const handleResizeStart = useCallback(
+    (e: React.MouseEvent): void => {
+      e.preventDefault();
+      if (!panelRef.current) return;
+
+      resizeStartX.current = e.clientX;
+      resizeStartWidth.current = panelRef.current.offsetWidth;
+
+      const handleMouseMove = (moveEvent: MouseEvent): void => {
+        const deltaX = moveEvent.clientX - resizeStartX.current;
+        const newWidth = Math.max(
+          60,
+          Math.min(window.innerWidth * 0.8, resizeStartWidth.current + deltaX)
+        );
+        setPanelWidth({ panelId: column.id, width: newWidth });
+      };
+
+      const handleMouseUp = (): void => {
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+      };
+
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    },
+    [column.id, setPanelWidth]
+  );
+
   return (
     <div
+      ref={panelRef}
       className={panelClassName}
-      style={{ width: `${column.widthPercent}%`, flex: `0 0 ${column.widthPercent}%` }}
+      style={{
+        width: `${column.widthFraction * 100}%`,
+        flex: `0 0 ${column.widthFraction * 100}%`,
+        position: 'relative',
+      }}
       data-panel-id={column.id}
     >
-      <TabBar
-        tabs={column.breadcrumbTabs}
-        variant="breadcrumbs"
-        ariaLabel="Hidden ancestor panels"
-        onSelect={handleTabSelection}
-      />
+      {/* Top tabs: minimized ancestors for leftmost panel */}
+      {column.topTabs.length > 0 && (
+        <TabBar
+          tabs={column.topTabs}
+          variant="breadcrumbs"
+          ariaLabel="Minimized ancestor panels"
+          onSelect={handleTabSelection}
+        />
+      )}
 
-      <TabBar
-        tabs={column.siblingTabs}
-        variant="siblings"
-        ariaLabel="Sibling panels"
-        onSelect={handleTabSelection}
-      />
+      {/* Sibling tabs always at top of panel */}
+      {column.siblingTabs.length > 0 && (
+        <TabBar
+          tabs={column.siblingTabs}
+          variant="siblings"
+          ariaLabel="Sibling panels"
+          onSelect={handleTabSelection}
+        />
+      )}
 
       <header className="panel-header">
         <h2 className="panel-title">{column.node.title}</h2>
@@ -93,11 +134,18 @@ export function PanelColumn({ column }: PanelColumnProps) {
           <button
             type="button"
             className="button button-ghost button-sm"
+            onClick={handleToggleMinimize}
+            aria-label={column.minimized ? 'Restore panel' : 'Minimize panel'}
+          >
+            {column.minimized ? '▶' : '◀'}
+          </button>
+          <button
+            type="button"
+            className="button button-ghost button-sm"
             onClick={handleLaunchChild}
           >
             Launch Child
           </button>
-          {column.id !== rootPanelId && (
             <button
               type="button"
               className="button button-ghost button-sm"
@@ -105,7 +153,6 @@ export function PanelColumn({ column }: PanelColumnProps) {
             >
               Close
             </button>
-          )}
         </div>
       </header>
 
@@ -113,7 +160,7 @@ export function PanelColumn({ column }: PanelColumnProps) {
         <div className="panel-section">
           <p className="panel-meta">Panel ID: {column.id}</p>
           <p className="panel-meta">
-            Depth: {column.depth >= 0 ? column.depth : 0}
+            Hi
           </p>
         </div>
 
@@ -124,11 +171,21 @@ export function PanelColumn({ column }: PanelColumnProps) {
         </div>
       </div>
 
-      <TabBar
-        tabs={column.childTabs}
-        variant="children"
-        ariaLabel="Hidden child panels"
-        onSelect={handleTabSelection}
+      {/* Bottom tabs: minimized ancestors (breadcrumbs) for non-leftmost panels */}
+      {column.bottomTabs.length > 0 && (
+        <TabBar
+          tabs={column.bottomTabs}
+          variant="breadcrumbs-bottom"
+          ariaLabel="Minimized ancestor panels"
+          onSelect={handleTabSelection}
+        />
+      )}
+
+      {/* Resize handle */}
+      <div
+        className="resize-handle"
+        onMouseDown={handleResizeStart}
+        aria-label="Resize panel"
       />
     </div>
   );

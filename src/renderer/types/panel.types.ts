@@ -23,15 +23,13 @@ export interface PanelTree {
   nodes: Map<PanelId, PanelNode>;
 }
 
-export type PanelHiddenReason = 'overflow' | null;
+/**
+ * User-controlled visibility state for each panel.
+ * True = minimized (collapsed), False = expanded
+ */
+export type PanelVisibilityMap = Map<PanelId, boolean>;
 
-export interface PanelVisibilityRecord {
-  panelId: PanelId;
-  visible: boolean;
-  hiddenBecause: PanelHiddenReason;
-}
-
-export type PanelTabKind = 'breadcrumb' | 'sibling' | 'child';
+export type PanelTabKind = 'breadcrumb' | 'sibling';
 
 export interface PanelTabModel {
   id: PanelId;
@@ -44,19 +42,13 @@ export interface PanelTabModel {
 export interface PanelColumnLayout {
   id: PanelId;
   node: PanelNode;
-  widthPercent: number;
-  isTarget: boolean;
-  depth: number;
-  breadcrumbTabs: PanelTabModel[];
+  widthFraction: number;
+  minimized: boolean;
+  topTabs: PanelTabModel[];
+  bottomTabs: PanelTabModel[];
   siblingTabs: PanelTabModel[];
-  childTabs: PanelTabModel[];
 }
 
 export interface PanelLayoutDescription {
   columns: PanelColumnLayout[];
-  visiblePanelIds: PanelId[];
-  hiddenPanels: {
-    ids: PanelId[];
-    overflowCount: number;
-  };
 }

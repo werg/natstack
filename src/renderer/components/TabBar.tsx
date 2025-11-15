@@ -2,7 +2,7 @@ import type { PanelTabModel } from '../types/panel.types';
 
 interface TabBarProps {
   tabs: PanelTabModel[];
-  variant: 'breadcrumbs' | 'siblings' | 'children';
+  variant: 'breadcrumbs' | 'breadcrumbs-bottom' | 'siblings';
   ariaLabel?: string;
   onSelect: (tab: PanelTabModel) => void;
 }

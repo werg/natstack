@@ -2,7 +2,7 @@
 
 ## Overview
 
-NatStack is an agentic platform for on-the-fly generative UI applications built on Electron. At its core is a sophisticated stackable panel system that allows dynamic, tree-based navigation with automatic layout management.
+NatStack is an agentic platform for on-the-fly generative UI applications built on Electron. At its core is a simple stackable panel system that allows tree-based navigation with user-controlled layout management.
 
 ## Core Concept
 
@@ -11,13 +11,14 @@ The panel system implements a **horizontal stack** of panels where:
 - Each panel can launch **child panels**
 - Panels form a logical **tree structure** (parent-child relationships)
 - Only one **path through the tree** is visible at a time (the "active path")
-- Panels automatically **collapse** to maintain a user-defined maximum visible panel count
+- Users **manually control** which panels are minimized via minimize buttons
+- Panel widths are **equal by default**, but can be **resized by dragging** boundaries
 
 ## Architecture
 
 ### 1. Data Structure (Panel Tree)
 
-**File**: `src/renderer/state/PanelTree.ts`
+**File**: [src/renderer/state/PanelTree.ts](src/renderer/state/PanelTree.ts)
 
 The panel tree is a hierarchical structure where:
 - Each node represents a panel
@@ -29,257 +30,245 @@ The panel tree is a hierarchical structure where:
 - `addChild(parentId, title)` - Create a new child panel
 - `removePanel(id)` - Delete a panel and all descendants
 - `getPathToPanel(id)` - Get the path from root to a panel
-- `getAncestors(id)` - Get all parent panels
-- `getDescendants(id)` - Get all child panels
 
 ### 2. State Management
 
-**File**: `src/renderer/state/panelAtoms.ts`
+**File**: [src/renderer/state/panelAtoms.ts](src/renderer/state/panelAtoms.ts)
 
-Global state is modelled with Jotai atoms so React renders only the parts of the UI that actually change:
+Global state is modeled with Jotai atoms so React renders only the parts of the UI that actually change:
 
-- `panelTreeAtom` – immutable snapshot of the tree (root node + `Map` of `PanelNode`s).
-- `targetPanelAtom` – the panel that should anchor the visible path. Changing it automatically recomputes the path via `activePathAtom`.
-- `panelColumnCountAtom` – user-configurable limit of simultaneous columns.
-- `panelVisibilityStateAtom` – map of `PanelId → { visible, hiddenBecause }`. This is the persisted record of which parts of the active path were visible previously.
-- `panelLayoutAtom` – derived description used by the renderer (`columns`, breadcrumbs, sibling tabs, child slivers, etc.).
+**Core State Atoms:**
+- `panelTreeAtom` – immutable snapshot of the tree (root node + `Map` of `PanelNode`s)
+- `targetPanelAtom` – the panel that should be active/focused
+- `panelVisibilityAtom` – `Map<PanelId, boolean>` where `true` = minimized, `false/undefined` = expanded
+- `panelWidthsAtom` – `Map<PanelId, number>` storing custom widths in pixels (panels not in map get equal width)
+- `activePathAtom` – derived atom computing the path from root to target panel
 
-Actions exported from the same module (`launchChildAtom`, `closePanelAtom`, `navigateToAtom`, `selectSiblingAtom`, `adjustColumnCountAtom`) mutate the atoms in response to UI events. Because these actions only replace the pieces of state that changed, React + Jotai automatically re-render the affected panels while leaving the rest of the tree untouched.
+**Layout Atom:**
+- `panelLayoutAtom` – derived atom that computes the complete layout description:
+  - Maps each panel in active path to a column descriptor
+  - Calculates width fractions (equal distribution or custom widths)
+  - Determines which tabs appear where (top/bottom/siblings)
+  - Checks minimized state for each panel
+
+**Action Atoms:**
+- `launchChildAtom` – create and navigate to a new child panel
+- `closePanelAtom` – remove a panel and its descendants
+- `navigateToAtom` – change the target panel
+- `selectSiblingAtom` – switch between sibling panels
+- `toggleMinimizeAtom` – toggle minimize state for a panel
+- `setPanelWidthAtom` – set custom width for a panel
 
 ### 3. Layout Engine
 
-**Files**: `src/renderer/state/panelVisibility.ts`, `src/renderer/state/panelAtoms.ts`
+**File**: [src/renderer/state/panelAtoms.ts](src/renderer/state/panelAtoms.ts)
 
-`reconcileVisibilityState()` is the new layout algorithm. It consumes four inputs—the active path, the requested column budget, the target panel, and the previous visibility map—and produces a stable sliding window of visible panels. The function:
+The layout algorithm (`panelLayoutAtom`) is radically simple:
 
-1. Clamps the column budget (minimum 1) and reuses the previous leftmost visible panel when possible so that the UI does not jump around.
-2. Forces the target panel into the window, shifting the window only as much as necessary.
-3. Writes a `Map<PanelId, PanelVisibilityRecord>` describing whether each panel on the path is visible or overflow-hidden. This map is persisted in Jotai, satisfying the requirement that hide/show decisions consider previous state.
+1. **Active Path**: All panels from root to target are included
+2. **Width Calculation**:
+   - If a panel has a custom width (in `panelWidthsAtom`), use it
+   - Otherwise, divide available space equally among panels without custom widths
+3. **Tab Placement**:
+   - **Top tabs** (leftmost panel only): Show minimized ancestors as breadcrumbs
+   - **Sibling tabs** (all panels): Show alternative children of the same parent
+   - **Bottom tabs** (non-leftmost panels): Show minimized ancestors as breadcrumbs
 
-`panelLayoutAtom` combines that visibility map with the tree to produce a `PanelLayoutDescription`:
-
-- `columns`: ordered descriptors with node metadata, width allocations, and tab collections.
-- `visiblePanelIds`: ids currently rendered as columns.
-- `hiddenPanels`: ids that are reachable but hidden because they fell outside the active window.
-
-Tabs now follow three concrete rules:
-
-1. **Sibling tabs** – whenever a parent has multiple children, tabs appear directly above the visible child panel so users can flip between alternatives in-place.
-2. **Breadcrumb tabs** – when ancestors are hidden (because the window slid past them), their tabs appear above the descendant panel, acting as breadcrumb navigation.
-3. **Child sliver tabs** – if a panel’s children are all hidden, a compact tab bar appears at the bottom of the parent to keep those children reachable.
-
-All tab sets are generated inside the layout atom so React components stay dumb renderers.
+No automatic hiding, no window sliding, no complex visibility reconciliation. The user controls everything via minimize buttons.
 
 ### 4. UI Components
 
 #### React component tree
 
-- **`PanelApp` (`src/renderer/components/PanelApp.tsx`)** – top-level React component. Mounts the control bar, panel stack, and a hook that keeps the visibility atom in sync with the latest path/column settings.
-- **`ControlBar`** – exposes column count controls and basic status (how many nodes are visible vs. total path length).
-- **`PanelStack` + `PanelColumn`** – render the horizontal stack. Each `PanelColumn` receives a descriptor from `panelLayoutAtom`, so it simply wires up buttons (`Launch Child`, `Close`) and injects the correct tab bars above/below its content.
-- **`TabBar`** – lightweight presenter used for breadcrumb tabs, sibling selectors, and child slivers. Styling is handled in CSS without prescribing hardcoded tokens in the design doc.
+**File**: [src/renderer/components/PanelApp.tsx](src/renderer/components/PanelApp.tsx)
 
-UI interactions (button clicks, tab selection) call the action atoms described earlier, so React only concerns itself with rendering and event wiring.
+- **`PanelApp`** – top-level React component. Only handles theme synchronization now (no control bar)
+- **`PanelStack`** – renders the horizontal stack of panels from `panelLayoutAtom`
+- **`PanelColumn`** – renders a single panel with:
+  - Top tabs (for leftmost panel: minimized ancestors)
+  - Sibling tabs (if panel has siblings)
+  - Header with title and action buttons (minimize, launch child, close)
+  - Content area (hidden when minimized)
+  - Bottom tabs (for non-leftmost panels: minimized ancestors)
+  - Resize handle (right edge, hidden when minimized)
+- **`TabBar`** – lightweight presenter for tab collections
+
+**Minimization Logic:**
+- Each panel has a minimize button (◀ to minimize)
+- When minimized:
+  - Panel is **completely hidden** (not rendered)
+  - Panel only appears as a **breadcrumb tab** that can be clicked to restore it
+- Minimized ancestors appear as breadcrumb tabs:
+  - At **top** of leftmost visible panel
+  - At **bottom** of all other visible panels
+- Clicking a breadcrumb tab restores (un-minimizes) that panel and navigates to it
+
+**Resizing Logic:**
+- Each expanded panel has a resize handle on its right edge
+- Dragging the handle updates `panelWidthsAtom` for that panel
+- Custom widths persist until panel is closed
+- Other panels without custom widths share remaining space equally
 
 ## Interaction Patterns
 
 ### 1. Spawning New Contexts
 
-When an agent or application needs to spawn a new context (such as launching a visualization tool, opening a detail view, or creating a subsidiary workspace):
+When an agent or application needs to spawn a new context:
 
 **Flow**:
-1. Create new child panel in tree hierarchy
-2. Update active path to include the new context
-3. Mark new context as active child of parent
-4. If exceeds max visible panels, auto-collapse ancestor contexts
-5. New context receives focus
+1. Call `launchChildAtom` with parent panel ID
+2. New child panel is added to tree
+3. Target panel updates to the new child
+4. Active path automatically includes the new panel
+5. All panels in path are visible (some may be minimized by user)
 
 **Use Cases**:
 - An agent spawns a data visualization from a query result
 - A code editor opens a related file for comparison
-- A workflow triggers a detail inspector for an item
 - A generative UI creates a new interactive widget
 
 ### 2. Switching Between Alternative Contexts
 
-When multiple alternative contexts exist at the same level (e.g., different views of the same data, alternative agent outputs, or parallel workflows):
+When multiple alternative contexts exist at the same level:
 
 **Flow**:
-1. Switch active child for parent context
-2. Rebuild active path through new branch
-3. Hide previous context and its descendants
-4. Show new context with any active descendants
+1. User clicks a sibling tab
+2. `selectSiblingAtom` updates the target panel
+3. Active path rebuilds through the new branch
+4. Previous sibling's descendants are no longer in active path (thus hidden)
 
 **Use Cases**:
 - Switching between different visualizations of the same dataset
 - Toggling between alternative agent-generated solutions
-- Comparing different file versions or branches
-- Switching between chat threads or conversation contexts
+- Comparing different file versions
 
-### 3. Navigating Up the Hierarchy
+### 3. Managing Screen Real Estate
 
-When users need to return to ancestor contexts (backtracking through their work):
-
-**Flow**:
-1. Truncate active path at selected ancestor
-2. Hide all descendant contexts
-3. Expand and focus the ancestor context
-4. Update layout to reveal the context
-
-**Use Cases**:
-- Returning to a previous step in a multi-step workflow
-- Navigating back to see the source that spawned current views
-- Reviewing the context that led to current state
-- Breadcrumb-style navigation through nested tools
-
-### 4. Managing Screen Real Estate
-
-Users can manually control how much space each context receives:
+Users have full manual control over panel visibility:
 
 **Flow**:
-1. Toggle individual panels between collapsed/expanded states
-2. Recalculate layout to redistribute space
-3. Collapsed panels show as thin tab strips
+1. Click minimize button (◀) to hide a panel
+2. `toggleMinimizeAtom` updates `panelVisibilityAtom`
+3. Panel is completely hidden (not rendered)
+4. Breadcrumb tab appears in descendant panels
+5. Click breadcrumb tab to restore and navigate to the panel
+
+**Benefits**:
+- Simple, predictable behavior
+- No automatic hiding surprises
+- Users control their own workflow
+- Clean interface - minimized panels don't take up space
+
+### 4. Adjusting Panel Widths
+
+Users can customize how much space each panel receives:
+
+**Flow**:
+1. Hover over panel boundary (right edge)
+2. Resize handle appears
+3. Drag left/right to adjust width
+4. `setPanelWidthAtom` stores custom width
+5. Other panels redistribute remaining space
 
 **Use Cases**:
-- Temporarily hiding contexts to focus on others
-- Keeping ancestor contexts visible for reference
-- Maximizing space for detailed work
-- Maintaining awareness of overall context tree
+- Giving more space to detailed content
+- Shrinking reference panels to small size
+- Creating custom layout for specific workflow
 
 ### 5. Closing Contexts
 
-When contexts are no longer needed, they can be removed along with any nested descendants:
+When contexts are no longer needed:
 
 **Flow**:
-1. Remove panel and all descendants from tree
-2. Select alternative sibling if available
-3. Rebuild active path excluding closed context
-4. Clean up resources and state
+1. Click close button
+2. `closePanelAtom` removes panel and descendants
+3. If closed panel was in active path, target moves to parent
+4. Visibility and width state cleaned up for removed panels
 
 **Use Cases**:
 - Closing completed sub-tasks
-- Removing outdated or incorrect agent outputs
-- Cleaning up workspace clutter
-- Ending specific workflows or sessions
-
-### 6. Adapting Display Density
-
-Users can adjust how many contexts are simultaneously visible:
-
-**Flow**:
-1. Update maximum visible panel count
-2. Recalculate layout with new constraints
-3. Auto-collapse or expand panels to meet limit
-
-**Use Cases**:
-- Working on ultrawide monitors (more panels visible)
-- Working on smaller screens (fewer panels visible)
-- Focusing deeply (reduce visible panels)
-- Maintaining broad context awareness (increase visible panels)
-
-## Layout Rules
-0%
-
-### Auto-Collapse Priority
-
-When `activePath.length > maxVisiblePanels`:
-- Keep **rightmost (deepest)** panels expanded
-- Collapse **leftmost (ancestor)** panels first
-- Algorithm: `expandablePanels.slice(-maxVisiblePanels)`
-
-### Tab Strip Positioning
-
-**Top (Breadcrumbs)**:
-- Shows collapsed ancestor panels
-- Positioned above first expanded panel
-- Left offset = sum of collapsed panel widths before first expanded
-
-**Bottom (Siblings)**:
-- Shows inactive siblings of panels in active path
-- Spans full width at bottom
-- Allows switching between branches
+- Removing outdated agent outputs
+- Cleaning up workspace
 
 ## Visual Design System
 
-### Design Tokens (`src/renderer/styles.css`)
+### Design Tokens
+
+**File**: [src/renderer/styles.css](src/renderer/styles.css)
 
 **Colors**:
 - Neutral palette: `--color-gray-50` through `--color-gray-900`
 - Primary: `--color-primary` (#3b82f6 blue)
 - Semantic: `--color-background`, `--color-surface`, `--color-border`
 
-**Spacing**: 8px scale (`--space-1` through `--space-12`)
+**Panel Dimensions**:
+- `--panel-min-width`: 200px (minimum width for expanded panels)
+- `--panel-header-height`: 48px
+- `--resize-handle-width`: 4px
 
 **Transitions**:
 - Fast: 150ms (hover effects)
 - Base: 250ms (state changes)
-- Panel: 400ms (collapse/expand animations)
-
-**Easing**: `cubic-bezier(0.4, 0, 0.2, 1)` for smooth motion
+- Panel: 400ms (minimize/expand animations)
 
 ### Component Styling
 
 **Panels**:
-- Subtle borders
-- Smooth width transitions
-- Focused panels have blue inset shadow
-- Collapsed panels show only header
+- Default: flexible width (equal distribution or custom)
+- Minimized: not rendered (only appear as breadcrumb tabs)
+- Target (`.panel-target`): blue inset shadow
+- Resize handle: 4px zone on right edge, becomes blue on hover
 
 **Tabs**:
-- Rounded corners
+- Breadcrumbs at top: for leftmost panel only
+- Sibling tabs: always at top of panel (below breadcrumbs if present)
+- Breadcrumbs at bottom: for all non-leftmost panels
+- Active tab: primary blue background
 - Hover: slight lift with shadow
-- Active: primary blue background
-- Transitions on all interactions
 
 **Buttons**:
-- Ghost: transparent with hover
-- All have hover lift effect
+- Ghost style for panel actions
+- Minimize button shows ◀ to hide the panel
 
 ## State Flow Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                     User Action                         │
-│ (launch child / pick tab / navigate / close)            │
+│ (launch/close/navigate/minimize/resize)                 │
 └────────────────────┬────────────────────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────────────────────┐
 │         Jotai action atoms (panelAtoms.ts)              │
-│  • mutate panelTreeAtom                                 │
-│  • move targetPanelAtom                                 │
-│  • tweak column count                                   │
+│  • launchChildAtom / closePanelAtom                     │
+│  • navigateToAtom / selectSiblingAtom                   │
+│  • toggleMinimizeAtom                                   │
+│  • setPanelWidthAtom                                    │
 └────────────────────┬────────────────────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────────────────────┐
 │         Atom graph recalculates derived state           │
-│  • activePathAtom                                       │
-│  • panelVisibilityStateAtom                             │
-│  • panelLayoutAtom                                      │
-└────────────────────┬────────────────────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│   reconcileVisibilityState + layout builder             │
-│  • keep prior window when possible                      │
-│  • generate breadcrumb / sibling / child tabs           │
-│  • assign widths                                        │
+│  • activePathAtom (root → target)                       │
+│  • panelLayoutAtom (columns + tabs + widths)            │
 └────────────────────┬────────────────────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────────────────────┐
 │            React components (PanelApp tree)             │
-│  • Control bar reflects settings                        │
-│  • PanelColumn renders tabs + content                   │
+│  • PanelColumn renders each panel in active path        │
+│  • Apply minimized state (hide content, rotate header)  │
+│  • Render tabs in correct positions                     │
+│  • Attach resize handlers                               │
 └────────────────────┬────────────────────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────────────────────┐
 │                    DOM Update                           │
-│  • Columns animate width                                │
-│  • Tab bars move with their panels                      │
+│  • Panels animate width changes                         │
+│  • Minimize transitions smooth                          │
+│  • Tab bars appear/disappear                            │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -287,31 +276,27 @@ When `activePath.length > maxVisiblePanels`:
 
 ### Agentic Platform Foundation
 
-NatStack is designed as a platform where autonomous agents can dynamically generate, compose, and manipulate user interfaces. The panel system provides the spatial and navigational framework for this:
+NatStack is designed as a platform where autonomous agents can dynamically generate, compose, and manipulate user interfaces:
 
 **Dynamic Content Generation**:
 - Agents compile and execute UI code on-the-fly using esbuild
 - Each panel can host TypeScript, React, Vue, or other framework code
 - Hot module reloading enables live updates as agents refine outputs
-- Dependency bundling happens transparently
 
 **Recursive Composition**:
 - Any panel can spawn additional panels programmatically
 - Panels can be webviews, iframes, or native components
 - Child panels inherit context but run in sandboxed environments
-- Agents can create deeply nested tool chains
 
 **Inter-Panel Communication**:
 - Parent-child messaging via IPC channels
 - Shared state management across panel hierarchies
-- Event systems for coordination between contexts
 - Agents can orchestrate multi-panel workflows
 
 **Lifecycle Management**:
 - Panels have mount/unmount hooks for resource management
-- State persistence across navigation and collapse/expand
+- State persistence for visibility and width preferences
 - Automatic cleanup when contexts are closed
-- Resource isolation prevents interference
 
 ### Extensibility & Customization
 
@@ -319,66 +304,65 @@ NatStack is designed as a platform where autonomous agents can dynamically gener
 - Drag-to-reorder sibling tabs for custom prioritization
 - Panel splitting (horizontal/vertical) for side-by-side views
 - Detach panels into floating windows for multi-monitor setups
-- Browser-style back/forward history through context trees
 - Keyboard shortcuts for power users
 
 **Workspace Management**:
 - Save/load panel layouts as templates
 - Quick-launch predefined workflows
-- Bookmark specific context paths
 - Session persistence and restoration
 
 **Visual Customization**:
 - Theme system supporting dark mode and custom schemes
-- Per-panel or per-app theming
 - Adaptive layouts for different screen sizes
 - Accessibility features (high contrast, reduced motion)
 
 ## Performance Considerations
 
 **Optimizations**:
-- Panels removed from active path are hidden (not destroyed)
+- Only panels in active path are rendered
 - Layout calculations are O(n) where n = active path length
 - Width transitions use CSS (GPU accelerated)
-- Event delegation for tab clicks
-- Virtual scrolling for many siblings (future)
+- Minimize state stored as simple boolean map
 
 **Constraints**:
 - Recommended max panels in tree: ~1000
-- Recommended max visible panels: 6
+- Recommended max visible panels in path: ~10
 - Recommended max siblings per parent: ~20
 
 ## Development Guide
 
 ### Adding a New Panel Type
 
-1. Extend `PanelContentData` type in `panel.types.ts`
-2. Add the rendering logic to `PanelColumn.tsx` (or compose a dedicated React component and mount it there)
-3. If the new panel type needs extra layout/state, add atoms or selectors in `panelAtoms.ts`
-4. Add or tweak styling in `styles.css`
+1. Extend `PanelContentData` type in [panel.types.ts](src/renderer/types/panel.types.ts)
+2. Add rendering logic to [PanelColumn.tsx](src/renderer/components/PanelColumn.tsx)
+3. Add styling in [styles.css](src/renderer/styles.css)
 
 ### Adding a New State Method
 
-1. Create a new atom or action in `panelAtoms.ts`
-2. Update `panelLayoutAtom` (or supporting selectors) if the derived data should change
-3. Document the new state surface in this design doc
-4. Wire the relevant UI control to the action atom inside the React components
+1. Create a new action atom in [panelAtoms.ts](src/renderer/state/panelAtoms.ts)
+2. Update `panelLayoutAtom` if derived data should change
+3. Wire UI control to the action atom in React components
 
 ### Testing Scenarios
 
 **Core Navigation**:
 - Spawn multiple child contexts from a single parent
 - Switch between alternative sibling contexts via tabs
-- Navigate back to ancestor contexts using breadcrumbs
+- Minimize/restore panels at various depths
+- Resize panels and verify width persistence
 - Close contexts at various tree depths
-- Adjust maximum visible panel count dynamically
 
-**Scalability**:
-- Deep hierarchies (5+ levels of nesting)
-- Wide branching (10+ sibling alternatives)
-- Mixed scenarios (deep + wide)
-- Window resizing and responsive behavior
-- Performance with large context trees (~1000 panels)
+**Layout Management**:
+- Minimize root panel, verify breadcrumbs at top of first visible panel
+- Minimize middle panel, verify breadcrumbs at bottom of descendants
+- Resize multiple panels, verify equal distribution of remaining space
+- Mix custom widths and minimized panels
+
+**Edge Cases**:
+- Minimize all panels except leaf
+- Close parent while child is target
+- Resize during minimize animation
+- Rapid minimize/restore toggling
 
 ## File Structure Summary
 
@@ -387,19 +371,30 @@ src/renderer/
 ├── types/
 │   └── panel.types.ts           # TypeScript interfaces
 ├── state/
-│   ├── PanelTree.ts            # Tree helper utilities
-│   ├── panelAtoms.ts           # Jotai atoms + actions + layout derivations
-│   └── panelVisibility.ts      # Visibility reconciliation algorithm
+│   ├── PanelTree.ts             # Tree helper utilities
+│   └── panelAtoms.ts            # Jotai atoms + actions + layout
 ├── components/
-│   ├── PanelApp.tsx            # Root React tree + sync hook
-│   ├── ControlBar.tsx          # Column controls and status
-│   ├── PanelStack.tsx          # Container for horizontal panels
-│   ├── PanelColumn.tsx         # Individual column renderer
-│   └── TabBar.tsx              # Breadcrumb / sibling / child tabs
-├── index.ts                    # React renderer bootstrap
-├── index.html                  # HTML shell
-└── styles.css                  # Design system + layout styles
+│   ├── PanelApp.tsx             # Root React component
+│   ├── PanelStack.tsx           # Container for horizontal panels
+│   ├── PanelColumn.tsx          # Individual panel with resize + minimize
+│   └── TabBar.tsx               # Tab presenter
+├── index.tsx                    # React renderer bootstrap
+├── index.html                   # HTML shell
+└── styles.css                   # Design system + layout styles
 ```
+
+## Key Simplifications from Previous Design
+
+1. **No automatic visibility reconciliation** – users control minimize state manually
+2. **No column count limit** – all panels in active path are visible (minimized or expanded)
+3. **No complex overflow logic** – just simple breadcrumb tabs for minimized ancestors
+4. **No control bar** – UI is cleaner without global controls
+5. **User-driven layout** – minimize and resize give users full control
+6. **Simpler state** – just tree, path, visibility map, and width map
+7. **Simpler tab rules**:
+   - Leftmost panel: minimized ancestors at **top**
+   - All panels: siblings at **top**
+   - Non-leftmost panels: minimized ancestors at **bottom**
 
 ## Use Case Examples
 
@@ -408,36 +403,37 @@ src/renderer/
 1. **Root Panel**: User starts with a data query interface
 2. **Query Results**: Agent spawns a child panel showing tabular results
 3. **Visualization**: From results, agent spawns a chart visualization
-4. **Detail Inspector**: User clicks a data point, spawning a detail view
-5. **Alternative Views**: Agent generates 3 alternative visualization types as sibling tabs
-6. **Editing**: User spawns an editor panel to modify the query
-
-Navigation: User can keep results and chart visible side-by-side, and use tabs to switch between alternative visualizations. Breadcrumbs allow quick return to the root query.
+4. User **minimizes** query panel - it disappears, appears as breadcrumb tab
+5. User **resizes** results panel to be smaller, giving more space to chart
+6. **Detail Inspector**: User clicks a data point, spawning a detail view
+7. User **minimizes** results panel - now only chart and detail view are visible
+8. User can click breadcrumb tabs to restore any minimized panel
 
 ### Example 2: Collaborative Code Review
 
 1. **Root Panel**: File tree browser
 2. **File View**: Developer opens a source file
-3. **Related Files**: Agent suggests and spawns related files as siblings
+3. User **minimizes** file tree - it becomes a breadcrumb tab
 4. **Diff View**: Opening a PR spawns a diff visualization
-5. **Comment Thread**: Clicking a comment spawns a discussion panel
-6. **AI Assistant**: Agent spawns a code analysis tool alongside the file
+5. User **resizes** file view to 30% width, diff to 70%
+6. **Comment Thread**: Clicking a comment spawns a discussion panel
+7. User **minimizes** file view - now only diff and comments visible
+8. Click file tree breadcrumb to restore and navigate back
 
-Navigation: Developers can switch between related files via tabs, keep diff visible while reading comments, and collapse the file tree when focusing on specific discussions.
+### Example 3: Multi-Step Workflow
 
-### Example 3: Generative UI Design System
-
-1. **Root Panel**: Component library browser
-2. **Component Viewer**: Selecting a component spawns a live preview
-3. **Variants**: Agent generates component variants as sibling tabs
-4. **Code View**: Spawns the component's source code in a child panel
-5. **Documentation**: Agent generates interactive docs in a sibling panel
-6. **Usage Examples**: Agent spawns example implementations
-
-Navigation: Designers can compare variants side-by-side, quickly switch between code and docs, and maintain breadcrumb access to the component library while exploring deep into implementation details.
+1. **Root**: Workflow dashboard
+2. **Step 1**: Input form
+3. User completes form, **minimizes** dashboard
+4. **Step 2**: Processing view (active)
+5. User **minimizes** Step 1 after completion
+6. **Step 3**: Review panel spawns
+7. Only Step 2 and Step 3 are visible; Steps 1 and dashboard are breadcrumb tabs
+8. User can click any breadcrumb to jump back and restore that step
+9. User adjusts widths of visible panels to focus on current work
 
 ## Conclusion
 
-The NatStack panel system provides a robust, extensible foundation for building dynamic, agentic UI applications. Its tree-based navigation model with automatic layout management creates an intuitive user experience while maintaining clean architectural separation between state, layout, and presentation concerns.
+The simplified NatStack panel system provides an intuitive, user-controlled foundation for building dynamic, agentic UI applications. By removing automatic layout management and giving users manual control via minimize buttons and resize handles, the system becomes more predictable, simpler to implement, and easier to understand.
 
-The system is designed to support autonomous agents that can programmatically generate, compose, and orchestrate user interfaces, enabling a new paradigm of adaptive, context-aware applications that evolve with user needs and agent capabilities.
+The tree-based navigation model remains intact, while the layout mechanism is now driven entirely by user actions rather than complex algorithms. This creates a better user experience and a cleaner codebase.

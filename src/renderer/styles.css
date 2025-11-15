@@ -92,11 +92,11 @@
   --z-tooltip: 200;
 
   /* Panel Specific */
-  --panel-collapsed-width: 56px;
   --panel-min-width: 200px;
   --panel-header-height: 48px;
   --tab-height: 40px;
   --tab-width: 48px;
+  --resize-handle-width: 4px;
 }
 
 /* ========================================
@@ -255,24 +255,7 @@ body {
   border-right: none;
 }
 
-/* Panel States */
-.panel.collapsed {
-  width: var(--panel-collapsed-width) !important;
-  min-width: var(--panel-collapsed-width);
-  max-width: var(--panel-collapsed-width);
-}
-
-.panel.hidden {
-  display: none;
-}
-
-.panel.focused {
-  box-shadow: inset 0 0 0 2px var(--color-primary-light);
-}
-
-.panel.inactive {
-  opacity: 0.8;
-}
+/* Panel States - minimized panels are not rendered, no special CSS needed */
 
 /* ========================================
    Panel Header
@@ -312,10 +295,6 @@ body {
   overflow-y: auto;
   overflow-x: hidden;
   padding: var(--space-4);
-}
-
-.panel.collapsed .panel-content {
-  display: none;
 }
 
 /* Custom Scrollbar */
@@ -443,10 +422,11 @@ body {
   border-bottom: 1px solid var(--color-border-subtle);
 }
 
-.panel-tabs--children {
+.panel-tabs--breadcrumbs-bottom {
   margin-top: auto;
   border-top: 1px solid var(--color-border);
   border-bottom: none;
+  background: var(--color-surface);
 }
 
 .panel-target {
@@ -546,29 +526,29 @@ body {
 }
 
 /* ========================================
-   Control Bar
+   Resize Handles
    ======================================== */
 
-.control-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--space-3) var(--space-4);
-  background: var(--color-background);
-  border-bottom: 1px solid var(--color-border);
-  gap: var(--space-4);
+.resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: var(--resize-handle-width);
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  transition: background-color var(--transition-fast) var(--ease-out);
+  z-index: var(--z-panel);
 }
 
-.control-group {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
+.resize-handle:hover {
+  background: var(--color-primary);
+  opacity: 0.5;
 }
 
-.control-label {
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  color: var(--color-text-secondary);
+.resize-handle:active {
+  background: var(--color-primary);
+  opacity: 0.8;
 }
 
 /* ========================================
