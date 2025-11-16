@@ -1,16 +1,19 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { Theme } from "@radix-ui/themes";
 
 import { effectiveThemeAtom, loadThemePreferenceAtom } from "../state/themeAtoms";
 import { PanelStack } from "./PanelStack";
+import { TitleBar } from "./TitleBar";
 
 export function PanelApp() {
   const effectiveTheme = useThemeSynchronizer();
+  const [currentTitle, setCurrentTitle] = useState("NatStack");
 
   return (
     <Theme appearance={effectiveTheme}>
-      <PanelStack />
+      <TitleBar title={currentTitle} />
+      <PanelStack onTitleChange={setCurrentTitle} />
     </Theme>
   );
 }

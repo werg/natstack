@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { PlusIcon } from "@radix-ui/react-icons";
 import { Box, Button, Card, Flex, Tabs, Text, Heading } from "@radix-ui/themes";
 
@@ -10,11 +10,15 @@ interface Panel {
   selectedChildId: string | null;
 }
 
+interface PanelStackProps {
+  onTitleChange?: (title: string) => void;
+}
+
 const generateRandomText = (): string => {
   return "Content for panel " + Math.random().toString(36).substring(7);
 };
 
-export function PanelStack() {
+export function PanelStack({ onTitleChange }: PanelStackProps) {
   const [rootPanels, setRootPanels] = useState<Panel[]>([
     {
       id: "root-1",
@@ -136,8 +140,15 @@ export function PanelStack() {
   // Suppress unused variable warning - selectedRootId is used for state management
   void selectedRootId;
 
+  // Notify parent of title changes
+  useEffect(() => {
+    if (onTitleChange && visiblePanel) {
+      onTitleChange(visiblePanel.title);
+    }
+  }, [onTitleChange, visiblePanel]);
+
   return (
-    <Box p="4" height="100vh">
+    <Box p="4" style={{ height: "calc(100vh - 32px)" }}>
       <Flex direction="column" gap="3" height="100%">
         {/* Ancestor Breadcrumbs */}
         {fullPath.length > 1 && (

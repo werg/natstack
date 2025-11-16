@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, ipcMain, nativeTheme, type IpcMainInvokeEvent } from "electron";
 import * as path from "path";
 import { isDev } from "./utils.js";
 
@@ -8,6 +8,12 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 600,
+    titleBarStyle: "hidden",
+    ...(process.platform !== "darwin"
+      ? {
+          titleBarOverlay: true,
+        }
+      : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       nodeIntegration: false,
@@ -26,47 +32,7 @@ function createWindow(): void {
   });
 }
 
-function setupMenu(): void {
-  const template = [
-    {
-      label: "File",
-      submenu: [
-        {
-          label: "Exit",
-          accelerator: "CmdOrCtrl+Q",
-          click: (): void => {
-            app.quit();
-          },
-        },
-      ],
-    },
-    {
-      label: "Edit",
-      submenu: [
-        { role: "undo" as const },
-        { role: "redo" as const },
-        { type: "separator" as const },
-        { role: "cut" as const },
-        { role: "copy" as const },
-        { role: "paste" as const },
-      ],
-    },
-    {
-      label: "View",
-      submenu: [
-        { role: "reload" as const },
-        { role: "forceReload" as const },
-        { role: "toggleDevTools" as const },
-      ],
-    },
-  ];
-
-  const menu = Menu.buildFromTemplate(template);
-  Menu.setApplicationMenu(menu);
-}
-
 app.on("ready", () => {
-  setupMenu();
   void createWindow();
 });
 
