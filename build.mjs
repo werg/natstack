@@ -38,12 +38,12 @@ const rendererConfig = {
   minify: !isDev,
   loader: {
     ".html": "text",
+    ".css": "css",
   },
 };
 
 function copyAssets() {
   fs.copyFileSync("src/renderer/index.html", "dist/index.html");
-  fs.copyFileSync("src/renderer/styles.css", "dist/styles.css");
 }
 
 async function build() {

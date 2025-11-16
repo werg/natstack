@@ -1,16 +1,4 @@
-# Panel App
-
-A horizontally stacked panel application built with Electron and TypeScript with strict type discipline.
-
-## Features
-
-- ⚡ Modern Electron with TypeScript
-- 🔒 Strict type checking and ESLint configuration
-- 🎨 Responsive two-panel layout with draggable divider
-- 🌓 Automatic dark/light mode support (respects system preferences)
-- 🛠️ esbuild for fast bundling
-- 📦 pnpm for package management
-- 🎯 Browser-like behavior with native context menus
+# Natstack
 
 ## Requirements
 
@@ -105,7 +93,6 @@ The application automatically respects your system's dark/light mode preference.
 4. **CSS Variables**: All colors are defined as CSS custom properties that automatically switch based on the theme
 
 The implementation includes:
-- Dark mode CSS variables in [src/renderer/styles.css](src/renderer/styles.css#L102-L176)
 - Theme state management in [src/renderer/state/themeAtoms.ts](src/renderer/state/themeAtoms.ts)
 - IPC handlers in [src/main/index.ts](src/main/index.ts#L91-L105)
 - Theme synchronization hook in [src/renderer/components/PanelApp.tsx](src/renderer/components/PanelApp.tsx#L57-L119)

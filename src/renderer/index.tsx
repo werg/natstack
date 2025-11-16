@@ -1,16 +1,17 @@
-import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import "@radix-ui/themes/styles.css";
 
-import { PanelApp } from './components/PanelApp';
+import { PanelApp } from "./components/PanelApp";
 
 async function initializeApp(): Promise<void> {
   try {
     const appInfo = await window.electronAPI.getAppInfo();
-    console.log('NatStack version:', appInfo.version);
+    console.log("NatStack version:", appInfo.version);
 
-    const container = document.getElementById('app');
+    const container = document.getElementById("app");
     if (!container) {
-      console.error('Renderer root not found');
+      console.error("Renderer root not found");
       return;
     }
 
@@ -21,7 +22,7 @@ async function initializeApp(): Promise<void> {
       </StrictMode>
     );
   } catch (error) {
-    console.error('Failed to initialize app:', error);
+    console.error("Failed to initialize app:", error);
   }
 }
 
