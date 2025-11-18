@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
 import { PlusIcon } from "@radix-ui/react-icons";
-import { Box, Button, Card, Flex, Tabs, Text, Heading } from "@radix-ui/themes";
+import { Box, Button, Card, Flex, Tabs, Heading } from "@radix-ui/themes";
 
 interface Panel {
   id: string;
   title: string;
-  content: string;
+  url: string;
   children: Panel[];
   selectedChildId: string | null;
 }
@@ -14,24 +14,30 @@ interface PanelStackProps {
   onTitleChange?: (title: string) => void;
 }
 
-const generateRandomText = (): string => {
-  return "Content for panel " + Math.random().toString(36).substring(7);
+const generateRandomUrl = (): string => {
+  const urls = [
+    "https://www.wikipedia.org",
+    "https://www.github.com",
+    "https://news.ycombinator.com",
+    "https://www.reddit.com",
+    "https://www.stackoverflow.com",
+  ];
+  return urls[Math.floor(Math.random() * urls.length)] || "https://www.google.com";
 };
 
 export function PanelStack({ onTitleChange }: PanelStackProps) {
   const [rootPanels, setRootPanels] = useState<Panel[]>([
     {
       id: "root-1",
-      title: "Panel 1",
-      content:
-        "# Welcome to Tree Panel Browser\n\nThis is a **glossy** tree-of-panels browser with breadcrumb navigation.\n\nClick the **+ Add Child** button to create nested panels.",
+      title: "Browser 1",
+      url: generateRandomUrl(),
       children: [],
       selectedChildId: null,
     },
   ]);
   const [selectedRootId, setSelectedRootId] = useState<string>("root-1");
   const [visiblePanelPath, setVisiblePanelPath] = useState<string[]>(["root-1"]);
-  const [nextChildCounter, setNextChildCounter] = useState(1);
+  const [nextChildCounter, setNextChildCounter] = useState(2);
 
   // Get the panel at a specific path
   const getPanelByPath = (path: string[]): Panel | null => {
@@ -67,8 +73,8 @@ export function PanelStack({ onTitleChange }: PanelStackProps) {
   const addChild = (path: string[]) => {
     const newChild: Panel = {
       id: `panel-${Date.now()}-${Math.random()}`,
-      title: `Child ${nextChildCounter}`,
-      content: generateRandomText(),
+      title: `Browser ${nextChildCounter}`,
+      url: generateRandomUrl(),
       children: [],
       selectedChildId: null,
     };
@@ -224,19 +230,23 @@ export function PanelStack({ onTitleChange }: PanelStackProps) {
             })()}
 
             {/* Panel Content */}
-            <Card size="3" style={{ flexGrow: 1, overflow: "auto" }}>
-              <Flex direction="column" gap="4" height="100%">
-                <Box flexGrow="1">
-                  <Text as="p" size="3">
-                    {visiblePanel.content}
-                  </Text>
+            <Card size="3" style={{ flexGrow: 1, overflow: "hidden", padding: 0 }}>
+              <Flex direction="column" gap="0" height="100%">
+                <Box style={{ flexGrow: 1, position: "relative" }}>
+                  <webview
+                    src={visiblePanel.url}
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                    }}
+                  />
                 </Box>
 
                 {/* Add Child Button */}
-                <Box>
+                <Box p="3" style={{ borderTop: "1px solid var(--gray-6)" }}>
                   <Button size="3" onClick={() => addChild(visiblePanelPath)}>
                     <PlusIcon />
-                    Add Child Panel
+                    Add Child Browser
                   </Button>
                 </Box>
               </Flex>

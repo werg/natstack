@@ -1,5 +1,15 @@
 # Natstack
 
+A tree-based browser with hierarchical panel navigation built on Electron.
+
+## Features
+
+- **Tree Panel Navigation**: Organize browser sessions in a hierarchical tree structure
+- **Breadcrumb UI**: Navigate through parent and child panels with intuitive breadcrumb navigation
+- **Tab Siblings**: Multiple panels at the same level appear as tabs for easy switching
+- **Embedded Browser**: Each panel contains a full webview with real web browsing capability
+- **Dark Mode**: Automatic theme synchronization with your system preferences
+
 ## Requirements
 
 - Node.js 20+
@@ -22,14 +32,30 @@ pnpm install
 - `pnpm format:check` - Check formatting
 - `pnpm type-check` - Type check without emitting
 
+## How It Works
+
+Each panel in Natstack is a browser session that can have child panels. This creates a tree structure where you can:
+
+1. **Navigate down**: Click "Add Child Browser" to create a nested browser panel
+2. **Navigate up**: Use ancestor breadcrumbs to go back to parent panels
+3. **Navigate sideways**: Click sibling tabs to switch between panels at the same level
+4. **Navigate down through descendants**: Click descendant breadcrumbs to jump to child panels
+
+Every panel displays a random website from a curated list (Wikipedia, GitHub, Hacker News, Reddit, Stack Overflow).
+
 ## Project Structure
 
 ```
 src/
-  main/        - Main process (Electron)
-  preload/     - Preload script (context bridge)
-  renderer/    - Renderer process (UI)
-build.mjs      - esbuild configuration
+  main/            - Main process (Electron)
+  preload/         - Preload script (context bridge)
+  renderer/        - Renderer process (UI)
+    components/    - React components
+      PanelStack.tsx - Main tree browser component
+      PanelApp.tsx   - Root app component with theme
+      TitleBar.tsx   - Custom window title bar
+    state/         - Jotai state management
+build.mjs          - esbuild configuration
 ```
 
 ## Type Safety
