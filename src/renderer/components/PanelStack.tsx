@@ -69,6 +69,23 @@ export function PanelStack({ onTitleChange }: PanelStackProps) {
 
   const fullPath = getFullPath();
 
+  // Flatten all panels into a single array for rendering all webviews
+  const flattenPanels = (panels: Panel[]): Panel[] => {
+    const result: Panel[] = [];
+    const traverse = (panelList: Panel[]) => {
+      for (const panel of panelList) {
+        result.push(panel);
+        if (panel.children.length > 0) {
+          traverse(panel.children);
+        }
+      }
+    };
+    traverse(panels);
+    return result;
+  };
+
+  const allPanels = flattenPanels(rootPanels);
+
   // Add a child to a specific panel
   const addChild = (path: string[]) => {
     const newChild: Panel = {
@@ -233,13 +250,19 @@ export function PanelStack({ onTitleChange }: PanelStackProps) {
             <Card size="3" style={{ flexGrow: 1, overflow: "hidden", padding: 0 }}>
               <Flex direction="column" gap="0" height="100%">
                 <Box style={{ flexGrow: 1, position: "relative" }}>
-                  <webview
-                    src={visiblePanel.url}
-                    style={{
-                      width: "100%",
-                      height: "100%",
-                    }}
-                  />
+                  {/* Render all webviews, show only the visible one */}
+                  {allPanels.map((panel) => (
+                    <webview
+                      key={panel.id}
+                      src={panel.url}
+                      partition={`persist:panel-${panel.id}`}
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        ...(panel.id === visiblePanel.id ? {} : { display: "none" }),
+                      }}
+                    />
+                  ))}
                 </Box>
 
                 {/* Add Child Button */}

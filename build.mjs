@@ -47,11 +47,13 @@ function copyAssets() {
 }
 
 async function build() {
+  let contexts = [];
+
   try {
     fs.mkdirSync("dist", { recursive: true });
 
     if (isWatch) {
-      const contexts = await Promise.all([
+      contexts = await Promise.all([
         esbuild.context(mainConfig),
         esbuild.context(preloadConfig),
         esbuild.context(rendererConfig),
@@ -61,6 +63,16 @@ async function build() {
 
       copyAssets();
       console.log("Watching for changes...");
+
+      // Properly cleanup on exit
+      const cleanup = async () => {
+        console.log("\nCleaning up...");
+        await Promise.all(contexts.map((ctx) => ctx.dispose()));
+        process.exit(0);
+      };
+
+      process.on("SIGINT", cleanup);
+      process.on("SIGTERM", cleanup);
     } else {
       await esbuild.build(mainConfig);
       await esbuild.build(preloadConfig);
@@ -71,6 +83,8 @@ async function build() {
     }
   } catch (error) {
     console.error("Build failed:", error);
+    // Cleanup contexts on error
+    await Promise.all(contexts.map((ctx) => ctx.dispose()));
     process.exit(1);
   }
 }
