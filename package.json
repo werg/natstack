@@ -28,27 +28,33 @@
     "allowedBuilds": [
       "electron",
       "esbuild"
+    ],
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
     ]
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
     "@types/node": "^24.10.1",
+    "@types/npmcli__arborist": "^6.3.1",
     "@types/react": "^19.2.4",
     "@types/react-dom": "^19.2.3",
     "@typescript-eslint/eslint-plugin": "^8.46.4",
     "@typescript-eslint/parser": "^8.46.4",
     "electron": "^39.1.2",
-    "esbuild": "^0.27.0",
     "eslint": "^9.39.1",
     "prettier": "^3.6.2",
-    "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.4"
   },
   "dependencies": {
+    "@npmcli/arborist": "^7.4.0",
     "@radix-ui/react-icons": "^1.3.2",
     "@radix-ui/themes": "^3.2.1",
+    "esbuild": "^0.27.0",
     "jotai": "^2.15.1",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "typescript": "^5.9.3"
   }
 }

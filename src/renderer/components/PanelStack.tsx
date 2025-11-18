@@ -1,11 +1,10 @@
-import { useState, useEffect } from "react";
-import { PlusIcon } from "@radix-ui/react-icons";
-import { Box, Button, Card, Flex, Tabs, Heading } from "@radix-ui/themes";
+import { useState, useEffect, useRef } from "react";
+import { Box, Button, Card, Flex, Tabs, Heading, Spinner, Text } from "@radix-ui/themes";
 
 interface Panel {
   id: string;
   title: string;
-  url: string;
+  path: string;
   children: Panel[];
   selectedChildId: string | null;
 }
@@ -14,30 +13,123 @@ interface PanelStackProps {
   onTitleChange?: (title: string) => void;
 }
 
-const generateRandomUrl = (): string => {
-  const urls = [
-    "https://www.wikipedia.org",
-    "https://www.github.com",
-    "https://news.ycombinator.com",
-    "https://www.reddit.com",
-    "https://www.stackoverflow.com",
-  ];
-  return urls[Math.floor(Math.random() * urls.length)] || "https://www.google.com";
-};
+interface PanelLoadState {
+  loading: boolean;
+  error?: string;
+  htmlPath?: string;
+}
 
 export function PanelStack({ onTitleChange }: PanelStackProps) {
-  const [rootPanels, setRootPanels] = useState<Panel[]>([
-    {
-      id: "root-1",
-      title: "Browser 1",
-      url: generateRandomUrl(),
-      children: [],
-      selectedChildId: null,
-    },
-  ]);
-  const [selectedRootId, setSelectedRootId] = useState<string>("root-1");
-  const [visiblePanelPath, setVisiblePanelPath] = useState<string[]>(["root-1"]);
-  const [nextChildCounter, setNextChildCounter] = useState(2);
+  const [rootPanels, setRootPanels] = useState<Panel[]>([]);
+  const [visiblePanelPath, setVisiblePanelPath] = useState<string[]>([]);
+  const [panelLoadStates, setPanelLoadStates] = useState<Map<string, PanelLoadState>>(new Map());
+  const [isInitializing, setIsInitializing] = useState(true);
+  const [panelPreloadPath, setPanelPreloadPath] = useState<string | null>(null);
+  const webviewRefs = useRef<Map<string, Electron.WebviewTag>>(new Map());
+  const panelLoadStatesRef = useRef(panelLoadStates);
+
+  useEffect(() => {
+    panelLoadStatesRef.current = panelLoadStates;
+  }, [panelLoadStates]);
+
+  // Initialize root panel on mount
+  useEffect(() => {
+    const initRootPanel = async () => {
+      try {
+        const rootPanel = await window.electronAPI.initRootPanel("panels/example");
+        setRootPanels([rootPanel]);
+        setVisiblePanelPath([rootPanel.id]);
+
+        // Build root panel
+        await buildAndLoadPanel(rootPanel);
+      } catch (error) {
+        console.error("Failed to initialize root panel:", error);
+      } finally {
+        setIsInitializing(false);
+      }
+    };
+
+    void initRootPanel();
+
+    // Listen for panel tree updates from main process
+    const cleanup = window.electronAPI.onPanelTreeUpdated((updatedRootPanels) => {
+      setRootPanels(updatedRootPanels);
+
+      const allPanels = flattenPanels(updatedRootPanels);
+      const panelsToBuild = allPanels.filter((panel) => !panelLoadStatesRef.current.has(panel.id));
+
+      setPanelLoadStates((prevStates) => {
+        const nextStates = new Map(prevStates);
+        const validIds = new Set(allPanels.map((panel) => panel.id));
+
+        for (const id of Array.from(nextStates.keys())) {
+          if (!validIds.has(id)) {
+            nextStates.delete(id);
+          }
+        }
+
+        for (const panel of panelsToBuild) {
+          nextStates.set(panel.id, { loading: true });
+        }
+
+        return nextStates;
+      });
+
+      for (const panel of panelsToBuild) {
+        void buildAndLoadPanel(panel);
+      }
+    });
+
+    return cleanup;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    window.electronAPI
+      .getPanelPreloadPath()
+      .then((value) => {
+        if (mounted) {
+          setPanelPreloadPath(value);
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to resolve panel preload path", error);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Build and load a panel
+  const buildAndLoadPanel = async (panel: Panel) => {
+    setPanelLoadStates((prev) => new Map(prev).set(panel.id, { loading: true }));
+
+    try {
+      const result = await window.electronAPI.buildPanel(panel.path);
+
+      if (result.success && result.htmlPath) {
+        setPanelLoadStates((prev) =>
+          new Map(prev).set(panel.id, {
+            loading: false,
+            htmlPath: result.htmlPath,
+          })
+        );
+      } else {
+        setPanelLoadStates((prev) =>
+          new Map(prev).set(panel.id, { loading: false, error: result.error || "Unknown error" })
+        );
+      }
+    } catch (error) {
+      setPanelLoadStates((prev) =>
+        new Map(prev).set(panel.id, {
+          loading: false,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      );
+    }
+  };
 
   // Get the panel at a specific path
   const getPanelByPath = (path: string[]): Panel | null => {
@@ -86,82 +178,41 @@ export function PanelStack({ onTitleChange }: PanelStackProps) {
 
   const allPanels = flattenPanels(rootPanels);
 
-  // Add a child to a specific panel
-  const addChild = (path: string[]) => {
-    const newChild: Panel = {
-      id: `panel-${Date.now()}-${Math.random()}`,
-      title: `Browser ${nextChildCounter}`,
-      url: generateRandomUrl(),
-      children: [],
-      selectedChildId: null,
-    };
-    setNextChildCounter(nextChildCounter + 1);
-
-    const updatePanelTree = (
-      panels: Panel[],
-      currentPath: string[],
-      depth: number = 0
-    ): Panel[] => {
-      if (depth >= currentPath.length) return panels;
-
-      return panels.map((panel) => {
-        if (panel.id === currentPath[depth]) {
-          if (depth === currentPath.length - 1) {
-            // This is the target panel
-            return {
-              ...panel,
-              children: [...panel.children, newChild],
-              selectedChildId: newChild.id,
-            };
-          } else {
-            // Keep traversing
-            return {
-              ...panel,
-              children: updatePanelTree(panel.children, currentPath, depth + 1),
-            };
-          }
-        }
-        return panel;
-      });
-    };
-
-    setRootPanels(updatePanelTree(rootPanels, path));
-    setVisiblePanelPath([...path, newChild.id]);
-  };
-
   // Navigate to a specific panel in the tree
   const navigateToPanel = (path: string[]) => {
     setVisiblePanelPath(path);
-    if (path.length > 0 && path[0] !== undefined) {
-      setSelectedRootId(path[0]);
-    }
-
-    // Update selected children along the path
-    const updateSelections = (
-      panels: Panel[],
-      currentPath: string[],
-      depth: number = 0
-    ): Panel[] => {
-      if (depth >= currentPath.length - 1) return panels;
-
-      return panels.map((panel) => {
-        if (panel.id === currentPath[depth]) {
-          const nextId = currentPath[depth + 1];
-          return {
-            ...panel,
-            selectedChildId: nextId !== undefined ? nextId : null,
-            children: updateSelections(panel.children, currentPath, depth + 1),
-          };
-        }
-        return panel;
-      });
-    };
-
-    setRootPanels(updateSelections(rootPanels, path));
   };
 
-  // Suppress unused variable warning - selectedRootId is used for state management
-  void selectedRootId;
+  // Initialize webview with panel ID when it loads
+  const handleWebviewReady = (panelId: string, webview: HTMLElement) => {
+    const webviewTag = webview as unknown as Electron.WebviewTag;
+    webviewRefs.current.set(panelId, webviewTag);
+
+    // Forward console messages from webview to main DevTools
+    webviewTag.addEventListener("console-message", (e: any) => {
+      const prefix = `[Panel ${panelId}]`;
+      if (e.level === 0) {
+        console.log(prefix, e.message);
+      } else if (e.level === 1) {
+        console.warn(prefix, e.message);
+      } else if (e.level === 2) {
+        console.error(prefix, e.message);
+      }
+    });
+
+  };
+
+  // Notify panels about focus changes
+  useEffect(() => {
+    const panelId = visiblePanel?.id;
+    if (!panelId) {
+      return;
+    }
+
+    void window.electronAPI.notifyPanelFocused(panelId).catch((error) => {
+      console.error("Failed to notify panel focus", error);
+    });
+  }, [visiblePanel?.id]);
 
   // Notify parent of title changes
   useEffect(() => {
@@ -169,6 +220,18 @@ export function PanelStack({ onTitleChange }: PanelStackProps) {
       onTitleChange(visiblePanel.title);
     }
   }, [onTitleChange, visiblePanel]);
+
+  // Show loading state while initializing
+  if (isInitializing || !panelPreloadPath) {
+    return (
+      <Box p="4" style={{ height: "calc(100vh - 32px)" }}>
+        <Flex direction="column" align="center" justify="center" height="100%">
+          <Spinner size="3" />
+          <Text mt="3">Initializing panels...</Text>
+        </Flex>
+      </Box>
+    );
+  }
 
   return (
     <Box p="4" style={{ height: "calc(100vh - 32px)" }}>
@@ -251,26 +314,73 @@ export function PanelStack({ onTitleChange }: PanelStackProps) {
               <Flex direction="column" gap="0" height="100%">
                 <Box style={{ flexGrow: 1, position: "relative" }}>
                   {/* Render all webviews, show only the visible one */}
-                  {allPanels.map((panel) => (
-                    <webview
-                      key={panel.id}
-                      src={panel.url}
-                      partition={`persist:panel-${panel.id}`}
-                      style={{
-                        width: "100%",
-                        height: "100%",
-                        ...(panel.id === visiblePanel.id ? {} : { display: "none" }),
-                      }}
-                    />
-                  ))}
-                </Box>
+                  {allPanels.map((panel) => {
+                    const loadState = panelLoadStates.get(panel.id);
+                    const isVisible = panel.id === visiblePanel.id;
 
-                {/* Add Child Button */}
-                <Box p="3" style={{ borderTop: "1px solid var(--gray-6)" }}>
-                  <Button size="3" onClick={() => addChild(visiblePanelPath)}>
-                    <PlusIcon />
-                    Add Child Browser
-                  </Button>
+                    // Show loading or error state for visible panel
+                    if (isVisible && loadState) {
+                      if (loadState.loading) {
+                        return (
+                          <Flex
+                            key={panel.id}
+                            direction="column"
+                            align="center"
+                            justify="center"
+                            height="100%"
+                          >
+                            <Spinner size="3" />
+                            <Text mt="3">Building panel...</Text>
+                          </Flex>
+                        );
+                      }
+
+                      if (loadState.error) {
+                        return (
+                          <Flex
+                            key={panel.id}
+                            direction="column"
+                            align="center"
+                            justify="center"
+                            height="100%"
+                            p="4"
+                          >
+                            <Text color="red" size="4" weight="bold" mb="2">
+                              Panel Build Error
+                            </Text>
+                            <Text color="red" size="2" style={{ fontFamily: "monospace" }}>
+                              {loadState.error}
+                            </Text>
+                          </Flex>
+                        );
+                      }
+                    }
+
+                    // Render webview if loaded
+                    if (loadState?.htmlPath) {
+                      const normalizedPath = loadState.htmlPath.replace(/\\/g, "/");
+                      const srcUrl = new URL(`file://${normalizedPath}`);
+                      srcUrl.searchParams.set("panelId", panel.id);
+                      return (
+                        <webview
+                          key={panel.id}
+                          ref={(el) => {
+                            if (el) handleWebviewReady(panel.id, el);
+                          }}
+                          src={srcUrl.toString()}
+                          preload={panelPreloadPath}
+                          partition={`persist:panel-${panel.id}`}
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            ...(panel.id === visiblePanel.id ? {} : { display: "none" }),
+                          }}
+                        />
+                      );
+                    }
+
+                    return null;
+                  })}
                 </Box>
               </Flex>
             </Card>

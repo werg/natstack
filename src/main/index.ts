@@ -1,8 +1,10 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, type IpcMainInvokeEvent } from "electron";
 import * as path from "path";
 import { isDev } from "./utils.js";
+import { PanelManager } from "./panelManager.js";
 
 let mainWindow: BrowserWindow | null = null;
+const panelManager = new PanelManager();
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -31,6 +33,9 @@ function createWindow(): void {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+
+  // Set main window reference in panel manager
+  panelManager.setMainWindow(mainWindow);
 }
 
 app.on("ready", () => {
@@ -66,6 +71,10 @@ ipcMain.handle(
     nativeTheme.themeSource = mode;
   }
 );
+
+ipcMain.handle("panel:get-preload-path", async (): Promise<string> => {
+  return path.join(__dirname, "panelPreload.cjs");
+});
 
 // Listen for system theme changes and notify renderer
 nativeTheme.on("updated", () => {

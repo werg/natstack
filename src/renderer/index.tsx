@@ -6,9 +6,6 @@ import { PanelApp } from "./components/PanelApp";
 
 async function initializeApp(): Promise<void> {
   try {
-    const appInfo = await window.electronAPI.getAppInfo();
-    console.log("NatStack version:", appInfo.version);
-
     const container = document.getElementById("app");
     if (!container) {
       console.error("Renderer root not found");
@@ -23,6 +20,15 @@ async function initializeApp(): Promise<void> {
     );
   } catch (error) {
     console.error("Failed to initialize app:", error);
+    // Show error in DOM
+    const container = document.getElementById("app");
+    if (container) {
+      container.innerHTML = `<div style="color: red; padding: 20px; font-family: monospace;">
+        <h2>Failed to initialize app</h2>
+        <pre>${error instanceof Error ? error.message : String(error)}</pre>
+        <pre>${error instanceof Error ? error.stack : ''}</pre>
+      </div>`;
+    }
   }
 }
 

@@ -11,7 +11,7 @@ const mainConfig = {
   target: "node20",
   format: "cjs",
   outfile: "dist/main.cjs",
-  external: ["electron"],
+  external: ["electron", "esbuild", "@npmcli/arborist"],
   sourcemap: isDev,
   minify: !isDev,
 };
@@ -24,6 +24,29 @@ const preloadConfig = {
   format: "cjs",
   outfile: "dist/preload.cjs",
   external: ["electron"],
+  sourcemap: isDev,
+  minify: !isDev,
+};
+
+const panelPreloadConfig = {
+  entryPoints: ["src/preload/panelPreload.ts"],
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "cjs",
+  outfile: "dist/panelPreload.cjs",
+  external: ["electron"],
+  sourcemap: isDev,
+  minify: !isDev,
+};
+
+const panelRuntimeConfig = {
+  entryPoints: ["src/panelRuntime/panelApi.ts"],
+  bundle: true,
+  platform: "browser",
+  target: "es2020",
+  format: "esm",
+  outfile: "dist/panelRuntime.js",
   sourcemap: isDev,
   minify: !isDev,
 };
@@ -56,6 +79,8 @@ async function build() {
       contexts = await Promise.all([
         esbuild.context(mainConfig),
         esbuild.context(preloadConfig),
+        esbuild.context(panelPreloadConfig),
+        esbuild.context(panelRuntimeConfig),
         esbuild.context(rendererConfig),
       ]);
 
@@ -76,6 +101,8 @@ async function build() {
     } else {
       await esbuild.build(mainConfig);
       await esbuild.build(preloadConfig);
+      await esbuild.build(panelPreloadConfig);
+      await esbuild.build(panelRuntimeConfig);
       await esbuild.build(rendererConfig);
 
       copyAssets();
