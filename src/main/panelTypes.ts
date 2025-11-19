@@ -26,9 +26,20 @@ export interface PanelBuildCache {
   htmlPath: string;
   sourceHash: string; // Hash of source files for cache invalidation
   builtAt: number;
+  dependencyHash?: string;
 }
 
 export type PanelEventPayload =
   | { type: "child-removed"; childId: string }
   | { type: "focus" }
   | { type: "theme"; theme: "light" | "dark" };
+
+export interface Panel {
+  id: string;
+  title: string;
+  path: string;
+  children: Panel[];
+  selectedChildId: string | null;
+  injectHostThemeVariables: boolean;
+  artifacts: PanelArtifacts;
+}

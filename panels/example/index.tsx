@@ -11,7 +11,9 @@ function ChildPanelLauncher() {
   const [status, setStatus] = useState<string>("");
   const [theme, setTheme] = useState(panelAPI.getTheme().appearance);
 
-  useEffect(() => panelAPI.onThemeChange(({ appearance }) => setTheme(appearance)), []);
+  useEffect(() => {
+    return panelAPI.onThemeChange(({ appearance }) => setTheme(appearance));
+  }, []);
 
   const launchChild = async () => {
     try {

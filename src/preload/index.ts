@@ -6,19 +6,7 @@ interface AppInfo {
 
 type ThemeMode = "light" | "dark" | "system";
 
-interface Panel {
-  id: string;
-  title: string;
-  path: string;
-  children: Panel[];
-  selectedChildId: string | null;
-  injectHostThemeVariables: boolean;
-  artifacts: {
-    htmlPath?: string;
-    bundlePath?: string;
-    error?: string;
-  };
-}
+import type { Panel } from "../main/panelTypes.js";
 
 export const electronAPI = {
   getAppInfo: async (): Promise<AppInfo> => {

@@ -16,19 +16,7 @@ declare namespace JSX {
   }
 }
 
-interface Panel {
-  id: string;
-  title: string;
-  path: string;
-  children: Panel[];
-  selectedChildId: string | null;
-  injectHostThemeVariables: boolean;
-  artifacts: {
-    htmlPath?: string;
-    bundlePath?: string;
-    error?: string;
-  };
-}
+type Panel = import("main/panelTypes").Panel;
 
 type ElectronAPI = typeof import("../preload/index").electronAPI;
 

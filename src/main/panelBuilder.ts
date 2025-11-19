@@ -15,6 +15,12 @@ const runtimeModuleMap = new Map([
   ["natstack/react", panelReactModulePath],
 ]);
 
+for (const [name, modulePath] of runtimeModuleMap) {
+  if (!fs.existsSync(modulePath)) {
+    throw new Error(`Runtime module ${name} not found at ${modulePath}`);
+  }
+}
+
 export class PanelBuilder {
   private cache: Map<string, PanelBuildCache> = new Map();
   private cacheDir: string;
@@ -175,11 +181,15 @@ export class PanelBuilder {
     }
 
     const defaultCandidates = ["index.tsx", "index.ts", "index.jsx", "index.js", "main.tsx", "main.ts"];
-    for (const candidate of defaultCandidates) {
-      const entry = verifyEntry(candidate);
-      if (entry) {
-        return entry;
-      }
+    const entries = defaultCandidates.filter(verifyEntry);
+    if (entries.length > 1) {
+      throw new Error(
+        `Multiple conventional entry points found (${entries.join(
+          ", "
+        )}). Please specify a single entry in panel.json.`
+      );
+    } else if (entries.length === 1) {
+      return entries[0]!;
     }
 
     throw new Error(
@@ -189,10 +199,11 @@ export class PanelBuilder {
 
   private async installDependencies(
     panelPath: string,
-    dependencies: Record<string, string>
-  ): Promise<void> {
+    dependencies: Record<string, string> | undefined,
+    previousHash?: string
+  ): Promise<string | undefined> {
     if (!dependencies || Object.keys(dependencies).length === 0) {
-      return;
+      return undefined;
     }
 
     const runtimeDir = this.ensureRuntimeDir(panelPath);
@@ -211,35 +222,36 @@ export class PanelBuilder {
       version: "1.0.0",
       dependencies,
     };
-
-    let needsInstall = true;
-    if (fs.existsSync(packageJsonPath)) {
-      try {
-        const existing = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as PanelRuntimePackageJson;
-        const existingDeps = JSON.stringify(existing.dependencies ?? {});
-        const desiredDeps = JSON.stringify(desiredPackageJson.dependencies ?? {});
-        if (existingDeps === desiredDeps && fs.existsSync(path.join(runtimeDir, "node_modules"))) {
-          needsInstall = false;
-        }
-      } catch {
-        needsInstall = true;
-      }
-    }
-
-    if (!needsInstall) {
-      return;
-    }
-
-    fs.writeFileSync(packageJsonPath, JSON.stringify(desiredPackageJson, null, 2));
+    const serialized = JSON.stringify(desiredPackageJson, null, 2);
+    const desiredHash = crypto.createHash("sha256").update(serialized).digest("hex");
 
     const nodeModulesPath = path.join(runtimeDir, "node_modules");
+    const packageLockPath = path.join(runtimeDir, "package-lock.json");
+
+    if (previousHash === desiredHash && fs.existsSync(nodeModulesPath)) {
+      const existingContent = fs.existsSync(packageJsonPath)
+        ? fs.readFileSync(packageJsonPath, "utf-8")
+        : null;
+      if (existingContent !== serialized) {
+        fs.writeFileSync(packageJsonPath, serialized);
+      }
+      return desiredHash;
+    }
+
+    fs.writeFileSync(packageJsonPath, serialized);
+
     if (fs.existsSync(nodeModulesPath)) {
       fs.rmSync(nodeModulesPath, { recursive: true, force: true });
+    }
+    if (fs.existsSync(packageLockPath)) {
+      fs.rmSync(packageLockPath, { recursive: true, force: true });
     }
 
     const arborist = new Arborist({ path: runtimeDir });
     await arborist.buildIdealTree();
     await arborist.reify();
+
+    return desiredHash;
   }
 
   async buildPanel(panelPath: string): Promise<PanelBuildResult> {
@@ -284,10 +296,11 @@ export class PanelBuilder {
         };
       }
 
-      // Install dependencies if specified
-      if (manifest.dependencies && Object.keys(manifest.dependencies).length > 0) {
-        await this.installDependencies(absolutePanelPath, manifest.dependencies);
-      }
+      const dependencyHash = await this.installDependencies(
+        absolutePanelPath,
+        manifest.dependencies,
+        cached?.dependencyHash
+      );
 
       // Determine entry point
       const entry = this.resolveEntryPoint(absolutePanelPath, manifest);
@@ -333,6 +346,7 @@ export class PanelBuilder {
         htmlPath,
         sourceHash,
         builtAt: Date.now(),
+        dependencyHash,
       };
 
       this.cache.set(absolutePanelPath, cacheEntry);

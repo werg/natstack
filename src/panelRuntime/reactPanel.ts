@@ -26,6 +26,10 @@ export function createReactPanelMount(
     ? createRadixThemeProvider(ReactLib, options.ThemeComponent)
     : null;
 
+  const Wrapper: ComponentType<{ children: ReactNode }> = ThemeProvider
+    ? ({ children }) => ReactLib.createElement(ThemeProvider, null, children)
+    : ({ children }) => ReactLib.createElement(ReactLib.Fragment, null, children);
+
   return function mountReactPanel<Props>(
     Component: ComponentType<Props>,
     initialProps?: Props
@@ -35,7 +39,11 @@ export function createReactPanelMount(
       throw new Error(`React root element '#${rootId}' not found in panel DOM`);
     }
 
-    const root = createRootFn(container);
+    const existingRoot = (container as any)._reactRoot;
+    const root = existingRoot ?? createRootFn(container);
+    if (!existingRoot) {
+      (container as any)._reactRoot = root;
+    }
     let currentProps = initialProps ?? ({} as Props);
 
     const render = (nextProps?: Props) => {
@@ -43,11 +51,13 @@ export function createReactPanelMount(
         currentProps = nextProps;
       }
 
-      let tree = ReactLib.createElement(Component as ComponentType<any>, currentProps as any);
-      if (ThemeProvider) {
-        tree = ReactLib.createElement(ThemeProvider as ComponentType<any>, undefined, tree);
-      }
-      root.render(tree);
+      root.render(
+        ReactLib.createElement(
+          Wrapper,
+          null,
+          ReactLib.createElement(Component as ComponentType<any>, currentProps as any)
+        )
+      );
     };
 
     render(currentProps);

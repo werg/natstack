@@ -63,12 +63,12 @@ export function PanelStack({ onTitleChange, hostTheme, onRegisterDevToolsHandler
     const previousKey = panelThemeCssKeys.current.get(panelId);
 
     const insertCss = () => {
-      void webview
-        .insertCSS(hostThemeCss)
-        .then((key) => {
+      void (webview as any)
+        .insertCSS(hostThemeCss, { cssOrigin: "author" })
+        .then((key: string) => {
           panelThemeCssKeys.current.set(panelId, key);
         })
-        .catch((error) => {
+        .catch((error: unknown) => {
           console.error(`Failed to inject theme CSS for panel ${panelId}`, error);
         });
     };
@@ -180,7 +180,7 @@ export function PanelStack({ onTitleChange, hostTheme, onRegisterDevToolsHandler
     if (!current) return null;
 
     for (let i = 1; i < path.length; i++) {
-      current = current.children.find((c) => c.id === path[i]);
+      current = current.children.find((c: Panel) => c.id === path[i]);
       if (!current) return null;
     }
 
@@ -249,20 +249,39 @@ export function PanelStack({ onTitleChange, hostTheme, onRegisterDevToolsHandler
   };
 
   // Initialize webview with panel ID when it loads
+  const webviewCleanup = useRef<Map<string, () => void>>(new Map());
+
   const handleWebviewReady = (panelId: string, webview: HTMLElement) => {
     const webviewTag = webview as unknown as Electron.WebviewTag;
     webviewRefs.current.set(panelId, webviewTag);
 
-    webviewTag.addEventListener("dom-ready", () => {
+    const onDomReady = () => {
       domReadyPanels.current.add(panelId);
       applyThemeCss(panelId, webviewTag);
-    });
+    };
 
-    webviewTag.addEventListener("destroyed", () => {
+    const onDestroyed = () => {
       domReadyPanels.current.delete(panelId);
       panelThemeCssKeys.current.delete(panelId);
+      webviewCleanup.current.get(panelId)?.();
+      webviewCleanup.current.delete(panelId);
+    };
+
+    webviewTag.addEventListener("dom-ready", onDomReady);
+    webviewTag.addEventListener("destroyed", onDestroyed);
+
+    webviewCleanup.current.set(panelId, () => {
+      webviewTag.removeEventListener("dom-ready", onDomReady);
+      webviewTag.removeEventListener("destroyed", onDestroyed);
     });
   };
+
+  useEffect(() => {
+    return () => {
+      webviewCleanup.current.forEach((cleanup) => cleanup());
+      webviewCleanup.current.clear();
+    };
+  }, []);
 
   // Notify panels about focus changes
   useEffect(() => {
@@ -341,7 +360,7 @@ export function PanelStack({ onTitleChange, hostTheme, onRegisterDevToolsHandler
                     }
                   >
                     <Tabs.List size="1">
-                      {siblings.map((sibling) => (
+                      {siblings.map((sibling: Panel) => (
                         <Tabs.Trigger key={sibling.id} value={sibling.id}>
                           {sibling.title}
                         </Tabs.Trigger>
@@ -380,7 +399,7 @@ export function PanelStack({ onTitleChange, hostTheme, onRegisterDevToolsHandler
                   onValueChange={(value) => navigateToPanel([...parentPath, value])}
                 >
                   <Tabs.List size="2">
-                    {siblings.map((sibling) => (
+                    {siblings.map((sibling: Panel) => (
                       <Tabs.Trigger key={sibling.id} value={sibling.id}>
                         {sibling.title}
                       </Tabs.Trigger>
@@ -490,7 +509,7 @@ export function PanelStack({ onTitleChange, hostTheme, onRegisterDevToolsHandler
                 descendantPath.push(currentPanel);
                 if (currentPanel.selectedChildId) {
                   currentPanel =
-                    currentPanel.children.find((c) => c.id === currentPanel!.selectedChildId) ||
+                    currentPanel.children.find((c: Panel) => c.id === currentPanel!.selectedChildId) ||
                     null;
                 } else {
                   currentPanel = null;
@@ -514,7 +533,7 @@ export function PanelStack({ onTitleChange, hostTheme, onRegisterDevToolsHandler
                       onValueChange={(value) => navigateToPanel([...pathToParent, value])}
                     >
                       <Tabs.List size="1">
-                        {parentPanel.children.map((child) => (
+                        {parentPanel.children.map((child: Panel) => (
                           <Tabs.Trigger key={child.id} value={child.id}>
                             {child.title}
                           </Tabs.Trigger>
@@ -524,7 +543,7 @@ export function PanelStack({ onTitleChange, hostTheme, onRegisterDevToolsHandler
                   );
                 }
 
-                return parentPanel.children.map((child) => (
+                return parentPanel.children.map((child: Panel) => (
                   <Button
                     key={child.id}
                     variant="soft"

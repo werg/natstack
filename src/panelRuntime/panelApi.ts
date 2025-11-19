@@ -108,9 +108,16 @@ export function createRadixThemeProvider(
     const [theme, setTheme] = ReactLib.useState<PanelTheme>(panelAPI.getTheme());
 
     ReactLib.useEffect(() => {
-      return panelAPI.onThemeChange((nextTheme) => {
-        setTheme(nextTheme);
+      let mounted = true;
+      const unsubscribe = panelAPI.onThemeChange((nextTheme) => {
+        if (mounted) {
+          setTheme(nextTheme);
+        }
       });
+      return () => {
+        mounted = false;
+        unsubscribe();
+      };
     }, []);
 
     return ReactLib.createElement(ThemeComponent, { appearance: theme.appearance }, children);

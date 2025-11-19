@@ -1,17 +1,7 @@
 import { ipcMain, type IpcMainInvokeEvent, type BrowserWindow, webContents } from "electron";
 import { PanelBuilder } from "./panelBuilder.js";
-import type { PanelEventPayload, PanelArtifacts } from "./panelTypes.js";
+import type { PanelEventPayload, Panel, PanelArtifacts} from "./panelTypes.js";
 import { getPanelCacheDirectory } from "./paths.js";
-
-export interface Panel {
-  id: string;
-  title: string;
-  path: string;
-  children: Panel[];
-  selectedChildId: string | null;
-  injectHostThemeVariables: boolean;
-  artifacts: PanelArtifacts;
-}
 
 export class PanelManager {
   private builder: PanelBuilder;
@@ -25,6 +15,7 @@ export class PanelManager {
     console.log("Using panel cache directory:", cacheDir);
     this.builder = new PanelBuilder(cacheDir);
     this.setupIpcHandlers();
+    // TODO: Perhaps a special way to handle errors / switch roots
     void this.initializeRootPanel(initialRootPanelPath);
   }
 
