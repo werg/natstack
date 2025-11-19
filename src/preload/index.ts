@@ -13,13 +13,11 @@ interface Panel {
   children: Panel[];
   selectedChildId: string | null;
   injectHostThemeVariables: boolean;
-}
-
-interface PanelBuildResult {
-  success: boolean;
-  bundlePath?: string;
-  htmlPath?: string;
-  error?: string;
+  artifacts: {
+    htmlPath?: string;
+    bundlePath?: string;
+    error?: string;
+  };
 }
 
 export const electronAPI = {
@@ -42,15 +40,8 @@ export const electronAPI = {
       ipcRenderer.removeListener("system-theme-changed", listener);
     };
   },
-  // Panel APIs
-  buildPanel: async (path: string): Promise<PanelBuildResult> => {
-    return ipcRenderer.invoke("panel:build", path) as Promise<PanelBuildResult>;
-  },
   getPanelTree: async (): Promise<Panel[]> => {
     return ipcRenderer.invoke("panel:get-tree") as Promise<Panel[]>;
-  },
-  initRootPanel: async (path: string): Promise<Panel> => {
-    return ipcRenderer.invoke("panel:init-root", path) as Promise<Panel>;
   },
   onPanelTreeUpdated: (callback: (rootPanels: Panel[]) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, rootPanels: Panel[]) => {
@@ -69,6 +60,12 @@ export const electronAPI = {
   },
   updatePanelTheme: async (theme: "light" | "dark"): Promise<void> => {
     return ipcRenderer.invoke("panel:update-theme", theme) as Promise<void>;
+  },
+  openPanelDevTools: async (panelId: string): Promise<void> => {
+    return ipcRenderer.invoke("panel:open-devtools", panelId) as Promise<void>;
+  },
+  openAppDevTools: async (): Promise<void> => {
+    return ipcRenderer.invoke("app:open-devtools") as Promise<void>;
   },
 };
 

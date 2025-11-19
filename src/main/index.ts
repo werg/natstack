@@ -2,9 +2,12 @@ import { app, BrowserWindow, ipcMain, nativeTheme, type IpcMainInvokeEvent } fro
 import * as path from "path";
 import { isDev } from "./utils.js";
 import { PanelManager } from "./panelManager.js";
+import { resolveInitialRootPanelPath } from "./rootPanelResolver.js";
 
 let mainWindow: BrowserWindow | null = null;
-const panelManager = new PanelManager();
+const initialRootPanelPath = resolveInitialRootPanelPath();
+console.log("Using root panel path:", initialRootPanelPath);
+const panelManager = new PanelManager(initialRootPanelPath);
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -74,6 +77,12 @@ ipcMain.handle(
 
 ipcMain.handle("panel:get-preload-path", async (): Promise<string> => {
   return path.join(__dirname, "panelPreload.cjs");
+});
+
+ipcMain.handle("app:open-devtools", async (): Promise<void> => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.openDevTools({ mode: "detach" });
+  }
 });
 
 // Listen for system theme changes and notify renderer

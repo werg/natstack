@@ -11,7 +11,7 @@ A panel is a directory containing:
 ```
 my-panel/
 ├── panel.json          # Manifest file (required)
-├── index.ts            # Entry point (default, can be customized)
+├── index.ts            # Default entry (index.tsx / index.jsx are also detected)
 ├── index.html          # HTML template (optional, auto-generated if missing)
 └── .natstack/          # Generated build artifacts + node_modules (created on first build)
 └── style.css           # Styles (optional)
@@ -24,7 +24,7 @@ my-panel/
 ```json
 {
   "title": "My Panel",           // Required: Default panel title
-  "entry": "index.ts",            // Optional: Entry point (defaults to "index.ts")
+  "entry": "index.tsx",          // Optional: Entry point (defaults to index.tsx/index.ts/...)
   "dependencies": {               // Optional: npm dependencies
     "lodash": "^4.17.21"
   },
@@ -158,6 +158,29 @@ Build artifacts live alongside the panel source:
 
 Because the renderer loads `index.html` (or the generated fallback) directly from the panel folder, every other static asset (CSS, images, etc.) continues to resolve normally.
 
+### React/TypeScript Helpers
+
+NatStack also ships a lightweight helper (available as `natstack/react`) for authoring panel UIs with React + TypeScript. Usage is entirely optional—plain HTML panels still work the same way.
+
+```tsx
+import React from "react";
+import { createRoot } from "react-dom/client";
+import { Theme } from "@radix-ui/themes";
+import { createReactPanelMount } from "natstack/react";
+
+const mount = createReactPanelMount(React, createRoot, { ThemeComponent: Theme });
+
+function Panel() {
+  return <div>Hello from React!</div>;
+}
+
+mount(Panel);
+```
+
+The helper automatically mounts into the `#root` element provided by your `index.html` (or the generated fallback) and keeps Radix' `<Theme>` synchronized with NatStack’s appearance if you pass it in via `ThemeComponent`.
+
+Entry detection now prefers `index.tsx` when `entry` isn’t specified, followed by `index.ts`, `index.jsx`, `index.js`, `main.tsx`, and `main.ts`—so you can drop an `index.tsx` alongside `index.html` and start building a modern TypeScript/React panel without extra wiring.
+
 ## Loading States
 
 The UI automatically shows:
@@ -180,6 +203,16 @@ See [panels/example/](panels/example/) for a working example that demonstrates:
 3. Write your panel code in TypeScript
 4. Launch the panel from another panel using `panelAPI.createChild()`
 5. The panel will be built automatically on first load
+
+### Root Panel Path
+
+NatStack picks the initial root panel path in this order:
+
+1. Command-line flag `--root-panel=/path/to/panel`
+2. Saved preference (`preferences.json` under the NatStack config directory)
+3. A default panel cloned into `<config dir>/Default Root Panel` on first run
+
+During development we pass `--root-panel=panels/example` via `pnpm dev`. To switch panels at runtime you can relaunch with a new flag or update the preference file.
 
 ## State Directory
 

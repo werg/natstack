@@ -16,13 +16,6 @@ declare namespace JSX {
   }
 }
 
-interface PanelBuildResult {
-  success: boolean;
-  bundlePath?: string;
-  htmlPath?: string;
-  error?: string;
-}
-
 interface Panel {
   id: string;
   title: string;
@@ -30,6 +23,11 @@ interface Panel {
   children: Panel[];
   selectedChildId: string | null;
   injectHostThemeVariables: boolean;
+  artifacts: {
+    htmlPath?: string;
+    bundlePath?: string;
+    error?: string;
+  };
 }
 
 type ElectronAPI = typeof import("../preload/index").electronAPI;

@@ -1,6 +1,6 @@
 import { ipcMain, type IpcMainInvokeEvent, type BrowserWindow, webContents } from "electron";
 import { PanelBuilder } from "./panelBuilder.js";
-import type { PanelBuildResult, PanelEventPayload } from "./panelTypes.js";
+import type { PanelEventPayload, PanelArtifacts } from "./panelTypes.js";
 import { getPanelCacheDirectory } from "./paths.js";
 
 export interface Panel {
@@ -10,6 +10,7 @@ export interface Panel {
   children: Panel[];
   selectedChildId: string | null;
   injectHostThemeVariables: boolean;
+  artifacts: PanelArtifacts;
 }
 
 export class PanelManager {
@@ -19,12 +20,12 @@ export class PanelManager {
   private rootPanels: Panel[] = [];
   private panelViews: Map<string, Set<number>> = new Map();
   private currentTheme: "light" | "dark" = "light";
-
-  constructor() {
+  constructor(initialRootPanelPath: string) {
     const cacheDir = getPanelCacheDirectory();
     console.log("Using panel cache directory:", cacheDir);
     this.builder = new PanelBuilder(cacheDir);
     this.setupIpcHandlers();
+    void this.initializeRootPanel(initialRootPanelPath);
   }
 
   setMainWindow(window: BrowserWindow): void {
@@ -32,14 +33,6 @@ export class PanelManager {
   }
 
   private setupIpcHandlers(): void {
-    // Build a panel
-    ipcMain.handle(
-      "panel:build",
-      async (_event: IpcMainInvokeEvent, panelPath: string): Promise<PanelBuildResult> => {
-        return this.builder.buildPanel(panelPath);
-      }
-    );
-
     // Create a child panel
     ipcMain.handle(
       "panel:create-child",
@@ -50,8 +43,8 @@ export class PanelManager {
         }
 
         const manifest = this.builder.loadManifest(path);
+        const artifacts = await this.buildPanelArtifacts(path);
 
-        // Create new panel
         const newPanel: Panel = {
           id: `panel-${Date.now()}-${Math.random()}`,
           title: manifest.title,
@@ -59,6 +52,7 @@ export class PanelManager {
           children: [],
           selectedChildId: null,
           injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
+          artifacts,
         };
 
         // Add to parent
@@ -149,36 +143,6 @@ export class PanelManager {
       }
     );
 
-    // Get panel tree
-    ipcMain.handle("panel:get-tree", async (): Promise<Panel[]> => {
-      return this.rootPanels;
-    });
-
-    // Initialize root panel
-    ipcMain.handle(
-      "panel:init-root",
-      async (_event: IpcMainInvokeEvent, path: string): Promise<Panel> => {
-        const manifest = this.builder.loadManifest(path);
-
-        const rootPanel: Panel = {
-          id: `root-${Date.now()}`,
-          title: manifest.title,
-          path,
-          children: [],
-          selectedChildId: null,
-          injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
-        };
-
-        this.rootPanels = [rootPanel];
-        this.panels.set(rootPanel.id, rootPanel);
-
-        // Notify renderer
-        this.notifyPanelTreeUpdate();
-
-        return rootPanel;
-      }
-    );
-
     ipcMain.handle(
       "panel:register-view",
       async (event: IpcMainInvokeEvent, panelId: string): Promise<void> => {
@@ -193,11 +157,32 @@ export class PanelManager {
       }
     );
 
+    ipcMain.handle("panel:get-tree", async (): Promise<Panel[]> => {
+      return this.rootPanels;
+    });
+
     ipcMain.handle(
       "panel:update-theme",
       async (_event: IpcMainInvokeEvent, theme: "light" | "dark"): Promise<void> => {
         this.currentTheme = theme;
         this.broadcastTheme(theme);
+      }
+    );
+
+    ipcMain.handle(
+      "panel:open-devtools",
+      async (_event: IpcMainInvokeEvent, panelId: string): Promise<void> => {
+        const views = this.panelViews.get(panelId);
+        if (!views || views.size === 0) {
+          throw new Error(`No active webviews for panel ${panelId}`);
+        }
+
+        for (const contentsId of views) {
+          const contents = webContents.fromId(contentsId);
+          if (contents && !contents.isDestroyed()) {
+            contents.openDevTools({ mode: "detach" });
+          }
+        }
       }
     );
   }
@@ -273,6 +258,49 @@ export class PanelManager {
   private broadcastTheme(theme: "light" | "dark"): void {
     for (const panelId of this.panelViews.keys()) {
       this.sendPanelEvent(panelId, { type: "theme", theme });
+    }
+  }
+
+  private async initializeRootPanel(panelPath: string): Promise<void> {
+    try {
+      const manifest = this.builder.loadManifest(panelPath);
+      const artifacts = await this.buildPanelArtifacts(panelPath);
+
+      const rootPanel: Panel = {
+        id: `root-${Date.now()}`,
+        title: manifest.title,
+        path: panelPath,
+        children: [],
+        selectedChildId: null,
+        injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
+        artifacts,
+      };
+
+      this.rootPanels = [rootPanel];
+      this.panels = new Map([[rootPanel.id, rootPanel]]);
+      this.notifyPanelTreeUpdate();
+    } catch (error) {
+      console.error("Failed to initialize root panel:", error);
+    }
+  }
+
+  private async buildPanelArtifacts(panelPath: string): Promise<PanelArtifacts> {
+    try {
+      const buildResult = await this.builder.buildPanel(panelPath);
+      if (buildResult.success && buildResult.htmlPath) {
+        return {
+          htmlPath: buildResult.htmlPath,
+          bundlePath: buildResult.bundlePath,
+        };
+      }
+
+      return {
+        error: buildResult.error || "Failed to build panel",
+      };
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 }

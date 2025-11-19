@@ -1,15 +1,10 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Box, Button, Card, Flex, Tabs, Heading, Spinner, Text } from "@radix-ui/themes";
 
 interface PanelStackProps {
   onTitleChange?: (title: string) => void;
   hostTheme: "light" | "dark";
-}
-
-interface PanelLoadState {
-  loading: boolean;
-  error?: string;
-  htmlPath?: string;
+  onRegisterDevToolsHandler?: (handler: () => void) => void;
 }
 
 function captureHostThemeCss(): string {
@@ -30,18 +25,23 @@ function captureHostThemeCss(): string {
     }
   }
 
-  return `:root { ${declarations.join("; ")} }`;
+  const cssVariables = `:root { ${declarations.join("; ")} }`;
+  const baseline = `html, body { margin: 0; padding: 0; height: 100%; }
+#root {
+  min-height: 100vh;
+  box-sizing: border-box;
+}`;
+
+  return `${cssVariables}\n${baseline}`;
 }
 
-export function PanelStack({ onTitleChange, hostTheme }: PanelStackProps) {
+export function PanelStack({ onTitleChange, hostTheme, onRegisterDevToolsHandler }: PanelStackProps) {
   const [rootPanels, setRootPanels] = useState<Panel[]>([]);
   const [visiblePanelPath, setVisiblePanelPath] = useState<string[]>([]);
-  const [panelLoadStates, setPanelLoadStates] = useState<Map<string, PanelLoadState>>(new Map());
-  const [isInitializing, setIsInitializing] = useState(true);
+  const [isTreeReady, setIsTreeReady] = useState(false);
   const [panelPreloadPath, setPanelPreloadPath] = useState<string | null>(null);
   const [hostThemeCss, setHostThemeCss] = useState<string | null>(null);
   const webviewRefs = useRef<Map<string, Electron.WebviewTag>>(new Map());
-  const panelLoadStatesRef = useRef(panelLoadStates);
   const panelThemeCssKeys = useRef<Map<string, string>>(new Map());
   const domReadyPanels = useRef<Set<string>>(new Set());
 
@@ -89,10 +89,6 @@ export function PanelStack({ onTitleChange, hostTheme }: PanelStackProps) {
   };
 
   useEffect(() => {
-    panelLoadStatesRef.current = panelLoadStates;
-  }, [panelLoadStates]);
-
-  useEffect(() => {
     const css = captureHostThemeCss();
     setHostThemeCss(css);
 
@@ -111,56 +107,52 @@ export function PanelStack({ onTitleChange, hostTheme }: PanelStackProps) {
     }
   }, [hostThemeCss]);
 
-  // Initialize root panel on mount
+  // Listen for panel tree updates from main process
   useEffect(() => {
-    const initRootPanel = async () => {
-      try {
-        const rootPanel = await window.electronAPI.initRootPanel("panels/example");
-        setRootPanels([rootPanel]);
-        setVisiblePanelPath([rootPanel.id]);
+    let mounted = true;
 
-        // Build root panel
-        await buildAndLoadPanel(rootPanel);
+    const initializeTree = async () => {
+      try {
+        const currentTree = await window.electronAPI.getPanelTree();
+        if (mounted) {
+          setRootPanels(currentTree);
+          if (currentTree.length > 0) {
+            setIsTreeReady(true);
+            setVisiblePanelPath([currentTree[0]!.id]);
+          }
+        }
       } catch (error) {
-        console.error("Failed to initialize root panel:", error);
-      } finally {
-        setIsInitializing(false);
+        console.error("Failed to load initial panel tree", error);
       }
     };
 
-    void initRootPanel();
+    void initializeTree();
 
-    // Listen for panel tree updates from main process
     const cleanup = window.electronAPI.onPanelTreeUpdated((updatedRootPanels) => {
+      setIsTreeReady(true);
       setRootPanels(updatedRootPanels);
 
-      const allPanels = flattenPanels(updatedRootPanels);
-      const panelsToBuild = allPanels.filter((panel) => !panelLoadStatesRef.current.has(panel.id));
-
-      setPanelLoadStates((prevStates) => {
-        const nextStates = new Map(prevStates);
-        const validIds = new Set(allPanels.map((panel) => panel.id));
-
-        for (const id of Array.from(nextStates.keys())) {
-          if (!validIds.has(id)) {
-            nextStates.delete(id);
-          }
+      setVisiblePanelPath((prevPath) => {
+        if (updatedRootPanels.length === 0) {
+          return [];
         }
 
-        for (const panel of panelsToBuild) {
-          nextStates.set(panel.id, { loading: true });
+        if (prevPath.length === 0) {
+          return [updatedRootPanels[0]!.id];
         }
 
-        return nextStates;
+        if (!findPanelByPathInTree(updatedRootPanels, prevPath)) {
+          return [updatedRootPanels[0]!.id];
+        }
+
+        return prevPath;
       });
-
-      for (const panel of panelsToBuild) {
-        void buildAndLoadPanel(panel);
-      }
     });
 
-    return cleanup;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => {
+      mounted = false;
+      cleanup();
+    };
   }, []);
 
   useEffect(() => {
@@ -181,40 +173,10 @@ export function PanelStack({ onTitleChange, hostTheme }: PanelStackProps) {
     };
   }, []);
 
-  // Build and load a panel
-  const buildAndLoadPanel = async (panel: Panel) => {
-    setPanelLoadStates((prev) => new Map(prev).set(panel.id, { loading: true }));
-
-    try {
-      const result = await window.electronAPI.buildPanel(panel.path);
-
-      if (result.success && result.htmlPath) {
-        setPanelLoadStates((prev) =>
-          new Map(prev).set(panel.id, {
-            loading: false,
-            htmlPath: result.htmlPath,
-          })
-        );
-      } else {
-        setPanelLoadStates((prev) =>
-          new Map(prev).set(panel.id, { loading: false, error: result.error || "Unknown error" })
-        );
-      }
-    } catch (error) {
-      setPanelLoadStates((prev) =>
-        new Map(prev).set(panel.id, {
-          loading: false,
-          error: error instanceof Error ? error.message : String(error),
-        })
-      );
-    }
-  };
-
-  // Get the panel at a specific path
-  const getPanelByPath = (path: string[]): Panel | null => {
+  const findPanelByPathInTree = (tree: Panel[], path: string[]): Panel | null => {
     if (path.length === 0) return null;
 
-    let current = rootPanels.find((p) => p.id === path[0]);
+    let current: Panel | undefined = tree.find((p) => p.id === path[0]);
     if (!current) return null;
 
     for (let i = 1; i < path.length; i++) {
@@ -223,6 +185,11 @@ export function PanelStack({ onTitleChange, hostTheme }: PanelStackProps) {
     }
 
     return current;
+  };
+
+  // Get the panel at a specific path using current state
+  const getPanelByPath = (path: string[]): Panel | null => {
+    return findPanelByPathInTree(rootPanels, path);
   };
 
   // Get the currently visible panel
@@ -286,18 +253,6 @@ export function PanelStack({ onTitleChange, hostTheme }: PanelStackProps) {
     const webviewTag = webview as unknown as Electron.WebviewTag;
     webviewRefs.current.set(panelId, webviewTag);
 
-    // Forward console messages from webview to main DevTools
-    webviewTag.addEventListener("console-message", (e: any) => {
-      const prefix = `[Panel ${panelId}]`;
-      if (e.level === 0) {
-        console.log(prefix, e.message);
-      } else if (e.level === 1) {
-        console.warn(prefix, e.message);
-      } else if (e.level === 2) {
-        console.error(prefix, e.message);
-      }
-    });
-
     webviewTag.addEventListener("dom-ready", () => {
       domReadyPanels.current.add(panelId);
       applyThemeCss(panelId, webviewTag);
@@ -321,6 +276,21 @@ export function PanelStack({ onTitleChange, hostTheme }: PanelStackProps) {
     });
   }, [visiblePanel?.id]);
 
+  const openDevToolsForVisiblePanel = useCallback(() => {
+    const panelId = visiblePanel?.id;
+    if (!panelId) {
+      return;
+    }
+
+    void window.electronAPI.openPanelDevTools(panelId).catch((error) => {
+      console.error("Failed to open panel devtools", error);
+    });
+  }, [visiblePanel?.id]);
+
+  useEffect(() => {
+    onRegisterDevToolsHandler?.(() => openDevToolsForVisiblePanel);
+  }, [onRegisterDevToolsHandler, openDevToolsForVisiblePanel]);
+
   // Notify parent of title changes
   useEffect(() => {
     if (onTitleChange && visiblePanel) {
@@ -329,12 +299,22 @@ export function PanelStack({ onTitleChange, hostTheme }: PanelStackProps) {
   }, [onTitleChange, visiblePanel]);
 
   // Show loading state while initializing
-  if (isInitializing || !panelPreloadPath) {
+  if (!isTreeReady || !panelPreloadPath) {
     return (
       <Box p="4" style={{ height: "calc(100vh - 32px)" }}>
         <Flex direction="column" align="center" justify="center" height="100%">
           <Spinner size="3" />
           <Text mt="3">Initializing panels...</Text>
+        </Flex>
+      </Box>
+    );
+  }
+
+  if (!visiblePanel) {
+    return (
+      <Box p="4" style={{ height: "calc(100vh - 32px)" }}>
+        <Flex direction="column" align="center" justify="center" height="100%">
+          <Text>No panels available.</Text>
         </Flex>
       </Box>
     );
@@ -422,27 +402,11 @@ export function PanelStack({ onTitleChange, hostTheme }: PanelStackProps) {
                 <Box style={{ flexGrow: 1, position: "relative" }}>
                   {/* Render all webviews, show only the visible one */}
                   {allPanels.map((panel) => {
-                    const loadState = panelLoadStates.get(panel.id);
-                    const isVisible = panel.id === visiblePanel.id;
+                    const artifacts = panel.artifacts;
+                    const isVisible = visiblePanel ? panel.id === visiblePanel.id : false;
 
-                    // Show loading or error state for visible panel
-                    if (isVisible && loadState) {
-                      if (loadState.loading) {
-                        return (
-                          <Flex
-                            key={panel.id}
-                            direction="column"
-                            align="center"
-                            justify="center"
-                            height="100%"
-                          >
-                            <Spinner size="3" />
-                            <Text mt="3">Building panel...</Text>
-                          </Flex>
-                        );
-                      }
-
-                      if (loadState.error) {
+                    if (isVisible) {
+                      if (artifacts?.error) {
                         return (
                           <Flex
                             key={panel.id}
@@ -456,16 +420,30 @@ export function PanelStack({ onTitleChange, hostTheme }: PanelStackProps) {
                               Panel Build Error
                             </Text>
                             <Text color="red" size="2" style={{ fontFamily: "monospace" }}>
-                              {loadState.error}
+                              {artifacts.error}
                             </Text>
+                          </Flex>
+                        );
+                      }
+
+                      if (!artifacts?.htmlPath) {
+                        return (
+                          <Flex
+                            key={panel.id}
+                            direction="column"
+                            align="center"
+                            justify="center"
+                            height="100%"
+                          >
+                            <Spinner size="3" />
+                            <Text mt="3">Preparing panel...</Text>
                           </Flex>
                         );
                       }
                     }
 
-                    // Render webview if loaded
-                    if (loadState?.htmlPath) {
-                      const normalizedPath = loadState.htmlPath.replace(/\\/g, "/");
+                    if (artifacts?.htmlPath) {
+                      const normalizedPath = artifacts.htmlPath.replace(/\\/g, "/");
                       const srcUrl = new URL(`file://${normalizedPath}`);
                       srcUrl.searchParams.set("panelId", panel.id);
                       return (

@@ -9,11 +9,41 @@ import { TitleBar } from "./TitleBar";
 export function PanelApp() {
   const effectiveTheme = useThemeSynchronizer();
   const [currentTitle, setCurrentTitle] = useState("NatStack");
+  const [openPanelDevTools, setOpenPanelDevTools] = useState<() => void>(() => () => {});
+
+  const openAppDevTools = () => {
+    void window.electronAPI.openAppDevTools().catch((error) => {
+      console.error("Failed to open app devtools", error);
+    });
+  };
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "i") {
+        event.preventDefault();
+        openPanelDevTools();
+      } else if ((event.ctrlKey || event.metaKey) && event.altKey && event.key.toLowerCase() === "i") {
+        event.preventDefault();
+        openAppDevTools();
+      }
+    };
+
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [openPanelDevTools]);
 
   return (
     <Theme appearance={effectiveTheme}>
-      <TitleBar title={currentTitle} />
-      <PanelStack onTitleChange={setCurrentTitle} hostTheme={effectiveTheme} />
+      <TitleBar
+        title={currentTitle}
+        onOpenPanelDevTools={openPanelDevTools}
+        onOpenAppDevTools={openAppDevTools}
+      />
+      <PanelStack
+        onTitleChange={setCurrentTitle}
+        hostTheme={effectiveTheme}
+        onRegisterDevToolsHandler={setOpenPanelDevTools}
+      />
     </Theme>
   );
 }

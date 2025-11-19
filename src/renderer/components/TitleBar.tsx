@@ -3,9 +3,11 @@ import { Box, DropdownMenu, Flex, IconButton, Text } from "@radix-ui/themes";
 
 interface TitleBarProps {
   title: string;
+  onOpenPanelDevTools?: () => void;
+  onOpenAppDevTools?: () => void;
 }
 
-export function TitleBar({ title }: TitleBarProps) {
+export function TitleBar({ title, onOpenPanelDevTools, onOpenAppDevTools }: TitleBarProps) {
   const handleExit = () => {
     window.close();
   };
@@ -46,7 +48,18 @@ export function TitleBar({ title }: TitleBarProps) {
               <DropdownMenu.Separator />
               <DropdownMenu.Item shortcut="Ctrl+R">Reload</DropdownMenu.Item>
               <DropdownMenu.Item shortcut="Ctrl+Shift+R">Force Reload</DropdownMenu.Item>
-              <DropdownMenu.Item shortcut="Ctrl+Shift+I">Toggle Dev Tools</DropdownMenu.Item>
+              <DropdownMenu.Item
+                shortcut="Ctrl+Shift+I"
+                onSelect={() => onOpenPanelDevTools?.()}
+              >
+                Toggle Panel DevTools
+              </DropdownMenu.Item>
+              <DropdownMenu.Item
+                shortcut="Ctrl+Alt+I"
+                onSelect={() => onOpenAppDevTools?.()}
+              >
+                Toggle App DevTools
+              </DropdownMenu.Item>
               <DropdownMenu.Separator />
               <DropdownMenu.Item shortcut="Ctrl+Q" onSelect={handleExit}>
                 Exit

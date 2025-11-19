@@ -50,6 +50,17 @@ const panelRuntimeConfig = {
   minify: !isDev,
 };
 
+const panelReactRuntimeConfig = {
+  entryPoints: ["src/panelRuntime/reactPanel.ts"],
+  bundle: true,
+  platform: "browser",
+  target: "es2020",
+  format: "esm",
+  outfile: "dist/panelReactRuntime.js",
+  sourcemap: isDev,
+  minify: !isDev,
+};
+
 const rendererConfig = {
   entryPoints: ["src/renderer/index.tsx"],
   bundle: true,
@@ -77,6 +88,7 @@ async function build() {
     await esbuild.build(preloadConfig);
     await esbuild.build(panelPreloadConfig);
     await esbuild.build(panelRuntimeConfig);
+    await esbuild.build(panelReactRuntimeConfig);
     await esbuild.build(rendererConfig);
 
     copyAssets();

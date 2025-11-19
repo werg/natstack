@@ -9,6 +9,11 @@ const CACHE_FILENAME = "build-cache.json";
 const PANEL_RUNTIME_DIRNAME = ".natstack";
 
 const panelApiModulePath = path.join(__dirname, "panelRuntime.js");
+const panelReactModulePath = path.join(__dirname, "panelReactRuntime.js");
+const runtimeModuleMap = new Map([
+  ["natstack/panel", panelApiModulePath],
+  ["natstack/react", panelReactModulePath],
+]);
 
 export class PanelBuilder {
   private cache: Map<string, PanelBuildCache> = new Map();
@@ -153,6 +158,35 @@ export class PanelBuilder {
     return manifest;
   }
 
+  private resolveEntryPoint(panelPath: string, manifest: PanelManifest): string {
+    const absolutePanelPath = path.resolve(panelPath);
+
+    const verifyEntry = (entryCandidate: string): string | null => {
+      const entryPath = path.join(absolutePanelPath, entryCandidate);
+      return fs.existsSync(entryPath) ? entryCandidate : null;
+    };
+
+    if (manifest.entry) {
+      const entry = verifyEntry(manifest.entry);
+      if (!entry) {
+        throw new Error(`Entry point not found: ${manifest.entry}`);
+      }
+      return entry;
+    }
+
+    const defaultCandidates = ["index.tsx", "index.ts", "index.jsx", "index.js", "main.tsx", "main.ts"];
+    for (const candidate of defaultCandidates) {
+      const entry = verifyEntry(candidate);
+      if (entry) {
+        return entry;
+      }
+    }
+
+    throw new Error(
+      `No entry point found. Provide an entry file (e.g., index.tsx) or set 'entry' in panel.json`
+    );
+  }
+
   private async installDependencies(
     panelPath: string,
     dependencies: Record<string, string>
@@ -197,6 +231,11 @@ export class PanelBuilder {
     }
 
     fs.writeFileSync(packageJsonPath, JSON.stringify(desiredPackageJson, null, 2));
+
+    const nodeModulesPath = path.join(runtimeDir, "node_modules");
+    if (fs.existsSync(nodeModulesPath)) {
+      fs.rmSync(nodeModulesPath, { recursive: true, force: true });
+    }
 
     const arborist = new Arborist({ path: runtimeDir });
     await arborist.buildIdealTree();
@@ -251,15 +290,8 @@ export class PanelBuilder {
       }
 
       // Determine entry point
-      const entry = manifest.entry || "index.ts";
+      const entry = this.resolveEntryPoint(absolutePanelPath, manifest);
       const entryPath = path.join(absolutePanelPath, entry);
-
-      if (!fs.existsSync(entryPath)) {
-        return {
-          success: false,
-          error: `Entry point not found: ${entry}`,
-        };
-      }
 
       const runtimeDir = this.ensureRuntimeDir(absolutePanelPath);
       const bundlePath = path.join(runtimeDir, "bundle.js");
@@ -269,9 +301,11 @@ export class PanelBuilder {
       const panelApiPlugin: esbuild.Plugin = {
         name: "panel-api-module",
         setup(build) {
-          build.onResolve({ filter: /^natstack\/panel$/ }, () => ({
-            path: panelApiModulePath,
-          }));
+          build.onResolve({ filter: /^natstack\/(panel|react)$/ }, (args) => {
+            const runtimePath = runtimeModuleMap.get(args.path);
+            if (!runtimePath) return null;
+            return { path: runtimePath };
+          });
         },
       };
 

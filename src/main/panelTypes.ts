@@ -3,12 +3,19 @@ export interface PanelManifest {
   entry?: string; // Defaults to "index.ts"
   dependencies?: Record<string, string>; // npm package -> version
   injectHostThemeVariables?: boolean; // Defaults to true
+  template?: "html" | "react"; // Optional: choose template helpers
 }
 
 export interface PanelBuildResult {
   success: boolean;
   bundlePath?: string;
   htmlPath?: string;
+  error?: string;
+}
+
+export interface PanelArtifacts {
+  htmlPath?: string;
+  bundlePath?: string;
   error?: string;
 }
 
