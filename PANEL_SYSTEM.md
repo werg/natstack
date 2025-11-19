@@ -27,7 +27,8 @@ my-panel/
   "entry": "index.ts",            // Optional: Entry point (defaults to "index.ts")
   "dependencies": {               // Optional: npm dependencies
     "lodash": "^4.17.21"
-  }
+  },
+  "injectHostThemeVariables": true // Optional: inherit NatStack theme CSS variables (defaults to true)
 }
 ```
 
@@ -89,6 +90,50 @@ const unsubscribe = panelAPI.onFocus(() => {
   console.log("Panel received focus");
 });
 ```
+
+### `getTheme(): { appearance: "light" | "dark" }`
+Returns the current host theme so the panel can coordinates its UI (useful for Radix or custom theming systems).
+
+### `onThemeChange(callback: (theme) => void): () => void`
+Subscribe to host theme changes. The callback is immediately invoked with the current theme and again whenever the user toggles light/dark mode.
+
+### `createRadixThemeProvider(React, ThemeComponent)`
+Utility for Radix UI panels. Provide your panel's `React` instance and the `Theme` component from `@radix-ui/themes`, and the helper returns a provider component that keeps the Radix appearance in sync with NatStack:
+
+```tsx
+import React from "react";
+import { Theme } from "@radix-ui/themes";
+import panelAPI, { createRadixThemeProvider } from "natstack/panel";
+
+const NatstackThemeProvider = createRadixThemeProvider(React, Theme);
+
+export function App() {
+  return (
+    <NatstackThemeProvider>
+      {/* panel UI */}
+    </NatstackThemeProvider>
+  );
+}
+```
+
+### Host Theme Variables
+
+By default, NatStack automatically injects the host application's CSS variables (including all Radix tokens) into each panel. Panels can opt out by setting `injectHostThemeVariables` to `false` in `panel.json`.
+
+When enabled, you can use the same tokens that Radix exposes in your panel styles:
+
+```css
+body {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.panel-card {
+  background: var(--color-panel);
+}
+```
+
+Combine CSS injection with the `getTheme`/`onThemeChange` API to keep any framework-level theming (Radix `<Theme>`, Tailwind data attributes, etc.) synchronized.
 
 ## Build System
 

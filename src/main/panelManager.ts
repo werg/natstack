@@ -9,6 +9,7 @@ export interface Panel {
   path: string;
   children: Panel[];
   selectedChildId: string | null;
+  injectHostThemeVariables: boolean;
 }
 
 export class PanelManager {
@@ -17,6 +18,7 @@ export class PanelManager {
   private panels: Map<string, Panel> = new Map();
   private rootPanels: Panel[] = [];
   private panelViews: Map<string, Set<number>> = new Map();
+  private currentTheme: "light" | "dark" = "light";
 
   constructor() {
     const cacheDir = getPanelCacheDirectory();
@@ -56,6 +58,7 @@ export class PanelManager {
           path,
           children: [],
           selectedChildId: null,
+          injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
         };
 
         // Add to parent
@@ -163,6 +166,7 @@ export class PanelManager {
           path,
           children: [],
           selectedChildId: null,
+          injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
         };
 
         this.rootPanels = [rootPanel];
@@ -186,6 +190,14 @@ export class PanelManager {
       "panel:notify-focus",
       async (_event: IpcMainInvokeEvent, panelId: string): Promise<void> => {
         this.sendPanelEvent(panelId, { type: "focus" });
+      }
+    );
+
+    ipcMain.handle(
+      "panel:update-theme",
+      async (_event: IpcMainInvokeEvent, theme: "light" | "dark"): Promise<void> => {
+        this.currentTheme = theme;
+        this.broadcastTheme(theme);
       }
     );
   }
@@ -242,6 +254,8 @@ export class PanelManager {
         }
       });
     }
+
+    this.sendPanelEvent(panelId, { type: "theme", theme: this.currentTheme });
   }
 
   private sendPanelEvent(panelId: string, payload: PanelEventPayload): void {
@@ -253,6 +267,12 @@ export class PanelManager {
       if (contents && !contents.isDestroyed()) {
         contents.send("panel:event", { panelId, ...payload });
       }
+    }
+  }
+
+  private broadcastTheme(theme: "light" | "dark"): void {
+    for (const panelId of this.panelViews.keys()) {
+      this.sendPanelEvent(panelId, { type: "theme", theme });
     }
   }
 }

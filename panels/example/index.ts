@@ -53,6 +53,16 @@ panelAPI
   .then(() => console.log("Initial title set"))
   .catch(console.error);
 
+const applyTheme = (theme: { appearance: "light" | "dark" }) => {
+  document.body.dataset.theme = theme.appearance;
+};
+
+applyTheme(panelAPI.getTheme());
+const unsubscribeTheme = panelAPI.onThemeChange((theme) => {
+  applyTheme(theme);
+  console.log("Panel theme updated", theme.appearance);
+});
+
 // Listen for focus events
 const unsubscribeFocus = panelAPI.onFocus(() => {
   console.log("Panel received focus");
@@ -68,4 +78,5 @@ const unsubscribeChildRemoved = panelAPI.onChildRemoved((childId) => {
 window.addEventListener("beforeunload", () => {
   unsubscribeFocus();
   unsubscribeChildRemoved();
+  unsubscribeTheme();
 });

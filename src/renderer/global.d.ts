@@ -29,20 +29,10 @@ interface Panel {
   path: string;
   children: Panel[];
   selectedChildId: string | null;
+  injectHostThemeVariables: boolean;
 }
 
-interface ElectronAPI {
-  getAppInfo(): Promise<{ version: string }>;
-  getSystemTheme(): Promise<"light" | "dark">;
-  setThemeMode(mode: "light" | "dark" | "system"): Promise<void>;
-  onSystemThemeChanged(callback: (theme: "light" | "dark") => void): () => void;
-  buildPanel(path: string): Promise<PanelBuildResult>;
-  getPanelTree(): Promise<Panel[]>;
-  initRootPanel(path: string): Promise<Panel>;
-  onPanelTreeUpdated(callback: (rootPanels: Panel[]) => void): () => void;
-  getPanelPreloadPath(): Promise<string>;
-  notifyPanelFocused(panelId: string): Promise<void>;
-}
+type ElectronAPI = typeof import("../preload/index").electronAPI;
 
 interface Window {
   electronAPI: ElectronAPI;

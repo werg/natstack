@@ -12,6 +12,7 @@ interface Panel {
   path: string;
   children: Panel[];
   selectedChildId: string | null;
+  injectHostThemeVariables: boolean;
 }
 
 interface PanelBuildResult {
@@ -21,21 +22,7 @@ interface PanelBuildResult {
   error?: string;
 }
 
-interface ElectronAPI {
-  getAppInfo(): Promise<AppInfo>;
-  getSystemTheme(): Promise<"light" | "dark">;
-  setThemeMode(mode: ThemeMode): Promise<void>;
-  onSystemThemeChanged(callback: (theme: "light" | "dark") => void): () => void;
-  // Panel APIs
-  buildPanel(path: string): Promise<PanelBuildResult>;
-  getPanelTree(): Promise<Panel[]>;
-  initRootPanel(path: string): Promise<Panel>;
-  onPanelTreeUpdated(callback: (rootPanels: Panel[]) => void): () => void;
-  getPanelPreloadPath(): Promise<string>;
-  notifyPanelFocused(panelId: string): Promise<void>;
-}
-
-const electronAPI: ElectronAPI = {
+export const electronAPI = {
   getAppInfo: async (): Promise<AppInfo> => {
     return ipcRenderer.invoke("get-app-info") as Promise<AppInfo>;
   },
@@ -80,12 +67,15 @@ const electronAPI: ElectronAPI = {
   notifyPanelFocused: async (panelId: string): Promise<void> => {
     return ipcRenderer.invoke("panel:notify-focus", panelId) as Promise<void>;
   },
+  updatePanelTheme: async (theme: "light" | "dark"): Promise<void> => {
+    return ipcRenderer.invoke("panel:update-theme", theme) as Promise<void>;
+  },
 };
 
 contextBridge.exposeInMainWorld("electronAPI", electronAPI);
 
 declare global {
   interface Window {
-    electronAPI: ElectronAPI;
+    electronAPI: typeof electronAPI;
   }
 }

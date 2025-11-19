@@ -13,7 +13,7 @@ export function PanelApp() {
   return (
     <Theme appearance={effectiveTheme}>
       <TitleBar title={currentTitle} />
-      <PanelStack onTitleChange={setCurrentTitle} />
+      <PanelStack onTitleChange={setCurrentTitle} hostTheme={effectiveTheme} />
     </Theme>
   );
 }

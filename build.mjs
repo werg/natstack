@@ -2,7 +2,6 @@ import * as esbuild from "esbuild";
 import * as fs from "fs";
 
 const isDev = process.env.NODE_ENV === "development";
-const isWatch = process.argv.includes("--watch");
 
 const mainConfig = {
   entryPoints: ["src/main/index.ts"],
@@ -73,41 +72,15 @@ async function build() {
   let contexts = [];
 
   try {
-    fs.mkdirSync("dist", { recursive: true });
+  fs.mkdirSync("dist", { recursive: true });
+    await esbuild.build(mainConfig);
+    await esbuild.build(preloadConfig);
+    await esbuild.build(panelPreloadConfig);
+    await esbuild.build(panelRuntimeConfig);
+    await esbuild.build(rendererConfig);
 
-    if (isWatch) {
-      contexts = await Promise.all([
-        esbuild.context(mainConfig),
-        esbuild.context(preloadConfig),
-        esbuild.context(panelPreloadConfig),
-        esbuild.context(panelRuntimeConfig),
-        esbuild.context(rendererConfig),
-      ]);
-
-      await Promise.all(contexts.map((ctx) => ctx.watch()));
-
-      copyAssets();
-      console.log("Watching for changes...");
-
-      // Properly cleanup on exit
-      const cleanup = async () => {
-        console.log("\nCleaning up...");
-        await Promise.all(contexts.map((ctx) => ctx.dispose()));
-        process.exit(0);
-      };
-
-      process.on("SIGINT", cleanup);
-      process.on("SIGTERM", cleanup);
-    } else {
-      await esbuild.build(mainConfig);
-      await esbuild.build(preloadConfig);
-      await esbuild.build(panelPreloadConfig);
-      await esbuild.build(panelRuntimeConfig);
-      await esbuild.build(rendererConfig);
-
-      copyAssets();
-      console.log("Build successful!");
-    }
+    copyAssets();
+    console.log("Build successful!");
   } catch (error) {
     console.error("Build failed:", error);
     // Cleanup contexts on error

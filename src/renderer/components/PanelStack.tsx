@@ -1,16 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import { Box, Button, Card, Flex, Tabs, Heading, Spinner, Text } from "@radix-ui/themes";
 
-interface Panel {
-  id: string;
-  title: string;
-  path: string;
-  children: Panel[];
-  selectedChildId: string | null;
-}
-
 interface PanelStackProps {
   onTitleChange?: (title: string) => void;
+  hostTheme: "light" | "dark";
 }
 
 interface PanelLoadState {
@@ -19,18 +12,104 @@ interface PanelLoadState {
   htmlPath?: string;
 }
 
-export function PanelStack({ onTitleChange }: PanelStackProps) {
+function captureHostThemeCss(): string {
+  if (typeof window === "undefined") {
+    return "";
+  }
+
+  const computed = getComputedStyle(document.documentElement);
+  const declarations: string[] = [];
+
+  for (const property of Array.from(computed)) {
+    if (!property.startsWith("--")) {
+      continue;
+    }
+    const value = computed.getPropertyValue(property).trim();
+    if (value) {
+      declarations.push(`${property}: ${value}`);
+    }
+  }
+
+  return `:root { ${declarations.join("; ")} }`;
+}
+
+export function PanelStack({ onTitleChange, hostTheme }: PanelStackProps) {
   const [rootPanels, setRootPanels] = useState<Panel[]>([]);
   const [visiblePanelPath, setVisiblePanelPath] = useState<string[]>([]);
   const [panelLoadStates, setPanelLoadStates] = useState<Map<string, PanelLoadState>>(new Map());
   const [isInitializing, setIsInitializing] = useState(true);
   const [panelPreloadPath, setPanelPreloadPath] = useState<string | null>(null);
+  const [hostThemeCss, setHostThemeCss] = useState<string | null>(null);
   const webviewRefs = useRef<Map<string, Electron.WebviewTag>>(new Map());
   const panelLoadStatesRef = useRef(panelLoadStates);
+  const panelThemeCssKeys = useRef<Map<string, string>>(new Map());
+  const domReadyPanels = useRef<Set<string>>(new Set());
+
+  const applyThemeCss = (panelId: string, explicitWebview?: Electron.WebviewTag) => {
+    const panel = findPanelById(panelId);
+    if (!panel || panel.injectHostThemeVariables === false) {
+      return;
+    }
+
+    if (!hostThemeCss || !domReadyPanels.current.has(panelId)) {
+      return;
+    }
+
+    const webview = explicitWebview ?? webviewRefs.current.get(panelId);
+    if (!webview) {
+      return;
+    }
+
+    const previousKey = panelThemeCssKeys.current.get(panelId);
+
+    const insertCss = () => {
+      void webview
+        .insertCSS(hostThemeCss)
+        .then((key) => {
+          panelThemeCssKeys.current.set(panelId, key);
+        })
+        .catch((error) => {
+          console.error(`Failed to inject theme CSS for panel ${panelId}`, error);
+        });
+    };
+
+    if (previousKey) {
+      void webview
+        .removeInsertedCSS(previousKey)
+        .catch((error) => {
+          console.error(`Failed to remove previous theme CSS for panel ${panelId}`, error);
+        })
+        .finally(() => {
+          panelThemeCssKeys.current.delete(panelId);
+          insertCss();
+        });
+    } else {
+      insertCss();
+    }
+  };
 
   useEffect(() => {
     panelLoadStatesRef.current = panelLoadStates;
   }, [panelLoadStates]);
+
+  useEffect(() => {
+    const css = captureHostThemeCss();
+    setHostThemeCss(css);
+
+    void window.electronAPI.updatePanelTheme(hostTheme).catch((error) => {
+      console.error("Failed to broadcast panel theme", error);
+    });
+  }, [hostTheme]);
+
+  useEffect(() => {
+    if (!hostThemeCss) {
+      return;
+    }
+
+    for (const [panelId, webview] of webviewRefs.current.entries()) {
+      applyThemeCss(panelId, webview);
+    }
+  }, [hostThemeCss]);
 
   // Initialize root panel on mount
   useEffect(() => {
@@ -178,6 +257,25 @@ export function PanelStack({ onTitleChange }: PanelStackProps) {
 
   const allPanels = flattenPanels(rootPanels);
 
+  function findPanelById(panelId: string): Panel | null {
+    const traverse = (panelList: Panel[]): Panel | null => {
+      for (const panel of panelList) {
+        if (panel.id === panelId) {
+          return panel;
+        }
+        if (panel.children.length > 0) {
+          const found = traverse(panel.children);
+          if (found) {
+            return found;
+          }
+        }
+      }
+      return null;
+    };
+
+    return traverse(rootPanels);
+  }
+
   // Navigate to a specific panel in the tree
   const navigateToPanel = (path: string[]) => {
     setVisiblePanelPath(path);
@@ -200,6 +298,15 @@ export function PanelStack({ onTitleChange }: PanelStackProps) {
       }
     });
 
+    webviewTag.addEventListener("dom-ready", () => {
+      domReadyPanels.current.add(panelId);
+      applyThemeCss(panelId, webviewTag);
+    });
+
+    webviewTag.addEventListener("destroyed", () => {
+      domReadyPanels.current.delete(panelId);
+      panelThemeCssKeys.current.delete(panelId);
+    });
   };
 
   // Notify panels about focus changes
@@ -365,7 +472,13 @@ export function PanelStack({ onTitleChange }: PanelStackProps) {
                         <webview
                           key={panel.id}
                           ref={(el) => {
-                            if (el) handleWebviewReady(panel.id, el);
+                            if (el) {
+                              handleWebviewReady(panel.id, el);
+                            } else {
+                              webviewRefs.current.delete(panel.id);
+                              domReadyPanels.current.delete(panel.id);
+                              panelThemeCssKeys.current.delete(panel.id);
+                            }
                           }}
                           src={srcUrl.toString()}
                           preload={panelPreloadPath}

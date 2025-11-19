@@ -2,9 +2,12 @@ import { contextBridge, ipcRenderer } from "electron";
 
 type PanelEventName = "child-removed" | "focus";
 
+type PanelTheme = "light" | "dark";
+
 type PanelEventMessage =
   | { panelId: string; type: "child-removed"; childId: string }
-  | { panelId: string; type: "focus" };
+  | { panelId: string; type: "focus" }
+  | { panelId: string; type: "theme"; theme: PanelTheme };
 
 const urlParams = new URLSearchParams(window.location.search);
 const panelId = urlParams.get("panelId");
@@ -18,9 +21,23 @@ void ipcRenderer.invoke("panel:register-view", panelId).catch((error) => {
 });
 
 const eventListeners = new Map<PanelEventName, Set<(payload: any) => void>>();
+let currentTheme: PanelTheme = "light";
+const themeListeners = new Set<(theme: PanelTheme) => void>();
+
+const updateTheme = (theme: PanelTheme) => {
+  currentTheme = theme;
+  for (const listener of themeListeners) {
+    listener(theme);
+  }
+};
 
 ipcRenderer.on("panel:event", (_event, payload: PanelEventMessage) => {
   if (payload.panelId !== panelId) {
+    return;
+  }
+
+  if (payload.type === "theme") {
+    updateTheme(payload.theme);
     return;
   }
 
@@ -50,6 +67,13 @@ const bridge = {
       if (listeners.size === 0) {
         eventListeners.delete(event);
       }
+    };
+  },
+  getTheme: (): PanelTheme => currentTheme,
+  onThemeChange: (listener: (theme: PanelTheme) => void) => {
+    themeListeners.add(listener);
+    return () => {
+      themeListeners.delete(listener);
     };
   },
 };
