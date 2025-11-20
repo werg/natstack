@@ -1,7 +1,8 @@
 import { ipcMain, type IpcMainInvokeEvent, type BrowserWindow, webContents } from "electron";
 import { PanelBuilder } from "./panelBuilder.js";
-import type { PanelEventPayload, Panel, PanelArtifacts} from "./panelTypes.js";
+import type { PanelEventPayload, Panel, PanelArtifacts } from "./panelTypes.js";
 import { getPanelCacheDirectory } from "./paths.js";
+import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
 
 export class PanelManager {
   private builder: PanelBuilder;
@@ -21,13 +22,19 @@ export class PanelManager {
 
   setMainWindow(window: BrowserWindow): void {
     this.mainWindow = window;
+    this.registerWebviewEnvInjection(window);
   }
 
   private setupIpcHandlers(): void {
     // Create a child panel
     ipcMain.handle(
       "panel:create-child",
-      async (_event: IpcMainInvokeEvent, parentId: string, path: string): Promise<string> => {
+      async (
+        _event: IpcMainInvokeEvent,
+        parentId: string,
+        path: string,
+        env?: Record<string, string>
+      ): Promise<string> => {
         const parent = this.panels.get(parentId);
         if (!parent) {
           throw new Error(`Parent panel not found: ${parentId}`);
@@ -44,6 +51,7 @@ export class PanelManager {
           selectedChildId: null,
           injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
           artifacts,
+          env,
         };
 
         // Add to parent
@@ -149,8 +157,19 @@ export class PanelManager {
     );
 
     ipcMain.handle("panel:get-tree", async (): Promise<Panel[]> => {
-      return this.rootPanels;
+      return this.getSerializablePanelTree();
     });
+
+    ipcMain.handle(
+      "panel:get-env",
+      async (_event: IpcMainInvokeEvent, panelId: string): Promise<Record<string, string>> => {
+        const panel = this.panels.get(panelId);
+        if (!panel) {
+          throw new Error(`Panel not found: ${panelId}`);
+        }
+        return panel.env ?? {};
+      }
+    );
 
     ipcMain.handle(
       "panel:update-theme",
@@ -203,8 +222,20 @@ export class PanelManager {
 
   private notifyPanelTreeUpdate(): void {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-      this.mainWindow.webContents.send("panel:tree-updated", this.rootPanels);
+      this.mainWindow.webContents.send("panel:tree-updated", this.getSerializablePanelTree());
     }
+  }
+
+  private getSerializablePanelTree(): Panel[] {
+    return this.rootPanels.map((panel) => this.serializePanel(panel));
+  }
+
+  private serializePanel(panel: Panel): Panel {
+    const { env: _env, children, ...rest } = panel;
+    return {
+      ...rest,
+      children: children.map((child) => this.serializePanel(child)),
+    };
   }
 
   getRootPanels(): Panel[] {
@@ -232,6 +263,45 @@ export class PanelManager {
     }
 
     this.sendPanelEvent(panelId, { type: "theme", theme: this.currentTheme });
+  }
+
+  private registerWebviewEnvInjection(window: BrowserWindow): void {
+    window.webContents.on("will-attach-webview", (_event, webPreferences, params) => {
+      const panelId = this.extractPanelIdFromSrc(params?.["src"]);
+      if (!panelId) {
+        return;
+      }
+
+      const env = this.panels.get(panelId)?.env;
+      if (!env || Object.keys(env).length === 0) {
+        return;
+      }
+
+      try {
+        const encodedEnv = Buffer.from(JSON.stringify(env), "utf-8").toString("base64");
+        const argument = `${PANEL_ENV_ARG_PREFIX}${encodedEnv}`;
+        const existingArgs = webPreferences.additionalArguments ?? [];
+        const filteredArgs = existingArgs.filter(
+          (arg) => !arg.startsWith(PANEL_ENV_ARG_PREFIX)
+        );
+        webPreferences.additionalArguments = [...filteredArgs, argument];
+      } catch (error) {
+        console.error(`Failed to encode env for panel ${panelId}`, error);
+      }
+    });
+  }
+
+  private extractPanelIdFromSrc(src?: string): string | null {
+    if (!src) {
+      return null;
+    }
+
+    try {
+      const url = new URL(src);
+      return url.searchParams.get("panelId");
+    } catch {
+      return null;
+    }
   }
 
   private sendPanelEvent(panelId: string, payload: PanelEventPayload): void {

@@ -42,11 +42,14 @@ import panelAPI from "natstack/panel";
 
 The helper exposes the following methods:
 
-### `createChild(path: string): Promise<string>`
-Creates a child panel at the specified path and returns its ID.
+### `createChild(path: string, env?: Record<string, string>): Promise<string>`
+Creates a child panel at the specified path and returns its ID. Optionally provide a map of string key/value pairs that will be exposed to the child panel as environment variables.
 
 ```typescript
-const childId = await panelAPI.createChild("panels/my-child");
+const childId = await panelAPI.createChild("panels/my-child", {
+  PARENT_ID: panelAPI.getId(),
+  MESSAGE: "Hello from parent",
+});
 ```
 
 ### `setTitle(title: string): Promise<void>`
@@ -97,6 +100,14 @@ Returns the current host theme so the panel can coordinates its UI (useful for R
 ### `onThemeChange(callback: (theme) => void): () => void`
 Subscribe to host theme changes. The callback is immediately invoked with the current theme and again whenever the user toggles light/dark mode.
 
+### `getEnv(): Promise<Record<string, string>>`
+Resolves to the environment variables that were provided when the panel was launched. This is useful when you want to react to runtime data asynchronously.
+
+```ts
+const env = await panelAPI.getEnv();
+console.log(env.PARENT_ID);
+```
+
 ### `createRadixThemeProvider(React, ThemeComponent)`
 Utility for Radix UI panels. Provide your panel's `React` instance and the `Theme` component from `@radix-ui/themes`, and the helper returns a provider component that keeps the Radix appearance in sync with NatStack:
 
@@ -134,6 +145,15 @@ body {
 ```
 
 Combine CSS injection with the `getTheme`/`onThemeChange` API to keep any framework-level theming (Radix `<Theme>`, Tailwind data attributes, etc.) synchronized.
+
+## Panel Environment Variables
+
+When one panel launches another via `panelAPI.createChild`, it can pass a dictionary of environment variables. These values are scoped to the launched panel and exposed in two ways:
+
+1. Inside the panel runtime you can synchronously read them via `process.env.MY_KEY`.
+2. You can also call `await panelAPI.getEnv()` for an asynchronous snapshot if you prefer not to rely on globals.
+
+Environment variables never travel through the host renderer process—they are bound directly inside the child panel's webview when it loads.
 
 ## Build System
 

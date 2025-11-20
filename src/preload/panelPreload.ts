@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
 
 type PanelEventName = "child-removed" | "focus";
 
@@ -15,6 +16,30 @@ const panelId = urlParams.get("panelId");
 if (!panelId) {
   throw new Error("Panel ID missing from panel URL");
 }
+
+const parseEnvArg = (): Record<string, string> => {
+  const arg = process.argv.find((value) => value.startsWith(PANEL_ENV_ARG_PREFIX));
+  if (!arg) {
+    return {};
+  }
+
+  const encoded = arg.slice(PANEL_ENV_ARG_PREFIX.length);
+  try {
+    const decoded = Buffer.from(encoded, "base64").toString("utf-8");
+    const parsed = JSON.parse(decoded) as Record<string, unknown>;
+    const sanitizedEntries = Object.entries(parsed ?? {}).filter(
+      ([key, value]) => typeof key === "string" && typeof value === "string"
+    ) as Array<[string, string]>;
+    return Object.fromEntries(sanitizedEntries);
+  } catch (error) {
+    console.error("Failed to parse panel env payload", error);
+    return {};
+  }
+};
+
+const syntheticEnv = parseEnvArg();
+
+contextBridge.exposeInMainWorld("process", { env: syntheticEnv });
 
 void ipcRenderer.invoke("panel:register-view", panelId).catch((error) => {
   console.error("Failed to register panel view", error);
@@ -75,6 +100,9 @@ const bridge = {
     return () => {
       themeListeners.delete(listener);
     };
+  },
+  getEnv: async (): Promise<Record<string, string>> => {
+    return ipcRenderer.invoke("panel:get-env", panelId) as Promise<Record<string, string>>;
   },
 };
 

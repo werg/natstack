@@ -42,4 +42,5 @@ export interface Panel {
   selectedChildId: string | null;
   injectHostThemeVariables: boolean;
   artifacts: PanelArtifacts;
+  env?: Record<string, string>;
 }

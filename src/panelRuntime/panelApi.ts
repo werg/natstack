@@ -14,6 +14,7 @@ interface PanelBridge {
   on(event: PanelBridgeEvent, listener: (payload?: unknown) => void): () => void;
   getTheme(): PanelThemeAppearance;
   onThemeChange(listener: (theme: PanelThemeAppearance) => void): () => void;
+  getEnv(): Promise<Record<string, string>>;
 }
 
 declare global {
@@ -49,8 +50,8 @@ const panelAPI = {
     return bridge.panelId;
   },
 
-  async createChild(path: string): AsyncResult<string> {
-    return bridge.invoke("panel:create-child", path) as Promise<string>;
+  async createChild(path: string, env?: Record<string, string>): AsyncResult<string> {
+    return bridge.invoke("panel:create-child", path, env) as Promise<string>;
   },
 
   async removeChild(childId: string): AsyncResult<void> {
@@ -87,6 +88,10 @@ const panelAPI = {
     return () => {
       themeListeners.delete(callback);
     };
+  },
+
+  async getEnv(): AsyncResult<Record<string, string>> {
+    return bridge.getEnv();
   },
 };
 

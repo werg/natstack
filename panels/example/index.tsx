@@ -15,11 +15,21 @@ function ChildPanelLauncher() {
     return panelAPI.onThemeChange(({ appearance }) => setTheme(appearance));
   }, []);
 
+  // Get env variables that were passed from parent
+  const parentId = process.env.PARENT_ID;
+  const launchTime = process.env.LAUNCH_TIME;
+  const message = process.env.MESSAGE;
+
   const launchChild = async () => {
     try {
       setStatus("Launching child panel...");
-      const childId = await panelAPI.createChild("panels/example");
-      setStatus(`Launched child ${childId}`);
+      const childEnv = {
+        PARENT_ID: panelAPI.getId(),
+        LAUNCH_TIME: new Date().toISOString(),
+        MESSAGE: "Hello from parent panel!",
+      };
+      const childId = await panelAPI.createChild("panels/example", childEnv);
+      setStatus(`Launched child ${childId} with env variables`);
     } catch (error) {
       setStatus(`Failed to launch child: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -38,6 +48,33 @@ function ChildPanelLauncher() {
         <Text size="2">
           Current theme: <Text weight="bold">{theme}</Text>
         </Text>
+        <Text size="2">
+          Panel ID: <Text weight="bold">{panelAPI.getId()}</Text>
+        </Text>
+        {(parentId || launchTime || message) && (
+          <Card variant="surface">
+            <Flex direction="column" gap="2">
+              <Text size="2" weight="bold">
+                Environment Variables (from process.env):
+              </Text>
+              {parentId && (
+                <Text size="1" style={{ fontFamily: "monospace" }}>
+                  PARENT_ID: {parentId}
+                </Text>
+              )}
+              {launchTime && (
+                <Text size="1" style={{ fontFamily: "monospace" }}>
+                  LAUNCH_TIME: {launchTime}
+                </Text>
+              )}
+              {message && (
+                <Text size="1" style={{ fontFamily: "monospace" }}>
+                  MESSAGE: {message}
+                </Text>
+              )}
+            </Flex>
+          </Card>
+        )}
         <Flex gap="3">
           <Button onClick={launchChild}>Launch child panel</Button>
           <Button variant="soft" onClick={setRandomTitle}>
