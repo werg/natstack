@@ -15,6 +15,7 @@ interface PanelBridge {
   getTheme(): PanelThemeAppearance;
   onThemeChange(listener: (theme: PanelThemeAppearance) => void): () => void;
   getEnv(): Promise<Record<string, string>>;
+  getInfo(): Promise<{ partition?: string }>;
 }
 
 declare global {
@@ -45,13 +46,33 @@ bridge.onThemeChange((appearance) => {
   }
 });
 
+export interface CreateChildOptions {
+  env?: Record<string, string>;
+  partition?: string;
+}
+
 const panelAPI = {
   getId(): string {
     return bridge.panelId;
   },
 
-  async createChild(path: string, env?: Record<string, string>): AsyncResult<string> {
-    return bridge.invoke("panel:create-child", path, env) as Promise<string>;
+  async createChild(path: string, options?: Record<string, string> | CreateChildOptions): AsyncResult<string> {
+    // Support both old signature (env as second param) and new signature (options object)
+    let env: Record<string, string> | undefined;
+    let partition: string | undefined;
+
+    if (options) {
+      // Check if it's the new options object (has 'env' or 'partition' keys) or old env object
+      if ('env' in options || 'partition' in options) {
+        env = (options as CreateChildOptions).env;
+        partition = (options as CreateChildOptions).partition;
+      } else {
+        // Legacy: treat as env object
+        env = options as Record<string, string>;
+      }
+    }
+
+    return bridge.invoke("panel:create-child", path, env, partition) as Promise<string>;
   },
 
   async removeChild(childId: string): AsyncResult<void> {
@@ -92,6 +113,15 @@ const panelAPI = {
 
   async getEnv(): AsyncResult<Record<string, string>> {
     return bridge.getEnv();
+  },
+
+  async getInfo(): AsyncResult<{ partition?: string }> {
+    return bridge.getInfo();
+  },
+
+  async getPartition(): AsyncResult<string | undefined> {
+    const info = await bridge.getInfo();
+    return info.partition;
   },
 };
 

@@ -104,6 +104,9 @@ const bridge = {
   getEnv: async (): Promise<Record<string, string>> => {
     return ipcRenderer.invoke("panel:get-env", panelId) as Promise<Record<string, string>>;
   },
+  getInfo: async (): Promise<{ partition?: string }> => {
+    return ipcRenderer.invoke("panel:get-info", panelId) as Promise<{ partition?: string }>;
+  },
 };
 
 contextBridge.exposeInMainWorld("__natstackPanelBridge", bridge);

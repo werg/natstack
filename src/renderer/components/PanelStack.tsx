@@ -465,6 +465,10 @@ export function PanelStack({ onTitleChange, hostTheme, onRegisterDevToolsHandler
                       const normalizedPath = artifacts.htmlPath.replace(/\\/g, "/");
                       const srcUrl = new URL(`file://${normalizedPath}`);
                       srcUrl.searchParams.set("panelId", panel.id);
+                      // Use custom partition if specified, otherwise use per-panel partition
+                      const partitionName = panel.partition
+                        ? `persist:${panel.partition}`
+                        : `persist:panel-${panel.id}`;
                       return (
                         <webview
                           key={panel.id}
@@ -479,7 +483,7 @@ export function PanelStack({ onTitleChange, hostTheme, onRegisterDevToolsHandler
                           }}
                           src={srcUrl.toString()}
                           preload={panelPreloadPath}
-                          partition={`persist:panel-${panel.id}`}
+                          partition={partitionName}
                           style={{
                             width: "100%",
                             height: "100%",

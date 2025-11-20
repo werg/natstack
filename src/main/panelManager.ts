@@ -33,7 +33,8 @@ export class PanelManager {
         _event: IpcMainInvokeEvent,
         parentId: string,
         path: string,
-        env?: Record<string, string>
+        env?: Record<string, string>,
+        partitionOverride?: string
       ): Promise<string> => {
         const parent = this.panels.get(parentId);
         if (!parent) {
@@ -42,6 +43,9 @@ export class PanelManager {
 
         const manifest = this.builder.loadManifest(path);
         const artifacts = await this.buildPanelArtifacts(path);
+
+        // Partition precedence: runtime override > manifest > undefined (will get per-panel partition)
+        const partition = partitionOverride ?? manifest.partition;
 
         const newPanel: Panel = {
           id: `panel-${Date.now()}-${Math.random()}`,
@@ -52,6 +56,7 @@ export class PanelManager {
           injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
           artifacts,
           env,
+          partition,
         };
 
         // Add to parent
@@ -172,6 +177,19 @@ export class PanelManager {
     );
 
     ipcMain.handle(
+      "panel:get-info",
+      async (_event: IpcMainInvokeEvent, panelId: string): Promise<{ partition?: string }> => {
+        const panel = this.panels.get(panelId);
+        if (!panel) {
+          throw new Error(`Panel not found: ${panelId}`);
+        }
+        return {
+          partition: panel.partition,
+        };
+      }
+    );
+
+    ipcMain.handle(
       "panel:update-theme",
       async (_event: IpcMainInvokeEvent, theme: "light" | "dark"): Promise<void> => {
         this.currentTheme = theme;
@@ -272,6 +290,11 @@ export class PanelManager {
         return;
       }
 
+      // Enable OPFS (Origin Private File System) support
+      // These settings ensure the File System Access API works properly
+      webPreferences.contextIsolation = true;
+      webPreferences.sandbox = true;
+
       const env = this.panels.get(panelId)?.env;
       if (!env || Object.keys(env).length === 0) {
         return;
@@ -335,6 +358,7 @@ export class PanelManager {
         selectedChildId: null,
         injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
         artifacts,
+        partition: manifest.partition,
       };
 
       this.rootPanels = [rootPanel];
