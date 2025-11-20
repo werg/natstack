@@ -77,6 +77,8 @@ const rendererConfig = {
 
 function copyAssets() {
   fs.copyFileSync("src/renderer/index.html", "dist/index.html");
+  // Copy panel runtime type definitions
+  fs.copyFileSync("src/panelRuntime/globals.d.ts", "dist/panelRuntimeGlobals.d.ts");
 }
 
 async function build() {
