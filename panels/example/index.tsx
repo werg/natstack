@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import fs, { promises as fsPromises } from "fs";
 import { Theme, Button, Card, Flex, Text, Heading, Callout, Separator, Badge } from "@radix-ui/themes";
 import panelAPI, { createReactPanelMount } from "natstack/react";
 import { createRoot } from "react-dom/client";
@@ -78,27 +79,16 @@ function ChildPanelLauncher() {
     setStatus(`Title set to ${title}`);
   };
 
-  // OPFS (Origin Private File System) example functions
+  const exampleFilePath = "/example.txt";
+
+  // OPFS (Origin Private File System) example functions via fs (ZenFS WebAccess backend)
   const writeToOPFS = async () => {
     try {
       setOpfsStatus("Writing to OPFS...");
 
-      // Get the root directory of the origin private file system
-      const root = await navigator.storage.getDirectory();
-
-      // Create or get a file handle
-      const fileHandle = await root.getFileHandle("example.txt", { create: true });
-
-      // Create a writable stream
-      const writable = await fileHandle.createWritable();
-
-      // Write some data
       const timestamp = new Date().toISOString();
       const content = `Hello from NatStack panel!\nWritten at: ${timestamp}\nPanel ID: ${panelAPI.getId()}`;
-      await writable.write(content);
-
-      // Close the writable stream
-      await writable.close();
+      await fsPromises.writeFile(exampleFilePath, content, "utf-8");
 
       setOpfsStatus("Successfully wrote to OPFS file: example.txt");
       setOpfsContent("");
@@ -111,22 +101,13 @@ function ChildPanelLauncher() {
     try {
       setOpfsStatus("Reading from OPFS...");
 
-      // Get the root directory of the origin private file system
-      const root = await navigator.storage.getDirectory();
-
-      // Get the file handle
-      const fileHandle = await root.getFileHandle("example.txt");
-
-      // Get the file
-      const file = await fileHandle.getFile();
-
-      // Read the content
-      const text = await file.text();
+      const text = await fsPromises.readFile(exampleFilePath, "utf-8");
 
       setOpfsContent(text);
       setOpfsStatus("Successfully read from OPFS file: example.txt");
     } catch (error) {
-      if (error instanceof Error && error.name === "NotFoundError") {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
         setOpfsStatus("File not found. Write to OPFS first!");
         setOpfsContent("");
       } else {
@@ -140,16 +121,13 @@ function ChildPanelLauncher() {
     try {
       setOpfsStatus("Deleting from OPFS...");
 
-      // Get the root directory of the origin private file system
-      const root = await navigator.storage.getDirectory();
-
-      // Remove the file
-      await root.removeEntry("example.txt");
+      await fsPromises.rm(exampleFilePath);
 
       setOpfsStatus("Successfully deleted example.txt from OPFS");
       setOpfsContent("");
     } catch (error) {
-      if (error instanceof Error && error.name === "NotFoundError") {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
         setOpfsStatus("File not found. Nothing to delete!");
       } else {
         setOpfsStatus(`Error deleting from OPFS: ${error instanceof Error ? error.message : String(error)}`);
@@ -161,14 +139,7 @@ function ChildPanelLauncher() {
     try {
       setOpfsStatus("Listing OPFS files...");
 
-      // Get the root directory of the origin private file system
-      const root = await navigator.storage.getDirectory();
-
-      const files: string[] = [];
-      // @ts-ignore - TypeScript might not have the full types for the async iterator
-      for await (const entry of root.values()) {
-        files.push(`${entry.name} (${entry.kind})`);
-      }
+      const files = await fsPromises.readdir("/");
 
       if (files.length === 0) {
         setOpfsStatus("OPFS is empty");

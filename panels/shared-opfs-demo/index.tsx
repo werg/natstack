@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import fs, { promises as fsPromises } from "fs";
 import { Theme, Button, Card, Flex, Text, Heading, Callout, Badge } from "@radix-ui/themes";
 import panelAPI, { createReactPanelMount } from "natstack/react";
 import { createRoot } from "react-dom/client";
@@ -11,6 +12,7 @@ function SharedOPFSPanel() {
   const [opfsContent, setOpfsContent] = useState<string>("");
   const [theme, setTheme] = useState(panelAPI.getTheme().appearance);
   const [partition, setPartition] = useState<string | undefined>(undefined);
+  const sharedFilePath = "/example.txt";
 
   useEffect(() => {
     return panelAPI.onThemeChange(({ appearance }) => setTheme(appearance));
@@ -24,14 +26,9 @@ function SharedOPFSPanel() {
     try {
       setOpfsStatus("Writing to shared OPFS...");
 
-      const root = await navigator.storage.getDirectory();
-      const fileHandle = await root.getFileHandle("example.txt", { create: true });
-      const writable = await fileHandle.createWritable();
-
       const timestamp = new Date().toISOString();
       const content = `Shared file updated!\nTime: ${timestamp}\nFrom Panel: ${panelAPI.getId()}`;
-      await writable.write(content);
-      await writable.close();
+      await fsPromises.writeFile(sharedFilePath, content, "utf-8");
 
       setOpfsStatus("Successfully wrote to shared OPFS!");
       setOpfsContent("");
@@ -44,15 +41,13 @@ function SharedOPFSPanel() {
     try {
       setOpfsStatus("Reading from shared OPFS...");
 
-      const root = await navigator.storage.getDirectory();
-      const fileHandle = await root.getFileHandle("example.txt");
-      const file = await fileHandle.getFile();
-      const text = await file.text();
+      const text = await fsPromises.readFile(sharedFilePath, "utf-8");
 
       setOpfsContent(text);
       setOpfsStatus("Successfully read from shared OPFS!");
     } catch (error) {
-      if (error instanceof Error && error.name === "NotFoundError") {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
         setOpfsStatus("Shared file not found. Write to it first!");
         setOpfsContent("");
       } else {
@@ -66,13 +61,7 @@ function SharedOPFSPanel() {
     try {
       setOpfsStatus("Listing shared OPFS files...");
 
-      const root = await navigator.storage.getDirectory();
-      const files: string[] = [];
-
-      // @ts-ignore
-      for await (const entry of root.values()) {
-        files.push(`${entry.name} (${entry.kind})`);
-      }
+      const files = await fsPromises.readdir("/");
 
       if (files.length === 0) {
         setOpfsStatus("Shared OPFS is empty");

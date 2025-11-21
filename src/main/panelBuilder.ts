@@ -10,16 +10,33 @@ const PANEL_RUNTIME_DIRNAME = ".natstack";
 
 const panelApiModulePath = path.join(__dirname, "panelRuntime.js");
 const panelReactModulePath = path.join(__dirname, "panelReactRuntime.js");
+const panelFsModulePath = path.join(__dirname, "panelFsRuntime.js");
+const panelFsPromisesModulePath = path.join(__dirname, "panelFsPromisesRuntime.js");
+
 const runtimeModuleMap = new Map([
   ["natstack/panel", panelApiModulePath],
   ["natstack/react", panelReactModulePath],
 ]);
 
-for (const [name, modulePath] of runtimeModuleMap) {
+const fsModuleMap = new Map([
+  ["fs", panelFsModulePath],
+  ["node:fs", panelFsModulePath],
+  ["fs/promises", panelFsPromisesModulePath],
+  ["node:fs/promises", panelFsPromisesModulePath],
+]);
+
+const virtualModuleMap = new Map([...runtimeModuleMap, ...fsModuleMap]);
+
+for (const [name, modulePath] of virtualModuleMap) {
   if (!fs.existsSync(modulePath)) {
     throw new Error(`Runtime module ${name} not found at ${modulePath}`);
   }
 }
+
+const defaultPanelDependencies: Record<string, string> = {
+  "@zenfs/core": "^2.4.4",
+  "@zenfs/dom": "^1.2.5",
+};
 
 export class PanelBuilder {
   private cache: Map<string, PanelBuildCache> = new Map();
@@ -326,9 +343,11 @@ export class PanelBuilder {
 
       console.log(`Rebuilding panel ${panelPath} (cache miss or stale)`);
 
+      const runtimeDependencies = this.mergeRuntimeDependencies(manifest.dependencies);
+
       const dependencyHash = await this.installDependencies(
         absolutePanelPath,
-        manifest.dependencies,
+        runtimeDependencies,
         cached?.dependencyHash
       );
 
@@ -344,11 +363,14 @@ export class PanelBuilder {
       const panelApiPlugin: esbuild.Plugin = {
         name: "panel-api-module",
         setup(build) {
-          build.onResolve({ filter: /^natstack\/(panel|react)$/ }, (args) => {
-            const runtimePath = runtimeModuleMap.get(args.path);
-            if (!runtimePath) return null;
-            return { path: runtimePath };
-          });
+          build.onResolve(
+            { filter: /^(natstack\/(panel|react)|fs|node:fs|fs\/promises|node:fs\/promises)$/ },
+            (args) => {
+              const runtimePath = virtualModuleMap.get(args.path);
+              if (!runtimePath) return null;
+              return { path: runtimePath };
+            }
+          );
         },
       };
 
@@ -357,7 +379,7 @@ export class PanelBuilder {
         entryPoints: [entryPath],
         bundle: true,
         platform: "browser",
-        target: "es2020",
+        target: "es2022",
         outfile: bundlePath,
         sourcemap: true,
         format: "esm",
@@ -398,6 +420,16 @@ export class PanelBuilder {
   getCachedBuild(panelPath: string): PanelBuildCache | undefined {
     const absolutePath = path.resolve(panelPath);
     return this.cache.get(absolutePath);
+  }
+
+  private mergeRuntimeDependencies(
+    panelDependencies: Record<string, string> | undefined
+  ): Record<string, string> {
+    const merged = { ...defaultPanelDependencies };
+    if (panelDependencies) {
+      Object.assign(merged, panelDependencies);
+    }
+    return merged;
   }
 
   clearCache(panelPath?: string): void {

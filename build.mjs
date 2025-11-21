@@ -43,7 +43,7 @@ const panelRuntimeConfig = {
   entryPoints: ["src/panelRuntime/panelApi.ts"],
   bundle: true,
   platform: "browser",
-  target: "es2020",
+  target: "es2022",
   format: "esm",
   outfile: "dist/panelRuntime.js",
   sourcemap: isDev,
@@ -54,9 +54,31 @@ const panelReactRuntimeConfig = {
   entryPoints: ["src/panelRuntime/reactPanel.ts"],
   bundle: true,
   platform: "browser",
-  target: "es2020",
+  target: "es2022",
   format: "esm",
   outfile: "dist/panelReactRuntime.js",
+  sourcemap: isDev,
+  minify: !isDev,
+};
+
+const panelFsRuntimeConfig = {
+  entryPoints: ["src/panelRuntime/panelFsRuntime.ts"],
+  bundle: true,
+  platform: "browser",
+  target: "es2022",
+  format: "esm",
+  outfile: "dist/panelFsRuntime.js",
+  sourcemap: isDev,
+  minify: !isDev,
+};
+
+const panelFsPromisesRuntimeConfig = {
+  entryPoints: ["src/panelRuntime/panelFsPromisesRuntime.ts"],
+  bundle: true,
+  platform: "browser",
+  target: "es2022",
+  format: "esm",
+  outfile: "dist/panelFsPromisesRuntime.js",
   sourcemap: isDev,
   minify: !isDev,
 };
@@ -91,6 +113,8 @@ async function build() {
     await esbuild.build(panelPreloadConfig);
     await esbuild.build(panelRuntimeConfig);
     await esbuild.build(panelReactRuntimeConfig);
+    await esbuild.build(panelFsRuntimeConfig);
+    await esbuild.build(panelFsPromisesRuntimeConfig);
     await esbuild.build(rendererConfig);
 
     copyAssets();
