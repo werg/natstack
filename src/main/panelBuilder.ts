@@ -84,7 +84,11 @@ export class PanelBuilder {
 
     for (const file of files) {
       // Skip node_modules and build artifacts
-      if (file.includes("node_modules") || file.includes("dist") || file.includes(PANEL_RUNTIME_DIRNAME)) {
+      if (
+        file.includes("node_modules") ||
+        file.includes("dist") ||
+        file.includes(PANEL_RUNTIME_DIRNAME)
+      ) {
         continue;
       }
 
@@ -220,7 +224,14 @@ export class PanelBuilder {
       return entry;
     }
 
-    const defaultCandidates = ["index.tsx", "index.ts", "index.jsx", "index.js", "main.tsx", "main.ts"];
+    const defaultCandidates = [
+      "index.tsx",
+      "index.ts",
+      "index.jsx",
+      "index.js",
+      "main.tsx",
+      "main.ts",
+    ];
     const entries = defaultCandidates.filter(verifyEntry);
     if (entries.length > 1) {
       throw new Error(
@@ -324,7 +335,7 @@ export class PanelBuilder {
 
       console.log(`[PanelBuilder] Checking cache for ${panelPath}`);
       console.log(`  Current hash: ${sourceHash}`);
-      console.log(`  Cached hash:  ${cached?.sourceHash || 'none'}`);
+      console.log(`  Cached hash:  ${cached?.sourceHash || "none"}`);
       console.log(`  Match: ${cached?.sourceHash === sourceHash}`);
 
       if (

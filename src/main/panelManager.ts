@@ -304,9 +304,7 @@ export class PanelManager {
         const encodedEnv = Buffer.from(JSON.stringify(env), "utf-8").toString("base64");
         const argument = `${PANEL_ENV_ARG_PREFIX}${encodedEnv}`;
         const existingArgs = webPreferences.additionalArguments ?? [];
-        const filteredArgs = existingArgs.filter(
-          (arg) => !arg.startsWith(PANEL_ENV_ARG_PREFIX)
-        );
+        const filteredArgs = existingArgs.filter((arg) => !arg.startsWith(PANEL_ENV_ARG_PREFIX));
         webPreferences.additionalArguments = [...filteredArgs, argument];
       } catch (error) {
         console.error(`Failed to encode env for panel ${panelId}`, error);

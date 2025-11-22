@@ -26,7 +26,7 @@ async function initializeApp(): Promise<void> {
       container.innerHTML = `<div style="color: red; padding: 20px; font-family: monospace;">
         <h2>Failed to initialize app</h2>
         <pre>${error instanceof Error ? error.message : String(error)}</pre>
-        <pre>${error instanceof Error ? error.stack : ''}</pre>
+        <pre>${error instanceof Error ? error.stack : ""}</pre>
       </div>`;
     }
   }

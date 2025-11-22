@@ -87,66 +87,68 @@ function SharedOPFSPanel() {
   };
 
   return (
-    <Card size="3" style={{ width: "100%" }}>
-      <Flex direction="column" gap="4">
-        <Flex align="center" gap="3">
-          <Heading size="6">Shared OPFS Demo</Heading>
-          <Badge color="purple">Shared Partition</Badge>
-        </Flex>
-
-        <Text size="2" color="gray">
-          This panel uses a shared partition. All panels with the same partition share the same OPFS context!
-        </Text>
-
-        <Card variant="surface">
-          <Flex direction="column" gap="2">
-            <Text size="2" weight="bold">Panel Info:</Text>
-            <Text size="1" style={{ fontFamily: "monospace" }}>
-              ID: {panelAPI.getId()}
-            </Text>
-            <Text size="1" style={{ fontFamily: "monospace" }}>
-              Partition: {partition || '(loading...)'}
-            </Text>
-            <Text size="1" style={{ fontFamily: "monospace" }}>
-              Theme: {theme}
-            </Text>
+    <div style={{ padding: "20px" }}>
+      <Card size="3" style={{ width: "100%" }}>
+        <Flex direction="column" gap="4">
+          <Flex align="center" gap="3">
+            <Heading size="6">Shared OPFS Demo</Heading>
+            <Badge color="purple">Shared Partition</Badge>
           </Flex>
-        </Card>
 
-        <Flex gap="2" wrap="wrap">
-          <Button onClick={writeSharedFile} variant="soft" color="green">
-            Write Shared File
-          </Button>
-          <Button onClick={readSharedFile} variant="soft" color="blue">
-            Read Shared File
-          </Button>
-          <Button onClick={listSharedFiles} variant="soft" color="purple">
-            List Shared Files
-          </Button>
-        </Flex>
+          <Text size="2" color="gray">
+            This panel uses a shared partition. All panels with the same partition share the same OPFS context!
+          </Text>
 
-        <Button onClick={launchAnotherSharedPanel} variant="outline">
-          Launch Another Shared Panel
-        </Button>
-
-        {opfsStatus && (
-          <Callout.Root color={opfsStatus.includes("Error") || opfsStatus.includes("not found") ? "red" : "green"}>
-            <Callout.Text>{opfsStatus}</Callout.Text>
-          </Callout.Root>
-        )}
-
-        {opfsContent && (
           <Card variant="surface">
             <Flex direction="column" gap="2">
-              <Text size="2" weight="bold">Content:</Text>
-              <Text size="1" style={{ fontFamily: "monospace", whiteSpace: "pre-wrap" }}>
-                {opfsContent}
+              <Text size="2" weight="bold">Panel Info:</Text>
+              <Text size="1" style={{ fontFamily: "monospace" }}>
+                ID: {panelAPI.getId()}
+              </Text>
+              <Text size="1" style={{ fontFamily: "monospace" }}>
+                Partition: {partition || '(loading...)'}
+              </Text>
+              <Text size="1" style={{ fontFamily: "monospace" }}>
+                Theme: {theme}
               </Text>
             </Flex>
           </Card>
-        )}
-      </Flex>
-    </Card>
+
+          <Flex gap="2" wrap="wrap">
+            <Button onClick={writeSharedFile} variant="soft" color="green">
+              Write Shared File
+            </Button>
+            <Button onClick={readSharedFile} variant="soft" color="blue">
+              Read Shared File
+            </Button>
+            <Button onClick={listSharedFiles} variant="soft" color="purple">
+              List Shared Files
+            </Button>
+          </Flex>
+
+          <Button onClick={launchAnotherSharedPanel} variant="outline">
+            Launch Another Shared Panel
+          </Button>
+
+          {opfsStatus && (
+            <Callout.Root color={opfsStatus.includes("Error") || opfsStatus.includes("not found") ? "red" : "green"}>
+              <Callout.Text>{opfsStatus}</Callout.Text>
+            </Callout.Root>
+          )}
+
+          {opfsContent && (
+            <Card variant="surface">
+              <Flex direction="column" gap="2">
+                <Text size="2" weight="bold">Content:</Text>
+                <Text size="1" style={{ fontFamily: "monospace", whiteSpace: "pre-wrap" }}>
+                  {opfsContent}
+                </Text>
+              </Flex>
+            </Card>
+          )}
+        </Flex>
+      </Card>
+    </div>
   );
 }
 

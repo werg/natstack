@@ -154,133 +154,135 @@ function ChildPanelLauncher() {
   };
 
   return (
-    <Card size="3" style={{ width: "100%" }}>
-      <Flex direction="column" gap="4">
-        <Flex align="center" gap="3">
-          <Heading size="6">React + Radix Panel</Heading>
-          {partition ? (
-            <Badge color="orange">Shared: {partition}</Badge>
-          ) : (
-            <Badge color="blue">Isolated OPFS</Badge>
+    <div style={{ padding: "20px" }}>
+      <Card size="3" style={{ width: "100%" }}>
+        <Flex direction="column" gap="4">
+          <Flex align="center" gap="3">
+            <Heading size="6">React + Radix Panel</Heading>
+            {partition ? (
+              <Badge color="orange">Shared: {partition}</Badge>
+            ) : (
+              <Badge color="blue">Isolated OPFS</Badge>
+            )}
+          </Flex>
+          <Text size="2">
+            Current theme: <Text weight="bold">{theme}</Text>
+          </Text>
+          <Text size="2">
+            Panel ID: <Text weight="bold">{panelAPI.getId()}</Text>
+          </Text>
+          <Text size="2">
+            Partition: <Text weight="bold" style={{ fontFamily: "monospace" }}>
+              {partition || `panel-${panelAPI.getId()} (isolated)`}
+            </Text>
+          </Text>
+          <Card variant="surface">
+            <Flex direction="column" gap="2">
+              <Text size="2" weight="bold">Partition Configuration:</Text>
+              <Text size="1" color="gray">
+                • <Text weight="bold">Isolated (default):</Text> Each panel instance gets its own OPFS partition
+              </Text>
+              <Text size="1" color="gray">
+                • <Text weight="bold">Shared (runtime override):</Text> Multiple panels can share the same OPFS by specifying a partition name
+              </Text>
+              <Text size="1" color="gray">
+                • <Text weight="bold">Manifest partition:</Text> Panels can define a default partition in panel.json
+              </Text>
+            </Flex>
+          </Card>
+          {(parentId || launchTime || message) && (
+            <Card variant="surface">
+              <Flex direction="column" gap="2">
+                <Text size="2" weight="bold">
+                  Environment Variables (from process.env):
+                </Text>
+                {parentId && (
+                  <Text size="1" style={{ fontFamily: "monospace" }}>
+                    PARENT_ID: {parentId}
+                  </Text>
+                )}
+                {launchTime && (
+                  <Text size="1" style={{ fontFamily: "monospace" }}>
+                    LAUNCH_TIME: {launchTime}
+                  </Text>
+                )}
+                {message && (
+                  <Text size="1" style={{ fontFamily: "monospace" }}>
+                    MESSAGE: {message}
+                  </Text>
+                )}
+              </Flex>
+            </Card>
+          )}
+          <Flex gap="3" wrap="wrap">
+            <Button onClick={launchChild}>Launch child panel (isolated)</Button>
+            <Button onClick={launchExampleWithSharedPartition} color="orange">
+              Launch child (shared partition)
+            </Button>
+            <Button onClick={launchSharedOPFSDemo} color="purple">
+              Launch Shared OPFS Demo
+            </Button>
+            <Button variant="soft" onClick={setRandomTitle}>
+              Set random title
+            </Button>
+          </Flex>
+          {status && (
+            <Callout.Root color="blue">
+              <Callout.Text>{status}</Callout.Text>
+            </Callout.Root>
+          )}
+
+          <Separator size="4" />
+
+          {/* OPFS Demo Section */}
+          <Heading size="5">OPFS Demo</Heading>
+          <Text size="2" color="gray">
+            This panel writes to "example.txt". If launched with isolated partition (default), each instance has separate storage. If launched with shared partition, all instances with the same partition share files.
+          </Text>
+          {message && message.includes("share OPFS") && (
+            <Callout.Root color="orange">
+              <Callout.Text>
+                This instance is using the SHARED partition! Files here are accessible to other panels with partition "shared-storage".
+              </Callout.Text>
+            </Callout.Root>
+          )}
+
+          <Flex gap="2" wrap="wrap">
+            <Button onClick={writeToOPFS} variant="soft" color="green">
+              Write to OPFS
+            </Button>
+            <Button onClick={readFromOPFS} variant="soft" color="blue">
+              Read from OPFS
+            </Button>
+            <Button onClick={listOPFSFiles} variant="soft" color="purple">
+              List OPFS Files
+            </Button>
+            <Button onClick={deleteFromOPFS} variant="soft" color="red">
+              Delete from OPFS
+            </Button>
+          </Flex>
+
+          {opfsStatus && (
+            <Callout.Root color={opfsStatus.includes("Error") || opfsStatus.includes("not found") ? "red" : "green"}>
+              <Callout.Text>{opfsStatus}</Callout.Text>
+            </Callout.Root>
+          )}
+
+          {opfsContent && (
+            <Card variant="surface">
+              <Flex direction="column" gap="2">
+                <Text size="2" weight="bold">
+                  File Content / List:
+                </Text>
+                <Text size="1" style={{ fontFamily: "monospace", whiteSpace: "pre-wrap" }}>
+                  {opfsContent}
+                </Text>
+              </Flex>
+            </Card>
           )}
         </Flex>
-        <Text size="2">
-          Current theme: <Text weight="bold">{theme}</Text>
-        </Text>
-        <Text size="2">
-          Panel ID: <Text weight="bold">{panelAPI.getId()}</Text>
-        </Text>
-        <Text size="2">
-          Partition: <Text weight="bold" style={{ fontFamily: "monospace" }}>
-            {partition || `panel-${panelAPI.getId()} (isolated)`}
-          </Text>
-        </Text>
-        <Card variant="surface">
-          <Flex direction="column" gap="2">
-            <Text size="2" weight="bold">Partition Configuration:</Text>
-            <Text size="1" color="gray">
-              • <Text weight="bold">Isolated (default):</Text> Each panel instance gets its own OPFS partition
-            </Text>
-            <Text size="1" color="gray">
-              • <Text weight="bold">Shared (runtime override):</Text> Multiple panels can share the same OPFS by specifying a partition name
-            </Text>
-            <Text size="1" color="gray">
-              • <Text weight="bold">Manifest partition:</Text> Panels can define a default partition in panel.json
-            </Text>
-          </Flex>
-        </Card>
-        {(parentId || launchTime || message) && (
-          <Card variant="surface">
-            <Flex direction="column" gap="2">
-              <Text size="2" weight="bold">
-                Environment Variables (from process.env):
-              </Text>
-              {parentId && (
-                <Text size="1" style={{ fontFamily: "monospace" }}>
-                  PARENT_ID: {parentId}
-                </Text>
-              )}
-              {launchTime && (
-                <Text size="1" style={{ fontFamily: "monospace" }}>
-                  LAUNCH_TIME: {launchTime}
-                </Text>
-              )}
-              {message && (
-                <Text size="1" style={{ fontFamily: "monospace" }}>
-                  MESSAGE: {message}
-                </Text>
-              )}
-            </Flex>
-          </Card>
-        )}
-        <Flex gap="3" wrap="wrap">
-          <Button onClick={launchChild}>Launch child panel (isolated)</Button>
-          <Button onClick={launchExampleWithSharedPartition} color="orange">
-            Launch child (shared partition)
-          </Button>
-          <Button onClick={launchSharedOPFSDemo} color="purple">
-            Launch Shared OPFS Demo
-          </Button>
-          <Button variant="soft" onClick={setRandomTitle}>
-            Set random title
-          </Button>
-        </Flex>
-        {status && (
-          <Callout.Root color="blue">
-            <Callout.Text>{status}</Callout.Text>
-          </Callout.Root>
-        )}
-
-        <Separator size="4" />
-
-        {/* OPFS Demo Section */}
-        <Heading size="5">OPFS Demo</Heading>
-        <Text size="2" color="gray">
-          This panel writes to "example.txt". If launched with isolated partition (default), each instance has separate storage. If launched with shared partition, all instances with the same partition share files.
-        </Text>
-        {message && message.includes("share OPFS") && (
-          <Callout.Root color="orange">
-            <Callout.Text>
-              This instance is using the SHARED partition! Files here are accessible to other panels with partition "shared-storage".
-            </Callout.Text>
-          </Callout.Root>
-        )}
-
-        <Flex gap="2" wrap="wrap">
-          <Button onClick={writeToOPFS} variant="soft" color="green">
-            Write to OPFS
-          </Button>
-          <Button onClick={readFromOPFS} variant="soft" color="blue">
-            Read from OPFS
-          </Button>
-          <Button onClick={listOPFSFiles} variant="soft" color="purple">
-            List OPFS Files
-          </Button>
-          <Button onClick={deleteFromOPFS} variant="soft" color="red">
-            Delete from OPFS
-          </Button>
-        </Flex>
-
-        {opfsStatus && (
-          <Callout.Root color={opfsStatus.includes("Error") || opfsStatus.includes("not found") ? "red" : "green"}>
-            <Callout.Text>{opfsStatus}</Callout.Text>
-          </Callout.Root>
-        )}
-
-        {opfsContent && (
-          <Card variant="surface">
-            <Flex direction="column" gap="2">
-              <Text size="2" weight="bold">
-                File Content / List:
-              </Text>
-              <Text size="1" style={{ fontFamily: "monospace", whiteSpace: "pre-wrap" }}>
-                {opfsContent}
-              </Text>
-            </Flex>
-          </Card>
-        )}
-      </Flex>
-    </Card>
+      </Card>
+    </div>
   );
 }
 

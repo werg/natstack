@@ -1,15 +1,25 @@
 import { useEffect, useState } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
-import { Theme } from "@radix-ui/themes";
+import { Flex, Theme } from "@radix-ui/themes";
 
 import { effectiveThemeAtom, loadThemePreferenceAtom } from "../state/themeAtoms";
+import { NavigationProvider, useNavigation } from "./NavigationContext";
 import { PanelStack } from "./PanelStack";
 import { TitleBar } from "./TitleBar";
 
 export function PanelApp() {
+  return (
+    <NavigationProvider>
+      <PanelAppContent />
+    </NavigationProvider>
+  );
+}
+
+function PanelAppContent() {
   const effectiveTheme = useThemeSynchronizer();
   const [currentTitle, setCurrentTitle] = useState("NatStack");
   const [openPanelDevTools, setOpenPanelDevTools] = useState<() => void>(() => () => {});
+  const { navigate, registerNavigate } = useNavigation();
 
   const openAppDevTools = () => {
     void window.electronAPI.openAppDevTools().catch((error) => {
@@ -22,7 +32,11 @@ export function PanelApp() {
       if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "i") {
         event.preventDefault();
         openPanelDevTools();
-      } else if ((event.ctrlKey || event.metaKey) && event.altKey && event.key.toLowerCase() === "i") {
+      } else if (
+        (event.ctrlKey || event.metaKey) &&
+        event.altKey &&
+        event.key.toLowerCase() === "i"
+      ) {
         event.preventDefault();
         openAppDevTools();
       }
@@ -33,17 +47,21 @@ export function PanelApp() {
   }, [openPanelDevTools]);
 
   return (
-    <Theme appearance={effectiveTheme}>
-      <TitleBar
-        title={currentTitle}
-        onOpenPanelDevTools={openPanelDevTools}
-        onOpenAppDevTools={openAppDevTools}
-      />
-      <PanelStack
-        onTitleChange={setCurrentTitle}
-        hostTheme={effectiveTheme}
-        onRegisterDevToolsHandler={setOpenPanelDevTools}
-      />
+    <Theme appearance={effectiveTheme} radius="none">
+      <Flex direction="column" height="100vh" style={{ overflow: "hidden" }}>
+        <TitleBar
+          title={currentTitle}
+          onOpenPanelDevTools={openPanelDevTools}
+          onOpenAppDevTools={openAppDevTools}
+          onNavigate={navigate}
+        />
+        <PanelStack
+          onTitleChange={setCurrentTitle}
+          hostTheme={effectiveTheme}
+          onRegisterDevToolsHandler={setOpenPanelDevTools}
+          onRegisterNavigate={registerNavigate}
+        />
+      </Flex>
     </Theme>
   );
 }

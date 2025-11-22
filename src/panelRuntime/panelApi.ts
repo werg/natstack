@@ -56,14 +56,17 @@ const panelAPI = {
     return bridge.panelId;
   },
 
-  async createChild(path: string, options?: Record<string, string> | CreateChildOptions): AsyncResult<string> {
+  async createChild(
+    path: string,
+    options?: Record<string, string> | CreateChildOptions
+  ): AsyncResult<string> {
     // Support both old signature (env as second param) and new signature (options object)
     let env: Record<string, string> | undefined;
     let partition: string | undefined;
 
     if (options) {
       // Check if it's the new options object (has 'env' or 'partition' keys) or old env object
-      if ('env' in options || 'partition' in options) {
+      if ("env" in options || "partition" in options) {
         env = (options as CreateChildOptions).env;
         partition = (options as CreateChildOptions).partition;
       } else {
