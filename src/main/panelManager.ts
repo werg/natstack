@@ -1,4 +1,4 @@
-import { ipcMain, type IpcMainInvokeEvent, type BrowserWindow, webContents } from "electron";
+import { type BrowserWindow, webContents } from "electron";
 import * as path from "path";
 import { randomBytes } from "crypto";
 import { PanelBuilder } from "./panelBuilder.js";
@@ -7,6 +7,7 @@ import { getPanelCacheDirectory } from "./paths.js";
 import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
 import type { GitServer } from "./gitServer.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
+import type { PanelInfo } from "../shared/ipc/index.js";
 
 export class PanelManager {
   private builder: PanelBuilder;
@@ -18,13 +19,13 @@ export class PanelManager {
   private currentTheme: "light" | "dark" = "light";
   private panelsRoot: string;
   private gitServer: GitServer;
+
   constructor(initialRootPanelPath: string, gitServer: GitServer) {
     this.gitServer = gitServer;
     this.panelsRoot = path.resolve(process.cwd());
     const cacheDir = getPanelCacheDirectory();
     console.log("Using panel cache directory:", cacheDir);
     this.builder = new PanelBuilder(cacheDir);
-    this.setupIpcHandlers();
     // TODO: Perhaps a special way to handle errors / switch roots
     void this.initializeRootPanel(initialRootPanelPath);
   }
@@ -77,228 +78,210 @@ export class PanelManager {
     return `${parentPrefix}/${escapedPath}/${autoSegment}`;
   }
 
-  private setupIpcHandlers(): void {
-    // Create a child panel
-    ipcMain.handle(
-      "panel:create-child",
-      async (
-        _event: IpcMainInvokeEvent,
-        parentId: string,
-        panelPath: string,
-        env?: Record<string, string>,
-        requestedPanelId?: string
-      ): Promise<string> => {
-        const parent = this.panels.get(parentId);
-        if (!parent) {
-          throw new Error(`Parent panel not found: ${parentId}`);
-        }
+  // Public methods for RPC services
 
-        const { relativePath, absolutePath } = this.normalizePanelPath(panelPath);
-        const manifest = this.builder.loadManifest(absolutePath);
-        const isSingleton = manifest.singletonState === true;
+  async createChild(
+    parentId: string,
+    panelPath: string,
+    env?: Record<string, string>,
+    requestedPanelId?: string
+  ): Promise<string> {
+    const parent = this.panels.get(parentId);
+    if (!parent) {
+      throw new Error(`Parent panel not found: ${parentId}`);
+    }
 
-        if (isSingleton && requestedPanelId) {
-          throw new Error(
-            `Panel at "${relativePath}" has singletonState and cannot have its ID overridden`
-          );
-        }
+    const { relativePath, absolutePath } = this.normalizePanelPath(panelPath);
+    const manifest = this.builder.loadManifest(absolutePath);
+    const isSingleton = manifest.singletonState === true;
 
-        const panelId = this.computePanelId({
-          relativePath,
-          parent,
-          requestedId: requestedPanelId,
-          singletonState: isSingleton,
-        });
+    if (isSingleton && requestedPanelId) {
+      throw new Error(
+        `Panel at "${relativePath}" has singletonState and cannot have its ID overridden`
+      );
+    }
 
-        if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
-          throw new Error(`A panel with id/partition "${panelId}" is already running`);
-        }
+    const panelId = this.computePanelId({
+      relativePath,
+      parent,
+      requestedId: requestedPanelId,
+      singletonState: isSingleton,
+    });
 
-        this.reservedPanelIds.add(panelId);
-        try {
-          const artifacts = await this.buildPanelArtifacts(absolutePath);
+    if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
+      throw new Error(`A panel with id/partition "${panelId}" is already running`);
+    }
 
-          // Inject git server credentials into panel env
-          const gitToken = this.gitServer.getTokenForPanel(panelId);
-          const panelEnv: Record<string, string> = {
-            ...env,
-            __GIT_SERVER_URL: this.gitServer.getBaseUrl(),
-            __GIT_TOKEN: gitToken,
-          };
+    this.reservedPanelIds.add(panelId);
+    try {
+      const artifacts = await this.buildPanelArtifacts(absolutePath);
 
-          const newPanel: Panel = {
-            id: panelId,
-            title: manifest.title,
-            path: relativePath,
-            children: [],
-            selectedChildId: null,
-            injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
-            artifacts,
-            env: panelEnv,
-          };
+      // Inject git server credentials into panel env
+      const gitToken = this.gitServer.getTokenForPanel(panelId);
+      const panelEnv: Record<string, string> = {
+        ...env,
+        __GIT_SERVER_URL: this.gitServer.getBaseUrl(),
+        __GIT_TOKEN: gitToken,
+      };
 
-          // Add to parent
-          parent.children.push(newPanel);
-          parent.selectedChildId = newPanel.id;
-          this.panels.set(newPanel.id, newPanel);
+      const newPanel: Panel = {
+        id: panelId,
+        title: manifest.title,
+        path: relativePath,
+        children: [],
+        selectedChildId: null,
+        injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
+        artifacts,
+        env: panelEnv,
+      };
 
-          // Notify renderer
-          this.notifyPanelTreeUpdate();
+      // Add to parent
+      parent.children.push(newPanel);
+      parent.selectedChildId = newPanel.id;
+      this.panels.set(newPanel.id, newPanel);
 
-          return newPanel.id;
-        } finally {
-          this.reservedPanelIds.delete(panelId);
-        }
-      }
-    );
+      // Notify renderer
+      this.notifyPanelTreeUpdate();
 
-    // Remove a child panel
-    ipcMain.handle(
-      "panel:remove-child",
-      async (_event: IpcMainInvokeEvent, parentId: string, childId: string): Promise<void> => {
-        const parent = this.panels.get(parentId);
-        if (!parent) {
-          throw new Error(`Parent panel not found: ${parentId}`);
-        }
+      return newPanel.id;
+    } finally {
+      this.reservedPanelIds.delete(panelId);
+    }
+  }
 
-        const childIndex = parent.children.findIndex((c) => c.id === childId);
-        if (childIndex === -1) {
-          throw new Error(`Child panel not found: ${childId}`);
-        }
+  async removeChild(parentId: string, childId: string): Promise<void> {
+    const parent = this.panels.get(parentId);
+    if (!parent) {
+      throw new Error(`Parent panel not found: ${parentId}`);
+    }
 
-        // Remove child
+    const childIndex = parent.children.findIndex((c) => c.id === childId);
+    if (childIndex === -1) {
+      throw new Error(`Child panel not found: ${childId}`);
+    }
+
+    // Remove child
+    parent.children.splice(childIndex, 1);
+
+    // Update selected child
+    if (parent.selectedChildId === childId) {
+      parent.selectedChildId = parent.children.length > 0 ? parent.children[0]!.id : null;
+    }
+
+    // Remove from panels map (and all descendants)
+    this.removePanelRecursive(childId);
+
+    this.sendPanelEvent(parent.id, { type: "child-removed", childId });
+
+    // Notify renderer
+    this.notifyPanelTreeUpdate();
+  }
+
+  async setTitle(panelId: string, title: string): Promise<void> {
+    const panel = this.panels.get(panelId);
+    if (!panel) {
+      throw new Error(`Panel not found: ${panelId}`);
+    }
+
+    panel.title = title;
+
+    // Notify renderer
+    this.notifyPanelTreeUpdate();
+  }
+
+  async closePanel(panelId: string): Promise<void> {
+    // Find parent
+    const parent = this.findParentPanel(panelId);
+    if (parent) {
+      const childIndex = parent.children.findIndex((c) => c.id === panelId);
+      if (childIndex !== -1) {
         parent.children.splice(childIndex, 1);
 
         // Update selected child
-        if (parent.selectedChildId === childId) {
+        if (parent.selectedChildId === panelId) {
           parent.selectedChildId = parent.children.length > 0 ? parent.children[0]!.id : null;
         }
 
-        // Remove from panels map (and all descendants)
-        this.removePanelRecursive(childId);
-
-        this.sendPanelEvent(parent.id, { type: "child-removed", childId });
-
-        // Notify renderer
-        this.notifyPanelTreeUpdate();
+        this.sendPanelEvent(parent.id, { type: "child-removed", childId: panelId });
       }
-    );
+    }
 
-    // Set panel title
-    ipcMain.handle(
-      "panel:set-title",
-      async (_event: IpcMainInvokeEvent, panelId: string, title: string): Promise<void> => {
-        const panel = this.panels.get(panelId);
-        if (!panel) {
-          throw new Error(`Panel not found: ${panelId}`);
-        }
+    // Remove from panels map
+    this.removePanelRecursive(panelId);
 
-        panel.title = title;
-
-        // Notify renderer
-        this.notifyPanelTreeUpdate();
-      }
-    );
-
-    // Close panel (remove from parent)
-    ipcMain.handle(
-      "panel:close",
-      async (_event: IpcMainInvokeEvent, panelId: string): Promise<void> => {
-        // Find parent
-        const parent = this.findParentPanel(panelId);
-        if (parent) {
-          const childIndex = parent.children.findIndex((c) => c.id === panelId);
-          if (childIndex !== -1) {
-            parent.children.splice(childIndex, 1);
-
-            // Update selected child
-            if (parent.selectedChildId === panelId) {
-              parent.selectedChildId = parent.children.length > 0 ? parent.children[0]!.id : null;
-            }
-
-            this.sendPanelEvent(parent.id, { type: "child-removed", childId: panelId });
-          }
-        }
-
-        // Remove from panels map
-        this.removePanelRecursive(panelId);
-
-        // Notify renderer
-        this.notifyPanelTreeUpdate();
-      }
-    );
-
-    ipcMain.handle(
-      "panel:register-view",
-      async (event: IpcMainInvokeEvent, panelId: string): Promise<void> => {
-        this.registerPanelView(panelId, event.sender.id);
-      }
-    );
-
-    ipcMain.handle(
-      "panel:notify-focus",
-      async (_event: IpcMainInvokeEvent, panelId: string): Promise<void> => {
-        this.sendPanelEvent(panelId, { type: "focus" });
-      }
-    );
-
-    ipcMain.handle("panel:get-tree", async (): Promise<Panel[]> => {
-      return this.getSerializablePanelTree();
-    });
-
-    ipcMain.handle(
-      "panel:get-env",
-      async (_event: IpcMainInvokeEvent, panelId: string): Promise<Record<string, string>> => {
-        const panel = this.panels.get(panelId);
-        if (!panel) {
-          throw new Error(`Panel not found: ${panelId}`);
-        }
-        return panel.env ?? {};
-      }
-    );
-
-    ipcMain.handle(
-      "panel:get-info",
-      async (
-        _event: IpcMainInvokeEvent,
-        panelId: string
-      ): Promise<{ panelId: string; partition: string }> => {
-        const panel = this.panels.get(panelId);
-        if (!panel) {
-          throw new Error(`Panel not found: ${panelId}`);
-        }
-        return {
-          panelId: panel.id,
-          partition: panel.id,
-        };
-      }
-    );
-
-    ipcMain.handle(
-      "panel:update-theme",
-      async (_event: IpcMainInvokeEvent, theme: "light" | "dark"): Promise<void> => {
-        this.currentTheme = theme;
-        this.broadcastTheme(theme);
-      }
-    );
-
-    ipcMain.handle(
-      "panel:open-devtools",
-      async (_event: IpcMainInvokeEvent, panelId: string): Promise<void> => {
-        const views = this.panelViews.get(panelId);
-        if (!views || views.size === 0) {
-          throw new Error(`No active webviews for panel ${panelId}`);
-        }
-
-        for (const contentsId of views) {
-          const contents = webContents.fromId(contentsId);
-          if (contents && !contents.isDestroyed()) {
-            contents.openDevTools({ mode: "detach" });
-          }
-        }
-      }
-    );
+    // Notify renderer
+    this.notifyPanelTreeUpdate();
   }
+
+  registerPanelView(panelId: string, senderId: number): void {
+    const views = this.panelViews.get(panelId) ?? new Set<number>();
+    views.add(senderId);
+    this.panelViews.set(panelId, views);
+
+    const contents = webContents.fromId(senderId);
+    if (contents) {
+      contents.once("destroyed", () => {
+        const currentViews = this.panelViews.get(panelId);
+        currentViews?.delete(senderId);
+        if (currentViews && currentViews.size === 0) {
+          this.panelViews.delete(panelId);
+        }
+      });
+    }
+
+    this.sendPanelEvent(panelId, { type: "theme", theme: this.currentTheme });
+  }
+
+  getEnv(panelId: string): Record<string, string> {
+    const panel = this.panels.get(panelId);
+    if (!panel) {
+      throw new Error(`Panel not found: ${panelId}`);
+    }
+    return panel.env ?? {};
+  }
+
+  getInfo(panelId: string): PanelInfo {
+    const panel = this.panels.get(panelId);
+    if (!panel) {
+      throw new Error(`Panel not found: ${panelId}`);
+    }
+    return {
+      panelId: panel.id,
+      partition: panel.id,
+    };
+  }
+
+  getSerializablePanelTree(): Panel[] {
+    return this.rootPanels.map((panel) => this.serializePanel(panel));
+  }
+
+  getPanelViews(panelId: string): Set<number> | undefined {
+    return this.panelViews.get(panelId);
+  }
+
+  setCurrentTheme(theme: "light" | "dark"): void {
+    this.currentTheme = theme;
+  }
+
+  sendPanelEvent(panelId: string, payload: PanelEventPayload): void {
+    const views = this.panelViews.get(panelId);
+    if (!views) return;
+
+    for (const senderId of views) {
+      const contents = webContents.fromId(senderId);
+      if (contents && !contents.isDestroyed()) {
+        contents.send("panel:event", { panelId, ...payload });
+      }
+    }
+  }
+
+  broadcastTheme(theme: "light" | "dark"): void {
+    for (const panelId of this.panelViews.keys()) {
+      this.sendPanelEvent(panelId, { type: "theme", theme });
+    }
+  }
+
+  // Private methods
 
   private removePanelRecursive(panelId: string): void {
     const panel = this.panels.get(panelId);
@@ -326,14 +309,10 @@ export class PanelManager {
     return null;
   }
 
-  private notifyPanelTreeUpdate(): void {
+  notifyPanelTreeUpdate(): void {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.mainWindow.webContents.send("panel:tree-updated", this.getSerializablePanelTree());
     }
-  }
-
-  private getSerializablePanelTree(): Panel[] {
-    return this.rootPanels.map((panel) => this.serializePanel(panel));
   }
 
   private serializePanel(panel: Panel): Panel {
@@ -350,25 +329,6 @@ export class PanelManager {
 
   getPanel(id: string): Panel | undefined {
     return this.panels.get(id);
-  }
-
-  private registerPanelView(panelId: string, senderId: number): void {
-    const views = this.panelViews.get(panelId) ?? new Set<number>();
-    views.add(senderId);
-    this.panelViews.set(panelId, views);
-
-    const contents = webContents.fromId(senderId);
-    if (contents) {
-      contents.once("destroyed", () => {
-        const currentViews = this.panelViews.get(panelId);
-        currentViews?.delete(senderId);
-        if (currentViews && currentViews.size === 0) {
-          this.panelViews.delete(panelId);
-        }
-      });
-    }
-
-    this.sendPanelEvent(panelId, { type: "theme", theme: this.currentTheme });
   }
 
   private registerWebviewEnvInjection(window: BrowserWindow): void {
@@ -410,24 +370,6 @@ export class PanelManager {
       return url.searchParams.get("panelId");
     } catch {
       return null;
-    }
-  }
-
-  private sendPanelEvent(panelId: string, payload: PanelEventPayload): void {
-    const views = this.panelViews.get(panelId);
-    if (!views) return;
-
-    for (const senderId of views) {
-      const contents = webContents.fromId(senderId);
-      if (contents && !contents.isDestroyed()) {
-        contents.send("panel:event", { panelId, ...payload });
-      }
-    }
-  }
-
-  private broadcastTheme(theme: "light" | "dark"): void {
-    for (const panelId of this.panelViews.keys()) {
-      this.sendPanelEvent(panelId, { type: "theme", theme });
     }
   }
 

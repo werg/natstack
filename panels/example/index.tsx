@@ -1,10 +1,20 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import fs, { promises as fsPromises } from "fs";
-import { Theme, Button, Card, Flex, Text, Heading, Callout, Separator, Badge } from "@radix-ui/themes";
-import panelAPI, { createReactPanelMount } from "natstack/react";
+import { Theme, Button, Card, Flex, Text, Heading, Callout, Separator, Badge, TextField } from "@radix-ui/themes";
+import panelAPI, { createReactPanelMount, type PanelRpcHandle } from "natstack/react";
 import { createRoot } from "react-dom/client";
 import "@radix-ui/themes/styles.css";
 import "./style.css";
+
+// Type definition for the RPC Demo Child API (matches what the child exposes)
+interface RpcDemoChildApi {
+  ping(): Promise<string>;
+  echo(message: string): Promise<string>;
+  getCounter(): Promise<number>;
+  incrementCounter(amount?: number): Promise<number>;
+  resetCounter(): Promise<void>;
+  getInfo(): Promise<{ panelId: string; createdAt: string }>;
+}
 
 const mount = createReactPanelMount(React, createRoot, { ThemeComponent: Theme });
 
@@ -15,12 +25,37 @@ function ChildPanelLauncher() {
   const [opfsContent, setOpfsContent] = useState<string>("");
   const [partition, setPartition] = useState<string | undefined>(undefined);
 
+  // RPC Demo state
+  const [rpcChildId, setRpcChildId] = useState<string | null>(null);
+  const [rpcChildHandle, setRpcChildHandle] = useState<PanelRpcHandle<RpcDemoChildApi> | null>(null);
+  const [rpcLog, setRpcLog] = useState<string[]>([]);
+  const [echoInput, setEchoInput] = useState("");
+  const [incrementAmount, setIncrementAmount] = useState("1");
+  const [childEvents, setChildEvents] = useState<string[]>([]);
+
+  const addRpcLog = useCallback((message: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setRpcLog((prev) => [`[${timestamp}] ${message}`, ...prev.slice(0, 9)]);
+  }, []);
+
   useEffect(() => {
     return panelAPI.onThemeChange(({ appearance }) => setTheme(appearance));
   }, []);
 
   useEffect(() => {
     panelAPI.getPartition().then(setPartition).catch(console.error);
+  }, []);
+
+  // Listen for events from child panels
+  useEffect(() => {
+    const unsubscribe = panelAPI.rpc.onEvent("childUpdate", (fromPanelId, payload) => {
+      const timestamp = new Date().toLocaleTimeString();
+      setChildEvents((prev) => [
+        `[${timestamp}] From ${fromPanelId}: ${JSON.stringify(payload)}`,
+        ...prev.slice(0, 4),
+      ]);
+    });
+    return unsubscribe;
   }, []);
 
   // Get env variables that were passed from parent
@@ -151,6 +186,126 @@ function ChildPanelLauncher() {
     }
   };
 
+  // ===========================================================================
+  // RPC Demo Functions
+  // ===========================================================================
+
+  const launchRpcDemoChild = async () => {
+    try {
+      addRpcLog("Launching RPC demo child panel...");
+      const childId = await panelAPI.createChild("panels/rpc-demo-child", {
+        env: {
+          PARENT_ID: panelAPI.getId(),
+        },
+      });
+      setRpcChildId(childId);
+
+      // Create a typed handle to communicate with the child
+      const handle = panelAPI.rpc.getHandle<RpcDemoChildApi>(childId);
+      setRpcChildHandle(handle);
+
+      addRpcLog(`Child panel launched: ${childId}`);
+    } catch (error) {
+      addRpcLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const callPing = async () => {
+    if (!rpcChildHandle) {
+      addRpcLog("No child panel connected");
+      return;
+    }
+    try {
+      addRpcLog("Calling ping()...");
+      const result = await rpcChildHandle.call.ping();
+      addRpcLog(`Result: "${result}"`);
+    } catch (error) {
+      addRpcLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const callEcho = async () => {
+    if (!rpcChildHandle) {
+      addRpcLog("No child panel connected");
+      return;
+    }
+    try {
+      const msg = echoInput || "Hello!";
+      addRpcLog(`Calling echo("${msg}")...`);
+      const result = await rpcChildHandle.call.echo(msg);
+      addRpcLog(`Result: "${result}"`);
+    } catch (error) {
+      addRpcLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const callGetCounter = async () => {
+    if (!rpcChildHandle) {
+      addRpcLog("No child panel connected");
+      return;
+    }
+    try {
+      addRpcLog("Calling getCounter()...");
+      const result = await rpcChildHandle.call.getCounter();
+      addRpcLog(`Result: ${result}`);
+    } catch (error) {
+      addRpcLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const callIncrementCounter = async () => {
+    if (!rpcChildHandle) {
+      addRpcLog("No child panel connected");
+      return;
+    }
+    try {
+      const amount = parseInt(incrementAmount) || 1;
+      addRpcLog(`Calling incrementCounter(${amount})...`);
+      const result = await rpcChildHandle.call.incrementCounter(amount);
+      addRpcLog(`Result: ${result}`);
+    } catch (error) {
+      addRpcLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const callResetCounter = async () => {
+    if (!rpcChildHandle) {
+      addRpcLog("No child panel connected");
+      return;
+    }
+    try {
+      addRpcLog("Calling resetCounter()...");
+      await rpcChildHandle.call.resetCounter();
+      addRpcLog("Counter reset successfully");
+    } catch (error) {
+      addRpcLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const callGetInfo = async () => {
+    if (!rpcChildHandle) {
+      addRpcLog("No child panel connected");
+      return;
+    }
+    try {
+      addRpcLog("Calling getInfo()...");
+      const result = await rpcChildHandle.call.getInfo();
+      addRpcLog(`Result: ${JSON.stringify(result)}`);
+    } catch (error) {
+      addRpcLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const sendEventToChild = () => {
+    if (!rpcChildId) {
+      addRpcLog("No child panel connected");
+      return;
+    }
+    const payload = { message: "Hello from parent!", timestamp: new Date().toISOString() };
+    panelAPI.rpc.emit(rpcChildId, "parentMessage", payload);
+    addRpcLog(`Sent 'parentMessage' event: ${JSON.stringify(payload)}`);
+  };
+
   return (
     <div style={{ padding: "20px" }}>
       <Card size="3" style={{ width: "100%" }}>
@@ -273,6 +428,115 @@ function ChildPanelLauncher() {
                 <Text size="1" style={{ fontFamily: "monospace", whiteSpace: "pre-wrap" }}>
                   {opfsContent}
                 </Text>
+              </Flex>
+            </Card>
+          )}
+
+          <Separator size="4" />
+
+          {/* Panel-to-Panel RPC Demo Section */}
+          <Heading size="5">Panel-to-Panel RPC Demo</Heading>
+          <Text size="2" color="gray">
+            Demonstrates typed RPC communication between parent and child panels.
+            The child exposes methods that the parent can call with full type safety.
+          </Text>
+
+          <Flex gap="2" wrap="wrap">
+            <Button onClick={launchRpcDemoChild} color="cyan" disabled={!!rpcChildHandle}>
+              {rpcChildHandle ? "Child Connected" : "Launch RPC Demo Child"}
+            </Button>
+          </Flex>
+
+          {rpcChildHandle && (
+            <>
+              <Card variant="surface">
+                <Flex direction="column" gap="3">
+                  <Flex align="center" gap="2">
+                    <Text size="2" weight="bold">Connected to:</Text>
+                    <Badge color="green" style={{ fontFamily: "monospace" }}>
+                      {rpcChildId}
+                    </Badge>
+                  </Flex>
+
+                  <Text size="2" weight="bold">Call Methods:</Text>
+                  <Flex gap="2" wrap="wrap">
+                    <Button onClick={callPing} variant="soft" size="1">
+                      ping()
+                    </Button>
+                    <Button onClick={callGetCounter} variant="soft" size="1">
+                      getCounter()
+                    </Button>
+                    <Button onClick={callResetCounter} variant="soft" size="1" color="red">
+                      resetCounter()
+                    </Button>
+                    <Button onClick={callGetInfo} variant="soft" size="1">
+                      getInfo()
+                    </Button>
+                  </Flex>
+
+                  <Flex gap="2" align="end">
+                    <Flex direction="column" gap="1" style={{ flex: 1 }}>
+                      <Text size="1" weight="bold">Echo Message:</Text>
+                      <TextField.Root
+                        placeholder="Enter message..."
+                        value={echoInput}
+                        onChange={(e) => setEchoInput(e.target.value)}
+                        size="1"
+                      />
+                    </Flex>
+                    <Button onClick={callEcho} variant="soft" size="1">
+                      echo()
+                    </Button>
+                  </Flex>
+
+                  <Flex gap="2" align="end">
+                    <Flex direction="column" gap="1" style={{ width: "100px" }}>
+                      <Text size="1" weight="bold">Amount:</Text>
+                      <TextField.Root
+                        type="number"
+                        value={incrementAmount}
+                        onChange={(e) => setIncrementAmount(e.target.value)}
+                        size="1"
+                      />
+                    </Flex>
+                    <Button onClick={callIncrementCounter} variant="soft" size="1" color="green">
+                      incrementCounter()
+                    </Button>
+                  </Flex>
+
+                  <Separator size="4" />
+
+                  <Text size="2" weight="bold">Events:</Text>
+                  <Button onClick={sendEventToChild} variant="soft" size="1" color="orange">
+                    Send "parentMessage" Event to Child
+                  </Button>
+                </Flex>
+              </Card>
+
+              {childEvents.length > 0 && (
+                <Card variant="surface">
+                  <Flex direction="column" gap="1">
+                    <Text size="2" weight="bold">Events from Child:</Text>
+                    {childEvents.map((event, i) => (
+                      <Text key={i} size="1" style={{ fontFamily: "monospace" }}>
+                        {event}
+                      </Text>
+                    ))}
+                  </Flex>
+                </Card>
+              )}
+            </>
+          )}
+
+          {rpcLog.length > 0 && (
+            <Card variant="surface" style={{ maxHeight: "200px", overflowY: "auto" }}>
+              <Flex direction="column" gap="1">
+                <Text size="2" weight="bold">RPC Log:</Text>
+                {rpcLog.map((entry, i) => (
+                  <Text key={i} size="1" style={{ fontFamily: "monospace" }}>
+                    {entry}
+                  </Text>
+                ))}
               </Flex>
             </Card>
           )}

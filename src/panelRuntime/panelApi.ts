@@ -1,4 +1,5 @@
 import type { ComponentType, ReactNode } from "react";
+import type { ExposedMethods, PanelRpcHandle, AnyFunction } from "../shared/ipc/index.js";
 
 type PanelBridgeEvent = "child-removed" | "focus";
 
@@ -8,14 +9,31 @@ export interface PanelTheme {
   appearance: PanelThemeAppearance;
 }
 
+interface PanelRpcBridge {
+  expose(methods: ExposedMethods): void;
+  call(targetPanelId: string, method: string, ...args: unknown[]): Promise<unknown>;
+  emit(targetPanelId: string, event: string, payload: unknown): void;
+  onEvent(event: string, listener: (fromPanelId: string, payload: unknown) => void): () => void;
+}
+
 interface PanelBridge {
   panelId: string;
-  invoke(channel: string, ...args: unknown[]): Promise<unknown>;
+  createChild(
+    path: string,
+    env?: Record<string, string>,
+    requestedPanelId?: string
+  ): Promise<string>;
+  removeChild(childId: string): Promise<void>;
+  setTitle(title: string): Promise<void>;
+  close(): Promise<void>;
+  getEnv(): Promise<Record<string, string>>;
+  getInfo(): Promise<{ panelId: string; partition: string }>;
+  // Event handling
   on(event: PanelBridgeEvent, listener: (payload?: unknown) => void): () => void;
   getTheme(): PanelThemeAppearance;
   onThemeChange(listener: (theme: PanelThemeAppearance) => void): () => void;
-  getEnv(): Promise<Record<string, string>>;
-  getInfo(): Promise<{ panelId: string; partition: string }>;
+  // Panel-to-panel RPC
+  rpc: PanelRpcBridge;
 }
 
 declare global {
@@ -58,12 +76,7 @@ const panelAPI = {
 
   async createChild(path: string, options?: CreateChildOptions): AsyncResult<string> {
     try {
-      return (await bridge.invoke(
-        "panel:create-child",
-        path,
-        options?.env,
-        options?.panelId
-      )) as string;
+      return await bridge.createChild(path, options?.env, options?.panelId);
     } catch (error) {
       console.error("Failed to create child panel", error);
       throw error;
@@ -71,15 +84,15 @@ const panelAPI = {
   },
 
   async removeChild(childId: string): AsyncResult<void> {
-    return bridge.invoke("panel:remove-child", childId) as Promise<void>;
+    return bridge.removeChild(childId);
   },
 
   async setTitle(title: string): AsyncResult<void> {
-    return bridge.invoke("panel:set-title", title) as Promise<void>;
+    return bridge.setTitle(title);
   },
 
   async close(): AsyncResult<void> {
-    return bridge.invoke("panel:close") as Promise<void>;
+    return bridge.close();
   },
 
   onChildRemoved(callback: (childId: string) => void): () => void {
@@ -123,11 +136,126 @@ const panelAPI = {
     const info = await bridge.getInfo();
     return info.panelId;
   },
+
+  // ===========================================================================
+  // Panel-to-Panel RPC
+  // ===========================================================================
+
+  /**
+   * Expose methods that can be called by parent or child panels.
+   *
+   * @example
+   * ```ts
+   * // Child panel exposes its API
+   * panelAPI.rpc.expose({
+   *   async loadFile(path: string) {
+   *     // Load file logic
+   *   },
+   *   async getContent() {
+   *     return editorContent;
+   *   }
+   * });
+   * ```
+   */
+  rpc: {
+    /**
+     * Expose methods that can be called by parent or child panels.
+     */
+    expose<T extends ExposedMethods>(methods: T): void {
+      bridge.rpc.expose(methods);
+    },
+
+    /**
+     * Get a typed handle to communicate with another panel.
+     * The panel must be a direct parent or child.
+     *
+     * @example
+     * ```ts
+     * // Parent panel calls child
+     * const childHandle = panelAPI.rpc.getHandle<EditorApi>(childPanelId);
+     * const content = await childHandle.call.getContent();
+     * ```
+     */
+    getHandle<T extends ExposedMethods = ExposedMethods>(
+      targetPanelId: string
+    ): PanelRpcHandle<T> {
+      // Create a proxy that allows typed method calls
+      const callProxy = new Proxy({} as PanelRpcHandle<T>["call"], {
+        get(_target, prop: string) {
+          return async (...args: unknown[]) => {
+            return bridge.rpc.call(targetPanelId, prop, ...args);
+          };
+        },
+      });
+
+      const eventListeners = new Map<string, Set<(payload: unknown) => void>>();
+
+      return {
+        panelId: targetPanelId,
+        call: callProxy,
+        on(event: string, handler: (payload: unknown) => void): () => void {
+          // Track local listeners for this handle
+          const listeners = eventListeners.get(event) ?? new Set();
+          listeners.add(handler);
+          eventListeners.set(event, listeners);
+
+          // Subscribe to RPC events, filtering by source panel
+          const unsubscribe = bridge.rpc.onEvent(event, (fromPanelId, payload) => {
+            if (fromPanelId === targetPanelId) {
+              handler(payload);
+            }
+          });
+
+          return () => {
+            listeners.delete(handler);
+            if (listeners.size === 0) {
+              eventListeners.delete(event);
+            }
+            unsubscribe();
+          };
+        },
+      };
+    },
+
+    /**
+     * Emit an event to a specific panel (must be parent or direct child).
+     *
+     * @example
+     * ```ts
+     * // Child notifies parent of a change
+     * panelAPI.rpc.emit(parentPanelId, "contentChanged", { path: "/foo.txt" });
+     * ```
+     */
+    emit(targetPanelId: string, event: string, payload: unknown): void {
+      bridge.rpc.emit(targetPanelId, event, payload);
+    },
+
+    /**
+     * Subscribe to events from any panel (filtered by event name).
+     * Use handle.on() for events from a specific panel.
+     *
+     * @example
+     * ```ts
+     * panelAPI.rpc.onEvent("contentChanged", (fromPanelId, payload) => {
+     *   console.log(`Panel ${fromPanelId} changed:`, payload);
+     * });
+     * ```
+     */
+    onEvent(
+      event: string,
+      listener: (fromPanelId: string, payload: unknown) => void
+    ): () => void {
+      return bridge.rpc.onEvent(event, listener);
+    },
+  },
 };
 
 export type PanelAPI = typeof panelAPI;
 
 export default panelAPI;
+
+// Re-export types for panel developers
+export type { ExposedMethods, PanelRpcHandle, AnyFunction };
 
 type ReactNamespace = typeof import("react");
 type RadixThemeComponent = ComponentType<{

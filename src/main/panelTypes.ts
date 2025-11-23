@@ -14,11 +14,8 @@ export interface PanelBuildResult {
   error?: string;
 }
 
-export interface PanelArtifacts {
-  htmlPath?: string;
-  bundlePath?: string;
-  error?: string;
-}
+// Re-export shared types for backwards compatibility
+export type { Panel, PanelArtifacts } from "../shared/ipc/types.js";
 
 export interface PanelBuildCache {
   path: string;
@@ -34,14 +31,3 @@ export type PanelEventPayload =
   | { type: "child-removed"; childId: string }
   | { type: "focus" }
   | { type: "theme"; theme: "light" | "dark" };
-
-export interface Panel {
-  id: string;
-  title: string;
-  path: string;
-  children: Panel[];
-  selectedChildId: string | null;
-  injectHostThemeVariables: boolean;
-  artifacts: PanelArtifacts;
-  env?: Record<string, string>;
-}
