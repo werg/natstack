@@ -78,7 +78,7 @@ function SharedOPFSPanel() {
   const launchAnotherSharedPanel = async () => {
     try {
       const childId = await panelAPI.createChild("panels/shared-opfs-demo", {
-        PARENT_ID: panelAPI.getId(),
+        env: { PARENT_ID: panelAPI.getId() },
       });
       setOpfsStatus(`Launched sibling panel ${childId} - it shares the same OPFS!`);
     } catch (error) {
@@ -92,11 +92,11 @@ function SharedOPFSPanel() {
         <Flex direction="column" gap="4">
           <Flex align="center" gap="3">
             <Heading size="6">Shared OPFS Demo</Heading>
-            <Badge color="purple">Shared Partition</Badge>
+            <Badge color="purple">Singleton Partition</Badge>
           </Flex>
 
           <Text size="2" color="gray">
-            This panel uses a shared partition. All panels with the same partition share the same OPFS context!
+            This panel uses a singleton partition id so every launch reuses the same OPFS context.
           </Text>
 
           <Card variant="surface">
@@ -106,7 +106,7 @@ function SharedOPFSPanel() {
                 ID: {panelAPI.getId()}
               </Text>
               <Text size="1" style={{ fontFamily: "monospace" }}>
-                Partition: {partition || '(loading...)'}
+                Partition: {partition || "(loading...)"}
               </Text>
               <Text size="1" style={{ fontFamily: "monospace" }}>
                 Theme: {theme}

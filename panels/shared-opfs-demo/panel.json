@@ -1,7 +1,7 @@
 {
   "title": "Shared OPFS Panel",
   "entry": "index.tsx",
-  "partition": "shared-storage",
+  "singletonState": true,
   "dependencies": {
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

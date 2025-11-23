@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { getStateDirectory } from "./paths.js";
+import { validateRelativePath } from "./pathUtils.js";
 
 export interface Preferences {
   rootPanelPath?: string;
@@ -27,7 +28,12 @@ export function savePreferences(prefs: Preferences): void {
 }
 
 export function setRootPanelPreference(rootPanelPath: string): void {
-  const prefs = loadPreferences();
-  prefs.rootPanelPath = rootPanelPath;
-  savePreferences(prefs);
+  try {
+    const normalized = validateRelativePath(rootPanelPath);
+    const prefs = loadPreferences();
+    prefs.rootPanelPath = normalized;
+    savePreferences(prefs);
+  } catch (error) {
+    console.error("Failed to set root panel preference:", error);
+  }
 }

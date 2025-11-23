@@ -4,7 +4,7 @@ export interface PanelManifest {
   dependencies?: Record<string, string>; // npm package -> version
   injectHostThemeVariables?: boolean; // Defaults to true
   template?: "html" | "react"; // Optional: choose template helpers
-  partition?: string; // Optional: custom partition name for shared OPFS context. If not set, each panel gets its own partition.
+  singletonState?: boolean; // If true, panel uses a singleton partition/id derived from its path
 }
 
 export interface PanelBuildResult {
@@ -44,5 +44,4 @@ export interface Panel {
   injectHostThemeVariables: boolean;
   artifacts: PanelArtifacts;
   env?: Record<string, string>;
-  partition?: string; // Custom partition name for shared OPFS context
 }

@@ -3,11 +3,13 @@ import * as path from "path";
 import { isDev } from "./utils.js";
 import { PanelManager } from "./panelManager.js";
 import { resolveInitialRootPanelPath } from "./rootPanelResolver.js";
+import { GitServer } from "./gitServer.js";
 
 let mainWindow: BrowserWindow | null = null;
 const initialRootPanelPath = resolveInitialRootPanelPath();
 console.log("Using root panel path:", initialRootPanelPath);
-const panelManager = new PanelManager(initialRootPanelPath);
+const gitServer = new GitServer();
+const panelManager = new PanelManager(initialRootPanelPath, gitServer);
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -41,7 +43,13 @@ function createWindow(): void {
   panelManager.setMainWindow(mainWindow);
 }
 
-app.on("ready", () => {
+app.on("ready", async () => {
+  try {
+    const port = await gitServer.start();
+    console.log(`Git server started on port ${port}`);
+  } catch (error) {
+    console.error("Failed to start git server:", error);
+  }
   void createWindow();
 });
 
@@ -49,6 +57,19 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
   }
+});
+
+// Use will-quit with preventDefault to properly await async shutdown
+app.on("will-quit", (event) => {
+  event.preventDefault();
+  gitServer
+    .stop()
+    .catch((error) => {
+      console.error("Error stopping git server:", error);
+    })
+    .finally(() => {
+      app.exit(0);
+    });
 });
 
 app.on("activate", () => {

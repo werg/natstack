@@ -47,10 +47,8 @@ function ChildPanelLauncher() {
   const launchSharedOPFSDemo = async () => {
     try {
       setStatus("Launching shared OPFS demo panel...");
-      const childId = await panelAPI.createChild("panels/shared-opfs-demo", {
-        partition: "shared-storage"
-      });
-      setStatus(`Launched shared OPFS demo panel ${childId} (partition: shared-storage)`);
+      const childId = await panelAPI.createChild("panels/shared-opfs-demo");
+      setStatus(`Launched shared OPFS demo panel ${childId}`);
     } catch (error) {
       setStatus(`Failed to launch: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -58,16 +56,16 @@ function ChildPanelLauncher() {
 
   const launchExampleWithSharedPartition = async () => {
     try {
-      setStatus("Launching example panel with shared partition...");
+      setStatus("Launching example panel with a shared panel id...");
       const childId = await panelAPI.createChild("panels/example", {
         env: {
           PARENT_ID: panelAPI.getId(),
           LAUNCH_TIME: new Date().toISOString(),
           MESSAGE: "I share OPFS with siblings!",
         },
-        partition: "shared-storage"
+        panelId: "shared-storage",
       });
-      setStatus(`Launched example panel ${childId} with shared partition!`);
+      setStatus(`Launched example panel ${childId} with shared panel id`);
     } catch (error) {
       setStatus(`Failed to launch: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -159,11 +157,9 @@ function ChildPanelLauncher() {
         <Flex direction="column" gap="4">
           <Flex align="center" gap="3">
             <Heading size="6">React + Radix Panel</Heading>
-            {partition ? (
-              <Badge color="orange">Shared: {partition}</Badge>
-            ) : (
-              <Badge color="blue">Isolated OPFS</Badge>
-            )}
+            <Badge color="orange">
+              Partition / Panel ID: {partition ?? "loading..."}
+            </Badge>
           </Flex>
           <Text size="2">
             Current theme: <Text weight="bold">{theme}</Text>
@@ -173,20 +169,20 @@ function ChildPanelLauncher() {
           </Text>
           <Text size="2">
             Partition: <Text weight="bold" style={{ fontFamily: "monospace" }}>
-              {partition || `panel-${panelAPI.getId()} (isolated)`}
+              {partition ?? "loading..."}
             </Text>
           </Text>
           <Card variant="surface">
             <Flex direction="column" gap="2">
-              <Text size="2" weight="bold">Partition Configuration:</Text>
+              <Text size="2" weight="bold">Partition Rules:</Text>
               <Text size="1" color="gray">
-                • <Text weight="bold">Isolated (default):</Text> Each panel instance gets its own OPFS partition
+                • <Text weight="bold">Tree panels:</Text> Children can set <Text weight="bold">panelId</Text> and get <Text weight="bold">tree/&lt;parent-id-without-tree-prefix&gt;/&lt;panelId&gt;</Text>.
               </Text>
               <Text size="1" color="gray">
-                • <Text weight="bold">Shared (runtime override):</Text> Multiple panels can share the same OPFS by specifying a partition name
+                • <Text weight="bold">Singleton panels:</Text> Manifests with <Text weight="bold">singletonState: true</Text> use <Text weight="bold">singleton/&lt;relative-path&gt;</Text> and cannot be overridden.
               </Text>
               <Text size="1" color="gray">
-                • <Text weight="bold">Manifest partition:</Text> Panels can define a default partition in panel.json
+                • <Text weight="bold">One per partition:</Text> Creating a panel for an existing partition ID throws and the parent call fails.
               </Text>
             </Flex>
           </Card>
@@ -217,7 +213,7 @@ function ChildPanelLauncher() {
           <Flex gap="3" wrap="wrap">
             <Button onClick={launchChild}>Launch child panel (isolated)</Button>
             <Button onClick={launchExampleWithSharedPartition} color="orange">
-              Launch child (shared partition)
+              Launch child (named partition)
             </Button>
             <Button onClick={launchSharedOPFSDemo} color="purple">
               Launch Shared OPFS Demo
@@ -237,12 +233,12 @@ function ChildPanelLauncher() {
           {/* OPFS Demo Section */}
           <Heading size="5">OPFS Demo</Heading>
           <Text size="2" color="gray">
-            This panel writes to "example.txt". If launched with isolated partition (default), each instance has separate storage. If launched with shared partition, all instances with the same partition share files.
+            This panel writes to "example.txt". Each partition (which equals the panel ID) has its own OPFS. Reusing the same panel ID (tree/singleton) shares storage; new IDs get fresh storage.
           </Text>
           {message && message.includes("share OPFS") && (
             <Callout.Root color="orange">
               <Callout.Text>
-                This instance is using the SHARED partition! Files here are accessible to other panels with partition "shared-storage".
+                This instance is using partition {partition ?? "(loading)"} — files are shared with any panel using the same ID.
               </Callout.Text>
             </Callout.Root>
           )}

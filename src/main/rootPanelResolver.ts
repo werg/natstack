@@ -1,24 +1,31 @@
 import * as fs from "fs";
 import * as path from "path";
 import { loadPreferences } from "./preferences.js";
-import { getStateDirectory } from "./paths.js";
+import { normalizeRelativePanelPath as normalizePath } from "./pathUtils.js";
+
+const workspaceRoot = path.resolve(process.cwd());
+
+function normalizeRelativePanelPath(candidate: string): string {
+  const { relativePath } = normalizePath(candidate, workspaceRoot);
+  return relativePath;
+}
 
 function ensureDefaultRootPanelPath(): string {
-  const stateDir = getStateDirectory();
-  const defaultPanelDir = path.join(stateDir, "Default Root Panel");
-  const manifestPath = path.join(defaultPanelDir, "panel.json");
+  const defaultRelative = "panels/example";
+  const defaultAbsolute = path.resolve(defaultRelative);
 
-  if (!fs.existsSync(manifestPath)) {
-    fs.rmSync(defaultPanelDir, { recursive: true, force: true });
-    fs.mkdirSync(defaultPanelDir, { recursive: true });
-
-    const templateSource = path.resolve("panels/example");
-    if (fs.existsSync(templateSource)) {
-      fs.cpSync(templateSource, defaultPanelDir, { recursive: true });
-    }
+  if (fs.existsSync(defaultAbsolute)) {
+    return defaultRelative;
   }
 
-  return defaultPanelDir;
+  const fallbackRelative = "panels/default-root-panel";
+  const fallbackAbsolute = path.resolve(fallbackRelative);
+
+  if (!fs.existsSync(fallbackAbsolute)) {
+    fs.mkdirSync(fallbackAbsolute, { recursive: true });
+  }
+
+  return fallbackRelative;
 }
 
 function parseCliRootPanelPath(): string | undefined {
@@ -26,13 +33,13 @@ function parseCliRootPanelPath(): string | undefined {
     if (arg.startsWith("--root-panel=")) {
       const [, value] = arg.split("=");
       if (value) {
-        return path.resolve(value);
+        return value;
       }
     } else if (arg === "--root-panel") {
       const index = process.argv.indexOf(arg);
       const value = process.argv[index + 1];
       if (value) {
-        return path.resolve(value);
+        return value;
       }
     }
   }
@@ -43,13 +50,21 @@ function parseCliRootPanelPath(): string | undefined {
 export function resolveInitialRootPanelPath(): string {
   const cliPath = parseCliRootPanelPath();
   if (cliPath) {
-    return cliPath;
+    try {
+      return normalizeRelativePanelPath(cliPath);
+    } catch (error) {
+      console.warn(`Ignoring invalid CLI root panel path "${cliPath}":`, error);
+    }
   }
 
   const prefs = loadPreferences();
   if (prefs.rootPanelPath) {
-    return path.resolve(prefs.rootPanelPath);
+    try {
+      return normalizeRelativePanelPath(prefs.rootPanelPath);
+    } catch (error) {
+      console.warn(`Ignoring invalid stored root panel path "${prefs.rootPanelPath}":`, error);
+    }
   }
 
-  return ensureDefaultRootPanelPath();
+  return normalizeRelativePanelPath(ensureDefaultRootPanelPath());
 }

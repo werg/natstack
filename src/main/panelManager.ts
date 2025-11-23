@@ -1,17 +1,26 @@
 import { ipcMain, type IpcMainInvokeEvent, type BrowserWindow, webContents } from "electron";
+import * as path from "path";
+import { randomBytes } from "crypto";
 import { PanelBuilder } from "./panelBuilder.js";
 import type { PanelEventPayload, Panel, PanelArtifacts } from "./panelTypes.js";
 import { getPanelCacheDirectory } from "./paths.js";
 import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
+import type { GitServer } from "./gitServer.js";
+import { normalizeRelativePanelPath } from "./pathUtils.js";
 
 export class PanelManager {
   private builder: PanelBuilder;
   private mainWindow: BrowserWindow | null = null;
   private panels: Map<string, Panel> = new Map();
+  private reservedPanelIds: Set<string> = new Set();
   private rootPanels: Panel[] = [];
   private panelViews: Map<string, Set<number>> = new Map();
   private currentTheme: "light" | "dark" = "light";
-  constructor(initialRootPanelPath: string) {
+  private panelsRoot: string;
+  private gitServer: GitServer;
+  constructor(initialRootPanelPath: string, gitServer: GitServer) {
+    this.gitServer = gitServer;
+    this.panelsRoot = path.resolve(process.cwd());
     const cacheDir = getPanelCacheDirectory();
     console.log("Using panel cache directory:", cacheDir);
     this.builder = new PanelBuilder(cacheDir);
@@ -25,6 +34,49 @@ export class PanelManager {
     this.registerWebviewEnvInjection(window);
   }
 
+  private normalizePanelPath(panelPath: string): { relativePath: string; absolutePath: string } {
+    return normalizeRelativePanelPath(panelPath, this.panelsRoot);
+  }
+
+  private sanitizeIdSegment(segment: string): string {
+    const trimmed = segment.trim();
+    if (!trimmed || trimmed === "." || trimmed.includes("/") || trimmed.includes("\\")) {
+      throw new Error(`Invalid panel identifier segment: ${segment}`);
+    }
+    return trimmed;
+  }
+
+  private generatePanelNonce(): string {
+    return `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
+  }
+
+  private computePanelId(params: {
+    relativePath: string;
+    parent?: Panel | null;
+    requestedId?: string;
+    singletonState?: boolean;
+  }): string {
+    const { relativePath, parent, requestedId, singletonState } = params;
+
+    // Escape slashes in path to avoid collisions (e.g., children of singletons)
+    const escapedPath = relativePath.replace(/\//g, "~");
+
+    if (singletonState) {
+      return `singleton/${escapedPath}`;
+    }
+
+    // Parent prefix: use parent's full ID, or "tree" for root panels
+    const parentPrefix = parent?.id ?? "tree";
+
+    if (requestedId) {
+      const segment = this.sanitizeIdSegment(requestedId);
+      return `${parentPrefix}/${segment}`;
+    }
+
+    const autoSegment = this.generatePanelNonce();
+    return `${parentPrefix}/${escapedPath}/${autoSegment}`;
+  }
+
   private setupIpcHandlers(): void {
     // Create a child panel
     ipcMain.handle(
@@ -32,42 +84,71 @@ export class PanelManager {
       async (
         _event: IpcMainInvokeEvent,
         parentId: string,
-        path: string,
+        panelPath: string,
         env?: Record<string, string>,
-        partitionOverride?: string
+        requestedPanelId?: string
       ): Promise<string> => {
         const parent = this.panels.get(parentId);
         if (!parent) {
           throw new Error(`Parent panel not found: ${parentId}`);
         }
 
-        const manifest = this.builder.loadManifest(path);
-        const artifacts = await this.buildPanelArtifacts(path);
+        const { relativePath, absolutePath } = this.normalizePanelPath(panelPath);
+        const manifest = this.builder.loadManifest(absolutePath);
+        const isSingleton = manifest.singletonState === true;
 
-        // Partition precedence: runtime override > manifest > undefined (will get per-panel partition)
-        const partition = partitionOverride ?? manifest.partition;
+        if (isSingleton && requestedPanelId) {
+          throw new Error(
+            `Panel at "${relativePath}" has singletonState and cannot have its ID overridden`
+          );
+        }
 
-        const newPanel: Panel = {
-          id: `panel-${Date.now()}-${Math.random()}`,
-          title: manifest.title,
-          path,
-          children: [],
-          selectedChildId: null,
-          injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
-          artifacts,
-          env,
-          partition,
-        };
+        const panelId = this.computePanelId({
+          relativePath,
+          parent,
+          requestedId: requestedPanelId,
+          singletonState: isSingleton,
+        });
 
-        // Add to parent
-        parent.children.push(newPanel);
-        parent.selectedChildId = newPanel.id;
-        this.panels.set(newPanel.id, newPanel);
+        if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
+          throw new Error(`A panel with id/partition "${panelId}" is already running`);
+        }
 
-        // Notify renderer
-        this.notifyPanelTreeUpdate();
+        this.reservedPanelIds.add(panelId);
+        try {
+          const artifacts = await this.buildPanelArtifacts(absolutePath);
 
-        return newPanel.id;
+          // Inject git server credentials into panel env
+          const gitToken = this.gitServer.getTokenForPanel(panelId);
+          const panelEnv: Record<string, string> = {
+            ...env,
+            __GIT_SERVER_URL: this.gitServer.getBaseUrl(),
+            __GIT_TOKEN: gitToken,
+          };
+
+          const newPanel: Panel = {
+            id: panelId,
+            title: manifest.title,
+            path: relativePath,
+            children: [],
+            selectedChildId: null,
+            injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
+            artifacts,
+            env: panelEnv,
+          };
+
+          // Add to parent
+          parent.children.push(newPanel);
+          parent.selectedChildId = newPanel.id;
+          this.panels.set(newPanel.id, newPanel);
+
+          // Notify renderer
+          this.notifyPanelTreeUpdate();
+
+          return newPanel.id;
+        } finally {
+          this.reservedPanelIds.delete(panelId);
+        }
       }
     );
 
@@ -178,13 +259,17 @@ export class PanelManager {
 
     ipcMain.handle(
       "panel:get-info",
-      async (_event: IpcMainInvokeEvent, panelId: string): Promise<{ partition?: string }> => {
+      async (
+        _event: IpcMainInvokeEvent,
+        panelId: string
+      ): Promise<{ panelId: string; partition: string }> => {
         const panel = this.panels.get(panelId);
         if (!panel) {
           throw new Error(`Panel not found: ${panelId}`);
         }
         return {
-          partition: panel.partition,
+          panelId: panel.id,
+          partition: panel.id,
         };
       }
     );
@@ -223,6 +308,9 @@ export class PanelManager {
     for (const child of panel.children) {
       this.removePanelRecursive(child.id);
     }
+
+    // Revoke git token for this panel
+    this.gitServer.revokeTokenForPanel(panelId);
 
     // Remove this panel
     this.panels.delete(panelId);
@@ -344,19 +432,41 @@ export class PanelManager {
   }
 
   private async initializeRootPanel(panelPath: string): Promise<void> {
+    let panelId: string | undefined;
     try {
-      const manifest = this.builder.loadManifest(panelPath);
-      const artifacts = await this.buildPanelArtifacts(panelPath);
+      const { relativePath, absolutePath } = this.normalizePanelPath(panelPath);
+      const manifest = this.builder.loadManifest(absolutePath);
+      const isSingleton = manifest.singletonState === true;
+      panelId = this.computePanelId({
+        relativePath,
+        singletonState: isSingleton,
+        parent: null,
+      });
+
+      if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
+        throw new Error(`Root panel id/partition already in use: ${panelId}`);
+      }
+
+      this.reservedPanelIds.add(panelId);
+
+      const artifacts = await this.buildPanelArtifacts(absolutePath);
+
+      // Inject git server credentials into root panel env
+      const gitToken = this.gitServer.getTokenForPanel(panelId);
+      const panelEnv: Record<string, string> = {
+        __GIT_SERVER_URL: this.gitServer.getBaseUrl(),
+        __GIT_TOKEN: gitToken,
+      };
 
       const rootPanel: Panel = {
-        id: `root-${Date.now()}`,
+        id: panelId,
         title: manifest.title,
-        path: panelPath,
+        path: relativePath,
         children: [],
         selectedChildId: null,
         injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
         artifacts,
-        partition: manifest.partition,
+        env: panelEnv,
       };
 
       this.rootPanels = [rootPanel];
@@ -364,6 +474,10 @@ export class PanelManager {
       this.notifyPanelTreeUpdate();
     } catch (error) {
       console.error("Failed to initialize root panel:", error);
+    } finally {
+      if (panelId) {
+        this.reservedPanelIds.delete(panelId);
+      }
     }
   }
 

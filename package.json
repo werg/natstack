@@ -55,6 +55,7 @@
     "@zenfs/dom": "^1.2.5",
     "esbuild": "^0.27.0",
     "jotai": "^2.15.1",
+    "node-git-server": "^1.0.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "typescript": "^5.9.3"
