@@ -48,24 +48,8 @@ export interface PanelRpcSchema {
 // =============================================================================
 
 export interface PanelRpcIpcApi {
-  // Expose methods that can be called by parent/children
-  "panel-rpc:expose": (panelId: string, schema: PanelRpcSchema) => void;
-
-  // Call a method on another panel (parent or child)
-  "panel-rpc:call": (
-    fromPanelId: string,
-    toPanelId: string,
-    method: string,
-    args: unknown[]
-  ) => unknown;
-
-  // Send an event to another panel
-  "panel-rpc:emit": (
-    fromPanelId: string,
-    toPanelId: string,
-    event: string,
-    payload: unknown
-  ) => void;
+  // Establish a MessageChannel between two panels
+  "panel-rpc:connect": (fromPanelId: string, toPanelId: string) => void;
 }
 
 // =============================================================================

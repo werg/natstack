@@ -62,23 +62,13 @@ export interface PanelBridgeIpcApi {
   "panel-bridge:remove-child": (parentId: string, childId: string) => void;
   "panel-bridge:set-title": (panelId: string, title: string) => void;
   "panel-bridge:close": (panelId: string) => void;
-  "panel-bridge:register-view": (panelId: string) => void;
+  "panel-bridge:register": (panelId: string, authToken: string) => void;
   "panel-bridge:get-env": (panelId: string) => Record<string, string>;
   "panel-bridge:get-info": (panelId: string) => PanelInfo;
 
   // Panel-to-panel RPC
-  "panel-rpc:call": (
-    fromPanelId: string,
-    toPanelId: string,
-    method: string,
-    args: unknown[]
-  ) => unknown;
-  "panel-rpc:emit": (
-    fromPanelId: string,
-    toPanelId: string,
-    event: string,
-    payload: unknown
-  ) => void;
+  // Request a direct MessagePort connection to another panel
+  "panel-rpc:connect": (fromPanelId: string, toPanelId: string) => void;
 }
 
 // Combined API for type utilities

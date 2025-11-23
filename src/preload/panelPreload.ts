@@ -10,6 +10,7 @@ type PanelEventMessage =
   | { panelId: string; type: "theme"; theme: ThemeAppearance };
 
 interface RpcRequest {
+  type: "request";
   requestId: string;
   fromPanelId: string;
   method: string;
@@ -17,10 +18,23 @@ interface RpcRequest {
 }
 
 interface RpcEvent {
+  type: "event";
   fromPanelId: string;
   event: string;
   payload: unknown;
 }
+
+type RpcResponse =
+  | {
+      type: "response";
+      requestId: string;
+      result: unknown;
+    }
+  | {
+      type: "response";
+      requestId: string;
+      error: string;
+    };
 
 const urlParams = new URLSearchParams(window.location.search);
 const panelId = urlParams.get("panelId");
@@ -51,12 +65,22 @@ const parseEnvArg = (): Record<string, string> => {
 
 const syntheticEnv = parseEnvArg();
 
-contextBridge.exposeInMainWorld("process", { env: syntheticEnv });
+const parseAuthToken = (): string | undefined => {
+  const arg = process.argv.find((value) => value.startsWith("--natstack-auth-token="));
+  return arg ? arg.split("=")[1] : undefined;
+};
 
-// Register this panel view with the main process
-void ipcRenderer.invoke("panel-bridge:register-view", panelId).catch((error: unknown) => {
-  console.error("Failed to register panel view", error);
-});
+const authToken = parseAuthToken();
+if (authToken) {
+  // Register this panel view with the main process using the secure token
+  void ipcRenderer.invoke("panel-bridge:register", panelId, authToken).catch((error: unknown) => {
+    console.error("Failed to register panel view", error);
+  });
+} else {
+  console.error("No auth token found for panel", panelId);
+}
+
+contextBridge.exposeInMainWorld("process", { env: syntheticEnv });
 
 // Event handling for panel events (one-way events from main)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -100,42 +124,153 @@ ipcRenderer.on("panel:event", (_event, payload: PanelEventMessage) => {
 // Methods exposed by this panel that other panels can call
 let exposedMethods: ExposedMethods = {};
 
+// Active RPC connections (MessagePorts) to other panels
+const rpcPorts = new Map<string, MessagePort>();
+
+// Pending requests for ports
+const pendingPortRequests = new Map<
+  string,
+  {
+    resolve: (port: MessagePort) => void;
+    reject: (error: Error) => void;
+    timeout?: NodeJS.Timeout;
+  }[]
+>();
+
 // Event listeners for RPC events from other panels
 const rpcEventListeners = new Map<string, Set<(fromPanelId: string, payload: unknown) => void>>();
 
-// Handle incoming RPC requests from other panels
-ipcRenderer.on("panel-rpc:request", async (_event, request: RpcRequest) => {
-  const { requestId, fromPanelId, method, args } = request;
+// Handle incoming ports from the main process
+ipcRenderer.on("panel-rpc:port", (event, { targetPanelId }: { targetPanelId: string }) => {
+  const port = event.ports[0];
+  if (!port) return;
 
-  try {
-    const handler = exposedMethods[method];
-    if (!handler) {
-      throw new Error(`Method "${method}" is not exposed by this panel`);
-    }
+  rpcPorts.set(targetPanelId, port);
+  setupPort(targetPanelId, port);
 
-    const result = await handler(...args);
-    ipcRenderer.send(`panel-rpc:response:${requestId}`, { result });
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    ipcRenderer.send(`panel-rpc:response:${requestId}`, { error: errorMessage });
-  }
-});
-
-// Handle incoming RPC events from other panels
-ipcRenderer.on("panel-rpc:event", (_event, rpcEvent: RpcEvent) => {
-  const { fromPanelId, event, payload } = rpcEvent;
-
-  const listeners = rpcEventListeners.get(event);
-  if (listeners) {
-    for (const listener of listeners) {
-      try {
-        listener(fromPanelId, payload);
-      } catch (error) {
-        console.error(`Error in RPC event listener for "${event}":`, error);
+  // Resolve any pending requests
+  const pending = pendingPortRequests.get(targetPanelId);
+  if (pending) {
+    pending.forEach(({ resolve, timeout }) => {
+      if (timeout) {
+        clearTimeout(timeout);
       }
-    }
+      resolve(port);
+    });
+    pendingPortRequests.delete(targetPanelId);
   }
 });
+
+function setupPort(targetPanelId: string, port: MessagePort) {
+  port.onmessage = (event) => {
+    const message = event.data as Partial<RpcRequest | RpcEvent | RpcResponse>;
+    if (!message || typeof message !== "object" || typeof message.type !== "string") {
+      return;
+    }
+
+    switch (message.type) {
+      case "request":
+        handleRpcRequest(targetPanelId, port, message as RpcRequest);
+        return;
+      case "event":
+        handleRpcEvent(targetPanelId, message as RpcEvent);
+        return;
+      default:
+        return;
+    }
+  };
+  port.start();
+}
+
+function handleRpcRequest(fromPanelId: string, port: MessagePort, request: RpcRequest) {
+  const { requestId, method, args } = request;
+
+  const handler = exposedMethods[method];
+  if (!handler) {
+    port.postMessage({
+      type: "response",
+      requestId,
+      error: `Method "${method}" is not exposed by this panel`,
+    });
+    return;
+  }
+
+  Promise.resolve(handler(...args))
+    .then((result) => {
+      port.postMessage({
+        type: "response",
+        requestId,
+        result,
+      });
+    })
+    .catch((error) => {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      port.postMessage({
+        type: "response",
+        requestId,
+        error: errorMessage,
+      });
+    });
+}
+
+function handleRpcEvent(fromPanelId: string, event: RpcEvent) {
+  const listeners = rpcEventListeners.get(event.event);
+  if (listeners) {
+    listeners.forEach((listener) => {
+      try {
+        listener(fromPanelId, event.payload);
+      } catch (error) {
+        console.error(`Error in RPC event listener for "${event.event}":`, error);
+      }
+    });
+  }
+}
+
+const PORT_TIMEOUT_MS = 60000;
+
+async function getRpcPort(targetPanelId: string): Promise<MessagePort> {
+  const existing = rpcPorts.get(targetPanelId);
+  if (existing) return existing;
+
+  // If we're already waiting, just add to the list
+  if (pendingPortRequests.has(targetPanelId)) {
+    return new Promise((resolve, reject) => {
+      pendingPortRequests.get(targetPanelId)!.push({ resolve, reject });
+    });
+  }
+
+  // First request: initialize array and start connection
+  return new Promise((resolve, reject) => {
+    const pending: {
+      resolve: (port: MessagePort) => void;
+      reject: (error: Error) => void;
+      timeout?: NodeJS.Timeout;
+    }[] = [{ resolve, reject }];
+    pendingPortRequests.set(targetPanelId, pending);
+
+    const timeout = setTimeout(() => {
+      const pending = pendingPortRequests.get(targetPanelId);
+      pending?.forEach(({ reject }) =>
+        reject(new Error(`Timed out establishing RPC connection to ${targetPanelId}`))
+      );
+      pendingPortRequests.delete(targetPanelId);
+    }, PORT_TIMEOUT_MS);
+    // Attach timeout to all waiters so we can clear on success
+    pending.forEach((entry) => (entry.timeout = timeout));
+
+    ipcRenderer.invoke("panel-rpc:connect", panelId, targetPanelId).catch((error) => {
+      clearTimeout(timeout);
+      console.error(`Failed to establish RPC connection to ${targetPanelId}`, error);
+      const pending = pendingPortRequests.get(targetPanelId);
+      if (pending) {
+        pending.forEach(({ reject }) =>
+          reject(error instanceof Error ? error : new Error(String(error)))
+        );
+        pendingPortRequests.delete(targetPanelId);
+      }
+    });
+  });
+}
 
 // Bridge interface exposed to panel code
 const bridge = {
@@ -198,35 +333,57 @@ const bridge = {
   // Panel-to-Panel RPC API
   // ==========================================================================
 
-  /**
-   * Expose methods that can be called by parent or child panels.
-   * Call this once during panel initialization to register your API.
-   */
   rpc: {
-    /**
-     * Expose methods that other panels can call
-     */
     expose: (methods: ExposedMethods): void => {
       exposedMethods = { ...exposedMethods, ...methods };
     },
 
-    /**
-     * Call a method on another panel (must be parent or direct child)
-     */
     call: async (targetPanelId: string, method: string, ...args: unknown[]): Promise<unknown> => {
-      return ipcRenderer.invoke("panel-rpc:call", panelId, targetPanelId, method, args);
+      const port = await getRpcPort(targetPanelId);
+      const requestId = crypto.randomUUID();
+
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          port.removeEventListener("message", responseHandler);
+          reject(new Error(`RPC call to ${targetPanelId}.${method} timed out`));
+        }, 30000);
+
+        const responseHandler = (event: MessageEvent) => {
+          const message = event.data as Partial<RpcResponse>;
+          if (!message || typeof message !== "object" || message.type !== "response") return;
+          if (message.requestId !== requestId) return;
+
+          clearTimeout(timeout);
+          port.removeEventListener("message", responseHandler);
+          if ("error" in message) {
+            reject(new Error(message.error as string));
+            return;
+          }
+          resolve((message as { result?: unknown }).result);
+        };
+
+        port.addEventListener("message", responseHandler);
+
+        port.postMessage({
+          type: "request",
+          requestId,
+          fromPanelId: panelId,
+          method,
+          args,
+        });
+      });
     },
 
-    /**
-     * Emit an event to another panel (must be parent or direct child)
-     */
-    emit: (targetPanelId: string, event: string, payload: unknown): void => {
-      void ipcRenderer.invoke("panel-rpc:emit", panelId, targetPanelId, event, payload);
+    emit: async (targetPanelId: string, event: string, payload: unknown): Promise<void> => {
+      const port = await getRpcPort(targetPanelId);
+      port.postMessage({
+        type: "event",
+        fromPanelId: panelId,
+        event,
+        payload,
+      });
     },
 
-    /**
-     * Subscribe to events from other panels
-     */
     onEvent: (
       event: string,
       listener: (fromPanelId: string, payload: unknown) => void

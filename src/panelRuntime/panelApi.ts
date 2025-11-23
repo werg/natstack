@@ -12,7 +12,7 @@ export interface PanelTheme {
 interface PanelRpcBridge {
   expose(methods: ExposedMethods): void;
   call(targetPanelId: string, method: string, ...args: unknown[]): Promise<unknown>;
-  emit(targetPanelId: string, event: string, payload: unknown): void;
+  emit(targetPanelId: string, event: string, payload: unknown): Promise<void>;
   onEvent(event: string, listener: (fromPanelId: string, payload: unknown) => void): () => void;
 }
 
@@ -155,8 +155,8 @@ const panelAPI = {
    *     return editorContent;
    *   }
    * });
-   * ```
-   */
+  * ```
+  */
   rpc: {
     /**
      * Expose methods that can be called by parent or child panels.
@@ -176,9 +176,7 @@ const panelAPI = {
      * const content = await childHandle.call.getContent();
      * ```
      */
-    getHandle<T extends ExposedMethods = ExposedMethods>(
-      targetPanelId: string
-    ): PanelRpcHandle<T> {
+    getHandle<T extends ExposedMethods = ExposedMethods>(targetPanelId: string): PanelRpcHandle<T> {
       // Create a proxy that allows typed method calls
       const callProxy = new Proxy({} as PanelRpcHandle<T>["call"], {
         get(_target, prop: string) {
@@ -218,6 +216,15 @@ const panelAPI = {
     },
 
     /**
+     * Alias for getHandle to retain existing call sites without schema validation.
+     */
+    getTypedHandle<T extends ExposedMethods = ExposedMethods>(
+      targetPanelId: string
+    ): PanelRpcHandle<T> {
+      return panelAPI.rpc.getHandle<T>(targetPanelId);
+    },
+
+    /**
      * Emit an event to a specific panel (must be parent or direct child).
      *
      * @example
@@ -226,8 +233,8 @@ const panelAPI = {
      * panelAPI.rpc.emit(parentPanelId, "contentChanged", { path: "/foo.txt" });
      * ```
      */
-    emit(targetPanelId: string, event: string, payload: unknown): void {
-      bridge.rpc.emit(targetPanelId, event, payload);
+    async emit(targetPanelId: string, event: string, payload: unknown): Promise<void> {
+      await bridge.rpc.emit(targetPanelId, event, payload);
     },
 
     /**
@@ -241,10 +248,7 @@ const panelAPI = {
      * });
      * ```
      */
-    onEvent(
-      event: string,
-      listener: (fromPanelId: string, payload: unknown) => void
-    ): () => void {
+    onEvent(event: string, listener: (fromPanelId: string, payload: unknown) => void): () => void {
       return bridge.rpc.onEvent(event, listener);
     },
   },

@@ -1,10 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type {
-  Panel,
-  ThemeAppearance,
-  ThemeMode,
-  AppInfo,
-} from "../shared/ipc/index.js";
+import type { Panel, ThemeAppearance, ThemeMode, AppInfo } from "../shared/ipc/index.js";
 
 // Create the API object that will be exposed to the renderer
 export const electronAPI = {

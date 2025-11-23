@@ -11,16 +11,6 @@ const mount = createReactPanelMount(React, createRoot, { ThemeComponent: Theme }
 // Define the RPC API this child panel exposes
 // =============================================================================
 
-// Type definition for the exposed API (can be shared with parent for type safety)
-export interface RpcDemoChildApi {
-  ping(): Promise<string>;
-  echo(message: string): Promise<string>;
-  getCounter(): Promise<number>;
-  incrementCounter(amount?: number): Promise<number>;
-  resetCounter(): Promise<void>;
-  getInfo(): Promise<{ panelId: string; createdAt: string }>;
-}
-
 // Internal state for the child panel
 let counter = 0;
 const createdAt = new Date().toISOString();

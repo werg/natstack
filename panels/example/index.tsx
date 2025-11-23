@@ -6,15 +6,7 @@ import { createRoot } from "react-dom/client";
 import "@radix-ui/themes/styles.css";
 import "./style.css";
 
-// Type definition for the RPC Demo Child API (matches what the child exposes)
-interface RpcDemoChildApi {
-  ping(): Promise<string>;
-  echo(message: string): Promise<string>;
-  getCounter(): Promise<number>;
-  incrementCounter(amount?: number): Promise<number>;
-  resetCounter(): Promise<void>;
-  getInfo(): Promise<{ panelId: string; createdAt: string }>;
-}
+import { type RpcDemoChildApi } from "../rpc-demo-child/api.js";
 
 const mount = createReactPanelMount(React, createRoot, { ThemeComponent: Theme });
 
@@ -201,7 +193,7 @@ function ChildPanelLauncher() {
       setRpcChildId(childId);
 
       // Create a typed handle to communicate with the child
-      const handle = panelAPI.rpc.getHandle<RpcDemoChildApi>(childId);
+      const handle = panelAPI.rpc.getTypedHandle<RpcDemoChildApi>(childId);
       setRpcChildHandle(handle);
 
       addRpcLog(`Child panel launched: ${childId}`);

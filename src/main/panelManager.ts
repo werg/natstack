@@ -213,25 +213,6 @@ export class PanelManager {
     this.notifyPanelTreeUpdate();
   }
 
-  registerPanelView(panelId: string, senderId: number): void {
-    const views = this.panelViews.get(panelId) ?? new Set<number>();
-    views.add(senderId);
-    this.panelViews.set(panelId, views);
-
-    const contents = webContents.fromId(senderId);
-    if (contents) {
-      contents.once("destroyed", () => {
-        const currentViews = this.panelViews.get(panelId);
-        currentViews?.delete(senderId);
-        if (currentViews && currentViews.size === 0) {
-          this.panelViews.delete(panelId);
-        }
-      });
-    }
-
-    this.sendPanelEvent(panelId, { type: "theme", theme: this.currentTheme });
-  }
-
   getEnv(panelId: string): Record<string, string> {
     const panel = this.panels.get(panelId);
     if (!panel) {
@@ -331,6 +312,28 @@ export class PanelManager {
     return this.panels.get(id);
   }
 
+  // Map guestInstanceId (from webContents) to panelId
+  private guestInstanceMap: Map<number, string> = new Map();
+  // Map panelId -> pending auth token
+  private pendingAuthTokens: Map<string, string> = new Map();
+
+  getPanelIdForWebContents(contents: Electron.WebContents): string | undefined {
+    return this.guestInstanceMap.get(contents.id);
+  }
+
+  verifyAndRegister(panelId: string, token: string, senderId: number): void {
+    const expectedToken = this.pendingAuthTokens.get(panelId);
+    if (!expectedToken || expectedToken !== token) {
+      throw new Error(`Invalid auth token for panel ${panelId}`);
+    }
+
+    // Token is valid and used
+    this.pendingAuthTokens.delete(panelId);
+
+    this.guestInstanceMap.set(senderId, panelId);
+    this.registerPanelView(panelId, senderId);
+  }
+
   private registerWebviewEnvInjection(window: BrowserWindow): void {
     window.webContents.on("will-attach-webview", (_event, webPreferences, params) => {
       const panelId = this.extractPanelIdFromSrc(params?.["src"]);
@@ -338,26 +341,54 @@ export class PanelManager {
         return;
       }
 
+      // Generate secure token
+      const authToken = randomBytes(32).toString("hex");
+      this.pendingAuthTokens.set(panelId, authToken);
+
       // Enable OPFS (Origin Private File System) support
-      // These settings ensure the File System Access API works properly
       webPreferences.contextIsolation = true;
       webPreferences.sandbox = true;
 
+      const args = webPreferences.additionalArguments ?? [];
+
+      // Inject auth token
+      args.push(`--natstack-auth-token=${authToken}`);
+
       const env = this.panels.get(panelId)?.env;
-      if (!env || Object.keys(env).length === 0) {
-        return;
+      if (env && Object.keys(env).length > 0) {
+        try {
+          const encodedEnv = Buffer.from(JSON.stringify(env), "utf-8").toString("base64");
+          args.push(`${PANEL_ENV_ARG_PREFIX}${encodedEnv}`);
+        } catch (error) {
+          console.error(`Failed to encode env for panel ${panelId}`, error);
+        }
       }
 
-      try {
-        const encodedEnv = Buffer.from(JSON.stringify(env), "utf-8").toString("base64");
-        const argument = `${PANEL_ENV_ARG_PREFIX}${encodedEnv}`;
-        const existingArgs = webPreferences.additionalArguments ?? [];
-        const filteredArgs = existingArgs.filter((arg) => !arg.startsWith(PANEL_ENV_ARG_PREFIX));
-        webPreferences.additionalArguments = [...filteredArgs, argument];
-      } catch (error) {
-        console.error(`Failed to encode env for panel ${panelId}`, error);
-      }
+      webPreferences.additionalArguments = args;
     });
+
+    // We still listen to did-attach-webview as a fallback or for cleanup,
+    // but registration is now primarily driven by the panel's explicit call.
+  }
+
+  private registerPanelView(panelId: string, senderId: number): void {
+    const views = this.panelViews.get(panelId) ?? new Set<number>();
+    views.add(senderId);
+    this.panelViews.set(panelId, views);
+
+    const contents = webContents.fromId(senderId);
+    if (contents) {
+      contents.once("destroyed", () => {
+        const currentViews = this.panelViews.get(panelId);
+        currentViews?.delete(senderId);
+        if (currentViews && currentViews.size === 0) {
+          this.panelViews.delete(panelId);
+        }
+        this.guestInstanceMap.delete(senderId);
+      });
+    }
+
+    this.sendPanelEvent(panelId, { type: "theme", theme: this.currentTheme });
   }
 
   private extractPanelIdFromSrc(src?: string): string | null {
