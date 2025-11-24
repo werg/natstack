@@ -32,13 +32,6 @@ function PanelAppContent() {
       if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "i") {
         event.preventDefault();
         openPanelDevTools();
-      } else if (
-        (event.ctrlKey || event.metaKey) &&
-        event.altKey &&
-        event.key.toLowerCase() === "i"
-      ) {
-        event.preventDefault();
-        openAppDevTools();
       }
     };
 
