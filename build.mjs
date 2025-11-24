@@ -83,6 +83,17 @@ const panelFsPromisesRuntimeConfig = {
   minify: !isDev,
 };
 
+const panelAiRuntimeConfig = {
+  entryPoints: ["src/panelRuntime/panelAiRuntime.ts"],
+  bundle: true,
+  platform: "browser",
+  target: "es2022",
+  format: "esm",
+  outfile: "dist/panelAiRuntime.js",
+  sourcemap: isDev,
+  minify: !isDev,
+};
+
 const rendererConfig = {
   entryPoints: ["src/renderer/index.tsx"],
   bundle: true,
@@ -115,6 +126,7 @@ async function build() {
     await esbuild.build(panelReactRuntimeConfig);
     await esbuild.build(panelFsRuntimeConfig);
     await esbuild.build(panelFsPromisesRuntimeConfig);
+    await esbuild.build(panelAiRuntimeConfig);
     await esbuild.build(rendererConfig);
 
     copyAssets();

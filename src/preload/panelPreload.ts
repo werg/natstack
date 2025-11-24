@@ -1,6 +1,16 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
-import type { ThemeAppearance, PanelInfo, ExposedMethods } from "../shared/ipc/index.js";
+import type {
+  ThemeAppearance,
+  PanelInfo,
+  ExposedMethods,
+  AICallOptions,
+  AIGenerateResult,
+  AIModelInfo,
+  AIStreamPart,
+  AIStreamChunkEvent,
+  AIStreamEndEvent,
+} from "../shared/ipc/index.js";
 
 type PanelEventName = "child-removed" | "focus";
 
@@ -88,6 +98,10 @@ const eventListeners = new Map<PanelEventName, Set<(payload: any) => void>>();
 let currentTheme: ThemeAppearance = "light";
 const themeListeners = new Set<(theme: ThemeAppearance) => void>();
 
+// AI stream event listeners
+const aiStreamChunkListeners = new Set<(streamId: string, chunk: AIStreamPart) => void>();
+const aiStreamEndListeners = new Set<(streamId: string) => void>();
+
 const updateTheme = (theme: ThemeAppearance) => {
   currentTheme = theme;
   for (const listener of themeListeners) {
@@ -115,6 +129,33 @@ ipcRenderer.on("panel:event", (_event, payload: PanelEventMessage) => {
   } else if (payload.type === "focus") {
     listeners.forEach((listener) => listener(undefined));
   }
+});
+
+// AI stream event handlers
+ipcRenderer.on("ai:stream-chunk", (_event, payload: AIStreamChunkEvent) => {
+  if (payload.panelId !== panelId) {
+    return;
+  }
+  aiStreamChunkListeners.forEach((listener) => {
+    try {
+      listener(payload.streamId, payload.chunk);
+    } catch (error) {
+      console.error("Error in AI stream chunk listener:", error);
+    }
+  });
+});
+
+ipcRenderer.on("ai:stream-end", (_event, payload: AIStreamEndEvent) => {
+  if (payload.panelId !== panelId) {
+    return;
+  }
+  aiStreamEndListeners.forEach((listener) => {
+    try {
+      listener(payload.streamId);
+    } catch (error) {
+      console.error("Error in AI stream end listener:", error);
+    }
+  });
 });
 
 // =============================================================================
@@ -396,6 +437,42 @@ const bridge = {
         if (listeners.size === 0) {
           rpcEventListeners.delete(event);
         }
+      };
+    },
+  },
+
+  // ==========================================================================
+  // AI Provider API
+  // ==========================================================================
+
+  ai: {
+    generate: (modelId: string, options: AICallOptions): Promise<AIGenerateResult> => {
+      return ipcRenderer.invoke("ai:generate", panelId, modelId, options);
+    },
+
+    streamStart: (modelId: string, options: AICallOptions, streamId: string): Promise<void> => {
+      return ipcRenderer.invoke("ai:stream-start", panelId, modelId, options, streamId);
+    },
+
+    streamCancel: (streamId: string): Promise<void> => {
+      return ipcRenderer.invoke("ai:stream-cancel", panelId, streamId);
+    },
+
+    listModels: (): Promise<AIModelInfo[]> => {
+      return ipcRenderer.invoke("ai:list-models", panelId);
+    },
+
+    onStreamChunk: (listener: (streamId: string, chunk: AIStreamPart) => void): (() => void) => {
+      aiStreamChunkListeners.add(listener);
+      return () => {
+        aiStreamChunkListeners.delete(listener);
+      };
+    },
+
+    onStreamEnd: (listener: (streamId: string) => void): (() => void) => {
+      aiStreamEndListeners.add(listener);
+      return () => {
+        aiStreamEndListeners.delete(listener);
       };
     },
   },

@@ -1,5 +1,9 @@
+import dotenv from "dotenv";
 import { app, BrowserWindow, nativeTheme, webContents } from "electron";
 import * as path from "path";
+import { createAnthropic } from "@ai-sdk/anthropic";
+
+dotenv.config();
 import { isDev } from "./utils.js";
 import { PanelManager } from "./panelManager.js";
 import { resolveInitialRootPanelPath } from "./rootPanelResolver.js";
@@ -109,6 +113,36 @@ handle("panel:open-devtools", async (_event, panelId: string) => {
 // Initialize RPC handler
 import { PanelRpcHandler } from "./ipc/rpcHandler.js";
 new PanelRpcHandler(panelManager);
+
+// Initialize AI handler
+import { AIHandler } from "./ai/aiHandler.js";
+export const aiHandler = new AIHandler(panelManager);
+
+// Temporary default provider registration until a config file is wired
+try {
+  const anthropicProvider = createAnthropic({
+    apiKey: process.env["ANTHROPIC_API_KEY"],
+  });
+
+  if (!process.env["ANTHROPIC_API_KEY"]) {
+    console.warn("[AIHandler] ANTHROPIC_API_KEY is not set; AI calls will fail until configured.");
+  }
+
+  aiHandler.registerProvider({
+    id: "anthropic",
+    name: "Anthropic",
+    createModel: (modelId) => anthropicProvider(modelId),
+    models: [
+      {
+        id: "claude-haiku-4-5-20251001",
+        displayName: "Claude 4.5 Haiku",
+        description: "Anthropic Claude 4.5 Haiku model",
+      },
+    ],
+  });
+} catch (error) {
+  console.warn("Failed to register default Anthropic provider. Configure providers manually.", error);
+}
 
 // =============================================================================
 // Panel Bridge IPC Handlers (panel webview <-> main)

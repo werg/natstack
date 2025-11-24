@@ -6,7 +6,7 @@
   "main": "dist/main.cjs",
   "scripts": {
     "build": "NODE_ENV=production node build.mjs",
-    "dev": "NODE_ENV=development ELECTRON_NO_SANDBOX=1 node build.mjs & pnpm type-check & sleep 2 && ELECTRON_NO_SANDBOX=1 node scripts/run-electron.mjs --root-panel=panels/example",
+    "dev": "NODE_ENV=development ELECTRON_NO_SANDBOX=1 sh -c 'node build.mjs & pnpm type-check & sleep 2 && node scripts/run-electron.mjs --root-panel=panels/example'",
     "dev:safe": "NODE_ENV=development node build.mjs & sleep 2 && node scripts/run-electron.mjs",
     "start": "node scripts/run-electron.mjs",
     "cleanup": "bash scripts/cleanup-processes.sh",
@@ -49,11 +49,15 @@
     "typescript-eslint": "^8.46.4"
   },
   "dependencies": {
+    "@ai-sdk/openai": "3.0.0-beta.65",
     "@npmcli/arborist": "^7.4.0",
     "@radix-ui/react-icons": "^1.3.2",
     "@radix-ui/themes": "^3.2.1",
     "@zenfs/core": "^2.4.4",
     "@zenfs/dom": "^1.2.5",
+    "ai": "6.0.0-beta.114",
+    "@ai-sdk/anthropic": "^2.0.45",
+    "dotenv": "^16.4.5",
     "esbuild": "^0.27.0",
     "jotai": "^2.15.1",
     "node-git-server": "^1.0.0",

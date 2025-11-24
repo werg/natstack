@@ -81,6 +81,16 @@ function ChildPanelLauncher() {
     }
   };
 
+  const launchAgenticChat = async () => {
+    try {
+      setStatus("Launching agentic chat example...");
+      const childId = await panelAPI.createChild("panels/agentic-chat");
+      setStatus(`Launched agentic chat panel ${childId}`);
+    } catch (error) {
+      setStatus(`Failed to launch agentic chat: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
   const launchExampleWithSharedPartition = async () => {
     try {
       setStatus("Launching example panel with a shared panel id...");
@@ -364,6 +374,9 @@ function ChildPanelLauncher() {
             </Button>
             <Button onClick={launchSharedOPFSDemo} color="purple">
               Launch Shared OPFS Demo
+            </Button>
+            <Button onClick={launchAgenticChat} color="green">
+              Launch Agentic Chat
             </Button>
             <Button variant="soft" onClick={setRandomTitle}>
               Set random title

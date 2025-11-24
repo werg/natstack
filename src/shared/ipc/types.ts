@@ -1,5 +1,7 @@
 // Shared types for typed IPC communication
 
+import type { AICallOptions, AIGenerateResult, AIModelInfo } from "./aiTypes.js";
+
 export type ThemeMode = "light" | "dark" | "system";
 export type ThemeAppearance = "light" | "dark";
 
@@ -71,8 +73,32 @@ export interface PanelBridgeIpcApi {
   "panel-rpc:connect": (fromPanelId: string, toPanelId: string) => void;
 }
 
+// AI provider IPC channels (panel webview <-> main)
+export interface AIProviderIpcApi {
+  /** Non-streaming text generation */
+  "ai:generate": (
+    panelId: string,
+    modelId: string,
+    options: AICallOptions
+  ) => AIGenerateResult;
+
+  /** Start a streaming generation - chunks sent via ai:stream-chunk events */
+  "ai:stream-start": (
+    panelId: string,
+    modelId: string,
+    options: AICallOptions,
+    streamId: string
+  ) => void;
+
+  /** Cancel an active streaming generation */
+  "ai:stream-cancel": (panelId: string, streamId: string) => void;
+
+  /** List available models for the panel */
+  "ai:list-models": (panelId: string) => AIModelInfo[];
+}
+
 // Combined API for type utilities
-export type AllIpcApi = AppIpcApi & PanelIpcApi & PanelBridgeIpcApi;
+export type AllIpcApi = AppIpcApi & PanelIpcApi & PanelBridgeIpcApi & AIProviderIpcApi;
 
 // =============================================================================
 // Type utilities for extracting channel info
