@@ -1,7 +1,20 @@
 import * as esbuild from "esbuild";
+import typiaPlugin from "@ryoppippi/unplugin-typia/esbuild";
 import * as fs from "fs";
 
 const isDev = process.env.NODE_ENV === "development";
+
+const typiaPlugins = [
+  typiaPlugin({
+    tsconfig: "tsconfig.json",
+    cache: true,
+    log: false,
+  }),
+];
+
+const logOverride = {
+  "suspicious-logical-operator": "silent",
+};
 
 const mainConfig = {
   entryPoints: ["src/main/index.ts"],
@@ -13,6 +26,8 @@ const mainConfig = {
   external: ["electron", "esbuild", "@npmcli/arborist"],
   sourcemap: isDev,
   minify: !isDev,
+  plugins: typiaPlugins,
+  logOverride,
 };
 
 const preloadConfig = {
@@ -25,6 +40,8 @@ const preloadConfig = {
   external: ["electron"],
   sourcemap: isDev,
   minify: !isDev,
+  plugins: typiaPlugins,
+  logOverride,
 };
 
 const panelPreloadConfig = {
@@ -37,6 +54,8 @@ const panelPreloadConfig = {
   external: ["electron"],
   sourcemap: isDev,
   minify: !isDev,
+  plugins: typiaPlugins,
+  logOverride,
 };
 
 const panelRuntimeConfig = {
@@ -48,6 +67,8 @@ const panelRuntimeConfig = {
   outfile: "dist/panelRuntime.js",
   sourcemap: isDev,
   minify: !isDev,
+  plugins: typiaPlugins,
+  logOverride,
 };
 
 const panelReactRuntimeConfig = {
@@ -59,6 +80,8 @@ const panelReactRuntimeConfig = {
   outfile: "dist/panelReactRuntime.js",
   sourcemap: isDev,
   minify: !isDev,
+  plugins: typiaPlugins,
+  logOverride,
 };
 
 const panelFsRuntimeConfig = {
@@ -70,6 +93,8 @@ const panelFsRuntimeConfig = {
   outfile: "dist/panelFsRuntime.js",
   sourcemap: isDev,
   minify: !isDev,
+  plugins: typiaPlugins,
+  logOverride,
 };
 
 const panelFsPromisesRuntimeConfig = {
@@ -81,6 +106,8 @@ const panelFsPromisesRuntimeConfig = {
   outfile: "dist/panelFsPromisesRuntime.js",
   sourcemap: isDev,
   minify: !isDev,
+  plugins: typiaPlugins,
+  logOverride,
 };
 
 const panelAiRuntimeConfig = {
@@ -92,6 +119,8 @@ const panelAiRuntimeConfig = {
   outfile: "dist/panelAiRuntime.js",
   sourcemap: isDev,
   minify: !isDev,
+  plugins: typiaPlugins,
+  logOverride,
 };
 
 const rendererConfig = {
@@ -102,6 +131,8 @@ const rendererConfig = {
   outfile: "dist/renderer.js",
   sourcemap: isDev,
   minify: !isDev,
+  plugins: typiaPlugins,
+  logOverride,
   loader: {
     ".html": "text",
     ".css": "css",

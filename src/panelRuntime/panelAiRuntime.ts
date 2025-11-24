@@ -32,6 +32,7 @@ import type {
   AIReasoningPart,
   AIToolCallPart,
 } from "../shared/ipc/index.js";
+import { encodeBase64 } from "../shared/base64.js";
 
 // =============================================================================
 // Bridge Interface
@@ -67,23 +68,6 @@ const getBridge = (): PanelBridgeWithAI => {
 // =============================================================================
 // Helpers
 // =============================================================================
-
-const hasBuffer = typeof Buffer !== "undefined";
-
-function encodeBinaryToBase64(data: Uint8Array): string {
-  if (hasBuffer) {
-    return Buffer.from(data).toString("base64");
-  }
-
-  // Fallback for browser without Buffer
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let i = 0; i < data.length; i += chunkSize) {
-    const chunk = data.subarray(i, i + chunkSize);
-    binary += String.fromCharCode(...chunk);
-  }
-  return btoa(binary);
-}
 
 const activeStreamCancelers = new Map<string, () => void>();
 let unloadCancelRegistered = false;
@@ -240,7 +224,7 @@ function convertPromptToIPC(prompt: LanguageModelV2Prompt): AIMessage[] {
             }
             if (part.type === "file") {
               // File part - encode to base64
-              const data = part.data instanceof Uint8Array ? encodeBinaryToBase64(part.data) : part.data; // Already a string (URL or base64)
+              const data = part.data instanceof Uint8Array ? encodeBase64(part.data) : part.data; // Already a string (URL or base64)
               return { type: "file", mimeType: part.mimeType, data };
             }
             throw new Error(`Unsupported user content type: ${(part as { type?: string }).type ?? "unknown"}`);
@@ -258,7 +242,7 @@ function convertPromptToIPC(prompt: LanguageModelV2Prompt): AIMessage[] {
                 return {
                   type: "file",
                   mimeType: part.mimeType,
-                  data: part.data instanceof Uint8Array ? encodeBinaryToBase64(part.data) : part.data,
+                  data: part.data instanceof Uint8Array ? encodeBase64(part.data) : part.data,
                 };
               case "reasoning":
                 return { type: "reasoning", text: part.text };

@@ -447,19 +447,19 @@ const bridge = {
 
   ai: {
     generate: (modelId: string, options: AICallOptions): Promise<AIGenerateResult> => {
-      return ipcRenderer.invoke("ai:generate", panelId, modelId, options);
+      return ipcRenderer.invoke("ai:generate", modelId, options);
     },
 
     streamStart: (modelId: string, options: AICallOptions, streamId: string): Promise<void> => {
-      return ipcRenderer.invoke("ai:stream-start", panelId, modelId, options, streamId);
+      return ipcRenderer.invoke("ai:stream-start", modelId, options, streamId);
     },
 
     streamCancel: (streamId: string): Promise<void> => {
-      return ipcRenderer.invoke("ai:stream-cancel", panelId, streamId);
+      return ipcRenderer.invoke("ai:stream-cancel", streamId);
     },
 
     listModels: (): Promise<AIModelInfo[]> => {
-      return ipcRenderer.invoke("ai:list-models", panelId);
+      return ipcRenderer.invoke("ai:list-models");
     },
 
     onStreamChunk: (listener: (streamId: string, chunk: AIStreamPart) => void): (() => void) => {

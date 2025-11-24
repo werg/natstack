@@ -74,27 +74,19 @@ export interface PanelBridgeIpcApi {
 }
 
 // AI provider IPC channels (panel webview <-> main)
+// Note: panelId is derived from the IPC sender identity for security
 export interface AIProviderIpcApi {
   /** Non-streaming text generation */
-  "ai:generate": (
-    panelId: string,
-    modelId: string,
-    options: AICallOptions
-  ) => AIGenerateResult;
+  "ai:generate": (modelId: string, options: AICallOptions) => AIGenerateResult;
 
   /** Start a streaming generation - chunks sent via ai:stream-chunk events */
-  "ai:stream-start": (
-    panelId: string,
-    modelId: string,
-    options: AICallOptions,
-    streamId: string
-  ) => void;
+  "ai:stream-start": (modelId: string, options: AICallOptions, streamId: string) => void;
 
   /** Cancel an active streaming generation */
-  "ai:stream-cancel": (panelId: string, streamId: string) => void;
+  "ai:stream-cancel": (streamId: string) => void;
 
   /** List available models for the panel */
-  "ai:list-models": (panelId: string) => AIModelInfo[];
+  "ai:list-models": () => AIModelInfo[];
 }
 
 // Combined API for type utilities

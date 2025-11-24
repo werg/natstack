@@ -23,8 +23,7 @@ pnpm install
 
 ## Scripts
 
-- `pnpm dev` - Build and start in development mode with DevTools (sandbox disabled for compatibility)
-- `pnpm dev:safe` - Same as dev but with sandbox enabled (may not work in all environments)
+- `pnpm dev` - Build and start in development mode with DevTools
 - `pnpm build` - Production build
 - `pnpm start` - Start the app (requires prior build)
 - `pnpm lint` - Run ESLint with strict rules
@@ -79,21 +78,6 @@ pnpm dev
 ```
 
 The app will open with DevTools enabled for debugging.
-
-### Sandbox Mode
-
-By default, `pnpm dev` runs with `--no-sandbox` flag due to common Linux environment restrictions (WSL2, containers, etc.). This is **only for development**.
-
-- **For development on systems with sandbox issues**: Use `pnpm dev` (sandbox disabled via `ELECTRON_NO_SANDBOX=1`)
-- **For development on systems with working sandbox**: Use `pnpm dev:safe` (full security)
-- **Production builds**: Always run with sandbox enabled (default)
-
-If you need to disable sandbox in other scenarios, set the environment variable:
-```bash
-ELECTRON_NO_SANDBOX=1 pnpm start
-```
-
-⚠️ **Security Warning**: Only disable sandbox in trusted development environments. Never ship production builds with sandbox disabled.
 
 ## Building for Production
 
