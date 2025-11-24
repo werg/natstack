@@ -6,6 +6,7 @@ import { resolveInitialRootPanelPath } from "./rootPanelResolver.js";
 import { GitServer } from "./gitServer.js";
 import { handle } from "./ipc/handlers.js";
 import type { ThemeMode, ThemeAppearance } from "../shared/ipc/index.js";
+import { setupMenu } from "./menu.js";
 
 let mainWindow: BrowserWindow | null = null;
 const initialRootPanelPath = resolveInitialRootPanelPath();
@@ -20,8 +21,8 @@ function createWindow(): void {
     titleBarStyle: "hidden",
     ...(process.platform !== "darwin"
       ? {
-          titleBarOverlay: true,
-        }
+        titleBarOverlay: true,
+      }
       : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -43,6 +44,9 @@ function createWindow(): void {
 
   // Set main window reference in panel manager
   panelManager.setMainWindow(mainWindow);
+
+  // Setup application menu
+  setupMenu(mainWindow);
 }
 
 // =============================================================================
