@@ -9,12 +9,12 @@ import { PanelManager } from "./panelManager.js";
 import { resolveInitialRootPanelPath } from "./rootPanelResolver.js";
 import { GitServer } from "./gitServer.js";
 import { handle } from "./ipc/handlers.js";
-import type { ThemeMode, ThemeAppearance } from "../shared/ipc/index.js";
+import * as SharedPanel from "../shared/ipc/types.js";
 import { setupMenu } from "./menu.js";
 
 let mainWindow: BrowserWindow | null = null;
 const initialRootPanelPath = resolveInitialRootPanelPath();
-console.log("Using root panel path:", initialRootPanelPath);
+// console.log("Using root panel path:", initialRootPanelPath);
 const gitServer = new GitServer();
 const panelManager = new PanelManager(initialRootPanelPath, gitServer);
 
@@ -25,8 +25,8 @@ function createWindow(): void {
     titleBarStyle: "hidden",
     ...(process.platform !== "darwin"
       ? {
-        titleBarOverlay: true,
-      }
+          titleBarOverlay: true,
+        }
       : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -65,7 +65,7 @@ handle("app:get-system-theme", async () => {
   return nativeTheme.shouldUseDarkColors ? "dark" : "light";
 });
 
-handle("app:set-theme-mode", async (_event, mode: ThemeMode) => {
+handle("app:set-theme-mode", async (_event, mode: SharedPanel.ThemeMode) => {
   nativeTheme.themeSource = mode;
 });
 
@@ -91,7 +91,7 @@ handle("panel:notify-focus", async (_event, panelId: string) => {
   panelManager.sendPanelEvent(panelId, { type: "focus" });
 });
 
-handle("panel:update-theme", async (_event, theme: ThemeAppearance) => {
+handle("panel:update-theme", async (_event, theme: SharedPanel.ThemeAppearance) => {
   panelManager.setCurrentTheme(theme);
   panelManager.broadcastTheme(theme);
 });
@@ -145,7 +145,10 @@ try {
     ],
   });
 } catch (error) {
-  console.warn("Failed to register default Anthropic provider. Configure providers manually.", error);
+  console.warn(
+    "Failed to register default Anthropic provider. Configure providers manually.",
+    error
+  );
 }
 
 // =============================================================================

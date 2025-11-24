@@ -1,15 +1,6 @@
 import typia, { type IValidation } from "typia";
 import { createAIError } from "./errors.js";
-import type {
-  AICallWarning,
-  AIGenerateResult,
-  AIMessage,
-  AIResponseContent,
-  AIToolDefinition,
-  AIFinishReason,
-  AIUsage,
-  AIResponseMetadata,
-} from "./ipc/index.js";
+import * as AI from "./ipc/aiTypes.js";
 
 /**
  * Typia-backed validation helpers for AI payloads.
@@ -24,12 +15,12 @@ type SDKResponseInput = {
   response?: { id?: unknown; modelId?: unknown; timestamp?: unknown };
 };
 
-const promptValidator = typia.createValidate<AIMessage[]>();
-const toolValidator = typia.createValidate<AIToolDefinition[]>();
-const responseContentValidator = typia.createValidate<AIResponseContent[]>();
+const promptValidator = typia.createValidate<AI.AIMessage[]>();
+const toolValidator = typia.createValidate<AI.AIToolDefinition[]>();
+const responseContentValidator = typia.createValidate<AI.AIResponseContent[]>();
 const sdkResponseValidator = typia.createValidate<SDKResponseInput>();
 
-const FINISH_REASONS: Set<AIFinishReason> = new Set([
+const FINISH_REASONS: Set<AI.AIFinishReason> = new Set([
   "stop",
   "length",
   "content-filter",
@@ -53,45 +44,50 @@ function assertWithValidator<T>(context: string, result: IValidation<T>): T {
   throw createAIError("internal_error", `${context} validation failed (${detail})`);
 }
 
-export function validatePrompt(prompt: AIMessage[]): AIMessage[] {
+export function validatePrompt(prompt: unknown): AI.AIMessage[] {
   return assertWithValidator("AI prompt", promptValidator(prompt));
 }
 
-export function validateToolDefinitions(tools?: AIToolDefinition[]): AIToolDefinition[] | undefined {
+export function validateToolDefinitions(tools: unknown): AI.AIToolDefinition[] | undefined {
   if (tools === undefined) return undefined;
   return assertWithValidator("AI tool definitions", toolValidator(tools));
 }
 
-export function validateResponseContent(content: unknown[]): AIResponseContent[] {
+export function validateResponseContent(content: unknown): AI.AIResponseContent[] {
   return assertWithValidator("AI response content", responseContentValidator(content));
 }
 
-export function validateFinishReason(reason: unknown): AIFinishReason {
-  if (typeof reason === "string" && FINISH_REASONS.has(reason as AIFinishReason)) {
-    return reason as AIFinishReason;
+export function validateFinishReason(reason: unknown): AI.AIFinishReason {
+  if (typeof reason === "string" && FINISH_REASONS.has(reason as AI.AIFinishReason)) {
+    return reason as AI.AIFinishReason;
   }
   return "unknown";
 }
 
-export function validateSDKResponse(result: unknown): AIGenerateResult {
+export function validateSDKResponse(result: unknown): AI.AIGenerateResult {
   const sdkResponse = assertWithValidator("AI SDK response", sdkResponseValidator(result));
 
-  const usage: AIUsage = {
-    promptTokens: typeof sdkResponse.usage?.promptTokens === "number" ? sdkResponse.usage.promptTokens : 0,
-    completionTokens: typeof sdkResponse.usage?.completionTokens === "number" ? sdkResponse.usage.completionTokens : 0,
+  const usage: AI.AIUsage = {
+    promptTokens:
+      typeof sdkResponse.usage?.promptTokens === "number" ? sdkResponse.usage.promptTokens : 0,
+    completionTokens:
+      typeof sdkResponse.usage?.completionTokens === "number"
+        ? sdkResponse.usage.completionTokens
+        : 0,
   };
 
-  const warnings: AICallWarning[] = (sdkResponse.warnings ?? []).map((warning, idx) => ({
+  const warnings: AI.AICallWarning[] = (sdkResponse.warnings ?? []).map((warning, idx) => ({
     type: typeof warning.type === "string" ? warning.type : `warning-${idx}`,
     message: typeof warning.message === "string" ? warning.message : "Unknown warning",
     details: warning.details,
   }));
 
-  let response: AIResponseMetadata | undefined;
+  let response: AI.AIResponseMetadata | undefined;
   if (sdkResponse.response) {
     response = {
       id: typeof sdkResponse.response.id === "string" ? sdkResponse.response.id : undefined,
-      modelId: typeof sdkResponse.response.modelId === "string" ? sdkResponse.response.modelId : undefined,
+      modelId:
+        typeof sdkResponse.response.modelId === "string" ? sdkResponse.response.modelId : undefined,
       timestamp:
         sdkResponse.response.timestamp instanceof Date
           ? sdkResponse.response.timestamp.toISOString()

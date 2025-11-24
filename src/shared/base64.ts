@@ -53,7 +53,9 @@ export function decodeBase64(encoded: string): Uint8Array {
     }
     return bytes;
   } catch (error) {
-    throw new Error(`Failed to decode base64: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `Failed to decode base64: ${error instanceof Error ? error.message : String(error)}`
+    );
   }
 }
 

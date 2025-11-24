@@ -88,7 +88,11 @@ export function isAIError(error: unknown): error is AIError {
 /**
  * Serialize error for IPC transmission.
  */
-export function serializeError(error: unknown): { message: string; code?: string; details?: unknown } {
+export function serializeError(error: unknown): {
+  message: string;
+  code?: string;
+  details?: unknown;
+} {
   if (isAIError(error)) {
     return {
       message: error.message,

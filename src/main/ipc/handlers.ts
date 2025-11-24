@@ -1,5 +1,5 @@
 import { ipcMain, type IpcMainInvokeEvent } from "electron";
-import type { AllIpcApi, IpcChannel, IpcHandler } from "../../shared/ipc/index.js";
+import { AllIpcApi, IpcChannel, IpcHandler } from "../../shared/ipc/types.js";
 
 // Type-safe handler registration for main process
 export function handle<C extends IpcChannel>(

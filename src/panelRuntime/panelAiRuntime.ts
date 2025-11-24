@@ -21,7 +21,6 @@
  */
 
 import type {
-  AIModelInfo,
   AICallOptions,
   AIGenerateResult,
   AIStreamPart,
@@ -31,7 +30,9 @@ import type {
   AIToolResultPart,
   AIReasoningPart,
   AIToolCallPart,
-} from "../shared/ipc/index.js";
+  AIResponseContent,
+  AIModelInfo,
+} from "../shared/ipc/aiTypes.js";
 import { encodeBase64 } from "../shared/base64.js";
 
 // =============================================================================
@@ -111,7 +112,9 @@ export interface LanguageModelV2CallOptions {
   frequencyPenalty?: number;
   stopSequences?: string[];
   seed?: number;
-  responseFormat?: { type: "text" } | { type: "json"; schema?: unknown; name?: string; description?: string };
+  responseFormat?:
+    | { type: "text" }
+    | { type: "json"; schema?: unknown; name?: string; description?: string };
   tools?: LanguageModelV2Tool[];
   toolChoice?: LanguageModelV2ToolChoice;
   abortSignal?: AbortSignal;
@@ -124,7 +127,15 @@ export type LanguageModelV2Prompt = LanguageModelV2Message[];
 export type LanguageModelV2Message =
   | { role: "system"; content: string }
   | { role: "user"; content: Array<LanguageModelV2TextPart | LanguageModelV2FilePart> }
-  | { role: "assistant"; content: Array<LanguageModelV2TextPart | LanguageModelV2FilePart | LanguageModelV2ReasoningPart | LanguageModelV2ToolCallPart> }
+  | {
+      role: "assistant";
+      content: Array<
+        | LanguageModelV2TextPart
+        | LanguageModelV2FilePart
+        | LanguageModelV2ReasoningPart
+        | LanguageModelV2ToolCallPart
+      >;
+    }
   | { role: "tool"; content: LanguageModelV2ToolResultPart[] };
 
 export interface LanguageModelV2TextPart {
@@ -172,7 +183,11 @@ export type LanguageModelV2ToolChoice =
   | { type: "tool"; toolName: string };
 
 export interface LanguageModelV2GenerateResult {
-  content: Array<{ type: "text"; text: string } | { type: "reasoning"; text: string } | { type: "tool-call"; toolCallId: string; toolName: string; args: unknown }>;
+  content: Array<
+    | { type: "text"; text: string }
+    | { type: "reasoning"; text: string }
+    | { type: "tool-call"; toolCallId: string; toolName: string; args: unknown }
+  >;
   finishReason: "stop" | "length" | "content-filter" | "tool-calls" | "error" | "other" | "unknown";
   usage: { promptTokens: number; completionTokens: number };
   warnings: Array<{ type: string; message: string; details?: unknown }>;
@@ -199,7 +214,11 @@ export type LanguageModelV2StreamPart =
   | { type: "tool-input-end"; toolCallId: string }
   | { type: "stream-start"; warnings: Array<{ type: string; message: string; details?: unknown }> }
   | { type: "response-metadata"; id?: string; modelId?: string; timestamp?: Date }
-  | { type: "finish"; finishReason: string; usage: { promptTokens: number; completionTokens: number } }
+  | {
+      type: "finish";
+      finishReason: string;
+      usage: { promptTokens: number; completionTokens: number };
+    }
   | { type: "error"; error: unknown };
 
 // =============================================================================
@@ -227,42 +246,48 @@ function convertPromptToIPC(prompt: LanguageModelV2Prompt): AIMessage[] {
               const data = part.data instanceof Uint8Array ? encodeBase64(part.data) : part.data; // Already a string (URL or base64)
               return { type: "file", mimeType: part.mimeType, data };
             }
-            throw new Error(`Unsupported user content type: ${(part as { type?: string }).type ?? "unknown"}`);
+            throw new Error(
+              `Unsupported user content type: ${(part as { type?: string }).type ?? "unknown"}`
+            );
           }),
         };
 
       case "assistant":
         return {
           role: "assistant",
-          content: msg.content.map((part): AITextPart | AIFilePart | AIReasoningPart | AIToolCallPart => {
-            switch (part.type) {
-              case "text":
-                return { type: "text", text: part.text };
-              case "file":
-                return {
-                  type: "file",
-                  mimeType: part.mimeType,
-                  data: part.data instanceof Uint8Array ? encodeBase64(part.data) : part.data,
-                };
-              case "reasoning":
-                return { type: "reasoning", text: part.text };
-              case "tool-call":
-                return {
-                  type: "tool-call",
-                  toolCallId: part.toolCallId,
-                  toolName: part.toolName,
-                  args: part.args,
-                };
-              default:
-                throw new Error(`Unsupported assistant content type: ${(part as { type?: string }).type ?? "unknown"}`);
+          content: msg.content.map(
+            (part): AITextPart | AIFilePart | AIReasoningPart | AIToolCallPart => {
+              switch (part.type) {
+                case "text":
+                  return { type: "text", text: part.text };
+                case "file":
+                  return {
+                    type: "file",
+                    mimeType: part.mimeType,
+                    data: part.data instanceof Uint8Array ? encodeBase64(part.data) : part.data,
+                  };
+                case "reasoning":
+                  return { type: "reasoning", text: part.text };
+                case "tool-call":
+                  return {
+                    type: "tool-call",
+                    toolCallId: part.toolCallId,
+                    toolName: part.toolName,
+                    args: part.args,
+                  };
+                default:
+                  throw new Error(
+                    `Unsupported assistant content type: ${(part as { type?: string }).type ?? "unknown"}`
+                  );
+              }
             }
-          }),
+          ),
         };
 
       case "tool":
         return {
           role: "tool",
-          content: msg.content.map((part): AIToolResultPart => ({
+          content: msg.content.map((part: AIToolResultPart) => ({
             type: "tool-result",
             toolCallId: part.toolCallId,
             toolName: part.toolName,
@@ -272,7 +297,9 @@ function convertPromptToIPC(prompt: LanguageModelV2Prompt): AIMessage[] {
         };
 
       default:
-        throw new Error(`Unsupported message role: ${(msg as { role?: string }).role ?? "unknown"}`);
+        throw new Error(
+          `Unsupported message role: ${(msg as { role?: string }).role ?? "unknown"}`
+        );
     }
   });
 }
@@ -282,7 +309,7 @@ function convertPromptToIPC(prompt: LanguageModelV2Prompt): AIMessage[] {
  */
 function convertResultFromIPC(result: AIGenerateResult): LanguageModelV2GenerateResult {
   return {
-    content: result.content.map((item) => {
+    content: result.content.map((item: AIResponseContent) => {
       switch (item.type) {
         case "text":
           return { type: "text" as const, text: item.text };
@@ -296,7 +323,9 @@ function convertResultFromIPC(result: AIGenerateResult): LanguageModelV2Generate
             args: item.args,
           };
         default:
-          throw new Error(`Unsupported response content type: ${(item as { type?: string }).type ?? "unknown"}`);
+          throw new Error(
+            `Unsupported response content type: ${(item as { type?: string }).type ?? "unknown"}`
+          );
       }
     }),
     finishReason: result.finishReason,
@@ -516,29 +545,32 @@ export function getModel(modelId: string): LanguageModelV2 {
  * });
  * ```
  */
-export const models: Record<string, LanguageModelV2> = new Proxy({} as Record<string, LanguageModelV2>, {
-  get(_target, prop: string) {
-    return getModel(prop);
-  },
-  has(_target, prop: string) {
-    // Always return true - we create models on demand
-    return typeof prop === "string";
-  },
-  ownKeys() {
-    // Return cached model IDs if available
-    return availableModelsCache?.map((m) => m.id) ?? [];
-  },
-  getOwnPropertyDescriptor(_target, prop) {
-    if (typeof prop === "string") {
-      return {
-        enumerable: true,
-        configurable: true,
-        value: getModel(prop),
-      };
-    }
-    return undefined;
-  },
-});
+export const models: Record<string, LanguageModelV2> = new Proxy(
+  {} as Record<string, LanguageModelV2>,
+  {
+    get(_target, prop: string) {
+      return getModel(prop);
+    },
+    has(_target, prop: string) {
+      // Always return true - we create models on demand
+      return typeof prop === "string";
+    },
+    ownKeys() {
+      // Return cached model IDs if available
+      return availableModelsCache?.map((m) => m.id) ?? [];
+    },
+    getOwnPropertyDescriptor(_target, prop) {
+      if (typeof prop === "string") {
+        return {
+          enumerable: true,
+          configurable: true,
+          value: getModel(prop),
+        };
+      }
+      return undefined;
+    },
+  }
+);
 
 /**
  * Clear the model cache. Useful if model availability changes.
@@ -547,6 +579,3 @@ export function clearModelCache(): void {
   modelCache.clear();
   availableModelsCache = null;
 }
-
-// Re-export types for convenience
-export type { AIModelInfo };

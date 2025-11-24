@@ -7,7 +7,7 @@ import { getPanelCacheDirectory } from "./paths.js";
 import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
 import type { GitServer } from "./gitServer.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
-import type { PanelInfo } from "../shared/ipc/index.js";
+import * as SharedPanel from "../shared/ipc/types.js";
 
 export class PanelManager {
   private builder: PanelBuilder;
@@ -24,9 +24,8 @@ export class PanelManager {
     this.gitServer = gitServer;
     this.panelsRoot = path.resolve(process.cwd());
     const cacheDir = getPanelCacheDirectory();
-    console.log("Using panel cache directory:", cacheDir);
+    // console.log("Using panel cache directory:", cacheDir);
     this.builder = new PanelBuilder(cacheDir);
-    // TODO: Perhaps a special way to handle errors / switch roots
     void this.initializeRootPanel(initialRootPanelPath);
   }
 
@@ -165,7 +164,8 @@ export class PanelManager {
 
     // Update selected child
     if (parent.selectedChildId === childId) {
-      parent.selectedChildId = parent.children.length > 0 ? parent.children[0]!.id : null;
+      const firstChild = parent.children[0];
+      parent.selectedChildId = firstChild ? firstChild.id : null;
     }
 
     // Remove from panels map (and all descendants)
@@ -199,7 +199,8 @@ export class PanelManager {
 
         // Update selected child
         if (parent.selectedChildId === panelId) {
-          parent.selectedChildId = parent.children.length > 0 ? parent.children[0]!.id : null;
+          const firstChild = parent.children[0];
+          parent.selectedChildId = firstChild ? firstChild.id : null;
         }
 
         this.sendPanelEvent(parent.id, { type: "child-removed", childId: panelId });
@@ -221,7 +222,7 @@ export class PanelManager {
     return panel.env ?? {};
   }
 
-  getInfo(panelId: string): PanelInfo {
+  getInfo(panelId: string): SharedPanel.PanelInfo {
     const panel = this.panels.get(panelId);
     if (!panel) {
       throw new Error(`Panel not found: ${panelId}`);

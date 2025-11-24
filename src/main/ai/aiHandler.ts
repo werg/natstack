@@ -22,9 +22,13 @@ import type {
   AIStreamPart,
   AIMessage,
   AIToolDefinition,
-  AIResponseContent,
+  AITextPart,
+  AIFilePart,
+  AIReasoningPart,
+  AIToolCallPart,
+  AIToolResultPart,
   AIFinishReason,
-} from "../../shared/ipc/index.js";
+} from "../../shared/ipc/aiTypes.js";
 import { createAIError, mapAISDKError, type AIError } from "../../shared/errors.js";
 import { Logger, generateRequestId } from "../../shared/logging.js";
 import {
@@ -67,7 +71,7 @@ function convertPromptToSDK(messages: AIMessage[]): unknown[] {
       case "user":
         return {
           role: "user",
-          content: msg.content.map((part, partIndex) => {
+          content: msg.content.map((part: AITextPart | AIFilePart, partIndex: number) => {
             if (part.type === "text") {
               return { type: "text", text: part.text };
             }
@@ -82,35 +86,40 @@ function convertPromptToSDK(messages: AIMessage[]): unknown[] {
       case "assistant":
         return {
           role: "assistant",
-          content: msg.content.map((part, partIndex) => {
-            switch (part.type) {
-              case "text":
-                return { type: "text", text: part.text };
-              case "file":
-                return {
-                  type: "file",
-                  mimeType: part.mimeType,
-                  data: decodeBinary(part.data, `prompt[${msgIndex}].content[${partIndex}]`),
-                };
-              case "reasoning":
-                return { type: "reasoning", text: part.text };
-              case "tool-call":
-                return {
-                  type: "tool-call",
-                  toolCallId: part.toolCallId,
-                  toolName: part.toolName,
-                  args: part.args,
-                };
-              default:
-                return part;
+          content: msg.content.map(
+            (
+              part: AITextPart | AIFilePart | AIReasoningPart | AIToolCallPart,
+              partIndex: number
+            ) => {
+              switch (part.type) {
+                case "text":
+                  return { type: "text", text: part.text };
+                case "file":
+                  return {
+                    type: "file",
+                    mimeType: part.mimeType,
+                    data: decodeBinary(part.data, `prompt[${msgIndex}].content[${partIndex}]`),
+                  };
+                case "reasoning":
+                  return { type: "reasoning", text: part.text };
+                case "tool-call":
+                  return {
+                    type: "tool-call",
+                    toolCallId: part.toolCallId,
+                    toolName: part.toolName,
+                    args: part.args,
+                  };
+                default:
+                  return part;
+              }
             }
-          }),
+          ),
         };
 
       case "tool":
         return {
           role: "tool",
-          content: msg.content.map((part) => ({
+          content: msg.content.map((part: AIToolResultPart) => ({
             type: "tool-result",
             toolCallId: part.toolCallId,
             toolName: part.toolName,
@@ -149,6 +158,10 @@ function decodeBinary(data: string, context: string): Uint8Array {
     throw createAIError("internal_error", `${context}: invalid base64 data (${message})`);
   }
 }
+
+/**
+ * Convert AI SDK response content to our serializable format.
+ */
 
 // =============================================================================
 // Stream Management
@@ -267,7 +280,10 @@ class AIProviderRegistry {
       // Validate model exists in this provider
       const model = provider.models.find((m) => m.id === modelName);
       if (!model) {
-        throw createAIError("model_not_found", `Model not found in provider ${providerId}: ${modelName}`);
+        throw createAIError(
+          "model_not_found",
+          `Model not found in provider ${providerId}: ${modelName}`
+        );
       }
 
       return provider.createModel(modelName);
@@ -314,11 +330,14 @@ export class AIHandler {
       return this.generate(requestId, panelId, modelId, options);
     });
 
-    handle("ai:stream-start", async (event, modelId: string, options: AICallOptions, streamId: string) => {
-      const requestId = generateRequestId();
-      const panelId = this.getPanelId(event, requestId);
-      void this.streamToPanel(event.sender, requestId, panelId, modelId, options, streamId);
-    });
+    handle(
+      "ai:stream-start",
+      async (event, modelId: string, options: AICallOptions, streamId: string) => {
+        const requestId = generateRequestId();
+        const panelId = this.getPanelId(event, requestId);
+        void this.streamToPanel(event.sender, requestId, panelId, modelId, options, streamId);
+      }
+    );
 
     handle("ai:stream-cancel", async (event, streamId: string) => {
       const requestId = generateRequestId();
@@ -399,7 +418,12 @@ export class AIHandler {
         };
       } catch (error) {
         const aiError = mapAISDKError(error);
-        this.logger.error(requestId, "AI SDK call failed", { code: aiError.code, message: aiError.message }, error as Error);
+        this.logger.error(
+          requestId,
+          "AI SDK call failed",
+          { code: aiError.code, message: aiError.message },
+          error as Error
+        );
         throw aiError;
       }
 
@@ -519,7 +543,8 @@ export class AIHandler {
   ): void {
     if (sender.isDestroyed()) return;
 
-    const aiError = error instanceof Error && "code" in error ? (error as AIError) : mapAISDKError(error);
+    const aiError =
+      error instanceof Error && "code" in error ? (error as AIError) : mapAISDKError(error);
 
     const errorChunk: AIStreamPart = {
       type: "error",
@@ -543,7 +568,11 @@ export class AIHandler {
       case "reasoning-start":
         return { type: "reasoning-start", id: part["id"] as string };
       case "reasoning-delta":
-        return { type: "reasoning-delta", id: part["id"] as string, delta: part["delta"] as string };
+        return {
+          type: "reasoning-delta",
+          id: part["id"] as string,
+          delta: part["delta"] as string,
+        };
       case "reasoning-end":
         return { type: "reasoning-end", id: part["id"] as string };
       case "tool-input-start":
@@ -574,21 +603,33 @@ export class AIHandler {
           id: part["id"] as string | undefined,
           modelId: part["modelId"] as string | undefined,
           timestamp: part["timestamp"]
-            ? (part["timestamp"] as Date).toISOString?.() ?? String(part["timestamp"])
+            ? ((part["timestamp"] as Date).toISOString?.() ?? String(part["timestamp"]))
             : undefined,
         };
       case "finish": {
         const finishReasonValue = part["finishReason"];
-        const validFinishReasons: AIFinishReason[] = ["stop", "length", "content-filter", "tool-calls", "error", "other", "unknown"];
-        const finishReason = (typeof finishReasonValue === "string" && validFinishReasons.includes(finishReasonValue as AIFinishReason)
-          ? finishReasonValue
-          : "unknown") as AIFinishReason;
+        const validFinishReasons: AIFinishReason[] = [
+          "stop",
+          "length",
+          "content-filter",
+          "tool-calls",
+          "error",
+          "other",
+          "unknown",
+        ];
+        const finishReason = (
+          typeof finishReasonValue === "string" &&
+          validFinishReasons.includes(finishReasonValue as AIFinishReason)
+            ? finishReasonValue
+            : "unknown"
+        ) as AIFinishReason;
         return {
           type: "finish",
           finishReason,
           usage: {
             promptTokens: (part["usage"] as { promptTokens?: number })?.promptTokens ?? 0,
-            completionTokens: (part["usage"] as { completionTokens?: number })?.completionTokens ?? 0,
+            completionTokens:
+              (part["usage"] as { completionTokens?: number })?.completionTokens ?? 0,
           },
         };
       }

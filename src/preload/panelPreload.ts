@@ -1,17 +1,15 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
-import type {
-  ThemeAppearance,
-  PanelInfo,
-  ExposedMethods,
+import { ExposedMethods } from "../shared/ipc/panelRpc.js";
+import { PanelInfo, ThemeAppearance } from "../shared/ipc/types.js";
+import {
   AICallOptions,
   AIGenerateResult,
   AIModelInfo,
-  AIStreamPart,
   AIStreamChunkEvent,
   AIStreamEndEvent,
-} from "../shared/ipc/index.js";
-
+  AIStreamPart,
+} from "../shared/ipc/aiTypes.js";
 type PanelEventName = "child-removed" | "focus";
 
 type PanelEventMessage =
@@ -132,7 +130,7 @@ ipcRenderer.on("panel:event", (_event, payload: PanelEventMessage) => {
 });
 
 // AI stream event handlers
-ipcRenderer.on("ai:stream-chunk", (_event, payload: AIStreamChunkEvent) => {
+const onChunk = (_event: Electron.IpcRendererEvent, payload: AIStreamChunkEvent) => {
   if (payload.panelId !== panelId) {
     return;
   }
@@ -143,9 +141,10 @@ ipcRenderer.on("ai:stream-chunk", (_event, payload: AIStreamChunkEvent) => {
       console.error("Error in AI stream chunk listener:", error);
     }
   });
-});
+};
+ipcRenderer.on("ai:stream-chunk", onChunk);
 
-ipcRenderer.on("ai:stream-end", (_event, payload: AIStreamEndEvent) => {
+const onEnd = (_event: Electron.IpcRendererEvent, payload: AIStreamEndEvent) => {
   if (payload.panelId !== panelId) {
     return;
   }
@@ -156,7 +155,8 @@ ipcRenderer.on("ai:stream-end", (_event, payload: AIStreamEndEvent) => {
       console.error("Error in AI stream end listener:", error);
     }
   });
-});
+};
+ipcRenderer.on("ai:stream-end", onEnd);
 
 // =============================================================================
 // Panel-to-Panel RPC
@@ -276,7 +276,10 @@ async function getRpcPort(targetPanelId: string): Promise<MessagePort> {
   // If we're already waiting, just add to the list
   if (pendingPortRequests.has(targetPanelId)) {
     return new Promise((resolve, reject) => {
-      pendingPortRequests.get(targetPanelId)!.push({ resolve, reject });
+      const pending = pendingPortRequests.get(targetPanelId);
+      if (pending) {
+        pending.push({ resolve, reject });
+      }
     });
   }
 
@@ -345,6 +348,8 @@ const bridge = {
   getInfo: (): Promise<PanelInfo> => {
     return ipcRenderer.invoke("panel-bridge:get-info", panelId);
   },
+
+  getTree: (): Promise<PanelInfo> => ipcRenderer.invoke("panel:get-tree"),
 
   // Event subscription (local event handling for one-way events)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

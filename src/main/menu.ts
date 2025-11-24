@@ -69,9 +69,9 @@ export function setupMenu(mainWindow: Electron.BrowserWindow): void {
           label: "Toggle App Developer Tools",
           accelerator: "CmdOrCtrl+Alt+I",
           click: () => {
-             if (mainWindow && !mainWindow.isDestroyed()) {
-               mainWindow.webContents.toggleDevTools();
-             }
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.toggleDevTools();
+            }
           },
         },
       ],
@@ -83,12 +83,7 @@ export function setupMenu(mainWindow: Electron.BrowserWindow): void {
         { role: "minimize" },
         { role: "zoom" },
         ...(isMac
-          ? [
-              { type: "separator" },
-              { role: "front" },
-              { type: "separator" },
-              { role: "window" },
-            ]
+          ? [{ type: "separator" }, { role: "front" }, { type: "separator" }, { role: "window" }]
           : [{ role: "close" }]),
       ] as MenuItemConstructorOptions[],
     },

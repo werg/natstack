@@ -1,5 +1,5 @@
 import type { ComponentType, ReactNode } from "react";
-import type { ExposedMethods, PanelRpcHandle, AnyFunction } from "../shared/ipc/index.js";
+import * as Rpc from "../shared/ipc/panelRpc.js";
 
 type PanelBridgeEvent = "child-removed" | "focus";
 
@@ -10,7 +10,7 @@ export interface PanelTheme {
 }
 
 interface PanelRpcBridge {
-  expose(methods: ExposedMethods): void;
+  expose(methods: Rpc.ExposedMethods): void;
   call(targetPanelId: string, method: string, ...args: unknown[]): Promise<unknown>;
   emit(targetPanelId: string, event: string, payload: unknown): Promise<void>;
   onEvent(event: string, listener: (fromPanelId: string, payload: unknown) => void): () => void;
@@ -155,13 +155,13 @@ const panelAPI = {
    *     return editorContent;
    *   }
    * });
-  * ```
-  */
+   * ```
+   */
   rpc: {
     /**
      * Expose methods that can be called by parent or child panels.
      */
-    expose<T extends ExposedMethods>(methods: T): void {
+    expose<T extends Rpc.ExposedMethods>(methods: T): void {
       bridge.rpc.expose(methods);
     },
 
@@ -176,9 +176,11 @@ const panelAPI = {
      * const content = await childHandle.call.getContent();
      * ```
      */
-    getHandle<T extends ExposedMethods = ExposedMethods>(targetPanelId: string): PanelRpcHandle<T> {
+    getHandle<T extends Rpc.ExposedMethods = Rpc.ExposedMethods>(
+      targetPanelId: string
+    ): Rpc.PanelRpcHandle<T> {
       // Create a proxy that allows typed method calls
-      const callProxy = new Proxy({} as PanelRpcHandle<T>["call"], {
+      const callProxy = new Proxy({} as Rpc.PanelRpcHandle<T>["call"], {
         get(_target, prop: string) {
           return async (...args: unknown[]) => {
             return bridge.rpc.call(targetPanelId, prop, ...args);
@@ -218,9 +220,9 @@ const panelAPI = {
     /**
      * Alias for getHandle to retain existing call sites without schema validation.
      */
-    getTypedHandle<T extends ExposedMethods = ExposedMethods>(
+    getTypedHandle<T extends Rpc.ExposedMethods = Rpc.ExposedMethods>(
       targetPanelId: string
-    ): PanelRpcHandle<T> {
+    ): Rpc.PanelRpcHandle<T> {
       return panelAPI.rpc.getHandle<T>(targetPanelId);
     },
 
@@ -259,7 +261,7 @@ export type PanelAPI = typeof panelAPI;
 export default panelAPI;
 
 // Re-export types for panel developers
-export type { ExposedMethods, PanelRpcHandle, AnyFunction };
+export type { Rpc };
 
 type ReactNamespace = typeof import("react");
 type RadixThemeComponent = ComponentType<{
