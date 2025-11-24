@@ -9,12 +9,45 @@ export type {
   AppIpcApi,
   PanelIpcApi,
   PanelBridgeIpcApi,
+  AIProviderIpcApi,
   AllIpcApi,
   IpcChannel,
   IpcHandler,
   IpcParams,
   IpcReturn,
 } from "./types.js";
+
+// Re-export AI types
+export type {
+  AIModelInfo,
+  AICallOptions,
+  AIGenerateResult,
+  AIStreamPart,
+  AIStreamChunkEvent,
+  AIStreamEndEvent,
+  AIMessage,
+  AITextPart,
+  AIFilePart,
+  AIToolCallPart,
+  AIToolResultPart,
+  AIReasoningPart,
+  AIMessagePart,
+  AISystemMessage,
+  AIUserMessage,
+  AIAssistantMessage,
+  AIToolMessage,
+  AIToolDefinition,
+  AIToolChoice,
+  AIResponseFormat,
+  AIFinishReason,
+  AIUsage,
+  AIResponseContent,
+  AIResponseText,
+  AIResponseReasoning,
+  AIResponseToolCall,
+  AICallWarning,
+  AIResponseMetadata,
+} from "./aiTypes.js";
 
 // Re-export panel RPC types
 export type {

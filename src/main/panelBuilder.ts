@@ -12,10 +12,12 @@ const panelApiModulePath = path.join(__dirname, "panelRuntime.js");
 const panelReactModulePath = path.join(__dirname, "panelReactRuntime.js");
 const panelFsModulePath = path.join(__dirname, "panelFsRuntime.js");
 const panelFsPromisesModulePath = path.join(__dirname, "panelFsPromisesRuntime.js");
+const panelAiModulePath = path.join(__dirname, "panelAiRuntime.js");
 
 const runtimeModuleMap = new Map([
   ["natstack/panel", panelApiModulePath],
   ["natstack/react", panelReactModulePath],
+  ["natstack/ai", panelAiModulePath],
 ]);
 
 const fsModuleMap = new Map([
@@ -375,7 +377,7 @@ export class PanelBuilder {
         name: "panel-api-module",
         setup(build) {
           build.onResolve(
-            { filter: /^(natstack\/(panel|react)|fs|node:fs|fs\/promises|node:fs\/promises)$/ },
+            { filter: /^(natstack\/(panel|react|ai)|fs|node:fs|fs\/promises|node:fs\/promises)$/ },
             (args) => {
               const runtimePath = virtualModuleMap.get(args.path);
               if (!runtimePath) return null;
