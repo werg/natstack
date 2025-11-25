@@ -7,7 +7,7 @@
   "main": "dist/main.cjs",
   "scripts": {
     "build": "NODE_ENV=production node build.mjs",
-    "dev": "NODE_ENV=development node build.mjs & pnpm type-check & node scripts/run-electron.mjs --root-panel=panels/example",
+    "dev": "NODE_ENV=development node build.mjs & pnpm type-check & node scripts/run-electron.mjs --workspace=workspace",
     "dev:safe": "NODE_ENV=development node build.mjs & sleep 2 && node scripts/run-electron.mjs",
     "start": "node scripts/run-electron.mjs",
     "cleanup": "bash scripts/cleanup-processes.sh",
@@ -17,7 +17,8 @@
     "type-check": "tsc --noEmit",
     "type-check:watch": "tsc --noEmit --watch --preserveWatchOutput",
     "type-check:panels": "node scripts/type-check-panels.mjs",
-    "type-check:all": "pnpm type-check && pnpm type-check:panels"
+    "type-check:all": "pnpm type-check && pnpm type-check:panels",
+    "init:workspace": "node scripts/init-workspace.mjs"
   },
   "keywords": [
     "electron",
@@ -54,6 +55,8 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^2.0.45",
+    "@ai-sdk/google": "^2.0.43",
+    "@ai-sdk/mistral": "^2.0.24",
     "@ai-sdk/openai": "3.0.0-beta.65",
     "@natstack/ai": "workspace:*",
     "@natstack/core": "workspace:*",
@@ -73,6 +76,7 @@
     "react-dom": "^19.2.0",
     "typescript": "^5.9.3",
     "typia": "^10.1.0",
+    "yaml": "^2.8.1",
     "zod": "^4.1.12"
   }
 }

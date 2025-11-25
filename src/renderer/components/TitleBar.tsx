@@ -16,6 +16,8 @@ interface TitleBarProps {
   onNavigate?: (path: string[]) => void;
   onOpenPanelDevTools?: () => void;
   onOpenAppDevTools?: () => void;
+  onOpenSettings?: () => void;
+  onOpenWorkspaceChooser?: () => void;
 }
 
 export function TitleBar({
@@ -23,6 +25,8 @@ export function TitleBar({
   onNavigate,
   onOpenPanelDevTools,
   onOpenAppDevTools,
+  onOpenSettings,
+  onOpenWorkspaceChooser,
 }: TitleBarProps) {
   const {
     mode: navigationMode,
@@ -67,6 +71,13 @@ export function TitleBar({
               </IconButton>
             </DropdownMenu.Trigger>
             <DropdownMenu.Content>
+              <DropdownMenu.Item shortcut="⌘⇧O" onSelect={() => onOpenWorkspaceChooser?.()}>
+                Switch Workspace...
+              </DropdownMenu.Item>
+              <DropdownMenu.Item shortcut="⌘," onSelect={() => onOpenSettings?.()}>
+                Settings...
+              </DropdownMenu.Item>
+              <DropdownMenu.Separator />
               <DropdownMenu.Item shortcut="Ctrl+Z">Undo</DropdownMenu.Item>
               <DropdownMenu.Item shortcut="Ctrl+Y">Redo</DropdownMenu.Item>
               <DropdownMenu.Separator />

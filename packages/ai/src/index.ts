@@ -4,17 +4,22 @@
  * This module provides AI SDK-compatible model objects that route requests
  * through IPC to the main process where API credentials are securely stored.
  *
+ * Panels access models by role (fast, smart, coding, cheap) rather than by
+ * provider-specific model IDs. All four standard roles are always available
+ * with intelligent defaults applied when not explicitly configured.
+ *
  * Usage:
  * ```typescript
- * import { models, getAvailableModels } from 'natstack/ai';
+ * import { models, getRoles } from '@natstack/ai';
  * import { generateText, streamText } from 'ai';
  *
- * // List available models
- * const available = await getAvailableModels();
+ * // Load role-to-model mappings (includes all standard roles)
+ * const roles = await getRoles();
+ * console.log(roles.fast); // { modelId: "...", provider: "...", displayName: "..." }
  *
- * // Use with AI SDK
+ * // Use models by role name
  * const result = await generateText({
- *   model: models['claude-sonnet'],
+ *   model: models.fast,
  *   prompt: 'Hello!'
  * });
  * ```
@@ -31,6 +36,7 @@ import type {
   AIReasoningPart,
   AIToolCallPart,
   AIResponseContent,
+  AIRoleRecord,
   AIModelInfo,
 } from "./types.js";
 import { encodeBase64 } from "./base64.js";
@@ -46,7 +52,7 @@ interface AIBridge {
   generate(modelId: string, options: AICallOptions): Promise<AIGenerateResult>;
   streamStart(modelId: string, options: AICallOptions, streamId: string): Promise<void>;
   streamCancel(streamId: string): Promise<void>;
-  listModels(): Promise<AIModelInfo[]>;
+  listRoles(): Promise<AIRoleRecord>;
   onStreamChunk(listener: (streamId: string, chunk: AIStreamPart) => void): () => void;
   onStreamEnd(listener: (streamId: string) => void): () => void;
 }
@@ -498,53 +504,104 @@ function createProxyModel(modelId: string, provider: string): LanguageModelV2 {
 /** Cache of proxy models by model ID */
 const modelCache = new Map<string, LanguageModelV2>();
 
-/** Cache of available models */
-let availableModelsCache: AIModelInfo[] | null = null;
+/** Cache of available role-to-model mappings */
+let roleRecordCache: AIRoleRecord | null = null;
 
 /**
- * Get the list of available AI models.
- * Models are configured in the main process based on user settings.
+ * Get the record of configured roles and their assigned models.
+ *
+ * All four standard roles (smart, fast, coding, cheap) are always present with
+ * intelligent defaults applied when not explicitly configured:
+ * - smart ↔ coding (both prefer fast if available)
+ * - cheap ↔ fast (both prefer smart if available)
+ *
+ * @returns Record mapping role names to model info (always includes all standard roles)
+ *
+ * Usage:
+ * ```typescript
+ * const roles = await getRoles();
+ * console.log(roles.fast); // { modelId: "anthropic:claude-haiku-...", provider: "anthropic", ... }
+ * console.log(roles.smart); // Always available (with defaults if not configured)
+ * ```
  */
-export async function getAvailableModels(): Promise<AIModelInfo[]> {
-  if (availableModelsCache) {
-    return availableModelsCache;
+export async function getRoles(): Promise<AIRoleRecord> {
+  if (roleRecordCache) {
+    return roleRecordCache;
   }
 
   const bridge = getBridge();
-  availableModelsCache = await bridge.ai.listModels();
-  return availableModelsCache;
+  roleRecordCache = await bridge.ai.listRoles();
+  return roleRecordCache;
 }
 
 /**
- * Get a proxy model by ID.
- * The model ID should match one returned by getAvailableModels().
+ * Get a proxy model by role name.
+ * Call getRoles() first to ensure roles are loaded.
+ *
+ * @param role - The role name (e.g., "fast", "smart", "coding", "cheap")
+ * @returns A proxy model for this role, or null if role is not configured
+ *
+ * Usage:
+ * ```typescript
+ * import { getModelByRole, getRoles } from '@natstack/ai';
+ *
+ * // Load roles first
+ * await getRoles();
+ *
+ * // Get model by role
+ * const fastModel = getModelByRole('fast');
+ * if (fastModel) {
+ *   const result = await generateText({
+ *     model: fastModel,
+ *     prompt: 'Hello!'
+ *   });
+ * }
+ * ```
  */
-export function getModel(modelId: string): LanguageModelV2 {
-  let model = modelCache.get(modelId);
+export function getModelByRole(role: string): LanguageModelV2 | null {
+  if (!roleRecordCache) {
+    throw new Error(
+      "Roles not loaded. Call getRoles() first to load role information."
+    );
+  }
+
+  const modelInfo = roleRecordCache[role];
+  if (!modelInfo) {
+    return null;
+  }
+
+  // Get or create proxy model for this model ID
+  let model = modelCache.get(modelInfo.modelId);
   if (!model) {
-    // Extract provider from model ID if present (format: "provider:model")
-    const provider = modelId.includes(":") ? (modelId.split(":")[0] ?? "unknown") : "unknown";
-    model = createProxyModel(modelId, provider);
-    modelCache.set(modelId, model);
+    model = createProxyModel(modelInfo.modelId, modelInfo.provider);
+    modelCache.set(modelInfo.modelId, model);
   }
   return model;
 }
 
 /**
- * Record of available models as proxy objects.
- * This is populated lazily - call getAvailableModels() first to ensure models are loaded.
+ * Proxy record of AI models, keyed by role name.
+ *
+ * Access models by standard role names (fast, smart, coding, cheap) or custom roles.
+ * Call getRoles() first to ensure roles are loaded.
  *
  * Usage:
  * ```typescript
- * import { models, getAvailableModels } from 'natstack/ai';
+ * import { models, getRoles } from '@natstack/ai';
+ * import { generateText } from 'ai';
  *
- * // First, load available models
- * await getAvailableModels();
+ * // Load roles first
+ * await getRoles();
  *
- * // Then use them
+ * // Access models by role - all standard roles are guaranteed to exist
  * const result = await generateText({
- *   model: models['claude-sonnet'],
- *   prompt: 'Hello!'
+ *   model: models.fast,  // Fast/cheap model
+ *   prompt: 'Quick summary'
+ * });
+ *
+ * const analysis = await generateText({
+ *   model: models.smart,  // Smart/reasoning model
+ *   prompt: 'Detailed analysis'
  * });
  * ```
  */
@@ -552,22 +609,22 @@ export const models: Record<string, LanguageModelV2> = new Proxy(
   {} as Record<string, LanguageModelV2>,
   {
     get(_target, prop: string) {
-      return getModel(prop);
+      return getModelByRole(prop);
     },
     has(_target, prop: string) {
-      // Always return true - we create models on demand
-      return typeof prop === "string";
+      if (!roleRecordCache) return false;
+      return prop in roleRecordCache;
     },
     ownKeys() {
-      // Return cached model IDs if available
-      return availableModelsCache?.map((m) => m.id) ?? [];
+      // Return role names if available
+      return roleRecordCache ? Object.keys(roleRecordCache) : [];
     },
     getOwnPropertyDescriptor(_target, prop) {
-      if (typeof prop === "string") {
+      if (typeof prop === "string" && roleRecordCache && prop in roleRecordCache) {
         return {
           enumerable: true,
           configurable: true,
-          value: getModel(prop),
+          value: getModelByRole(prop),
         };
       }
       return undefined;
@@ -576,9 +633,9 @@ export const models: Record<string, LanguageModelV2> = new Proxy(
 );
 
 /**
- * Clear the model cache. Useful if model availability changes.
+ * Clear the model cache. Useful if role configuration changes.
  */
 export function clearModelCache(): void {
   modelCache.clear();
-  availableModelsCache = null;
+  roleRecordCache = null;
 }

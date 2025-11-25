@@ -1,8 +1,9 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { Provider as JotaiProvider } from "jotai";
 import "@radix-ui/themes/styles.css";
 
-import { PanelApp } from "./components/PanelApp";
+import { App } from "./components/App";
 
 async function initializeApp(): Promise<void> {
   try {
@@ -15,7 +16,9 @@ async function initializeApp(): Promise<void> {
     const root = createRoot(container);
     root.render(
       <StrictMode>
-        <PanelApp />
+        <JotaiProvider>
+          <App />
+        </JotaiProvider>
       </StrictMode>
     );
   } catch (error) {

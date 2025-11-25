@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { getStateDirectory } from "./paths.js";
+import { getCentralConfigDirectory } from "./paths.js";
 import { validateRelativePath } from "./pathUtils.js";
 
 export interface Preferences {
@@ -8,8 +8,8 @@ export interface Preferences {
 }
 
 function getPreferencesPath(): string {
-  const stateDir = getStateDirectory();
-  return path.join(stateDir, "preferences.json");
+  const configDir = getCentralConfigDirectory();
+  return path.join(configDir, "preferences.json");
 }
 
 export function loadPreferences(): Preferences {

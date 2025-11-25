@@ -11,14 +11,16 @@ function normalizeRelativePanelPath(candidate: string): string {
 }
 
 function ensureDefaultRootPanelPath(): string {
-  const defaultRelative = "panels/example";
-  const defaultAbsolute = path.resolve(defaultRelative);
+  // Try workspace panels/root first
+  const workspaceDefault = "panels/root";
+  const workspaceDefaultAbsolute = path.resolve(workspaceDefault);
 
-  if (fs.existsSync(defaultAbsolute)) {
-    return defaultRelative;
+  if (fs.existsSync(workspaceDefaultAbsolute)) {
+    return workspaceDefault;
   }
 
-  const fallbackRelative = "panels/default-root-panel";
+  // Create default if nothing exists
+  const fallbackRelative = "panels/root";
   const fallbackAbsolute = path.resolve(fallbackRelative);
 
   if (!fs.existsSync(fallbackAbsolute)) {
@@ -28,7 +30,7 @@ function ensureDefaultRootPanelPath(): string {
   return fallbackRelative;
 }
 
-function parseCliRootPanelPath(): string | undefined {
+export function parseCliRootPanelPath(): string | undefined {
   for (const arg of process.argv.slice(2)) {
     if (arg.startsWith("--root-panel=")) {
       const [, value] = arg.split("=");

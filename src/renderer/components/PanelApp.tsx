@@ -3,6 +3,10 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { Flex, Theme } from "@radix-ui/themes";
 
 import { effectiveThemeAtom, loadThemePreferenceAtom } from "../state/themeAtoms";
+import {
+  settingsDialogOpenAtom,
+  workspaceChooserDialogOpenAtom,
+} from "../state/appModeAtoms";
 import { NavigationProvider, useNavigation } from "./NavigationContext";
 import { PanelStack } from "./PanelStack";
 import { TitleBar } from "./TitleBar";
@@ -20,11 +24,21 @@ function PanelAppContent() {
   const [currentTitle, setCurrentTitle] = useState("NatStack");
   const [openPanelDevTools, setOpenPanelDevTools] = useState<() => void>(() => () => {});
   const { navigate, registerNavigate } = useNavigation();
+  const setSettingsOpen = useSetAtom(settingsDialogOpenAtom);
+  const setWorkspaceChooserOpen = useSetAtom(workspaceChooserDialogOpenAtom);
 
   const openAppDevTools = () => {
     void window.electronAPI.openAppDevTools().catch((error) => {
       console.error("Failed to open app devtools", error);
     });
+  };
+
+  const openSettings = () => {
+    setSettingsOpen(true);
+  };
+
+  const openWorkspaceChooser = () => {
+    setWorkspaceChooserOpen(true);
   };
 
   useEffect(() => {
@@ -46,6 +60,8 @@ function PanelAppContent() {
           title={currentTitle}
           onOpenPanelDevTools={openPanelDevTools}
           onOpenAppDevTools={openAppDevTools}
+          onOpenSettings={openSettings}
+          onOpenWorkspaceChooser={openWorkspaceChooser}
           onNavigate={navigate}
         />
         <PanelStack

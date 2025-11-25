@@ -54,7 +54,7 @@ export default function ChildPanelLauncher() {
   const launchChild = async () => {
     try {
       setStatus("Launching child panel...");
-      const childId = await panel.createChild("panels/example", {
+      const childId = await panel.createChild("panels/root", {
         env: {
           PARENT_ID: panelId,
           LAUNCH_TIME: new Date().toISOString(),
@@ -89,8 +89,8 @@ export default function ChildPanelLauncher() {
 
   const launchExampleWithSharedPartition = async () => {
     try {
-      setStatus("Launching example panel with a shared panel id...");
-      const childId = await panel.createChild("panels/example", {
+      setStatus("Launching root panel with a shared panel id...");
+      const childId = await panel.createChild("panels/root", {
         env: {
           PARENT_ID: panelId,
           LAUNCH_TIME: new Date().toISOString(),
@@ -98,7 +98,7 @@ export default function ChildPanelLauncher() {
         },
         panelId: "shared-storage",
       });
-      setStatus(`Launched example panel ${childId} with shared panel id`);
+      setStatus(`Launched root panel ${childId} with shared panel id`);
     } catch (error) {
       setStatus(`Failed to launch: ${error instanceof Error ? error.message : String(error)}`);
     }

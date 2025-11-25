@@ -9,16 +9,48 @@
 // Model Metadata
 // =============================================================================
 
+/**
+ * Information about a model assigned to a role.
+ * Panels access models by role (e.g., "fast", "smart"), not by provider-specific IDs.
+ */
 export interface AIModelInfo {
-  /** Unique identifier for this model (e.g., "claude-sonnet", "gpt-4o") */
-  id: string;
+  /** Underlying model ID this role resolves to */
+  modelId: string;
   /** Provider identifier (e.g., "anthropic", "openai") */
   provider: string;
-  /** Human-readable display name */
+  /** Human-readable display name of the model */
   displayName: string;
-  /** Optional description of model capabilities */
+  /** Optional description */
   description?: string;
 }
+
+/**
+ * Record mapping role names to their configured models.
+ *
+ * Standard roles (smart, fast, cheap, coding) are always present with defaults applied:
+ * - smart <-> coding (both prefer fast if not configured)
+ * - cheap <-> fast (both prefer smart if not configured)
+ *
+ * Additional custom roles can be added as needed.
+ *
+ * Example:
+ * ```typescript
+ * const roles: AIRoleRecord = {
+ *   fast: { modelId: "openai:gpt-4o-mini", provider: "openai", displayName: "GPT-4o Mini" },
+ *   smart: { modelId: "anthropic:claude-sonnet-4-20250514", provider: "anthropic", displayName: "Claude Sonnet 4" },
+ *   coding: { modelId: "anthropic:claude-sonnet-4-20250514", provider: "anthropic", displayName: "Claude Sonnet 4" },
+ *   cheap: { modelId: "openai:gpt-4o-mini", provider: "openai", displayName: "GPT-4o Mini" },
+ *   // optional custom roles:
+ *   vision: { modelId: "openai:gpt-4o", provider: "openai", displayName: "GPT-4o" }
+ * }
+ * ```
+ */
+export type AIRoleRecord = {
+  smart: AIModelInfo;
+  fast: AIModelInfo;
+  cheap: AIModelInfo;
+  coding: AIModelInfo;
+} & Record<string, AIModelInfo>;
 
 // =============================================================================
 // Request Types (Panel -> Main)

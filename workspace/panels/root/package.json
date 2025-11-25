@@ -1,10 +1,10 @@
 {
-  "name": "@natstack-panels/example",
+  "name": "@natstack-panels/root",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "natstack": {
-    "title": "React Example Panel",
+    "title": "Root Panel",
     "entry": "index.tsx"
   },
   "dependencies": {

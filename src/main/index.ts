@@ -1,27 +1,109 @@
-import dotenv from "dotenv";
 import { app, BrowserWindow, nativeTheme, webContents } from "electron";
 import * as path from "path";
-import { createAnthropic } from "@ai-sdk/anthropic";
+import * as fs from "fs";
 
-dotenv.config();
 import { isDev } from "./utils.js";
 import { PanelManager } from "./panelManager.js";
-import { resolveInitialRootPanelPath } from "./rootPanelResolver.js";
+import { resolveInitialRootPanelPath, parseCliRootPanelPath } from "./rootPanelResolver.js";
 import { GitServer } from "./gitServer.js";
 import { handle } from "./ipc/handlers.js";
-import * as SharedPanel from "../shared/ipc/types.js";
+import type * as SharedPanel from "../shared/ipc/types.js";
 import { setupMenu } from "./menu.js";
+import { setActiveWorkspace } from "./paths.js";
+import {
+  parseCliWorkspacePath,
+  discoverWorkspace,
+  createWorkspace,
+  loadCentralEnv,
+} from "./workspace/loader.js";
+import type { Workspace, AppMode } from "./workspace/types.js";
+import { setAppMode } from "./ipc/workspaceHandlers.js";
+import { getCentralData } from "./centralData.js";
 
+// =============================================================================
+// Configuration Initialization
+// =============================================================================
+
+// Load central environment variables first (.env and .secrets.yml from ~/.config/natstack/)
+loadCentralEnv();
+
+// Parse CLI arguments
+const cliWorkspacePath = parseCliWorkspacePath();
+const cliRootPanelPath = parseCliRootPanelPath();
+
+// Determine startup workspace (CLI > env > walk-up > default), but only if config exists
+const discoveredWorkspacePath = discoverWorkspace(cliWorkspacePath);
+const configPath = path.join(discoveredWorkspacePath, "natstack.yml");
+const hasWorkspaceConfig = fs.existsSync(configPath);
+
+// If CLI path was explicitly provided but has no config, error and exit
+if (cliWorkspacePath && !hasWorkspaceConfig) {
+  console.error(`[Error] Workspace config not found at ${discoveredWorkspacePath}`);
+  console.error(`[Error] Expected natstack.yml at: ${configPath}`);
+  app.quit();
+  process.exit(1);
+}
+
+let appMode: AppMode = hasWorkspaceConfig ? "main" : "chooser";
+let workspace: Workspace | null = null;
+let gitServer: GitServer | null = null;
+let panelManager: PanelManager | null = null;
 let mainWindow: BrowserWindow | null = null;
-const initialRootPanelPath = resolveInitialRootPanelPath();
-// console.log("Using root panel path:", initialRootPanelPath);
-const gitServer = new GitServer();
-const panelManager = new PanelManager(initialRootPanelPath, gitServer);
+
+// Export AI handler for use by other modules (will be set during initialization)
+export let aiHandler: import("./ai/aiHandler.js").AIHandler | null = null;
+
+// =============================================================================
+// Main Mode Initialization
+// =============================================================================
+
+if (appMode === "main" && hasWorkspaceConfig) {
+  try {
+    workspace = createWorkspace(discoveredWorkspacePath);
+    setActiveWorkspace(workspace);
+    console.log(`[Workspace] Loaded: ${workspace.path} (id: ${workspace.config.id})`);
+
+    // Add to recent workspaces
+    const centralData = getCentralData();
+    centralData.addRecentWorkspace(workspace.path, workspace.config.id);
+
+    // Resolve root panel path: CLI arg > workspace config > default
+    // Normalize all paths to be relative to workspace
+    let initialRootPanelPath =
+      cliRootPanelPath ?? workspace.config["root-panel"] ?? resolveInitialRootPanelPath();
+
+    // If path is absolute, make it relative to workspace
+    if (path.isAbsolute(initialRootPanelPath)) {
+      initialRootPanelPath = path.relative(workspace.path, initialRootPanelPath);
+    }
+
+    console.log(`[Panel] Root panel: ${initialRootPanelPath}`);
+
+    // Create git server with workspace configuration
+    gitServer = new GitServer({
+      port: workspace.config.git?.port,
+      reposPath: workspace.gitReposPath,
+    });
+
+    // Create panel manager
+    panelManager = new PanelManager(initialRootPanelPath, gitServer);
+  } catch (error) {
+    console.error("[Workspace] Failed to initialize workspace, falling back to chooser mode:", error);
+    appMode = "chooser";
+  }
+}
+
+setAppMode(appMode);
+console.log(`[App] Starting in ${appMode} mode`);
+
+// =============================================================================
+// Window Creation
+// =============================================================================
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1200,
-    height: 600,
+    height: appMode === "main" ? 600 : 500,
     titleBarStyle: "hidden",
     ...(process.platform !== "darwin"
       ? {
@@ -46,15 +128,17 @@ function createWindow(): void {
     mainWindow = null;
   });
 
-  // Set main window reference in panel manager
-  panelManager.setMainWindow(mainWindow);
+  // Set main window reference in panel manager (if in main mode)
+  if (panelManager) {
+    panelManager.setMainWindow(mainWindow);
+  }
 
   // Setup application menu
   setupMenu(mainWindow);
 }
 
 // =============================================================================
-// App IPC Handlers (renderer <-> main)
+// App IPC Handlers (renderer <-> main) - Always available
 // =============================================================================
 
 handle("app:get-info", async () => {
@@ -80,24 +164,43 @@ handle("app:get-panel-preload-path", async () => {
 });
 
 // =============================================================================
-// Panel IPC Handlers (renderer <-> main)
+// Panel IPC Handlers (renderer <-> main) - Only in main mode
 // =============================================================================
 
+// Helper to ensure we're in main mode with panel manager
+function requirePanelManager(): PanelManager {
+  if (!panelManager) {
+    throw new Error("Panel operations not available in workspace chooser mode");
+  }
+  return panelManager;
+}
+
+// Helper to get sender ID and validate authorization
+function assertAuthorized(event: Electron.IpcMainInvokeEvent, panelId: string): void {
+  const pm = requirePanelManager();
+  const senderPanelId = pm.getPanelIdForWebContents(event.sender);
+  if (senderPanelId !== panelId) {
+    throw new Error(`Unauthorized: Sender ${senderPanelId} cannot act as ${panelId}`);
+  }
+}
+
 handle("panel:get-tree", async () => {
-  return panelManager.getSerializablePanelTree();
+  return requirePanelManager().getSerializablePanelTree();
 });
 
 handle("panel:notify-focus", async (_event, panelId: string) => {
-  panelManager.sendPanelEvent(panelId, { type: "focus" });
+  requirePanelManager().sendPanelEvent(panelId, { type: "focus" });
 });
 
 handle("panel:update-theme", async (_event, theme: SharedPanel.ThemeAppearance) => {
-  panelManager.setCurrentTheme(theme);
-  panelManager.broadcastTheme(theme);
+  const pm = requirePanelManager();
+  pm.setCurrentTheme(theme);
+  pm.broadcastTheme(theme);
 });
 
 handle("panel:open-devtools", async (_event, panelId: string) => {
-  const views = panelManager.getPanelViews(panelId);
+  const pm = requirePanelManager();
+  const views = pm.getPanelViews(panelId);
   if (!views || views.size === 0) {
     throw new Error(`No active webviews for panel ${panelId}`);
   }
@@ -111,57 +214,8 @@ handle("panel:open-devtools", async (_event, panelId: string) => {
 });
 
 // =============================================================================
-// Panel Bridge IPC Handlers (panel webview <-> main)
+// Panel Bridge IPC Handlers (panel webview <-> main) - Only in main mode
 // =============================================================================
-
-// Initialize RPC handler
-import { PanelRpcHandler } from "./ipc/rpcHandler.js";
-new PanelRpcHandler(panelManager);
-
-// Initialize AI handler
-import { AIHandler } from "./ai/aiHandler.js";
-export const aiHandler = new AIHandler(panelManager);
-
-// Temporary default provider registration until a config file is wired
-try {
-  const anthropicProvider = createAnthropic({
-    apiKey: process.env["ANTHROPIC_API_KEY"],
-  });
-
-  if (!process.env["ANTHROPIC_API_KEY"]) {
-    console.warn("[AIHandler] ANTHROPIC_API_KEY is not set; AI calls will fail until configured.");
-  }
-
-  aiHandler.registerProvider({
-    id: "anthropic",
-    name: "Anthropic",
-    createModel: (modelId) => anthropicProvider(modelId),
-    models: [
-      {
-        id: "claude-haiku-4-5-20251001",
-        displayName: "Claude 4.5 Haiku",
-        description: "Anthropic Claude 4.5 Haiku model",
-      },
-    ],
-  });
-} catch (error) {
-  console.warn(
-    "Failed to register default Anthropic provider. Configure providers manually.",
-    error
-  );
-}
-
-// =============================================================================
-// Panel Bridge IPC Handlers (panel webview <-> main)
-// =============================================================================
-
-// Helper to get sender ID and validate authorization
-function assertAuthorized(event: Electron.IpcMainInvokeEvent, panelId: string): void {
-  const senderPanelId = panelManager.getPanelIdForWebContents(event.sender);
-  if (senderPanelId !== panelId) {
-    throw new Error(`Unauthorized: Sender ${senderPanelId} cannot act as ${panelId}`);
-  }
-}
 
 handle(
   "panel-bridge:create-child",
@@ -173,39 +227,39 @@ handle(
     requestedPanelId?: string
   ) => {
     assertAuthorized(event, parentId);
-    return panelManager.createChild(parentId, panelPath, env, requestedPanelId);
+    return requirePanelManager().createChild(parentId, panelPath, env, requestedPanelId);
   }
 );
 
 handle("panel-bridge:remove-child", async (event, parentId: string, childId: string) => {
   assertAuthorized(event, parentId);
-  return panelManager.removeChild(parentId, childId);
+  return requirePanelManager().removeChild(parentId, childId);
 });
 
 handle("panel-bridge:set-title", async (event, panelId: string, title: string) => {
   assertAuthorized(event, panelId);
-  return panelManager.setTitle(panelId, title);
+  return requirePanelManager().setTitle(panelId, title);
 });
 
 handle("panel-bridge:close", async (event, panelId: string) => {
   assertAuthorized(event, panelId);
-  return panelManager.closePanel(panelId);
+  return requirePanelManager().closePanel(panelId);
 });
 
 handle("panel-bridge:register", async (event, panelId: string, authToken: string) => {
   // This is the initial handshake, so we don't use assertAuthorized yet.
   // Instead, we verify the token which proves identity.
-  panelManager.verifyAndRegister(panelId, authToken, event.sender.id);
+  requirePanelManager().verifyAndRegister(panelId, authToken, event.sender.id);
 });
 
 handle("panel-bridge:get-env", async (event, panelId: string) => {
   assertAuthorized(event, panelId);
-  return panelManager.getEnv(panelId);
+  return requirePanelManager().getEnv(panelId);
 });
 
 handle("panel-bridge:get-info", async (event, panelId: string) => {
   assertAuthorized(event, panelId);
-  return panelManager.getInfo(panelId);
+  return requirePanelManager().getInfo(panelId);
 });
 
 // =============================================================================
@@ -213,12 +267,26 @@ handle("panel-bridge:get-info", async (event, panelId: string) => {
 // =============================================================================
 
 app.on("ready", async () => {
-  try {
-    const port = await gitServer.start();
-    console.log(`Git server started on port ${port}`);
-  } catch (error) {
-    console.error("Failed to start git server:", error);
+  // Initialize services only in main mode
+  if (appMode === "main" && gitServer && panelManager) {
+    try {
+      // Start git server
+      const port = await gitServer.start();
+      console.log(`[Git] Server started on port ${port}`);
+
+      // Initialize RPC handler
+      const { PanelRpcHandler } = await import("./ipc/rpcHandler.js");
+      new PanelRpcHandler(panelManager);
+
+      // Initialize AI handler
+      const { AIHandler } = await import("./ai/aiHandler.js");
+      aiHandler = new AIHandler(panelManager);
+      await aiHandler.initialize();
+    } catch (error) {
+      console.error("Failed to initialize services:", error);
+    }
   }
+
   void createWindow();
 });
 
@@ -230,15 +298,17 @@ app.on("window-all-closed", () => {
 
 // Use will-quit with preventDefault to properly await async shutdown
 app.on("will-quit", (event) => {
-  event.preventDefault();
-  gitServer
-    .stop()
-    .catch((error) => {
-      console.error("Error stopping git server:", error);
-    })
-    .finally(() => {
-      app.exit(0);
-    });
+  if (gitServer) {
+    event.preventDefault();
+    gitServer
+      .stop()
+      .catch((error) => {
+        console.error("Error stopping git server:", error);
+      })
+      .finally(() => {
+        app.exit(0);
+      });
+  }
 });
 
 app.on("activate", () => {
@@ -256,3 +326,6 @@ nativeTheme.on("updated", () => {
     );
   }
 });
+
+// Import workspace handlers to register them
+import "./ipc/workspaceHandlers.js";

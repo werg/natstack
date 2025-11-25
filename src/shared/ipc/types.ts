@@ -1,6 +1,6 @@
 // Shared types for typed IPC communication
 
-import type { AICallOptions, AIGenerateResult, AIModelInfo } from "@natstack/ai";
+import type { AICallOptions, AIGenerateResult, AIRoleRecord } from "@natstack/ai";
 
 export type ThemeMode = "light" | "dark" | "system";
 export type ThemeAppearance = "light" | "dark";
@@ -85,12 +85,109 @@ export interface AIProviderIpcApi {
   /** Cancel an active streaming generation */
   "ai:stream-cancel": (streamId: string) => void;
 
-  /** List available models for the panel */
-  "ai:list-models": () => AIModelInfo[];
+  /** Get record of configured roles and their assigned models */
+  "ai:list-roles": () => AIRoleRecord;
+}
+
+// =============================================================================
+// Workspace & Settings Types
+// =============================================================================
+
+/**
+ * Application mode for startup flow:
+ * - chooser: Show workspace chooser (with setup modal if no providers)
+ * - main: Has workspace - show main panel UI
+ */
+export type AppMode = "chooser" | "main";
+
+export interface RecentWorkspace {
+  path: string;
+  name: string;
+  lastOpened: number;
+}
+
+export interface WorkspaceValidation {
+  path: string;
+  name: string;
+  isValid: boolean;
+  hasConfig: boolean;
+  error?: string;
+}
+
+export interface ProviderInfo {
+  id: string;
+  name: string;
+  hasApiKey: boolean;
+  models: string[];
+}
+
+export interface AvailableProvider {
+  id: string;
+  name: string;
+  envVar: string;
+}
+
+/**
+ * Simplified model role config for IPC (string format only).
+ * Full ModelConfig objects are converted to "provider:model" strings.
+ */
+export interface ModelRoleConfig {
+  smart?: string;
+  coding?: string;
+  fast?: string;
+  cheap?: string;
+  [key: string]: string | undefined;
+}
+
+export interface SettingsData {
+  providers: ProviderInfo[];
+  modelRoles: ModelRoleConfig;
+  availableProviders: AvailableProvider[];
+  /** Whether at least one provider has an API key */
+  hasConfiguredProviders: boolean;
+}
+
+// =============================================================================
+// Workspace & Settings IPC Channels
+// =============================================================================
+
+// Central data IPC channels (workspace chooser, recent workspaces)
+export interface CentralDataIpcApi {
+  "central:get-recent-workspaces": () => RecentWorkspace[];
+  "central:add-recent-workspace": (path: string) => void;
+  "central:remove-recent-workspace": (path: string) => void;
+}
+
+// Workspace management IPC channels
+export interface WorkspaceIpcApi {
+  "workspace:validate-path": (path: string) => WorkspaceValidation;
+  "workspace:open-folder-dialog": () => string | null;
+  "workspace:create": (path: string, name: string) => WorkspaceValidation;
+  "workspace:select": (path: string) => void;
+}
+
+// Settings IPC channels
+export interface SettingsIpcApi {
+  "settings:get-data": () => SettingsData;
+  "settings:set-api-key": (providerId: string, apiKey: string) => void;
+  "settings:remove-api-key": (providerId: string) => void;
+  "settings:set-model-role": (role: string, modelSpec: string) => void;
+}
+
+// App mode IPC channels
+export interface AppModeIpcApi {
+  "app:get-mode": () => AppMode;
 }
 
 // Combined API for type utilities
-export type AllIpcApi = AppIpcApi & PanelIpcApi & PanelBridgeIpcApi & AIProviderIpcApi;
+export type AllIpcApi = AppIpcApi &
+  PanelIpcApi &
+  PanelBridgeIpcApi &
+  AIProviderIpcApi &
+  CentralDataIpcApi &
+  WorkspaceIpcApi &
+  SettingsIpcApi &
+  AppModeIpcApi;
 
 // =============================================================================
 // Type utilities for extracting channel info

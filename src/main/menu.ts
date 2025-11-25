@@ -26,7 +26,29 @@ export function setupMenu(mainWindow: Electron.BrowserWindow): void {
     // { role: 'fileMenu' }
     {
       label: "File",
-      submenu: [isMac ? { role: "close" } : { role: "quit" }],
+      submenu: [
+        {
+          label: "Switch Workspace...",
+          accelerator: "CmdOrCtrl+Shift+O",
+          click: () => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send("open-workspace-chooser");
+            }
+          },
+        },
+        { type: "separator" },
+        {
+          label: "Settings...",
+          accelerator: "CmdOrCtrl+,",
+          click: () => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send("open-settings");
+            }
+          },
+        },
+        { type: "separator" },
+        isMac ? { role: "close" } : { role: "quit" },
+      ] as MenuItemConstructorOptions[],
     },
     // { role: 'editMenu' }
     {

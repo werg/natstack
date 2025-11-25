@@ -45,3 +45,9 @@ release
 *.tmp
 .cache
 .parcel-cache
+
+# Workspace secrets and state
+workspace/.env
+workspace/.secrets.yml
+workspace/state/git-repos/
+workspace/state/.cache/

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { models, getAvailableModels, type AIModelInfo } from "@natstack/panel";
+import { models, getRoles, type AIRoleRecord } from "@natstack/panel";
 import { Box, Flex, Card, Text, Heading, Button, TextArea, Select, Callout, Separator } from "@radix-ui/themes";
 
 type ChatTurn = { role: "user" | "assistant"; text: string; pending?: boolean };
@@ -9,8 +9,8 @@ type PromptMessage =
   | { role: "assistant"; content: Array<{ type: "text"; text: string }> };
 
 export default function AgenticChat() {
-  const [availableModels, setAvailableModels] = useState<AIModelInfo[]>([]);
-  const [modelId, setModelId] = useState<string | null>(null);
+  const [roles, setRoles] = useState<AIRoleRecord | null>(null);
+  const [selectedRole, setSelectedRole] = useState<string>("fast");
   const [messages, setMessages] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<string>("");
@@ -20,16 +20,13 @@ export default function AgenticChat() {
   useEffect(() => {
     void (async () => {
       try {
-        const modelsList = await getAvailableModels();
-        setAvailableModels(modelsList);
-        if (!modelId && modelsList.length > 0) {
-          setModelId(modelsList[0].id);
-        }
+        const roleRecord = await getRoles();
+        setRoles(roleRecord);
       } catch (error) {
-        setStatus(`Failed to load models: ${error instanceof Error ? error.message : String(error)}`);
+        setStatus(`Failed to load roles: ${error instanceof Error ? error.message : String(error)}`);
       }
     })();
-  }, [modelId]);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -54,7 +51,7 @@ export default function AgenticChat() {
 
   const sendMessage = async () => {
     const trimmed = input.trim();
-    if (!trimmed || !modelId) return;
+    if (!trimmed || !roles) return;
 
     abortRef.current?.abort();
 
@@ -68,7 +65,8 @@ export default function AgenticChat() {
     setStreaming(true);
 
     try {
-      const model = models[modelId];
+      // Access model by role - the models proxy allows accessing by role name
+      const model = models[selectedRole];
       const { stream } = await model.doStream({
         prompt: [...prompt, { role: "user", content: [{ type: "text", text: trimmed }] }],
         abortSignal: controller.signal,
@@ -134,14 +132,14 @@ export default function AgenticChat() {
           <Flex align="center" gap="3">
             <Box>
               <Text size="1" color="gray">
-                Model
+                Role
               </Text>
-              <Select.Root value={modelId ?? ""} onValueChange={(value) => setModelId(value)}>
-                <Select.Trigger placeholder="Select a model" size="2" disabled={!availableModels.length} />
+              <Select.Root value={selectedRole} onValueChange={(value) => setSelectedRole(value)}>
+                <Select.Trigger placeholder="Select a role" size="2" disabled={!roles} />
                 <Select.Content>
-                  {availableModels.map((m) => (
-                    <Select.Item key={m.id} value={m.id}>
-                      {m.displayName ?? m.id}
+                  {roles && Object.entries(roles).map(([role, modelInfo]) => (
+                    <Select.Item key={role} value={role}>
+                      {role}: {modelInfo.displayName}
                     </Select.Item>
                   ))}
                 </Select.Content>
@@ -182,7 +180,7 @@ export default function AgenticChat() {
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Shift+Enter for newline. Enter to send."
-              disabled={!modelId || streaming}
+              disabled={!roles || streaming}
             />
             <Flex align="center" justify="between" gap="3">
               {status ? (
@@ -192,7 +190,7 @@ export default function AgenticChat() {
               ) : (
                 <Box />
               )}
-              <Button onClick={() => void sendMessage()} disabled={!modelId || streaming || !input.trim()} size="2">
+              <Button onClick={() => void sendMessage()} disabled={!roles || streaming || !input.trim()} size="2">
                 {streaming ? "Streaming…" : "Send"}
               </Button>
             </Flex>

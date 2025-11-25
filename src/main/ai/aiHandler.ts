@@ -18,6 +18,7 @@ import type { PanelManager } from "../panelManager.js";
 import type {
   AICallOptions,
   AIGenerateResult,
+  AIRoleRecord,
   AIModelInfo,
   AIStreamPart,
   AIMessage,
@@ -41,15 +42,16 @@ import {
 // AI SDK Types
 // =============================================================================
 
-interface LanguageModelV2 {
-  specificationVersion: "v2";
+// Support both v2 and v3 language models from the AI SDK
+interface LanguageModel {
+  specificationVersion: "v2" | "v3";
   provider: string;
   modelId: string;
   doGenerate(options: unknown): PromiseLike<unknown>;
   doStream(options: unknown): PromiseLike<{ stream: ReadableStream<unknown> }>;
 }
 
-type AISDKProvider = (modelId: string) => LanguageModelV2;
+type AISDKProvider = (modelId: string) => LanguageModel;
 
 // =============================================================================
 // Type Converters
@@ -228,6 +230,16 @@ export interface AIProviderConfig {
 }
 
 /**
+ * Internal model info with id field (not the same as AIModelInfo from types.ts)
+ */
+interface InternalModelInfo {
+  id: string;
+  provider: string;
+  displayName: string;
+  description?: string;
+}
+
+/**
  * Manages registered AI providers and model discovery.
  */
 class AIProviderRegistry {
@@ -242,8 +254,8 @@ class AIProviderRegistry {
     });
   }
 
-  getAvailableModels(): AIModelInfo[] {
-    const models: AIModelInfo[] = [];
+  getAvailableModels(): InternalModelInfo[] {
+    const models: InternalModelInfo[] = [];
     for (const [providerId, config] of this.providers) {
       for (const model of config.models) {
         models.push({
@@ -257,7 +269,7 @@ class AIProviderRegistry {
     return models;
   }
 
-  getModel(modelId: string): LanguageModelV2 {
+  getModel(modelId: string): LanguageModel {
     // Model ID format: "provider:modelName" or just "modelName"
     let providerId: string | undefined;
     let modelName: string;
@@ -309,6 +321,7 @@ export class AIHandler {
   private registry = new AIProviderRegistry();
   private streamManager = new AIStreamManager();
   private logger = new Logger("AIHandler");
+  private modelRoleResolver: import("./modelRoles.js").ModelRoleResolver | null = null;
 
   constructor(private panelManager: PanelManager) {
     this.registerHandlers();
@@ -319,15 +332,168 @@ export class AIHandler {
     this.registry.registerProvider(config, requestId);
   }
 
-  getAvailableModels(): AIModelInfo[] {
-    return this.registry.getAvailableModels();
+  /**
+   * Clear all registered providers
+   */
+  clearProviders(): void {
+    this.registry = new AIProviderRegistry();
+    const requestId = generateRequestId();
+    this.logger.info(requestId, "All providers cleared");
+  }
+
+  /**
+   * Initialize providers and model roles.
+   * - Model roles come from central config (~/.config/natstack/config.yml)
+   * - API keys come from central config (.secrets.yml or .env)
+   */
+  async initialize(): Promise<void> {
+    const requestId = generateRequestId();
+    this.logger.info(requestId, "Initializing AI handler");
+
+    // Clear existing providers
+    this.clearProviders();
+
+    // Import dynamically to avoid circular dependencies at module load time
+    const { createProviderFromConfig, getSupportedProviders } = await import("./providerFactory.js");
+    const { ModelRoleResolver } = await import("./modelRoles.js");
+    const { loadCentralConfig } = await import("../workspace/loader.js");
+
+    // Load model roles from central config
+    const centralConfig = loadCentralConfig();
+    this.modelRoleResolver = new ModelRoleResolver(centralConfig.models);
+
+    // Auto-detect providers from environment variables
+    // API keys come from central .secrets.yml (loaded into env) or .env file
+    let registeredCount = 0;
+    for (const providerId of getSupportedProviders()) {
+      const providerRegistration = createProviderFromConfig(providerId);
+      if (providerRegistration) {
+        this.registerProvider(providerRegistration);
+        registeredCount++;
+      }
+    }
+
+    this.logger.info(requestId, "AI handler initialization complete", { registeredCount });
+  }
+
+  /**
+   * Resolve a model role or ID to the actual model ID
+   */
+  resolveModelId(roleOrId: string): string {
+    if (this.modelRoleResolver) {
+      return this.modelRoleResolver.getModel(roleOrId);
+    }
+    return roleOrId;
+  }
+
+  /**
+   * Get role-to-model mappings with defaults applied.
+   *
+   * Defaulting rules (applied only when a role is not explicitly configured):
+   * - smart <-> coding (both prefer fast if available)
+   * - cheap <-> fast (both prefer smart if available)
+   *
+   * This ensures all four standard roles always have a model assigned
+   * as long as at least one role is configured.
+   */
+  getAvailableRoles(): AIRoleRecord {
+    if (!this.modelRoleResolver) {
+      // Return empty record if no resolver - won't satisfy AIRoleRecord type
+      // but this should only happen during initialization
+      return {} as AIRoleRecord;
+    }
+
+    const allModels = this.registry.getAvailableModels();
+
+    // Helper to get model info for a role
+    const getModelInfo = (role: 'smart' | 'coding' | 'fast' | 'cheap'): AIModelInfo | null => {
+      const spec = this.modelRoleResolver?.resolveSpec(role);
+      if (!spec) return null;
+
+      // The spec.model is just the model name (e.g., "claude-haiku-4-5-20251001")
+      // The registry stores models with this ID format
+      const modelInfo = allModels.find(m => m.id === spec.model && m.provider === spec.provider);
+      if (!modelInfo) return null;
+
+      return {
+        modelId: spec.modelId, // Keep the full format "provider:model"
+        provider: modelInfo.provider,
+        displayName: modelInfo.displayName,
+        description: modelInfo.description,
+      };
+    };
+
+    // Get explicitly configured roles
+    const smart = getModelInfo('smart');
+    const coding = getModelInfo('coding');
+    const fast = getModelInfo('fast');
+    const cheap = getModelInfo('cheap');
+
+    // Apply defaulting rules
+    // smart <-> coding, both prefer fast
+    const smartFinal = smart || coding || fast || cheap;
+    const codingFinal = coding || smart || fast || cheap;
+
+    // cheap <-> fast, both prefer smart
+    const fastFinal = fast || cheap || smart || coding;
+    const cheapFinal = cheap || fast || smart || coding;
+
+    if (!smartFinal || !codingFinal || !fastFinal || !cheapFinal) {
+      // This should not happen if at least one provider is configured
+      // Return a minimal valid record using the first available model
+      const fallback = smartFinal || codingFinal || fastFinal || cheapFinal;
+      if (fallback) {
+        console.warn('[AI] Using fallback model for unconfigured roles. Consider configuring all standard roles in ~/.config/natstack/config.yml');
+        console.warn(`[AI] Fallback model: ${fallback.displayName} (${fallback.modelId})`);
+        return {
+          smart: fallback,
+          coding: fallback,
+          fast: fallback,
+          cheap: fallback,
+        };
+      }
+      // No models available at all
+      throw new Error('No AI models available. Please configure at least one provider.');
+    }
+
+    // Log if any roles are using fallback defaults
+    const usedFallback =
+      (smart === null && smartFinal !== null) ||
+      (coding === null && codingFinal !== null) ||
+      (fast === null && fastFinal !== null) ||
+      (cheap === null && cheapFinal !== null);
+
+    if (usedFallback) {
+      const unconfiguredRoles = [];
+      if (smart === null) unconfiguredRoles.push('smart');
+      if (coding === null) unconfiguredRoles.push('coding');
+      if (fast === null) unconfiguredRoles.push('fast');
+      if (cheap === null) unconfiguredRoles.push('cheap');
+      console.warn(`[AI] Using fallback models for unconfigured roles: ${unconfiguredRoles.join(', ')}`);
+    }
+
+    // Build the final record with standard roles
+    const roles: AIRoleRecord = {
+      smart: smartFinal,
+      coding: codingFinal,
+      fast: fastFinal,
+      cheap: cheapFinal,
+    };
+
+    // Add any custom roles (non-standard roles from config)
+    // Note: Currently we only check standard roles, but this could be extended
+    // to discover custom roles from the config if needed
+
+    return roles;
   }
 
   private registerHandlers(): void {
     handle("ai:generate", async (event, modelId: string, options: AICallOptions) => {
       const requestId = generateRequestId();
       const panelId = this.getPanelId(event, requestId);
-      return this.generate(requestId, panelId, modelId, options);
+      // Resolve model role to actual model ID
+      const resolvedModelId = this.resolveModelId(modelId);
+      return this.generate(requestId, panelId, resolvedModelId, options);
     });
 
     handle(
@@ -335,7 +501,9 @@ export class AIHandler {
       async (event, modelId: string, options: AICallOptions, streamId: string) => {
         const requestId = generateRequestId();
         const panelId = this.getPanelId(event, requestId);
-        void this.streamToPanel(event.sender, requestId, panelId, modelId, options, streamId);
+        // Resolve model role to actual model ID
+        const resolvedModelId = this.resolveModelId(modelId);
+        void this.streamToPanel(event.sender, requestId, panelId, resolvedModelId, options, streamId);
       }
     );
 
@@ -345,10 +513,10 @@ export class AIHandler {
       this.streamManager.cancelStream(streamId);
     });
 
-    handle("ai:list-models", async (event) => {
+    handle("ai:list-roles", async (event) => {
       const requestId = generateRequestId();
       this.getPanelId(event, requestId); // Validate authorization
-      return this.getAvailableModels();
+      return this.getAvailableRoles();
     });
   }
 

@@ -4,7 +4,7 @@ import type { Rpc } from "@natstack/core";
 import {
   type AICallOptions,
   type AIGenerateResult,
-  type AIModelInfo,
+  type AIRoleRecord,
   type AIStreamChunkEvent,
   type AIStreamEndEvent,
   type AIStreamPart,
@@ -463,8 +463,8 @@ const bridge = {
       return ipcRenderer.invoke("ai:stream-cancel", streamId);
     },
 
-    listModels: (): Promise<AIModelInfo[]> => {
-      return ipcRenderer.invoke("ai:list-models");
+    listRoles: (): Promise<AIRoleRecord> => {
+      return ipcRenderer.invoke("ai:list-roles");
     },
 
     onStreamChunk: (listener: (streamId: string, chunk: AIStreamPart) => void): (() => void) => {

@@ -3,7 +3,7 @@ import * as path from "path";
 import { randomBytes } from "crypto";
 import { PanelBuilder } from "./panelBuilder.js";
 import type { PanelEventPayload, Panel, PanelArtifacts } from "./panelTypes.js";
-import { getPanelCacheDirectory } from "./paths.js";
+import { getPanelCacheDirectory, getActiveWorkspace } from "./paths.js";
 import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
 import type { GitServer } from "./gitServer.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
@@ -22,7 +22,8 @@ export class PanelManager {
 
   constructor(initialRootPanelPath: string, gitServer: GitServer) {
     this.gitServer = gitServer;
-    this.panelsRoot = path.resolve(process.cwd());
+    const workspace = getActiveWorkspace();
+    this.panelsRoot = workspace?.path ?? path.resolve(process.cwd());
     const cacheDir = getPanelCacheDirectory();
     // console.log("Using panel cache directory:", cacheDir);
     this.builder = new PanelBuilder(cacheDir);
