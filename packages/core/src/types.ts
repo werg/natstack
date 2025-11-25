@@ -63,7 +63,18 @@ export interface ExposedMethods {
   [methodName: string]: AnyFunction;
 }
 
-export interface PanelRpcHandle<T extends ExposedMethods = ExposedMethods> {
+/**
+ * Event map for typed events.
+ * Extend this interface to define event types.
+ */
+export interface RpcEventMap {
+  [eventName: string]: any;
+}
+
+export interface PanelRpcHandle<
+  T extends ExposedMethods = ExposedMethods,
+  E extends RpcEventMap = RpcEventMap
+> {
   /** The panel ID this handle connects to */
   panelId: string;
 
@@ -74,7 +85,13 @@ export interface PanelRpcHandle<T extends ExposedMethods = ExposedMethods> {
       : never;
   };
 
-  /** Subscribe to events from the remote panel */
+  /** Subscribe to events from the remote panel (typed if event map provided) */
+  on<EventName extends Extract<keyof E, string>>(
+    event: EventName,
+    handler: (payload: E[EventName]) => void
+  ): () => void;
+
+  /** Subscribe to events from the remote panel (untyped fallback) */
   on(event: string, handler: (payload: unknown) => void): () => void;
 }
 

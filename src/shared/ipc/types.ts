@@ -1,6 +1,6 @@
 // Shared types for typed IPC communication
 
-import type { AICallOptions, AIGenerateResult, AIModelInfo } from "./aiTypes.js";
+import type { AICallOptions, AIGenerateResult, AIModelInfo } from "@natstack/ai";
 
 export type ThemeMode = "light" | "dark" | "system";
 export type ThemeAppearance = "light" | "dark";

@@ -28,7 +28,7 @@ import type {
   AIToolCallPart,
   AIToolResultPart,
   AIFinishReason,
-} from "../../shared/ipc/aiTypes.js";
+} from "@natstack/ai";
 import { createAIError, mapAISDKError, type AIError } from "../../shared/errors.js";
 import { Logger, generateRequestId } from "../../shared/logging.js";
 import {

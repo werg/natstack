@@ -1,6 +1,7 @@
 import * as esbuild from "esbuild";
 import typiaPlugin from "@ryoppippi/unplugin-typia/esbuild";
 import * as fs from "fs";
+import { execSync } from "child_process";
 
 const isDev = process.env.NODE_ENV === "development";
 
@@ -58,32 +59,7 @@ const panelPreloadConfig = {
   logOverride,
 };
 
-const panelRuntimeConfig = {
-  entryPoints: ["src/panelRuntime/panelApi.ts"],
-  bundle: true,
-  platform: "browser",
-  target: "es2022",
-  format: "esm",
-  outfile: "dist/panelRuntime.js",
-  sourcemap: isDev,
-  minify: !isDev,
-  plugins: typiaPlugins,
-  logOverride,
-};
-
-const panelReactRuntimeConfig = {
-  entryPoints: ["src/panelRuntime/reactPanel.ts"],
-  bundle: true,
-  platform: "browser",
-  target: "es2022",
-  format: "esm",
-  outfile: "dist/panelReactRuntime.js",
-  sourcemap: isDev,
-  minify: !isDev,
-  plugins: typiaPlugins,
-  logOverride,
-};
-
+// Keep only fs runtime configs (these remain as virtual modules for now)
 const panelFsRuntimeConfig = {
   entryPoints: ["src/panelRuntime/panelFsRuntime.ts"],
   bundle: true,
@@ -104,19 +80,6 @@ const panelFsPromisesRuntimeConfig = {
   target: "es2022",
   format: "esm",
   outfile: "dist/panelFsPromisesRuntime.js",
-  sourcemap: isDev,
-  minify: !isDev,
-  plugins: typiaPlugins,
-  logOverride,
-};
-
-const panelAiRuntimeConfig = {
-  entryPoints: ["src/panelRuntime/panelAiRuntime.ts"],
-  bundle: true,
-  platform: "browser",
-  target: "es2022",
-  format: "esm",
-  outfile: "dist/panelAiRuntime.js",
   sourcemap: isDev,
   minify: !isDev,
   plugins: typiaPlugins,
@@ -145,19 +108,32 @@ function copyAssets() {
   fs.copyFileSync("src/panelRuntime/globals.d.ts", "dist/panelRuntimeGlobals.d.ts");
 }
 
+async function buildWorkspacePackages() {
+  console.log("Building workspace packages...");
+  try {
+    execSync('pnpm --filter "@natstack/*" build', { stdio: 'inherit' });
+    console.log("Workspace packages built successfully!");
+  } catch (error) {
+    console.error("Failed to build workspace packages:", error);
+    throw error;
+  }
+}
+
 async function build() {
   let contexts = [];
 
   try {
-  fs.mkdirSync("dist", { recursive: true });
+    fs.mkdirSync("dist", { recursive: true });
+
+    // Build workspace packages first
+    await buildWorkspacePackages();
+
+    // Build main app
     await esbuild.build(mainConfig);
     await esbuild.build(preloadConfig);
     await esbuild.build(panelPreloadConfig);
-    await esbuild.build(panelRuntimeConfig);
-    await esbuild.build(panelReactRuntimeConfig);
     await esbuild.build(panelFsRuntimeConfig);
     await esbuild.build(panelFsPromisesRuntimeConfig);
-    await esbuild.build(panelAiRuntimeConfig);
     await esbuild.build(rendererConfig);
 
     copyAssets();

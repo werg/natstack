@@ -8,17 +8,9 @@ import type { PanelManifest, PanelBuildResult, PanelBuildCache } from "./panelTy
 const CACHE_FILENAME = "build-cache.json";
 const PANEL_RUNTIME_DIRNAME = ".natstack";
 
-const panelApiModulePath = path.join(__dirname, "panelRuntime.js");
-const panelReactModulePath = path.join(__dirname, "panelReactRuntime.js");
+// Keep only fs virtual modules (natstack/* now resolved via workspace packages)
 const panelFsModulePath = path.join(__dirname, "panelFsRuntime.js");
 const panelFsPromisesModulePath = path.join(__dirname, "panelFsPromisesRuntime.js");
-const panelAiModulePath = path.join(__dirname, "panelAiRuntime.js");
-
-const runtimeModuleMap = new Map([
-  ["natstack/panel", panelApiModulePath],
-  ["natstack/react", panelReactModulePath],
-  ["natstack/ai", panelAiModulePath],
-]);
 
 const fsModuleMap = new Map([
   ["fs", panelFsModulePath],
@@ -27,15 +19,15 @@ const fsModuleMap = new Map([
   ["node:fs/promises", panelFsPromisesModulePath],
 ]);
 
-const virtualModuleMap = new Map([...runtimeModuleMap, ...fsModuleMap]);
-
-for (const [name, modulePath] of virtualModuleMap) {
+for (const [name, modulePath] of fsModuleMap) {
   if (!fs.existsSync(modulePath)) {
     throw new Error(`Runtime module ${name} not found at ${modulePath}`);
   }
 }
 
 const defaultPanelDependencies: Record<string, string> = {
+  // Ensure a predictable panel runtime baseline
+  "@natstack/panel": "workspace:*",
   "@zenfs/core": "^2.4.4",
   "@zenfs/dom": "^1.2.5",
 };
@@ -170,6 +162,7 @@ export class PanelBuilder {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/themes@3.2.1/styles.css">
   <link rel="stylesheet" href="./bundle.css" />
 </head>
 <body>
@@ -195,16 +188,34 @@ export class PanelBuilder {
 
   loadManifest(panelPath: string): PanelManifest {
     const absolutePanelPath = path.resolve(panelPath);
-    const manifestPath = path.join(absolutePanelPath, "panel.json");
-    if (!fs.existsSync(manifestPath)) {
-      throw new Error(`panel.json not found in ${panelPath}`);
+    const packageJsonPath = path.join(absolutePanelPath, "package.json");
+
+    if (!fs.existsSync(packageJsonPath)) {
+      throw new Error(`package.json not found in ${panelPath}`);
     }
 
-    const manifestContent = fs.readFileSync(manifestPath, "utf-8");
-    const manifest = JSON.parse(manifestContent) as PanelManifest;
+    const packageContent = fs.readFileSync(packageJsonPath, "utf-8");
+    const packageJson = JSON.parse(packageContent) as {
+      natstack?: PanelManifest;
+      dependencies?: Record<string, string>;
+    };
+
+    if (!packageJson.natstack) {
+      throw new Error(`package.json in ${panelPath} must include a 'natstack' field`);
+    }
+
+    const manifest = packageJson.natstack;
 
     if (!manifest.title) {
-      throw new Error("panel.json must include a 'title' field");
+      throw new Error("natstack.title must be specified in package.json");
+    }
+
+    // Merge package.json dependencies with natstack.dependencies
+    if (packageJson.dependencies) {
+      manifest.dependencies = {
+        ...manifest.dependencies,
+        ...packageJson.dependencies,
+      };
     }
 
     return manifest;
@@ -250,6 +261,23 @@ export class PanelBuilder {
     );
   }
 
+  private resolveWorkspaceDependencies(dependencies: Record<string, string>): Record<string, string> {
+    const resolved: Record<string, string> = {};
+    const workspaceRoot = process.cwd();
+
+    for (const [pkg, version] of Object.entries(dependencies)) {
+      if (version.startsWith("workspace:")) {
+        // Resolve workspace package to file path
+        const packagePath = path.join(workspaceRoot, "packages", pkg.split("/")[1] || pkg);
+        resolved[pkg] = `file:${packagePath}`;
+      } else {
+        resolved[pkg] = version;
+      }
+    }
+
+    return resolved;
+  }
+
   private async installDependencies(
     panelPath: string,
     dependencies: Record<string, string> | undefined,
@@ -262,6 +290,9 @@ export class PanelBuilder {
     const runtimeDir = this.ensureRuntimeDir(panelPath);
     const packageJsonPath = path.join(runtimeDir, "package.json");
 
+    // Resolve workspace:* to file: paths
+    const resolvedDependencies = this.resolveWorkspaceDependencies(dependencies);
+
     type PanelRuntimePackageJson = {
       name: string;
       private: boolean;
@@ -273,7 +304,7 @@ export class PanelBuilder {
       name: "natstack-panel-runtime",
       private: true,
       version: "1.0.0",
-      dependencies,
+      dependencies: resolvedDependencies,
     };
     const serialized = JSON.stringify(desiredPackageJson, null, 2);
     const desiredHash = crypto.createHash("sha256").update(serialized).digest("hex");
@@ -373,13 +404,14 @@ export class PanelBuilder {
 
       const nodePaths = this.getNodeResolutionPaths(absolutePanelPath);
 
-      const panelApiPlugin: esbuild.Plugin = {
-        name: "panel-api-module",
+      // Only keep fs virtual module plugin (natstack/* resolved via node_modules)
+      const fsPlugin: esbuild.Plugin = {
+        name: "fs-virtual-module",
         setup(build) {
           build.onResolve(
-            { filter: /^(natstack\/(panel|react|ai)|fs|node:fs|fs\/promises|node:fs\/promises)$/ },
+            { filter: /^(fs|node:fs|fs\/promises|node:fs\/promises)$/ },
             (args) => {
-              const runtimePath = virtualModuleMap.get(args.path);
+              const runtimePath = fsModuleMap.get(args.path);
               if (!runtimePath) return null;
               return { path: runtimePath };
             }
@@ -388,8 +420,23 @@ export class PanelBuilder {
       };
 
       // Build with esbuild
+      // We need to wrap the user's module and call auto-mount
+      const tempEntryPath = path.join(runtimeDir, "_entry.js");
+      const relativeUserEntry = path.relative(runtimeDir, entryPath);
+
+      // Create a wrapper entry that imports user module and calls auto-mount
+      const wrapperCode = `
+import { autoMountReactPanel, shouldAutoMount } from "@natstack/panel";
+import * as userModule from ${JSON.stringify(relativeUserEntry)};
+
+if (shouldAutoMount(userModule)) {
+  autoMountReactPanel(userModule);
+}
+`;
+      fs.writeFileSync(tempEntryPath, wrapperCode);
+
       await esbuild.build({
-        entryPoints: [entryPath],
+        entryPoints: [tempEntryPath],
         bundle: true,
         platform: "browser",
         target: "es2022",
@@ -398,7 +445,9 @@ export class PanelBuilder {
         format: "esm",
         absWorkingDir: absolutePanelPath,
         nodePaths,
-        plugins: [panelApiPlugin],
+        plugins: [fsPlugin],
+        // Bundle everything - React and Radix are included via @natstack/react
+        external: [],
       });
 
       const htmlPath = this.resolveHtmlPath(absolutePanelPath, manifest.title);

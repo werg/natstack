@@ -1,0 +1,13 @@
+{
+  "name": "@natstack-panels/example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "title": "React Example Panel",
+    "entry": "index.tsx"
+  },
+  "dependencies": {
+    "@natstack/panel": "workspace:*"
+  }
+}

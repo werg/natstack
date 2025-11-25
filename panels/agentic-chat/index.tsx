@@ -1,9 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { createRoot } from "react-dom/client";
-import { createReactPanelMount } from "natstack/react";
-import { models, getAvailableModels, type AIModelInfo } from "natstack/ai";
-import { Theme, Box, Flex, Card, Text, Heading, Button, TextArea, Select, Callout, Separator } from "@radix-ui/themes";
-import "@radix-ui/themes/styles.css";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { models, getAvailableModels, type AIModelInfo } from "@natstack/panel";
+import { Box, Flex, Card, Text, Heading, Button, TextArea, Select, Callout, Separator } from "@radix-ui/themes";
 
 type ChatTurn = { role: "user" | "assistant"; text: string; pending?: boolean };
 type PromptMessage =
@@ -11,9 +8,7 @@ type PromptMessage =
   | { role: "user"; content: Array<{ type: "text"; text: string }> }
   | { role: "assistant"; content: Array<{ type: "text"; text: string }> };
 
-const mount = createReactPanelMount(React, createRoot, { ThemeComponent: Theme });
-
-function App() {
+export default function AgenticChat() {
   const [availableModels, setAvailableModels] = useState<AIModelInfo[]>([]);
   const [modelId, setModelId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatTurn[]>([]);
@@ -207,5 +202,3 @@ function App() {
     </Box>
   );
 }
-
-mount(App);

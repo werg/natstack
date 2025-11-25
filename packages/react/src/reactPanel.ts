@@ -1,6 +1,6 @@
 import type { ComponentType, ReactNode } from "react";
 import type { Root } from "react-dom/client";
-import panelAPI, { createRadixThemeProvider } from "./panelApi";
+import { panel, createRadixThemeProvider } from "@natstack/core";
 
 export interface ReactPanelOptions {
   rootId?: string;
@@ -70,4 +70,4 @@ export function createReactPanelMount(
   };
 }
 
-export default panelAPI;
+export default panel;

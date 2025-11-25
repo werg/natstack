@@ -1,15 +1,15 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
-import { ExposedMethods } from "../shared/ipc/panelRpc.js";
-import { PanelInfo, ThemeAppearance } from "../shared/ipc/types.js";
+import type { Rpc } from "@natstack/core";
 import {
-  AICallOptions,
-  AIGenerateResult,
-  AIModelInfo,
-  AIStreamChunkEvent,
-  AIStreamEndEvent,
-  AIStreamPart,
-} from "../shared/ipc/aiTypes.js";
+  type AICallOptions,
+  type AIGenerateResult,
+  type AIModelInfo,
+  type AIStreamChunkEvent,
+  type AIStreamEndEvent,
+  type AIStreamPart,
+} from "@natstack/ai";
+import { PanelInfo, ThemeAppearance } from "../shared/ipc/types.js";
 type PanelEventName = "child-removed" | "focus";
 
 type PanelEventMessage =
@@ -163,7 +163,7 @@ ipcRenderer.on("ai:stream-end", onEnd);
 // =============================================================================
 
 // Methods exposed by this panel that other panels can call
-let exposedMethods: ExposedMethods = {};
+let exposedMethods: Rpc.ExposedMethods = {};
 
 // Active RPC connections (MessagePorts) to other panels
 const rpcPorts = new Map<string, MessagePort>();
@@ -380,7 +380,7 @@ const bridge = {
   // ==========================================================================
 
   rpc: {
-    expose: (methods: ExposedMethods): void => {
+    expose: (methods: Rpc.ExposedMethods): void => {
       exposedMethods = { ...exposedMethods, ...methods };
     },
 

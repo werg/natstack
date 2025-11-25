@@ -1,9 +1,0 @@
-{
-  "title": "RPC Demo Child",
-  "entry": "index.tsx",
-  "dependencies": {
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "@radix-ui/themes": "^3.2.1"
-  }
-}

@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": ".natstack",
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["**/*.tsx", "**/*.ts", "**/*.jsx", "**/*.js"],
+  "exclude": [".natstack", "node_modules"]
+}

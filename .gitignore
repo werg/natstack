@@ -8,6 +8,9 @@ dist
 build
 out
 **/.natstack
+packages/*/dist
+*.tsbuildinfo
+packages/*/**/*.map
 
 # Environment
 .env

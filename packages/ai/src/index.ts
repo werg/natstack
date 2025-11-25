@@ -32,8 +32,11 @@ import type {
   AIToolCallPart,
   AIResponseContent,
   AIModelInfo,
-} from "../shared/ipc/aiTypes.js";
-import { encodeBase64 } from "../shared/base64.js";
+} from "./types.js";
+import { encodeBase64 } from "./base64.js";
+
+// Re-export all AI IPC and model types for consumers
+export type * from "./types.js";
 
 // =============================================================================
 // Bridge Interface

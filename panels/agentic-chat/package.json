@@ -1,0 +1,13 @@
+{
+  "name": "@natstack-panels/agentic-chat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "title": "Agentic Chat (AI SDK)",
+    "entry": "index.tsx"
+  },
+  "dependencies": {
+    "@natstack/panel": "workspace:*"
+  }
+}

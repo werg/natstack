@@ -1,25 +1,32 @@
-import React, { useState, useEffect, useCallback } from "react";
-import fs, { promises as fsPromises } from "fs";
-import { Theme, Button, Card, Flex, Text, Heading, Callout, Separator, Badge, TextField } from "@radix-ui/themes";
-import panelAPI, { createReactPanelMount, type PanelRpcHandle } from "natstack/react";
-import { createRoot } from "react-dom/client";
-import "@radix-ui/themes/styles.css";
+import { useState, useCallback } from "react";
+import { promises as fsPromises } from "fs";
+import { Button, Card, Flex, Text, Heading, Callout, Separator, Badge, TextField } from "@radix-ui/themes";
+import {
+  panel,
+  usePanelTheme,
+  usePanelId,
+  usePanelPartition,
+  usePanelEnv,
+  usePanelRpc,
+  usePanelRpcGlobalEvent,
+} from "@natstack/panel";
 import "./style.css";
 
-import { type RpcDemoChildApi } from "../rpc-demo-child/api.js";
+import { type RpcDemoChildApi } from "../typed-rpc-child/api.js";
 
-const mount = createReactPanelMount(React, createRoot, { ThemeComponent: Theme });
-
-function ChildPanelLauncher() {
+export default function ChildPanelLauncher() {
   const [status, setStatus] = useState<string>("");
-  const [theme, setTheme] = useState(panelAPI.getTheme().appearance);
+  const theme = usePanelTheme();
+  const panelId = usePanelId();
+  const partition = usePanelPartition();
+  const env = usePanelEnv();
+
   const [opfsStatus, setOpfsStatus] = useState<string>("");
   const [opfsContent, setOpfsContent] = useState<string>("");
-  const [partition, setPartition] = useState<string | undefined>(undefined);
 
   // RPC Demo state
   const [rpcChildId, setRpcChildId] = useState<string | null>(null);
-  const [rpcChildHandle, setRpcChildHandle] = useState<PanelRpcHandle<RpcDemoChildApi> | null>(null);
+  const rpcChildHandle = usePanelRpc<RpcDemoChildApi>(rpcChildId);
   const [rpcLog, setRpcLog] = useState<string[]>([]);
   const [echoInput, setEchoInput] = useState("");
   const [incrementAmount, setIncrementAmount] = useState("1");
@@ -30,37 +37,26 @@ function ChildPanelLauncher() {
     setRpcLog((prev) => [`[${timestamp}] ${message}`, ...prev.slice(0, 9)]);
   }, []);
 
-  useEffect(() => {
-    return panelAPI.onThemeChange(({ appearance }) => setTheme(appearance));
-  }, []);
-
-  useEffect(() => {
-    panelAPI.getPartition().then(setPartition).catch(console.error);
-  }, []);
-
   // Listen for events from child panels
-  useEffect(() => {
-    const unsubscribe = panelAPI.rpc.onEvent("childUpdate", (fromPanelId, payload) => {
-      const timestamp = new Date().toLocaleTimeString();
-      setChildEvents((prev) => [
-        `[${timestamp}] From ${fromPanelId}: ${JSON.stringify(payload)}`,
-        ...prev.slice(0, 4),
-      ]);
-    });
-    return unsubscribe;
-  }, []);
+  usePanelRpcGlobalEvent("childUpdate", (fromPanelId: string, payload: unknown) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setChildEvents((prev) => [
+      `[${timestamp}] From ${fromPanelId}: ${JSON.stringify(payload)}`,
+      ...prev.slice(0, 4),
+    ]);
+  });
 
   // Get env variables that were passed from parent
-  const parentId = process.env.PARENT_ID;
-  const launchTime = process.env.LAUNCH_TIME;
-  const message = process.env.MESSAGE;
+  const parentId = env.PARENT_ID;
+  const launchTime = env.LAUNCH_TIME;
+  const message = env.MESSAGE;
 
   const launchChild = async () => {
     try {
       setStatus("Launching child panel...");
-      const childId = await panelAPI.createChild("panels/example", {
+      const childId = await panel.createChild("panels/example", {
         env: {
-          PARENT_ID: panelAPI.getId(),
+          PARENT_ID: panelId,
           LAUNCH_TIME: new Date().toISOString(),
           MESSAGE: "Hello from parent panel!",
         }
@@ -74,7 +70,7 @@ function ChildPanelLauncher() {
   const launchSharedOPFSDemo = async () => {
     try {
       setStatus("Launching shared OPFS demo panel...");
-      const childId = await panelAPI.createChild("panels/shared-opfs-demo");
+      const childId = await panel.createChild("panels/shared-opfs-demo");
       setStatus(`Launched shared OPFS demo panel ${childId}`);
     } catch (error) {
       setStatus(`Failed to launch: ${error instanceof Error ? error.message : String(error)}`);
@@ -84,7 +80,7 @@ function ChildPanelLauncher() {
   const launchAgenticChat = async () => {
     try {
       setStatus("Launching agentic chat example...");
-      const childId = await panelAPI.createChild("panels/agentic-chat");
+      const childId = await panel.createChild("panels/agentic-chat");
       setStatus(`Launched agentic chat panel ${childId}`);
     } catch (error) {
       setStatus(`Failed to launch agentic chat: ${error instanceof Error ? error.message : String(error)}`);
@@ -94,9 +90,9 @@ function ChildPanelLauncher() {
   const launchExampleWithSharedPartition = async () => {
     try {
       setStatus("Launching example panel with a shared panel id...");
-      const childId = await panelAPI.createChild("panels/example", {
+      const childId = await panel.createChild("panels/example", {
         env: {
-          PARENT_ID: panelAPI.getId(),
+          PARENT_ID: panelId,
           LAUNCH_TIME: new Date().toISOString(),
           MESSAGE: "I share OPFS with siblings!",
         },
@@ -110,7 +106,7 @@ function ChildPanelLauncher() {
 
   const setRandomTitle = async () => {
     const title = `Radix Panel ${Math.floor(Math.random() * 1000)}`;
-    await panelAPI.setTitle(title);
+    await panel.setTitle(title);
     setStatus(`Title set to ${title}`);
   };
 
@@ -122,7 +118,7 @@ function ChildPanelLauncher() {
       setOpfsStatus("Writing to OPFS...");
 
       const timestamp = new Date().toISOString();
-      const content = `Hello from NatStack panel!\nWritten at: ${timestamp}\nPanel ID: ${panelAPI.getId()}`;
+      const content = `Hello from NatStack panel!\nWritten at: ${timestamp}\nPanel ID: ${panelId}`;
       await fsPromises.writeFile(exampleFilePath, content, "utf-8");
 
       setOpfsStatus("Successfully wrote to OPFS file: example.txt");
@@ -195,17 +191,12 @@ function ChildPanelLauncher() {
   const launchRpcDemoChild = async () => {
     try {
       addRpcLog("Launching RPC demo child panel...");
-      const childId = await panelAPI.createChild("panels/rpc-demo-child", {
+      const childId = await panel.createChild("panels/typed-rpc-child", {
         env: {
-          PARENT_ID: panelAPI.getId(),
+          PARENT_ID: panelId,
         },
       });
       setRpcChildId(childId);
-
-      // Create a typed handle to communicate with the child
-      const handle = panelAPI.rpc.getTypedHandle<RpcDemoChildApi>(childId);
-      setRpcChildHandle(handle);
-
       addRpcLog(`Child panel launched: ${childId}`);
     } catch (error) {
       addRpcLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
@@ -304,7 +295,7 @@ function ChildPanelLauncher() {
       return;
     }
     const payload = { message: "Hello from parent!", timestamp: new Date().toISOString() };
-    panelAPI.rpc.emit(rpcChildId, "parentMessage", payload);
+    panel.rpc.emit(rpcChildId, "parentMessage", payload);
     addRpcLog(`Sent 'parentMessage' event: ${JSON.stringify(payload)}`);
   };
 
@@ -319,10 +310,10 @@ function ChildPanelLauncher() {
             </Badge>
           </Flex>
           <Text size="2">
-            Current theme: <Text weight="bold">{theme}</Text>
+            Current theme: <Text weight="bold">{theme.appearance}</Text>
           </Text>
           <Text size="2">
-            Panel ID: <Text weight="bold">{panelAPI.getId()}</Text>
+            Panel ID: <Text weight="bold">{panelId}</Text>
           </Text>
           <Text size="2">
             Partition: <Text weight="bold" style={{ fontFamily: "monospace" }}>
@@ -550,5 +541,3 @@ function ChildPanelLauncher() {
     </div>
   );
 }
-
-mount(ChildPanelLauncher);

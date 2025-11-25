@@ -1,5 +1,6 @@
 import type { ComponentType, ReactNode } from "react";
-import * as Rpc from "../shared/ipc/panelRpc.js";
+import typia from "typia";
+import * as Rpc from "./types.js";
 
 type PanelBridgeEvent = "child-removed" | "focus";
 
@@ -67,6 +68,14 @@ bridge.onThemeChange((appearance) => {
 export interface CreateChildOptions {
   env?: Record<string, string>;
   panelId?: string;
+}
+
+export interface PanelRpcHandleOptions {
+  /**
+   * When enabled, validate incoming RPC event payloads with typia.
+   * This surfaces schema mismatches early during development.
+   */
+  validateEvents?: boolean;
 }
 
 const panelAPI = {
@@ -171,14 +180,31 @@ const panelAPI = {
      *
      * @example
      * ```ts
+     * // Define types
+     * interface EditorApi {
+     *   getContent(): Promise<string>;
+     *   setContent(text: string): Promise<void>;
+     * }
+     *
+     * interface EditorEvents extends Rpc.RpcEventMap {
+     *   "content-changed": { text: string };
+     *   "saved": { path: string };
+     * }
+     *
      * // Parent panel calls child
-     * const childHandle = panelAPI.rpc.getHandle<EditorApi>(childPanelId);
+     * const childHandle = panelAPI.rpc.getHandle<EditorApi, EditorEvents>(childPanelId);
      * const content = await childHandle.call.getContent();
+     *
+     * // Listen to typed events
+     * childHandle.on("content-changed", (payload) => {
+     *   console.log(payload.text); // Fully typed!
+     * });
      * ```
      */
-    getHandle<T extends Rpc.ExposedMethods = Rpc.ExposedMethods>(
-      targetPanelId: string
-    ): Rpc.PanelRpcHandle<T> {
+    getHandle<
+      T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+      E extends Rpc.RpcEventMap = Rpc.RpcEventMap
+    >(targetPanelId: string, options?: PanelRpcHandleOptions): Rpc.PanelRpcHandle<T, E> {
       // Create a proxy that allows typed method calls
       const callProxy = new Proxy({} as Rpc.PanelRpcHandle<T>["call"], {
         get(_target, prop: string) {
@@ -188,12 +214,34 @@ const panelAPI = {
         },
       });
 
-      const eventListeners = new Map<string, Set<(payload: unknown) => void>>();
+      const eventListeners = new Map<string, Set<(payload: any) => void>>();
+      const validateEvents = options?.validateEvents ?? false;
+      const eventValidators = new Map<string, (payload: any) => void>();
 
-      return {
+      const getValidator = validateEvents
+        ? <EventName extends Extract<keyof E, string>>(event: EventName) => {
+            if (!eventValidators.has(event)) {
+              let assertPayload: (payload: any) => void;
+              try {
+                assertPayload = typia.createAssert<E[EventName]>();
+              } catch (error) {
+                console.warn(
+                  `[Panel RPC] Falling back to unvalidated events for "${event}":`,
+                  error
+                );
+                assertPayload = () => {};
+              }
+              eventValidators.set(event, assertPayload as (payload: any) => void);
+            }
+            return eventValidators.get(event) as (payload: E[EventName]) => void;
+          }
+        : null;
+
+      // Create the handle with proper overload support
+      const handle: Rpc.PanelRpcHandle<T, E> = {
         panelId: targetPanelId,
         call: callProxy,
-        on(event: string, handler: (payload: unknown) => void): () => void {
+        on(event: string, handler: (payload: any) => void): () => void {
           // Track local listeners for this handle
           const listeners = eventListeners.get(event) ?? new Set();
           listeners.add(handler);
@@ -202,6 +250,18 @@ const panelAPI = {
           // Subscribe to RPC events, filtering by source panel
           const unsubscribe = bridge.rpc.onEvent(event, (fromPanelId, payload) => {
             if (fromPanelId === targetPanelId) {
+              try {
+                if (getValidator) {
+                  const assertPayload = getValidator(event as Extract<keyof E, string>);
+                  assertPayload(payload as unknown as E[Extract<keyof E, string>]);
+                }
+              } catch (error) {
+                console.error(
+                  `[Panel RPC] Event payload validation failed for "${event}" from ${fromPanelId}:`,
+                  error
+                );
+                return;
+              }
               handler(payload);
             }
           });
@@ -215,15 +275,29 @@ const panelAPI = {
           };
         },
       };
+
+      return handle;
     },
 
     /**
      * Alias for getHandle to retain existing call sites without schema validation.
      */
-    getTypedHandle<T extends Rpc.ExposedMethods = Rpc.ExposedMethods>(
-      targetPanelId: string
-    ): Rpc.PanelRpcHandle<T> {
-      return panelAPI.rpc.getHandle<T>(targetPanelId);
+    getTypedHandle<
+      T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+      E extends Rpc.RpcEventMap = Rpc.RpcEventMap
+    >(targetPanelId: string): Rpc.PanelRpcHandle<T, E> {
+      return panelAPI.rpc.getHandle<T, E>(targetPanelId);
+    },
+
+    /**
+     * Convenience helper: get a handle with typia-backed event validation enabled.
+     * Useful during development to surface schema drift between panels.
+     */
+    getValidatedHandle<
+      T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+      E extends Rpc.RpcEventMap = Rpc.RpcEventMap
+    >(targetPanelId: string): Rpc.PanelRpcHandle<T, E> {
+      return panelAPI.rpc.getHandle<T, E>(targetPanelId, { validateEvents: true });
     },
 
     /**

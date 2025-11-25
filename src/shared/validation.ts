@@ -1,6 +1,6 @@
 import typia, { type IValidation } from "typia";
 import { createAIError } from "./errors.js";
-import * as AI from "./ipc/aiTypes.js";
+import type * as AI from "@natstack/ai";
 
 /**
  * Typia-backed validation helpers for AI payloads.

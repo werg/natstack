@@ -8,12 +8,18 @@ const GIT_SERVER_PORT = 63524;
 
 export class GitServer {
   private git: InstanceType<typeof Git> | null = null;
-  private reposPath: string;
+  private reposPath: string | null = null;
   private authManager: GitAuthManager;
 
   constructor() {
-    this.reposPath = path.join(app.getPath("userData"), "git-repos");
     this.authManager = new GitAuthManager();
+  }
+
+  private ensureReposPath(): string {
+    if (!this.reposPath) {
+      this.reposPath = path.join(app.getPath("userData"), "git-repos");
+    }
+    return this.reposPath;
   }
 
   /**
@@ -21,12 +27,14 @@ export class GitServer {
    * Throws if port is already in use.
    */
   async start(): Promise<number> {
+    const reposPath = this.ensureReposPath();
+
     // Ensure repos directory exists
-    if (!fs.existsSync(this.reposPath)) {
-      fs.mkdirSync(this.reposPath, { recursive: true });
+    if (!fs.existsSync(reposPath)) {
+      fs.mkdirSync(reposPath, { recursive: true });
     }
 
-    this.git = new Git(this.reposPath, {
+    this.git = new Git(reposPath, {
       autoCreate: true,
       authenticate: ({ type, repo, headers }, next) => {
         // Extract bearer token from Authorization header
@@ -67,7 +75,7 @@ export class GitServer {
     return new Promise((resolve, reject) => {
       const server = git.listen(GIT_SERVER_PORT, { type: "http" }, () => {
         console.log(`[GitServer] Started on http://localhost:${GIT_SERVER_PORT}`);
-        console.log(`[GitServer] Repos directory: ${this.reposPath}`);
+        console.log(`[GitServer] Repos directory: ${this.ensureReposPath()}`);
         resolve(GIT_SERVER_PORT);
       });
 
@@ -128,6 +136,6 @@ export class GitServer {
    * Get the path to the repos directory
    */
   getReposPath(): string {
-    return this.reposPath;
+    return this.ensureReposPath();
   }
 }

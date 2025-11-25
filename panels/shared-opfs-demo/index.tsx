@@ -1,33 +1,22 @@
-import React, { useState, useEffect } from "react";
-import fs, { promises as fsPromises } from "fs";
-import { Theme, Button, Card, Flex, Text, Heading, Callout, Badge } from "@radix-ui/themes";
-import panelAPI, { createReactPanelMount } from "natstack/react";
-import { createRoot } from "react-dom/client";
-import "@radix-ui/themes/styles.css";
+import { useState } from "react";
+import { promises as fsPromises } from "fs";
+import { Button, Card, Flex, Text, Heading, Callout, Badge } from "@radix-ui/themes";
+import { panel, usePanelTheme, usePanelId, usePanelPartition } from "@natstack/panel";
 
-const mount = createReactPanelMount(React, createRoot, { ThemeComponent: Theme });
-
-function SharedOPFSPanel() {
+export default function SharedOPFSPanel() {
   const [opfsStatus, setOpfsStatus] = useState<string>("");
   const [opfsContent, setOpfsContent] = useState<string>("");
-  const [theme, setTheme] = useState(panelAPI.getTheme().appearance);
-  const [partition, setPartition] = useState<string | undefined>(undefined);
+  const theme = usePanelTheme();
+  const panelId = usePanelId();
+  const partition = usePanelPartition();
   const sharedFilePath = "/example.txt";
-
-  useEffect(() => {
-    return panelAPI.onThemeChange(({ appearance }) => setTheme(appearance));
-  }, []);
-
-  useEffect(() => {
-    panelAPI.getPartition().then(setPartition).catch(console.error);
-  }, []);
 
   const writeSharedFile = async () => {
     try {
       setOpfsStatus("Writing to shared OPFS...");
 
       const timestamp = new Date().toISOString();
-      const content = `Shared file updated!\nTime: ${timestamp}\nFrom Panel: ${panelAPI.getId()}`;
+      const content = `Shared file updated!\nTime: ${timestamp}\nFrom Panel: ${panelId}`;
       await fsPromises.writeFile(sharedFilePath, content, "utf-8");
 
       setOpfsStatus("Successfully wrote to shared OPFS!");
@@ -77,8 +66,8 @@ function SharedOPFSPanel() {
 
   const launchAnotherSharedPanel = async () => {
     try {
-      const childId = await panelAPI.createChild("panels/shared-opfs-demo", {
-        env: { PARENT_ID: panelAPI.getId() },
+      const childId = await panel.createChild("panels/shared-opfs-demo", {
+        env: { PARENT_ID: panelId },
       });
       setOpfsStatus(`Launched sibling panel ${childId} - it shares the same OPFS!`);
     } catch (error) {
@@ -103,13 +92,13 @@ function SharedOPFSPanel() {
             <Flex direction="column" gap="2">
               <Text size="2" weight="bold">Panel Info:</Text>
               <Text size="1" style={{ fontFamily: "monospace" }}>
-                ID: {panelAPI.getId()}
+                ID: {panelId}
               </Text>
               <Text size="1" style={{ fontFamily: "monospace" }}>
-                Partition: {partition || "(loading...)"}
+                Partition: {partition ?? "(loading...)"}
               </Text>
               <Text size="1" style={{ fontFamily: "monospace" }}>
-                Theme: {theme}
+                Theme: {theme.appearance}
               </Text>
             </Flex>
           </Card>
@@ -151,5 +140,3 @@ function SharedOPFSPanel() {
     </div>
   );
 }
-
-mount(SharedOPFSPanel);

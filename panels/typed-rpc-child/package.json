@@ -1,0 +1,12 @@
+{
+  "name": "@natstack-panels/typed-rpc-child",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "title": "Typed RPC Child"
+  },
+  "dependencies": {
+    "@natstack/panel": "workspace:*"
+  }
+}

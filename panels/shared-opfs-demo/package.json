@@ -1,0 +1,14 @@
+{
+  "name": "@natstack-panels/shared-opfs-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "title": "Shared OPFS Panel",
+    "entry": "index.tsx",
+    "singletonState": true
+  },
+  "dependencies": {
+    "@natstack/panel": "workspace:*"
+  }
+}
