@@ -109,7 +109,7 @@ function convertPromptToSDK(messages: AIMessage[]): unknown[] {
                     type: "tool-call",
                     toolCallId: part.toolCallId,
                     toolName: part.toolName,
-                    args: part.args,
+                    input: part.args, // AI SDK expects "input", not "args"
                   };
                 default:
                   return part;
@@ -125,8 +125,11 @@ function convertPromptToSDK(messages: AIMessage[]): unknown[] {
             type: "tool-result",
             toolCallId: part.toolCallId,
             toolName: part.toolName,
-            result: part.result,
-            isError: part.isError,
+            // AI SDK expects output: { type: ..., value: ... } format
+            output: {
+              type: part.isError ? "error-json" : "json",
+              value: part.result,
+            },
           })),
         };
 
@@ -148,7 +151,7 @@ function convertToolsToSDK(tools: AIToolDefinition[] | undefined): unknown[] | u
     type: "function",
     name: tool.name,
     description: tool.description,
-    parameters: tool.parameters,
+    inputSchema: tool.parameters, // AI SDK uses inputSchema, not parameters
   }));
 }
 
@@ -746,17 +749,17 @@ export class AIHandler {
       case "tool-input-start":
         return {
           type: "tool-input-start",
-          toolCallId: part["toolCallId"] as string,
+          toolCallId: part["id"] as string, // AI SDK uses "id", not "toolCallId"
           toolName: part["toolName"] as string,
         };
       case "tool-input-delta":
         return {
           type: "tool-input-delta",
-          toolCallId: part["toolCallId"] as string,
-          inputTextDelta: part["inputTextDelta"] as string,
+          toolCallId: part["id"] as string, // AI SDK uses "id", not "toolCallId"
+          inputTextDelta: part["delta"] as string, // AI SDK uses "delta", not "inputTextDelta"
         };
       case "tool-input-end":
-        return { type: "tool-input-end", toolCallId: part["toolCallId"] as string };
+        return { type: "tool-input-end", toolCallId: part["id"] as string }; // AI SDK uses "id"
       case "stream-start":
         return {
           type: "stream-start",
