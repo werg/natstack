@@ -51,19 +51,18 @@ export function getAppMode(): AppMode {
 }
 
 /**
- * Check if any AI providers are configured in our secrets file (not from environment)
+ * Check if any AI providers are configured (either in secrets file or environment).
  * This determines if the user needs to go through initial setup.
+ *
+ * We check both secrets file AND process.env because:
+ * - Secrets file contains user-configured keys via UI
+ * - process.env may contain keys from .env file or system environment
  */
 export function hasConfiguredProviders(): boolean {
-  const secrets = loadSecrets();
   const providers = getSupportedProviders();
-  const providerEnvVars = getProviderEnvVars();
 
-  // Check if any AI provider API key is present in secrets
-  return providers.some((providerId) => {
-    const envVar = providerEnvVars[providerId];
-    return envVar && secrets[envVar] !== undefined;
-  });
+  // Check if any provider has an API key available (from any source)
+  return providers.some((providerId) => hasProviderApiKey(providerId));
 }
 
 /**
