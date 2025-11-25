@@ -34,15 +34,15 @@ interface RpcEvent {
 
 type RpcResponse =
   | {
-      type: "response";
-      requestId: string;
-      result: unknown;
-    }
+    type: "response";
+    requestId: string;
+    result: unknown;
+  }
   | {
-      type: "response";
-      requestId: string;
-      error: string;
-    };
+    type: "response";
+    requestId: string;
+    error: string;
+  };
 
 const urlParams = new URLSearchParams(window.location.search);
 const panelId = urlParams.get("panelId");
@@ -106,6 +106,16 @@ const updateTheme = (theme: ThemeAppearance) => {
     listener(theme);
   }
 };
+
+// Global keydown listener for DevTools
+window.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "i") {
+    event.preventDefault();
+    void ipcRenderer.invoke("panel:open-devtools", panelId).catch((error) => {
+      console.error("Failed to open panel devtools", error);
+    });
+  }
+});
 
 ipcRenderer.on("panel:event", (_event, payload: PanelEventMessage) => {
   if (payload.panelId !== panelId) {
