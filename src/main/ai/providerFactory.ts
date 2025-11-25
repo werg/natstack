@@ -9,8 +9,43 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createMistral } from "@ai-sdk/mistral";
+import { createClaudeCode } from "ai-sdk-provider-claude-code";
+import { codexCli } from "ai-sdk-provider-codex-cli";
+import { execSync } from "child_process";
 import type { AIProviderConfig } from "./aiHandler.js";
 import type { SupportedProvider } from "../workspace/types.js";
+
+/**
+ * Find an executable in the system PATH.
+ * Cross-platform: uses `where` on Windows, `which` on Unix-like systems.
+ */
+function findExecutable(name: string): string | undefined {
+  const isWindows = process.platform === "win32";
+  const command = isWindows ? `where ${name}` : `which ${name}`;
+
+  try {
+    const result = execSync(command, { encoding: "utf-8" }).trim();
+    // `where` on Windows may return multiple lines; take the first one
+    const firstLine = result.split(/\r?\n/)[0];
+    return firstLine || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Find the path to the Claude Code CLI executable.
+ */
+function findClaudeCodeExecutable(): string | undefined {
+  return findExecutable("claude");
+}
+
+/**
+ * Find the path to the Codex CLI executable.
+ */
+function findCodexCliExecutable(): string | undefined {
+  return findExecutable("codex");
+}
 
 /**
  * Model information for a provider
@@ -179,6 +214,40 @@ const DEFAULT_MODELS: Record<SupportedProvider, ModelInfo[]> = {
       description: "Fast web-connected model",
     },
   ],
+  "claude-code": [
+    {
+      id: "sonnet",
+      displayName: "Claude Code (Sonnet)",
+      description: "Claude Code agent with Sonnet model - optimized for coding tasks",
+    },
+    {
+      id: "opus",
+      displayName: "Claude Code (Opus)",
+      description: "Claude Code agent with Opus model - most capable for complex coding",
+    },
+    {
+      id: "haiku",
+      displayName: "Claude Code (Haiku)",
+      description: "Claude Code agent with Haiku model - fast and efficient",
+    },
+  ],
+  "codex-cli": [
+    {
+      id: "gpt-5.1-codex",
+      displayName: "Codex CLI (GPT-5.1 Codex)",
+      description: "OpenAI Codex agent - optimized for coding tasks",
+    },
+    {
+      id: "gpt-5.1-codex-max",
+      displayName: "Codex CLI (GPT-5.1 Codex Max)",
+      description: "OpenAI Codex agent - flagship model for complex coding",
+    },
+    {
+      id: "gpt-5.1-codex-mini",
+      displayName: "Codex CLI (GPT-5.1 Codex Mini)",
+      description: "OpenAI Codex agent - lightweight and fast",
+    },
+  ],
 };
 
 /**
@@ -193,7 +262,9 @@ const OPENAI_COMPATIBLE_BASE_URLS: Partial<Record<SupportedProvider, string>> = 
 };
 
 /**
- * Environment variable names for each provider's API key
+ * Environment variable names for each provider's API key.
+ * Note: Claude Code uses CLI authentication via `claude login`, not an API key.
+ * The empty string indicates no API key is needed.
  */
 const PROVIDER_ENV_VARS: Record<SupportedProvider, string> = {
   anthropic: "ANTHROPIC_API_KEY",
@@ -205,6 +276,8 @@ const PROVIDER_ENV_VARS: Record<SupportedProvider, string> = {
   together: "TOGETHER_API_KEY",
   replicate: "REPLICATE_API_KEY",
   perplexity: "PERPLEXITY_API_KEY",
+  "claude-code": "", // Uses CLI auth, not API key
+  "codex-cli": "", // Uses CLI auth, not API key
 };
 
 /**
@@ -220,16 +293,65 @@ function getApiKey(providerId: SupportedProvider): string | undefined {
  * Create an AI provider configuration.
  * API keys are read from environment variables (populated from .secrets.yml or .env).
  * Returns null if the provider cannot be created (e.g., missing API key).
+ * Note: Claude Code uses CLI authentication and doesn't require an API key.
  */
 export function createProviderFromConfig(providerId: SupportedProvider): AIProviderConfig | null {
+  const models = DEFAULT_MODELS[providerId] ?? [];
+
+  // Claude Code uses CLI authentication, not API keys
+  if (providerId === "claude-code") {
+    // Find the Claude Code CLI executable path
+    // This is needed because import.meta.url is not available in Electron's bundled environment
+    const claudeExecutable = findClaudeCodeExecutable();
+    if (!claudeExecutable) {
+      console.warn("[ProviderFactory] Claude Code CLI not found in PATH, skipping");
+      return null;
+    }
+
+    return {
+      id: providerId,
+      name: "Claude Code",
+      createModel: (modelId) =>
+        createClaudeCode()(modelId as "sonnet" | "opus" | "haiku", {
+          // Explicitly provide the path to the Claude CLI
+          // Required because import.meta.url is undefined in Electron's bundled environment
+          pathToClaudeCodeExecutable: claudeExecutable,
+          // Use current working directory as the project root
+          cwd: process.cwd(),
+          // Use default permission mode (will prompt for permissions)
+          permissionMode: "default",
+        }),
+      models,
+    };
+  }
+
+  // Codex CLI uses CLI authentication, not API keys
+  if (providerId === "codex-cli") {
+    // Find the Codex CLI executable path or fall back to npx
+    const codexExecutable = findCodexCliExecutable();
+
+    return {
+      id: providerId,
+      name: "Codex CLI",
+      createModel: (modelId) =>
+        codexCli(modelId, {
+          // Fall back to npx if CLI not installed
+          allowNpx: !codexExecutable,
+          // Skip git repo check for flexibility
+          skipGitRepoCheck: true,
+          // Use current working directory as the project root
+          cwd: process.cwd(),
+        }),
+      models,
+    };
+  }
+
   const apiKey = getApiKey(providerId);
 
   if (!apiKey) {
     console.warn(`[ProviderFactory] No API key for ${providerId}, skipping`);
     return null;
   }
-
-  const models = DEFAULT_MODELS[providerId] ?? [];
 
   switch (providerId) {
     case "anthropic": {
@@ -345,6 +467,8 @@ export function getProviderDisplayName(providerId: SupportedProvider): string {
     together: "Together AI",
     replicate: "Replicate",
     perplexity: "Perplexity",
+    "claude-code": "Claude Code",
+    "codex-cli": "Codex CLI",
   };
   return displayNames[providerId] ?? providerId;
 }
@@ -355,4 +479,11 @@ export function getProviderDisplayName(providerId: SupportedProvider): string {
 export function hasProviderApiKey(providerId: SupportedProvider): boolean {
   const envVar = PROVIDER_ENV_VARS[providerId];
   return !!process.env[envVar];
+}
+
+/**
+ * Check if a provider uses CLI authentication instead of API keys
+ */
+export function usesCliAuth(providerId: SupportedProvider): boolean {
+  return providerId === "claude-code" || providerId === "codex-cli";
 }

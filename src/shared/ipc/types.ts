@@ -119,12 +119,18 @@ export interface ProviderInfo {
   name: string;
   hasApiKey: boolean;
   models: string[];
+  /** True if provider uses CLI authentication instead of API key */
+  usesCliAuth?: boolean;
+  /** True if provider is enabled (for CLI auth providers) */
+  isEnabled?: boolean;
 }
 
 export interface AvailableProvider {
   id: string;
   name: string;
   envVar: string;
+  /** True if provider uses CLI authentication instead of API key */
+  usesCliAuth?: boolean;
 }
 
 /**
@@ -172,6 +178,10 @@ export interface SettingsIpcApi {
   "settings:set-api-key": (providerId: string, apiKey: string) => void;
   "settings:remove-api-key": (providerId: string) => void;
   "settings:set-model-role": (role: string, modelSpec: string) => void;
+  /** Enable a CLI-auth provider (like claude-code) */
+  "settings:enable-provider": (providerId: string) => void;
+  /** Disable a CLI-auth provider */
+  "settings:disable-provider": (providerId: string) => void;
 }
 
 // App mode IPC channels

@@ -26,7 +26,9 @@ export type SupportedProvider =
   | "mistral"
   | "together"
   | "replicate"
-  | "perplexity";
+  | "perplexity"
+  | "claude-code"
+  | "codex-cli";
 
 /**
  * Standard model roles with fallback behavior

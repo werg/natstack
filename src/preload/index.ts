@@ -76,6 +76,10 @@ export const electronAPI = {
     ipcRenderer.invoke("settings:remove-api-key", providerId),
   setModelRole: (role: string, modelSpec: string): Promise<void> =>
     ipcRenderer.invoke("settings:set-model-role", role, modelSpec),
+  enableProvider: (providerId: string): Promise<void> =>
+    ipcRenderer.invoke("settings:enable-provider", providerId),
+  disableProvider: (providerId: string): Promise<void> =>
+    ipcRenderer.invoke("settings:disable-provider", providerId),
 
   // Settings menu event
   onOpenSettings: (callback: () => void): (() => void) => {

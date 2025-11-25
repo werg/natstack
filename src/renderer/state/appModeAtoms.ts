@@ -170,6 +170,36 @@ export const setModelRoleAtom = atom(
   }
 );
 
+/**
+ * Enable a CLI-auth provider (like claude-code)
+ */
+export const enableProviderAtom = atom(null, async (_get, set, providerId: string) => {
+  try {
+    await window.electronAPI.enableProvider(providerId);
+    // Reload settings to reflect change
+    const data = await window.electronAPI.getSettingsData();
+    set(settingsDataAtom, data);
+  } catch (error) {
+    console.error("Failed to enable provider:", error);
+    throw error;
+  }
+});
+
+/**
+ * Disable a CLI-auth provider
+ */
+export const disableProviderAtom = atom(null, async (_get, set, providerId: string) => {
+  try {
+    await window.electronAPI.disableProvider(providerId);
+    // Reload settings to reflect change
+    const data = await window.electronAPI.getSettingsData();
+    set(settingsDataAtom, data);
+  } catch (error) {
+    console.error("Failed to disable provider:", error);
+    throw error;
+  }
+});
+
 // =============================================================================
 // Workspace Chooser State (for main mode)
 // =============================================================================

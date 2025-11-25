@@ -20,6 +20,7 @@ import {
   getProviderDisplayName,
   getDefaultModelsForProvider,
   hasProviderApiKey,
+  usesCliAuth,
 } from "../ai/providerFactory.js";
 import type { SupportedProvider } from "../workspace/types.js";
 import type {
@@ -57,12 +58,20 @@ export function getAppMode(): AppMode {
  * We check both secrets file AND process.env because:
  * - Secrets file contains user-configured keys via UI
  * - process.env may contain keys from .env file or system environment
+ * - CLI-auth providers (like claude-code) store "enabled" in secrets
  */
 export function hasConfiguredProviders(): boolean {
   const providers = getSupportedProviders();
+  const secrets = loadSecrets();
 
   // Check if any provider has an API key available (from any source)
-  return providers.some((providerId) => hasProviderApiKey(providerId));
+  // OR is a CLI-auth provider that's been enabled
+  return providers.some((providerId) => {
+    if (usesCliAuth(providerId)) {
+      return secrets[providerId] === "enabled";
+    }
+    return hasProviderApiKey(providerId);
+  });
 }
 
 /**
@@ -293,20 +302,28 @@ handle("settings:get-data", async (): Promise<SettingsData> => {
   const centralConfig = loadCentralConfig();
   const supportedProviders = getSupportedProviders();
   const envVars = getProviderEnvVars();
+  const secrets = loadSecrets();
 
   // Build provider info list
-  const providers: ProviderInfo[] = supportedProviders.map((providerId) => ({
-    id: providerId,
-    name: getProviderDisplayName(providerId),
-    hasApiKey: hasProviderApiKey(providerId),
-    models: getDefaultModelsForProvider(providerId).map((m) => m.id),
-  }));
+  const providers: ProviderInfo[] = supportedProviders.map((providerId) => {
+    const cliAuth = usesCliAuth(providerId);
+    return {
+      id: providerId,
+      name: getProviderDisplayName(providerId),
+      hasApiKey: hasProviderApiKey(providerId),
+      models: getDefaultModelsForProvider(providerId).map((m) => m.id),
+      usesCliAuth: cliAuth,
+      // For CLI auth providers, check if enabled in secrets (stored as "enabled" value)
+      isEnabled: cliAuth ? secrets[providerId] === "enabled" : undefined,
+    };
+  });
 
   // Build available providers list
   const availableProviders: AvailableProvider[] = supportedProviders.map((providerId) => ({
     id: providerId,
     name: getProviderDisplayName(providerId),
     envVar: envVars[providerId],
+    usesCliAuth: usesCliAuth(providerId),
   }));
 
   // Get model roles (simplified to string format for UI)
@@ -376,6 +393,34 @@ handle(
     await refreshAiProviders();
   }
 );
+
+handle("settings:enable-provider", async (_event, providerId: string): Promise<void> => {
+  // Only allow enabling CLI-auth providers
+  if (!usesCliAuth(providerId as SupportedProvider)) {
+    console.warn(`[Settings] Cannot enable provider ${providerId} - not a CLI-auth provider`);
+    return;
+  }
+
+  const secrets = loadSecrets();
+  secrets[providerId] = "enabled";
+  saveSecrets(secrets);
+
+  await refreshAiProviders();
+});
+
+handle("settings:disable-provider", async (_event, providerId: string): Promise<void> => {
+  // Only allow disabling CLI-auth providers
+  if (!usesCliAuth(providerId as SupportedProvider)) {
+    console.warn(`[Settings] Cannot disable provider ${providerId} - not a CLI-auth provider`);
+    return;
+  }
+
+  const secrets = loadSecrets();
+  delete secrets[providerId];
+  saveSecrets(secrets);
+
+  await refreshAiProviders();
+});
 
 // =============================================================================
 // App Mode Handlers
