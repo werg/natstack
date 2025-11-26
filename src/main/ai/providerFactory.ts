@@ -19,7 +19,7 @@ import type { SupportedProvider } from "../workspace/types.js";
  * Find an executable in the system PATH.
  * Cross-platform: uses `where` on Windows, `which` on Unix-like systems.
  */
-function findExecutable(name: string): string | undefined {
+export function findExecutable(name: string): string | undefined {
   const isWindows = process.platform === "win32";
   const command = isWindows ? `where ${name}` : `which ${name}`;
 
@@ -298,10 +298,11 @@ function getApiKey(providerId: SupportedProvider): string | undefined {
 export function createProviderFromConfig(providerId: SupportedProvider): AIProviderConfig | null {
   const models = DEFAULT_MODELS[providerId] ?? [];
 
-  // Claude Code uses CLI authentication, not API keys
+  // Claude Code uses CLI authentication, not API keys.
+  // NOTE: This provider is for basic text generation WITHOUT tools.
+  // For tool use with Claude Code, aiHandler.streamToPanel() routes through
+  // streamClaudeCodeWithTools() which sets up proper MCP tool proxying.
   if (providerId === "claude-code") {
-    // Find the Claude Code CLI executable path
-    // This is needed because import.meta.url is not available in Electron's bundled environment
     const claudeExecutable = findClaudeCodeExecutable();
     if (!claudeExecutable) {
       console.warn("[ProviderFactory] Claude Code CLI not found in PATH, skipping");
@@ -313,12 +314,9 @@ export function createProviderFromConfig(providerId: SupportedProvider): AIProvi
       name: "Claude Code",
       createModel: (modelId) =>
         createClaudeCode()(modelId as "sonnet" | "opus" | "haiku", {
-          // Explicitly provide the path to the Claude CLI
-          // Required because import.meta.url is undefined in Electron's bundled environment
+          allowedTools: [], // No tools for basic provider
           pathToClaudeCodeExecutable: claudeExecutable,
-          // Use current working directory as the project root
           cwd: process.cwd(),
-          // Use default permission mode (will prompt for permissions)
           permissionMode: "default",
         }),
       models,

@@ -30,6 +30,11 @@ import type {
   AIToolResultPart,
   AIFinishReason,
 } from "@natstack/ai";
+import type {
+  ClaudeCodeConversationInfo,
+  ClaudeCodeToolResult,
+  ClaudeCodeToolExecuteRequest,
+} from "../../shared/ipc/types.js";
 import { createAIError, mapAISDKError, type AIError } from "../../shared/errors.js";
 import { Logger, generateRequestId } from "../../shared/logging.js";
 import {
@@ -37,6 +42,11 @@ import {
   validateToolDefinitions,
   validateSDKResponse,
 } from "../../shared/validation.js";
+import {
+  getClaudeCodeConversationManager,
+  type ClaudeCodeConversationManager,
+} from "./claudeCodeConversationManager.js";
+import { getMcpToolNames, type ToolExecutionResult } from "./claudeCodeToolProxy.js";
 
 // =============================================================================
 // AI SDK Types
@@ -325,8 +335,30 @@ export class AIHandler {
   private streamManager = new AIStreamManager();
   private logger = new Logger("AIHandler");
   private modelRoleResolver: import("./modelRoles.js").ModelRoleResolver | null = null;
+  private ccConversationManager: ClaudeCodeConversationManager;
+  private ccConversationEndUnsub: (() => void) | null = null;
+
+  // Pending tool executions: executionId -> { resolve, reject }
+  private pendingToolExecutions = new Map<
+    string,
+    {
+      resolve: (result: ToolExecutionResult) => void;
+      reject: (error: Error) => void;
+      timeoutId: NodeJS.Timeout;
+      conversationId: string;
+      panelId: string;
+    }
+  >();
+  private readonly TOOL_EXECUTION_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 
   constructor(private panelManager: PanelManager) {
+    this.ccConversationManager = getClaudeCodeConversationManager();
+    // Reject any outstanding tool executions when conversations are torn down elsewhere (e.g., panel removal)
+    this.ccConversationEndUnsub = this.ccConversationManager.addConversationEndListener(
+      (conversationId, panelId) => {
+        this.rejectPendingToolExecutions(conversationId, panelId, "Conversation ended");
+      }
+    );
     this.registerHandlers();
   }
 
@@ -521,6 +553,290 @@ export class AIHandler {
       this.getPanelId(event, requestId); // Validate authorization
       return this.getAvailableRoles();
     });
+
+    // =========================================================================
+    // Claude Code Conversation Handlers
+    // =========================================================================
+
+    handle(
+      "ai:cc-conversation-start",
+      async (event, modelId: string, tools: AIToolDefinition[]): Promise<ClaudeCodeConversationInfo> => {
+        const requestId = generateRequestId();
+        const panelId = this.getPanelId(event, requestId);
+
+        this.logger.info(requestId, "Starting Claude Code conversation", {
+          panelId,
+          modelId,
+          toolCount: tools.length,
+        });
+
+        // Validate tools
+        const validatedTools = validateToolDefinitions(tools);
+        if (!validatedTools || validatedTools.length === 0) {
+          throw createAIError("api_error", "At least one tool is required for Claude Code conversations");
+        }
+
+        // Extract the model name from the modelId (e.g., "claude-code:sonnet" -> "sonnet")
+        const ccModelId = modelId.startsWith("claude-code:")
+          ? modelId.substring("claude-code:".length)
+          : modelId;
+
+        // Use an object reference so the callback can access the correct conversation ID
+        // after createConversation() sets it (the callback is created before we know the ID)
+        const conversationRef = { id: "" };
+
+        // Create a tool execution callback that sends requests to the panel via IPC
+        const executeCallback = async (
+          toolName: string,
+          args: Record<string, unknown>
+        ): Promise<ToolExecutionResult> => {
+          const executionId = crypto.randomUUID();
+
+          // Strip MCP prefix from tool name (mcp__serverName__toolName -> toolName)
+          let simpleToolName = toolName;
+          const mcpMatch = toolName.match(/^mcp__[^_]+__(.+)$/);
+          if (mcpMatch) {
+            simpleToolName = mcpMatch[1]!;
+          }
+
+          this.logger.debug(requestId, "Executing tool via panel", {
+            executionId,
+            toolName: simpleToolName,
+            conversationId: conversationRef.id,
+          });
+
+          return new Promise((resolve, reject) => {
+            const timeoutId = setTimeout(() => {
+              this.pendingToolExecutions.delete(executionId);
+              reject(new Error(`Tool execution timed out: ${simpleToolName}`));
+            }, this.TOOL_EXECUTION_TIMEOUT);
+
+            this.pendingToolExecutions.set(executionId, {
+              resolve,
+              reject,
+              timeoutId,
+              conversationId: conversationRef.id,
+              panelId,
+            });
+
+            const request: ClaudeCodeToolExecuteRequest = {
+              panelId,
+              executionId,
+              conversationId: conversationRef.id,
+              toolName: simpleToolName,
+              args,
+            };
+
+            const panelWebContents = this.panelManager.getWebContentsForPanel(panelId);
+            if (!panelWebContents || panelWebContents.isDestroyed()) {
+              this.pendingToolExecutions.delete(executionId);
+              clearTimeout(timeoutId);
+              reject(new Error("Panel is not available"));
+              return;
+            }
+
+            panelWebContents.send("ai:cc-tool-execute", request);
+          });
+        };
+
+        // Create the conversation
+        let conversationHandle: { conversationId: string };
+        try {
+          conversationHandle = this.ccConversationManager.createConversation({
+            panelId,
+            modelId: ccModelId,
+            tools: validatedTools,
+            executeCallback,
+          });
+        } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error));
+          this.logger.error(requestId, "Failed to create Claude Code conversation", { message: err.message }, err);
+          throw createAIError("api_error", err.message);
+        }
+
+        // Update the reference so the callback uses the correct conversation ID
+        conversationRef.id = conversationHandle.conversationId;
+
+        // Get the registered MCP tool names for debugging
+        const registeredTools = getMcpToolNames(conversationHandle.conversationId, validatedTools);
+
+        this.logger.info(requestId, "Claude Code conversation started", {
+          conversationId: conversationHandle.conversationId,
+          registeredTools,
+        });
+
+        return {
+          conversationId: conversationHandle.conversationId,
+          registeredTools,
+        };
+      }
+    );
+
+    handle(
+      "ai:cc-generate",
+      async (event, conversationId: string, options: AICallOptions): Promise<AIGenerateResult> => {
+        const requestId = generateRequestId();
+        const panelId = this.getPanelId(event, requestId);
+
+        this.logger.info(requestId, "Claude Code generate", { panelId, conversationId });
+
+        const conversation = this.ccConversationManager.getConversation(conversationId);
+        if (!conversation) {
+          throw createAIError("api_error", `Conversation not found: ${conversationId}`);
+        }
+
+        if (conversation.panelId !== panelId) {
+          throw createAIError("unauthorized", "Conversation belongs to a different panel");
+        }
+
+        const model = this.ccConversationManager.getModel(conversationId);
+        if (!model) {
+          throw createAIError("internal_error", "Failed to get model for conversation");
+        }
+
+        // Convert request to SDK format (tools are already configured in the conversation)
+        let prompt: unknown[];
+        try {
+          prompt = convertPromptToSDK(options.prompt);
+        } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error));
+          this.logger.error(requestId, "Request conversion failed", { error: err.message }, err);
+          throw error;
+        }
+
+        const sdkOptions = {
+          prompt,
+          maxOutputTokens: options.maxOutputTokens,
+          temperature: options.temperature,
+          topP: options.topP,
+          topK: options.topK,
+          presencePenalty: options.presencePenalty,
+          frequencyPenalty: options.frequencyPenalty,
+          stopSequences: options.stopSequences,
+          seed: options.seed,
+          responseFormat: options.responseFormat,
+          providerOptions: options.providerOptions,
+          // Note: tools and toolChoice are handled by the conversation's MCP server
+        };
+
+        try {
+          const result = (await model.doGenerate(sdkOptions)) as {
+            content?: unknown[];
+            finishReason?: string;
+            usage?: { promptTokens?: number; completionTokens?: number };
+            warnings?: Array<{ type: string; message: string; details?: unknown }>;
+            response?: { id?: string; modelId?: string; timestamp?: Date };
+          };
+
+          const response = validateSDKResponse(result);
+
+          this.logger.info(requestId, "Claude Code generation completed", {
+            conversationId,
+            finishReason: response.finishReason,
+          });
+
+          return response;
+        } catch (error) {
+          const aiError = mapAISDKError(error);
+          this.logger.error(
+            requestId,
+            "Claude Code generation failed",
+            { conversationId, code: aiError.code, message: aiError.message },
+            error as Error
+          );
+          throw aiError;
+        }
+      }
+    );
+
+    handle(
+      "ai:cc-stream-start",
+      async (event, conversationId: string, options: AICallOptions, streamId: string) => {
+        const requestId = generateRequestId();
+        const panelId = this.getPanelId(event, requestId);
+
+        this.logger.info(requestId, "Claude Code stream start", { panelId, conversationId, streamId });
+
+        const conversation = this.ccConversationManager.getConversation(conversationId);
+        if (!conversation) {
+          throw createAIError("api_error", `Conversation not found: ${conversationId}`);
+        }
+
+        if (conversation.panelId !== panelId) {
+          throw createAIError("unauthorized", "Conversation belongs to a different panel");
+        }
+
+        // Run the stream in the background
+        void this.ccStreamToPanel(event.sender, requestId, panelId, conversationId, options, streamId);
+      }
+    );
+
+    handle("ai:cc-conversation-end", async (event, conversationId: string) => {
+      const requestId = generateRequestId();
+      const panelId = this.getPanelId(event, requestId);
+
+      this.logger.info(requestId, "Ending Claude Code conversation", { panelId, conversationId });
+
+      const conversation = this.ccConversationManager.getConversation(conversationId);
+      if (!conversation) {
+        this.logger.warn(requestId, "Conversation not found (may have already ended)", { conversationId });
+        return;
+      }
+
+      if (conversation.panelId !== panelId) {
+        throw createAIError("unauthorized", "Conversation belongs to a different panel");
+      }
+
+      this.rejectPendingToolExecutions(conversationId, panelId, "Conversation ended");
+      this.ccConversationManager.endConversation(conversationId);
+    });
+
+    handle(
+      "ai:cc-tool-result",
+      async (event, executionId: string, result: ClaudeCodeToolResult) => {
+        const requestId = generateRequestId();
+        this.getPanelId(event, requestId); // Validate authorization
+
+        this.logger.debug(requestId, "Received tool result", { executionId, isError: result.isError });
+
+        const pending = this.pendingToolExecutions.get(executionId);
+        if (!pending) {
+          this.logger.warn(requestId, "No pending execution found for tool result", { executionId });
+          return;
+        }
+
+        clearTimeout(pending.timeoutId);
+        this.pendingToolExecutions.delete(executionId);
+
+        // Convert to ToolExecutionResult format
+        pending.resolve({
+          content: result.content,
+          isError: result.isError,
+        });
+      }
+    );
+  }
+
+  /**
+   * Reject and clean up any pending tool executions for a conversation.
+   */
+  private rejectPendingToolExecutions(
+    conversationId: string,
+    panelId: string,
+    reason: string
+  ): void {
+    for (const [executionId, pending] of this.pendingToolExecutions) {
+      if (pending.conversationId === conversationId) {
+        clearTimeout(pending.timeoutId);
+        this.pendingToolExecutions.delete(executionId);
+        pending.reject(new Error(reason));
+        this.logger.debug("cleanup", "Rejected pending tool execution", {
+          executionId,
+          conversationId,
+          panelId,
+        });
+      }
+    }
   }
 
   /**
@@ -544,6 +860,16 @@ export class AIHandler {
     options: AICallOptions
   ): Promise<AIGenerateResult> {
     this.logger.info(requestId, "Generation request", { panelId, modelId });
+
+    // Claude Code with tools requires the streaming conversation API
+    const isClaudeCode = modelId.startsWith("claude-code:");
+    const hasTools = options.tools && options.tools.length > 0;
+    if (isClaudeCode && hasTools) {
+      throw createAIError(
+        "api_error",
+        "Claude Code with tools requires streaming. Use doStream() with registerToolCallbacks() instead of doGenerate()."
+      );
+    }
 
     try {
       const model = this.registry.getModel(modelId);
@@ -625,6 +951,16 @@ export class AIHandler {
     options: AICallOptions,
     streamId: string
   ): Promise<void> {
+    // Check if this is a Claude Code model with tools - needs special handling via MCP
+    const isClaudeCode = modelId.startsWith("claude-code:");
+    const hasTools = options.tools && options.tools.length > 0;
+
+    if (isClaudeCode && hasTools) {
+      // Route to Claude Code conversation-based streaming for tool support
+      await this.streamClaudeCodeWithTools(sender, requestId, panelId, modelId, options, streamId);
+      return;
+    }
+
     this.logger.info(requestId, "Stream started", { panelId, modelId, streamId });
 
     const abortController = new AbortController();
@@ -706,6 +1042,217 @@ export class AIHandler {
     }
   }
 
+  /**
+   * Stream with Claude Code model when tools are present.
+   * Creates a temporary conversation with MCP proxy for tool execution.
+   */
+  private async streamClaudeCodeWithTools(
+    sender: Electron.WebContents,
+    requestId: string,
+    panelId: string,
+    modelId: string,
+    options: AICallOptions,
+    streamId: string
+  ): Promise<void> {
+    this.logger.info(requestId, "Claude Code stream with tools started", {
+      panelId,
+      modelId,
+      streamId,
+      toolCount: options.tools?.length ?? 0,
+    });
+
+    const abortController = new AbortController();
+    this.streamManager.startTracking(streamId, abortController, requestId);
+
+    const onDestroyed = (): void => {
+      this.logger.info(requestId, "Panel destroyed, cancelling Claude Code stream", { streamId });
+      this.streamManager.cleanup(streamId);
+    };
+
+    sender.on("destroyed", onDestroyed);
+
+    // Extract the model name (e.g., "claude-code:sonnet" -> "sonnet")
+    const ccModelId = modelId.startsWith("claude-code:")
+      ? modelId.substring("claude-code:".length)
+      : modelId;
+
+    // Validate and convert tools
+    const validatedTools = validateToolDefinitions(options.tools);
+    if (!validatedTools || validatedTools.length === 0) {
+      this.sendStreamError(sender, panelId, streamId, new Error("Tools are required for Claude Code"));
+      return;
+    }
+
+    // Track pending tool executions for this specific stream
+    const streamPendingTools = new Map<
+      string,
+      {
+        resolve: (result: ToolExecutionResult) => void;
+        reject: (error: Error) => void;
+        timeoutId: NodeJS.Timeout;
+      }
+    >();
+
+    // Use an object reference so the callback can access the correct conversation ID
+    // after createConversation() sets it (the callback is created before we know the ID)
+    const conversationRef = { id: "" };
+
+    // Create tool execution callback
+    const executeCallback = async (
+      toolName: string,
+      args: Record<string, unknown>
+    ): Promise<ToolExecutionResult> => {
+      const executionId = crypto.randomUUID();
+
+      // Strip MCP prefix from tool name (mcp__serverName__toolName -> toolName)
+      // The MCP server uses prefixed names internally, but panel callbacks use simple names
+      let simpleToolName = toolName;
+      const mcpMatch = toolName.match(/^mcp__[^_]+__(.+)$/);
+      if (mcpMatch) {
+        simpleToolName = mcpMatch[1]!;
+      }
+
+      this.logger.debug(requestId, "Executing tool via panel (inline)", {
+        executionId,
+        toolName,
+        simpleToolName,
+        conversationId: conversationRef.id,
+      });
+
+      return new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          streamPendingTools.delete(executionId);
+          reject(new Error(`Tool execution timed out: ${simpleToolName}`));
+        }, this.TOOL_EXECUTION_TIMEOUT);
+
+        streamPendingTools.set(executionId, { resolve, reject, timeoutId });
+
+        // Also track in the main map so ai:cc-tool-result can find it
+        this.pendingToolExecutions.set(executionId, {
+          resolve,
+          reject,
+          timeoutId,
+          conversationId: conversationRef.id,
+          panelId,
+        });
+
+        const request: ClaudeCodeToolExecuteRequest = {
+          panelId,
+          executionId,
+          conversationId: conversationRef.id,
+          toolName: simpleToolName, // Use the simple name for panel callbacks
+          args,
+        };
+
+        if (sender.isDestroyed()) {
+          streamPendingTools.delete(executionId);
+          this.pendingToolExecutions.delete(executionId);
+          clearTimeout(timeoutId);
+          reject(new Error("Panel is not available"));
+          return;
+        }
+
+        sender.send("ai:cc-tool-execute", request);
+      });
+    };
+
+    let actualConversationId: string | null = null;
+
+    try {
+      // Create the conversation
+      const conversationHandle = this.ccConversationManager.createConversation({
+        panelId,
+        modelId: ccModelId,
+        tools: validatedTools,
+        executeCallback,
+      });
+
+      // Update the reference so the callback uses the correct conversation ID
+      conversationRef.id = conversationHandle.conversationId;
+      actualConversationId = conversationHandle.conversationId;
+
+      this.logger.info(requestId, "Created inline Claude Code conversation", {
+        conversationId: actualConversationId,
+        toolCount: validatedTools.length,
+      });
+
+      // Get the model and stream
+      const model = conversationHandle.getModel();
+
+      // Convert prompt
+      let prompt: unknown[];
+      try {
+        prompt = convertPromptToSDK(options.prompt);
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        this.logger.error(requestId, "Request conversion failed", { error: err.message }, err);
+        this.sendStreamError(sender, panelId, streamId, error);
+        return;
+      }
+
+      const sdkOptions = {
+        prompt,
+        maxOutputTokens: options.maxOutputTokens,
+        temperature: options.temperature,
+        topP: options.topP,
+        topK: options.topK,
+        presencePenalty: options.presencePenalty,
+        frequencyPenalty: options.frequencyPenalty,
+        stopSequences: options.stopSequences,
+        seed: options.seed,
+        responseFormat: options.responseFormat,
+        providerOptions: options.providerOptions,
+        abortSignal: abortController.signal,
+        // Tools are handled by the MCP server, not passed directly
+      };
+
+      const { stream } = (await model.doStream(sdkOptions)) as { stream: ReadableStream<unknown> };
+      const reader = stream.getReader();
+
+      try {
+        while (true) {
+          if (sender.isDestroyed()) {
+            abortController.abort();
+            break;
+          }
+
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = this.convertStreamPart(value as Record<string, unknown>);
+          if (chunk && !sender.isDestroyed()) {
+            sender.send("ai:stream-chunk", { panelId, streamId, chunk });
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+
+      if (!sender.isDestroyed()) {
+        sender.send("ai:stream-end", { panelId, streamId });
+        this.logger.info(requestId, "Claude Code stream with tools completed", { streamId });
+      }
+    } catch (error) {
+      this.logger.error(requestId, "Claude Code stream with tools error", { streamId }, error as Error);
+      this.sendStreamError(sender, panelId, streamId, error);
+    } finally {
+      if (actualConversationId) {
+        this.rejectPendingToolExecutions(actualConversationId, panelId, "Conversation ended");
+        this.ccConversationManager.endConversation(actualConversationId);
+      }
+
+      // Clean up pending tool executions for this stream
+      for (const [executionId, pending] of streamPendingTools) {
+        clearTimeout(pending.timeoutId);
+        this.pendingToolExecutions.delete(executionId);
+      }
+      streamPendingTools.clear();
+
+      sender.removeListener("destroyed", onDestroyed);
+      this.streamManager.cleanup(streamId);
+    }
+  }
+
   private sendStreamError(
     sender: Electron.WebContents,
     panelId: string,
@@ -746,12 +1293,19 @@ export class AIHandler {
         };
       case "reasoning-end":
         return { type: "reasoning-end", id: part["id"] as string };
-      case "tool-input-start":
+      case "tool-input-start": {
+        // Strip MCP prefix from tool name (mcp__serverName__toolName -> toolName)
+        let toolName = part["toolName"] as string;
+        const mcpMatch = toolName.match(/^mcp__[^_]+__(.+)$/);
+        if (mcpMatch) {
+          toolName = mcpMatch[1]!;
+        }
         return {
           type: "tool-input-start",
           toolCallId: part["id"] as string, // AI SDK uses "id", not "toolCallId"
-          toolName: part["toolName"] as string,
+          toolName,
         };
+      }
       case "tool-input-delta":
         return {
           type: "tool-input-delta",
@@ -813,6 +1367,98 @@ export class AIHandler {
       }
       default:
         return null;
+    }
+  }
+
+  /**
+   * Stream Claude Code conversation results to a panel.
+   * Similar to streamToPanel but uses the conversation's model.
+   */
+  private async ccStreamToPanel(
+    sender: Electron.WebContents,
+    requestId: string,
+    panelId: string,
+    conversationId: string,
+    options: AICallOptions,
+    streamId: string
+  ): Promise<void> {
+    this.logger.info(requestId, "Claude Code stream started", { panelId, conversationId, streamId });
+
+    const abortController = new AbortController();
+    this.streamManager.startTracking(streamId, abortController, requestId);
+
+    const onDestroyed = (): void => {
+      this.logger.info(requestId, "Panel destroyed, cancelling Claude Code stream", { streamId });
+      this.streamManager.cleanup(streamId);
+    };
+
+    sender.on("destroyed", onDestroyed);
+
+    try {
+      const model = this.ccConversationManager.getModel(conversationId);
+      if (!model) {
+        throw createAIError("internal_error", "Failed to get model for conversation");
+      }
+
+      // Convert request to SDK format (tools are handled by the conversation's MCP server)
+      let prompt: unknown[];
+      try {
+        prompt = convertPromptToSDK(options.prompt);
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        this.logger.error(requestId, "Request conversion failed", { error: err.message }, err);
+        this.sendStreamError(sender, panelId, streamId, error);
+        return;
+      }
+
+      const sdkOptions = {
+        prompt,
+        maxOutputTokens: options.maxOutputTokens,
+        temperature: options.temperature,
+        topP: options.topP,
+        topK: options.topK,
+        presencePenalty: options.presencePenalty,
+        frequencyPenalty: options.frequencyPenalty,
+        stopSequences: options.stopSequences,
+        seed: options.seed,
+        responseFormat: options.responseFormat,
+        providerOptions: options.providerOptions,
+        abortSignal: abortController.signal,
+        // Note: tools and toolChoice are handled by the conversation's MCP server
+      };
+
+      const { stream } = (await model.doStream(sdkOptions)) as { stream: ReadableStream<unknown> };
+      const reader = stream.getReader();
+
+      try {
+        while (true) {
+          if (sender.isDestroyed()) {
+            abortController.abort();
+            break;
+          }
+
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = this.convertStreamPart(value as Record<string, unknown>);
+          if (chunk && !sender.isDestroyed()) {
+            sender.send("ai:stream-chunk", { panelId, streamId, chunk });
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+
+      if (!sender.isDestroyed()) {
+        sender.send("ai:stream-end", { panelId, streamId });
+        this.logger.info(requestId, "Claude Code stream completed", { streamId });
+      }
+    } catch (error) {
+      this.logger.error(requestId, "Claude Code stream error", { streamId }, error as Error);
+      this.sendStreamError(sender, panelId, streamId, error);
+    } finally {
+      sender.removeListener("destroyed", onDestroyed);
+      this.streamManager.cleanup(streamId);
     }
   }
 }

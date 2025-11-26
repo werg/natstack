@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { models, getRoles, type AIRoleRecord, type LanguageModelV2Prompt } from "@natstack/panel";
+import {
+  models,
+  getRoles,
+  registerToolCallbacks,
+  type AIRoleRecord,
+  type LanguageModelV2Prompt,
+  type ClaudeCodeToolResult,
+} from "@natstack/panel";
 import {
   Box,
   Flex,
@@ -282,6 +289,36 @@ export default function AgenticChat() {
     };
   }, []);
 
+  // Register tool callbacks for Claude Code inline streaming
+  // This allows tools to be executed when using Claude Code models with the regular doStream API
+  useEffect(() => {
+    const executeToolForClaudeCode = async (
+      name: string,
+      args: Record<string, unknown>
+    ): Promise<ClaudeCodeToolResult> => {
+      try {
+        const result = executeTool(name, args);
+        return {
+          content: [{ type: "text", text: JSON.stringify(result) }],
+        };
+      } catch (error) {
+        return {
+          content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+          isError: true,
+        };
+      }
+    };
+
+    const cleanup = registerToolCallbacks({
+      get_current_time: (args) => executeToolForClaudeCode("get_current_time", args),
+      calculate: (args) => executeToolForClaudeCode("calculate", args),
+      random_number: (args) => executeToolForClaudeCode("random_number", args),
+      string_transform: (args) => executeToolForClaudeCode("string_transform", args),
+    });
+
+    return cleanup;
+  }, []);
+
   // Build the prompt for the AI SDK
   const buildPrompt = useCallback(
     (msgs: ChatMessage[], results: Map<string, ToolResult>): LanguageModelV2Prompt => {
@@ -481,7 +518,26 @@ When you need to use a tool, make a tool call. After receiving results, provide 
             break;
           }
 
-          // Execute tool calls and add results
+          // For Claude Code models, tools are executed server-side via MCP proxy.
+          // The model already processed the tool results and provided a final response,
+          // so we don't need to execute tools locally or continue the loop.
+          const isClaudeCode = roles[selectedRole]?.modelId?.startsWith("claude-code:");
+          if (isClaudeCode) {
+            // Just record the tool calls for display purposes
+            for (const tc of toolCalls) {
+              const toolResult: ToolResult = {
+                toolCallId: tc.toolCallId,
+                toolName: tc.toolName,
+                result: { status: "executed via Claude Code" },
+                isError: false,
+              };
+              currentResults.set(tc.toolCallId, toolResult);
+            }
+            setToolResults(new Map(currentResults));
+            break;
+          }
+
+          // For non-Claude Code models, execute tools locally
           const toolResultParts: MessagePart[] = [];
           for (const tc of toolCalls) {
             let result: unknown;

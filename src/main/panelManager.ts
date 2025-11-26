@@ -8,6 +8,7 @@ import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
 import type { GitServer } from "./gitServer.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
 import * as SharedPanel from "../shared/ipc/types.js";
+import { getClaudeCodeConversationManager } from "./ai/claudeCodeConversationManager.js";
 
 export class PanelManager {
   private builder: PanelBuilder;
@@ -278,6 +279,9 @@ export class PanelManager {
     // Revoke git token for this panel
     this.gitServer.revokeTokenForPanel(panelId);
 
+    // Clean up any Claude Code conversations for this panel
+    getClaudeCodeConversationManager().endPanelConversations(panelId);
+
     // Remove this panel
     this.panels.delete(panelId);
     this.panelViews.delete(panelId);
@@ -321,6 +325,21 @@ export class PanelManager {
 
   getPanelIdForWebContents(contents: Electron.WebContents): string | undefined {
     return this.guestInstanceMap.get(contents.id);
+  }
+
+  /**
+   * Get WebContents for a panel (returns the first registered view).
+   * Used for sending IPC messages to panels.
+   */
+  getWebContentsForPanel(panelId: string): Electron.WebContents | undefined {
+    const views = this.panelViews.get(panelId);
+    if (!views || views.size === 0) return undefined;
+
+    // Get the first view's webContents
+    const firstViewId = views.values().next().value;
+    if (firstViewId === undefined) return undefined;
+
+    return webContents.fromId(firstViewId) ?? undefined;
   }
 
   verifyAndRegister(panelId: string, token: string, senderId: number): void {

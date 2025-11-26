@@ -38,8 +38,40 @@ import type {
   AIResponseContent,
   AIRoleRecord,
   AIModelInfo,
+  AIToolDefinition,
 } from "./types.js";
 import { encodeBase64 } from "./base64.js";
+
+// =============================================================================
+// Claude Code Conversation Types
+// =============================================================================
+
+/** Information about a started Claude Code conversation */
+export interface ClaudeCodeConversationInfo {
+  conversationId: string;
+  /** MCP tool names that were registered (for debugging) */
+  registeredTools: string[];
+}
+
+/** Tool execution result */
+export interface ClaudeCodeToolResult {
+  /** Text content of the result */
+  content: Array<{ type: "text"; text: string }>;
+  /** Whether the tool execution resulted in an error */
+  isError?: boolean;
+}
+
+/** Tool callback function type */
+export type ClaudeCodeToolCallback = (
+  args: Record<string, unknown>
+) => Promise<ClaudeCodeToolResult>;
+
+/** Tool definition with callback for Claude Code conversations */
+export interface ClaudeCodeToolWithCallback {
+  description?: string;
+  parameters: Record<string, unknown>;
+  execute: ClaudeCodeToolCallback;
+}
 
 // Re-export all AI IPC and model types for consumers
 export type * from "./types.js";
@@ -55,6 +87,21 @@ interface AIBridge {
   listRoles(): Promise<AIRoleRecord>;
   onStreamChunk(listener: (streamId: string, chunk: AIStreamPart) => void): () => void;
   onStreamEnd(listener: (streamId: string) => void): () => void;
+
+  // Claude Code conversation API
+  ccConversationStart(
+    modelId: string,
+    tools: AIToolDefinition[],
+    callbacks: Record<string, (args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>>
+  ): Promise<ClaudeCodeConversationInfo>;
+  ccGenerate(conversationId: string, options: AICallOptions): Promise<AIGenerateResult>;
+  ccStreamStart(conversationId: string, options: AICallOptions, streamId: string): Promise<void>;
+  ccConversationEnd(conversationId: string): Promise<void>;
+
+  // Register tool callbacks for inline Claude Code streaming
+  registerToolCallbacks(
+    callbacks: Record<string, (args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>>
+  ): () => void;
 }
 
 interface PanelBridgeWithAI {
@@ -638,4 +685,304 @@ export const models: Record<string, LanguageModelV2> = new Proxy(
 export function clearModelCache(): void {
   modelCache.clear();
   roleRecordCache = null;
+}
+
+/**
+ * Register tool callbacks for inline Claude Code streaming.
+ *
+ * When using a Claude Code model with tools via the regular `models[role].doStream()` API,
+ * these callbacks will be invoked when Claude calls tools. This enables tool use without
+ * explicitly creating a Claude Code conversation.
+ *
+ * @param callbacks - Map of tool name to callback function. Each callback receives the
+ *   tool arguments and should return a ClaudeCodeToolResult.
+ * @returns A cleanup function to unregister the callbacks
+ *
+ * @example
+ * ```typescript
+ * import { models, registerToolCallbacks, ClaudeCodeToolResult } from '@natstack/ai';
+ *
+ * // Register tool callbacks before streaming
+ * const cleanup = registerToolCallbacks({
+ *   get_current_time: async () => ({
+ *     content: [{ type: 'text', text: new Date().toISOString() }]
+ *   }),
+ *   calculate: async ({ expression }) => ({
+ *     content: [{ type: 'text', text: String(eval(expression)) }]
+ *   })
+ * });
+ *
+ * // Use the model with tools - callbacks will be invoked automatically
+ * const { stream } = await models.fast.doStream({
+ *   prompt: [{ role: 'user', content: [{ type: 'text', text: 'What time is it?' }] }],
+ *   tools: [{ type: 'function', name: 'get_current_time', ... }]
+ * });
+ *
+ * // Clean up when done
+ * cleanup();
+ * ```
+ */
+export function registerToolCallbacks(
+  callbacks: Record<string, ClaudeCodeToolCallback>
+): () => void {
+  const bridge = getBridge();
+  return bridge.ai.registerToolCallbacks(callbacks);
+}
+
+// =============================================================================
+// Claude Code Conversation API
+// =============================================================================
+
+/**
+ * Claude Code conversation handle for interacting with a conversation.
+ */
+export interface ClaudeCodeConversation {
+  /** Unique ID for this conversation */
+  readonly conversationId: string;
+  /** MCP tool names that were registered */
+  readonly registeredTools: string[];
+
+  /**
+   * Get a proxy model for this conversation.
+   * Use this with AI SDK's generateText/streamText.
+   */
+  getModel(): LanguageModelV2;
+
+  /**
+   * Generate text using this conversation.
+   */
+  generate(options: Omit<LanguageModelV2CallOptions, "tools" | "toolChoice">): Promise<LanguageModelV2GenerateResult>;
+
+  /**
+   * Stream text using this conversation.
+   */
+  stream(options: Omit<LanguageModelV2CallOptions, "tools" | "toolChoice">): Promise<LanguageModelV2StreamResult>;
+
+  /**
+   * End the conversation and clean up resources.
+   */
+  end(): Promise<void>;
+}
+
+/**
+ * Options for creating a Claude Code conversation.
+ */
+export interface CreateClaudeCodeConversationOptions {
+  /**
+   * Model to use (e.g., "claude-code:sonnet", "claude-code:opus", "claude-code:haiku")
+   * or just the model name ("sonnet", "opus", "haiku")
+   */
+  model: string;
+
+  /**
+   * Tools with callbacks that will be executed when Claude calls them.
+   */
+  tools: Record<string, ClaudeCodeToolWithCallback>;
+}
+
+/**
+ * Create a Claude Code conversation with tools.
+ *
+ * This creates a dedicated Claude Code session where tools are executed via
+ * callbacks in your panel code. This enables Claude Code to use your custom
+ * tools while leveraging its CLI-based authentication.
+ *
+ * @example
+ * ```typescript
+ * import { createClaudeCodeConversation } from '@natstack/ai';
+ * import { generateText } from 'ai';
+ *
+ * const conversation = await createClaudeCodeConversation({
+ *   model: 'sonnet',
+ *   tools: {
+ *     search: {
+ *       description: 'Search the database',
+ *       parameters: {
+ *         type: 'object',
+ *         properties: {
+ *           query: { type: 'string', description: 'Search query' }
+ *         },
+ *         required: ['query']
+ *       },
+ *       execute: async ({ query }) => {
+ *         const results = await searchDatabase(query);
+ *         return {
+ *           content: [{ type: 'text', text: JSON.stringify(results) }]
+ *         };
+ *       }
+ *     }
+ *   }
+ * });
+ *
+ * // Use with AI SDK
+ * const { text } = await generateText({
+ *   model: conversation.getModel(),
+ *   prompt: 'Search for cats in the database'
+ * });
+ *
+ * // Clean up when done
+ * await conversation.end();
+ * ```
+ */
+export async function createClaudeCodeConversation(
+  options: CreateClaudeCodeConversationOptions
+): Promise<ClaudeCodeConversation> {
+  const bridge = getBridge();
+
+  // Normalize model ID
+  let modelId = options.model;
+  if (!modelId.includes(":")) {
+    modelId = `claude-code:${modelId}`;
+  }
+
+  // Convert tools to the format expected by the bridge
+  const toolDefinitions: AIToolDefinition[] = [];
+  const callbacks: Record<string, (args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>> = {};
+
+  for (const [name, toolDef] of Object.entries(options.tools)) {
+    toolDefinitions.push({
+      type: "function",
+      name,
+      description: toolDef.description,
+      parameters: toolDef.parameters,
+    });
+    callbacks[name] = toolDef.execute;
+  }
+
+  // Start the conversation
+  const info = await bridge.ai.ccConversationStart(modelId, toolDefinitions, callbacks);
+
+  // Create a proxy model for this conversation
+  const createConversationModel = (): LanguageModelV2 => ({
+    specificationVersion: "v2",
+    provider: "claude-code-conversation",
+    modelId: info.conversationId,
+    supportedUrls: {},
+
+    async doGenerate(callOptions: LanguageModelV2CallOptions): Promise<LanguageModelV2GenerateResult> {
+      const ipcOptions: AICallOptions = {
+        prompt: convertPromptToIPC(callOptions.prompt),
+        maxOutputTokens: callOptions.maxOutputTokens,
+        temperature: callOptions.temperature,
+        topP: callOptions.topP,
+        topK: callOptions.topK,
+        presencePenalty: callOptions.presencePenalty,
+        frequencyPenalty: callOptions.frequencyPenalty,
+        stopSequences: callOptions.stopSequences,
+        seed: callOptions.seed,
+        responseFormat: callOptions.responseFormat as AICallOptions["responseFormat"],
+        providerOptions: callOptions.providerOptions,
+        // Note: tools are configured in the conversation, not passed here
+      };
+
+      const result = await bridge.ai.ccGenerate(info.conversationId, ipcOptions);
+      return convertResultFromIPC(result);
+    },
+
+    async doStream(callOptions: LanguageModelV2CallOptions): Promise<LanguageModelV2StreamResult> {
+      const streamId = crypto.randomUUID();
+      registerUnloadCancelHook();
+
+      const ipcOptions: AICallOptions = {
+        prompt: convertPromptToIPC(callOptions.prompt),
+        maxOutputTokens: callOptions.maxOutputTokens,
+        temperature: callOptions.temperature,
+        topP: callOptions.topP,
+        topK: callOptions.topK,
+        presencePenalty: callOptions.presencePenalty,
+        frequencyPenalty: callOptions.frequencyPenalty,
+        stopSequences: callOptions.stopSequences,
+        seed: callOptions.seed,
+        responseFormat: callOptions.responseFormat as AICallOptions["responseFormat"],
+        providerOptions: callOptions.providerOptions,
+      };
+
+      const cancelStream = () => {
+        const cancel = activeStreamCancelers.get(streamId);
+        if (cancel) {
+          cancel();
+        }
+      };
+
+      const stream = new ReadableStream<LanguageModelV2StreamPart>({
+        start(controller) {
+          let ended = false;
+
+          const unsubChunk = bridge.ai.onStreamChunk((sid, chunk) => {
+            if (sid === streamId && !ended) {
+              controller.enqueue(convertStreamPartFromIPC(chunk));
+            }
+          });
+
+          const unsubEnd = bridge.ai.onStreamEnd((sid) => {
+            if (sid === streamId && !ended) {
+              ended = true;
+              unsubChunk();
+              unsubEnd();
+              controller.close();
+              activeStreamCancelers.delete(streamId);
+            }
+          });
+
+          if (callOptions.abortSignal) {
+            callOptions.abortSignal.addEventListener("abort", () => {
+              if (!ended) {
+                ended = true;
+                unsubChunk();
+                unsubEnd();
+                cancelStream();
+                controller.error(new Error("Aborted"));
+              }
+            });
+          }
+        },
+      });
+
+      const cancelWrapper = () => {
+        activeStreamCancelers.delete(streamId);
+        void bridge.ai.streamCancel(streamId).catch((error) => {
+          console.error("Failed to cancel Claude Code stream", error);
+        });
+      };
+      activeStreamCancelers.set(streamId, cancelWrapper);
+
+      try {
+        await bridge.ai.ccStreamStart(info.conversationId, ipcOptions, streamId);
+      } catch (error) {
+        activeStreamCancelers.delete(streamId);
+        throw error;
+      }
+
+      return { stream };
+    },
+  });
+
+  const model = createConversationModel();
+
+  return {
+    conversationId: info.conversationId,
+    registeredTools: info.registeredTools,
+
+    getModel: () => model,
+
+    async generate(callOptions) {
+      return model.doGenerate({
+        ...callOptions,
+        tools: undefined,
+        toolChoice: undefined,
+      });
+    },
+
+    async stream(callOptions) {
+      return model.doStream({
+        ...callOptions,
+        tools: undefined,
+        toolChoice: undefined,
+      });
+    },
+
+    async end() {
+      await bridge.ai.ccConversationEnd(info.conversationId);
+    },
+  };
 }

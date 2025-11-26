@@ -7,8 +7,8 @@
   "main": "dist/main.cjs",
   "scripts": {
     "build": "NODE_ENV=production node build.mjs",
-    "dev": "NODE_ENV=development node build.mjs & pnpm type-check & node scripts/run-electron.mjs --workspace=workspace",
-    "dev:safe": "NODE_ENV=development node build.mjs & sleep 2 && node scripts/run-electron.mjs",
+    "dev": "NODE_ENV=development node build.mjs && pnpm type-check & node scripts/run-electron.mjs --workspace=workspace",
+    "dev:safe": "NODE_ENV=development node build.mjs && node scripts/run-electron.mjs",
     "start": "node scripts/run-electron.mjs",
     "cleanup": "bash scripts/cleanup-processes.sh",
     "lint": "eslint src --max-warnings 0",

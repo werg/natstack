@@ -8,8 +8,15 @@ import {
   type AIStreamChunkEvent,
   type AIStreamEndEvent,
   type AIStreamPart,
+  type AIToolDefinition,
 } from "@natstack/ai";
-import { PanelInfo, ThemeAppearance } from "../shared/ipc/types.js";
+import {
+  PanelInfo,
+  ThemeAppearance,
+  type ClaudeCodeConversationInfo,
+  type ClaudeCodeToolExecuteRequest,
+  type ClaudeCodeToolResult,
+} from "../shared/ipc/types.js";
 type PanelEventName = "child-removed" | "focus";
 
 type PanelEventMessage =
@@ -167,6 +174,66 @@ const onEnd = (_event: Electron.IpcRendererEvent, payload: AIStreamEndEvent) => 
   });
 };
 ipcRenderer.on("ai:stream-end", onEnd);
+
+// Claude Code tool execution listeners
+// Map conversationId -> tool callbacks
+const ccToolCallbacks = new Map<
+  string,
+  Map<string, (args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>>
+>();
+
+// Default tool callbacks for inline streaming (when using regular doStream with tools)
+// These are used when no conversation-specific callbacks are found
+const defaultToolCallbacks = new Map<
+  string,
+  (args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>
+>();
+
+// Handle tool execution requests from main process
+ipcRenderer.on(
+  "ai:cc-tool-execute",
+  async (_event: Electron.IpcRendererEvent, request: ClaudeCodeToolExecuteRequest) => {
+    // Security: Only process requests for this panel
+    if (request.panelId !== panelId) {
+      return;
+    }
+
+    const { executionId, conversationId, toolName, args } = request;
+
+    try {
+      // First try conversation-specific callbacks
+      let callback: ((args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>) | undefined;
+
+      const conversationCallbacks = ccToolCallbacks.get(conversationId);
+      if (conversationCallbacks) {
+        callback = conversationCallbacks.get(toolName);
+      }
+
+      // Fall back to default callbacks (for inline streaming with tools)
+      if (!callback) {
+        callback = defaultToolCallbacks.get(toolName);
+      }
+
+      if (!callback) {
+        throw new Error(`No callback registered for tool: ${toolName}`);
+      }
+
+      const result = await callback(args);
+      void ipcRenderer.invoke("ai:cc-tool-result", executionId, result);
+    } catch (error) {
+      const errorResult: ClaudeCodeToolResult = {
+        content: [
+          {
+            type: "text",
+            text: error instanceof Error ? error.message : String(error),
+          },
+        ],
+        isError: true,
+      };
+      void ipcRenderer.invoke("ai:cc-tool-result", executionId, errorResult);
+    }
+  }
+);
 
 // =============================================================================
 // Panel-to-Panel RPC
@@ -488,6 +555,89 @@ const bridge = {
       aiStreamEndListeners.add(listener);
       return () => {
         aiStreamEndListeners.delete(listener);
+      };
+    },
+
+    // =========================================================================
+    // Claude Code Conversation API
+    // =========================================================================
+
+    /**
+     * Start a Claude Code conversation with tools.
+     * Returns conversation info including the conversationId.
+     */
+    ccConversationStart: async (
+      modelId: string,
+      tools: AIToolDefinition[],
+      callbacks: Record<string, (args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>>
+    ): Promise<ClaudeCodeConversationInfo> => {
+      const info = await ipcRenderer.invoke(
+        "ai:cc-conversation-start",
+        modelId,
+        tools
+      ) as ClaudeCodeConversationInfo;
+
+      // Register the tool callbacks for this conversation
+      const callbackMap = new Map<
+        string,
+        (args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>
+      >();
+      for (const [name, callback] of Object.entries(callbacks)) {
+        callbackMap.set(name, callback);
+      }
+      ccToolCallbacks.set(info.conversationId, callbackMap);
+
+      return info;
+    },
+
+    /**
+     * Generate with an existing Claude Code conversation.
+     */
+    ccGenerate: (conversationId: string, options: AICallOptions): Promise<AIGenerateResult> => {
+      return ipcRenderer.invoke("ai:cc-generate", conversationId, options);
+    },
+
+    /**
+     * Start streaming with an existing Claude Code conversation.
+     */
+    ccStreamStart: (
+      conversationId: string,
+      options: AICallOptions,
+      streamId: string
+    ): Promise<void> => {
+      return ipcRenderer.invoke("ai:cc-stream-start", conversationId, options, streamId);
+    },
+
+    /**
+     * End a Claude Code conversation and clean up resources.
+     */
+    ccConversationEnd: (conversationId: string): Promise<void> => {
+      // Clean up local callbacks
+      ccToolCallbacks.delete(conversationId);
+      return ipcRenderer.invoke("ai:cc-conversation-end", conversationId);
+    },
+
+    /**
+     * Register tool callbacks for inline Claude Code streaming.
+     * These callbacks are used when calling doStream with tools on a Claude Code model.
+     * This allows tools to be executed without explicitly creating a conversation.
+     *
+     * @param callbacks - Map of tool name to callback function
+     * @returns Cleanup function to unregister the callbacks
+     */
+    registerToolCallbacks: (
+      callbacks: Record<string, (args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>>
+    ): (() => void) => {
+      // Register each callback
+      for (const [name, callback] of Object.entries(callbacks)) {
+        defaultToolCallbacks.set(name, callback);
+      }
+
+      // Return cleanup function
+      return () => {
+        for (const name of Object.keys(callbacks)) {
+          defaultToolCallbacks.delete(name);
+        }
       };
     },
   },

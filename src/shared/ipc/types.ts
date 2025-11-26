@@ -1,6 +1,6 @@
 // Shared types for typed IPC communication
 
-import type { AICallOptions, AIGenerateResult, AIRoleRecord } from "@natstack/ai";
+import type { AICallOptions, AIGenerateResult, AIRoleRecord, AIToolDefinition } from "@natstack/ai";
 
 export type ThemeMode = "light" | "dark" | "system";
 export type ThemeAppearance = "light" | "dark";
@@ -87,6 +87,78 @@ export interface AIProviderIpcApi {
 
   /** Get record of configured roles and their assigned models */
   "ai:list-roles": () => AIRoleRecord;
+
+  // Claude Code conversation management (for tool callback support)
+
+  /**
+   * Start a Claude Code conversation with tools.
+   * Returns a conversationId that must be passed to subsequent calls.
+   */
+  "ai:cc-conversation-start": (
+    modelId: string,
+    tools: AIToolDefinition[]
+  ) => ClaudeCodeConversationInfo;
+
+  /**
+   * Generate with an existing Claude Code conversation.
+   * Tools are executed via ai:cc-tool-execute events.
+   */
+  "ai:cc-generate": (
+    conversationId: string,
+    options: AICallOptions
+  ) => AIGenerateResult;
+
+  /**
+   * Stream with an existing Claude Code conversation.
+   * Tools are executed via ai:cc-tool-execute events.
+   */
+  "ai:cc-stream-start": (
+    conversationId: string,
+    options: AICallOptions,
+    streamId: string
+  ) => void;
+
+  /** End a Claude Code conversation and clean up resources */
+  "ai:cc-conversation-end": (conversationId: string) => void;
+
+  /** Response from panel after executing a tool (called by panel) */
+  "ai:cc-tool-result": (
+    executionId: string,
+    result: ClaudeCodeToolResult
+  ) => void;
+}
+
+// =============================================================================
+// Claude Code Conversation Types
+// =============================================================================
+
+/** Information about a started Claude Code conversation */
+export interface ClaudeCodeConversationInfo {
+  conversationId: string;
+  /** MCP tool names that were registered (for debugging) */
+  registeredTools: string[];
+}
+
+/** Tool execution request sent from main to panel (via IPC event) */
+export interface ClaudeCodeToolExecuteRequest {
+  /** Panel ID for security validation (receivers must check this matches their panelId) */
+  panelId: string;
+  /** Unique ID for this execution (for matching result) */
+  executionId: string;
+  /** Conversation this tool call belongs to */
+  conversationId: string;
+  /** Name of the tool to execute */
+  toolName: string;
+  /** Arguments for the tool */
+  args: Record<string, unknown>;
+}
+
+/** Tool execution result sent from panel to main */
+export interface ClaudeCodeToolResult {
+  /** Text content of the result */
+  content: Array<{ type: "text"; text: string }>;
+  /** Whether the tool execution resulted in an error */
+  isError?: boolean;
 }
 
 // =============================================================================
