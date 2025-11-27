@@ -10,6 +10,7 @@ export const electronAPI = {
     ipcRenderer.invoke("app:set-theme-mode", mode),
   openAppDevTools: (): Promise<void> => ipcRenderer.invoke("app:open-devtools"),
   getPanelPreloadPath: (): Promise<string> => ipcRenderer.invoke("app:get-panel-preload-path"),
+  clearBuildCache: (): Promise<void> => ipcRenderer.invoke("app:clear-build-cache"),
 
   // Panel methods
   getPanelTree: (): Promise<Panel.Panel[]> => ipcRenderer.invoke("panel:get-tree"),

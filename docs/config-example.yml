@@ -1,0 +1,58 @@
+# NatStack Central Configuration Example
+# Location: ~/.config/natstack/config.yml (or equivalent on Windows/Mac)
+# This configuration is shared across all workspaces
+
+# ============================================================================
+# Model Role Configuration
+# ============================================================================
+# Define which models to use for different roles
+# Roles can be: smart, coding, fast, cheap, or custom names
+# Format: "provider:model" or detailed config object
+
+models:
+  smart: anthropic:claude-sonnet-4-20250514
+  coding: anthropic:claude-sonnet-4-20250514
+  fast: anthropic:claude-haiku-3-5-20241022
+  cheap: anthropic:claude-haiku-3-5-20241022
+
+# ============================================================================
+# Build Cache Configuration
+# ============================================================================
+# Configure the build cache system for panel artifacts and dependencies
+# All sizes are in bytes unless otherwise specified
+
+cache:
+  # Main Process Cache (Global Storage)
+  # These entries are shared across all panels via selective loading
+  maxEntries: 100000           # Maximum number of cache entries (default: 100000)
+  maxSize: 5368709120          # Maximum total size in bytes (default: 5GB)
+
+  # Panel Cache (Per-Panel Limits)
+  # Each panel loads only the cache entries it needs from the main process
+  maxEntriesPerPanel: 50000    # Maximum entries per panel (default: 50000)
+  maxSizePerPanel: 2147483648  # Maximum size per panel in bytes (default: 2GB)
+
+  # Repo Manifest Tracking
+  # Tracks which cache entries each git repo uses during runtime
+  maxKeysPerRepo: 5000         # Maximum cache keys tracked per repo (default: 5000)
+  maxRepos: 100                # Maximum repos to track (default: 100)
+
+  # Cache Expiration
+  # Only applies in development mode (production never expires)
+  expirationMs: 300000         # Expiration time in milliseconds (default: 300000 = 5 minutes)
+
+# ============================================================================
+# Size Reference Guide
+# ============================================================================
+# 1 KB = 1024 bytes
+# 1 MB = 1048576 bytes
+# 1 GB = 1073741824 bytes
+#
+# Default maxSize (5GB) = 5368709120 bytes
+# Default maxSizePerPanel (2GB) = 2147483648 bytes
+#
+# Examples:
+# 10 GB = 10737418240
+# 1 GB  = 1073741824
+# 500 MB = 524288000
+# 100 MB = 104857600

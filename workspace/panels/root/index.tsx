@@ -51,7 +51,7 @@ export default function ChildPanelLauncher() {
   const launchTime = env.LAUNCH_TIME;
   const message = env.MESSAGE;
 
-  const launchChild = async () => {
+  const launchChildPanel = async () => {
     try {
       setStatus("Launching child panel...");
       const childId = await panel.createChild("panels/root", {
@@ -59,9 +59,9 @@ export default function ChildPanelLauncher() {
           PARENT_ID: panelId,
           LAUNCH_TIME: new Date().toISOString(),
           MESSAGE: "Hello from parent panel!",
-        }
+        },
       });
-      setStatus(`Launched child ${childId} with isolated OPFS`);
+      setStatus(`Launched child ${childId}`);
     } catch (error) {
       setStatus(`Failed to launch child: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -87,20 +87,13 @@ export default function ChildPanelLauncher() {
     }
   };
 
-  const launchExampleWithSharedPartition = async () => {
+  const launchInPanelBuildDemo = async () => {
     try {
-      setStatus("Launching root panel with a shared panel id...");
-      const childId = await panel.createChild("panels/root", {
-        env: {
-          PARENT_ID: panelId,
-          LAUNCH_TIME: new Date().toISOString(),
-          MESSAGE: "I share OPFS with siblings!",
-        },
-        panelId: "shared-storage",
-      });
-      setStatus(`Launched root panel ${childId} with shared panel id`);
+      setStatus("Launching in-panel build demo...");
+      const childId = await panel.createChild("panels/in-panel-build-demo");
+      setStatus(`Launched in-panel build demo ${childId}`);
     } catch (error) {
-      setStatus(`Failed to launch: ${error instanceof Error ? error.message : String(error)}`);
+      setStatus(`Failed to launch in-panel build demo: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -192,9 +185,7 @@ export default function ChildPanelLauncher() {
     try {
       addRpcLog("Launching RPC demo child panel...");
       const childId = await panel.createChild("panels/typed-rpc-child", {
-        env: {
-          PARENT_ID: panelId,
-        },
+        env: { PARENT_ID: panelId },
       });
       setRpcChildId(childId);
       addRpcLog(`Child panel launched: ${childId}`);
@@ -359,15 +350,15 @@ export default function ChildPanelLauncher() {
             </Card>
           )}
           <Flex gap="3" wrap="wrap">
-            <Button onClick={launchChild}>Launch child panel (isolated)</Button>
-            <Button onClick={launchExampleWithSharedPartition} color="orange">
-              Launch child (named partition)
-            </Button>
+            <Button onClick={launchChildPanel}>Launch Root Panel</Button>
             <Button onClick={launchSharedOPFSDemo} color="purple">
               Launch Shared OPFS Demo
             </Button>
             <Button onClick={launchAgenticChat} color="green">
               Launch Agentic Chat
+            </Button>
+            <Button onClick={launchInPanelBuildDemo} color="cyan">
+              Launch In-Panel Build Demo
             </Button>
             <Button variant="soft" onClick={setRandomTitle}>
               Set random title

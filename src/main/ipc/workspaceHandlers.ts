@@ -205,7 +205,6 @@ handle(
 
       // Create workspace structure
       fs.mkdirSync(path.join(resolvedPath, "panels"), { recursive: true });
-      fs.mkdirSync(path.join(resolvedPath, "git-repos"), { recursive: true });
       fs.mkdirSync(path.join(resolvedPath, ".cache"), { recursive: true });
 
       // Create natstack.yml with a random port in a safe range

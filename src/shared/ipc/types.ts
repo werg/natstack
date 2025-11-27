@@ -21,6 +21,39 @@ export interface PanelArtifacts {
   error?: string;
 }
 
+/**
+ * Build artifacts passed from an in-panel build
+ * Used when a panel builds its own child using @natstack/build
+ */
+export interface InMemoryBuildArtifacts {
+  /** The bundled JavaScript code */
+  bundle: string;
+  /** Generated or provided HTML template */
+  html: string;
+  /** Panel title from manifest */
+  title: string;
+  /** CSS bundle if any */
+  css?: string;
+  /** Whether to inject host theme variables (defaults to true) */
+  injectHostThemeVariables?: boolean;
+  /** Optional source repo path (workspace-relative) to retain git association */
+  sourceRepo?: string;
+  /** Git dependencies from manifest */
+  gitDependencies?: Record<string, GitDependencySpec>;
+}
+
+/**
+ * Git dependency specification (shorthand string or full object)
+ */
+export type GitDependencySpec =
+  | string
+  | {
+      repo: string;
+      branch?: string;
+      commit?: string;
+      tag?: string;
+    };
+
 export interface Panel {
   id: string;
   title: string;
@@ -30,6 +63,10 @@ export interface Panel {
   injectHostThemeVariables: boolean;
   artifacts: PanelArtifacts;
   env?: Record<string, string>;
+  /** Optional source repo when served from in-memory artifacts */
+  sourceRepo?: string;
+  /** Git dependencies from manifest (to clone into OPFS) */
+  gitDependencies?: Record<string, GitDependencySpec>;
 }
 
 // =============================================================================
@@ -43,6 +80,7 @@ export interface AppIpcApi {
   "app:set-theme-mode": (mode: ThemeMode) => void;
   "app:open-devtools": () => void;
   "app:get-panel-preload-path": () => string;
+  "app:clear-build-cache": () => void;
 }
 
 // Panel-related IPC channels (renderer <-> main)
@@ -55,18 +93,102 @@ export interface PanelIpcApi {
 
 // Panel bridge IPC channels (panel webview <-> main)
 export interface PanelBridgeIpcApi {
-  "panel-bridge:create-child": (
+  /**
+   * Get pre-bundled @natstack/* packages for in-panel builds
+   * Returns a map of package name -> ESM bundle code
+   */
+  "panel-bridge:get-prebundled-packages": () => Record<string, string>;
+
+  /**
+   * Get development mode flag
+   * Returns true if running in development mode, false for production
+   * Used by @natstack/build to determine cache expiration behavior
+   */
+  "panel-bridge:get-dev-mode": () => boolean;
+
+  /**
+   * Get cache configuration from central config
+   * Returns panel-specific cache limits
+   */
+  "panel-bridge:get-cache-config": () => {
+    maxEntriesPerPanel: number;
+    maxSizePerPanel: number;
+    expirationMs: number;
+  };
+
+  /**
+   * Load cache from disk
+   * Returns cache entries stored on disk (shared across all panels)
+   */
+  "panel-bridge:load-disk-cache": (panelId: string) => Record<string, {
+    key: string;
+    value: string;
+    timestamp: number;
+    size: number;
+  }>;
+
+  /**
+   * Save cache to disk
+   * Saves cache entries to disk (shared across all panels)
+   */
+  "panel-bridge:save-disk-cache": (panelId: string, entries: Record<string, {
+    key: string;
+    value: string;
+    timestamp: number;
+    size: number;
+  }>) => void;
+
+  /**
+   * Record cache hits for repo manifest tracking
+   * Tracks which cache entries this repo URL uses during runtime
+   */
+  "panel-bridge:record-cache-hits": (panelId: string, cacheKeys: string[]) => void;
+
+  /**
+   * Get cache keys for a repo (for pre-population)
+   * Returns the list of cache keys this repo has used before
+   */
+  "panel-bridge:get-repo-cache-keys": (panelId: string) => string[];
+
+  /**
+   * Load specific cache entries by key
+   * Returns only the requested cache entries (selective loading)
+   */
+  "panel-bridge:load-cache-entries": (keys: string[]) => Record<string, {
+    key: string;
+    value: string;
+    timestamp: number;
+    size: number;
+  }>;
+
+  /**
+   * Launch a child panel from in-memory build artifacts
+   * Use this when the panel was built in-browser using @natstack/build
+   */
+  "panel-bridge:launch-child": (
     parentId: string,
-    panelPath: string,
+    artifacts: InMemoryBuildArtifacts,
     env?: Record<string, string>,
     requestedPanelId?: string
   ) => string;
+
   "panel-bridge:remove-child": (parentId: string, childId: string) => void;
   "panel-bridge:set-title": (panelId: string, title: string) => void;
   "panel-bridge:close": (panelId: string) => void;
   "panel-bridge:register": (panelId: string, authToken: string) => void;
   "panel-bridge:get-env": (panelId: string) => Record<string, string>;
   "panel-bridge:get-info": (panelId: string) => PanelInfo;
+
+  /**
+   * Get git configuration for a panel.
+   * Used by panels to clone/pull their source and dependencies via @natstack/git.
+   */
+  "panel-bridge:get-git-config": (panelId: string) => {
+    serverUrl: string;
+    token: string;
+    sourceRepo: string;
+    gitDependencies: Record<string, GitDependencySpec>;
+  };
 
   // Panel-to-panel RPC
   // Request a direct MessagePort connection to another panel

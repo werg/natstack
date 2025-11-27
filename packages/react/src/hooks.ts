@@ -7,8 +7,8 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   panel as panelAPI,
   type PanelTheme,
-  type CreateChildOptions,
   type PanelRpcHandleOptions,
+  type CreateChildOptions,
   type Rpc,
 } from "@natstack/core";
 

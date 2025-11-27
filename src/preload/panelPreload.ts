@@ -11,8 +11,9 @@ import {
   type AIToolDefinition,
 } from "@natstack/ai";
 import {
-  PanelInfo,
-  ThemeAppearance,
+  type InMemoryBuildArtifacts,
+  type PanelInfo,
+  type ThemeAppearance,
   type ClaudeCodeConversationInfo,
   type ClaudeCodeToolExecuteRequest,
   type ClaudeCodeToolResult,
@@ -85,12 +86,92 @@ const parseAuthToken = (): string | undefined => {
   return arg ? arg.split("=")[1] : undefined;
 };
 
+/**
+ * Validate and sanitize a repo URL for safe use as cache identifier
+ * - Ensures URL is a valid string
+ * - Removes query parameters and fragments
+ * - Normalizes trailing slashes
+ * - Limits length to prevent abuse
+ */
+function sanitizeRepoUrl(repoUrl: unknown): string | null {
+  if (typeof repoUrl !== 'string' || !repoUrl) {
+    return null;
+  }
+
+  // Limit length to prevent abuse (max 500 chars)
+  if (repoUrl.length > 500) {
+    console.warn(`[Panel] Repo URL too long (${repoUrl.length} chars), truncating`);
+    return null;
+  }
+
+  try {
+    // For relative paths (workspace-relative repos), just normalize
+    if (!repoUrl.includes('://')) {
+      // Remove leading/trailing slashes and normalize
+      const normalized = repoUrl.replace(/^\/+|\/+$/g, '');
+      // Validate it doesn't contain dangerous characters
+      if (/[<>"|?*\x00-\x1f]/.test(normalized)) {
+        console.warn(`[Panel] Repo path contains invalid characters: ${normalized}`);
+        return null;
+      }
+      return normalized;
+    }
+
+    // For full URLs, parse and sanitize
+    const url = new URL(repoUrl);
+
+    // Only allow http/https/git protocols
+    if (!['http:', 'https:', 'git:'].includes(url.protocol)) {
+      console.warn(`[Panel] Invalid repo URL protocol: ${url.protocol}`);
+      return null;
+    }
+
+    // Remove query params and fragments (not needed for cache keys)
+    url.search = '';
+    url.hash = '';
+
+    // Normalize trailing slash
+    const sanitized = url.toString().replace(/\/$/, '');
+
+    return sanitized;
+  } catch (error) {
+    console.warn(`[Panel] Invalid repo URL format: ${repoUrl}`, error);
+    return null;
+  }
+}
+
 const authToken = parseAuthToken();
 if (authToken) {
   // Register this panel view with the main process using the secure token
-  void ipcRenderer.invoke("panel-bridge:register", panelId, authToken).catch((error: unknown) => {
-    console.error("Failed to register panel view", error);
-  });
+  void ipcRenderer.invoke("panel-bridge:register", panelId, authToken)
+    .then(async () => {
+      // After registration, get panel info to extract source repo for cache warming
+      try {
+        const gitConfig = await ipcRenderer.invoke("panel-bridge:get-git-config", panelId) as {
+          serverUrl: string;
+          token: string;
+          sourceRepo: string;
+          gitDependencies: Record<string, unknown>;
+        };
+
+        if (gitConfig.sourceRepo) {
+          // Validate and sanitize repo URL before using as cache identifier
+          const sanitizedRepoUrl = sanitizeRepoUrl(gitConfig.sourceRepo);
+          if (sanitizedRepoUrl) {
+            // Set repo URL in globalThis for cache hit tracking
+            (globalThis as { __natstackRepoUrl?: string }).__natstackRepoUrl = sanitizedRepoUrl;
+            console.log(`[Panel] Set repo URL for cache tracking: ${sanitizedRepoUrl}`);
+          } else {
+            console.warn(`[Panel] Skipping cache tracking - invalid repo URL: ${gitConfig.sourceRepo}`);
+          }
+        }
+      } catch (error) {
+        console.warn("[Panel] Failed to get git config for cache warming:", error);
+      }
+    })
+    .catch((error: unknown) => {
+      console.error("Failed to register panel view", error);
+    });
 } else {
   console.error("No auth token found for panel", panelId);
 }
@@ -397,17 +478,94 @@ async function getRpcPort(targetPanelId: string): Promise<MessagePort> {
 const bridge = {
   panelId,
 
-  // IPC methods via ipcRenderer.invoke
-  createChild: (
-    path: string,
+  // ==========================================================================
+  // Panel Lifecycle API
+  // ==========================================================================
+
+  /**
+   * Launch a child panel from in-memory build artifacts.
+   * Use this when you've built the panel in-browser using @natstack/build.
+   * Each child gets its own isolated OPFS partition.
+   */
+  launchChild: (
+    artifacts: InMemoryBuildArtifacts,
     env?: Record<string, string>,
     requestedPanelId?: string
   ): Promise<string> => {
-    return ipcRenderer.invoke("panel-bridge:create-child", panelId, path, env, requestedPanelId);
+    return ipcRenderer.invoke("panel-bridge:launch-child", panelId, artifacts, env, requestedPanelId);
   },
 
   removeChild: (childId: string): Promise<void> => {
     return ipcRenderer.invoke("panel-bridge:remove-child", panelId, childId);
+  },
+
+  /**
+   * Get pre-bundled @natstack/* packages for in-panel builds.
+   * Use with @natstack/build's registerPrebundledBatch() to enable
+   * building child panels that use @natstack packages.
+   */
+  getPrebundledPackages: (): Promise<Record<string, string>> => {
+    return ipcRenderer.invoke("panel-bridge:get-prebundled-packages");
+  },
+
+  /**
+   * Get development mode flag.
+   * Use with @natstack/build's setDevMode() to configure cache expiration.
+   */
+  getDevMode: (): Promise<boolean> => {
+    return ipcRenderer.invoke("panel-bridge:get-dev-mode");
+  },
+
+  /**
+   * Get cache configuration from central config.
+   * Returns panel-specific cache limits.
+   */
+  getCacheConfig: (): Promise<{
+    maxEntriesPerPanel: number;
+    maxSizePerPanel: number;
+    expirationMs: number;
+  }> => {
+    return ipcRenderer.invoke("panel-bridge:get-cache-config");
+  },
+
+  /**
+   * Load cache from disk (shared across all panels).
+   * Returns cache entries stored in app data directory.
+   */
+  loadDiskCache: (): Promise<Record<string, { key: string; value: string; timestamp: number; size: number }>> => {
+    return ipcRenderer.invoke("panel-bridge:load-disk-cache", panelId);
+  },
+
+  /**
+   * Save cache to disk (shared across all panels).
+   * Saves cache entries to app data directory.
+   */
+  saveDiskCache: (entries: Record<string, { key: string; value: string; timestamp: number; size: number }>): Promise<void> => {
+    return ipcRenderer.invoke("panel-bridge:save-disk-cache", panelId, entries);
+  },
+
+  /**
+   * Record cache hits for repo manifest tracking.
+   * Tracks which cache entries this repo uses during runtime.
+   */
+  recordCacheHits: (cacheKeys: string[]): Promise<void> => {
+    return ipcRenderer.invoke("panel-bridge:record-cache-hits", panelId, cacheKeys);
+  },
+
+  /**
+   * Get cache keys for a repo (for pre-population).
+   * Returns the list of cache keys this repo has used before.
+   */
+  getRepoCacheKeys: (): Promise<string[]> => {
+    return ipcRenderer.invoke("panel-bridge:get-repo-cache-keys", panelId);
+  },
+
+  /**
+   * Load specific cache entries by key (selective loading).
+   * Returns only the requested cache entries.
+   */
+  loadCacheEntries: (keys: string[]): Promise<Record<string, { key: string; value: string; timestamp: number; size: number }>> => {
+    return ipcRenderer.invoke("panel-bridge:load-cache-entries", keys);
   },
 
   setTitle: (title: string): Promise<void> => {
@@ -639,6 +797,31 @@ const bridge = {
           defaultToolCallbacks.delete(name);
         }
       };
+    },
+  },
+
+  // ==========================================================================
+  // Git API
+  // ==========================================================================
+
+  git: {
+    /**
+     * Get git configuration for this panel.
+     * Use with @natstack/git to clone/pull repos into OPFS.
+     *
+     * Returns:
+     * - serverUrl: Git server base URL (e.g., http://localhost:63524)
+     * - token: Bearer token for authentication
+     * - sourceRepo: This panel's source repo path (e.g., "panels/my-panel")
+     * - gitDependencies: Git dependencies from manifest (to clone into OPFS)
+     */
+    getConfig: (): Promise<{
+      serverUrl: string;
+      token: string;
+      sourceRepo: string;
+      gitDependencies: Record<string, string | { repo: string; branch?: string; commit?: string; tag?: string }>;
+    }> => {
+      return ipcRenderer.invoke("panel-bridge:get-git-config", panelId);
     },
   },
 };

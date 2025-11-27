@@ -8,17 +8,13 @@
   "scripts": {
     "build": "NODE_ENV=production node build.mjs",
     "dev": "NODE_ENV=development node build.mjs && pnpm type-check & node scripts/run-electron.mjs --workspace=workspace",
-    "dev:safe": "NODE_ENV=development node build.mjs && node scripts/run-electron.mjs",
     "start": "node scripts/run-electron.mjs",
     "cleanup": "bash scripts/cleanup-processes.sh",
     "lint": "eslint src --max-warnings 0",
     "format": "prettier --write 'src/**/*.{ts,tsx,css,html,json}'",
     "format:check": "prettier --check 'src/**/*.{ts,tsx,css,html,json}'",
     "type-check": "tsc --noEmit",
-    "type-check:watch": "tsc --noEmit --watch --preserveWatchOutput",
-    "type-check:panels": "node scripts/type-check-panels.mjs",
-    "type-check:all": "pnpm type-check && pnpm type-check:panels",
-    "init:workspace": "node scripts/init-workspace.mjs"
+    "type-check:watch": "tsc --noEmit --watch --preserveWatchOutput"
   },
   "keywords": [
     "electron",

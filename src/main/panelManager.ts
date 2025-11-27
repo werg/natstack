@@ -9,6 +9,12 @@ import type { GitServer } from "./gitServer.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
 import * as SharedPanel from "../shared/ipc/types.js";
 import { getClaudeCodeConversationManager } from "./ai/claudeCodeConversationManager.js";
+import {
+  storeInMemoryPanel,
+  removeInMemoryPanel,
+  isInMemoryPanel,
+  registerProtocolForPartition,
+} from "./inMemoryPanelProtocol.js";
 
 export class PanelManager {
   private builder: PanelBuilder;
@@ -81,9 +87,13 @@ export class PanelManager {
 
   // Public methods for RPC services
 
-  async createChild(
+  /**
+   * Launch a child panel from in-memory build artifacts.
+   * Used when a panel builds its own child using @natstack/build in the browser.
+   */
+  async launchChild(
     parentId: string,
-    panelPath: string,
+    inMemoryArtifacts: SharedPanel.InMemoryBuildArtifacts,
     env?: Record<string, string>,
     requestedPanelId?: string
   ): Promise<string> {
@@ -92,21 +102,67 @@ export class PanelManager {
       throw new Error(`Parent panel not found: ${parentId}`);
     }
 
-    const { relativePath, absolutePath } = this.normalizePanelPath(panelPath);
-    const manifest = this.builder.loadManifest(absolutePath);
-    const isSingleton = manifest.singletonState === true;
+    const syntheticPath = `inmemory/${inMemoryArtifacts.title.toLowerCase().replace(/\s+/g, "-")}`;
 
-    if (isSingleton && requestedPanelId) {
-      throw new Error(
-        `Panel at "${relativePath}" has singletonState and cannot have its ID overridden`
-      );
-    }
-
+    // Compute panelId first since we need it to store in-memory content
     const panelId = this.computePanelId({
+      relativePath: syntheticPath,
+      parent,
+      requestedId: requestedPanelId,
+      singletonState: false,
+    });
+
+    // Store the in-memory content and get the URL
+    const htmlUrl = storeInMemoryPanel(panelId, inMemoryArtifacts);
+
+    return this.registerPanel({
+      panelId,
+      parent,
+      relativePath: syntheticPath,
+      title: inMemoryArtifacts.title,
+      artifacts: { htmlPath: htmlUrl },
+      env,
+      injectHostThemeVariables: inMemoryArtifacts.injectHostThemeVariables !== false,
+      sourceRepo: inMemoryArtifacts.sourceRepo,
+      gitDependencies: inMemoryArtifacts.gitDependencies,
+    });
+  }
+
+  /**
+   * Shared panel registration logic for both filesystem and in-memory panels.
+   */
+  private async registerPanel(params: {
+    panelId?: string;
+    parent: Panel;
+    relativePath: string;
+    title: string;
+    artifacts: PanelArtifacts;
+    env?: Record<string, string>;
+    requestedPanelId?: string;
+    singletonState?: boolean;
+    injectHostThemeVariables: boolean;
+    gitDependencies?: Record<string, SharedPanel.GitDependencySpec>;
+    sourceRepo?: string;
+  }): Promise<string> {
+    const {
+      parent,
+      relativePath,
+      title,
+      artifacts,
+      env,
+      requestedPanelId,
+      singletonState = false,
+      injectHostThemeVariables,
+      gitDependencies,
+      sourceRepo,
+    } = params;
+
+    // Use pre-computed panelId if provided, otherwise compute it
+    const panelId = params.panelId ?? this.computePanelId({
       relativePath,
       parent,
       requestedId: requestedPanelId,
-      singletonState: isSingleton,
+      singletonState,
     });
 
     if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
@@ -115,9 +171,6 @@ export class PanelManager {
 
     this.reservedPanelIds.add(panelId);
     try {
-      const artifacts = await this.buildPanelArtifacts(absolutePath);
-
-      // Inject git server credentials into panel env
       const gitToken = this.gitServer.getTokenForPanel(panelId);
       const panelEnv: Record<string, string> = {
         ...env,
@@ -127,21 +180,21 @@ export class PanelManager {
 
       const newPanel: Panel = {
         id: panelId,
-        title: manifest.title,
+        title,
         path: relativePath,
         children: [],
         selectedChildId: null,
-        injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
+        injectHostThemeVariables,
         artifacts,
         env: panelEnv,
+        sourceRepo: sourceRepo ?? relativePath,
+        gitDependencies,
       };
 
-      // Add to parent
       parent.children.push(newPanel);
       parent.selectedChildId = newPanel.id;
       this.panels.set(newPanel.id, newPanel);
 
-      // Notify renderer
       this.notifyPanelTreeUpdate();
 
       return newPanel.id;
@@ -235,6 +288,32 @@ export class PanelManager {
     };
   }
 
+  /**
+   * Get git configuration for a panel.
+   * Used by panels to clone/pull their source and dependencies via @natstack/git.
+   */
+  getGitConfig(panelId: string): {
+    serverUrl: string;
+    token: string;
+    sourceRepo: string;
+    gitDependencies: Record<string, SharedPanel.GitDependencySpec>;
+  } {
+    const panel = this.panels.get(panelId);
+    if (!panel) {
+      throw new Error(`Panel not found: ${panelId}`);
+    }
+    const sourceRepo = panel.sourceRepo ?? panel.path;
+    if (!sourceRepo) {
+      throw new Error("Git configuration is not available for this panel");
+    }
+    return {
+      serverUrl: this.gitServer.getBaseUrl(),
+      token: this.gitServer.getTokenForPanel(panelId),
+      sourceRepo,
+      gitDependencies: panel.gitDependencies ?? {},
+    };
+  }
+
   getSerializablePanelTree(): Panel[] {
     return this.rootPanels.map((panel) => this.serializePanel(panel));
   }
@@ -282,6 +361,11 @@ export class PanelManager {
     // Clean up any Claude Code conversations for this panel
     getClaudeCodeConversationManager().endPanelConversations(panelId);
 
+    // Clean up in-memory panel content if applicable
+    if (isInMemoryPanel(panelId)) {
+      removeInMemoryPanel(panelId);
+    }
+
     // Remove this panel
     this.panels.delete(panelId);
     this.panelViews.delete(panelId);
@@ -298,7 +382,22 @@ export class PanelManager {
 
   notifyPanelTreeUpdate(): void {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-      this.mainWindow.webContents.send("panel:tree-updated", this.getSerializablePanelTree());
+      const tree = this.getSerializablePanelTree();
+      // Debug: log panel tree being sent
+      const logTree = (panels: Panel[], depth = 0): void => {
+        for (const p of panels) {
+          console.log(`[PanelManager] ${"  ".repeat(depth)}Panel: ${p.id}, htmlPath: ${p.artifacts?.htmlPath?.slice(0, 80) ?? "none"}`);
+          if (p.children.length > 0) logTree(p.children, depth + 1);
+        }
+      };
+      console.log("[PanelManager] Notifying panel tree update:");
+      logTree(tree);
+      this.mainWindow.webContents.send("panel:tree-updated", tree);
+
+      // Also log to main window's console for debugging
+      this.mainWindow.webContents.executeJavaScript(`
+        console.log('[Main->Renderer] Panel tree update sent, panel count:', ${tree.length});
+      `).catch(() => {});
     }
   }
 
@@ -360,6 +459,13 @@ export class PanelManager {
       const panelId = this.extractPanelIdFromSrc(params?.["src"]);
       if (!panelId) {
         return;
+      }
+
+      // Register the natstack-panel:// protocol for this partition
+      // Each webview partition needs its own protocol handler registration
+      const partition = webPreferences.partition as string | undefined;
+      if (partition) {
+        void registerProtocolForPartition(partition);
       }
 
       // Generate secure token
@@ -461,6 +567,7 @@ export class PanelManager {
         injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
         artifacts,
         env: panelEnv,
+        gitDependencies: manifest.gitDependencies,
       };
 
       this.rootPanels = [rootPanel];
