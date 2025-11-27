@@ -259,7 +259,6 @@ function createDefaultWorkspaceConfig(workspacePath: string): WorkspaceConfig {
   // Ensure directory exists
   fs.mkdirSync(workspacePath, { recursive: true });
   fs.mkdirSync(path.join(workspacePath, "panels"), { recursive: true });
-  fs.mkdirSync(path.join(workspacePath, "git-repos"), { recursive: true });
   fs.mkdirSync(path.join(workspacePath, ".cache"), { recursive: true });
 
   // Write config
@@ -350,7 +349,7 @@ export function createWorkspace(
 
   // Workspace directories (no state/ prefix)
   const panelsPath = path.join(resolvedPath, "panels");
-  const gitReposPath = path.join(resolvedPath, "git-repos");
+  const gitReposPath = resolvedPath;
   const cachePath = path.join(resolvedPath, ".cache");
 
   // Only create directories/config when explicitly allowed

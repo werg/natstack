@@ -2,6 +2,9 @@ import { app, BrowserWindow, nativeTheme, webContents } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 
+// Silence Electron security warnings in dev; panels run in isolated webviews.
+process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
+
 import { isDev } from "./utils.js";
 import { PanelManager } from "./panelManager.js";
 import { resolveInitialRootPanelPath, parseCliRootPanelPath } from "./rootPanelResolver.js";
@@ -19,6 +22,18 @@ import {
 import type { Workspace, AppMode } from "./workspace/types.js";
 import { setAppMode } from "./ipc/workspaceHandlers.js";
 import { getCentralData } from "./centralData.js";
+import {
+  registerInMemoryPanelProtocol,
+  setupInMemoryPanelProtocol,
+} from "./inMemoryPanelProtocol.js";
+import { loadPrebundledPackages } from "./prebundledLoader.js";
+
+// =============================================================================
+// Protocol Registration (must happen before app ready)
+// =============================================================================
+
+// Register custom protocol for serving in-memory panel bundles
+registerInMemoryPanelProtocol();
 
 // =============================================================================
 // Configuration Initialization
@@ -217,23 +232,29 @@ handle("panel:open-devtools", async (_event, panelId: string) => {
 // Panel Bridge IPC Handlers (panel webview <-> main) - Only in main mode
 // =============================================================================
 
+// Launch child from in-memory build artifacts (for in-panel builds)
 handle(
-  "panel-bridge:create-child",
+  "panel-bridge:launch-child",
   async (
     event,
     parentId: string,
-    panelPath: string,
+    artifacts: SharedPanel.InMemoryBuildArtifacts,
     env?: Record<string, string>,
     requestedPanelId?: string
   ) => {
     assertAuthorized(event, parentId);
-    return requirePanelManager().createChild(parentId, panelPath, env, requestedPanelId);
+    return requirePanelManager().launchChild(parentId, artifacts, env, requestedPanelId);
   }
 );
 
 handle("panel-bridge:remove-child", async (event, parentId: string, childId: string) => {
   assertAuthorized(event, parentId);
   return requirePanelManager().removeChild(parentId, childId);
+});
+
+// Get pre-bundled packages for in-panel builds
+handle("panel-bridge:get-prebundled-packages", async () => {
+  return loadPrebundledPackages();
 });
 
 handle("panel-bridge:set-title", async (event, panelId: string, title: string) => {
@@ -262,11 +283,19 @@ handle("panel-bridge:get-info", async (event, panelId: string) => {
   return requirePanelManager().getInfo(panelId);
 });
 
+handle("panel-bridge:get-git-config", async (event, panelId: string) => {
+  assertAuthorized(event, panelId);
+  return requirePanelManager().getGitConfig(panelId);
+});
+
 // =============================================================================
 // App Lifecycle
 // =============================================================================
 
 app.on("ready", async () => {
+  // Set up in-memory panel protocol handler
+  setupInMemoryPanelProtocol();
+
   // Initialize services only in main mode
   if (appMode === "main" && gitServer && panelManager) {
     try {

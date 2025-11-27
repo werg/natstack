@@ -7,6 +7,7 @@ import type { PanelManifest, PanelBuildResult, PanelBuildCache } from "./panelTy
 
 const CACHE_FILENAME = "build-cache.json";
 const PANEL_RUNTIME_DIRNAME = ".natstack";
+const PANEL_BUILD_CACHE_VERSION = 3;
 
 // Keep only fs virtual modules (natstack/* now resolved via workspace packages)
 const panelFsModulePath = path.join(__dirname, "panelFsRuntime.js");
@@ -28,8 +29,8 @@ for (const [name, modulePath] of fsModuleMap) {
 const defaultPanelDependencies: Record<string, string> = {
   // Ensure a predictable panel runtime baseline
   "@natstack/panel": "workspace:*",
-  "@zenfs/core": "^2.4.4",
-  "@zenfs/dom": "^1.2.5",
+  // Provide Node types to satisfy dependencies that expect them at runtime
+  "@types/node": "^22.9.0",
 };
 
 export class PanelBuilder {
@@ -52,7 +53,10 @@ export class PanelBuilder {
       try {
         const data = fs.readFileSync(cacheFile, "utf-8");
         const cacheArray = JSON.parse(data) as PanelBuildCache[];
-        this.cache = new Map(cacheArray.map((item) => [item.path, item]));
+        const filtered = cacheArray.filter(
+          (item) => item.cacheVersion === PANEL_BUILD_CACHE_VERSION
+        );
+        this.cache = new Map(filtered.map((item) => [item.path, item]));
       } catch (error) {
         console.error("Failed to load panel cache:", error);
       }
@@ -156,12 +160,23 @@ export class PanelBuilder {
 
     const runtimeDir = this.ensureRuntimeDir(panelPath);
     const generatedHtmlPath = path.join(runtimeDir, "index.html");
+
+    // Import map for external dependencies loaded from CDN
+    // isomorphic-git needs ESM from esm.sh for proper Buffer polyfill
+    const importMap = {
+      imports: {
+        "isomorphic-git": "https://esm.sh/isomorphic-git",
+        "isomorphic-git/http/web": "https://esm.sh/isomorphic-git/http/web",
+      },
+    };
+
     const defaultHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title}</title>
+  <script type="importmap">${JSON.stringify(importMap)}</script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/themes@3.2.1/styles.css">
   <link rel="stylesheet" href="./bundle.css" />
 </head>
@@ -441,13 +456,15 @@ if (shouldAutoMount(userModule)) {
         platform: "browser",
         target: "es2022",
         outfile: bundlePath,
-        sourcemap: true,
+        // Disable sourcemaps to avoid noisy ENOENT lookups for deps that ship maps without sources
+        sourcemap: false,
         format: "esm",
         absWorkingDir: absolutePanelPath,
         nodePaths,
         plugins: [fsPlugin],
-        // Bundle everything - React and Radix are included via @natstack/react
-        external: [],
+        // Mark packages that should be loaded from import map at runtime
+        // isomorphic-git needs ESM version from esm.sh for Buffer polyfill
+        external: ["isomorphic-git", "isomorphic-git/http/web"],
       });
 
       const htmlPath = this.resolveHtmlPath(absolutePanelPath, manifest.title);
@@ -461,6 +478,7 @@ if (shouldAutoMount(userModule)) {
         sourceHash,
         builtAt: Date.now(),
         dependencyHash,
+        cacheVersion: PANEL_BUILD_CACHE_VERSION,
       };
 
       this.cache.set(absolutePanelPath, cacheEntry);

@@ -1,0 +1,17 @@
+{
+  "name": "@natstack-panels/in-panel-build-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "title": "In-Panel Build Demo",
+    "entry": "index.tsx"
+  },
+  "dependencies": {
+    "@natstack/build": "workspace:*",
+    "@natstack/panel": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild-wasm": "^0.25.5"
+  }
+}

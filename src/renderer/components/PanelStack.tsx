@@ -181,6 +181,9 @@ export function PanelStack({
   onRegisterDevToolsHandler,
   onRegisterNavigate,
 }: PanelStackProps) {
+  // Debug: log component render
+  console.log("[PanelStack] Component rendering");
+
   const { mode: navigationMode, setTitleNavigation, setStatusNavigation } = useNavigation();
   const [rootPanels, setRootPanels] = useState<Panel[]>([]);
   const [visiblePanelPath, setVisiblePanelPath] = useState<string[]>([]);
@@ -280,6 +283,15 @@ export function PanelStack({
     void initializeTree();
 
     const cleanup = window.electronAPI.onPanelTreeUpdated((updatedRootPanels) => {
+      // Debug: log all panels in tree
+      const logPanels = (panels: Panel[], depth = 0): void => {
+        for (const p of panels) {
+          console.log(`[PanelStack] ${"  ".repeat(depth)}Panel: ${p.id}, htmlPath: ${p.artifacts?.htmlPath?.slice(0, 80) ?? "none"}`);
+          if (p.children.length > 0) logPanels(p.children, depth + 1);
+        }
+      };
+      console.log("[PanelStack] Panel tree updated:");
+      logPanels(updatedRootPanels);
       setIsTreeReady(true);
       setRootPanels(updatedRootPanels);
 
@@ -441,6 +453,9 @@ export function PanelStack({
 
   const allPanels = flattenPanels(rootPanels);
 
+  // Debug: log all panels
+  console.log(`[PanelStack] allPanels count: ${allPanels.length}, ids: ${allPanels.map(p => p.id.slice(-20)).join(", ")}`);
+
   function findPanelById(panelId: string): Panel | null {
     const traverse = (panelList: Panel[]): Panel | null => {
       for (const panel of panelList) {
@@ -480,6 +495,7 @@ export function PanelStack({
   const webviewCleanup = useRef<Map<string, () => void>>(new Map());
 
   const handleWebviewReady = (panelId: string, webview: HTMLElement) => {
+    console.log(`[PanelStack] handleWebviewReady called for panel: ${panelId.slice(-30)}`);
     const webviewTag = webview as unknown as Electron.WebviewTag;
     webviewRefs.current.set(panelId, webviewTag);
 
@@ -674,6 +690,9 @@ export function PanelStack({
                     const artifacts = panel.artifacts;
                     const isVisible = visiblePanel ? panel.id === visiblePanel.id : false;
 
+                    // Debug logging for all panels
+                    console.log(`[PanelStack] Rendering panel: ${panel.id}, visible: ${isVisible}, hasArtifacts: ${!!artifacts}, htmlPath: ${artifacts?.htmlPath?.slice(0, 50)}...`);
+
                     if (isVisible) {
                       if (artifacts?.error) {
                         return (
@@ -712,14 +731,26 @@ export function PanelStack({
                     }
 
                     if (artifacts?.htmlPath) {
-                      const normalizedPath = artifacts.htmlPath.replace(/\\/g, "/");
-                      const srcUrl = new URL(`file://${normalizedPath}`);
+                      // Handle both file:// URLs (filesystem builds) and natstack-panel:// URLs (in-memory builds)
+                      let srcUrl: URL;
+                      if (artifacts.htmlPath.startsWith("natstack-panel://")) {
+                        // In-memory panel - use URL directly
+                        srcUrl = new URL(artifacts.htmlPath);
+                        console.log(`[PanelStack] In-memory panel URL: ${srcUrl.toString()}`);
+                      } else {
+                        // Filesystem panel - construct file:// URL
+                        const normalizedPath = artifacts.htmlPath.replace(/\\/g, "/");
+                        srcUrl = new URL(`file://${normalizedPath}`);
+                      }
                       srcUrl.searchParams.set("panelId", panel.id);
                       const partitionName = `persist:${panel.id}`;
+                      console.log(`[PanelStack] Final webview src: ${srcUrl.toString()}`);
+                      console.log(`[PanelStack] Creating webview element for: ${panel.id.slice(-30)}`);
                       return (
                         <webview
                           key={panel.id}
                           ref={(el) => {
+                            console.log(`[PanelStack] webview ref callback for ${panel.id.slice(-30)}, el: ${el ? "HTMLElement" : "null"}`);
                             if (el) {
                               handleWebviewReady(panel.id, el);
                             } else {

@@ -10,7 +10,6 @@
  * 2. Workspace (project directory with natstack.yml):
  *    - natstack.yml: Workspace ID, git port, root panel
  *    - panels/: Panel source code
- *    - git-repos/: Git server storage
  *    - .cache/: Build cache
  */
 
@@ -122,7 +121,7 @@ export interface Workspace {
   config: WorkspaceConfig;
   /** Absolute path to panels directory (workspace/panels) */
   panelsPath: string;
-  /** Absolute path to git repos directory (workspace/git-repos) */
+  /** Absolute path to git repos directory (workspace) */
   gitReposPath: string;
   /** Absolute path to cache directory (workspace/.cache) */
   cachePath: string;

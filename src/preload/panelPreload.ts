@@ -11,8 +11,9 @@ import {
   type AIToolDefinition,
 } from "@natstack/ai";
 import {
-  PanelInfo,
-  ThemeAppearance,
+  type InMemoryBuildArtifacts,
+  type PanelInfo,
+  type ThemeAppearance,
   type ClaudeCodeConversationInfo,
   type ClaudeCodeToolExecuteRequest,
   type ClaudeCodeToolResult,
@@ -397,17 +398,34 @@ async function getRpcPort(targetPanelId: string): Promise<MessagePort> {
 const bridge = {
   panelId,
 
-  // IPC methods via ipcRenderer.invoke
-  createChild: (
-    path: string,
+  // ==========================================================================
+  // Panel Lifecycle API
+  // ==========================================================================
+
+  /**
+   * Launch a child panel from in-memory build artifacts.
+   * Use this when you've built the panel in-browser using @natstack/build.
+   * Each child gets its own isolated OPFS partition.
+   */
+  launchChild: (
+    artifacts: InMemoryBuildArtifacts,
     env?: Record<string, string>,
     requestedPanelId?: string
   ): Promise<string> => {
-    return ipcRenderer.invoke("panel-bridge:create-child", panelId, path, env, requestedPanelId);
+    return ipcRenderer.invoke("panel-bridge:launch-child", panelId, artifacts, env, requestedPanelId);
   },
 
   removeChild: (childId: string): Promise<void> => {
     return ipcRenderer.invoke("panel-bridge:remove-child", panelId, childId);
+  },
+
+  /**
+   * Get pre-bundled @natstack/* packages for in-panel builds.
+   * Use with @natstack/build's registerPrebundledBatch() to enable
+   * building child panels that use @natstack packages.
+   */
+  getPrebundledPackages: (): Promise<Record<string, string>> => {
+    return ipcRenderer.invoke("panel-bridge:get-prebundled-packages");
   },
 
   setTitle: (title: string): Promise<void> => {
@@ -639,6 +657,31 @@ const bridge = {
           defaultToolCallbacks.delete(name);
         }
       };
+    },
+  },
+
+  // ==========================================================================
+  // Git API
+  // ==========================================================================
+
+  git: {
+    /**
+     * Get git configuration for this panel.
+     * Use with @natstack/git to clone/pull repos into OPFS.
+     *
+     * Returns:
+     * - serverUrl: Git server base URL (e.g., http://localhost:63524)
+     * - token: Bearer token for authentication
+     * - sourceRepo: This panel's source repo path (e.g., "panels/my-panel")
+     * - gitDependencies: Git dependencies from manifest (to clone into OPFS)
+     */
+    getConfig: (): Promise<{
+      serverUrl: string;
+      token: string;
+      sourceRepo: string;
+      gitDependencies: Record<string, string | { repo: string; branch?: string; commit?: string; tag?: string }>;
+    }> => {
+      return ipcRenderer.invoke("panel-bridge:get-git-config", panelId);
     },
   },
 };
