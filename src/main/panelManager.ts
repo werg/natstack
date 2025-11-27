@@ -103,13 +103,22 @@ export class PanelManager {
     }
 
     const syntheticPath = `inmemory/${inMemoryArtifacts.title.toLowerCase().replace(/\s+/g, "-")}`;
+    const rawPath = inMemoryArtifacts.sourceRepo ?? syntheticPath;
+    const { relativePath } = this.normalizePanelPath(rawPath);
+    const isSingleton = inMemoryArtifacts.singletonState === true;
+
+    if (isSingleton && requestedPanelId) {
+      throw new Error(
+        `Panel at "${relativePath}" has singletonState and cannot have its ID overridden`
+      );
+    }
 
     // Compute panelId first since we need it to store in-memory content
     const panelId = this.computePanelId({
-      relativePath: syntheticPath,
+      relativePath,
       parent,
       requestedId: requestedPanelId,
-      singletonState: false,
+      singletonState: isSingleton,
     });
 
     // Store the in-memory content and get the URL
@@ -118,12 +127,12 @@ export class PanelManager {
     return this.registerPanel({
       panelId,
       parent,
-      relativePath: syntheticPath,
+      relativePath,
       title: inMemoryArtifacts.title,
       artifacts: { htmlPath: htmlUrl },
       env,
       injectHostThemeVariables: inMemoryArtifacts.injectHostThemeVariables !== false,
-      sourceRepo: inMemoryArtifacts.sourceRepo,
+      sourceRepo: inMemoryArtifacts.sourceRepo ?? relativePath,
       gitDependencies: inMemoryArtifacts.gitDependencies,
     });
   }

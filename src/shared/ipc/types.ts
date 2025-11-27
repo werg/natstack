@@ -32,6 +32,8 @@ export interface InMemoryBuildArtifacts {
   html: string;
   /** Panel title from manifest */
   title: string;
+  /** Whether this panel should use a singleton partition/id */
+  singletonState?: boolean;
   /** CSS bundle if any */
   css?: string;
   /** Whether to inject host theme variables (defaults to true) */

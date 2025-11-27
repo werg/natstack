@@ -485,7 +485,7 @@ const bridge = {
   /**
    * Launch a child panel from in-memory build artifacts.
    * Use this when you've built the panel in-browser using @natstack/build.
-   * Each child gets its own isolated OPFS partition.
+   * Each child gets its own isolated OPFS partition unless its manifest sets singletonState.
    */
   launchChild: (
     artifacts: InMemoryBuildArtifacts,
