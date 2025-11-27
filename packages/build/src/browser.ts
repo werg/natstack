@@ -21,6 +21,8 @@ export {
   setEsbuildInstance,
   getEsbuildInstance,
   isEsbuildInitialized,
+  setDevMode,
+  isDevMode,
 } from "./browser-builder.js";
 export type {
   EsbuildAPI,
@@ -29,3 +31,13 @@ export type {
   EsbuildInitializer,
 } from "./browser-builder.js";
 export { OpfsFileSystem, createOpfsFileSystem } from "./opfs-fs.js";
+
+// Cache exports
+export {
+  getUnifiedCache,
+  clearCache,
+  type CacheMetrics,
+  type CacheStats,
+  type CacheEntry,
+  type CacheOptions,
+} from "./cache-manager.js";

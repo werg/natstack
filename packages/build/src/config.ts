@@ -11,7 +11,7 @@ export {
   VERSIONS,
   CDN_BASE_URLS,
   CDN_URLS,
-  CDN_DEFAULTS, // Legacy alias
+  CDN_DEFAULTS,
   ESBUILD_CDN_FALLBACKS,
 } from "./types.js";
 

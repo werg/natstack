@@ -4,10 +4,10 @@ import * as path from "path";
 import * as crypto from "crypto";
 import Arborist from "@npmcli/arborist";
 import type { PanelManifest, PanelBuildResult, PanelBuildCache } from "./panelTypes.js";
+import { getMainCacheManager } from "./cacheManager.js";
+import { isDev } from "./utils.js";
 
-const CACHE_FILENAME = "build-cache.json";
 const PANEL_RUNTIME_DIRNAME = ".natstack";
-const PANEL_BUILD_CACHE_VERSION = 3;
 
 // Keep only fs virtual modules (natstack/* now resolved via workspace packages)
 const panelFsModulePath = path.join(__dirname, "panelFsRuntime.js");
@@ -34,46 +34,69 @@ const defaultPanelDependencies: Record<string, string> = {
 };
 
 export class PanelBuilder {
-  private cache: Map<string, PanelBuildCache> = new Map();
   private cacheDir: string;
+  private cacheManager = getMainCacheManager();
 
   constructor(cacheDir: string) {
     this.cacheDir = path.resolve(cacheDir);
 
     // Ensure directories exist
     fs.mkdirSync(this.cacheDir, { recursive: true });
-
-    // Load cache from disk
-    this.loadCache();
   }
 
-  private loadCache(): void {
-    const cacheFile = path.join(this.cacheDir, CACHE_FILENAME);
-    if (fs.existsSync(cacheFile)) {
-      try {
-        const data = fs.readFileSync(cacheFile, "utf-8");
-        const cacheArray = JSON.parse(data) as PanelBuildCache[];
-        const filtered = cacheArray.filter(
-          (item) => item.cacheVersion === PANEL_BUILD_CACHE_VERSION
-        );
-        this.cache = new Map(filtered.map((item) => [item.path, item]));
-      } catch (error) {
-        console.error("Failed to load panel cache:", error);
-      }
-    }
-  }
+  /**
+   * Get cached build metadata for a panel
+   */
+  private getCachedBuildMetadata(absolutePanelPath: string): PanelBuildCache | null {
+    const cached = this.cacheManager.get(absolutePanelPath, isDev());
+    if (!cached) return null;
 
-  private saveCache(): void {
-    const cacheFile = path.join(this.cacheDir, CACHE_FILENAME);
     try {
-      const cacheArray = Array.from(this.cache.values());
-      fs.writeFileSync(cacheFile, JSON.stringify(cacheArray, null, 2));
+      return JSON.parse(cached) as PanelBuildCache;
     } catch (error) {
-      console.error("Failed to save panel cache:", error);
+      console.error(`[PanelBuilder] Failed to parse cached metadata for ${absolutePanelPath}:`, error);
+      return null;
     }
+  }
+
+  /**
+   * Save build metadata to cache
+   */
+  private async saveBuildMetadata(absolutePanelPath: string, metadata: PanelBuildCache): Promise<void> {
+    const serialized = JSON.stringify(metadata);
+    await this.cacheManager.set(absolutePanelPath, serialized);
   }
 
   private async hashDirectory(dirPath: string): Promise<string> {
+    // Fast path: Try to get git commit SHA (zero file reads)
+    try {
+      const gitDir = path.join(dirPath, ".git");
+      if (fs.existsSync(gitDir)) {
+        // Read HEAD to get current commit
+        const headPath = path.join(gitDir, "HEAD");
+        const headContent = fs.readFileSync(headPath, "utf-8").trim();
+
+        // HEAD can be: "ref: refs/heads/main" or a direct SHA
+        if (headContent.startsWith("ref: ")) {
+          const refPath = headContent.substring(5); // Remove "ref: "
+          const commitPath = path.join(gitDir, refPath);
+          if (fs.existsSync(commitPath)) {
+            const commitSha = fs.readFileSync(commitPath, "utf-8").trim();
+            console.log(`[PanelBuilder] Using git commit SHA: ${commitSha.slice(0, 8)}...`);
+            return `git:${commitSha}`;
+          }
+        } else if (/^[0-9a-f]{40}$/i.test(headContent)) {
+          // HEAD is a direct SHA (detached HEAD state)
+          console.log(`[PanelBuilder] Using git commit SHA: ${headContent.slice(0, 8)}...`);
+          return `git:${headContent}`;
+        }
+      }
+    } catch (error) {
+      // Ignore git errors, fall back to content hashing
+      console.log(`[PanelBuilder] Git not available, falling back to content hashing`);
+    }
+
+    // Fallback path: Walk file tree and hash contents
     const hash = crypto.createHash("sha256");
     const files = this.getAllFiles(dirPath);
 
@@ -95,7 +118,8 @@ export class PanelBuilder {
       hash.update(content);
     }
 
-    return hash.digest("hex");
+    const contentHash = hash.digest("hex");
+    return `content:${contentHash}`;
   }
 
   private getAllFiles(dirPath: string, arrayOfFiles: string[] = []): string[] {
@@ -379,7 +403,7 @@ export class PanelBuilder {
 
       // Check cache
       const sourceHash = await this.hashDirectory(absolutePanelPath);
-      const cached = this.cache.get(absolutePanelPath);
+      const cached = this.getCachedBuildMetadata(absolutePanelPath);
 
       console.log(`[PanelBuilder] Checking cache for ${panelPath}`);
       console.log(`  Current hash: ${sourceHash}`);
@@ -478,11 +502,9 @@ if (shouldAutoMount(userModule)) {
         sourceHash,
         builtAt: Date.now(),
         dependencyHash,
-        cacheVersion: PANEL_BUILD_CACHE_VERSION,
       };
 
-      this.cache.set(absolutePanelPath, cacheEntry);
-      this.saveCache();
+      await this.saveBuildMetadata(absolutePanelPath, cacheEntry);
 
       return {
         success: true,
@@ -499,7 +521,7 @@ if (shouldAutoMount(userModule)) {
 
   getCachedBuild(panelPath: string): PanelBuildCache | undefined {
     const absolutePath = path.resolve(panelPath);
-    return this.cache.get(absolutePath);
+    return this.getCachedBuildMetadata(absolutePath) ?? undefined;
   }
 
   private mergeRuntimeDependencies(
@@ -512,13 +534,15 @@ if (shouldAutoMount(userModule)) {
     return merged;
   }
 
-  clearCache(panelPath?: string): void {
+  async clearCache(panelPath?: string): Promise<void> {
     if (panelPath) {
-      const absolutePath = path.resolve(panelPath);
-      this.cache.delete(absolutePath);
+      // For individual panel cache clearing, we'd need to delete from the unified cache
+      // The unified cache doesn't expose a delete method yet, so we skip this for now
+      // In practice, stale cache entries are handled by hash checking
+      console.warn('[PanelBuilder] Individual panel cache clearing not yet supported with unified cache');
     } else {
-      this.cache.clear();
+      // Clear the entire unified cache
+      await this.cacheManager.clear();
     }
-    this.saveCache();
   }
 }

@@ -87,6 +87,10 @@ interface PanelBridge {
    * Get pre-bundled @natstack/* packages for in-panel builds.
    */
   getPrebundledPackages(): Promise<Record<string, string>>;
+  /**
+   * Get development mode flag.
+   */
+  getDevMode(): Promise<boolean>;
   setTitle(title: string): Promise<void>;
   close(): Promise<void>;
   getEnv(): Promise<Record<string, string>>;
@@ -178,13 +182,50 @@ const panelAPI = {
         throw new Error('childPath must be a non-empty string');
       }
 
-      // Guard against potentially dangerous paths
-      const normalizedPath = childPath.trim();
-      if (normalizedPath.includes('..') || normalizedPath.includes('\\')) {
-        throw new Error('Invalid path: must not contain ".." or backslashes');
+      // Normalize path and guard against dangerous patterns
+      let normalizedPath = childPath.trim().replace(/\\/g, '/'); // Convert backslashes to forward slashes
+
+      // Remove any leading slashes for consistency
+      normalizedPath = normalizedPath.replace(/^\/+/, '');
+
+      // Reject empty paths after normalization
+      if (!normalizedPath) {
+        throw new Error('Invalid path: path cannot be empty');
       }
+
+      // Reject paths with null bytes (path injection)
+      if (normalizedPath.includes('\0')) {
+        throw new Error('Invalid path: null bytes not allowed');
+      }
+
+      // Reject URL-encoded traversal attempts
+      if (normalizedPath.includes('%2e') || normalizedPath.includes('%2E')) {
+        throw new Error('Invalid path: URL-encoded characters not allowed');
+      }
+
+      // Reject absolute paths (Unix/Windows style)
+      if (normalizedPath.startsWith('/') || /^[a-zA-Z]:/.test(normalizedPath)) {
+        throw new Error('Invalid path: absolute paths not allowed');
+      }
+
+      // Reject HTTP(S) URLs
       if (normalizedPath.startsWith('http://') || normalizedPath.startsWith('https://')) {
-        throw new Error('Invalid path: absolute URLs not allowed, use relative workspace paths');
+        throw new Error('Invalid path: URLs not allowed, use relative workspace paths');
+      }
+
+      // Reject path traversal (after normalization)
+      const pathSegments = normalizedPath.split('/');
+      for (const segment of pathSegments) {
+        if (segment === '..' || segment === '.') {
+          throw new Error('Invalid path: path traversal not allowed (.. or .)');
+        }
+      }
+
+      // Ensure path starts with an allowed prefix for safety
+      const allowedPrefixes = ['panels/', 'workspace/'];
+      const hasAllowedPrefix = allowedPrefixes.some(prefix => normalizedPath.startsWith(prefix));
+      if (!hasAllowedPrefix) {
+        throw new Error(`Invalid path: must start with one of: ${allowedPrefixes.join(', ')}`);
       }
 
       // Check OPFS quota before starting (import dynamically to avoid circular deps)
@@ -216,6 +257,7 @@ const panelAPI = {
 
       // Track if we cloned fresh (for cleanup on build failure)
       let freshClone = false;
+      let cleanupOnFailure: (() => Promise<void>) | null = null;
 
       // Step 1: Clone or update git repository
       try {
@@ -244,25 +286,86 @@ const panelAPI = {
           // Fresh clone
           freshClone = true;
           await gitClient.clone({ url: normalizedPath, dir: opfsPath });
+
+          // Register cleanup function for fresh clones
+          cleanupOnFailure = async () => {
+            try {
+              await fsPromises.rm(opfsPath, { recursive: true, force: true });
+              console.log(`[Panel] Cleaned up failed clone: ${opfsPath}`);
+            } catch (cleanupError) {
+              console.error('[Panel] Failed to cleanup:', cleanupError);
+            }
+          };
         }
       } catch (gitError) {
         const errorMessage = gitError instanceof Error ? gitError.message : String(gitError);
+
+        // Clean up fresh clone on git error
+        if (cleanupOnFailure) {
+          await cleanupOnFailure();
+        }
+
         throw new Error(`Failed to clone/update git repository "${normalizedPath}": ${errorMessage}`);
       }
 
-      // Step 2: Read and parse manifest
-      let manifest: PanelManifest;
+      // Wrap all subsequent steps in try-catch to ensure cleanup on any failure
       try {
-        const packageJsonPath = `${opfsPath}/package.json`;
-        const packageJsonContent = await fsPromises.readFile(packageJsonPath, "utf-8");
-        const packageJson = JSON.parse(packageJsonContent as string) as { natstack?: PanelManifest };
-        manifest = packageJson.natstack ?? { title: normalizedPath.split("/").pop() ?? "Panel" };
-      } catch (manifestError) {
-        const errorMessage = manifestError instanceof Error ? manifestError.message : String(manifestError);
-        throw new Error(`Failed to read panel manifest from "${opfsPath}/package.json": ${errorMessage}`);
+        // Step 2: Get current commit SHA for cache optimization
+        let sourceCommit: string | undefined;
+        try {
+          const commit = await gitClient.getCurrentCommit(opfsPath);
+          sourceCommit = commit ?? undefined;
+          if (sourceCommit) {
+            console.log(`[Panel] Source at commit: ${sourceCommit.slice(0, 8)}`);
+          }
+        } catch (error) {
+          // Commit SHA is optional - continue without it
+          console.warn(`[Panel] Could not get source commit SHA:`, error);
+        }
+
+        // Step 3: Read and parse manifest
+        let manifest: PanelManifest;
+        try {
+          const packageJsonPath = `${opfsPath}/package.json`;
+          const packageJsonContent = await fsPromises.readFile(packageJsonPath, "utf-8");
+          const packageJson = JSON.parse(packageJsonContent as string) as { natstack?: PanelManifest };
+          manifest = packageJson.natstack ?? { title: normalizedPath.split("/").pop() ?? "Panel" };
+        } catch (manifestError) {
+          const errorMessage = manifestError instanceof Error ? manifestError.message : String(manifestError);
+          throw new Error(`Failed to read panel manifest from "${opfsPath}/package.json": ${errorMessage}`);
+        }
+
+      // Step 4: Handle git dependencies if specified in manifest
+      const depCommits: Record<string, string> = {};
+      if (manifest.gitDependencies && Object.keys(manifest.gitDependencies).length > 0) {
+        try {
+          const { DependencyResolver } = await import("@natstack/git");
+          const depsPath = "/deps";
+          const resolver = new DependencyResolver(fsPromises as ConstructorParameters<typeof DependencyResolver>[0], {
+            serverUrl: gitConfig.serverUrl,
+            token: gitConfig.token,
+          }, depsPath);
+
+          console.log(`[Panel] Syncing ${Object.keys(manifest.gitDependencies).length} git dependencies...`);
+          const depResults = await resolver.syncAll(manifest.gitDependencies);
+
+          for (const [name, result] of depResults) {
+            if (result.commit) {
+              depCommits[name] = result.commit;
+              console.log(`[Panel] Dependency "${name}" at commit: ${result.commit.slice(0, 8)}`);
+            }
+          }
+        } catch (depError) {
+          console.warn(`[Panel] Failed to sync git dependencies:`, depError);
+          // Continue without dependencies - they're optional
+        }
       }
 
-      // Step 3: Build panel
+      // Step 5: Set git commits in globalThis for cache optimization
+      const { setGitCommits } = await import("@natstack/git");
+      setGitCommits({ sourceCommit, depCommits });
+
+      // Step 6: Build panel
       let artifacts;
       try {
         // Build from OPFS using @natstack/build
@@ -271,12 +374,25 @@ const panelAPI = {
           BrowserPanelBuilder,
           isEsbuildInitialized,
           setEsbuildInstance,
+          setDevMode,
           registerPrebundledBatch,
           CDN_DEFAULTS,
         } = buildModule;
 
         // Also import config for fallback URLs
         const { ESBUILD_CDN_FALLBACKS } = await import("@natstack/build/config");
+
+        // Set development mode for cache expiration
+        const devMode = await bridge.getDevMode();
+        setDevMode(devMode);
+
+        // Initialize unified cache (with disk persistence)
+        try {
+          const { initializeCache } = await import("@natstack/build");
+          await initializeCache();
+        } catch (err) {
+          console.warn('[Panel] Failed to initialize unified cache:', err);
+        }
 
         // Initialize esbuild if not already done
         if (!isEsbuildInitialized()) {
@@ -323,7 +439,30 @@ const panelAPI = {
           },
           async readFileBytes(p: string): Promise<Uint8Array> {
             const buffer = await fsPromises.readFile(p);
-            return new Uint8Array(buffer as unknown as ArrayBuffer);
+            // Validate that we got an ArrayBuffer-like object
+            // Cast to unknown first to avoid type errors, then validate at runtime
+            const bufferUnknown = buffer as unknown;
+
+            // Check for Uint8Array first (most common case from ZenFS)
+            if (bufferUnknown instanceof Uint8Array) {
+              return bufferUnknown;
+            }
+            // Check for ArrayBuffer
+            if (bufferUnknown instanceof ArrayBuffer) {
+              return new Uint8Array(bufferUnknown);
+            }
+            // Check if it has byteLength property (buffer-like object)
+            if (bufferUnknown && typeof bufferUnknown === 'object' && 'byteLength' in bufferUnknown) {
+              try {
+                // Try to construct Uint8Array from buffer-like object
+                return new Uint8Array(bufferUnknown as ArrayBuffer);
+              } catch (error) {
+                const errMsg = error instanceof Error ? error.message : String(error);
+                throw new Error(`readFileBytes: cannot convert buffer to Uint8Array for ${p}: ${errMsg}`);
+              }
+            }
+            // Unexpected type
+            throw new Error(`readFileBytes: expected buffer-like object for ${p}, got ${typeof bufferUnknown}`);
           },
           async exists(p: string): Promise<boolean> {
             try {
@@ -380,7 +519,7 @@ const panelAPI = {
         throw new Error(`Failed to build panel "${normalizedPath}": ${errorMessage}`);
       }
 
-      // Step 4: Launch with built artifacts
+      // Step 7: Launch with built artifacts
       try {
         return await bridge.launchChild(
           {
@@ -400,10 +539,18 @@ const panelAPI = {
         throw new Error(`Failed to launch panel "${normalizedPath}": ${errorMessage}`);
       }
     } catch (error) {
+      // Clean up OPFS directory if fresh clone succeeded but subsequent steps failed
+      if (cleanupOnFailure) {
+        await cleanupOnFailure();
+      }
       // All errors are already wrapped with context, just re-throw
       throw error;
     }
-  },
+  } catch (error) {
+    // Function-level error handler - re-throw after any cleanup
+    throw error;
+  }
+},
 
   /**
    * Launch a child panel from in-memory build artifacts.

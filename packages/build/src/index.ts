@@ -49,7 +49,7 @@ export {
   VERSIONS,
   CDN_BASE_URLS,
   CDN_URLS,
-  CDN_DEFAULTS, // Legacy alias
+  CDN_DEFAULTS,
 } from "./types.js";
 
 // Framework presets
@@ -81,8 +81,36 @@ export {
   setEsbuildInstance,
   getEsbuildInstance,
   isEsbuildInitialized,
+  setDevMode,
+  isDevMode,
   clearBuildCache,
 } from "./browser-builder.js";
+
+// Unified cache manager
+export {
+  UnifiedCache,
+  getUnifiedCache,
+  initializeCache,
+  clearCache,
+  getCacheStats,
+  computeHash,
+} from "./cache-manager.js";
+export type {
+  CacheEntry,
+  CacheStats,
+  CacheOptions,
+} from "./cache-manager.js";
+
+// ESM module caching
+export {
+  fetchEsmModule,
+  prefetchEsmModules,
+  isEsmModuleCached,
+  clearEsmCache,
+} from "./esm-cache.js";
+export type {
+  FetchOptions,
+} from "./esm-cache.js";
 export type {
   BrowserBuildOptions,
   EsbuildAPI,

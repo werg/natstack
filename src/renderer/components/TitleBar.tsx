@@ -44,6 +44,15 @@ export function TitleBar({
     setMode(nextMode);
   };
 
+  const handleClearBuildCache = async () => {
+    try {
+      await window.electronAPI.clearBuildCache();
+      console.log("[App] Build cache cleared");
+    } catch (error) {
+      console.error("[App] Failed to clear build cache:", error);
+    }
+  };
+
   return (
     <Box
       style={
@@ -92,6 +101,10 @@ export function TitleBar({
               </DropdownMenu.Item>
               <DropdownMenu.Item shortcut="Ctrl+Alt+I" onSelect={() => onOpenAppDevTools?.()}>
                 Toggle App DevTools
+              </DropdownMenu.Item>
+              <DropdownMenu.Separator />
+              <DropdownMenu.Item onSelect={handleClearBuildCache}>
+                Clear Build Cache
               </DropdownMenu.Item>
               <DropdownMenu.Separator />
               <DropdownMenu.Item shortcut="Ctrl+Q" onSelect={handleExit}>

@@ -131,7 +131,7 @@ export const CDN_URLS = {
   ISOMORPHIC_GIT: `${CDN_BASE_URLS.ESM_SH}/isomorphic-git@${VERSIONS.ISOMORPHIC_GIT}`,
 } as const;
 
-// Legacy alias for backwards compatibility
+/** Common CDN defaults for convenience */
 export const CDN_DEFAULTS = {
   ESM_SH: CDN_BASE_URLS.ESM_SH,
   ESBUILD_WASM_BINARY: CDN_URLS.ESBUILD_WASM_BINARY,
@@ -214,7 +214,7 @@ import { configureSingle } from "@zenfs/core";
 import { WebAccess } from "@zenfs/dom";
 import { autoMountReactPanel, shouldAutoMount } from "@natstack/panel";
 
-const INIT_TIMEOUT_MS = 10000;
+const INIT_TIMEOUT_MS = 10000; // Filesystem initialization timeout
 
 const configureOpfs = (() => {
   let initPromise: Promise<void> | null = null;

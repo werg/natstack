@@ -23,7 +23,9 @@
   ],
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
-    "dev": "tsc --project tsconfig.build.json --watch"
+    "dev": "tsc --project tsconfig.build.json --watch",
+    "test": "tsx --test src/*.test.ts",
+    "test:watch": "tsx --test --watch src/*.test.ts"
   },
   "dependencies": {
     "esbuild-wasm": "^0.25.5"
@@ -39,6 +41,7 @@
   "devDependencies": {
     "@types/node": "^24.10.1",
     "@zenfs/core": "^2.4.4",
+    "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   }
 }

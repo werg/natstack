@@ -34,8 +34,12 @@ export interface BootstrapResult {
   success: boolean;
   /** Path to panel source in OPFS */
   sourcePath: string;
+  /** Current commit SHA of panel source (for cache key generation) */
+  sourceCommit?: string;
   /** Map of dependency name -> path in OPFS */
   depPaths: Record<string, string>;
+  /** Map of dependency name -> commit SHA (for cache key generation) */
+  depCommits: Record<string, string>;
   /** Actions taken (cloned, pulled, unchanged) */
   actions: {
     source: "cloned" | "pulled" | "unchanged" | "error";
@@ -73,6 +77,7 @@ export async function bootstrap(
     success: false,
     sourcePath,
     depPaths: {},
+    depCommits: {},
     actions: {
       source: "error",
       deps: {},
@@ -123,6 +128,12 @@ export async function bootstrap(
       }
     }
 
+    // Get current commit SHA for cache key generation
+    const sourceCommit = await git.getCurrentCommit(sourcePath);
+    if (sourceCommit) {
+      result.sourceCommit = sourceCommit;
+    }
+
     // Step 2: Clone or update dependencies
     if (config.gitDependencies && Object.keys(config.gitDependencies).length > 0) {
       const resolver = new DependencyResolver(fs, gitOptions, depsPath);
@@ -134,6 +145,10 @@ export async function bootstrap(
           result.actions.deps[name] = "error";
         } else {
           result.actions.deps[name] = depResult.action as "cloned" | "updated" | "unchanged";
+          // Track commit SHA for cache key generation
+          if (depResult.commit) {
+            result.depCommits[name] = depResult.commit;
+          }
         }
       }
     }

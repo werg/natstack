@@ -7,6 +7,8 @@ import type {
 } from "./types.js";
 import { REACT_PRESET, createImportMap, getImportMapPackages } from "./types.js";
 import { createCdnResolverPlugin } from "./cdn-resolver.js";
+import { getUnifiedCache, computeHash } from "./cache-manager.js";
+import { CONTENT_HASH_LIMITS } from "./cache-constants.js";
 
 /**
  * Minimal esbuild API surface required by BrowserPanelBuilder.
@@ -65,36 +67,17 @@ export interface EsbuildInitializer {
 }
 
 /**
- * Build artifact cache entry
- */
-interface CachedBuildArtifact {
-  hash: string;
-  timestamp: number;
-  artifacts: import("./types.js").PanelBuildArtifacts;
-}
-
-/**
  * Global esbuild singleton storage
  * Stored on globalThis to ensure single instance across all panel contexts
  */
 interface EsbuildGlobal {
   __natstackEsbuildInstance?: EsbuildAPI;
   __natstackEsbuildInitialized?: boolean;
-  /** Cache of built artifacts by content hash */
-  __natstackBuildCache?: Map<string, CachedBuildArtifact>;
+  /** Development mode flag - when true, cache expires after 5 minutes */
+  __natstackDevMode?: boolean;
 }
 
 const globalStore = globalThis as EsbuildGlobal;
-
-/**
- * Get or initialize the global build cache
- */
-function getBuildCache(): Map<string, CachedBuildArtifact> {
-  if (!globalStore.__natstackBuildCache) {
-    globalStore.__natstackBuildCache = new Map();
-  }
-  return globalStore.__natstackBuildCache;
-}
 
 /**
  * Set the esbuild instance to use for building.
@@ -138,62 +121,302 @@ export function isEsbuildInitialized(): boolean {
 }
 
 /**
- * Compute a hash of the source files to use as cache key
+ * Set development mode flag.
+ * When enabled, build cache expires after 5 minutes to prevent stale builds during development.
+ * When disabled (production), cache never expires based on time.
+ *
+ * @param enabled - Whether to enable development mode
  */
-async function computeSourceHash(
+export function setDevMode(enabled: boolean): void {
+  globalStore.__natstackDevMode = enabled;
+  console.log(`[BrowserPanelBuilder] Development mode ${enabled ? 'enabled' : 'disabled'} (cache expiration: ${enabled ? '5 minutes' : 'never'})`);
+}
+
+/**
+ * Get current development mode setting
+ */
+export function isDevMode(): boolean {
+  return globalStore.__natstackDevMode ?? false;
+}
+
+/**
+ * Recursively collect all source files from a directory with safety limits
+ */
+async function collectSourceFiles(
   fs: import("./types.js").BuildFileSystem,
-  panelPath: string,
-  entryPath: string
-): Promise<string> {
-  // Simple hash based on entry file content + timestamp
-  // In a real implementation, you'd want to hash all dependencies too
+  dirPath: string,
+  files: Map<string, string>,
+  stats: { fileCount: number; totalSize: number }
+): Promise<void> {
   try {
-    const entryContent = await fs.readFile(entryPath);
-    const manifestContent = await fs.readFile(`${panelPath}/package.json`);
-
-    // Combine content for hashing
-    const combined = entryContent + manifestContent;
-
-    // Simple hash using built-in crypto if available
-    if (typeof crypto !== 'undefined' && crypto.subtle) {
-      const encoder = new TextEncoder();
-      const data = encoder.encode(combined);
-      const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+    if (!(await fs.exists(dirPath)) || !(await fs.isDirectory(dirPath))) {
+      return;
     }
 
-    // Fallback: simple string hash
-    let hash = 0;
-    for (let i = 0; i < combined.length; i++) {
-      const char = combined.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32-bit integer
+    const entries = await fs.readdir(dirPath);
+
+    // Sort entries for deterministic ordering
+    const sortedEntries = entries.sort();
+
+    for (const entry of sortedEntries) {
+      // Check file count limit
+      if (stats.fileCount >= CONTENT_HASH_LIMITS.MAX_FILES) {
+        console.warn(`[BrowserPanelBuilder] Reached file count limit (${CONTENT_HASH_LIMITS.MAX_FILES}) during content hashing`);
+        return;
+      }
+
+      // Check total size limit
+      if (stats.totalSize >= CONTENT_HASH_LIMITS.MAX_TOTAL_SIZE_BYTES) {
+        const sizeMB = (CONTENT_HASH_LIMITS.MAX_TOTAL_SIZE_BYTES / 1024 / 1024).toFixed(0);
+        console.warn(`[BrowserPanelBuilder] Reached total size limit (${sizeMB}MB) during content hashing`);
+        return;
+      }
+
+      const fullPath = `${dirPath}/${entry}`;
+
+      if (await fs.isDirectory(fullPath)) {
+        // Skip known large directories
+        if (entry === 'node_modules' || entry === '.git' || entry === 'dist' || entry === 'build' || entry === '.next') {
+          continue;
+        }
+        // Recursively traverse subdirectories
+        await collectSourceFiles(fs, fullPath, files, stats);
+      } else if (
+        entry.endsWith('.ts') ||
+        entry.endsWith('.tsx') ||
+        entry.endsWith('.js') ||
+        entry.endsWith('.jsx') ||
+        entry.endsWith('.css') ||
+        entry.endsWith('.json')
+      ) {
+        try {
+          const content = await fs.readFile(fullPath);
+          const fileSize = content.length;
+
+          // Skip files that are too large
+          if (fileSize > CONTENT_HASH_LIMITS.MAX_FILE_SIZE_BYTES) {
+            const sizeMB = (fileSize / 1024 / 1024).toFixed(2);
+            const limitMB = (CONTENT_HASH_LIMITS.MAX_FILE_SIZE_BYTES / 1024 / 1024).toFixed(0);
+            console.warn(`[BrowserPanelBuilder] Skipping large file ${fullPath} (${sizeMB}MB > ${limitMB}MB limit)`);
+            continue;
+          }
+
+          // Store with relative path for deterministic ordering
+          files.set(fullPath, content);
+          stats.fileCount++;
+          stats.totalSize += fileSize;
+        } catch {
+          // Skip files we can't read
+        }
+      }
     }
-    return Math.abs(hash).toString(16).padStart(16, '0').slice(0, 16);
   } catch {
-    // If we can't compute hash, use timestamp to prevent caching
-    return Date.now().toString(16);
+    // Directory doesn't exist or can't be read, skip
+  }
+}
+
+async function addFileIfExists(
+  fs: import("./types.js").BuildFileSystem,
+  filePath: string,
+  files: Map<string, string>,
+  alias?: string
+): Promise<void> {
+  try {
+    if (await fs.exists(filePath)) {
+      const content = await fs.readFile(filePath);
+      files.set(alias ?? filePath, content);
+    }
+  } catch {
+    // Ignore unreadable files
   }
 }
 
 /**
- * Get cached build artifacts if available
+ * Compute a content-addressable hash of all source files and build configuration.
+ *
+ * Fast path: Uses git commit SHA if available (zero file reads).
+ * Fallback: Walks file tree and hashes contents (for non-git panels).
+ *
+ * This enables maximal sharing - identical source + config produce identical hashes.
+ */
+async function computeSourceHash(
+  fs: import("./types.js").BuildFileSystem,
+  panelPath: string,
+  entryPath: string,
+  buildOptions: {
+    minify?: boolean;
+    sourcemap?: boolean | 'inline';
+    target?: string;
+    external?: string[];
+    frameworkPreset?: import("./types.js").FrameworkPreset;
+  }
+): Promise<string> {
+  try {
+    // Fast path: Use git commit SHAs if available (zero file system operations)
+    const global = globalThis as {
+      __natstackSourceCommit?: string;
+      __natstackDepCommits?: Record<string, string>;
+    };
+
+    const sourceCommit = global.__natstackSourceCommit;
+    const depCommits = global.__natstackDepCommits;
+
+    // Validate SHA format (must be 40 hex characters for full SHA or 7+ for short SHA)
+    const isValidSha = (sha: string): boolean => {
+      return /^[0-9a-f]{7,40}$/i.test(sha);
+    };
+
+    // Fallback to content hashing function (defined early to avoid hoisting issues)
+    const fallbackToContentHashing = async (): Promise<string> => {
+      console.log('[BrowserPanelBuilder] Using content-based hashing');
+
+      // Map to store files with their paths as keys (for sorting)
+      const fileMap = new Map<string, string>();
+      const hashStats = { fileCount: 0, totalSize: 0 };
+
+      // 1. Include manifest (with normalized path)
+      await addFileIfExists(fs, `${panelPath}/package.json`, fileMap, '__manifest__');
+
+      // 2. Include lockfiles for dependency tracking (avoids hashing node_modules)
+      await addFileIfExists(fs, `${panelPath}/package-lock.json`, fileMap, '__package-lock__');
+      await addFileIfExists(fs, `${panelPath}/yarn.lock`, fileMap, '__yarn-lock__');
+      await addFileIfExists(fs, `${panelPath}/pnpm-lock.yaml`, fileMap, '__pnpm-lock__');
+
+      // 3. Include entry file (with normalized path)
+      await addFileIfExists(fs, entryPath, fileMap, '__entry__');
+
+      // 4. Recursively collect all source files from common directories (with limits)
+      const sourceDirs = ['src', 'lib', 'components', 'styles', 'public', 'assets'];
+      for (const dir of sourceDirs) {
+        await collectSourceFiles(fs, `${panelPath}/${dir}`, fileMap, hashStats);
+      }
+
+      // 5. Include common config and env files that affect builds
+      const rootFiles = [
+        'tsconfig.json',
+        'tsconfig.app.json',
+        'vite.config.ts',
+        'vite.config.js',
+        'webpack.config.js',
+        'rollup.config.js',
+        'babel.config.js',
+        'postcss.config.js',
+        'tailwind.config.js',
+        '.env',
+        '.env.local',
+        '.env.development',
+        '.env.production',
+      ];
+      for (const file of rootFiles) {
+        await addFileIfExists(fs, `${panelPath}/${file}`, fileMap);
+      }
+
+      // 5. Sort all files by path for deterministic ordering
+      const sortedPaths = Array.from(fileMap.keys()).sort();
+
+      // 6. Build hash input with:
+      //    - Build configuration (serialized)
+      //    - All file contents in sorted order
+      const hashParts: string[] = [];
+
+      const normalizePathForHash = (filePath: string): string => {
+        if (filePath.startsWith(panelPath)) {
+          const relative = filePath.slice(panelPath.length).replace(/^\/?/, '');
+          return relative || filePath;
+        }
+        return filePath;
+      };
+
+      // Include build options in hash
+      hashParts.push(JSON.stringify({
+        minify: buildOptions.minify ?? false,
+        sourcemap: buildOptions.sourcemap ?? false,
+        target: buildOptions.target ?? 'es2020',
+        external: (buildOptions.external ?? []).sort(), // Sort for determinism
+        framework: buildOptions.frameworkPreset?.name ?? 'none',
+      }));
+
+      // Include all file contents in sorted order
+      for (const path of sortedPaths) {
+        const content = fileMap.get(path)!;
+        const normalizedPath = normalizePathForHash(path);
+        // Include both path and content for better deduplication
+        hashParts.push(`[${normalizedPath}]${content}`);
+      }
+
+      // Combine and hash
+      const combined = hashParts.join('\n---FILE---\n');
+      const contentHash = await computeHash(combined);
+      return `content:${contentHash}`;
+    };
+
+    if (sourceCommit && isValidSha(sourceCommit)) {
+      // Build composite cache key: source commit + dependency commits + build config
+      const keyParts: string[] = [sourceCommit];
+
+      // Add dependency commits in sorted order for determinism
+      if (depCommits && Object.keys(depCommits).length > 0) {
+        const sortedDeps = Object.keys(depCommits).sort();
+        for (const depName of sortedDeps) {
+          const depSha = depCommits[depName];
+          // Validate each dependency SHA
+          if (!depSha || !isValidSha(depSha)) {
+            console.warn(`[BrowserPanelBuilder] Invalid SHA for dependency ${depName}: ${depSha ?? 'undefined'}, falling back to content hashing`);
+            // Fall through to content hashing below
+            return await fallbackToContentHashing();
+          }
+          keyParts.push(`${depName}:${depSha}`);
+        }
+      }
+
+      // Hash the build configuration
+      const buildConfigHash = await computeHash(JSON.stringify({
+        minify: buildOptions.minify ?? false,
+        sourcemap: buildOptions.sourcemap ?? false,
+        target: buildOptions.target ?? 'es2020',
+        external: (buildOptions.external ?? []).sort(),
+        framework: buildOptions.frameworkPreset?.name ?? 'none',
+      }));
+
+      keyParts.push(buildConfigHash);
+
+      const hash = `git:${keyParts.join(':')}`;
+      const depCount = depCommits ? Object.keys(depCommits).length : 0;
+      console.log(
+        `[BrowserPanelBuilder] Using git-based cache key: ` +
+        `source=${sourceCommit.slice(0, 8)} deps=${depCount}`
+      );
+      return hash;
+    } else if (sourceCommit && !isValidSha(sourceCommit)) {
+      console.warn(`[BrowserPanelBuilder] Invalid source commit SHA: ${sourceCommit}, falling back to content hashing`);
+    }
+
+    // Call the fallback function (git not available or invalid)
+    return await fallbackToContentHashing();
+  } catch (error) {
+    console.warn('[BrowserPanelBuilder] Failed to compute source hash:', error);
+    // Fallback to timestamp-based hash (disables caching)
+    return `timestamp:${Date.now().toString(16)}`;
+  }
+}
+
+/**
+ * Get cached build artifacts if available from unified cache
+ * Uses content-addressable caching with cross-panel sharing
  */
 function getCachedBuild(hash: string): import("./types.js").PanelBuildArtifacts | null {
-  const cache = getBuildCache();
-  const cached = cache.get(hash);
+  const unifiedCache = getUnifiedCache();
+  const cacheKey = `build:${hash}`;
 
-  if (cached) {
-    const age = Date.now() - cached.timestamp;
-    const MAX_CACHE_AGE = 5 * 60 * 1000; // 5 minutes
-
-    if (age < MAX_CACHE_AGE) {
-      console.log(`[BrowserPanelBuilder] Cache hit for hash ${hash} (age: ${(age / 1000).toFixed(1)}s)`);
-      return cached.artifacts;
-    } else {
-      console.log(`[BrowserPanelBuilder] Cache expired for hash ${hash} (age: ${(age / 1000).toFixed(1)}s)`);
-      cache.delete(hash);
+  const cachedJson = unifiedCache.get(cacheKey);
+  if (cachedJson) {
+    try {
+      const artifacts = JSON.parse(cachedJson) as import("./types.js").PanelBuildArtifacts;
+      console.log(`[BrowserPanelBuilder] Cache hit for hash ${hash} (cross-panel shared)`);
+      return artifacts;
+    } catch (error) {
+      console.warn(`[BrowserPanelBuilder] Failed to parse cached build:`, error);
+      return null;
     }
   }
 
@@ -201,40 +424,43 @@ function getCachedBuild(hash: string): import("./types.js").PanelBuildArtifacts 
 }
 
 /**
- * Store build artifacts in cache
+ * Store build artifacts in unified cache
+ *
+ * Note: JSON serialization is required here because PanelBuildArtifacts is a
+ * structured object (bundle, html, css, manifest). The cache layer stores strings,
+ * so we must serialize the entire object. This is not redundant - the bundle field
+ * is already a string, but the overall artifacts object is not.
  */
-function cacheBuild(hash: string, artifacts: import("./types.js").PanelBuildArtifacts): void {
-  const cache = getBuildCache();
+async function cacheBuild(hash: string, artifacts: import("./types.js").PanelBuildArtifacts): Promise<void> {
+  const unifiedCache = getUnifiedCache();
+  const cacheKey = `build:${hash}`;
 
-  // Limit cache size to prevent memory bloat
-  const MAX_CACHE_SIZE = 20;
-  if (cache.size >= MAX_CACHE_SIZE) {
-    // Remove oldest entry
-    const oldestKey = Array.from(cache.entries())
-      .sort((a, b) => a[1].timestamp - b[1].timestamp)[0]?.[0];
-    if (oldestKey) {
-      cache.delete(oldestKey);
-      console.log(`[BrowserPanelBuilder] Evicted old cache entry to make room`);
-    }
+  try {
+    // Serialize artifacts object to JSON for storage in string-based cache
+    const artifactsJson = JSON.stringify(artifacts);
+
+    // Store in unified cache (will be synced to main process and disk)
+    await unifiedCache.set(cacheKey, artifactsJson);
+
+    const stats = unifiedCache.getStats();
+    console.log(`[BrowserPanelBuilder] Cached build (hash: ${hash}, entries: ${stats.entries}, size: ${(stats.totalSize / 1024 / 1024).toFixed(1)}MB)`);
+  } catch (error) {
+    console.warn(`[BrowserPanelBuilder] Failed to cache build artifacts:`, error);
   }
-
-  cache.set(hash, {
-    hash,
-    timestamp: Date.now(),
-    artifacts,
-  });
-
-  console.log(`[BrowserPanelBuilder] Cached build artifacts (hash: ${hash}, cache size: ${cache.size})`);
 }
 
 /**
  * Clear the build cache (useful for debugging)
+ * Clears the unified cache (local memory + main process + disk)
  */
-export function clearBuildCache(): void {
-  const cache = getBuildCache();
-  const size = cache.size;
-  cache.clear();
-  console.log(`[BrowserPanelBuilder] Cleared ${size} cached builds`);
+export async function clearBuildCache(): Promise<void> {
+  try {
+    const { clearCache } = await import('./cache-manager.js');
+    await clearCache();
+    console.log(`[BrowserPanelBuilder] Cleared unified cache (local memory only - use app:clear-build-cache for full clear)`);
+  } catch (error) {
+    console.warn(`[BrowserPanelBuilder] Failed to clear cache:`, error);
+  }
 }
 
 /**
@@ -399,7 +625,11 @@ ${cssLinks}
       const entryPath = this.joinPath(panelPath, entry);
 
       // Compute source hash for caching
-      const sourceHash = await computeSourceHash(this.options.fs, panelPath, entryPath);
+      const sourceHash = await computeSourceHash(this.options.fs, panelPath, entryPath, {
+        minify: this.options.minify,
+        sourcemap: this.options.sourcemap,
+        frameworkPreset: this.preset,
+      });
 
       // Check cache
       const cached = getCachedBuild(sourceHash);
@@ -488,8 +718,8 @@ ${cssLinks}
         sourceMap: undefined, // Inline in bundle when enabled
       };
 
-      // Cache the build artifacts
-      cacheBuild(sourceHash, artifacts);
+      // Cache the build artifacts (async, but we don't need to wait)
+      void cacheBuild(sourceHash, artifacts);
 
       return {
         success: true,

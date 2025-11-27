@@ -27,6 +27,8 @@ import {
   setupInMemoryPanelProtocol,
 } from "./inMemoryPanelProtocol.js";
 import { loadPrebundledPackages } from "./prebundledLoader.js";
+import { getMainCacheManager } from "./cacheManager.js";
+import { getRepoCacheManifestManager } from "./repoCacheManifest.js";
 
 // =============================================================================
 // Protocol Registration (must happen before app ready)
@@ -178,6 +180,65 @@ handle("app:get-panel-preload-path", async () => {
   return path.join(__dirname, "panelPreload.cjs");
 });
 
+handle("app:clear-build-cache", async () => {
+  if (!panelManager) {
+    console.log("[App] No panels to clear cache in (chooser mode)");
+    return;
+  }
+
+  const pm = requirePanelManager();
+  const panelTree = pm.getSerializablePanelTree();
+
+  const collectPanelIds = (panels: SharedPanel.Panel[]): string[] => {
+    const ids: string[] = [];
+    for (const panel of panels) {
+      ids.push(panel.id);
+      if (panel.children && panel.children.length > 0) {
+        ids.push(...collectPanelIds(panel.children));
+      }
+    }
+    return ids;
+  };
+
+  const panelIds = collectPanelIds(panelTree);
+  const viewIds: number[] = [];
+  for (const id of panelIds) {
+    const views = pm.getPanelViews(id);
+    if (views) {
+      viewIds.push(...views);
+    }
+  }
+
+  // Clear renderer-side caches
+  await Promise.all(
+    viewIds.map(async (contentsId) => {
+      const contents = webContents.fromId(contentsId);
+      if (!contents || contents.isDestroyed()) return;
+      try {
+        await contents.executeJavaScript(`
+          (async () => {
+            try {
+              const { clearCache } = await import("@natstack/build");
+              await clearCache();
+            } catch (e) {
+              console.warn('[App] Failed to clear panel cache:', e);
+            }
+          })();
+        `);
+      } catch (error) {
+        console.warn(`[App] Failed to clear cache in view ${contentsId}:`, error);
+      }
+    })
+  );
+
+  // Clear main-process cache and repo manifest
+  const cacheManager = getMainCacheManager();
+  await cacheManager.clear();
+  getRepoCacheManifestManager().clear();
+
+  console.log("[App] Build cache cleared across renderers, main memory, and disk");
+});
+
 // =============================================================================
 // Panel IPC Handlers (renderer <-> main) - Only in main mode
 // =============================================================================
@@ -257,6 +318,111 @@ handle("panel-bridge:get-prebundled-packages", async () => {
   return loadPrebundledPackages();
 });
 
+// Get development mode flag for build cache expiration
+handle("panel-bridge:get-dev-mode", async () => {
+  return isDev();
+});
+
+// Get cache configuration
+handle("panel-bridge:get-cache-config", async () => {
+  const { getCacheConfig } = await import("./cacheConfig.js");
+  const config = getCacheConfig();
+  return {
+    maxEntriesPerPanel: config.maxEntriesPerPanel,
+    maxSizePerPanel: config.maxSizePerPanel,
+    expirationMs: config.expirationMs,
+  };
+});
+
+// Get cache entries for the calling panel's repo (pre-populating a new worker/view)
+handle("panel-bridge:load-disk-cache", async (event, panelId: string) => {
+  assertAuthorized(event, panelId);
+  const pm = requirePanelManager();
+  const gitConfig = pm.getGitConfig(panelId);
+  const repoUrl = gitConfig?.sourceRepo;
+  if (!repoUrl) return {};
+
+  const manifestManager = getRepoCacheManifestManager();
+  const allowedKeys = manifestManager.getCacheKeysForRepo(repoUrl);
+  if (allowedKeys.length === 0) return {};
+
+  const cacheManager = getMainCacheManager();
+  const result: Record<string, { key: string; value: string; timestamp: number; size: number }> = {};
+  for (const key of allowedKeys) {
+    const entry = cacheManager.getEntry(key, isDev());
+    if (entry) {
+      result[key] = entry;
+    }
+  }
+  return result;
+});
+
+// Save cache entries produced by a panel back to main process (only build/esm keys)
+handle("panel-bridge:save-disk-cache", async (event, panelId: string, entries: Record<string, { key: string; value: string; timestamp: number; size: number }>) => {
+  assertAuthorized(event, panelId);
+  const pm = requirePanelManager();
+  const gitConfig = pm.getGitConfig(panelId);
+  const repoUrl = gitConfig?.sourceRepo;
+
+  const filtered: Record<string, { key: string; value: string; timestamp: number; size: number }> = {};
+  for (const [key, entry] of Object.entries(entries)) {
+    // Only accept known cache namespaces to avoid pollution
+    if (key.startsWith("build:") || key.startsWith("esm:")) {
+      filtered[key] = entry;
+    }
+  }
+
+  if (Object.keys(filtered).length > 0) {
+    await getMainCacheManager().setMany(filtered);
+    if (repoUrl) {
+      getRepoCacheManifestManager().recordCacheHits(repoUrl, Object.keys(filtered));
+    }
+  }
+});
+
+// Record cache hits for repo manifest tracking (repo derived from panel id)
+handle("panel-bridge:record-cache-hits", async (event, panelId: string, cacheKeys: string[]) => {
+  assertAuthorized(event, panelId);
+  const pm = requirePanelManager();
+  const gitConfig = pm.getGitConfig(panelId);
+  if (gitConfig?.sourceRepo) {
+    getRepoCacheManifestManager().recordCacheHits(gitConfig.sourceRepo, cacheKeys);
+  }
+});
+
+// Get cache keys for the calling panel's repo (for pre-population)
+handle("panel-bridge:get-repo-cache-keys", async (event, panelId: string) => {
+  assertAuthorized(event, panelId);
+  const pm = requirePanelManager();
+  const gitConfig = pm.getGitConfig(panelId);
+  if (!gitConfig?.sourceRepo) return [];
+  return getRepoCacheManifestManager().getCacheKeysForRepo(gitConfig.sourceRepo);
+});
+
+// Get cache entries for specific keys (selective loading) scoped to repo manifest
+handle("panel-bridge:load-cache-entries", async (event, keys: string[]) => {
+  // Keys are filtered below via manifest membership to prevent cross-repo reads
+  const senderPanelId = requirePanelManager().getPanelIdForWebContents(event.sender);
+  if (!senderPanelId) {
+    throw new Error("Unauthorized: Sender not registered to a panel");
+  }
+  const gitConfig = requirePanelManager().getGitConfig(senderPanelId);
+  const repoUrl = gitConfig?.sourceRepo;
+  if (!repoUrl) return {};
+
+  const allowed = new Set(getRepoCacheManifestManager().getCacheKeysForRepo(repoUrl));
+  const cacheManager = getMainCacheManager();
+  const result: Record<string, { key: string; value: string; timestamp: number; size: number }> = {};
+  for (const key of keys) {
+    if (!allowed.has(key)) continue;
+    const entry = cacheManager.getEntry(key, isDev());
+    if (entry) {
+      result[key] = entry;
+    }
+  }
+  return result;
+});
+
 handle("panel-bridge:set-title", async (event, panelId: string, title: string) => {
   assertAuthorized(event, panelId);
   return requirePanelManager().setTitle(panelId, title);
@@ -295,6 +461,14 @@ handle("panel-bridge:get-git-config", async (event, panelId: string) => {
 app.on("ready", async () => {
   // Set up in-memory panel protocol handler
   setupInMemoryPanelProtocol();
+
+  // Initialize cache manager (shared across all panels)
+  const cacheManager = getMainCacheManager();
+  await cacheManager.initialize();
+
+  // Initialize repo manifest manager
+  const manifestManager = getRepoCacheManifestManager();
+  await manifestManager.initialize();
 
   // Initialize services only in main mode
   if (appMode === "main" && gitServer && panelManager) {

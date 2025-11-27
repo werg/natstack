@@ -80,6 +80,7 @@ export interface AppIpcApi {
   "app:set-theme-mode": (mode: ThemeMode) => void;
   "app:open-devtools": () => void;
   "app:get-panel-preload-path": () => string;
+  "app:clear-build-cache": () => void;
 }
 
 // Panel-related IPC channels (renderer <-> main)
@@ -97,6 +98,68 @@ export interface PanelBridgeIpcApi {
    * Returns a map of package name -> ESM bundle code
    */
   "panel-bridge:get-prebundled-packages": () => Record<string, string>;
+
+  /**
+   * Get development mode flag
+   * Returns true if running in development mode, false for production
+   * Used by @natstack/build to determine cache expiration behavior
+   */
+  "panel-bridge:get-dev-mode": () => boolean;
+
+  /**
+   * Get cache configuration from central config
+   * Returns panel-specific cache limits
+   */
+  "panel-bridge:get-cache-config": () => {
+    maxEntriesPerPanel: number;
+    maxSizePerPanel: number;
+    expirationMs: number;
+  };
+
+  /**
+   * Load cache from disk
+   * Returns cache entries stored on disk (shared across all panels)
+   */
+  "panel-bridge:load-disk-cache": (panelId: string) => Record<string, {
+    key: string;
+    value: string;
+    timestamp: number;
+    size: number;
+  }>;
+
+  /**
+   * Save cache to disk
+   * Saves cache entries to disk (shared across all panels)
+   */
+  "panel-bridge:save-disk-cache": (panelId: string, entries: Record<string, {
+    key: string;
+    value: string;
+    timestamp: number;
+    size: number;
+  }>) => void;
+
+  /**
+   * Record cache hits for repo manifest tracking
+   * Tracks which cache entries this repo URL uses during runtime
+   */
+  "panel-bridge:record-cache-hits": (panelId: string, cacheKeys: string[]) => void;
+
+  /**
+   * Get cache keys for a repo (for pre-population)
+   * Returns the list of cache keys this repo has used before
+   */
+  "panel-bridge:get-repo-cache-keys": (panelId: string) => string[];
+
+  /**
+   * Load specific cache entries by key
+   * Returns only the requested cache entries (selective loading)
+   */
+  "panel-bridge:load-cache-entries": (keys: string[]) => Record<string, {
+    key: string;
+    value: string;
+    timestamp: number;
+    size: number;
+  }>;
 
   /**
    * Launch a child panel from in-memory build artifacts
