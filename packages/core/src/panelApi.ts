@@ -65,6 +65,13 @@ interface PanelManifest {
   gitDependencies?: Record<string, string | GitDependency>;
 }
 
+interface CacheEntry {
+  key: string;
+  value: string;
+  timestamp: number;
+  size: number;
+}
+
 interface PanelBridge {
   panelId: string;
   /**
@@ -91,6 +98,19 @@ interface PanelBridge {
    * Get development mode flag.
    */
   getDevMode(): Promise<boolean>;
+  /**
+   * Cache operations (used by @natstack/build)
+   */
+  getCacheConfig(): Promise<{
+    maxEntriesPerPanel: number;
+    maxSizePerPanel: number;
+    expirationMs: number;
+  }>;
+  loadDiskCache(): Promise<Record<string, CacheEntry>>;
+  saveDiskCache(entries: Record<string, CacheEntry>): Promise<void>;
+  recordCacheHits(cacheKeys: string[]): Promise<void>;
+  getRepoCacheKeys(): Promise<string[]>;
+  loadCacheEntries(keys: string[]): Promise<Record<string, CacheEntry>>;
   setTitle(title: string): Promise<void>;
   close(): Promise<void>;
   getEnv(): Promise<Record<string, string>>;
