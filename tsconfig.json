@@ -27,9 +27,7 @@
       "@natstack/ai": ["packages/ai/src/index.ts"],
       "@natstack/core": ["packages/core/src/index.ts"],
       "@natstack/build": ["packages/build/src/index.ts"],
-      "@natstack/build/*": ["packages/build/src/*"],
       "@natstack/git": ["packages/git/src/index.ts"],
-      "@natstack/git/*": ["packages/git/src/*"],
       "@natstack/react": ["packages/react/src/index.ts"],
       "@natstack/panel": ["packages/panel/src/index.ts"]
     }

@@ -1,6 +1,17 @@
 /**
  * Global type declarations for @natstack/build
+ *
+ * Note: These types duplicate some from @natstack/core because @natstack/build
+ * is compiled independently and doesn't have @natstack/core as a build dependency.
+ * The types must match those in @natstack/core/src/panelApi.ts.
  */
+
+interface CacheEntry {
+  key: string;
+  value: string;
+  timestamp: number;
+  size: number;
+}
 
 interface PanelBridge {
   getCacheConfig(): Promise<{
@@ -8,26 +19,12 @@ interface PanelBridge {
     maxSizePerPanel: number;
     expirationMs: number;
   }>;
-  loadDiskCache(): Promise<Record<string, {
-    key: string;
-    value: string;
-    timestamp: number;
-    size: number;
-  }>>;
-  saveDiskCache(entries: Record<string, {
-    key: string;
-    value: string;
-    timestamp: number;
-    size: number;
-  }>): Promise<void>;
+  loadDiskCache(): Promise<Record<string, CacheEntry>>;
+  saveDiskCache(entries: Record<string, CacheEntry>): Promise<void>;
   recordCacheHits(cacheKeys: string[]): Promise<void>;
   getRepoCacheKeys(): Promise<string[]>;
-  loadCacheEntries(keys: string[]): Promise<Record<string, {
-    key: string;
-    value: string;
-    timestamp: number;
-    size: number;
-  }>>;
+  loadCacheEntries(keys: string[]): Promise<Record<string, CacheEntry>>;
+  getDevMode(): Promise<boolean>;
 }
 
 declare global {
