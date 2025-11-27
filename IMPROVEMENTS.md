@@ -197,25 +197,20 @@ function MyPanel() {
 
 ```
 src/panelRuntime/
-  ├── panelApi.ts           # Core panel API (existing)
-  ├── reactPanel.ts         # React mount helpers (existing)
-  ├── hooks.ts              # 🆕 React hooks
-  ├── autoMount.ts          # 🆕 Auto-mounting system
-  ├── typedEvents.ts        # 🆕 Typed event utilities
-  └── globals.d.ts          # 🆕 Enhanced type definitions
-```
+  ├── panelFsRuntime.ts     # File system API
+  ├── panelFsPromisesRuntime.ts # File system Promises API
+  └── globals.d.ts          # Global type definitions
 
-### Example Panels
-
-```
-panels/
-  ├── simple-example/       # 🆕 Hooks-based simple example
-  ├── typed-rpc-parent/     # 🆕 Typed RPC parent panel
-  ├── typed-rpc-child/      # 🆕 Typed RPC child panel
-  ├── example/              # ✅ Updated comprehensive example
-  ├── agentic-chat/         # ✅ AI integration example
-  ├── rpc-demo-child/       # Legacy RPC demo
-  └── shared-opfs-demo/     # OPFS sharing example
+packages/
+  ├── core/                 # Core panel API
+  │   ├── src/
+  │   │   ├── panelApi.ts   # Core API implementation
+  │   │   └── index.ts      # Main export
+  └── react/                # React integration
+      ├── src/
+      │   ├── hooks.ts      # React hooks
+      │   ├── autoMount.ts  # Auto-mounting system
+      │   └── index.ts      # Main export
 ```
 
 ---

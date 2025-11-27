@@ -9,7 +9,7 @@ import { isDev } from "./utils.js";
 
 const PANEL_RUNTIME_DIRNAME = ".natstack";
 
-// Keep only fs virtual modules (natstack/* now resolved via workspace packages)
+// Keep only fs virtual modules.
 const panelFsModulePath = path.join(__dirname, "panelFsRuntime.js");
 const panelFsPromisesModulePath = path.join(__dirname, "panelFsPromisesRuntime.js");
 
