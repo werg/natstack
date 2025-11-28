@@ -3,18 +3,18 @@ import * as path from "path";
 import { randomBytes } from "crypto";
 import { PanelBuilder } from "./panelBuilder.js";
 import type { PanelEventPayload, Panel, PanelArtifacts } from "./panelTypes.js";
-import { getPanelCacheDirectory, getActiveWorkspace } from "./paths.js";
+import { getActiveWorkspace } from "./paths.js";
 import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
 import type { GitServer } from "./gitServer.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
 import * as SharedPanel from "../shared/ipc/types.js";
 import { getClaudeCodeConversationManager } from "./ai/claudeCodeConversationManager.js";
 import {
-  storeInMemoryPanel,
-  removeInMemoryPanel,
-  isInMemoryPanel,
+  storeProtocolPanel,
+  removeProtocolPanel,
+  isProtocolPanel,
   registerProtocolForPartition,
-} from "./inMemoryPanelProtocol.js";
+} from "./panelProtocol.js";
 
 export class PanelManager {
   private builder: PanelBuilder;
@@ -31,9 +31,7 @@ export class PanelManager {
     this.gitServer = gitServer;
     const workspace = getActiveWorkspace();
     this.panelsRoot = workspace?.path ?? path.resolve(process.cwd());
-    const cacheDir = getPanelCacheDirectory();
-    // console.log("Using panel cache directory:", cacheDir);
-    this.builder = new PanelBuilder(cacheDir);
+    this.builder = new PanelBuilder();
     void this.initializeRootPanel(initialRootPanelPath);
   }
 
@@ -88,129 +86,174 @@ export class PanelManager {
   // Public methods for RPC services
 
   /**
-   * Launch a child panel from in-memory build artifacts.
-   * Used when a panel builds its own child using @natstack/build in the browser.
+   * Create a child panel from a workspace path.
+   * Main process handles git checkout and build asynchronously.
+   * Returns panel ID immediately; build happens in background.
    */
-  async launchChild(
+  async createChild(
     parentId: string,
-    inMemoryArtifacts: SharedPanel.InMemoryBuildArtifacts,
-    env?: Record<string, string>,
-    requestedPanelId?: string
+    childPath: string,
+    options?: SharedPanel.CreateChildOptions
   ): Promise<string> {
     const parent = this.panels.get(parentId);
     if (!parent) {
       throw new Error(`Parent panel not found: ${parentId}`);
     }
 
-    const syntheticPath = `inmemory/${inMemoryArtifacts.title.toLowerCase().replace(/\s+/g, "-")}`;
-    const rawPath = inMemoryArtifacts.sourceRepo ?? syntheticPath;
-    const { relativePath } = this.normalizePanelPath(rawPath);
-    const isSingleton = inMemoryArtifacts.singletonState === true;
+    const { relativePath, absolutePath } = this.normalizePanelPath(childPath);
 
-    if (isSingleton && requestedPanelId) {
+    // Read manifest to check singleton state and get title
+    let manifest;
+    try {
+      manifest = this.builder.loadManifest(absolutePath);
+    } catch (error) {
+      throw new Error(
+        `Failed to load manifest for ${childPath}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    const isSingleton = manifest.singletonState === true;
+
+    if (isSingleton && options?.panelId) {
       throw new Error(
         `Panel at "${relativePath}" has singletonState and cannot have its ID overridden`
       );
     }
 
-    // Compute panelId first since we need it to store in-memory content
+    // Compute panelId
     const panelId = this.computePanelId({
       relativePath,
       parent,
-      requestedId: requestedPanelId,
+      requestedId: options?.panelId,
       singletonState: isSingleton,
     });
 
-    // Store the in-memory content and get the URL
-    const htmlUrl = storeInMemoryPanel(panelId, inMemoryArtifacts);
-
-    return this.registerPanel({
-      panelId,
-      parent,
-      relativePath,
-      title: inMemoryArtifacts.title,
-      artifacts: { htmlPath: htmlUrl },
-      env,
-      injectHostThemeVariables: inMemoryArtifacts.injectHostThemeVariables !== false,
-      sourceRepo: inMemoryArtifacts.sourceRepo ?? relativePath,
-      gitDependencies: inMemoryArtifacts.gitDependencies,
-    });
-  }
-
-  /**
-   * Shared panel registration logic for both filesystem and in-memory panels.
-   */
-  private async registerPanel(params: {
-    panelId?: string;
-    parent: Panel;
-    relativePath: string;
-    title: string;
-    artifacts: PanelArtifacts;
-    env?: Record<string, string>;
-    requestedPanelId?: string;
-    singletonState?: boolean;
-    injectHostThemeVariables: boolean;
-    gitDependencies?: Record<string, SharedPanel.GitDependencySpec>;
-    sourceRepo?: string;
-  }): Promise<string> {
-    const {
-      parent,
-      relativePath,
-      title,
-      artifacts,
-      env,
-      requestedPanelId,
-      singletonState = false,
-      injectHostThemeVariables,
-      gitDependencies,
-      sourceRepo,
-    } = params;
-
-    // Use pre-computed panelId if provided, otherwise compute it
-    const panelId =
-      params.panelId ??
-      this.computePanelId({
-        relativePath,
-        parent,
-        requestedId: requestedPanelId,
-        singletonState,
-      });
-
+    // Check if panel already exists (for singletons)
     if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
+      if (isSingleton) {
+        // For singletons, just select the existing panel
+        parent.selectedChildId = panelId;
+        this.notifyPanelTreeUpdate();
+        return panelId;
+      }
       throw new Error(`A panel with id/partition "${panelId}" is already running`);
     }
 
     this.reservedPanelIds.add(panelId);
+
     try {
+      // Create panel immediately with 'building' state
       const gitToken = this.gitServer.getTokenForPanel(panelId);
       const panelEnv: Record<string, string> = {
-        ...env,
+        ...options?.env,
         __GIT_SERVER_URL: this.gitServer.getBaseUrl(),
         __GIT_TOKEN: gitToken,
       };
 
       const newPanel: Panel = {
         id: panelId,
-        title,
+        title: manifest.title,
         path: relativePath,
         children: [],
         selectedChildId: null,
-        injectHostThemeVariables,
-        artifacts,
+        injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
+        artifacts: {
+          buildState: "building",
+          buildProgress: "Starting build...",
+        },
         env: panelEnv,
-        sourceRepo: sourceRepo ?? relativePath,
-        gitDependencies,
+        sourceRepo: relativePath,
+        gitDependencies: manifest.gitDependencies,
       };
 
       parent.children.push(newPanel);
       parent.selectedChildId = newPanel.id;
       this.panels.set(newPanel.id, newPanel);
 
+      // Notify UI of new panel (will show placeholder)
       this.notifyPanelTreeUpdate();
+
+      // Start async build
+      void this.buildPanelAsync(newPanel, options);
 
       return newPanel.id;
     } finally {
       this.reservedPanelIds.delete(panelId);
+    }
+  }
+
+  /**
+   * Build a panel asynchronously and update its state.
+   * Works for both root and child panels (all use protocol serving now).
+   */
+  private async buildPanelAsync(
+    panel: Panel,
+    options?: SharedPanel.CreateChildOptions
+  ): Promise<void> {
+    try {
+      const version =
+        options?.branch || options?.commit || options?.tag
+          ? {
+              branch: options.branch,
+              commit: options.commit,
+              tag: options.tag,
+            }
+          : undefined;
+
+      const result = await this.builder.buildPanel(
+        this.panelsRoot,
+        panel.path,
+        version,
+        (progress) => {
+          // Update panel state with progress
+          panel.artifacts = {
+            ...panel.artifacts,
+            buildState: progress.state,
+            buildProgress: progress.message,
+            buildLog: progress.log,
+          };
+          this.notifyPanelTreeUpdate();
+        }
+      );
+
+      if (result.success && result.bundle && result.html) {
+        // Store panel content for protocol serving
+        const htmlUrl = storeProtocolPanel(panel.id, {
+          bundle: result.bundle,
+          html: result.html,
+          title: result.manifest?.title ?? panel.title,
+          css: result.css,
+          injectHostThemeVariables: result.manifest?.injectHostThemeVariables !== false,
+          sourceRepo: panel.path,
+          gitDependencies: result.manifest?.gitDependencies,
+        });
+
+        // Update panel with successful build
+        panel.artifacts = {
+          htmlPath: htmlUrl,
+          buildState: "ready",
+          buildProgress: "Build complete",
+          buildLog: result.buildLog,
+        };
+      } else {
+        // Build failed
+        panel.artifacts = {
+          error: result.error ?? "Build failed",
+          buildState: "error",
+          buildProgress: result.error ?? "Build failed",
+          buildLog: result.buildLog,
+        };
+      }
+
+      this.notifyPanelTreeUpdate();
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      panel.artifacts = {
+        error: errorMsg,
+        buildState: "error",
+        buildProgress: errorMsg,
+      };
+      this.notifyPanelTreeUpdate();
     }
   }
 
@@ -372,9 +415,9 @@ export class PanelManager {
     // Clean up any Claude Code conversations for this panel
     getClaudeCodeConversationManager().endPanelConversations(panelId);
 
-    // Clean up in-memory panel content if applicable
-    if (isInMemoryPanel(panelId)) {
-      removeInMemoryPanel(panelId);
+    // Clean up protocol-served panel content if applicable
+    if (isProtocolPanel(panelId)) {
+      removeProtocolPanel(panelId);
     }
 
     // Remove this panel
@@ -566,8 +609,6 @@ export class PanelManager {
 
       this.reservedPanelIds.add(panelId);
 
-      const artifacts = await this.buildPanelArtifacts(absolutePath);
-
       // Inject git server credentials into root panel env
       const gitToken = this.gitServer.getTokenForPanel(panelId);
       const panelEnv: Record<string, string> = {
@@ -575,6 +616,7 @@ export class PanelManager {
         __GIT_TOKEN: gitToken,
       };
 
+      // Create root panel with initial building state
       const rootPanel: Panel = {
         id: panelId,
         title: manifest.title,
@@ -582,7 +624,10 @@ export class PanelManager {
         children: [],
         selectedChildId: null,
         injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
-        artifacts,
+        artifacts: {
+          buildState: "building",
+          buildProgress: "Initializing...",
+        },
         env: panelEnv,
         gitDependencies: manifest.gitDependencies,
       };
@@ -590,32 +635,15 @@ export class PanelManager {
       this.rootPanels = [rootPanel];
       this.panels = new Map([[rootPanel.id, rootPanel]]);
       this.notifyPanelTreeUpdate();
+
+      // Build asynchronously (same as child panels)
+      void this.buildPanelAsync(rootPanel);
     } catch (error) {
       console.error("Failed to initialize root panel:", error);
     } finally {
       if (panelId) {
         this.reservedPanelIds.delete(panelId);
       }
-    }
-  }
-
-  private async buildPanelArtifacts(panelPath: string): Promise<PanelArtifacts> {
-    try {
-      const buildResult = await this.builder.buildPanel(panelPath);
-      if (buildResult.success && buildResult.htmlPath) {
-        return {
-          htmlPath: buildResult.htmlPath,
-          bundlePath: buildResult.bundlePath,
-        };
-      }
-
-      return {
-        error: buildResult.error || "Failed to build panel",
-      };
-    } catch (error) {
-      return {
-        error: error instanceof Error ? error.message : String(error),
-      };
     }
   }
 }

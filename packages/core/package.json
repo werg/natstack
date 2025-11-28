@@ -22,7 +22,6 @@
     "typia": "^10.1.0"
   },
   "devDependencies": {
-    "@natstack/build": "workspace:*",
     "@natstack/git": "workspace:*",
     "typescript": "^5.9.3"
   }

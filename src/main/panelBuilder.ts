@@ -3,11 +3,51 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import Arborist from "@npmcli/arborist";
-import type { PanelManifest, PanelBuildResult, PanelBuildCache } from "./panelTypes.js";
+import type { PanelManifest, PanelBuildResult } from "./panelTypes.js";
 import { getMainCacheManager } from "./cacheManager.js";
 import { isDev } from "./utils.js";
+import { provisionPanelVersion, resolveTargetCommit, type VersionSpec } from "./gitProvisioner.js";
+import type { PanelBuildState } from "../shared/ipc/types.js";
+
+// ===========================================================================
+// Child Panel Build Types
+// ===========================================================================
+
+/**
+ * Progress callback for child panel builds.
+ */
+export interface BuildProgress {
+  state: PanelBuildState;
+  message: string;
+  log?: string;
+}
+
+/**
+ * Result of building a child panel.
+ * Includes in-memory artifacts for serving via natstack-panel:// protocol.
+ */
+export interface ChildBuildResult {
+  success: boolean;
+  /** The bundled JavaScript code */
+  bundle?: string;
+  /** Generated HTML template */
+  html?: string;
+  /** CSS bundle if any */
+  css?: string;
+  /** Panel manifest */
+  manifest?: PanelManifest;
+  /** Error message if build failed */
+  error?: string;
+  /** Full build log (for UI) */
+  buildLog?: string;
+}
 
 const PANEL_RUNTIME_DIRNAME = ".natstack";
+
+// Bundle size limits (very generous to avoid disrupting normal use)
+const MAX_BUNDLE_SIZE = 50 * 1024 * 1024; // 50 MB for JS bundle
+const MAX_HTML_SIZE = 10 * 1024 * 1024; // 10 MB for HTML
+const MAX_CSS_SIZE = 10 * 1024 * 1024; // 10 MB for CSS
 
 // Keep only fs virtual modules.
 const panelFsModulePath = path.join(__dirname, "panelFsRuntime.js");
@@ -33,121 +73,54 @@ const defaultPanelDependencies: Record<string, string> = {
   "@types/node": "^22.9.0",
 };
 
+// ===========================================================================
+// Internal Build Types
+// ===========================================================================
+
+interface BuildFromSourceOptions {
+  /** Absolute path to the panel source directory */
+  sourcePath: string;
+  /** Previous dependency hash for cache optimization */
+  previousDependencyHash?: string;
+  /** Logger function for build output */
+  log?: (message: string) => void;
+}
+
+interface BuildFromSourceResult {
+  success: boolean;
+  /** The manifest from package.json */
+  manifest?: PanelManifest;
+  /** Path to bundle file */
+  bundlePath?: string;
+  /** Path to HTML file */
+  htmlPath?: string;
+  /** Error message on failure */
+  error?: string;
+  /** Hash of dependencies for caching */
+  dependencyHash?: string;
+}
+
 export class PanelBuilder {
-  private cacheDir: string;
   private cacheManager = getMainCacheManager();
 
-  constructor(cacheDir: string) {
-    this.cacheDir = path.resolve(cacheDir);
-
-    // Ensure directories exist
-    fs.mkdirSync(this.cacheDir, { recursive: true });
+  constructor() {
+    // CacheManager handles its own storage directory
   }
 
   /**
-   * Get cached build metadata for a panel
+   * Get cached dependency hash for a panel source path.
+   * This helps avoid unnecessary npm installs when dependencies haven't changed.
    */
-  private getCachedBuildMetadata(absolutePanelPath: string): PanelBuildCache | null {
-    const cached = this.cacheManager.get(absolutePanelPath, isDev());
-    if (!cached) return null;
-
-    try {
-      return JSON.parse(cached) as PanelBuildCache;
-    } catch (error) {
-      console.error(
-        `[PanelBuilder] Failed to parse cached metadata for ${absolutePanelPath}:`,
-        error
-      );
-      return null;
-    }
+  private getDependencyHashFromCache(cacheKey: string): string | undefined {
+    const cached = this.cacheManager.get(cacheKey, isDev());
+    return cached ?? undefined;
   }
 
   /**
-   * Save build metadata to cache
+   * Save dependency hash to cache
    */
-  private async saveBuildMetadata(
-    absolutePanelPath: string,
-    metadata: PanelBuildCache
-  ): Promise<void> {
-    const serialized = JSON.stringify(metadata);
-    await this.cacheManager.set(absolutePanelPath, serialized);
-  }
-
-  private async hashDirectory(dirPath: string): Promise<string> {
-    // Fast path: Try to get git commit SHA (zero file reads)
-    try {
-      const gitDir = path.join(dirPath, ".git");
-      if (fs.existsSync(gitDir)) {
-        // Read HEAD to get current commit
-        const headPath = path.join(gitDir, "HEAD");
-        const headContent = fs.readFileSync(headPath, "utf-8").trim();
-
-        // HEAD can be: "ref: refs/heads/main" or a direct SHA
-        if (headContent.startsWith("ref: ")) {
-          const refPath = headContent.substring(5); // Remove "ref: "
-          const commitPath = path.join(gitDir, refPath);
-          if (fs.existsSync(commitPath)) {
-            const commitSha = fs.readFileSync(commitPath, "utf-8").trim();
-            console.log(`[PanelBuilder] Using git commit SHA: ${commitSha.slice(0, 8)}...`);
-            return `git:${commitSha}`;
-          }
-        } else if (/^[0-9a-f]{40}$/i.test(headContent)) {
-          // HEAD is a direct SHA (detached HEAD state)
-          console.log(`[PanelBuilder] Using git commit SHA: ${headContent.slice(0, 8)}...`);
-          return `git:${headContent}`;
-        }
-      }
-    } catch (error) {
-      // Ignore git errors, fall back to content hashing
-      console.log(`[PanelBuilder] Git not available, falling back to content hashing`);
-    }
-
-    // Fallback path: Walk file tree and hash contents
-    const hash = crypto.createHash("sha256");
-    const files = this.getAllFiles(dirPath);
-
-    // Sort files for consistent hashing
-    files.sort();
-
-    for (const file of files) {
-      // Skip node_modules and build artifacts
-      if (
-        file.includes("node_modules") ||
-        file.includes("dist") ||
-        file.includes(PANEL_RUNTIME_DIRNAME)
-      ) {
-        continue;
-      }
-
-      const content = fs.readFileSync(file);
-      hash.update(file);
-      hash.update(content);
-    }
-
-    const contentHash = hash.digest("hex");
-    return `content:${contentHash}`;
-  }
-
-  private getAllFiles(dirPath: string, arrayOfFiles: string[] = []): string[] {
-    if (!fs.existsSync(dirPath)) {
-      return arrayOfFiles;
-    }
-
-    const files = fs.readdirSync(dirPath);
-
-    for (const file of files) {
-      const fullPath = path.join(dirPath, file);
-      if (fs.statSync(fullPath).isDirectory()) {
-        // Skip node_modules during file collection
-        if (file !== "node_modules" && file !== "dist" && file !== PANEL_RUNTIME_DIRNAME) {
-          this.getAllFiles(fullPath, arrayOfFiles);
-        }
-      } else {
-        arrayOfFiles.push(fullPath);
-      }
-    }
-
-    return arrayOfFiles;
+  private async saveDependencyHashToCache(cacheKey: string, hash: string): Promise<void> {
+    await this.cacheManager.set(cacheKey, hash);
   }
 
   private getRuntimeDir(panelPath: string): string {
@@ -385,91 +358,60 @@ export class PanelBuilder {
     return desiredHash;
   }
 
-  async buildPanel(panelPath: string): Promise<PanelBuildResult> {
-    try {
-      // Resolve to absolute path
-      const absolutePanelPath = path.resolve(panelPath);
+  // ===========================================================================
+  // Unified Build Methods
+  // ===========================================================================
 
-      // Check if panel directory exists
-      if (!fs.existsSync(absolutePanelPath)) {
-        return {
-          success: false,
-          error: `Panel directory not found: ${panelPath}`,
-        };
-      }
+  /**
+   * Core build method that compiles a panel from source.
+   * Writes output to disk (proven to work reliably).
+   * Used by both buildPanel() and buildChildPanel().
+   */
+  private async buildFromSource(options: BuildFromSourceOptions): Promise<BuildFromSourceResult> {
+    const { sourcePath, previousDependencyHash, log = console.log.bind(console) } = options;
 
-      // Read manifest
-      let manifest: PanelManifest;
-      try {
-        manifest = this.loadManifest(absolutePanelPath);
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : String(error),
-        };
-      }
-
-      // Check cache
-      const sourceHash = await this.hashDirectory(absolutePanelPath);
-      const cached = this.getCachedBuildMetadata(absolutePanelPath);
-
-      console.log(`[PanelBuilder] Checking cache for ${panelPath}`);
-      console.log(`  Current hash: ${sourceHash}`);
-      console.log(`  Cached hash:  ${cached?.sourceHash || "none"}`);
-      console.log(`  Match: ${cached?.sourceHash === sourceHash}`);
-
-      if (
-        cached &&
-        cached.sourceHash === sourceHash &&
-        fs.existsSync(cached.bundlePath) &&
-        fs.existsSync(cached.htmlPath)
-      ) {
-        console.log(`Using cached build for ${panelPath}`);
-        return {
-          success: true,
-          bundlePath: cached.bundlePath,
-          htmlPath: cached.htmlPath,
-        };
-      }
-
-      console.log(`Rebuilding panel ${panelPath} (cache miss or stale)`);
-
-      const runtimeDependencies = this.mergeRuntimeDependencies(manifest.dependencies);
-
-      const dependencyHash = await this.installDependencies(
-        absolutePanelPath,
-        runtimeDependencies,
-        cached?.dependencyHash
-      );
-
-      // Determine entry point
-      const entry = this.resolveEntryPoint(absolutePanelPath, manifest);
-      const entryPath = path.join(absolutePanelPath, entry);
-
-      const runtimeDir = this.ensureRuntimeDir(absolutePanelPath);
-      const bundlePath = path.join(runtimeDir, "bundle.js");
-
-      const nodePaths = this.getNodeResolutionPaths(absolutePanelPath);
-
-      // Only keep fs virtual module plugin (natstack/* resolved via node_modules)
-      const fsPlugin: esbuild.Plugin = {
-        name: "fs-virtual-module",
-        setup(build) {
-          build.onResolve({ filter: /^(fs|node:fs|fs\/promises|node:fs\/promises)$/ }, (args) => {
-            const runtimePath = fsModuleMap.get(args.path);
-            if (!runtimePath) return null;
-            return { path: runtimePath };
-          });
-        },
+    // Check if panel directory exists
+    if (!fs.existsSync(sourcePath)) {
+      return {
+        success: false,
+        error: `Panel directory not found: ${sourcePath}`,
       };
+    }
 
-      // Build with esbuild
-      // We need to wrap the user's module and call auto-mount
-      const tempEntryPath = path.join(runtimeDir, "_entry.js");
-      const relativeUserEntry = path.relative(runtimeDir, entryPath);
+    // Load manifest
+    let manifest: PanelManifest;
+    try {
+      manifest = this.loadManifest(sourcePath);
+      log(`Manifest loaded: ${manifest.title}`);
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
 
-      // Create a wrapper entry that imports user module and calls auto-mount
-      const wrapperCode = `
+    // Install dependencies
+    log(`Installing dependencies...`);
+    const runtimeDependencies = this.mergeRuntimeDependencies(manifest.dependencies);
+    const dependencyHash = await this.installDependencies(
+      sourcePath,
+      runtimeDependencies,
+      previousDependencyHash
+    );
+    log(`Dependencies installed`);
+
+    // Determine entry point
+    const entry = this.resolveEntryPoint(sourcePath, manifest);
+    const entryPath = path.join(sourcePath, entry);
+
+    const runtimeDir = this.ensureRuntimeDir(sourcePath);
+    const bundlePath = path.join(runtimeDir, "bundle.js");
+    const nodePaths = this.getNodeResolutionPaths(sourcePath);
+
+    // Create wrapper entry that imports user module and calls auto-mount
+    const tempEntryPath = path.join(runtimeDir, "_entry.js");
+    const relativeUserEntry = path.relative(runtimeDir, entryPath);
+    const wrapperCode = `
 import { autoMountReactPanel, shouldAutoMount } from "@natstack/panel";
 import * as userModule from ${JSON.stringify(relativeUserEntry)};
 
@@ -477,56 +419,50 @@ if (shouldAutoMount(userModule)) {
   autoMountReactPanel(userModule);
 }
 `;
-      fs.writeFileSync(tempEntryPath, wrapperCode);
+    fs.writeFileSync(tempEntryPath, wrapperCode);
 
-      await esbuild.build({
-        entryPoints: [tempEntryPath],
-        bundle: true,
-        platform: "browser",
-        target: "es2022",
-        outfile: bundlePath,
-        // Disable sourcemaps to avoid noisy ENOENT lookups for deps that ship maps without sources
-        sourcemap: false,
-        format: "esm",
-        absWorkingDir: absolutePanelPath,
-        nodePaths,
-        plugins: [fsPlugin],
-        // Mark packages that should be loaded from import map at runtime
-        // isomorphic-git needs ESM version from esm.sh for Buffer polyfill
-        external: ["isomorphic-git", "isomorphic-git/http/web"],
-      });
+    // Build with esbuild (write to disk)
+    log(`Building panel...`);
+    await esbuild.build({
+      entryPoints: [tempEntryPath],
+      bundle: true,
+      platform: "browser",
+      target: "es2022",
+      outfile: bundlePath,
+      sourcemap: false,
+      format: "esm",
+      absWorkingDir: sourcePath,
+      nodePaths,
+      plugins: [this.createFsPlugin()],
+      external: ["isomorphic-git", "isomorphic-git/http/web"],
+    });
 
-      const htmlPath = this.resolveHtmlPath(absolutePanelPath, manifest.title);
+    const htmlPath = this.resolveHtmlPath(sourcePath, manifest.title);
+    log(`Build complete: ${bundlePath}`);
 
-      // Update cache
-      const cacheEntry: PanelBuildCache = {
-        path: absolutePanelPath,
-        manifest,
-        bundlePath,
-        htmlPath,
-        sourceHash,
-        builtAt: Date.now(),
-        dependencyHash,
-      };
-
-      await this.saveBuildMetadata(absolutePanelPath, cacheEntry);
-
-      return {
-        success: true,
-        bundlePath,
-        htmlPath,
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
+    return {
+      success: true,
+      manifest,
+      bundlePath,
+      htmlPath,
+      dependencyHash,
+    };
   }
 
-  getCachedBuild(panelPath: string): PanelBuildCache | undefined {
-    const absolutePath = path.resolve(panelPath);
-    return this.getCachedBuildMetadata(absolutePath) ?? undefined;
+  /**
+   * Create the fs virtual module plugin for esbuild.
+   */
+  private createFsPlugin(): esbuild.Plugin {
+    return {
+      name: "fs-virtual-module",
+      setup(build) {
+        build.onResolve({ filter: /^(fs|node:fs|fs\/promises|node:fs\/promises)$/ }, (args) => {
+          const runtimePath = fsModuleMap.get(args.path);
+          if (!runtimePath) return null;
+          return { path: runtimePath };
+        });
+      },
+    };
   }
 
   private mergeRuntimeDependencies(
@@ -539,16 +475,201 @@ if (shouldAutoMount(userModule)) {
     return merged;
   }
 
+  // ===========================================================================
+  // Public Build API
+  // ===========================================================================
+
+  /**
+   * Build a panel from a workspace path with optional version specifier.
+   * All panels (root and child) are built and served via natstack-panel:// protocol.
+   *
+   * @param panelsRoot - Absolute path to workspace root
+   * @param panelPath - Relative path to panel within workspace (e.g., "panels/root")
+   * @param version - Optional version specifier (branch, commit, or tag)
+   * @param onProgress - Optional progress callback for UI updates
+   */
+  async buildPanel(
+    panelsRoot: string,
+    panelPath: string,
+    version?: VersionSpec,
+    onProgress?: (progress: BuildProgress) => void
+  ): Promise<ChildBuildResult> {
+    let cleanup: (() => Promise<void>) | null = null;
+    let buildLog = "";
+    const canonicalPanelPath = path.resolve(panelsRoot, panelPath);
+
+    const log = (message: string) => {
+      buildLog += message + "\n";
+      console.log(`[PanelBuilder] ${message}`);
+    };
+
+    try {
+      // Step 1: Early cache check (fast - no git checkout needed)
+      const earlyCommit = await resolveTargetCommit(panelsRoot, panelPath, version);
+
+      if (earlyCommit) {
+        const cacheKey = `panel:${canonicalPanelPath}:${earlyCommit}`;
+        const cached = this.cacheManager.get(cacheKey, isDev());
+
+        if (cached) {
+          log(`Early cache hit for ${cacheKey}`);
+          onProgress?.({ state: "ready", message: "Loaded from cache", log: buildLog });
+
+          try {
+            return JSON.parse(cached) as ChildBuildResult;
+          } catch {
+            log(`Cache parse failed, will rebuild`);
+          }
+        }
+      }
+
+      // Step 2: Provision source at the right version
+      onProgress?.({ state: "cloning", message: "Fetching panel source...", log: buildLog });
+      log(`Provisioning ${panelPath}${version ? ` at ${JSON.stringify(version)}` : ""}`);
+
+      const provision = await provisionPanelVersion(panelsRoot, panelPath, version, (progress) => {
+        log(`Git: ${progress.message}`);
+        onProgress?.({ state: "cloning", message: progress.message, log: buildLog });
+      });
+
+      cleanup = provision.cleanup;
+      const sourcePath = provision.sourcePath;
+      const sourceCommit = provision.commit;
+
+      log(`Source provisioned at ${sourcePath} (commit: ${sourceCommit.slice(0, 8)})`);
+
+      // Cache key for storing the result
+      const cacheKey = `panel:${canonicalPanelPath}:${sourceCommit}`;
+
+      // Step 3: Build from source
+      onProgress?.({ state: "building", message: "Building panel...", log: buildLog });
+
+      // Check for cached dependency hash to avoid unnecessary npm installs
+      const dependencyCacheKey = `deps:${canonicalPanelPath}:${sourceCommit}`;
+      const previousDependencyHash = this.getDependencyHashFromCache(dependencyCacheKey);
+
+      const buildResult = await this.buildFromSource({
+        sourcePath,
+        previousDependencyHash,
+        log,
+      });
+
+      // Save the new dependency hash for next time
+      if (buildResult.success && buildResult.dependencyHash) {
+        await this.saveDependencyHashToCache(dependencyCacheKey, buildResult.dependencyHash);
+      }
+
+      if (!buildResult.success) {
+        log(`Build failed: ${buildResult.error}`);
+        onProgress?.({ state: "error", message: buildResult.error!, log: buildLog });
+
+        if (cleanup) {
+          await cleanup();
+        }
+
+        return {
+          success: false,
+          error: buildResult.error,
+          buildLog,
+        };
+      }
+
+      // Step 4: Read built files for protocol serving
+      const bundle = fs.readFileSync(buildResult.bundlePath!, "utf-8");
+      const html = fs.readFileSync(buildResult.htmlPath!, "utf-8");
+
+      // Check bundle size limits
+      if (bundle.length > MAX_BUNDLE_SIZE) {
+        const sizeMB = (bundle.length / 1024 / 1024).toFixed(2);
+        const maxMB = (MAX_BUNDLE_SIZE / 1024 / 1024).toFixed(0);
+        log(`Warning: Bundle size (${sizeMB}MB) exceeds limit (${maxMB}MB)`);
+        return {
+          success: false,
+          error: `Bundle too large: ${sizeMB}MB (max: ${maxMB}MB). Consider code splitting or removing dependencies.`,
+          buildLog,
+        };
+      }
+
+      if (html.length > MAX_HTML_SIZE) {
+        const sizeMB = (html.length / 1024 / 1024).toFixed(2);
+        const maxMB = (MAX_HTML_SIZE / 1024 / 1024).toFixed(0);
+        log(`Warning: HTML size (${sizeMB}MB) exceeds limit (${maxMB}MB)`);
+        return {
+          success: false,
+          error: `HTML too large: ${sizeMB}MB (max: ${maxMB}MB)`,
+          buildLog,
+        };
+      }
+
+      // Check for CSS bundle
+      const cssPath = buildResult.bundlePath!.replace(".js", ".css");
+      let css: string | undefined;
+      if (fs.existsSync(cssPath)) {
+        css = fs.readFileSync(cssPath, "utf-8");
+        if (css.length > MAX_CSS_SIZE) {
+          const sizeMB = (css.length / 1024 / 1024).toFixed(2);
+          const maxMB = (MAX_CSS_SIZE / 1024 / 1024).toFixed(0);
+          log(`Warning: CSS size (${sizeMB}MB) exceeds limit (${maxMB}MB)`);
+          return {
+            success: false,
+            error: `CSS too large: ${sizeMB}MB (max: ${maxMB}MB)`,
+            buildLog,
+          };
+        }
+      }
+
+      log(`Build complete: ${bundle.length} bytes JS${css ? `, ${css.length} bytes CSS` : ""}`);
+
+      // Step 5: Cache result
+      const result: ChildBuildResult = {
+        success: true,
+        bundle,
+        html,
+        css,
+        manifest: buildResult.manifest,
+        buildLog,
+      };
+
+      await this.cacheManager.set(cacheKey, JSON.stringify(result));
+      log(`Cached build result`);
+
+      // Cleanup temp directory
+      if (cleanup) {
+        await cleanup();
+        log(`Cleaned up temp directory`);
+      }
+
+      onProgress?.({ state: "ready", message: "Build complete", log: buildLog });
+
+      return result;
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      log(`Build failed: ${errorMsg}`);
+
+      if (cleanup) {
+        try {
+          await cleanup();
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+
+      onProgress?.({ state: "error", message: errorMsg, log: buildLog });
+
+      return {
+        success: false,
+        error: errorMsg,
+        buildLog,
+      };
+    }
+  }
+
   async clearCache(panelPath?: string): Promise<void> {
     if (panelPath) {
-      // For individual panel cache clearing, we'd need to delete from the unified cache
-      // The unified cache doesn't expose a delete method yet, so we skip this for now
-      // In practice, stale cache entries are handled by hash checking
       console.warn(
         "[PanelBuilder] Individual panel cache clearing not yet supported with unified cache"
       );
     } else {
-      // Clear the entire unified cache
       await this.cacheManager.clear();
     }
   }

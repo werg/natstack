@@ -87,16 +87,6 @@ export default function ChildPanelLauncher() {
     }
   };
 
-  const launchInPanelBuildDemo = async () => {
-    try {
-      setStatus("Launching in-panel build demo...");
-      const childId = await panel.createChild("panels/in-panel-build-demo");
-      setStatus(`Launched in-panel build demo ${childId}`);
-    } catch (error) {
-      setStatus(`Failed to launch in-panel build demo: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-
   const setRandomTitle = async () => {
     const title = `Radix Panel ${Math.floor(Math.random() * 1000)}`;
     await panel.setTitle(title);
@@ -356,9 +346,6 @@ export default function ChildPanelLauncher() {
             </Button>
             <Button onClick={launchAgenticChat} color="green">
               Launch Agentic Chat
-            </Button>
-            <Button onClick={launchInPanelBuildDemo} color="cyan">
-              Launch In-Panel Build Demo
             </Button>
             <Button variant="soft" onClick={setRandomTitle}>
               Set random title

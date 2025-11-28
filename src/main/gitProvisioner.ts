@@ -1,0 +1,234 @@
+/**
+ * Git version provisioning for panel builds.
+ * Handles checking out specific branches, commits, or tags to temp directories.
+ */
+
+import * as fs from "fs";
+import * as path from "path";
+import { execFile } from "child_process";
+import { promisify } from "util";
+
+const execFileAsync = promisify(execFile);
+
+export interface VersionSpec {
+  branch?: string;
+  commit?: string;
+  tag?: string;
+}
+
+export interface ProvisionResult {
+  /** Absolute path to the provisioned panel source */
+  sourcePath: string;
+  /** The resolved commit SHA */
+  commit: string;
+  /** Cleanup function to remove temp directory (only for versioned checkouts) */
+  cleanup: (() => Promise<void>) | null;
+}
+
+export interface ProvisionProgress {
+  stage: "resolving" | "checking-out" | "ready";
+  message: string;
+}
+
+/**
+ * Provision panel source code at a specific version.
+ *
+ * For panels without version specifiers, returns the workspace path directly.
+ * For versioned panels, creates a temporary worktree or checkout.
+ *
+ * @param panelsRoot - Absolute path to the workspace root
+ * @param panelPath - Relative path to the panel within workspace (e.g., "panels/child")
+ * @param version - Optional version specifier (branch, commit, or tag)
+ * @param onProgress - Optional progress callback
+ */
+export async function provisionPanelVersion(
+  panelsRoot: string,
+  panelPath: string,
+  version?: VersionSpec,
+  onProgress?: (progress: ProvisionProgress) => void
+): Promise<ProvisionResult> {
+  const absolutePanelPath = path.resolve(panelsRoot, panelPath);
+
+  // Validate panel exists
+  if (!fs.existsSync(absolutePanelPath)) {
+    throw new Error(`Panel directory not found: ${absolutePanelPath}`);
+  }
+
+  // Require panels to be git repos (submodules are allowed via .git file)
+  const gitDir = path.join(absolutePanelPath, ".git");
+  if (!fs.existsSync(gitDir)) {
+    throw new Error(`Panel must be a git repository (or submodule): ${absolutePanelPath}`);
+  }
+
+  // Ensure we only use committed state; reject dirty worktrees to avoid local edits
+  await assertCleanWorktree(absolutePanelPath);
+
+  // Get current commit for cache keying
+  const currentCommit = await getGitCommit(absolutePanelPath);
+
+  // No version specifier - use working directory as-is
+  if (!version || (!version.branch && !version.commit && !version.tag)) {
+    onProgress?.({ stage: "ready", message: "Using current working directory" });
+    return {
+      sourcePath: absolutePanelPath,
+      commit: currentCommit,
+      cleanup: null,
+    };
+  }
+
+  // Resolve the target ref
+  onProgress?.({ stage: "resolving", message: "Resolving version..." });
+
+  let targetRef: string;
+  if (version.commit) {
+    targetRef = version.commit;
+  } else if (version.tag) {
+    targetRef = `tags/${version.tag}`;
+  } else if (version.branch) {
+    targetRef = version.branch;
+  } else {
+    throw new Error("No version specifier provided");
+  }
+
+  // Resolve to actual commit SHA
+  const resolvedCommit = await resolveRef(absolutePanelPath, targetRef);
+
+  // If resolved commit matches current HEAD, no need for temp checkout
+  if (resolvedCommit === currentCommit) {
+    onProgress?.({ stage: "ready", message: "Already at requested version" });
+    return {
+      sourcePath: absolutePanelPath,
+      commit: resolvedCommit,
+      cleanup: null,
+    };
+  }
+
+  // Create temp directory for the versioned checkout
+  onProgress?.({ stage: "checking-out", message: `Checking out ${targetRef}...` });
+
+  const tempDir = await createTempCheckout(absolutePanelPath, resolvedCommit);
+
+  return {
+    sourcePath: tempDir,
+    commit: resolvedCommit,
+    cleanup: async () => {
+      try {
+        await fs.promises.rm(tempDir, { recursive: true, force: true });
+      } catch (error) {
+        console.warn(`[GitProvisioner] Failed to cleanup temp dir: ${tempDir}`, error);
+      }
+    },
+  };
+}
+
+/**
+ * Get the current HEAD commit SHA for a git repo.
+ */
+async function getGitCommit(repoPath: string): Promise<string> {
+  return runGit(["rev-parse", "HEAD"], repoPath);
+}
+
+/**
+ * Resolve the target commit for a panel without creating any temp directories.
+ * This allows early cache lookup before expensive git operations.
+ *
+ * @param panelsRoot - Absolute path to the workspace root
+ * @param panelPath - Relative path to the panel within workspace
+ * @param version - Optional version specifier
+ * @returns The commit SHA that would be used, or null if not determinable (non-git repo)
+ */
+export async function resolveTargetCommit(
+  panelsRoot: string,
+  panelPath: string,
+  version?: VersionSpec
+): Promise<string | null> {
+  const absolutePanelPath = path.resolve(panelsRoot, panelPath);
+
+  if (!fs.existsSync(absolutePanelPath)) {
+    return null;
+  }
+
+  const gitDir = path.join(absolutePanelPath, ".git");
+  if (!fs.existsSync(gitDir)) {
+    throw new Error(`Panel must be a git repository (or submodule): ${absolutePanelPath}`);
+  }
+
+  // No version specifier - use current HEAD
+  if (!version || (!version.branch && !version.commit && !version.tag)) {
+    return getGitCommit(absolutePanelPath);
+  }
+
+  // Resolve the target ref to a commit SHA
+  let targetRef: string;
+  if (version.commit) {
+    targetRef = version.commit;
+  } else if (version.tag) {
+    targetRef = `tags/${version.tag}`;
+  } else if (version.branch) {
+    targetRef = version.branch;
+  } else {
+    return null;
+  }
+
+  return resolveRef(absolutePanelPath, targetRef);
+}
+
+/**
+ * Resolve a ref (branch, tag, or commit) to a full commit SHA.
+ */
+async function resolveRef(repoPath: string, ref: string): Promise<string> {
+  return runGit(["rev-parse", ref], repoPath);
+}
+
+/**
+ * Create a temporary checkout of a repo at a specific commit.
+ * Uses git worktree for efficiency when possible.
+ */
+async function createTempCheckout(repoPath: string, commit: string): Promise<string> {
+  // Create temp directory
+  const tempBase = path.join(repoPath, ".natstack", "temp-builds");
+  await fs.promises.mkdir(tempBase, { recursive: true });
+
+  const tempDir = path.join(tempBase, `build-${commit.slice(0, 8)}-${Date.now()}`);
+
+  try {
+    // Try using git worktree first (more efficient, shares object store)
+    await runGit(["worktree", "add", "--detach", tempDir, commit], repoPath);
+  } catch (worktreeError) {
+    // Fallback to archive extraction if worktree fails
+    console.warn("[GitProvisioner] Worktree failed, falling back to archive:", worktreeError);
+
+    await fs.promises.mkdir(tempDir, { recursive: true });
+
+    // Use git archive to extract files at specific commit without a shell pipeline
+    const archivePath = path.join(tempBase, `archive-${commit.slice(0, 8)}.tar`);
+    await runGit(["archive", "-o", archivePath, commit], repoPath);
+    await execFileAsync("tar", ["-xf", archivePath, "-C", tempDir]);
+    await fs.promises.rm(archivePath, { force: true });
+  }
+
+  return tempDir;
+}
+
+async function assertCleanWorktree(repoPath: string): Promise<void> {
+  const status = await runGit(["status", "--porcelain"], repoPath);
+  if (status.trim().length > 0) {
+    throw new Error(
+      `Panel repo has uncommitted changes. Commit or stash before building: ${repoPath}`
+    );
+  }
+}
+
+async function runGit(args: string[], cwd: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync("git", args, {
+      cwd,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return stdout.trim();
+  } catch (error) {
+    throw new Error(
+      `Git command failed (${args.join(" ")}): ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}

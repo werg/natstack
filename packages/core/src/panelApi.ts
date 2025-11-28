@@ -3,12 +3,6 @@ import type { GitDependency } from "@natstack/git";
 import typia from "typia";
 import * as Rpc from "./types.js";
 
-// Helper type for esbuild-wasm dynamic import
-interface EsbuildWasm {
-  initialize(opts: { wasmURL: string }): Promise<void>;
-  version?: string;
-}
-
 type PanelBridgeEvent = "child-removed" | "focus";
 
 type PanelThemeAppearance = "light" | "dark";
@@ -25,26 +19,6 @@ interface PanelRpcBridge {
 }
 
 /**
- * Build artifacts for launching a child panel from in-memory content
- */
-export interface InMemoryBuildArtifacts {
-  /** The bundled JavaScript code */
-  bundle: string;
-  /** Generated or provided HTML template */
-  html: string;
-  /** Panel title from manifest */
-  title: string;
-  /** CSS bundle if any */
-  css?: string;
-  /** Whether to inject host theme variables (defaults to true) */
-  injectHostThemeVariables?: boolean;
-  /** Optional source repo path (workspace-relative) to retain git association */
-  sourceRepo?: string;
-  /** Git dependencies from manifest */
-  gitDependencies?: Record<string, string | GitDependency>;
-}
-
-/**
  * Git configuration for a panel
  */
 interface GitConfig {
@@ -54,34 +28,16 @@ interface GitConfig {
   gitDependencies: Record<string, string | GitDependency>;
 }
 
-/**
- * Panel manifest from package.json natstack field (read from OPFS)
- */
-interface PanelManifest {
-  title: string;
-  entry?: string;
-  singletonState?: boolean;
-  injectHostThemeVariables?: boolean;
-  gitDependencies?: Record<string, string | GitDependency>;
-}
-
-interface CacheEntry {
-  key: string;
-  value: string;
-  timestamp: number;
-  size: number;
-}
-
 interface PanelBridge {
   panelId: string;
   /**
-   * Launch a child panel from in-memory build artifacts.
-   * Use this when you've built the panel in-browser using @natstack/build.
+   * Create a child panel from a workspace-relative path.
+   * The main process handles git checkout (if version specified) and build.
+   * Returns the panel ID immediately; build happens asynchronously.
    */
-  launchChild(
-    artifacts: InMemoryBuildArtifacts,
-    env?: Record<string, string>,
-    requestedPanelId?: string
+  createChild(
+    childPath: string,
+    options?: CreateChildOptions
   ): Promise<string>;
   removeChild(childId: string): Promise<void>;
   /**
@@ -90,27 +46,6 @@ interface PanelBridge {
   git: {
     getConfig(): Promise<GitConfig>;
   };
-  /**
-   * Get pre-bundled @natstack/* packages for in-panel builds.
-   */
-  getPrebundledPackages(): Promise<Record<string, string>>;
-  /**
-   * Get development mode flag.
-   */
-  getDevMode(): Promise<boolean>;
-  /**
-   * Cache operations (used by @natstack/build)
-   */
-  getCacheConfig(): Promise<{
-    maxEntriesPerPanel: number;
-    maxSizePerPanel: number;
-    expirationMs: number;
-  }>;
-  loadDiskCache(): Promise<Record<string, CacheEntry>>;
-  saveDiskCache(entries: Record<string, CacheEntry>): Promise<void>;
-  recordCacheHits(cacheKeys: string[]): Promise<void>;
-  getRepoCacheKeys(): Promise<string[]>;
-  loadCacheEntries(keys: string[]): Promise<Record<string, CacheEntry>>;
   setTitle(title: string): Promise<void>;
   close(): Promise<void>;
   getEnv(): Promise<Record<string, string>>;
@@ -163,6 +98,12 @@ export interface CreateChildOptions {
   env?: Record<string, string>;
   /** Optional panel ID (only used for tree panels, ignored for singletons) */
   panelId?: string;
+  /** Branch name to track (e.g., "develop") */
+  branch?: string;
+  /** Specific commit hash to pin to (e.g., "abc123...") */
+  commit?: string;
+  /** Tag to pin to (e.g., "v1.0.0") */
+  tag?: string;
 }
 
 // Log OPFS quota on initialization (run once when module loads)
@@ -183,423 +124,20 @@ const panelAPI = {
   },
 
   /**
-   * Create a child panel from a workspace path.
-   * This method orchestrates:
-   * 1. Using this panel's git config to clone the child source to OPFS
-   * 2. Reading the manifest from OPFS
-   * 3. Building the panel in-browser via @natstack/build
-   * 4. Launching the child with the built artifacts
+   * Create a child panel from a workspace-relative path.
+   * The main process handles git checkout (if version specified) and build.
+   * Returns the panel ID immediately; build happens asynchronously.
    *
-   * The path convention: OPFS paths = workspace paths = git repo paths.
-   * The panel uses its own git token (which has read access to all repos).
-   *
-   * NOTE: This requires @natstack/git and @natstack/build to be available.
+   * @param childPath - Workspace-relative path to the panel (e.g., "panels/my-panel")
+   * @param options - Optional env vars and version specifiers (branch, commit, tag)
+   * @returns Panel ID that can be used for communication
    */
   async createChild(childPath: string, options?: CreateChildOptions): AsyncResult<string> {
-    try {
-      // Validate path format
-      if (!childPath || typeof childPath !== 'string') {
-        throw new Error('childPath must be a non-empty string');
-      }
-
-      // Normalize path and guard against dangerous patterns
-      let normalizedPath = childPath.trim().replace(/\\/g, '/'); // Convert backslashes to forward slashes
-
-      // Remove any leading slashes for consistency
-      normalizedPath = normalizedPath.replace(/^\/+/, '');
-
-      // Reject empty paths after normalization
-      if (!normalizedPath) {
-        throw new Error('Invalid path: path cannot be empty');
-      }
-
-      // Reject paths with null bytes (path injection)
-      if (normalizedPath.includes('\0')) {
-        throw new Error('Invalid path: null bytes not allowed');
-      }
-
-      // Reject URL-encoded traversal attempts
-      if (normalizedPath.includes('%2e') || normalizedPath.includes('%2E')) {
-        throw new Error('Invalid path: URL-encoded characters not allowed');
-      }
-
-      // Reject absolute paths (Unix/Windows style)
-      if (normalizedPath.startsWith('/') || /^[a-zA-Z]:/.test(normalizedPath)) {
-        throw new Error('Invalid path: absolute paths not allowed');
-      }
-
-      // Reject HTTP(S) URLs
-      if (normalizedPath.startsWith('http://') || normalizedPath.startsWith('https://')) {
-        throw new Error('Invalid path: URLs not allowed, use relative workspace paths');
-      }
-
-      // Reject path traversal (after normalization)
-      const pathSegments = normalizedPath.split('/');
-      for (const segment of pathSegments) {
-        if (segment === '..' || segment === '.') {
-          throw new Error('Invalid path: path traversal not allowed (.. or .)');
-        }
-      }
-
-      // Ensure path starts with an allowed prefix for safety
-      const allowedPrefixes = ['panels/', 'workspace/'];
-      const hasAllowedPrefix = allowedPrefixes.some(prefix => normalizedPath.startsWith(prefix));
-      if (!hasAllowedPrefix) {
-        throw new Error(`Invalid path: must start with one of: ${allowedPrefixes.join(', ')}`);
-      }
-
-      // Check OPFS quota before starting (import dynamically to avoid circular deps)
-      const { ensureSpace, ESTIMATED_CLONE_SIZE, ESTIMATED_BUILD_SIZE } = await import("./opfsQuota.js");
-      const estimatedSize = ESTIMATED_CLONE_SIZE + ESTIMATED_BUILD_SIZE;
-      await ensureSpace(estimatedSize);
-
-      // Get this panel's git config (same server URL and token work for any repo)
-      const gitConfig = await bridge.git.getConfig();
-
-      // Import fs (shimmed to ZenFS/OPFS in panel environment)
-      const fsModule = await import("fs");
-      const fsPromises = fsModule.promises;
-
-      // Dynamically import @natstack/git (resolved at runtime in browser)
-      const gitModule = await import("@natstack/git");
-      const { GitClient } = gitModule;
-
-      // Clone/pull child source to OPFS at the same path as workspace
-      // e.g., workspace path "panels/child" -> OPFS path "/panels/child"
-      // Convention: OPFS paths = workspace paths = git repo paths (for simplicity)
-      const opfsPath = normalizedPath.startsWith("/") ? normalizedPath : `/${normalizedPath}`;
-
-      // GitClient auto-adapts fs/promises for isomorphic-git compatibility
-      const gitClient = new GitClient(fsPromises as ConstructorParameters<typeof GitClient>[0], {
-        serverUrl: gitConfig.serverUrl,
-        token: gitConfig.token,
-      });
-
-      // Track if we cloned fresh (for cleanup on build failure)
-      let freshClone = false;
-      let cleanupOnFailure: (() => Promise<void>) | null = null;
-
-      // Step 1: Clone or update git repository
-      try {
-        // Check if directory exists
-        let dirExists = false;
-        try {
-          await fsPromises.stat(opfsPath);
-          dirExists = true;
-        } catch {
-          // Directory doesn't exist
-        }
-
-        // Check if it's a valid git repo
-        const isRepo = dirExists && await gitClient.isRepo(opfsPath);
-
-        if (isRepo) {
-          // Already a repo - just pull latest
-          await gitClient.pull({ dir: opfsPath });
-        } else if (dirExists) {
-          // Directory exists but isn't a repo - init and set up remote, then pull
-          await gitClient.init(opfsPath);
-          await gitClient.addRemote(opfsPath, "origin", normalizedPath);
-          await gitClient.fetch({ dir: opfsPath, ref: "main" });
-          await gitClient.checkout(opfsPath, "origin/main");
-        } else {
-          // Fresh clone
-          freshClone = true;
-          await gitClient.clone({ url: normalizedPath, dir: opfsPath });
-
-          // Register cleanup function for fresh clones
-          cleanupOnFailure = async () => {
-            try {
-              await fsPromises.rm(opfsPath, { recursive: true, force: true });
-              console.log(`[Panel] Cleaned up failed clone: ${opfsPath}`);
-            } catch (cleanupError) {
-              console.error('[Panel] Failed to cleanup:', cleanupError);
-            }
-          };
-        }
-      } catch (gitError) {
-        const errorMessage = gitError instanceof Error ? gitError.message : String(gitError);
-
-        // Clean up fresh clone on git error
-        if (cleanupOnFailure) {
-          await cleanupOnFailure();
-        }
-
-        throw new Error(`Failed to clone/update git repository "${normalizedPath}": ${errorMessage}`);
-      }
-
-      // Wrap all subsequent steps in try-catch to ensure cleanup on any failure
-      try {
-        // Step 2: Get current commit SHA for cache optimization
-        let sourceCommit: string | undefined;
-        try {
-          const commit = await gitClient.getCurrentCommit(opfsPath);
-          sourceCommit = commit ?? undefined;
-          if (sourceCommit) {
-            console.log(`[Panel] Source at commit: ${sourceCommit.slice(0, 8)}`);
-          }
-        } catch (error) {
-          // Commit SHA is optional - continue without it
-          console.warn(`[Panel] Could not get source commit SHA:`, error);
-        }
-
-        // Step 3: Read and parse manifest
-        let manifest: PanelManifest;
-        try {
-          const packageJsonPath = `${opfsPath}/package.json`;
-          const packageJsonContent = await fsPromises.readFile(packageJsonPath, "utf-8");
-          const packageJson = JSON.parse(packageJsonContent as string) as { natstack?: PanelManifest };
-          manifest = packageJson.natstack ?? { title: normalizedPath.split("/").pop() ?? "Panel" };
-        } catch (manifestError) {
-          const errorMessage = manifestError instanceof Error ? manifestError.message : String(manifestError);
-          throw new Error(`Failed to read panel manifest from "${opfsPath}/package.json": ${errorMessage}`);
-        }
-
-      // Step 4: Handle git dependencies if specified in manifest
-      const depCommits: Record<string, string> = {};
-      if (manifest.gitDependencies && Object.keys(manifest.gitDependencies).length > 0) {
-        try {
-          const { DependencyResolver } = await import("@natstack/git");
-          const depsPath = "/deps";
-          const resolver = new DependencyResolver(fsPromises as ConstructorParameters<typeof DependencyResolver>[0], {
-            serverUrl: gitConfig.serverUrl,
-            token: gitConfig.token,
-          }, depsPath);
-
-          console.log(`[Panel] Syncing ${Object.keys(manifest.gitDependencies).length} git dependencies...`);
-          const depResults = await resolver.syncAll(manifest.gitDependencies);
-
-          for (const [name, result] of depResults) {
-            if (result.commit) {
-              depCommits[name] = result.commit;
-              console.log(`[Panel] Dependency "${name}" at commit: ${result.commit.slice(0, 8)}`);
-            }
-          }
-        } catch (depError) {
-          console.warn(`[Panel] Failed to sync git dependencies:`, depError);
-          // Continue without dependencies - they're optional
-        }
-      }
-
-      // Step 5: Set git commits in globalThis for cache optimization
-      const { setGitCommits } = await import("@natstack/git");
-      setGitCommits({ sourceCommit, depCommits });
-
-      // Step 6: Build panel
-      let artifacts;
-      try {
-        // Build from OPFS using @natstack/build
-        const buildModule = await import("@natstack/build");
-        const {
-          BrowserPanelBuilder,
-          isEsbuildInitialized,
-          setEsbuildInstance,
-          setDevMode,
-          registerPrebundledBatch,
-          CDN_DEFAULTS,
-        } = buildModule;
-
-        // Also import config for fallback URLs
-        const { ESBUILD_CDN_FALLBACKS } = await import("@natstack/build/config");
-
-        // Set development mode for cache expiration
-        const devMode = await bridge.getDevMode();
-        setDevMode(devMode);
-
-        // Initialize unified cache (with disk persistence)
-        try {
-          const { initializeCache } = await import("@natstack/build");
-          await initializeCache();
-        } catch (err) {
-          console.warn('[Panel] Failed to initialize unified cache:', err);
-        }
-
-        // Initialize esbuild if not already done
-        if (!isEsbuildInitialized()) {
-          let esbuild: EsbuildWasm | null = null;
-          let lastError: Error | null = null;
-
-          // Try each CDN fallback in order
-          for (const cdnUrl of ESBUILD_CDN_FALLBACKS) {
-            try {
-              const esbuildModule = await import(/* @vite-ignore */ cdnUrl);
-              esbuild = (esbuildModule.default ?? esbuildModule) as EsbuildWasm;
-
-              if (esbuild && typeof esbuild.initialize === "function") {
-                console.log(`[Panel] Loaded esbuild-wasm from ${cdnUrl}`);
-                break;
-              }
-            } catch (err) {
-              lastError = err instanceof Error ? err : new Error(String(err));
-              console.warn(`[Panel] Failed to load esbuild from ${cdnUrl}:`, lastError.message);
-            }
-          }
-
-          if (!esbuild || typeof esbuild.initialize !== "function") {
-            throw new Error(
-              `Failed to load esbuild-wasm from any CDN. Last error: ${lastError?.message ?? "unknown"}`
-            );
-          }
-
-          await esbuild.initialize({
-            wasmURL: CDN_DEFAULTS.ESBUILD_WASM_BINARY,
-          });
-          // Cast through unknown to satisfy type checker (esbuild type is complex)
-          setEsbuildInstance(esbuild as unknown as Parameters<typeof setEsbuildInstance>[0]);
-        }
-
-        // Load and register prebundled packages
-        const prebundled = await bridge.getPrebundledPackages();
-        registerPrebundledBatch(prebundled);
-
-        // Create file system adapter for the builder
-        const buildFs = {
-          async readFile(p: string): Promise<string> {
-            return fsPromises.readFile(p, "utf-8") as Promise<string>;
-          },
-          async readFileBytes(p: string): Promise<Uint8Array> {
-            const buffer = await fsPromises.readFile(p);
-            // Validate that we got an ArrayBuffer-like object
-            // Cast to unknown first to avoid type errors, then validate at runtime
-            const bufferUnknown = buffer as unknown;
-
-            // Check for Uint8Array first (most common case from ZenFS)
-            if (bufferUnknown instanceof Uint8Array) {
-              return bufferUnknown;
-            }
-            // Check for ArrayBuffer
-            if (bufferUnknown instanceof ArrayBuffer) {
-              return new Uint8Array(bufferUnknown);
-            }
-            // Check if it has byteLength property (buffer-like object)
-            if (bufferUnknown && typeof bufferUnknown === 'object' && 'byteLength' in bufferUnknown) {
-              try {
-                // Try to construct Uint8Array from buffer-like object
-                return new Uint8Array(bufferUnknown as ArrayBuffer);
-              } catch (error) {
-                const errMsg = error instanceof Error ? error.message : String(error);
-                throw new Error(`readFileBytes: cannot convert buffer to Uint8Array for ${p}: ${errMsg}`);
-              }
-            }
-            // Unexpected type
-            throw new Error(`readFileBytes: expected buffer-like object for ${p}, got ${typeof bufferUnknown}`);
-          },
-          async exists(p: string): Promise<boolean> {
-            try {
-              await fsPromises.access(p);
-              return true;
-            } catch {
-              return false;
-            }
-          },
-          async readdir(p: string): Promise<string[]> {
-            const entries = await fsPromises.readdir(p);
-            return entries as string[];
-          },
-          async isDirectory(p: string): Promise<boolean> {
-            try {
-              const stat = await fsPromises.stat(p);
-              return stat.isDirectory();
-            } catch {
-              return false;
-            }
-          },
-          async glob(): Promise<string[]> {
-            return [];
-          },
-        };
-
-        const builder = new BrowserPanelBuilder({
-          basePath: opfsPath,
-          fs: buildFs,
-          dependencyResolver: { cdnBaseUrl: CDN_DEFAULTS.ESM_SH },
-          // Avoid source maps to prevent noisy fetches of node_modules paths in OPFS
-          sourcemap: false,
-        });
-
-        const buildResult = await builder.build(opfsPath);
-
-        if (!buildResult.success) {
-          throw new Error(`Build failed: ${(buildResult as { error: string }).error}`);
-        }
-        artifacts = buildResult.artifacts;
-      } catch (buildError) {
-        // Clean up fresh clone on build failure to save OPFS space
-        if (freshClone) {
-          try {
-            // Recursively remove the cloned directory
-            await fsPromises.rmdir(opfsPath, { recursive: true } as never);
-            console.log(`[Panel] Cleaned up failed clone at ${opfsPath}`);
-          } catch (cleanupError) {
-            console.warn(`[Panel] Failed to cleanup ${opfsPath}:`, cleanupError);
-          }
-        }
-
-        const errorMessage = buildError instanceof Error ? buildError.message : String(buildError);
-        throw new Error(`Failed to build panel "${normalizedPath}": ${errorMessage}`);
-      }
-
-      // Step 7: Launch with built artifacts
-      try {
-        return await bridge.launchChild(
-          {
-            bundle: artifacts.bundle,
-            html: artifacts.html,
-            title: artifacts.manifest.title,
-            css: artifacts.css,
-            injectHostThemeVariables: manifest.injectHostThemeVariables,
-            sourceRepo: normalizedPath,
-            gitDependencies: manifest.gitDependencies,
-          },
-          options?.env,
-          options?.panelId
-        );
-      } catch (launchError) {
-        const errorMessage = launchError instanceof Error ? launchError.message : String(launchError);
-        throw new Error(`Failed to launch panel "${normalizedPath}": ${errorMessage}`);
-      }
-    } catch (error) {
-      // Clean up OPFS directory if fresh clone succeeded but subsequent steps failed
-      if (cleanupOnFailure) {
-        await cleanupOnFailure();
-      }
-      // All errors are already wrapped with context, just re-throw
-      throw error;
-    }
-  } catch (error) {
-    // Function-level error handler - re-throw after any cleanup
-    throw error;
-  }
-},
-
-  /**
-   * Launch a child panel from in-memory build artifacts.
-   * Use this when you've built the panel in-browser using @natstack/build.
-   * Each child gets its own isolated OPFS partition.
-   */
-  async launchChild(
-    artifacts: InMemoryBuildArtifacts,
-    options?: CreateChildOptions
-  ): AsyncResult<string> {
-    try {
-      return await bridge.launchChild(artifacts, options?.env, options?.panelId);
-    } catch (error) {
-      console.error("Failed to launch child panel", error);
-      throw error;
-    }
+    return bridge.createChild(childPath, options);
   },
 
   async removeChild(childId: string): AsyncResult<void> {
     return bridge.removeChild(childId);
-  },
-
-  /**
-   * Get pre-bundled @natstack/* packages for in-panel builds.
-   * Use with @natstack/build's registerPrebundledBatch() to enable
-   * building child panels that use @natstack packages.
-   */
-  async getPrebundledPackages(): AsyncResult<Record<string, string>> {
-    return bridge.getPrebundledPackages();
   },
 
   async setTitle(title: string): AsyncResult<void> {

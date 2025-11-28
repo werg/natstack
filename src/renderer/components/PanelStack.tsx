@@ -737,20 +737,11 @@ export function PanelStack({
                     }
 
                     if (artifacts?.htmlPath) {
-                      // Handle both file:// URLs (filesystem builds) and natstack-panel:// URLs (in-memory builds)
-                      let srcUrl: URL;
-                      if (artifacts.htmlPath.startsWith("natstack-panel://")) {
-                        // In-memory panel - use URL directly
-                        srcUrl = new URL(artifacts.htmlPath);
-                        console.log(`[PanelStack] In-memory panel URL: ${srcUrl.toString()}`);
-                      } else {
-                        // Filesystem panel - construct file:// URL
-                        const normalizedPath = artifacts.htmlPath.replace(/\\/g, "/");
-                        srcUrl = new URL(`file://${normalizedPath}`);
-                      }
+                      // All panels are now served via natstack-panel:// protocol
+                      const srcUrl = new URL(artifacts.htmlPath);
                       srcUrl.searchParams.set("panelId", panel.id);
                       const partitionName = `persist:${panel.id}`;
-                      console.log(`[PanelStack] Final webview src: ${srcUrl.toString()}`);
+                      console.log(`[PanelStack] Panel URL: ${srcUrl.toString()}`);
                       console.log(
                         `[PanelStack] Creating webview element for: ${panel.id.slice(-30)}`
                       );

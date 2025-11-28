@@ -11,7 +11,7 @@ import {
   type AIToolDefinition,
 } from "@natstack/ai";
 import {
-  type InMemoryBuildArtifacts,
+  type CreateChildOptions,
   type PanelInfo,
   type ThemeAppearance,
   type ClaudeCodeConversationInfo,
@@ -486,101 +486,20 @@ const bridge = {
   // ==========================================================================
 
   /**
-   * Launch a child panel from in-memory build artifacts.
-   * Use this when you've built the panel in-browser using @natstack/build.
-   * Each child gets its own isolated OPFS partition unless its manifest sets singletonState.
+   * Create a child panel from a workspace-relative path.
+   * The main process handles git checkout (if version specified) and build.
+   * Returns the panel ID immediately; build happens asynchronously.
+   *
+   * @param childPath - Workspace-relative path to the panel (e.g., "panels/my-panel")
+   * @param options - Optional env vars and version specifiers (branch, commit, tag)
+   * @returns Panel ID that can be used for communication
    */
-  launchChild: (
-    artifacts: InMemoryBuildArtifacts,
-    env?: Record<string, string>,
-    requestedPanelId?: string
-  ): Promise<string> => {
-    return ipcRenderer.invoke(
-      "panel-bridge:launch-child",
-      panelId,
-      artifacts,
-      env,
-      requestedPanelId
-    );
+  createChild: (childPath: string, options?: CreateChildOptions): Promise<string> => {
+    return ipcRenderer.invoke("panel-bridge:create-child", panelId, childPath, options);
   },
 
   removeChild: (childId: string): Promise<void> => {
     return ipcRenderer.invoke("panel-bridge:remove-child", panelId, childId);
-  },
-
-  /**
-   * Get pre-bundled @natstack/* packages for in-panel builds.
-   * Use with @natstack/build's registerPrebundledBatch() to enable
-   * building child panels that use @natstack packages.
-   */
-  getPrebundledPackages: (): Promise<Record<string, string>> => {
-    return ipcRenderer.invoke("panel-bridge:get-prebundled-packages");
-  },
-
-  /**
-   * Get development mode flag.
-   * Use with @natstack/build's setDevMode() to configure cache expiration.
-   */
-  getDevMode: (): Promise<boolean> => {
-    return ipcRenderer.invoke("panel-bridge:get-dev-mode");
-  },
-
-  /**
-   * Get cache configuration from central config.
-   * Returns panel-specific cache limits.
-   */
-  getCacheConfig: (): Promise<{
-    maxEntriesPerPanel: number;
-    maxSizePerPanel: number;
-    expirationMs: number;
-  }> => {
-    return ipcRenderer.invoke("panel-bridge:get-cache-config");
-  },
-
-  /**
-   * Load cache from disk (shared across all panels).
-   * Returns cache entries stored in app data directory.
-   */
-  loadDiskCache: (): Promise<
-    Record<string, { key: string; value: string; timestamp: number; size: number }>
-  > => {
-    return ipcRenderer.invoke("panel-bridge:load-disk-cache", panelId);
-  },
-
-  /**
-   * Save cache to disk (shared across all panels).
-   * Saves cache entries to app data directory.
-   */
-  saveDiskCache: (
-    entries: Record<string, { key: string; value: string; timestamp: number; size: number }>
-  ): Promise<void> => {
-    return ipcRenderer.invoke("panel-bridge:save-disk-cache", panelId, entries);
-  },
-
-  /**
-   * Record cache hits for repo manifest tracking.
-   * Tracks which cache entries this repo uses during runtime.
-   */
-  recordCacheHits: (cacheKeys: string[]): Promise<void> => {
-    return ipcRenderer.invoke("panel-bridge:record-cache-hits", panelId, cacheKeys);
-  },
-
-  /**
-   * Get cache keys for a repo (for pre-population).
-   * Returns the list of cache keys this repo has used before.
-   */
-  getRepoCacheKeys: (): Promise<string[]> => {
-    return ipcRenderer.invoke("panel-bridge:get-repo-cache-keys", panelId);
-  },
-
-  /**
-   * Load specific cache entries by key (selective loading).
-   * Returns only the requested cache entries.
-   */
-  loadCacheEntries: (
-    keys: string[]
-  ): Promise<Record<string, { key: string; value: string; timestamp: number; size: number }>> => {
-    return ipcRenderer.invoke("panel-bridge:load-cache-entries", keys);
   },
 
   setTitle: (title: string): Promise<void> => {

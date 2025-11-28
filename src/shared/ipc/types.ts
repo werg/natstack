@@ -15,17 +15,30 @@ export interface PanelInfo {
 }
 
 // Panel-related types (shared between main and renderer)
+
+/**
+ * Build state for panels built by main process.
+ * Used to show placeholder UI during build.
+ */
+export type PanelBuildState = "pending" | "cloning" | "building" | "ready" | "error";
+
 export interface PanelArtifacts {
   htmlPath?: string;
   bundlePath?: string;
   error?: string;
+  /** Build state for async main-process builds */
+  buildState?: PanelBuildState;
+  /** Human-readable progress message (e.g., "Installing dependencies...") */
+  buildProgress?: string;
+  /** Detailed build log (esbuild output, errors, etc.) */
+  buildLog?: string;
 }
 
 /**
- * Build artifacts passed from an in-panel build
- * Used when a panel builds its own child using @natstack/build
+ * Build artifacts for protocol-served panels via natstack-panel://.
+ * All panels (root and child) are now served this way.
  */
-export interface InMemoryBuildArtifacts {
+export interface ProtocolBuildArtifacts {
   /** The bundled JavaScript code */
   bundle: string;
   /** Generated or provided HTML template */
@@ -45,16 +58,44 @@ export interface InMemoryBuildArtifacts {
 }
 
 /**
- * Git dependency specification (shorthand string or full object)
+ * Git dependency specification in panel manifest.
+ * Can be a shorthand string or full object.
+ *
+ * Shorthand formats:
+ * - "panels/shared" - defaults to main branch
+ * - "panels/shared#develop" - specific branch
+ * - "panels/shared@v1.0.0" - specific tag
+ * - "panels/shared@abc123" - specific commit (7+ hex chars)
  */
 export type GitDependencySpec =
   | string
   | {
+      /** Git repository path relative to workspace (e.g., "panels/shared") */
       repo: string;
+      /** Branch name to track */
       branch?: string;
+      /** Specific commit hash to pin to */
       commit?: string;
+      /** Tag to pin to */
       tag?: string;
     };
+
+/**
+ * Options for creating a child panel.
+ * Version specifiers are mutually exclusive; priority: commit > tag > branch
+ */
+export interface CreateChildOptions {
+  /** Environment variables to pass to the child panel */
+  env?: Record<string, string>;
+  /** Custom panel ID (only used for tree panels, ignored for singletons) */
+  panelId?: string;
+  /** Branch name to track (e.g., "develop") */
+  branch?: string;
+  /** Specific commit hash to pin to (e.g., "abc123...") */
+  commit?: string;
+  /** Tag to pin to (e.g., "v1.0.0") */
+  tag?: string;
+}
 
 export interface Panel {
   id: string;
@@ -96,94 +137,14 @@ export interface PanelIpcApi {
 // Panel bridge IPC channels (panel webview <-> main)
 export interface PanelBridgeIpcApi {
   /**
-   * Get pre-bundled @natstack/* packages for in-panel builds
-   * Returns a map of package name -> ESM bundle code
+   * Create a child panel from a workspace path.
+   * Main process handles git checkout and build.
+   * Returns panel ID immediately; build happens async.
    */
-  "panel-bridge:get-prebundled-packages": () => Record<string, string>;
-
-  /**
-   * Get development mode flag
-   * Returns true if running in development mode, false for production
-   * Used by @natstack/build to determine cache expiration behavior
-   */
-  "panel-bridge:get-dev-mode": () => boolean;
-
-  /**
-   * Get cache configuration from central config
-   * Returns panel-specific cache limits
-   */
-  "panel-bridge:get-cache-config": () => {
-    maxEntriesPerPanel: number;
-    maxSizePerPanel: number;
-    expirationMs: number;
-  };
-
-  /**
-   * Load cache from disk
-   * Returns cache entries stored on disk (shared across all panels)
-   */
-  "panel-bridge:load-disk-cache": (panelId: string) => Record<
-    string,
-    {
-      key: string;
-      value: string;
-      timestamp: number;
-      size: number;
-    }
-  >;
-
-  /**
-   * Save cache to disk
-   * Saves cache entries to disk (shared across all panels)
-   */
-  "panel-bridge:save-disk-cache": (
-    panelId: string,
-    entries: Record<
-      string,
-      {
-        key: string;
-        value: string;
-        timestamp: number;
-        size: number;
-      }
-    >
-  ) => void;
-
-  /**
-   * Record cache hits for repo manifest tracking
-   * Tracks which cache entries this repo URL uses during runtime
-   */
-  "panel-bridge:record-cache-hits": (panelId: string, cacheKeys: string[]) => void;
-
-  /**
-   * Get cache keys for a repo (for pre-population)
-   * Returns the list of cache keys this repo has used before
-   */
-  "panel-bridge:get-repo-cache-keys": (panelId: string) => string[];
-
-  /**
-   * Load specific cache entries by key
-   * Returns only the requested cache entries (selective loading)
-   */
-  "panel-bridge:load-cache-entries": (keys: string[]) => Record<
-    string,
-    {
-      key: string;
-      value: string;
-      timestamp: number;
-      size: number;
-    }
-  >;
-
-  /**
-   * Launch a child panel from in-memory build artifacts
-   * Use this when the panel was built in-browser using @natstack/build
-   */
-  "panel-bridge:launch-child": (
+  "panel-bridge:create-child": (
     parentId: string,
-    artifacts: InMemoryBuildArtifacts,
-    env?: Record<string, string>,
-    requestedPanelId?: string
+    childPath: string,
+    options?: CreateChildOptions
   ) => string;
 
   "panel-bridge:remove-child": (parentId: string, childId: string) => void;

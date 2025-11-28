@@ -1,25 +1,6 @@
-/**
- * Git dependency specification in panel manifest.
- * Can be a shorthand string or full object.
- *
- * Shorthand formats:
- * - "panels/shared" - defaults to main branch
- * - "panels/shared#develop" - specific branch
- * - "panels/shared@v1.0.0" - specific tag
- * - "panels/shared@abc123" - specific commit (7+ hex chars)
- */
-export type GitDependencySpec =
-  | string
-  | {
-      /** Git repository path relative to workspace (e.g., "panels/shared") */
-      repo: string;
-      /** Branch name to track */
-      branch?: string;
-      /** Specific commit hash to pin to */
-      commit?: string;
-      /** Tag to pin to */
-      tag?: string;
-    };
+// Re-export GitDependencySpec from shared types (canonical definition)
+export type { GitDependencySpec } from "../shared/ipc/types.js";
+import type { GitDependencySpec } from "../shared/ipc/types.js";
 
 export interface PanelManifest {
   title: string;
@@ -54,17 +35,6 @@ export interface PanelBuildResult {
 
 // Re-export shared types for backwards compatibility
 export type { Panel, PanelArtifacts } from "../shared/ipc/types.js";
-
-export interface PanelBuildCache {
-  path: string;
-  manifest: PanelManifest;
-  bundlePath: string;
-  htmlPath: string;
-  sourceHash: string; // Hash of source files for cache invalidation
-  builtAt: number;
-  dependencyHash?: string;
-  cacheVersion?: number;
-}
 
 export type PanelEventPayload =
   | { type: "child-removed"; childId: string }

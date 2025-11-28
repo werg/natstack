@@ -119,16 +119,6 @@ async function buildWorkspacePackages() {
   }
 }
 
-async function prebundlePackages() {
-  console.log("Pre-bundling @natstack/* packages for panel runtime...");
-  try {
-    execSync('node scripts/prebundle-packages.mjs', { stdio: 'inherit' });
-  } catch (error) {
-    console.error("Failed to pre-bundle packages:", error);
-    throw error;
-  }
-}
-
 /**
  * Build dependency graph
  * Defines explicit dependencies between build steps to ensure correct ordering
@@ -144,22 +134,13 @@ async function build() {
     // ========================================================================
     // These must be built first as they are consumed by later steps
     // Dependencies: None
-    // Required by: prebundlePackages
     await buildWorkspacePackages();
 
     // ========================================================================
-    // STEP 2: Pre-bundle @natstack/* packages
-    // ========================================================================
-    // Bundles the workspace packages for injection into panel runtime
-    // Dependencies: buildWorkspacePackages (needs dist/ outputs)
-    // Required by: mainApp (includes prebundled-packages.json in dist/)
-    await prebundlePackages();
-
-    // ========================================================================
-    // STEP 3: Build main application
+    // STEP 2: Build main application
     // ========================================================================
     // These can run in parallel as they don't depend on each other
-    // Dependencies: prebundlePackages (mainConfig loads prebundled-packages.json)
+    // Dependencies: buildWorkspacePackages
     // Required by: None (final outputs)
     await esbuild.build(mainConfig);
     await esbuild.build(preloadConfig);
@@ -169,7 +150,7 @@ async function build() {
     await esbuild.build(rendererConfig);
 
     // ========================================================================
-    // STEP 4: Copy static assets
+    // STEP 3: Copy static assets
     // ========================================================================
     // Dependencies: None (just copying files)
     // Required by: None

@@ -1,11 +1,12 @@
 import { protocol, session } from "electron";
-import type { InMemoryBuildArtifacts } from "../shared/ipc/types.js";
+import type { ProtocolBuildArtifacts } from "../shared/ipc/types.js";
 
 /**
- * In-memory panel content storage
+ * Protocol-served panel content storage
  * Maps panelId -> { html, bundle, css }
+ * This is the runtime serving cache for natstack-panel:// protocol
  */
-const inMemoryPanels = new Map<
+const protocolPanels = new Map<
   string,
   {
     html: string;
@@ -25,10 +26,10 @@ const registeredPartitions = new Set<string>();
 const registrationLocks = new Map<string, Promise<void>>();
 
 /**
- * Register the natstack-panel:// protocol for serving in-memory panel content
+ * Register the natstack-panel:// protocol for serving panel content
  * Must be called before app.ready
  */
-export function registerInMemoryPanelProtocol(): void {
+export function registerPanelProtocol(): void {
   protocol.registerSchemesAsPrivileged([
     {
       scheme: "natstack-panel",
@@ -48,33 +49,22 @@ export function registerInMemoryPanelProtocol(): void {
  * This is the shared handler logic used by all sessions
  */
 function handleProtocolRequest(request: Request): Response {
-  console.log(`[InMemoryPanel] Protocol handler invoked for: ${request.url.slice(0, 100)}`);
+  console.log(`[PanelProtocol] Protocol handler invoked for: ${request.url.slice(0, 100)}`);
   const url = new URL(request.url);
 
   // The panelId is encoded in the URL. Since panelIds contain '/', we encode them as the path
   // URL format: natstack-panel://panel/{encodedPanelId}/resource
-  // Or legacy: natstack-panel://{simplePanelId}/resource (if no '/' in panelId)
-  let panelId: string;
-  let pathname: string;
+  const pathParts = url.pathname.split("/").filter(Boolean);
+  const panelId = decodeURIComponent(pathParts[0] || "");
+  const pathname = "/" + pathParts.slice(1).join("/") || "/";
 
-  if (url.hostname === "panel") {
-    // New format: natstack-panel://panel/{encodedPanelId}/resource
-    const pathParts = url.pathname.split("/").filter(Boolean);
-    panelId = decodeURIComponent(pathParts[0] || "");
-    pathname = "/" + pathParts.slice(1).join("/") || "/";
-  } else {
-    // Legacy format for simple panel IDs: natstack-panel://{panelId}/resource
-    panelId = url.hostname;
-    pathname = url.pathname || "/";
-  }
+  console.log(`[PanelProtocol] Request: ${request.url}`);
+  console.log(`[PanelProtocol] Parsed panelId: ${panelId}, pathname: ${pathname}`);
+  console.log(`[PanelProtocol] Available panels:`, Array.from(protocolPanels.keys()));
 
-  console.log(`[InMemoryPanel] Request: ${request.url}`);
-  console.log(`[InMemoryPanel] Parsed panelId: ${panelId}, pathname: ${pathname}`);
-  console.log(`[InMemoryPanel] Available panels:`, Array.from(inMemoryPanels.keys()));
-
-  const panelContent = inMemoryPanels.get(panelId);
+  const panelContent = protocolPanels.get(panelId);
   if (!panelContent) {
-    console.error(`[InMemoryPanel] Panel not found: ${panelId}`);
+    console.error(`[PanelProtocol] Panel not found: ${panelId}`);
     return new Response(`Panel not found: ${panelId}`, {
       status: 404,
       headers: { "Content-Type": "text/plain" },
@@ -85,7 +75,7 @@ function handleProtocolRequest(request: Request): Response {
   if (pathname === "/" || pathname === "/index.html") {
     // Inject the bundle script tag into the HTML
     const htmlWithBundle = injectBundleIntoHtml(panelContent.html, panelId);
-    console.log(`[InMemoryPanel] Serving HTML (${htmlWithBundle.length} bytes)`);
+    console.log(`[PanelProtocol] Serving HTML (${htmlWithBundle.length} bytes)`);
     return new Response(htmlWithBundle, {
       status: 200,
       headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -116,8 +106,8 @@ function handleProtocolRequest(request: Request): Response {
  * Set up the protocol handler for the default session
  * Must be called after app.ready
  */
-export function setupInMemoryPanelProtocol(): void {
-  console.log("[InMemoryPanel] Setting up protocol handler for default session");
+export function setupPanelProtocol(): void {
+  console.log("[PanelProtocol] Setting up protocol handler for default session");
   protocol.handle("natstack-panel", handleProtocolRequest);
   registeredPartitions.add("default");
 }
@@ -144,7 +134,7 @@ export async function registerProtocolForPartition(partition: string): Promise<v
   // Create registration promise
   const registrationPromise = (async () => {
     try {
-      console.log(`[InMemoryPanel] Registering protocol for partition: ${partition}`);
+      console.log(`[PanelProtocol] Registering protocol for partition: ${partition}`);
       const ses = session.fromPartition(partition);
       ses.protocol.handle("natstack-panel", handleProtocolRequest);
       registeredPartitions.add(partition);
@@ -164,8 +154,9 @@ export async function registerProtocolForPartition(partition: string): Promise<v
  */
 function injectBundleIntoHtml(html: string, panelId: string): string {
   const encodedPanelId = encodeURIComponent(panelId);
-  const bundleScript = `<script type="module" src="natstack-panel://panel/${encodedPanelId}/bundle.js"></script>`;
-  const cssLink = `<link rel="stylesheet" href="natstack-panel://panel/${encodedPanelId}/bundle.css">`;
+  const bundleUrl = `natstack-panel://panel/${encodedPanelId}/bundle.js`;
+  const cssUrl = `natstack-panel://panel/${encodedPanelId}/bundle.css`;
+  const bundleScript = `<script type="module" src="${bundleUrl}"></script>`;
 
   let result = html;
 
@@ -174,7 +165,7 @@ function injectBundleIntoHtml(html: string, panelId: string): string {
     result = result.replace("<!-- BUNDLE_PLACEHOLDER -->", bundleScript);
   } else if (result.includes('src="./bundle.js"')) {
     // Replace relative bundle reference
-    result = result.replace(/src="\.\/bundle\.js"/g, `src="natstack-panel://${panelId}/bundle.js"`);
+    result = result.replace(/src="\.\/bundle\.js"/g, `src="${bundleUrl}"`);
   } else if (!result.includes("bundle.js")) {
     // Append before </body> if no bundle reference exists
     result = result.replace("</body>", `${bundleScript}\n</body>`);
@@ -182,26 +173,23 @@ function injectBundleIntoHtml(html: string, panelId: string): string {
 
   // Handle CSS similarly
   if (result.includes('href="./bundle.css"')) {
-    result = result.replace(
-      /href="\.\/bundle\.css"/g,
-      `href="natstack-panel://${panelId}/bundle.css"`
-    );
+    result = result.replace(/href="\.\/bundle\.css"/g, `href="${cssUrl}"`);
   }
 
   return result;
 }
 
 /**
- * Store in-memory panel content
+ * Store panel content for protocol serving
  */
-export function storeInMemoryPanel(panelId: string, artifacts: InMemoryBuildArtifacts): string {
-  inMemoryPanels.set(panelId, {
+export function storeProtocolPanel(panelId: string, artifacts: ProtocolBuildArtifacts): string {
+  protocolPanels.set(panelId, {
     html: artifacts.html,
     bundle: artifacts.bundle,
     css: artifacts.css,
   });
 
-  console.log(`[InMemoryPanel] Stored panel: ${panelId}`);
+  console.log(`[PanelProtocol] Stored panel: ${panelId}`);
 
   // Return the URL for this panel
   // Use the new format with encoded panelId to handle '/' in panel IDs
@@ -210,23 +198,23 @@ export function storeInMemoryPanel(panelId: string, artifacts: InMemoryBuildArti
 }
 
 /**
- * Remove in-memory panel content
+ * Remove panel content from protocol serving
  */
-export function removeInMemoryPanel(panelId: string): void {
-  inMemoryPanels.delete(panelId);
+export function removeProtocolPanel(panelId: string): void {
+  protocolPanels.delete(panelId);
 }
 
 /**
- * Check if a panel is served from memory
+ * Check if a panel is served via protocol
  */
-export function isInMemoryPanel(panelId: string): boolean {
-  return inMemoryPanels.has(panelId);
+export function isProtocolPanel(panelId: string): boolean {
+  return protocolPanels.has(panelId);
 }
 
 /**
- * Get the URL for an in-memory panel
+ * Get the URL for a protocol-served panel
  */
-export function getInMemoryPanelUrl(panelId: string): string {
+export function getProtocolPanelUrl(panelId: string): string {
   const encodedPanelId = encodeURIComponent(panelId);
   return `natstack-panel://panel/${encodedPanelId}/index.html`;
 }
