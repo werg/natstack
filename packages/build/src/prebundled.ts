@@ -74,6 +74,7 @@ export const DEFAULT_PREBUNDLED_PACKAGES = [
   "@zenfs/core",
   "@zenfs/core/promises",
   "@zenfs/dom",
+  "typescript", // For in-panel type checking
 ] as const;
 
 /**

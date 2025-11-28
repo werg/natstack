@@ -80,6 +80,13 @@ export interface BuildOptions {
   sourcemap?: boolean;
   /** Minify output */
   minify?: boolean;
+  /** 
+   * Enable TypeScript type checking before build
+   * - false: Skip type checking
+   * - true: Type check but allow build with warnings
+   * - 'strict': Fail build on type errors (default)
+   */
+  typeCheck?: boolean | 'strict';
 }
 
 /**
@@ -214,7 +221,7 @@ import { configureSingle } from "@zenfs/core";
 import { WebAccess } from "@zenfs/dom";
 import { autoMountReactPanel, shouldAutoMount } from "@natstack/panel";
 
-const INIT_TIMEOUT_MS = 10000; // Filesystem initialization timeout
+const INIT_TIMEOUT_MS = 60000; // Filesystem initialization timeout (60s for large projects)
 
 const configureOpfs = (() => {
   let initPromise: Promise<void> | null = null;

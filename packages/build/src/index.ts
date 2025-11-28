@@ -118,3 +118,13 @@ export type {
   EsbuildPluginBuild,
   EsbuildInitializer,
 } from "./browser-builder.js";
+
+// Type checker (for panels that want standalone type checking)
+export {
+  typeCheckPanel,
+  isTypeScriptLoaded,
+  preloadTypeScript,
+} from "./type-checker.js";
+export type {
+  TypeCheckResult,
+} from "./type-checker.js";

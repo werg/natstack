@@ -33,8 +33,14 @@ const NATSTACK_PACKAGES = [
 /**
  * Third-party packages that must be available in the panel runtime.
  * ZenFS is bundled to avoid CDN incompatibilities (missing exports).
+ * TypeScript is bundled for in-panel type checking.
  */
-const THIRD_PARTY_PACKAGES = ["@zenfs/core", "@zenfs/core/promises", "@zenfs/dom"];
+const THIRD_PARTY_PACKAGES = [
+  "@zenfs/core",
+  "@zenfs/core/promises",
+  "@zenfs/dom",
+  "typescript", // For in-panel type checking
+];
 
 /**
  * External dependencies that should NOT be bundled
@@ -139,9 +145,10 @@ async function bundleNodePackage(packageName) {
 }
 
 // Size limits and warnings
-const MAX_TOTAL_SIZE = 2 * 1024 * 1024; // 2MB total
-const MAX_SINGLE_PACKAGE_SIZE = 500 * 1024; // 500KB per package
-const WARN_TOTAL_SIZE = 1.5 * 1024 * 1024; // Warn at 1.5MB
+// Increased to accommodate TypeScript (~3.5MB) for in-panel type checking
+const MAX_TOTAL_SIZE = 5 * 1024 * 1024; // 5MB total (was 2MB)
+const MAX_SINGLE_PACKAGE_SIZE = 4 * 1024 * 1024; // 4MB per package (was 500KB)
+const WARN_TOTAL_SIZE = 4 * 1024 * 1024; // Warn at 4MB (was 1.5MB)
 
 /**
  * Format bytes as human-readable string

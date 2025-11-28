@@ -643,6 +643,28 @@ ${cssLinks}
       // Collect all source files
       const sourceFiles = await this.collectSourceFiles(panelPath);
 
+      // Type check if enabled
+      if (this.options.typeCheck) {
+        console.log('[BrowserPanelBuilder] Running type check...');
+        const { typeCheckPanel } = await import('./type-checker.js');
+        const typeCheckResult = await typeCheckPanel(sourceFiles);
+
+        if (!typeCheckResult.success) {
+          const errorMessage = `Type checking failed with ${typeCheckResult.errorCount} error(s):\n${typeCheckResult.errors.join('\n')}`;
+
+          // In strict mode, fail the build
+          if (this.options.typeCheck === 'strict') {
+            return {
+              success: false,
+              error: errorMessage,
+            };
+          }
+
+          // Otherwise, just warn
+          console.warn('[BrowserPanelBuilder] Type check warnings (build continuing):', errorMessage);
+        }
+      }
+
       // Create virtual file system plugin for esbuild
       const virtualFsPlugin = this.createVirtualFsPlugin(panelPath, sourceFiles);
 

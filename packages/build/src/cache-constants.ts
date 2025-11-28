@@ -12,11 +12,11 @@ export const CACHE_TIMINGS = {
   /** Interval for cleanup of expired cache entries (ms) */
   CLEANUP_INTERVAL_MS: 60000,
 
-  /** Timeout for IPC operations (ms) */
-  IPC_TIMEOUT_MS: 5000,
+  /** Timeout for IPC operations (ms) - increased for type checking */
+  IPC_TIMEOUT_MS: 120000, // 2 minutes
 
-  /** Timeout for filesystem initialization (ms) */
-  INIT_TIMEOUT_MS: 10000,
+  /** Timeout for filesystem initialization (ms) - increased for large projects */
+  INIT_TIMEOUT_MS: 60000, // 1 minute
 } as const;
 
 /**

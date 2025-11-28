@@ -124,8 +124,8 @@ function createWindow(): void {
     titleBarStyle: "hidden",
     ...(process.platform !== "darwin"
       ? {
-          titleBarOverlay: true,
-        }
+        titleBarOverlay: true,
+      }
       : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
