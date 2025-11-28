@@ -29,7 +29,8 @@
       "@natstack/build": ["packages/build/src/index.ts"],
       "@natstack/git": ["packages/git/src/index.ts"],
       "@natstack/react": ["packages/react/src/index.ts"],
-      "@natstack/panel": ["packages/panel/src/index.ts"]
+      "@natstack/panel": ["packages/panel/src/index.ts"],
+      "@natstack/scoped-fs": ["packages/scoped-fs/src/index.ts"]
     }
   },
   "include": ["src/**/*"],
