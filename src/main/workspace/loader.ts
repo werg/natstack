@@ -17,12 +17,7 @@ import * as path from "path";
 import { app } from "electron";
 import YAML from "yaml";
 import dotenv from "dotenv";
-import type {
-  Workspace,
-  WorkspaceConfig,
-  CentralConfig,
-  CentralConfigPaths,
-} from "./types.js";
+import type { Workspace, WorkspaceConfig, CentralConfig, CentralConfigPaths } from "./types.js";
 
 const WORKSPACE_CONFIG_FILE = "natstack.yml";
 const CENTRAL_CONFIG_FILE = "config.yml";

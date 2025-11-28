@@ -105,9 +105,7 @@ export function SettingsDialog({ isSetupMode = false }: SettingsDialogProps) {
                 <Callout.Icon>
                   <InfoCircledIcon />
                 </Callout.Icon>
-                <Callout.Text>
-                  Add an API key for at least one provider to continue.
-                </Callout.Text>
+                <Callout.Text>Add an API key for at least one provider to continue.</Callout.Text>
               </Callout.Root>
             )}
 
@@ -118,9 +116,7 @@ export function SettingsDialog({ isSetupMode = false }: SettingsDialogProps) {
               </Text>
               <Flex direction="column" gap="2">
                 {settingsData.availableProviders.map((provider) => {
-                  const providerInfo = settingsData.providers.find(
-                    (p) => p.id === provider.id
-                  );
+                  const providerInfo = settingsData.providers.find((p) => p.id === provider.id);
                   return (
                     <ProviderRow
                       key={provider.id}
@@ -143,8 +139,8 @@ export function SettingsDialog({ isSetupMode = false }: SettingsDialogProps) {
                     Model Roles
                   </Text>
                   <Text size="1" color="gray" mb="3" style={{ display: "block" }}>
-                    Assign models to roles. Roles fall back to each other: smart ↔
-                    coding, fast ↔ cheap.
+                    Assign models to roles. Roles fall back to each other: smart ↔ coding, fast ↔
+                    cheap.
                   </Text>
                   <Flex direction="column" gap="3">
                     {MODEL_ROLES.map((role) => (
@@ -168,10 +164,7 @@ export function SettingsDialog({ isSetupMode = false }: SettingsDialogProps) {
 
         <Flex gap="3" mt="5" justify="end">
           {isSetupMode ? (
-            <Button
-              disabled={!canClose}
-              onClick={() => handleOpenChange(false)}
-            >
+            <Button disabled={!canClose} onClick={() => handleOpenChange(false)}>
               {canClose ? "Continue" : "Configure a provider to continue"}
             </Button>
           ) : (
@@ -299,12 +292,7 @@ function ProviderRow({ provider, providerInfo }: ProviderRowProps) {
                 {isSaving ? <Spinner /> : "Disable"}
               </Button>
             ) : (
-              <Button
-                variant="soft"
-                size="1"
-                onClick={handleEnable}
-                disabled={isSaving}
-              >
+              <Button variant="soft" size="1" onClick={handleEnable} disabled={isSaving}>
                 {isSaving ? <Spinner /> : "Enable"}
               </Button>
             )}
@@ -313,7 +301,8 @@ function ProviderRow({ provider, providerInfo }: ProviderRowProps) {
         {!isEnabled && (
           <Box px="2" pb="2">
             <Text size="1" color="gray">
-              Requires Claude Code CLI. Run: npm install -g @anthropic-ai/claude-code && claude login
+              Requires Claude Code CLI. Run: npm install -g @anthropic-ai/claude-code && claude
+              login
             </Text>
           </Box>
         )}
@@ -351,27 +340,13 @@ function ProviderRow({ provider, providerInfo }: ProviderRowProps) {
               style={{ width: "200px" }}
               autoFocus
             />
-            <Button
-              variant="ghost"
-              size="1"
-              onClick={() => setShowKey(!showKey)}
-            >
+            <Button variant="ghost" size="1" onClick={() => setShowKey(!showKey)}>
               {showKey ? <EyeClosedIcon /> : <EyeOpenIcon />}
             </Button>
-            <Button
-              size="1"
-              onClick={handleSave}
-              disabled={!apiKey.trim() || isSaving}
-            >
+            <Button size="1" onClick={handleSave} disabled={!apiKey.trim() || isSaving}>
               {isSaving ? <Spinner /> : "Save"}
             </Button>
-            <Button
-              variant="soft"
-              color="gray"
-              size="1"
-              onClick={handleCancel}
-              disabled={isSaving}
-            >
+            <Button variant="soft" color="gray" size="1" onClick={handleCancel} disabled={isSaving}>
               Cancel
             </Button>
           </Flex>
@@ -379,11 +354,7 @@ function ProviderRow({ provider, providerInfo }: ProviderRowProps) {
           <Flex gap="2">
             {hasKey ? (
               <>
-                <Button
-                  variant="soft"
-                  size="1"
-                  onClick={() => setIsEditing(true)}
-                >
+                <Button variant="soft" size="1" onClick={() => setIsEditing(true)}>
                   Change
                 </Button>
                 <Button
@@ -423,8 +394,7 @@ function ModelRoleRow({ role, currentValue, providers }: ModelRoleRowProps) {
     provider.hasApiKey || (provider.usesCliAuth && provider.isEnabled);
 
   // Build list of available models from configured providers
-  const availableModels: { value: string; label: string; provider: string }[] =
-    [];
+  const availableModels: { value: string; label: string; provider: string }[] = [];
   for (const provider of providers) {
     if (isProviderAvailable(provider)) {
       for (const modelId of provider.models) {
@@ -469,29 +439,25 @@ function ModelRoleRow({ role, currentValue, providers }: ModelRoleRowProps) {
         >
           <Select.Trigger
             placeholder={
-              availableModels.length === 0
-                ? "No providers configured"
-                : "Select model..."
+              availableModels.length === 0 ? "No providers configured" : "Select model..."
             }
             style={{ width: "100%" }}
           />
           <Select.Content>
             {/* Group by provider */}
-            {providers
-              .filter(isProviderAvailable)
-              .map((provider) => (
-                <Select.Group key={provider.id}>
-                  <Select.Label>{provider.name}</Select.Label>
-                  {provider.models.map((modelId) => (
-                    <Select.Item
-                      key={`${provider.id}:${modelId}`}
-                      value={`${provider.id}:${modelId}`}
-                    >
-                      {modelId}
-                    </Select.Item>
-                  ))}
-                </Select.Group>
-              ))}
+            {providers.filter(isProviderAvailable).map((provider) => (
+              <Select.Group key={provider.id}>
+                <Select.Label>{provider.name}</Select.Label>
+                {provider.models.map((modelId) => (
+                  <Select.Item
+                    key={`${provider.id}:${modelId}`}
+                    value={`${provider.id}:${modelId}`}
+                  >
+                    {modelId}
+                  </Select.Item>
+                ))}
+              </Select.Group>
+            ))}
           </Select.Content>
         </Select.Root>
       </Box>

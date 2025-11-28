@@ -54,7 +54,10 @@ export class PanelBuilder {
     try {
       return JSON.parse(cached) as PanelBuildCache;
     } catch (error) {
-      console.error(`[PanelBuilder] Failed to parse cached metadata for ${absolutePanelPath}:`, error);
+      console.error(
+        `[PanelBuilder] Failed to parse cached metadata for ${absolutePanelPath}:`,
+        error
+      );
       return null;
     }
   }
@@ -62,7 +65,10 @@ export class PanelBuilder {
   /**
    * Save build metadata to cache
    */
-  private async saveBuildMetadata(absolutePanelPath: string, metadata: PanelBuildCache): Promise<void> {
+  private async saveBuildMetadata(
+    absolutePanelPath: string,
+    metadata: PanelBuildCache
+  ): Promise<void> {
     const serialized = JSON.stringify(metadata);
     await this.cacheManager.set(absolutePanelPath, serialized);
   }
@@ -300,7 +306,9 @@ export class PanelBuilder {
     );
   }
 
-  private resolveWorkspaceDependencies(dependencies: Record<string, string>): Record<string, string> {
+  private resolveWorkspaceDependencies(
+    dependencies: Record<string, string>
+  ): Record<string, string> {
     const resolved: Record<string, string> = {};
     const workspaceRoot = process.cwd();
 
@@ -447,14 +455,11 @@ export class PanelBuilder {
       const fsPlugin: esbuild.Plugin = {
         name: "fs-virtual-module",
         setup(build) {
-          build.onResolve(
-            { filter: /^(fs|node:fs|fs\/promises|node:fs\/promises)$/ },
-            (args) => {
-              const runtimePath = fsModuleMap.get(args.path);
-              if (!runtimePath) return null;
-              return { path: runtimePath };
-            }
-          );
+          build.onResolve({ filter: /^(fs|node:fs|fs\/promises|node:fs\/promises)$/ }, (args) => {
+            const runtimePath = fsModuleMap.get(args.path);
+            if (!runtimePath) return null;
+            return { path: runtimePath };
+          });
         },
       };
 
@@ -539,7 +544,9 @@ if (shouldAutoMount(userModule)) {
       // For individual panel cache clearing, we'd need to delete from the unified cache
       // The unified cache doesn't expose a delete method yet, so we skip this for now
       // In practice, stale cache entries are handled by hash checking
-      console.warn('[PanelBuilder] Individual panel cache clearing not yet supported with unified cache');
+      console.warn(
+        "[PanelBuilder] Individual panel cache clearing not yet supported with unified cache"
+      );
     } else {
       // Clear the entire unified cache
       await this.cacheManager.clear();

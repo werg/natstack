@@ -4,9 +4,9 @@
  * Stored in app data directory, shared across all panels
  */
 
-import { promises as fsPromises } from 'fs';
-import * as path from 'path';
-import { app } from 'electron';
+import { promises as fsPromises } from "fs";
+import * as path from "path";
+import { app } from "electron";
 
 export interface DiskCacheEntry {
   key: string;
@@ -20,14 +20,14 @@ export interface DiskCacheData {
   entries: Record<string, DiskCacheEntry>;
 }
 
-const CACHE_VERSION = '1';
-const CACHE_FILENAME = 'build-cache.json';
+const CACHE_VERSION = "1";
+const CACHE_FILENAME = "build-cache.json";
 
 /**
  * Get the cache file path
  */
 function getCacheFilePath(): string {
-  const userDataPath = app.getPath('userData');
+  const userDataPath = app.getPath("userData");
   return path.join(userDataPath, CACHE_FILENAME);
 }
 
@@ -42,15 +42,17 @@ export async function loadDiskCache(): Promise<Record<string, DiskCacheEntry>> {
     try {
       await fsPromises.access(cacheFilePath);
     } catch {
-      console.log('[DiskCache] No cache file found, starting fresh');
+      console.log("[DiskCache] No cache file found, starting fresh");
       return {};
     }
 
-    const content = await fsPromises.readFile(cacheFilePath, 'utf-8');
+    const content = await fsPromises.readFile(cacheFilePath, "utf-8");
     const data = JSON.parse(content) as DiskCacheData;
 
     if (data.version !== CACHE_VERSION) {
-      console.log(`[DiskCache] Cache version mismatch (${data.version} vs ${CACHE_VERSION}), discarding`);
+      console.log(
+        `[DiskCache] Cache version mismatch (${data.version} vs ${CACHE_VERSION}), discarding`
+      );
       return {};
     }
 
@@ -58,7 +60,7 @@ export async function loadDiskCache(): Promise<Record<string, DiskCacheEntry>> {
     console.log(`[DiskCache] Loaded ${entryCount} entries from disk`);
     return data.entries;
   } catch (error) {
-    console.error('[DiskCache] Failed to load cache from disk:', error);
+    console.error("[DiskCache] Failed to load cache from disk:", error);
     return {};
   }
 }
@@ -78,11 +80,11 @@ export async function saveDiskCache(entries: Record<string, DiskCacheEntry>): Pr
 
     // Use compact JSON (no pretty-printing) to reduce disk usage
     const content = JSON.stringify(data);
-    const contentSizeBytes = Buffer.byteLength(content, 'utf-8');
+    const contentSizeBytes = Buffer.byteLength(content, "utf-8");
     const contentSizeMB = (contentSizeBytes / 1024 / 1024).toFixed(2);
 
     // Check available disk space (require 2x content size for safety)
-    const userDataPath = app.getPath('userData');
+    const userDataPath = app.getPath("userData");
     try {
       const stats = await fsPromises.statfs(userDataPath);
       const availableBytes = stats.bavail * stats.bsize;
@@ -97,11 +99,11 @@ export async function saveDiskCache(entries: Record<string, DiskCacheEntry>): Pr
       }
     } catch (statfsError) {
       // statfs may not be available on all platforms, log warning but continue
-      console.warn('[DiskCache] Unable to check disk space:', statfsError);
+      console.warn("[DiskCache] Unable to check disk space:", statfsError);
     }
 
     // Write to temporary file first (atomic write pattern)
-    await fsPromises.writeFile(tempPath, content, 'utf-8');
+    await fsPromises.writeFile(tempPath, content, "utf-8");
 
     // Atomically rename temp file to final location
     await fsPromises.rename(tempPath, cacheFilePath);
@@ -109,7 +111,7 @@ export async function saveDiskCache(entries: Record<string, DiskCacheEntry>): Pr
     const entryCount = Object.keys(entries).length;
     console.log(`[DiskCache] Saved ${entryCount} entries to disk (${contentSizeMB}MB)`);
   } catch (error) {
-    console.error('[DiskCache] Failed to save cache to disk:', error);
+    console.error("[DiskCache] Failed to save cache to disk:", error);
 
     // Clean up temp file if it exists
     try {
@@ -133,12 +135,12 @@ export async function clearDiskCache(): Promise<void> {
     try {
       await fsPromises.access(cacheFilePath);
       await fsPromises.unlink(cacheFilePath);
-      console.log('[DiskCache] Cleared disk cache');
+      console.log("[DiskCache] Cleared disk cache");
     } catch {
       // File doesn't exist, nothing to clear
     }
   } catch (error) {
-    console.error('[DiskCache] Failed to clear disk cache:', error);
+    console.error("[DiskCache] Failed to clear disk cache:", error);
   }
 }
 
@@ -153,10 +155,10 @@ export async function getDiskCacheSize(): Promise<number> {
     return stats.size;
   } catch (error) {
     // File doesn't exist or can't be accessed
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return 0;
     }
-    console.error('[DiskCache] Failed to get cache size:', error);
+    console.error("[DiskCache] Failed to get cache size:", error);
     return 0;
   }
 }

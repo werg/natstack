@@ -88,7 +88,8 @@ function ChooserMode() {
   }, [loadSettings]);
 
   // Determine if we need setup mode (no providers configured)
-  const needsSetup = initialLoadDone && settingsData !== null && !settingsData.hasConfiguredProviders;
+  const needsSetup =
+    initialLoadDone && settingsData !== null && !settingsData.hasConfiguredProviders;
 
   return (
     <>
@@ -117,7 +118,8 @@ function MainMode() {
   }, [loadSettings]);
 
   // Check if we need setup mode (no providers configured)
-  const needsSetup = initialLoadDone && settingsData !== null && !settingsData.hasConfiguredProviders;
+  const needsSetup =
+    initialLoadDone && settingsData !== null && !settingsData.hasConfiguredProviders;
 
   // Open settings dialog on startup if no providers configured
   useEffect(() => {

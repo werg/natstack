@@ -2,8 +2,8 @@
  * Cache configuration with centralized defaults
  */
 
-import { loadCentralConfig } from './workspace/loader.js';
-import type { CacheConfig } from './workspace/types.js';
+import { loadCentralConfig } from "./workspace/loader.js";
+import type { CacheConfig } from "./workspace/types.js";
 
 /**
  * Default cache configuration values

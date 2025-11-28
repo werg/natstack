@@ -63,7 +63,7 @@ export function loadPrebundledPackages(): Record<string, string> {
 
     console.log(
       `[Prebundled] Loaded ${coreCount} core + ${optionalCount} optional packages ` +
-      `(version: ${manifest.version})`
+        `(version: ${manifest.version})`
     );
     return cachedPrebundled;
   } catch (error) {

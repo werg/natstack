@@ -77,9 +77,7 @@ export class CentralDataManager {
    */
   addRecentWorkspace(path: string, name: string): void {
     // Remove existing entry if present
-    this.data.recentWorkspaces = this.data.recentWorkspaces.filter(
-      (w) => w.path !== path
-    );
+    this.data.recentWorkspaces = this.data.recentWorkspaces.filter((w) => w.path !== path);
 
     // Add new entry at the beginning
     this.data.recentWorkspaces.unshift({
@@ -98,9 +96,7 @@ export class CentralDataManager {
    * Remove a workspace from the recent list
    */
   removeRecentWorkspace(path: string): void {
-    this.data.recentWorkspaces = this.data.recentWorkspaces.filter(
-      (w) => w.path !== path
-    );
+    this.data.recentWorkspaces = this.data.recentWorkspaces.filter((w) => w.path !== path);
     this.save();
   }
 

@@ -3,10 +3,7 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { Flex, Theme } from "@radix-ui/themes";
 
 import { effectiveThemeAtom, loadThemePreferenceAtom } from "../state/themeAtoms";
-import {
-  settingsDialogOpenAtom,
-  workspaceChooserDialogOpenAtom,
-} from "../state/appModeAtoms";
+import { settingsDialogOpenAtom, workspaceChooserDialogOpenAtom } from "../state/appModeAtoms";
 import { NavigationProvider, useNavigation } from "./NavigationContext";
 import { PanelStack } from "./PanelStack";
 import { TitleBar } from "./TitleBar";

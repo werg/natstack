@@ -174,10 +174,7 @@ function injectBundleIntoHtml(html: string, panelId: string): string {
     result = result.replace("<!-- BUNDLE_PLACEHOLDER -->", bundleScript);
   } else if (result.includes('src="./bundle.js"')) {
     // Replace relative bundle reference
-    result = result.replace(
-      /src="\.\/bundle\.js"/g,
-      `src="natstack-panel://${panelId}/bundle.js"`
-    );
+    result = result.replace(/src="\.\/bundle\.js"/g, `src="natstack-panel://${panelId}/bundle.js"`);
   } else if (!result.includes("bundle.js")) {
     // Append before </body> if no bundle reference exists
     result = result.replace("</body>", `${bundleScript}\n</body>`);
@@ -197,10 +194,7 @@ function injectBundleIntoHtml(html: string, panelId: string): string {
 /**
  * Store in-memory panel content
  */
-export function storeInMemoryPanel(
-  panelId: string,
-  artifacts: InMemoryBuildArtifacts
-): string {
+export function storeInMemoryPanel(panelId: string, artifacts: InMemoryBuildArtifacts): string {
   inMemoryPanels.set(panelId, {
     html: artifacts.html,
     bundle: artifacts.bundle,

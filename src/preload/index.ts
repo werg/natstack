@@ -62,15 +62,13 @@ export const electronAPI = {
     ipcRenderer.invoke("workspace:open-folder-dialog"),
   createWorkspace: (path: string, name: string): Promise<Panel.WorkspaceValidation> =>
     ipcRenderer.invoke("workspace:create", path, name),
-  selectWorkspace: (path: string): Promise<void> =>
-    ipcRenderer.invoke("workspace:select", path),
+  selectWorkspace: (path: string): Promise<void> => ipcRenderer.invoke("workspace:select", path),
 
   // =============================================================================
   // Settings Methods
   // =============================================================================
 
-  getSettingsData: (): Promise<Panel.SettingsData> =>
-    ipcRenderer.invoke("settings:get-data"),
+  getSettingsData: (): Promise<Panel.SettingsData> => ipcRenderer.invoke("settings:get-data"),
   setApiKey: (providerId: string, apiKey: string): Promise<void> =>
     ipcRenderer.invoke("settings:set-api-key", providerId, apiKey),
   removeApiKey: (providerId: string): Promise<void> =>

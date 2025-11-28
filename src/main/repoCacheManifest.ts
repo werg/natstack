@@ -6,10 +6,10 @@
  * most recently used entries for that repo.
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
-import { app } from 'electron';
-import { getCacheConfig } from './cacheConfig.js';
+import * as fs from "fs";
+import * as path from "path";
+import { app } from "electron";
+import { getCacheConfig } from "./cacheConfig.js";
 
 interface RepoManifest {
   /** Git repo source URL */
@@ -28,8 +28,8 @@ interface ManifestData {
   accessOrder: string[];
 }
 
-const MANIFEST_VERSION = '1';
-const MANIFEST_FILENAME = 'repo-cache-manifest.json';
+const MANIFEST_VERSION = "1";
+const MANIFEST_FILENAME = "repo-cache-manifest.json";
 
 class RepoCacheManifestManager {
   private manifests = new Map<string, RepoManifest>();
@@ -46,7 +46,7 @@ class RepoCacheManifestManager {
    * Get the file path for the manifest
    */
   private getManifestFilePath(): string {
-    const userDataPath = app.getPath('userData');
+    const userDataPath = app.getPath("userData");
     return path.join(userDataPath, MANIFEST_FILENAME);
   }
 
@@ -59,7 +59,7 @@ class RepoCacheManifestManager {
     const manifestPath = this.getManifestFilePath();
     try {
       if (fs.existsSync(manifestPath)) {
-        const content = fs.readFileSync(manifestPath, 'utf-8');
+        const content = fs.readFileSync(manifestPath, "utf-8");
         const data = JSON.parse(content) as ManifestData;
 
         if (data.version === MANIFEST_VERSION) {
@@ -70,13 +70,13 @@ class RepoCacheManifestManager {
           this.repoAccessOrder = data.accessOrder;
           console.log(`[RepoManifest] Loaded ${this.manifests.size} repo manifests from disk`);
         } else {
-          console.log('[RepoManifest] Version mismatch, starting fresh');
+          console.log("[RepoManifest] Version mismatch, starting fresh");
         }
       } else {
-        console.log('[RepoManifest] No manifest file found, starting fresh');
+        console.log("[RepoManifest] No manifest file found, starting fresh");
       }
     } catch (error) {
-      console.error('[RepoManifest] Failed to load manifest from disk:', error);
+      console.error("[RepoManifest] Failed to load manifest from disk:", error);
     }
 
     this.initialized = true;
@@ -112,11 +112,11 @@ class RepoCacheManifestManager {
       };
 
       const content = JSON.stringify(data, null, 2);
-      fs.writeFileSync(manifestPath, content, 'utf-8');
+      fs.writeFileSync(manifestPath, content, "utf-8");
       this.isDirty = false;
       console.log(`[RepoManifest] Saved ${this.manifests.size} repo manifests to disk`);
     } catch (error) {
-      console.error('[RepoManifest] Failed to save manifest to disk:', error);
+      console.error("[RepoManifest] Failed to save manifest to disk:", error);
     }
   }
 
@@ -191,7 +191,9 @@ class RepoCacheManifestManager {
     const uniqueKeys = [...new Set(cacheKeys)];
 
     if (uniqueKeys.length < cacheKeys.length) {
-      console.log(`[RepoManifest] Deduplicated ${cacheKeys.length - uniqueKeys.length} duplicate cache keys for ${repoUrl}`);
+      console.log(
+        `[RepoManifest] Deduplicated ${cacheKeys.length - uniqueKeys.length} duplicate cache keys for ${repoUrl}`
+      );
     }
 
     for (const key of uniqueKeys) {
@@ -212,7 +214,7 @@ class RepoCacheManifestManager {
     }
 
     // Update access order
-    this.repoAccessOrder = this.repoAccessOrder.filter(url => url !== repoUrl);
+    this.repoAccessOrder = this.repoAccessOrder.filter((url) => url !== repoUrl);
     this.repoAccessOrder.push(repoUrl);
 
     console.log(`[RepoManifest] Found ${manifest.cacheKeys.length} cached keys for ${repoUrl}`);
@@ -231,7 +233,7 @@ class RepoCacheManifestManager {
       lastUpdated: number;
     }>;
   } {
-    const repoStats = Array.from(this.manifests.values()).map(manifest => ({
+    const repoStats = Array.from(this.manifests.values()).map((manifest) => ({
       repoUrl: manifest.repoUrl,
       keyCount: manifest.cacheKeys.length,
       lastUpdated: manifest.lastUpdated,

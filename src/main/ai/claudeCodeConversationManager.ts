@@ -263,7 +263,9 @@ export class ClaudeCodeConversationManager {
   /**
    * Subscribe to conversation end events.
    */
-  addConversationEndListener(listener: (conversationId: string, panelId: string) => void): () => void {
+  addConversationEndListener(
+    listener: (conversationId: string, panelId: string) => void
+  ): () => void {
     this.endListeners.add(listener);
     return () => this.endListeners.delete(listener);
   }

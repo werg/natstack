@@ -42,15 +42,15 @@ interface RpcEvent {
 
 type RpcResponse =
   | {
-    type: "response";
-    requestId: string;
-    result: unknown;
-  }
+      type: "response";
+      requestId: string;
+      result: unknown;
+    }
   | {
-    type: "response";
-    requestId: string;
-    error: string;
-  };
+      type: "response";
+      requestId: string;
+      error: string;
+    };
 
 const urlParams = new URLSearchParams(window.location.search);
 const panelId = urlParams.get("panelId");
@@ -94,7 +94,7 @@ const parseAuthToken = (): string | undefined => {
  * - Limits length to prevent abuse
  */
 function sanitizeRepoUrl(repoUrl: unknown): string | null {
-  if (typeof repoUrl !== 'string' || !repoUrl) {
+  if (typeof repoUrl !== "string" || !repoUrl) {
     return null;
   }
 
@@ -106,9 +106,9 @@ function sanitizeRepoUrl(repoUrl: unknown): string | null {
 
   try {
     // For relative paths (workspace-relative repos), just normalize
-    if (!repoUrl.includes('://')) {
+    if (!repoUrl.includes("://")) {
       // Remove leading/trailing slashes and normalize
-      const normalized = repoUrl.replace(/^\/+|\/+$/g, '');
+      const normalized = repoUrl.replace(/^\/+|\/+$/g, "");
       // Validate it doesn't contain dangerous characters
       if (/[<>"|?*\x00-\x1f]/.test(normalized)) {
         console.warn(`[Panel] Repo path contains invalid characters: ${normalized}`);
@@ -121,17 +121,17 @@ function sanitizeRepoUrl(repoUrl: unknown): string | null {
     const url = new URL(repoUrl);
 
     // Only allow http/https/git protocols
-    if (!['http:', 'https:', 'git:'].includes(url.protocol)) {
+    if (!["http:", "https:", "git:"].includes(url.protocol)) {
       console.warn(`[Panel] Invalid repo URL protocol: ${url.protocol}`);
       return null;
     }
 
     // Remove query params and fragments (not needed for cache keys)
-    url.search = '';
-    url.hash = '';
+    url.search = "";
+    url.hash = "";
 
     // Normalize trailing slash
-    const sanitized = url.toString().replace(/\/$/, '');
+    const sanitized = url.toString().replace(/\/$/, "");
 
     return sanitized;
   } catch (error) {
@@ -143,11 +143,12 @@ function sanitizeRepoUrl(repoUrl: unknown): string | null {
 const authToken = parseAuthToken();
 if (authToken) {
   // Register this panel view with the main process using the secure token
-  void ipcRenderer.invoke("panel-bridge:register", panelId, authToken)
+  void ipcRenderer
+    .invoke("panel-bridge:register", panelId, authToken)
     .then(async () => {
       // After registration, get panel info to extract source repo for cache warming
       try {
-        const gitConfig = await ipcRenderer.invoke("panel-bridge:get-git-config", panelId) as {
+        const gitConfig = (await ipcRenderer.invoke("panel-bridge:get-git-config", panelId)) as {
           serverUrl: string;
           token: string;
           sourceRepo: string;
@@ -162,7 +163,9 @@ if (authToken) {
             (globalThis as { __natstackRepoUrl?: string }).__natstackRepoUrl = sanitizedRepoUrl;
             console.log(`[Panel] Set repo URL for cache tracking: ${sanitizedRepoUrl}`);
           } else {
-            console.warn(`[Panel] Skipping cache tracking - invalid repo URL: ${gitConfig.sourceRepo}`);
+            console.warn(
+              `[Panel] Skipping cache tracking - invalid repo URL: ${gitConfig.sourceRepo}`
+            );
           }
         }
       } catch (error) {
@@ -492,7 +495,13 @@ const bridge = {
     env?: Record<string, string>,
     requestedPanelId?: string
   ): Promise<string> => {
-    return ipcRenderer.invoke("panel-bridge:launch-child", panelId, artifacts, env, requestedPanelId);
+    return ipcRenderer.invoke(
+      "panel-bridge:launch-child",
+      panelId,
+      artifacts,
+      env,
+      requestedPanelId
+    );
   },
 
   removeChild: (childId: string): Promise<void> => {
@@ -532,7 +541,9 @@ const bridge = {
    * Load cache from disk (shared across all panels).
    * Returns cache entries stored in app data directory.
    */
-  loadDiskCache: (): Promise<Record<string, { key: string; value: string; timestamp: number; size: number }>> => {
+  loadDiskCache: (): Promise<
+    Record<string, { key: string; value: string; timestamp: number; size: number }>
+  > => {
     return ipcRenderer.invoke("panel-bridge:load-disk-cache", panelId);
   },
 
@@ -540,7 +551,9 @@ const bridge = {
    * Save cache to disk (shared across all panels).
    * Saves cache entries to app data directory.
    */
-  saveDiskCache: (entries: Record<string, { key: string; value: string; timestamp: number; size: number }>): Promise<void> => {
+  saveDiskCache: (
+    entries: Record<string, { key: string; value: string; timestamp: number; size: number }>
+  ): Promise<void> => {
     return ipcRenderer.invoke("panel-bridge:save-disk-cache", panelId, entries);
   },
 
@@ -564,7 +577,9 @@ const bridge = {
    * Load specific cache entries by key (selective loading).
    * Returns only the requested cache entries.
    */
-  loadCacheEntries: (keys: string[]): Promise<Record<string, { key: string; value: string; timestamp: number; size: number }>> => {
+  loadCacheEntries: (
+    keys: string[]
+  ): Promise<Record<string, { key: string; value: string; timestamp: number; size: number }>> => {
     return ipcRenderer.invoke("panel-bridge:load-cache-entries", keys);
   },
 
@@ -729,11 +744,11 @@ const bridge = {
       tools: AIToolDefinition[],
       callbacks: Record<string, (args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>>
     ): Promise<ClaudeCodeConversationInfo> => {
-      const info = await ipcRenderer.invoke(
+      const info = (await ipcRenderer.invoke(
         "ai:cc-conversation-start",
         modelId,
         tools
-      ) as ClaudeCodeConversationInfo;
+      )) as ClaudeCodeConversationInfo;
 
       // Register the tool callbacks for this conversation
       const callbackMap = new Map<
@@ -819,7 +834,10 @@ const bridge = {
       serverUrl: string;
       token: string;
       sourceRepo: string;
-      gitDependencies: Record<string, string | { repo: string; branch?: string; commit?: string; tag?: string }>;
+      gitDependencies: Record<
+        string,
+        string | { repo: string; branch?: string; commit?: string; tag?: string }
+      >;
     }> => {
       return ipcRenderer.invoke("panel-bridge:get-git-config", panelId);
     },

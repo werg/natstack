@@ -223,7 +223,9 @@ export class ModelRoleResolver {
 
     // Fallback: assume it's a model name without provider prefix
     // Default to anthropic for backwards compatibility
-    console.warn(`[ModelRoles] Model ID without provider prefix: ${roleOrId}, defaulting to anthropic`);
+    console.warn(
+      `[ModelRoles] Model ID without provider prefix: ${roleOrId}, defaulting to anthropic`
+    );
     return {
       modelId: `anthropic:${roleOrId}`,
       provider: "anthropic",

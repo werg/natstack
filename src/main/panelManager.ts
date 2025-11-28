@@ -167,12 +167,14 @@ export class PanelManager {
     } = params;
 
     // Use pre-computed panelId if provided, otherwise compute it
-    const panelId = params.panelId ?? this.computePanelId({
-      relativePath,
-      parent,
-      requestedId: requestedPanelId,
-      singletonState,
-    });
+    const panelId =
+      params.panelId ??
+      this.computePanelId({
+        relativePath,
+        parent,
+        requestedId: requestedPanelId,
+        singletonState,
+      });
 
     if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
       throw new Error(`A panel with id/partition "${panelId}" is already running`);
@@ -395,7 +397,9 @@ export class PanelManager {
       // Debug: log panel tree being sent
       const logTree = (panels: Panel[], depth = 0): void => {
         for (const p of panels) {
-          console.log(`[PanelManager] ${"  ".repeat(depth)}Panel: ${p.id}, htmlPath: ${p.artifacts?.htmlPath?.slice(0, 80) ?? "none"}`);
+          console.log(
+            `[PanelManager] ${"  ".repeat(depth)}Panel: ${p.id}, htmlPath: ${p.artifacts?.htmlPath?.slice(0, 80) ?? "none"}`
+          );
           if (p.children.length > 0) logTree(p.children, depth + 1);
         }
       };
@@ -404,9 +408,13 @@ export class PanelManager {
       this.mainWindow.webContents.send("panel:tree-updated", tree);
 
       // Also log to main window's console for debugging
-      this.mainWindow.webContents.executeJavaScript(`
+      this.mainWindow.webContents
+        .executeJavaScript(
+          `
         console.log('[Main->Renderer] Panel tree update sent, panel count:', ${tree.length});
-      `).catch(() => {});
+      `
+        )
+        .catch(() => {});
     }
   }
 

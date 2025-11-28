@@ -1,14 +1,5 @@
 import { useAtomValue, useSetAtom } from "jotai";
-import {
-  Box,
-  Button,
-  Callout,
-  Dialog,
-  Flex,
-  Spinner,
-  Text,
-  TextField,
-} from "@radix-ui/themes";
+import { Box, Button, Callout, Dialog, Flex, Spinner, Text, TextField } from "@radix-ui/themes";
 import { ExclamationTriangleIcon, FileIcon } from "@radix-ui/react-icons";
 
 import {
@@ -95,9 +86,7 @@ export function WorkspaceWizard() {
               <Flex gap="2">
                 <TextField.Root
                   value={formData.folderPath}
-                  onChange={(e) =>
-                    setFormData({ ...formData, folderPath: e.target.value })
-                  }
+                  onChange={(e) => setFormData({ ...formData, folderPath: e.target.value })}
                   placeholder="/path/to/workspace"
                   style={{ flex: 1 }}
                 />
@@ -120,9 +109,7 @@ export function WorkspaceWizard() {
               </Text>
               <TextField.Root
                 value={formData.workspaceName}
-                onChange={(e) =>
-                  setFormData({ ...formData, workspaceName: e.target.value })
-                }
+                onChange={(e) => setFormData({ ...formData, workspaceName: e.target.value })}
                 placeholder="my-workspace"
                 autoFocus
               />
@@ -172,11 +159,7 @@ export function WorkspaceWizard() {
               Next
             </Button>
           ) : (
-            <Button
-              onClick={handleCreate}
-              disabled={isCreating || !canProceed()}
-              color="green"
-            >
+            <Button onClick={handleCreate} disabled={isCreating || !canProceed()} color="green">
               {isCreating ? "Creating..." : "Create Workspace"}
             </Button>
           )}
@@ -193,11 +176,7 @@ export function WorkspaceWizard() {
                   height: 8,
                   borderRadius: "50%",
                   backgroundColor:
-                    s === step
-                      ? "var(--accent-9)"
-                      : s < step
-                        ? "var(--accent-6)"
-                        : "var(--gray-5)",
+                    s === step ? "var(--accent-9)" : s < step ? "var(--accent-6)" : "var(--gray-5)",
                 }}
               />
             ))}

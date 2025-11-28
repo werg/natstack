@@ -69,7 +69,9 @@ function jsonSchemaToZod(schema: Record<string, unknown>): z.ZodType {
       return z.array(z.unknown());
     }
     case "object": {
-      const properties = schema["properties"] as Record<string, Record<string, unknown>> | undefined;
+      const properties = schema["properties"] as
+        | Record<string, Record<string, unknown>>
+        | undefined;
       const required = (schema["required"] as string[]) || [];
 
       if (!properties) {
@@ -152,7 +154,9 @@ export function createToolProxyMcpServer(config: ToolProxyConfig): McpSdkServerC
         } catch (error) {
           // Convert thrown errors to isError results so Claude sees them gracefully
           return {
-            content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+            content: [
+              { type: "text", text: error instanceof Error ? error.message : String(error) },
+            ],
             isError: true,
           };
         }

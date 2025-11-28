@@ -286,7 +286,9 @@ export function PanelStack({
       // Debug: log all panels in tree
       const logPanels = (panels: Panel[], depth = 0): void => {
         for (const p of panels) {
-          console.log(`[PanelStack] ${"  ".repeat(depth)}Panel: ${p.id}, htmlPath: ${p.artifacts?.htmlPath?.slice(0, 80) ?? "none"}`);
+          console.log(
+            `[PanelStack] ${"  ".repeat(depth)}Panel: ${p.id}, htmlPath: ${p.artifacts?.htmlPath?.slice(0, 80) ?? "none"}`
+          );
           if (p.children.length > 0) logPanels(p.children, depth + 1);
         }
       };
@@ -454,7 +456,9 @@ export function PanelStack({
   const allPanels = flattenPanels(rootPanels);
 
   // Debug: log all panels
-  console.log(`[PanelStack] allPanels count: ${allPanels.length}, ids: ${allPanels.map(p => p.id.slice(-20)).join(", ")}`);
+  console.log(
+    `[PanelStack] allPanels count: ${allPanels.length}, ids: ${allPanels.map((p) => p.id.slice(-20)).join(", ")}`
+  );
 
   function findPanelById(panelId: string): Panel | null {
     const traverse = (panelList: Panel[]): Panel | null => {
@@ -691,7 +695,9 @@ export function PanelStack({
                     const isVisible = visiblePanel ? panel.id === visiblePanel.id : false;
 
                     // Debug logging for all panels
-                    console.log(`[PanelStack] Rendering panel: ${panel.id}, visible: ${isVisible}, hasArtifacts: ${!!artifacts}, htmlPath: ${artifacts?.htmlPath?.slice(0, 50)}...`);
+                    console.log(
+                      `[PanelStack] Rendering panel: ${panel.id}, visible: ${isVisible}, hasArtifacts: ${!!artifacts}, htmlPath: ${artifacts?.htmlPath?.slice(0, 50)}...`
+                    );
 
                     if (isVisible) {
                       if (artifacts?.error) {
@@ -745,12 +751,16 @@ export function PanelStack({
                       srcUrl.searchParams.set("panelId", panel.id);
                       const partitionName = `persist:${panel.id}`;
                       console.log(`[PanelStack] Final webview src: ${srcUrl.toString()}`);
-                      console.log(`[PanelStack] Creating webview element for: ${panel.id.slice(-30)}`);
+                      console.log(
+                        `[PanelStack] Creating webview element for: ${panel.id.slice(-30)}`
+                      );
                       return (
                         <webview
                           key={panel.id}
                           ref={(el) => {
-                            console.log(`[PanelStack] webview ref callback for ${panel.id.slice(-30)}, el: ${el ? "HTMLElement" : "null"}`);
+                            console.log(
+                              `[PanelStack] webview ref callback for ${panel.id.slice(-30)}, el: ${el ? "HTMLElement" : "null"}`
+                            );
                             if (el) {
                               handleWebviewReady(panel.id, el);
                             } else {

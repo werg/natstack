@@ -39,8 +39,7 @@ export class GitServer {
 
   private ensureReposPath(): string {
     if (!this.resolvedReposPath) {
-      this.resolvedReposPath =
-        this.configuredReposPath ?? app.getPath("userData");
+      this.resolvedReposPath = this.configuredReposPath ?? app.getPath("userData");
     }
     return this.resolvedReposPath;
   }
@@ -123,9 +122,7 @@ export class GitServer {
     // Find an available port, starting from the configured one
     const port = await this.findAvailablePort(this.configuredPort);
     if (port !== this.configuredPort) {
-      console.log(
-        `[GitServer] Configured port ${this.configuredPort} unavailable, using ${port}`
-      );
+      console.log(`[GitServer] Configured port ${this.configuredPort} unavailable, using ${port}`);
     }
 
     const git = this.git;

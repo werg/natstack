@@ -1,15 +1,6 @@
 import { useEffect } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
-import {
-  Box,
-  Button,
-  Card,
-  Flex,
-  Heading,
-  IconButton,
-  Separator,
-  Text,
-} from "@radix-ui/themes";
+import { Box, Button, Card, Flex, Heading, IconButton, Separator, Text } from "@radix-ui/themes";
 import { Cross2Icon, FileIcon, GearIcon, PlusIcon } from "@radix-ui/react-icons";
 
 import {
@@ -150,11 +141,7 @@ export function WorkspaceChooser() {
             }}
           >
             {recentWorkspaces.length === 0 ? (
-              <Flex
-                align="center"
-                justify="center"
-                style={{ height: "100%", minHeight: "120px" }}
-              >
+              <Flex align="center" justify="center" style={{ height: "100%", minHeight: "120px" }}>
                 <Text size="2" color="gray">
                   No recent workspaces
                 </Text>
@@ -208,18 +195,9 @@ interface WorkspaceItemProps {
   onRemove: (e: React.MouseEvent) => void;
 }
 
-function WorkspaceItem({
-  workspace,
-  formatPath,
-  onSelect,
-  onRemove,
-}: WorkspaceItemProps) {
+function WorkspaceItem({ workspace, formatPath, onSelect, onRemove }: WorkspaceItemProps) {
   return (
-    <Card
-      asChild
-      style={{ cursor: "pointer" }}
-      className="workspace-item"
-    >
+    <Card asChild style={{ cursor: "pointer" }} className="workspace-item">
       <button
         onClick={onSelect}
         style={{
@@ -235,12 +213,7 @@ function WorkspaceItem({
             <Text size="2" weight="medium" truncate>
               {workspace.name}
             </Text>
-            <Text
-              size="1"
-              color="gray"
-              truncate
-              style={{ fontFamily: "var(--font-mono)" }}
-            >
+            <Text size="1" color="gray" truncate style={{ fontFamily: "var(--font-mono)" }}>
               {formatPath(workspace.path)}
             </Text>
           </Flex>

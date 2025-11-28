@@ -5,8 +5,8 @@
  * All panels communicate with this via IPC.
  */
 
-import { loadDiskCache, saveDiskCache } from './diskCache.js';
-import { getCacheConfig } from './cacheConfig.js';
+import { loadDiskCache, saveDiskCache } from "./diskCache.js";
+import { getCacheConfig } from "./cacheConfig.js";
 
 interface CacheEntry {
   key: string;
@@ -41,7 +41,9 @@ class MainCacheManager {
     }
 
     this.initialized = true;
-    console.log(`[MainCache] Initialized with ${this.cache.size} entries from disk (${Math.round(this.totalSize / 1024 / 1024)}MB)`);
+    console.log(
+      `[MainCache] Initialized with ${this.cache.size} entries from disk (${Math.round(this.totalSize / 1024 / 1024)}MB)`
+    );
   }
 
   /**
@@ -138,7 +140,9 @@ class MainCacheManager {
     const size = value.length;
 
     if (size > this.MAX_SIZE) {
-      console.warn(`[MainCache] Skipping ${key} (${size} bytes) because it exceeds max cache size of ${this.MAX_SIZE} bytes`);
+      console.warn(
+        `[MainCache] Skipping ${key} (${size} bytes) because it exceeds max cache size of ${this.MAX_SIZE} bytes`
+      );
       return;
     }
 
@@ -178,7 +182,9 @@ class MainCacheManager {
   async setMany(entries: Record<string, CacheEntry>): Promise<void> {
     for (const [key, entry] of Object.entries(entries)) {
       if (entry.size > this.MAX_SIZE) {
-        console.warn(`[MainCache] Skipping ${key} (${entry.size} bytes) because it exceeds max cache size of ${this.MAX_SIZE} bytes`);
+        console.warn(
+          `[MainCache] Skipping ${key} (${entry.size} bytes) because it exceeds max cache size of ${this.MAX_SIZE} bytes`
+        );
         continue;
       }
 
@@ -236,7 +242,7 @@ class MainCacheManager {
     oldestEntry: number | null;
     newestEntry: number | null;
   } {
-    const timestamps = Array.from(this.cache.values()).map(e => e.timestamp);
+    const timestamps = Array.from(this.cache.values()).map((e) => e.timestamp);
 
     return {
       entries: this.cache.size,
@@ -289,7 +295,7 @@ class MainCacheManager {
       this.isDirty = false;
       console.log(`[MainCache] Saved ${Object.keys(entries).length} entries to disk`);
     } catch (error) {
-      console.error('[MainCache] Failed to save to disk, will retry on next change:', error);
+      console.error("[MainCache] Failed to save to disk, will retry on next change:", error);
       // Keep isDirty = true to retry on next change
     }
   }

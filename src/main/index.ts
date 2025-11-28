@@ -105,7 +105,10 @@ if (appMode === "main" && hasWorkspaceConfig) {
     // Create panel manager
     panelManager = new PanelManager(initialRootPanelPath, gitServer);
   } catch (error) {
-    console.error("[Workspace] Failed to initialize workspace, falling back to chooser mode:", error);
+    console.error(
+      "[Workspace] Failed to initialize workspace, falling back to chooser mode:",
+      error
+    );
     appMode = "chooser";
   }
 }
@@ -124,8 +127,8 @@ function createWindow(): void {
     titleBarStyle: "hidden",
     ...(process.platform !== "darwin"
       ? {
-        titleBarOverlay: true,
-      }
+          titleBarOverlay: true,
+        }
       : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -347,7 +350,8 @@ handle("panel-bridge:load-disk-cache", async (event, panelId: string) => {
   if (allowedKeys.length === 0) return {};
 
   const cacheManager = getMainCacheManager();
-  const result: Record<string, { key: string; value: string; timestamp: number; size: number }> = {};
+  const result: Record<string, { key: string; value: string; timestamp: number; size: number }> =
+    {};
   for (const key of allowedKeys) {
     const entry = cacheManager.getEntry(key, isDev());
     if (entry) {
@@ -358,27 +362,37 @@ handle("panel-bridge:load-disk-cache", async (event, panelId: string) => {
 });
 
 // Save cache entries produced by a panel back to main process (only build/esm keys)
-handle("panel-bridge:save-disk-cache", async (event, panelId: string, entries: Record<string, { key: string; value: string; timestamp: number; size: number }>) => {
-  assertAuthorized(event, panelId);
-  const pm = requirePanelManager();
-  const gitConfig = pm.getGitConfig(panelId);
-  const repoUrl = gitConfig?.sourceRepo;
+handle(
+  "panel-bridge:save-disk-cache",
+  async (
+    event,
+    panelId: string,
+    entries: Record<string, { key: string; value: string; timestamp: number; size: number }>
+  ) => {
+    assertAuthorized(event, panelId);
+    const pm = requirePanelManager();
+    const gitConfig = pm.getGitConfig(panelId);
+    const repoUrl = gitConfig?.sourceRepo;
 
-  const filtered: Record<string, { key: string; value: string; timestamp: number; size: number }> = {};
-  for (const [key, entry] of Object.entries(entries)) {
-    // Only accept known cache namespaces to avoid pollution
-    if (key.startsWith("build:") || key.startsWith("esm:")) {
-      filtered[key] = entry;
+    const filtered: Record<
+      string,
+      { key: string; value: string; timestamp: number; size: number }
+    > = {};
+    for (const [key, entry] of Object.entries(entries)) {
+      // Only accept known cache namespaces to avoid pollution
+      if (key.startsWith("build:") || key.startsWith("esm:")) {
+        filtered[key] = entry;
+      }
+    }
+
+    if (Object.keys(filtered).length > 0) {
+      await getMainCacheManager().setMany(filtered);
+      if (repoUrl) {
+        getRepoCacheManifestManager().recordCacheHits(repoUrl, Object.keys(filtered));
+      }
     }
   }
-
-  if (Object.keys(filtered).length > 0) {
-    await getMainCacheManager().setMany(filtered);
-    if (repoUrl) {
-      getRepoCacheManifestManager().recordCacheHits(repoUrl, Object.keys(filtered));
-    }
-  }
-});
+);
 
 // Record cache hits for repo manifest tracking (repo derived from panel id)
 handle("panel-bridge:record-cache-hits", async (event, panelId: string, cacheKeys: string[]) => {
@@ -412,7 +426,8 @@ handle("panel-bridge:load-cache-entries", async (event, keys: string[]) => {
 
   const allowed = new Set(getRepoCacheManifestManager().getCacheKeysForRepo(repoUrl));
   const cacheManager = getMainCacheManager();
-  const result: Record<string, { key: string; value: string; timestamp: number; size: number }> = {};
+  const result: Record<string, { key: string; value: string; timestamp: number; size: number }> =
+    {};
   for (const key of keys) {
     if (!allowed.has(key)) continue;
     const entry = cacheManager.getEntry(key, isDev());

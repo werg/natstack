@@ -389,7 +389,9 @@ export class AIHandler {
     this.clearProviders();
 
     // Import dynamically to avoid circular dependencies at module load time
-    const { createProviderFromConfig, getSupportedProviders } = await import("./providerFactory.js");
+    const { createProviderFromConfig, getSupportedProviders } = await import(
+      "./providerFactory.js"
+    );
     const { ModelRoleResolver } = await import("./modelRoles.js");
     const { loadCentralConfig } = await import("../workspace/loader.js");
 
@@ -441,13 +443,13 @@ export class AIHandler {
     const allModels = this.registry.getAvailableModels();
 
     // Helper to get model info for a role
-    const getModelInfo = (role: 'smart' | 'coding' | 'fast' | 'cheap'): AIModelInfo | null => {
+    const getModelInfo = (role: "smart" | "coding" | "fast" | "cheap"): AIModelInfo | null => {
       const spec = this.modelRoleResolver?.resolveSpec(role);
       if (!spec) return null;
 
       // The spec.model is just the model name (e.g., "claude-haiku-4-5-20251001")
       // The registry stores models with this ID format
-      const modelInfo = allModels.find(m => m.id === spec.model && m.provider === spec.provider);
+      const modelInfo = allModels.find((m) => m.id === spec.model && m.provider === spec.provider);
       if (!modelInfo) return null;
 
       return {
@@ -459,10 +461,10 @@ export class AIHandler {
     };
 
     // Get explicitly configured roles
-    const smart = getModelInfo('smart');
-    const coding = getModelInfo('coding');
-    const fast = getModelInfo('fast');
-    const cheap = getModelInfo('cheap');
+    const smart = getModelInfo("smart");
+    const coding = getModelInfo("coding");
+    const fast = getModelInfo("fast");
+    const cheap = getModelInfo("cheap");
 
     // Apply defaulting rules
     // smart <-> coding, both prefer fast
@@ -478,7 +480,9 @@ export class AIHandler {
       // Return a minimal valid record using the first available model
       const fallback = smartFinal || codingFinal || fastFinal || cheapFinal;
       if (fallback) {
-        console.warn('[AI] Using fallback model for unconfigured roles. Consider configuring all standard roles in ~/.config/natstack/config.yml');
+        console.warn(
+          "[AI] Using fallback model for unconfigured roles. Consider configuring all standard roles in ~/.config/natstack/config.yml"
+        );
         console.warn(`[AI] Fallback model: ${fallback.displayName} (${fallback.modelId})`);
         return {
           smart: fallback,
@@ -488,7 +492,7 @@ export class AIHandler {
         };
       }
       // No models available at all
-      throw new Error('No AI models available. Please configure at least one provider.');
+      throw new Error("No AI models available. Please configure at least one provider.");
     }
 
     // Log if any roles are using fallback defaults
@@ -500,11 +504,13 @@ export class AIHandler {
 
     if (usedFallback) {
       const unconfiguredRoles = [];
-      if (smart === null) unconfiguredRoles.push('smart');
-      if (coding === null) unconfiguredRoles.push('coding');
-      if (fast === null) unconfiguredRoles.push('fast');
-      if (cheap === null) unconfiguredRoles.push('cheap');
-      console.warn(`[AI] Using fallback models for unconfigured roles: ${unconfiguredRoles.join(', ')}`);
+      if (smart === null) unconfiguredRoles.push("smart");
+      if (coding === null) unconfiguredRoles.push("coding");
+      if (fast === null) unconfiguredRoles.push("fast");
+      if (cheap === null) unconfiguredRoles.push("cheap");
+      console.warn(
+        `[AI] Using fallback models for unconfigured roles: ${unconfiguredRoles.join(", ")}`
+      );
     }
 
     // Build the final record with standard roles
@@ -538,7 +544,14 @@ export class AIHandler {
         const panelId = this.getPanelId(event, requestId);
         // Resolve model role to actual model ID
         const resolvedModelId = this.resolveModelId(modelId);
-        void this.streamToPanel(event.sender, requestId, panelId, resolvedModelId, options, streamId);
+        void this.streamToPanel(
+          event.sender,
+          requestId,
+          panelId,
+          resolvedModelId,
+          options,
+          streamId
+        );
       }
     );
 
@@ -560,7 +573,11 @@ export class AIHandler {
 
     handle(
       "ai:cc-conversation-start",
-      async (event, modelId: string, tools: AIToolDefinition[]): Promise<ClaudeCodeConversationInfo> => {
+      async (
+        event,
+        modelId: string,
+        tools: AIToolDefinition[]
+      ): Promise<ClaudeCodeConversationInfo> => {
         const requestId = generateRequestId();
         const panelId = this.getPanelId(event, requestId);
 
@@ -573,7 +590,10 @@ export class AIHandler {
         // Validate tools
         const validatedTools = validateToolDefinitions(tools);
         if (!validatedTools || validatedTools.length === 0) {
-          throw createAIError("api_error", "At least one tool is required for Claude Code conversations");
+          throw createAIError(
+            "api_error",
+            "At least one tool is required for Claude Code conversations"
+          );
         }
 
         // Extract the model name from the modelId (e.g., "claude-code:sonnet" -> "sonnet")
@@ -650,7 +670,12 @@ export class AIHandler {
           });
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
-          this.logger.error(requestId, "Failed to create Claude Code conversation", { message: err.message }, err);
+          this.logger.error(
+            requestId,
+            "Failed to create Claude Code conversation",
+            { message: err.message },
+            err
+          );
           throw createAIError("api_error", err.message);
         }
 
@@ -755,7 +780,11 @@ export class AIHandler {
         const requestId = generateRequestId();
         const panelId = this.getPanelId(event, requestId);
 
-        this.logger.info(requestId, "Claude Code stream start", { panelId, conversationId, streamId });
+        this.logger.info(requestId, "Claude Code stream start", {
+          panelId,
+          conversationId,
+          streamId,
+        });
 
         const conversation = this.ccConversationManager.getConversation(conversationId);
         if (!conversation) {
@@ -767,7 +796,14 @@ export class AIHandler {
         }
 
         // Run the stream in the background
-        void this.ccStreamToPanel(event.sender, requestId, panelId, conversationId, options, streamId);
+        void this.ccStreamToPanel(
+          event.sender,
+          requestId,
+          panelId,
+          conversationId,
+          options,
+          streamId
+        );
       }
     );
 
@@ -779,7 +815,9 @@ export class AIHandler {
 
       const conversation = this.ccConversationManager.getConversation(conversationId);
       if (!conversation) {
-        this.logger.warn(requestId, "Conversation not found (may have already ended)", { conversationId });
+        this.logger.warn(requestId, "Conversation not found (may have already ended)", {
+          conversationId,
+        });
         return;
       }
 
@@ -797,11 +835,16 @@ export class AIHandler {
         const requestId = generateRequestId();
         this.getPanelId(event, requestId); // Validate authorization
 
-        this.logger.debug(requestId, "Received tool result", { executionId, isError: result.isError });
+        this.logger.debug(requestId, "Received tool result", {
+          executionId,
+          isError: result.isError,
+        });
 
         const pending = this.pendingToolExecutions.get(executionId);
         if (!pending) {
-          this.logger.warn(requestId, "No pending execution found for tool result", { executionId });
+          this.logger.warn(requestId, "No pending execution found for tool result", {
+            executionId,
+          });
           return;
         }
 
@@ -1079,7 +1122,12 @@ export class AIHandler {
     // Validate and convert tools
     const validatedTools = validateToolDefinitions(options.tools);
     if (!validatedTools || validatedTools.length === 0) {
-      this.sendStreamError(sender, panelId, streamId, new Error("Tools are required for Claude Code"));
+      this.sendStreamError(
+        sender,
+        panelId,
+        streamId,
+        new Error("Tools are required for Claude Code")
+      );
       return;
     }
 
@@ -1233,7 +1281,12 @@ export class AIHandler {
         this.logger.info(requestId, "Claude Code stream with tools completed", { streamId });
       }
     } catch (error) {
-      this.logger.error(requestId, "Claude Code stream with tools error", { streamId }, error as Error);
+      this.logger.error(
+        requestId,
+        "Claude Code stream with tools error",
+        { streamId },
+        error as Error
+      );
       this.sendStreamError(sender, panelId, streamId, error);
     } finally {
       if (actualConversationId) {
@@ -1382,7 +1435,11 @@ export class AIHandler {
     options: AICallOptions,
     streamId: string
   ): Promise<void> {
-    this.logger.info(requestId, "Claude Code stream started", { panelId, conversationId, streamId });
+    this.logger.info(requestId, "Claude Code stream started", {
+      panelId,
+      conversationId,
+      streamId,
+    });
 
     const abortController = new AbortController();
     this.streamManager.startTracking(streamId, abortController, requestId);

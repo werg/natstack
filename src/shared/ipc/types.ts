@@ -122,23 +122,32 @@ export interface PanelBridgeIpcApi {
    * Load cache from disk
    * Returns cache entries stored on disk (shared across all panels)
    */
-  "panel-bridge:load-disk-cache": (panelId: string) => Record<string, {
-    key: string;
-    value: string;
-    timestamp: number;
-    size: number;
-  }>;
+  "panel-bridge:load-disk-cache": (panelId: string) => Record<
+    string,
+    {
+      key: string;
+      value: string;
+      timestamp: number;
+      size: number;
+    }
+  >;
 
   /**
    * Save cache to disk
    * Saves cache entries to disk (shared across all panels)
    */
-  "panel-bridge:save-disk-cache": (panelId: string, entries: Record<string, {
-    key: string;
-    value: string;
-    timestamp: number;
-    size: number;
-  }>) => void;
+  "panel-bridge:save-disk-cache": (
+    panelId: string,
+    entries: Record<
+      string,
+      {
+        key: string;
+        value: string;
+        timestamp: number;
+        size: number;
+      }
+    >
+  ) => void;
 
   /**
    * Record cache hits for repo manifest tracking
@@ -156,12 +165,15 @@ export interface PanelBridgeIpcApi {
    * Load specific cache entries by key
    * Returns only the requested cache entries (selective loading)
    */
-  "panel-bridge:load-cache-entries": (keys: string[]) => Record<string, {
-    key: string;
-    value: string;
-    timestamp: number;
-    size: number;
-  }>;
+  "panel-bridge:load-cache-entries": (keys: string[]) => Record<
+    string,
+    {
+      key: string;
+      value: string;
+      timestamp: number;
+      size: number;
+    }
+  >;
 
   /**
    * Launch a child panel from in-memory build artifacts
@@ -227,29 +239,19 @@ export interface AIProviderIpcApi {
    * Generate with an existing Claude Code conversation.
    * Tools are executed via ai:cc-tool-execute events.
    */
-  "ai:cc-generate": (
-    conversationId: string,
-    options: AICallOptions
-  ) => AIGenerateResult;
+  "ai:cc-generate": (conversationId: string, options: AICallOptions) => AIGenerateResult;
 
   /**
    * Stream with an existing Claude Code conversation.
    * Tools are executed via ai:cc-tool-execute events.
    */
-  "ai:cc-stream-start": (
-    conversationId: string,
-    options: AICallOptions,
-    streamId: string
-  ) => void;
+  "ai:cc-stream-start": (conversationId: string, options: AICallOptions, streamId: string) => void;
 
   /** End a Claude Code conversation and clean up resources */
   "ai:cc-conversation-end": (conversationId: string) => void;
 
   /** Response from panel after executing a tool (called by panel) */
-  "ai:cc-tool-result": (
-    executionId: string,
-    result: ClaudeCodeToolResult
-  ) => void;
+  "ai:cc-tool-result": (executionId: string, result: ClaudeCodeToolResult) => void;
 }
 
 // =============================================================================
