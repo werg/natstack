@@ -15,6 +15,7 @@ import {
   isProtocolPanel,
   registerProtocolForPartition,
 } from "./panelProtocol.js";
+import { getWorkerManager } from "./workerManager.js";
 
 export class PanelManager {
   private builder: PanelBuilder;
@@ -86,9 +87,13 @@ export class PanelManager {
   // Public methods for RPC services
 
   /**
-   * Create a child panel from a workspace path.
+   * Create a child panel or worker from a workspace path.
    * Main process handles git checkout and build asynchronously.
-   * Returns panel ID immediately; build happens in background.
+   * Returns child ID immediately; build happens in background.
+   *
+   * The runtime type (panel vs worker) is determined by the manifest's `runtime` field.
+   * Workers run in isolated-vm with auto-generated filesystem scope paths.
+   * Singleton children get the same ID/scope path across restarts.
    */
   async createChild(
     parentId: string,
@@ -113,6 +118,7 @@ export class PanelManager {
     }
 
     const isSingleton = manifest.singletonState === true;
+    const isWorker = manifest.runtime === "worker";
 
     if (isSingleton && options?.panelId) {
       throw new Error(
@@ -120,65 +126,157 @@ export class PanelManager {
       );
     }
 
-    // Compute panelId
-    const panelId = this.computePanelId({
+    // Compute child ID
+    const childId = this.computePanelId({
       relativePath,
       parent,
       requestedId: options?.panelId,
       singletonState: isSingleton,
     });
 
-    // Check if panel already exists (for singletons)
-    if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
+    // Check if child already exists (for singletons)
+    if (this.panels.has(childId) || this.reservedPanelIds.has(childId)) {
       if (isSingleton) {
-        // For singletons, just select the existing panel
-        parent.selectedChildId = panelId;
+        // For singletons, just select the existing child
+        parent.selectedChildId = childId;
         this.notifyPanelTreeUpdate();
-        return panelId;
+        return childId;
       }
-      throw new Error(`A panel with id/partition "${panelId}" is already running`);
+      throw new Error(`A child with id "${childId}" is already running`);
     }
 
-    this.reservedPanelIds.add(panelId);
+    this.reservedPanelIds.add(childId);
 
     try {
-      // Create panel immediately with 'building' state
-      const gitToken = this.gitServer.getTokenForPanel(panelId);
-      const panelEnv: Record<string, string> = {
-        ...options?.env,
-        __GIT_SERVER_URL: this.gitServer.getBaseUrl(),
-        __GIT_TOKEN: gitToken,
-      };
-
-      const newPanel: Panel = {
-        id: panelId,
+      // Create child node immediately with 'building' state
+      const newChild: Panel = {
+        id: childId,
         title: manifest.title,
         path: relativePath,
         children: [],
         selectedChildId: null,
-        injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
+        injectHostThemeVariables: !isWorker && manifest.injectHostThemeVariables !== false,
         artifacts: {
           buildState: "building",
-          buildProgress: "Starting build...",
+          buildProgress: isWorker ? "Starting worker..." : "Starting build...",
         },
-        env: panelEnv,
+        env: options?.env,
         sourceRepo: relativePath,
         gitDependencies: manifest.gitDependencies,
+        type: isWorker ? "worker" : undefined,
+        workerOptions: isWorker
+          ? {
+              memoryLimitMB: options?.memoryLimitMB,
+            }
+          : undefined,
       };
 
-      parent.children.push(newPanel);
-      parent.selectedChildId = newPanel.id;
-      this.panels.set(newPanel.id, newPanel);
+      // For panels, also set up git token
+      if (!isWorker) {
+        const gitToken = this.gitServer.getTokenForPanel(childId);
+        newChild.env = {
+          ...newChild.env,
+          __GIT_SERVER_URL: this.gitServer.getBaseUrl(),
+          __GIT_TOKEN: gitToken,
+        };
+      }
 
-      // Notify UI of new panel (will show placeholder)
+      parent.children.push(newChild);
+      parent.selectedChildId = newChild.id;
+      this.panels.set(newChild.id, newChild);
+
+      // Notify UI of new child (will show placeholder)
       this.notifyPanelTreeUpdate();
 
-      // Start async build
-      void this.buildPanelAsync(newPanel, options);
+      // Start async build/creation
+      if (isWorker) {
+        void this.buildWorkerAsync(newChild, options);
+      } else {
+        void this.buildPanelAsync(newChild, options);
+      }
 
-      return newPanel.id;
+      return newChild.id;
     } finally {
-      this.reservedPanelIds.delete(panelId);
+      this.reservedPanelIds.delete(childId);
+    }
+  }
+
+  /**
+   * Build a worker asynchronously and update its state.
+   * Workers are built via PanelBuilder and then sent to the utility process.
+   */
+  private async buildWorkerAsync(
+    worker: Panel,
+    options?: SharedPanel.CreateChildOptions
+  ): Promise<void> {
+    const workerManager = getWorkerManager();
+
+    try {
+      // Create the worker entry in WorkerManager (sets up scoped FS)
+      const workerInfo = await workerManager.createWorker(
+        this.findParentPanel(worker.id)?.id ?? "",
+        worker.path,
+        {
+          env: options?.env,
+          memoryLimitMB: options?.memoryLimitMB,
+          branch: options?.branch,
+          commit: options?.commit,
+          tag: options?.tag,
+        },
+        worker.id // Pass the tree node ID so WorkerManager uses it
+      );
+
+      if (workerInfo.error) {
+        throw new Error(workerInfo.error);
+      }
+
+      // Build the worker bundle using PanelBuilder
+      const version =
+        options?.branch || options?.commit || options?.tag
+          ? {
+              branch: options.branch,
+              commit: options.commit,
+              tag: options.tag,
+            }
+          : undefined;
+
+      const buildResult = await this.builder.buildWorker(
+        this.panelsRoot,
+        worker.path,
+        version,
+        (progress) => {
+          worker.artifacts = {
+            ...worker.artifacts,
+            buildState: progress.state,
+            buildProgress: progress.message,
+            buildLog: progress.log,
+          };
+          this.notifyPanelTreeUpdate();
+        }
+      );
+
+      if (!buildResult.success || !buildResult.bundle) {
+        throw new Error(buildResult.error ?? "Worker build failed");
+      }
+
+      // Send the bundle to the utility process
+      await workerManager.sendWorkerBundle(worker.id, buildResult.bundle);
+
+      // Mark as ready
+      worker.artifacts = {
+        buildState: "ready",
+        buildProgress: "Worker ready",
+        buildLog: buildResult.buildLog,
+      };
+      this.notifyPanelTreeUpdate();
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      worker.artifacts = {
+        error: errorMsg,
+        buildState: "error",
+        buildProgress: errorMsg,
+      };
+      this.notifyPanelTreeUpdate();
     }
   }
 
@@ -298,6 +396,35 @@ export class PanelManager {
     this.notifyPanelTreeUpdate();
   }
 
+  /**
+   * Add a console log entry to a worker panel.
+   * Keeps only the last 100 log entries to avoid memory bloat.
+   */
+  addWorkerConsoleLog(workerId: string, level: string, message: string): void {
+    const panel = this.panels.get(workerId);
+    if (!panel || panel.type !== "worker") {
+      return; // Silently ignore if not a worker
+    }
+
+    if (!panel.consoleLogs) {
+      panel.consoleLogs = [];
+    }
+
+    panel.consoleLogs.push({
+      timestamp: Date.now(),
+      level,
+      message,
+    });
+
+    // Keep only the last 100 entries
+    if (panel.consoleLogs.length > 100) {
+      panel.consoleLogs = panel.consoleLogs.slice(-100);
+    }
+
+    // Notify renderer about the update
+    this.notifyPanelTreeUpdate();
+  }
+
   async closePanel(panelId: string): Promise<void> {
     // Find parent
     const parent = this.findParentPanel(panelId);
@@ -409,18 +536,25 @@ export class PanelManager {
       this.removePanelRecursive(child.id);
     }
 
-    // Revoke git token for this panel
-    this.gitServer.revokeTokenForPanel(panelId);
+    // Check if this is a worker or a panel
+    if (panel.type === "worker") {
+      // Terminate the worker
+      void getWorkerManager().terminateWorker(panelId);
+    } else {
+      // Panel cleanup
+      // Revoke git token for this panel
+      this.gitServer.revokeTokenForPanel(panelId);
 
-    // Clean up any Claude Code conversations for this panel
-    getClaudeCodeConversationManager().endPanelConversations(panelId);
+      // Clean up any Claude Code conversations for this panel
+      getClaudeCodeConversationManager().endPanelConversations(panelId);
 
-    // Clean up protocol-served panel content if applicable
-    if (isProtocolPanel(panelId)) {
-      removeProtocolPanel(panelId);
+      // Clean up protocol-served panel content if applicable
+      if (isProtocolPanel(panelId)) {
+        removeProtocolPanel(panelId);
+      }
     }
 
-    // Remove this panel
+    // Remove from panels map and views
     this.panels.delete(panelId);
     this.panelViews.delete(panelId);
   }
@@ -437,27 +571,7 @@ export class PanelManager {
   notifyPanelTreeUpdate(): void {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       const tree = this.getSerializablePanelTree();
-      // Debug: log panel tree being sent
-      const logTree = (panels: Panel[], depth = 0): void => {
-        for (const p of panels) {
-          console.log(
-            `[PanelManager] ${"  ".repeat(depth)}Panel: ${p.id}, htmlPath: ${p.artifacts?.htmlPath?.slice(0, 80) ?? "none"}`
-          );
-          if (p.children.length > 0) logTree(p.children, depth + 1);
-        }
-      };
-      console.log("[PanelManager] Notifying panel tree update:");
-      logTree(tree);
       this.mainWindow.webContents.send("panel:tree-updated", tree);
-
-      // Also log to main window's console for debugging
-      this.mainWindow.webContents
-        .executeJavaScript(
-          `
-        console.log('[Main->Renderer] Panel tree update sent, panel count:', ${tree.length});
-      `
-        )
-        .catch(() => {});
     }
   }
 

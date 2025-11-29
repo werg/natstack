@@ -5,7 +5,8 @@
 
 import { useState, useEffect } from "react";
 import { Card, Flex, Heading, Text, Badge, Button } from "@radix-ui/themes";
-import { usePanelEnv, panel } from "@natstack/panel";
+import { panel } from "@natstack/panel";
+import { usePanelEnv } from "@natstack/react";
 
 // Internal state
 let counter = 0;

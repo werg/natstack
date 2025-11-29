@@ -1,0 +1,28 @@
+{
+  "name": "@natstack/worker-runtime",
+  "version": "0.1.0",
+  "description": "Runtime shim for natstack isolated workers",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json"
+  },
+  "dependencies": {
+    "@natstack/core": "workspace:*",
+    "@natstack/ai": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

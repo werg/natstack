@@ -81,13 +81,16 @@ export type GitDependencySpec =
     };
 
 /**
- * Options for creating a child panel.
+ * Options for creating a child panel or worker.
  * Version specifiers are mutually exclusive; priority: commit > tag > branch
+ *
+ * Note: The runtime type (panel vs worker) is determined by the manifest's
+ * `runtime` field, not by options passed here.
  */
 export interface CreateChildOptions {
-  /** Environment variables to pass to the child panel */
+  /** Environment variables to pass to the child */
   env?: Record<string, string>;
-  /** Custom panel ID (only used for tree panels, ignored for singletons) */
+  /** Custom ID (only used for tree children, ignored for singletons) */
   panelId?: string;
   /** Branch name to track (e.g., "develop") */
   branch?: string;
@@ -95,8 +98,26 @@ export interface CreateChildOptions {
   commit?: string;
   /** Tag to pin to (e.g., "v1.0.0") */
   tag?: string;
+
+  // Worker-specific options (only apply when manifest.runtime is "worker")
+
+  /** Memory limit in MB (default: 1024, workers only) */
+  memoryLimitMB?: number;
 }
 
+/**
+ * A single console log entry from a worker.
+ */
+export interface WorkerConsoleLogEntry {
+  timestamp: number;
+  level: string;
+  message: string;
+}
+
+/**
+ * Panel/worker node in the tree.
+ * Workers are children that run in isolated-vm instead of webviews.
+ */
 export interface Panel {
   id: string;
   title: string;
@@ -110,6 +131,14 @@ export interface Panel {
   sourceRepo?: string;
   /** Git dependencies from manifest (to clone into OPFS) */
   gitDependencies?: Record<string, GitDependencySpec>;
+  /** Runtime type: "panel" (default) or "worker" */
+  type?: RuntimeType;
+  /** Worker-specific options (only present when type is "worker") */
+  workerOptions?: {
+    memoryLimitMB?: number;
+  };
+  /** Console log entries (workers only, most recent last) */
+  consoleLogs?: WorkerConsoleLogEntry[];
 }
 
 // =============================================================================
@@ -137,9 +166,13 @@ export interface PanelIpcApi {
 // Panel bridge IPC channels (panel webview <-> main)
 export interface PanelBridgeIpcApi {
   /**
-   * Create a child panel from a workspace path.
+   * Create a child panel or worker from a workspace path.
    * Main process handles git checkout and build.
-   * Returns panel ID immediately; build happens async.
+   * Returns child ID immediately; build happens async.
+   *
+   * The runtime type (panel vs worker) is determined by the manifest's `runtime` field.
+   * Workers run in isolated-vm with auto-generated filesystem scope paths.
+   * Singleton children (singletonState: true in manifest) get the same ID/scope across restarts.
    */
   "panel-bridge:create-child": (
     parentId: string,
@@ -165,9 +198,15 @@ export interface PanelBridgeIpcApi {
     gitDependencies: Record<string, GitDependencySpec>;
   };
 
-  // Panel-to-panel RPC
-  // Request a direct MessagePort connection to another panel
-  "panel-rpc:connect": (fromPanelId: string, toPanelId: string) => void;
+  /**
+   * Request an RPC connection to another panel or worker.
+   * Unified endpoint for panel-to-panel, panel-to-worker, and worker-to-panel RPC.
+   * The type (panel vs worker) is determined by looking up the ID in the tree.
+   * @param fromId - Source endpoint ID
+   * @param toId - Target endpoint ID
+   * @returns Info about the connection (whether target is a worker)
+   */
+  "panel-rpc:connect": (fromId: string, toId: string) => { isWorker: boolean; workerId?: string };
 }
 
 // AI provider IPC channels (panel webview <-> main)
@@ -246,6 +285,49 @@ export interface ClaudeCodeToolResult {
   content: Array<{ type: "text"; text: string }>;
   /** Whether the tool execution resulted in an error */
   isError?: boolean;
+}
+
+// =============================================================================
+// Isolated Worker Types
+// =============================================================================
+
+/**
+ * Runtime type for manifests - determines whether to build as panel or worker.
+ */
+export type RuntimeType = "panel" | "worker";
+
+/**
+ * Build state for workers (same as panels).
+ */
+export type WorkerBuildState = "pending" | "cloning" | "building" | "ready" | "error";
+
+/**
+ * Options for creating a worker from a panel.
+ * Note: scopePath is auto-generated based on workspace ID and worker ID.
+ */
+export interface WorkerCreateOptions {
+  /** Environment variables to pass to the worker */
+  env?: Record<string, string>;
+  /** Memory limit in MB (default: 1024) */
+  memoryLimitMB?: number;
+  /** Branch name to track (e.g., "develop") */
+  branch?: string;
+  /** Specific commit hash to pin to */
+  commit?: string;
+  /** Tag to pin to (e.g., "v1.0.0") */
+  tag?: string;
+}
+
+/**
+ * Information about a created worker.
+ */
+export interface WorkerInfo {
+  /** Worker ID (prefixed with "worker:") */
+  workerId: string;
+  /** Build state */
+  buildState: WorkerBuildState;
+  /** Error message if build failed */
+  error?: string;
 }
 
 // =============================================================================

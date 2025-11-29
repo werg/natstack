@@ -8,6 +8,7 @@
     "entry": "index.tsx"
   },
   "dependencies": {
-    "@natstack/panel": "workspace:*"
+    "@natstack/panel": "workspace:*",
+    "@natstack/ai": "workspace:*"
   }
 }

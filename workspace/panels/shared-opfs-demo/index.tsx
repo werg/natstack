@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { promises as fsPromises } from "fs";
 import { Button, Card, Flex, Text, Heading, Callout, Badge } from "@radix-ui/themes";
-import { panel, usePanelTheme, usePanelId, usePanelPartition } from "@natstack/panel";
+import { panel } from "@natstack/panel";
+import { usePanelTheme, usePanelId, usePanelPartition } from "@natstack/react";
 
 export default function SharedOPFSPanel() {
   const [opfsStatus, setOpfsStatus] = useState<string>("");

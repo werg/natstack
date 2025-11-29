@@ -1,7 +1,23 @@
+/**
+ * Panel API for NatStack panels.
+ *
+ * This module provides the browser-side API for panels to interact with
+ * the NatStack framework, including child management, RPC, theme, and git.
+ */
+
 import type { ComponentType, ReactNode } from "react";
-import type { GitDependency } from "@natstack/git";
 import typia from "typia";
 import * as Rpc from "./types.js";
+import type {
+  CreateChildOptions as SharedCreateChildOptions,
+  GitConfig as SharedGitConfig,
+  RpcHandleOptions,
+} from "./index.js";
+
+// Re-export shared types for backwards compatibility
+export type CreateChildOptions = SharedCreateChildOptions;
+export type GitConfig = SharedGitConfig;
+export type PanelRpcHandleOptions = RpcHandleOptions;
 
 type PanelBridgeEvent = "child-removed" | "focus";
 
@@ -16,16 +32,6 @@ interface PanelRpcBridge {
   call(targetPanelId: string, method: string, ...args: unknown[]): Promise<unknown>;
   emit(targetPanelId: string, event: string, payload: unknown): Promise<void>;
   onEvent(event: string, listener: (fromPanelId: string, payload: unknown) => void): () => void;
-}
-
-/**
- * Git configuration for a panel
- */
-interface GitConfig {
-  serverUrl: string;
-  token: string;
-  sourceRepo: string;
-  gitDependencies: Record<string, string | GitDependency>;
 }
 
 interface PanelBridge {
@@ -85,26 +91,6 @@ bridge.onThemeChange((appearance) => {
     listener(currentTheme);
   }
 });
-
-export interface PanelRpcHandleOptions {
-  /**
-   * When enabled, validate incoming RPC event payloads with typia.
-   * This surfaces schema mismatches early during development.
-   */
-  validateEvents?: boolean;
-}
-
-export interface CreateChildOptions {
-  env?: Record<string, string>;
-  /** Optional panel ID (only used for tree panels, ignored for singletons) */
-  panelId?: string;
-  /** Branch name to track (e.g., "develop") */
-  branch?: string;
-  /** Specific commit hash to pin to (e.g., "abc123...") */
-  commit?: string;
-  /** Tag to pin to (e.g., "v1.0.0") */
-  tag?: string;
-}
 
 // Log OPFS quota on initialization (run once when module loads)
 if (typeof window !== 'undefined') {
@@ -394,7 +380,6 @@ export default panelAPI;
 
 // Re-export types for panel developers
 export type { Rpc };
-export type { GitConfig };
 
 type ReactNamespace = typeof import("react");
 type RadixThemeComponent = ComponentType<{

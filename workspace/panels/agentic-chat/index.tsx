@@ -6,7 +6,7 @@ import {
   type AIRoleRecord,
   type LanguageModelV2Prompt,
   type ClaudeCodeToolResult,
-} from "@natstack/panel";
+} from "@natstack/ai";
 import {
   Box,
   Flex,

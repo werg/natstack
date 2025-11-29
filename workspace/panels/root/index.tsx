@@ -1,18 +1,19 @@
 import { useState, useCallback } from "react";
 import { promises as fsPromises } from "fs";
 import { Button, Card, Flex, Text, Heading, Callout, Separator, Badge, TextField } from "@radix-ui/themes";
+import { panel } from "@natstack/panel";
 import {
-  panel,
   usePanelTheme,
   usePanelId,
   usePanelPartition,
   usePanelEnv,
   usePanelRpc,
   usePanelRpcGlobalEvent,
-} from "@natstack/panel";
+} from "@natstack/react";
 import "./style.css";
 
 import { type RpcDemoChildApi } from "../typed-rpc-child/api.js";
+import { type RpcExampleWorkerApi } from "../../workers/rpc-example/api.js";
 
 export default function ChildPanelLauncher() {
   const [status, setStatus] = useState<string>("");
@@ -24,7 +25,7 @@ export default function ChildPanelLauncher() {
   const [opfsStatus, setOpfsStatus] = useState<string>("");
   const [opfsContent, setOpfsContent] = useState<string>("");
 
-  // RPC Demo state
+  // RPC Demo state (panel child)
   const [rpcChildId, setRpcChildId] = useState<string | null>(null);
   const rpcChildHandle = usePanelRpc<RpcDemoChildApi>(rpcChildId);
   const [rpcLog, setRpcLog] = useState<string[]>([]);
@@ -32,9 +33,23 @@ export default function ChildPanelLauncher() {
   const [incrementAmount, setIncrementAmount] = useState("1");
   const [childEvents, setChildEvents] = useState<string[]>([]);
 
+  // Worker RPC Demo state
+  const [workerId, setWorkerId] = useState<string | null>(null);
+  const workerHandle = usePanelRpc<RpcExampleWorkerApi>(workerId);
+  const [workerLog, setWorkerLog] = useState<string[]>([]);
+  const [workerEchoInput, setWorkerEchoInput] = useState("");
+  const [workerIncrementAmount, setWorkerIncrementAmount] = useState("1");
+  const [workerSumInput, setWorkerSumInput] = useState("1, 2, 3, 4, 5");
+  const [workerEvents, setWorkerEvents] = useState<string[]>([]);
+
   const addRpcLog = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
     setRpcLog((prev) => [`[${timestamp}] ${message}`, ...prev.slice(0, 9)]);
+  }, []);
+
+  const addWorkerLog = useCallback((message: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setWorkerLog((prev) => [`[${timestamp}] ${message}`, ...prev.slice(0, 9)]);
   }, []);
 
   // Listen for events from child panels
@@ -55,6 +70,7 @@ export default function ChildPanelLauncher() {
     try {
       setStatus("Launching child panel...");
       const childId = await panel.createChild("panels/root", {
+        panelId: 'another-root',
         env: {
           PARENT_ID: panelId,
           LAUNCH_TIME: new Date().toISOString(),
@@ -70,7 +86,9 @@ export default function ChildPanelLauncher() {
   const launchSharedOPFSDemo = async () => {
     try {
       setStatus("Launching shared OPFS demo panel...");
-      const childId = await panel.createChild("panels/shared-opfs-demo");
+      const childId = await panel.createChild("panels/shared-opfs-demo", {
+        panelId: "shared-opfs-demo"
+      });
       setStatus(`Launched shared OPFS demo panel ${childId}`);
     } catch (error) {
       setStatus(`Failed to launch: ${error instanceof Error ? error.message : String(error)}`);
@@ -80,7 +98,9 @@ export default function ChildPanelLauncher() {
   const launchAgenticChat = async () => {
     try {
       setStatus("Launching agentic chat example...");
-      const childId = await panel.createChild("panels/agentic-chat");
+      const childId = await panel.createChild("panels/agentic-chat", {
+        panelId: 'agentic-chat',
+      });
       setStatus(`Launched agentic chat panel ${childId}`);
     } catch (error) {
       setStatus(`Failed to launch agentic chat: ${error instanceof Error ? error.message : String(error)}`);
@@ -175,6 +195,7 @@ export default function ChildPanelLauncher() {
     try {
       addRpcLog("Launching RPC demo child panel...");
       const childId = await panel.createChild("panels/typed-rpc-child", {
+        panelId: 'typed-rpc-child',
         env: { PARENT_ID: panelId },
       });
       setRpcChildId(childId);
@@ -279,6 +300,166 @@ export default function ChildPanelLauncher() {
     panel.rpc.emit(rpcChildId, "parentMessage", payload);
     addRpcLog(`Sent 'parentMessage' event: ${JSON.stringify(payload)}`);
   };
+
+  // ===========================================================================
+  // Worker RPC Demo Functions
+  // ===========================================================================
+
+  const launchRpcWorker = async () => {
+    try {
+      addWorkerLog("Launching RPC example worker...");
+      const id = await panel.createChild("workers/rpc-example", {
+        env: { PARENT_ID: panelId },
+        panelId: 'rpc-example-worker',
+      });
+      setWorkerId(id);
+      addWorkerLog(`Worker launched: ${id}`);
+    } catch (error) {
+      addWorkerLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const workerCallPing = async () => {
+    if (!workerHandle) {
+      addWorkerLog("No worker connected");
+      return;
+    }
+    try {
+      addWorkerLog("Calling ping()...");
+      const result = await workerHandle.call.ping();
+      addWorkerLog(`Result: "${result}"`);
+    } catch (error) {
+      addWorkerLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const workerCallEcho = async () => {
+    if (!workerHandle) {
+      addWorkerLog("No worker connected");
+      return;
+    }
+    try {
+      const msg = workerEchoInput || "Hello from panel!";
+      addWorkerLog(`Calling echo("${msg}")...`);
+      const result = await workerHandle.call.echo(msg);
+      addWorkerLog(`Result: "${result}"`);
+    } catch (error) {
+      addWorkerLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const workerCallGetCounter = async () => {
+    if (!workerHandle) {
+      addWorkerLog("No worker connected");
+      return;
+    }
+    try {
+      addWorkerLog("Calling getCounter()...");
+      const result = await workerHandle.call.getCounter();
+      addWorkerLog(`Result: ${result}`);
+    } catch (error) {
+      addWorkerLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const workerCallIncrementCounter = async () => {
+    if (!workerHandle) {
+      addWorkerLog("No worker connected");
+      return;
+    }
+    try {
+      const amount = parseInt(workerIncrementAmount) || 1;
+      addWorkerLog(`Calling incrementCounter(${amount})...`);
+      const result = await workerHandle.call.incrementCounter(amount);
+      addWorkerLog(`Result: ${result}`);
+    } catch (error) {
+      addWorkerLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const workerCallResetCounter = async () => {
+    if (!workerHandle) {
+      addWorkerLog("No worker connected");
+      return;
+    }
+    try {
+      addWorkerLog("Calling resetCounter()...");
+      await workerHandle.call.resetCounter();
+      addWorkerLog("Counter reset successfully");
+    } catch (error) {
+      addWorkerLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const workerCallGetInfo = async () => {
+    if (!workerHandle) {
+      addWorkerLog("No worker connected");
+      return;
+    }
+    try {
+      addWorkerLog("Calling getWorkerInfo()...");
+      const result = await workerHandle.call.getWorkerInfo();
+      addWorkerLog(`Result: ${JSON.stringify(result)}`);
+    } catch (error) {
+      addWorkerLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const workerCallComputeSum = async () => {
+    if (!workerHandle) {
+      addWorkerLog("No worker connected");
+      return;
+    }
+    try {
+      const numbers = workerSumInput.split(",").map((s) => parseFloat(s.trim())).filter((n) => !isNaN(n));
+      addWorkerLog(`Calling computeSum([${numbers.join(", ")}])...`);
+      const result = await workerHandle.call.computeSum(numbers);
+      addWorkerLog(`Result: ${result}`);
+    } catch (error) {
+      addWorkerLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const sendEventToWorker = () => {
+    if (!workerId) {
+      addWorkerLog("No worker connected");
+      return;
+    }
+    const payload = { message: "Hello from panel!", timestamp: new Date().toISOString() };
+    panel.rpc.emit(workerId, "parentMessage", payload);
+    addWorkerLog(`Sent 'parentMessage' event: ${JSON.stringify(payload)}`);
+  };
+
+  // Listen for events from worker
+  usePanelRpcGlobalEvent("counter-changed", (fromId: string, payload: unknown) => {
+    if (fromId === workerId) {
+      const timestamp = new Date().toLocaleTimeString();
+      setWorkerEvents((prev) => [
+        `[${timestamp}] counter-changed: ${JSON.stringify(payload)}`,
+        ...prev.slice(0, 4),
+      ]);
+    }
+  });
+
+  usePanelRpcGlobalEvent("ping-received", (fromId: string, payload: unknown) => {
+    if (fromId === workerId) {
+      const timestamp = new Date().toLocaleTimeString();
+      setWorkerEvents((prev) => [
+        `[${timestamp}] ping-received: ${JSON.stringify(payload)}`,
+        ...prev.slice(0, 4),
+      ]);
+    }
+  });
+
+  usePanelRpcGlobalEvent("reset", (fromId: string, payload: unknown) => {
+    if (fromId === workerId) {
+      const timestamp = new Date().toLocaleTimeString();
+      setWorkerEvents((prev) => [
+        `[${timestamp}] reset: ${JSON.stringify(payload)}`,
+        ...prev.slice(0, 4),
+      ]);
+    }
+  });
 
   return (
     <div style={{ padding: "20px" }}>
@@ -507,6 +688,130 @@ export default function ChildPanelLauncher() {
               <Flex direction="column" gap="1">
                 <Text size="2" weight="bold">RPC Log:</Text>
                 {rpcLog.map((entry, i) => (
+                  <Text key={i} size="1" style={{ fontFamily: "monospace" }}>
+                    {entry}
+                  </Text>
+                ))}
+              </Flex>
+            </Card>
+          )}
+
+          <Separator size="4" />
+
+          {/* Worker RPC Demo Section */}
+          <Heading size="5">Worker RPC Demo</Heading>
+          <Text size="2" color="gray">
+            Demonstrates RPC communication between a panel and an isolated worker.
+            Workers run in a sandboxed environment with their own filesystem and limited capabilities.
+          </Text>
+
+          <Flex gap="2" wrap="wrap">
+            <Button onClick={launchRpcWorker} color="orange" disabled={!!workerHandle}>
+              {workerHandle ? "Worker Connected" : "Launch RPC Example Worker"}
+            </Button>
+          </Flex>
+
+          {workerHandle && (
+            <>
+              <Card variant="surface">
+                <Flex direction="column" gap="3">
+                  <Flex align="center" gap="2">
+                    <Text size="2" weight="bold">Connected to:</Text>
+                    <Badge color="orange" style={{ fontFamily: "monospace" }}>
+                      {workerId}
+                    </Badge>
+                  </Flex>
+
+                  <Text size="2" weight="bold">Call Methods:</Text>
+                  <Flex gap="2" wrap="wrap">
+                    <Button onClick={workerCallPing} variant="soft" size="1">
+                      ping()
+                    </Button>
+                    <Button onClick={workerCallGetCounter} variant="soft" size="1">
+                      getCounter()
+                    </Button>
+                    <Button onClick={workerCallResetCounter} variant="soft" size="1" color="red">
+                      resetCounter()
+                    </Button>
+                    <Button onClick={workerCallGetInfo} variant="soft" size="1">
+                      getWorkerInfo()
+                    </Button>
+                  </Flex>
+
+                  <Flex gap="2" align="end">
+                    <Flex direction="column" gap="1" style={{ flex: 1 }}>
+                      <Text size="1" weight="bold">Echo Message:</Text>
+                      <TextField.Root
+                        placeholder="Enter message..."
+                        value={workerEchoInput}
+                        onChange={(e) => setWorkerEchoInput(e.target.value)}
+                        size="1"
+                      />
+                    </Flex>
+                    <Button onClick={workerCallEcho} variant="soft" size="1">
+                      echo()
+                    </Button>
+                  </Flex>
+
+                  <Flex gap="2" align="end">
+                    <Flex direction="column" gap="1" style={{ width: "100px" }}>
+                      <Text size="1" weight="bold">Amount:</Text>
+                      <TextField.Root
+                        type="number"
+                        value={workerIncrementAmount}
+                        onChange={(e) => setWorkerIncrementAmount(e.target.value)}
+                        size="1"
+                      />
+                    </Flex>
+                    <Button onClick={workerCallIncrementCounter} variant="soft" size="1" color="green">
+                      incrementCounter()
+                    </Button>
+                  </Flex>
+
+                  <Flex gap="2" align="end">
+                    <Flex direction="column" gap="1" style={{ flex: 1 }}>
+                      <Text size="1" weight="bold">Numbers (comma-separated):</Text>
+                      <TextField.Root
+                        placeholder="1, 2, 3, 4, 5"
+                        value={workerSumInput}
+                        onChange={(e) => setWorkerSumInput(e.target.value)}
+                        size="1"
+                      />
+                    </Flex>
+                    <Button onClick={workerCallComputeSum} variant="soft" size="1" color="purple">
+                      computeSum()
+                    </Button>
+                  </Flex>
+
+                  <Separator size="4" />
+
+                  <Text size="2" weight="bold">Events:</Text>
+                  <Button onClick={sendEventToWorker} variant="soft" size="1" color="orange">
+                    Send "parentMessage" Event to Worker
+                  </Button>
+                </Flex>
+              </Card>
+
+              {workerEvents.length > 0 && (
+                <Card variant="surface">
+                  <Flex direction="column" gap="1">
+                    <Text size="2" weight="bold">Events from Worker:</Text>
+                    {workerEvents.map((event, i) => (
+                      <Text key={i} size="1" style={{ fontFamily: "monospace" }}>
+                        {event}
+                      </Text>
+                    ))}
+                  </Flex>
+                </Card>
+              )}
+            </>
+          )}
+
+          {workerLog.length > 0 && (
+            <Card variant="surface" style={{ maxHeight: "200px", overflowY: "auto" }}>
+              <Flex direction="column" gap="1">
+                <Text size="2" weight="bold">Worker RPC Log:</Text>
+                {workerLog.map((entry, i) => (
                   <Text key={i} size="1" style={{ fontFamily: "monospace" }}>
                     {entry}
                   </Text>

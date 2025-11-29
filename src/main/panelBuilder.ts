@@ -73,6 +73,29 @@ const defaultPanelDependencies: Record<string, string> = {
   "@types/node": "^22.9.0",
 };
 
+const defaultWorkerDependencies: Record<string, string> = {
+  // Worker runtime for fs, network, and RPC APIs
+  "@natstack/worker-runtime": "workspace:*",
+  // Provide Node types to satisfy dependencies that expect them at runtime
+  "@types/node": "^22.9.0",
+};
+
+/**
+ * Result of building a worker.
+ * Contains just the JS bundle (no HTML/CSS needed).
+ */
+export interface WorkerBuildResult {
+  success: boolean;
+  /** The bundled JavaScript code */
+  bundle?: string;
+  /** Worker manifest */
+  manifest?: PanelManifest;
+  /** Error message if build failed */
+  error?: string;
+  /** Full build log (for UI) */
+  buildLog?: string;
+}
+
 // ===========================================================================
 // Internal Build Types
 // ===========================================================================
@@ -412,7 +435,7 @@ export class PanelBuilder {
     const tempEntryPath = path.join(runtimeDir, "_entry.js");
     const relativeUserEntry = path.relative(runtimeDir, entryPath);
     const wrapperCode = `
-import { autoMountReactPanel, shouldAutoMount } from "@natstack/panel";
+import { autoMountReactPanel, shouldAutoMount } from "@natstack/react";
 import * as userModule from ${JSON.stringify(relativeUserEntry)};
 
 if (shouldAutoMount(userModule)) {
@@ -662,6 +685,210 @@ if (shouldAutoMount(userModule)) {
         buildLog,
       };
     }
+  }
+
+  /**
+   * Build a worker from a workspace path with optional version specifier.
+   * Workers are built for isolated-vm (Node.js target) and return just a JS bundle.
+   *
+   * @param panelsRoot - Absolute path to workspace root
+   * @param workerPath - Relative path to worker within workspace
+   * @param version - Optional version specifier (branch, commit, or tag)
+   * @param onProgress - Optional progress callback for UI updates
+   */
+  async buildWorker(
+    panelsRoot: string,
+    workerPath: string,
+    version?: VersionSpec,
+    onProgress?: (progress: BuildProgress) => void
+  ): Promise<WorkerBuildResult> {
+    let cleanup: (() => Promise<void>) | null = null;
+    let buildLog = "";
+    const canonicalWorkerPath = path.resolve(panelsRoot, workerPath);
+
+    const log = (message: string) => {
+      buildLog += message + "\n";
+      console.log(`[PanelBuilder:Worker] ${message}`);
+    };
+
+    try {
+      // Step 1: Early cache check (fast - no git checkout needed)
+      const earlyCommit = await resolveTargetCommit(panelsRoot, workerPath, version);
+
+      if (earlyCommit) {
+        const cacheKey = `worker:${canonicalWorkerPath}:${earlyCommit}`;
+        const cached = this.cacheManager.get(cacheKey, isDev());
+
+        if (cached) {
+          log(`Early cache hit for ${cacheKey}`);
+          onProgress?.({ state: "ready", message: "Loaded from cache", log: buildLog });
+
+          try {
+            return JSON.parse(cached) as WorkerBuildResult;
+          } catch {
+            log(`Cache parse failed, will rebuild`);
+          }
+        }
+      }
+
+      // Step 2: Provision source at the right version
+      onProgress?.({ state: "cloning", message: "Fetching worker source...", log: buildLog });
+      log(`Provisioning ${workerPath}${version ? ` at ${JSON.stringify(version)}` : ""}`);
+
+      const provision = await provisionPanelVersion(panelsRoot, workerPath, version, (progress) => {
+        log(`Git: ${progress.message}`);
+        onProgress?.({ state: "cloning", message: progress.message, log: buildLog });
+      });
+
+      cleanup = provision.cleanup;
+      const sourcePath = provision.sourcePath;
+      const sourceCommit = provision.commit;
+
+      log(`Source provisioned at ${sourcePath} (commit: ${sourceCommit.slice(0, 8)})`);
+
+      // Cache key for storing the result
+      const cacheKey = `worker:${canonicalWorkerPath}:${sourceCommit}`;
+
+      // Step 3: Load manifest and validate it's a worker
+      let manifest: PanelManifest;
+      try {
+        manifest = this.loadManifest(sourcePath);
+        log(`Manifest loaded: ${manifest.title}`);
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        log(`Failed to load manifest: ${errorMsg}`);
+        onProgress?.({ state: "error", message: errorMsg, log: buildLog });
+        if (cleanup) await cleanup();
+        return { success: false, error: errorMsg, buildLog };
+      }
+
+      // Step 4: Install dependencies
+      onProgress?.({ state: "building", message: "Installing dependencies...", log: buildLog });
+      log(`Installing dependencies...`);
+
+      const dependencyCacheKey = `deps:${canonicalWorkerPath}:${sourceCommit}`;
+      const previousDependencyHash = this.getDependencyHashFromCache(dependencyCacheKey);
+
+      const workerDependencies = this.mergeWorkerDependencies(manifest.dependencies);
+      const dependencyHash = await this.installDependencies(
+        sourcePath,
+        workerDependencies,
+        previousDependencyHash
+      );
+
+      if (dependencyHash) {
+        await this.saveDependencyHashToCache(dependencyCacheKey, dependencyHash);
+      }
+      log(`Dependencies installed`);
+
+      // Step 5: Build the worker bundle
+      onProgress?.({ state: "building", message: "Building worker...", log: buildLog });
+      log(`Building worker bundle...`);
+
+      const entry = this.resolveEntryPoint(sourcePath, manifest);
+      const entryPath = path.join(sourcePath, entry);
+      const runtimeDir = this.ensureRuntimeDir(sourcePath);
+      const bundlePath = path.join(runtimeDir, "worker-bundle.js");
+      const nodePaths = this.getNodeResolutionPaths(sourcePath);
+
+      // Create wrapper entry that imports user module and sets up worker runtime
+      const tempEntryPath = path.join(runtimeDir, "_worker_entry.js");
+      const relativeUserEntry = path.relative(runtimeDir, entryPath);
+
+      // Worker wrapper - imports worker-runtime to set up console/globals,
+      // then imports the user module which should call rpc.expose()
+      const wrapperCode = `
+// Import worker runtime to set up console and globals
+import "@natstack/worker-runtime";
+
+// Import user module - it should call rpc.expose() to register methods
+import ${JSON.stringify(relativeUserEntry)};
+`;
+      fs.writeFileSync(tempEntryPath, wrapperCode);
+
+      // Build with esbuild for isolated-vm (Node.js-like environment)
+      await esbuild.build({
+        entryPoints: [tempEntryPath],
+        bundle: true,
+        platform: "node", // Workers run in isolated-vm which is Node-like
+        target: "es2022",
+        outfile: bundlePath,
+        sourcemap: false,
+        format: "esm",
+        absWorkingDir: sourcePath,
+        nodePaths,
+        // No fs plugin needed - workers use @natstack/worker-runtime fs
+        external: ["isomorphic-git", "isomorphic-git/http/web"],
+      });
+
+      // Read the built bundle
+      const bundle = fs.readFileSync(bundlePath, "utf-8");
+
+      // Check bundle size
+      if (bundle.length > MAX_BUNDLE_SIZE) {
+        const sizeMB = (bundle.length / 1024 / 1024).toFixed(2);
+        const maxMB = (MAX_BUNDLE_SIZE / 1024 / 1024).toFixed(0);
+        log(`Warning: Bundle size (${sizeMB}MB) exceeds limit (${maxMB}MB)`);
+        if (cleanup) await cleanup();
+        return {
+          success: false,
+          error: `Bundle too large: ${sizeMB}MB (max: ${maxMB}MB)`,
+          buildLog,
+        };
+      }
+
+      log(`Build complete: ${bundle.length} bytes JS`);
+
+      // Step 6: Cache result
+      const result: WorkerBuildResult = {
+        success: true,
+        bundle,
+        manifest,
+        buildLog,
+      };
+
+      await this.cacheManager.set(cacheKey, JSON.stringify(result));
+      log(`Cached build result`);
+
+      // Cleanup temp directory
+      if (cleanup) {
+        await cleanup();
+        log(`Cleaned up temp directory`);
+      }
+
+      onProgress?.({ state: "ready", message: "Build complete", log: buildLog });
+
+      return result;
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      log(`Build failed: ${errorMsg}`);
+
+      if (cleanup) {
+        try {
+          await cleanup();
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+
+      onProgress?.({ state: "error", message: errorMsg, log: buildLog });
+
+      return {
+        success: false,
+        error: errorMsg,
+        buildLog,
+      };
+    }
+  }
+
+  private mergeWorkerDependencies(
+    workerDependencies: Record<string, string> | undefined
+  ): Record<string, string> {
+    const merged = { ...defaultWorkerDependencies };
+    if (workerDependencies) {
+      Object.assign(merged, workerDependencies);
+    }
+    return merged;
   }
 
   async clearCache(panelPath?: string): Promise<void> {

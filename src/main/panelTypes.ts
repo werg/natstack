@@ -1,6 +1,6 @@
 // Re-export GitDependencySpec from shared types (canonical definition)
-export type { GitDependencySpec } from "../shared/ipc/types.js";
-import type { GitDependencySpec } from "../shared/ipc/types.js";
+export type { GitDependencySpec, RuntimeType } from "../shared/ipc/types.js";
+import type { GitDependencySpec, RuntimeType } from "../shared/ipc/types.js";
 
 export interface PanelManifest {
   title: string;
@@ -24,6 +24,12 @@ export interface PanelManifest {
   injectHostThemeVariables?: boolean; // Defaults to true
   template?: "html" | "react"; // Optional: choose template helpers
   singletonState?: boolean; // If true, panel uses a singleton partition/id derived from its path
+  /**
+   * Runtime type for this manifest.
+   * - "panel" (default): Builds for browser, serves via webview
+   * - "worker": Builds for isolated-vm, runs in utility process
+   */
+  runtime?: RuntimeType;
 }
 
 export interface PanelBuildResult {

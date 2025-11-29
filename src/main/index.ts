@@ -13,6 +13,8 @@ import { handle } from "./ipc/handlers.js";
 import type * as SharedPanel from "../shared/ipc/types.js";
 import { setupMenu } from "./menu.js";
 import { setActiveWorkspace } from "./paths.js";
+import { getWorkerManager } from "./workerManager.js";
+import { registerWorkerHandlers } from "./ipc/workerHandlers.js";
 import {
   parseCliWorkspacePath,
   discoverWorkspace,
@@ -298,7 +300,7 @@ app.on("ready", async () => {
   await cacheManager.initialize();
 
   // Initialize services only in main mode
-  if (appMode === "main" && gitServer && panelManager) {
+  if (appMode === "main" && gitServer && panelManager && workspace) {
     try {
       // Start git server
       const port = await gitServer.start();
@@ -307,6 +309,11 @@ app.on("ready", async () => {
       // Initialize RPC handler
       const { PanelRpcHandler } = await import("./ipc/rpcHandler.js");
       new PanelRpcHandler(panelManager);
+
+      // Initialize WorkerManager (uses getActiveWorkspace() internally)
+      getWorkerManager();
+      registerWorkerHandlers(panelManager);
+      console.log("[Workers] Manager initialized");
 
       // Initialize AI handler
       const { AIHandler } = await import("./ai/aiHandler.js");

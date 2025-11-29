@@ -75,3 +75,33 @@ export function getPanelCacheDirectory(): string {
 
   return cacheDir;
 }
+
+/**
+ * Escape a worker ID for use in a filesystem path.
+ * Replaces slashes with double underscores to avoid directory traversal.
+ */
+function escapeWorkerIdForPath(workerId: string): string {
+  return workerId.replace(/\//g, "__");
+}
+
+/**
+ * Get the filesystem scope path for a worker.
+ * Creates a directory at: <central-config>/worker-scopes/<workspace-id>/<escaped-worker-id>/
+ *
+ * This provides each worker with its own isolated filesystem sandbox.
+ * Singleton workers will get the same path across restarts since their ID is deterministic.
+ *
+ * @param workspaceId - The workspace ID from workspace config
+ * @param workerId - The worker's tree node ID (may contain slashes)
+ * @returns Absolute path to the worker's scope directory
+ */
+export function getWorkerScopePath(workspaceId: string, workerId: string): string {
+  const configDir = getCentralConfigDirectory();
+  const escapedWorkerId = escapeWorkerIdForPath(workerId);
+  const scopePath = path.join(configDir, "worker-scopes", workspaceId, escapedWorkerId);
+
+  // Create the directory if it doesn't exist
+  fs.mkdirSync(scopePath, { recursive: true });
+
+  return scopePath;
+}

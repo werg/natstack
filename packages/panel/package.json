@@ -18,13 +18,7 @@
     "dev": "tsc --project tsconfig.build.json --watch"
   },
   "dependencies": {
-    "@natstack/ai": "workspace:*",
-    "@natstack/core": "workspace:*",
-    "@natstack/react": "workspace:*",
-    "@radix-ui/themes": "^3.2.1",
-    "ai": "6.0.0-beta.114",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "@natstack/core": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

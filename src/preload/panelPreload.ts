@@ -28,14 +28,14 @@ type PanelEventMessage =
 interface RpcRequest {
   type: "request";
   requestId: string;
-  fromPanelId: string;
+  fromId: string;
   method: string;
   args: unknown[];
 }
 
 interface RpcEvent {
   type: "event";
-  fromPanelId: string;
+  fromId: string;
   event: string;
   payload: unknown;
 }
@@ -329,18 +329,54 @@ let exposedMethods: Rpc.ExposedMethods = {};
 // Active RPC connections (MessagePorts) to other panels
 const rpcPorts = new Map<string, MessagePort>();
 
-// Pending requests for ports
+// Worker RPC connections - uses IPC instead of MessageChannel
+interface WorkerRpcConnection {
+  workerId: string;
+  messageHandlers: Set<(event: { data: unknown }) => void>;
+}
+const workerRpcConnections = new Map<string, WorkerRpcConnection>();
+
+// Pending requests for ports (can be real MessagePort or RpcPort proxy)
 const pendingPortRequests = new Map<
   string,
   {
-    resolve: (port: MessagePort) => void;
+    resolve: (port: MessagePort | RpcPort) => void;
     reject: (error: Error) => void;
     timeout?: NodeJS.Timeout;
   }[]
 >();
 
+// Interface for a MessagePort-like object (works for both real ports and worker proxies)
+interface RpcPort {
+  postMessage(message: unknown): void;
+  addEventListener(type: "message", handler: (event: MessageEvent) => void): void;
+  removeEventListener(type: "message", handler: (event: MessageEvent) => void): void;
+}
+
 // Event listeners for RPC events from other panels
 const rpcEventListeners = new Map<string, Set<(fromPanelId: string, payload: unknown) => void>>();
+
+// Handle incoming RPC messages from workers
+ipcRenderer.on(
+  "worker-rpc:message",
+  (_event, { fromId, message }: { fromId: string; message: unknown }) => {
+    // Worker sends fromId as "worker:xxx" - strip the prefix to match our connection key
+    const workerId = fromId.startsWith("worker:") ? fromId.slice(7) : fromId;
+
+    // Find the connection for this worker
+    const conn = workerRpcConnections.get(workerId);
+    if (conn) {
+      // Dispatch to all handlers
+      for (const handler of conn.messageHandlers) {
+        try {
+          handler({ data: message });
+        } catch (error) {
+          console.error(`Error in worker RPC message handler:`, error);
+        }
+      }
+    }
+  }
+);
 
 // Handle incoming ports from the main process
 ipcRenderer.on("panel-rpc:port", (event, { targetPanelId }: { targetPanelId: string }) => {
@@ -430,9 +466,45 @@ function handleRpcEvent(fromPanelId: string, event: RpcEvent) {
 
 const PORT_TIMEOUT_MS = 60000;
 
-async function getRpcPort(targetPanelId: string): Promise<MessagePort> {
-  const existing = rpcPorts.get(targetPanelId);
-  if (existing) return existing;
+// Create a fake "port" for worker communication that routes via IPC
+function createWorkerRpcPort(workerId: string): RpcPort {
+  // Get or create the worker connection
+  let conn = workerRpcConnections.get(workerId);
+  if (!conn) {
+    conn = { workerId, messageHandlers: new Set() };
+    workerRpcConnections.set(workerId, conn);
+  }
+
+  return {
+    postMessage(message: unknown): void {
+      // Send via IPC to main process which routes to worker
+      ipcRenderer.send("panel-rpc:to-worker", panelId, workerId, message);
+    },
+    addEventListener(type: "message", handler: (event: MessageEvent) => void): void {
+      if (type === "message") {
+        // Store handler that receives our simplified event format
+        conn!.messageHandlers.add(handler as (event: { data: unknown }) => void);
+      }
+    },
+    removeEventListener(type: "message", handler: (event: MessageEvent) => void): void {
+      if (type === "message") {
+        conn!.messageHandlers.delete(handler as (event: { data: unknown }) => void);
+      }
+    },
+  };
+}
+
+// Cache of worker ports (fake ports that route via IPC)
+const workerRpcPorts = new Map<string, RpcPort>();
+
+async function getRpcPort(targetPanelId: string): Promise<RpcPort> {
+  // Check for existing real MessagePort (panel connection)
+  const existingPort = rpcPorts.get(targetPanelId);
+  if (existingPort) return existingPort;
+
+  // Check for existing worker port
+  const existingWorkerPort = workerRpcPorts.get(targetPanelId);
+  if (existingWorkerPort) return existingWorkerPort;
 
   // If we're already waiting, just add to the list
   if (pendingPortRequests.has(targetPanelId)) {
@@ -447,7 +519,7 @@ async function getRpcPort(targetPanelId: string): Promise<MessagePort> {
   // First request: initialize array and start connection
   return new Promise((resolve, reject) => {
     const pending: {
-      resolve: (port: MessagePort) => void;
+      resolve: (port: RpcPort) => void;
       reject: (error: Error) => void;
       timeout?: NodeJS.Timeout;
     }[] = [{ resolve, reject }];
@@ -463,17 +535,38 @@ async function getRpcPort(targetPanelId: string): Promise<MessagePort> {
     // Attach timeout to all waiters so we can clear on success
     pending.forEach((entry) => (entry.timeout = timeout));
 
-    ipcRenderer.invoke("panel-rpc:connect", panelId, targetPanelId).catch((error) => {
-      clearTimeout(timeout);
-      console.error(`Failed to establish RPC connection to ${targetPanelId}`, error);
-      const pending = pendingPortRequests.get(targetPanelId);
-      if (pending) {
-        pending.forEach(({ reject }) =>
-          reject(error instanceof Error ? error : new Error(String(error)))
-        );
-        pendingPortRequests.delete(targetPanelId);
-      }
-    });
+    ipcRenderer
+      .invoke("panel-rpc:connect", panelId, targetPanelId)
+      .then((result: { isWorker: boolean; workerId?: string }) => {
+        if (result.isWorker && result.workerId) {
+          // Target is a worker - create IPC-based proxy port
+          clearTimeout(timeout);
+          const port = createWorkerRpcPort(result.workerId);
+          workerRpcPorts.set(targetPanelId, port);
+
+          // Resolve all pending requests
+          const pending = pendingPortRequests.get(targetPanelId);
+          if (pending) {
+            pending.forEach(({ resolve, timeout: t }) => {
+              if (t) clearTimeout(t);
+              resolve(port);
+            });
+            pendingPortRequests.delete(targetPanelId);
+          }
+        }
+        // For panels, we wait for the "panel-rpc:port" event which delivers the MessagePort
+      })
+      .catch((error) => {
+        clearTimeout(timeout);
+        console.error(`Failed to establish RPC connection to ${targetPanelId}`, error);
+        const pending = pendingPortRequests.get(targetPanelId);
+        if (pending) {
+          pending.forEach(({ reject }) =>
+            reject(error instanceof Error ? error : new Error(String(error)))
+          );
+          pendingPortRequests.delete(targetPanelId);
+        }
+      });
   });
 }
 
@@ -582,7 +675,7 @@ const bridge = {
         port.postMessage({
           type: "request",
           requestId,
-          fromPanelId: panelId,
+          fromId: panelId,
           method,
           args,
         });
@@ -593,7 +686,7 @@ const bridge = {
       const port = await getRpcPort(targetPanelId);
       port.postMessage({
         type: "event",
-        fromPanelId: panelId,
+        fromId: panelId,
         event,
         payload,
       });
@@ -762,5 +855,36 @@ const bridge = {
     },
   },
 };
+
+// Listen for RPC messages from workers
+ipcRenderer.on(
+  "worker-rpc:message",
+  (
+    _event,
+    { fromId, message }: { fromId: string; message: { type: string; [key: string]: unknown } }
+  ) => {
+    // Route to the RPC port handling system
+    // Workers communicate through the same RPC mechanism as panels
+    if (message.type === "event") {
+      // Handle event from worker
+      const eventMessage = message as {
+        type: "event";
+        fromId: string;
+        event: string;
+        payload: unknown;
+      };
+      const listeners = rpcEventListeners.get(eventMessage.event);
+      if (listeners) {
+        listeners.forEach((listener) => {
+          try {
+            listener(fromId, eventMessage.payload);
+          } catch (error) {
+            console.error(`Error in RPC event listener for "${eventMessage.event}":`, error);
+          }
+        });
+      }
+    }
+  }
+);
 
 contextBridge.exposeInMainWorld("__natstackPanelBridge", bridge);

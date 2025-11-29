@@ -24,7 +24,7 @@ const mainConfig = {
   target: "node20",
   format: "cjs",
   outfile: "dist/main.cjs",
-  external: ["electron", "esbuild", "@npmcli/arborist"],
+  external: ["electron", "esbuild", "@npmcli/arborist", "isolated-vm"],
   sourcemap: isDev,
   minify: !isDev,
   plugins: typiaPlugins,
@@ -102,6 +102,39 @@ const rendererConfig = {
   },
 };
 
+// =============================================================================
+// Worker-related build configs
+// =============================================================================
+
+// Utility process that hosts isolated-vm isolates
+const utilityProcessConfig = {
+  entryPoints: ["src/workers/utilityEntry.ts"],
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "cjs",
+  outfile: "dist/utilityProcess.cjs",
+  external: ["electron", "isolated-vm"],
+  sourcemap: isDev,
+  minify: !isDev,
+  plugins: typiaPlugins,
+  logOverride,
+};
+
+// Worker runtime shim that gets bundled into worker code
+// This is built from the packages/worker-runtime source
+const workerRuntimeConfig = {
+  entryPoints: ["packages/worker-runtime/src/index.ts"],
+  bundle: true,
+  platform: "browser",  // isolated-vm runs V8 without Node APIs
+  target: "es2022",
+  format: "esm",
+  outfile: "dist/workerRuntime.js",
+  sourcemap: isDev,
+  minify: !isDev,
+  logOverride,
+};
+
 function copyAssets() {
   fs.copyFileSync("src/renderer/index.html", "dist/index.html");
   // Copy panel runtime type definitions
@@ -148,6 +181,8 @@ async function build() {
     await esbuild.build(panelFsRuntimeConfig);
     await esbuild.build(panelFsPromisesRuntimeConfig);
     await esbuild.build(rendererConfig);
+    await esbuild.build(utilityProcessConfig);
+    await esbuild.build(workerRuntimeConfig);
 
     // ========================================================================
     // STEP 3: Copy static assets

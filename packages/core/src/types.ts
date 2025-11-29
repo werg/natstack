@@ -48,8 +48,11 @@ export interface PanelRpcSchema {
 // =============================================================================
 
 export interface PanelRpcIpcApi {
-  // Establish a MessageChannel between two panels
-  "panel-rpc:connect": (fromPanelId: string, toPanelId: string) => void;
+  // Establish a connection to another panel or worker
+  "panel-rpc:connect": (
+    fromPanelId: string,
+    toPanelId: string
+  ) => { isWorker: boolean; workerId?: string };
 }
 
 // =============================================================================
