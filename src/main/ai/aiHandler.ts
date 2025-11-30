@@ -13,40 +13,24 @@
  * - Implements stream resource limits and cleanup
  */
 
+import { MessageChannelMain } from "electron";
 import { handle } from "../ipc/handlers.js";
 import type { PanelManager } from "../panelManager.js";
+import type { AIRoleRecord, AIModelInfo, AIToolDefinition } from "@natstack/ai";
 import type {
-  AICallOptions,
-  AIGenerateResult,
-  AIRoleRecord,
-  AIModelInfo,
-  AIStreamPart,
-  AIMessage,
-  AIToolDefinition,
-  AITextPart,
-  AIFilePart,
-  AIReasoningPart,
-  AIToolCallPart,
-  AIToolResultPart,
-  AIFinishReason,
-} from "@natstack/ai";
-import type {
-  ClaudeCodeConversationInfo,
-  ClaudeCodeToolResult,
-  ClaudeCodeToolExecuteRequest,
+  StreamTextOptions,
+  StreamTextEvent,
+  ToolExecutionResult as IPCToolExecutionResult,
 } from "../../shared/ipc/types.js";
-import { createAIError, mapAISDKError, type AIError } from "../../shared/errors.js";
+import { createAIError } from "../../shared/errors.js";
 import { Logger, generateRequestId } from "../../shared/logging.js";
-import {
-  validatePrompt,
-  validateToolDefinitions,
-  validateSDKResponse,
-} from "../../shared/validation.js";
+import { validateToolDefinitions } from "../../shared/validation.js";
+import { TOOL_EXECUTION_TIMEOUT_MS, MAX_STREAM_DURATION_MS } from "../../shared/constants.js";
 import {
   getClaudeCodeConversationManager,
   type ClaudeCodeConversationManager,
 } from "./claudeCodeConversationManager.js";
-import { getMcpToolNames, type ToolExecutionResult } from "./claudeCodeToolProxy.js";
+import { type ToolExecutionResult } from "./claudeCodeToolProxy.js";
 
 // =============================================================================
 // AI SDK Types
@@ -64,106 +48,8 @@ interface LanguageModel {
 type AISDKProvider = (modelId: string) => LanguageModel;
 
 // =============================================================================
-// Type Converters
+// Utilities
 // =============================================================================
-
-/**
- * Convert our serializable AIMessage format to AI SDK's LanguageModelV2Prompt format.
- * Validates all message content before conversion.
- * @throws AIError if message format is invalid
- */
-function convertPromptToSDK(messages: AIMessage[]): unknown[] {
-  const prompt = validatePrompt(messages);
-
-  return prompt.map((msg, msgIndex) => {
-    switch (msg.role) {
-      case "system":
-        return { role: "system", content: msg.content };
-
-      case "user":
-        return {
-          role: "user",
-          content: msg.content.map((part: AITextPart | AIFilePart, partIndex: number) => {
-            if (part.type === "text") {
-              return { type: "text", text: part.text };
-            }
-            return {
-              type: "file",
-              mimeType: part.mimeType,
-              data: decodeBinary(part.data, `prompt[${msgIndex}].content[${partIndex}]`),
-            };
-          }),
-        };
-
-      case "assistant":
-        return {
-          role: "assistant",
-          content: msg.content.map(
-            (
-              part: AITextPart | AIFilePart | AIReasoningPart | AIToolCallPart,
-              partIndex: number
-            ) => {
-              switch (part.type) {
-                case "text":
-                  return { type: "text", text: part.text };
-                case "file":
-                  return {
-                    type: "file",
-                    mimeType: part.mimeType,
-                    data: decodeBinary(part.data, `prompt[${msgIndex}].content[${partIndex}]`),
-                  };
-                case "reasoning":
-                  return { type: "reasoning", text: part.text };
-                case "tool-call":
-                  return {
-                    type: "tool-call",
-                    toolCallId: part.toolCallId,
-                    toolName: part.toolName,
-                    input: part.args, // AI SDK expects "input", not "args"
-                  };
-                default:
-                  return part;
-              }
-            }
-          ),
-        };
-
-      case "tool":
-        return {
-          role: "tool",
-          content: msg.content.map((part: AIToolResultPart) => ({
-            type: "tool-result",
-            toolCallId: part.toolCallId,
-            toolName: part.toolName,
-            // AI SDK expects output: { type: ..., value: ... } format
-            output: {
-              type: part.isError ? "error-json" : "json",
-              value: part.result,
-            },
-          })),
-        };
-
-      default:
-        return msg;
-    }
-  });
-}
-
-/**
- * Convert our AIToolDefinition to AI SDK's tool format.
- * @throws AIError if tool definition is invalid
- */
-function convertToolsToSDK(tools: AIToolDefinition[] | undefined): unknown[] | undefined {
-  const validated = validateToolDefinitions(tools);
-  if (!validated) return undefined;
-
-  return validated.map((tool) => ({
-    type: "function",
-    name: tool.name,
-    description: tool.description,
-    inputSchema: tool.parameters, // AI SDK uses inputSchema, not parameters
-  }));
-}
 
 function decodeBinary(data: string, context: string): Uint8Array {
   try {
@@ -175,8 +61,31 @@ function decodeBinary(data: string, context: string): Uint8Array {
 }
 
 /**
- * Convert AI SDK response content to our serializable format.
+ * Safely parse JSON with fallback to raw string on error.
+ * @param jsonString - String to parse
+ * @param fallback - Value to return on parse error (default: original string)
+ * @returns Parsed object or fallback
  */
+function safeJsonParse(jsonString: string, fallback?: unknown): unknown {
+  try {
+    return JSON.parse(jsonString);
+  } catch {
+    return fallback !== undefined ? fallback : jsonString;
+  }
+}
+
+/**
+ * Safely stringify to JSON with fallback to String() on error.
+ * @param value - Value to stringify
+ * @returns JSON string or String(value) on error
+ */
+function safeJsonStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
 
 // =============================================================================
 // Stream Management
@@ -189,7 +98,6 @@ function decodeBinary(data: string, context: string): Uint8Array {
 class AIStreamManager {
   private activeStreams = new Map<string, AbortController>();
   private streamTimeouts = new Map<string, NodeJS.Timeout>();
-  private readonly MAX_STREAM_DURATION = 10 * 60 * 1000; // 10 minutes
   private readonly logger = new Logger("AIStreamManager");
 
   startTracking(streamId: string, abortController: AbortController, requestId: string): void {
@@ -199,7 +107,7 @@ class AIStreamManager {
     const timeout = setTimeout(() => {
       this.logger.warn(requestId, "Stream exceeded maximum duration", { streamId });
       this.cancelStream(streamId);
-    }, this.MAX_STREAM_DURATION);
+    }, MAX_STREAM_DURATION_MS);
 
     this.streamTimeouts.set(streamId, timeout);
   }
@@ -336,29 +244,9 @@ export class AIHandler {
   private logger = new Logger("AIHandler");
   private modelRoleResolver: import("./modelRoles.js").ModelRoleResolver | null = null;
   private ccConversationManager: ClaudeCodeConversationManager;
-  private ccConversationEndUnsub: (() => void) | null = null;
-
-  // Pending tool executions: executionId -> { resolve, reject }
-  private pendingToolExecutions = new Map<
-    string,
-    {
-      resolve: (result: ToolExecutionResult) => void;
-      reject: (error: Error) => void;
-      timeoutId: NodeJS.Timeout;
-      conversationId: string;
-      panelId: string;
-    }
-  >();
-  private readonly TOOL_EXECUTION_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 
   constructor(private panelManager: PanelManager) {
     this.ccConversationManager = getClaudeCodeConversationManager();
-    // Reject any outstanding tool executions when conversations are torn down elsewhere (e.g., panel removal)
-    this.ccConversationEndUnsub = this.ccConversationManager.addConversationEndListener(
-      (conversationId, panelId) => {
-        this.rejectPendingToolExecutions(conversationId, panelId, "Conversation ended");
-      }
-    );
     this.registerHandlers();
   }
 
@@ -529,32 +417,6 @@ export class AIHandler {
   }
 
   private registerHandlers(): void {
-    handle("ai:generate", async (event, modelId: string, options: AICallOptions) => {
-      const requestId = generateRequestId();
-      const panelId = this.getPanelId(event, requestId);
-      // Resolve model role to actual model ID
-      const resolvedModelId = this.resolveModelId(modelId);
-      return this.generate(requestId, panelId, resolvedModelId, options);
-    });
-
-    handle(
-      "ai:stream-start",
-      async (event, modelId: string, options: AICallOptions, streamId: string) => {
-        const requestId = generateRequestId();
-        const panelId = this.getPanelId(event, requestId);
-        // Resolve model role to actual model ID
-        const resolvedModelId = this.resolveModelId(modelId);
-        void this.streamToPanel(
-          event.sender,
-          requestId,
-          panelId,
-          resolvedModelId,
-          options,
-          streamId
-        );
-      }
-    );
-
     handle("ai:stream-cancel", async (event, streamId: string) => {
       const requestId = generateRequestId();
       this.getPanelId(event, requestId); // Validate authorization
@@ -568,318 +430,37 @@ export class AIHandler {
     });
 
     // =========================================================================
-    // Claude Code Conversation Handlers
+    // Unified streamText API
     // =========================================================================
 
     handle(
-      "ai:cc-conversation-start",
-      async (
-        event,
-        modelId: string,
-        tools: AIToolDefinition[]
-      ): Promise<ClaudeCodeConversationInfo> => {
+      "ai:stream-text-start",
+      async (event, options: StreamTextOptions, streamId: string) => {
         const requestId = generateRequestId();
         const panelId = this.getPanelId(event, requestId);
 
-        this.logger.info(requestId, "Starting Claude Code conversation", {
-          panelId,
-          modelId,
-          toolCount: tools.length,
-        });
-
-        // Validate tools
-        const validatedTools = validateToolDefinitions(tools);
-        if (!validatedTools || validatedTools.length === 0) {
-          throw createAIError(
-            "api_error",
-            "At least one tool is required for Claude Code conversations"
-          );
-        }
-
-        // Extract the model name from the modelId (e.g., "claude-code:sonnet" -> "sonnet")
-        const ccModelId = modelId.startsWith("claude-code:")
-          ? modelId.substring("claude-code:".length)
-          : modelId;
-
-        // Use an object reference so the callback can access the correct conversation ID
-        // after createConversation() sets it (the callback is created before we know the ID)
-        const conversationRef = { id: "" };
-
-        // Create a tool execution callback that sends requests to the panel via IPC
-        const executeCallback = async (
-          toolName: string,
-          args: Record<string, unknown>
-        ): Promise<ToolExecutionResult> => {
-          const executionId = crypto.randomUUID();
-
-          // Strip MCP prefix from tool name (mcp__serverName__toolName -> toolName)
-          let simpleToolName = toolName;
-          const mcpMatch = toolName.match(/^mcp__[^_]+__(.+)$/);
-          if (mcpMatch) {
-            simpleToolName = mcpMatch[1]!;
-          }
-
-          this.logger.debug(requestId, "Executing tool via panel", {
-            executionId,
-            toolName: simpleToolName,
-            conversationId: conversationRef.id,
-          });
-
-          return new Promise((resolve, reject) => {
-            const timeoutId = setTimeout(() => {
-              this.pendingToolExecutions.delete(executionId);
-              reject(new Error(`Tool execution timed out: ${simpleToolName}`));
-            }, this.TOOL_EXECUTION_TIMEOUT);
-
-            this.pendingToolExecutions.set(executionId, {
-              resolve,
-              reject,
-              timeoutId,
-              conversationId: conversationRef.id,
-              panelId,
-            });
-
-            const request: ClaudeCodeToolExecuteRequest = {
-              panelId,
-              executionId,
-              conversationId: conversationRef.id,
-              toolName: simpleToolName,
-              args,
-            };
-
-            const panelWebContents = this.panelManager.getWebContentsForPanel(panelId);
-            if (!panelWebContents || panelWebContents.isDestroyed()) {
-              this.pendingToolExecutions.delete(executionId);
-              clearTimeout(timeoutId);
-              reject(new Error("Panel is not available"));
-              return;
-            }
-
-            panelWebContents.send("ai:cc-tool-execute", request);
-          });
-        };
-
-        // Create the conversation
-        let conversationHandle: { conversationId: string };
-        try {
-          conversationHandle = this.ccConversationManager.createConversation({
-            panelId,
-            modelId: ccModelId,
-            tools: validatedTools,
-            executeCallback,
-          });
-        } catch (error) {
-          const err = error instanceof Error ? error : new Error(String(error));
-          this.logger.error(
-            requestId,
-            "Failed to create Claude Code conversation",
-            { message: err.message },
-            err
-          );
-          throw createAIError("api_error", err.message);
-        }
-
-        // Update the reference so the callback uses the correct conversation ID
-        conversationRef.id = conversationHandle.conversationId;
-
-        // Get the registered MCP tool names for debugging
-        const registeredTools = getMcpToolNames(conversationHandle.conversationId, validatedTools);
-
-        this.logger.info(requestId, "Claude Code conversation started", {
-          conversationId: conversationHandle.conversationId,
-          registeredTools,
-        });
-
-        return {
-          conversationId: conversationHandle.conversationId,
-          registeredTools,
-        };
-      }
-    );
-
-    handle(
-      "ai:cc-generate",
-      async (event, conversationId: string, options: AICallOptions): Promise<AIGenerateResult> => {
-        const requestId = generateRequestId();
-        const panelId = this.getPanelId(event, requestId);
-
-        this.logger.info(requestId, "Claude Code generate", { panelId, conversationId });
-
-        const conversation = this.ccConversationManager.getConversation(conversationId);
-        if (!conversation) {
-          throw createAIError("api_error", `Conversation not found: ${conversationId}`);
-        }
-
-        if (conversation.panelId !== panelId) {
-          throw createAIError("unauthorized", "Conversation belongs to a different panel");
-        }
-
-        const model = this.ccConversationManager.getModel(conversationId);
-        if (!model) {
-          throw createAIError("internal_error", "Failed to get model for conversation");
-        }
-
-        // Convert request to SDK format (tools are already configured in the conversation)
-        let prompt: unknown[];
-        try {
-          prompt = convertPromptToSDK(options.prompt);
-        } catch (error) {
-          const err = error instanceof Error ? error : new Error(String(error));
-          this.logger.error(requestId, "Request conversion failed", { error: err.message }, err);
-          throw error;
-        }
-
-        const sdkOptions = {
-          prompt,
-          maxOutputTokens: options.maxOutputTokens,
-          temperature: options.temperature,
-          topP: options.topP,
-          topK: options.topK,
-          presencePenalty: options.presencePenalty,
-          frequencyPenalty: options.frequencyPenalty,
-          stopSequences: options.stopSequences,
-          seed: options.seed,
-          responseFormat: options.responseFormat,
-          providerOptions: options.providerOptions,
-          // Note: tools and toolChoice are handled by the conversation's MCP server
-        };
-
-        try {
-          const result = (await model.doGenerate(sdkOptions)) as {
-            content?: unknown[];
-            finishReason?: string;
-            usage?: { promptTokens?: number; completionTokens?: number };
-            warnings?: Array<{ type: string; message: string; details?: unknown }>;
-            response?: { id?: string; modelId?: string; timestamp?: Date };
-          };
-
-          const response = validateSDKResponse(result);
-
-          this.logger.info(requestId, "Claude Code generation completed", {
-            conversationId,
-            finishReason: response.finishReason,
-          });
-
-          return response;
-        } catch (error) {
-          const aiError = mapAISDKError(error);
-          this.logger.error(
-            requestId,
-            "Claude Code generation failed",
-            { conversationId, code: aiError.code, message: aiError.message },
-            error as Error
-          );
-          throw aiError;
-        }
-      }
-    );
-
-    handle(
-      "ai:cc-stream-start",
-      async (event, conversationId: string, options: AICallOptions, streamId: string) => {
-        const requestId = generateRequestId();
-        const panelId = this.getPanelId(event, requestId);
-
-        this.logger.info(requestId, "Claude Code stream start", {
-          panelId,
-          conversationId,
+        // Debug: Log received options
+        this.logger.info(requestId, "[Main AI] stream-text-start received", {
+          model: options.model,
+          messageCount: options.messages?.length,
+          toolCount: options.tools?.length,
           streamId,
         });
 
-        const conversation = this.ccConversationManager.getConversation(conversationId);
-        if (!conversation) {
-          throw createAIError("api_error", `Conversation not found: ${conversationId}`);
-        }
+        // Resolve model role to actual model ID
+        const resolvedModelId = this.resolveModelId(options.model);
 
-        if (conversation.panelId !== panelId) {
-          throw createAIError("unauthorized", "Conversation belongs to a different panel");
-        }
-
-        // Run the stream in the background
-        void this.ccStreamToPanel(
+        void this.streamTextToPanel(
           event.sender,
           requestId,
           panelId,
-          conversationId,
+          resolvedModelId,
           options,
           streamId
         );
       }
     );
 
-    handle("ai:cc-conversation-end", async (event, conversationId: string) => {
-      const requestId = generateRequestId();
-      const panelId = this.getPanelId(event, requestId);
-
-      this.logger.info(requestId, "Ending Claude Code conversation", { panelId, conversationId });
-
-      const conversation = this.ccConversationManager.getConversation(conversationId);
-      if (!conversation) {
-        this.logger.warn(requestId, "Conversation not found (may have already ended)", {
-          conversationId,
-        });
-        return;
-      }
-
-      if (conversation.panelId !== panelId) {
-        throw createAIError("unauthorized", "Conversation belongs to a different panel");
-      }
-
-      this.rejectPendingToolExecutions(conversationId, panelId, "Conversation ended");
-      this.ccConversationManager.endConversation(conversationId);
-    });
-
-    handle(
-      "ai:cc-tool-result",
-      async (event, executionId: string, result: ClaudeCodeToolResult) => {
-        const requestId = generateRequestId();
-        this.getPanelId(event, requestId); // Validate authorization
-
-        this.logger.debug(requestId, "Received tool result", {
-          executionId,
-          isError: result.isError,
-        });
-
-        const pending = this.pendingToolExecutions.get(executionId);
-        if (!pending) {
-          this.logger.warn(requestId, "No pending execution found for tool result", {
-            executionId,
-          });
-          return;
-        }
-
-        clearTimeout(pending.timeoutId);
-        this.pendingToolExecutions.delete(executionId);
-
-        // Convert to ToolExecutionResult format
-        pending.resolve({
-          content: result.content,
-          isError: result.isError,
-        });
-      }
-    );
-  }
-
-  /**
-   * Reject and clean up any pending tool executions for a conversation.
-   */
-  private rejectPendingToolExecutions(
-    conversationId: string,
-    panelId: string,
-    reason: string
-  ): void {
-    for (const [executionId, pending] of this.pendingToolExecutions) {
-      if (pending.conversationId === conversationId) {
-        clearTimeout(pending.timeoutId);
-        this.pendingToolExecutions.delete(executionId);
-        pending.reject(new Error(reason));
-        this.logger.debug("cleanup", "Rejected pending tool execution", {
-          executionId,
-          conversationId,
-          panelId,
-        });
-      }
-    }
   }
 
   /**
@@ -896,162 +477,265 @@ export class AIHandler {
     return panelId;
   }
 
-  private async generate(
-    requestId: string,
-    panelId: string,
-    modelId: string,
-    options: AICallOptions
-  ): Promise<AIGenerateResult> {
-    this.logger.info(requestId, "Generation request", { panelId, modelId });
+  // ===========================================================================
+  // Unified streamText Implementation
+  // ===========================================================================
 
-    // Claude Code with tools requires the streaming conversation API
-    const isClaudeCode = modelId.startsWith("claude-code:");
-    const hasTools = options.tools && options.tools.length > 0;
-    if (isClaudeCode && hasTools) {
-      throw createAIError(
-        "api_error",
-        "Claude Code with tools requires streaming. Use doStream() with registerToolCallbacks() instead of doGenerate()."
-      );
-    }
-
-    try {
-      const model = this.registry.getModel(modelId);
-
-      // Convert request to SDK format with validation
-      let prompt: unknown[];
-      let tools: unknown[] | undefined;
-
-      try {
-        prompt = convertPromptToSDK(options.prompt);
-        tools = convertToolsToSDK(options.tools);
-      } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        this.logger.error(requestId, "Request conversion failed", { error: err.message }, err);
-        throw error;
-      }
-
-      const sdkOptions = {
-        prompt,
-        maxOutputTokens: options.maxOutputTokens,
-        temperature: options.temperature,
-        topP: options.topP,
-        topK: options.topK,
-        presencePenalty: options.presencePenalty,
-        frequencyPenalty: options.frequencyPenalty,
-        stopSequences: options.stopSequences,
-        seed: options.seed,
-        responseFormat: options.responseFormat,
-        tools,
-        toolChoice: options.toolChoice,
-        providerOptions: options.providerOptions,
-      };
-
-      // Call AI SDK with validation
-      let result;
-      try {
-        result = (await model.doGenerate(sdkOptions)) as {
-          content?: unknown[];
-          finishReason?: string;
-          usage?: { promptTokens?: number; completionTokens?: number };
-          warnings?: Array<{ type: string; message: string; details?: unknown }>;
-          response?: { id?: string; modelId?: string; timestamp?: Date };
-        };
-      } catch (error) {
-        const aiError = mapAISDKError(error);
-        this.logger.error(
-          requestId,
-          "AI SDK call failed",
-          { code: aiError.code, message: aiError.message },
-          error as Error
-        );
-        throw aiError;
-      }
-
-      // Validate and normalize SDK response
-      const response = validateSDKResponse(result);
-
-      this.logger.info(requestId, "Generation completed", {
-        finishReason: response.finishReason,
-        tokens: response.usage,
-      });
-
-      return response;
-    } catch (error) {
-      if (error instanceof Error && "code" in error) {
-        throw error; // Re-throw AIError as-is
-      }
-      const aiError = createAIError("internal_error", "Unexpected error during generation");
-      this.logger.error(requestId, "Unexpected error", { error: aiError.message }, error as Error);
-      throw aiError;
-    }
-  }
-
-  private async streamToPanel(
+  /**
+   * Unified streamText implementation with server-side agent loop.
+   * Works for both regular models and Claude Code models.
+   */
+  private async streamTextToPanel(
     sender: Electron.WebContents,
     requestId: string,
     panelId: string,
     modelId: string,
-    options: AICallOptions,
+    options: StreamTextOptions,
     streamId: string
   ): Promise<void> {
-    // Check if this is a Claude Code model with tools - needs special handling via MCP
     const isClaudeCode = modelId.startsWith("claude-code:");
     const hasTools = options.tools && options.tools.length > 0;
+    const maxSteps = options.maxSteps ?? 10;
 
-    if (isClaudeCode && hasTools) {
-      // Route to Claude Code conversation-based streaming for tool support
-      await this.streamClaudeCodeWithTools(sender, requestId, panelId, modelId, options, streamId);
-      return;
-    }
-
-    this.logger.info(requestId, "Stream started", { panelId, modelId, streamId });
+    this.logger.info(requestId, "streamText started", {
+      panelId,
+      modelId,
+      streamId,
+      hasTools,
+      maxSteps,
+      isClaudeCode,
+    });
 
     const abortController = new AbortController();
     this.streamManager.startTracking(streamId, abortController, requestId);
 
     const onDestroyed = (): void => {
-      this.logger.info(requestId, "Panel destroyed, cancelling stream", { streamId });
+      this.logger.info(requestId, "Panel destroyed, cancelling streamText", { streamId });
       this.streamManager.cleanup(streamId);
     };
-
     sender.on("destroyed", onDestroyed);
 
-    try {
-      const model = this.registry.getModel(modelId);
-
-      // Convert request to SDK format with validation
-      let prompt: unknown[];
-      let tools: unknown[] | undefined;
-
-      try {
-        prompt = convertPromptToSDK(options.prompt);
-        tools = convertToolsToSDK(options.tools);
-      } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        this.logger.error(requestId, "Request conversion failed", { error: err.message }, err);
-        this.sendStreamError(sender, panelId, streamId, error);
-        return;
+    // Helper to send streamText events
+    const sendEvent = (event: StreamTextEvent): void => {
+      if (!sender.isDestroyed()) {
+        sender.send("ai:stream-text-chunk", { panelId, streamId, chunk: event });
       }
+    };
+
+    // Helper to execute a tool via panel callback using bidirectional RPC
+    const executeToolViaPanel = async (
+      toolName: string,
+      args: Record<string, unknown>
+    ): Promise<ToolExecutionResult> => {
+      this.logger.debug(requestId, "Requesting tool execution from panel", {
+        toolName,
+        streamId,
+      });
+
+      if (sender.isDestroyed()) {
+        throw new Error("Panel is not available");
+      }
+
+      return new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          reject(new Error(`Tool execution timed out: ${toolName}`));
+        }, TOOL_EXECUTION_TIMEOUT_MS);
+
+        // Create a MessageChannel for the response
+        const { port1, port2 } = new MessageChannelMain();
+
+        port1.on("message", (event) => {
+          clearTimeout(timeoutId);
+          port1.close();
+          const result = event.data as IPCToolExecutionResult;
+          resolve({
+            content: result.content,
+            isError: result.isError,
+          });
+        });
+
+        port1.start();
+
+        // Send tool execution request with response port
+        sender.postMessage("panel:execute-tool", [streamId, toolName, args], [port2]);
+      });
+    };
+
+    try {
+      if (isClaudeCode && hasTools) {
+        // Route to Claude Code with MCP proxy for tool support
+        await this.streamTextClaudeCode(
+          sender,
+          requestId,
+          panelId,
+          modelId,
+          options,
+          streamId,
+          maxSteps,
+          abortController,
+          sendEvent,
+          executeToolViaPanel
+        );
+      } else if (hasTools) {
+        // Regular model with tools - run agent loop
+        await this.streamTextWithAgentLoop(
+          sender,
+          requestId,
+          panelId,
+          modelId,
+          options,
+          streamId,
+          maxSteps,
+          abortController,
+          sendEvent,
+          executeToolViaPanel
+        );
+      } else {
+        // Simple case: no tools, just stream
+        await this.streamTextSimple(
+          sender,
+          requestId,
+          panelId,
+          modelId,
+          options,
+          streamId,
+          abortController,
+          sendEvent
+        );
+      }
+
+      if (!sender.isDestroyed()) {
+        sender.send("ai:stream-text-end", { panelId, streamId });
+        this.logger.info(requestId, "streamText completed", { streamId });
+      }
+    } catch (error) {
+      this.logger.error(requestId, "streamText error", { streamId }, error as Error);
+      sendEvent({
+        type: "error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (!sender.isDestroyed()) {
+        sender.send("ai:stream-text-end", { panelId, streamId });
+      }
+    } finally {
+      sender.removeListener("destroyed", onDestroyed);
+      this.streamManager.cleanup(streamId);
+    }
+  }
+
+  /**
+   * Simple streaming without tools - single model call.
+   */
+  private async streamTextSimple(
+    sender: Electron.WebContents,
+    requestId: string,
+    panelId: string,
+    modelId: string,
+    options: StreamTextOptions,
+    streamId: string,
+    abortController: AbortController,
+    sendEvent: (event: StreamTextEvent) => void
+  ): Promise<void> {
+    const model = this.registry.getModel(modelId);
+
+    // Convert messages to SDK format
+    const prompt = this.convertStreamTextMessagesToSDK(options.messages);
+
+    const sdkOptions = {
+      prompt,
+      maxOutputTokens: options.maxOutputTokens,
+      temperature: options.temperature,
+      abortSignal: abortController.signal,
+    };
+
+    const { stream } = (await model.doStream(sdkOptions)) as { stream: ReadableStream<unknown> };
+    const reader = stream.getReader();
+
+    let totalUsage = { promptTokens: 0, completionTokens: 0 };
+
+    try {
+      while (true) {
+        if (sender.isDestroyed()) {
+          abortController.abort();
+          break;
+        }
+
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const part = value as Record<string, unknown>;
+        const type = part["type"] as string;
+
+        // Convert to unified event format
+        if (type === "text-delta") {
+          sendEvent({ type: "text-delta", text: part["delta"] as string });
+        } else if (type === "finish") {
+          totalUsage = {
+            promptTokens: (part["usage"] as { promptTokens?: number })?.promptTokens ?? 0,
+            completionTokens: (part["usage"] as { completionTokens?: number })?.completionTokens ?? 0,
+          };
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    sendEvent({ type: "step-finish", stepNumber: 1, finishReason: "stop" });
+    sendEvent({ type: "finish", totalSteps: 1, usage: totalUsage });
+  }
+
+  /**
+   * Streaming with agent loop for regular models with tools.
+   */
+  private async streamTextWithAgentLoop(
+    sender: Electron.WebContents,
+    requestId: string,
+    panelId: string,
+    modelId: string,
+    options: StreamTextOptions,
+    streamId: string,
+    maxSteps: number,
+    abortController: AbortController,
+    sendEvent: (event: StreamTextEvent) => void,
+    executeToolViaPanel: (toolName: string, args: Record<string, unknown>) => Promise<ToolExecutionResult>
+  ): Promise<void> {
+    const model = this.registry.getModel(modelId);
+
+    // Convert tools to SDK format (v3 API uses inputSchema, not parameters)
+    const sdkTools = options.tools?.map((tool) => ({
+      type: "function" as const,
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.parameters,
+    }));
+
+    // Build conversation messages (will be extended with tool results)
+    const conversationMessages = [...options.messages];
+    let totalUsage = { promptTokens: 0, completionTokens: 0 };
+
+    for (let step = 1; step <= maxSteps; step++) {
+      if (sender.isDestroyed() || abortController.signal.aborted) break;
+
+      // Convert current conversation to SDK format
+      const prompt = this.convertStreamTextMessagesToSDK(conversationMessages);
 
       const sdkOptions = {
         prompt,
+        tools: sdkTools,
+        toolChoice: { type: "auto" },
         maxOutputTokens: options.maxOutputTokens,
         temperature: options.temperature,
-        topP: options.topP,
-        topK: options.topK,
-        presencePenalty: options.presencePenalty,
-        frequencyPenalty: options.frequencyPenalty,
-        stopSequences: options.stopSequences,
-        seed: options.seed,
-        responseFormat: options.responseFormat,
-        tools,
-        toolChoice: options.toolChoice,
-        providerOptions: options.providerOptions,
         abortSignal: abortController.signal,
       };
 
       const { stream } = (await model.doStream(sdkOptions)) as { stream: ReadableStream<unknown> };
       const reader = stream.getReader();
+
+      // Collect tool calls from this step
+      const toolCalls: Array<{ toolCallId: string; toolName: string; args: unknown }> = [];
+      const toolCallArgsBuffers = new Map<string, string>();
+      let textContent = "";
+      let finishReason: "stop" | "tool-calls" | "length" | "error" = "stop";
 
       try {
         while (true) {
@@ -1063,195 +747,255 @@ export class AIHandler {
           const { done, value } = await reader.read();
           if (done) break;
 
-          const chunk = this.convertStreamPart(value as Record<string, unknown>);
-          if (chunk && !sender.isDestroyed()) {
-            sender.send("ai:stream-chunk", { panelId, streamId, chunk });
+          const part = value as Record<string, unknown>;
+          const type = part["type"] as string;
+
+          switch (type) {
+            case "text-delta":
+              textContent += part["delta"] as string;
+              sendEvent({ type: "text-delta", text: part["delta"] as string });
+              break;
+
+            case "tool-input-start": {
+              const toolCallId = part["id"] as string;
+              const toolName = part["toolName"] as string;
+              toolCallArgsBuffers.set(toolCallId, "");
+              toolCalls.push({ toolCallId, toolName, args: {} });
+              break;
+            }
+
+            case "tool-input-delta": {
+              const toolCallId = part["id"] as string;
+              const delta = part["delta"] as string;
+              const current = toolCallArgsBuffers.get(toolCallId) ?? "";
+              toolCallArgsBuffers.set(toolCallId, current + delta);
+              break;
+            }
+
+            case "tool-input-end": {
+              const toolCallId = part["id"] as string;
+              const argsStr = toolCallArgsBuffers.get(toolCallId) ?? "{}";
+              const tc = toolCalls.find((t) => t.toolCallId === toolCallId);
+              if (tc) {
+                tc.args = safeJsonParse(argsStr, { raw: argsStr });
+                // Send tool-call event
+                sendEvent({
+                  type: "tool-call",
+                  toolCallId: tc.toolCallId,
+                  toolName: tc.toolName,
+                  args: tc.args,
+                });
+              }
+              break;
+            }
+
+            case "finish": {
+              const reason = part["finishReason"] as string;
+              if (reason === "tool-calls") finishReason = "tool-calls";
+              else if (reason === "length") finishReason = "length";
+              else if (reason === "error") finishReason = "error";
+              else finishReason = "stop";
+
+              const usage = part["usage"] as { promptTokens?: number; completionTokens?: number } | undefined;
+              if (usage) {
+                totalUsage.promptTokens += usage.promptTokens ?? 0;
+                totalUsage.completionTokens += usage.completionTokens ?? 0;
+              }
+              break;
+            }
           }
         }
       } finally {
         reader.releaseLock();
       }
 
-      if (!sender.isDestroyed()) {
-        sender.send("ai:stream-end", { panelId, streamId });
-        this.logger.info(requestId, "Stream completed", { streamId });
+      // Send step-finish event
+      sendEvent({ type: "step-finish", stepNumber: step, finishReason });
+
+      // If no tool calls or finish reason is stop, we're done
+      if (toolCalls.length === 0 || finishReason === "stop") {
+        sendEvent({ type: "finish", totalSteps: step, usage: totalUsage });
+        return;
       }
-    } catch (error) {
-      this.logger.error(requestId, "Stream error", { streamId }, error as Error);
-      this.sendStreamError(sender, panelId, streamId, error);
-    } finally {
-      sender.removeListener("destroyed", onDestroyed);
-      this.streamManager.cleanup(streamId);
+
+      // Execute tools and collect results
+      const toolResults: Array<{ toolCallId: string; toolName: string; result: unknown; isError?: boolean }> = [];
+
+      for (const tc of toolCalls) {
+        try {
+          const result = await executeToolViaPanel(tc.toolName, tc.args as Record<string, unknown>);
+          const resultText = result.content[0]?.text;
+          const parsedResult = resultText ? safeJsonParse(resultText) : resultText;
+          toolResults.push({
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            result: parsedResult,
+            isError: result.isError,
+          });
+          sendEvent({
+            type: "tool-result",
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            result: parsedResult,
+            isError: result.isError,
+          });
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          toolResults.push({
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            result: { error: errorMessage },
+            isError: true,
+          });
+          sendEvent({
+            type: "tool-result",
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            result: { error: errorMessage },
+            isError: true,
+          });
+        }
+      }
+
+      // Add assistant message with tool calls to conversation
+      conversationMessages.push({
+        role: "assistant",
+        content: [
+          ...(textContent ? [{ type: "text" as const, text: textContent }] : []),
+          ...toolCalls.map((tc) => ({
+            type: "tool-call" as const,
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            args: tc.args,
+          })),
+        ],
+      });
+
+      // Add tool results to conversation
+      conversationMessages.push({
+        role: "tool",
+        content: toolResults.map((tr) => ({
+          type: "tool-result" as const,
+          toolCallId: tr.toolCallId,
+          toolName: tr.toolName,
+          result: tr.result,
+          isError: tr.isError,
+        })),
+      });
     }
+
+    // Hit max steps
+    sendEvent({ type: "finish", totalSteps: maxSteps, usage: totalUsage });
   }
 
   /**
-   * Stream with Claude Code model when tools are present.
-   * Creates a temporary conversation with MCP proxy for tool execution.
+   * Streaming with Claude Code model and tools via MCP proxy.
    */
-  private async streamClaudeCodeWithTools(
+  private async streamTextClaudeCode(
     sender: Electron.WebContents,
     requestId: string,
     panelId: string,
     modelId: string,
-    options: AICallOptions,
-    streamId: string
+    options: StreamTextOptions,
+    streamId: string,
+    maxSteps: number,
+    abortController: AbortController,
+    sendEvent: (event: StreamTextEvent) => void,
+    executeToolViaPanel: (toolName: string, args: Record<string, unknown>) => Promise<ToolExecutionResult>
   ): Promise<void> {
-    this.logger.info(requestId, "Claude Code stream with tools started", {
-      panelId,
-      modelId,
-      streamId,
-      toolCount: options.tools?.length ?? 0,
-    });
-
-    const abortController = new AbortController();
-    this.streamManager.startTracking(streamId, abortController, requestId);
-
-    const onDestroyed = (): void => {
-      this.logger.info(requestId, "Panel destroyed, cancelling Claude Code stream", { streamId });
-      this.streamManager.cleanup(streamId);
-    };
-
-    sender.on("destroyed", onDestroyed);
-
     // Extract the model name (e.g., "claude-code:sonnet" -> "sonnet")
     const ccModelId = modelId.startsWith("claude-code:")
       ? modelId.substring("claude-code:".length)
       : modelId;
 
-    // Validate and convert tools
-    const validatedTools = validateToolDefinitions(options.tools);
-    if (!validatedTools || validatedTools.length === 0) {
-      this.sendStreamError(
-        sender,
-        panelId,
-        streamId,
-        new Error("Tools are required for Claude Code")
-      );
-      return;
+    // Validate tools
+    if (!options.tools || options.tools.length === 0) {
+      throw createAIError("api_error", "Tools are required for Claude Code streamText");
     }
 
-    // Track pending tool executions for this specific stream
-    const streamPendingTools = new Map<
-      string,
-      {
-        resolve: (result: ToolExecutionResult) => void;
-        reject: (error: Error) => void;
-        timeoutId: NodeJS.Timeout;
-      }
-    >();
+    // Convert to AIToolDefinition format
+    const aiTools: AIToolDefinition[] = options.tools.map((t) => ({
+      type: "function",
+      name: t.name,
+      description: t.description,
+      parameters: t.parameters,
+    }));
+
+    const validatedTools = validateToolDefinitions(aiTools);
+    if (!validatedTools || validatedTools.length === 0) {
+      throw createAIError("api_error", "Tools validation failed");
+    }
 
     // Use an object reference so the callback can access the correct conversation ID
-    // after createConversation() sets it (the callback is created before we know the ID)
     const conversationRef = { id: "" };
 
-    // Create tool execution callback
-    const executeCallback = async (
+    // Create tool execution callback that wraps executeToolViaPanel
+    const mcpExecuteCallback = async (
       toolName: string,
       args: Record<string, unknown>
     ): Promise<ToolExecutionResult> => {
-      const executionId = crypto.randomUUID();
-
-      // Strip MCP prefix from tool name (mcp__serverName__toolName -> toolName)
-      // The MCP server uses prefixed names internally, but panel callbacks use simple names
+      // Strip MCP prefix from tool name
       let simpleToolName = toolName;
       const mcpMatch = toolName.match(/^mcp__[^_]+__(.+)$/);
       if (mcpMatch) {
         simpleToolName = mcpMatch[1]!;
       }
 
-      this.logger.debug(requestId, "Executing tool via panel (inline)", {
-        executionId,
-        toolName,
-        simpleToolName,
-        conversationId: conversationRef.id,
+      // Send tool-call event
+      const toolCallId = crypto.randomUUID();
+      sendEvent({
+        type: "tool-call",
+        toolCallId,
+        toolName: simpleToolName,
+        args,
       });
 
-      return new Promise((resolve, reject) => {
-        const timeoutId = setTimeout(() => {
-          streamPendingTools.delete(executionId);
-          reject(new Error(`Tool execution timed out: ${simpleToolName}`));
-        }, this.TOOL_EXECUTION_TIMEOUT);
+      // Execute via panel
+      const result = await executeToolViaPanel(simpleToolName, args);
 
-        streamPendingTools.set(executionId, { resolve, reject, timeoutId });
-
-        // Also track in the main map so ai:cc-tool-result can find it
-        this.pendingToolExecutions.set(executionId, {
-          resolve,
-          reject,
-          timeoutId,
-          conversationId: conversationRef.id,
-          panelId,
-        });
-
-        const request: ClaudeCodeToolExecuteRequest = {
-          panelId,
-          executionId,
-          conversationId: conversationRef.id,
-          toolName: simpleToolName, // Use the simple name for panel callbacks
-          args,
-        };
-
-        if (sender.isDestroyed()) {
-          streamPendingTools.delete(executionId);
-          this.pendingToolExecutions.delete(executionId);
-          clearTimeout(timeoutId);
-          reject(new Error("Panel is not available"));
-          return;
-        }
-
-        sender.send("ai:cc-tool-execute", request);
+      // Send tool-result event
+      const resultText = result.content[0]?.text;
+      const parsedResult = resultText ? safeJsonParse(resultText) : resultText;
+      sendEvent({
+        type: "tool-result",
+        toolCallId,
+        toolName: simpleToolName,
+        result: parsedResult,
+        isError: result.isError,
       });
+
+      return result;
     };
 
-    let actualConversationId: string | null = null;
+    // Create the conversation
+    const conversationHandle = this.ccConversationManager.createConversation({
+      panelId,
+      modelId: ccModelId,
+      tools: validatedTools,
+      executeCallback: mcpExecuteCallback,
+    });
+
+    conversationRef.id = conversationHandle.conversationId;
+
+    this.logger.info(requestId, "Created streamText Claude Code conversation", {
+      conversationId: conversationRef.id,
+      toolCount: validatedTools.length,
+    });
+
+    let totalUsage = { promptTokens: 0, completionTokens: 0 };
 
     try {
-      // Create the conversation
-      const conversationHandle = this.ccConversationManager.createConversation({
-        panelId,
-        modelId: ccModelId,
-        tools: validatedTools,
-        executeCallback,
-      });
-
-      // Update the reference so the callback uses the correct conversation ID
-      conversationRef.id = conversationHandle.conversationId;
-      actualConversationId = conversationHandle.conversationId;
-
-      this.logger.info(requestId, "Created inline Claude Code conversation", {
-        conversationId: actualConversationId,
-        toolCount: validatedTools.length,
-      });
-
-      // Get the model and stream
       const model = conversationHandle.getModel();
 
-      // Convert prompt
-      let prompt: unknown[];
-      try {
-        prompt = convertPromptToSDK(options.prompt);
-      } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        this.logger.error(requestId, "Request conversion failed", { error: err.message }, err);
-        this.sendStreamError(sender, panelId, streamId, error);
-        return;
-      }
+      // Convert messages
+      const prompt = this.convertStreamTextMessagesToSDK(options.messages);
 
       const sdkOptions = {
         prompt,
         maxOutputTokens: options.maxOutputTokens,
         temperature: options.temperature,
-        topP: options.topP,
-        topK: options.topK,
-        presencePenalty: options.presencePenalty,
-        frequencyPenalty: options.frequencyPenalty,
-        stopSequences: options.stopSequences,
-        seed: options.seed,
-        responseFormat: options.responseFormat,
-        providerOptions: options.providerOptions,
         abortSignal: abortController.signal,
-        // Tools are handled by the MCP server, not passed directly
+        // Tools are handled by MCP, not passed directly
       };
 
       const { stream } = (await model.doStream(sdkOptions)) as { stream: ReadableStream<unknown> };
@@ -1267,255 +1011,581 @@ export class AIHandler {
           const { done, value } = await reader.read();
           if (done) break;
 
-          const chunk = this.convertStreamPart(value as Record<string, unknown>);
-          if (chunk && !sender.isDestroyed()) {
-            sender.send("ai:stream-chunk", { panelId, streamId, chunk });
+          const part = value as Record<string, unknown>;
+          const type = part["type"] as string;
+
+          // Convert to unified event format
+          if (type === "text-delta") {
+            sendEvent({ type: "text-delta", text: part["delta"] as string });
+          } else if (type === "finish") {
+            const usage = part["usage"] as { promptTokens?: number; completionTokens?: number } | undefined;
+            if (usage) {
+              totalUsage.promptTokens += usage.promptTokens ?? 0;
+              totalUsage.completionTokens += usage.completionTokens ?? 0;
+            }
           }
         }
       } finally {
         reader.releaseLock();
       }
 
-      if (!sender.isDestroyed()) {
-        sender.send("ai:stream-end", { panelId, streamId });
-        this.logger.info(requestId, "Claude Code stream with tools completed", { streamId });
-      }
-    } catch (error) {
-      this.logger.error(
-        requestId,
-        "Claude Code stream with tools error",
-        { streamId },
-        error as Error
-      );
-      this.sendStreamError(sender, panelId, streamId, error);
+      sendEvent({ type: "step-finish", stepNumber: 1, finishReason: "stop" });
+      sendEvent({ type: "finish", totalSteps: 1, usage: totalUsage });
     } finally {
-      if (actualConversationId) {
-        this.rejectPendingToolExecutions(actualConversationId, panelId, "Conversation ended");
-        this.ccConversationManager.endConversation(actualConversationId);
-      }
-
-      // Clean up pending tool executions for this stream
-      for (const [executionId, pending] of streamPendingTools) {
-        clearTimeout(pending.timeoutId);
-        this.pendingToolExecutions.delete(executionId);
-      }
-      streamPendingTools.clear();
-
-      sender.removeListener("destroyed", onDestroyed);
-      this.streamManager.cleanup(streamId);
-    }
-  }
-
-  private sendStreamError(
-    sender: Electron.WebContents,
-    panelId: string,
-    streamId: string,
-    error: unknown
-  ): void {
-    if (sender.isDestroyed()) return;
-
-    const aiError =
-      error instanceof Error && "code" in error ? (error as AIError) : mapAISDKError(error);
-
-    const errorChunk: AIStreamPart = {
-      type: "error",
-      error: aiError.message,
-    };
-
-    sender.send("ai:stream-chunk", { panelId, streamId, chunk: errorChunk });
-    sender.send("ai:stream-end", { panelId, streamId });
-  }
-
-  private convertStreamPart(part: Record<string, unknown>): AIStreamPart | null {
-    const type = part["type"] as string;
-
-    switch (type) {
-      case "text-start":
-        return { type: "text-start", id: part["id"] as string };
-      case "text-delta":
-        return { type: "text-delta", id: part["id"] as string, delta: part["delta"] as string };
-      case "text-end":
-        return { type: "text-end", id: part["id"] as string };
-      case "reasoning-start":
-        return { type: "reasoning-start", id: part["id"] as string };
-      case "reasoning-delta":
-        return {
-          type: "reasoning-delta",
-          id: part["id"] as string,
-          delta: part["delta"] as string,
-        };
-      case "reasoning-end":
-        return { type: "reasoning-end", id: part["id"] as string };
-      case "tool-input-start": {
-        // Strip MCP prefix from tool name (mcp__serverName__toolName -> toolName)
-        let toolName = part["toolName"] as string;
-        const mcpMatch = toolName.match(/^mcp__[^_]+__(.+)$/);
-        if (mcpMatch) {
-          toolName = mcpMatch[1]!;
-        }
-        return {
-          type: "tool-input-start",
-          toolCallId: part["id"] as string, // AI SDK uses "id", not "toolCallId"
-          toolName,
-        };
-      }
-      case "tool-input-delta":
-        return {
-          type: "tool-input-delta",
-          toolCallId: part["id"] as string, // AI SDK uses "id", not "toolCallId"
-          inputTextDelta: part["delta"] as string, // AI SDK uses "delta", not "inputTextDelta"
-        };
-      case "tool-input-end":
-        return { type: "tool-input-end", toolCallId: part["id"] as string }; // AI SDK uses "id"
-      case "stream-start":
-        return {
-          type: "stream-start",
-          warnings: ((part["warnings"] as unknown[]) ?? []).map((w: unknown) => {
-            const warn = w as { type: string; message: string; details?: unknown };
-            return { type: warn.type, message: warn.message, details: warn.details };
-          }),
-        };
-      case "response-metadata":
-        return {
-          type: "response-metadata",
-          id: part["id"] as string | undefined,
-          modelId: part["modelId"] as string | undefined,
-          timestamp: part["timestamp"]
-            ? ((part["timestamp"] as Date).toISOString?.() ?? String(part["timestamp"]))
-            : undefined,
-        };
-      case "finish": {
-        const finishReasonValue = part["finishReason"];
-        const validFinishReasons: AIFinishReason[] = [
-          "stop",
-          "length",
-          "content-filter",
-          "tool-calls",
-          "error",
-          "other",
-          "unknown",
-        ];
-        const finishReason = (
-          typeof finishReasonValue === "string" &&
-          validFinishReasons.includes(finishReasonValue as AIFinishReason)
-            ? finishReasonValue
-            : "unknown"
-        ) as AIFinishReason;
-        return {
-          type: "finish",
-          finishReason,
-          usage: {
-            promptTokens: (part["usage"] as { promptTokens?: number })?.promptTokens ?? 0,
-            completionTokens:
-              (part["usage"] as { completionTokens?: number })?.completionTokens ?? 0,
-          },
-        };
-      }
-      case "error": {
-        const err = part["error"];
-        return {
-          type: "error",
-          error: err instanceof Error ? err.message : String(err),
-        };
-      }
-      default:
-        return null;
+      // Clean up conversation
+      this.ccConversationManager.endConversation(conversationRef.id);
     }
   }
 
   /**
-   * Stream Claude Code conversation results to a panel.
-   * Similar to streamToPanel but uses the conversation's model.
+   * Convert StreamTextOptions messages to SDK format with proper type safety.
    */
-  private async ccStreamToPanel(
-    sender: Electron.WebContents,
+  private convertStreamTextMessagesToSDK(messages: StreamTextOptions["messages"]): unknown[] {
+    return messages.map((msg) => {
+      switch (msg.role) {
+        case "system":
+          return { role: "system", content: msg.content };
+
+        case "user": {
+          if (typeof msg.content === "string") {
+            return { role: "user", content: [{ type: "text", text: msg.content }] };
+          }
+          // Array of content parts
+          return {
+            role: "user",
+            content: msg.content.map((part) => {
+              if (part.type === "text") {
+                return { type: "text", text: part.text };
+              }
+              // File part
+              if (part.type === "file") {
+                return {
+                  type: "file",
+                  mimeType: part.mimeType,
+                  data: typeof part.data === "string" ? decodeBinary(part.data, "user content") : part.data,
+                };
+              }
+              throw createAIError("internal_error", `Unknown user content part type: ${(part as { type?: string }).type}`);
+            }),
+          };
+        }
+
+        case "assistant": {
+          if (typeof msg.content === "string") {
+            return { role: "assistant", content: [{ type: "text", text: msg.content }] };
+          }
+          return {
+            role: "assistant",
+            content: msg.content.map((part) => {
+              if (part.type === "text") {
+                return { type: "text", text: part.text };
+              }
+              if (part.type === "tool-call") {
+                return {
+                  type: "tool-call",
+                  toolCallId: part.toolCallId,
+                  toolName: part.toolName,
+                  input: part.args, // SDK uses "input" not "args"
+                };
+              }
+              throw createAIError("internal_error", `Unknown assistant content part type: ${(part as { type?: string }).type}`);
+            }),
+          };
+        }
+
+        case "tool":
+          return {
+            role: "tool",
+            content: msg.content.map((part) => ({
+              type: "tool-result",
+              toolCallId: part.toolCallId,
+              toolName: part.toolName,
+              output: {
+                type: part.isError ? "error-json" : "json",
+                value: part.result,
+              },
+            })),
+          };
+
+        default:
+          // TypeScript should ensure this is never reached
+          throw createAIError("internal_error", `Unknown message role: ${(msg as { role?: string }).role}`);
+      }
+    });
+  }
+
+  // ===========================================================================
+  // Worker Support Methods
+  // ===========================================================================
+
+  /**
+   * Cancel a stream by ID.
+   * Used by worker handlers to cancel streams.
+   */
+  public cancelStream(streamId: string): void {
+    this.streamManager.cancelStream(streamId);
+  }
+
+  /**
+   * Stream text to a worker (instead of a panel webContents).
+   * Routes events through workerManager.sendPush and tool execution via serviceInvoke.
+   */
+  public async streamTextToWorker(
+    workerManager: {
+      sendPush: (workerId: string, service: string, event: string, payload: unknown) => void;
+      serviceInvoke: (workerId: string, service: string, method: string, args: unknown[], timeoutMs?: number) => Promise<unknown>;
+    },
+    workerId: string,
     requestId: string,
-    panelId: string,
-    conversationId: string,
-    options: AICallOptions,
+    options: StreamTextOptions,
     streamId: string
   ): Promise<void> {
-    this.logger.info(requestId, "Claude Code stream started", {
-      panelId,
-      conversationId,
+    const modelId = this.resolveModelId(options.model);
+    const isClaudeCode = modelId.startsWith("claude-code:");
+    const hasTools = options.tools && options.tools.length > 0;
+    const maxSteps = options.maxSteps ?? 10;
+
+    this.logger.info(requestId, "streamText to worker started", {
+      workerId,
+      modelId,
       streamId,
+      hasTools,
+      maxSteps,
+      isClaudeCode,
     });
 
     const abortController = new AbortController();
     this.streamManager.startTracking(streamId, abortController, requestId);
 
-    const onDestroyed = (): void => {
-      this.logger.info(requestId, "Panel destroyed, cancelling Claude Code stream", { streamId });
-      this.streamManager.cleanup(streamId);
+    // Helper to send events to worker
+    const sendEvent = (event: StreamTextEvent): void => {
+      workerManager.sendPush(workerId, "ai", "stream-text-chunk", { streamId, chunk: event });
     };
 
-    sender.on("destroyed", onDestroyed);
+    // Tool execution via worker using bidirectional service invoke
+    const executeToolViaWorker = async (
+      toolName: string,
+      args: Record<string, unknown>
+    ): Promise<ToolExecutionResult> => {
+      const result = await workerManager.serviceInvoke(
+        workerId,
+        "ai",
+        "executeTool",
+        [streamId, toolName, args],
+        TOOL_EXECUTION_TIMEOUT_MS
+      );
+      return result as ToolExecutionResult;
+    };
 
     try {
-      const model = this.ccConversationManager.getModel(conversationId);
-      if (!model) {
-        throw createAIError("internal_error", "Failed to get model for conversation");
+      if (isClaudeCode && hasTools) {
+        // Use Claude Code with MCP proxy
+        await this.streamTextClaudeCodeForWorker(
+          requestId,
+          workerId,
+          modelId,
+          options,
+          streamId,
+          maxSteps,
+          abortController,
+          sendEvent,
+          executeToolViaWorker
+        );
+      } else if (hasTools) {
+        // Regular model with tools - agent loop
+        await this.streamTextWithAgentLoopForWorker(
+          requestId,
+          workerId,
+          modelId,
+          options,
+          streamId,
+          maxSteps,
+          abortController,
+          sendEvent,
+          executeToolViaWorker
+        );
+      } else {
+        // Simple streaming without tools
+        await this.streamTextSimpleForWorker(
+          requestId,
+          workerId,
+          modelId,
+          options,
+          streamId,
+          abortController,
+          sendEvent
+        );
       }
+    } catch (error) {
+      this.logger.error(requestId, "streamText to worker error", { streamId }, error as Error);
+      sendEvent({
+        type: "error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      this.streamManager.cleanup(streamId);
+      workerManager.sendPush(workerId, "ai", "stream-text-end", { streamId });
+    }
+  }
 
-      // Convert request to SDK format (tools are handled by the conversation's MCP server)
-      let prompt: unknown[];
-      try {
-        prompt = convertPromptToSDK(options.prompt);
-      } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        this.logger.error(requestId, "Request conversion failed", { error: err.message }, err);
-        this.sendStreamError(sender, panelId, streamId, error);
-        return;
+  /**
+   * Simple streaming for workers (no tools).
+   */
+  private async streamTextSimpleForWorker(
+    requestId: string,
+    workerId: string,
+    modelId: string,
+    options: StreamTextOptions,
+    streamId: string,
+    abortController: AbortController,
+    sendEvent: (event: StreamTextEvent) => void
+  ): Promise<void> {
+    const model = this.registry.getModel(modelId);
+    const prompt = this.convertStreamTextMessagesToSDK(options.messages);
+
+    const sdkOptions = {
+      prompt,
+      maxOutputTokens: options.maxOutputTokens,
+      temperature: options.temperature,
+      abortSignal: abortController.signal,
+    };
+
+    const { stream } = (await model.doStream(sdkOptions)) as { stream: ReadableStream<unknown> };
+    const reader = stream.getReader();
+
+    let totalUsage = { promptTokens: 0, completionTokens: 0 };
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const part = value as Record<string, unknown>;
+        const type = part["type"] as string;
+
+        if (type === "text-delta") {
+          sendEvent({ type: "text-delta", text: part["delta"] as string });
+        } else if (type === "finish") {
+          const usage = part["usage"] as { promptTokens?: number; completionTokens?: number } | undefined;
+          if (usage) {
+            totalUsage = {
+              promptTokens: usage.promptTokens ?? 0,
+              completionTokens: usage.completionTokens ?? 0,
+            };
+          }
+        }
       }
+    } finally {
+      reader.releaseLock();
+    }
+
+    sendEvent({ type: "step-finish", stepNumber: 1, finishReason: "stop" });
+    sendEvent({ type: "finish", totalSteps: 1, usage: totalUsage });
+  }
+
+  /**
+   * Streaming with agent loop for workers.
+   */
+  private async streamTextWithAgentLoopForWorker(
+    requestId: string,
+    _workerId: string,
+    modelId: string,
+    options: StreamTextOptions,
+    _streamId: string,
+    maxSteps: number,
+    abortController: AbortController,
+    sendEvent: (event: StreamTextEvent) => void,
+    executeToolViaWorker: (toolName: string, args: Record<string, unknown>) => Promise<ToolExecutionResult>
+  ): Promise<void> {
+    const model = this.registry.getModel(modelId);
+
+    // Convert tools to SDK format
+    const sdkTools = options.tools?.map((t) => ({
+      type: "function",
+      name: t.name,
+      description: t.description,
+      inputSchema: t.parameters,
+    }));
+
+    // Build conversation messages
+    const conversationMessages = [...options.messages];
+    let totalUsage = { promptTokens: 0, completionTokens: 0 };
+
+    for (let step = 1; step <= maxSteps; step++) {
+      const prompt = this.convertStreamTextMessagesToSDK(conversationMessages);
 
       const sdkOptions = {
         prompt,
         maxOutputTokens: options.maxOutputTokens,
         temperature: options.temperature,
-        topP: options.topP,
-        topK: options.topK,
-        presencePenalty: options.presencePenalty,
-        frequencyPenalty: options.frequencyPenalty,
-        stopSequences: options.stopSequences,
-        seed: options.seed,
-        responseFormat: options.responseFormat,
-        providerOptions: options.providerOptions,
+        tools: sdkTools,
         abortSignal: abortController.signal,
-        // Note: tools and toolChoice are handled by the conversation's MCP server
       };
 
       const { stream } = (await model.doStream(sdkOptions)) as { stream: ReadableStream<unknown> };
       const reader = stream.getReader();
 
+      let textContent = "";
+      const toolCalls: Array<{ toolCallId: string; toolName: string; args: unknown; argsText: string }> = [];
+      let currentToolCall: { id: string; name: string; argsText: string } | null = null;
+      let finishReason: "stop" | "tool-calls" | "length" | "error" = "stop";
+
       try {
         while (true) {
-          if (sender.isDestroyed()) {
-            abortController.abort();
-            break;
-          }
-
           const { done, value } = await reader.read();
           if (done) break;
 
-          const chunk = this.convertStreamPart(value as Record<string, unknown>);
-          if (chunk && !sender.isDestroyed()) {
-            sender.send("ai:stream-chunk", { panelId, streamId, chunk });
+          const part = value as Record<string, unknown>;
+          const type = part["type"] as string;
+
+          if (type === "text-delta") {
+            const delta = part["delta"] as string;
+            textContent += delta;
+            sendEvent({ type: "text-delta", text: delta });
+          } else if (type === "tool-input-start") {
+            currentToolCall = {
+              id: part["id"] as string,
+              name: part["toolName"] as string,
+              argsText: "",
+            };
+          } else if (type === "tool-input-delta" && currentToolCall) {
+            currentToolCall.argsText += part["delta"] as string;
+          } else if (type === "tool-input-end" && currentToolCall) {
+            const args = safeJsonParse(currentToolCall.argsText, {});
+            toolCalls.push({
+              toolCallId: currentToolCall.id,
+              toolName: currentToolCall.name,
+              args,
+              argsText: currentToolCall.argsText,
+            });
+            currentToolCall = null;
+          } else if (type === "finish") {
+            const reason = part["finishReason"] as string;
+            if (reason === "tool-calls") finishReason = "tool-calls";
+            else if (reason === "length") finishReason = "length";
+            else if (reason === "error") finishReason = "error";
+
+            const usage = part["usage"] as { promptTokens?: number; completionTokens?: number } | undefined;
+            if (usage) {
+              totalUsage.promptTokens += usage.promptTokens ?? 0;
+              totalUsage.completionTokens += usage.completionTokens ?? 0;
+            }
           }
         }
       } finally {
         reader.releaseLock();
       }
 
-      if (!sender.isDestroyed()) {
-        sender.send("ai:stream-end", { panelId, streamId });
-        this.logger.info(requestId, "Claude Code stream completed", { streamId });
+      // If no tool calls, we're done
+      if (toolCalls.length === 0) {
+        sendEvent({ type: "step-finish", stepNumber: step, finishReason });
+        sendEvent({ type: "finish", totalSteps: step, usage: totalUsage });
+        return;
       }
-    } catch (error) {
-      this.logger.error(requestId, "Claude Code stream error", { streamId }, error as Error);
-      this.sendStreamError(sender, panelId, streamId, error);
+
+      // Execute tool calls
+      const toolResults: Array<{ toolCallId: string; toolName: string; result: unknown; isError?: boolean }> = [];
+
+      for (const tc of toolCalls) {
+        sendEvent({
+          type: "tool-call",
+          toolCallId: tc.toolCallId,
+          toolName: tc.toolName,
+          args: tc.args,
+        });
+
+        try {
+          const result = await executeToolViaWorker(tc.toolName, tc.args as Record<string, unknown>);
+          const resultText = result.content.map((c) => c.text).join("\n");
+          toolResults.push({
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            result: resultText,
+            isError: result.isError,
+          });
+
+          sendEvent({
+            type: "tool-result",
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            result: resultText,
+            isError: result.isError,
+          });
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          toolResults.push({
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            result: errorMessage,
+            isError: true,
+          });
+
+          sendEvent({
+            type: "tool-result",
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            result: errorMessage,
+            isError: true,
+          });
+        }
+      }
+
+      sendEvent({ type: "step-finish", stepNumber: step, finishReason: "tool-calls" });
+
+      // Add messages to conversation
+      conversationMessages.push({
+        role: "assistant",
+        content: [
+          ...(textContent ? [{ type: "text" as const, text: textContent }] : []),
+          ...toolCalls.map((tc) => ({
+            type: "tool-call" as const,
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            args: tc.args,
+          })),
+        ],
+      });
+
+      conversationMessages.push({
+        role: "tool",
+        content: toolResults.map((tr) => ({
+          type: "tool-result" as const,
+          toolCallId: tr.toolCallId,
+          toolName: tr.toolName,
+          result: tr.result,
+          isError: tr.isError,
+        })),
+      });
+    }
+
+    // Hit max steps
+    sendEvent({ type: "finish", totalSteps: maxSteps, usage: totalUsage });
+  }
+
+  /**
+   * Claude Code streaming for workers.
+   */
+  private async streamTextClaudeCodeForWorker(
+    requestId: string,
+    workerId: string,
+    modelId: string,
+    options: StreamTextOptions,
+    streamId: string,
+    maxSteps: number,
+    abortController: AbortController,
+    sendEvent: (event: StreamTextEvent) => void,
+    executeToolViaWorker: (toolName: string, args: Record<string, unknown>) => Promise<ToolExecutionResult>
+  ): Promise<void> {
+    // Extract the model name
+    const ccModelId = modelId.startsWith("claude-code:")
+      ? modelId.substring("claude-code:".length)
+      : modelId;
+
+    if (!options.tools || options.tools.length === 0) {
+      throw createAIError("api_error", "Tools are required for Claude Code streamText");
+    }
+
+    // Convert to AIToolDefinition format
+    const aiTools: AIToolDefinition[] = options.tools.map((t) => ({
+      type: "function",
+      name: t.name,
+      description: t.description,
+      parameters: t.parameters,
+    }));
+
+    const validatedTools = validateToolDefinitions(aiTools);
+    if (!validatedTools || validatedTools.length === 0) {
+      throw createAIError("api_error", "Tools validation failed");
+    }
+
+    const conversationRef = { id: "" };
+
+    // Create MCP callback
+    const mcpExecuteCallback = async (
+      toolName: string,
+      args: Record<string, unknown>
+    ): Promise<ToolExecutionResult> => {
+      let simpleToolName = toolName;
+      const mcpMatch = toolName.match(/^mcp__[^_]+__(.+)$/);
+      if (mcpMatch) {
+        simpleToolName = mcpMatch[1]!;
+      }
+
+      const toolCallId = crypto.randomUUID();
+      sendEvent({
+        type: "tool-call",
+        toolCallId,
+        toolName: simpleToolName,
+        args,
+      });
+
+      const result = await executeToolViaWorker(simpleToolName, args);
+
+      sendEvent({
+        type: "tool-result",
+        toolCallId,
+        toolName: simpleToolName,
+        result: result.content.map((c) => c.text).join("\n"),
+        isError: result.isError,
+      });
+
+      return result;
+    };
+
+    // Create conversation
+    const conversationHandle = this.ccConversationManager.createConversation({
+      panelId: workerId,
+      modelId: ccModelId,
+      tools: validatedTools,
+      executeCallback: mcpExecuteCallback,
+    });
+
+    conversationRef.id = conversationHandle.conversationId;
+
+    try {
+      const model = conversationHandle.getModel();
+      const prompt = this.convertStreamTextMessagesToSDK(options.messages);
+
+      const sdkOptions = {
+        prompt,
+        maxOutputTokens: options.maxOutputTokens,
+        temperature: options.temperature,
+        abortSignal: abortController.signal,
+      };
+
+      const { stream } = (await model.doStream(sdkOptions)) as { stream: ReadableStream<unknown> };
+      const reader = stream.getReader();
+
+      let totalUsage = { promptTokens: 0, completionTokens: 0 };
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const part = value as Record<string, unknown>;
+          const type = part["type"] as string;
+
+          if (type === "text-delta") {
+            sendEvent({ type: "text-delta", text: part["delta"] as string });
+          } else if (type === "finish") {
+            const usage = part["usage"] as { promptTokens?: number; completionTokens?: number } | undefined;
+            if (usage) {
+              totalUsage = {
+                promptTokens: usage.promptTokens ?? 0,
+                completionTokens: usage.completionTokens ?? 0,
+              };
+            }
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+
+      sendEvent({ type: "step-finish", stepNumber: 1, finishReason: "stop" });
+      sendEvent({ type: "finish", totalSteps: 1, usage: totalUsage });
     } finally {
-      sender.removeListener("destroyed", onDestroyed);
-      this.streamManager.cleanup(streamId);
+      this.ccConversationManager.endConversation(conversationRef.id);
     }
   }
 }

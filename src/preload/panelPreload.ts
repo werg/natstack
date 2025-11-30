@@ -1,22 +1,14 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
 import type { Rpc } from "@natstack/core";
-import {
-  type AICallOptions,
-  type AIGenerateResult,
-  type AIRoleRecord,
-  type AIStreamChunkEvent,
-  type AIStreamEndEvent,
-  type AIStreamPart,
-  type AIToolDefinition,
-} from "@natstack/ai";
+import { type AIRoleRecord } from "@natstack/ai";
 import {
   type CreateChildOptions,
   type PanelInfo,
   type ThemeAppearance,
-  type ClaudeCodeConversationInfo,
-  type ClaudeCodeToolExecuteRequest,
-  type ClaudeCodeToolResult,
+  type StreamTextOptions,
+  type StreamTextEvent,
+  type ToolExecutionResult,
 } from "../shared/ipc/types.js";
 type PanelEventName = "child-removed" | "focus";
 
@@ -187,9 +179,16 @@ const eventListeners = new Map<PanelEventName, Set<(payload: any) => void>>();
 let currentTheme: ThemeAppearance = "light";
 const themeListeners = new Set<(theme: ThemeAppearance) => void>();
 
-// AI stream event listeners
-const aiStreamChunkListeners = new Set<(streamId: string, chunk: AIStreamPart) => void>();
-const aiStreamEndListeners = new Set<(streamId: string) => void>();
+// Unified streamText event listeners
+const streamTextChunkListeners = new Set<(streamId: string, chunk: StreamTextEvent) => void>();
+const streamTextEndListeners = new Set<(streamId: string) => void>();
+
+// Tool callbacks registered by @natstack/ai streamText
+// Map from streamId -> Map<toolName, callback>
+const registeredToolCallbacks = new Map<
+  string,
+  Map<string, (args: Record<string, unknown>) => Promise<unknown>>
+>();
 
 const updateTheme = (theme: ThemeAppearance) => {
   currentTheme = theme;
@@ -230,92 +229,66 @@ ipcRenderer.on("panel:event", (_event, payload: PanelEventMessage) => {
   }
 });
 
-// AI stream event handlers
-const onChunk = (_event: Electron.IpcRendererEvent, payload: AIStreamChunkEvent) => {
-  if (payload.panelId !== panelId) {
-    return;
-  }
-  aiStreamChunkListeners.forEach((listener) => {
-    try {
-      listener(payload.streamId, payload.chunk);
-    } catch (error) {
-      console.error("Error in AI stream chunk listener:", error);
-    }
-  });
-};
-ipcRenderer.on("ai:stream-chunk", onChunk);
-
-const onEnd = (_event: Electron.IpcRendererEvent, payload: AIStreamEndEvent) => {
-  if (payload.panelId !== panelId) {
-    return;
-  }
-  aiStreamEndListeners.forEach((listener) => {
-    try {
-      listener(payload.streamId);
-    } catch (error) {
-      console.error("Error in AI stream end listener:", error);
-    }
-  });
-};
-ipcRenderer.on("ai:stream-end", onEnd);
-
-// Claude Code tool execution listeners
-// Map conversationId -> tool callbacks
-const ccToolCallbacks = new Map<
-  string,
-  Map<string, (args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>>
->();
-
-// Default tool callbacks for inline streaming (when using regular doStream with tools)
-// These are used when no conversation-specific callbacks are found
-const defaultToolCallbacks = new Map<
-  string,
-  (args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>
->();
-
-// Handle tool execution requests from main process
+// StreamText event handlers
 ipcRenderer.on(
-  "ai:cc-tool-execute",
-  async (_event: Electron.IpcRendererEvent, request: ClaudeCodeToolExecuteRequest) => {
-    // Security: Only process requests for this panel
-    if (request.panelId !== panelId) {
-      return;
-    }
-
-    const { executionId, conversationId, toolName, args } = request;
-
-    try {
-      // First try conversation-specific callbacks
-      let callback: ((args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>) | undefined;
-
-      const conversationCallbacks = ccToolCallbacks.get(conversationId);
-      if (conversationCallbacks) {
-        callback = conversationCallbacks.get(toolName);
+  "ai:stream-text-chunk",
+  (_event: Electron.IpcRendererEvent, payload: { panelId: string; streamId: string; chunk: StreamTextEvent }) => {
+    if (payload.panelId !== panelId) return;
+    streamTextChunkListeners.forEach((listener) => {
+      try {
+        listener(payload.streamId, payload.chunk);
+      } catch (error) {
+        console.error("Error in streamText chunk listener:", error);
       }
+    });
+  }
+);
 
-      // Fall back to default callbacks (for inline streaming with tools)
-      if (!callback) {
-        callback = defaultToolCallbacks.get(toolName);
+ipcRenderer.on(
+  "ai:stream-text-end",
+  (_event: Electron.IpcRendererEvent, payload: { panelId: string; streamId: string }) => {
+    if (payload.panelId !== panelId) return;
+    streamTextEndListeners.forEach((listener) => {
+      try {
+        listener(payload.streamId);
+      } catch (error) {
+        console.error("Error in streamText end listener:", error);
       }
+    });
+  }
+);
 
-      if (!callback) {
-        throw new Error(`No callback registered for tool: ${toolName}`);
-      }
+// Handle tool execution requests from main process (bidirectional RPC)
+// Main process sends: sender.postMessage("panel:execute-tool", [streamId, toolName, args], [port])
+ipcRenderer.on(
+  "panel:execute-tool",
+  async (event: Electron.IpcRendererEvent, message: [string, string, Record<string, unknown>]) => {
+    const [streamId, toolName, args] = message;
+    const streamCallbacks = registeredToolCallbacks.get(streamId);
+    const callback = streamCallbacks?.get(toolName);
 
-      const result = await callback(args);
-      void ipcRenderer.invoke("ai:cc-tool-result", executionId, result);
-    } catch (error) {
-      const errorResult: ClaudeCodeToolResult = {
-        content: [
-          {
-            type: "text",
-            text: error instanceof Error ? error.message : String(error),
-          },
-        ],
+    let result: ToolExecutionResult;
+    if (!callback) {
+      result = {
+        content: [{ type: "text", text: `Unknown tool: ${toolName}` }],
         isError: true,
       };
-      void ipcRenderer.invoke("ai:cc-tool-result", executionId, errorResult);
+    } else {
+      try {
+        const toolResult = await callback(args);
+        result = {
+          content: [{ type: "text", text: typeof toolResult === "string" ? toolResult : JSON.stringify(toolResult) }],
+        };
+      } catch (err) {
+        result = {
+          content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }],
+          isError: true,
+        };
+      }
     }
+
+    // Send response back via the port
+    event.ports[0]?.postMessage(result);
   }
 );
 
@@ -713,116 +686,87 @@ const bridge = {
   // ==========================================================================
 
   ai: {
-    generate: (modelId: string, options: AICallOptions): Promise<AIGenerateResult> => {
-      return ipcRenderer.invoke("ai:generate", modelId, options);
-    },
+    // =========================================================================
+    // Core API
+    // =========================================================================
 
-    streamStart: (modelId: string, options: AICallOptions, streamId: string): Promise<void> => {
-      return ipcRenderer.invoke("ai:stream-start", modelId, options, streamId);
+    listRoles: (): Promise<AIRoleRecord> => {
+      return ipcRenderer.invoke("ai:list-roles");
     },
 
     streamCancel: (streamId: string): Promise<void> => {
       return ipcRenderer.invoke("ai:stream-cancel", streamId);
     },
 
-    listRoles: (): Promise<AIRoleRecord> => {
-      return ipcRenderer.invoke("ai:list-roles");
+    // =========================================================================
+    // New Unified streamText API
+    // =========================================================================
+
+    /**
+     * Start a streamText generation - unified API for all model types.
+     * The agent loop runs server-side, tool callbacks execute panel-side.
+     */
+    streamTextStart: (options: StreamTextOptions, streamId: string): Promise<void> => {
+      // Debug: Log what we're about to send via IPC
+      console.log("[Preload AI] streamTextStart called:", {
+        model: options.model,
+        messageCount: options.messages?.length,
+        toolCount: options.tools?.length,
+        streamId,
+      });
+
+      // Debug: Try JSON stringify to catch serialization issues
+      try {
+        JSON.stringify(options);
+        console.log("[Preload AI] options is JSON-serializable");
+      } catch (e) {
+        console.error("[Preload AI] options failed JSON.stringify:", e);
+        console.error("[Preload AI] options detail:", options);
+      }
+
+      return ipcRenderer.invoke("ai:stream-text-start", options, streamId);
     },
 
-    onStreamChunk: (listener: (streamId: string, chunk: AIStreamPart) => void): (() => void) => {
-      aiStreamChunkListeners.add(listener);
+    /**
+     * Listen for streamText chunks (unified format).
+     */
+    onStreamChunk: (listener: (streamId: string, chunk: StreamTextEvent) => void): (() => void) => {
+      streamTextChunkListeners.add(listener);
       return () => {
-        aiStreamChunkListeners.delete(listener);
+        streamTextChunkListeners.delete(listener);
       };
     },
 
+    /**
+     * Listen for streamText end events.
+     */
     onStreamEnd: (listener: (streamId: string) => void): (() => void) => {
-      aiStreamEndListeners.add(listener);
+      streamTextEndListeners.add(listener);
       return () => {
-        aiStreamEndListeners.delete(listener);
+        streamTextEndListeners.delete(listener);
       };
     },
 
-    // =========================================================================
-    // Claude Code Conversation API
-    // =========================================================================
-
     /**
-     * Start a Claude Code conversation with tools.
-     * Returns conversation info including the conversationId.
-     */
-    ccConversationStart: async (
-      modelId: string,
-      tools: AIToolDefinition[],
-      callbacks: Record<string, (args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>>
-    ): Promise<ClaudeCodeConversationInfo> => {
-      const info = (await ipcRenderer.invoke(
-        "ai:cc-conversation-start",
-        modelId,
-        tools
-      )) as ClaudeCodeConversationInfo;
-
-      // Register the tool callbacks for this conversation
-      const callbackMap = new Map<
-        string,
-        (args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>
-      >();
-      for (const [name, callback] of Object.entries(callbacks)) {
-        callbackMap.set(name, callback);
-      }
-      ccToolCallbacks.set(info.conversationId, callbackMap);
-
-      return info;
-    },
-
-    /**
-     * Generate with an existing Claude Code conversation.
-     */
-    ccGenerate: (conversationId: string, options: AICallOptions): Promise<AIGenerateResult> => {
-      return ipcRenderer.invoke("ai:cc-generate", conversationId, options);
-    },
-
-    /**
-     * Start streaming with an existing Claude Code conversation.
-     */
-    ccStreamStart: (
-      conversationId: string,
-      options: AICallOptions,
-      streamId: string
-    ): Promise<void> => {
-      return ipcRenderer.invoke("ai:cc-stream-start", conversationId, options, streamId);
-    },
-
-    /**
-     * End a Claude Code conversation and clean up resources.
-     */
-    ccConversationEnd: (conversationId: string): Promise<void> => {
-      // Clean up local callbacks
-      ccToolCallbacks.delete(conversationId);
-      return ipcRenderer.invoke("ai:cc-conversation-end", conversationId);
-    },
-
-    /**
-     * Register tool callbacks for inline Claude Code streaming.
-     * These callbacks are used when calling doStream with tools on a Claude Code model.
-     * This allows tools to be executed without explicitly creating a conversation.
+     * Register tool callbacks for a stream.
+     * Called by @natstack/ai streamText to register tool execute functions.
+     * Main process will invoke these via panel:execute-tool.
      *
-     * @param callbacks - Map of tool name to callback function
-     * @returns Cleanup function to unregister the callbacks
+     * Note: We accept a plain object instead of Map because contextBridge
+     * cannot pass Maps with function values across the boundary.
      */
-    registerToolCallbacks: (
-      callbacks: Record<string, (args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>>
+    registerTools: (
+      streamId: string,
+      callbacks: Record<string, (args: Record<string, unknown>) => Promise<unknown>>
     ): (() => void) => {
-      // Register each callback
-      for (const [name, callback] of Object.entries(callbacks)) {
-        defaultToolCallbacks.set(name, callback);
+      // Convert the plain object to a Map for internal storage
+      const callbackMap = new Map<string, (args: Record<string, unknown>) => Promise<unknown>>();
+      for (const [name, fn] of Object.entries(callbacks)) {
+        callbackMap.set(name, fn);
       }
-
-      // Return cleanup function
+      registeredToolCallbacks.set(streamId, callbackMap);
       return () => {
-        for (const name of Object.keys(callbacks)) {
-          defaultToolCallbacks.delete(name);
-        }
+        registeredToolCallbacks.delete(streamId);
       };
     },
   },

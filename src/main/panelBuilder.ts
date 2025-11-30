@@ -67,17 +67,49 @@ for (const [name, modulePath] of fsModuleMap) {
 }
 
 const defaultPanelDependencies: Record<string, string> = {
-  // Ensure a predictable panel runtime baseline
-  "@natstack/panel": "workspace:*",
-  // Provide Node types to satisfy dependencies that expect them at runtime
+  // Node types for dependencies that expect them
   "@types/node": "^22.9.0",
 };
 
 const defaultWorkerDependencies: Record<string, string> = {
-  // Worker runtime for fs, network, and RPC APIs
-  "@natstack/worker-runtime": "workspace:*",
-  // Provide Node types to satisfy dependencies that expect them at runtime
+  // Node types for dependencies that expect them
   "@types/node": "^22.9.0",
+};
+
+/**
+ * Get React dependencies from @natstack/react's peerDependencies.
+ * Returns null if @natstack/react package.json can't be found.
+ */
+function getReactDependenciesFromNatstackReact(): Record<string, string> | null {
+  try {
+    const natstackReactPkgPath = path.join(process.cwd(), "packages/react/package.json");
+    if (!fs.existsSync(natstackReactPkgPath)) {
+      return null;
+    }
+    const pkg = JSON.parse(fs.readFileSync(natstackReactPkgPath, "utf-8")) as {
+      peerDependencies?: Record<string, string>;
+    };
+    const peerDeps = pkg.peerDependencies ?? {};
+    const result: Record<string, string> = {};
+    if (peerDeps["react"]) result["react"] = peerDeps["react"];
+    if (peerDeps["react-dom"]) result["react-dom"] = peerDeps["react-dom"];
+    return Object.keys(result).length > 0 ? result : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Implicit externals added when certain dependencies are detected.
+ * Maps dependency name -> externals to add.
+ * This avoids requiring panels to manually specify common externals.
+ */
+const implicitExternals: Record<string, Record<string, string>> = {
+  // @natstack/git uses isomorphic-git which needs CDN loading for Buffer polyfills
+  "@natstack/git": {
+    "isomorphic-git": "https://esm.sh/isomorphic-git",
+    "isomorphic-git/http/web": "https://esm.sh/isomorphic-git/http/web",
+  },
 };
 
 /**
@@ -178,7 +210,11 @@ export class PanelBuilder {
     }
   }
 
-  private resolveHtmlPath(panelPath: string, title: string): string {
+  private resolveHtmlPath(
+    panelPath: string,
+    title: string,
+    externals?: Record<string, string>
+  ): string {
     const sourceHtmlPath = path.join(panelPath, "index.html");
     if (fs.existsSync(sourceHtmlPath)) {
       return sourceHtmlPath;
@@ -187,14 +223,17 @@ export class PanelBuilder {
     const runtimeDir = this.ensureRuntimeDir(panelPath);
     const generatedHtmlPath = path.join(runtimeDir, "index.html");
 
-    // Import map for external dependencies loaded from CDN
-    // isomorphic-git needs ESM from esm.sh for proper Buffer polyfill
+    // Import map for externals declared in natstack.externals
+    // These are loaded via CDN (e.g., esm.sh) instead of bundled
     const importMap = {
-      imports: {
-        "isomorphic-git": "https://esm.sh/isomorphic-git",
-        "isomorphic-git/http/web": "https://esm.sh/isomorphic-git/http/web",
-      },
+      imports: externals ?? {},
     };
+
+    // Only include import map script if there are externals
+    const importMapScript =
+      Object.keys(importMap.imports).length > 0
+        ? `<script type="importmap">${JSON.stringify(importMap)}</script>\n  `
+        : "";
 
     const defaultHtml = `<!DOCTYPE html>
 <html lang="en">
@@ -202,8 +241,7 @@ export class PanelBuilder {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title}</title>
-  <script type="importmap">${JSON.stringify(importMap)}</script>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/themes@3.2.1/styles.css">
+  ${importMapScript}<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/themes@3.2.1/styles.css">
   <link rel="stylesheet" href="./bundle.css" />
 </head>
 <body>
@@ -431,10 +469,17 @@ export class PanelBuilder {
     const bundlePath = path.join(runtimeDir, "bundle.js");
     const nodePaths = this.getNodeResolutionPaths(sourcePath);
 
-    // Create wrapper entry that imports user module and calls auto-mount
+    // Determine if panel uses @natstack/react (enables auto-mount)
+    const hasNatstackReact = "@natstack/react" in (manifest.dependencies ?? {});
+
+    // Create wrapper entry
     const tempEntryPath = path.join(runtimeDir, "_entry.js");
     const relativeUserEntry = path.relative(runtimeDir, entryPath);
-    const wrapperCode = `
+
+    let wrapperCode: string;
+    if (hasNatstackReact) {
+      // Auto-mount wrapper for React panels
+      wrapperCode = `
 import { autoMountReactPanel, shouldAutoMount } from "@natstack/react";
 import * as userModule from ${JSON.stringify(relativeUserEntry)};
 
@@ -442,10 +487,35 @@ if (shouldAutoMount(userModule)) {
   autoMountReactPanel(userModule);
 }
 `;
+    } else {
+      // Direct import for non-React panels (panel handles its own mounting)
+      wrapperCode = `import ${JSON.stringify(relativeUserEntry)};\n`;
+    }
     fs.writeFileSync(tempEntryPath, wrapperCode);
+
+    // Get externals from manifest (packages loaded via import map / CDN)
+    // Also add implicit externals based on detected dependencies
+    const externals: Record<string, string> = { ...(manifest.externals ?? {}) };
+    const allDependencies = { ...defaultPanelDependencies, ...(manifest.dependencies ?? {}) };
+    for (const [dep, depExternals] of Object.entries(implicitExternals)) {
+      if (dep in allDependencies) {
+        Object.assign(externals, depExternals);
+      }
+    }
+    const externalModules = Object.keys(externals);
 
     // Build with esbuild (write to disk)
     log(`Building panel...`);
+    if (externalModules.length > 0) {
+      log(`External modules (CDN): ${externalModules.join(", ")}`);
+    }
+
+    // Only use React dedupe plugin if panel uses @natstack/react
+    const plugins: esbuild.Plugin[] = [this.createFsPlugin()];
+    if (hasNatstackReact) {
+      plugins.push(this.createReactDedupePlugin(sourcePath));
+    }
+
     await esbuild.build({
       entryPoints: [tempEntryPath],
       bundle: true,
@@ -456,11 +526,11 @@ if (shouldAutoMount(userModule)) {
       format: "esm",
       absWorkingDir: sourcePath,
       nodePaths,
-      plugins: [this.createFsPlugin()],
-      external: ["isomorphic-git", "isomorphic-git/http/web"],
+      plugins,
+      external: externalModules,
     });
 
-    const htmlPath = this.resolveHtmlPath(sourcePath, manifest.title);
+    const htmlPath = this.resolveHtmlPath(sourcePath, manifest.title, externals);
     log(`Build complete: ${bundlePath}`);
 
     return {
@@ -488,10 +558,65 @@ if (shouldAutoMount(userModule)) {
     };
   }
 
+  /**
+   * Create a plugin to deduplicate React imports.
+   * This ensures all React imports (including from dependencies like react-virtuoso)
+   * resolve to the same React instance in .natstack/node_modules.
+   *
+   * This mirrors how Next.js solves this with webpack resolve.alias.
+   */
+  private createReactDedupePlugin(panelPath: string): esbuild.Plugin {
+    const runtimeNodeModules = path.join(this.getRuntimeDir(panelPath), "node_modules");
+
+    return {
+      name: "react-dedupe",
+      setup(build) {
+        // Force all react imports to resolve to the same instance
+        // Use build.resolve() to properly resolve package entry points
+        build.onResolve({ filter: /^react(\/.*)?$/ }, async (args) => {
+          // Skip if already resolving from the target directory (prevent infinite recursion)
+          if (args.resolveDir === runtimeNodeModules) {
+            return null; // Let esbuild's default resolver handle it
+          }
+          // Re-resolve the same import but from the runtime node_modules directory
+          // This forces all react imports to use the same physical package
+          const result = await build.resolve(args.path, {
+            kind: args.kind,
+            resolveDir: runtimeNodeModules,
+          });
+          return result;
+        });
+
+        // Force all react-dom imports to resolve to the same instance
+        build.onResolve({ filter: /^react-dom(\/.*)?$/ }, async (args) => {
+          // Skip if already resolving from the target directory (prevent infinite recursion)
+          if (args.resolveDir === runtimeNodeModules) {
+            return null;
+          }
+          const result = await build.resolve(args.path, {
+            kind: args.kind,
+            resolveDir: runtimeNodeModules,
+          });
+          return result;
+        });
+      },
+    };
+  }
+
   private mergeRuntimeDependencies(
     panelDependencies: Record<string, string> | undefined
   ): Record<string, string> {
     const merged = { ...defaultPanelDependencies };
+
+    // If panel depends on @natstack/react, add React dependencies
+    // Use the version from @natstack/react's peerDependencies
+    if (panelDependencies && "@natstack/react" in panelDependencies) {
+      const reactDeps = getReactDependenciesFromNatstackReact();
+      if (reactDeps) {
+        Object.assign(merged, reactDeps);
+      }
+    }
+
     if (panelDependencies) {
       Object.assign(merged, panelDependencies);
     }

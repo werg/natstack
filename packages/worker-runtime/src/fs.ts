@@ -1,19 +1,13 @@
 /**
  * Filesystem proxy for workers.
  *
- * This module uses the unified __serviceCall global to proxy filesystem
+ * This module uses the unified RPC mechanism to proxy filesystem
  * operations through IPC to the main process which uses @natstack/scoped-fs
  * to enforce filesystem boundaries.
  */
 
 import type { WorkerFs, FileStats, MkdirOptions, RmOptions } from "./types.js";
-
-// Declare the unified service call global
-declare const __serviceCall: (
-  service: string,
-  method: string,
-  ...args: unknown[]
-) => Promise<unknown>;
+import { rpc } from "./rpc.js";
 
 /**
  * Encode binary data as base64 for IPC transfer.
@@ -46,44 +40,44 @@ export const fs: WorkerFs = {
   async readFile(path: string, encoding?: BufferEncoding): Promise<string | Uint8Array> {
     if (encoding) {
       // Text mode: return string
-      return (await __serviceCall("fs", "readFile", path, encoding)) as string;
+      return rpc.call<string>("main", "fs.readFile", path, encoding);
     }
     // Binary mode: receive base64, decode to Uint8Array
-    const base64 = (await __serviceCall("fs", "readFile", path, null)) as string;
+    const base64 = await rpc.call<string>("main", "fs.readFile", path, null);
     return decodeBase64(base64);
   },
 
   async writeFile(path: string, data: string | Uint8Array): Promise<void> {
     if (typeof data === "string") {
       // Text mode: send string directly
-      await __serviceCall("fs", "writeFile", path, data, "utf-8");
+      await rpc.call("main", "fs.writeFile", path, data, "utf-8");
     } else {
       // Binary mode: encode as base64
-      await __serviceCall("fs", "writeFile", path, encodeBase64(data), "base64");
+      await rpc.call("main", "fs.writeFile", path, encodeBase64(data), "base64");
     }
   },
 
   async readdir(path: string): Promise<string[]> {
-    return (await __serviceCall("fs", "readdir", path)) as string[];
+    return rpc.call<string[]>("main", "fs.readdir", path);
   },
 
   async stat(path: string): Promise<FileStats> {
-    return (await __serviceCall("fs", "stat", path)) as FileStats;
+    return rpc.call<FileStats>("main", "fs.stat", path);
   },
 
   async mkdir(path: string, options?: MkdirOptions): Promise<void> {
-    await __serviceCall("fs", "mkdir", path, options);
+    await rpc.call("main", "fs.mkdir", path, options);
   },
 
   async rm(path: string, options?: RmOptions): Promise<void> {
-    await __serviceCall("fs", "rm", path, options);
+    await rpc.call("main", "fs.rm", path, options);
   },
 
   async exists(path: string): Promise<boolean> {
-    return (await __serviceCall("fs", "exists", path)) as boolean;
+    return rpc.call<boolean>("main", "fs.exists", path);
   },
 
   async unlink(path: string): Promise<void> {
-    await __serviceCall("fs", "unlink", path);
+    await rpc.call("main", "fs.unlink", path);
   },
 };

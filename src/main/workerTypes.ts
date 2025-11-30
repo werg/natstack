@@ -11,10 +11,18 @@ import type {
   ServiceCallRequest,
   ServiceCallResponse,
   ServicePushEvent,
+  ServiceInvokeRequest,
+  ServiceInvokeResponse,
 } from "../shared/rpc/types.js";
 
 // Re-export service types for convenience
-export type { ServiceCallRequest, ServiceCallResponse, ServicePushEvent };
+export type {
+  ServiceCallRequest,
+  ServiceCallResponse,
+  ServicePushEvent,
+  ServiceInvokeRequest,
+  ServiceInvokeResponse,
+};
 
 // =============================================================================
 // Worker Lifecycle Messages
@@ -112,7 +120,9 @@ export interface UtilityWorkerError {
  * Messages use the unified service RPC pattern:
  * - service:call - Request from worker to main for any service (fs, network, bridge, ai)
  * - service:response - Response from main to worker
- * - service:push - Push event from main to worker (streams, tool execution)
+ * - service:push - Push event from main to worker (streams)
+ * - service:invoke - Request from main to worker (bidirectional RPC)
+ * - service:invoke-response - Response from worker to main
  *
  * Plus lifecycle and notification messages:
  * - worker:create/created/terminate/terminated - Worker lifecycle
@@ -128,10 +138,14 @@ export type UtilityMessage =
   | UtilityWorkerTerminateResponse
   // Panel <-> Worker RPC
   | UtilityRpcForward
-  // Unified service RPC
+  // Unified service RPC (worker -> main)
   | ServiceCallRequest
   | ServiceCallResponse
+  // Push events (main -> worker, one-way)
   | ServicePushEvent
+  // Bidirectional service invoke (main -> worker -> main)
+  | ServiceInvokeRequest
+  | ServiceInvokeResponse
   // Notifications
   | UtilityConsoleLog
   | UtilityWorkerError;

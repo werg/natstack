@@ -1,107 +1,301 @@
 /**
- * Panel AI Runtime - Proxy models for the Vercel AI SDK
+ * Panel AI Runtime - Unified streamText API
  *
- * This module provides AI SDK-compatible model objects that route requests
- * through IPC to the main process where API credentials are securely stored.
+ * This module provides a high-level streamText function that works identically
+ * for all model types (regular providers and Claude Code). The agent loop runs
+ * server-side, and tool callbacks execute panel-side via IPC.
  *
- * Panels access models by role (fast, smart, coding, cheap) rather than by
- * provider-specific model IDs. All four standard roles are always available
- * with intelligent defaults applied when not explicitly configured.
+ * Compatible with Vercel AI SDK patterns where possible.
  *
  * Usage:
  * ```typescript
- * import { models, getRoles } from '@natstack/ai';
- * import { generateText, streamText } from 'ai';
+ * import { streamText, tool, getRoles } from '@natstack/ai';
+ * import { z } from 'zod';
  *
- * // Load role-to-model mappings (includes all standard roles)
- * const roles = await getRoles();
- * console.log(roles.fast); // { modelId: "...", provider: "...", displayName: "..." }
+ * // Define tools with Zod schemas (like Vercel AI SDK)
+ * const tools = {
+ *   get_time: tool({
+ *     description: "Get current time",
+ *     parameters: z.object({}),
+ *     execute: async () => ({ time: new Date().toISOString() })
+ *   })
+ * };
  *
- * // Use models by role name
- * const result = await generateText({
- *   model: models.fast,
- *   prompt: 'Hello!'
+ * // Stream with callbacks
+ * const result = streamText({
+ *   model: "fast",
+ *   messages: [{ role: "user", content: "What time is it?" }],
+ *   tools,
+ *   onChunk: (chunk) => console.log(chunk),
+ *   onFinish: (result) => console.log("Done!", result),
  * });
+ *
+ * // Multiple access patterns:
+ * // 1. AsyncIterable (for await)
+ * for await (const event of result) { ... }
+ *
+ * // 2. Specific streams
+ * for await (const text of result.textStream) { ... }
+ * for await (const event of result.fullStream) { ... }
+ *
+ * // 3. Awaitable promises
+ * const text = await result.text;
+ * const toolCalls = await result.toolCalls;
  * ```
  */
 
-import type {
-  AICallOptions,
-  AIGenerateResult,
-  AIStreamPart,
-  AIMessage,
-  AITextPart,
-  AIFilePart,
-  AIToolResultPart,
-  AIReasoningPart,
-  AIToolCallPart,
-  AIResponseContent,
-  AIRoleRecord,
-  AIModelInfo,
-  AIToolDefinition,
-} from "./types.js";
+import type { AIRoleRecord } from "./types.js";
 import { encodeBase64 } from "./base64.js";
 
+// Re-export types for consumers
+export type {
+  // Model metadata
+  AIRoleRecord,
+  AIModelInfo,
+  // Tool definition (used by server for validation)
+  AIToolDefinition,
+} from "./types.js";
+
 // =============================================================================
-// Claude Code Conversation Types
+// StreamText API Types
 // =============================================================================
 
-/** Information about a started Claude Code conversation */
-export interface ClaudeCodeConversationInfo {
-  conversationId: string;
-  /** MCP tool names that were registered (for debugging) */
-  registeredTools: string[];
+/**
+ * Message role types for the streamText API.
+ */
+export type MessageRole = "system" | "user" | "assistant" | "tool";
+
+/**
+ * Content part types for messages.
+ * FilePart data accepts Uint8Array for convenience but will be base64-encoded for IPC.
+ */
+export type TextPart = { type: "text"; text: string };
+export type FilePart = { type: "file"; mimeType: string; data: string | Uint8Array };
+export type ToolCallPart = { type: "tool-call"; toolCallId: string; toolName: string; args: unknown };
+export type ToolResultPart = { type: "tool-result"; toolCallId: string; toolName: string; result: unknown; isError?: boolean };
+
+/**
+ * Message types for the streamText API.
+ */
+export type SystemMessage = { role: "system"; content: string };
+export type UserMessage = { role: "user"; content: string | Array<TextPart | FilePart> };
+export type AssistantMessage = { role: "assistant"; content: string | Array<TextPart | ToolCallPart> };
+export type ToolMessage = { role: "tool"; content: ToolResultPart[] };
+export type Message = SystemMessage | UserMessage | AssistantMessage | ToolMessage;
+
+/**
+ * Tool definition with execute callback.
+ */
+export interface ToolDefinition {
+  description?: string;
+  parameters: Record<string, unknown>; // JSON Schema
+  execute: (args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
 }
 
-/** Tool execution result */
-export interface ClaudeCodeToolResult {
-  /** Text content of the result */
+/**
+ * Callback types for streamText (Vercel AI SDK compatible)
+ */
+export type OnChunkCallback = (chunk: StreamEvent) => void | Promise<void>;
+export type OnFinishCallback = (result: StreamTextFinishResult) => void | Promise<void>;
+export type OnStepFinishCallback = (step: StepFinishResult) => void | Promise<void>;
+export type OnErrorCallback = (error: Error) => void | Promise<void>;
+
+export interface StepFinishResult {
+  stepNumber: number;
+  finishReason: "stop" | "tool-calls" | "length" | "error";
+  text: string;
+  toolCalls: Array<{ toolCallId: string; toolName: string; args: unknown }>;
+  toolResults: Array<{ toolCallId: string; toolName: string; result: unknown; isError?: boolean }>;
+}
+
+export interface StreamTextFinishResult {
+  text: string;
+  toolCalls: Array<{ toolCallId: string; toolName: string; args: unknown }>;
+  toolResults: Array<{ toolCallId: string; toolName: string; result: unknown; isError?: boolean }>;
+  totalSteps: number;
+  usage?: { promptTokens: number; completionTokens: number };
+  finishReason: "stop" | "tool-calls" | "length" | "error";
+}
+
+/**
+ * Options for streamText.
+ */
+export interface StreamTextOptions {
+  /** Model role name (e.g., "fast", "smart") or full model ID (e.g., "claude-code:sonnet") */
+  model: string;
+  /** Messages to send */
+  messages: Message[];
+  /** Tools with execute callbacks */
+  tools?: Record<string, ToolDefinition>;
+  /** Maximum agent loop iterations (default: 10) */
+  maxSteps?: number;
+  /** Abort signal for cancellation */
+  abortSignal?: AbortSignal;
+  /** Maximum output tokens */
+  maxOutputTokens?: number;
+  /** Temperature (0-1) */
+  temperature?: number;
+  /** System prompt (alternative to system message) */
+  system?: string;
+
+  // Callbacks (Vercel AI SDK compatible)
+  /** Called for each stream chunk */
+  onChunk?: OnChunkCallback;
+  /** Called when the stream finishes */
+  onFinish?: OnFinishCallback;
+  /** Called when each step finishes */
+  onStepFinish?: OnStepFinishCallback;
+  /** Called when an error occurs */
+  onError?: OnErrorCallback;
+}
+
+/**
+ * Stream event types returned by streamText.
+ */
+export type StreamEvent =
+  | { type: "text-delta"; text: string }
+  | { type: "tool-call"; toolCallId: string; toolName: string; args: unknown }
+  | { type: "tool-result"; toolCallId: string; toolName: string; result: unknown; isError?: boolean }
+  | { type: "step-finish"; stepNumber: number; finishReason: "stop" | "tool-calls" | "length" | "error" }
+  | { type: "finish"; totalSteps: number; usage?: { promptTokens: number; completionTokens: number } }
+  | { type: "error"; error: Error };
+
+/**
+ * Tool execution result (internal format for IPC).
+ */
+export interface ToolExecutionResult {
   content: Array<{ type: "text"; text: string }>;
-  /** Whether the tool execution resulted in an error */
   isError?: boolean;
 }
 
-/** Tool callback function type */
-export type ClaudeCodeToolCallback = (
-  args: Record<string, unknown>
-) => Promise<ClaudeCodeToolResult>;
+/**
+ * Result object returned by streamText.
+ * Provides multiple ways to consume the stream (Vercel AI SDK compatible).
+ */
+export interface StreamTextResult extends AsyncIterable<StreamEvent> {
+  /** Full stream of all events */
+  readonly fullStream: AsyncIterable<StreamEvent>;
 
-/** Tool definition with callback for Claude Code conversations */
-export interface ClaudeCodeToolWithCallback {
-  description?: string;
-  parameters: Record<string, unknown>;
-  execute: ClaudeCodeToolCallback;
+  /** Stream of text deltas only */
+  readonly textStream: AsyncIterable<string>;
+
+  /** Promise that resolves to the full generated text */
+  readonly text: Promise<string>;
+
+  /** Promise that resolves to all tool calls made */
+  readonly toolCalls: Promise<Array<{ toolCallId: string; toolName: string; args: unknown }>>;
+
+  /** Promise that resolves to all tool results */
+  readonly toolResults: Promise<Array<{ toolCallId: string; toolName: string; result: unknown; isError?: boolean }>>;
+
+  /** Promise that resolves to the finish reason */
+  readonly finishReason: Promise<"stop" | "tool-calls" | "length" | "error">;
+
+  /** Promise that resolves to token usage */
+  readonly usage: Promise<{ promptTokens: number; completionTokens: number } | undefined>;
+
+  /** Promise that resolves to total steps */
+  readonly totalSteps: Promise<number>;
 }
 
-// Re-export all AI IPC and model types for consumers
-export type * from "./types.js";
+// =============================================================================
+// Zod Schema Support
+// =============================================================================
+
+import { zodToJsonSchema as convertZodToJsonSchema } from "zod-to-json-schema";
+import { z } from "zod";
+import { StreamTextSession } from "./StreamTextSession.js";
+
+/**
+ * Type guard to check if something is a Zod schema.
+ * Uses instanceof check for robust detection.
+ */
+function isZodSchema(schema: unknown): schema is z.ZodTypeAny {
+  return schema instanceof z.ZodType;
+}
+
+/**
+ * Convert a Zod schema to JSON Schema using the zod-to-json-schema library.
+ */
+function zodToJsonSchema(zodSchema: unknown): Record<string, unknown> {
+  if (!isZodSchema(zodSchema)) {
+    // Already JSON Schema
+    return zodSchema as Record<string, unknown>;
+  }
+
+  // Use the library for proper conversion
+  // TypeScript doesn't know the full Zod type, so we cast
+  return convertZodToJsonSchema(zodSchema as Parameters<typeof convertZodToJsonSchema>[0], { target: "openApi3" }) as Record<string, unknown>;
+}
+
+/**
+ * Input type for the tool() helper - accepts Zod schemas or JSON Schema.
+ */
+export interface ToolInput<TParams = Record<string, unknown>> {
+  description?: string;
+  /** Parameters schema - can be a Zod schema or JSON Schema object */
+  parameters: TParams;
+  /** Execute function called when the tool is invoked. Receives an optional AbortSignal for cancellation. */
+  execute: (args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
+}
+
+/**
+ * Create a tool definition with Zod schema support.
+ *
+ * This helper provides Vercel AI SDK compatibility by accepting Zod schemas
+ * and converting them to JSON Schema internally.
+ *
+ * @example
+ * ```typescript
+ * import { tool } from '@natstack/ai';
+ * import { z } from 'zod';
+ *
+ * const weatherTool = tool({
+ *   description: 'Get the weather for a location',
+ *   parameters: z.object({
+ *     city: z.string().describe('City name'),
+ *     units: z.enum(['celsius', 'fahrenheit']).optional(),
+ *   }),
+ *   execute: async ({ city, units }) => {
+ *     return { temperature: 72, units: units ?? 'fahrenheit' };
+ *   },
+ * });
+ * ```
+ */
+export function tool<TParams>(input: ToolInput<TParams>): ToolDefinition {
+  return {
+    description: input.description,
+    parameters: zodToJsonSchema(input.parameters),
+    execute: input.execute,
+  };
+}
 
 // =============================================================================
 // Bridge Interface
 // =============================================================================
 
+// Bridge types - simplified to use Message types directly
+interface StreamTextBridgeOptions {
+  model: string;
+  messages: Message[];
+  tools?: Array<{ name: string; description?: string; parameters: Record<string, unknown> }>;
+  maxSteps?: number;
+  maxOutputTokens?: number;
+  temperature?: number;
+  system?: string;
+}
+
 interface AIBridge {
-  generate(modelId: string, options: AICallOptions): Promise<AIGenerateResult>;
-  streamStart(modelId: string, options: AICallOptions, streamId: string): Promise<void>;
-  streamCancel(streamId: string): Promise<void>;
   listRoles(): Promise<AIRoleRecord>;
-  onStreamChunk(listener: (streamId: string, chunk: AIStreamPart) => void): () => void;
+  streamTextStart(options: StreamTextBridgeOptions, streamId: string): Promise<void>;
+  streamCancel(streamId: string): Promise<void>;
+  onStreamChunk(listener: (streamId: string, chunk: StreamEvent) => void): () => void;
   onStreamEnd(listener: (streamId: string) => void): () => void;
-
-  // Claude Code conversation API
-  ccConversationStart(
-    modelId: string,
-    tools: AIToolDefinition[],
-    callbacks: Record<string, (args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>>
-  ): Promise<ClaudeCodeConversationInfo>;
-  ccGenerate(conversationId: string, options: AICallOptions): Promise<AIGenerateResult>;
-  ccStreamStart(conversationId: string, options: AICallOptions, streamId: string): Promise<void>;
-  ccConversationEnd(conversationId: string): Promise<void>;
-
-  // Register tool callbacks for inline Claude Code streaming
-  registerToolCallbacks(
-    callbacks: Record<string, (args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>>
-  ): () => void;
+  /**
+   * Register tool callbacks for a stream. Main process invokes these via panel:execute-tool.
+   * Note: Uses plain object instead of Map because contextBridge cannot pass Maps with functions.
+   */
+  registerTools(streamId: string, callbacks: Record<string, (args: Record<string, unknown>) => Promise<unknown>>): () => void;
 }
 
 interface PanelBridgeWithAI {
@@ -110,7 +304,6 @@ interface PanelBridgeWithAI {
 }
 
 const getBridge = (): PanelBridgeWithAI => {
-  // Access the bridge from the global window object
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const bridge = (window as any).__natstackPanelBridge as PanelBridgeWithAI | undefined;
   if (!bridge) {
@@ -141,415 +334,46 @@ function registerUnloadCancelHook(): void {
 }
 
 // =============================================================================
-// AI SDK Compatible Types
+// Message Serialization (Uint8Array → base64 for IPC)
 // =============================================================================
 
 /**
- * Minimal LanguageModelV2 interface for AI SDK compatibility.
- * This matches the Vercel AI SDK's LanguageModelV2 specification.
+ * Prepare messages for IPC by encoding any Uint8Array data to base64.
+ * Only user messages with file parts need conversion.
  */
-export interface LanguageModelV2 {
-  readonly specificationVersion: "v2";
-  readonly provider: string;
-  readonly modelId: string;
-  readonly supportedUrls: Record<string, RegExp[]>;
-
-  doGenerate(options: LanguageModelV2CallOptions): Promise<LanguageModelV2GenerateResult>;
-  doStream(options: LanguageModelV2CallOptions): Promise<LanguageModelV2StreamResult>;
-}
-
-export interface LanguageModelV2CallOptions {
-  prompt: LanguageModelV2Prompt;
-  maxOutputTokens?: number;
-  temperature?: number;
-  topP?: number;
-  topK?: number;
-  presencePenalty?: number;
-  frequencyPenalty?: number;
-  stopSequences?: string[];
-  seed?: number;
-  responseFormat?:
-    | { type: "text" }
-    | { type: "json"; schema?: unknown; name?: string; description?: string };
-  tools?: LanguageModelV2Tool[];
-  toolChoice?: LanguageModelV2ToolChoice;
-  abortSignal?: AbortSignal;
-  headers?: Record<string, string>;
-  providerOptions?: Record<string, Record<string, unknown>>;
-}
-
-export type LanguageModelV2Prompt = LanguageModelV2Message[];
-
-export type LanguageModelV2Message =
-  | { role: "system"; content: string }
-  | { role: "user"; content: Array<LanguageModelV2TextPart | LanguageModelV2FilePart> }
-  | {
-      role: "assistant";
-      content: Array<
-        | LanguageModelV2TextPart
-        | LanguageModelV2FilePart
-        | LanguageModelV2ReasoningPart
-        | LanguageModelV2ToolCallPart
-      >;
+function prepareMessagesForIPC(messages: Message[]): Message[] {
+  return messages.map((msg): Message => {
+    // Only user messages can have file parts with binary data
+    if (msg.role === "user" && typeof msg.content !== "string") {
+      return {
+        ...msg,
+        content: msg.content.map((part) => {
+          if (part.type === "file" && part.data instanceof Uint8Array) {
+            return { ...part, data: encodeBase64(part.data) };
+          }
+          return part;
+        }),
+      };
     }
-  | { role: "tool"; content: LanguageModelV2ToolResultPart[] };
 
-export interface LanguageModelV2TextPart {
-  type: "text";
-  text: string;
-}
-
-export interface LanguageModelV2FilePart {
-  type: "file";
-  mimeType: string;
-  data: Uint8Array | string;
-}
-
-export interface LanguageModelV2ReasoningPart {
-  type: "reasoning";
-  text: string;
-}
-
-export interface LanguageModelV2ToolCallPart {
-  type: "tool-call";
-  toolCallId: string;
-  toolName: string;
-  args: unknown;
-}
-
-export interface LanguageModelV2ToolResultPart {
-  type: "tool-result";
-  toolCallId: string;
-  toolName: string;
-  result: unknown;
-  isError?: boolean;
-}
-
-export interface LanguageModelV2Tool {
-  type: "function";
-  name: string;
-  description?: string;
-  parameters: Record<string, unknown>;
-}
-
-export type LanguageModelV2ToolChoice =
-  | { type: "auto" }
-  | { type: "none" }
-  | { type: "required" }
-  | { type: "tool"; toolName: string };
-
-export interface LanguageModelV2GenerateResult {
-  content: Array<
-    | { type: "text"; text: string }
-    | { type: "reasoning"; text: string }
-    | { type: "tool-call"; toolCallId: string; toolName: string; args: unknown }
-  >;
-  finishReason: "stop" | "length" | "content-filter" | "tool-calls" | "error" | "other" | "unknown";
-  usage: { promptTokens: number; completionTokens: number };
-  warnings: Array<{ type: string; message: string; details?: unknown }>;
-  response?: { id?: string; modelId?: string; timestamp?: Date };
-  request?: { body?: unknown };
-  providerMetadata?: Record<string, Record<string, unknown>>;
-}
-
-export interface LanguageModelV2StreamResult {
-  stream: ReadableStream<LanguageModelV2StreamPart>;
-  request?: { body?: unknown };
-  response?: { headers?: Record<string, string> };
-}
-
-export type LanguageModelV2StreamPart =
-  | { type: "text-start"; id: string }
-  | { type: "text-delta"; id: string; delta: string }
-  | { type: "text-end"; id: string }
-  | { type: "reasoning-start"; id: string }
-  | { type: "reasoning-delta"; id: string; delta: string }
-  | { type: "reasoning-end"; id: string }
-  | { type: "tool-input-start"; toolCallId: string; toolName: string }
-  | { type: "tool-input-delta"; toolCallId: string; inputTextDelta: string }
-  | { type: "tool-input-end"; toolCallId: string }
-  | { type: "stream-start"; warnings: Array<{ type: string; message: string; details?: unknown }> }
-  | { type: "response-metadata"; id?: string; modelId?: string; timestamp?: Date }
-  | {
-      type: "finish";
-      finishReason: string;
-      usage: { promptTokens: number; completionTokens: number };
-    }
-  | { type: "error"; error: unknown };
-
-// =============================================================================
-// Type Converters
-// =============================================================================
-
-/**
- * Convert AI SDK prompt to our serializable format.
- */
-function convertPromptToIPC(prompt: LanguageModelV2Prompt): AIMessage[] {
-  return prompt.map((msg): AIMessage => {
-    switch (msg.role) {
-      case "system":
-        return { role: "system", content: msg.content };
-
-      case "user":
-        return {
-          role: "user",
-          content: msg.content.map((part): AITextPart | AIFilePart => {
-            if (part.type === "text") {
-              return { type: "text", text: part.text };
-            }
-            if (part.type === "file") {
-              // File part - encode to base64
-              const data = part.data instanceof Uint8Array ? encodeBase64(part.data) : part.data; // Already a string (URL or base64)
-              return { type: "file", mimeType: part.mimeType, data };
-            }
-            throw new Error(
-              `Unsupported user content type: ${(part as { type?: string }).type ?? "unknown"}`
-            );
-          }),
-        };
-
-      case "assistant":
-        return {
-          role: "assistant",
-          content: msg.content.map(
-            (part): AITextPart | AIFilePart | AIReasoningPart | AIToolCallPart => {
-              switch (part.type) {
-                case "text":
-                  return { type: "text", text: part.text };
-                case "file":
-                  return {
-                    type: "file",
-                    mimeType: part.mimeType,
-                    data: part.data instanceof Uint8Array ? encodeBase64(part.data) : part.data,
-                  };
-                case "reasoning":
-                  return { type: "reasoning", text: part.text };
-                case "tool-call":
-                  return {
-                    type: "tool-call",
-                    toolCallId: part.toolCallId,
-                    toolName: part.toolName,
-                    args: part.args,
-                  };
-                default:
-                  throw new Error(
-                    `Unsupported assistant content type: ${(part as { type?: string }).type ?? "unknown"}`
-                  );
-              }
-            }
-          ),
-        };
-
-      case "tool":
-        return {
-          role: "tool",
-          content: msg.content.map((part: AIToolResultPart) => ({
-            type: "tool-result",
-            toolCallId: part.toolCallId,
-            toolName: part.toolName,
-            result: part.result,
-            isError: part.isError,
-          })),
-        };
-
-      default:
-        throw new Error(
-          `Unsupported message role: ${(msg as { role?: string }).role ?? "unknown"}`
-        );
-    }
+    // All other message types pass through unchanged
+    return msg;
   });
 }
 
-/**
- * Convert our IPC result back to AI SDK format.
- */
-function convertResultFromIPC(result: AIGenerateResult): LanguageModelV2GenerateResult {
-  return {
-    content: result.content.map((item: AIResponseContent) => {
-      switch (item.type) {
-        case "text":
-          return { type: "text" as const, text: item.text };
-        case "reasoning":
-          return { type: "reasoning" as const, text: item.text };
-        case "tool-call":
-          return {
-            type: "tool-call" as const,
-            toolCallId: item.toolCallId,
-            toolName: item.toolName,
-            args: item.args,
-          };
-        default:
-          throw new Error(
-            `Unsupported response content type: ${(item as { type?: string }).type ?? "unknown"}`
-          );
-      }
-    }),
-    finishReason: result.finishReason,
-    usage: result.usage,
-    warnings: result.warnings,
-    response: result.response
-      ? {
-          id: result.response.id,
-          modelId: result.response.modelId,
-          timestamp: result.response.timestamp ? new Date(result.response.timestamp) : undefined,
-        }
-      : undefined,
-  };
+function serializeTools(tools: Record<string, ToolDefinition>): Array<{ name: string; description?: string; parameters: Record<string, unknown> }> {
+  return Object.entries(tools).map(([name, t]) => ({
+    name,
+    description: t.description,
+    parameters: t.parameters,
+  }));
 }
 
-/**
- * Convert IPC stream chunk to AI SDK format.
- */
-function convertStreamPartFromIPC(chunk: AIStreamPart): LanguageModelV2StreamPart {
-  if (chunk.type === "response-metadata") {
-    return {
-      type: "response-metadata",
-      id: chunk.id,
-      modelId: chunk.modelId,
-      timestamp: chunk.timestamp ? new Date(chunk.timestamp) : undefined,
-    };
-  }
-  // Most types are already compatible
-  return chunk as LanguageModelV2StreamPart;
-}
-
-// =============================================================================
-// Proxy Model Factory
-// =============================================================================
-
-/**
- * Create a proxy language model that routes requests through IPC.
- */
-function createProxyModel(modelId: string, provider: string): LanguageModelV2 {
-  const bridge = getBridge();
-
-  return {
-    specificationVersion: "v2",
-    provider: `natstack-proxy:${provider}`,
-    modelId,
-    supportedUrls: {},
-
-    async doGenerate(options: LanguageModelV2CallOptions): Promise<LanguageModelV2GenerateResult> {
-      const ipcOptions: AICallOptions = {
-        prompt: convertPromptToIPC(options.prompt),
-        maxOutputTokens: options.maxOutputTokens,
-        temperature: options.temperature,
-        topP: options.topP,
-        topK: options.topK,
-        presencePenalty: options.presencePenalty,
-        frequencyPenalty: options.frequencyPenalty,
-        stopSequences: options.stopSequences,
-        seed: options.seed,
-        responseFormat: options.responseFormat as AICallOptions["responseFormat"],
-        tools: options.tools?.map((t) => ({
-          type: "function" as const,
-          name: t.name,
-          description: t.description,
-          parameters: t.parameters,
-        })),
-        toolChoice: options.toolChoice as AICallOptions["toolChoice"],
-        providerOptions: options.providerOptions,
-      };
-
-      const result = await bridge.ai.generate(modelId, ipcOptions);
-      return convertResultFromIPC(result);
-    },
-
-    async doStream(options: LanguageModelV2CallOptions): Promise<LanguageModelV2StreamResult> {
-      const streamId = crypto.randomUUID();
-      registerUnloadCancelHook();
-
-      const ipcOptions: AICallOptions = {
-        prompt: convertPromptToIPC(options.prompt),
-        maxOutputTokens: options.maxOutputTokens,
-        temperature: options.temperature,
-        topP: options.topP,
-        topK: options.topK,
-        presencePenalty: options.presencePenalty,
-        frequencyPenalty: options.frequencyPenalty,
-        stopSequences: options.stopSequences,
-        seed: options.seed,
-        responseFormat: options.responseFormat as AICallOptions["responseFormat"],
-        tools: options.tools?.map((t) => ({
-          type: "function" as const,
-          name: t.name,
-          description: t.description,
-          parameters: t.parameters,
-        })),
-        toolChoice: options.toolChoice as AICallOptions["toolChoice"],
-        providerOptions: options.providerOptions,
-      };
-
-      const cancelStream = () => {
-        const cancel = activeStreamCancelers.get(streamId);
-        if (cancel) {
-          cancel();
-        }
-      };
-
-      // Create a ReadableStream that receives chunks from IPC events
-      const stream = new ReadableStream<LanguageModelV2StreamPart>({
-        start(controller) {
-          let ended = false;
-
-          const unsubChunk = bridge.ai.onStreamChunk((sid, chunk) => {
-            if (sid === streamId && !ended) {
-              controller.enqueue(convertStreamPartFromIPC(chunk));
-            }
-          });
-
-          const unsubEnd = bridge.ai.onStreamEnd((sid) => {
-            if (sid === streamId && !ended) {
-              ended = true;
-              unsubChunk();
-              unsubEnd();
-              controller.close();
-              activeStreamCancelers.delete(streamId);
-            }
-          });
-
-          // Handle abort signal
-          if (options.abortSignal) {
-            options.abortSignal.addEventListener("abort", () => {
-              if (!ended) {
-                ended = true;
-                unsubChunk();
-                unsubEnd();
-                cancelStream();
-                controller.error(new Error("Aborted"));
-              }
-            });
-          }
-        },
-      });
-
-      // Start the stream on the main process
-      const cancelWrapper = () => {
-        activeStreamCancelers.delete(streamId);
-        void bridge.ai.streamCancel(streamId).catch((error) => {
-          console.error("Failed to cancel AI stream", error);
-        });
-      };
-      activeStreamCancelers.set(streamId, cancelWrapper);
-
-      try {
-        await bridge.ai.streamStart(modelId, ipcOptions, streamId);
-      } catch (error) {
-        activeStreamCancelers.delete(streamId);
-        throw error;
-      }
-
-      return { stream };
-    },
-  };
-}
+// StreamEvent is already the canonical event type, no conversion needed
 
 // =============================================================================
 // Public API
 // =============================================================================
-
-/** Cache of proxy models by model ID */
-const modelCache = new Map<string, LanguageModelV2>();
 
 /** Cache of available role-to-model mappings */
 let roleRecordCache: AIRoleRecord | null = null;
@@ -557,19 +381,9 @@ let roleRecordCache: AIRoleRecord | null = null;
 /**
  * Get the record of configured roles and their assigned models.
  *
- * All four standard roles (smart, fast, coding, cheap) are always present with
- * intelligent defaults applied when not explicitly configured:
- * - smart ↔ coding (both prefer fast if available)
- * - cheap ↔ fast (both prefer smart if available)
+ * All four standard roles (smart, fast, coding, cheap) are always present.
  *
- * @returns Record mapping role names to model info (always includes all standard roles)
- *
- * Usage:
- * ```typescript
- * const roles = await getRoles();
- * console.log(roles.fast); // { modelId: "anthropic:claude-haiku-...", provider: "anthropic", ... }
- * console.log(roles.smart); // Always available (with defaults if not configured)
- * ```
+ * @returns Record mapping role names to model info
  */
 export async function getRoles(): Promise<AIRoleRecord> {
   if (roleRecordCache) {
@@ -582,407 +396,164 @@ export async function getRoles(): Promise<AIRoleRecord> {
 }
 
 /**
- * Get a proxy model by role name.
- * Call getRoles() first to ensure roles are loaded.
- *
- * @param role - The role name (e.g., "fast", "smart", "coding", "cheap")
- * @returns A proxy model for this role, or null if role is not configured
- *
- * Usage:
- * ```typescript
- * import { getModelByRole, getRoles } from '@natstack/ai';
- *
- * // Load roles first
- * await getRoles();
- *
- * // Get model by role
- * const fastModel = getModelByRole('fast');
- * if (fastModel) {
- *   const result = await generateText({
- *     model: fastModel,
- *     prompt: 'Hello!'
- *   });
- * }
- * ```
+ * Clear the role cache. Useful if role configuration changes.
  */
-export function getModelByRole(role: string): LanguageModelV2 | null {
-  if (!roleRecordCache) {
-    throw new Error(
-      "Roles not loaded. Call getRoles() first to load role information."
-    );
-  }
-
-  const modelInfo = roleRecordCache[role];
-  if (!modelInfo) {
-    return null;
-  }
-
-  // Get or create proxy model for this model ID
-  let model = modelCache.get(modelInfo.modelId);
-  if (!model) {
-    model = createProxyModel(modelInfo.modelId, modelInfo.provider);
-    modelCache.set(modelInfo.modelId, model);
-  }
-  return model;
-}
-
-/**
- * Proxy record of AI models, keyed by role name.
- *
- * Access models by standard role names (fast, smart, coding, cheap) or custom roles.
- * Call getRoles() first to ensure roles are loaded.
- *
- * Usage:
- * ```typescript
- * import { models, getRoles } from '@natstack/ai';
- * import { generateText } from 'ai';
- *
- * // Load roles first
- * await getRoles();
- *
- * // Access models by role - all standard roles are guaranteed to exist
- * const result = await generateText({
- *   model: models.fast,  // Fast/cheap model
- *   prompt: 'Quick summary'
- * });
- *
- * const analysis = await generateText({
- *   model: models.smart,  // Smart/reasoning model
- *   prompt: 'Detailed analysis'
- * });
- * ```
- */
-export const models: Record<string, LanguageModelV2> = new Proxy(
-  {} as Record<string, LanguageModelV2>,
-  {
-    get(_target, prop: string) {
-      return getModelByRole(prop);
-    },
-    has(_target, prop: string) {
-      if (!roleRecordCache) return false;
-      return prop in roleRecordCache;
-    },
-    ownKeys() {
-      // Return role names if available
-      return roleRecordCache ? Object.keys(roleRecordCache) : [];
-    },
-    getOwnPropertyDescriptor(_target, prop) {
-      if (typeof prop === "string" && roleRecordCache && prop in roleRecordCache) {
-        return {
-          enumerable: true,
-          configurable: true,
-          value: getModelByRole(prop),
-        };
-      }
-      return undefined;
-    },
-  }
-);
-
-/**
- * Clear the model cache. Useful if role configuration changes.
- */
-export function clearModelCache(): void {
-  modelCache.clear();
+export function clearRoleCache(): void {
   roleRecordCache = null;
 }
 
 /**
- * Register tool callbacks for inline Claude Code streaming.
+ * Stream text from an AI model with optional tool support.
  *
- * When using a Claude Code model with tools via the regular `models[role].doStream()` API,
- * these callbacks will be invoked when Claude calls tools. This enables tool use without
- * explicitly creating a Claude Code conversation.
+ * Returns a result object that provides multiple ways to consume the stream:
+ * - As an AsyncIterable (for await...of)
+ * - Via specific streams (textStream, fullStream)
+ * - Via promises (text, toolCalls, etc.)
  *
- * @param callbacks - Map of tool name to callback function. Each callback receives the
- *   tool arguments and should return a ClaudeCodeToolResult.
- * @returns A cleanup function to unregister the callbacks
- *
- * @example
- * ```typescript
- * import { models, registerToolCallbacks, ClaudeCodeToolResult } from '@natstack/ai';
- *
- * // Register tool callbacks before streaming
- * const cleanup = registerToolCallbacks({
- *   get_current_time: async () => ({
- *     content: [{ type: 'text', text: new Date().toISOString() }]
- *   }),
- *   calculate: async ({ expression }) => ({
- *     content: [{ type: 'text', text: String(eval(expression)) }]
- *   })
- * });
- *
- * // Use the model with tools - callbacks will be invoked automatically
- * const { stream } = await models.fast.doStream({
- *   prompt: [{ role: 'user', content: [{ type: 'text', text: 'What time is it?' }] }],
- *   tools: [{ type: 'function', name: 'get_current_time', ... }]
- * });
- *
- * // Clean up when done
- * cleanup();
- * ```
- */
-export function registerToolCallbacks(
-  callbacks: Record<string, ClaudeCodeToolCallback>
-): () => void {
-  const bridge = getBridge();
-  return bridge.ai.registerToolCallbacks(callbacks);
-}
-
-// =============================================================================
-// Claude Code Conversation API
-// =============================================================================
-
-/**
- * Claude Code conversation handle for interacting with a conversation.
- */
-export interface ClaudeCodeConversation {
-  /** Unique ID for this conversation */
-  readonly conversationId: string;
-  /** MCP tool names that were registered */
-  readonly registeredTools: string[];
-
-  /**
-   * Get a proxy model for this conversation.
-   * Use this with AI SDK's generateText/streamText.
-   */
-  getModel(): LanguageModelV2;
-
-  /**
-   * Generate text using this conversation.
-   */
-  generate(options: Omit<LanguageModelV2CallOptions, "tools" | "toolChoice">): Promise<LanguageModelV2GenerateResult>;
-
-  /**
-   * Stream text using this conversation.
-   */
-  stream(options: Omit<LanguageModelV2CallOptions, "tools" | "toolChoice">): Promise<LanguageModelV2StreamResult>;
-
-  /**
-   * End the conversation and clean up resources.
-   */
-  end(): Promise<void>;
-}
-
-/**
- * Options for creating a Claude Code conversation.
- */
-export interface CreateClaudeCodeConversationOptions {
-  /**
-   * Model to use (e.g., "claude-code:sonnet", "claude-code:opus", "claude-code:haiku")
-   * or just the model name ("sonnet", "opus", "haiku")
-   */
-  model: string;
-
-  /**
-   * Tools with callbacks that will be executed when Claude calls them.
-   */
-  tools: Record<string, ClaudeCodeToolWithCallback>;
-}
-
-/**
- * Create a Claude Code conversation with tools.
- *
- * This creates a dedicated Claude Code session where tools are executed via
- * callbacks in your panel code. This enables Claude Code to use your custom
- * tools while leveraging its CLI-based authentication.
+ * @param options - Stream configuration
+ * @returns StreamTextResult with multiple access patterns
  *
  * @example
  * ```typescript
- * import { createClaudeCodeConversation } from '@natstack/ai';
- * import { generateText } from 'ai';
- *
- * const conversation = await createClaudeCodeConversation({
- *   model: 'sonnet',
- *   tools: {
- *     search: {
- *       description: 'Search the database',
- *       parameters: {
- *         type: 'object',
- *         properties: {
- *           query: { type: 'string', description: 'Search query' }
- *         },
- *         required: ['query']
- *       },
- *       execute: async ({ query }) => {
- *         const results = await searchDatabase(query);
- *         return {
- *           content: [{ type: 'text', text: JSON.stringify(results) }]
- *         };
- *       }
- *     }
- *   }
+ * // Using AsyncIterable
+ * const result = streamText({
+ *   model: "fast",
+ *   messages: [{ role: "user", content: "Hello!" }],
  * });
  *
- * // Use with AI SDK
- * const { text } = await generateText({
- *   model: conversation.getModel(),
- *   prompt: 'Search for cats in the database'
- * });
+ * for await (const event of result) {
+ *   if (event.type === "text-delta") console.log(event.text);
+ * }
  *
- * // Clean up when done
- * await conversation.end();
+ * // Using textStream
+ * for await (const text of result.textStream) {
+ *   process.stdout.write(text);
+ * }
+ *
+ * // Using promises
+ * const finalText = await result.text;
  * ```
  */
-export async function createClaudeCodeConversation(
-  options: CreateClaudeCodeConversationOptions
-): Promise<ClaudeCodeConversation> {
+export function streamText(options: StreamTextOptions): StreamTextResult {
   const bridge = getBridge();
+  const streamId = crypto.randomUUID();
 
-  // Normalize model ID
-  let modelId = options.model;
-  if (!modelId.includes(":")) {
-    modelId = `claude-code:${modelId}`;
+  registerUnloadCancelHook();
+
+  // Extract tool callbacks and serialize tools
+  // Use plain object instead of Map because contextBridge cannot pass Maps with functions
+  const toolCallbacks: Record<string, (args: Record<string, unknown>) => Promise<unknown>> = {};
+  let serializedTools: Array<{ name: string; description?: string; parameters: Record<string, unknown> }> | undefined;
+
+  if (options.tools) {
+    for (const [name, t] of Object.entries(options.tools)) {
+      toolCallbacks[name] = t.execute;
+    }
+    serializedTools = serializeTools(options.tools);
   }
 
-  // Convert tools to the format expected by the bridge
-  const toolDefinitions: AIToolDefinition[] = [];
-  const callbacks: Record<string, (args: Record<string, unknown>) => Promise<ClaudeCodeToolResult>> = {};
-
-  for (const [name, toolDef] of Object.entries(options.tools)) {
-    toolDefinitions.push({
-      type: "function",
-      name,
-      description: toolDef.description,
-      parameters: toolDef.parameters,
-    });
-    callbacks[name] = toolDef.execute;
+  // Prepend system message if provided
+  let messages = options.messages;
+  if (options.system) {
+    messages = [{ role: "system", content: options.system }, ...messages];
   }
 
-  // Start the conversation
-  const info = await bridge.ai.ccConversationStart(modelId, toolDefinitions, callbacks);
+  // Prepare messages for IPC (encode Uint8Array to base64)
+  const ipcMessages = prepareMessagesForIPC(messages);
 
-  // Create a proxy model for this conversation
-  const createConversationModel = (): LanguageModelV2 => ({
-    specificationVersion: "v2",
-    provider: "claude-code-conversation",
-    modelId: info.conversationId,
-    supportedUrls: {},
+  // Build IPC options
+  const bridgeOptions: StreamTextBridgeOptions = {
+    model: options.model,
+    messages: ipcMessages,
+    tools: serializedTools,
+    maxSteps: options.maxSteps,
+    maxOutputTokens: options.maxOutputTokens,
+    temperature: options.temperature,
+  };
 
-    async doGenerate(callOptions: LanguageModelV2CallOptions): Promise<LanguageModelV2GenerateResult> {
-      const ipcOptions: AICallOptions = {
-        prompt: convertPromptToIPC(callOptions.prompt),
-        maxOutputTokens: callOptions.maxOutputTokens,
-        temperature: callOptions.temperature,
-        topP: callOptions.topP,
-        topK: callOptions.topK,
-        presencePenalty: callOptions.presencePenalty,
-        frequencyPenalty: callOptions.frequencyPenalty,
-        stopSequences: callOptions.stopSequences,
-        seed: callOptions.seed,
-        responseFormat: callOptions.responseFormat as AICallOptions["responseFormat"],
-        providerOptions: callOptions.providerOptions,
-        // Note: tools are configured in the conversation, not passed here
-      };
-
-      const result = await bridge.ai.ccGenerate(info.conversationId, ipcOptions);
-      return convertResultFromIPC(result);
-    },
-
-    async doStream(callOptions: LanguageModelV2CallOptions): Promise<LanguageModelV2StreamResult> {
-      const streamId = crypto.randomUUID();
-      registerUnloadCancelHook();
-
-      const ipcOptions: AICallOptions = {
-        prompt: convertPromptToIPC(callOptions.prompt),
-        maxOutputTokens: callOptions.maxOutputTokens,
-        temperature: callOptions.temperature,
-        topP: callOptions.topP,
-        topK: callOptions.topK,
-        presencePenalty: callOptions.presencePenalty,
-        frequencyPenalty: callOptions.frequencyPenalty,
-        stopSequences: callOptions.stopSequences,
-        seed: callOptions.seed,
-        responseFormat: callOptions.responseFormat as AICallOptions["responseFormat"],
-        providerOptions: callOptions.providerOptions,
-      };
-
-      const cancelStream = () => {
-        const cancel = activeStreamCancelers.get(streamId);
-        if (cancel) {
-          cancel();
-        }
-      };
-
-      const stream = new ReadableStream<LanguageModelV2StreamPart>({
-        start(controller) {
-          let ended = false;
-
-          const unsubChunk = bridge.ai.onStreamChunk((sid, chunk) => {
-            if (sid === streamId && !ended) {
-              controller.enqueue(convertStreamPartFromIPC(chunk));
-            }
-          });
-
-          const unsubEnd = bridge.ai.onStreamEnd((sid) => {
-            if (sid === streamId && !ended) {
-              ended = true;
-              unsubChunk();
-              unsubEnd();
-              controller.close();
-              activeStreamCancelers.delete(streamId);
-            }
-          });
-
-          if (callOptions.abortSignal) {
-            callOptions.abortSignal.addEventListener("abort", () => {
-              if (!ended) {
-                ended = true;
-                unsubChunk();
-                unsubEnd();
-                cancelStream();
-                controller.error(new Error("Aborted"));
-              }
-            });
-          }
-        },
+  // Create session - encapsulates all state and logic
+  const session = new StreamTextSession(
+    streamId,
+    options,
+    () => {
+      void bridge.ai.streamCancel(streamId).catch(() => {
+        // Stream cancellation failed, but cleanup already happened
       });
+    }
+  );
 
-      const cancelWrapper = () => {
-        activeStreamCancelers.delete(streamId);
-        void bridge.ai.streamCancel(streamId).catch((error) => {
-          console.error("Failed to cancel Claude Code stream", error);
-        });
-      };
-      activeStreamCancelers.set(streamId, cancelWrapper);
+  // Register cancel handler
+  activeStreamCancelers.set(streamId, () => session.cancel());
 
-      try {
-        await bridge.ai.ccStreamStart(info.conversationId, ipcOptions, streamId);
-      } catch (error) {
-        activeStreamCancelers.delete(streamId);
-        throw error;
-      }
+  // Handle abort signal
+  if (options.abortSignal) {
+    options.abortSignal.addEventListener("abort", () => {
+      session.cancel();
+    });
+  }
 
-      return { stream };
-    },
+  // Listen for stream chunks and forward to session
+  const unsubChunk = bridge.ai.onStreamChunk((sid, chunk) => {
+    if (sid !== streamId) return;
+    void session.processEvent(chunk);
   });
 
-  const model = createConversationModel();
+  // Listen for stream end
+  const unsubEnd = bridge.ai.onStreamEnd((sid) => {
+    if (sid !== streamId) return;
+    session.cleanup();
+  });
+
+  // Register tool callbacks with preload bridge
+  const unsubTools = bridge.ai.registerTools(streamId, toolCallbacks);
+
+  // Register unsubscribers with session for cleanup
+  session.addUnsubscriber(unsubChunk);
+  session.addUnsubscriber(unsubEnd);
+  session.addUnsubscriber(unsubTools);
+  session.addUnsubscriber(() => activeStreamCancelers.delete(streamId));
+
+  // Start the stream
+  void bridge.ai.streamTextStart(bridgeOptions, streamId).catch((err) => {
+    const error = err instanceof Error ? err : new Error(String(err));
+    void session.processEvent({ type: "error", error });
+    session.cleanup();
+  });
+
+  // Return the result object from the session
+  return session.toResult();
+}
+
+/**
+ * Generate text (non-streaming) from an AI model.
+ *
+ * This is a convenience wrapper around streamText that collects all events
+ * and returns the final text.
+ *
+ * @param options - Same as streamText options
+ * @returns Promise with the generated text and usage info
+ */
+export async function generateText(options: StreamTextOptions): Promise<{
+  text: string;
+  toolCalls: Array<{ toolCallId: string; toolName: string; args: unknown }>;
+  toolResults: Array<{ toolCallId: string; toolName: string; result: unknown; isError?: boolean }>;
+  usage?: { promptTokens: number; completionTokens: number };
+  finishReason: "stop" | "tool-calls" | "length" | "error";
+}> {
+  const result = streamText(options);
+
+  // Consume the stream to trigger processing
+  for await (const event of result) {
+    if (event.type === "error") {
+      throw event.error;
+    }
+  }
 
   return {
-    conversationId: info.conversationId,
-    registeredTools: info.registeredTools,
-
-    getModel: () => model,
-
-    async generate(callOptions) {
-      return model.doGenerate({
-        ...callOptions,
-        tools: undefined,
-        toolChoice: undefined,
-      });
-    },
-
-    async stream(callOptions) {
-      return model.doStream({
-        ...callOptions,
-        tools: undefined,
-        toolChoice: undefined,
-      });
-    },
-
-    async end() {
-      await bridge.ai.ccConversationEnd(info.conversationId);
-    },
+    text: await result.text,
+    toolCalls: await result.toolCalls,
+    toolResults: await result.toolResults,
+    usage: await result.usage,
+    finishReason: await result.finishReason,
   };
 }

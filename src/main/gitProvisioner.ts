@@ -153,8 +153,14 @@ export async function resolveTargetCommit(
     throw new Error(`Panel must be a git repository (or submodule): ${absolutePanelPath}`);
   }
 
-  // No version specifier - use current HEAD
+  // No version specifier - use current HEAD, but only if worktree is clean
   if (!version || (!version.branch && !version.commit && !version.tag)) {
+    // Check for dirty state - return null to skip cache and force full provision
+    // which will then error with a proper message via assertCleanWorktree
+    const isDirty = await isWorktreeDirty(absolutePanelPath);
+    if (isDirty) {
+      return null;
+    }
     return getGitCommit(absolutePanelPath);
   }
 
@@ -210,9 +216,13 @@ async function createTempCheckout(repoPath: string, commit: string): Promise<str
   return tempDir;
 }
 
-async function assertCleanWorktree(repoPath: string): Promise<void> {
+async function isWorktreeDirty(repoPath: string): Promise<boolean> {
   const status = await runGit(["status", "--porcelain"], repoPath);
-  if (status.trim().length > 0) {
+  return status.trim().length > 0;
+}
+
+async function assertCleanWorktree(repoPath: string): Promise<void> {
+  if (await isWorktreeDirty(repoPath)) {
     throw new Error(
       `Panel repo has uncommitted changes. Commit or stash before building: ${repoPath}`
     );

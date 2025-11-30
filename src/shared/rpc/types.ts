@@ -194,20 +194,49 @@ export interface ServiceCallResponse {
 }
 
 /**
- * Push event from main process to worker (for streams, tool execution, etc.)
+ * Push event from main process to worker (for streams, etc.)
  */
 export interface ServicePushEvent {
   type: "service:push";
   workerId: string;
   service: string;
-  event: string; // "stream-chunk" | "stream-end" | "tool-execute" | etc.
+  event: string; // "stream-chunk" | "stream-end" | etc.
   payload: unknown;
+}
+
+/**
+ * Service invoke request from main process to worker (bidirectional RPC).
+ * This allows main to call methods on workers and get results back.
+ */
+export interface ServiceInvokeRequest {
+  type: "service:invoke";
+  requestId: string;
+  workerId: string;
+  service: string;
+  method: string;
+  args: unknown[];
+}
+
+/**
+ * Service invoke response from worker to main process.
+ */
+export interface ServiceInvokeResponse {
+  type: "service:invoke-response";
+  requestId: string;
+  workerId: string;
+  result?: unknown;
+  error?: string;
 }
 
 /**
  * Union type for all service messages (utility process <-> main process).
  */
-export type ServiceMessage = ServiceCallRequest | ServiceCallResponse | ServicePushEvent;
+export type ServiceMessage =
+  | ServiceCallRequest
+  | ServiceCallResponse
+  | ServicePushEvent
+  | ServiceInvokeRequest
+  | ServiceInvokeResponse;
 
 /**
  * Service handler function type.

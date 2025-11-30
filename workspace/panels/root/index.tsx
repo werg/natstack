@@ -107,6 +107,18 @@ export default function ChildPanelLauncher() {
     }
   };
 
+  const launchAgenticNotebook = async () => {
+    try {
+      setStatus("Launching agentic notebook...");
+      const childId = await panel.createChild("panels/agentic-notebook", {
+        panelId: 'agentic-notebook',
+      });
+      setStatus(`Launched agentic notebook panel ${childId}`);
+    } catch (error) {
+      setStatus(`Failed to launch agentic notebook: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
   const setRandomTitle = async () => {
     const title = `Radix Panel ${Math.floor(Math.random() * 1000)}`;
     await panel.setTitle(title);
@@ -527,6 +539,9 @@ export default function ChildPanelLauncher() {
             </Button>
             <Button onClick={launchAgenticChat} color="green">
               Launch Agentic Chat
+            </Button>
+            <Button onClick={launchAgenticNotebook} color="blue">
+              Launch Agentic Notebook
             </Button>
             <Button variant="soft" onClick={setRandomTitle}>
               Set random title

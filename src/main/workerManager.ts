@@ -12,6 +12,7 @@ import * as path from "path";
 import * as crypto from "crypto";
 import { createScopedFs } from "@natstack/scoped-fs";
 import { getActiveWorkspace, getWorkerScopePath } from "./paths.js";
+import { TOOL_EXECUTION_TIMEOUT_MS, DEFAULT_WORKER_MEMORY_LIMIT_MB } from "../shared/constants.js";
 import type {
   WorkerState,
   UtilityMessage,
@@ -22,13 +23,15 @@ import type {
   ServiceCallRequest,
   ServiceCallResponse,
   ServicePushEvent,
+  ServiceInvokeRequest,
+  ServiceInvokeResponse,
 } from "./workerTypes.js";
 import type { WorkerCreateOptions, WorkerInfo } from "../shared/ipc/types.js";
 import type { RpcMessage, ServiceHandler } from "../shared/rpc/types.js";
 
 // Default options for workers
 const DEFAULTS = {
-  memoryLimitMB: 1024, // 1 GB default
+  memoryLimitMB: DEFAULT_WORKER_MEMORY_LIMIT_MB,
   env: {} as Record<string, string>,
 } as const;
 
@@ -71,6 +74,15 @@ export class WorkerManager {
 
   /** Service handlers registered by service name */
   private serviceHandlers = new Map<string, ServiceHandler>();
+
+  /** Pending service invoke requests waiting for responses */
+  private pendingInvokes = new Map<
+    string,
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+    }
+  >();
 
   // Utility process is started lazily on first worker creation
 
@@ -158,12 +170,31 @@ export class WorkerManager {
       case "service:call":
         void this.handleServiceCall(message);
         break;
+      case "service:invoke-response":
+        this.handleServiceInvokeResponse(message);
+        break;
       case "console:log":
         this.handleConsoleLog(message);
         break;
       case "worker:error":
         this.handleWorkerError(message);
         break;
+    }
+  }
+
+  /**
+   * Handle service invoke response from worker.
+   */
+  private handleServiceInvokeResponse(response: ServiceInvokeResponse): void {
+    const pending = this.pendingInvokes.get(response.requestId);
+    if (!pending) return;
+
+    this.pendingInvokes.delete(response.requestId);
+
+    if (response.error) {
+      pending.reject(new Error(response.error));
+    } else {
+      pending.resolve(response.result);
     }
   }
 
@@ -487,6 +518,48 @@ export class WorkerManager {
       payload,
     };
     this.utilityProc?.postMessage(message);
+  }
+
+  /**
+   * Invoke a service method on a worker and wait for the result (bidirectional RPC).
+   * This is like sendPush but expects a response.
+   */
+  async serviceInvoke(
+    workerId: string,
+    service: string,
+    method: string,
+    args: unknown[],
+    timeoutMs: number = TOOL_EXECUTION_TIMEOUT_MS
+  ): Promise<unknown> {
+    const requestId = crypto.randomUUID();
+
+    return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        this.pendingInvokes.delete(requestId);
+        reject(new Error(`Service invoke ${service}.${method} timed out`));
+      }, timeoutMs);
+
+      this.pendingInvokes.set(requestId, {
+        resolve: (value: unknown) => {
+          clearTimeout(timeoutId);
+          resolve(value);
+        },
+        reject: (error: Error) => {
+          clearTimeout(timeoutId);
+          reject(error);
+        },
+      });
+
+      const message: ServiceInvokeRequest = {
+        type: "service:invoke",
+        requestId,
+        workerId,
+        service,
+        method,
+        args,
+      };
+      this.utilityProc?.postMessage(message);
+    });
   }
 
   /**

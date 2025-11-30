@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  models,
+  streamText,
   getRoles,
-  registerToolCallbacks,
   type AIRoleRecord,
-  type LanguageModelV2Prompt,
-  type ClaudeCodeToolResult,
+  type StreamEvent,
+  type ToolDefinition,
+  type Message,
 } from "@natstack/ai";
 import {
   Box,
@@ -26,13 +26,6 @@ import {
 // =============================================================================
 // Types
 // =============================================================================
-
-interface ToolDefinition {
-  type: "function";
-  name: string;
-  description: string;
-  parameters: Record<string, unknown>;
-}
 
 interface ToolCall {
   toolCallId: string;
@@ -59,77 +52,10 @@ interface ChatMessage {
 }
 
 // =============================================================================
-// Tool Definitions & Implementations
+// Tool Definitions with Execute Callbacks
 // =============================================================================
 
-const TOOLS: ToolDefinition[] = [
-  {
-    type: "function",
-    name: "get_current_time",
-    description: "Get the current date and time in ISO format",
-    parameters: {
-      type: "object",
-      properties: {},
-      required: [],
-    },
-  },
-  {
-    type: "function",
-    name: "calculate",
-    description: "Evaluate a mathematical expression. Supports basic arithmetic (+, -, *, /, **, %).",
-    parameters: {
-      type: "object",
-      properties: {
-        expression: {
-          type: "string",
-          description: "The mathematical expression to evaluate (e.g., '2 + 2', '10 * 5')",
-        },
-      },
-      required: ["expression"],
-    },
-  },
-  {
-    type: "function",
-    name: "random_number",
-    description: "Generate a random number within a specified range",
-    parameters: {
-      type: "object",
-      properties: {
-        min: {
-          type: "number",
-          description: "Minimum value (inclusive)",
-        },
-        max: {
-          type: "number",
-          description: "Maximum value (inclusive)",
-        },
-      },
-      required: ["min", "max"],
-    },
-  },
-  {
-    type: "function",
-    name: "string_transform",
-    description: "Transform a string: reverse, uppercase, lowercase, or count characters",
-    parameters: {
-      type: "object",
-      properties: {
-        text: {
-          type: "string",
-          description: "The text to transform",
-        },
-        operation: {
-          type: "string",
-          enum: ["reverse", "uppercase", "lowercase", "length"],
-          description: "The transformation to apply",
-        },
-      },
-      required: ["text", "operation"],
-    },
-  },
-];
-
-function executeTool(name: string, args: unknown): unknown {
+function executeTool(name: string, args: Record<string, unknown>): unknown {
   switch (name) {
     case "get_current_time":
       return { time: new Date().toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
@@ -176,6 +102,73 @@ function executeTool(name: string, args: unknown): unknown {
       throw new Error(`Unknown tool: ${name}`);
   }
 }
+
+/**
+ * Tool definitions for the new streamText API.
+ * Each tool includes an execute callback that runs panel-side.
+ */
+const TOOLS: Record<string, ToolDefinition> = {
+  get_current_time: {
+    description: "Get the current date and time in ISO format",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+    execute: async (args) => executeTool("get_current_time", args),
+  },
+  calculate: {
+    description: "Evaluate a mathematical expression. Supports basic arithmetic (+, -, *, /, **, %).",
+    parameters: {
+      type: "object",
+      properties: {
+        expression: {
+          type: "string",
+          description: "The mathematical expression to evaluate (e.g., '2 + 2', '10 * 5')",
+        },
+      },
+      required: ["expression"],
+    },
+    execute: async (args) => executeTool("calculate", args),
+  },
+  random_number: {
+    description: "Generate a random number within a specified range",
+    parameters: {
+      type: "object",
+      properties: {
+        min: {
+          type: "number",
+          description: "Minimum value (inclusive)",
+        },
+        max: {
+          type: "number",
+          description: "Maximum value (inclusive)",
+        },
+      },
+      required: ["min", "max"],
+    },
+    execute: async (args) => executeTool("random_number", args),
+  },
+  string_transform: {
+    description: "Transform a string: reverse, uppercase, lowercase, or count characters",
+    parameters: {
+      type: "object",
+      properties: {
+        text: {
+          type: "string",
+          description: "The text to transform",
+        },
+        operation: {
+          type: "string",
+          enum: ["reverse", "uppercase", "lowercase", "length"],
+          description: "The transformation to apply",
+        },
+      },
+      required: ["text", "operation"],
+    },
+    execute: async (args) => executeTool("string_transform", args),
+  },
+};
 
 // =============================================================================
 // Components
@@ -256,6 +249,16 @@ function MessageCard({ message, toolResults }: { message: ChatMessage; toolResul
 // Main Component
 // =============================================================================
 
+const SYSTEM_PROMPT = `You are a helpful assistant with access to tools. Use tools when appropriate to help answer questions.
+
+Available tools:
+- get_current_time: Get the current date and time
+- calculate: Evaluate mathematical expressions
+- random_number: Generate random numbers in a range
+- string_transform: Transform strings (reverse, uppercase, lowercase, length)
+
+When you need to use a tool, make a tool call. After receiving results, provide a helpful response to the user.`;
+
 export default function AgenticChat() {
   const [roles, setRoles] = useState<AIRoleRecord | null>(null);
   const [selectedRole, setSelectedRole] = useState<string>("fast");
@@ -272,6 +275,7 @@ export default function AgenticChat() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Load available roles
   useEffect(() => {
     void (async () => {
       try {
@@ -283,116 +287,73 @@ export default function AgenticChat() {
     })();
   }, []);
 
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
     };
   }, []);
 
-  // Register tool callbacks for Claude Code inline streaming
-  // This allows tools to be executed when using Claude Code models with the regular doStream API
-  useEffect(() => {
-    const executeToolForClaudeCode = async (
-      name: string,
-      args: Record<string, unknown>
-    ): Promise<ClaudeCodeToolResult> => {
-      try {
-        const result = executeTool(name, args);
-        return {
-          content: [{ type: "text", text: JSON.stringify(result) }],
-        };
-      } catch (error) {
-        return {
-          content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
-          isError: true,
-        };
-      }
-    };
+  /**
+   * Convert ChatMessage array to Message array for streamText API.
+   */
+  const buildMessages = useCallback((msgs: ChatMessage[]): Message[] => {
+    const result: Message[] = [];
 
-    const cleanup = registerToolCallbacks({
-      get_current_time: (args) => executeToolForClaudeCode("get_current_time", args),
-      calculate: (args) => executeToolForClaudeCode("calculate", args),
-      random_number: (args) => executeToolForClaudeCode("random_number", args),
-      string_transform: (args) => executeToolForClaudeCode("string_transform", args),
-    });
-
-    return cleanup;
-  }, []);
-
-  // Build the prompt for the AI SDK
-  const buildPrompt = useCallback(
-    (msgs: ChatMessage[], results: Map<string, ToolResult>): LanguageModelV2Prompt => {
-      const prompt: LanguageModelV2Prompt = [
-        {
-          role: "system",
-          content: `You are a helpful assistant with access to tools. Use tools when appropriate to help answer questions.
-
-Available tools:
-- get_current_time: Get the current date and time
-- calculate: Evaluate mathematical expressions
-- random_number: Generate random numbers in a range
-- string_transform: Transform strings (reverse, uppercase, lowercase, length)
-
-When you need to use a tool, make a tool call. After receiving results, provide a helpful response to the user.`,
-        },
-      ];
-
-      for (const msg of msgs) {
-        if (msg.role === "user") {
-          const textParts = msg.parts.filter((p) => p.type === "text") as Array<{ type: "text"; text: string }>;
-          if (textParts.length > 0) {
-            prompt.push({
-              role: "user",
-              content: textParts,
+    for (const msg of msgs) {
+      if (msg.role === "user") {
+        const textParts = msg.parts.filter((p) => p.type === "text") as Array<{ type: "text"; text: string }>;
+        if (textParts.length > 0) {
+          result.push({
+            role: "user",
+            content: textParts.map((p) => p.text).join("\n"),
+          });
+        }
+      } else if (msg.role === "assistant") {
+        const content: Array<{ type: "text"; text: string } | { type: "tool-call"; toolCallId: string; toolName: string; args: unknown }> = [];
+        for (const part of msg.parts) {
+          if (part.type === "text" && part.text) {
+            content.push({ type: "text", text: part.text });
+          } else if (part.type === "tool-call" && part.toolCallId) {
+            content.push({
+              type: "tool-call",
+              toolCallId: part.toolCallId,
+              toolName: part.toolName,
+              args: part.args,
             });
-          }
-        } else if (msg.role === "assistant") {
-          const content: Array<
-            | { type: "text"; text: string }
-            | { type: "tool-call"; toolCallId: string; toolName: string; args: unknown }
-          > = [];
-          for (const part of msg.parts) {
-            if (part.type === "text" && part.text) {
-              content.push({ type: "text", text: part.text });
-            } else if (part.type === "tool-call" && part.toolCallId) {
-              // Only include tool calls that have a valid toolCallId
-              content.push({
-                type: "tool-call",
-                toolCallId: part.toolCallId,
-                toolName: part.toolName,
-                args: part.args,
-              });
-            }
-          }
-          if (content.length > 0) {
-            prompt.push({ role: "assistant", content });
-          }
-        } else if (msg.role === "tool") {
-          const toolResultParts = msg.parts
-            .filter((p) => p.type === "tool-result")
-            .map((p) => {
-              const tr = p as { type: "tool-result"; toolCallId: string; toolName: string; result: unknown; isError?: boolean };
-              return {
-                type: "tool-result" as const,
-                toolCallId: tr.toolCallId,
-                toolName: tr.toolName,
-                result: tr.result,
-                isError: tr.isError,
-              };
-            });
-          if (toolResultParts.length > 0) {
-            prompt.push({ role: "tool", content: toolResultParts });
           }
         }
+        if (content.length > 0) {
+          result.push({ role: "assistant", content });
+        }
+      } else if (msg.role === "tool") {
+        const toolResultParts = msg.parts
+          .filter((p) => p.type === "tool-result")
+          .map((p) => {
+            const tr = p as { type: "tool-result"; toolCallId: string; toolName: string; result: unknown; isError?: boolean };
+            return {
+              type: "tool-result" as const,
+              toolCallId: tr.toolCallId,
+              toolName: tr.toolName,
+              result: tr.result,
+              isError: tr.isError,
+            };
+          });
+        if (toolResultParts.length > 0) {
+          result.push({ role: "tool", content: toolResultParts });
+        }
       }
+    }
 
-      return prompt;
-    },
-    []
-  );
+    return result;
+  }, []);
 
-  const runAgentLoop = useCallback(
-    async (initialMessages: ChatMessage[], initialResults: Map<string, ToolResult>) => {
+  /**
+   * Run the agent using the new streamText API.
+   * The agent loop runs server-side, tool callbacks execute panel-side.
+   */
+  const runAgent = useCallback(
+    async (initialMessages: ChatMessage[]) => {
       if (!roles) return;
 
       const controller = new AbortController();
@@ -400,188 +361,106 @@ When you need to use a tool, make a tool call. After receiving results, provide 
       setRunning(true);
       setStatus("");
 
-      let currentMessages = [...initialMessages];
-      let currentResults = new Map(initialResults);
-      const maxIterations = 10;
+      // Add pending assistant message
+      const assistantMsg: ChatMessage = { role: "assistant", parts: [], pending: true };
+      let currentMessages = [...initialMessages, assistantMsg];
+      setMessages(currentMessages);
+
+      const currentResults = new Map(toolResults);
+      let textContent = "";
 
       try {
-        for (let iteration = 0; iteration < maxIterations; iteration++) {
-          // Add pending assistant message
-          const assistantMsg: ChatMessage = { role: "assistant", parts: [], pending: true };
-          currentMessages = [...currentMessages, assistantMsg];
-          setMessages(currentMessages);
+        // Build messages for API
+        const apiMessages = buildMessages(initialMessages);
 
-          // Build prompt and call model
-          const prompt = buildPrompt(currentMessages.slice(0, -1), currentResults);
-          const model = models[selectedRole];
+        // Start streaming with the unified API
+        const stream = streamText({
+          model: selectedRole,
+          system: SYSTEM_PROMPT,
+          messages: apiMessages,
+          tools: TOOLS,
+          maxSteps: 10,
+          abortSignal: controller.signal,
+        });
 
-          const { stream } = await model.doStream({
-            prompt,
-            tools: TOOLS,
-            toolChoice: { type: "auto" },
-            abortSignal: controller.signal,
-          });
+        // Process stream events
+        for await (const event of stream) {
+          switch (event.type) {
+            case "text-delta":
+              textContent += event.text;
+              // Update assistant message with new text
+              currentMessages = currentMessages.slice(0, -1);
+              assistantMsg.parts = [
+                { type: "text", text: textContent },
+                ...assistantMsg.parts.filter((p) => p.type === "tool-call"),
+              ];
+              currentMessages = [...currentMessages, { ...assistantMsg }];
+              setMessages(currentMessages);
+              break;
 
-          // Process stream
-          let textContent = "";
-          const toolCalls: ToolCall[] = [];
-          const toolCallArgsBuffers = new Map<string, string>();
-          const reader = stream.getReader();
+            case "tool-call":
+              // Add tool call to assistant message
+              currentMessages = currentMessages.slice(0, -1);
+              assistantMsg.parts = [
+                ...assistantMsg.parts.filter((p) => p.type === "text"),
+                ...assistantMsg.parts.filter((p) => p.type === "tool-call"),
+                {
+                  type: "tool-call",
+                  toolCallId: event.toolCallId,
+                  toolName: event.toolName,
+                  args: event.args,
+                },
+              ];
+              currentMessages = [...currentMessages, { ...assistantMsg }];
+              setMessages(currentMessages);
+              break;
 
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (!value || typeof value !== "object") continue;
+            case "tool-result":
+              // Record tool result for display
+              currentResults.set(event.toolCallId, {
+                toolCallId: event.toolCallId,
+                toolName: event.toolName,
+                result: event.result,
+                isError: event.isError,
+              });
+              setToolResults(new Map(currentResults));
+              break;
 
-            const chunk = value as { type: string; [key: string]: unknown };
-
-            switch (chunk.type) {
-              case "text-delta":
-                textContent += (chunk.delta as string) ?? "";
-                currentMessages = currentMessages.slice(0, -1);
-                assistantMsg.parts = [{ type: "text", text: textContent }, ...toolCalls.map(tc => ({
-                  type: "tool-call" as const,
-                  toolCallId: tc.toolCallId,
-                  toolName: tc.toolName,
-                  args: tc.args,
-                }))];
-                currentMessages = [...currentMessages, { ...assistantMsg }];
-                setMessages(currentMessages);
-                break;
-
-              case "tool-input-start": {
-                const toolCallId = chunk.toolCallId as string;
-                const toolName = chunk.toolName as string;
-                toolCallArgsBuffers.set(toolCallId, "");
-                toolCalls.push({ toolCallId, toolName, args: {} });
-                break;
+            case "step-finish":
+              // A step finished - could be text completion or tool calls
+              // Reset text for next step if there will be more
+              if (event.finishReason === "tool-calls") {
+                textContent = "";
               }
+              break;
 
-              case "tool-input-delta": {
-                const toolCallId = chunk.toolCallId as string;
-                const delta = chunk.inputTextDelta as string;
-                const current = toolCallArgsBuffers.get(toolCallId) ?? "";
-                toolCallArgsBuffers.set(toolCallId, current + delta);
-                break;
-              }
+            case "finish":
+              // All done - mark assistant as no longer pending
+              assistantMsg.pending = false;
+              currentMessages = currentMessages.slice(0, -1);
+              currentMessages = [...currentMessages, { ...assistantMsg }];
+              setMessages(currentMessages);
+              break;
 
-              case "tool-input-end": {
-                const toolCallId = chunk.toolCallId as string;
-                const argsStr = toolCallArgsBuffers.get(toolCallId) ?? "{}";
-                const tc = toolCalls.find((t) => t.toolCallId === toolCallId);
-                if (tc) {
-                  try {
-                    tc.args = JSON.parse(argsStr);
-                  } catch {
-                    tc.args = { raw: argsStr };
-                  }
-                }
-                // Update UI with tool call
-                currentMessages = currentMessages.slice(0, -1);
-                assistantMsg.parts = [
-                  ...(textContent ? [{ type: "text" as const, text: textContent }] : []),
-                  ...toolCalls.map(t => ({
-                    type: "tool-call" as const,
-                    toolCallId: t.toolCallId,
-                    toolName: t.toolName,
-                    args: t.args,
-                  })),
-                ];
-                currentMessages = [...currentMessages, { ...assistantMsg }];
-                setMessages(currentMessages);
-                break;
-              }
-
-              case "finish":
-                assistantMsg.pending = false;
-                currentMessages = currentMessages.slice(0, -1);
-                assistantMsg.parts = [
-                  ...(textContent ? [{ type: "text" as const, text: textContent }] : []),
-                  ...toolCalls.map(t => ({
-                    type: "tool-call" as const,
-                    toolCallId: t.toolCallId,
-                    toolName: t.toolName,
-                    args: t.args,
-                  })),
-                ];
-                currentMessages = [...currentMessages, { ...assistantMsg }];
-                setMessages(currentMessages);
-                break;
-
-              case "error":
-                throw new Error(String(chunk.error));
-            }
+            case "error":
+              throw event.error;
           }
-
-          // If no tool calls, we're done
-          if (toolCalls.length === 0) {
-            break;
-          }
-
-          // For Claude Code models, tools are executed server-side via MCP proxy.
-          // The model already processed the tool results and provided a final response,
-          // so we don't need to execute tools locally or continue the loop.
-          const isClaudeCode = roles[selectedRole]?.modelId?.startsWith("claude-code:");
-          if (isClaudeCode) {
-            // Just record the tool calls for display purposes
-            for (const tc of toolCalls) {
-              const toolResult: ToolResult = {
-                toolCallId: tc.toolCallId,
-                toolName: tc.toolName,
-                result: { status: "executed via Claude Code" },
-                isError: false,
-              };
-              currentResults.set(tc.toolCallId, toolResult);
-            }
-            setToolResults(new Map(currentResults));
-            break;
-          }
-
-          // For non-Claude Code models, execute tools locally
-          const toolResultParts: MessagePart[] = [];
-          for (const tc of toolCalls) {
-            let result: unknown;
-            let isError = false;
-            try {
-              result = executeTool(tc.toolName, tc.args);
-            } catch (err) {
-              result = { error: err instanceof Error ? err.message : String(err) };
-              isError = true;
-            }
-
-            const toolResult: ToolResult = {
-              toolCallId: tc.toolCallId,
-              toolName: tc.toolName,
-              result,
-              isError,
-            };
-            currentResults.set(tc.toolCallId, toolResult);
-            toolResultParts.push({
-              type: "tool-result",
-              toolCallId: tc.toolCallId,
-              toolName: tc.toolName,
-              result,
-              isError,
-            });
-          }
-
-          setToolResults(new Map(currentResults));
-
-          // Add tool message with results
-          const toolMsg: ChatMessage = { role: "tool", parts: toolResultParts };
-          currentMessages = [...currentMessages, toolMsg];
-          setMessages(currentMessages);
         }
       } catch (error) {
         if ((error as Error).name !== "AbortError") {
           setStatus(`Error: ${error instanceof Error ? error.message : String(error)}`);
         }
+        // Mark assistant as no longer pending even on error
+        assistantMsg.pending = false;
+        currentMessages = currentMessages.slice(0, -1);
+        currentMessages = [...currentMessages, { ...assistantMsg }];
+        setMessages(currentMessages);
       } finally {
         setRunning(false);
         abortRef.current = null;
       }
     },
-    [roles, selectedRole, buildPrompt]
+    [roles, selectedRole, toolResults, buildMessages]
   );
 
   const sendMessage = useCallback(async () => {
@@ -595,8 +474,8 @@ When you need to use a tool, make a tool call. After receiving results, provide 
     setMessages(newMessages);
     setInput("");
 
-    await runAgentLoop(newMessages, toolResults);
-  }, [input, roles, messages, toolResults, runAgentLoop]);
+    await runAgent(newMessages);
+  }, [input, roles, messages, runAgent]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -623,7 +502,7 @@ When you need to use a tool, make a tool call. After receiving results, provide 
           <Box>
             <Heading size="4">Agentic Chat</Heading>
             <Text size="1" color="gray">
-              AI with tool calling via @natstack/ai
+              AI with tool calling via @natstack/ai streamText API
             </Text>
           </Box>
           <Flex align="center" gap="3">
@@ -658,9 +537,9 @@ When you need to use a tool, make a tool call. After receiving results, provide 
             <Text size="1" color="gray">
               Tools:
             </Text>
-            {TOOLS.map((tool) => (
-              <Badge key={tool.name} variant="outline" size="1">
-                {tool.name}
+            {Object.keys(TOOLS).map((toolName) => (
+              <Badge key={toolName} variant="outline" size="1">
+                {toolName}
               </Badge>
             ))}
           </Flex>

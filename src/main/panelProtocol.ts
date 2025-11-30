@@ -128,12 +128,19 @@ export async function registerProtocolForPartition(partition: string): Promise<v
   const existingLock = registrationLocks.get(partition);
   if (existingLock) {
     await existingLock;
+    // Double-check after awaiting lock (another caller may have completed registration)
     return;
   }
 
   // Create registration promise
   const registrationPromise = (async () => {
     try {
+      // Double-check pattern: verify not registered after acquiring lock
+      // This prevents race where multiple callers create locks before any complete
+      if (registeredPartitions.has(partition)) {
+        return;
+      }
+
       console.log(`[PanelProtocol] Registering protocol for partition: ${partition}`);
       const ses = session.fromPartition(partition);
       ses.protocol.handle("natstack-panel", handleProtocolRequest);
@@ -144,6 +151,7 @@ export async function registerProtocolForPartition(partition: string): Promise<v
     }
   })();
 
+  // Set lock BEFORE awaiting to prevent other callers from starting duplicate registration
   registrationLocks.set(partition, registrationPromise);
   await registrationPromise;
 }

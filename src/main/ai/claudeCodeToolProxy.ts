@@ -46,15 +46,22 @@ export interface ToolProxyConfig {
 }
 
 /**
- * Convert JSON Schema to Zod schema for the SDK MCP server.
- * This is a simplified conversion that handles common JSON Schema patterns.
+ * Convert JSON Schema to Zod schema.
+ * Simplified conversion that handles common JSON Schema patterns.
+ * Note: json-schema-to-zod returns code strings which can't be used at runtime,
+ * so we still need manual conversion for the most common patterns.
  */
-function jsonSchemaToZod(schema: Record<string, unknown>): z.ZodType {
+function convertJsonSchemaToZod(schema: Record<string, unknown>): z.ZodType {
   const type = schema["type"] as string | undefined;
 
   switch (type) {
-    case "string":
+    case "string": {
+      const enumValues = schema["enum"] as string[] | undefined;
+      if (enumValues && enumValues.length > 0) {
+        return z.enum(enumValues as [string, ...string[]]);
+      }
       return z.string();
+    }
     case "number":
       return z.number();
     case "integer":
@@ -64,23 +71,20 @@ function jsonSchemaToZod(schema: Record<string, unknown>): z.ZodType {
     case "array": {
       const items = schema["items"] as Record<string, unknown> | undefined;
       if (items) {
-        return z.array(jsonSchemaToZod(items));
+        return z.array(convertJsonSchemaToZod(items));
       }
       return z.array(z.unknown());
     }
     case "object": {
-      const properties = schema["properties"] as
-        | Record<string, Record<string, unknown>>
-        | undefined;
+      const properties = schema["properties"] as Record<string, Record<string, unknown>> | undefined;
       const required = (schema["required"] as string[]) || [];
 
       if (!properties) {
         return z.record(z.string(), z.unknown());
       }
-
       const shape: Record<string, z.ZodType> = {};
       for (const [key, propSchema] of Object.entries(properties)) {
-        const zodType = jsonSchemaToZod(propSchema);
+        const zodType = convertJsonSchemaToZod(propSchema);
         shape[key] = required.includes(key) ? zodType : zodType.optional();
       }
       return z.object(shape);
@@ -88,15 +92,18 @@ function jsonSchemaToZod(schema: Record<string, unknown>): z.ZodType {
     case "null":
       return z.null();
     default:
-      // Handle union types (anyOf, oneOf)
+      // Handle union types
       if (schema["anyOf"] || schema["oneOf"]) {
         const variants = (schema["anyOf"] || schema["oneOf"]) as Record<string, unknown>[];
-        if (variants.length === 0) return z.unknown();
-        if (variants.length === 1) return jsonSchemaToZod(variants[0]!);
-        const zodVariants = variants.map(jsonSchemaToZod) as [z.ZodType, z.ZodType, ...z.ZodType[]];
-        return z.union(zodVariants);
+        if (variants.length === 0) {
+          return z.unknown();
+        } else if (variants.length === 1) {
+          return convertJsonSchemaToZod(variants[0]!);
+        } else {
+          const zodVariants = variants.map(convertJsonSchemaToZod) as [z.ZodType, z.ZodType, ...z.ZodType[]];
+          return z.union(zodVariants);
+        }
       }
-      // Default to unknown for unrecognized schemas
       return z.unknown();
   }
 }
@@ -120,14 +127,14 @@ function jsonSchemaToShape(schema: Record<string, unknown>): Record<string, z.Zo
 
     const shape: Record<string, z.ZodType> = {};
     for (const [key, propSchema] of Object.entries(properties)) {
-      const zodType = jsonSchemaToZod(propSchema);
+      const zodType = convertJsonSchemaToZod(propSchema);
       shape[key] = required.includes(key) ? zodType : zodType.optional();
     }
     return shape;
   }
 
   // Non-object schemas get wrapped
-  return { input: jsonSchemaToZod(schema) };
+  return { input: convertJsonSchemaToZod(schema) };
 }
 
 /**

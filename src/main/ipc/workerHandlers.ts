@@ -9,7 +9,7 @@
 
 import { getWorkerManager } from "../workerManager.js";
 import type { PanelManager } from "../panelManager.js";
-import type { CreateChildOptions } from "../../shared/ipc/types.js";
+import type { CreateChildOptions, StreamTextOptions } from "../../shared/ipc/types.js";
 
 /**
  * Register worker-related handlers.
@@ -76,7 +76,7 @@ export function registerWorkerHandlers(panelManager: PanelManager): void {
     }
   });
 
-  // Register the "ai" service for AI operations
+  // Register the "ai" service for AI operations (unified streamText API)
   workerManager.registerService("ai", async (workerId, method, args) => {
     // Import aiHandler dynamically to avoid circular dependencies
     const { aiHandler } = await import("../index.js");
@@ -85,27 +85,16 @@ export function registerWorkerHandlers(panelManager: PanelManager): void {
     }
 
     switch (method) {
-      case "generate": {
-        const [modelId, options] = args as [string, import("@natstack/ai").AICallOptions];
-        const resolvedModelId = aiHandler.resolveModelId(modelId);
-        const requestId = crypto.randomUUID();
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return (aiHandler as any).generate(requestId, workerId, resolvedModelId, options);
+      case "listRoles": {
+        return aiHandler.getAvailableRoles();
       }
-      case "streamStart": {
-        const [modelId, options, streamId] = args as [
-          string,
-          import("@natstack/ai").AICallOptions,
-          string,
-        ];
-        const resolvedModelId = aiHandler.resolveModelId(modelId);
+      case "streamTextStart": {
+        const [options, streamId] = args as [StreamTextOptions, string];
         // Start streaming and route chunks back through workerManager.sendPush
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        void (aiHandler as any).streamToWorker(
+        void aiHandler.streamTextToWorker(
           workerManager,
           workerId,
           crypto.randomUUID(),
-          resolvedModelId,
           options,
           streamId
         );
@@ -113,48 +102,8 @@ export function registerWorkerHandlers(panelManager: PanelManager): void {
       }
       case "streamCancel": {
         const [streamId] = args as [string];
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (aiHandler as any).cancelStream(streamId);
+        aiHandler.cancelStream(streamId);
         return;
-      }
-      case "listRoles": {
-        return aiHandler.getAvailableRoles();
-      }
-      case "ccConversationStart": {
-        const [modelId, tools] = args as [string, import("@natstack/ai").AIToolDefinition[]];
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return (aiHandler as any).startWorkerConversation(workerId, modelId, tools);
-      }
-      case "ccGenerate": {
-        const [conversationId, options] = args as [string, import("@natstack/ai").AICallOptions];
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return (aiHandler as any).ccGenerateForWorker(workerId, conversationId, options);
-      }
-      case "ccStreamStart": {
-        const [conversationId, options, streamId] = args as [
-          string,
-          import("@natstack/ai").AICallOptions,
-          string,
-        ];
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        void (aiHandler as any).ccStreamToWorker(
-          workerManager,
-          workerId,
-          conversationId,
-          options,
-          streamId
-        );
-        return;
-      }
-      case "ccConversationEnd": {
-        const [conversationId] = args as [string];
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return (aiHandler as any).endWorkerConversation(workerId, conversationId);
-      }
-      case "ccToolResult": {
-        const [executionId, result] = args as [string, unknown];
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return (aiHandler as any).handleWorkerToolResult(executionId, result);
       }
       default:
         throw new Error(`Unknown AI method: ${method}`);

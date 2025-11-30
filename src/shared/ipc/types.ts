@@ -1,6 +1,6 @@
 // Shared types for typed IPC communication
 
-import type { AICallOptions, AIGenerateResult, AIRoleRecord, AIToolDefinition } from "@natstack/ai";
+import type { AIRoleRecord } from "@natstack/ai";
 
 export type ThemeMode = "light" | "dark" | "system";
 export type ThemeAppearance = "light" | "dark";
@@ -209,70 +209,87 @@ export interface PanelBridgeIpcApi {
   "panel-rpc:connect": (fromId: string, toId: string) => { isWorker: boolean; workerId?: string };
 }
 
+// Main-to-panel IPC channels (main -> panel webview via invoke)
+export interface MainToPanelIpcApi {
+  /**
+   * Execute a tool in the panel (called by main process).
+   * This is a bidirectional RPC where main invokes the panel.
+   */
+  "panel:execute-tool": (
+    toolName: string,
+    args: Record<string, unknown>
+  ) => ToolExecutionResult;
+}
+
 // AI provider IPC channels (panel webview <-> main)
 // Note: panelId is derived from the IPC sender identity for security
 export interface AIProviderIpcApi {
-  /** Non-streaming text generation */
-  "ai:generate": (modelId: string, options: AICallOptions) => AIGenerateResult;
+  /** Get record of configured roles and their assigned models */
+  "ai:list-roles": () => AIRoleRecord;
 
-  /** Start a streaming generation - chunks sent via ai:stream-chunk events */
-  "ai:stream-start": (modelId: string, options: AICallOptions, streamId: string) => void;
+  /** Start a streamText generation - unified API for all model types */
+  "ai:stream-text-start": (options: StreamTextOptions, streamId: string) => void;
 
   /** Cancel an active streaming generation */
   "ai:stream-cancel": (streamId: string) => void;
 
-  /** Get record of configured roles and their assigned models */
-  "ai:list-roles": () => AIRoleRecord;
-
-  // Claude Code conversation management (for tool callback support)
-
-  /**
-   * Start a Claude Code conversation with tools.
-   * Returns a conversationId that must be passed to subsequent calls.
-   */
-  "ai:cc-conversation-start": (
-    modelId: string,
-    tools: AIToolDefinition[]
-  ) => ClaudeCodeConversationInfo;
-
-  /**
-   * Generate with an existing Claude Code conversation.
-   * Tools are executed via ai:cc-tool-execute events.
-   */
-  "ai:cc-generate": (conversationId: string, options: AICallOptions) => AIGenerateResult;
-
-  /**
-   * Stream with an existing Claude Code conversation.
-   * Tools are executed via ai:cc-tool-execute events.
-   */
-  "ai:cc-stream-start": (conversationId: string, options: AICallOptions, streamId: string) => void;
-
-  /** End a Claude Code conversation and clean up resources */
-  "ai:cc-conversation-end": (conversationId: string) => void;
-
-  /** Response from panel after executing a tool (called by panel) */
-  "ai:cc-tool-result": (executionId: string, result: ClaudeCodeToolResult) => void;
+  /** Response from panel after executing a tool */
+  "ai:tool-result": (executionId: string, result: ToolExecutionResult) => void;
 }
 
 // =============================================================================
-// Claude Code Conversation Types
+// StreamText Types (Unified AI API)
 // =============================================================================
 
-/** Information about a started Claude Code conversation */
-export interface ClaudeCodeConversationInfo {
-  conversationId: string;
-  /** MCP tool names that were registered (for debugging) */
-  registeredTools: string[];
+// Import types from @natstack/ai to avoid duplication
+// These are the canonical message types used by both panels and IPC
+import type { Message as AIMessage } from "@natstack/ai";
+
+/** Message type for IPC - directly uses AI SDK message format */
+export type StreamTextMessage = AIMessage;
+
+/** Tool definition for IPC */
+export interface StreamTextToolDefinition {
+  name: string;
+  description?: string;
+  parameters: Record<string, unknown>;
+}
+
+/** Options for streamText IPC call */
+export interface StreamTextOptions {
+  model: string;
+  messages: StreamTextMessage[];
+  tools?: StreamTextToolDefinition[];
+  maxSteps?: number;
+  maxOutputTokens?: number;
+  temperature?: number;
+  system?: string;
+}
+
+/** Stream event sent from main to panel */
+export interface StreamTextEvent {
+  type: string;
+  text?: string;
+  toolCallId?: string;
+  toolName?: string;
+  args?: unknown;
+  result?: unknown;
+  isError?: boolean;
+  stepNumber?: number;
+  finishReason?: string;
+  totalSteps?: number;
+  usage?: { promptTokens: number; completionTokens: number };
+  error?: string;
 }
 
 /** Tool execution request sent from main to panel (via IPC event) */
-export interface ClaudeCodeToolExecuteRequest {
-  /** Panel ID for security validation (receivers must check this matches their panelId) */
+export interface ToolExecuteRequest {
+  /** Panel ID for security validation */
   panelId: string;
+  /** Stream ID this tool execution belongs to */
+  streamId: string;
   /** Unique ID for this execution (for matching result) */
   executionId: string;
-  /** Conversation this tool call belongs to */
-  conversationId: string;
   /** Name of the tool to execute */
   toolName: string;
   /** Arguments for the tool */
@@ -280,11 +297,24 @@ export interface ClaudeCodeToolExecuteRequest {
 }
 
 /** Tool execution result sent from panel to main */
-export interface ClaudeCodeToolResult {
+export interface ToolExecutionResult {
   /** Text content of the result */
   content: Array<{ type: "text"; text: string }>;
   /** Whether the tool execution resulted in an error */
   isError?: boolean;
+}
+
+/** Event sent from main to panel with stream chunks */
+export interface StreamTextChunkEvent {
+  panelId: string;
+  streamId: string;
+  chunk: StreamTextEvent;
+}
+
+/** Event sent from main to panel when stream ends */
+export interface StreamTextEndEvent {
+  panelId: string;
+  streamId: string;
 }
 
 // =============================================================================

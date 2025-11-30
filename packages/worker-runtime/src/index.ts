@@ -44,7 +44,26 @@ export {
 } from "./bridge.js";
 
 // AI capabilities
-export { ai, type ClaudeCodeConversationInfo, type ClaudeCodeToolResult } from "./ai.js";
+export {
+  ai,
+  streamText,
+  generateText,
+  getRoles,
+  clearRoleCache,
+  type StreamTextOptions,
+  type StreamEvent,
+  type ToolDefinition,
+  type ToolExecutionResult,
+  type Message,
+  type SystemMessage,
+  type UserMessage,
+  type AssistantMessage,
+  type ToolMessage,
+  type TextPart,
+  type FilePart,
+  type ToolCallPart,
+  type ToolResultPart,
+} from "./ai.js";
 
 // Re-export types for convenience
 export type {

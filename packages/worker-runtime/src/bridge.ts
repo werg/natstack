@@ -1,18 +1,12 @@
 /**
  * Panel bridge proxy for workers.
  *
- * This module uses the unified __serviceCall global to access bridge operations.
+ * This module uses the unified RPC mechanism to access bridge operations.
  * Workers can create children, set titles, and access git config just like panels.
  */
 
 import type { CreateChildOptions, GitConfig, EndpointInfo } from "@natstack/core";
-
-// Declare the unified service call global
-declare const __serviceCall: (
-  service: string,
-  method: string,
-  ...args: unknown[]
-) => Promise<unknown>;
+import { rpc } from "./rpc.js";
 
 /**
  * Create a child panel or worker from a workspace-relative path.
@@ -27,7 +21,7 @@ export async function createChild(
   childPath: string,
   options?: CreateChildOptions
 ): Promise<string> {
-  return (await __serviceCall("bridge", "createChild", childPath, options)) as string;
+  return rpc.call<string>("main", "bridge.createChild", childPath, options);
 }
 
 /**
@@ -36,7 +30,7 @@ export async function createChild(
  * @param childId - ID of the child to remove
  */
 export async function removeChild(childId: string): Promise<void> {
-  await __serviceCall("bridge", "removeChild", childId);
+  await rpc.call("main", "bridge.removeChild", childId);
 }
 
 /**
@@ -46,7 +40,7 @@ export async function removeChild(childId: string): Promise<void> {
  * @param title - New title to display
  */
 export async function setTitle(title: string): Promise<void> {
-  await __serviceCall("bridge", "setTitle", title);
+  await rpc.call("main", "bridge.setTitle", title);
 }
 
 /**
@@ -54,21 +48,21 @@ export async function setTitle(title: string): Promise<void> {
  * This terminates the worker and removes it from the tree.
  */
 export async function close(): Promise<void> {
-  await __serviceCall("bridge", "close");
+  await rpc.call("main", "bridge.close");
 }
 
 /**
  * Get environment variables passed to this worker.
  */
 export async function getEnv(): Promise<Record<string, string>> {
-  return (await __serviceCall("bridge", "getEnv")) as Record<string, string>;
+  return rpc.call<Record<string, string>>("main", "bridge.getEnv");
 }
 
 /**
  * Get information about this worker (ID and partition).
  */
 export async function getInfo(): Promise<EndpointInfo> {
-  return (await __serviceCall("bridge", "getInfo")) as EndpointInfo;
+  return rpc.call<EndpointInfo>("main", "bridge.getInfo");
 }
 
 /**
@@ -86,6 +80,6 @@ export const git = {
    * - gitDependencies: Git dependencies from manifest (to clone)
    */
   async getConfig(): Promise<GitConfig> {
-    return (await __serviceCall("bridge", "getGitConfig")) as GitConfig;
+    return rpc.call<GitConfig>("main", "bridge.getGitConfig");
   },
 };
