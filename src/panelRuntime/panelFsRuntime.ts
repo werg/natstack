@@ -40,4 +40,8 @@ await Promise.race([ready, timeoutPromise]);
 
 export { fs, ready };
 export { promises };
+// Default export for `import fs from "fs"`
 export default fs;
+// Also mirror the Node pattern where `fs/promises` can be default-imported
+// by panels bundling to CJS-like syntax and expecting a default object.
+export const promisesDefault = promises;

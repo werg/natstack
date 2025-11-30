@@ -10,6 +10,7 @@ This guide covers developing mini-apps (panels) for NatStack with the simplified
 - [Typed RPC Communication](#typed-rpc-communication)
 - [Event System](#event-system)
 - [File System Access (OPFS)](#file-system-access-opfs)
+- [FS + Git in Panels](#fs--git-in-panels)
 - [AI Integration](#ai-integration)
 
 ---
@@ -498,6 +499,35 @@ await panel.createChild("panels/editor", {
 ```
 
 ---
+
+## FS + Git in Panels
+
+NatStack exposes an OPFS-backed `fs` implementation (via ZenFS) in panel builds, and `@natstack/git` works atop it. To use them in your panel:
+
+1) Import the shimmed `fs` and a Git client:
+
+```ts
+import fs from "fs/promises";
+import { GitClient } from "@natstack/git";
+```
+
+2) Initialize your storage and inject `fs` where needed (e.g., notebook kernels, agent tools):
+
+```ts
+// Example wiring inside your panel bootstrap
+const git = new GitClient();
+// fs is already the OPFS-backed impl from preload/build
+await storage.initialize(fs, git);   // your storage layer
+kernel.injectFileSystemBindings(fs); // so user code can use fs in the kernel
+agent.registerFileTools(fs);         // if your agent exposes file tools
+```
+
+3) Common gotchas:
+- Do not bring your own `fs` polyfill; the build/runtime already maps `fs`/`fs/promises` to OPFS.
+- Ensure you call your storage initialization before rendering history UIs; otherwise you may see loading skeletons forever.
+- When using `@natstack/git`, no extra polyfills are needed—the shimmed `fs` is sufficient.
+
+With this wiring, panels get persistent OPFS storage, git capabilities, and `fs` available both in panel code and injected runtime environments (kernels/agents).
 
 ## AI Integration
 
