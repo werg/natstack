@@ -2,7 +2,7 @@ import { type BrowserWindow, webContents } from "electron";
 import * as path from "path";
 import { randomBytes } from "crypto";
 import { PanelBuilder } from "./panelBuilder.js";
-import type { PanelEventPayload, Panel, PanelArtifacts } from "./panelTypes.js";
+import type { PanelEventPayload, Panel, PanelManifest } from "./panelTypes.js";
 import { getActiveWorkspace } from "./paths.js";
 import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
 import type { GitServer } from "./gitServer.js";
@@ -62,14 +62,19 @@ export class PanelManager {
     parent?: Panel | null;
     requestedId?: string;
     singletonState?: boolean;
+    isRoot?: boolean;
   }): string {
-    const { relativePath, parent, requestedId, singletonState } = params;
+    const { relativePath, parent, requestedId, singletonState, isRoot } = params;
 
     // Escape slashes in path to avoid collisions (e.g., children of singletons)
     const escapedPath = relativePath.replace(/\//g, "~");
 
     if (singletonState) {
       return `singleton/${escapedPath}`;
+    }
+
+    if (isRoot) {
+      return `tree/${escapedPath}`;
     }
 
     // Parent prefix: use parent's full ID, or "tree" for root panels
@@ -85,6 +90,116 @@ export class PanelManager {
   }
 
   // Public methods for RPC services
+
+  /**
+   * Build env for a panel, injecting git credentials for non-worker panels.
+   */
+  private buildPanelEnv(
+    panelId: string,
+    isWorker: boolean,
+    baseEnv?: Record<string, string>
+  ): Record<string, string> | undefined {
+    if (isWorker) {
+      return baseEnv ? { ...baseEnv } : undefined;
+    }
+
+    const gitToken = this.gitServer.getTokenForPanel(panelId);
+    return {
+      ...baseEnv,
+      __GIT_SERVER_URL: this.gitServer.getBaseUrl(),
+      __GIT_TOKEN: gitToken,
+    };
+  }
+
+  /**
+   * Shared creation path for both root and child panels.
+   */
+  private createPanelFromManifest(params: {
+    manifest: PanelManifest;
+    relativePath: string;
+    parent: Panel | null;
+    options?: SharedPanel.CreateChildOptions;
+    isRoot?: boolean;
+  }): string {
+    const { manifest, relativePath, parent, options, isRoot } = params;
+
+    const isSingleton = manifest.singletonState === true;
+    const isWorker = manifest.runtime === "worker";
+
+    if (isSingleton && options?.panelId) {
+      throw new Error(
+        `Panel at "${relativePath}" has singletonState and cannot have its ID overridden`
+      );
+    }
+
+    const panelId = this.computePanelId({
+      relativePath,
+      parent,
+      requestedId: options?.panelId,
+      singletonState: isSingleton,
+      isRoot,
+    });
+
+    if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
+      if (isSingleton && parent) {
+        parent.selectedChildId = panelId;
+        this.notifyPanelTreeUpdate();
+        return panelId;
+      }
+      throw new Error(`A panel with id "${panelId}" is already running`);
+    }
+
+    this.reservedPanelIds.add(panelId);
+
+    try {
+      const panelEnv = this.buildPanelEnv(panelId, isWorker, options?.env);
+
+      const panel: Panel = {
+        id: panelId,
+        title: manifest.title,
+        path: relativePath,
+        children: [],
+        selectedChildId: null,
+        injectHostThemeVariables: !isWorker && manifest.injectHostThemeVariables !== false,
+        artifacts: {
+          buildState: "building",
+          buildProgress: isWorker ? "Starting worker..." : "Starting build...",
+        },
+        env: panelEnv,
+        sourceRepo: relativePath,
+        gitDependencies: manifest.gitDependencies,
+        type: isWorker ? "worker" : undefined,
+        workerOptions: isWorker
+          ? {
+              memoryLimitMB: options?.memoryLimitMB,
+            }
+          : undefined,
+      };
+
+      if (isRoot) {
+        this.rootPanels = [panel];
+        this.panels = new Map([[panel.id, panel]]);
+      } else if (parent) {
+        parent.children.push(panel);
+        parent.selectedChildId = panel.id;
+        this.panels.set(panel.id, panel);
+      } else {
+        this.panels.set(panel.id, panel);
+      }
+
+      this.notifyPanelTreeUpdate();
+
+      if (isWorker) {
+        void this.buildWorkerAsync(panel, options);
+      } else {
+        void this.buildPanelAsync(panel, options);
+      }
+
+      return panel.id;
+    } finally {
+      this.reservedPanelIds.delete(panelId);
+    }
+  }
 
   /**
    * Create a child panel or worker from a workspace path.
@@ -108,7 +223,7 @@ export class PanelManager {
     const { relativePath, absolutePath } = this.normalizePanelPath(childPath);
 
     // Read manifest to check singleton state and get title
-    let manifest;
+    let manifest: PanelManifest;
     try {
       manifest = this.builder.loadManifest(absolutePath);
     } catch (error) {
@@ -117,88 +232,12 @@ export class PanelManager {
       );
     }
 
-    const isSingleton = manifest.singletonState === true;
-    const isWorker = manifest.runtime === "worker";
-
-    if (isSingleton && options?.panelId) {
-      throw new Error(
-        `Panel at "${relativePath}" has singletonState and cannot have its ID overridden`
-      );
-    }
-
-    // Compute child ID
-    const childId = this.computePanelId({
+    return this.createPanelFromManifest({
+      manifest,
       relativePath,
       parent,
-      requestedId: options?.panelId,
-      singletonState: isSingleton,
+      options,
     });
-
-    // Check if child already exists (for singletons)
-    if (this.panels.has(childId) || this.reservedPanelIds.has(childId)) {
-      if (isSingleton) {
-        // For singletons, just select the existing child
-        parent.selectedChildId = childId;
-        this.notifyPanelTreeUpdate();
-        return childId;
-      }
-      throw new Error(`A child with id "${childId}" is already running`);
-    }
-
-    this.reservedPanelIds.add(childId);
-
-    try {
-      // Create child node immediately with 'building' state
-      const newChild: Panel = {
-        id: childId,
-        title: manifest.title,
-        path: relativePath,
-        children: [],
-        selectedChildId: null,
-        injectHostThemeVariables: !isWorker && manifest.injectHostThemeVariables !== false,
-        artifacts: {
-          buildState: "building",
-          buildProgress: isWorker ? "Starting worker..." : "Starting build...",
-        },
-        env: options?.env,
-        sourceRepo: relativePath,
-        gitDependencies: manifest.gitDependencies,
-        type: isWorker ? "worker" : undefined,
-        workerOptions: isWorker
-          ? {
-              memoryLimitMB: options?.memoryLimitMB,
-            }
-          : undefined,
-      };
-
-      // For panels, also set up git token
-      if (!isWorker) {
-        const gitToken = this.gitServer.getTokenForPanel(childId);
-        newChild.env = {
-          ...newChild.env,
-          __GIT_SERVER_URL: this.gitServer.getBaseUrl(),
-          __GIT_TOKEN: gitToken,
-        };
-      }
-
-      parent.children.push(newChild);
-      parent.selectedChildId = newChild.id;
-      this.panels.set(newChild.id, newChild);
-
-      // Notify UI of new child (will show placeholder)
-      this.notifyPanelTreeUpdate();
-
-      // Start async build/creation
-      if (isWorker) {
-        void this.buildWorkerAsync(newChild, options);
-      } else {
-        void this.buildPanelAsync(newChild, options);
-      }
-
-      return newChild.id;
-    } finally {
-      this.reservedPanelIds.delete(childId);
-    }
   }
 
   /**
@@ -706,58 +745,17 @@ export class PanelManager {
   }
 
   private async initializeRootPanel(panelPath: string): Promise<void> {
-    let panelId: string | undefined;
     try {
       const { relativePath, absolutePath } = this.normalizePanelPath(panelPath);
       const manifest = this.builder.loadManifest(absolutePath);
-      const isSingleton = manifest.singletonState === true;
-      panelId = this.computePanelId({
+      this.createPanelFromManifest({
+        manifest,
         relativePath,
-        singletonState: isSingleton,
         parent: null,
+        isRoot: true,
       });
-
-      if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
-        throw new Error(`Root panel id/partition already in use: ${panelId}`);
-      }
-
-      this.reservedPanelIds.add(panelId);
-
-      // Inject git server credentials into root panel env
-      const gitToken = this.gitServer.getTokenForPanel(panelId);
-      const panelEnv: Record<string, string> = {
-        __GIT_SERVER_URL: this.gitServer.getBaseUrl(),
-        __GIT_TOKEN: gitToken,
-      };
-
-      // Create root panel with initial building state
-      const rootPanel: Panel = {
-        id: panelId,
-        title: manifest.title,
-        path: relativePath,
-        children: [],
-        selectedChildId: null,
-        injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
-        artifacts: {
-          buildState: "building",
-          buildProgress: "Initializing...",
-        },
-        env: panelEnv,
-        gitDependencies: manifest.gitDependencies,
-      };
-
-      this.rootPanels = [rootPanel];
-      this.panels = new Map([[rootPanel.id, rootPanel]]);
-      this.notifyPanelTreeUpdate();
-
-      // Build asynchronously (same as child panels)
-      void this.buildPanelAsync(rootPanel);
     } catch (error) {
       console.error("Failed to initialize root panel:", error);
-    } finally {
-      if (panelId) {
-        this.reservedPanelIds.delete(panelId);
-      }
     }
   }
 }

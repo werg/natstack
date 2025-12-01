@@ -86,9 +86,7 @@ export default function ChildPanelLauncher() {
   const launchSharedOPFSDemo = async () => {
     try {
       setStatus("Launching shared OPFS demo panel...");
-      const childId = await panel.createChild("panels/shared-opfs-demo", {
-        panelId: "shared-opfs-demo"
-      });
+      const childId = await panel.createChild("panels/shared-opfs-demo");
       setStatus(`Launched shared OPFS demo panel ${childId}`);
     } catch (error) {
       setStatus(`Failed to launch: ${error instanceof Error ? error.message : String(error)}`);
