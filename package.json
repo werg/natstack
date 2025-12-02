@@ -6,6 +6,7 @@
   "description": "A horizontally stacked panel app built with Electron and TypeScript",
   "main": "dist/main.cjs",
   "scripts": {
+    "prebuild": "node scripts/generate-channels.mjs && node scripts/generate-injected.mjs",
     "build": "NODE_ENV=production node build.mjs",
     "dev": "NODE_ENV=development node build.mjs && pnpm type-check & node scripts/run-electron.mjs --workspace=workspace",
     "start": "node scripts/run-electron.mjs",

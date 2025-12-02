@@ -141,10 +141,34 @@ function copyAssets() {
   fs.copyFileSync("src/panelRuntime/globals.d.ts", "dist/panelRuntimeGlobals.d.ts");
 }
 
-async function buildWorkspacePackages() {
-  console.log("Building workspace packages...");
+async function generateProtocolFiles() {
+  console.log("Generating protocol files...");
   try {
-    execSync('pnpm --filter "@natstack/*" build', { stdio: 'inherit' });
+    execSync('node scripts/generate-channels.mjs', { stdio: 'inherit' });
+    execSync('node scripts/generate-injected.mjs', { stdio: 'inherit' });
+    console.log("Protocol files generated successfully!");
+  } catch (error) {
+    console.error("Failed to generate protocol files:", error);
+    throw error;
+  }
+}
+
+async function buildPlaywrightCore() {
+  console.log("Building @natstack/playwright-core (browser bundle)...");
+  try {
+    execSync('pnpm --filter "@natstack/playwright-core" build', { stdio: 'inherit' });
+    console.log("@natstack/playwright-core built successfully!");
+  } catch (error) {
+    console.error("Failed to build @natstack/playwright-core:", error);
+    throw error;
+  }
+}
+
+async function buildWorkspacePackages() {
+  console.log("Building other workspace packages...");
+  try {
+    // Build all packages except playwright-core (already built separately)
+    execSync('pnpm --filter "!@natstack/playwright-core" --filter "@natstack/*" build', { stdio: 'inherit' });
     console.log("Workspace packages built successfully!");
   } catch (error) {
     console.error("Failed to build workspace packages:", error);
@@ -163,10 +187,24 @@ async function build() {
     fs.mkdirSync("dist", { recursive: true });
 
     // ========================================================================
-    // STEP 1: Build workspace packages
+    // STEP 0: Generate protocol files from definitions
     // ========================================================================
-    // These must be built first as they are consumed by later steps
+    // These must be generated first as they are used by workspace packages
     // Dependencies: None
+    await generateProtocolFiles();
+
+    // ========================================================================
+    // STEP 0.5: Build Playwright Core (browser bundle)
+    // ========================================================================
+    // Must be built before other packages since playwright-client depends on it
+    // Dependencies: generateProtocolFiles
+    await buildPlaywrightCore();
+
+    // ========================================================================
+    // STEP 1: Build other workspace packages
+    // ========================================================================
+    // These must be built as they are consumed by later steps
+    // Dependencies: generateProtocolFiles, buildPlaywrightCore
     await buildWorkspacePackages();
 
     // ========================================================================
