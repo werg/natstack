@@ -436,6 +436,12 @@ export class WorkerManager {
     }
   }
 
+  /** Pending termination promises waiting for confirmation from utility process */
+  private pendingTerminations = new Map<
+    string,
+    { resolve: () => void; reject: (error: Error) => void }
+  >();
+
   /**
    * Handle worker termination response.
    */
@@ -444,11 +450,20 @@ export class WorkerManager {
     success: boolean;
     error?: string;
   }): void {
-    const worker = this.workers.get(message.workerId);
-    if (worker) {
-      this.workers.delete(message.workerId);
-      this.scopedFsInstances.delete(message.workerId);
+    // Resolve any pending termination promise
+    const pending = this.pendingTerminations.get(message.workerId);
+    if (pending) {
+      this.pendingTerminations.delete(message.workerId);
+      if (message.success) {
+        pending.resolve();
+      } else {
+        pending.reject(new Error(message.error ?? "Worker termination failed"));
+      }
     }
+
+    // Clean up local state after confirmation
+    this.workers.delete(message.workerId);
+    this.scopedFsInstances.delete(message.workerId);
   }
 
   /**
@@ -654,11 +669,19 @@ export class WorkerManager {
 
   /**
    * Terminate a worker.
+   * Waits for the utility process to confirm termination before cleaning up local state.
    */
-  async terminateWorker(workerId: string): Promise<void> {
+  terminateWorker(workerId: string): void {
     const worker = this.workers.get(workerId);
     if (!worker) {
       return; // Worker already terminated or doesn't exist
+    }
+
+    // If utility process is gone, just clean up locally
+    if (!this.utilityProc) {
+      this.workers.delete(workerId);
+      this.scopedFsInstances.delete(workerId);
+      return;
     }
 
     const request: UtilityWorkerTerminateRequest = {
@@ -666,11 +689,9 @@ export class WorkerManager {
       workerId,
     };
 
-    this.utilityProc?.postMessage(request);
+    this.utilityProc.postMessage(request);
 
-    // Clean up local state
-    this.workers.delete(workerId);
-    this.scopedFsInstances.delete(workerId);
+    // State cleanup happens in handleWorkerTerminated when we get confirmation
   }
 
   /**
@@ -723,26 +744,21 @@ export class WorkerManager {
   /**
    * Terminate all workers created by a specific panel.
    */
-  async terminateWorkersForPanel(panelId: string): Promise<void> {
-    const workerIds: string[] = [];
+  terminateWorkersForPanel(panelId: string): void {
     for (const worker of this.workers.values()) {
       if (worker.parentPanelId === panelId) {
-        workerIds.push(worker.id);
+        this.terminateWorker(worker.id);
       }
-    }
-
-    for (const workerId of workerIds) {
-      await this.terminateWorker(workerId);
     }
   }
 
   /**
    * Shutdown the worker manager and terminate all workers.
    */
-  async shutdown(): Promise<void> {
+  shutdown(): void {
     // Terminate all workers
     for (const workerId of this.workers.keys()) {
-      await this.terminateWorker(workerId);
+      this.terminateWorker(workerId);
     }
 
     // Kill utility process

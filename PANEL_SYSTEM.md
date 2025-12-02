@@ -2,7 +2,17 @@
 
 ## Overview
 
-The NatStack panel system allows you to create dynamically loaded, hierarchical panels that can spawn child panels. Each panel is an independent TypeScript/JavaScript project that gets compiled on-the-fly using esbuild.
+The NatStack panel system allows you to create dynamically loaded, hierarchical panels that can spawn child panels, workers, and browser panels. Each panel is an independent TypeScript/JavaScript project that gets compiled on-the-fly using esbuild.
+
+## Panel Types
+
+NatStack supports three types of panels:
+
+| Type | Description | Use Case |
+|------|-------------|----------|
+| `app` | Built webview from source code | UI components, editors, dashboards |
+| `worker` | Isolated-vm background process | CPU-intensive tasks, long-running computations |
+| `browser` | External URL with Playwright automation | Web scraping, testing, automation |
 
 ## Panel Structure
 
@@ -10,115 +20,295 @@ A panel is a directory containing:
 
 ```
 my-panel/
-├── panel.json          # Manifest file (required)
-├── index.ts            # Default entry (index.tsx / index.jsx are also detected)
+├── package.json        # Manifest with natstack field (required)
+├── index.tsx           # Default entry (index.ts / index.jsx also detected)
 ├── index.html          # HTML template (optional, auto-generated if missing)
-└── .natstack/          # Generated build artifacts + node_modules (created on first build)
+├── api.ts              # Optional: Exported RPC types for parent panels
 └── style.css           # Styles (optional)
 ```
 
 ## Manifest Format
 
-`panel.json` is a simple JSON file with the following fields:
+Panel configuration is specified in `package.json` with a `natstack` field:
 
 ```json
 {
-  "title": "My Panel",           // Required: Default panel title
-  "entry": "index.tsx",          // Optional: Entry point (defaults to index.tsx/index.ts/...)
-  "dependencies": {               // Optional: npm dependencies
-    "lodash": "^4.17.21"
+  "name": "@natstack-panels/my-panel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "title": "My Panel",
+    "entry": "index.tsx",
+    "runtime": "panel",
+    "injectHostThemeVariables": true,
+    "singletonState": false,
+    "gitDependencies": {
+      "shared": "panels/shared-lib"
+    }
   },
-  "injectHostThemeVariables": true // Optional: inherit NatStack theme CSS variables (defaults to true)
+  "dependencies": {
+    "@natstack/core": "workspace:*",
+    "@natstack/react": "workspace:*"
+  }
 }
 ```
 
+### Manifest Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `title` | string | **Required** | Display name shown in panel UI |
+| `entry` | string | `index.tsx` | Entry point file |
+| `runtime` | `"panel"` \| `"worker"` | `"panel"` | Determines if built as UI panel or background worker |
+| `injectHostThemeVariables` | boolean | `true` | Inherit NatStack theme CSS variables |
+| `singletonState` | boolean | `false` | Share storage across all instances |
+| `gitDependencies` | object | `{}` | Git repos to clone into panel's OPFS |
+
 ## Panel API
 
-Panels can import the NatStack runtime helper by referencing `natstack/panel` in their TypeScript entry point:
+Import the panel API from `@natstack/core`:
 
 ```ts
-import panelAPI from "natstack/panel";
+import { panel } from "@natstack/core";
 ```
 
-The helper exposes the following methods:
+### Creating Child Panels
 
-### `createChild(path: string, env?: Record<string, string>): Promise<string>`
-Creates a child panel at the specified path and returns its ID. Optionally provide a map of string key/value pairs that will be exposed to the child panel as environment variables.
+Use the spec-based `createChild()` API:
 
 ```typescript
-const childId = await panelAPI.createChild("panels/my-child", {
-  PARENT_ID: panelAPI.getId(),
-  MESSAGE: "Hello from parent",
+// Create an app panel
+const editorId = await panel.createChild({
+  type: 'app',
+  name: 'editor',
+  path: 'panels/editor',
+  env: { FILE_PATH: '/foo.txt' },
+});
+
+// Create a worker
+const computeId = await panel.createChild({
+  type: 'worker',
+  name: 'compute-worker',
+  path: 'workers/compute',
+  memoryLimitMB: 512,
+});
+
+// Create a browser panel
+const browserId = await panel.createChild({
+  type: 'browser',
+  name: 'web-scraper',
+  url: 'https://example.com',
 });
 ```
 
-### `setTitle(title: string): Promise<void>`
-Sets the title of the current panel.
+### Child Spec Types
 
+#### App Panel Spec
 ```typescript
-await panelAPI.setTitle("My Custom Title");
+interface AppChildSpec {
+  type: 'app';
+  name: string;              // Unique name (becomes part of panel ID)
+  path: string;              // Workspace-relative path to source
+  env?: Record<string, string>;  // Environment variables
+  branch?: string;           // Git branch to track
+  commit?: string;           // Specific commit hash
+  tag?: string;              // Git tag to pin to
+}
 ```
 
-### `removeChild(childId: string): Promise<void>`
-Removes a child panel by ID.
-
+#### Worker Spec
 ```typescript
-await panelAPI.removeChild(childId);
+interface WorkerChildSpec {
+  type: 'worker';
+  name: string;              // Unique name (becomes part of worker ID)
+  path: string;              // Workspace-relative path to source
+  env?: Record<string, string>;  // Environment variables
+  memoryLimitMB?: number;    // Memory limit (default: 1024)
+  branch?: string;           // Git branch to track
+  commit?: string;           // Specific commit hash
+  tag?: string;              // Git tag to pin to
+}
 ```
 
-### `close(): Promise<void>`
-Closes the current panel (removes it from its parent).
-
+#### Browser Panel Spec
 ```typescript
-await panelAPI.close();
+interface BrowserChildSpec {
+  type: 'browser';
+  name: string;              // Unique name (becomes part of panel ID)
+  url: string;               // Initial URL to load
+  title?: string;            // Optional title (defaults to URL hostname)
+  env?: Record<string, string>;  // Environment variables
+}
 ```
 
-### `onChildRemoved(callback: (childId: string) => void): () => void`
-Listen for child removal events. Returns a cleanup function.
+### Other Panel Methods
 
 ```typescript
-const unsubscribe = panelAPI.onChildRemoved((childId) => {
+// Set panel title
+await panel.setTitle("My Custom Title");
+
+// Remove a child panel
+await panel.removeChild(childId);
+
+// Close current panel
+await panel.close();
+
+// Get panel info
+const info = await panel.getInfo();
+console.log(info.panelId, info.partition);
+
+// Get environment variables
+const env = await panel.getEnv();
+console.log(env.PARENT_ID);
+
+// Theme
+const theme = panel.getTheme(); // { appearance: "light" | "dark" }
+const unsubscribe = panel.onThemeChange((theme) => {
+  console.log("Theme changed:", theme.appearance);
+});
+```
+
+### Browser Automation API
+
+Control browser panels programmatically with Playwright:
+
+```typescript
+import { chromium } from 'playwright-core';
+
+// Create browser panel
+const browserId = await panel.createChild({
+  type: 'browser',
+  name: 'automation-target',
+  url: 'https://example.com',
+});
+
+// Get CDP endpoint for Playwright
+const cdpUrl = await panel.browser.getCdpEndpoint(browserId);
+
+// Connect Playwright
+const browser = await chromium.connectOverCDP(cdpUrl);
+const page = browser.contexts()[0].pages()[0];
+
+// Automate!
+await page.click('.button');
+await page.fill('input[name="search"]', 'query');
+const content = await page.textContent('.result');
+```
+
+#### Browser Methods
+
+```typescript
+panel.browser.getCdpEndpoint(browserId): Promise<string>  // Get CDP WebSocket URL
+panel.browser.navigate(browserId, url): Promise<void>     // Navigate to URL
+panel.browser.goBack(browserId): Promise<void>            // Go back in history
+panel.browser.goForward(browserId): Promise<void>         // Go forward in history
+panel.browser.reload(browserId): Promise<void>            // Reload page
+panel.browser.stop(browserId): Promise<void>              // Stop loading
+```
+
+### Git Configuration API
+
+Access git configuration for cloning dependencies:
+
+```typescript
+const gitConfig = await panel.git.getConfig();
+// Returns: { serverUrl, token, sourceRepo, gitDependencies }
+
+// Use with @natstack/git
+import { GitClient } from "@natstack/git";
+const git = new GitClient();
+await git.clone(gitConfig.serverUrl, gitConfig.sourceRepo, "/repo", {
+  headers: { Authorization: `Bearer ${gitConfig.token}` }
+});
+```
+
+### Event Listeners
+
+```typescript
+// Listen for child removal
+const unsubscribe = panel.onChildRemoved((childId) => {
   console.log(`Child ${childId} was removed`);
 });
 
-// Later, to cleanup:
-unsubscribe();
-```
-
-### `onFocus(callback: () => void): () => void`
-Listen for focus events. Returns a cleanup function.
-
-```typescript
-const unsubscribe = panelAPI.onFocus(() => {
+// Listen for focus events
+const unsubscribe = panel.onFocus(() => {
   console.log("Panel received focus");
 });
 ```
 
-### `getTheme(): { appearance: "light" | "dark" }`
-Returns the current host theme so the panel can coordinates its UI (useful for Radix or custom theming systems).
+## Workers
 
-### `onThemeChange(callback: (theme) => void): () => void`
-Subscribe to host theme changes. The callback is immediately invoked with the current theme and again whenever the user toggles light/dark mode.
+Workers are background processes that run in isolated-vm. They're useful for CPU-intensive tasks that shouldn't block the UI.
 
-### `getEnv(): Promise<Record<string, string>>`
-Resolves to the environment variables that were provided when the panel was launched. This is useful when you want to react to runtime data asynchronously.
+### Creating a Worker
 
-```ts
-const env = await panelAPI.getEnv();
-console.log(env.PARENT_ID);
+```typescript
+const workerId = await panel.createChild({
+  type: 'worker',
+  name: 'my-worker',
+  path: 'workers/compute',
+  memoryLimitMB: 512,
+  env: { MODE: 'production' },
+});
 ```
 
-### `createRadixThemeProvider(React, ThemeComponent)`
-Utility for Radix UI panels. Provide your panel's `React` instance and the `Theme` component from `@radix-ui/themes`, and the helper returns a provider component that keeps the Radix appearance in sync with NatStack:
+### Worker Manifest
+
+Workers use the same `package.json` format but with `runtime: "worker"`:
+
+```json
+{
+  "name": "@natstack-workers/compute",
+  "natstack": {
+    "title": "Compute Worker",
+    "runtime": "worker"
+  }
+}
+```
+
+### Communicating with Workers
+
+Use RPC to communicate with workers:
+
+```typescript
+// In parent panel
+const handle = panel.rpc.getHandle<WorkerAPI>(workerId);
+const result = await handle.call.compute(data);
+
+// In worker (workers/compute/index.ts)
+import { panel } from "@natstack/core";
+
+panel.rpc.expose({
+  async compute(data: number[]) {
+    return data.reduce((a, b) => a + b, 0);
+  }
+});
+```
+
+## Host Theme Variables
+
+By default, NatStack injects the host application's CSS variables into each panel. Panels can opt out by setting `injectHostThemeVariables: false` in the manifest.
+
+```css
+body {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+```
+
+### Radix Theme Provider
+
+For Radix UI panels, use the theme provider helper:
 
 ```tsx
 import React from "react";
 import { Theme } from "@radix-ui/themes";
-import panelAPI, { createRadixThemeProvider } from "natstack/panel";
+import { panel, createRadixThemeProvider } from "@natstack/core";
 
 const NatstackThemeProvider = createRadixThemeProvider(React, Theme);
 
-export function App() {
+export default function App() {
   return (
     <NatstackThemeProvider>
       {/* panel UI */}
@@ -127,79 +317,20 @@ export function App() {
 }
 ```
 
-### Host Theme Variables
-
-By default, NatStack automatically injects the host application's CSS variables (including all Radix tokens) into each panel. Panels can opt out by setting `injectHostThemeVariables` to `false` in `panel.json`.
-
-When enabled, you can use the same tokens that Radix exposes in your panel styles:
-
-```css
-body {
-  background: var(--color-surface);
-  color: var(--color-text);
-}
-
-.panel-card {
-  background: var(--color-panel);
-}
-```
-
-Combine CSS injection with the `getTheme`/`onThemeChange` API to keep any framework-level theming (Radix `<Theme>`, Tailwind data attributes, etc.) synchronized.
-
-## Panel Environment Variables
-
-When one panel launches another via `panelAPI.createChild`, it can pass a dictionary of environment variables. These values are scoped to the launched panel and exposed in two ways:
-
-1. Inside the panel runtime you can synchronously read them via `process.env.MY_KEY`.
-2. You can also call `await panelAPI.getEnv()` for an asynchronous snapshot if you prefer not to rely on globals.
-
-Environment variables never travel through the host renderer process—they are bound directly inside the child panel's webview when it loads.
-
 ## Build System
 
 ### Caching
 - Panels are built on-demand when first loaded
 - Build results are cached based on source file hashes
-- Cached builds are reused until source files change
-- Cache is stored in the platform-specific state directory:
-  - **Linux**: `~/.config/natstack/panel-cache/`
-  - **macOS**: `~/Library/Application Support/natstack/panel-cache/`
-  - **Windows**: `%APPDATA%/natstack/panel-cache/`
-- To clear the cache, delete this directory or restart NatStack with fresh data
+- Cache is stored in the platform-specific state directory
 
-### Dependencies
-If your panel specifies npm dependencies in `panel.json`, they will be resolved and installed with `@npmcli/arborist` inside the panel's `.natstack/node_modules` directory. These installs are scoped per panel path, so remember to add `.natstack/` to your `.gitignore` if you create new panels.
+### State Directory
 
-### Build Output
-Build artifacts live alongside the panel source:
-- `.natstack/bundle.js` - Compiled JavaScript bundle (reference it from your HTML via `./.natstack/bundle.js`)
-- `.natstack/node_modules` - Dependencies installed for the bundle
-- Optional `.natstack/index.html` - Generated only when the panel does not provide its own HTML
-
-Because the renderer loads `index.html` (or the generated fallback) directly from the panel folder, every other static asset (CSS, images, etc.) continues to resolve normally.
-
-### React/TypeScript Helpers
-
-NatStack also ships a lightweight helper (available as `natstack/react`) for authoring panel UIs with React + TypeScript. Usage is entirely optional—plain HTML panels still work the same way.
-
-```tsx
-import React from "react";
-import { createRoot } from "react-dom/client";
-import { Theme } from "@radix-ui/themes";
-import { createReactPanelMount } from "natstack/react";
-
-const mount = createReactPanelMount(React, createRoot, { ThemeComponent: Theme });
-
-function Panel() {
-  return <div>Hello from React!</div>;
-}
-
-mount(Panel);
-```
-
-The helper automatically mounts into the `#root` element provided by your `index.html` (or the generated fallback) and keeps Radix' `<Theme>` synchronized with NatStack’s appearance if you pass it in via `ThemeComponent`.
-
-Entry detection now prefers `index.tsx` when `entry` isn’t specified, followed by `index.ts`, `index.jsx`, `index.js`, `main.tsx`, and `main.ts`—so you can drop an `index.tsx` alongside `index.html` and start building a modern TypeScript/React panel without extra wiring.
+| Platform | Path |
+|----------|------|
+| Linux | `~/.config/natstack/` |
+| macOS | `~/Library/Application Support/natstack/` |
+| Windows | `%APPDATA%/natstack/` |
 
 ## Loading States
 
@@ -208,20 +339,21 @@ The UI automatically shows:
 - **Error message** - If the build fails
 - **Panel content** - Once successfully built
 
-## Example Panel
+## Example Panels
 
-See [panels/example/](panels/example/) for a working example that demonstrates:
-- Creating child panels
-- Setting panel title
-- Listening to events
-- Basic styling
+See these example panels in the repository:
+
+- `panels/example/` - Root panel with child management, OPFS, typed RPC
+- `panels/agentic-chat/` - AI integration with Vercel AI SDK
+- `panels/agentic-notebook/` - Jupyter-style notebook with AI
+- `panels/shared-opfs-demo/` - Shared file storage demo
 
 ## Development Workflow
 
 1. Create a new panel directory in `panels/`
-2. Add a `panel.json` manifest
+2. Add a `package.json` with a `natstack` field
 3. Write your panel code in TypeScript
-4. Launch the panel from another panel using `panelAPI.createChild()`
+4. Launch the panel from another panel using `panel.createChild()`
 5. The panel will be built automatically on first load
 
 ### Root Panel Path
@@ -232,25 +364,9 @@ NatStack picks the initial root panel path in this order:
 2. Saved preference (`preferences.json` under the NatStack config directory)
 3. A default panel cloned into `<config dir>/Default Root Panel` on first run
 
-During development we pass `--root-panel=panels/example` via `pnpm dev`. To switch panels at runtime you can relaunch with a new flag or update the preference file.
-
-## State Directory
-
-NatStack stores application state (panel build cache, etc.) in a platform-specific directory:
-
-- **Linux**: `~/.config/natstack/`
-- **macOS**: `~/Library/Application Support/natstack/`
-- **Windows**: `%APPDATA%/natstack/`
-
-This directory contains:
-- `panel-cache/` - Cached panel builds and metadata
-- Future: settings, logs, and other persistent data
-
 ## Notes
 
 - Panels are isolated in separate webviews
-- Each panel has its own persistent session storage
-- Directory traversal is allowed for panel paths
-- Paths are resolved relative to where the Electron app is invoked
-- Panel source and builds (`.natstack/`) remain in the panel directory for quick iteration
-- Build errors are displayed directly in the UI
+- Each panel has its own persistent session storage (unless `singletonState: true`)
+- Workers run in isolated-vm with configurable memory limits
+- Browser panels support full Playwright automation via CDP

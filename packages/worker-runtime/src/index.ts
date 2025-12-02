@@ -12,7 +12,11 @@
  * await setTitle("My Worker");
  *
  * // Create a child panel
- * const childId = await createChild("panels/my-panel");
+ * const childId = await createChild({
+ *   type: 'app',
+ *   name: 'my-panel',
+ *   path: 'panels/my-panel',
+ * });
  *
  * // Use AI
  * const result = await ai.generate("smart", { prompt: [...] });

@@ -83,16 +83,7 @@ interface WorkerState {
 /** Active worker contexts keyed by worker ID */
 const workers = new Map<string, WorkerState>();
 
-/** Pending service requests waiting for responses (legacy __serviceCall) */
-const pendingRequests = new Map<
-  string,
-  {
-    resolve: (value: unknown) => void;
-    reject: (error: Error) => void;
-  }
->();
-
-/** Pending RPC requests to main (unified rpc.call("main", ...)) */
+/** Pending RPC requests to main (rpc.call("main", ...)) */
 const pendingRpcToMain = new Map<string, { workerId: string }>();
 
 // =============================================================================
@@ -307,27 +298,10 @@ function handleRpcToMain(workerId: string, request: RpcRequest): void {
 }
 
 /**
- * Handle unified service response from main process.
+ * Handle service response from main process.
  * Converts to RPC response and delivers to the requesting worker.
  */
 function handleServiceResponse(response: ServiceCallResponse): void {
-  // First check if this is a response to a legacy __serviceCall (for backwards compatibility)
-  const pending = pendingRequests.get(response.requestId);
-  if (pending) {
-    pendingRequests.delete(response.requestId);
-    if (response.error) {
-      pending.reject(new Error(response.error));
-    } else {
-      pending.resolve(response.result);
-    }
-    return;
-  }
-
-  // Otherwise, this is a response to an rpc.call("main", ...) request
-  // We need to find the worker that made this request and deliver the RPC response
-  // The requestId format allows us to extract the workerId
-  // For now, we need to track which worker made which request
-  // This is handled by the pendingRpcToMain map
   const rpcPending = pendingRpcToMain.get(response.requestId);
   if (!rpcPending) return;
 
@@ -444,48 +418,6 @@ function createSandbox(
     debug: createLogMethod("debug"),
   };
 
-  // Unified service call function
-  const serviceCall = async (
-    service: string,
-    method: string,
-    ...args: unknown[]
-  ): Promise<unknown> => {
-    const requestId = crypto.randomUUID();
-
-    return new Promise((resolve, reject) => {
-      // Timeout based on service type
-      // AI operations get 5 minutes, others get 30 seconds
-      const timeoutMs = service === "ai" ? 300000 : 30000;
-      const timeoutId = setTimeout(() => {
-        if (pendingRequests.has(requestId)) {
-          pendingRequests.delete(requestId);
-          reject(new Error(`Service call ${service}.${method} timed out`));
-        }
-      }, timeoutMs);
-
-      pendingRequests.set(requestId, {
-        resolve: (value: unknown) => {
-          clearTimeout(timeoutId);
-          resolve(value);
-        },
-        reject: (error: Error) => {
-          clearTimeout(timeoutId);
-          reject(error);
-        },
-      });
-
-      const request: ServiceCallRequest = {
-        type: "service:call",
-        workerId,
-        requestId,
-        service,
-        method,
-        args,
-      };
-      parentPort.postMessage(request);
-    });
-  };
-
   // RPC send function
   const rpcSend = (targetId: string, message: unknown) => {
     const forward: UtilityRpcForward = {
@@ -513,22 +445,9 @@ function createSandbox(
     // Environment variables
     __env: options.env,
 
-    // DEPRECATED: Legacy service call mechanism
-    // Workers should use rpc.call("main", "service.method", ...args) instead
-    // Kept for backwards compatibility during transition
-    __serviceCall: serviceCall,
-
     // RPC bridge - the unified communication mechanism
     __rpcSend: rpcSend,
     __rpcReceive: null, // Set by worker runtime (rpc.ts)
-
-    // DEPRECATED: Legacy push event handler (set by worker runtime)
-    // Workers should use rpc.onEvent() instead
-    __servicePush: null,
-
-    // DEPRECATED: Legacy service invoke handler (set by worker runtime)
-    // Workers should use rpc.expose() instead
-    __serviceHandler: null,
 
     // Standard JS globals that are safe to expose
     Object,
@@ -602,7 +521,7 @@ function createSandbox(
     // - process (no process access)
     // - Buffer (use Uint8Array instead)
     // - fs, path, os, etc. (no Node.js APIs)
-    // - fetch (use __serviceCall instead for network)
+    // - fetch (use rpc.call("main", "network.fetch", ...) via worker-runtime)
     // - eval, Function constructor (prevent code injection)
   };
 }

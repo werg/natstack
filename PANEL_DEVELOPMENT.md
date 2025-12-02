@@ -6,12 +6,14 @@ This guide covers developing mini-apps (panels) for NatStack with the simplified
 
 - [Quick Start](#quick-start)
 - [Panel Basics](#panel-basics)
+- [Panel Types](#panel-types)
 - [React Hooks API](#react-hooks-api)
 - [Typed RPC Communication](#typed-rpc-communication)
 - [Event System](#event-system)
 - [File System Access (OPFS)](#file-system-access-opfs)
 - [FS + Git in Panels](#fs--git-in-panels)
 - [AI Integration](#ai-integration)
+- [Browser Automation](#browser-automation)
 
 ---
 
@@ -62,10 +64,14 @@ Every panel requires a `package.json` with a `natstack` field:
   "private": true,
   "type": "module",
   "natstack": {
-    "title": "My Panel",              // Required: Display name
-    "entry": "index.tsx",              // Optional: Entry file (default: index.tsx)
-    "injectHostThemeVariables": true,  // Optional: Inherit theme CSS (default: true)
-    "singletonState": false            // Optional: Singleton storage (default: false)
+    "title": "My Panel",
+    "entry": "index.tsx",
+    "runtime": "panel",
+    "injectHostThemeVariables": true,
+    "singletonState": false,
+    "gitDependencies": {
+      "shared": "panels/shared-lib"
+    }
   },
   "dependencies": {
     "@natstack/core": "workspace:*",
@@ -73,6 +79,17 @@ Every panel requires a `package.json` with a `natstack` field:
   }
 }
 ```
+
+### Manifest Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `title` | string | **Required** | Display name shown in panel UI |
+| `entry` | string | `index.tsx` | Entry point file |
+| `runtime` | `"panel"` \| `"worker"` | `"panel"` | Build as UI panel or background worker |
+| `injectHostThemeVariables` | boolean | `true` | Inherit NatStack theme CSS variables |
+| `singletonState` | boolean | `false` | Share storage across all instances |
+| `gitDependencies` | object | `{}` | Git repos to clone into panel's OPFS |
 
 ### File Structure
 
@@ -82,6 +99,64 @@ panels/my-app/
   ├── index.tsx           # Entry point (or specify in natstack.entry)
   ├── api.ts              # Optional: Exported RPC types for parent panels
   └── style.css           # Optional: Custom styles
+```
+
+---
+
+## Panel Types
+
+NatStack supports three types of panels:
+
+### App Panels (`type: "app"`)
+
+Standard UI panels built from source code.
+
+```typescript
+const editorId = await panel.createChild({
+  type: 'app',
+  name: 'editor',
+  path: 'panels/editor',
+  env: { FILE_PATH: '/foo.txt' },
+});
+```
+
+### Worker Panels (`type: "worker"`)
+
+Background processes running in isolated-vm. Useful for CPU-intensive tasks.
+
+```typescript
+const computeId = await panel.createChild({
+  type: 'worker',
+  name: 'compute-worker',
+  path: 'workers/compute',
+  memoryLimitMB: 512,
+  env: { MODE: 'production' },
+});
+```
+
+Worker manifest uses `runtime: "worker"`:
+
+```json
+{
+  "name": "@natstack-workers/compute",
+  "natstack": {
+    "title": "Compute Worker",
+    "runtime": "worker"
+  }
+}
+```
+
+### Browser Panels (`type: "browser"`)
+
+External URLs with Playwright automation support.
+
+```typescript
+const browserId = await panel.createChild({
+  type: 'browser',
+  name: 'web-scraper',
+  url: 'https://example.com',
+  title: 'Scraper',
+});
 ```
 
 ---
@@ -187,16 +262,40 @@ import { useChildPanels } from "@natstack/react";
 function MyPanel() {
   const { children, createChild, removeChild } = useChildPanels();
 
-  const handleAddChild = async () => {
-    const childId = await createChild("panels/example", {
+  const handleAddAppPanel = async () => {
+    const childId = await createChild({
+      type: 'app',
+      name: 'example',
+      path: 'panels/example',
       env: { MESSAGE: "Hello from parent!" }
     });
     console.log("Created child:", childId);
   };
 
+  const handleAddWorker = async () => {
+    const workerId = await createChild({
+      type: 'worker',
+      name: 'compute',
+      path: 'workers/compute',
+      memoryLimitMB: 512,
+    });
+    console.log("Created worker:", workerId);
+  };
+
+  const handleAddBrowser = async () => {
+    const browserId = await createChild({
+      type: 'browser',
+      name: 'scraper',
+      url: 'https://example.com',
+    });
+    console.log("Created browser:", browserId);
+  };
+
   return (
     <div>
-      <button onClick={handleAddChild}>Add Child</button>
+      <button onClick={handleAddAppPanel}>Add App Panel</button>
+      <button onClick={handleAddWorker}>Add Worker</button>
+      <button onClick={handleAddBrowser}>Add Browser</button>
       <ul>
         {children.map(childId => (
           <li key={childId}>
@@ -214,7 +313,7 @@ function MyPanel() {
 
 ## Typed RPC Communication
 
-NatStack provides fully type-safe RPC communication between panels.
+NatStack provides fully type-safe RPC communication between panels and workers.
 
 ### Defining the API
 
@@ -307,7 +406,11 @@ export default function Parent() {
   }, [editorHandle]);
 
   const handleLaunch = async () => {
-    const id = await panel.createChild("panels/editor");
+    const id = await panel.createChild({
+      type: 'app',
+      name: 'editor',
+      path: 'panels/editor',
+    });
     setEditorId(id);
   };
 
@@ -340,7 +443,7 @@ export default function Parent() {
 
 #### `usePanelRpc()`
 
-Get a typed RPC handle to another panel:
+Get a typed RPC handle to another panel or worker:
 
 ```tsx
 const childHandle = usePanelRpc<ChildAPI, ChildEvents>(childId);
@@ -488,15 +591,7 @@ export default function FileManager() {
 Each panel has its own OPFS partition:
 
 - **Isolated by default**: Each panel instance gets unique storage
-- **Shared storage**: Use `panelId` option to share between instances
-- **Singleton mode**: Set `singletonState: true` in `natstack` field
-
-```tsx
-// Create child with shared storage
-await panel.createChild("panels/editor", {
-  panelId: "shared-editor" // All instances share storage
-});
-```
+- **Singleton mode**: Set `singletonState: true` in `natstack` field to share across instances
 
 ---
 
@@ -607,6 +702,47 @@ export default function AIChatPanel() {
 
 ---
 
+## Browser Automation
+
+Control browser panels programmatically with Playwright:
+
+```typescript
+import { chromium } from 'playwright-core';
+import { panel } from "@natstack/react";
+
+// Create browser panel
+const browserId = await panel.createChild({
+  type: 'browser',
+  name: 'automation-target',
+  url: 'https://example.com',
+});
+
+// Get CDP endpoint for Playwright
+const cdpUrl = await panel.browser.getCdpEndpoint(browserId);
+
+// Connect Playwright
+const browser = await chromium.connectOverCDP(cdpUrl);
+const page = browser.contexts()[0].pages()[0];
+
+// Automate!
+await page.click('.button');
+await page.fill('input[name="search"]', 'query');
+const content = await page.textContent('.result');
+```
+
+### Browser API Methods
+
+```typescript
+panel.browser.getCdpEndpoint(browserId): Promise<string>  // Get CDP WebSocket URL
+panel.browser.navigate(browserId, url): Promise<void>     // Navigate to URL
+panel.browser.goBack(browserId): Promise<void>            // Go back in history
+panel.browser.goForward(browserId): Promise<void>         // Go forward in history
+panel.browser.reload(browserId): Promise<void>            // Reload page
+panel.browser.stop(browserId): Promise<void>              // Stop loading
+```
+
+---
+
 ## Best Practices
 
 ### 1. Use Hooks for Everything
@@ -675,33 +811,85 @@ return <div>Storage: {partition}</div>;
 
 See the example panels:
 - [panels/example/](panels/example/) - **Root panel**: Comprehensive demo with child management, OPFS, typed RPC, and environment variables
-- [panels/typed-rpc-child/](panels/typed-rpc-child/) - Child panel that exposes typed RPC API and emits events
 - [panels/agentic-chat/](panels/agentic-chat/) - AI integration with Vercel AI SDK streaming
+- [panels/agentic-notebook/](panels/agentic-notebook/) - Jupyter-style notebook with AI agent
 - [panels/shared-opfs-demo/](panels/shared-opfs-demo/) - Demonstrates shared file storage across panel instances
 
 ---
 
 ## API Reference
 
+### Child Spec Types
+
+```typescript
+// App panel spec
+interface AppChildSpec {
+  type: 'app';
+  name: string;                      // Unique name (becomes part of panel ID)
+  path: string;                      // Workspace-relative path to source
+  env?: Record<string, string>;      // Environment variables
+  branch?: string;                   // Git branch to track
+  commit?: string;                   // Specific commit hash
+  tag?: string;                      // Git tag to pin to
+}
+
+// Worker spec
+interface WorkerChildSpec {
+  type: 'worker';
+  name: string;                      // Unique name (becomes part of worker ID)
+  path: string;                      // Workspace-relative path to source
+  env?: Record<string, string>;      // Environment variables
+  memoryLimitMB?: number;            // Memory limit (default: 1024)
+  branch?: string;                   // Git branch to track
+  commit?: string;                   // Specific commit hash
+  tag?: string;                      // Git tag to pin to
+}
+
+// Browser panel spec
+interface BrowserChildSpec {
+  type: 'browser';
+  name: string;                      // Unique name (becomes part of panel ID)
+  url: string;                       // Initial URL to load
+  title?: string;                    // Optional title (defaults to URL hostname)
+  env?: Record<string, string>;      // Environment variables
+}
+
+type ChildSpec = AppChildSpec | WorkerChildSpec | BrowserChildSpec;
+```
+
 ### Panel API (`panel`)
 
 ```tsx
 import { panel } from "@natstack/react";
 
+// Core methods
 panel.getId(): string
-panel.createChild(path: string, options?: CreateChildOptions): Promise<string>
+panel.createChild(spec: ChildSpec): Promise<string>
 panel.removeChild(childId: string): Promise<void>
 panel.setTitle(title: string): Promise<void>
 panel.close(): Promise<void>
 panel.getTheme(): PanelTheme
 panel.onThemeChange(callback: (theme: PanelTheme) => void): () => void
 panel.getEnv(): Promise<Record<string, string>>
-panel.getPartition(): Promise<string>
+panel.getPartition(): Promise<string | null>
 panel.getInfo(): Promise<{ panelId: string; partition: string }>
+
+// RPC methods
 panel.rpc.expose<T>(methods: T): void
 panel.rpc.getHandle<T, E>(panelId: string): PanelRpcHandle<T, E>
 panel.rpc.emit(panelId: string, event: string, payload: unknown): Promise<void>
 panel.rpc.onEvent(event: string, handler: (from: string, payload: unknown) => void): () => void
+
+// Git methods
+panel.git.getConfig(): Promise<GitConfig>
+
+// Browser methods
+panel.browser.getCdpEndpoint(browserId: string): Promise<string>
+panel.browser.navigate(browserId: string, url: string): Promise<void>
+panel.browser.goBack(browserId: string): Promise<void>
+panel.browser.goForward(browserId: string): Promise<void>
+panel.browser.reload(browserId: string): Promise<void>
+panel.browser.stop(browserId: string): Promise<void>
 ```
 
 ### React Hooks
@@ -715,6 +903,6 @@ usePanelPartition(): string | null
 usePanelRpc<T, E>(panelId: string | null): PanelRpcHandle<T, E> | null
 usePanelRpcEvent<T>(panelId: string | null, event: string, handler: (payload: T) => void): void
 usePanelRpcGlobalEvent<T>(event: string, handler: (from: string, payload: T) => void): void
-useChildPanels(): { children: string[]; createChild: Function; removeChild: Function }
+useChildPanels(): { children: string[]; createChild: (spec: ChildSpec) => Promise<string>; removeChild: (id: string) => Promise<void> }
 usePanelFocus(): boolean
 ```

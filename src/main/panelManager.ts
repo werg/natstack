@@ -726,8 +726,9 @@ export class PanelManager {
     // Cleanup based on panel type
     switch (panel.type) {
       case "worker":
-        // Terminate the worker
-        void getWorkerManager().terminateWorker(panelId);
+        // Terminate the worker (fire-and-forget is acceptable here since
+        // terminateWorker handles cleanup and we don't need to block panel removal)
+        getWorkerManager().terminateWorker(panelId);
         // Revoke CDP token for this worker (cleans up browser ownership)
         getCdpServer().revokeTokenForPanel(panelId);
         break;
@@ -820,8 +821,10 @@ export class PanelManager {
 
   // Map guestInstanceId (from webContents) to panelId
   private guestInstanceMap: Map<number, string> = new Map();
-  // Map panelId -> pending auth token
-  private pendingAuthTokens: Map<string, string> = new Map();
+  // Map panelId -> pending auth token with timestamp for TTL cleanup
+  private pendingAuthTokens: Map<string, { token: string; createdAt: number }> = new Map();
+  // TTL for pending auth tokens (30 seconds should be plenty for webview init)
+  private readonly AUTH_TOKEN_TTL_MS = 30_000;
 
   getPanelIdForWebContents(contents: Electron.WebContents): string | undefined {
     return this.guestInstanceMap.get(contents.id);
@@ -843,9 +846,15 @@ export class PanelManager {
   }
 
   verifyAndRegister(panelId: string, token: string, senderId: number): void {
-    const expectedToken = this.pendingAuthTokens.get(panelId);
-    if (!expectedToken || expectedToken !== token) {
+    const pending = this.pendingAuthTokens.get(panelId);
+    if (!pending || pending.token !== token) {
       throw new Error(`Invalid auth token for panel ${panelId}`);
+    }
+
+    // Check if token has expired
+    if (Date.now() - pending.createdAt > this.AUTH_TOKEN_TTL_MS) {
+      this.pendingAuthTokens.delete(panelId);
+      throw new Error(`Auth token for panel ${panelId} has expired`);
     }
 
     // Token is valid and used
@@ -869,9 +878,12 @@ export class PanelManager {
         void registerProtocolForPartition(partition);
       }
 
-      // Generate secure token
+      // Generate secure token with timestamp for TTL
       const authToken = randomBytes(32).toString("hex");
-      this.pendingAuthTokens.set(panelId, authToken);
+      this.pendingAuthTokens.set(panelId, { token: authToken, createdAt: Date.now() });
+
+      // Periodic cleanup of expired tokens (runs lazily on each new webview attach)
+      this.cleanupExpiredAuthTokens();
 
       // Enable OPFS (Origin Private File System) support
       webPreferences.contextIsolation = true;
@@ -897,6 +909,19 @@ export class PanelManager {
 
     // We still listen to did-attach-webview as a fallback or for cleanup,
     // but registration is now primarily driven by the panel's explicit call.
+  }
+
+  /**
+   * Clean up expired auth tokens to prevent memory leaks.
+   * Called lazily when new webviews attach.
+   */
+  private cleanupExpiredAuthTokens(): void {
+    const now = Date.now();
+    for (const [panelId, pending] of this.pendingAuthTokens) {
+      if (now - pending.createdAt > this.AUTH_TOKEN_TTL_MS) {
+        this.pendingAuthTokens.delete(panelId);
+      }
+    }
   }
 
   private registerPanelView(panelId: string, senderId: number): void {
