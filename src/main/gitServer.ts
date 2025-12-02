@@ -2,10 +2,10 @@ import { Git } from "node-git-server";
 import { app } from "electron";
 import * as path from "path";
 import * as fs from "fs";
-import * as net from "net";
 import * as http from "http";
 import { spawnSync } from "child_process";
-import { GitAuthManager } from "./gitAuthManager.js";
+import { GitAuthManager, getTokenManager } from "./tokenManager.js";
+import { tryBindPort } from "./portUtils.js";
 
 const DEFAULT_GIT_SERVER_PORT = 63524;
 
@@ -34,7 +34,7 @@ export class GitServer {
     this.configuredPort = config?.port ?? DEFAULT_GIT_SERVER_PORT;
     this.configuredReposPath = config?.reposPath ?? null;
     this.initPatterns = config?.initPatterns ?? ["panels/*"];
-    this.authManager = new GitAuthManager();
+    this.authManager = new GitAuthManager(getTokenManager());
   }
 
   private ensureReposPath(): string {
@@ -45,26 +45,16 @@ export class GitServer {
   }
 
   /**
-   * Check if a port is available
+   * Find an available port starting from the configured port.
+   * Returns the port and a temporary server holding it (to avoid TOCTOU).
    */
-  private async isPortAvailable(port: number): Promise<boolean> {
-    return new Promise((resolve) => {
-      const server = net.createServer();
-      server.once("error", () => resolve(false));
-      server.once("listening", () => {
-        server.close(() => resolve(true));
-      });
-      server.listen(port);
-    });
-  }
-
-  /**
-   * Find an available port starting from the configured port
-   */
-  private async findAvailablePort(startPort: number): Promise<number> {
+  private async findAvailablePort(
+    startPort: number
+  ): Promise<{ port: number; tempServer: import("net").Server }> {
     for (let port = startPort; port < startPort + 100; port++) {
-      if (await this.isPortAvailable(port)) {
-        return port;
+      const server = await tryBindPort(port);
+      if (server) {
+        return { port, tempServer: server };
       }
     }
     throw new Error(`Could not find available port in range ${startPort}-${startPort + 99}`);
@@ -119,11 +109,14 @@ export class GitServer {
       fetch.accept();
     });
 
-    // Find an available port, starting from the configured one
-    const port = await this.findAvailablePort(this.configuredPort);
+    // Find an available port, starting from the configured one (TOCTOU-safe)
+    const { port, tempServer } = await this.findAvailablePort(this.configuredPort);
     if (port !== this.configuredPort) {
       console.log(`[GitServer] Configured port ${this.configuredPort} unavailable, using ${port}`);
     }
+
+    // Close temp server and immediately bind our real server
+    await new Promise<void>((resolve) => tempServer.close(() => resolve()));
 
     const git = this.git;
     if (!git) {

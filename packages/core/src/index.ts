@@ -38,27 +38,67 @@ export {
 
 import type { GitDependency } from "@natstack/git";
 
+// =============================================================================
+// Child Spec Types (spec-based API for createChild)
+// =============================================================================
+
 /**
- * Options for creating a child panel or worker.
- * Version specifiers are mutually exclusive; priority: commit > tag > branch
+ * Base spec fields common to all child types.
  */
-export interface CreateChildOptions {
+interface ChildSpecBase {
+  /** Unique name for this child (becomes part of the panel ID) */
+  name: string;
   /** Environment variables to pass to the child */
   env?: Record<string, string>;
-  /** Custom ID (only used for tree children, ignored for singletons) */
-  panelId?: string;
-  /** Branch name to track (e.g., "develop") */
+}
+
+/**
+ * Spec for creating an app panel child.
+ */
+export interface AppChildSpec extends ChildSpecBase {
+  type: "app";
+  /** Workspace-relative path to panel source */
+  path: string;
+  /** Branch name to track */
   branch?: string;
-  /** Specific commit hash to pin to (e.g., "abc123...") */
+  /** Specific commit hash to pin to */
   commit?: string;
-  /** Tag to pin to (e.g., "v1.0.0") */
+  /** Tag to pin to */
   tag?: string;
+}
 
-  // Worker-specific options (only apply when manifest.runtime is "worker")
-
-  /** Memory limit in MB (default: 1024, workers only) */
+/**
+ * Spec for creating a worker child.
+ */
+export interface WorkerChildSpec extends ChildSpecBase {
+  type: "worker";
+  /** Workspace-relative path to worker source */
+  path: string;
+  /** Branch name to track */
+  branch?: string;
+  /** Specific commit hash to pin to */
+  commit?: string;
+  /** Tag to pin to */
+  tag?: string;
+  /** Memory limit in MB (default: 1024) */
   memoryLimitMB?: number;
 }
+
+/**
+ * Spec for creating a browser panel child.
+ */
+export interface BrowserChildSpec extends ChildSpecBase {
+  type: "browser";
+  /** Initial URL to load */
+  url: string;
+  /** Optional title (defaults to URL hostname) */
+  title?: string;
+}
+
+/**
+ * Union type for createChild spec parameter.
+ */
+export type ChildSpec = AppChildSpec | WorkerChildSpec | BrowserChildSpec;
 
 /**
  * Git configuration for a panel or worker.

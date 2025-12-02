@@ -3,7 +3,7 @@ import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
 import type { Rpc } from "@natstack/core";
 import { type AIRoleRecord } from "@natstack/ai";
 import {
-  type CreateChildOptions,
+  type ChildSpec,
   type PanelInfo,
   type ThemeAppearance,
   type StreamTextOptions,
@@ -330,16 +330,33 @@ interface RpcPort {
 const rpcEventListeners = new Map<string, Set<(fromPanelId: string, payload: unknown) => void>>();
 
 // Handle incoming RPC messages from workers
+// This single handler processes both RPC requests/responses and events
 ipcRenderer.on(
   "worker-rpc:message",
   (_event, { fromId, message }: { fromId: string; message: unknown }) => {
     // Worker sends fromId as "worker:xxx" - strip the prefix to match our connection key
     const workerId = fromId.startsWith("worker:") ? fromId.slice(7) : fromId;
 
-    // Find the connection for this worker
+    // Type check for message structure
+    const msg = message as { type?: string; event?: string; payload?: unknown } | null;
+
+    // Handle events directly to rpcEventListeners
+    if (msg && msg.type === "event" && typeof msg.event === "string") {
+      const listeners = rpcEventListeners.get(msg.event);
+      if (listeners) {
+        listeners.forEach((listener) => {
+          try {
+            listener(fromId, msg.payload);
+          } catch (error) {
+            console.error(`Error in RPC event listener for "${msg.event}":`, error);
+          }
+        });
+      }
+    }
+
+    // Also dispatch to worker RPC connection handlers (for request/response)
     const conn = workerRpcConnections.get(workerId);
     if (conn) {
-      // Dispatch to all handlers
       for (const handler of conn.messageHandlers) {
         try {
           handler({ data: message });
@@ -552,16 +569,15 @@ const bridge = {
   // ==========================================================================
 
   /**
-   * Create a child panel from a workspace-relative path.
-   * The main process handles git checkout (if version specified) and build.
+   * Create a child panel, worker, or browser from a spec.
+   * The main process handles git checkout and build for app/worker types.
    * Returns the panel ID immediately; build happens asynchronously.
    *
-   * @param childPath - Workspace-relative path to the panel (e.g., "panels/my-panel")
-   * @param options - Optional env vars and version specifiers (branch, commit, tag)
+   * @param spec - Child specification with type discriminator
    * @returns Panel ID that can be used for communication
    */
-  createChild: (childPath: string, options?: CreateChildOptions): Promise<string> => {
-    return ipcRenderer.invoke("panel-bridge:create-child", panelId, childPath, options);
+  createChild: (spec: ChildSpec): Promise<string> => {
+    return ipcRenderer.invoke("panel-bridge:create-child", panelId, spec);
   },
 
   removeChild: (childId: string): Promise<void> => {
@@ -772,6 +788,57 @@ const bridge = {
   },
 
   // ==========================================================================
+  // Browser Panel API
+  // ==========================================================================
+
+  browser: {
+    /**
+     * Get CDP WebSocket endpoint for Playwright connection.
+     * Only the parent panel that created the browser can access this.
+     * @param browserId - The browser panel's ID
+     * @returns WebSocket URL for CDP connection
+     */
+    getCdpEndpoint: (browserId: string): Promise<string> => {
+      return ipcRenderer.invoke("panel-bridge:browser-get-cdp-endpoint", browserId);
+    },
+
+    /**
+     * Navigate browser panel to a URL (human UI control).
+     */
+    navigate: (browserId: string, url: string): Promise<void> => {
+      return ipcRenderer.invoke("panel-bridge:browser-navigate", browserId, url);
+    },
+
+    /**
+     * Go back in browser history.
+     */
+    goBack: (browserId: string): Promise<void> => {
+      return ipcRenderer.invoke("panel-bridge:browser-go-back", browserId);
+    },
+
+    /**
+     * Go forward in browser history.
+     */
+    goForward: (browserId: string): Promise<void> => {
+      return ipcRenderer.invoke("panel-bridge:browser-go-forward", browserId);
+    },
+
+    /**
+     * Reload the current page.
+     */
+    reload: (browserId: string): Promise<void> => {
+      return ipcRenderer.invoke("panel-bridge:browser-reload", browserId);
+    },
+
+    /**
+     * Stop loading the current page.
+     */
+    stop: (browserId: string): Promise<void> => {
+      return ipcRenderer.invoke("panel-bridge:browser-stop", browserId);
+    },
+  },
+
+  // ==========================================================================
   // Git API
   // ==========================================================================
 
@@ -799,36 +866,5 @@ const bridge = {
     },
   },
 };
-
-// Listen for RPC messages from workers
-ipcRenderer.on(
-  "worker-rpc:message",
-  (
-    _event,
-    { fromId, message }: { fromId: string; message: { type: string; [key: string]: unknown } }
-  ) => {
-    // Route to the RPC port handling system
-    // Workers communicate through the same RPC mechanism as panels
-    if (message.type === "event") {
-      // Handle event from worker
-      const eventMessage = message as {
-        type: "event";
-        fromId: string;
-        event: string;
-        payload: unknown;
-      };
-      const listeners = rpcEventListeners.get(eventMessage.event);
-      if (listeners) {
-        listeners.forEach((listener) => {
-          try {
-            listener(fromId, eventMessage.payload);
-          } catch (error) {
-            console.error(`Error in RPC event listener for "${eventMessage.event}":`, error);
-          }
-        });
-      }
-    }
-  }
-);
 
 contextBridge.exposeInMainWorld("__natstackPanelBridge", bridge);

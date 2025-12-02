@@ -5,23 +5,45 @@
  * Workers can create children, set titles, and access git config just like panels.
  */
 
-import type { CreateChildOptions, GitConfig, EndpointInfo } from "@natstack/core";
+import type { ChildSpec, GitConfig, EndpointInfo } from "@natstack/core";
 import { rpc } from "./rpc.js";
 
 /**
- * Create a child panel or worker from a workspace-relative path.
- * The main process handles git checkout (if version specified) and build.
+ * Create a child panel, worker, or browser from a spec.
+ * The main process handles git checkout (if version specified) and build for app/worker types.
  * Returns the child ID immediately; build happens asynchronously.
  *
- * @param childPath - Workspace-relative path to the panel/worker (e.g., "panels/my-panel")
- * @param options - Optional env vars and version specifiers (branch, commit, tag)
+ * @param spec - Child specification with type discriminator
  * @returns Child ID that can be used for RPC communication
+ *
+ * @example
+ * ```ts
+ * // Create an app panel
+ * const editorId = await createChild({
+ *   type: 'app',
+ *   name: 'editor',
+ *   path: 'panels/editor',
+ *   env: { FILE_PATH: '/foo.txt' },
+ * });
+ *
+ * // Create a worker
+ * const computeId = await createChild({
+ *   type: 'worker',
+ *   name: 'compute-worker',
+ *   path: 'workers/compute',
+ *   memoryLimitMB: 512,
+ * });
+ *
+ * // Create a browser panel
+ * const browserId = await createChild({
+ *   type: 'browser',
+ *   name: 'web-scraper',
+ *   url: 'https://example.com',
+ * });
+ * ```
  */
-export async function createChild(
-  childPath: string,
-  options?: CreateChildOptions
-): Promise<string> {
-  return rpc.call<string>("main", "bridge.createChild", childPath, options);
+export async function createChild(spec: ChildSpec): Promise<string> {
+  return rpc.call<string>("main", "bridge.createChild", spec);
 }
 
 /**
@@ -81,5 +103,37 @@ export const git = {
    */
   async getConfig(): Promise<GitConfig> {
     return rpc.call<GitConfig>("main", "bridge.getGitConfig");
+  },
+};
+
+/**
+ * Browser automation API for workers.
+ */
+export const browser = {
+  /**
+   * Get CDP WebSocket endpoint for Playwright connection.
+   * Only the parent (worker or panel) that created the browser can access this.
+   *
+   * @param browserId - The browser panel's ID (returned from createChild)
+   * @returns WebSocket URL for CDP connection (e.g., "ws://localhost:49300/browser-id?token=xxx")
+   *
+   * @example
+   * ```ts
+   * import { chromium } from 'playwright-core';
+   *
+   * const browserId = await createChild({
+   *   type: 'browser',
+   *   name: 'scraper',
+   *   url: 'https://example.com',
+   * });
+   *
+   * const endpoint = await browser.getCdpEndpoint(browserId);
+   * const browser = await chromium.connectOverCDP(endpoint);
+   * const page = browser.contexts()[0].pages()[0];
+   * // ... automate the page
+   * ```
+   */
+  async getCdpEndpoint(browserId: string): Promise<string> {
+    return rpc.call<string>("main", "browser.getCdpEndpoint", browserId);
   },
 };

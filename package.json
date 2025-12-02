@@ -64,6 +64,7 @@
     "@npmcli/arborist": "^7.4.0",
     "@radix-ui/react-icons": "^1.3.2",
     "@radix-ui/themes": "^3.2.1",
+    "@types/ws": "^8.18.1",
     "@zenfs/core": "^2.4.4",
     "@zenfs/dom": "^1.2.5",
     "ai": "6.0.0-beta.114",
@@ -77,6 +78,7 @@
     "react-dom": "^19.2.0",
     "typescript": "^5.9.3",
     "typia": "^10.1.0",
+    "ws": "^8.18.3",
     "yaml": "^2.8.1",
     "zod": "^3.24.1",
     "zod-to-json-schema": "^3.25.0"

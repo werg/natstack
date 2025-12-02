@@ -20,6 +20,12 @@ export const electronAPI = {
     ipcRenderer.invoke("panel:update-theme", theme),
   openPanelDevTools: (panelId: string): Promise<void> =>
     ipcRenderer.invoke("panel:open-devtools", panelId),
+  registerBrowserWebview: (browserId: string, webContentsId: number): Promise<void> =>
+    ipcRenderer.invoke("panel:register-browser-webview", browserId, webContentsId),
+  updateBrowserState: (
+    browserId: string,
+    state: { url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean }
+  ): Promise<void> => ipcRenderer.invoke("panel:update-browser-state", browserId, state),
 
   // Event listeners (one-way events from main)
   onSystemThemeChanged: (callback: (theme: Panel.ThemeMode) => void): (() => void) => {

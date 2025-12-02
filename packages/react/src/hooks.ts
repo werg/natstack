@@ -8,7 +8,7 @@ import {
   panel as panelAPI,
   type PanelTheme,
   type PanelRpcHandleOptions,
-  type CreateChildOptions,
+  type ChildSpec,
   type Rpc,
 } from "@natstack/core";
 
@@ -231,7 +231,11 @@ export function usePanelRpcGlobalEvent<T = unknown>(
  *   const { children, createChild, removeChild } = useChildPanels();
  *
  *   const handleAddChild = async () => {
- *     await createChild("panels/example");
+ *     await createChild({
+ *       type: 'app',
+ *       name: 'example',
+ *       path: 'panels/example',
+ *     });
  *   };
  *
  *   return (
@@ -253,14 +257,11 @@ export function usePanelRpcGlobalEvent<T = unknown>(
 export function useChildPanels() {
   const [children, setChildren] = useState<string[]>([]);
 
-  const createChild = useCallback(
-    async (path: string, options?: CreateChildOptions): Promise<string> => {
-      const childId = await panelAPI.createChild(path, options);
-      setChildren((prev) => [...prev, childId]);
-      return childId;
-    },
-    []
-  );
+  const createChild = useCallback(async (spec: ChildSpec): Promise<string> => {
+    const childId = await panelAPI.createChild(spec);
+    setChildren((prev) => [...prev, childId]);
+    return childId;
+  }, []);
 
   const removeChild = useCallback(async (childId: string): Promise<void> => {
     await panelAPI.removeChild(childId);

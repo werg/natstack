@@ -32,7 +32,7 @@ export { fs } from "./fs.js";
 export { fetch } from "./network.js";
 export { rpc } from "./rpc.js";
 
-// Panel bridge operations (child management, git, etc.)
+// Panel bridge operations (child management, git, browser, etc.)
 export {
   createChild,
   removeChild,
@@ -41,6 +41,7 @@ export {
   getEnv as fetchEnv, // Async version that fetches from main process
   getInfo,
   git,
+  browser,
 } from "./bridge.js";
 
 // AI capabilities
@@ -79,7 +80,14 @@ export type {
 } from "./types.js";
 
 // Re-export shared types from @natstack/core
-export type { CreateChildOptions, GitConfig, EndpointInfo } from "@natstack/core";
+export type {
+  ChildSpec,
+  AppChildSpec,
+  WorkerChildSpec,
+  BrowserChildSpec,
+  GitConfig,
+  EndpointInfo,
+} from "@natstack/core";
 
 // Declare globals that are available in the worker environment
 declare global {

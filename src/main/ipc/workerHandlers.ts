@@ -9,7 +9,8 @@
 
 import { getWorkerManager } from "../workerManager.js";
 import type { PanelManager } from "../panelManager.js";
-import type { CreateChildOptions, StreamTextOptions } from "../../shared/ipc/types.js";
+import type { ChildSpec, StreamTextOptions } from "../../shared/ipc/types.js";
+import { getCdpServer } from "../cdpServer.js";
 
 /**
  * Register worker-related handlers.
@@ -48,8 +49,8 @@ export function registerWorkerHandlers(panelManager: PanelManager): void {
   workerManager.registerService("bridge", async (workerId, method, args) => {
     switch (method) {
       case "createChild": {
-        const [childPath, options] = args as [string, CreateChildOptions | undefined];
-        return panelManager.createChild(workerId, childPath, options);
+        const [spec] = args as [ChildSpec];
+        return panelManager.createChild(workerId, spec);
       }
       case "removeChild": {
         const [childId] = args as [string];
@@ -107,6 +108,24 @@ export function registerWorkerHandlers(panelManager: PanelManager): void {
       }
       default:
         throw new Error(`Unknown AI method: ${method}`);
+    }
+  });
+
+  // Register the "browser" service for browser panel control
+  workerManager.registerService("browser", async (workerId, method, args) => {
+    const cdpServer = getCdpServer();
+
+    switch (method) {
+      case "getCdpEndpoint": {
+        const [browserId] = args as [string];
+        const endpoint = cdpServer.getCdpEndpoint(browserId, workerId);
+        if (!endpoint) {
+          throw new Error("Access denied: you do not own this browser panel");
+        }
+        return endpoint;
+      }
+      default:
+        throw new Error(`Unknown browser method: ${method}`);
     }
   });
 }

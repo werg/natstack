@@ -26,6 +26,7 @@ import { setAppMode } from "./ipc/workspaceHandlers.js";
 import { getCentralData } from "./centralData.js";
 import { registerPanelProtocol, setupPanelProtocol } from "./panelProtocol.js";
 import { getMainCacheManager } from "./cacheManager.js";
+import { getCdpServer, type CdpServer } from "./cdpServer.js";
 
 // =============================================================================
 // Protocol Registration (must happen before app ready)
@@ -61,6 +62,7 @@ if (cliWorkspacePath && !hasWorkspaceConfig) {
 let appMode: AppMode = hasWorkspaceConfig ? "main" : "chooser";
 let workspace: Workspace | null = null;
 let gitServer: GitServer | null = null;
+let cdpServer: CdpServer | null = null;
 let panelManager: PanelManager | null = null;
 let mainWindow: BrowserWindow | null = null;
 
@@ -243,11 +245,12 @@ handle("panel:open-devtools", async (_event, panelId: string) => {
 // =============================================================================
 
 // Create child panel - main process handles git checkout and build
+// Spec-based API: accepts ChildSpec with type discriminator
 handle(
   "panel-bridge:create-child",
-  async (event, parentId: string, childPath: string, options?: SharedPanel.CreateChildOptions) => {
+  async (event, parentId: string, spec: SharedPanel.ChildSpec) => {
     assertAuthorized(event, parentId);
-    return requirePanelManager().createChild(parentId, childPath, options);
+    return requirePanelManager().createChild(parentId, spec);
   }
 );
 
@@ -288,6 +291,133 @@ handle("panel-bridge:get-git-config", async (event, panelId: string) => {
 });
 
 // =============================================================================
+// Browser Panel IPC Handlers
+// =============================================================================
+
+// Helper to get browser webContents and validate it exists
+function requireBrowserWebContents(browserId: string): Electron.WebContents {
+  const contents = getCdpServer().getBrowserWebContents(browserId);
+  if (!contents) {
+    throw new Error(`Browser webContents not found for ${browserId}`);
+  }
+  return contents;
+}
+
+// Helper to verify the sender owns the browser panel
+function assertBrowserOwner(event: Electron.IpcMainInvokeEvent, browserId: string): void {
+  const pm = requirePanelManager();
+
+  // Find which panel the sender belongs to
+  const senderPanelId = pm.findPanelIdBySenderId(event.sender.id);
+  if (!senderPanelId) {
+    throw new Error("Unauthorized: could not determine requesting panel");
+  }
+
+  // Verify the sender panel owns this browser
+  if (!getCdpServer().panelOwnsBrowser(senderPanelId, browserId)) {
+    throw new Error("Access denied: you do not own this browser panel");
+  }
+}
+
+handle("panel-bridge:browser-navigate", async (event, browserId: string, url: string) => {
+  assertBrowserOwner(event, browserId);
+  const contents = requireBrowserWebContents(browserId);
+  try {
+    await contents.loadURL(url);
+  } catch (err) {
+    // ERR_ABORTED (-3) is common during redirects - not a real error
+    const error = err as { code?: string; errno?: number };
+    if (error.errno === -3 || error.code === "ERR_ABORTED") {
+      return; // Navigation was aborted (redirect, user action, etc.) - ignore
+    }
+    throw err;
+  }
+});
+
+handle("panel-bridge:browser-go-back", async (event, browserId: string) => {
+  assertBrowserOwner(event, browserId);
+  const contents = requireBrowserWebContents(browserId);
+  if (contents.canGoBack()) {
+    contents.goBack();
+  }
+});
+
+handle("panel-bridge:browser-go-forward", async (event, browserId: string) => {
+  assertBrowserOwner(event, browserId);
+  const contents = requireBrowserWebContents(browserId);
+  if (contents.canGoForward()) {
+    contents.goForward();
+  }
+});
+
+handle("panel-bridge:browser-reload", async (event, browserId: string) => {
+  assertBrowserOwner(event, browserId);
+  const contents = requireBrowserWebContents(browserId);
+  contents.reload();
+});
+
+handle("panel-bridge:browser-stop", async (event, browserId: string) => {
+  assertBrowserOwner(event, browserId);
+  const contents = requireBrowserWebContents(browserId);
+  contents.stop();
+});
+
+handle("panel-bridge:browser-get-cdp-endpoint", async (event, browserId: string) => {
+  // Need to find which panel is making this request
+  // The requesting panel must be authorized and must own the browser
+  const pm = requirePanelManager();
+
+  // Find the panel ID for this sender
+  const requestingPanelId = pm.findPanelIdBySenderId(event.sender.id);
+
+  if (!requestingPanelId) {
+    throw new Error("Unauthorized: could not determine requesting panel");
+  }
+
+  const cdpServer = getCdpServer();
+  const endpoint = cdpServer.getCdpEndpoint(browserId, requestingPanelId);
+
+  if (!endpoint) {
+    throw new Error("Access denied: you do not own this browser panel");
+  }
+
+  return endpoint;
+});
+
+// Register a browser webview with the CDP server (called from renderer when webview is ready)
+handle("panel:register-browser-webview", async (_event, browserId: string, webContentsId: number) => {
+  const pm = requirePanelManager();
+
+  // Find the parent panel for this browser
+  const panel = pm.getPanel(browserId);
+  if (!panel || panel.type !== "browser") {
+    throw new Error(`Browser panel not found: ${browserId}`);
+  }
+
+  // Find the parent panel ID
+  const parentId = pm.findParentId(browserId);
+  if (!parentId) {
+    throw new Error(`Parent panel not found for browser: ${browserId}`);
+  }
+
+  // Register with CDP server (idempotent - may be called multiple times on dom-ready)
+  getCdpServer().registerBrowser(browserId, webContentsId, parentId);
+});
+
+// Update browser panel state (called from renderer when webview events fire)
+handle(
+  "panel:update-browser-state",
+  async (
+    _event,
+    browserId: string,
+    state: { url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean }
+  ) => {
+    const pm = requirePanelManager();
+    pm.updateBrowserState(browserId, state);
+  }
+);
+
+// =============================================================================
 // App Lifecycle
 // =============================================================================
 
@@ -305,6 +435,11 @@ app.on("ready", async () => {
       // Start git server
       const port = await gitServer.start();
       console.log(`[Git] Server started on port ${port}`);
+
+      // Start CDP server for browser automation
+      cdpServer = getCdpServer();
+      const cdpPort = await cdpServer.start();
+      console.log(`[CDP] Server started on port ${cdpPort}`);
 
       // Initialize RPC handler
       const { PanelRpcHandler } = await import("./ipc/rpcHandler.js");
@@ -335,16 +470,32 @@ app.on("window-all-closed", () => {
 
 // Use will-quit with preventDefault to properly await async shutdown
 app.on("will-quit", (event) => {
-  if (gitServer) {
+  const hasServersToStop = gitServer || cdpServer;
+  if (hasServersToStop) {
     event.preventDefault();
-    gitServer
-      .stop()
-      .catch((error) => {
-        console.error("Error stopping git server:", error);
-      })
-      .finally(() => {
-        app.exit(0);
-      });
+
+    // Stop all servers in parallel
+    const stopPromises: Promise<void>[] = [];
+
+    if (cdpServer) {
+      stopPromises.push(
+        cdpServer.stop().catch((error) => {
+          console.error("Error stopping CDP server:", error);
+        })
+      );
+    }
+
+    if (gitServer) {
+      stopPromises.push(
+        gitServer.stop().catch((error) => {
+          console.error("Error stopping git server:", error);
+        })
+      );
+    }
+
+    Promise.all(stopPromises).finally(() => {
+      app.exit(0);
+    });
   }
 });
 

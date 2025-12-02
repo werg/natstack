@@ -1,5 +1,18 @@
-// Re-export GitDependencySpec from shared types (canonical definition)
-export type { GitDependencySpec, RuntimeType } from "../shared/ipc/types.js";
+// Re-export types from shared types (canonical definitions)
+export type {
+  GitDependencySpec,
+  RuntimeType,
+  PanelType,
+  Panel,
+  AppPanel,
+  WorkerPanel,
+  BrowserPanel,
+  BrowserState,
+  ChildSpec,
+  AppChildSpec,
+  WorkerChildSpec,
+  BrowserChildSpec,
+} from "../shared/ipc/types.js";
 import type { GitDependencySpec, RuntimeType } from "../shared/ipc/types.js";
 
 export interface PanelManifest {
@@ -52,8 +65,8 @@ export interface PanelBuildResult {
   error?: string;
 }
 
-// Re-export shared types for backwards compatibility
-export type { Panel, PanelArtifacts } from "../shared/ipc/types.js";
+// Re-export PanelArtifacts for backwards compatibility (Panel is now exported above)
+export type { PanelArtifacts } from "../shared/ipc/types.js";
 
 export type PanelEventPayload =
   | { type: "child-removed"; childId: string }

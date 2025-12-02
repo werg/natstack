@@ -9,13 +9,19 @@ import type { ComponentType, ReactNode } from "react";
 import typia from "typia";
 import * as Rpc from "./types.js";
 import type {
-  CreateChildOptions as SharedCreateChildOptions,
+  ChildSpec as SharedChildSpec,
+  AppChildSpec as SharedAppChildSpec,
+  WorkerChildSpec as SharedWorkerChildSpec,
+  BrowserChildSpec as SharedBrowserChildSpec,
   GitConfig as SharedGitConfig,
   RpcHandleOptions,
 } from "./index.js";
 
-// Re-export shared types for backwards compatibility
-export type CreateChildOptions = SharedCreateChildOptions;
+// Re-export shared types
+export type ChildSpec = SharedChildSpec;
+export type AppChildSpec = SharedAppChildSpec;
+export type WorkerChildSpec = SharedWorkerChildSpec;
+export type BrowserChildSpec = SharedBrowserChildSpec;
 export type GitConfig = SharedGitConfig;
 export type PanelRpcHandleOptions = RpcHandleOptions;
 
@@ -34,17 +40,23 @@ interface PanelRpcBridge {
   onEvent(event: string, listener: (fromPanelId: string, payload: unknown) => void): () => void;
 }
 
+interface PanelBrowserBridge {
+  getCdpEndpoint(browserId: string): Promise<string>;
+  navigate(browserId: string, url: string): Promise<void>;
+  goBack(browserId: string): Promise<void>;
+  goForward(browserId: string): Promise<void>;
+  reload(browserId: string): Promise<void>;
+  stop(browserId: string): Promise<void>;
+}
+
 interface PanelBridge {
   panelId: string;
   /**
-   * Create a child panel from a workspace-relative path.
-   * The main process handles git checkout (if version specified) and build.
+   * Create a child panel, worker, or browser from a spec.
+   * The main process handles git checkout and build for app/worker types.
    * Returns the panel ID immediately; build happens asynchronously.
    */
-  createChild(
-    childPath: string,
-    options?: CreateChildOptions
-  ): Promise<string>;
+  createChild(spec: ChildSpec): Promise<string>;
   removeChild(childId: string): Promise<void>;
   /**
    * Git operations
@@ -52,6 +64,10 @@ interface PanelBridge {
   git: {
     getConfig(): Promise<GitConfig>;
   };
+  /**
+   * Browser panel operations
+   */
+  browser: PanelBrowserBridge;
   setTitle(title: string): Promise<void>;
   close(): Promise<void>;
   getEnv(): Promise<Record<string, string>>;
@@ -110,16 +126,41 @@ const panelAPI = {
   },
 
   /**
-   * Create a child panel from a workspace-relative path.
-   * The main process handles git checkout (if version specified) and build.
+   * Create a child panel, worker, or browser from a spec.
+   * The main process handles git checkout and build for app/worker types.
    * Returns the panel ID immediately; build happens asynchronously.
    *
-   * @param childPath - Workspace-relative path to the panel (e.g., "panels/my-panel")
-   * @param options - Optional env vars and version specifiers (branch, commit, tag)
+   * @param spec - Child specification with type discriminator
    * @returns Panel ID that can be used for communication
+   *
+   * @example
+   * ```ts
+   * // Create an app panel
+   * const editorId = await panel.createChild({
+   *   type: 'app',
+   *   name: 'editor',
+   *   path: 'panels/editor',
+   *   env: { FILE_PATH: '/foo.txt' },
+   * });
+   *
+   * // Create a worker
+   * const computeId = await panel.createChild({
+   *   type: 'worker',
+   *   name: 'compute-worker',
+   *   path: 'workers/compute',
+   *   memoryLimitMB: 512,
+   * });
+   *
+   * // Create a browser panel
+   * const browserId = await panel.createChild({
+   *   type: 'browser',
+   *   name: 'web-scraper',
+   *   url: 'https://example.com',
+   * });
+   * ```
    */
-  async createChild(childPath: string, options?: CreateChildOptions): AsyncResult<string> {
-    return bridge.createChild(childPath, options);
+  async createChild(spec: ChildSpec): AsyncResult<string> {
+    return bridge.createChild(spec);
   },
 
   async removeChild(childId: string): AsyncResult<void> {
@@ -187,6 +228,74 @@ const panelAPI = {
      */
     async getConfig(): AsyncResult<GitConfig> {
       return bridge.git.getConfig();
+    },
+  },
+
+  // ===========================================================================
+  // Browser Panel Operations
+  // ===========================================================================
+
+  browser: {
+    /**
+     * Get CDP WebSocket endpoint for Playwright connection.
+     * Only the parent panel that created the browser can access this.
+     *
+     * @param browserId - The browser panel's ID
+     * @returns WebSocket URL for CDP connection (e.g., ws://localhost:63525/browser-id?token=xyz)
+     *
+     * @example
+     * ```ts
+     * import { chromium } from 'playwright-core';
+     *
+     * const browserId = await panel.createChild({
+     *   type: 'browser',
+     *   name: 'automation-target',
+     *   url: 'https://example.com',
+     * });
+     *
+     * const cdpUrl = await panel.browser.getCdpEndpoint(browserId);
+     * const browser = await chromium.connectOverCDP(cdpUrl);
+     * const page = browser.contexts()[0].pages()[0];
+     * await page.click('.button');
+     * ```
+     */
+    async getCdpEndpoint(browserId: string): AsyncResult<string> {
+      return bridge.browser.getCdpEndpoint(browserId);
+    },
+
+    /**
+     * Navigate browser panel to a URL (human UI control).
+     */
+    async navigate(browserId: string, url: string): AsyncResult<void> {
+      return bridge.browser.navigate(browserId, url);
+    },
+
+    /**
+     * Go back in browser history.
+     */
+    async goBack(browserId: string): AsyncResult<void> {
+      return bridge.browser.goBack(browserId);
+    },
+
+    /**
+     * Go forward in browser history.
+     */
+    async goForward(browserId: string): AsyncResult<void> {
+      return bridge.browser.goForward(browserId);
+    },
+
+    /**
+     * Reload the current page.
+     */
+    async reload(browserId: string): AsyncResult<void> {
+      return bridge.browser.reload(browserId);
+    },
+
+    /**
+     * Stop loading the current page.
+     */
+    async stop(browserId: string): AsyncResult<void> {
+      return bridge.browser.stop(browserId);
     },
   },
 

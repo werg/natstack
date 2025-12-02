@@ -42,6 +42,11 @@ export default function ChildPanelLauncher() {
   const [workerSumInput, setWorkerSumInput] = useState("1, 2, 3, 4, 5");
   const [workerEvents, setWorkerEvents] = useState<string[]>([]);
 
+  // Browser Automation Demo state
+  const [browserId, setBrowserId] = useState<string | null>(null);
+  const [browserLog, setBrowserLog] = useState<string[]>([]);
+  const [browserUrlInput, setBrowserUrlInput] = useState("https://example.com");
+
   const addRpcLog = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
     setRpcLog((prev) => [`[${timestamp}] ${message}`, ...prev.slice(0, 9)]);
@@ -50,6 +55,11 @@ export default function ChildPanelLauncher() {
   const addWorkerLog = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
     setWorkerLog((prev) => [`[${timestamp}] ${message}`, ...prev.slice(0, 9)]);
+  }, []);
+
+  const addBrowserLog = useCallback((message: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setBrowserLog((prev) => [`[${timestamp}] ${message}`, ...prev.slice(0, 19)]);
   }, []);
 
   // Listen for events from child panels
@@ -69,8 +79,10 @@ export default function ChildPanelLauncher() {
   const launchChildPanel = async () => {
     try {
       setStatus("Launching child panel...");
-      const childId = await panel.createChild("panels/root", {
-        panelId: 'another-root',
+      const childId = await panel.createChild({
+        type: "app",
+        name: "another-root",
+        path: "panels/root",
         env: {
           PARENT_ID: panelId,
           LAUNCH_TIME: new Date().toISOString(),
@@ -86,7 +98,11 @@ export default function ChildPanelLauncher() {
   const launchSharedOPFSDemo = async () => {
     try {
       setStatus("Launching shared OPFS demo panel...");
-      const childId = await panel.createChild("panels/shared-opfs-demo");
+      const childId = await panel.createChild({
+        type: "app",
+        name: "shared-opfs-demo",
+        path: "panels/shared-opfs-demo",
+      });
       setStatus(`Launched shared OPFS demo panel ${childId}`);
     } catch (error) {
       setStatus(`Failed to launch: ${error instanceof Error ? error.message : String(error)}`);
@@ -96,8 +112,10 @@ export default function ChildPanelLauncher() {
   const launchAgenticChat = async () => {
     try {
       setStatus("Launching agentic chat example...");
-      const childId = await panel.createChild("panels/agentic-chat", {
-        panelId: 'agentic-chat',
+      const childId = await panel.createChild({
+        type: "app",
+        name: "agentic-chat",
+        path: "panels/agentic-chat",
       });
       setStatus(`Launched agentic chat panel ${childId}`);
     } catch (error) {
@@ -108,8 +126,10 @@ export default function ChildPanelLauncher() {
   const launchAgenticNotebook = async () => {
     try {
       setStatus("Launching agentic notebook...");
-      const childId = await panel.createChild("panels/agentic-notebook", {
-        panelId: 'agentic-notebook',
+      const childId = await panel.createChild({
+        type: "app",
+        name: "agentic-notebook",
+        path: "panels/agentic-notebook",
       });
       setStatus(`Launched agentic notebook panel ${childId}`);
     } catch (error) {
@@ -204,8 +224,10 @@ export default function ChildPanelLauncher() {
   const launchRpcDemoChild = async () => {
     try {
       addRpcLog("Launching RPC demo child panel...");
-      const childId = await panel.createChild("panels/typed-rpc-child", {
-        panelId: 'typed-rpc-child',
+      const childId = await panel.createChild({
+        type: "app",
+        name: "typed-rpc-child",
+        path: "panels/typed-rpc-child",
         env: { PARENT_ID: panelId },
       });
       setRpcChildId(childId);
@@ -318,9 +340,11 @@ export default function ChildPanelLauncher() {
   const launchRpcWorker = async () => {
     try {
       addWorkerLog("Launching RPC example worker...");
-      const id = await panel.createChild("workers/rpc-example", {
+      const id = await panel.createChild({
+        type: "worker",
+        name: "rpc-example-worker",
+        path: "workers/rpc-example",
         env: { PARENT_ID: panelId },
-        panelId: 'rpc-example-worker',
       });
       setWorkerId(id);
       addWorkerLog(`Worker launched: ${id}`);
@@ -470,6 +494,172 @@ export default function ChildPanelLauncher() {
       ]);
     }
   });
+
+  // ===========================================================================
+  // Browser Automation Demo Functions
+  // ===========================================================================
+
+  const launchBrowser = async () => {
+    try {
+      addBrowserLog("Launching browser panel...");
+      const id = await panel.createChild({
+        type: "browser",
+        name: "demo-browser",
+        url: browserUrlInput,
+        title: "Demo Browser",
+      });
+      setBrowserId(id);
+      addBrowserLog(`Browser launched: ${id}`);
+    } catch (error) {
+      addBrowserLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  /**
+   * Simple CDP (Chrome DevTools Protocol) client using raw WebSocket.
+   * This demonstrates browser automation without requiring playwright-core.
+   */
+  const runCdpDemo = async () => {
+    if (!browserId) {
+      addBrowserLog("No browser launched - launch one first!");
+      return;
+    }
+
+    let ws: WebSocket | null = null;
+    let messageId = 1;
+
+    const sendCommand = (method: string, params: Record<string, unknown> = {}): Promise<unknown> => {
+      return new Promise((resolve, reject) => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          reject(new Error("WebSocket not connected"));
+          return;
+        }
+
+        const id = messageId++;
+        const handler = (event: MessageEvent) => {
+          try {
+            const response = JSON.parse(event.data);
+            if (response.id === id) {
+              ws?.removeEventListener("message", handler);
+              if (response.error) {
+                reject(new Error(response.error.message));
+              } else {
+                resolve(response.result);
+              }
+            }
+          } catch {
+            // Ignore parse errors for other messages
+          }
+        };
+
+        ws.addEventListener("message", handler);
+        ws.send(JSON.stringify({ id, method, params }));
+
+        // Timeout after 30 seconds
+        setTimeout(() => {
+          ws?.removeEventListener("message", handler);
+          reject(new Error(`Timeout waiting for response to ${method}`));
+        }, 30000);
+      });
+    };
+
+    try {
+      addBrowserLog("Getting CDP endpoint...");
+      const cdpUrl = await panel.browser.getCdpEndpoint(browserId);
+      addBrowserLog(`CDP endpoint: ${cdpUrl}`);
+
+      addBrowserLog("Connecting via WebSocket...");
+      ws = new WebSocket(cdpUrl);
+
+      await new Promise<void>((resolve, reject) => {
+        ws!.onopen = () => resolve();
+        ws!.onerror = (e) => reject(new Error(`WebSocket error: ${e}`));
+        setTimeout(() => reject(new Error("Connection timeout")), 10000);
+      });
+      addBrowserLog("Connected to CDP!");
+
+      // Enable the Page domain
+      addBrowserLog("Enabling Page domain...");
+      await sendCommand("Page.enable");
+
+      // Get the current URL
+      addBrowserLog("Getting current frame tree...");
+      const frameTree = await sendCommand("Page.getFrameTree") as { frameTree: { frame: { url: string } } };
+      const currentUrl = frameTree.frameTree.frame.url;
+      addBrowserLog(`Current URL: ${currentUrl}`);
+
+      // Navigate to httpbin.org/html
+      addBrowserLog("Navigating to https://httpbin.org/html...");
+      await sendCommand("Page.navigate", { url: "https://httpbin.org/html" });
+
+      // Wait for page to load
+      addBrowserLog("Waiting for page load...");
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      // Enable Runtime for JavaScript evaluation
+      await sendCommand("Runtime.enable");
+
+      // Get the page title using Runtime.evaluate
+      addBrowserLog("Evaluating document.title...");
+      const titleResult = await sendCommand("Runtime.evaluate", {
+        expression: "document.title",
+        returnByValue: true,
+      }) as { result: { value: string } };
+      addBrowserLog(`Page title: "${titleResult.result.value}"`);
+
+      // Extract h1 content
+      addBrowserLog("Extracting h1 heading...");
+      const h1Result = await sendCommand("Runtime.evaluate", {
+        expression: "document.querySelector('h1')?.textContent || 'No h1 found'",
+        returnByValue: true,
+      }) as { result: { value: string } };
+      addBrowserLog(`Found heading: "${h1Result.result.value}"`);
+
+      // Take a screenshot
+      addBrowserLog("Taking screenshot...");
+      const screenshot = await sendCommand("Page.captureScreenshot", {
+        format: "png",
+      }) as { data: string };
+      const screenshotSize = Math.round(screenshot.data.length * 0.75); // base64 to bytes estimate
+      addBrowserLog(`Screenshot captured (~${screenshotSize} bytes)`);
+
+      // Navigate to example.com
+      addBrowserLog("Navigating to https://example.com...");
+      await sendCommand("Page.navigate", { url: "https://example.com" });
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      // Get final title
+      const finalTitleResult = await sendCommand("Runtime.evaluate", {
+        expression: "document.title",
+        returnByValue: true,
+      }) as { result: { value: string } };
+      addBrowserLog(`Final page: "${finalTitleResult.result.value}"`);
+
+      addBrowserLog("CDP demo complete!");
+    } catch (error) {
+      addBrowserLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+        addBrowserLog("WebSocket closed");
+      }
+    }
+  };
+
+  const closeBrowser = async () => {
+    if (!browserId) {
+      addBrowserLog("No browser to close");
+      return;
+    }
+    try {
+      addBrowserLog(`Closing browser ${browserId}...`);
+      await panel.removeChild(browserId);
+      setBrowserId(null);
+      addBrowserLog("Browser closed");
+    } catch (error) {
+      addBrowserLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
 
   return (
     <div style={{ padding: "20px" }}>
@@ -825,6 +1015,76 @@ export default function ChildPanelLauncher() {
               <Flex direction="column" gap="1">
                 <Text size="2" weight="bold">Worker RPC Log:</Text>
                 {workerLog.map((entry, i) => (
+                  <Text key={i} size="1" style={{ fontFamily: "monospace" }}>
+                    {entry}
+                  </Text>
+                ))}
+              </Flex>
+            </Card>
+          )}
+
+          <Separator size="4" />
+
+          {/* Browser Automation Demo Section */}
+          <Heading size="5">Browser Automation Demo</Heading>
+          <Text size="2" color="gray">
+            Demonstrates browser panel creation and automation via the Chrome DevTools Protocol (CDP).
+            Launch a browser panel, then run the CDP demo to orchestrate it programmatically.
+          </Text>
+
+          <Flex gap="2" wrap="wrap" align="end">
+            <Flex direction="column" gap="1" style={{ flex: 1 }}>
+              <Text size="1" weight="bold">Initial URL:</Text>
+              <TextField.Root
+                placeholder="https://example.com"
+                value={browserUrlInput}
+                onChange={(e) => setBrowserUrlInput(e.target.value)}
+                size="1"
+              />
+            </Flex>
+            <Button onClick={launchBrowser} color="teal" disabled={!!browserId}>
+              {browserId ? "Browser Running" : "Launch Browser"}
+            </Button>
+          </Flex>
+
+          {browserId && (
+            <Card variant="surface">
+              <Flex direction="column" gap="3">
+                <Flex align="center" gap="2">
+                  <Text size="2" weight="bold">Browser Panel:</Text>
+                  <Badge color="teal" style={{ fontFamily: "monospace" }}>
+                    {browserId}
+                  </Badge>
+                </Flex>
+
+                <Text size="2" color="gray">
+                  The browser panel is running as a child. Click "Run CDP Demo" to:
+                </Text>
+                <Text size="1" color="gray" style={{ paddingLeft: "16px" }}>
+                  • Connect via CDP WebSocket<br />
+                  • Navigate to httpbin.org/html<br />
+                  • Extract the page heading<br />
+                  • Take a screenshot<br />
+                  • Navigate to example.com
+                </Text>
+
+                <Flex gap="2" wrap="wrap">
+                  <Button onClick={runCdpDemo} variant="soft" color="teal">
+                    Run CDP Demo
+                  </Button>
+                  <Button onClick={closeBrowser} variant="soft" color="red">
+                    Close Browser
+                  </Button>
+                </Flex>
+              </Flex>
+            </Card>
+          )}
+
+          {browserLog.length > 0 && (
+            <Card variant="surface" style={{ maxHeight: "300px", overflowY: "auto" }}>
+              <Flex direction="column" gap="1">
+                <Text size="2" weight="bold">Browser Automation Log:</Text>
+                {browserLog.map((entry, i) => (
                   <Text key={i} size="1" style={{ fontFamily: "monospace" }}>
                     {entry}
                   </Text>

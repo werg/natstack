@@ -1,6 +1,15 @@
 // Shared types for typed IPC communication
 
 import type { AIRoleRecord } from "@natstack/ai";
+import type {
+  ChildSpec,
+  AppChildSpec,
+  WorkerChildSpec,
+  BrowserChildSpec,
+} from "@natstack/core";
+
+// Re-export ChildSpec types for consumers of this module
+export type { ChildSpec, AppChildSpec, WorkerChildSpec, BrowserChildSpec };
 
 export type ThemeMode = "light" | "dark" | "system";
 export type ThemeAppearance = "light" | "dark";
@@ -81,31 +90,6 @@ export type GitDependencySpec =
     };
 
 /**
- * Options for creating a child panel or worker.
- * Version specifiers are mutually exclusive; priority: commit > tag > branch
- *
- * Note: The runtime type (panel vs worker) is determined by the manifest's
- * `runtime` field, not by options passed here.
- */
-export interface CreateChildOptions {
-  /** Environment variables to pass to the child */
-  env?: Record<string, string>;
-  /** Custom ID (only used for tree children, ignored for singletons) */
-  panelId?: string;
-  /** Branch name to track (e.g., "develop") */
-  branch?: string;
-  /** Specific commit hash to pin to (e.g., "abc123...") */
-  commit?: string;
-  /** Tag to pin to (e.g., "v1.0.0") */
-  tag?: string;
-
-  // Worker-specific options (only apply when manifest.runtime is "worker")
-
-  /** Memory limit in MB (default: 1024, workers only) */
-  memoryLimitMB?: number;
-}
-
-/**
  * A single console log entry from a worker.
  */
 export interface WorkerConsoleLogEntry {
@@ -114,32 +98,8 @@ export interface WorkerConsoleLogEntry {
   message: string;
 }
 
-/**
- * Panel/worker node in the tree.
- * Workers are children that run in isolated-vm instead of webviews.
- */
-export interface Panel {
-  id: string;
-  title: string;
-  path: string;
-  children: Panel[];
-  selectedChildId: string | null;
-  injectHostThemeVariables: boolean;
-  artifacts: PanelArtifacts;
-  env?: Record<string, string>;
-  /** Optional source repo when served from in-memory artifacts */
-  sourceRepo?: string;
-  /** Git dependencies from manifest (to clone into OPFS) */
-  gitDependencies?: Record<string, GitDependencySpec>;
-  /** Runtime type: "panel" (default) or "worker" */
-  type?: RuntimeType;
-  /** Worker-specific options (only present when type is "worker") */
-  workerOptions?: {
-    memoryLimitMB?: number;
-  };
-  /** Console log entries (workers only, most recent last) */
-  consoleLogs?: WorkerConsoleLogEntry[];
-}
+// Panel interface moved to discriminated union types section below
+// See: AppPanel, WorkerPanel, BrowserPanel, Panel
 
 // =============================================================================
 // IPC Channel Definitions
@@ -161,24 +121,34 @@ export interface PanelIpcApi {
   "panel:notify-focus": (panelId: string) => void;
   "panel:update-theme": (theme: ThemeAppearance) => void;
   "panel:open-devtools": (panelId: string) => void;
+  /**
+   * Register a browser panel's webview with the CDP server.
+   * Called by renderer when a browser webview's dom-ready fires.
+   * @param browserId - The browser panel's ID
+   * @param webContentsId - The webContents ID from the webview
+   */
+  "panel:register-browser-webview": (browserId: string, webContentsId: number) => void;
+  /**
+   * Update browser panel state (URL, loading, navigation).
+   * Called by renderer when webview events fire.
+   */
+  "panel:update-browser-state": (
+    browserId: string,
+    state: Partial<BrowserState> & { url?: string }
+  ) => void;
 }
 
 // Panel bridge IPC channels (panel webview <-> main)
 export interface PanelBridgeIpcApi {
   /**
-   * Create a child panel or worker from a workspace path.
-   * Main process handles git checkout and build.
+   * Create a child panel, worker, or browser from a spec.
+   * Main process handles git checkout and build for app/worker types.
    * Returns child ID immediately; build happens async.
    *
-   * The runtime type (panel vs worker) is determined by the manifest's `runtime` field.
-   * Workers run in isolated-vm with auto-generated filesystem scope paths.
-   * Singleton children (singletonState: true in manifest) get the same ID/scope across restarts.
+   * For app/worker: Uses manifest's `runtime` field to determine type.
+   * For browser: Creates external URL panel with Playwright automation.
    */
-  "panel-bridge:create-child": (
-    parentId: string,
-    childPath: string,
-    options?: CreateChildOptions
-  ) => string;
+  "panel-bridge:create-child": (parentId: string, spec: ChildSpec) => string;
 
   "panel-bridge:remove-child": (parentId: string, childId: string) => void;
   "panel-bridge:set-title": (panelId: string, title: string) => void;
@@ -207,6 +177,43 @@ export interface PanelBridgeIpcApi {
    * @returns Info about the connection (whether target is a worker)
    */
   "panel-rpc:connect": (fromId: string, toId: string) => { isWorker: boolean; workerId?: string };
+
+  // ===========================================================================
+  // Browser Panel IPC Channels
+  // ===========================================================================
+
+  /**
+   * Navigate browser panel to a URL (human UI control).
+   */
+  "panel-bridge:browser-navigate": (panelId: string, url: string) => void;
+
+  /**
+   * Go back in browser history.
+   */
+  "panel-bridge:browser-go-back": (panelId: string) => void;
+
+  /**
+   * Go forward in browser history.
+   */
+  "panel-bridge:browser-go-forward": (panelId: string) => void;
+
+  /**
+   * Reload the current page.
+   */
+  "panel-bridge:browser-reload": (panelId: string) => void;
+
+  /**
+   * Stop loading the current page.
+   */
+  "panel-bridge:browser-stop": (panelId: string) => void;
+
+  /**
+   * Get CDP WebSocket endpoint for Playwright connection.
+   * Only the parent panel that created the browser can access this.
+   * @param browserId - The browser panel's ID
+   * @returns WebSocket URL for CDP connection (e.g., ws://localhost:63525/browser-id?token=xyz)
+   */
+  "panel-bridge:browser-get-cdp-endpoint": (browserId: string) => string;
 }
 
 // Main-to-panel IPC channels (main -> panel webview via invoke)
@@ -318,11 +325,85 @@ export interface StreamTextEndEvent {
 }
 
 // =============================================================================
+// Panel Type Discriminated Unions
+// =============================================================================
+
+/**
+ * Panel type discriminator.
+ * - "app": Built webview from source code
+ * - "worker": Isolated-vm background process
+ * - "browser": External URL with Playwright automation
+ */
+export type PanelType = "app" | "worker" | "browser";
+
+/**
+ * Browser panel navigation state.
+ */
+export interface BrowserState {
+  pageTitle: string;
+  isLoading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+}
+
+/**
+ * Base panel fields common to all panel types.
+ */
+interface PanelBase {
+  id: string;
+  title: string;
+  children: Panel[];
+  selectedChildId: string | null;
+  artifacts: PanelArtifacts;
+  env?: Record<string, string>;
+}
+
+/**
+ * App panel - built webview from source code.
+ */
+export interface AppPanel extends PanelBase {
+  type: "app";
+  path: string; // Workspace-relative source path
+  sourceRepo?: string;
+  gitDependencies?: Record<string, GitDependencySpec>;
+  injectHostThemeVariables: boolean;
+}
+
+/**
+ * Worker panel - isolated-vm background process.
+ */
+export interface WorkerPanel extends PanelBase {
+  type: "worker";
+  path: string; // Workspace-relative source path
+  sourceRepo?: string;
+  gitDependencies?: Record<string, GitDependencySpec>;
+  workerOptions?: { memoryLimitMB?: number };
+  consoleLogs?: WorkerConsoleLogEntry[];
+}
+
+/**
+ * Browser panel - external URL with Playwright control.
+ */
+export interface BrowserPanel extends PanelBase {
+  type: "browser";
+  url: string; // Current URL
+  browserState: BrowserState;
+  /** Browser panels don't inject host theme - external sites have their own styles */
+  injectHostThemeVariables: false;
+}
+
+/**
+ * Union type of all panel types.
+ */
+export type Panel = AppPanel | WorkerPanel | BrowserPanel;
+
+// =============================================================================
 // Isolated Worker Types
 // =============================================================================
 
 /**
  * Runtime type for manifests - determines whether to build as panel or worker.
+ * @deprecated Use PanelType instead. This is kept for manifest compatibility.
  */
 export type RuntimeType = "panel" | "worker";
 

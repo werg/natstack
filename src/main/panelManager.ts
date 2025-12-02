@@ -16,6 +16,7 @@ import {
   registerProtocolForPartition,
 } from "./panelProtocol.js";
 import { getWorkerManager } from "./workerManager.js";
+import { getCdpServer } from "./cdpServer.js";
 
 export class PanelManager {
   private builder: PanelBuilder;
@@ -27,6 +28,11 @@ export class PanelManager {
   private currentTheme: "light" | "dark" = "light";
   private panelsRoot: string;
   private gitServer: GitServer;
+
+  // Debounce state for panel tree updates
+  private treeUpdatePending = false;
+  private treeUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly TREE_UPDATE_DEBOUNCE_MS = 16; // ~1 frame at 60fps
 
   constructor(initialRootPanelPath: string, gitServer: GitServer) {
     this.gitServer = gitServer;
@@ -118,15 +124,15 @@ export class PanelManager {
     manifest: PanelManifest;
     relativePath: string;
     parent: Panel | null;
-    options?: SharedPanel.CreateChildOptions;
+    spec?: SharedPanel.AppChildSpec | SharedPanel.WorkerChildSpec;
     isRoot?: boolean;
   }): string {
-    const { manifest, relativePath, parent, options, isRoot } = params;
+    const { manifest, relativePath, parent, spec, isRoot } = params;
 
     const isSingleton = manifest.singletonState === true;
     const isWorker = manifest.runtime === "worker";
 
-    if (isSingleton && options?.panelId) {
+    if (isSingleton && spec?.name) {
       throw new Error(
         `Panel at "${relativePath}" has singletonState and cannot have its ID overridden`
       );
@@ -135,7 +141,7 @@ export class PanelManager {
     const panelId = this.computePanelId({
       relativePath,
       parent,
-      requestedId: options?.panelId,
+      requestedId: spec?.name,
       singletonState: isSingleton,
       isRoot,
     });
@@ -152,29 +158,44 @@ export class PanelManager {
     this.reservedPanelIds.add(panelId);
 
     try {
-      const panelEnv = this.buildPanelEnv(panelId, isWorker, options?.env);
+      const panelEnv = this.buildPanelEnv(panelId, isWorker, spec?.env);
 
-      const panel: Panel = {
-        id: panelId,
-        title: manifest.title,
-        path: relativePath,
-        children: [],
-        selectedChildId: null,
-        injectHostThemeVariables: !isWorker && manifest.injectHostThemeVariables !== false,
-        artifacts: {
-          buildState: "building",
-          buildProgress: isWorker ? "Starting worker..." : "Starting build...",
-        },
-        env: panelEnv,
-        sourceRepo: relativePath,
-        gitDependencies: manifest.gitDependencies,
-        type: isWorker ? "worker" : undefined,
-        workerOptions: isWorker
-          ? {
-              memoryLimitMB: options?.memoryLimitMB,
-            }
-          : undefined,
-      };
+      // Create the appropriate panel type based on manifest runtime
+      const panel: Panel = isWorker
+        ? {
+            type: "worker",
+            id: panelId,
+            title: manifest.title,
+            path: relativePath,
+            children: [],
+            selectedChildId: null,
+            artifacts: {
+              buildState: "building",
+              buildProgress: "Starting worker...",
+            },
+            env: panelEnv,
+            sourceRepo: relativePath,
+            gitDependencies: manifest.gitDependencies,
+            workerOptions: {
+              memoryLimitMB: spec?.type === "worker" ? spec.memoryLimitMB : undefined,
+            },
+          }
+        : {
+            type: "app",
+            id: panelId,
+            title: manifest.title,
+            path: relativePath,
+            children: [],
+            selectedChildId: null,
+            injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
+            artifacts: {
+              buildState: "building",
+              buildProgress: "Starting build...",
+            },
+            env: panelEnv,
+            sourceRepo: relativePath,
+            gitDependencies: manifest.gitDependencies,
+          };
 
       if (isRoot) {
         this.rootPanels = [panel];
@@ -189,10 +210,10 @@ export class PanelManager {
 
       this.notifyPanelTreeUpdate();
 
-      if (isWorker) {
-        void this.buildWorkerAsync(panel, options);
-      } else {
-        void this.buildPanelAsync(panel, options);
+      if (panel.type === "worker") {
+        void this.buildWorkerAsync(panel, spec?.type === "worker" ? spec : undefined);
+      } else if (panel.type === "app") {
+        void this.buildPanelAsync(panel, spec?.type === "app" ? spec : undefined);
       }
 
       return panel.id;
@@ -202,25 +223,22 @@ export class PanelManager {
   }
 
   /**
-   * Create a child panel or worker from a workspace path.
-   * Main process handles git checkout and build asynchronously.
+   * Create a child panel, worker, or browser from a spec.
+   * Main process handles git checkout and build asynchronously for app/worker types.
    * Returns child ID immediately; build happens in background.
-   *
-   * The runtime type (panel vs worker) is determined by the manifest's `runtime` field.
-   * Workers run in isolated-vm with auto-generated filesystem scope paths.
-   * Singleton children get the same ID/scope path across restarts.
    */
-  async createChild(
-    parentId: string,
-    childPath: string,
-    options?: SharedPanel.CreateChildOptions
-  ): Promise<string> {
+  async createChild(parentId: string, spec: SharedPanel.ChildSpec): Promise<string> {
     const parent = this.panels.get(parentId);
     if (!parent) {
       throw new Error(`Parent panel not found: ${parentId}`);
     }
 
-    const { relativePath, absolutePath } = this.normalizePanelPath(childPath);
+    // Handle browser panels separately (no manifest/build needed)
+    if (spec.type === "browser") {
+      return this.createBrowserChild(parentId, spec);
+    }
+
+    const { relativePath, absolutePath } = this.normalizePanelPath(spec.path);
 
     // Read manifest to check singleton state and get title
     let manifest: PanelManifest;
@@ -228,7 +246,7 @@ export class PanelManager {
       manifest = this.builder.loadManifest(absolutePath);
     } catch (error) {
       throw new Error(
-        `Failed to load manifest for ${childPath}: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to load manifest for ${spec.path}: ${error instanceof Error ? error.message : String(error)}`
       );
     }
 
@@ -236,8 +254,119 @@ export class PanelManager {
       manifest,
       relativePath,
       parent,
-      options,
+      spec,
     });
+  }
+
+  /**
+   * Create a browser child panel that loads an external URL.
+   * Browser panels don't require manifest or build - they load external content directly.
+   */
+  private async createBrowserChild(
+    parentId: string,
+    spec: SharedPanel.BrowserChildSpec
+  ): Promise<string> {
+    const parent = this.panels.get(parentId);
+    if (!parent) {
+      throw new Error(`Parent panel not found: ${parentId}`);
+    }
+
+    // Validate URL protocol
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(spec.url);
+    } catch {
+      throw new Error(`Invalid URL format: "${spec.url}"`);
+    }
+
+    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+      throw new Error(
+        `Invalid URL protocol "${parsedUrl.protocol}". Only http: and https: are allowed.`
+      );
+    }
+
+    const panelId = this.computePanelId({
+      relativePath: `browser/${spec.name}`,
+      parent,
+      requestedId: spec.name,
+      singletonState: false,
+      isRoot: false,
+    });
+
+    if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
+      throw new Error(`A panel with id "${panelId}" is already running`);
+    }
+
+    const panel: SharedPanel.BrowserPanel = {
+      type: "browser",
+      id: panelId,
+      title: spec.title ?? parsedUrl.hostname,
+      url: spec.url,
+      children: [],
+      selectedChildId: null,
+      artifacts: {
+        buildState: "ready",
+      },
+      env: spec.env,
+      browserState: {
+        pageTitle: spec.title ?? parsedUrl.hostname,
+        isLoading: true,
+        canGoBack: false,
+        canGoForward: false,
+      },
+      injectHostThemeVariables: false,
+    };
+
+    parent.children.push(panel);
+    parent.selectedChildId = panel.id;
+    this.panels.set(panel.id, panel);
+
+    this.notifyPanelTreeUpdate();
+
+    return panel.id;
+  }
+
+  /**
+   * Update browser panel state (URL, loading, navigation capabilities).
+   * Called when the renderer forwards webview events.
+   */
+  updateBrowserState(
+    browserId: string,
+    state: {
+      url?: string;
+      pageTitle?: string;
+      isLoading?: boolean;
+      canGoBack?: boolean;
+      canGoForward?: boolean;
+    }
+  ): void {
+    const panel = this.panels.get(browserId);
+    if (!panel || panel.type !== "browser") {
+      console.warn(`[PanelManager] Browser panel not found: ${browserId}`);
+      return;
+    }
+
+    // Update URL if provided
+    if (state.url !== undefined) {
+      panel.url = state.url;
+    }
+
+    // Update browserState fields
+    if (state.pageTitle !== undefined) {
+      panel.browserState.pageTitle = state.pageTitle;
+      panel.title = state.pageTitle; // Also update the panel title
+    }
+    if (state.isLoading !== undefined) {
+      panel.browserState.isLoading = state.isLoading;
+    }
+    if (state.canGoBack !== undefined) {
+      panel.browserState.canGoBack = state.canGoBack;
+    }
+    if (state.canGoForward !== undefined) {
+      panel.browserState.canGoForward = state.canGoForward;
+    }
+
+    this.notifyPanelTreeUpdate();
   }
 
   /**
@@ -245,8 +374,8 @@ export class PanelManager {
    * Workers are built via PanelBuilder and then sent to the utility process.
    */
   private async buildWorkerAsync(
-    worker: Panel,
-    options?: SharedPanel.CreateChildOptions
+    worker: SharedPanel.WorkerPanel,
+    spec?: SharedPanel.WorkerChildSpec
   ): Promise<void> {
     const workerManager = getWorkerManager();
 
@@ -256,11 +385,11 @@ export class PanelManager {
         this.findParentPanel(worker.id)?.id ?? "",
         worker.path,
         {
-          env: options?.env,
-          memoryLimitMB: options?.memoryLimitMB,
-          branch: options?.branch,
-          commit: options?.commit,
-          tag: options?.tag,
+          env: spec?.env,
+          memoryLimitMB: spec?.memoryLimitMB,
+          branch: spec?.branch,
+          commit: spec?.commit,
+          tag: spec?.tag,
         },
         worker.id // Pass the tree node ID so WorkerManager uses it
       );
@@ -271,11 +400,11 @@ export class PanelManager {
 
       // Build the worker bundle using PanelBuilder
       const version =
-        options?.branch || options?.commit || options?.tag
+        spec?.branch || spec?.commit || spec?.tag
           ? {
-              branch: options.branch,
-              commit: options.commit,
-              tag: options.tag,
+              branch: spec.branch,
+              commit: spec.commit,
+              tag: spec.tag,
             }
           : undefined;
 
@@ -324,16 +453,16 @@ export class PanelManager {
    * Works for both root and child panels (all use protocol serving now).
    */
   private async buildPanelAsync(
-    panel: Panel,
-    options?: SharedPanel.CreateChildOptions
+    panel: SharedPanel.AppPanel,
+    spec?: SharedPanel.AppChildSpec
   ): Promise<void> {
     try {
       const version =
-        options?.branch || options?.commit || options?.tag
+        spec?.branch || spec?.commit || spec?.tag
           ? {
-              branch: options.branch,
-              commit: options.commit,
-              tag: options.tag,
+              branch: spec.branch,
+              commit: spec.commit,
+              tag: spec.tag,
             }
           : undefined;
 
@@ -522,6 +651,12 @@ export class PanelManager {
     if (!panel) {
       throw new Error(`Panel not found: ${panelId}`);
     }
+
+    // Browser panels don't have git configuration
+    if (panel.type === "browser") {
+      throw new Error("Git configuration is not available for browser panels");
+    }
+
     const sourceRepo = panel.sourceRepo ?? panel.path;
     if (!sourceRepo) {
       throw new Error("Git configuration is not available for this panel");
@@ -540,6 +675,19 @@ export class PanelManager {
 
   getPanelViews(panelId: string): Set<number> | undefined {
     return this.panelViews.get(panelId);
+  }
+
+  /**
+   * Find which panel a webContents sender belongs to.
+   * Returns the panel ID if found, null otherwise.
+   */
+  findPanelIdBySenderId(senderId: number): string | null {
+    for (const [panelId, views] of this.panelViews) {
+      if (views.has(senderId)) {
+        return panelId;
+      }
+    }
+    return null;
   }
 
   setCurrentTheme(theme: "light" | "dark"): void {
@@ -575,22 +723,36 @@ export class PanelManager {
       this.removePanelRecursive(child.id);
     }
 
-    // Check if this is a worker or a panel
-    if (panel.type === "worker") {
-      // Terminate the worker
-      void getWorkerManager().terminateWorker(panelId);
-    } else {
-      // Panel cleanup
-      // Revoke git token for this panel
-      this.gitServer.revokeTokenForPanel(panelId);
+    // Cleanup based on panel type
+    switch (panel.type) {
+      case "worker":
+        // Terminate the worker
+        void getWorkerManager().terminateWorker(panelId);
+        // Revoke CDP token for this worker (cleans up browser ownership)
+        getCdpServer().revokeTokenForPanel(panelId);
+        break;
 
-      // Clean up any Claude Code conversations for this panel
-      getClaudeCodeConversationManager().endPanelConversations(panelId);
+      case "browser":
+        // Unregister from CDP server
+        getCdpServer().unregisterBrowser(panelId);
+        break;
 
-      // Clean up protocol-served panel content if applicable
-      if (isProtocolPanel(panelId)) {
-        removeProtocolPanel(panelId);
-      }
+      case "app":
+        // App panel cleanup
+        // Revoke git token for this panel
+        this.gitServer.revokeTokenForPanel(panelId);
+
+        // Revoke CDP token for this panel (cleans up browser ownership)
+        getCdpServer().revokeTokenForPanel(panelId);
+
+        // Clean up any Claude Code conversations for this panel
+        getClaudeCodeConversationManager().endPanelConversations(panelId);
+
+        // Clean up protocol-served panel content if applicable
+        if (isProtocolPanel(panelId)) {
+          removeProtocolPanel(panelId);
+        }
+        break;
     }
 
     // Remove from panels map and views
@@ -607,11 +769,37 @@ export class PanelManager {
     return null;
   }
 
+  /**
+   * Find the parent panel ID for a given child panel ID.
+   * Returns null if the panel is a root panel or not found.
+   */
+  findParentId(childId: string): string | null {
+    const parent = this.findParentPanel(childId);
+    return parent?.id ?? null;
+  }
+
+  /**
+   * Notify renderer of panel tree changes.
+   * Debounced to batch rapid updates (e.g., worker console logs).
+   */
   notifyPanelTreeUpdate(): void {
-    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-      const tree = this.getSerializablePanelTree();
-      this.mainWindow.webContents.send("panel:tree-updated", tree);
+    // Mark update pending
+    this.treeUpdatePending = true;
+
+    // If timer already running, let it handle the update
+    if (this.treeUpdateTimer) {
+      return;
     }
+
+    // Schedule debounced update
+    this.treeUpdateTimer = setTimeout(() => {
+      this.treeUpdateTimer = null;
+      if (this.treeUpdatePending && this.mainWindow && !this.mainWindow.isDestroyed()) {
+        this.treeUpdatePending = false;
+        const tree = this.getSerializablePanelTree();
+        this.mainWindow.webContents.send("panel:tree-updated", tree);
+      }
+    }, this.TREE_UPDATE_DEBOUNCE_MS);
   }
 
   private serializePanel(panel: Panel): Panel {

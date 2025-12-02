@@ -1,5 +1,13 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
-import { CaretDownIcon, CaretRightIcon } from "@radix-ui/react-icons";
+import {
+  CaretDownIcon,
+  CaretRightIcon,
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  ReloadIcon,
+  Cross2Icon,
+  GlobeIcon,
+} from "@radix-ui/react-icons";
 import {
   Badge,
   Box,
@@ -10,11 +18,12 @@ import {
   ScrollArea,
   Spinner,
   Text,
+  TextField,
   Tooltip,
 } from "@radix-ui/themes";
 
 import type { StatusNavigationData, TitleNavigationData } from "./navigationTypes";
-import type { WorkerConsoleLogEntry } from "../../shared/ipc/types";
+import type { WorkerConsoleLogEntry, BrowserPanel, BrowserState } from "../../shared/ipc/types";
 import { useNavigation } from "./NavigationContext";
 
 interface PanelStackProps {
@@ -98,9 +107,13 @@ function PanelTreeSidebar({ rootPanels, visiblePath, onSelect }: PanelTreeSideba
               ? "var(--gray-a3)"
               : undefined;
 
+      // Get tooltip content based on panel type
+      const tooltipContent =
+        panel.type === "browser" ? panel.url : "path" in panel ? panel.path : panel.id;
+
       return (
         <Box key={panel.id} style={{ paddingLeft: `calc(${ancestry.length} * var(--space-2))` }}>
-          <Tooltip content={panel.path} side="right">
+          <Tooltip content={tooltipContent} side="right">
             <Flex
               align="center"
               gap="2"
@@ -194,6 +207,7 @@ export function PanelStack({
   const [sidebarWidth, setSidebarWidth] = useState<number>(260);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const [isResizeHover, setIsResizeHover] = useState(false);
+  const [browserUrlInputs, setBrowserUrlInputs] = useState<Map<string, string>>(new Map());
   const webviewRefs = useRef<Map<string, Electron.WebviewTag>>(new Map());
   const panelThemeCssKeys = useRef<Map<string, string>>(new Map());
   const domReadyPanels = useRef<Set<string>>(new Set());
@@ -241,6 +255,57 @@ export function PanelStack({
     } else {
       insertCss();
     }
+  };
+
+  // Browser navigation helpers
+  const getBrowserUrlInput = (panelId: string, fallback: string): string => {
+    return browserUrlInputs.get(panelId) ?? fallback;
+  };
+
+  const setBrowserUrlInput = (panelId: string, url: string) => {
+    setBrowserUrlInputs((prev) => {
+      const next = new Map(prev);
+      next.set(panelId, url);
+      return next;
+    });
+  };
+
+  const handleBrowserNavigate = (panelId: string, url: string) => {
+    const webview = webviewRefs.current.get(panelId);
+    if (webview) {
+      // Ensure URL has a protocol
+      let normalizedUrl = url.trim();
+      if (normalizedUrl && !normalizedUrl.match(/^[a-z]+:\/\//i)) {
+        normalizedUrl = `https://${normalizedUrl}`;
+      }
+      if (normalizedUrl) {
+        void webview.loadURL(normalizedUrl);
+      }
+    }
+  };
+
+  const handleBrowserGoBack = (panelId: string) => {
+    const webview = webviewRefs.current.get(panelId);
+    if (webview?.canGoBack()) {
+      webview.goBack();
+    }
+  };
+
+  const handleBrowserGoForward = (panelId: string) => {
+    const webview = webviewRefs.current.get(panelId);
+    if (webview?.canGoForward()) {
+      webview.goForward();
+    }
+  };
+
+  const handleBrowserReload = (panelId: string) => {
+    const webview = webviewRefs.current.get(panelId);
+    webview?.reload();
+  };
+
+  const handleBrowserStop = (panelId: string) => {
+    const webview = webviewRefs.current.get(panelId);
+    webview?.stop();
   };
 
   useEffect(() => {
@@ -338,6 +403,42 @@ export function PanelStack({
       mounted = false;
     };
   }, []);
+
+  // Sync browser URL inputs when actual URLs change (e.g., from navigation)
+  // Also clean up entries for removed panels to prevent memory leaks
+  useEffect(() => {
+    setBrowserUrlInputs((prev) => {
+      const next = new Map(prev);
+
+      // Collect all current browser panel IDs
+      const currentBrowserIds = new Set<string>();
+      const collectBrowserIds = (panels: Panel[]) => {
+        for (const panel of panels) {
+          if (panel.type === "browser") {
+            currentBrowserIds.add(panel.id);
+
+            // Also check if stored URL doesn't match actual URL (navigation occurred)
+            const stored = next.get(panel.id);
+            const actualUrl = (panel as BrowserPanel).url;
+            if (stored !== undefined && stored !== actualUrl) {
+              next.delete(panel.id);
+            }
+          }
+          collectBrowserIds(panel.children);
+        }
+      };
+      collectBrowserIds(rootPanels);
+
+      // Remove entries for panels that no longer exist
+      for (const panelId of next.keys()) {
+        if (!currentBrowserIds.has(panelId)) {
+          next.delete(panelId);
+        }
+      }
+
+      return next;
+    });
+  }, [rootPanels]);
 
   const findPanelByPathInTree = (tree: Panel[], path: string[]): Panel | null => {
     if (path.length === 0) return null;
@@ -499,14 +600,34 @@ export function PanelStack({
   // Initialize webview with panel ID when it loads
   const webviewCleanup = useRef<Map<string, () => void>>(new Map());
 
-  const handleWebviewReady = (panelId: string, webview: HTMLElement) => {
-    console.log(`[PanelStack] handleWebviewReady called for panel: ${panelId.slice(-30)}`);
+  const handleWebviewReady = (panelId: string, webview: HTMLElement, isBrowser: boolean = false) => {
+    // Skip if we already have listeners set up for this panel
+    // (ref callbacks can be called multiple times)
+    if (webviewCleanup.current.has(panelId)) {
+      return;
+    }
+
     const webviewTag = webview as unknown as Electron.WebviewTag;
     webviewRefs.current.set(panelId, webviewTag);
 
     const onDomReady = () => {
       domReadyPanels.current.add(panelId);
       applyThemeCss(panelId, webviewTag);
+
+      // Register browser webviews with the CDP server for Playwright automation
+      if (isBrowser) {
+        // getWebContentsId is a valid Electron WebviewTag method but not in the type declarations
+        // See: https://www.electronjs.org/docs/latest/api/webview-tag#webviewgetwebcontentsid
+        const getWebContentsId = webviewTag.getWebContentsId as (() => number) | undefined;
+        const webContentsId = getWebContentsId?.();
+        if (webContentsId !== undefined) {
+          void window.electronAPI.registerBrowserWebview(panelId, webContentsId).catch((error) => {
+            console.error(`[PanelStack] Failed to register browser webview ${panelId}:`, error);
+          });
+        } else {
+          console.warn(`[PanelStack] Could not get webContentsId for browser panel ${panelId}`);
+        }
+      }
     };
 
     const onDestroyed = () => {
@@ -519,9 +640,90 @@ export function PanelStack({
     webviewTag.addEventListener("dom-ready", onDomReady);
     webviewTag.addEventListener("destroyed", onDestroyed);
 
+    // Browser-specific event listeners for state forwarding
+    // Uses debouncing to batch multiple updates and reduce IPC traffic
+    let browserCleanup: (() => void) | undefined;
+    if (isBrowser) {
+      // Debounced state update - batches changes within 50ms window
+      let pendingState: {
+        url?: string;
+        isLoading?: boolean;
+        canGoBack?: boolean;
+        canGoForward?: boolean;
+        pageTitle?: string;
+      } = {};
+      let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const flushPendingState = () => {
+        if (Object.keys(pendingState).length > 0) {
+          void window.electronAPI.updateBrowserState(panelId, pendingState);
+          pendingState = {};
+        }
+        debounceTimer = null;
+      };
+
+      const queueStateUpdate = (update: typeof pendingState) => {
+        Object.assign(pendingState, update);
+        if (!debounceTimer) {
+          debounceTimer = setTimeout(flushPendingState, 50);
+        }
+      };
+
+      const onDidNavigate = (event: Electron.DidNavigateEvent) => {
+        queueStateUpdate({ url: event.url });
+      };
+
+      const onDidStartLoading = () => {
+        queueStateUpdate({ isLoading: true });
+      };
+
+      const onDidStopLoading = () => {
+        queueStateUpdate({
+          isLoading: false,
+          canGoBack: webviewTag.canGoBack(),
+          canGoForward: webviewTag.canGoForward(),
+        });
+      };
+
+      const onPageTitleUpdated = (event: Electron.PageTitleUpdatedEvent) => {
+        queueStateUpdate({ pageTitle: event.title });
+      };
+
+      // Handle navigation failures - ERR_ABORTED (-3) is common for redirects
+      const onDidFailLoad = (event: Electron.DidFailLoadEvent) => {
+        // Ignore aborted loads (redirects, user navigation, etc.)
+        if (event.errorCode === -3) {
+          return;
+        }
+        // Log other errors for debugging
+        console.warn(`[Browser] Navigation failed: ${event.errorDescription} (${event.errorCode})`);
+      };
+
+      webviewTag.addEventListener("did-navigate", onDidNavigate);
+      webviewTag.addEventListener("did-navigate-in-page", onDidNavigate);
+      webviewTag.addEventListener("did-start-loading", onDidStartLoading);
+      webviewTag.addEventListener("did-stop-loading", onDidStopLoading);
+      webviewTag.addEventListener("page-title-updated", onPageTitleUpdated);
+      webviewTag.addEventListener("did-fail-load", onDidFailLoad);
+
+      browserCleanup = () => {
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+          flushPendingState(); // Flush any pending updates on cleanup
+        }
+        webviewTag.removeEventListener("did-navigate", onDidNavigate);
+        webviewTag.removeEventListener("did-navigate-in-page", onDidNavigate);
+        webviewTag.removeEventListener("did-start-loading", onDidStartLoading);
+        webviewTag.removeEventListener("did-stop-loading", onDidStopLoading);
+        webviewTag.removeEventListener("page-title-updated", onPageTitleUpdated);
+        webviewTag.removeEventListener("did-fail-load", onDidFailLoad);
+      };
+    }
+
     webviewCleanup.current.set(panelId, () => {
       webviewTag.removeEventListener("dom-ready", onDomReady);
       webviewTag.removeEventListener("destroyed", onDestroyed);
+      browserCleanup?.();
     });
   };
 
@@ -791,6 +993,103 @@ export function PanelStack({
                           );
                         }
 
+                        // Browser panels show a webview with URL bar controls
+                        if (panel.type === "browser") {
+                          const browserPanel = panel as BrowserPanel;
+                          const isLoading = browserPanel.browserState?.isLoading;
+                          return (
+                            <Flex
+                              key={panel.id}
+                              direction="column"
+                              height="100%"
+                              style={{ overflow: "hidden" }}
+                            >
+                              {/* Browser toolbar */}
+                              <Flex
+                                align="center"
+                                gap="2"
+                                p="2"
+                                style={{
+                                  borderBottom: "1px solid var(--gray-6)",
+                                  backgroundColor: "var(--gray-2)",
+                                }}
+                              >
+                                <IconButton
+                                  size="1"
+                                  variant="ghost"
+                                  color="gray"
+                                  disabled={!browserPanel.browserState?.canGoBack}
+                                  aria-label="Go back"
+                                  onClick={() => handleBrowserGoBack(panel.id)}
+                                >
+                                  <ArrowLeftIcon />
+                                </IconButton>
+                                <IconButton
+                                  size="1"
+                                  variant="ghost"
+                                  color="gray"
+                                  disabled={!browserPanel.browserState?.canGoForward}
+                                  aria-label="Go forward"
+                                  onClick={() => handleBrowserGoForward(panel.id)}
+                                >
+                                  <ArrowRightIcon />
+                                </IconButton>
+                                <IconButton
+                                  size="1"
+                                  variant="ghost"
+                                  color="gray"
+                                  aria-label={isLoading ? "Stop" : "Reload"}
+                                  onClick={() =>
+                                    isLoading
+                                      ? handleBrowserStop(panel.id)
+                                      : handleBrowserReload(panel.id)
+                                  }
+                                >
+                                  {isLoading ? <Cross2Icon /> : <ReloadIcon />}
+                                </IconButton>
+                                <Flex flexGrow="1" align="center" gap="2">
+                                  <GlobeIcon color="gray" />
+                                  <TextField.Root
+                                    size="1"
+                                    variant="soft"
+                                    style={{ flex: 1 }}
+                                    value={getBrowserUrlInput(panel.id, browserPanel.url)}
+                                    onChange={(e) => setBrowserUrlInput(panel.id, e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") {
+                                        handleBrowserNavigate(panel.id, getBrowserUrlInput(panel.id, browserPanel.url));
+                                      }
+                                    }}
+                                    placeholder="Enter URL..."
+                                  />
+                                </Flex>
+                                <Badge color="blue" variant="soft">
+                                  Browser
+                                </Badge>
+                              </Flex>
+                              {/* Browser webview - no partition for standard browser behavior */}
+                              <Box style={{ flex: 1, position: "relative" }}>
+                                <webview
+                                  ref={(el) => {
+                                    if (el) {
+                                      handleWebviewReady(panel.id, el, true);
+                                    } else {
+                                      webviewRefs.current.delete(panel.id);
+                                      domReadyPanels.current.delete(panel.id);
+                                      panelThemeCssKeys.current.delete(panel.id);
+                                    }
+                                  }}
+                                  src={browserPanel.url}
+                                  style={{
+                                    width: "100%",
+                                    height: "100%",
+                                  }}
+                                />
+                              </Box>
+                            </Flex>
+                          );
+                        }
+
                         // Regular panel loading state
                         return (
                           <Flex
@@ -805,6 +1104,32 @@ export function PanelStack({
                           </Flex>
                         );
                       }
+                    }
+
+                    // Browser panels also need webviews even when not visible (to maintain state)
+                    // No partition for standard browser behavior (shared cookies/storage)
+                    if (panel.type === "browser") {
+                      const browserPanel = panel as BrowserPanel;
+                      return (
+                        <webview
+                          key={panel.id}
+                          ref={(el) => {
+                            if (el) {
+                              handleWebviewReady(panel.id, el, true);
+                            } else {
+                              webviewRefs.current.delete(panel.id);
+                              domReadyPanels.current.delete(panel.id);
+                              panelThemeCssKeys.current.delete(panel.id);
+                            }
+                          }}
+                          src={browserPanel.url}
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            display: "none",
+                          }}
+                        />
+                      );
                     }
 
                     if (artifacts?.htmlPath) {
