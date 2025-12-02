@@ -29,7 +29,7 @@ console.log('Step 2: Bundling with esbuild...');
 
 // esbuild configuration for browser-compatible Playwright Core
 const buildConfig = {
-  entryPoints: [path.join(__dirname, 'src/client/playwright.ts')],
+  entryPoints: [path.join(__dirname, 'src/index.ts')],
   outfile: path.join(__dirname, 'dist/playwright-core.js'),
   bundle: true,
   platform: 'browser',

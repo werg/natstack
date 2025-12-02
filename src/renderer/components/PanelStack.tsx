@@ -196,7 +196,6 @@ export function PanelStack({
   onRegisterNavigate,
 }: PanelStackProps) {
   // Debug: log component render
-  console.log("[PanelStack] Component rendering");
 
   const { mode: navigationMode, setTitleNavigation, setStatusNavigation } = useNavigation();
   const [rootPanels, setRootPanels] = useState<Panel[]>([]);
@@ -558,10 +557,6 @@ export function PanelStack({
   const allPanels = flattenPanels(rootPanels);
 
   // Debug: log all panels
-  console.log(
-    `[PanelStack] allPanels count: ${allPanels.length}, ids: ${allPanels.map((p) => p.id.slice(-20)).join(", ")}`
-  );
-
   function findPanelById(panelId: string): Panel | null {
     const traverse = (panelList: Panel[]): Panel | null => {
       for (const panel of panelList) {
@@ -610,24 +605,15 @@ export function PanelStack({
     const webviewTag = webview as unknown as Electron.WebviewTag;
     webviewRefs.current.set(panelId, webviewTag);
 
+    // Note: Browser webview registration with the CDP server is now handled automatically
+    // by the main process via the did-attach-webview event. This is more reliable than
+    // trying to call getWebContentsId from the renderer, which has timing issues with
+    // Electron's webview lifecycle.
+
     const onDomReady = () => {
+      console.log(`[PanelStack] dom-ready fired for ${panelId}, isBrowser=${isBrowser}`);
       domReadyPanels.current.add(panelId);
       applyThemeCss(panelId, webviewTag);
-
-      // Register browser webviews with the CDP server for Playwright automation
-      if (isBrowser) {
-        // getWebContentsId is a valid Electron WebviewTag method but not in the type declarations
-        // See: https://www.electronjs.org/docs/latest/api/webview-tag#webviewgetwebcontentsid
-        const getWebContentsId = webviewTag.getWebContentsId as (() => number) | undefined;
-        const webContentsId = getWebContentsId?.();
-        if (webContentsId !== undefined) {
-          void window.electronAPI.registerBrowserWebview(panelId, webContentsId).catch((error) => {
-            console.error(`[PanelStack] Failed to register browser webview ${panelId}:`, error);
-          });
-        } else {
-          console.warn(`[PanelStack] Could not get webContentsId for browser panel ${panelId}`);
-        }
-      }
     };
 
     const onDestroyed = () => {

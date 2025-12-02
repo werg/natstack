@@ -35,7 +35,7 @@ export { ElementHandle } from './client/elementHandle';
 export { TimeoutError, TargetClosedError } from './client/errors';
 
 // Platform abstraction - runtime environment bridge
-export { emptyPlatform } from './client/platform';
+export { emptyPlatform, webPlatform } from './client/platform';
 export type { Platform } from './client/platform';
 
 // Connection infrastructure - CDP protocol handling

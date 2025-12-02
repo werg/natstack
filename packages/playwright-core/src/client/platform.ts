@@ -118,3 +118,76 @@ export const emptyPlatform: Platform = {
 
   zones: { empty: noopZone, current: () => noopZone },
 };
+
+/**
+ * Web platform implementation for browser-based Playwright usage.
+ * Uses Web Crypto API for SHA1 and crypto.randomUUID for GUIDs.
+ */
+export const webPlatform: Platform = {
+  name: 'web',
+
+  boxedStackPrefixes: () => [],
+
+  calculateSha1: async (text: string) => {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(text);
+    const hashBuffer = await crypto.subtle.digest('SHA-1', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  },
+
+  colors: webColors,
+
+  createGuid: () => {
+    return crypto.randomUUID();
+  },
+
+  defaultMaxListeners: () => 100,
+
+  env: {},
+
+  fs: () => {
+    throw new Error('File system is not available in browser');
+  },
+
+  inspectCustom: undefined,
+
+  isDebugMode: () => false,
+
+  isJSDebuggerAttached: () => false,
+
+  isLogEnabled(name: 'api' | 'channel') {
+    return false;
+  },
+
+  isUnderTest: () => false,
+
+  log(name: 'api' | 'channel', message: string | Error | object) {
+    // Browser logging
+    if (name === 'api') {
+      console.log('[Playwright API]', message);
+    }
+  },
+
+  path: () => {
+    throw new Error('Path module is not available in browser');
+  },
+
+  pathSeparator: '/',
+
+  showInternalStackFrames: () => false,
+
+  streamFile(path: string, writable: Writable): Promise<void> {
+    throw new Error('File streaming is not available in browser');
+  },
+
+  streamReadable: (channel: channels.StreamChannel) => {
+    throw new Error('Streams are not available in browser');
+  },
+
+  streamWritable: (channel: channels.WritableStreamChannel) => {
+    throw new Error('Streams are not available in browser');
+  },
+
+  zones: { empty: noopZone, current: () => noopZone },
+};

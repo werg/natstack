@@ -2,7 +2,7 @@ import { type BrowserWindow, webContents } from "electron";
 import * as path from "path";
 import { randomBytes } from "crypto";
 import { PanelBuilder } from "./panelBuilder.js";
-import type { PanelEventPayload, Panel, PanelManifest } from "./panelTypes.js";
+import type { PanelEventPayload, Panel, PanelManifest, BrowserPanel } from "./panelTypes.js";
 import { getActiveWorkspace } from "./paths.js";
 import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
 import type { GitServer } from "./gitServer.js";
@@ -777,6 +777,27 @@ export class PanelManager {
   findParentId(childId: string): string | null {
     const parent = this.findParentPanel(childId);
     return parent?.id ?? null;
+  }
+
+  /**
+   * Find a browser panel by its URL.
+   * Used for auto-registering browser webviews when they attach.
+   * Returns null if no matching browser panel is found.
+   */
+  findBrowserPanelByUrl(url: string): Panel | null {
+    // Normalize the URL for comparison
+    const normalizedUrl = url.toLowerCase();
+
+    for (const panel of this.panels.values()) {
+      if (panel.type === "browser") {
+        const browserUrl = (panel as BrowserPanel).url?.toLowerCase();
+        // Match if URLs are the same or if the browser navigated (URL might have changed)
+        if (browserUrl && (normalizedUrl.startsWith(browserUrl) || browserUrl.startsWith(normalizedUrl))) {
+          return panel;
+        }
+      }
+    }
+    return null;
   }
 
   /**

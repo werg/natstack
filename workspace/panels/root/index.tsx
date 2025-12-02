@@ -516,9 +516,8 @@ export default function ChildPanelLauncher() {
   };
 
   /**
-   * Browser automation using Playwright Core library.
-   * This demonstrates how to use the browser-compatible Playwright library
-   * to control a child browser panel with high-level APIs instead of raw CDP.
+   * Browser automation using Playwright API.
+   * TODO: Implement proper Playwright shim over CDP.
    */
   const runPlaywrightDemo = async () => {
     if (!browserId) {
@@ -527,137 +526,15 @@ export default function ChildPanelLauncher() {
     }
 
     try {
-      // Import Playwright dynamically to keep bundle size reasonable
-      const { Connection, webPlatform } = await import("@natstack/playwright-core");
-
       addBrowserLog("Getting CDP endpoint...");
       const cdpUrl = await panel.browser.getCdpEndpoint(browserId);
-      addBrowserLog(`CDP endpoint obtained`);
+      addBrowserLog(`CDP endpoint: ${cdpUrl}`);
 
-      addBrowserLog("Initializing Playwright connection...");
-      const connection = new Connection(webPlatform);
+      addBrowserLog("TODO: Implement Playwright API shim over CDP");
+      addBrowserLog("The challenge: Playwright's Connection class expects a Playwright server,");
+      addBrowserLog("not raw CDP. We need to build a shim that translates Playwright API calls");
+      addBrowserLog("into CDP commands.");
 
-      // Set up WebSocket communication with the browser
-      let ws: WebSocket | null = null;
-      connection.onmessage = (message: any) => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify(message));
-        }
-      };
-
-      // Connect WebSocket
-      ws = new WebSocket(cdpUrl);
-      await new Promise<void>((resolve, reject) => {
-        ws!.onopen = () => resolve();
-        ws!.onerror = (e) => reject(new Error(`WebSocket error: ${e}`));
-        setTimeout(() => reject(new Error("Connection timeout")), 10000);
-      });
-
-      ws.addEventListener("message", (event) => {
-        try {
-          connection.dispatch(JSON.parse(event.data));
-        } catch {
-          // Ignore parse errors
-        }
-      });
-
-      addBrowserLog("Connected to browser! Initializing Playwright...");
-
-      // Initialize Playwright and get browser context
-      const playwright = await connection.initializePlaywright();
-      const browser = playwright._preLaunchedBrowser();
-      const contexts = browser.contexts();
-      const context = contexts[0];
-      if (!context) throw new Error("No browser context available");
-
-      addBrowserLog("Getting page...");
-      const pages = context.pages();
-      let page = pages[0];
-      if (!page) {
-        // Create a new page if none exists
-        page = await context.newPage();
-      }
-
-      // Navigate to a test page
-      addBrowserLog("Navigating to https://httpbin.org/html...");
-      await page.goto("https://httpbin.org/html", { waitUntil: "networkidle" });
-      addBrowserLog("Page loaded");
-
-      // Get page title
-      const title = await page.title();
-      addBrowserLog(`Page title: "${title}"`);
-
-      // Extract the h1 heading using locator API
-      addBrowserLog("Extracting h1 content...");
-      const h1Locator = page.locator("h1");
-      const h1Count = await h1Locator.count();
-      if (h1Count > 0) {
-        const h1Text = await h1Locator.first().textContent();
-        addBrowserLog(`Found h1: "${h1Text}"`);
-      } else {
-        addBrowserLog("No h1 found on page");
-      }
-
-      // Extract all heading hierarchy
-      addBrowserLog("Analyzing page structure...");
-      const headings = page.locator("h1, h2, h3, h4, h5, h6");
-      const headingCount = await headings.count();
-      addBrowserLog(`Found ${headingCount} heading(s)`);
-      for (let i = 0; i < Math.min(headingCount, 3); i++) {
-        const heading = headings.nth(i);
-        const tag = await heading.evaluate((el: any) => el.tagName.toLowerCase());
-        const text = await heading.textContent();
-        addBrowserLog(`  ${tag}: "${text?.trim()}"`);
-      }
-
-      // Test input field interaction if present
-      const inputLocators = page.locator('input[type="text"], textarea');
-      const inputCount = await inputLocators.count();
-      if (inputCount > 0) {
-        addBrowserLog(`Found ${inputCount} input field(s)`);
-        const firstInput = inputLocators.first();
-        const placeholder = await firstInput.getAttribute("placeholder");
-        addBrowserLog(`First input placeholder: "${placeholder}"`);
-      }
-
-      // Get network information
-      addBrowserLog("Testing network interception...");
-      let requestCount = 0;
-      page.on("request", (request: any) => {
-        requestCount++;
-      });
-
-      // Take a screenshot
-      addBrowserLog("Taking screenshot...");
-      try {
-        const screenshot = await page.screenshot({ type: "png" });
-        addBrowserLog(`Screenshot captured (${screenshot.byteLength} bytes)`);
-      } catch (e) {
-        addBrowserLog("Screenshot not available (may require headless mode)");
-      }
-
-      // Navigate to a different site
-      addBrowserLog("Navigating to https://example.com...");
-      await page.goto("https://example.com", { waitUntil: "networkidle" });
-
-      const exampleTitle = await page.title();
-      const mainHeading = page.locator("h1");
-      const mainHeadingExists = (await mainHeading.count()) > 0;
-
-      addBrowserLog(`Navigated to: "${exampleTitle}"`);
-      addBrowserLog(`Main heading exists: ${mainHeadingExists}`);
-
-      // Demonstrate JavaScript evaluation
-      addBrowserLog("Evaluating JavaScript...");
-      const pageInfo = await page.evaluate(() => ({
-        url: window.location.href,
-        title: document.title,
-        elementCount: document.querySelectorAll("*").length,
-        linkCount: document.querySelectorAll("a").length,
-      }));
-      addBrowserLog(`Page stats: ${JSON.stringify(pageInfo)}`);
-
-      addBrowserLog("✅ Playwright demo complete!");
     } catch (error) {
       addBrowserLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
     }

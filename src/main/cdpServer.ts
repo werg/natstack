@@ -119,13 +119,40 @@ export class CdpServer {
   }
 
   /**
-   * Get the CDP endpoint URL for a browser.
-   * Only the parent panel that created the browser can get this URL.
+   * Check if a panel can access a browser (direct parent or tree ancestor).
+   * Panel hierarchy format: tree/root, tree/root/child1, tree/root/child1/child2, etc.
+   * A panel can access a browser if:
+   * - It directly owns the browser, OR
+   * - It's a tree ancestor of the browser's owner
    */
+  private canAccessBrowser(panelId: string, browserId: string): boolean {
+    // Check direct ownership first
+    const ownedBrowsers = this.panelBrowsers.get(panelId);
+    if (ownedBrowsers?.has(browserId)) {
+      console.log(`[CDP Access] Direct ownership: panel ${panelId} owns ${browserId}`);
+      return true;
+    }
+
+    // Check if panelId is a tree ancestor of any owner of this browser
+    // (i.e., if an owner's panel ID starts with panelId/)
+    for (const [ownerId, browsers] of this.panelBrowsers) {
+      if (browsers.has(browserId)) {
+        // Found the owner, check if requesting panel is an ancestor
+        console.log(`[CDP Access] Browser ${browserId} owned by ${ownerId}, checking ancestor ${panelId}`);
+        if (ownerId.startsWith(panelId + "/")) {
+          console.log(`[CDP Access] Granted: ${panelId} is ancestor of ${ownerId}`);
+          return true;
+        }
+      }
+    }
+
+    console.log(`[CDP Access] Denied: ${panelId} has no access to ${browserId}. panelBrowsers:`, Array.from(this.panelBrowsers.entries()).map(([id, set]) => `${id}->[${Array.from(set).join(",")}]`));
+    return false;
+  }
+
   getCdpEndpoint(browserId: string, requestingPanelId: string): string | null {
-    // Verify the requesting panel owns this browser
-    const ownedBrowsers = this.panelBrowsers.get(requestingPanelId);
-    if (!ownedBrowsers?.has(browserId)) {
+    // Verify the requesting panel can access this browser (direct parent or tree ancestor)
+    if (!this.canAccessBrowser(requestingPanelId, browserId)) {
       return null; // Access denied
     }
 
@@ -197,9 +224,8 @@ export class CdpServer {
       return;
     }
 
-    // Validate this panel owns the browser
-    const ownedBrowsers = this.panelBrowsers.get(panelId);
-    if (!ownedBrowsers?.has(browserId)) {
+    // Validate this panel can access the browser (direct parent or tree ancestor)
+    if (!this.canAccessBrowser(panelId, browserId)) {
       ws.close(4003, "Access denied to this browser");
       return;
     }

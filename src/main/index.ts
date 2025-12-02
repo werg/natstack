@@ -152,6 +152,70 @@ function createWindow(): void {
     panelManager.setMainWindow(mainWindow);
   }
 
+  // Listen for webview attachments to auto-register browser panels with CDP server.
+  // This is more reliable than calling getWebContentsId from the renderer, which has timing issues.
+  mainWindow.webContents.on("did-attach-webview", (_event, webContents) => {
+    const webContentsId = webContents.id;
+
+    // Try to register immediately with current URL
+    const tryRegister = (): boolean => {
+      const url = webContents.getURL();
+
+      // Skip app panel webviews (they use our natstack-panel:// protocol)
+      if (url.startsWith("natstack-panel://")) {
+        return true; // Treat as "handled" so we don't keep listening
+      }
+
+      // Skip empty URLs (webview not yet navigated)
+      if (!url || url === "about:blank") {
+        return false;
+      }
+
+      console.log(`[Main] did-attach-webview: webContentsId=${webContentsId}, url=${url}`);
+
+      // Find which browser panel this webContents belongs to by matching URL
+      if (panelManager) {
+        const browserPanel = panelManager.findBrowserPanelByUrl(url);
+        if (browserPanel) {
+          const parentId = panelManager.findParentId(browserPanel.id);
+          if (parentId) {
+            console.log(`[Main] Auto-registering browser ${browserPanel.id} (webContentsId=${webContentsId}) for parent ${parentId}`);
+            getCdpServer().registerBrowser(browserPanel.id, webContentsId, parentId);
+            return true;
+          } else {
+            console.log(`[Main] Browser panel ${browserPanel.id} has no parent - might be a root browser`);
+          }
+        } else {
+          console.log(`[Main] Could not find browser panel for URL: ${url}`);
+        }
+      }
+      return false;
+    };
+
+    // Try immediately
+    if (tryRegister()) {
+      return;
+    }
+
+    // If URL wasn't available yet, wait for navigation
+    const onNavigate = () => {
+      if (tryRegister()) {
+        webContents.off("did-navigate", onNavigate);
+        webContents.off("did-start-navigation", onNavigate);
+      }
+    };
+
+    webContents.on("did-navigate", onNavigate);
+    webContents.on("did-start-navigation", onNavigate);
+
+    // Also try after a short delay as fallback
+    setTimeout(() => {
+      tryRegister();
+      webContents.off("did-navigate", onNavigate);
+      webContents.off("did-start-navigation", onNavigate);
+    }, 500);
+  });
+
   // Setup application menu
   setupMenu(mainWindow);
 }
@@ -369,6 +433,7 @@ handle("panel-bridge:browser-get-cdp-endpoint", async (event, browserId: string)
 
   // Find the panel ID for this sender
   const requestingPanelId = pm.findPanelIdBySenderId(event.sender.id);
+  console.log(`[CDP] getCdpEndpoint: event.sender.id=${event.sender.id}, requestingPanelId=${requestingPanelId}, browserId=${browserId}`);
 
   if (!requestingPanelId) {
     throw new Error("Unauthorized: could not determine requesting panel");
@@ -376,6 +441,7 @@ handle("panel-bridge:browser-get-cdp-endpoint", async (event, browserId: string)
 
   const cdpServer = getCdpServer();
   const endpoint = cdpServer.getCdpEndpoint(browserId, requestingPanelId);
+  console.log(`[CDP] getCdpEndpoint result: ${endpoint ? "granted" : "denied"}`);
 
   if (!endpoint) {
     throw new Error("Access denied: you do not own this browser panel");
@@ -400,6 +466,7 @@ handle("panel:register-browser-webview", async (_event, browserId: string, webCo
     throw new Error(`Parent panel not found for browser: ${browserId}`);
   }
 
+  console.log(`[CDP] registerBrowser: browserId=${browserId}, parentId=${parentId}, webContentsId=${webContentsId}`);
   // Register with CDP server (idempotent - may be called multiple times on dom-ready)
   getCdpServer().registerBrowser(browserId, webContentsId, parentId);
 });

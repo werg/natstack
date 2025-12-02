@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@natstack/panel": "workspace:*",
+    "@natstack/playwright-client": "workspace:*",
     "@natstack/playwright-core": "workspace:*",
     "@natstack/react": "workspace:*"
   }
