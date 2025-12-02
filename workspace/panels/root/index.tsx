@@ -516,133 +516,150 @@ export default function ChildPanelLauncher() {
   };
 
   /**
-   * Simple CDP (Chrome DevTools Protocol) client using raw WebSocket.
-   * This demonstrates browser automation without requiring playwright-core.
+   * Browser automation using Playwright Core library.
+   * This demonstrates how to use the browser-compatible Playwright library
+   * to control a child browser panel with high-level APIs instead of raw CDP.
    */
-  const runCdpDemo = async () => {
+  const runPlaywrightDemo = async () => {
     if (!browserId) {
       addBrowserLog("No browser launched - launch one first!");
       return;
     }
 
-    let ws: WebSocket | null = null;
-    let messageId = 1;
-
-    const sendCommand = (method: string, params: Record<string, unknown> = {}): Promise<unknown> => {
-      return new Promise((resolve, reject) => {
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-          reject(new Error("WebSocket not connected"));
-          return;
-        }
-
-        const id = messageId++;
-        const handler = (event: MessageEvent) => {
-          try {
-            const response = JSON.parse(event.data);
-            if (response.id === id) {
-              ws?.removeEventListener("message", handler);
-              if (response.error) {
-                reject(new Error(response.error.message));
-              } else {
-                resolve(response.result);
-              }
-            }
-          } catch {
-            // Ignore parse errors for other messages
-          }
-        };
-
-        ws.addEventListener("message", handler);
-        ws.send(JSON.stringify({ id, method, params }));
-
-        // Timeout after 30 seconds
-        setTimeout(() => {
-          ws?.removeEventListener("message", handler);
-          reject(new Error(`Timeout waiting for response to ${method}`));
-        }, 30000);
-      });
-    };
-
     try {
+      // Import Playwright dynamically to keep bundle size reasonable
+      const { Connection, webPlatform } = await import("@natstack/playwright-core");
+
       addBrowserLog("Getting CDP endpoint...");
       const cdpUrl = await panel.browser.getCdpEndpoint(browserId);
-      addBrowserLog(`CDP endpoint: ${cdpUrl}`);
+      addBrowserLog(`CDP endpoint obtained`);
 
-      addBrowserLog("Connecting via WebSocket...");
+      addBrowserLog("Initializing Playwright connection...");
+      const connection = new Connection(webPlatform);
+
+      // Set up WebSocket communication with the browser
+      let ws: WebSocket | null = null;
+      connection.onmessage = (message: any) => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(message));
+        }
+      };
+
+      // Connect WebSocket
       ws = new WebSocket(cdpUrl);
-
       await new Promise<void>((resolve, reject) => {
         ws!.onopen = () => resolve();
         ws!.onerror = (e) => reject(new Error(`WebSocket error: ${e}`));
         setTimeout(() => reject(new Error("Connection timeout")), 10000);
       });
-      addBrowserLog("Connected to CDP!");
 
-      // Enable the Page domain
-      addBrowserLog("Enabling Page domain...");
-      await sendCommand("Page.enable");
+      ws.addEventListener("message", (event) => {
+        try {
+          connection.dispatch(JSON.parse(event.data));
+        } catch {
+          // Ignore parse errors
+        }
+      });
 
-      // Get the current URL
-      addBrowserLog("Getting current frame tree...");
-      const frameTree = await sendCommand("Page.getFrameTree") as { frameTree: { frame: { url: string } } };
-      const currentUrl = frameTree.frameTree.frame.url;
-      addBrowserLog(`Current URL: ${currentUrl}`);
+      addBrowserLog("Connected to browser! Initializing Playwright...");
 
-      // Navigate to httpbin.org/html
+      // Initialize Playwright and get browser context
+      const playwright = await connection.initializePlaywright();
+      const browser = playwright._preLaunchedBrowser();
+      const contexts = browser.contexts();
+      const context = contexts[0];
+      if (!context) throw new Error("No browser context available");
+
+      addBrowserLog("Getting page...");
+      const pages = context.pages();
+      let page = pages[0];
+      if (!page) {
+        // Create a new page if none exists
+        page = await context.newPage();
+      }
+
+      // Navigate to a test page
       addBrowserLog("Navigating to https://httpbin.org/html...");
-      await sendCommand("Page.navigate", { url: "https://httpbin.org/html" });
+      await page.goto("https://httpbin.org/html", { waitUntil: "networkidle" });
+      addBrowserLog("Page loaded");
 
-      // Wait for page to load
-      addBrowserLog("Waiting for page load...");
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      // Get page title
+      const title = await page.title();
+      addBrowserLog(`Page title: "${title}"`);
 
-      // Enable Runtime for JavaScript evaluation
-      await sendCommand("Runtime.enable");
+      // Extract the h1 heading using locator API
+      addBrowserLog("Extracting h1 content...");
+      const h1Locator = page.locator("h1");
+      const h1Count = await h1Locator.count();
+      if (h1Count > 0) {
+        const h1Text = await h1Locator.first().textContent();
+        addBrowserLog(`Found h1: "${h1Text}"`);
+      } else {
+        addBrowserLog("No h1 found on page");
+      }
 
-      // Get the page title using Runtime.evaluate
-      addBrowserLog("Evaluating document.title...");
-      const titleResult = await sendCommand("Runtime.evaluate", {
-        expression: "document.title",
-        returnByValue: true,
-      }) as { result: { value: string } };
-      addBrowserLog(`Page title: "${titleResult.result.value}"`);
+      // Extract all heading hierarchy
+      addBrowserLog("Analyzing page structure...");
+      const headings = page.locator("h1, h2, h3, h4, h5, h6");
+      const headingCount = await headings.count();
+      addBrowserLog(`Found ${headingCount} heading(s)`);
+      for (let i = 0; i < Math.min(headingCount, 3); i++) {
+        const heading = headings.nth(i);
+        const tag = await heading.evaluate((el: any) => el.tagName.toLowerCase());
+        const text = await heading.textContent();
+        addBrowserLog(`  ${tag}: "${text?.trim()}"`);
+      }
 
-      // Extract h1 content
-      addBrowserLog("Extracting h1 heading...");
-      const h1Result = await sendCommand("Runtime.evaluate", {
-        expression: "document.querySelector('h1')?.textContent || 'No h1 found'",
-        returnByValue: true,
-      }) as { result: { value: string } };
-      addBrowserLog(`Found heading: "${h1Result.result.value}"`);
+      // Test input field interaction if present
+      const inputLocators = page.locator('input[type="text"], textarea');
+      const inputCount = await inputLocators.count();
+      if (inputCount > 0) {
+        addBrowserLog(`Found ${inputCount} input field(s)`);
+        const firstInput = inputLocators.first();
+        const placeholder = await firstInput.getAttribute("placeholder");
+        addBrowserLog(`First input placeholder: "${placeholder}"`);
+      }
+
+      // Get network information
+      addBrowserLog("Testing network interception...");
+      let requestCount = 0;
+      page.on("request", (request: any) => {
+        requestCount++;
+      });
 
       // Take a screenshot
       addBrowserLog("Taking screenshot...");
-      const screenshot = await sendCommand("Page.captureScreenshot", {
-        format: "png",
-      }) as { data: string };
-      const screenshotSize = Math.round(screenshot.data.length * 0.75); // base64 to bytes estimate
-      addBrowserLog(`Screenshot captured (~${screenshotSize} bytes)`);
+      try {
+        const screenshot = await page.screenshot({ type: "png" });
+        addBrowserLog(`Screenshot captured (${screenshot.byteLength} bytes)`);
+      } catch (e) {
+        addBrowserLog("Screenshot not available (may require headless mode)");
+      }
 
-      // Navigate to example.com
+      // Navigate to a different site
       addBrowserLog("Navigating to https://example.com...");
-      await sendCommand("Page.navigate", { url: "https://example.com" });
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await page.goto("https://example.com", { waitUntil: "networkidle" });
 
-      // Get final title
-      const finalTitleResult = await sendCommand("Runtime.evaluate", {
-        expression: "document.title",
-        returnByValue: true,
-      }) as { result: { value: string } };
-      addBrowserLog(`Final page: "${finalTitleResult.result.value}"`);
+      const exampleTitle = await page.title();
+      const mainHeading = page.locator("h1");
+      const mainHeadingExists = (await mainHeading.count()) > 0;
 
-      addBrowserLog("CDP demo complete!");
+      addBrowserLog(`Navigated to: "${exampleTitle}"`);
+      addBrowserLog(`Main heading exists: ${mainHeadingExists}`);
+
+      // Demonstrate JavaScript evaluation
+      addBrowserLog("Evaluating JavaScript...");
+      const pageInfo = await page.evaluate(() => ({
+        url: window.location.href,
+        title: document.title,
+        elementCount: document.querySelectorAll("*").length,
+        linkCount: document.querySelectorAll("a").length,
+      }));
+      addBrowserLog(`Page stats: ${JSON.stringify(pageInfo)}`);
+
+      addBrowserLog("✅ Playwright demo complete!");
     } catch (error) {
       addBrowserLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.close();
-        addBrowserLog("WebSocket closed");
-      }
     }
   };
 
@@ -1069,8 +1086,8 @@ export default function ChildPanelLauncher() {
                 </Text>
 
                 <Flex gap="2" wrap="wrap">
-                  <Button onClick={runCdpDemo} variant="soft" color="teal">
-                    Run CDP Demo
+                  <Button onClick={runPlaywrightDemo} variant="soft" color="teal">
+                    Run Playwright Demo
                   </Button>
                   <Button onClick={closeBrowser} variant="soft" color="red">
                     Close Browser

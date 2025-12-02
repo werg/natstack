@@ -1,0 +1,22 @@
+{
+  "name": "@natstack-panels/agentic-notebook",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "title": "Agentic Notebook",
+    "entry": "index.tsx"
+  },
+  "dependencies": {
+    "@mdx-js/mdx": "^3.1.1",
+    "@mdx-js/react": "^3.1.1",
+    "@natstack/ai": "workspace:*",
+    "@natstack/git": "workspace:*",
+    "@natstack/notebook-kernel": "workspace:*",
+    "@natstack/panel": "workspace:*",
+    "@natstack/react": "workspace:*",
+    "jotai": "^2.15.1",
+    "react-syntax-highlighter": "^15.6.6",
+    "react-virtuoso": "^4.15.0"
+  }
+}
