@@ -30,15 +30,15 @@ import type { Playwright } from './playwright';
 import type { ConnectOptions, LaunchOptions, LaunchPersistentContextOptions, LaunchServerOptions } from './types';
 import type * as api from '../../types/types';
 import type * as channels from '@protocol/channels';
+import type { ChildProcess } from 'child_process';
 
 export interface BrowserServerLauncher {
   launchServer(options?: LaunchServerOptions): Promise<api.BrowserServer>;
 }
 
 // This is here just for api generation and checking.
-// Browser context doesn't support local launching, only remote connections
 export interface BrowserServer extends api.BrowserServer {
-  process(): any; // Not available in browser
+  process(): ChildProcess;
   wsEndpoint(): string;
   close(): Promise<void>;
   kill(): Promise<void>;

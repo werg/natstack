@@ -16,6 +16,20 @@
  */
 
 export const Events = {
+  AndroidDevice: {
+    WebView: 'webview',
+    Close: 'close'
+  },
+
+  AndroidSocket: {
+    Data: 'data',
+    Close: 'close'
+  },
+
+  AndroidWebView: {
+    Close: 'close'
+  },
+
   Browser: {
     Disconnected: 'disconnected'
   },
@@ -45,6 +59,7 @@ export const Events = {
     Crash: 'crash',
     Console: 'console',
     Dialog: 'dialog',
+    Download: 'download',
     FileChooser: 'filechooser',
     DOMContentLoaded: 'domcontentloaded',
     // Can't use just 'error' due to node.js special treatment of error events.
@@ -73,5 +88,11 @@ export const Events = {
   Worker: {
     Close: 'close',
     Console: 'console',
+  },
+
+  ElectronApplication: {
+    Close: 'close',
+    Console: 'console',
+    Window: 'window',
   },
 };

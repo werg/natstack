@@ -35,21 +35,36 @@ const buildConfig = {
   platform: 'browser',
   target: 'ES2020',
   format: 'esm',
-  sourcemap: process.env.NODE_ENV === 'development',
-  minify: process.env.NODE_ENV === 'production',
+  sourcemap: true,  // Always enable for debugging
+  minify: false,    // Disable for better debugging
+  keepNames: true,  // Preserve class/function names for debugging
   packages: 'external', // Don't bundle npm packages
 
-  // Custom path resolution for Playwright's internal structure
+  // Custom path resolution for Playwright's internal structure and browser stubs for Node built-ins
   alias: {
     '@protocol': path.join(__dirname, '../playwright-protocol/src'),
     '@isomorphic': path.join(__dirname, 'src/utils/isomorphic'),
+    fs: path.join(__dirname, 'src/browser-stubs/fs.ts'),
+    path: path.join(__dirname, 'src/browser-stubs/path.ts'),
+    os: path.join(__dirname, 'src/browser-stubs/os.ts'),
+    crypto: path.join(__dirname, 'src/browser-stubs/crypto.ts'),
+    http: path.join(__dirname, 'src/browser-stubs/http.ts'),
+    https: path.join(__dirname, 'src/browser-stubs/https.ts'),
+    http2: path.join(__dirname, 'src/browser-stubs/http2.ts'),
+    url: path.join(__dirname, 'src/browser-stubs/url.ts'),
+    dns: path.join(__dirname, 'src/browser-stubs/dns.ts'),
+    net: path.join(__dirname, 'src/browser-stubs/net.ts'),
+    tls: path.join(__dirname, 'src/browser-stubs/tls.ts'),
+    util: path.join(__dirname, 'src/browser-stubs/util.ts'),
+    stream: path.join(__dirname, 'src/browser-stubs/stream.ts'),
+    events: path.join(__dirname, 'src/browser-stubs/events.ts'),
+    async_hooks: path.join(__dirname, 'src/browser-stubs/async_hooks.ts'),
+    child_process: path.join(__dirname, 'src/browser-stubs/child_process.ts'),
+    readline: path.join(__dirname, 'src/browser-stubs/readline.ts'),
+    electron: path.join(__dirname, 'src/browser-stubs/electron.ts'),
   },
 
-  // Keep these as external since they're type-only or will be provided at runtime
-  external: [
-    'fs', 'path', 'os', 'child_process',  // Node.js APIs
-    'electron',                             // Electron APIs
-  ],
+  external: [],
 
   // Handle TypeScript
   loader: {

@@ -17,6 +17,7 @@
 import { ChannelOwner } from './channelOwner';
 
 import type * as api from '../../types/types';
+import type { Protocol } from '../server/chromium/protocol';
 import type * as channels from '@protocol/channels';
 
 export class CDPSession extends ChannelOwner<channels.CDPSessionChannel> implements api.CDPSession {
@@ -38,12 +39,12 @@ export class CDPSession extends ChannelOwner<channels.CDPSessionChannel> impleme
     this.once = super.once;
   }
 
-  async send<T = any>(
-    method: string,
-    params?: any
-  ): Promise<any> {
+  async send<T extends keyof Protocol.CommandParameters>(
+    method: T,
+    params?: Protocol.CommandParameters[T]
+  ): Promise<Protocol.CommandReturnValues[T]> {
     const result = await this._channel.send({ method, params });
-    return result.result;
+    return result.result as Protocol.CommandReturnValues[T];
   }
 
   async detach() {

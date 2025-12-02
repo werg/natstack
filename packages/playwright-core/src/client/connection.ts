@@ -15,6 +15,8 @@
  */
 
 import { EventEmitter } from './eventEmitter';
+import { Android, AndroidDevice, AndroidSocket } from './android';
+import { Artifact } from './artifact';
 import { Browser } from './browser';
 import { BrowserContext } from './browserContext';
 import { BrowserType } from './browserType';
@@ -22,16 +24,19 @@ import { CDPSession } from './cdpSession';
 import { ChannelOwner } from './channelOwner';
 import { createInstrumentation } from './clientInstrumentation';
 import { Dialog } from './dialog';
+import { Electron, ElectronApplication } from './electron';
 import { ElementHandle } from './elementHandle';
 import { TargetClosedError, parseError } from './errors';
 import { APIRequestContext } from './fetch';
 import { Frame } from './frame';
 import { JSHandle } from './jsHandle';
 import { JsonPipe } from './jsonPipe';
+import { LocalUtils } from './localUtils';
 import { Request, Response, Route, WebSocket, WebSocketRoute } from './network';
 import { BindingCall, Page } from './page';
 import { Playwright } from './playwright';
 import { Stream } from './stream';
+import { Tracing } from './tracing';
 import { Worker } from './worker';
 import { WritableStream } from './writableStream';
 import { ValidationError, findValidator  } from '../protocol/validator';
@@ -231,6 +236,15 @@ export class Connection extends EventEmitter {
     const validator = findValidator(type, '', 'Initializer');
     initializer = validator(initializer, '', this._validatorFromWireContext());
     switch (type) {
+      case 'Android':
+        result = new Android(parent, type, guid, initializer);
+        break;
+      case 'AndroidSocket':
+        result = new AndroidSocket(parent, type, guid, initializer);
+        break;
+      case 'AndroidDevice':
+        result = new AndroidDevice(parent, type, guid, initializer);
+        break;
       case 'APIRequestContext':
         result = new APIRequestContext(parent, type, guid, initializer);
         break;
@@ -254,6 +268,12 @@ export class Connection extends EventEmitter {
         break;
       case 'Dialog':
         result = new Dialog(parent, type, guid, initializer);
+        break;
+      case 'Electron':
+        result = new Electron(parent, type, guid, initializer);
+        break;
+      case 'ElectronApplication':
+        result = new ElectronApplication(parent, type, guid, initializer);
         break;
       case 'ElementHandle':
         result = new ElementHandle(parent, type, guid, initializer);

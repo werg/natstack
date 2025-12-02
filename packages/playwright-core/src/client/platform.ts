@@ -16,7 +16,10 @@
 
 import { webColors } from '../utils/isomorphic/colors';
 
-import type { Colors } from '../utils/isomorphic/colors';
+import type * as fs from 'fs';
+import type * as path from 'path';
+import type { Readable, Writable } from 'stream';
+import type { Colors } from '@isomorphic/colors';
 import type * as channels from '@protocol/channels';
 
 export type Zone = {
@@ -43,19 +46,19 @@ export type Platform = {
   createGuid: () => string;
   defaultMaxListeners: () => number;
   env: Record<string, string | undefined>;
-  fs: () => any; // Browser doesn't need fs
+  fs: () => typeof fs;
   inspectCustom: symbol | undefined;
   isDebugMode: () => boolean;
   isJSDebuggerAttached: () => boolean;
   isLogEnabled: (name: 'api' | 'channel') => boolean;
   isUnderTest: () => boolean,
   log: (name: 'api' | 'channel', message: string | Error | object) => void;
-  path: () => any; // Browser doesn't need path
+  path: () => typeof path;
   pathSeparator: string;
   showInternalStackFrames: () => boolean,
-  streamFile: (path: string, writable: any) => Promise<void>,
-  streamReadable: (channel: channels.StreamChannel) => any,
-  streamWritable: (channel: channels.WritableStreamChannel) => any,
+  streamFile: (path: string, writable: Writable) => Promise<void>,
+  streamReadable: (channel: channels.StreamChannel) => Readable,
+  streamWritable: (channel: channels.WritableStreamChannel) => Writable,
   zones: { empty: Zone, current: () => Zone; };
 };
 
@@ -119,75 +122,60 @@ export const emptyPlatform: Platform = {
   zones: { empty: noopZone, current: () => noopZone },
 };
 
-/**
- * Web platform implementation for browser-based Playwright usage.
- * Uses Web Crypto API for SHA1 and crypto.randomUUID for GUIDs.
- */
+function guidFromCrypto(): string {
+  const cryptoObj = (globalThis as any).crypto;
+  if (!cryptoObj)
+    throw new Error('crypto is not available in this environment');
+  const bytes = new Uint8Array(16);
+  cryptoObj.getRandomValues(bytes);
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function sha1FromCrypto(text: string): Promise<string> {
+  const cryptoObj = (globalThis as any).crypto;
+  if (!cryptoObj)
+    throw new Error('crypto is not available in this environment');
+  const bytes = new TextEncoder().encode(text);
+  const hashBuffer = await cryptoObj.subtle.digest('SHA-1', bytes);
+  return Array.from(new Uint8Array(hashBuffer), b => b.toString(16).padStart(2, '0')).join('');
+}
+
 export const webPlatform: Platform = {
+  ...emptyPlatform,
   name: 'web',
-
   boxedStackPrefixes: () => [],
-
-  calculateSha1: async (text: string) => {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(text);
-    const hashBuffer = await crypto.subtle.digest('SHA-1', data);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-  },
-
+  calculateSha1: sha1FromCrypto,
+  createGuid: guidFromCrypto,
   colors: webColors,
-
-  createGuid: () => {
-    return crypto.randomUUID();
-  },
-
-  defaultMaxListeners: () => 100,
-
-  env: {},
-
-  fs: () => {
-    throw new Error('File system is not available in browser');
-  },
-
+  defaultMaxListeners: () => 10,
+  env: (typeof process !== 'undefined' && process.env) ? process.env as any : {},
   inspectCustom: undefined,
-
   isDebugMode: () => false,
-
   isJSDebuggerAttached: () => false,
-
-  isLogEnabled(name: 'api' | 'channel') {
-    return false;
+  isLogEnabled: () => true,
+  log: (name: 'api' | 'channel', message: string | Error | object) => {
+    if (typeof console !== 'undefined')
+      console.debug(name, message);
   },
-
-  isUnderTest: () => false,
-
-  log(name: 'api' | 'channel', message: string | Error | object) {
-    // Browser logging
-    if (name === 'api') {
-      console.log('[Playwright API]', message);
-    }
-  },
-
-  path: () => {
-    throw new Error('Path module is not available in browser');
-  },
-
   pathSeparator: '/',
-
-  showInternalStackFrames: () => false,
-
+  path: () => {
+    throw new Error('path is not available in web platform');
+  },
+  fs: () => {
+    const injected = (globalThis as any).fs;
+    if (!injected)
+      throw new Error('fs is not available in this environment');
+    return injected as any;
+  },
+  showInternalStackFrames: () => true,
   streamFile(path: string, writable: Writable): Promise<void> {
-    throw new Error('File streaming is not available in browser');
+    throw new Error('Streams are not available');
   },
-
   streamReadable: (channel: channels.StreamChannel) => {
-    throw new Error('Streams are not available in browser');
+    throw new Error('Streams are not available');
   },
-
   streamWritable: (channel: channels.WritableStreamChannel) => {
-    throw new Error('Streams are not available in browser');
+    throw new Error('Streams are not available');
   },
-
   zones: { empty: noopZone, current: () => noopZone },
 };

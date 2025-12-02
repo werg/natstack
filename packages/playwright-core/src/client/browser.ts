@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { Artifact } from './artifact';
 import { BrowserContext, prepareBrowserContextParams } from './browserContext';
 import { CDPSession } from './cdpSession';
 import { ChannelOwner } from './channelOwner';
@@ -35,6 +36,7 @@ export class Browser extends ChannelOwner<channels.BrowserChannel> implements ap
   _browserType!: BrowserType;
   _options: LaunchOptions = {};
   readonly _name: string;
+  private _path: string | undefined;
   _closeReason: string | undefined;
 
   static from(browser: channels.BrowserChannel): Browser {
@@ -142,6 +144,23 @@ export class Browser extends ChannelOwner<channels.BrowserChannel> implements ap
 
   async newBrowserCDPSession(): Promise<api.CDPSession> {
     return CDPSession.from((await this._channel.newBrowserCDPSession()).session);
+  }
+
+  async startTracing(page?: Page, options: { path?: string; screenshots?: boolean; categories?: string[]; } = {}) {
+    this._path = options.path;
+    await this._channel.startTracing({ ...options, page: page ? page._channel : undefined });
+  }
+
+  async stopTracing(): Promise<Buffer> {
+    const artifact = Artifact.from((await this._channel.stopTracing()).artifact);
+    const buffer = await artifact.readIntoBuffer();
+    await artifact.delete();
+    if (this._path) {
+      await mkdirIfNeeded(this._platform, this._path);
+      await this._platform.fs().promises.writeFile(this._path, buffer);
+      this._path = undefined;
+    }
+    return buffer;
   }
 
   async [Symbol.asyncDispose]() {

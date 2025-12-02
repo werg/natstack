@@ -14,9 +14,26 @@
  * limitations under the License.
  */
 
-// Re-export web platform for browser contexts
-export { webPlatform } from './webPlatform';
+import { Connection, webPlatform } from '@natstack/playwright-core';
+
+import type { Browser } from '@natstack/playwright-core';
 
 export type Options = {
   headless?: boolean;
 };
+
+export async function connect(wsEndpoint: string, browserName: string, options: Options): Promise<Browser> {
+  const ws = new WebSocket(`${wsEndpoint}?browser=${browserName}&launch-options=${JSON.stringify(options)}`);
+  await new Promise((f, r) => {
+    ws.addEventListener('open', f);
+    ws.addEventListener('error', r);
+  });
+
+  const connection = new Connection(webPlatform);
+  connection.onmessage = message => ws.send(JSON.stringify(message));
+  ws.addEventListener('message', message => connection.dispatch(JSON.parse(message.data)));
+  ws.addEventListener('close', () => connection.close());
+
+  const playwright = await connection.initializePlaywright();
+  return playwright._preLaunchedBrowser();
+}

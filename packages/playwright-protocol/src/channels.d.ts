@@ -27,8 +27,16 @@ export interface Channel {
 // ----------- Initializer Traits -----------
 export type InitializerTraits<T> =
     T extends JsonPipeChannel ? JsonPipeInitializer :
+    T extends AndroidDeviceChannel ? AndroidDeviceInitializer :
+    T extends AndroidSocketChannel ? AndroidSocketInitializer :
+    T extends AndroidChannel ? AndroidInitializer :
+    T extends ElectronApplicationChannel ? ElectronApplicationInitializer :
+    T extends ElectronChannel ? ElectronInitializer :
     T extends CDPSessionChannel ? CDPSessionInitializer :
     T extends WritableStreamChannel ? WritableStreamInitializer :
+    T extends StreamChannel ? StreamInitializer :
+    T extends ArtifactChannel ? ArtifactInitializer :
+    T extends TracingChannel ? TracingInitializer :
     T extends DialogChannel ? DialogInitializer :
     T extends BindingCallChannel ? BindingCallInitializer :
     T extends WebSocketChannel ? WebSocketInitializer :
@@ -49,14 +57,23 @@ export type InitializerTraits<T> =
     T extends DebugControllerChannel ? DebugControllerInitializer :
     T extends PlaywrightChannel ? PlaywrightInitializer :
     T extends RootChannel ? RootInitializer :
+    T extends LocalUtilsChannel ? LocalUtilsInitializer :
     T extends APIRequestContextChannel ? APIRequestContextInitializer :
     object;
 
 // ----------- Event Traits -----------
 export type EventsTraits<T> =
     T extends JsonPipeChannel ? JsonPipeEvents :
+    T extends AndroidDeviceChannel ? AndroidDeviceEvents :
+    T extends AndroidSocketChannel ? AndroidSocketEvents :
+    T extends AndroidChannel ? AndroidEvents :
+    T extends ElectronApplicationChannel ? ElectronApplicationEvents :
+    T extends ElectronChannel ? ElectronEvents :
     T extends CDPSessionChannel ? CDPSessionEvents :
     T extends WritableStreamChannel ? WritableStreamEvents :
+    T extends StreamChannel ? StreamEvents :
+    T extends ArtifactChannel ? ArtifactEvents :
+    T extends TracingChannel ? TracingEvents :
     T extends DialogChannel ? DialogEvents :
     T extends BindingCallChannel ? BindingCallEvents :
     T extends WebSocketChannel ? WebSocketEvents :
@@ -77,14 +94,23 @@ export type EventsTraits<T> =
     T extends DebugControllerChannel ? DebugControllerEvents :
     T extends PlaywrightChannel ? PlaywrightEvents :
     T extends RootChannel ? RootEvents :
+    T extends LocalUtilsChannel ? LocalUtilsEvents :
     T extends APIRequestContextChannel ? APIRequestContextEvents :
     undefined;
 
 // ----------- EventTarget Traits -----------
 export type EventTargetTraits<T> =
     T extends JsonPipeChannel ? JsonPipeEventTarget :
+    T extends AndroidDeviceChannel ? AndroidDeviceEventTarget :
+    T extends AndroidSocketChannel ? AndroidSocketEventTarget :
+    T extends AndroidChannel ? AndroidEventTarget :
+    T extends ElectronApplicationChannel ? ElectronApplicationEventTarget :
+    T extends ElectronChannel ? ElectronEventTarget :
     T extends CDPSessionChannel ? CDPSessionEventTarget :
     T extends WritableStreamChannel ? WritableStreamEventTarget :
+    T extends StreamChannel ? StreamEventTarget :
+    T extends ArtifactChannel ? ArtifactEventTarget :
+    T extends TracingChannel ? TracingEventTarget :
     T extends DialogChannel ? DialogEventTarget :
     T extends BindingCallChannel ? BindingCallEventTarget :
     T extends WebSocketChannel ? WebSocketEventTarget :
@@ -105,6 +131,7 @@ export type EventTargetTraits<T> =
     T extends DebugControllerChannel ? DebugControllerEventTarget :
     T extends PlaywrightChannel ? PlaywrightEventTarget :
     T extends RootChannel ? RootEventTarget :
+    T extends LocalUtilsChannel ? LocalUtilsEventTarget :
     T extends APIRequestContextChannel ? APIRequestContextEventTarget :
     undefined;
 
@@ -292,7 +319,9 @@ export type FormField = {
 
 export type SDKLanguage = 'javascript' | 'python' | 'java' | 'csharp';
 // ----------- APIRequestContext -----------
-export type APIRequestContextInitializer = {};
+export type APIRequestContextInitializer = {
+  tracing: TracingChannel,
+};
 export interface APIRequestContextEventTarget {
 }
 export interface APIRequestContextChannel extends APIRequestContextEventTarget, Channel {
@@ -392,6 +421,157 @@ export type APIResponse = {
 };
 
 export type LifecycleEvent = 'load' | 'domcontentloaded' | 'networkidle' | 'commit';
+// ----------- LocalUtils -----------
+export type LocalUtilsInitializer = {
+  deviceDescriptors: {
+    name: string,
+    descriptor: {
+      userAgent: string,
+      viewport: {
+        width: number,
+        height: number,
+      },
+      screen?: {
+        width: number,
+        height: number,
+      },
+      deviceScaleFactor: number,
+      isMobile: boolean,
+      hasTouch: boolean,
+      defaultBrowserType: 'chromium' | 'firefox' | 'webkit',
+    },
+  }[],
+};
+export interface LocalUtilsEventTarget {
+}
+export interface LocalUtilsChannel extends LocalUtilsEventTarget, Channel {
+  _type_LocalUtils: boolean;
+  zip(params: LocalUtilsZipParams, progress?: Progress): Promise<LocalUtilsZipResult>;
+  harOpen(params: LocalUtilsHarOpenParams, progress?: Progress): Promise<LocalUtilsHarOpenResult>;
+  harLookup(params: LocalUtilsHarLookupParams, progress?: Progress): Promise<LocalUtilsHarLookupResult>;
+  harClose(params: LocalUtilsHarCloseParams, progress?: Progress): Promise<LocalUtilsHarCloseResult>;
+  harUnzip(params: LocalUtilsHarUnzipParams, progress?: Progress): Promise<LocalUtilsHarUnzipResult>;
+  connect(params: LocalUtilsConnectParams, progress?: Progress): Promise<LocalUtilsConnectResult>;
+  tracingStarted(params: LocalUtilsTracingStartedParams, progress?: Progress): Promise<LocalUtilsTracingStartedResult>;
+  addStackToTracingNoReply(params: LocalUtilsAddStackToTracingNoReplyParams, progress?: Progress): Promise<LocalUtilsAddStackToTracingNoReplyResult>;
+  traceDiscarded(params: LocalUtilsTraceDiscardedParams, progress?: Progress): Promise<LocalUtilsTraceDiscardedResult>;
+  globToRegex(params: LocalUtilsGlobToRegexParams, progress?: Progress): Promise<LocalUtilsGlobToRegexResult>;
+}
+export type LocalUtilsZipParams = {
+  zipFile: string,
+  entries: NameValue[],
+  stacksId?: string,
+  mode: 'write' | 'append',
+  includeSources: boolean,
+};
+export type LocalUtilsZipOptions = {
+  stacksId?: string,
+};
+export type LocalUtilsZipResult = void;
+export type LocalUtilsHarOpenParams = {
+  file: string,
+};
+export type LocalUtilsHarOpenOptions = {
+
+};
+export type LocalUtilsHarOpenResult = {
+  harId?: string,
+  error?: string,
+};
+export type LocalUtilsHarLookupParams = {
+  harId: string,
+  url: string,
+  method: string,
+  headers: NameValue[],
+  postData?: Binary,
+  isNavigationRequest: boolean,
+};
+export type LocalUtilsHarLookupOptions = {
+  postData?: Binary,
+};
+export type LocalUtilsHarLookupResult = {
+  action: 'error' | 'redirect' | 'fulfill' | 'noentry',
+  message?: string,
+  redirectURL?: string,
+  status?: number,
+  headers?: NameValue[],
+  body?: Binary,
+};
+export type LocalUtilsHarCloseParams = {
+  harId: string,
+};
+export type LocalUtilsHarCloseOptions = {
+
+};
+export type LocalUtilsHarCloseResult = void;
+export type LocalUtilsHarUnzipParams = {
+  zipFile: string,
+  harFile: string,
+};
+export type LocalUtilsHarUnzipOptions = {
+
+};
+export type LocalUtilsHarUnzipResult = void;
+export type LocalUtilsConnectParams = {
+  wsEndpoint: string,
+  headers?: any,
+  exposeNetwork?: string,
+  slowMo?: number,
+  timeout: number,
+  socksProxyRedirectPortForTest?: number,
+};
+export type LocalUtilsConnectOptions = {
+  headers?: any,
+  exposeNetwork?: string,
+  slowMo?: number,
+  socksProxyRedirectPortForTest?: number,
+};
+export type LocalUtilsConnectResult = {
+  pipe: JsonPipeChannel,
+  headers: NameValue[],
+};
+export type LocalUtilsTracingStartedParams = {
+  tracesDir?: string,
+  traceName: string,
+  live?: boolean,
+};
+export type LocalUtilsTracingStartedOptions = {
+  tracesDir?: string,
+  live?: boolean,
+};
+export type LocalUtilsTracingStartedResult = {
+  stacksId: string,
+};
+export type LocalUtilsAddStackToTracingNoReplyParams = {
+  callData: ClientSideCallMetadata,
+};
+export type LocalUtilsAddStackToTracingNoReplyOptions = {
+
+};
+export type LocalUtilsAddStackToTracingNoReplyResult = void;
+export type LocalUtilsTraceDiscardedParams = {
+  stacksId: string,
+};
+export type LocalUtilsTraceDiscardedOptions = {
+
+};
+export type LocalUtilsTraceDiscardedResult = void;
+export type LocalUtilsGlobToRegexParams = {
+  glob: string,
+  baseURL?: string,
+  webSocketUrl?: boolean,
+};
+export type LocalUtilsGlobToRegexOptions = {
+  baseURL?: string,
+  webSocketUrl?: boolean,
+};
+export type LocalUtilsGlobToRegexResult = {
+  regex: string,
+};
+
+export interface LocalUtilsEvents {
+}
+
 // ----------- Root -----------
 export type RootInitializer = {};
 export interface RootEventTarget {
@@ -418,7 +598,11 @@ export type PlaywrightInitializer = {
   chromium: BrowserTypeChannel,
   firefox: BrowserTypeChannel,
   webkit: BrowserTypeChannel,
+  android: AndroidChannel,
+  electron: ElectronChannel,
+  utils?: LocalUtilsChannel,
   preLaunchedBrowser?: BrowserChannel,
+  preConnectedAndroidDevice?: AndroidDeviceChannel,
   socksSupport?: SocksSupportChannel,
 };
 export interface PlaywrightEventTarget {
@@ -952,6 +1136,8 @@ export interface BrowserChannel extends BrowserEventTarget, Channel {
   newContextForReuse(params: BrowserNewContextForReuseParams, progress?: Progress): Promise<BrowserNewContextForReuseResult>;
   disconnectFromReusedContext(params: BrowserDisconnectFromReusedContextParams, progress?: Progress): Promise<BrowserDisconnectFromReusedContextResult>;
   newBrowserCDPSession(params?: BrowserNewBrowserCDPSessionParams, progress?: Progress): Promise<BrowserNewBrowserCDPSessionResult>;
+  startTracing(params: BrowserStartTracingParams, progress?: Progress): Promise<BrowserStartTracingResult>;
+  stopTracing(params?: BrowserStopTracingParams, progress?: Progress): Promise<BrowserStopTracingResult>;
 }
 export type BrowserContextEvent = {
   context: BrowserContextChannel,
@@ -1262,6 +1448,22 @@ export type BrowserNewBrowserCDPSessionOptions = {};
 export type BrowserNewBrowserCDPSessionResult = {
   session: CDPSessionChannel,
 };
+export type BrowserStartTracingParams = {
+  page?: PageChannel,
+  screenshots?: boolean,
+  categories?: string[],
+};
+export type BrowserStartTracingOptions = {
+  page?: PageChannel,
+  screenshots?: boolean,
+  categories?: string[],
+};
+export type BrowserStartTracingResult = void;
+export type BrowserStopTracingParams = {};
+export type BrowserStopTracingOptions = {};
+export type BrowserStopTracingResult = {
+  artifact: ArtifactChannel,
+};
 
 export interface BrowserEvents {
   'context': BrowserContextEvent;
@@ -1297,6 +1499,7 @@ export interface EventTargetEvents {
 export type BrowserContextInitializer = {
   isChromium: boolean,
   requestContext: APIRequestContextChannel,
+  tracing: TracingChannel,
   options: {
     noDefaultViewport?: boolean,
     viewport?: {
@@ -1365,6 +1568,7 @@ export interface BrowserContextEventTarget {
   on(event: 'pageError', callback: (params: BrowserContextPageErrorEvent) => void): this;
   on(event: 'route', callback: (params: BrowserContextRouteEvent) => void): this;
   on(event: 'webSocketRoute', callback: (params: BrowserContextWebSocketRouteEvent) => void): this;
+  on(event: 'video', callback: (params: BrowserContextVideoEvent) => void): this;
   on(event: 'serviceWorker', callback: (params: BrowserContextServiceWorkerEvent) => void): this;
   on(event: 'request', callback: (params: BrowserContextRequestEvent) => void): this;
   on(event: 'requestFailed', callback: (params: BrowserContextRequestFailedEvent) => void): this;
@@ -1397,6 +1601,7 @@ export interface BrowserContextChannel extends BrowserContextEventTarget, EventT
   disableRecorder(params?: BrowserContextDisableRecorderParams, progress?: Progress): Promise<BrowserContextDisableRecorderResult>;
   newCDPSession(params: BrowserContextNewCDPSessionParams, progress?: Progress): Promise<BrowserContextNewCDPSessionResult>;
   harStart(params: BrowserContextHarStartParams, progress?: Progress): Promise<BrowserContextHarStartResult>;
+  harExport(params: BrowserContextHarExportParams, progress?: Progress): Promise<BrowserContextHarExportResult>;
   createTempFiles(params: BrowserContextCreateTempFilesParams, progress?: Progress): Promise<BrowserContextCreateTempFilesResult>;
   updateSubscription(params: BrowserContextUpdateSubscriptionParams, progress?: Progress): Promise<BrowserContextUpdateSubscriptionResult>;
   clockFastForward(params: BrowserContextClockFastForwardParams, progress?: Progress): Promise<BrowserContextClockFastForwardResult>;
@@ -1438,6 +1643,9 @@ export type BrowserContextRouteEvent = {
 };
 export type BrowserContextWebSocketRouteEvent = {
   webSocketRoute: WebSocketRouteChannel,
+};
+export type BrowserContextVideoEvent = {
+  artifact: ArtifactChannel,
 };
 export type BrowserContextServiceWorkerEvent = {
   worker: WorkerChannel,
@@ -1691,6 +1899,15 @@ export type BrowserContextHarStartOptions = {
 export type BrowserContextHarStartResult = {
   harId: string,
 };
+export type BrowserContextHarExportParams = {
+  harId?: string,
+};
+export type BrowserContextHarExportOptions = {
+  harId?: string,
+};
+export type BrowserContextHarExportResult = {
+  artifact: ArtifactChannel,
+};
 export type BrowserContextCreateTempFilesParams = {
   rootDirName?: string,
   items: {
@@ -1780,6 +1997,7 @@ export interface BrowserContextEvents {
   'pageError': BrowserContextPageErrorEvent;
   'route': BrowserContextRouteEvent;
   'webSocketRoute': BrowserContextWebSocketRouteEvent;
+  'video': BrowserContextVideoEvent;
   'serviceWorker': BrowserContextServiceWorkerEvent;
   'request': BrowserContextRequestEvent;
   'requestFailed': BrowserContextRequestFailedEvent;
@@ -1802,6 +2020,7 @@ export interface PageEventTarget {
   on(event: 'bindingCall', callback: (params: PageBindingCallEvent) => void): this;
   on(event: 'close', callback: (params: PageCloseEvent) => void): this;
   on(event: 'crash', callback: (params: PageCrashEvent) => void): this;
+  on(event: 'download', callback: (params: PageDownloadEvent) => void): this;
   on(event: 'viewportSizeChanged', callback: (params: PageViewportSizeChangedEvent) => void): this;
   on(event: 'fileChooser', callback: (params: PageFileChooserEvent) => void): this;
   on(event: 'frameAttached', callback: (params: PageFrameAttachedEvent) => void): this;
@@ -1809,6 +2028,7 @@ export interface PageEventTarget {
   on(event: 'locatorHandlerTriggered', callback: (params: PageLocatorHandlerTriggeredEvent) => void): this;
   on(event: 'route', callback: (params: PageRouteEvent) => void): this;
   on(event: 'webSocketRoute', callback: (params: PageWebSocketRouteEvent) => void): this;
+  on(event: 'video', callback: (params: PageVideoEvent) => void): this;
   on(event: 'webSocket', callback: (params: PageWebSocketEvent) => void): this;
   on(event: 'worker', callback: (params: PageWorkerEvent) => void): this;
 }
@@ -1859,6 +2079,11 @@ export type PageBindingCallEvent = {
 };
 export type PageCloseEvent = {};
 export type PageCrashEvent = {};
+export type PageDownloadEvent = {
+  url: string,
+  suggestedFilename: string,
+  artifact: ArtifactChannel,
+};
 export type PageViewportSizeChangedEvent = {
   viewportSize?: {
     width: number,
@@ -1883,6 +2108,9 @@ export type PageRouteEvent = {
 };
 export type PageWebSocketRouteEvent = {
   webSocketRoute: WebSocketRouteChannel,
+};
+export type PageVideoEvent = {
+  artifact: ArtifactChannel,
 };
 export type PageWebSocketEvent = {
   webSocket: WebSocketChannel,
@@ -2353,6 +2581,7 @@ export interface PageEvents {
   'bindingCall': PageBindingCallEvent;
   'close': PageCloseEvent;
   'crash': PageCrashEvent;
+  'download': PageDownloadEvent;
   'viewportSizeChanged': PageViewportSizeChangedEvent;
   'fileChooser': PageFileChooserEvent;
   'frameAttached': PageFrameAttachedEvent;
@@ -2360,6 +2589,7 @@ export interface PageEvents {
   'locatorHandlerTriggered': PageLocatorHandlerTriggeredEvent;
   'route': PageRouteEvent;
   'webSocketRoute': PageWebSocketRouteEvent;
+  'video': PageVideoEvent;
   'webSocket': PageWebSocketEvent;
   'worker': PageWorkerEvent;
 }
@@ -3941,6 +4171,157 @@ export type DialogDismissResult = void;
 export interface DialogEvents {
 }
 
+// ----------- Tracing -----------
+export type TracingInitializer = {};
+export interface TracingEventTarget {
+}
+export interface TracingChannel extends TracingEventTarget, Channel {
+  _type_Tracing: boolean;
+  tracingStart(params: TracingTracingStartParams, progress?: Progress): Promise<TracingTracingStartResult>;
+  tracingStartChunk(params: TracingTracingStartChunkParams, progress?: Progress): Promise<TracingTracingStartChunkResult>;
+  tracingGroup(params: TracingTracingGroupParams, progress?: Progress): Promise<TracingTracingGroupResult>;
+  tracingGroupEnd(params?: TracingTracingGroupEndParams, progress?: Progress): Promise<TracingTracingGroupEndResult>;
+  tracingStopChunk(params: TracingTracingStopChunkParams, progress?: Progress): Promise<TracingTracingStopChunkResult>;
+  tracingStop(params?: TracingTracingStopParams, progress?: Progress): Promise<TracingTracingStopResult>;
+}
+export type TracingTracingStartParams = {
+  name?: string,
+  snapshots?: boolean,
+  screenshots?: boolean,
+  live?: boolean,
+};
+export type TracingTracingStartOptions = {
+  name?: string,
+  snapshots?: boolean,
+  screenshots?: boolean,
+  live?: boolean,
+};
+export type TracingTracingStartResult = void;
+export type TracingTracingStartChunkParams = {
+  name?: string,
+  title?: string,
+};
+export type TracingTracingStartChunkOptions = {
+  name?: string,
+  title?: string,
+};
+export type TracingTracingStartChunkResult = {
+  traceName: string,
+};
+export type TracingTracingGroupParams = {
+  name: string,
+  location?: {
+    file: string,
+    line?: number,
+    column?: number,
+  },
+};
+export type TracingTracingGroupOptions = {
+  location?: {
+    file: string,
+    line?: number,
+    column?: number,
+  },
+};
+export type TracingTracingGroupResult = void;
+export type TracingTracingGroupEndParams = {};
+export type TracingTracingGroupEndOptions = {};
+export type TracingTracingGroupEndResult = void;
+export type TracingTracingStopChunkParams = {
+  mode: 'archive' | 'discard' | 'entries',
+};
+export type TracingTracingStopChunkOptions = {
+
+};
+export type TracingTracingStopChunkResult = {
+  artifact?: ArtifactChannel,
+  entries?: NameValue[],
+};
+export type TracingTracingStopParams = {};
+export type TracingTracingStopOptions = {};
+export type TracingTracingStopResult = void;
+
+export interface TracingEvents {
+}
+
+// ----------- Artifact -----------
+export type ArtifactInitializer = {
+  absolutePath: string,
+};
+export interface ArtifactEventTarget {
+}
+export interface ArtifactChannel extends ArtifactEventTarget, Channel {
+  _type_Artifact: boolean;
+  pathAfterFinished(params?: ArtifactPathAfterFinishedParams, progress?: Progress): Promise<ArtifactPathAfterFinishedResult>;
+  saveAs(params: ArtifactSaveAsParams, progress?: Progress): Promise<ArtifactSaveAsResult>;
+  saveAsStream(params?: ArtifactSaveAsStreamParams, progress?: Progress): Promise<ArtifactSaveAsStreamResult>;
+  failure(params?: ArtifactFailureParams, progress?: Progress): Promise<ArtifactFailureResult>;
+  stream(params?: ArtifactStreamParams, progress?: Progress): Promise<ArtifactStreamResult>;
+  cancel(params?: ArtifactCancelParams, progress?: Progress): Promise<ArtifactCancelResult>;
+  delete(params?: ArtifactDeleteParams, progress?: Progress): Promise<ArtifactDeleteResult>;
+}
+export type ArtifactPathAfterFinishedParams = {};
+export type ArtifactPathAfterFinishedOptions = {};
+export type ArtifactPathAfterFinishedResult = {
+  value: string,
+};
+export type ArtifactSaveAsParams = {
+  path: string,
+};
+export type ArtifactSaveAsOptions = {
+
+};
+export type ArtifactSaveAsResult = void;
+export type ArtifactSaveAsStreamParams = {};
+export type ArtifactSaveAsStreamOptions = {};
+export type ArtifactSaveAsStreamResult = {
+  stream: StreamChannel,
+};
+export type ArtifactFailureParams = {};
+export type ArtifactFailureOptions = {};
+export type ArtifactFailureResult = {
+  error?: string,
+};
+export type ArtifactStreamParams = {};
+export type ArtifactStreamOptions = {};
+export type ArtifactStreamResult = {
+  stream: StreamChannel,
+};
+export type ArtifactCancelParams = {};
+export type ArtifactCancelOptions = {};
+export type ArtifactCancelResult = void;
+export type ArtifactDeleteParams = {};
+export type ArtifactDeleteOptions = {};
+export type ArtifactDeleteResult = void;
+
+export interface ArtifactEvents {
+}
+
+// ----------- Stream -----------
+export type StreamInitializer = {};
+export interface StreamEventTarget {
+}
+export interface StreamChannel extends StreamEventTarget, Channel {
+  _type_Stream: boolean;
+  read(params: StreamReadParams, progress?: Progress): Promise<StreamReadResult>;
+  close(params?: StreamCloseParams, progress?: Progress): Promise<StreamCloseResult>;
+}
+export type StreamReadParams = {
+  size?: number,
+};
+export type StreamReadOptions = {
+  size?: number,
+};
+export type StreamReadResult = {
+  binary: Binary,
+};
+export type StreamCloseParams = {};
+export type StreamCloseOptions = {};
+export type StreamCloseResult = void;
+
+export interface StreamEvents {
+}
+
 // ----------- WritableStream -----------
 export type WritableStreamInitializer = {};
 export interface WritableStreamEventTarget {
@@ -3995,6 +4376,651 @@ export type CDPSessionDetachResult = void;
 export interface CDPSessionEvents {
   'event': CDPSessionEventEvent;
 }
+
+// ----------- Electron -----------
+export type ElectronInitializer = {};
+export interface ElectronEventTarget {
+}
+export interface ElectronChannel extends ElectronEventTarget, Channel {
+  _type_Electron: boolean;
+  launch(params: ElectronLaunchParams, progress?: Progress): Promise<ElectronLaunchResult>;
+}
+export type ElectronLaunchParams = {
+  executablePath?: string,
+  args?: string[],
+  cwd?: string,
+  env?: NameValue[],
+  timeout: number,
+  acceptDownloads?: 'accept' | 'deny' | 'internal-browser-default',
+  bypassCSP?: boolean,
+  colorScheme?: 'dark' | 'light' | 'no-preference' | 'no-override',
+  extraHTTPHeaders?: NameValue[],
+  geolocation?: {
+    longitude: number,
+    latitude: number,
+    accuracy?: number,
+  },
+  httpCredentials?: {
+    username: string,
+    password: string,
+    origin?: string,
+  },
+  ignoreHTTPSErrors?: boolean,
+  locale?: string,
+  offline?: boolean,
+  recordVideo?: {
+    dir: string,
+    size?: {
+      width: number,
+      height: number,
+    },
+  },
+  strictSelectors?: boolean,
+  timezoneId?: string,
+  tracesDir?: string,
+  selectorEngines?: SelectorEngine[],
+  testIdAttributeName?: string,
+};
+export type ElectronLaunchOptions = {
+  executablePath?: string,
+  args?: string[],
+  cwd?: string,
+  env?: NameValue[],
+  acceptDownloads?: 'accept' | 'deny' | 'internal-browser-default',
+  bypassCSP?: boolean,
+  colorScheme?: 'dark' | 'light' | 'no-preference' | 'no-override',
+  extraHTTPHeaders?: NameValue[],
+  geolocation?: {
+    longitude: number,
+    latitude: number,
+    accuracy?: number,
+  },
+  httpCredentials?: {
+    username: string,
+    password: string,
+    origin?: string,
+  },
+  ignoreHTTPSErrors?: boolean,
+  locale?: string,
+  offline?: boolean,
+  recordVideo?: {
+    dir: string,
+    size?: {
+      width: number,
+      height: number,
+    },
+  },
+  strictSelectors?: boolean,
+  timezoneId?: string,
+  tracesDir?: string,
+  selectorEngines?: SelectorEngine[],
+  testIdAttributeName?: string,
+};
+export type ElectronLaunchResult = {
+  electronApplication: ElectronApplicationChannel,
+};
+
+export interface ElectronEvents {
+}
+
+// ----------- ElectronApplication -----------
+export type ElectronApplicationInitializer = {
+  context: BrowserContextChannel,
+};
+export interface ElectronApplicationEventTarget {
+  on(event: 'close', callback: (params: ElectronApplicationCloseEvent) => void): this;
+  on(event: 'console', callback: (params: ElectronApplicationConsoleEvent) => void): this;
+}
+export interface ElectronApplicationChannel extends ElectronApplicationEventTarget, EventTargetChannel {
+  _type_ElectronApplication: boolean;
+  browserWindow(params: ElectronApplicationBrowserWindowParams, progress?: Progress): Promise<ElectronApplicationBrowserWindowResult>;
+  evaluateExpression(params: ElectronApplicationEvaluateExpressionParams, progress?: Progress): Promise<ElectronApplicationEvaluateExpressionResult>;
+  evaluateExpressionHandle(params: ElectronApplicationEvaluateExpressionHandleParams, progress?: Progress): Promise<ElectronApplicationEvaluateExpressionHandleResult>;
+  updateSubscription(params: ElectronApplicationUpdateSubscriptionParams, progress?: Progress): Promise<ElectronApplicationUpdateSubscriptionResult>;
+}
+export type ElectronApplicationCloseEvent = {};
+export type ElectronApplicationConsoleEvent = {
+  type: string,
+  text: string,
+  args: JSHandleChannel[],
+  location: {
+    url: string,
+    lineNumber: number,
+    columnNumber: number,
+  },
+};
+export type ElectronApplicationBrowserWindowParams = {
+  page: PageChannel,
+};
+export type ElectronApplicationBrowserWindowOptions = {
+
+};
+export type ElectronApplicationBrowserWindowResult = {
+  handle: JSHandleChannel,
+};
+export type ElectronApplicationEvaluateExpressionParams = {
+  expression: string,
+  isFunction?: boolean,
+  arg: SerializedArgument,
+};
+export type ElectronApplicationEvaluateExpressionOptions = {
+  isFunction?: boolean,
+};
+export type ElectronApplicationEvaluateExpressionResult = {
+  value: SerializedValue,
+};
+export type ElectronApplicationEvaluateExpressionHandleParams = {
+  expression: string,
+  isFunction?: boolean,
+  arg: SerializedArgument,
+};
+export type ElectronApplicationEvaluateExpressionHandleOptions = {
+  isFunction?: boolean,
+};
+export type ElectronApplicationEvaluateExpressionHandleResult = {
+  handle: JSHandleChannel,
+};
+export type ElectronApplicationUpdateSubscriptionParams = {
+  event: 'console',
+  enabled: boolean,
+};
+export type ElectronApplicationUpdateSubscriptionOptions = {
+
+};
+export type ElectronApplicationUpdateSubscriptionResult = void;
+
+export interface ElectronApplicationEvents {
+  'close': ElectronApplicationCloseEvent;
+  'console': ElectronApplicationConsoleEvent;
+}
+
+// ----------- Android -----------
+export type AndroidInitializer = {};
+export interface AndroidEventTarget {
+}
+export interface AndroidChannel extends AndroidEventTarget, Channel {
+  _type_Android: boolean;
+  devices(params: AndroidDevicesParams, progress?: Progress): Promise<AndroidDevicesResult>;
+}
+export type AndroidDevicesParams = {
+  host?: string,
+  port?: number,
+  omitDriverInstall?: boolean,
+};
+export type AndroidDevicesOptions = {
+  host?: string,
+  port?: number,
+  omitDriverInstall?: boolean,
+};
+export type AndroidDevicesResult = {
+  devices: AndroidDeviceChannel[],
+};
+
+export interface AndroidEvents {
+}
+
+// ----------- AndroidSocket -----------
+export type AndroidSocketInitializer = {};
+export interface AndroidSocketEventTarget {
+  on(event: 'data', callback: (params: AndroidSocketDataEvent) => void): this;
+  on(event: 'close', callback: (params: AndroidSocketCloseEvent) => void): this;
+}
+export interface AndroidSocketChannel extends AndroidSocketEventTarget, Channel {
+  _type_AndroidSocket: boolean;
+  write(params: AndroidSocketWriteParams, progress?: Progress): Promise<AndroidSocketWriteResult>;
+  close(params?: AndroidSocketCloseParams, progress?: Progress): Promise<AndroidSocketCloseResult>;
+}
+export type AndroidSocketDataEvent = {
+  data: Binary,
+};
+export type AndroidSocketCloseEvent = {};
+export type AndroidSocketWriteParams = {
+  data: Binary,
+};
+export type AndroidSocketWriteOptions = {
+
+};
+export type AndroidSocketWriteResult = void;
+export type AndroidSocketCloseParams = {};
+export type AndroidSocketCloseOptions = {};
+export type AndroidSocketCloseResult = void;
+
+export interface AndroidSocketEvents {
+  'data': AndroidSocketDataEvent;
+  'close': AndroidSocketCloseEvent;
+}
+
+// ----------- AndroidDevice -----------
+export type AndroidDeviceInitializer = {
+  model: string,
+  serial: string,
+};
+export interface AndroidDeviceEventTarget {
+  on(event: 'close', callback: (params: AndroidDeviceCloseEvent) => void): this;
+  on(event: 'webViewAdded', callback: (params: AndroidDeviceWebViewAddedEvent) => void): this;
+  on(event: 'webViewRemoved', callback: (params: AndroidDeviceWebViewRemovedEvent) => void): this;
+}
+export interface AndroidDeviceChannel extends AndroidDeviceEventTarget, EventTargetChannel {
+  _type_AndroidDevice: boolean;
+  wait(params: AndroidDeviceWaitParams, progress?: Progress): Promise<AndroidDeviceWaitResult>;
+  fill(params: AndroidDeviceFillParams, progress?: Progress): Promise<AndroidDeviceFillResult>;
+  tap(params: AndroidDeviceTapParams, progress?: Progress): Promise<AndroidDeviceTapResult>;
+  drag(params: AndroidDeviceDragParams, progress?: Progress): Promise<AndroidDeviceDragResult>;
+  fling(params: AndroidDeviceFlingParams, progress?: Progress): Promise<AndroidDeviceFlingResult>;
+  longTap(params: AndroidDeviceLongTapParams, progress?: Progress): Promise<AndroidDeviceLongTapResult>;
+  pinchClose(params: AndroidDevicePinchCloseParams, progress?: Progress): Promise<AndroidDevicePinchCloseResult>;
+  pinchOpen(params: AndroidDevicePinchOpenParams, progress?: Progress): Promise<AndroidDevicePinchOpenResult>;
+  scroll(params: AndroidDeviceScrollParams, progress?: Progress): Promise<AndroidDeviceScrollResult>;
+  swipe(params: AndroidDeviceSwipeParams, progress?: Progress): Promise<AndroidDeviceSwipeResult>;
+  info(params: AndroidDeviceInfoParams, progress?: Progress): Promise<AndroidDeviceInfoResult>;
+  screenshot(params?: AndroidDeviceScreenshotParams, progress?: Progress): Promise<AndroidDeviceScreenshotResult>;
+  inputType(params: AndroidDeviceInputTypeParams, progress?: Progress): Promise<AndroidDeviceInputTypeResult>;
+  inputPress(params: AndroidDeviceInputPressParams, progress?: Progress): Promise<AndroidDeviceInputPressResult>;
+  inputTap(params: AndroidDeviceInputTapParams, progress?: Progress): Promise<AndroidDeviceInputTapResult>;
+  inputSwipe(params: AndroidDeviceInputSwipeParams, progress?: Progress): Promise<AndroidDeviceInputSwipeResult>;
+  inputDrag(params: AndroidDeviceInputDragParams, progress?: Progress): Promise<AndroidDeviceInputDragResult>;
+  launchBrowser(params: AndroidDeviceLaunchBrowserParams, progress?: Progress): Promise<AndroidDeviceLaunchBrowserResult>;
+  open(params: AndroidDeviceOpenParams, progress?: Progress): Promise<AndroidDeviceOpenResult>;
+  shell(params: AndroidDeviceShellParams, progress?: Progress): Promise<AndroidDeviceShellResult>;
+  installApk(params: AndroidDeviceInstallApkParams, progress?: Progress): Promise<AndroidDeviceInstallApkResult>;
+  push(params: AndroidDevicePushParams, progress?: Progress): Promise<AndroidDevicePushResult>;
+  connectToWebView(params: AndroidDeviceConnectToWebViewParams, progress?: Progress): Promise<AndroidDeviceConnectToWebViewResult>;
+  close(params?: AndroidDeviceCloseParams, progress?: Progress): Promise<AndroidDeviceCloseResult>;
+}
+export type AndroidDeviceCloseEvent = {};
+export type AndroidDeviceWebViewAddedEvent = {
+  webView: AndroidWebView,
+};
+export type AndroidDeviceWebViewRemovedEvent = {
+  socketName: string,
+};
+export type AndroidDeviceWaitParams = {
+  androidSelector: AndroidSelector,
+  state?: 'gone',
+  timeout: number,
+};
+export type AndroidDeviceWaitOptions = {
+  state?: 'gone',
+};
+export type AndroidDeviceWaitResult = void;
+export type AndroidDeviceFillParams = {
+  androidSelector: AndroidSelector,
+  text: string,
+  timeout: number,
+};
+export type AndroidDeviceFillOptions = {
+
+};
+export type AndroidDeviceFillResult = void;
+export type AndroidDeviceTapParams = {
+  androidSelector: AndroidSelector,
+  duration?: number,
+  timeout: number,
+};
+export type AndroidDeviceTapOptions = {
+  duration?: number,
+};
+export type AndroidDeviceTapResult = void;
+export type AndroidDeviceDragParams = {
+  androidSelector: AndroidSelector,
+  dest: Point,
+  speed?: number,
+  timeout: number,
+};
+export type AndroidDeviceDragOptions = {
+  speed?: number,
+};
+export type AndroidDeviceDragResult = void;
+export type AndroidDeviceFlingParams = {
+  androidSelector: AndroidSelector,
+  direction: 'up' | 'down' | 'left' | 'right',
+  speed?: number,
+  timeout: number,
+};
+export type AndroidDeviceFlingOptions = {
+  speed?: number,
+};
+export type AndroidDeviceFlingResult = void;
+export type AndroidDeviceLongTapParams = {
+  androidSelector: AndroidSelector,
+  timeout: number,
+};
+export type AndroidDeviceLongTapOptions = {
+
+};
+export type AndroidDeviceLongTapResult = void;
+export type AndroidDevicePinchCloseParams = {
+  androidSelector: AndroidSelector,
+  percent: number,
+  speed?: number,
+  timeout: number,
+};
+export type AndroidDevicePinchCloseOptions = {
+  speed?: number,
+};
+export type AndroidDevicePinchCloseResult = void;
+export type AndroidDevicePinchOpenParams = {
+  androidSelector: AndroidSelector,
+  percent: number,
+  speed?: number,
+  timeout: number,
+};
+export type AndroidDevicePinchOpenOptions = {
+  speed?: number,
+};
+export type AndroidDevicePinchOpenResult = void;
+export type AndroidDeviceScrollParams = {
+  androidSelector: AndroidSelector,
+  direction: 'up' | 'down' | 'left' | 'right',
+  percent: number,
+  speed?: number,
+  timeout: number,
+};
+export type AndroidDeviceScrollOptions = {
+  speed?: number,
+};
+export type AndroidDeviceScrollResult = void;
+export type AndroidDeviceSwipeParams = {
+  androidSelector: AndroidSelector,
+  direction: 'up' | 'down' | 'left' | 'right',
+  percent: number,
+  speed?: number,
+  timeout: number,
+};
+export type AndroidDeviceSwipeOptions = {
+  speed?: number,
+};
+export type AndroidDeviceSwipeResult = void;
+export type AndroidDeviceInfoParams = {
+  androidSelector: AndroidSelector,
+};
+export type AndroidDeviceInfoOptions = {
+
+};
+export type AndroidDeviceInfoResult = {
+  info: AndroidElementInfo,
+};
+export type AndroidDeviceScreenshotParams = {};
+export type AndroidDeviceScreenshotOptions = {};
+export type AndroidDeviceScreenshotResult = {
+  binary: Binary,
+};
+export type AndroidDeviceInputTypeParams = {
+  text: string,
+};
+export type AndroidDeviceInputTypeOptions = {
+
+};
+export type AndroidDeviceInputTypeResult = void;
+export type AndroidDeviceInputPressParams = {
+  key: string,
+};
+export type AndroidDeviceInputPressOptions = {
+
+};
+export type AndroidDeviceInputPressResult = void;
+export type AndroidDeviceInputTapParams = {
+  point: Point,
+};
+export type AndroidDeviceInputTapOptions = {
+
+};
+export type AndroidDeviceInputTapResult = void;
+export type AndroidDeviceInputSwipeParams = {
+  segments: Point[],
+  steps: number,
+};
+export type AndroidDeviceInputSwipeOptions = {
+
+};
+export type AndroidDeviceInputSwipeResult = void;
+export type AndroidDeviceInputDragParams = {
+  from: Point,
+  to: Point,
+  steps: number,
+};
+export type AndroidDeviceInputDragOptions = {
+
+};
+export type AndroidDeviceInputDragResult = void;
+export type AndroidDeviceLaunchBrowserParams = {
+  noDefaultViewport?: boolean,
+  viewport?: {
+    width: number,
+    height: number,
+  },
+  screen?: {
+    width: number,
+    height: number,
+  },
+  ignoreHTTPSErrors?: boolean,
+  clientCertificates?: {
+    origin: string,
+    cert?: Binary,
+    key?: Binary,
+    passphrase?: string,
+    pfx?: Binary,
+  }[],
+  javaScriptEnabled?: boolean,
+  bypassCSP?: boolean,
+  userAgent?: string,
+  locale?: string,
+  timezoneId?: string,
+  geolocation?: {
+    longitude: number,
+    latitude: number,
+    accuracy?: number,
+  },
+  permissions?: string[],
+  extraHTTPHeaders?: NameValue[],
+  offline?: boolean,
+  httpCredentials?: {
+    username: string,
+    password: string,
+    origin?: string,
+    send?: 'always' | 'unauthorized',
+  },
+  deviceScaleFactor?: number,
+  isMobile?: boolean,
+  hasTouch?: boolean,
+  colorScheme?: 'dark' | 'light' | 'no-preference' | 'no-override',
+  reducedMotion?: 'reduce' | 'no-preference' | 'no-override',
+  forcedColors?: 'active' | 'none' | 'no-override',
+  acceptDownloads?: 'accept' | 'deny' | 'internal-browser-default',
+  contrast?: 'no-preference' | 'more' | 'no-override',
+  baseURL?: string,
+  recordVideo?: {
+    dir: string,
+    size?: {
+      width: number,
+      height: number,
+    },
+  },
+  strictSelectors?: boolean,
+  serviceWorkers?: 'allow' | 'block',
+  selectorEngines?: SelectorEngine[],
+  testIdAttributeName?: string,
+  pkg?: string,
+  args?: string[],
+  proxy?: {
+    server: string,
+    bypass?: string,
+    username?: string,
+    password?: string,
+  },
+};
+export type AndroidDeviceLaunchBrowserOptions = {
+  noDefaultViewport?: boolean,
+  viewport?: {
+    width: number,
+    height: number,
+  },
+  screen?: {
+    width: number,
+    height: number,
+  },
+  ignoreHTTPSErrors?: boolean,
+  clientCertificates?: {
+    origin: string,
+    cert?: Binary,
+    key?: Binary,
+    passphrase?: string,
+    pfx?: Binary,
+  }[],
+  javaScriptEnabled?: boolean,
+  bypassCSP?: boolean,
+  userAgent?: string,
+  locale?: string,
+  timezoneId?: string,
+  geolocation?: {
+    longitude: number,
+    latitude: number,
+    accuracy?: number,
+  },
+  permissions?: string[],
+  extraHTTPHeaders?: NameValue[],
+  offline?: boolean,
+  httpCredentials?: {
+    username: string,
+    password: string,
+    origin?: string,
+    send?: 'always' | 'unauthorized',
+  },
+  deviceScaleFactor?: number,
+  isMobile?: boolean,
+  hasTouch?: boolean,
+  colorScheme?: 'dark' | 'light' | 'no-preference' | 'no-override',
+  reducedMotion?: 'reduce' | 'no-preference' | 'no-override',
+  forcedColors?: 'active' | 'none' | 'no-override',
+  acceptDownloads?: 'accept' | 'deny' | 'internal-browser-default',
+  contrast?: 'no-preference' | 'more' | 'no-override',
+  baseURL?: string,
+  recordVideo?: {
+    dir: string,
+    size?: {
+      width: number,
+      height: number,
+    },
+  },
+  strictSelectors?: boolean,
+  serviceWorkers?: 'allow' | 'block',
+  selectorEngines?: SelectorEngine[],
+  testIdAttributeName?: string,
+  pkg?: string,
+  args?: string[],
+  proxy?: {
+    server: string,
+    bypass?: string,
+    username?: string,
+    password?: string,
+  },
+};
+export type AndroidDeviceLaunchBrowserResult = {
+  context: BrowserContextChannel,
+};
+export type AndroidDeviceOpenParams = {
+  command: string,
+};
+export type AndroidDeviceOpenOptions = {
+
+};
+export type AndroidDeviceOpenResult = {
+  socket: AndroidSocketChannel,
+};
+export type AndroidDeviceShellParams = {
+  command: string,
+};
+export type AndroidDeviceShellOptions = {
+
+};
+export type AndroidDeviceShellResult = {
+  result: Binary,
+};
+export type AndroidDeviceInstallApkParams = {
+  file: Binary,
+  args?: string[],
+};
+export type AndroidDeviceInstallApkOptions = {
+  args?: string[],
+};
+export type AndroidDeviceInstallApkResult = void;
+export type AndroidDevicePushParams = {
+  file: Binary,
+  path: string,
+  mode?: number,
+};
+export type AndroidDevicePushOptions = {
+  mode?: number,
+};
+export type AndroidDevicePushResult = void;
+export type AndroidDeviceConnectToWebViewParams = {
+  socketName: string,
+};
+export type AndroidDeviceConnectToWebViewOptions = {
+
+};
+export type AndroidDeviceConnectToWebViewResult = {
+  context: BrowserContextChannel,
+};
+export type AndroidDeviceCloseParams = {};
+export type AndroidDeviceCloseOptions = {};
+export type AndroidDeviceCloseResult = void;
+
+export interface AndroidDeviceEvents {
+  'close': AndroidDeviceCloseEvent;
+  'webViewAdded': AndroidDeviceWebViewAddedEvent;
+  'webViewRemoved': AndroidDeviceWebViewRemovedEvent;
+}
+
+export type AndroidWebView = {
+  pid: number,
+  pkg: string,
+  socketName: string,
+};
+
+export type AndroidSelector = {
+  checkable?: boolean,
+  checked?: boolean,
+  clazz?: string,
+  clickable?: boolean,
+  depth?: number,
+  desc?: string,
+  enabled?: boolean,
+  focusable?: boolean,
+  focused?: boolean,
+  hasChild?: {
+    androidSelector: AndroidSelector,
+  },
+  hasDescendant?: {
+    androidSelector: AndroidSelector,
+    maxDepth?: number,
+  },
+  longClickable?: boolean,
+  pkg?: string,
+  res?: string,
+  scrollable?: boolean,
+  selected?: boolean,
+  text?: string,
+};
+
+export type AndroidElementInfo = {
+  children?: AndroidElementInfo[],
+  clazz: string,
+  desc: string,
+  res: string,
+  pkg: string,
+  text: string,
+  bounds: Rect,
+  checkable: boolean,
+  checked: boolean,
+  clickable: boolean,
+  enabled: boolean,
+  focusable: boolean,
+  focused: boolean,
+  longClickable: boolean,
+  scrollable: boolean,
+  selected: boolean,
+};
 
 // ----------- JsonPipe -----------
 export type JsonPipeInitializer = {};

@@ -19,7 +19,8 @@
 
 'use strict';
 
-module.exports = pixelmatch;
+// Preserve CommonJS default while providing ESM default for bundlers.
+export default pixelmatch;
 
 const defaultOptions = {
     threshold: 0.1,         // matching threshold (0 to 1); smaller is more sensitive

@@ -18,6 +18,7 @@ import { toClientCertificatesProtocol } from './browserContext';
 import { ChannelOwner } from './channelOwner';
 import { TargetClosedError, isTargetClosedError } from './errors';
 import { RawHeaders } from './network';
+import { Tracing } from './tracing';
 import { assert } from '../utils/isomorphic/assert';
 import { mkdirIfNeeded } from './fileUtils';
 import { headersObjectToArray } from '../utils/isomorphic/headers';
@@ -31,6 +32,7 @@ import type * as api from '../../types/types';
 import type { HeadersArray, NameValue } from '../utils/isomorphic/types';
 import type { Platform } from './platform';
 import type * as channels from '@protocol/channels';
+import type * as fs from 'fs';
 
 export type FetchOptions = {
   params?: { [key: string]: string | number | boolean; } | URLSearchParams | string,
@@ -38,7 +40,7 @@ export type FetchOptions = {
   headers?: Headers,
   data?: string | Buffer | Serializable,
   form?: { [key: string]: string|number|boolean; } | FormData;
-  multipart?: { [key: string]: string|number|boolean|FilePayload; } | FormData;
+  multipart?: { [key: string]: string|number|boolean|fs.ReadStream|FilePayload; } | FormData;
   timeout?: number,
   failOnStatusCode?: boolean,
   ignoreHTTPSErrors?: boolean,
@@ -272,7 +274,7 @@ export class APIRequestContext extends ChannelOwner<channels.APIRequestContextCh
   }
 }
 
-async function toFormField(platform: Platform, name: string, value: string | number | boolean | any | FilePayload): Promise<channels.FormField> {
+async function toFormField(platform: Platform, name: string, value: string | number | boolean | fs.ReadStream | FilePayload): Promise<channels.FormField> {
   const typeOfValue = typeof value;
   if (isFilePayload(value)) {
     const payload = value as FilePayload;
@@ -282,7 +284,7 @@ async function toFormField(platform: Platform, name: string, value: string | num
   } else if (typeOfValue === 'string' || typeOfValue === 'number' || typeOfValue === 'boolean') {
     return { name, value: String(value) };
   } else {
-    return { name, file: await readStreamToJson(platform, value as any) };
+    return { name, file: await readStreamToJson(platform, value as fs.ReadStream) };
   }
 }
 
@@ -396,7 +398,7 @@ function filePayloadToJson(payload: FilePayload): ServerFilePayload {
   };
 }
 
-async function readStreamToJson(platform: Platform, stream: any): Promise<ServerFilePayload> {
+async function readStreamToJson(platform: Platform, stream: fs.ReadStream): Promise<ServerFilePayload> {
   const buffer = await new Promise<Buffer>((resolve, reject) => {
     const chunks: Buffer[] = [];
     stream.on('data', chunk => chunks.push(chunk as Buffer));

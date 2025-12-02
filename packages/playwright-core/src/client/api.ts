@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+export { Android, AndroidDevice, AndroidInput, AndroidSocket, AndroidWebView } from './android';
 export { Browser } from './browser';
 export { BrowserContext } from './browserContext';
 export type { BrowserServer } from './browserType';
@@ -22,6 +23,8 @@ export { Clock } from './clock';
 export { ConsoleMessage } from './consoleMessage';
 export { Coverage } from './coverage';
 export { Dialog } from './dialog';
+export { Download } from './download';
+export { Electron, ElectronApplication } from './electron';
 export { FrameLocator, Locator } from './locator';
 export { ElementHandle } from './elementHandle';
 export { FileChooser } from './fileChooser';
@@ -34,6 +37,8 @@ export { Request, Response, Route, WebSocket, WebSocketRoute } from './network';
 export { APIRequest, APIRequestContext, APIResponse } from './fetch';
 export { Page } from './page';
 export { Selectors } from './selectors';
+export { Tracing } from './tracing';
+export { Video } from './video';
 export { Worker } from './worker';
 export { CDPSession } from './cdpSession';
 export { Playwright } from './playwright';

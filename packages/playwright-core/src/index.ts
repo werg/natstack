@@ -1,57 +1,48 @@
 /**
- * Browser-compatible Playwright Core
- * Exports the main classes needed for CDP-based browser automation in a sandboxed context
- *
- * NOTE: This bundle is optimized for browser-only use with a proxied CDP connection.
- * Server-side functionality (file I/O, process management, video encoding, tracing)
- * is intentionally omitted. If you need these features, use the full Playwright package.
+ * Browser-friendly Playwright Core surface.
+ * Exposes client-side primitives and a minimal CDP transport that work in sandboxed panels.
  */
 
-// Main entry point
+// Main client entry point
 export { Playwright } from './client/playwright';
 
-// Browser & Context classes - core automation targets
+// Browser & Context classes - client channel side
 export { Browser } from './client/browser';
 export { BrowserContext } from './client/browserContext';
 
-// Page & Frame - primary interaction surface
+// Page & Frame
 export { Page } from './client/page';
 export { Frame } from './client/frame';
 
-// Locators - selector and element querying
+// Locators and selectors
 export { Locator } from './client/locator';
+export { Selectors } from './client/selectors';
 
-// Network - request/response handling
-export { Request } from './client/network';
-export { Response } from './client/network';
-export { Route } from './client/network';
-export { WebSocket } from './client/network';
+// Network
+export { Request, Response, Route, WebSocket } from './client/network';
 
-// JS Interop - handle execution and manipulation
+// JS handles
 export { JSHandle } from './client/jsHandle';
 export { ElementHandle } from './client/elementHandle';
 
-// Error types
+// Errors
 export { TimeoutError, TargetClosedError } from './client/errors';
 
-// Platform abstraction - runtime environment bridge
+// Platform abstractions
 export { emptyPlatform, webPlatform } from './client/platform';
 export type { Platform } from './client/platform';
 
-// Connection infrastructure - CDP protocol handling
+// Client-side connection layer
 export { Connection } from './client/connection';
 export { ChannelOwner } from './client/channelOwner';
 
-// Selector utilities
-export { Selectors } from './client/selectors';
+// Minimal server-side CDP wiring that is browser-safe
+export { CRConnection, CRSession, ConnectionEvents, kBrowserCloseMessageId } from './server/chromium/crConnection';
+export { BrowserWebSocketTransport } from './server/browserTransport';
+export type { BrowserWebSocketTransportOptions } from './server/browserTransport';
+export type { ConnectionTransport, ProtocolRequest, ProtocolResponse } from './server/transport';
+export { helper } from './server/helper';
+export { RecentLogsCollector } from './server/utils/debugLogger';
 
-// NOTE: The following are NOT exported to minimize bundle size:
-// - BrowserType (browser launching is not supported in browser contexts)
-// - APIRequest/APIRequestContext/APIResponse (HTTP client - use fetch instead)
-// - Artifact, Download, Video, Tracing (file-based operations require server)
-// - LocalUtils (filesystem utilities are server-side only)
-// - Coverage (code coverage requires server instrumentation)
-// - Dialog, FileChooser (handled via CDP events, direct access not needed)
-// - Worker (not typically needed in browser automation)
-// - ConsoleMessage (subscribed via events instead)
-// - HARRouter (HAR recording is server-side)
+// Browser-compatible CRBrowser facade
+export { CRBrowser } from './client/crBrowser';
