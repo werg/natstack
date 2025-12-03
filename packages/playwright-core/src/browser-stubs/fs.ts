@@ -1,17 +1,19 @@
-const injectedFs = (globalThis as any).fs;
-const notAvailable = () => {
-  throw new Error('fs is not available in the browser bundle');
-};
+// Startup validation for OPFS fs
+if (!(globalThis as any).fs) {
+  throw new Error('Missing required: globalThis.fs (OPFS) - Playwright requires OPFS-based fs for browser operation');
+}
 
-const fs = injectedFs ?? {
-  readFile: notAvailable,
-  writeFile: notAvailable,
-  rm: notAvailable,
-  existsSync: () => false,
+const injectedFs = (globalThis as any).fs;
+
+const fs = {
+  readFile: injectedFs.readFile?.bind(injectedFs),
+  writeFile: injectedFs.writeFile?.bind(injectedFs),
+  rm: injectedFs.rm?.bind(injectedFs),
+  existsSync: injectedFs.existsSync?.bind(injectedFs),
 };
 
 export default fs;
-export const readFile = fs.readFile?.bind(fs) ?? notAvailable;
-export const writeFile = fs.writeFile?.bind(fs) ?? notAvailable;
-export const rm = fs.rm?.bind(fs) ?? notAvailable;
-export const existsSync = fs.existsSync?.bind(fs) ?? (() => false);
+export const readFile = fs.readFile;
+export const writeFile = fs.writeFile;
+export const rm = fs.rm;
+export const existsSync = fs.existsSync;

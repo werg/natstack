@@ -44,5 +44,10 @@ export type { ConnectionTransport, ProtocolRequest, ProtocolResponse } from './s
 export { helper } from './server/helper';
 export { RecentLogsCollector } from './server/utils/debugLogger';
 
-// Browser-compatible CRBrowser facade
-export { CRBrowser } from './client/crBrowser';
+// Browser environment validation
+export { validateBrowserEnvironment } from './client/validateBrowserEnvironment';
+
+// CDP Adapter and related utilities
+export { CDPAdapter } from './client/cdpAdapter';
+export { FrameAdapter } from './client/frameAdapter';
+export { InjectedScriptLoader } from './client/injectedScriptLoader';
