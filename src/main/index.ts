@@ -1,4 +1,4 @@
-import { app, BrowserWindow, nativeTheme, webContents } from "electron";
+import { app, BaseWindow, nativeTheme } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 
@@ -27,6 +27,11 @@ import { getCentralData } from "./centralData.js";
 import { registerPanelProtocol, setupPanelProtocol } from "./panelProtocol.js";
 import { getMainCacheManager } from "./cacheManager.js";
 import { getCdpServer, type CdpServer } from "./cdpServer.js";
+import {
+  initViewManager,
+  getViewManager,
+  type ViewManager,
+} from "./viewManager.js";
 
 // =============================================================================
 // Protocol Registration (must happen before app ready)
@@ -64,7 +69,8 @@ let workspace: Workspace | null = null;
 let gitServer: GitServer | null = null;
 let cdpServer: CdpServer | null = null;
 let panelManager: PanelManager | null = null;
-let mainWindow: BrowserWindow | null = null;
+let mainWindow: BaseWindow | null = null;
+let viewManager: ViewManager | null = null;
 
 // Export AI handler for use by other modules (will be set during initialization)
 export let aiHandler: import("./ai/aiHandler.js").AIHandler | null = null;
@@ -120,7 +126,8 @@ console.log(`[App] Starting in ${appMode} mode`);
 // =============================================================================
 
 function createWindow(): void {
-  mainWindow = new BrowserWindow({
+  // Create BaseWindow (no webContents of its own)
+  mainWindow = new BaseWindow({
     width: 1200,
     height: appMode === "main" ? 600 : 500,
     titleBarStyle: "hidden",
@@ -129,95 +136,29 @@ function createWindow(): void {
           titleBarOverlay: true,
         }
       : {}),
-    webPreferences: {
-      preload: path.join(__dirname, "preload.cjs"),
-      nodeIntegration: false,
-      contextIsolation: true,
-      webviewTag: true,
-    },
   });
 
-  void mainWindow.loadFile(path.join(__dirname, "index.html"));
-
-  if (isDev()) {
-    mainWindow.webContents.openDevTools();
-  }
+  // Initialize ViewManager with shell view
+  viewManager = initViewManager({
+    window: mainWindow,
+    shellPreload: path.join(__dirname, "preload.cjs"),
+    panelPreload: path.join(__dirname, "panelPreload.cjs"),
+    shellHtmlPath: path.join(__dirname, "index.html"),
+    devTools: isDev(),
+  });
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+    viewManager = null;
   });
 
-  // Set main window reference in panel manager (if in main mode)
-  if (panelManager) {
-    panelManager.setMainWindow(mainWindow);
+  // Set ViewManager reference in panel manager (if in main mode)
+  if (panelManager && viewManager) {
+    panelManager.setViewManager(viewManager);
   }
 
-  // Listen for webview attachments to auto-register browser panels with CDP server.
-  // This is more reliable than calling getWebContentsId from the renderer, which has timing issues.
-  mainWindow.webContents.on("did-attach-webview", (_event, webContents) => {
-    const webContentsId = webContents.id;
-
-    // Try to register immediately with current URL
-    const tryRegister = (): boolean => {
-      const url = webContents.getURL();
-
-      // Skip app panel webviews (they use our natstack-panel:// protocol)
-      if (url.startsWith("natstack-panel://")) {
-        return true; // Treat as "handled" so we don't keep listening
-      }
-
-      // Skip empty URLs (webview not yet navigated)
-      if (!url || url === "about:blank") {
-        return false;
-      }
-
-      console.log(`[Main] did-attach-webview: webContentsId=${webContentsId}, url=${url}`);
-
-      // Find which browser panel this webContents belongs to by matching URL
-      if (panelManager) {
-        const browserPanel = panelManager.findBrowserPanelByUrl(url);
-        if (browserPanel) {
-          const parentId = panelManager.findParentId(browserPanel.id);
-          if (parentId) {
-            console.log(`[Main] Auto-registering browser ${browserPanel.id} (webContentsId=${webContentsId}) for parent ${parentId}`);
-            getCdpServer().registerBrowser(browserPanel.id, webContentsId, parentId);
-            return true;
-          } else {
-            console.log(`[Main] Browser panel ${browserPanel.id} has no parent - might be a root browser`);
-          }
-        } else {
-          console.log(`[Main] Could not find browser panel for URL: ${url}`);
-        }
-      }
-      return false;
-    };
-
-    // Try immediately
-    if (tryRegister()) {
-      return;
-    }
-
-    // If URL wasn't available yet, wait for navigation
-    const onNavigate = () => {
-      if (tryRegister()) {
-        webContents.off("did-navigate", onNavigate);
-        webContents.off("did-start-navigation", onNavigate);
-      }
-    };
-
-    webContents.on("did-navigate", onNavigate);
-    webContents.on("did-start-navigation", onNavigate);
-
-    // Also try after a short delay as fallback
-    setTimeout(() => {
-      tryRegister();
-      webContents.off("did-navigate", onNavigate);
-      webContents.off("did-start-navigation", onNavigate);
-    }, 500);
-  });
-
-  // Setup application menu
-  setupMenu(mainWindow);
+  // Setup application menu (uses shell webContents for menu events)
+  setupMenu(mainWindow, viewManager.getShellWebContents());
 }
 
 // =============================================================================
@@ -237,8 +178,8 @@ handle("app:set-theme-mode", async (_event, mode: SharedPanel.ThemeMode) => {
 });
 
 handle("app:open-devtools", async () => {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.openDevTools({ mode: "detach" });
+  if (viewManager) {
+    viewManager.openDevTools("shell");
   }
 });
 
@@ -290,18 +231,12 @@ handle("panel:update-theme", async (_event, theme: SharedPanel.ThemeAppearance) 
 });
 
 handle("panel:open-devtools", async (_event, panelId: string) => {
-  const pm = requirePanelManager();
-  const views = pm.getPanelViews(panelId);
-  if (!views || views.size === 0) {
-    throw new Error(`No active webviews for panel ${panelId}`);
+  requirePanelManager();
+  const vm = getViewManager();
+  if (!vm.hasView(panelId)) {
+    throw new Error(`No view found for panel ${panelId}`);
   }
-
-  for (const contentsId of views) {
-    const contents = webContents.fromId(contentsId);
-    if (contents && !contents.isDestroyed()) {
-      contents.openDevTools({ mode: "detach" });
-    }
-  }
+  vm.openDevTools(panelId);
 });
 
 // =============================================================================
@@ -360,7 +295,9 @@ handle("panel-bridge:get-git-config", async (event, panelId: string) => {
 
 // Helper to get browser webContents and validate it exists
 function requireBrowserWebContents(browserId: string): Electron.WebContents {
-  const contents = getCdpServer().getBrowserWebContents(browserId);
+  // Use ViewManager for webContents access
+  const vm = getViewManager();
+  const contents = vm.getWebContents(browserId);
   if (!contents) {
     throw new Error(`Browser webContents not found for ${browserId}`);
   }
@@ -485,6 +422,61 @@ handle(
 );
 
 // =============================================================================
+// View Management IPC Handlers (renderer <-> main)
+// =============================================================================
+
+handle(
+  "view:set-bounds",
+  async (
+    _event,
+    viewId: string,
+    bounds: { x: number; y: number; width: number; height: number }
+  ) => {
+    const vm = getViewManager();
+    vm.setViewBounds(viewId, bounds);
+  }
+);
+
+handle("view:set-visible", async (_event, viewId: string, visible: boolean) => {
+  const vm = getViewManager();
+  vm.setViewVisible(viewId, visible);
+});
+
+handle(
+  "view:set-theme-css",
+  async (_event, css: string) => {
+    const vm = getViewManager();
+    vm.setThemeCss(css);
+  }
+);
+
+// Browser navigation via ViewManager (for renderer UI controls)
+handle("view:browser-navigate", async (_event, browserId: string, url: string) => {
+  const vm = getViewManager();
+  await vm.navigateView(browserId, url);
+});
+
+handle("view:browser-go-back", async (_event, browserId: string) => {
+  const vm = getViewManager();
+  vm.goBack(browserId);
+});
+
+handle("view:browser-go-forward", async (_event, browserId: string) => {
+  const vm = getViewManager();
+  vm.goForward(browserId);
+});
+
+handle("view:browser-reload", async (_event, browserId: string) => {
+  const vm = getViewManager();
+  vm.reload(browserId);
+});
+
+handle("view:browser-stop", async (_event, browserId: string) => {
+  const vm = getViewManager();
+  vm.stop(browserId);
+});
+
+// =============================================================================
 // App Lifecycle
 // =============================================================================
 
@@ -574,11 +566,14 @@ app.on("activate", () => {
 
 // Listen for system theme changes and notify renderer
 nativeTheme.on("updated", () => {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(
-      "system-theme-changed",
-      nativeTheme.shouldUseDarkColors ? "dark" : "light"
-    );
+  if (viewManager) {
+    const shellContents = viewManager.getShellWebContents();
+    if (!shellContents.isDestroyed()) {
+      shellContents.send(
+        "system-theme-changed",
+        nativeTheme.shouldUseDarkColors ? "dark" : "light"
+      );
+    }
   }
 });
 

@@ -1,6 +1,11 @@
-import { app, Menu, shell, MenuItemConstructorOptions } from "electron";
+import { app, Menu, shell, MenuItemConstructorOptions, type WebContents } from "electron";
 
-export function setupMenu(mainWindow: Electron.BrowserWindow): void {
+/**
+ * Setup application menu.
+ * @param mainWindow - The main BaseWindow (for window operations)
+ * @param shellContents - WebContents for the shell view (for IPC and devtools)
+ */
+export function setupMenu(mainWindow: Electron.BaseWindow, shellContents: WebContents): void {
   const isMac = process.platform === "darwin";
 
   const template: MenuItemConstructorOptions[] = [
@@ -31,8 +36,8 @@ export function setupMenu(mainWindow: Electron.BrowserWindow): void {
           label: "Switch Workspace...",
           accelerator: "CmdOrCtrl+Shift+O",
           click: () => {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send("open-workspace-chooser");
+            if (shellContents && !shellContents.isDestroyed()) {
+              shellContents.send("open-workspace-chooser");
             }
           },
         },
@@ -41,8 +46,8 @@ export function setupMenu(mainWindow: Electron.BrowserWindow): void {
           label: "Settings...",
           accelerator: "CmdOrCtrl+,",
           click: () => {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send("open-settings");
+            if (shellContents && !shellContents.isDestroyed()) {
+              shellContents.send("open-settings");
             }
           },
         },
@@ -91,8 +96,8 @@ export function setupMenu(mainWindow: Electron.BrowserWindow): void {
           label: "Toggle App Developer Tools",
           accelerator: "CmdOrCtrl+Alt+I",
           click: () => {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.toggleDevTools();
+            if (shellContents && !shellContents.isDestroyed()) {
+              shellContents.toggleDevTools();
             }
           },
         },

@@ -139,6 +139,8 @@ interface BuildFromSourceOptions {
   previousDependencyHash?: string;
   /** Logger function for build output */
   log?: (message: string) => void;
+  /** Whether to emit inline sourcemaps (default: true) */
+  inlineSourcemap?: boolean;
 }
 
 interface BuildFromSourceResult {
@@ -429,7 +431,12 @@ export class PanelBuilder {
    * Used by both buildPanel() and buildChildPanel().
    */
   private async buildFromSource(options: BuildFromSourceOptions): Promise<BuildFromSourceResult> {
-    const { sourcePath, previousDependencyHash, log = console.log.bind(console) } = options;
+    const {
+      sourcePath,
+      previousDependencyHash,
+      log = console.log.bind(console),
+      inlineSourcemap = true,
+    } = options;
 
     // Check if panel directory exists
     if (!fs.existsSync(sourcePath)) {
@@ -522,7 +529,8 @@ if (shouldAutoMount(userModule)) {
       platform: "browser",
       target: "es2022",
       outfile: bundlePath,
-      sourcemap: false,
+      sourcemap: inlineSourcemap ? "inline" : false,
+      keepNames: true,      // Preserve class/function names
       format: "esm",
       absWorkingDir: sourcePath,
       nodePaths,
@@ -640,7 +648,8 @@ if (shouldAutoMount(userModule)) {
     panelsRoot: string,
     panelPath: string,
     version?: VersionSpec,
-    onProgress?: (progress: BuildProgress) => void
+    onProgress?: (progress: BuildProgress) => void,
+    options?: { sourcemap?: boolean }
   ): Promise<ChildBuildResult> {
     let cleanup: (() => Promise<void>) | null = null;
     let buildLog = "";
@@ -700,6 +709,7 @@ if (shouldAutoMount(userModule)) {
         sourcePath,
         previousDependencyHash,
         log,
+        inlineSourcemap: options?.sourcemap !== false,
       });
 
       // Save the new dependency hash for next time

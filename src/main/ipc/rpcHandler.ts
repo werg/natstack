@@ -1,8 +1,9 @@
-import { ipcMain, MessageChannelMain, webContents } from "electron";
+import { ipcMain, MessageChannelMain } from "electron";
 import { handle } from "./handlers.js";
 import type { PanelManager } from "../panelManager.js";
 import { getWorkerManager } from "../workerManager.js";
 import type { RpcMessage } from "../../shared/rpc/types.js";
+import { isViewManagerInitialized, getViewManager } from "../viewManager.js";
 
 export class PanelRpcHandler {
   constructor(private panelManager: PanelManager) {
@@ -87,16 +88,10 @@ export class PanelRpcHandler {
   }
 
   private getPanelWebContents(panelId: string): Electron.WebContents | undefined {
-    const views = this.panelManager.getPanelViews(panelId);
-    if (!views || views.size === 0) {
+    if (!isViewManagerInitialized()) {
       return undefined;
     }
-    // Get the first view (panels typically have one view)
-    const contentsId = views.values().next().value;
-    if (contentsId === undefined) {
-      return undefined;
-    }
-    const contents = webContents.fromId(contentsId);
+    const contents = getViewManager().getWebContents(panelId);
     return contents && !contents.isDestroyed() ? contents : undefined;
   }
 

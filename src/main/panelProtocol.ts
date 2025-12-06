@@ -46,10 +46,10 @@ export function registerPanelProtocol(): void {
 
 /**
  * Handle a protocol request for natstack-panel://
- * This is the shared handler logic used by all sessions
+ * This is the shared handler logic used by all sessions.
+ * Exported for use by ViewManager when registering protocol on partition sessions.
  */
-function handleProtocolRequest(request: Request): Response {
-  console.log(`[PanelProtocol] Protocol handler invoked for: ${request.url.slice(0, 100)}`);
+export function handleProtocolRequest(request: Request): Response {
   const url = new URL(request.url);
 
   // The panelId is encoded in the URL. Since panelIds contain '/', we encode them as the path
@@ -57,10 +57,6 @@ function handleProtocolRequest(request: Request): Response {
   const pathParts = url.pathname.split("/").filter(Boolean);
   const panelId = decodeURIComponent(pathParts[0] || "");
   const pathname = "/" + pathParts.slice(1).join("/") || "/";
-
-  console.log(`[PanelProtocol] Request: ${request.url}`);
-  console.log(`[PanelProtocol] Parsed panelId: ${panelId}, pathname: ${pathname}`);
-  console.log(`[PanelProtocol] Available panels:`, Array.from(protocolPanels.keys()));
 
   const panelContent = protocolPanels.get(panelId);
   if (!panelContent) {
@@ -73,9 +69,7 @@ function handleProtocolRequest(request: Request): Response {
 
   // Route based on pathname
   if (pathname === "/" || pathname === "/index.html") {
-    // Inject the bundle script tag into the HTML
     const htmlWithBundle = injectBundleIntoHtml(panelContent.html, panelId);
-    console.log(`[PanelProtocol] Serving HTML (${htmlWithBundle.length} bytes)`);
     return new Response(htmlWithBundle, {
       status: 200,
       headers: { "Content-Type": "text/html; charset=utf-8" },

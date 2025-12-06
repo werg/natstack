@@ -20,12 +20,32 @@ export const electronAPI = {
     ipcRenderer.invoke("panel:update-theme", theme),
   openPanelDevTools: (panelId: string): Promise<void> =>
     ipcRenderer.invoke("panel:open-devtools", panelId),
-  registerBrowserWebview: (browserId: string, webContentsId: number): Promise<void> =>
-    ipcRenderer.invoke("panel:register-browser-webview", browserId, webContentsId),
   updateBrowserState: (
     browserId: string,
     state: { url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean }
   ): Promise<void> => ipcRenderer.invoke("panel:update-browser-state", browserId, state),
+
+  // View management (for WebContentsView bounds/visibility)
+  setViewBounds: (
+    viewId: string,
+    bounds: { x: number; y: number; width: number; height: number }
+  ): Promise<void> => ipcRenderer.invoke("view:set-bounds", viewId, bounds),
+  setViewVisible: (viewId: string, visible: boolean): Promise<void> =>
+    ipcRenderer.invoke("view:set-visible", viewId, visible),
+  setViewThemeCss: (css: string): Promise<void> =>
+    ipcRenderer.invoke("view:set-theme-css", css),
+
+  // Browser navigation (for renderer UI controls)
+  browserNavigate: (browserId: string, url: string): Promise<void> =>
+    ipcRenderer.invoke("view:browser-navigate", browserId, url),
+  browserGoBack: (browserId: string): Promise<void> =>
+    ipcRenderer.invoke("view:browser-go-back", browserId),
+  browserGoForward: (browserId: string): Promise<void> =>
+    ipcRenderer.invoke("view:browser-go-forward", browserId),
+  browserReload: (browserId: string): Promise<void> =>
+    ipcRenderer.invoke("view:browser-reload", browserId),
+  browserStop: (browserId: string): Promise<void> =>
+    ipcRenderer.invoke("view:browser-stop", browserId),
 
   // Event listeners (one-way events from main)
   onSystemThemeChanged: (callback: (theme: Panel.ThemeMode) => void): (() => void) => {
@@ -47,6 +67,8 @@ export const electronAPI = {
       ipcRenderer.removeListener("panel:tree-updated", listener);
     };
   },
+
+  // CDP visibility toggle removed - WebContentsView architecture doesn't need it
 
   // =============================================================================
   // Workspace Chooser Methods

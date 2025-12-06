@@ -44,11 +44,16 @@ type RpcResponse =
       error: string;
     };
 
-const urlParams = new URLSearchParams(window.location.search);
-const panelId = urlParams.get("panelId");
+// Parse panelId from additionalArguments (passed via webPreferences)
+const parsePanelId = (): string | null => {
+  const arg = process.argv.find((value) => value.startsWith("--natstack-panel-id="));
+  return arg ? arg.split("=")[1] ?? null : null;
+};
+
+const panelId = parsePanelId();
 
 if (!panelId) {
-  throw new Error("Panel ID missing from panel URL");
+  throw new Error("Panel ID missing from additionalArguments");
 }
 
 const parseEnvArg = (): Record<string, string> => {

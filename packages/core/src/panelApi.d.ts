@@ -85,7 +85,7 @@ declare const panelAPI: {
      * const editorId = await panel.createChild({
      *   type: 'app',
      *   name: 'editor',
-     *   path: 'panels/editor',
+     *   source: 'panels/editor',
      *   env: { FILE_PATH: '/foo.txt' },
      * });
      *
@@ -93,7 +93,7 @@ declare const panelAPI: {
      * const computeId = await panel.createChild({
      *   type: 'worker',
      *   name: 'compute-worker',
-     *   path: 'workers/compute',
+     *   source: 'workers/compute',
      *   memoryLimitMB: 512,
      * });
      *
@@ -101,7 +101,14 @@ declare const panelAPI: {
      * const browserId = await panel.createChild({
      *   type: 'browser',
      *   name: 'web-scraper',
-     *   url: 'https://example.com',
+     *   source: 'https://example.com',
+     * });
+     *
+     * // Create an app panel without sourcemaps (defaults to inline sourcemaps)
+     * const prodPanel = await panel.createChild({
+     *   type: 'app',
+     *   source: 'panels/prod-only',
+     *   sourcemap: false,
      * });
      * ```
      */

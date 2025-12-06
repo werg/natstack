@@ -14,51 +14,62 @@ export { checkQuota, logQuotaInfo, ensureSpace, formatBytes, ESTIMATED_CLONE_SIZ
 export { getPackageRegistry, resetPackageRegistry, parseSpec, isGitSpec, isNpmSpec, type PackageSpec, type PackageRegistry, } from "./packages.js";
 import type { GitDependency } from "@natstack/git";
 /**
- * Base spec fields common to all child types.
+ * Base fields shared by all child spec types.
+ * Extended by AppChildSpec, WorkerChildSpec, and BrowserChildSpec.
  */
 interface ChildSpecBase {
-    /** Unique name for this child (becomes part of the panel ID) */
-    name: string;
+    /** Optional name for this child (becomes part of the panel ID). If omitted, a random ID is generated. */
+    name?: string;
     /** Environment variables to pass to the child */
     env?: Record<string, string>;
+    /** Source: workspace-relative path for app/worker, URL for browser */
+    source: string;
+}
+/**
+ * Common fields shared by all child spec types.
+ * Used as a type constraint for generic child handling.
+ * This is the intersection of all child spec types' common fields.
+ */
+export interface ChildSpecCommon extends ChildSpecBase {
+    /** Child type discriminator */
+    type: "app" | "worker" | "browser";
+}
+/**
+ * Git-related fields for app and worker specs.
+ */
+interface GitVersionFields {
+    /** Branch name to track */
+    branch?: string;
+    /** Specific commit hash to pin to */
+    commit?: string;
+    /** Tag to pin to */
+    tag?: string;
 }
 /**
  * Spec for creating an app panel child.
+ * Name is optional - if omitted, a random ID is generated.
+ * Singleton panels (singletonState: true in manifest) cannot have a name override.
  */
-export interface AppChildSpec extends ChildSpecBase {
+export interface AppChildSpec extends ChildSpecBase, GitVersionFields {
     type: "app";
-    /** Workspace-relative path to panel source */
-    path: string;
-    /** Branch name to track */
-    branch?: string;
-    /** Specific commit hash to pin to */
-    commit?: string;
-    /** Tag to pin to */
-    tag?: string;
+    /** Emit inline sourcemaps (default: true). Set to false to omit sourcemaps. */
+    sourcemap?: boolean;
 }
 /**
  * Spec for creating a worker child.
+ * Name is optional - if omitted, a random ID is generated.
  */
-export interface WorkerChildSpec extends ChildSpecBase {
+export interface WorkerChildSpec extends ChildSpecBase, GitVersionFields {
     type: "worker";
-    /** Workspace-relative path to worker source */
-    path: string;
-    /** Branch name to track */
-    branch?: string;
-    /** Specific commit hash to pin to */
-    commit?: string;
-    /** Tag to pin to */
-    tag?: string;
     /** Memory limit in MB (default: 1024) */
     memoryLimitMB?: number;
 }
 /**
  * Spec for creating a browser panel child.
+ * Name is optional - if omitted, a random ID is generated.
  */
 export interface BrowserChildSpec extends ChildSpecBase {
     type: "browser";
-    /** Initial URL to load */
-    url: string;
     /** Optional title (defaults to URL hostname) */
     title?: string;
 }

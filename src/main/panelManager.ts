@@ -1,10 +1,8 @@
-import { type BrowserWindow, webContents } from "electron";
 import * as path from "path";
 import { randomBytes } from "crypto";
 import { PanelBuilder } from "./panelBuilder.js";
 import type { PanelEventPayload, Panel, PanelManifest, BrowserPanel } from "./panelTypes.js";
 import { getActiveWorkspace } from "./paths.js";
-import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
 import type { GitServer } from "./gitServer.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
 import * as SharedPanel from "../shared/ipc/types.js";
@@ -13,18 +11,17 @@ import {
   storeProtocolPanel,
   removeProtocolPanel,
   isProtocolPanel,
-  registerProtocolForPartition,
 } from "./panelProtocol.js";
 import { getWorkerManager } from "./workerManager.js";
 import { getCdpServer } from "./cdpServer.js";
+import type { ViewManager } from "./viewManager.js";
 
 export class PanelManager {
   private builder: PanelBuilder;
-  private mainWindow: BrowserWindow | null = null;
+  private viewManager: ViewManager | null = null;
   private panels: Map<string, Panel> = new Map();
   private reservedPanelIds: Set<string> = new Set();
   private rootPanels: Panel[] = [];
-  private panelViews: Map<string, Set<number>> = new Map();
   private currentTheme: "light" | "dark" = "light";
   private panelsRoot: string;
   private gitServer: GitServer;
@@ -34,17 +31,190 @@ export class PanelManager {
   private treeUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly TREE_UPDATE_DEBOUNCE_MS = 16; // ~1 frame at 60fps
 
+  private initialRootPanelPath: string | null = null;
+
   constructor(initialRootPanelPath: string, gitServer: GitServer) {
     this.gitServer = gitServer;
     const workspace = getActiveWorkspace();
     this.panelsRoot = workspace?.path ?? path.resolve(process.cwd());
     this.builder = new PanelBuilder();
-    void this.initializeRootPanel(initialRootPanelPath);
+    // Defer root panel initialization until ViewManager is set
+    this.initialRootPanelPath = initialRootPanelPath;
   }
 
-  setMainWindow(window: BrowserWindow): void {
-    this.mainWindow = window;
-    this.registerWebviewEnvInjection(window);
+  /**
+   * Set the ViewManager for creating and managing panel views.
+   * Must be called after window creation. This triggers deferred root panel initialization.
+   */
+  setViewManager(vm: ViewManager): void {
+    this.viewManager = vm;
+
+    // Now that ViewManager is set, initialize the root panel if deferred
+    if (this.initialRootPanelPath) {
+      const rootPath = this.initialRootPanelPath;
+      this.initialRootPanelPath = null; // Clear to prevent re-initialization
+      this.initializeRootPanel(rootPath).catch((error) => {
+        console.error("[PanelManager] Failed to initialize root panel:", error);
+        // Notify shell about the failure so user sees feedback
+        const shellContents = vm.getShellWebContents();
+        if (!shellContents.isDestroyed()) {
+          shellContents.send("panel:initialization-error", {
+            path: rootPath,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      });
+    }
+  }
+
+  /**
+   * Get the ViewManager (throws if not set).
+   */
+  getViewManager(): ViewManager {
+    if (!this.viewManager) {
+      throw new Error("ViewManager not set - call setViewManager first");
+    }
+    return this.viewManager;
+  }
+
+  /**
+   * Create a WebContentsView for a panel or browser.
+   * Called when panel build is ready or browser is created.
+   * @throws Error if ViewManager is not set
+   */
+  createViewForPanel(panelId: string, url: string, type: "panel" | "browser"): void {
+    if (!this.viewManager) {
+      throw new Error(`[PanelManager] ViewManager not set, cannot create view for ${panelId}`);
+    }
+
+    if (this.viewManager.hasView(panelId)) {
+      // View already exists, navigate if URL changed
+      const currentUrl = this.viewManager.getViewUrl(panelId);
+      if (currentUrl !== url) {
+        void this.viewManager.navigateView(panelId, url);
+      }
+      return; // View exists and is handled
+    }
+
+    const panel = this.panels.get(panelId);
+    const parentId = this.findParentId(panelId);
+
+    if (type === "browser") {
+      // Browser panels: no preload, shared session for cookies/auth
+      const view = this.viewManager.createView({
+        id: panelId,
+        type: "browser",
+        // No partition = default session (shared across browsers)
+        preload: null, // No preload for browsers
+        url: url,
+        parentId: parentId ?? undefined,
+        injectHostThemeVariables: false,
+      });
+
+      // Register with CDP server when dom-ready
+      if (parentId) {
+        view.webContents.on("dom-ready", () => {
+          getCdpServer().registerBrowser(panelId, view.webContents.id, parentId);
+        });
+      }
+
+      // Track browser state changes
+      this.setupBrowserStateTracking(panelId, view.webContents);
+    } else {
+      // App panels: isolated partition, panel preload with auth token and env
+      const authToken = randomBytes(32).toString("hex");
+      this.pendingAuthTokens.set(panelId, { token: authToken, createdAt: Date.now() });
+
+      // Periodic cleanup of expired tokens (runs lazily on each panel creation)
+      this.cleanupExpiredAuthTokens();
+
+      // Build additional arguments for preload
+      const additionalArgs: string[] = [
+        `--natstack-panel-id=${panelId}`,
+        `--natstack-auth-token=${authToken}`,
+      ];
+
+      // Add panel env if available
+      if (panel?.env && Object.keys(panel.env).length > 0) {
+        try {
+          const encodedEnv = Buffer.from(JSON.stringify(panel.env), "utf-8").toString("base64");
+          additionalArgs.push(`--natstack-panel-env=${encodedEnv}`);
+        } catch (error) {
+          console.error(`[PanelManager] Failed to encode env for panel ${panelId}`, error);
+        }
+      }
+
+      this.viewManager.createView({
+        id: panelId,
+        type: "panel",
+        partition: `persist:${panelId}`, // Isolated partition for app panels
+        url: url,
+        parentId: parentId ?? undefined,
+        injectHostThemeVariables: panel?.type === "app" ? (panel as SharedPanel.AppPanel).injectHostThemeVariables : true,
+        additionalArguments: additionalArgs,
+      });
+    }
+  }
+
+  /**
+   * Setup webContents event tracking for browser state (URL, loading, navigation).
+   */
+  private setupBrowserStateTracking(browserId: string, contents: Electron.WebContents): void {
+    let pendingState: Partial<SharedPanel.BrowserState & { url?: string }> = {};
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let destroyed = false;
+
+    const flushPendingState = () => {
+      if (destroyed) return; // Don't update after destruction
+      if (Object.keys(pendingState).length > 0) {
+        this.updateBrowserState(browserId, pendingState);
+        pendingState = {};
+      }
+      debounceTimer = null;
+    };
+
+    const queueStateUpdate = (update: typeof pendingState) => {
+      if (destroyed) return; // Don't queue after destruction
+      Object.assign(pendingState, update);
+      if (!debounceTimer) {
+        debounceTimer = setTimeout(flushPendingState, 50);
+      }
+    };
+
+    // Clean up debounce timer when webContents is destroyed
+    contents.once("destroyed", () => {
+      destroyed = true;
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
+    });
+
+    contents.on("did-navigate", (_event, url) => {
+      queueStateUpdate({ url });
+    });
+
+    contents.on("did-navigate-in-page", (_event, url) => {
+      queueStateUpdate({ url });
+    });
+
+    contents.on("did-start-loading", () => {
+      queueStateUpdate({ isLoading: true });
+    });
+
+    contents.on("did-stop-loading", () => {
+      // Guard against destroyed webContents (can happen if event fires during destruction)
+      if (contents.isDestroyed()) return;
+      queueStateUpdate({
+        isLoading: false,
+        canGoBack: contents.canGoBack(),
+        canGoForward: contents.canGoForward(),
+      });
+    });
+
+    contents.on("page-title-updated", (_event, title) => {
+      queueStateUpdate({ pageTitle: title });
+    });
   }
 
   private normalizePanelPath(panelPath: string): { relativePath: string; absolutePath: string } {
@@ -238,7 +408,7 @@ export class PanelManager {
       return this.createBrowserChild(parentId, spec);
     }
 
-    const { relativePath, absolutePath } = this.normalizePanelPath(spec.path);
+    const { relativePath, absolutePath } = this.normalizePanelPath(spec.source);
 
     // Read manifest to check singleton state and get title
     let manifest: PanelManifest;
@@ -246,7 +416,7 @@ export class PanelManager {
       manifest = this.builder.loadManifest(absolutePath);
     } catch (error) {
       throw new Error(
-        `Failed to load manifest for ${spec.path}: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to load manifest for ${spec.source}: ${error instanceof Error ? error.message : String(error)}`
       );
     }
 
@@ -274,9 +444,9 @@ export class PanelManager {
     // Validate URL protocol
     let parsedUrl: URL;
     try {
-      parsedUrl = new URL(spec.url);
+      parsedUrl = new URL(spec.source);
     } catch {
-      throw new Error(`Invalid URL format: "${spec.url}"`);
+      throw new Error(`Invalid URL format: "${spec.source}"`);
     }
 
     if (!["http:", "https:"].includes(parsedUrl.protocol)) {
@@ -285,10 +455,13 @@ export class PanelManager {
       );
     }
 
+    // Generate a random name if not provided
+    const browserName = spec.name ?? `browser-${this.generatePanelNonce()}`;
+
     const panelId = this.computePanelId({
-      relativePath: `browser/${spec.name}`,
+      relativePath: `browser/${browserName}`,
       parent,
-      requestedId: spec.name,
+      requestedId: browserName,
       singletonState: false,
       isRoot: false,
     });
@@ -301,7 +474,7 @@ export class PanelManager {
       type: "browser",
       id: panelId,
       title: spec.title ?? parsedUrl.hostname,
-      url: spec.url,
+      url: spec.source,
       children: [],
       selectedChildId: null,
       artifacts: {
@@ -320,6 +493,9 @@ export class PanelManager {
     parent.children.push(panel);
     parent.selectedChildId = panel.id;
     this.panels.set(panel.id, panel);
+
+    // Create WebContentsView for the browser
+    this.createViewForPanel(panel.id, spec.source, "browser");
 
     this.notifyPanelTreeUpdate();
 
@@ -479,7 +655,8 @@ export class PanelManager {
             buildLog: progress.log,
           };
           this.notifyPanelTreeUpdate();
-        }
+        },
+        { sourcemap: spec?.sourcemap !== false }
       );
 
       if (result.success && result.bundle && result.html) {
@@ -501,6 +678,11 @@ export class PanelManager {
           buildProgress: "Build complete",
           buildLog: result.buildLog,
         };
+
+        // Create WebContentsView for this panel
+        const srcUrl = new URL(htmlUrl);
+        srcUrl.searchParams.set("panelId", panel.id);
+        this.createViewForPanel(panel.id, srcUrl.toString(), "panel");
       } else {
         // Build failed
         panel.artifacts = {
@@ -673,21 +855,16 @@ export class PanelManager {
     return this.rootPanels.map((panel) => this.serializePanel(panel));
   }
 
-  getPanelViews(panelId: string): Set<number> | undefined {
-    return this.panelViews.get(panelId);
-  }
-
   /**
    * Find which panel a webContents sender belongs to.
+   * Uses ViewManager's reverse lookup from webContents ID to view ID.
    * Returns the panel ID if found, null otherwise.
    */
   findPanelIdBySenderId(senderId: number): string | null {
-    for (const [panelId, views] of this.panelViews) {
-      if (views.has(senderId)) {
-        return panelId;
-      }
+    if (!this.viewManager) {
+      return null;
     }
-    return null;
+    return this.viewManager.findViewIdByWebContentsId(senderId);
   }
 
   setCurrentTheme(theme: "light" | "dark"): void {
@@ -695,20 +872,23 @@ export class PanelManager {
   }
 
   sendPanelEvent(panelId: string, payload: PanelEventPayload): void {
-    const views = this.panelViews.get(panelId);
-    if (!views) return;
+    // Use ViewManager to get webContents for the panel
+    if (!this.viewManager) {
+      return;
+    }
 
-    for (const senderId of views) {
-      const contents = webContents.fromId(senderId);
-      if (contents && !contents.isDestroyed()) {
-        contents.send("panel:event", { panelId, ...payload });
-      }
+    const contents = this.viewManager.getWebContents(panelId);
+    if (contents && !contents.isDestroyed()) {
+      contents.send("panel:event", { panelId, ...payload });
     }
   }
 
   broadcastTheme(theme: "light" | "dark"): void {
-    for (const panelId of this.panelViews.keys()) {
-      this.sendPanelEvent(panelId, { type: "theme", theme });
+    // Broadcast to all panels that have views (app panels with views, not workers)
+    for (const panelId of this.panels.keys()) {
+      if (this.viewManager?.hasView(panelId)) {
+        this.sendPanelEvent(panelId, { type: "theme", theme });
+      }
     }
   }
 
@@ -756,9 +936,13 @@ export class PanelManager {
         break;
     }
 
-    // Remove from panels map and views
+    // Destroy the WebContentsView
+    if (this.viewManager?.hasView(panelId)) {
+      this.viewManager.destroyView(panelId);
+    }
+
+    // Remove from panels map
     this.panels.delete(panelId);
-    this.panelViews.delete(panelId);
   }
 
   private findParentPanel(childId: string): Panel | null {
@@ -816,10 +1000,13 @@ export class PanelManager {
     // Schedule debounced update
     this.treeUpdateTimer = setTimeout(() => {
       this.treeUpdateTimer = null;
-      if (this.treeUpdatePending && this.mainWindow && !this.mainWindow.isDestroyed()) {
+      if (this.treeUpdatePending && this.viewManager) {
         this.treeUpdatePending = false;
         const tree = this.getSerializablePanelTree();
-        this.mainWindow.webContents.send("panel:tree-updated", tree);
+        const shellContents = this.viewManager.getShellWebContents();
+        if (!shellContents.isDestroyed()) {
+          shellContents.send("panel:tree-updated", tree);
+        }
       }
     }, this.TREE_UPDATE_DEBOUNCE_MS);
   }
@@ -852,18 +1039,14 @@ export class PanelManager {
   }
 
   /**
-   * Get WebContents for a panel (returns the first registered view).
+   * Get WebContents for a panel.
    * Used for sending IPC messages to panels.
    */
   getWebContentsForPanel(panelId: string): Electron.WebContents | undefined {
-    const views = this.panelViews.get(panelId);
-    if (!views || views.size === 0) return undefined;
-
-    // Get the first view's webContents
-    const firstViewId = views.values().next().value;
-    if (firstViewId === undefined) return undefined;
-
-    return webContents.fromId(firstViewId) ?? undefined;
+    if (!this.viewManager) {
+      return undefined;
+    }
+    return this.viewManager.getWebContents(panelId) ?? undefined;
   }
 
   verifyAndRegister(panelId: string, token: string, senderId: number): void {
@@ -885,56 +1068,9 @@ export class PanelManager {
     this.registerPanelView(panelId, senderId);
   }
 
-  private registerWebviewEnvInjection(window: BrowserWindow): void {
-    window.webContents.on("will-attach-webview", (_event, webPreferences, params) => {
-      const panelId = this.extractPanelIdFromSrc(params?.["src"]);
-      if (!panelId) {
-        return;
-      }
-
-      // Register the natstack-panel:// protocol for this partition
-      // Each webview partition needs its own protocol handler registration
-      const partition = webPreferences.partition as string | undefined;
-      if (partition) {
-        void registerProtocolForPartition(partition);
-      }
-
-      // Generate secure token with timestamp for TTL
-      const authToken = randomBytes(32).toString("hex");
-      this.pendingAuthTokens.set(panelId, { token: authToken, createdAt: Date.now() });
-
-      // Periodic cleanup of expired tokens (runs lazily on each new webview attach)
-      this.cleanupExpiredAuthTokens();
-
-      // Enable OPFS (Origin Private File System) support
-      webPreferences.contextIsolation = true;
-      webPreferences.sandbox = true;
-
-      const args = webPreferences.additionalArguments ?? [];
-
-      // Inject auth token
-      args.push(`--natstack-auth-token=${authToken}`);
-
-      const env = this.panels.get(panelId)?.env;
-      if (env && Object.keys(env).length > 0) {
-        try {
-          const encodedEnv = Buffer.from(JSON.stringify(env), "utf-8").toString("base64");
-          args.push(`${PANEL_ENV_ARG_PREFIX}${encodedEnv}`);
-        } catch (error) {
-          console.error(`Failed to encode env for panel ${panelId}`, error);
-        }
-      }
-
-      webPreferences.additionalArguments = args;
-    });
-
-    // We still listen to did-attach-webview as a fallback or for cleanup,
-    // but registration is now primarily driven by the panel's explicit call.
-  }
-
   /**
    * Clean up expired auth tokens to prevent memory leaks.
-   * Called lazily when new webviews attach.
+   * Called lazily when new panels are created.
    */
   private cleanupExpiredAuthTokens(): void {
     const now = Date.now();
@@ -946,36 +1082,15 @@ export class PanelManager {
   }
 
   private registerPanelView(panelId: string, senderId: number): void {
-    const views = this.panelViews.get(panelId) ?? new Set<number>();
-    views.add(senderId);
-    this.panelViews.set(panelId, views);
-
-    const contents = webContents.fromId(senderId);
-    if (contents) {
+    // ViewManager now tracks the webContents, we just need to set up cleanup for guestInstanceMap
+    const contents = this.viewManager?.getWebContents(panelId);
+    if (contents && !contents.isDestroyed()) {
       contents.once("destroyed", () => {
-        const currentViews = this.panelViews.get(panelId);
-        currentViews?.delete(senderId);
-        if (currentViews && currentViews.size === 0) {
-          this.panelViews.delete(panelId);
-        }
         this.guestInstanceMap.delete(senderId);
       });
     }
 
     this.sendPanelEvent(panelId, { type: "theme", theme: this.currentTheme });
-  }
-
-  private extractPanelIdFromSrc(src?: string): string | null {
-    if (!src) {
-      return null;
-    }
-
-    try {
-      const url = new URL(src);
-      return url.searchParams.get("panelId");
-    } catch {
-      return null;
-    }
   }
 
   private async initializeRootPanel(panelPath: string): Promise<void> {

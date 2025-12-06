@@ -138,6 +138,46 @@ export interface PanelIpcApi {
   ) => void;
 }
 
+// View management IPC channels (renderer <-> main for WebContentsView bounds/visibility)
+export interface ViewIpcApi {
+  /**
+   * Set bounds for a WebContentsView.
+   * Called from renderer when layout changes (resize, panel switch).
+   */
+  "view:set-bounds": (
+    viewId: string,
+    bounds: { x: number; y: number; width: number; height: number }
+  ) => void;
+  /**
+   * Set visibility of a WebContentsView.
+   */
+  "view:set-visible": (viewId: string, visible: boolean) => void;
+  /**
+   * Set theme CSS to inject into views that have injectHostThemeVariables enabled.
+   */
+  "view:set-theme-css": (css: string) => void;
+  /**
+   * Navigate a browser view to a URL.
+   */
+  "view:browser-navigate": (browserId: string, url: string) => void;
+  /**
+   * Go back in browser history.
+   */
+  "view:browser-go-back": (browserId: string) => void;
+  /**
+   * Go forward in browser history.
+   */
+  "view:browser-go-forward": (browserId: string) => void;
+  /**
+   * Reload a browser view.
+   */
+  "view:browser-reload": (browserId: string) => void;
+  /**
+   * Stop loading a browser view.
+   */
+  "view:browser-stop": (browserId: string) => void;
+}
+
 // Panel bridge IPC channels (panel webview <-> main)
 export interface PanelBridgeIpcApi {
   /**
@@ -544,6 +584,7 @@ export interface AppModeIpcApi {
 // Combined API for type utilities
 export type AllIpcApi = AppIpcApi &
   PanelIpcApi &
+  ViewIpcApi &
   PanelBridgeIpcApi &
   AIProviderIpcApi &
   CentralDataIpcApi &

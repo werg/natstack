@@ -8,14 +8,16 @@
   "scripts": {
     "prebuild": "node scripts/generate-channels.mjs && node scripts/generate-injected.mjs",
     "build": "NODE_ENV=production node build.mjs",
-    "dev": "NODE_ENV=development node build.mjs && pnpm type-check & node scripts/run-electron.mjs --workspace=workspace",
+    "dev": "pnpm type-check & NODE_ENV=development node build.mjs && node scripts/run-electron.mjs --workspace=workspace",
     "start": "node scripts/run-electron.mjs",
     "cleanup": "bash scripts/cleanup-processes.sh",
     "lint": "eslint src --max-warnings 0",
     "format": "prettier --write 'src/**/*.{ts,tsx,css,html,json}'",
     "format:check": "prettier --check 'src/**/*.{ts,tsx,css,html,json}'",
     "type-check": "tsc --noEmit",
-    "type-check:watch": "tsc --noEmit --watch --preserveWatchOutput"
+    "type-check:watch": "tsc --noEmit --watch --preserveWatchOutput",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [
     "electron",
@@ -45,10 +47,11 @@
     "@types/react-dom": "^19.2.3",
     "@typescript-eslint/eslint-plugin": "^8.46.4",
     "@typescript-eslint/parser": "^8.46.4",
-    "electron": "^39.1.2",
+    "electron": "^39.2.5",
     "eslint": "^9.39.1",
     "prettier": "^3.6.2",
-    "typescript-eslint": "^8.46.4"
+    "typescript-eslint": "^8.46.4",
+    "vitest": "^3.2.2"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^2.0.45",

@@ -46,6 +46,7 @@ export default function ChildPanelLauncher() {
   const [browserId, setBrowserId] = useState<string | null>(null);
   const [browserLog, setBrowserLog] = useState<string[]>([]);
   const [browserUrlInput, setBrowserUrlInput] = useState("https://example.com");
+  const [screenshotDataUrl, setScreenshotDataUrl] = useState<string | null>(null);
 
   const addRpcLog = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -82,7 +83,7 @@ export default function ChildPanelLauncher() {
       const childId = await panel.createChild({
         type: "app",
         name: "another-root",
-        path: "panels/root",
+        source: "panels/root",
         env: {
           PARENT_ID: panelId,
           LAUNCH_TIME: new Date().toISOString(),
@@ -100,8 +101,7 @@ export default function ChildPanelLauncher() {
       setStatus("Launching shared OPFS demo panel...");
       const childId = await panel.createChild({
         type: "app",
-        name: "shared-opfs-demo",
-        path: "panels/shared-opfs-demo",
+        source: "panels/shared-opfs-demo",
       });
       setStatus(`Launched shared OPFS demo panel ${childId}`);
     } catch (error) {
@@ -115,7 +115,7 @@ export default function ChildPanelLauncher() {
       const childId = await panel.createChild({
         type: "app",
         name: "agentic-chat",
-        path: "panels/agentic-chat",
+        source: "panels/agentic-chat",
       });
       setStatus(`Launched agentic chat panel ${childId}`);
     } catch (error) {
@@ -129,7 +129,7 @@ export default function ChildPanelLauncher() {
       const childId = await panel.createChild({
         type: "app",
         name: "agentic-notebook",
-        path: "panels/agentic-notebook",
+        source: "panels/agentic-notebook",
       });
       setStatus(`Launched agentic notebook panel ${childId}`);
     } catch (error) {
@@ -227,7 +227,7 @@ export default function ChildPanelLauncher() {
       const childId = await panel.createChild({
         type: "app",
         name: "typed-rpc-child",
-        path: "panels/typed-rpc-child",
+        source: "panels/typed-rpc-child",
         env: { PARENT_ID: panelId },
       });
       setRpcChildId(childId);
@@ -343,7 +343,7 @@ export default function ChildPanelLauncher() {
       const id = await panel.createChild({
         type: "worker",
         name: "rpc-example-worker",
-        path: "workers/rpc-example",
+        source: "workers/rpc-example",
         env: { PARENT_ID: panelId },
       });
       setWorkerId(id);
@@ -505,7 +505,7 @@ export default function ChildPanelLauncher() {
       const id = await panel.createChild({
         type: "browser",
         name: "demo-browser",
-        url: browserUrlInput,
+        source: browserUrlInput,
         title: "Demo Browser",
       });
       setBrowserId(id);
@@ -516,8 +516,9 @@ export default function ChildPanelLauncher() {
   };
 
   /**
-   * Browser automation using Playwright API.
-   * TODO: Implement proper Playwright shim over CDP.
+   * Browser automation using BrowserImpl from playwright-core.
+   * This uses the new CDP-direct implementation for browser control.
+   * The browser panel can be automated even when not visible (hidden in off-screen container).
    */
   const runPlaywrightDemo = async () => {
     if (!browserId) {
@@ -525,18 +526,118 @@ export default function ChildPanelLauncher() {
       return;
     }
 
+    addBrowserLog("Starting CDP automation on browser panel...");
+
     try {
+      // Import BrowserImpl from the new CDP-direct implementation
+      const { BrowserImpl } = await import("@natstack/playwright-core");
+
       addBrowserLog("Getting CDP endpoint...");
       const cdpUrl = await panel.browser.getCdpEndpoint(browserId);
-      addBrowserLog(`CDP endpoint: ${cdpUrl}`);
+      addBrowserLog(`CDP endpoint obtained`);
 
-      addBrowserLog("TODO: Implement Playwright API shim over CDP");
-      addBrowserLog("The challenge: Playwright's Connection class expects a Playwright server,");
-      addBrowserLog("not raw CDP. We need to build a shim that translates Playwright API calls");
-      addBrowserLog("into CDP commands.");
+      addBrowserLog("Connecting to browser via BrowserImpl...");
+      const browser = await BrowserImpl.connect(cdpUrl);
+      addBrowserLog(`Connected! Browser version: ${browser.version()}`);
 
+      // Get the default context and its pages
+      const context = browser.defaultContext();
+      if (!context) {
+        addBrowserLog("No default context available");
+        return;
+      }
+
+      addBrowserLog("Getting page...");
+      let pages = context.pages();
+      let page = pages[0];
+      if (!page) {
+        addBrowserLog("Creating new page...");
+        page = await context.newPage();
+      }
+      addBrowserLog(`Got page, current URL: ${page.url()}`);
+
+      // Navigate to a test page (using example.com for stability)
+      addBrowserLog("Navigating to https://example.com...");
+      await page.goto("https://example.com", { waitUntil: "load" });
+      addBrowserLog("Page loaded");
+
+      // Get page title
+      const title = await page.title();
+      addBrowserLog(`Page title: "${title}"`);
+
+      // Extract the h1 heading using evaluate
+      addBrowserLog("Extracting h1 content...");
+      const h1Text = await page.evaluate(() => {
+        const h1 = document.querySelector("h1");
+        return h1 ? h1.textContent : null;
+      });
+      if (h1Text) {
+        addBrowserLog(`Found h1: "${h1Text.trim()}"`);
+      } else {
+        addBrowserLog("No h1 found on page");
+      }
+
+      // Extract all headings
+      addBrowserLog("Analyzing page structure...");
+      const headings = await page.evaluate(() => {
+        const els = document.querySelectorAll("h1, h2, h3, h4, h5, h6");
+        return Array.from(els).map(el => ({
+          tag: el.tagName.toLowerCase(),
+          text: el.textContent?.trim() || "",
+        }));
+      }) as { tag: string; text: string }[];
+      addBrowserLog(`Found ${headings.length} heading(s)`);
+      for (let i = 0; i < Math.min(headings.length, 3); i++) {
+        const heading = headings[i];
+        addBrowserLog(`  ${heading.tag}: "${heading.text}"`);
+      }
+
+      // Take a screenshot using the new PageImpl API
+      addBrowserLog("Taking screenshot via CDP...");
+      try {
+        const screenshotData = await page.screenshot({ format: "png" });
+        addBrowserLog(`Screenshot captured: ${screenshotData.length} bytes`);
+
+        // Convert to data URL for display
+        // screenshotData is a Uint8Array, convert to base64 using browser APIs
+        let binary = "";
+        const bytes = new Uint8Array(screenshotData);
+        for (let i = 0; i < bytes.byteLength; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const base64 = btoa(binary);
+        const dataUrl = `data:image/png;base64,${base64}`;
+        setScreenshotDataUrl(dataUrl);
+        addBrowserLog("Screenshot saved for display");
+      } catch (screenshotError) {
+        addBrowserLog(`Screenshot failed: ${screenshotError instanceof Error ? screenshotError.message : String(screenshotError)}`);
+      }
+
+      // Evaluate JavaScript
+      addBrowserLog("Evaluating JavaScript...");
+      const pageInfo = await page.evaluate(() => ({
+        url: window.location.href,
+        title: document.title,
+        elementCount: document.querySelectorAll("*").length,
+        linkCount: document.querySelectorAll("a").length,
+      }));
+      addBrowserLog(`Page stats: ${JSON.stringify(pageInfo)}`);
+
+      // Test selector operations
+      addBrowserLog("Testing selector operations...");
+      const hasMoreLink = await page.querySelector("a[href]");
+      if (hasMoreLink) {
+        addBrowserLog("✓ Found link element");
+      }
+
+      // Close the browser connection
+      addBrowserLog("Closing browser connection...");
+      await browser.close();
+
+      addBrowserLog("✅ BrowserImpl automation demo complete!");
     } catch (error) {
       addBrowserLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      console.error("Playwright demo error:", error);
     }
   };
 
@@ -956,10 +1057,10 @@ export default function ChildPanelLauncher() {
                 </Text>
                 <Text size="1" color="gray" style={{ paddingLeft: "16px" }}>
                   • Connect via CDP WebSocket<br />
-                  • Navigate to httpbin.org/html<br />
-                  • Extract the page heading<br />
+                  • Navigate to example.com<br />
+                  • Extract page title and headings<br />
                   • Take a screenshot<br />
-                  • Navigate to example.com
+                  • Evaluate JavaScript on page
                 </Text>
 
                 <Flex gap="2" wrap="wrap">
@@ -983,6 +1084,33 @@ export default function ChildPanelLauncher() {
                     {entry}
                   </Text>
                 ))}
+              </Flex>
+            </Card>
+          )}
+
+          {screenshotDataUrl && (
+            <Card variant="surface">
+              <Flex direction="column" gap="2">
+                <Flex justify="between" align="center">
+                  <Text size="2" weight="bold">Screenshot:</Text>
+                  <Button
+                    variant="soft"
+                    size="1"
+                    color="red"
+                    onClick={() => setScreenshotDataUrl(null)}
+                  >
+                    Clear
+                  </Button>
+                </Flex>
+                <img
+                  src={screenshotDataUrl}
+                  alt="Browser Screenshot"
+                  style={{
+                    maxWidth: "100%",
+                    border: "1px solid var(--gray-6)",
+                    borderRadius: "4px",
+                  }}
+                />
               </Flex>
             </Card>
           )}

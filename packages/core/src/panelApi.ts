@@ -183,7 +183,7 @@ const panelAPI = {
    * const editorId = await panel.createChild({
    *   type: 'app',
    *   name: 'editor',
-   *   path: 'panels/editor',
+   *   source: 'panels/editor',
    *   env: { FILE_PATH: '/foo.txt' },
    * });
    *
@@ -191,7 +191,7 @@ const panelAPI = {
    * const computeId = await panel.createChild({
    *   type: 'worker',
    *   name: 'compute-worker',
-   *   path: 'workers/compute',
+   *   source: 'workers/compute',
    *   memoryLimitMB: 512,
    * });
    *
@@ -199,7 +199,14 @@ const panelAPI = {
    * const browserId = await panel.createChild({
    *   type: 'browser',
    *   name: 'web-scraper',
-   *   url: 'https://example.com',
+   *   source: 'https://example.com',
+   * });
+   *
+   * // Create an app panel without sourcemaps (defaults to inline sourcemaps)
+   * const prodPanel = await panel.createChild({
+   *   type: 'app',
+   *   source: 'panels/prod-only',
+   *   sourcemap: false,
    * });
    * ```
    */
@@ -255,7 +262,7 @@ const panelAPI = {
         type: "browser",
         name: options.name,
         title: options.title,
-        url: options.url,
+        source: options.url,
         env: options.env,
       });
     } else {
@@ -263,7 +270,7 @@ const panelAPI = {
       childId = await bridge.createChild({
         type: "app",
         name: options.name,
-        path: options.panel!,
+        source: options.panel!,
         env: options.env,
       });
     }

@@ -11,6 +11,7 @@ import { getWorkerManager } from "../workerManager.js";
 import type { PanelManager } from "../panelManager.js";
 import type { ChildSpec, StreamTextOptions } from "../../shared/ipc/types.js";
 import { getCdpServer } from "../cdpServer.js";
+import { isViewManagerInitialized, getViewManager } from "../viewManager.js";
 
 /**
  * Register worker-related handlers.
@@ -26,23 +27,19 @@ export function registerWorkerHandlers(panelManager: PanelManager): void {
 
   // Set up callback to route RPC from workers to panels
   workerManager.setRpcToPanelCallback((panelId, fromId, message) => {
-    // Get the panel's webContents and send the message
-    const views = panelManager.getPanelViews(panelId);
-    if (!views || views.size === 0) {
-      console.warn(`[WorkerHandlers] Panel ${panelId} has no views for RPC delivery`);
+    // Get the panel's webContents via ViewManager and send the message
+    if (!isViewManagerInitialized()) {
+      console.warn(`[WorkerHandlers] ViewManager not initialized for RPC delivery to ${panelId}`);
       return;
     }
 
-    // Import webContents dynamically to avoid circular dependencies
-    import("electron").then(({ webContents }) => {
-      for (const contentsId of views) {
-        const contents = webContents.fromId(contentsId);
-        if (contents && !contents.isDestroyed()) {
-          contents.send("worker-rpc:message", { fromId, message });
-          break; // Send to first available view
-        }
-      }
-    });
+    const contents = getViewManager().getWebContents(panelId);
+    if (!contents) {
+      console.warn(`[WorkerHandlers] Panel ${panelId} has no view for RPC delivery`);
+      return;
+    }
+
+    contents.send("worker-rpc:message", { fromId, message });
   });
 
   // Register the "bridge" service for panel bridge operations

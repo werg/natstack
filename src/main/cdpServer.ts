@@ -4,6 +4,7 @@ import * as http from "http";
 import { URL } from "url";
 import { findAvailablePortForService } from "./portUtils.js";
 import { getTokenManager, type TokenManager } from "./tokenManager.js";
+import { isViewManagerInitialized, getViewManager } from "./viewManager.js";
 
 /**
  * CDP WebSocket server for browser panel automation.
@@ -163,14 +164,12 @@ export class CdpServer {
 
   /**
    * Get the webContents for a browser panel (for navigation control).
-   * Returns null if the browser is not registered.
    */
   getBrowserWebContents(browserId: string): Electron.WebContents | null {
-    const webContentsId = this.browserRegistry.get(browserId);
-    if (webContentsId === undefined) {
+    if (!isViewManagerInitialized()) {
       return null;
     }
-    return webContents.fromId(webContentsId) ?? null;
+    return getViewManager().getWebContents(browserId);
   }
 
   /**
@@ -230,15 +229,9 @@ export class CdpServer {
       return;
     }
 
-    // Get webContents
-    const webContentsId = this.browserRegistry.get(browserId);
-    if (!webContentsId) {
-      ws.close(4004, "Browser not found");
-      return;
-    }
-
-    const contents = webContents.fromId(webContentsId);
-    if (!contents) {
+    // Get webContents - try ViewManager first, then browserRegistry fallback
+    const contents = this.getBrowserWebContents(browserId);
+    if (!contents || contents.isDestroyed()) {
       ws.close(4004, "Browser webContents not found");
       return;
     }
@@ -257,37 +250,86 @@ export class CdpServer {
     // Forward CDP messages bidirectionally
     ws.on("message", async (data: Buffer) => {
       let msgId: number | undefined;
+      let sessionId: string | undefined;
       try {
         const msg = JSON.parse(data.toString()) as {
           id: number;
           method: string;
           params?: Record<string, unknown>;
+          sessionId?: string;
         };
         msgId = msg.id;
+        sessionId = msg.sessionId;
 
-        const result = await contents.debugger.sendCommand(msg.method, msg.params);
-        ws.send(JSON.stringify({ id: msg.id, result }));
+        let result: unknown;
+
+        // Intercept Page.captureScreenshot - temporarily show hidden views for capture
+        if (msg.method === "Page.captureScreenshot") {
+          const capture = () => contents.debugger.sendCommand(msg.method, msg.params, sessionId);
+          if (isViewManagerInitialized()) {
+            const vm = getViewManager();
+            // withViewVisible returns null if view not found, so fallback to direct capture
+            result = await vm.withViewVisible(browserId, capture) ?? await capture();
+          } else {
+            result = await capture();
+          }
+        } else {
+          // Forward other CDP commands directly
+          // Pass sessionId to support flattened CDP sessions (iframes, targets, etc.)
+          result = await contents.debugger.sendCommand(
+            msg.method,
+            msg.params,
+            sessionId
+          );
+        }
+
+        // Include sessionId in response so client can route to correct session
+        const response: { id: number; result: unknown; sessionId?: string } = {
+          id: msg.id,
+          result,
+        };
+        if (sessionId) {
+          response.sessionId = sessionId;
+        }
+        ws.send(JSON.stringify(response));
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         console.error(`[CdpServer] CDP error for browser ${browserId}:`, errorMessage);
-        // Send error response if we have a message ID, otherwise send a generic error
-        ws.send(
-          JSON.stringify({
-            id: msgId ?? -1,
+        // Only send error response if we have a valid message ID
+        // CDP protocol requires responses to match request IDs; without an ID we can't send a valid response
+        if (msgId !== undefined) {
+          const errorResponse: { id: number; error: { message: string }; sessionId?: string } = {
+            id: msgId,
             error: { message: errorMessage },
-          })
-        );
+          };
+          if (sessionId) {
+            errorResponse.sessionId = sessionId;
+          }
+          ws.send(JSON.stringify(errorResponse));
+        } else {
+          // Log the error but don't send an invalid response - malformed request without ID
+          console.error(`[CdpServer] Cannot send error response - no message ID in request`);
+        }
       }
     });
 
     // Forward CDP events from browser to WebSocket
+    // The message event includes sessionId for flattened CDP sessions
     const debuggerMessageHandler = (
       _event: Electron.Event,
       method: string,
-      params: Record<string, unknown>
+      params: Record<string, unknown>,
+      sessionId?: string
     ) => {
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ method, params }));
+        const message: { method: string; params: Record<string, unknown>; sessionId?: string } = {
+          method,
+          params,
+        };
+        if (sessionId) {
+          message.sessionId = sessionId;
+        }
+        ws.send(JSON.stringify(message));
       }
     };
 

@@ -70,7 +70,7 @@ export default function SharedOPFSPanel() {
       const childId = await panel.createChild({
         type: "app",
         name: "shared-opfs-sibling",
-        path: "workspace/panels/shared-opfs-demo",
+        source: "panels/shared-opfs-demo",
         env: { PARENT_ID: panelId },
       });
       setOpfsStatus(`Launched sibling panel ${childId} - it shares the same OPFS!`);
