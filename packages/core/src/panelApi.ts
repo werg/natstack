@@ -6,7 +6,6 @@
  */
 
 import type { ComponentType, ReactNode } from "react";
-import typia from "typia";
 import * as Rpc from "./types.js";
 import type {
   ChildSpec as SharedChildSpec,
@@ -14,7 +13,16 @@ import type {
   WorkerChildSpec as SharedWorkerChildSpec,
   BrowserChildSpec as SharedBrowserChildSpec,
   GitConfig as SharedGitConfig,
-  RpcHandleOptions,
+  ChildHandle,
+  TypedCallProxy,
+  ChildAddedCallback,
+  ChildRemovedCallback,
+  ParentHandle,
+  EventSchemaMap,
+  PanelContract,
+  ChildHandleFromContract,
+  ParentHandleFromContract,
+  InferEventMap,
 } from "./index.js";
 
 // Re-export shared types
@@ -23,51 +31,6 @@ export type AppChildSpec = SharedAppChildSpec;
 export type WorkerChildSpec = SharedWorkerChildSpec;
 export type BrowserChildSpec = SharedBrowserChildSpec;
 export type GitConfig = SharedGitConfig;
-export type PanelRpcHandleOptions = RpcHandleOptions;
-
-// =============================================================================
-// Unified ViewChild API Types
-// =============================================================================
-
-/**
- * Options for creating a view child (panel or browser).
- * Uses source discriminator: `url` for browsers, `panel` for app panels.
- */
-export interface CreateViewChildOptions {
-  /** Unique name within parent (used for ID generation) */
-  name: string;
-  /** Display title (defaults to name) */
-  title?: string;
-  /** Environment variables to pass */
-  env?: Record<string, string>;
-
-  // Source - exactly one of:
-  /** External URL → creates browser view */
-  url?: string;
-  /** Panel path → creates app panel view */
-  panel?: string;
-}
-
-/**
- * Unified handle for managing child views (both panels and browsers).
- * Provides consistent API for CDP automation, screenshots, and lifecycle.
- */
-export interface ViewChild {
-  /** Unique view ID */
-  id: string;
-  /** View type discriminator */
-  type: "browser" | "panel";
-  /** Name within parent */
-  name: string;
-  /** Display title */
-  title: string;
-
-  /** Get CDP WebSocket endpoint for automation (works for both panel and browser) */
-  getCdpEndpoint(): Promise<string>;
-
-  /** Close the view */
-  close(): Promise<void>;
-}
 
 type PanelBridgeEvent = "child-removed" | "focus";
 
@@ -95,6 +58,8 @@ interface PanelBrowserBridge {
 
 interface PanelBridge {
   panelId: string;
+  /** Parent panel ID (from env.PARENT_ID), null if root panel */
+  parentId: string | null;
   /**
    * Create a child panel, worker, or browser from a spec.
    * The main process handles git checkout and build for app/worker types.
@@ -145,12 +110,221 @@ const bridge = getBridge();
 let currentTheme: PanelTheme = { appearance: bridge.getTheme() };
 const themeListeners = new Set<(theme: PanelTheme) => void>();
 
+// =============================================================================
+// ChildHandle Implementation
+// =============================================================================
+
+// Module-level state for child tracking
+const childHandles = new Map<string, ChildHandle>();
+const childAddedListeners = new Set<ChildAddedCallback>();
+const childRemovedListeners = new Set<ChildRemovedCallback>();
+
+// Listen for child removal events to clean up handles
+bridge.on("child-removed", (childId) => {
+  if (typeof childId === "string") {
+    // Find by ID and remove
+    for (const [name, handle] of childHandles) {
+      if (handle.id === childId) {
+        childHandles.delete(name);
+        // Notify listeners
+        for (const listener of childRemovedListeners) {
+          try {
+            listener(name, childId);
+          } catch (error) {
+            console.error("[ChildHandle] Error in child-removed listener:", error);
+          }
+        }
+        break;
+      }
+    }
+  }
+});
+
+/**
+ * Factory function to create a ChildHandle for a child.
+ */
+function createChildHandle<
+  T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+  E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
+  EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
+>(
+  id: string,
+  type: "app" | "worker" | "browser",
+  name: string,
+  title: string,
+  source: string,
+  eventSchemas?: EventSchemaMap
+): ChildHandle<T, E, EmitE> {
+  // Per-handle event listeners (for cleanup on close)
+  const eventUnsubscribers: Array<() => void> = [];
+
+  // Create typed call proxy using Proxy
+  const callProxy = new Proxy({} as TypedCallProxy<T>, {
+    get(_target, method: string) {
+      return async (...args: unknown[]) => {
+        return bridge.rpc.call(id, method, ...args);
+      };
+    },
+  });
+
+  const handle: ChildHandle<T, E, EmitE> = {
+    id,
+    type,
+    name,
+    title,
+    source,
+
+    async close() {
+      // Unsubscribe all event listeners for this handle
+      for (const unsubscribe of eventUnsubscribers) {
+        unsubscribe();
+      }
+      eventUnsubscribers.length = 0;
+      await bridge.removeChild(id);
+    },
+
+    call: callProxy,
+
+    async emit(event: string, payload: unknown) {
+      await bridge.rpc.emit(id, event, payload);
+    },
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    onEvent(event: string, listener: (payload: any) => void): () => void {
+      // Subscribe to bridge events, filtering by source panel ID
+      const unsubscribe = bridge.rpc.onEvent(event, (fromPanelId, payload) => {
+        if (fromPanelId === id) {
+          // Validate payload if schema exists for this event
+          const schema = eventSchemas?.[event];
+          if (schema) {
+            const result = schema.safeParse(payload);
+            if (!result.success) {
+              console.error(
+                `[ChildHandle] Event "${event}" from ${name} failed validation:`,
+                result.error.format()
+              );
+              return; // Skip listener if validation fails
+            }
+            listener(result.data);
+          } else {
+            listener(payload);
+          }
+        }
+      });
+      eventUnsubscribers.push(unsubscribe);
+
+      // Return an unsubscribe function that also removes from our tracking array
+      return () => {
+        unsubscribe();
+        const idx = eventUnsubscribers.indexOf(unsubscribe);
+        if (idx !== -1) {
+          eventUnsubscribers.splice(idx, 1);
+        }
+      };
+    },
+
+    async getCdpEndpoint() {
+      return bridge.browser.getCdpEndpoint(id);
+    },
+
+    // Browser-specific methods
+    async navigate(url) {
+      if (type !== "browser") {
+        throw new Error("navigate() is only available for browser children");
+      }
+      await bridge.browser.navigate(id, url);
+    },
+
+    async goBack() {
+      if (type !== "browser") {
+        throw new Error("goBack() is only available for browser children");
+      }
+      await bridge.browser.goBack(id);
+    },
+
+    async goForward() {
+      if (type !== "browser") {
+        throw new Error("goForward() is only available for browser children");
+      }
+      await bridge.browser.goForward(id);
+    },
+
+    async reload() {
+      if (type !== "browser") {
+        throw new Error("reload() is only available for browser children");
+      }
+      await bridge.browser.reload(id);
+    },
+
+    async stop() {
+      if (type !== "browser") {
+        throw new Error("stop() is only available for browser children");
+      }
+      await bridge.browser.stop(id);
+    },
+  };
+
+  return handle;
+}
+
 bridge.onThemeChange((appearance) => {
   currentTheme = { appearance };
   for (const listener of themeListeners) {
     listener(currentTheme);
   }
 });
+
+// =============================================================================
+// ParentHandle Implementation
+// =============================================================================
+
+/**
+ * Factory function to create a ParentHandle for parent communication.
+ * Returns null if this panel has no parent (is root).
+ */
+function createParentHandle<
+  T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+  E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
+  EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
+>(): ParentHandle<T, E, EmitE> | null {
+  const parentId = bridge.parentId;
+  if (!parentId) return null;
+
+  // Create typed call proxy using Proxy
+  const callProxy = new Proxy({} as TypedCallProxy<T>, {
+    get(_target, method: string) {
+      return async (...args: unknown[]) => {
+        return bridge.rpc.call(parentId, method, ...args);
+      };
+    },
+  });
+
+  const handle: ParentHandle<T, E, EmitE> = {
+    id: parentId,
+
+    call: callProxy,
+
+    async emit(event: string, payload: unknown) {
+      await bridge.rpc.emit(parentId, event, payload);
+    },
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    onEvent(event: string, listener: (payload: any) => void): () => void {
+      // Subscribe to bridge events, filtering by source panel ID (parent)
+      const unsubscribe = bridge.rpc.onEvent(event, (fromPanelId, payload) => {
+        if (fromPanelId === parentId) {
+          listener(payload);
+        }
+      });
+      return unsubscribe;
+    },
+  };
+
+  return handle;
+}
+
+// Lazy-initialized parent handle (cached)
+let cachedParentHandle: ParentHandle | null | undefined;
 
 // Log OPFS quota on initialization (run once when module loads)
 if (typeof window !== 'undefined') {
@@ -165,133 +339,241 @@ if (typeof window !== 'undefined') {
 }
 
 const panelAPI = {
-  getId(): string {
+  // ===========================================================================
+  // Identity
+  // ===========================================================================
+
+  /**
+   * This panel's unique ID.
+   */
+  get id(): string {
     return bridge.panelId;
   },
 
   /**
-   * Create a child panel, worker, or browser from a spec.
-   * The main process handles git checkout and build for app/worker types.
-   * Returns the panel ID immediately; build happens asynchronously.
+   * Get a typed handle for communicating with the parent panel.
+   * Returns null if this panel has no parent (is root).
    *
-   * @param spec - Child specification with type discriminator
-   * @returns Panel ID that can be used for communication
+   * @typeParam T - RPC methods the parent exposes (what the child can call)
+   * @typeParam E - RPC event map for events from parent (what the child listens to)
+   * @typeParam EmitE - RPC event map for events to parent (what the child emits)
    *
    * @example
    * ```ts
-   * // Create an app panel
-   * const editorId = await panel.createChild({
-   *   type: 'app',
-   *   name: 'editor',
-   *   source: 'panels/editor',
-   *   env: { FILE_PATH: '/foo.txt' },
-   * });
+   * // For full type safety, prefer getParentWithContract():
+   * import { myContract } from "./contract.js";
+   * const parent = panel.getParentWithContract(myContract);
    *
-   * // Create a worker
-   * const computeId = await panel.createChild({
-   *   type: 'worker',
-   *   name: 'compute-worker',
-   *   source: 'workers/compute',
-   *   memoryLimitMB: 512,
-   * });
-   *
-   * // Create a browser panel
-   * const browserId = await panel.createChild({
-   *   type: 'browser',
-   *   name: 'web-scraper',
-   *   source: 'https://example.com',
-   * });
-   *
-   * // Create an app panel without sourcemaps (defaults to inline sourcemaps)
-   * const prodPanel = await panel.createChild({
-   *   type: 'app',
-   *   source: 'panels/prod-only',
-   *   sourcemap: false,
-   * });
+   * // Or use direct type parameters:
+   * interface MyEmitEvents { saved: { path: string } }
+   * const parent = panel.getParent<{}, {}, MyEmitEvents>();
+   * if (parent) {
+   *   // Typed emit - payload is type-checked!
+   *   parent.emit("saved", { path: "/foo.txt" });
+   * }
    * ```
    */
-  async createChild(spec: ChildSpec): AsyncResult<string> {
-    return bridge.createChild(spec);
-  },
-
-  async removeChild(childId: string): AsyncResult<void> {
-    return bridge.removeChild(childId);
+  getParent<
+    T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+    E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
+    EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
+  >(): ParentHandle<T, E, EmitE> | null {
+    if (cachedParentHandle === undefined) {
+      cachedParentHandle = createParentHandle();
+    }
+    return cachedParentHandle as ParentHandle<T, E, EmitE> | null;
   },
 
   /**
-   * Create a unified view child (panel or browser).
-   * This is the recommended API for creating child views.
+   * Get a typed parent handle using a contract for full type safety.
+   * The contract defines both the child's and parent's interface.
    *
-   * @param options - Options with either `url` (browser) or `panel` (app panel)
-   * @returns ViewChild handle for managing the view
+   * @param contract - Panel contract defining the interface
+   * @returns Typed ParentHandle derived from the contract (flipped perspective)
    *
    * @example
    * ```ts
-   * // Create a browser view
-   * const browser = await panel.createViewChild({
-   *   name: "web-scraper",
-   *   url: "https://example.com",
-   * });
-   * const cdpUrl = await browser.getCdpEndpoint();
+   * import { myContract } from "./contract.js";
    *
-   * // Create an app panel view
-   * const subPanel = await panel.createViewChild({
-   *   name: "editor",
-   *   panel: "panels/code-editor",
-   *   env: { FILE_PATH: "/foo.txt" },
-   * });
-   * const panelCdp = await subPanel.getCdpEndpoint();
+   * const parent = panel.getParentWithContract(myContract);
+   * if (parent) {
+   *   // Fully typed from contract:
+   *   await parent.call.notifyReady();        // parent methods
+   *   parent.onEvent("theme-changed", ...);   // parent events
+   *   parent.emit("saved", { path: "..." });  // child events (what we emit)
+   * }
    * ```
    */
-  async createViewChild(options: CreateViewChildOptions): AsyncResult<ViewChild> {
-    // Validate: exactly one of url or panel must be provided
-    if (options.url && options.panel) {
-      throw new Error("Cannot specify both 'url' and 'panel' - choose one");
+  getParentWithContract<C extends PanelContract>(
+    _contract: C
+  ): ParentHandleFromContract<C> | null {
+    if (cachedParentHandle === undefined) {
+      cachedParentHandle = createParentHandle();
     }
-    if (!options.url && !options.panel) {
-      throw new Error("Must specify either 'url' (browser) or 'panel' (app panel)");
+    return cachedParentHandle as ParentHandleFromContract<C> | null;
+  },
+
+  /**
+   * Create a child panel, worker, or browser from a spec.
+   * Returns a ChildHandle for unified interaction with the child.
+   *
+   * @typeParam T - RPC methods the child exposes (for typed calls)
+   * @typeParam E - RPC event map for typed events
+   * @param spec - Child specification with type discriminator
+   * @returns ChildHandle with RPC, lifecycle, and automation methods
+   *
+   * @example
+   * ```ts
+   * // Create an app panel with typed RPC
+   * interface EditorApi {
+   *   openFile(path: string): Promise<void>;
+   *   getContent(): Promise<string>;
+   * }
+   * const editor = await panel.createChild<EditorApi>({
+   *   type: 'app',
+   *   name: 'editor',
+   *   source: 'panels/editor',
+   * });
+   * await editor.call.openFile('/foo.txt');
+   * const content = await editor.call.getContent();
+   * await editor.close();
+   *
+   * // Create a browser with navigation
+   * const browser = await panel.createChild({
+   *   type: 'browser',
+   *   name: 'scraper',
+   *   source: 'https://example.com',
+   * });
+   * await browser.navigate('https://other.com');
+   * const cdp = await browser.getCdpEndpoint();
+   *
+   * // Query existing children
+   * const existing = panel.getChild<EditorApi>('editor');
+   * console.log([...panel.children.keys()]);
+   * ```
+   */
+  async createChild<
+    T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+    E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
+    EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
+  >(spec: ChildSpec): AsyncResult<ChildHandle<T, E, EmitE>> {
+    // Extract eventSchemas before passing to bridge (Zod schemas can't be structured-cloned)
+    const { eventSchemas, ...bridgeSpec } = spec;
+    const childId = await bridge.createChild(bridgeSpec as ChildSpec);
+
+    // Determine type
+    const type = spec.type;
+
+    // Name: use provided or derive from ID (main process generates if not provided)
+    const name = spec.name ?? childId.split("/").pop() ?? childId;
+
+    // Title: explicit for browser, or derive from name
+    const title = (spec.type === "browser" && spec.title) ? spec.title : name;
+
+    const handle = createChildHandle<T, E, EmitE>(childId, type, name, title, spec.source, eventSchemas);
+
+    // Track by name
+    childHandles.set(name, handle as ChildHandle);
+
+    // Notify listeners
+    for (const listener of childAddedListeners) {
+      try {
+        (listener as ChildAddedCallback<T>)(name, handle);
+      } catch (error) {
+        console.error("[ChildHandle] Error in child-added listener:", error);
+      }
     }
 
-    // Convert to ChildSpec and create
-    let childId: string;
-    let childType: "browser" | "panel";
+    return handle;
+  },
 
-    if (options.url) {
-      childType = "browser";
-      childId = await bridge.createChild({
-        type: "browser",
-        name: options.name,
-        title: options.title,
-        source: options.url,
-        env: options.env,
-      });
-    } else {
-      childType = "panel";
-      childId = await bridge.createChild({
-        type: "app",
-        name: options.name,
-        source: options.panel!,
-        env: options.env,
-      });
+  /**
+   * Create a child panel using a contract for full type safety.
+   * The contract defines both the child's and parent's interface.
+   *
+   * @param contract - Panel contract defining the interface
+   * @param options - Optional overrides (name, env, type for worker)
+   * @returns Typed ChildHandle derived from the contract
+   *
+   * @example
+   * ```ts
+   * import { editorContract } from "../editor/contract.js";
+   *
+   * const editor = await panel.createChildWithContract(editorContract, {
+   *   name: "my-editor",
+   * });
+   *
+   * // Fully typed from contract:
+   * await editor.call.openFile("/foo.txt");  // child methods
+   * editor.onEvent("saved", (p) => { ... }); // child events
+   * editor.emit("theme-changed", { ... });   // parent events
+   * ```
+   */
+  async createChildWithContract<C extends PanelContract>(
+    contract: C,
+    options?: {
+      name?: string;
+      env?: Record<string, string>;
+      type?: "app" | "worker";
     }
-
-    // Return ViewChild handle
-    const viewChild: ViewChild = {
-      id: childId,
-      type: childType,
-      name: options.name,
-      title: options.title ?? options.name,
-
-      async getCdpEndpoint(): Promise<string> {
-        return bridge.browser.getCdpEndpoint(childId);
-      },
-
-      async close(): Promise<void> {
-        return bridge.removeChild(childId);
-      },
+  ): AsyncResult<ChildHandleFromContract<C>> {
+    // Build the spec from contract + options
+    const spec: ChildSpec = {
+      type: options?.type ?? "app",
+      source: contract.source,
+      name: options?.name,
+      env: options?.env,
+      eventSchemas: contract.child?.emits,
     };
 
-    return viewChild;
+    // Extract types from contract for the handle
+    type ChildMethods = C extends PanelContract<infer M, infer _CE, infer _PM, infer _PE> ? M : Rpc.ExposedMethods;
+    type ChildEmits = C extends PanelContract<infer _CM, infer CE, infer _PM, infer _PE> ? InferEventMap<CE> : Rpc.RpcEventMap;
+    type ParentEmits = C extends PanelContract<infer _CM, infer _CE, infer _PM, infer PE> ? InferEventMap<PE> : Rpc.RpcEventMap;
+
+    // Delegate to createChild with proper types
+    const handle = await this.createChild<ChildMethods, ChildEmits, ParentEmits>(spec);
+
+    return handle as ChildHandleFromContract<C>;
+  },
+
+  // ===========================================================================
+  // Child Query API
+  // ===========================================================================
+
+  /**
+   * Get all children as a readonly Map.
+   * Keys are child names, values are ChildHandles.
+   */
+  get children(): ReadonlyMap<string, ChildHandle> {
+    return childHandles;
+  },
+
+  /**
+   * Get a child by name (if it exists).
+   *
+   * @typeParam T - RPC methods the child exposes
+   * @typeParam E - RPC event map for typed events
+   * @param name - The child's name (as provided in createChild spec)
+   * @returns ChildHandle or undefined if not found
+   */
+  getChild<
+    T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+    E extends Rpc.RpcEventMap = Rpc.RpcEventMap
+  >(name: string): ChildHandle<T, E> | undefined {
+    return childHandles.get(name) as ChildHandle<T, E> | undefined;
+  },
+
+  /**
+   * Subscribe to child added events.
+   * Called when a child is created via createChild().
+   * @returns Unsubscribe function
+   */
+  onChildAdded(callback: ChildAddedCallback): () => void {
+    childAddedListeners.add(callback);
+    return () => {
+      childAddedListeners.delete(callback);
+    };
   },
 
   async setTitle(title: string): AsyncResult<void> {
@@ -359,248 +641,46 @@ const panelAPI = {
   },
 
   // ===========================================================================
-  // Browser Panel Operations
-  // ===========================================================================
-
-  browser: {
-    /**
-     * Get CDP WebSocket endpoint for Playwright connection.
-     * Only the parent panel that created the browser can access this.
-     *
-     * @param browserId - The browser panel's ID
-     * @returns WebSocket URL for CDP connection (e.g., ws://localhost:63525/browser-id?token=xyz)
-     *
-     * @example
-     * ```ts
-     * import { chromium } from 'playwright-core';
-     *
-     * const browserId = await panel.createChild({
-     *   type: 'browser',
-     *   name: 'automation-target',
-     *   url: 'https://example.com',
-     * });
-     *
-     * const cdpUrl = await panel.browser.getCdpEndpoint(browserId);
-     * const browser = await chromium.connectOverCDP(cdpUrl);
-     * const page = browser.contexts()[0].pages()[0];
-     * await page.click('.button');
-     * ```
-     */
-    async getCdpEndpoint(browserId: string): AsyncResult<string> {
-      return bridge.browser.getCdpEndpoint(browserId);
-    },
-
-    /**
-     * Navigate browser panel to a URL (human UI control).
-     */
-    async navigate(browserId: string, url: string): AsyncResult<void> {
-      return bridge.browser.navigate(browserId, url);
-    },
-
-    /**
-     * Go back in browser history.
-     */
-    async goBack(browserId: string): AsyncResult<void> {
-      return bridge.browser.goBack(browserId);
-    },
-
-    /**
-     * Go forward in browser history.
-     */
-    async goForward(browserId: string): AsyncResult<void> {
-      return bridge.browser.goForward(browserId);
-    },
-
-    /**
-     * Reload the current page.
-     */
-    async reload(browserId: string): AsyncResult<void> {
-      return bridge.browser.reload(browserId);
-    },
-
-    /**
-     * Stop loading the current page.
-     */
-    async stop(browserId: string): AsyncResult<void> {
-      return bridge.browser.stop(browserId);
-    },
-  },
-
-  // ===========================================================================
   // Panel-to-Panel RPC
   // ===========================================================================
 
   /**
-   * Expose methods that can be called by parent or child panels.
+   * RPC namespace for exposing methods and listening to global events.
    *
-   * @example
-   * ```ts
-   * // Child panel exposes its API
-   * panelAPI.rpc.expose({
-   *   async loadFile(path: string) {
-   *     // Load file logic
-   *   },
-   *   async getContent() {
-   *     return editorContent;
-   *   }
-   * });
-   * ```
+   * For child communication, use `createChild()` which returns a ChildHandle.
+   * For parent communication, use `getParent()` which returns a ParentHandle.
    */
   rpc: {
     /**
      * Expose methods that can be called by parent or child panels.
+     *
+     * @example
+     * ```ts
+     * panel.rpc.expose({
+     *   async loadFile(path: string) {
+     *     // Load file logic
+     *   },
+     *   async getContent() {
+     *     return editorContent;
+     *   }
+     * });
+     * ```
      */
     expose<T extends Rpc.ExposedMethods>(methods: T): void {
       bridge.rpc.expose(methods);
     },
 
     /**
-     * Get a typed handle to communicate with another panel.
-     * The panel must be a direct parent or child.
-     *
-     * @example
-     * ```ts
-     * // Define types
-     * interface EditorApi {
-     *   getContent(): Promise<string>;
-     *   setContent(text: string): Promise<void>;
-     * }
-     *
-     * interface EditorEvents extends Rpc.RpcEventMap {
-     *   "content-changed": { text: string };
-     *   "saved": { path: string };
-     * }
-     *
-     * // Parent panel calls child
-     * const childHandle = panelAPI.rpc.getHandle<EditorApi, EditorEvents>(childPanelId);
-     * const content = await childHandle.call.getContent();
-     *
-     * // Listen to typed events
-     * childHandle.on("content-changed", (payload) => {
-     *   console.log(payload.text); // Fully typed!
-     * });
-     * ```
-     */
-    getHandle<
-      T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
-      E extends Rpc.RpcEventMap = Rpc.RpcEventMap
-    >(targetPanelId: string, options?: PanelRpcHandleOptions): Rpc.PanelRpcHandle<T, E> {
-      // Create a proxy that allows typed method calls
-      const callProxy = new Proxy({} as Rpc.PanelRpcHandle<T>["call"], {
-        get(_target, prop: string) {
-          return async (...args: unknown[]) => {
-            return bridge.rpc.call(targetPanelId, prop, ...args);
-          };
-        },
-      });
-
-      const eventListeners = new Map<string, Set<(payload: any) => void>>();
-      const validateEvents = options?.validateEvents ?? false;
-      const eventValidators = new Map<string, (payload: any) => void>();
-
-      const getValidator = validateEvents
-        ? <EventName extends Extract<keyof E, string>>(event: EventName) => {
-            if (!eventValidators.has(event)) {
-              let assertPayload: (payload: any) => void;
-              try {
-                assertPayload = typia.createAssert<E[EventName]>();
-              } catch (error) {
-                console.warn(
-                  `[Panel RPC] Falling back to unvalidated events for "${event}":`,
-                  error
-                );
-                assertPayload = () => {};
-              }
-              eventValidators.set(event, assertPayload as (payload: any) => void);
-            }
-            return eventValidators.get(event) as (payload: E[EventName]) => void;
-          }
-        : null;
-
-      // Create the handle with proper overload support
-      const handle: Rpc.PanelRpcHandle<T, E> = {
-        panelId: targetPanelId,
-        call: callProxy,
-        on(event: string, handler: (payload: any) => void): () => void {
-          // Track local listeners for this handle
-          const listeners = eventListeners.get(event) ?? new Set();
-          listeners.add(handler);
-          eventListeners.set(event, listeners);
-
-          // Subscribe to RPC events, filtering by source panel
-          const unsubscribe = bridge.rpc.onEvent(event, (fromPanelId, payload) => {
-            if (fromPanelId === targetPanelId) {
-              try {
-                if (getValidator) {
-                  const assertPayload = getValidator(event as Extract<keyof E, string>);
-                  assertPayload(payload as unknown as E[Extract<keyof E, string>]);
-                }
-              } catch (error) {
-                console.error(
-                  `[Panel RPC] Event payload validation failed for "${event}" from ${fromPanelId}:`,
-                  error
-                );
-                return;
-              }
-              handler(payload);
-            }
-          });
-
-          return () => {
-            listeners.delete(handler);
-            if (listeners.size === 0) {
-              eventListeners.delete(event);
-            }
-            unsubscribe();
-          };
-        },
-      };
-
-      return handle;
-    },
-
-    /**
-     * Alias for getHandle to retain existing call sites without schema validation.
-     */
-    getTypedHandle<
-      T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
-      E extends Rpc.RpcEventMap = Rpc.RpcEventMap
-    >(targetPanelId: string): Rpc.PanelRpcHandle<T, E> {
-      return panelAPI.rpc.getHandle<T, E>(targetPanelId);
-    },
-
-    /**
-     * Convenience helper: get a handle with typia-backed event validation enabled.
-     * Useful during development to surface schema drift between panels.
-     */
-    getValidatedHandle<
-      T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
-      E extends Rpc.RpcEventMap = Rpc.RpcEventMap
-    >(targetPanelId: string): Rpc.PanelRpcHandle<T, E> {
-      return panelAPI.rpc.getHandle<T, E>(targetPanelId, { validateEvents: true });
-    },
-
-    /**
-     * Emit an event to a specific panel (must be parent or direct child).
-     *
-     * @example
-     * ```ts
-     * // Child notifies parent of a change
-     * panelAPI.rpc.emit(parentPanelId, "contentChanged", { path: "/foo.txt" });
-     * ```
-     */
-    async emit(targetPanelId: string, event: string, payload: unknown): Promise<void> {
-      await bridge.rpc.emit(targetPanelId, event, payload);
-    },
-
-    /**
      * Subscribe to events from any panel (filtered by event name).
-     * Use handle.on() for events from a specific panel.
+     * Useful for broadcast events where the sender is unknown.
+     *
+     * For events from a specific child, use `childHandle.onEvent()`.
+     * For events from the parent, use `parentHandle.onEvent()`.
      *
      * @example
      * ```ts
-     * panelAPI.rpc.onEvent("contentChanged", (fromPanelId, payload) => {
-     *   console.log(`Panel ${fromPanelId} changed:`, payload);
+     * panel.rpc.onEvent("statusUpdate", (fromPanelId, payload) => {
+     *   console.log(`Panel ${fromPanelId} sent:`, payload);
      * });
      * ```
      */

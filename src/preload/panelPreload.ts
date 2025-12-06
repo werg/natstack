@@ -568,6 +568,7 @@ async function getRpcPort(targetPanelId: string): Promise<RpcPort> {
 // Bridge interface exposed to panel code
 const bridge = {
   panelId,
+  parentId: syntheticEnv["PARENT_ID"] ?? null,
 
   // ==========================================================================
   // Panel Lifecycle API

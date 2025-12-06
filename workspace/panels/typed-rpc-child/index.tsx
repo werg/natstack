@@ -6,7 +6,11 @@
 import { useState, useEffect } from "react";
 import { Card, Flex, Heading, Text, Badge, Button } from "@radix-ui/themes";
 import { panel } from "@natstack/panel";
-import { usePanelEnv } from "@natstack/react";
+import { rpcDemoContract } from "./contract.js";
+
+// Get typed parent handle using the contract
+// This gives us type-checked emit() calls derived from the contract
+const parent = panel.getParentWithContract(rpcDemoContract);
 
 // Internal state
 let counter = 0;
@@ -15,7 +19,6 @@ let pingCount = 0;
 export default function TypedRpcChild() {
   const [displayCounter, setDisplayCounter] = useState(counter);
   const [log, setLog] = useState<string[]>([]);
-  const env = usePanelEnv();
 
   const addLog = (message: string) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -31,9 +34,9 @@ export default function TypedRpcChild() {
         pingCount++;
         addLog(`ping() called (count: ${pingCount})`);
 
-        // Emit typed event (though not type-checked at runtime yet)
-        if (env.PARENT_ID) {
-          panel.rpc.emit(env.PARENT_ID, "ping-received", { count: pingCount });
+        // Emit typed event to parent
+        if (parent) {
+          void parent.emit("ping-received", { count: pingCount });
         }
 
         return "pong";
@@ -55,9 +58,9 @@ export default function TypedRpcChild() {
         setDisplayCounter(counter);
         addLog(`incrementCounter(${amount}) called, new value: ${counter}`);
 
-        // Emit typed event
-        if (env.PARENT_ID) {
-          panel.rpc.emit(env.PARENT_ID, "counter-changed", {
+        // Emit typed event to parent
+        if (parent) {
+          void parent.emit("counter-changed", {
             value: counter,
             previousValue,
           });
@@ -71,9 +74,9 @@ export default function TypedRpcChild() {
         setDisplayCounter(counter);
         addLog("resetCounter() called");
 
-        // Emit typed event
-        if (env.PARENT_ID) {
-          panel.rpc.emit(env.PARENT_ID, "reset", {
+        // Emit typed event to parent
+        if (parent) {
+          void parent.emit("reset", {
             timestamp: new Date().toISOString(),
           });
         }
@@ -87,15 +90,15 @@ export default function TypedRpcChild() {
     });
 
     addLog("RPC API exposed successfully");
-  }, [env.PARENT_ID]);
+  }, []);
 
   const handleLocalIncrement = async () => {
     const previousValue = counter;
     counter += 1;
     setDisplayCounter(counter);
 
-    if (env.PARENT_ID) {
-      panel.rpc.emit(env.PARENT_ID, "counter-changed", {
+    if (parent) {
+      void parent.emit("counter-changed", {
         value: counter,
         previousValue,
       });
@@ -106,8 +109,8 @@ export default function TypedRpcChild() {
     counter = 0;
     setDisplayCounter(counter);
 
-    if (env.PARENT_ID) {
-      panel.rpc.emit(env.PARENT_ID, "reset", {
+    if (parent) {
+      void parent.emit("reset", {
         timestamp: new Date().toISOString(),
       });
     }
@@ -127,10 +130,10 @@ export default function TypedRpcChild() {
             full type safety.
           </Text>
 
-          {env.PARENT_ID && (
+          {parent && (
             <Card variant="surface">
               <Text size="2">
-                Parent ID: <Text weight="bold" style={{ fontFamily: "monospace" }}>{env.PARENT_ID}</Text>
+                Parent ID: <Text weight="bold" style={{ fontFamily: "monospace" }}>{parent.id}</Text>
               </Text>
             </Card>
           )}

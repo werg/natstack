@@ -1,19 +1,18 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { promises as fsPromises } from "fs";
 import { Button, Card, Flex, Text, Heading, Callout, Separator, Badge, TextField } from "@radix-ui/themes";
-import { panel } from "@natstack/panel";
+import { panel, type ChildHandle, type ChildHandleFromContract } from "@natstack/panel";
 import {
   usePanelTheme,
   usePanelId,
   usePanelPartition,
   usePanelEnv,
-  usePanelRpc,
-  usePanelRpcGlobalEvent,
+  usePanelChildren,
 } from "@natstack/react";
 import "./style.css";
 
-import { type RpcDemoChildApi } from "../typed-rpc-child/api.js";
-import { type RpcExampleWorkerApi } from "../../workers/rpc-example/api.js";
+import { rpcDemoContract } from "../typed-rpc-child/contract.js";
+import { rpcExampleWorkerContract } from "../../workers/rpc-example/contract.js";
 
 export default function ChildPanelLauncher() {
   const [status, setStatus] = useState<string>("");
@@ -21,29 +20,28 @@ export default function ChildPanelLauncher() {
   const panelId = usePanelId();
   const partition = usePanelPartition();
   const env = usePanelEnv();
+  const children = usePanelChildren();
 
   const [opfsStatus, setOpfsStatus] = useState<string>("");
   const [opfsContent, setOpfsContent] = useState<string>("");
 
-  // RPC Demo state (panel child)
-  const [rpcChildId, setRpcChildId] = useState<string | null>(null);
-  const rpcChildHandle = usePanelRpc<RpcDemoChildApi>(rpcChildId);
+  // RPC Demo state - using contract-derived ChildHandle type
+  const [rpcChild, setRpcChild] = useState<ChildHandleFromContract<typeof rpcDemoContract> | null>(null);
   const [rpcLog, setRpcLog] = useState<string[]>([]);
   const [echoInput, setEchoInput] = useState("");
   const [incrementAmount, setIncrementAmount] = useState("1");
   const [childEvents, setChildEvents] = useState<string[]>([]);
 
-  // Worker RPC Demo state
-  const [workerId, setWorkerId] = useState<string | null>(null);
-  const workerHandle = usePanelRpc<RpcExampleWorkerApi>(workerId);
+  // Worker RPC Demo state - using contract-derived ChildHandle type
+  const [worker, setWorker] = useState<ChildHandleFromContract<typeof rpcExampleWorkerContract> | null>(null);
   const [workerLog, setWorkerLog] = useState<string[]>([]);
   const [workerEchoInput, setWorkerEchoInput] = useState("");
   const [workerIncrementAmount, setWorkerIncrementAmount] = useState("1");
   const [workerSumInput, setWorkerSumInput] = useState("1, 2, 3, 4, 5");
   const [workerEvents, setWorkerEvents] = useState<string[]>([]);
 
-  // Browser Automation Demo state
-  const [browserId, setBrowserId] = useState<string | null>(null);
+  // Browser Automation Demo state - using ChildHandle directly
+  const [browser, setBrowser] = useState<ChildHandle | null>(null);
   const [browserLog, setBrowserLog] = useState<string[]>([]);
   const [browserUrlInput, setBrowserUrlInput] = useState("https://example.com");
   const [screenshotDataUrl, setScreenshotDataUrl] = useState<string | null>(null);
@@ -63,14 +61,50 @@ export default function ChildPanelLauncher() {
     setBrowserLog((prev) => [`[${timestamp}] ${message}`, ...prev.slice(0, 19)]);
   }, []);
 
-  // Listen for events from child panels
-  usePanelRpcGlobalEvent("childUpdate", (fromPanelId: string, payload: unknown) => {
-    const timestamp = new Date().toLocaleTimeString();
-    setChildEvents((prev) => [
-      `[${timestamp}] From ${fromPanelId}: ${JSON.stringify(payload)}`,
-      ...prev.slice(0, 4),
-    ]);
-  });
+  // Subscribe to events from the RPC child using handle.onEvent
+  useEffect(() => {
+    if (!rpcChild) return;
+    const unsubscribe = rpcChild.onEvent("counter-changed", (payload) => {
+      const timestamp = new Date().toLocaleTimeString();
+      setChildEvents((prev) => [
+        `[${timestamp}] counter-changed: ${JSON.stringify(payload)}`,
+        ...prev.slice(0, 4),
+      ]);
+    });
+    return unsubscribe;
+  }, [rpcChild]);
+
+  // Subscribe to events from the worker using handle.onEvent
+  useEffect(() => {
+    if (!worker) return;
+    const unsubs: Array<() => void> = [];
+
+    unsubs.push(worker.onEvent("counter-changed", (payload) => {
+      const timestamp = new Date().toLocaleTimeString();
+      setWorkerEvents((prev) => [
+        `[${timestamp}] counter-changed: ${JSON.stringify(payload)}`,
+        ...prev.slice(0, 4),
+      ]);
+    }));
+
+    unsubs.push(worker.onEvent("ping-received", (payload) => {
+      const timestamp = new Date().toLocaleTimeString();
+      setWorkerEvents((prev) => [
+        `[${timestamp}] ping-received: ${JSON.stringify(payload)}`,
+        ...prev.slice(0, 4),
+      ]);
+    }));
+
+    unsubs.push(worker.onEvent("reset", (payload) => {
+      const timestamp = new Date().toLocaleTimeString();
+      setWorkerEvents((prev) => [
+        `[${timestamp}] reset: ${JSON.stringify(payload)}`,
+        ...prev.slice(0, 4),
+      ]);
+    }));
+
+    return () => unsubs.forEach((fn) => fn());
+  }, [worker]);
 
   // Get env variables that were passed from parent
   const parentId = env.PARENT_ID;
@@ -80,7 +114,7 @@ export default function ChildPanelLauncher() {
   const launchChildPanel = async () => {
     try {
       setStatus("Launching child panel...");
-      const childId = await panel.createChild({
+      const child = await panel.createChild({
         type: "app",
         name: "another-root",
         source: "panels/root",
@@ -90,7 +124,7 @@ export default function ChildPanelLauncher() {
           MESSAGE: "Hello from parent panel!",
         },
       });
-      setStatus(`Launched child ${childId}`);
+      setStatus(`Launched child: ${child.name} (${child.id})`);
     } catch (error) {
       setStatus(`Failed to launch child: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -99,11 +133,11 @@ export default function ChildPanelLauncher() {
   const launchSharedOPFSDemo = async () => {
     try {
       setStatus("Launching shared OPFS demo panel...");
-      const childId = await panel.createChild({
+      const child = await panel.createChild({
         type: "app",
         source: "panels/shared-opfs-demo",
       });
-      setStatus(`Launched shared OPFS demo panel ${childId}`);
+      setStatus(`Launched shared OPFS demo: ${child.name}`);
     } catch (error) {
       setStatus(`Failed to launch: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -112,12 +146,12 @@ export default function ChildPanelLauncher() {
   const launchAgenticChat = async () => {
     try {
       setStatus("Launching agentic chat example...");
-      const childId = await panel.createChild({
+      const child = await panel.createChild({
         type: "app",
         name: "agentic-chat",
         source: "panels/agentic-chat",
       });
-      setStatus(`Launched agentic chat panel ${childId}`);
+      setStatus(`Launched agentic chat: ${child.name}`);
     } catch (error) {
       setStatus(`Failed to launch agentic chat: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -126,12 +160,12 @@ export default function ChildPanelLauncher() {
   const launchAgenticNotebook = async () => {
     try {
       setStatus("Launching agentic notebook...");
-      const childId = await panel.createChild({
+      const child = await panel.createChild({
         type: "app",
         name: "agentic-notebook",
         source: "panels/agentic-notebook",
       });
-      setStatus(`Launched agentic notebook panel ${childId}`);
+      setStatus(`Launched agentic notebook: ${child.name}`);
     } catch (error) {
       setStatus(`Failed to launch agentic notebook: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -149,11 +183,9 @@ export default function ChildPanelLauncher() {
   const writeToOPFS = async () => {
     try {
       setOpfsStatus("Writing to OPFS...");
-
       const timestamp = new Date().toISOString();
       const content = `Hello from NatStack panel!\nWritten at: ${timestamp}\nPanel ID: ${panelId}`;
       await fsPromises.writeFile(exampleFilePath, content, "utf-8");
-
       setOpfsStatus("Successfully wrote to OPFS file: example.txt");
       setOpfsContent("");
     } catch (error) {
@@ -164,9 +196,7 @@ export default function ChildPanelLauncher() {
   const readFromOPFS = async () => {
     try {
       setOpfsStatus("Reading from OPFS...");
-
       const text = await fsPromises.readFile(exampleFilePath, "utf-8");
-
       setOpfsContent(text);
       setOpfsStatus("Successfully read from OPFS file: example.txt");
     } catch (error) {
@@ -184,9 +214,7 @@ export default function ChildPanelLauncher() {
   const deleteFromOPFS = async () => {
     try {
       setOpfsStatus("Deleting from OPFS...");
-
       await fsPromises.rm(exampleFilePath);
-
       setOpfsStatus("Successfully deleted example.txt from OPFS");
       setOpfsContent("");
     } catch (error) {
@@ -202,9 +230,7 @@ export default function ChildPanelLauncher() {
   const listOPFSFiles = async () => {
     try {
       setOpfsStatus("Listing OPFS files...");
-
       const files = await fsPromises.readdir("/");
-
       if (files.length === 0) {
         setOpfsStatus("OPFS is empty");
         setOpfsContent("");
@@ -218,33 +244,32 @@ export default function ChildPanelLauncher() {
   };
 
   // ===========================================================================
-  // RPC Demo Functions
+  // RPC Demo Functions - Using ChildHandle API
   // ===========================================================================
 
   const launchRpcDemoChild = async () => {
     try {
       addRpcLog("Launching RPC demo child panel...");
-      const childId = await panel.createChild({
-        type: "app",
+      // Use the contract-based API for full type safety
+      const child = await panel.createChildWithContract(rpcDemoContract, {
         name: "typed-rpc-child",
-        source: "panels/typed-rpc-child",
         env: { PARENT_ID: panelId },
       });
-      setRpcChildId(childId);
-      addRpcLog(`Child panel launched: ${childId}`);
+      setRpcChild(child);
+      addRpcLog(`Child panel launched: ${child.name} (${child.id})`);
     } catch (error) {
       addRpcLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
   const callPing = async () => {
-    if (!rpcChildHandle) {
+    if (!rpcChild) {
       addRpcLog("No child panel connected");
       return;
     }
     try {
       addRpcLog("Calling ping()...");
-      const result = await rpcChildHandle.call.ping();
+      const result = await rpcChild.call.ping();
       addRpcLog(`Result: "${result}"`);
     } catch (error) {
       addRpcLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
@@ -252,14 +277,14 @@ export default function ChildPanelLauncher() {
   };
 
   const callEcho = async () => {
-    if (!rpcChildHandle) {
+    if (!rpcChild) {
       addRpcLog("No child panel connected");
       return;
     }
     try {
       const msg = echoInput || "Hello!";
       addRpcLog(`Calling echo("${msg}")...`);
-      const result = await rpcChildHandle.call.echo(msg);
+      const result = await rpcChild.call.echo(msg);
       addRpcLog(`Result: "${result}"`);
     } catch (error) {
       addRpcLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
@@ -267,13 +292,13 @@ export default function ChildPanelLauncher() {
   };
 
   const callGetCounter = async () => {
-    if (!rpcChildHandle) {
+    if (!rpcChild) {
       addRpcLog("No child panel connected");
       return;
     }
     try {
       addRpcLog("Calling getCounter()...");
-      const result = await rpcChildHandle.call.getCounter();
+      const result = await rpcChild.call.getCounter();
       addRpcLog(`Result: ${result}`);
     } catch (error) {
       addRpcLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
@@ -281,14 +306,14 @@ export default function ChildPanelLauncher() {
   };
 
   const callIncrementCounter = async () => {
-    if (!rpcChildHandle) {
+    if (!rpcChild) {
       addRpcLog("No child panel connected");
       return;
     }
     try {
       const amount = parseInt(incrementAmount) || 1;
       addRpcLog(`Calling incrementCounter(${amount})...`);
-      const result = await rpcChildHandle.call.incrementCounter(amount);
+      const result = await rpcChild.call.incrementCounter(amount);
       addRpcLog(`Result: ${result}`);
     } catch (error) {
       addRpcLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
@@ -296,13 +321,13 @@ export default function ChildPanelLauncher() {
   };
 
   const callResetCounter = async () => {
-    if (!rpcChildHandle) {
+    if (!rpcChild) {
       addRpcLog("No child panel connected");
       return;
     }
     try {
       addRpcLog("Calling resetCounter()...");
-      await rpcChildHandle.call.resetCounter();
+      await rpcChild.call.resetCounter();
       addRpcLog("Counter reset successfully");
     } catch (error) {
       addRpcLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
@@ -310,57 +335,70 @@ export default function ChildPanelLauncher() {
   };
 
   const callGetInfo = async () => {
-    if (!rpcChildHandle) {
+    if (!rpcChild) {
       addRpcLog("No child panel connected");
       return;
     }
     try {
       addRpcLog("Calling getInfo()...");
-      const result = await rpcChildHandle.call.getInfo();
+      const result = await rpcChild.call.getInfo();
       addRpcLog(`Result: ${JSON.stringify(result)}`);
     } catch (error) {
       addRpcLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
-  const sendEventToChild = () => {
-    if (!rpcChildId) {
+  const sendEventToChild = async () => {
+    if (!rpcChild) {
       addRpcLog("No child panel connected");
       return;
     }
     const payload = { message: "Hello from parent!", timestamp: new Date().toISOString() };
-    panel.rpc.emit(rpcChildId, "parentMessage", payload);
+    await rpcChild.emit("parentMessage", payload);
     addRpcLog(`Sent 'parentMessage' event: ${JSON.stringify(payload)}`);
   };
 
+  const closeRpcChild = async () => {
+    if (!rpcChild) return;
+    try {
+      addRpcLog(`Closing ${rpcChild.name}...`);
+      await rpcChild.close();
+      setRpcChild(null);
+      setChildEvents([]);
+      addRpcLog("Child closed");
+    } catch (error) {
+      addRpcLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
   // ===========================================================================
-  // Worker RPC Demo Functions
+  // Worker RPC Demo Functions - Using ChildHandle API
   // ===========================================================================
 
   const launchRpcWorker = async () => {
     try {
       addWorkerLog("Launching RPC example worker...");
-      const id = await panel.createChild({
-        type: "worker",
+      // Use the contract-based API for full type safety
+      const w = await panel.createChildWithContract(rpcExampleWorkerContract, {
         name: "rpc-example-worker",
-        source: "workers/rpc-example",
         env: { PARENT_ID: panelId },
+        type: "worker",
       });
-      setWorkerId(id);
-      addWorkerLog(`Worker launched: ${id}`);
+      setWorker(w);
+      addWorkerLog(`Worker launched: ${w.name} (${w.id})`);
     } catch (error) {
       addWorkerLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
   const workerCallPing = async () => {
-    if (!workerHandle) {
+    if (!worker) {
       addWorkerLog("No worker connected");
       return;
     }
     try {
       addWorkerLog("Calling ping()...");
-      const result = await workerHandle.call.ping();
+      const result = await worker.call.ping();
       addWorkerLog(`Result: "${result}"`);
     } catch (error) {
       addWorkerLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
@@ -368,14 +406,14 @@ export default function ChildPanelLauncher() {
   };
 
   const workerCallEcho = async () => {
-    if (!workerHandle) {
+    if (!worker) {
       addWorkerLog("No worker connected");
       return;
     }
     try {
       const msg = workerEchoInput || "Hello from panel!";
       addWorkerLog(`Calling echo("${msg}")...`);
-      const result = await workerHandle.call.echo(msg);
+      const result = await worker.call.echo(msg);
       addWorkerLog(`Result: "${result}"`);
     } catch (error) {
       addWorkerLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
@@ -383,13 +421,13 @@ export default function ChildPanelLauncher() {
   };
 
   const workerCallGetCounter = async () => {
-    if (!workerHandle) {
+    if (!worker) {
       addWorkerLog("No worker connected");
       return;
     }
     try {
       addWorkerLog("Calling getCounter()...");
-      const result = await workerHandle.call.getCounter();
+      const result = await worker.call.getCounter();
       addWorkerLog(`Result: ${result}`);
     } catch (error) {
       addWorkerLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
@@ -397,14 +435,14 @@ export default function ChildPanelLauncher() {
   };
 
   const workerCallIncrementCounter = async () => {
-    if (!workerHandle) {
+    if (!worker) {
       addWorkerLog("No worker connected");
       return;
     }
     try {
       const amount = parseInt(workerIncrementAmount) || 1;
       addWorkerLog(`Calling incrementCounter(${amount})...`);
-      const result = await workerHandle.call.incrementCounter(amount);
+      const result = await worker.call.incrementCounter(amount);
       addWorkerLog(`Result: ${result}`);
     } catch (error) {
       addWorkerLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
@@ -412,13 +450,13 @@ export default function ChildPanelLauncher() {
   };
 
   const workerCallResetCounter = async () => {
-    if (!workerHandle) {
+    if (!worker) {
       addWorkerLog("No worker connected");
       return;
     }
     try {
       addWorkerLog("Calling resetCounter()...");
-      await workerHandle.call.resetCounter();
+      await worker.call.resetCounter();
       addWorkerLog("Counter reset successfully");
     } catch (error) {
       addWorkerLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
@@ -426,13 +464,13 @@ export default function ChildPanelLauncher() {
   };
 
   const workerCallGetInfo = async () => {
-    if (!workerHandle) {
+    if (!worker) {
       addWorkerLog("No worker connected");
       return;
     }
     try {
       addWorkerLog("Calling getWorkerInfo()...");
-      const result = await workerHandle.call.getWorkerInfo();
+      const result = await worker.call.getWorkerInfo();
       addWorkerLog(`Result: ${JSON.stringify(result)}`);
     } catch (error) {
       addWorkerLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
@@ -440,88 +478,65 @@ export default function ChildPanelLauncher() {
   };
 
   const workerCallComputeSum = async () => {
-    if (!workerHandle) {
+    if (!worker) {
       addWorkerLog("No worker connected");
       return;
     }
     try {
       const numbers = workerSumInput.split(",").map((s) => parseFloat(s.trim())).filter((n) => !isNaN(n));
       addWorkerLog(`Calling computeSum([${numbers.join(", ")}])...`);
-      const result = await workerHandle.call.computeSum(numbers);
+      const result = await worker.call.computeSum(numbers);
       addWorkerLog(`Result: ${result}`);
     } catch (error) {
       addWorkerLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
-  const sendEventToWorker = () => {
-    if (!workerId) {
+  const sendEventToWorker = async () => {
+    if (!worker) {
       addWorkerLog("No worker connected");
       return;
     }
     const payload = { message: "Hello from panel!", timestamp: new Date().toISOString() };
-    panel.rpc.emit(workerId, "parentMessage", payload);
+    await worker.emit("parentMessage", payload);
     addWorkerLog(`Sent 'parentMessage' event: ${JSON.stringify(payload)}`);
   };
 
-  // Listen for events from worker
-  usePanelRpcGlobalEvent("counter-changed", (fromId: string, payload: unknown) => {
-    if (fromId === workerId) {
-      const timestamp = new Date().toLocaleTimeString();
-      setWorkerEvents((prev) => [
-        `[${timestamp}] counter-changed: ${JSON.stringify(payload)}`,
-        ...prev.slice(0, 4),
-      ]);
+  const closeWorker = async () => {
+    if (!worker) return;
+    try {
+      addWorkerLog(`Closing ${worker.name}...`);
+      await worker.close();
+      setWorker(null);
+      setWorkerEvents([]);
+      addWorkerLog("Worker closed");
+    } catch (error) {
+      addWorkerLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
     }
-  });
-
-  usePanelRpcGlobalEvent("ping-received", (fromId: string, payload: unknown) => {
-    if (fromId === workerId) {
-      const timestamp = new Date().toLocaleTimeString();
-      setWorkerEvents((prev) => [
-        `[${timestamp}] ping-received: ${JSON.stringify(payload)}`,
-        ...prev.slice(0, 4),
-      ]);
-    }
-  });
-
-  usePanelRpcGlobalEvent("reset", (fromId: string, payload: unknown) => {
-    if (fromId === workerId) {
-      const timestamp = new Date().toLocaleTimeString();
-      setWorkerEvents((prev) => [
-        `[${timestamp}] reset: ${JSON.stringify(payload)}`,
-        ...prev.slice(0, 4),
-      ]);
-    }
-  });
+  };
 
   // ===========================================================================
-  // Browser Automation Demo Functions
+  // Browser Automation Demo Functions - Using ChildHandle API
   // ===========================================================================
 
   const launchBrowser = async () => {
     try {
       addBrowserLog("Launching browser panel...");
-      const id = await panel.createChild({
+      const b = await panel.createChild({
         type: "browser",
         name: "demo-browser",
         source: browserUrlInput,
         title: "Demo Browser",
       });
-      setBrowserId(id);
-      addBrowserLog(`Browser launched: ${id}`);
+      setBrowser(b);
+      addBrowserLog(`Browser launched: ${b.name} (${b.id})`);
     } catch (error) {
       addBrowserLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
-  /**
-   * Browser automation using BrowserImpl from playwright-core.
-   * This uses the new CDP-direct implementation for browser control.
-   * The browser panel can be automated even when not visible (hidden in off-screen container).
-   */
   const runPlaywrightDemo = async () => {
-    if (!browserId) {
+    if (!browser) {
       addBrowserLog("No browser launched - launch one first!");
       return;
     }
@@ -529,19 +544,18 @@ export default function ChildPanelLauncher() {
     addBrowserLog("Starting CDP automation on browser panel...");
 
     try {
-      // Import BrowserImpl from the new CDP-direct implementation
       const { BrowserImpl } = await import("@natstack/playwright-core");
 
       addBrowserLog("Getting CDP endpoint...");
-      const cdpUrl = await panel.browser.getCdpEndpoint(browserId);
+      // Use ChildHandle's getCdpEndpoint method directly
+      const cdpUrl = await browser.getCdpEndpoint();
       addBrowserLog(`CDP endpoint obtained`);
 
       addBrowserLog("Connecting to browser via BrowserImpl...");
-      const browser = await BrowserImpl.connect(cdpUrl);
-      addBrowserLog(`Connected! Browser version: ${browser.version()}`);
+      const browserConn = await BrowserImpl.connect(cdpUrl);
+      addBrowserLog(`Connected! Browser version: ${browserConn.version()}`);
 
-      // Get the default context and its pages
-      const context = browser.defaultContext();
+      const context = browserConn.defaultContext();
       if (!context) {
         addBrowserLog("No default context available");
         return;
@@ -556,16 +570,13 @@ export default function ChildPanelLauncher() {
       }
       addBrowserLog(`Got page, current URL: ${page.url()}`);
 
-      // Navigate to a test page (using example.com for stability)
       addBrowserLog("Navigating to https://example.com...");
       await page.goto("https://example.com", { waitUntil: "load" });
       addBrowserLog("Page loaded");
 
-      // Get page title
       const title = await page.title();
       addBrowserLog(`Page title: "${title}"`);
 
-      // Extract the h1 heading using evaluate
       addBrowserLog("Extracting h1 content...");
       const h1Text = await page.evaluate(() => {
         const h1 = document.querySelector("h1");
@@ -577,7 +588,6 @@ export default function ChildPanelLauncher() {
         addBrowserLog("No h1 found on page");
       }
 
-      // Extract all headings
       addBrowserLog("Analyzing page structure...");
       const headings = await page.evaluate(() => {
         const els = document.querySelectorAll("h1, h2, h3, h4, h5, h6");
@@ -592,14 +602,11 @@ export default function ChildPanelLauncher() {
         addBrowserLog(`  ${heading.tag}: "${heading.text}"`);
       }
 
-      // Take a screenshot using the new PageImpl API
       addBrowserLog("Taking screenshot via CDP...");
       try {
         const screenshotData = await page.screenshot({ format: "png" });
         addBrowserLog(`Screenshot captured: ${screenshotData.length} bytes`);
 
-        // Convert to data URL for display
-        // screenshotData is a Uint8Array, convert to base64 using browser APIs
         let binary = "";
         const bytes = new Uint8Array(screenshotData);
         for (let i = 0; i < bytes.byteLength; i++) {
@@ -613,7 +620,6 @@ export default function ChildPanelLauncher() {
         addBrowserLog(`Screenshot failed: ${screenshotError instanceof Error ? screenshotError.message : String(screenshotError)}`);
       }
 
-      // Evaluate JavaScript
       addBrowserLog("Evaluating JavaScript...");
       const pageInfo = await page.evaluate(() => ({
         url: window.location.href,
@@ -623,16 +629,14 @@ export default function ChildPanelLauncher() {
       }));
       addBrowserLog(`Page stats: ${JSON.stringify(pageInfo)}`);
 
-      // Test selector operations
       addBrowserLog("Testing selector operations...");
       const hasMoreLink = await page.querySelector("a[href]");
       if (hasMoreLink) {
         addBrowserLog("✓ Found link element");
       }
 
-      // Close the browser connection
       addBrowserLog("Closing browser connection...");
-      await browser.close();
+      await browserConn.close();
 
       addBrowserLog("✅ BrowserImpl automation demo complete!");
     } catch (error) {
@@ -642,15 +646,28 @@ export default function ChildPanelLauncher() {
   };
 
   const closeBrowser = async () => {
-    if (!browserId) {
+    if (!browser) {
       addBrowserLog("No browser to close");
       return;
     }
     try {
-      addBrowserLog(`Closing browser ${browserId}...`);
-      await panel.removeChild(browserId);
-      setBrowserId(null);
+      addBrowserLog(`Closing browser ${browser.name}...`);
+      // Use ChildHandle's close method directly
+      await browser.close();
+      setBrowser(null);
       addBrowserLog("Browser closed");
+    } catch (error) {
+      addBrowserLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  // Use browser's navigate method via the handle
+  const navigateBrowser = async (url: string) => {
+    if (!browser) return;
+    try {
+      addBrowserLog(`Navigating to ${url}...`);
+      await browser.navigate(url);
+      addBrowserLog("Navigation complete");
     } catch (error) {
       addBrowserLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -664,6 +681,9 @@ export default function ChildPanelLauncher() {
             <Heading size="6">React + Radix Panel</Heading>
             <Badge color="orange">
               Partition / Panel ID: {partition ?? "loading..."}
+            </Badge>
+            <Badge color="violet">
+              Children: {children.size}
             </Badge>
           </Flex>
           <Text size="2">
@@ -788,30 +808,36 @@ export default function ChildPanelLauncher() {
           <Separator size="4" />
 
           {/* Panel-to-Panel RPC Demo Section */}
-          <Heading size="5">Panel-to-Panel RPC Demo</Heading>
+          <Heading size="5">Panel-to-Panel RPC Demo (ChildHandle API)</Heading>
           <Text size="2" color="gray">
-            Demonstrates typed RPC communication between parent and child panels.
-            The child exposes methods that the parent can call with full type safety.
+            Demonstrates typed RPC communication between parent and child panels using the unified ChildHandle API.
+            All operations go through the handle: <code>child.call.*</code>, <code>child.emit()</code>, <code>child.onEvent()</code>, <code>child.close()</code>.
           </Text>
 
           <Flex gap="2" wrap="wrap">
-            <Button onClick={launchRpcDemoChild} color="cyan" disabled={!!rpcChildHandle}>
-              {rpcChildHandle ? "Child Connected" : "Launch RPC Demo Child"}
+            <Button onClick={launchRpcDemoChild} color="cyan" disabled={!!rpcChild}>
+              {rpcChild ? "Child Connected" : "Launch RPC Demo Child"}
             </Button>
+            {rpcChild && (
+              <Button onClick={closeRpcChild} variant="soft" color="red">
+                Close Child
+              </Button>
+            )}
           </Flex>
 
-          {rpcChildHandle && (
+          {rpcChild && (
             <>
               <Card variant="surface">
                 <Flex direction="column" gap="3">
                   <Flex align="center" gap="2">
                     <Text size="2" weight="bold">Connected to:</Text>
                     <Badge color="green" style={{ fontFamily: "monospace" }}>
-                      {rpcChildId}
+                      {rpcChild.name}
                     </Badge>
+                    <Text size="1" color="gray">({rpcChild.type})</Text>
                   </Flex>
 
-                  <Text size="2" weight="bold">Call Methods:</Text>
+                  <Text size="2" weight="bold">Call Methods via <code>child.call.*</code>:</Text>
                   <Flex gap="2" wrap="wrap">
                     <Button onClick={callPing} variant="soft" size="1">
                       ping()
@@ -859,7 +885,7 @@ export default function ChildPanelLauncher() {
 
                   <Separator size="4" />
 
-                  <Text size="2" weight="bold">Events:</Text>
+                  <Text size="2" weight="bold">Events via <code>child.emit()</code>:</Text>
                   <Button onClick={sendEventToChild} variant="soft" size="1" color="orange">
                     Send "parentMessage" Event to Child
                   </Button>
@@ -869,7 +895,7 @@ export default function ChildPanelLauncher() {
               {childEvents.length > 0 && (
                 <Card variant="surface">
                   <Flex direction="column" gap="1">
-                    <Text size="2" weight="bold">Events from Child:</Text>
+                    <Text size="2" weight="bold">Events from Child (via <code>child.onEvent()</code>):</Text>
                     {childEvents.map((event, i) => (
                       <Text key={i} size="1" style={{ fontFamily: "monospace" }}>
                         {event}
@@ -897,30 +923,36 @@ export default function ChildPanelLauncher() {
           <Separator size="4" />
 
           {/* Worker RPC Demo Section */}
-          <Heading size="5">Worker RPC Demo</Heading>
+          <Heading size="5">Worker RPC Demo (ChildHandle API)</Heading>
           <Text size="2" color="gray">
-            Demonstrates RPC communication between a panel and an isolated worker.
-            Workers run in a sandboxed environment with their own filesystem and limited capabilities.
+            Demonstrates RPC communication between a panel and an isolated worker using the unified ChildHandle API.
+            Workers run in a sandboxed environment with their own filesystem.
           </Text>
 
           <Flex gap="2" wrap="wrap">
-            <Button onClick={launchRpcWorker} color="orange" disabled={!!workerHandle}>
-              {workerHandle ? "Worker Connected" : "Launch RPC Example Worker"}
+            <Button onClick={launchRpcWorker} color="orange" disabled={!!worker}>
+              {worker ? "Worker Connected" : "Launch RPC Example Worker"}
             </Button>
+            {worker && (
+              <Button onClick={closeWorker} variant="soft" color="red">
+                Close Worker
+              </Button>
+            )}
           </Flex>
 
-          {workerHandle && (
+          {worker && (
             <>
               <Card variant="surface">
                 <Flex direction="column" gap="3">
                   <Flex align="center" gap="2">
                     <Text size="2" weight="bold">Connected to:</Text>
                     <Badge color="orange" style={{ fontFamily: "monospace" }}>
-                      {workerId}
+                      {worker.name}
                     </Badge>
+                    <Text size="1" color="gray">({worker.type})</Text>
                   </Flex>
 
-                  <Text size="2" weight="bold">Call Methods:</Text>
+                  <Text size="2" weight="bold">Call Methods via <code>worker.call.*</code>:</Text>
                   <Flex gap="2" wrap="wrap">
                     <Button onClick={workerCallPing} variant="soft" size="1">
                       ping()
@@ -983,7 +1015,7 @@ export default function ChildPanelLauncher() {
 
                   <Separator size="4" />
 
-                  <Text size="2" weight="bold">Events:</Text>
+                  <Text size="2" weight="bold">Events via <code>worker.emit()</code>:</Text>
                   <Button onClick={sendEventToWorker} variant="soft" size="1" color="orange">
                     Send "parentMessage" Event to Worker
                   </Button>
@@ -993,7 +1025,7 @@ export default function ChildPanelLauncher() {
               {workerEvents.length > 0 && (
                 <Card variant="surface">
                   <Flex direction="column" gap="1">
-                    <Text size="2" weight="bold">Events from Worker:</Text>
+                    <Text size="2" weight="bold">Events from Worker (via <code>worker.onEvent()</code>):</Text>
                     {workerEvents.map((event, i) => (
                       <Text key={i} size="1" style={{ fontFamily: "monospace" }}>
                         {event}
@@ -1021,10 +1053,10 @@ export default function ChildPanelLauncher() {
           <Separator size="4" />
 
           {/* Browser Automation Demo Section */}
-          <Heading size="5">Browser Automation Demo</Heading>
+          <Heading size="5">Browser Automation Demo (ChildHandle API)</Heading>
           <Text size="2" color="gray">
             Demonstrates browser panel creation and automation via the Chrome DevTools Protocol (CDP).
-            Launch a browser panel, then run the CDP demo to orchestrate it programmatically.
+            Uses <code>browser.getCdpEndpoint()</code>, <code>browser.navigate()</code>, and <code>browser.close()</code> from the handle.
           </Text>
 
           <Flex gap="2" wrap="wrap" align="end">
@@ -1037,26 +1069,27 @@ export default function ChildPanelLauncher() {
                 size="1"
               />
             </Flex>
-            <Button onClick={launchBrowser} color="teal" disabled={!!browserId}>
-              {browserId ? "Browser Running" : "Launch Browser"}
+            <Button onClick={launchBrowser} color="teal" disabled={!!browser}>
+              {browser ? "Browser Running" : "Launch Browser"}
             </Button>
           </Flex>
 
-          {browserId && (
+          {browser && (
             <Card variant="surface">
               <Flex direction="column" gap="3">
                 <Flex align="center" gap="2">
                   <Text size="2" weight="bold">Browser Panel:</Text>
                   <Badge color="teal" style={{ fontFamily: "monospace" }}>
-                    {browserId}
+                    {browser.name}
                   </Badge>
+                  <Text size="1" color="gray">({browser.type})</Text>
                 </Flex>
 
                 <Text size="2" color="gray">
                   The browser panel is running as a child. Click "Run CDP Demo" to:
                 </Text>
                 <Text size="1" color="gray" style={{ paddingLeft: "16px" }}>
-                  • Connect via CDP WebSocket<br />
+                  • Connect via CDP WebSocket using <code>browser.getCdpEndpoint()</code><br />
                   • Navigate to example.com<br />
                   • Extract page title and headings<br />
                   • Take a screenshot<br />
@@ -1066,6 +1099,9 @@ export default function ChildPanelLauncher() {
                 <Flex gap="2" wrap="wrap">
                   <Button onClick={runPlaywrightDemo} variant="soft" color="teal">
                     Run Playwright Demo
+                  </Button>
+                  <Button onClick={() => navigateBrowser("https://google.com")} variant="soft">
+                    Navigate to Google
                   </Button>
                   <Button onClick={closeBrowser} variant="soft" color="red">
                     Close Browser
@@ -1111,6 +1147,46 @@ export default function ChildPanelLauncher() {
                     borderRadius: "4px",
                   }}
                 />
+              </Flex>
+            </Card>
+          )}
+
+          <Separator size="4" />
+
+          {/* Children Overview Section */}
+          <Heading size="5">Active Children (via <code>usePanelChildren()</code>)</Heading>
+          <Text size="2" color="gray">
+            Displays all children tracked by the panel API. Uses the <code>usePanelChildren()</code> hook for reactive updates.
+          </Text>
+
+          {children.size === 0 ? (
+            <Callout.Root color="gray">
+              <Callout.Text>No children currently active. Launch a child above to see it here.</Callout.Text>
+            </Callout.Root>
+          ) : (
+            <Card variant="surface">
+              <Flex direction="column" gap="2">
+                {[...children.entries()].map(([name, handle]) => (
+                  <Flex key={handle.id} justify="between" align="center">
+                    <Flex gap="2" align="center">
+                      <Badge color={handle.type === "app" ? "cyan" : handle.type === "worker" ? "orange" : "teal"}>
+                        {handle.type}
+                      </Badge>
+                      <Text size="2" weight="bold">{name}</Text>
+                      <Text size="1" color="gray" style={{ fontFamily: "monospace" }}>
+                        {handle.id}
+                      </Text>
+                    </Flex>
+                    <Button
+                      variant="soft"
+                      size="1"
+                      color="red"
+                      onClick={() => handle.close()}
+                    >
+                      Close
+                    </Button>
+                  </Flex>
+                ))}
               </Flex>
             </Card>
           )}

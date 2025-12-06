@@ -7,8 +7,9 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   panel as panelAPI,
   type PanelTheme,
-  type PanelRpcHandleOptions,
   type ChildSpec,
+  type ChildHandle,
+  type ParentHandle,
   type Rpc,
 } from "@natstack/core";
 
@@ -88,7 +89,7 @@ export function usePanelEnv(): Record<string, string> {
  * ```
  */
 export function usePanelId(): string {
-  return useMemo(() => panelAPI.getId(), []);
+  return panelAPI.id;
 }
 
 /**
@@ -110,88 +111,6 @@ export function usePanelPartition(): string | null {
   }, []);
 
   return partition;
-}
-
-/**
- * Get an RPC handle to communicate with another panel.
- * Returns a stable handle that can be used to call methods and subscribe to events.
- *
- * @example
- * ```tsx
- * interface ChildAPI {
- *   ping(): Promise<string>;
- *   getData(): Promise<{ count: number }>;
- * }
- *
- * interface ChildEvents extends Rpc.RpcEventMap {
- *   "data-changed": { value: string };
- *   "status": { ready: boolean };
- * }
- *
- * function MyPanel() {
- *   const [childId, setChildId] = useState<string | null>(null);
- *   const childHandle = usePanelRpc<ChildAPI, ChildEvents>(childId);
- *
- *   const handlePing = async () => {
- *     if (childHandle) {
- *       const response = await childHandle.call.ping();
- *       console.log(response);
- *     }
- *   };
- *
- *   // Typed event subscription
- *   useEffect(() => {
- *     if (!childHandle) return;
- *     return childHandle.on("data-changed", (payload) => {
- *       console.log(payload.value); // Fully typed!
- *     });
- *   }, [childHandle]);
- *
- *   return <button onClick={handlePing}>Ping Child</button>;
- * }
- * ```
- */
-export function usePanelRpc<
-  T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
-  E extends Rpc.RpcEventMap = Rpc.RpcEventMap
->(targetPanelId: string | null | undefined, options?: PanelRpcHandleOptions): Rpc.PanelRpcHandle<T, E> | null {
-  return useMemo(() => {
-    if (!targetPanelId) return null;
-    return panelAPI.rpc.getHandle<T, E>(targetPanelId, options);
-  }, [targetPanelId, options]);
-}
-
-/**
- * Subscribe to RPC events from a specific panel.
- *
- * @example
- * ```tsx
- * function MyPanel({ childId }: { childId: string }) {
- *   const [lastEvent, setLastEvent] = useState(null);
- *
- *   usePanelRpcEvent(childId, "data-changed", (payload) => {
- *     setLastEvent(payload);
- *   });
- *
- *   return <div>Last event: {JSON.stringify(lastEvent)}</div>;
- * }
- * ```
- */
-export function usePanelRpcEvent<T = unknown>(
-  targetPanelId: string | null | undefined,
-  eventName: string,
-  handler: (payload: T) => void
-): void {
-  const stableHandler = useCallback(handler, [handler]);
-
-  useEffect(() => {
-    if (!targetPanelId) return;
-
-    const handle = panelAPI.rpc.getHandle(targetPanelId);
-    const unsubscribe = handle.on(eventName, stableHandler);
-
-    return unsubscribe;
-  }, [targetPanelId, eventName, stableHandler]);
 }
 
 /**
@@ -222,30 +141,79 @@ export function usePanelRpcGlobalEvent<T = unknown>(
   }, [eventName, handler]);
 }
 
+// =============================================================================
+// ParentHandle Hooks
+// =============================================================================
+
 /**
- * Manage child panels with automatic cleanup.
+ * Get a typed handle for communicating with the parent panel.
+ * Returns null if this panel has no parent (is root).
+ *
+ * @typeParam T - RPC methods the parent exposes
+ * @typeParam E - RPC event map for typed events from parent
  *
  * @example
  * ```tsx
+ * interface ParentApi {
+ *   notifyReady(): Promise<void>;
+ *   reportStatus(status: string): Promise<void>;
+ * }
+ *
+ * function MyPanel() {
+ *   const parent = usePanelParent<ParentApi>();
+ *
+ *   useEffect(() => {
+ *     if (parent) {
+ *       parent.call.notifyReady();
+ *     }
+ *   }, [parent]);
+ *
+ *   return <div>Has parent: {parent ? "Yes" : "No"}</div>;
+ * }
+ * ```
+ */
+export function usePanelParent<
+  T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+  E extends Rpc.RpcEventMap = Rpc.RpcEventMap
+>(): ParentHandle<T, E> | null {
+  // getParent() returns a cached handle, so useMemo is for React stability
+  return useMemo(() => panelAPI.getParent<T, E>(), []);
+}
+
+// =============================================================================
+// ChildHandle Hooks
+// =============================================================================
+
+/**
+ * Manage child panels with automatic cleanup.
+ * Returns ChildHandles for unified interaction with children.
+ *
+ * @example
+ * ```tsx
+ * interface EditorApi {
+ *   openFile(path: string): Promise<void>;
+ * }
+ *
  * function MyPanel() {
  *   const { children, createChild, removeChild } = useChildPanels();
  *
  *   const handleAddChild = async () => {
- *     await createChild({
+ *     const editor = await createChild<EditorApi>({
  *       type: 'app',
- *       name: 'example',
- *       path: 'panels/example',
+ *       name: 'editor',
+ *       source: 'panels/editor',
  *     });
+ *     await editor.call.openFile('/foo.txt');
  *   };
  *
  *   return (
  *     <div>
  *       <button onClick={handleAddChild}>Add Child</button>
  *       <ul>
- *         {children.map(id => (
- *           <li key={id}>
- *             {id}
- *             <button onClick={() => removeChild(id)}>Remove</button>
+ *         {children.map(handle => (
+ *           <li key={handle.id}>
+ *             {handle.name} ({handle.type})
+ *             <button onClick={() => handle.close()}>Close</button>
  *           </li>
  *         ))}
  *       </ul>
@@ -255,23 +223,26 @@ export function usePanelRpcGlobalEvent<T = unknown>(
  * ```
  */
 export function useChildPanels() {
-  const [children, setChildren] = useState<string[]>([]);
+  const [children, setChildren] = useState<ChildHandle[]>([]);
 
-  const createChild = useCallback(async (spec: ChildSpec): Promise<string> => {
-    const childId = await panelAPI.createChild(spec);
-    setChildren((prev) => [...prev, childId]);
-    return childId;
+  const createChild = useCallback(async <
+    T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+    E extends Rpc.RpcEventMap = Rpc.RpcEventMap
+  >(spec: ChildSpec): Promise<ChildHandle<T, E>> => {
+    const handle = await panelAPI.createChild<T, E>(spec);
+    setChildren((prev) => [...prev, handle as ChildHandle]);
+    return handle;
   }, []);
 
-  const removeChild = useCallback(async (childId: string): Promise<void> => {
-    await panelAPI.removeChild(childId);
-    setChildren((prev) => prev.filter((id) => id !== childId));
+  const removeChild = useCallback(async (handle: ChildHandle): Promise<void> => {
+    await handle.close();
+    setChildren((prev) => prev.filter((h) => h.id !== handle.id));
   }, []);
 
   // Listen for child removal events from the system
   useEffect(() => {
     const unsubscribe = panelAPI.onChildRemoved((childId) => {
-      setChildren((prev) => prev.filter((id) => id !== childId));
+      setChildren((prev) => prev.filter((h) => h.id !== childId));
     });
     return unsubscribe;
   }, []);
@@ -317,4 +288,207 @@ export function usePanelFocus(): boolean {
   }, []);
 
   return isFocused;
+}
+
+// =============================================================================
+// ChildHandle Hooks
+// =============================================================================
+
+/**
+ * Get a child handle by name with automatic updates.
+ * Returns undefined if the child doesn't exist.
+ *
+ * @typeParam T - RPC methods the child exposes
+ * @typeParam E - RPC event map for typed events
+ * @param name - The child's name (as provided in createChild spec)
+ * @returns ChildHandle or undefined if not found
+ *
+ * @example
+ * ```tsx
+ * interface EditorApi {
+ *   openFile(path: string): Promise<void>;
+ *   getContent(): Promise<string>;
+ * }
+ *
+ * function MyPanel() {
+ *   const editor = usePanelChild<EditorApi>("editor");
+ *
+ *   const handleOpen = async () => {
+ *     if (editor) {
+ *       await editor.call.openFile("/foo.txt");
+ *     }
+ *   };
+ *
+ *   return (
+ *     <div>
+ *       <button onClick={handleOpen} disabled={!editor}>
+ *         Open File
+ *       </button>
+ *     </div>
+ *   );
+ * }
+ * ```
+ */
+export function usePanelChild<
+  T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+  E extends Rpc.RpcEventMap = Rpc.RpcEventMap
+>(name: string): ChildHandle<T, E> | undefined {
+  const [handle, setHandle] = useState<ChildHandle<T, E> | undefined>(() =>
+    panelAPI.getChild<T, E>(name)
+  );
+
+  useEffect(() => {
+    // Check if it already exists
+    const existing = panelAPI.getChild<T, E>(name);
+    if (existing) {
+      setHandle(existing);
+    }
+
+    // Subscribe to child added events
+    const unsubAdded = panelAPI.onChildAdded((addedName, addedHandle) => {
+      if (addedName === name) {
+        setHandle(addedHandle as ChildHandle<T, E>);
+      }
+    });
+
+    // Subscribe to child removed events
+    const unsubRemoved = panelAPI.onChildRemoved((removedId) => {
+      // Check if the removed child matches our handle
+      const current = panelAPI.getChild<T, E>(name);
+      if (!current) {
+        setHandle(undefined);
+      }
+    });
+
+    return () => {
+      unsubAdded();
+      unsubRemoved();
+    };
+  }, [name]);
+
+  return handle;
+}
+
+/**
+ * Get all children as a Map with automatic updates.
+ * Useful for rendering a list of children or iterating over them.
+ *
+ * @returns ReadonlyMap of child names to ChildHandles
+ *
+ * @example
+ * ```tsx
+ * function MyPanel() {
+ *   const children = usePanelChildren();
+ *
+ *   return (
+ *     <ul>
+ *       {[...children.entries()].map(([name, handle]) => (
+ *         <li key={handle.id}>
+ *           {name} ({handle.type})
+ *           <button onClick={() => handle.close()}>Close</button>
+ *         </li>
+ *       ))}
+ *     </ul>
+ *   );
+ * }
+ * ```
+ */
+export function usePanelChildren(): ReadonlyMap<string, ChildHandle> {
+  const [children, setChildren] = useState<ReadonlyMap<string, ChildHandle>>(
+    () => new Map(panelAPI.children)
+  );
+
+  useEffect(() => {
+    // Sync initial state
+    setChildren(new Map(panelAPI.children));
+
+    // Subscribe to changes
+    const unsubAdded = panelAPI.onChildAdded(() => {
+      setChildren(new Map(panelAPI.children));
+    });
+
+    const unsubRemoved = panelAPI.onChildRemoved(() => {
+      setChildren(new Map(panelAPI.children));
+    });
+
+    return () => {
+      unsubAdded();
+      unsubRemoved();
+    };
+  }, []);
+
+  return children;
+}
+
+/**
+ * Create and manage a child with automatic cleanup on unmount.
+ * The child is created when the hook is first called and closed when the component unmounts.
+ *
+ * @typeParam T - RPC methods the child exposes
+ * @typeParam E - RPC event map for typed events
+ * @param spec - Child specification (or null to skip creation)
+ * @returns ChildHandle or null while loading/if spec is null
+ *
+ * @example
+ * ```tsx
+ * interface WorkerApi {
+ *   compute(data: number[]): Promise<number>;
+ * }
+ *
+ * function MyPanel() {
+ *   const worker = usePanelCreateChild<WorkerApi>({
+ *     type: "worker",
+ *     name: "compute-worker",
+ *     source: "workers/compute",
+ *   });
+ *
+ *   const handleCompute = async () => {
+ *     if (worker) {
+ *       const result = await worker.call.compute([1, 2, 3]);
+ *       console.log("Result:", result);
+ *     }
+ *   };
+ *
+ *   return <button onClick={handleCompute}>Compute</button>;
+ * }
+ * ```
+ */
+export function usePanelCreateChild<
+  T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+  E extends Rpc.RpcEventMap = Rpc.RpcEventMap
+>(spec: ChildSpec | null): ChildHandle<T, E> | null {
+  const [handle, setHandle] = useState<ChildHandle<T, E> | null>(null);
+
+  useEffect(() => {
+    if (!spec) {
+      setHandle(null);
+      return;
+    }
+
+    let mounted = true;
+    let createdHandle: ChildHandle<T, E> | null = null;
+
+    panelAPI.createChild<T, E>(spec).then((h) => {
+      if (mounted) {
+        createdHandle = h;
+        setHandle(h);
+      } else {
+        // Component unmounted before creation finished, close the child
+        void h.close();
+      }
+    }).catch((error) => {
+      console.error("[usePanelCreateChild] Failed to create child:", error);
+    });
+
+    return () => {
+      mounted = false;
+      if (createdHandle) {
+        void createdHandle.close();
+      }
+    };
+  // We intentionally only run this once on mount
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return handle;
 }

@@ -14,7 +14,6 @@ export {
 
 // Filesystem utilities (uses ZenFS which is backed by OPFS)
 export {
-  // New names
   FsLoader,
   importModule,
   clearModuleCache,
@@ -22,14 +21,6 @@ export {
   readFile,
   writeFile,
   createFsPlugin,
-  // Legacy aliases for backward compatibility
-  OPFSLoader,
-  importFromOPFS,
-  clearOPFSCache,
-  invalidateOPFSModule,
-  readOPFSFile,
-  writeOPFSFile,
-  createOPFSPlugin,
 } from "./opfs-loader.js";
 
 // Code transformation

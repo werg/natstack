@@ -67,13 +67,13 @@ export default function SharedOPFSPanel() {
 
   const launchAnotherSharedPanel = async () => {
     try {
-      const childId = await panel.createChild({
+      const child = await panel.createChild({
         type: "app",
         name: "shared-opfs-sibling",
         source: "panels/shared-opfs-demo",
         env: { PARENT_ID: panelId },
       });
-      setOpfsStatus(`Launched sibling panel ${childId} - it shares the same OPFS!`);
+      setOpfsStatus(`Launched sibling panel ${child.name} (${child.id}) - it shares the same OPFS!`);
     } catch (error) {
       setOpfsStatus(`Failed to launch: ${error instanceof Error ? error.message : String(error)}`);
     }
