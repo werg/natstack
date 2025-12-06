@@ -3,14 +3,12 @@ import type { ChannelMessage } from "../../types/messages";
 import { CodeBlock } from "./CodeBlock";
 import { CodeCellOutput } from "./CodeCellOutput";
 import { ToolCallRecord } from "./ToolCallRecord";
-import type { KernelManager } from "../../kernel/KernelManager";
 
 interface ExecutionBlockProps {
   codeMessage: ChannelMessage;
   codeResult?: ChannelMessage | null;
   toolCall?: ChannelMessage | null;
   toolResult?: ChannelMessage | null;
-  kernel: KernelManager | null;
 }
 
 /**
@@ -21,7 +19,6 @@ export function ExecutionBlock({
   codeResult,
   toolCall,
   toolResult,
-  kernel,
 }: ExecutionBlockProps) {
   const codeContent = codeMessage.content.type === "code" ? codeMessage.content : null;
   const codeResultContent = codeResult?.content.type === "code_result" ? codeResult.content : null;
@@ -71,7 +68,7 @@ export function ExecutionBlock({
       )}
 
       {codeResultContent && (
-        <CodeCellOutput result={codeResultContent} kernel={kernel} defaultCollapsed={false} />
+        <CodeCellOutput result={codeResultContent} defaultCollapsed={false} />
       )}
     </Card>
   );

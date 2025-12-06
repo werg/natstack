@@ -12,7 +12,17 @@
     "skipLibCheck": true,
     "noEmit": true,
     "rootDir": ".",
-    "outDir": ".natstack"
+    "outDir": ".natstack",
+    "baseUrl": ".",
+    "paths": {
+      "@natstack/build": ["../../../packages/build/dist/index.d.ts"],
+      "@natstack/build-eval": ["../../../packages/build-eval/dist/index.d.ts"],
+      "@natstack/build-mdx": ["../../../packages/build-mdx/dist/index.d.ts"],
+      "@natstack/git": ["../../../packages/git/dist/index.d.ts"],
+      "@natstack/ai": ["../../../packages/ai/dist/index.d.ts"],
+      "@natstack/panel": ["../../../packages/panel/dist/index.d.ts"],
+      "@natstack/react": ["../../../packages/react/dist/index.d.ts"]
+    }
   },
   "include": [
     "index.tsx",

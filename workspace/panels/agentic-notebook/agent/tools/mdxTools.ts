@@ -1,5 +1,4 @@
-import { evaluate } from "@mdx-js/mdx";
-import * as runtime from "react/jsx-runtime";
+import { compileMDX, MDXCompileError } from "@natstack/build-mdx";
 import type { AgentTool } from "../AgentSession";
 import { generateComponentDocs } from "../../components/ChatArea/mdxComponents";
 
@@ -23,7 +22,7 @@ Use this tool when you want to display formatted content with interactive UI com
 structured layouts, or styled elements beyond plain markdown.
 
 MDX is a superset of Markdown that supports embedded JSX components. The content you provide
-will be compiled and rendered in the chat interface.
+will be compiled and rendered in the chat interface. MDX can also import modules from OPFS.
 
 ${componentDocs}
 
@@ -78,15 +77,12 @@ Note: The tool returns any compilation errors. If rendering fails, check your JS
 
         // Validate the MDX by compiling it - catch syntax errors before claiming success
         try {
-          await evaluate(content, {
-            ...runtime,
-            baseUrl: import.meta.url,
-            development: false,
-          });
+          await compileMDX(content, {});
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
+          const errorType = err instanceof MDXCompileError ? "MDX compilation error" : "Error";
           return {
-            content: [{ type: "text", text: `MDX compilation error: ${message}` }],
+            content: [{ type: "text", text: `${errorType}: ${message}` }],
             isError: true,
           };
         }

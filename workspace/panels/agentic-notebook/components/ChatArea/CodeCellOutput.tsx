@@ -1,13 +1,11 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { Box, Card, Flex, Text, Badge, IconButton, Tooltip } from "@radix-ui/themes";
 import { CopyIcon, CheckIcon } from "@radix-ui/react-icons";
 import type { CodeResultContent } from "../../types/messages";
-import type { KernelManager } from "../../kernel/KernelManager";
 import { CodeBlock } from "./CodeBlock";
 
 interface CodeCellOutputProps {
   result: CodeResultContent;
-  kernel: KernelManager | null;
   defaultCollapsed?: boolean;
 }
 
@@ -61,36 +59,17 @@ function formatConsoleOutput(
 }
 
 /**
- * CodeCellOutput - Code execution result with React mount support.
+ * CodeCellOutput - Code execution result display.
  */
 export function CodeCellOutput({
   result,
-  kernel,
   defaultCollapsed = true,
 }: CodeCellOutputProps) {
   const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
-  const mountRef = useRef<HTMLDivElement>(null);
-
-  // Render React component if present, with proper cleanup
-  useEffect(() => {
-    const mountId = result.reactMountId;
-    if (!mountId || !kernel || !mountRef.current) {
-      return;
-    }
-
-    const registry = kernel.getMountRegistry();
-    registry.render(mountId, mountRef.current);
-
-    // Cleanup: unmount React component when this component unmounts
-    return () => {
-      registry.unmount(mountId);
-    };
-  }, [result.reactMountId, kernel]);
 
   const hasOutput = result.consoleOutput.length > 0;
   const hasResult = result.result !== undefined;
   const hasError = !result.success;
-  const hasReactMount = !!result.reactMountId;
 
   return (
     <Card
@@ -135,19 +114,6 @@ export function CodeCellOutput({
           </Text>
         )}
       </Flex>
-
-      {/* React Mount Area */}
-      {hasReactMount && (
-        <Box
-          ref={mountRef}
-          style={{
-            background: "var(--gray-1)",
-            borderRadius: "var(--radius-2)",
-            padding: "12px",
-            marginBottom: isCollapsed ? "0" : "8px",
-          }}
-        />
-      )}
 
       {/* Console Output & Result (collapsible) */}
       {!isCollapsed && (
@@ -221,18 +187,6 @@ export function CodeCellOutput({
                 }
                 language="json"
               />
-            </Box>
-          )}
-
-          {/* Declared Variables */}
-          {(result.constNames?.length || result.mutableNames?.length) && (
-            <Box mt="2">
-              <Text size="1" color="gray">
-                Declared:{" "}
-                {[...(result.constNames ?? []), ...(result.mutableNames ?? [])].join(
-                  ", "
-                )}
-              </Text>
             </Box>
           )}
         </>

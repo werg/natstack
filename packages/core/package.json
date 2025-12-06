@@ -15,7 +15,9 @@
   ],
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
-    "dev": "tsc --project tsconfig.build.json --watch"
+    "dev": "tsc --project tsconfig.build.json --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "peerDependencies": {},
   "dependencies": {
@@ -23,6 +25,7 @@
   },
   "devDependencies": {
     "@natstack/git": "workspace:*",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.2"
   }
 }

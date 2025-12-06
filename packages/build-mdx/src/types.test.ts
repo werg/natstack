@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect } from "vitest";
-import type { AnyComponent, MDXOptions, MDXResult } from "./types.js";
+import type { AnyComponent, MDXOptions, MDXResult, MDXContext } from "./types.js";
+import type { PackageRegistry, PackageSpec } from "@natstack/build";
 
 describe("AnyComponent type", () => {
   it("should accept React functional components", () => {
@@ -62,6 +63,111 @@ describe("MDXOptions type", () => {
       signal: controller.signal,
     };
     expect(options).toBeDefined();
+  });
+
+  it("should accept optional context", () => {
+    const options: MDXOptions = {
+      context: {
+        projectRoot: "/project",
+      },
+    };
+    expect(options.context?.projectRoot).toBe("/project");
+  });
+
+  it("should accept context with registry", () => {
+    const mockRegistry: PackageRegistry = {
+      get: () => undefined,
+      has: () => false,
+      keys: () => [],
+    };
+    const options: MDXOptions = {
+      context: {
+        projectRoot: "/project",
+        registry: mockRegistry,
+      },
+    };
+    expect(options.context?.registry).toBe(mockRegistry);
+  });
+
+  it("should accept context with dependencies", () => {
+    const options: MDXOptions = {
+      context: {
+        projectRoot: "/project",
+        dependencies: {
+          lodash: "^4.17.0",
+          "my-lib": "user/lib#main",
+        },
+      },
+    };
+    expect(options.context?.dependencies?.["lodash"]).toBe("^4.17.0");
+  });
+});
+
+describe("MDXContext type", () => {
+  it("should require projectRoot", () => {
+    const context: MDXContext = {
+      projectRoot: "/my/project",
+    };
+    expect(context.projectRoot).toBe("/my/project");
+  });
+
+  it("should accept optional sourceRoot", () => {
+    const context: MDXContext = {
+      projectRoot: "/project",
+      sourceRoot: "/project/content",
+    };
+    expect(context.sourceRoot).toBe("/project/content");
+  });
+
+  it("should accept optional registry", () => {
+    const mockRegistry: PackageRegistry = {
+      get: (name: string): PackageSpec | undefined => {
+        if (name === "test") return { gitSpec: "user/test#main" };
+        return undefined;
+      },
+      has: (name: string) => name === "test",
+      keys: () => ["test"],
+    };
+    const context: MDXContext = {
+      projectRoot: "/project",
+      registry: mockRegistry,
+    };
+    expect(context.registry?.has("test")).toBe(true);
+    expect(context.registry?.get("test")?.gitSpec).toBe("user/test#main");
+  });
+
+  it("should accept optional dependencies map", () => {
+    const context: MDXContext = {
+      projectRoot: "/project",
+      dependencies: {
+        react: "^18.0.0",
+        "@mdx-js/react": "^3.0.0",
+      },
+    };
+    expect(context.dependencies).toEqual({
+      react: "^18.0.0",
+      "@mdx-js/react": "^3.0.0",
+    });
+  });
+
+  it("should accept all context properties", () => {
+    const mockRegistry: PackageRegistry = {
+      get: () => undefined,
+      has: () => false,
+      keys: () => [],
+    };
+    const context: MDXContext = {
+      projectRoot: "/project",
+      sourceRoot: "/project/docs",
+      registry: mockRegistry,
+      dependencies: {
+        "local-lib": "user/lib#main",
+      },
+    };
+    expect(context.projectRoot).toBe("/project");
+    expect(context.sourceRoot).toBe("/project/docs");
+    expect(context.registry).toBe(mockRegistry);
+    expect(context.dependencies).toHaveProperty("local-lib");
   });
 });
 

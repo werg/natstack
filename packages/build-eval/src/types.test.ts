@@ -6,12 +6,14 @@ import { describe, it, expect } from "vitest";
 import type {
   EvalOptions,
   EvalResult,
+  EvalContext,
   ConsoleEntry,
   ConsoleCapture,
   TypeCheckOptions,
   TypeCheckResult,
   TypeCheckError,
 } from "./types.js";
+import type { PackageRegistry, PackageSpec } from "@natstack/build";
 
 describe("EvalOptions type", () => {
   it("should accept valid options with language", () => {
@@ -62,6 +64,114 @@ describe("EvalOptions type", () => {
       signal: controller.signal,
     };
     expect(options).toBeDefined();
+  });
+
+  it("should accept optional context", () => {
+    const options: EvalOptions = {
+      language: "typescript",
+      context: {
+        projectRoot: "/project",
+      },
+    };
+    expect(options.context?.projectRoot).toBe("/project");
+  });
+
+  it("should accept context with registry", () => {
+    const mockRegistry: PackageRegistry = {
+      get: () => undefined,
+      has: () => false,
+      keys: () => [],
+    };
+    const options: EvalOptions = {
+      language: "typescript",
+      context: {
+        projectRoot: "/project",
+        registry: mockRegistry,
+      },
+    };
+    expect(options.context?.registry).toBe(mockRegistry);
+  });
+
+  it("should accept context with dependencies", () => {
+    const options: EvalOptions = {
+      language: "typescript",
+      context: {
+        projectRoot: "/project",
+        dependencies: {
+          lodash: "^4.17.0",
+          "my-lib": "user/lib#main",
+        },
+      },
+    };
+    expect(options.context?.dependencies?.["lodash"]).toBe("^4.17.0");
+  });
+});
+
+describe("EvalContext type", () => {
+  it("should require projectRoot", () => {
+    const context: EvalContext = {
+      projectRoot: "/my/project",
+    };
+    expect(context.projectRoot).toBe("/my/project");
+  });
+
+  it("should accept optional sourceRoot", () => {
+    const context: EvalContext = {
+      projectRoot: "/project",
+      sourceRoot: "/project/src",
+    };
+    expect(context.sourceRoot).toBe("/project/src");
+  });
+
+  it("should accept optional registry", () => {
+    const mockRegistry: PackageRegistry = {
+      get: (name: string): PackageSpec | undefined => {
+        if (name === "test") return { gitSpec: "user/test#main" };
+        return undefined;
+      },
+      has: (name: string) => name === "test",
+      keys: () => ["test"],
+    };
+    const context: EvalContext = {
+      projectRoot: "/project",
+      registry: mockRegistry,
+    };
+    expect(context.registry?.has("test")).toBe(true);
+    expect(context.registry?.get("test")?.gitSpec).toBe("user/test#main");
+  });
+
+  it("should accept optional dependencies map", () => {
+    const context: EvalContext = {
+      projectRoot: "/project",
+      dependencies: {
+        react: "^18.0.0",
+        lodash: "^4.17.0",
+      },
+    };
+    expect(context.dependencies).toEqual({
+      react: "^18.0.0",
+      lodash: "^4.17.0",
+    });
+  });
+
+  it("should accept all context properties", () => {
+    const mockRegistry: PackageRegistry = {
+      get: () => undefined,
+      has: () => false,
+      keys: () => [],
+    };
+    const context: EvalContext = {
+      projectRoot: "/project",
+      sourceRoot: "/project/src/cells",
+      registry: mockRegistry,
+      dependencies: {
+        "local-lib": "user/lib#main",
+      },
+    };
+    expect(context.projectRoot).toBe("/project");
+    expect(context.sourceRoot).toBe("/project/src/cells");
+    expect(context.registry).toBe(mockRegistry);
+    expect(context.dependencies).toHaveProperty("local-lib");
   });
 });
 

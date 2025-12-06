@@ -14,6 +14,7 @@ export {
 export type {
   MDXOptions,
   MDXResult,
+  MDXContext,
   AnyComponent,
 } from "./types.js";
 

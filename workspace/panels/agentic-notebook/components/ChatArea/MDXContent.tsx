@@ -1,5 +1,4 @@
-import { evaluate } from "@mdx-js/mdx";
-import * as runtime from "react/jsx-runtime";
+import { compileMDX, MDXCompileError } from "@natstack/build-mdx";
 import { useState, useEffect, useMemo } from "react";
 
 interface MDXContentProps {
@@ -9,9 +8,9 @@ interface MDXContentProps {
 }
 
 /**
- * MDXContent - Runtime MDX compiler and renderer.
+ * MDXContent - Runtime MDX compiler and renderer using @natstack/build-mdx.
  *
- * Compiles MDX content at runtime using @mdx-js/mdx's evaluate().
+ * Compiles MDX content at runtime with full OPFS import support.
  * This is intentionally unguarded - MDX has full access to passed components
  * and can execute arbitrary JSX. This is desired for the LLM sandbox.
  */
@@ -31,23 +30,22 @@ export function MDXContent({ content, components = {} }: MDXContentProps) {
 
     async function compile() {
       try {
-        // evaluate() compiles and executes MDX at runtime
-        // This is essentially eval() for MDX - intentionally unguarded
-        // Note: development: false uses jsx/jsxs from react/jsx-runtime
-        // development: true would require jsxDEV from react/jsx-dev-runtime
-        const { default: MDXComponent } = await evaluate(content, {
-          ...runtime,
-          baseUrl: import.meta.url,
-          development: false,
+        // compileMDX() compiles MDX to a React component with OPFS import support
+        const result = await compileMDX(content, {
+          components: stableComponents,
         });
 
         if (!cancelled) {
-          setComponent(() => MDXComponent as MDXCompiledComponent);
+          setComponent(() => result.Component as MDXCompiledComponent);
           setError(null);
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err : new Error(String(err)));
+          if (err instanceof MDXCompileError) {
+            setError(err);
+          } else {
+            setError(err instanceof Error ? err : new Error(String(err)));
+          }
           setComponent(null);
         }
       }
@@ -57,7 +55,7 @@ export function MDXContent({ content, components = {} }: MDXContentProps) {
     return () => {
       cancelled = true;
     };
-  }, [content]);
+  }, [content, stableComponents]);
 
   if (error) {
     return (

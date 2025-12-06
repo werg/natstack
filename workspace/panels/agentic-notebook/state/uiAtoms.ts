@@ -1,5 +1,4 @@
 import { atom } from "jotai";
-import type { CodeLanguage } from "../types/messages";
 import type { SubmitKeyConfig } from "../types/channel";
 
 /**
@@ -8,17 +7,7 @@ import type { SubmitKeyConfig } from "../types/channel";
 export const sidebarOpenAtom = atom<boolean>(true);
 
 /**
- * Input mode: text or code.
- */
-export const inputModeAtom = atom<"text" | "code">("text");
-
-/**
- * Selected code language for code input.
- */
-export const codeLanguageAtom = atom<CodeLanguage>("typescript");
-
-/**
- * Current input value (text or code).
+ * Current input value.
  */
 export const inputValueAtom = atom<string>("");
 

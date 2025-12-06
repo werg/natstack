@@ -44,3 +44,15 @@ export {
 
 // Types
 export { BuildError, type BuildErrorDetail } from "./types.js";
+
+// Dependency resolution
+export {
+  resolveDependency,
+  resolveDependencies,
+  getGitDependencies,
+  parsePackageSpecifier,
+  type ResolvedDependency,
+  type DependencyResolverOptions,
+  type PackageSpec,
+  type PackageRegistry,
+} from "./dependency-resolver.js";

@@ -1,4 +1,3 @@
-import { useAtomValue } from "jotai";
 import {
   Box,
   Flex,
@@ -11,7 +10,6 @@ import {
 } from "@radix-ui/themes";
 import { useParticipants, useChannelStatus } from "../hooks/useChannel";
 import { useModelRole } from "../hooks/useAgent";
-import { useKernelExecutionCount } from "../hooks/useKernel";
 import { ThemeToggle } from "./ThemeToggle";
 import type { AnyParticipant, ChannelStatus } from "../types/channel";
 
@@ -77,7 +75,6 @@ function getStatusText(status: ChannelStatus): string {
  */
 function ParticipantConfig({ participant }: { participant: AnyParticipant }) {
   const [modelRole, setModelRole] = useModelRole();
-  const executionCount = useKernelExecutionCount();
 
   if (participant.type === "agent") {
     return (
@@ -110,25 +107,12 @@ function ParticipantConfig({ participant }: { participant: AnyParticipant }) {
     return (
       <Box style={{ minWidth: 200 }}>
         <Text size="2" weight="medium" mb="2">
-          Kernel Info
+          Code Execution
         </Text>
         <Separator size="4" mb="2" />
-        <Flex direction="column" gap="1">
-          <Flex justify="between">
-            <Text size="1" color="gray">
-              Executions
-            </Text>
-            <Text size="1">{executionCount}</Text>
-          </Flex>
-          <Flex justify="between">
-            <Text size="1" color="gray">
-              Status
-            </Text>
-            <Text size="1" color="green">
-              Ready
-            </Text>
-          </Flex>
-        </Flex>
+        <Text size="1" color="gray">
+          Stateless TypeScript/JavaScript execution
+        </Text>
       </Box>
     );
   }

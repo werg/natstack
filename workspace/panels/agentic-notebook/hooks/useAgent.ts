@@ -18,10 +18,8 @@ import {
   endGenerationAtom,
   abortGenerationAtom,
 } from "../state";
-import { kernelAtom } from "../state/kernelAtoms";
 import type { FileSystem } from "../storage/ChatStore";
 import type { ChannelMessage } from "../types/messages";
-import type { KernelManager } from "../kernel/KernelManager";
 
 /**
  * Create a channel adapter that bridges AgentSession to Jotai atoms.
@@ -73,7 +71,6 @@ function createChannelAdapter(store: ReturnType<typeof useStore>): ChannelAdapte
 export function useAgent() {
   const [agent, setAgent] = useAtom(agentAtom);
   const store = useStore();
-  const kernel = useAtomValue(kernelAtom);
   const [isStreaming, setIsStreaming] = useAtom(isStreamingAtom);
   const [modelRole, setModelRole] = useAtom(modelRoleAtom);
 
@@ -83,13 +80,9 @@ export function useAgent() {
     adapterRef.current = createChannelAdapter(store);
   }
 
-  // Keep kernel ref for use in initializeAgent without causing re-renders
-  const kernelRef = useRef(kernel);
-  kernelRef.current = kernel;
-
   // Initialize agent
   const initializeAgent = useCallback(
-    async (options?: { fs?: FileSystem; kernel?: KernelManager }) => {
+    async (options?: { fs?: FileSystem }) => {
       const session = new AgentSession({
         adapter: adapterRef.current!,
         modelRole,
@@ -102,12 +95,7 @@ export function useAgent() {
       if (options?.fs) {
         session.registerFileTools(options.fs);
       }
-      // Use provided kernel, or fall back to ref (for re-initialization after render)
-      const kernelToUse = options?.kernel ?? kernelRef.current;
-      if (kernelToUse) {
-        session.registerKernelTools(kernelToUse);
-      }
-      // Always register MDX tools
+      session.registerEvalTools();
       session.registerMDXTools();
 
       setAgent(session);

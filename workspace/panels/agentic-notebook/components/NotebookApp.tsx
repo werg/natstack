@@ -7,6 +7,20 @@ import * as fs from "fs/promises";
 import { usePanel } from "@natstack/react";
 
 import { useThemeAppearance } from "../hooks/useTheme";
+import { initialize as initializeEval } from "../eval";
+import { useAgent } from "../hooks/useAgent";
+import { useChatStorage } from "../hooks/useChatStorage";
+import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import { sidebarOpenAtom, isMobileAtom } from "../state/uiAtoms";
+
+import { ParticipantBar } from "./ParticipantBar";
+import { ChatArea } from "./ChatArea";
+import { InputArea } from "./InputArea";
+import { Sidebar } from "./Sidebar";
+import { ErrorBoundary } from "./ErrorBoundary";
+import { KeyboardShortcutsOverlay } from "./KeyboardShortcutsOverlay";
+import { storageInitializedAtom } from "../state/storageAtoms";
+import { useMessages } from "../hooks/useChannel";
 
 /**
  * Loading spinner component.
@@ -41,20 +55,6 @@ function LoadingSpinner({ size = 24 }: { size?: number }) {
     </svg>
   );
 }
-import { useKernel } from "../hooks/useKernel";
-import { useAgent } from "../hooks/useAgent";
-import { useChatStorage } from "../hooks/useChatStorage";
-import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
-import { sidebarOpenAtom, isMobileAtom } from "../state/uiAtoms";
-
-import { ParticipantBar } from "./ParticipantBar";
-import { ChatArea } from "./ChatArea";
-import { InputArea } from "./InputArea";
-import { Sidebar } from "./Sidebar";
-import { ErrorBoundary } from "./ErrorBoundary";
-import { KeyboardShortcutsOverlay } from "./KeyboardShortcutsOverlay";
-import { storageInitializedAtom } from "../state/storageAtoms";
-import { useMessages } from "../hooks/useChannel";
 
 interface NotebookAppProps {
   panelId: string;
@@ -65,7 +65,6 @@ interface NotebookAppProps {
  */
 export function NotebookApp({ panelId }: NotebookAppProps) {
   const panel = usePanel();
-  const { initializeKernel } = useKernel();
   const { initializeAgent, abort } = useAgent();
   const {
     initialize,
@@ -108,7 +107,7 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
         console.log("[NotebookApp] Starting initialization...");
         setIsInitializing(true);
 
-        // Initialize storage (fs + git) and kernel/agent wiring
+        // Get filesystem and git client
         const fsImpl = fs as unknown as import("../storage/ChatStore").FileSystem;
         const gitConfig = await panel.git.getConfig();
         const git = new GitClient(fsImpl, {
@@ -116,9 +115,9 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
           token: gitConfig.token,
         });
 
-        // Initialize kernel with fs bindings
-        console.log("[NotebookApp] Initializing kernel...");
-        const kernel = await initializeKernel(fsImpl);
+        // Pre-warm esbuild for code execution
+        console.log("[NotebookApp] Initializing code execution runtime...");
+        await initializeEval();
         if (!mounted) return;
 
         // Initialize storage (OPFS)
@@ -127,17 +126,14 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
         if (!mounted) return;
         setStorageInitialized(true);
 
-        // Initialize agent with the kernel
-        console.log("[NotebookApp] Initializing agent with kernel...");
-        await initializeAgent({ kernel, fs: fsImpl });
+        // Initialize agent with file tools
+        console.log("[NotebookApp] Initializing agent...");
+        await initializeAgent({ fs: fsImpl });
         if (!mounted) return;
 
-        // Create new chat with default participants
+        // Create new chat
         console.log("[NotebookApp] Creating new chat...");
         createNewChat();
-
-        // Mark storage as initialized for UI even if persistence backend isn't ready
-        setStorageInitialized(true);
 
         console.log("[NotebookApp] Initialization complete");
         setIsInitializing(false);
@@ -155,7 +151,7 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
     return () => {
       mounted = false;
     };
-  }, [initializeKernel, initializeAgent, createNewChat]);
+  }, [initializeAgent, createNewChat, initialize, panel.git, setStorageInitialized]);
 
   // Keyboard shortcuts
   useKeyboardShortcuts({
@@ -167,7 +163,6 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
   // Auto-persist chat history whenever messages change
   useEffect(() => {
     if (!isInitializing) {
-      // Fire and forget; debounced by batching of message state updates
       void (async () => {
         try {
           await saveCurrentChat();
@@ -280,7 +275,7 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
           {/* Participant bar */}
           <ParticipantBar onToggleSidebar={handleToggleSidebar} />
 
-          {/* Chat area - wrapped in ErrorBoundary to catch rendering errors */}
+          {/* Chat area */}
           <ErrorBoundary componentName="ChatArea">
             <ChatArea />
           </ErrorBoundary>
@@ -292,7 +287,7 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
         </Flex>
       </Flex>
 
-      {/* Keyboard shortcuts overlay - press ? to open */}
+      {/* Keyboard shortcuts overlay */}
       <KeyboardShortcutsOverlay />
     </Theme>
   );

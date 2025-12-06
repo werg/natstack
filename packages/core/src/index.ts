@@ -32,6 +32,17 @@ export {
   type QuotaInfo,
 } from "./opfsQuota.js";
 
+// Package registry for dynamic imports
+export {
+  getPackageRegistry,
+  resetPackageRegistry,
+  parseSpec,
+  isGitSpec,
+  isNpmSpec,
+  type PackageSpec,
+  type PackageRegistry,
+} from "./packages.js";
+
 // =============================================================================
 // Shared Types
 // =============================================================================

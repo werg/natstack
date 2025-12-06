@@ -1,9 +1,7 @@
-import { useAtomValue } from "jotai";
 import { useMemo } from "react";
 import { Box } from "@radix-ui/themes";
 import { Virtuoso } from "react-virtuoso";
 import { useMessages } from "../../hooks/useChannel";
-import { kernelAtom } from "../../state/kernelAtoms";
 import { MessageBubble } from "./MessageBubble";
 import type { ChannelMessage } from "../../types/messages";
 import { ToolCallRecord } from "./ToolCallRecord";
@@ -20,7 +18,6 @@ type GroupedItem = {
  */
 export function ChatArea() {
   const messages = useMessages();
-  const kernel = useAtomValue(kernelAtom);
 
   const displayItems: GroupedItem[] = useMemo(() => {
     const idToMessage = new Map<string, ChannelMessage>();
@@ -78,7 +75,7 @@ export function ChatArea() {
                 padding: "12px",
               }}
             >
-              <MessageBubble message={item.root} kernel={kernel} />
+              <MessageBubble message={item.root} />
               {(() => {
                 // Combine tool call + result pairs within this group
                 const children = [...item.children];
@@ -117,11 +114,7 @@ export function ChatArea() {
                       )}
                       {codeResults.map((cr) => (
                         <Box key={cr.id} mt="2">
-                          <CodeCellOutput
-                            result={cr.content}
-                            kernel={kernel}
-                            defaultCollapsed
-                          />
+                          <CodeCellOutput result={cr.content} defaultCollapsed />
                         </Box>
                       ))}
                     </Box>
@@ -156,14 +149,14 @@ export function ChatArea() {
                       if (child.content.type === "code_result") {
                         return (
                           <Box key={child.id} mt="2">
-                            <CodeCellOutput result={child.content} kernel={kernel} defaultCollapsed />
+                            <CodeCellOutput result={child.content} defaultCollapsed />
                           </Box>
                         );
                       }
                       if (child.content.type === "code" || child.content.type === "text") {
                         return (
                           <Box key={child.id} mt="2">
-                            <MessageBubble message={child} kernel={kernel} />
+                            <MessageBubble message={child} />
                           </Box>
                         );
                       }

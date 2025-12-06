@@ -1,5 +1,5 @@
 import type { ParticipantType } from "./channel";
-import type { ConsoleEntry } from "../kernel/KernelManager";
+import type { ConsoleEntry } from "../eval";
 
 export type { ConsoleEntry };
 

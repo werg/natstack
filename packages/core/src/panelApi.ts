@@ -25,6 +25,50 @@ export type BrowserChildSpec = SharedBrowserChildSpec;
 export type GitConfig = SharedGitConfig;
 export type PanelRpcHandleOptions = RpcHandleOptions;
 
+// =============================================================================
+// Unified ViewChild API Types
+// =============================================================================
+
+/**
+ * Options for creating a view child (panel or browser).
+ * Uses source discriminator: `url` for browsers, `panel` for app panels.
+ */
+export interface CreateViewChildOptions {
+  /** Unique name within parent (used for ID generation) */
+  name: string;
+  /** Display title (defaults to name) */
+  title?: string;
+  /** Environment variables to pass */
+  env?: Record<string, string>;
+
+  // Source - exactly one of:
+  /** External URL → creates browser view */
+  url?: string;
+  /** Panel path → creates app panel view */
+  panel?: string;
+}
+
+/**
+ * Unified handle for managing child views (both panels and browsers).
+ * Provides consistent API for CDP automation, screenshots, and lifecycle.
+ */
+export interface ViewChild {
+  /** Unique view ID */
+  id: string;
+  /** View type discriminator */
+  type: "browser" | "panel";
+  /** Name within parent */
+  name: string;
+  /** Display title */
+  title: string;
+
+  /** Get CDP WebSocket endpoint for automation (works for both panel and browser) */
+  getCdpEndpoint(): Promise<string>;
+
+  /** Close the view */
+  close(): Promise<void>;
+}
+
 type PanelBridgeEvent = "child-removed" | "focus";
 
 type PanelThemeAppearance = "light" | "dark";
@@ -165,6 +209,82 @@ const panelAPI = {
 
   async removeChild(childId: string): AsyncResult<void> {
     return bridge.removeChild(childId);
+  },
+
+  /**
+   * Create a unified view child (panel or browser).
+   * This is the recommended API for creating child views.
+   *
+   * @param options - Options with either `url` (browser) or `panel` (app panel)
+   * @returns ViewChild handle for managing the view
+   *
+   * @example
+   * ```ts
+   * // Create a browser view
+   * const browser = await panel.createViewChild({
+   *   name: "web-scraper",
+   *   url: "https://example.com",
+   * });
+   * const cdpUrl = await browser.getCdpEndpoint();
+   *
+   * // Create an app panel view
+   * const subPanel = await panel.createViewChild({
+   *   name: "editor",
+   *   panel: "panels/code-editor",
+   *   env: { FILE_PATH: "/foo.txt" },
+   * });
+   * const panelCdp = await subPanel.getCdpEndpoint();
+   * ```
+   */
+  async createViewChild(options: CreateViewChildOptions): AsyncResult<ViewChild> {
+    // Validate: exactly one of url or panel must be provided
+    if (options.url && options.panel) {
+      throw new Error("Cannot specify both 'url' and 'panel' - choose one");
+    }
+    if (!options.url && !options.panel) {
+      throw new Error("Must specify either 'url' (browser) or 'panel' (app panel)");
+    }
+
+    // Convert to ChildSpec and create
+    let childId: string;
+    let childType: "browser" | "panel";
+
+    if (options.url) {
+      childType = "browser";
+      childId = await bridge.createChild({
+        type: "browser",
+        name: options.name,
+        title: options.title,
+        url: options.url,
+        env: options.env,
+      });
+    } else {
+      childType = "panel";
+      childId = await bridge.createChild({
+        type: "app",
+        name: options.name,
+        path: options.panel!,
+        env: options.env,
+      });
+    }
+
+    // Return ViewChild handle
+    const viewChild: ViewChild = {
+      id: childId,
+      type: childType,
+      name: options.name,
+      title: options.title ?? options.name,
+
+      async getCdpEndpoint(): Promise<string> {
+        return bridge.browser.getCdpEndpoint(childId);
+      },
+
+      async close(): Promise<void> {
+        return bridge.removeChild(childId);
+      },
+    };
+
+    return viewChild;
   },
 
   async setTitle(title: string): AsyncResult<void> {

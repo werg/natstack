@@ -4,14 +4,21 @@ import {
   type StreamEvent,
   type ToolDefinition,
 } from "@natstack/ai";
-import type { KernelManager } from "../kernel/KernelManager";
 import type { FileSystem } from "../storage/ChatStore";
 import type { ChannelMessage } from "../types/messages";
 import { createFileTools } from "./tools/fileTools";
-import { createKernelTools } from "./tools/kernelTools";
+import { createEvalTools } from "./tools/evalTools";
 import { createMDXTools } from "./tools/mdxTools";
 import { getSystemPrompt } from "./prompts/systemPrompt";
 import { PromptBuilder } from "./PromptBuilder";
+
+/**
+ * Context passed to tool execution.
+ */
+export interface ToolExecutionContext {
+  /** Signal for aborting the operation */
+  signal?: AbortSignal;
+}
 
 /**
  * Tool definition with execute callback (internal format).
@@ -20,7 +27,10 @@ export interface AgentTool {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
-  execute: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+  execute: (
+    args: Record<string, unknown>,
+    context?: ToolExecutionContext
+  ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
 }
 
 /**
@@ -108,11 +118,11 @@ export class AgentSession {
   }
 
   /**
-   * Register kernel operation tools.
+   * Register code execution tools.
    */
-  registerKernelTools(kernel: KernelManager): void {
-    const kernelTools = createKernelTools(kernel);
-    for (const tool of kernelTools) {
+  registerEvalTools(): void {
+    const evalTools = createEvalTools();
+    for (const tool of evalTools) {
       this.tools.set(tool.name, tool);
     }
   }
@@ -138,8 +148,10 @@ export class AgentSession {
         description: tool.description,
         parameters: tool.parameters,
         execute: async (args: Record<string, unknown>): Promise<unknown> => {
-          // Execute the tool and extract the text result
-          const result = await tool.execute(args);
+          // Execute the tool with abort signal from current generation
+          const result = await tool.execute(args, {
+            signal: this.abortController?.signal,
+          });
           const text = result.content.map(c => c.text).join("\n");
 
           // If error, throw so streamText handles it as an error

@@ -2,7 +2,6 @@ import { useState, useCallback } from "react";
 import { Box, Card, Flex, Text, IconButton, Tooltip } from "@radix-ui/themes";
 import { CopyIcon, CheckIcon } from "@radix-ui/react-icons";
 import type { ChannelMessage } from "../../types/messages";
-import type { KernelManager } from "../../kernel/KernelManager";
 import { ToolCallRecord } from "./ToolCallRecord";
 import { MDXToolResult, isRenderMDXResult } from "./MDXToolResult";
 import { CodeCellOutput } from "./CodeCellOutput";
@@ -43,20 +42,13 @@ function CopyButton({ text, size = "1" }: { text: string; size?: "1" | "2" }) {
 
 interface MessageBubbleProps {
   message: ChannelMessage;
-  kernel: KernelManager | null;
   showCopy?: boolean;
 }
 
 /**
  * Render message content based on type.
  */
-function MessageContent({
-  message,
-  kernel,
-}: {
-  message: ChannelMessage;
-  kernel: KernelManager | null;
-}) {
+function MessageContent({ message }: { message: ChannelMessage }) {
   const content = message.content;
 
   switch (content.type) {
@@ -96,13 +88,7 @@ function MessageContent({
       );
 
     case "code_result":
-      return (
-        <CodeCellOutput
-          result={content}
-          kernel={kernel}
-          defaultCollapsed={false}
-        />
-      );
+      return <CodeCellOutput result={content} defaultCollapsed={false} />;
 
     case "tool_call":
       // Use MDXToolResult for render_mdx tool calls
@@ -161,7 +147,7 @@ function MessageContent({
       );
 
     case "react_mount":
-      // React mount is handled as part of code_result
+      // React mount is no longer supported in stateless mode
       return null;
 
     default:
@@ -208,7 +194,7 @@ function getMessageBackground(type: string): string {
 /**
  * MessageBubble - Individual message display.
  */
-export function MessageBubble({ message, kernel }: MessageBubbleProps) {
+export function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.participantType === "user";
   const isSystem = message.participantType === "system";
 
@@ -217,7 +203,7 @@ export function MessageBubble({ message, kernel }: MessageBubbleProps) {
     return (
       <Box my="2" style={{ textAlign: "center" }}>
         <Text size="1" color="gray">
-          <MessageContent message={message} kernel={kernel} />
+          <MessageContent message={message} />
         </Text>
       </Box>
     );
@@ -230,7 +216,7 @@ export function MessageBubble({ message, kernel }: MessageBubbleProps) {
   ) {
     return (
       <Box my="1" ml={isUser ? "0" : "8"}>
-        <MessageContent message={message} kernel={kernel} />
+        <MessageContent message={message} />
       </Box>
     );
   }
@@ -263,7 +249,7 @@ export function MessageBubble({ message, kernel }: MessageBubbleProps) {
           background: getMessageBackground(message.participantType),
         }}
       >
-        <MessageContent message={message} kernel={kernel} />
+        <MessageContent message={message} />
       </Card>
     </Flex>
   );

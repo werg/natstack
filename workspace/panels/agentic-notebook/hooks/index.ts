@@ -9,13 +9,6 @@ export {
 } from "./useChannel";
 
 export {
-  useKernel,
-  useKernelReady,
-  useKernelExecutionCount,
-  useKernelExecuting,
-} from "./useKernel";
-
-export {
   useAgent,
   useIsStreaming,
   useModelRole,

@@ -22,6 +22,7 @@ export {
 export type {
   EvalOptions,
   EvalResult,
+  EvalContext,
   ConsoleEntry,
   ConsoleCapture,
   TypeCheckOptions,

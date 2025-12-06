@@ -2,6 +2,29 @@
  * Types for @natstack/build-eval
  */
 
+import type { PackageRegistry } from "@natstack/build";
+
+/**
+ * Context for dependency resolution during evaluation.
+ */
+export interface EvalContext {
+  /** Filesystem path to the project root (for package.json lookup) */
+  projectRoot: string;
+
+  /**
+   * Source root for resolving relative imports (e.g., "./utils", "../lib").
+   * If not provided, defaults to projectRoot.
+   * This allows eval code to import relative to a specific file location.
+   */
+  sourceRoot?: string;
+
+  /** Package registry (includes project + workspace deps) */
+  registry?: PackageRegistry;
+
+  /** Pre-parsed dependencies (alternative to registry) */
+  dependencies?: Record<string, string>;
+}
+
 export interface EvalOptions {
   /** Language of input code */
   language: "javascript" | "typescript";
@@ -14,6 +37,9 @@ export interface EvalOptions {
 
   /** AbortSignal for cancellation */
   signal?: AbortSignal;
+
+  /** Context for dependency resolution */
+  context?: EvalContext;
 }
 
 export interface EvalResult {
