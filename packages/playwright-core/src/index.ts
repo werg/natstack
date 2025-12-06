@@ -51,3 +51,11 @@ export { validateBrowserEnvironment } from './client/validateBrowserEnvironment'
 export { CDPAdapter } from './client/cdpAdapter';
 export { FrameAdapter } from './client/frameAdapter';
 export { InjectedScriptLoader } from './client/injectedScriptLoader';
+
+// CDP-direct implementations (Phase 4)
+export { BrowserImpl } from './client/browserImpl';
+export { BrowserContextImpl } from './client/browserContextImpl';
+export { PageImpl } from './client/pageImpl';
+export { FrameImpl } from './client/frameImpl';
+export type { BrowserConnectOptions } from './client/browserImpl';
+export type { GotoOptions, ScreenshotOptions } from './client/pageImpl';

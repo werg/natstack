@@ -41,10 +41,10 @@ const buildConfig = {
   packages: 'external', // Don't bundle npm packages
 
   // Custom path resolution for Playwright's internal structure and browser stubs for Node built-ins
+  // Note: 'fs' is not aliased - it's provided by the panel runtime injection
   alias: {
     '@protocol': path.join(__dirname, '../playwright-protocol/src'),
     '@isomorphic': path.join(__dirname, 'src/utils/isomorphic'),
-    fs: path.join(__dirname, 'src/browser-stubs/fs.ts'),
     path: path.join(__dirname, 'src/browser-stubs/path.ts'),
     os: path.join(__dirname, 'src/browser-stubs/os.ts'),
     crypto: path.join(__dirname, 'src/browser-stubs/crypto.ts'),

@@ -70,15 +70,16 @@ export class CDPAdapter {
   }
 
   /**
-   * Enable required CDP domains
+   * Enable required CDP domains for browser-level session
+   * Note: Input domain is page-level only, enabled per-page in PageImpl
    */
   async enableDomains(): Promise<void> {
-    await Promise.all([
+    // Enable required CDP domains. Some may fail on certain targets - that's ok.
+    await Promise.allSettled([
       this.session.send('Runtime.enable'),
       this.session.send('Page.enable'),
       this.session.send('DOM.enable'),
       this.session.send('CSS.enable'),
-      this.session.send('Input.enable'),
       this.session.send('Network.enable'),
     ] as any[]);
   }

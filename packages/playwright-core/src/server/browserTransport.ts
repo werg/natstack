@@ -11,10 +11,8 @@ export class BrowserWebSocketTransport implements ConnectionTransport {
   onclose?: (reason?: string) => void;
 
   static async connect(url: string, options: BrowserWebSocketTransportOptions = {}): Promise<BrowserWebSocketTransport> {
-    console.log('[CDP] Connecting WebSocket to:', url);
     const transport = new BrowserWebSocketTransport(url, options);
     await transport._waitForOpen();
-    console.log('[CDP] WebSocket connected successfully');
     return transport;
   }
 
@@ -26,16 +24,19 @@ export class BrowserWebSocketTransport implements ConnectionTransport {
     this._ws.addEventListener('message', event => {
       try {
         const payload = JSON.parse((event as MessageEvent).data as string);
-        // Debug: log all incoming messages
-        console.log('[CDP:recv]', payload.id !== undefined ? `id=${payload.id}` : payload.method, payload.sessionId ? `session=${payload.sessionId}` : '');
         this.onmessage?.(payload);
       } catch (e) {
         // Swallow malformed frames to avoid crashing the transport.
         console.warn('[BrowserWebSocketTransport] Failed to parse message', e);
       }
     });
-    this._ws.addEventListener('close', event => this.onclose?.(event.reason || undefined));
-    this._ws.addEventListener('error', event => this.onclose?.((event as ErrorEvent).message));
+    this._ws.addEventListener('close', event => {
+      this.onclose?.(event.reason || `WebSocket closed with code ${event.code}`);
+    });
+    this._ws.addEventListener('error', event => {
+      console.error('[CDP] WebSocket error:', (event as ErrorEvent).message);
+      this.onclose?.((event as ErrorEvent).message);
+    });
   }
 
   private _waitForOpen(): Promise<void> {
@@ -58,7 +59,6 @@ export class BrowserWebSocketTransport implements ConnectionTransport {
   }
 
   send(message: ProtocolRequest) {
-    console.log('[CDP:send]', `id=${message.id}`, message.method, message.sessionId ? `session=${message.sessionId}` : '');
     this._ws.send(JSON.stringify(message));
   }
 
