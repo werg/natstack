@@ -17,7 +17,9 @@
 
 import {
   BaseWindow,
+  Menu,
   WebContentsView,
+  type MenuItemConstructorOptions,
   type WebContents,
   type NativeImage,
   session,
@@ -118,6 +120,15 @@ export class ViewManager {
     if (options.devTools) {
       this.shellView.webContents.openDevTools();
     }
+
+    // Set up standard browser context menu for shell
+    this.shellView.webContents.on("context-menu", (_event, params) => {
+      const menuItems = this.buildContextMenuItems(params, this.shellView.webContents);
+      if (menuItems.length > 0) {
+        const menu = Menu.buildFromTemplate(menuItems);
+        menu.popup();
+      }
+    });
 
     // Update shell bounds when window resizes
     this.window.on("resize", () => this.updateShellBounds());
@@ -227,7 +238,74 @@ export class ViewManager {
       }
     });
 
+    // Set up standard browser context menu
+    view.webContents.on("context-menu", (_event, params) => {
+      const menuItems = this.buildContextMenuItems(params, view.webContents);
+      if (menuItems.length > 0) {
+        const menu = Menu.buildFromTemplate(menuItems);
+        menu.popup();
+      }
+    });
+
     return view;
+  }
+
+  /**
+   * Build standard browser context menu items based on the context.
+   */
+  private buildContextMenuItems(
+    params: Electron.ContextMenuParams,
+    contents: WebContents
+  ): MenuItemConstructorOptions[] {
+    const items: MenuItemConstructorOptions[] = [];
+
+    // Undo/Redo for editable fields
+    if (params.isEditable) {
+      if (params.editFlags.canUndo) {
+        items.push({ label: "Undo", role: "undo" });
+      }
+      if (params.editFlags.canRedo) {
+        items.push({ label: "Redo", role: "redo" });
+      }
+      if (items.length > 0) {
+        items.push({ type: "separator" });
+      }
+    }
+
+    // Cut/Copy/Paste
+    if (params.isEditable && params.editFlags.canCut) {
+      items.push({ label: "Cut", role: "cut" });
+    }
+    if (params.selectionText && params.editFlags.canCopy) {
+      items.push({ label: "Copy", role: "copy" });
+    }
+    if (params.isEditable && params.editFlags.canPaste) {
+      items.push({ label: "Paste", role: "paste" });
+    }
+    if (params.isEditable && params.editFlags.canDelete) {
+      items.push({ label: "Delete", role: "delete" });
+    }
+
+    // Select All
+    if (params.editFlags.canSelectAll) {
+      if (items.length > 0) {
+        items.push({ type: "separator" });
+      }
+      items.push({ label: "Select All", role: "selectAll" });
+    }
+
+    // Inspect Element (always available)
+    if (items.length > 0) {
+      items.push({ type: "separator" });
+    }
+    items.push({
+      label: "Inspect",
+      click: () => {
+        contents.inspectElement(params.x, params.y);
+      },
+    });
+
+    return items;
   }
 
   /**

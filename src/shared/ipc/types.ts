@@ -121,6 +121,10 @@ export interface PanelIpcApi {
   "panel:notify-focus": (panelId: string) => void;
   "panel:update-theme": (theme: ThemeAppearance) => void;
   "panel:open-devtools": (panelId: string) => void;
+  /** Reload a panel's webview */
+  "panel:reload": (panelId: string) => void;
+  /** Close a panel and its children */
+  "panel:close": (panelId: string) => void;
   /**
    * Register a browser panel's webview with the CDP server.
    * Called by renderer when a browser webview's dom-ready fires.
@@ -583,6 +587,29 @@ export interface AppModeIpcApi {
   "app:get-mode": () => AppMode;
 }
 
+// Menu IPC channels (native menus that render above WebContentsViews)
+export interface MenuIpcApi {
+  /** Show the hamburger menu at the given position */
+  "menu:show-hamburger": (position: { x: number; y: number }) => void;
+  /** Show a context menu with dynamic items, returns selected item ID or null */
+  "menu:show-context": (
+    items: Array<{ id: string; label: string }>,
+    position: { x: number; y: number }
+  ) => string | null;
+  /**
+   * Show a panel context menu (tab-like) with standard actions.
+   * Returns the action that was selected, or null if dismissed.
+   */
+  "menu:show-panel-context": (
+    panelId: string,
+    panelType: PanelType,
+    position: { x: number; y: number }
+  ) => PanelContextMenuAction | null;
+}
+
+/** Actions available in panel context menus */
+export type PanelContextMenuAction = "reload" | "close" | "close-siblings" | "close-subtree";
+
 // Combined API for type utilities
 export type AllIpcApi = AppIpcApi &
   PanelIpcApi &
@@ -592,7 +619,8 @@ export type AllIpcApi = AppIpcApi &
   CentralDataIpcApi &
   WorkspaceIpcApi &
   SettingsIpcApi &
-  AppModeIpcApi;
+  AppModeIpcApi &
+  MenuIpcApi;
 
 // =============================================================================
 // Type utilities for extracting channel info

@@ -1050,6 +1050,19 @@ export class PanelManager {
   }
 
   verifyAndRegister(panelId: string, token: string, senderId: number): void {
+    // Check if this is a reload - same webContentsId already registered for this panel.
+    // This is safe because:
+    // 1. The senderId (webContentsId) is assigned by Electron and cannot be spoofed
+    // 2. We only skip token validation if BOTH the senderId AND panelId match existing registration
+    // 3. A malicious panel with a different senderId cannot re-register as another panel
+    const existingPanelId = this.guestInstanceMap.get(senderId);
+    if (existingPanelId === panelId) {
+      // Re-registration after reload - panel is re-initializing with same webContents.
+      // Re-send theme to ensure panel has current theme after reload.
+      this.sendPanelEvent(panelId, { type: "theme", theme: this.currentTheme });
+      return;
+    }
+
     const pending = this.pendingAuthTokens.get(panelId);
     if (!pending || pending.token !== token) {
       throw new Error(`Invalid auth token for panel ${panelId}`);

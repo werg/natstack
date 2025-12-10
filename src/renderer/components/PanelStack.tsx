@@ -15,7 +15,7 @@ import {
 } from "@radix-ui/themes";
 
 import type { StatusNavigationData, TitleNavigationData } from "./navigationTypes";
-import type { WorkerConsoleLogEntry } from "../../shared/ipc/types";
+import type { WorkerConsoleLogEntry, PanelContextMenuAction } from "../../shared/ipc/types";
 import { useNavigation } from "./NavigationContext";
 
 interface PanelStackProps {
@@ -23,6 +23,7 @@ interface PanelStackProps {
   hostTheme: "light" | "dark";
   onRegisterDevToolsHandler?: (handler: () => void) => void;
   onRegisterNavigate?: (navigate: (path: string[]) => void) => void;
+  onRegisterPanelAction?: (handler: (panelId: string, action: PanelContextMenuAction) => void) => void;
 }
 
 function captureHostThemeCss(): string {
@@ -57,9 +58,10 @@ interface PanelTreeSidebarProps {
   rootPanels: Panel[];
   visiblePath: string[];
   onSelect: (path: string[]) => void;
+  onPanelAction?: (panelId: string, action: PanelContextMenuAction) => void;
 }
 
-function PanelTreeSidebar({ rootPanels, visiblePath, onSelect }: PanelTreeSidebarProps) {
+function PanelTreeSidebar({ rootPanels, visiblePath, onSelect, onPanelAction }: PanelTreeSidebarProps) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [hoveredId, setHoveredId] = useState<string | null>(null);
 
@@ -81,6 +83,20 @@ function PanelTreeSidebar({ rootPanels, visiblePath, onSelect }: PanelTreeSideba
       }
       return next;
     });
+  };
+
+  const handleContextMenu = async (e: React.MouseEvent, panel: Panel) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const { screenX, screenY } = e;
+    const action = await window.electronAPI.showPanelContextMenu(
+      panel.id,
+      panel.type,
+      { x: Math.round(screenX), y: Math.round(screenY) }
+    );
+    if (action) {
+      onPanelAction?.(panel.id, action);
+    }
   };
 
   const renderNodes = (panels: Panel[], ancestry: string[]): ReactNode =>
@@ -118,6 +134,7 @@ function PanelTreeSidebar({ rootPanels, visiblePath, onSelect }: PanelTreeSideba
               }}
               data-active={isActive ? "true" : "false"}
               onClick={() => onSelect(path)}
+              onContextMenu={(e) => handleContextMenu(e, panel)}
               onMouseEnter={() => setHoveredId(panel.id)}
               onMouseLeave={() =>
                 setHoveredId((current) => (current === panel.id ? null : current))
@@ -186,6 +203,7 @@ export function PanelStack({
   hostTheme,
   onRegisterDevToolsHandler,
   onRegisterNavigate,
+  onRegisterPanelAction,
 }: PanelStackProps) {
   // Debug: log component render
 
@@ -415,6 +433,66 @@ export function PanelStack({
     onRegisterNavigate(navigateToPanel);
   }, [onRegisterNavigate, navigateToPanel]);
 
+  // Helper to find siblings of a panel (panels with the same parent)
+  const findSiblings = useCallback(
+    (panelId: string): Panel[] => {
+      // Check if panel is a root panel
+      const isRoot = rootPanels.some((p) => p.id === panelId);
+      if (isRoot) {
+        return rootPanels;
+      }
+
+      // Find parent by traversing tree
+      const findParent = (panels: Panel[]): Panel | null => {
+        for (const panel of panels) {
+          if (panel.children.some((c: Panel) => c.id === panelId)) {
+            return panel;
+          }
+          const found = findParent(panel.children);
+          if (found) return found;
+        }
+        return null;
+      };
+
+      const parent = findParent(rootPanels);
+      return parent?.children ?? [];
+    },
+    [rootPanels]
+  );
+
+  // Handle panel context menu actions (reload, close, etc.)
+  const handlePanelAction = useCallback(
+    async (panelId: string, action: PanelContextMenuAction) => {
+      switch (action) {
+        case "reload":
+          await window.electronAPI.reloadPanel(panelId);
+          break;
+        case "close":
+          await window.electronAPI.closePanel(panelId);
+          break;
+        case "close-siblings": {
+          // Close all siblings except this one in parallel for better UX
+          const siblings = findSiblings(panelId);
+          const closePromises = siblings
+            .filter((sibling) => sibling.id !== panelId)
+            .map((sibling) => window.electronAPI.closePanel(sibling.id));
+          await Promise.all(closePromises);
+          break;
+        }
+        case "close-subtree":
+          // Close the panel and all its descendants (closePanel handles recursion)
+          await window.electronAPI.closePanel(panelId);
+          break;
+      }
+    },
+    [findSiblings]
+  );
+
+  // Register panel action handler with parent
+  useEffect(() => {
+    onRegisterPanelAction?.(handlePanelAction);
+  }, [onRegisterPanelAction, handlePanelAction]);
+
   const startSidebarResize = (event: React.PointerEvent) => {
     event.preventDefault();
     resizePointerIdRef.current = event.pointerId;
@@ -550,7 +628,8 @@ export function PanelStack({
   }, [visiblePanel?.id]);
 
   useEffect(() => {
-    onRegisterDevToolsHandler?.(() => openDevToolsForVisiblePanel);
+    // Provide the actual handler so callers don't need to double-invoke
+    onRegisterDevToolsHandler?.(openDevToolsForVisiblePanel);
   }, [onRegisterDevToolsHandler, openDevToolsForVisiblePanel]);
 
   // Notify parent of title changes
@@ -613,6 +692,7 @@ export function PanelStack({
                 rootPanels={rootPanels}
                 visiblePath={visiblePanelPath}
                 onSelect={navigateToPanel}
+                onPanelAction={handlePanelAction}
               />
             </Flex>
           </Card>

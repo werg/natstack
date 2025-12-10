@@ -20,6 +20,8 @@ export const electronAPI = {
     ipcRenderer.invoke("panel:update-theme", theme),
   openPanelDevTools: (panelId: string): Promise<void> =>
     ipcRenderer.invoke("panel:open-devtools", panelId),
+  reloadPanel: (panelId: string): Promise<void> => ipcRenderer.invoke("panel:reload", panelId),
+  closePanel: (panelId: string): Promise<void> => ipcRenderer.invoke("panel:close", panelId),
   updateBrowserState: (
     browserId: string,
     state: { url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean }
@@ -127,6 +129,39 @@ export const electronAPI = {
     ipcRenderer.on("open-workspace-chooser", listener);
     return () => {
       ipcRenderer.removeListener("open-workspace-chooser", listener);
+    };
+  },
+
+  // =============================================================================
+  // Native Menu Methods (for menus that render above WebContentsViews)
+  // =============================================================================
+
+  /** Show the hamburger menu at the given screen position */
+  showHamburgerMenu: (position: { x: number; y: number }): Promise<void> =>
+    ipcRenderer.invoke("menu:show-hamburger", position),
+
+  /** Show a context menu with dynamic items, returns selected item ID or null if dismissed */
+  showContextMenu: (
+    items: Array<{ id: string; label: string }>,
+    position: { x: number; y: number }
+  ): Promise<string | null> => ipcRenderer.invoke("menu:show-context", items, position),
+
+  /** Show a panel context menu with tab-like actions (reload, close, etc.) */
+  showPanelContextMenu: (
+    panelId: string,
+    panelType: Panel.PanelType,
+    position: { x: number; y: number }
+  ): Promise<Panel.PanelContextMenuAction | null> =>
+    ipcRenderer.invoke("menu:show-panel-context", panelId, panelType, position),
+
+  /** Listen for menu action to toggle panel devtools */
+  onTogglePanelDevTools: (callback: () => void): (() => void) => {
+    const listener = () => {
+      callback();
+    };
+    ipcRenderer.on("menu:toggle-panel-devtools", listener);
+    return () => {
+      ipcRenderer.removeListener("menu:toggle-panel-devtools", listener);
     };
   },
 };

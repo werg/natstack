@@ -1,4 +1,5 @@
-import { app, BaseWindow, nativeTheme } from "electron";
+import { app, BaseWindow, Menu, nativeTheme, type MenuItemConstructorOptions } from "electron";
+import { buildHamburgerMenuTemplate } from "./menu.js";
 import * as path from "path";
 import * as fs from "fs";
 
@@ -11,6 +12,7 @@ import { resolveInitialRootPanelPath, parseCliRootPanelPath } from "./rootPanelR
 import { GitServer } from "./gitServer.js";
 import { handle } from "./ipc/handlers.js";
 import type * as SharedPanel from "../shared/ipc/types.js";
+import type { PanelContextMenuAction } from "../shared/ipc/types.js";
 import { setupMenu } from "./menu.js";
 import { setActiveWorkspace } from "./paths.js";
 import { getWorkerManager } from "./workerManager.js";
@@ -196,6 +198,92 @@ handle("app:clear-build-cache", async () => {
 });
 
 // =============================================================================
+// Native Menu IPC Handlers (for menus that need to render above WebContentsViews)
+// =============================================================================
+
+handle("menu:show-hamburger", async (_event, position: { x: number; y: number }) => {
+  const vm = getViewManager();
+  const shellContents = vm.getShellWebContents();
+
+  const clearBuildCache = async () => {
+    const cacheManager = getMainCacheManager();
+    await cacheManager.clear();
+    console.log("[App] Build cache cleared via menu");
+  };
+
+  const template = buildHamburgerMenuTemplate(shellContents, clearBuildCache);
+  const menu = Menu.buildFromTemplate(template);
+  menu.popup({ x: position.x, y: position.y });
+});
+
+handle(
+  "menu:show-context",
+  async (
+    _event,
+    items: Array<{ id: string; label: string }>,
+    position: { x: number; y: number }
+  ): Promise<string | null> => {
+    return new Promise((resolve) => {
+      const template: MenuItemConstructorOptions[] = items.map((item) => ({
+        label: item.label,
+        click: () => resolve(item.id),
+      }));
+
+      const menu = Menu.buildFromTemplate(template);
+      menu.popup({
+        x: position.x,
+        y: position.y,
+        callback: () => resolve(null), // User dismissed menu without selecting
+      });
+    });
+  }
+);
+
+handle(
+  "menu:show-panel-context",
+  async (
+    _event,
+    _panelId: string,
+    panelType: string,
+    position: { x: number; y: number }
+  ): Promise<PanelContextMenuAction | null> => {
+    return new Promise((resolve) => {
+      const template: MenuItemConstructorOptions[] = [];
+
+      // Reload - only for app and browser panels (workers don't have a view to reload)
+      if (panelType === "app" || panelType === "browser") {
+        template.push({
+          label: "Reload",
+          click: () => resolve("reload"),
+        });
+        template.push({ type: "separator" });
+      }
+
+      // Close actions - available for all panel types
+      template.push({
+        label: "Close",
+        click: () => resolve("close"),
+      });
+      template.push({
+        label: "Close Siblings",
+        click: () => resolve("close-siblings"),
+      });
+      template.push({
+        label: "Close Subtree",
+        click: () => resolve("close-subtree"),
+      });
+
+      const menu = Menu.buildFromTemplate(template);
+      menu.popup({
+        x: position.x,
+        y: position.y,
+        callback: () => resolve(null),
+      });
+    });
+  }
+);
+
+// =============================================================================
 // Panel IPC Handlers (renderer <-> main) - Only in main mode
 // =============================================================================
 
@@ -237,6 +325,20 @@ handle("panel:open-devtools", async (_event, panelId: string) => {
     throw new Error(`No view found for panel ${panelId}`);
   }
   vm.openDevTools(panelId);
+});
+
+handle("panel:reload", async (_event, panelId: string) => {
+  requirePanelManager();
+  const vm = getViewManager();
+  if (!vm.hasView(panelId)) {
+    throw new Error(`No view found for panel ${panelId}`);
+  }
+  vm.reload(panelId);
+});
+
+handle("panel:close", async (_event, panelId: string) => {
+  const pm = requirePanelManager();
+  await pm.closePanel(panelId);
 });
 
 // =============================================================================

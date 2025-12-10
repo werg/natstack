@@ -4,30 +4,22 @@ import {
   BoxIcon,
   ViewVerticalIcon,
   ChevronRightIcon,
+  DividerVerticalIcon,
 } from "@radix-ui/react-icons";
-import { Box, Button, Card, DropdownMenu, Flex, IconButton, Text, Tooltip } from "@radix-ui/themes";
-import type { CSSProperties } from "react";
+import { Box, Flex, IconButton, Text, Tooltip } from "@radix-ui/themes";
+import type { CSSProperties, MouseEvent } from "react";
 
 import { useNavigation } from "./NavigationContext";
 import type { NavigationMode, StatusNavigationData, TitleNavigationData } from "./navigationTypes";
+import type { PanelContextMenuAction } from "../../shared/ipc/types";
 
 interface TitleBarProps {
   title: string;
   onNavigate?: (path: string[]) => void;
-  onOpenPanelDevTools?: () => void;
-  onOpenAppDevTools?: () => void;
-  onOpenSettings?: () => void;
-  onOpenWorkspaceChooser?: () => void;
+  onPanelAction?: (panelId: string, action: PanelContextMenuAction) => void;
 }
 
-export function TitleBar({
-  title,
-  onNavigate,
-  onOpenPanelDevTools,
-  onOpenAppDevTools,
-  onOpenSettings,
-  onOpenWorkspaceChooser,
-}: TitleBarProps) {
+export function TitleBar({ title, onNavigate, onPanelAction }: TitleBarProps) {
   const {
     mode: navigationMode,
     setMode,
@@ -35,22 +27,14 @@ export function TitleBar({
     statusNavigation,
   } = useNavigation();
 
-  const handleExit = () => {
-    window.close();
-  };
-
   const handleNavigationToggle = () => {
     const nextMode: NavigationMode = navigationMode === "stack" ? "tree" : "stack";
     setMode(nextMode);
   };
 
-  const handleClearBuildCache = async () => {
-    try {
-      await window.electronAPI.clearBuildCache();
-      console.log("[App] Build cache cleared");
-    } catch (error) {
-      console.error("[App] Failed to clear build cache:", error);
-    }
+  const handleHamburgerClick = (e: MouseEvent<HTMLButtonElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    void window.electronAPI.showHamburgerMenu(getScreenPositionFromRect(rect));
   };
 
   return (
@@ -73,45 +57,9 @@ export function TitleBar({
           gap="2"
           style={{ appRegion: "no-drag", WebkitAppRegion: "no-drag" } as CSSProperties}
         >
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger>
-              <IconButton variant="ghost" size="1">
-                <HamburgerMenuIcon />
-              </IconButton>
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Content>
-              <DropdownMenu.Item shortcut="⌘⇧O" onSelect={() => onOpenWorkspaceChooser?.()}>
-                Switch Workspace...
-              </DropdownMenu.Item>
-              <DropdownMenu.Item shortcut="⌘," onSelect={() => onOpenSettings?.()}>
-                Settings...
-              </DropdownMenu.Item>
-              <DropdownMenu.Separator />
-              <DropdownMenu.Item shortcut="Ctrl+Z">Undo</DropdownMenu.Item>
-              <DropdownMenu.Item shortcut="Ctrl+Y">Redo</DropdownMenu.Item>
-              <DropdownMenu.Separator />
-              <DropdownMenu.Item shortcut="Ctrl+X">Cut</DropdownMenu.Item>
-              <DropdownMenu.Item shortcut="Ctrl+C">Copy</DropdownMenu.Item>
-              <DropdownMenu.Item shortcut="Ctrl+V">Paste</DropdownMenu.Item>
-              <DropdownMenu.Separator />
-              <DropdownMenu.Item shortcut="Ctrl+R">Reload</DropdownMenu.Item>
-              <DropdownMenu.Item shortcut="Ctrl+Shift+R">Force Reload</DropdownMenu.Item>
-              <DropdownMenu.Item shortcut="Ctrl+Shift+I" onSelect={() => onOpenPanelDevTools?.()}>
-                Toggle Panel DevTools
-              </DropdownMenu.Item>
-              <DropdownMenu.Item shortcut="Ctrl+Alt+I" onSelect={() => onOpenAppDevTools?.()}>
-                Toggle App DevTools
-              </DropdownMenu.Item>
-              <DropdownMenu.Separator />
-              <DropdownMenu.Item onSelect={handleClearBuildCache}>
-                Clear Build Cache
-              </DropdownMenu.Item>
-              <DropdownMenu.Separator />
-              <DropdownMenu.Item shortcut="Ctrl+Q" onSelect={handleExit}>
-                Exit
-              </DropdownMenu.Item>
-            </DropdownMenu.Content>
-          </DropdownMenu.Root>
+          <IconButton variant="ghost" size="1" onClick={handleHamburgerClick}>
+            <HamburgerMenuIcon />
+          </IconButton>
 
           <Tooltip content={navigationMode === "tree" ? "Breadcrumb mode" : "Tree mode"}>
             <IconButton
@@ -146,6 +94,7 @@ export function TitleBar({
             navigationData={navigationData}
             statusNavigation={statusNavigation}
             onNavigate={onNavigate}
+            onPanelAction={onPanelAction}
           />
         </Box>
 
@@ -161,16 +110,49 @@ interface BreadcrumbBarProps {
   navigationData?: TitleNavigationData | null;
   statusNavigation?: StatusNavigationData | null;
   onNavigate?: (path: string[]) => void;
+  onPanelAction?: (panelId: string, action: PanelContextMenuAction) => void;
 }
 
 const MAX_VISIBLE_ANCESTORS = 2;
 const MAX_VISIBLE_DESC_GROUPS = 2;
+
+/**
+ * Convert element bounding rect to screen coordinates for native menu positioning.
+ * Uses window.screenX/Y for proper multi-monitor support.
+ * Note: For context menus (right-click), use event.screenX/screenY directly instead.
+ */
+function getScreenPositionFromRect(rect: DOMRect): { x: number; y: number } {
+  return {
+    x: Math.round(window.screenX + rect.left + window.scrollX),
+    y: Math.round(window.screenY + rect.bottom + window.scrollY),
+  };
+}
+
+// Shared styles for breadcrumb items
+const itemStyle: CSSProperties = {
+  padding: "2px 6px",
+  borderRadius: "3px",
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+  transition: "background-color 100ms",
+};
+
+// Style for sibling group container
+const groupStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "1px",
+  padding: "1px",
+  borderRadius: "4px",
+  border: "1px solid var(--gray-6)",
+};
 
 function BreadcrumbBar({
   title,
   navigationData,
   statusNavigation,
   onNavigate,
+  onPanelAction,
 }: BreadcrumbBarProps) {
   const ancestors = navigationData?.ancestors ?? [];
   const descendantGroups = statusNavigation?.descendantGroups ?? [];
@@ -181,154 +163,183 @@ function BreadcrumbBar({
   const visibleDescendants = descendantGroups.slice(0, MAX_VISIBLE_DESC_GROUPS);
   const hiddenDescendants = descendantGroups.slice(visibleDescendants.length);
 
+  const handlePanelContextMenu = async (
+    e: MouseEvent<HTMLSpanElement>,
+    panel: Panel
+  ) => {
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const action = await window.electronAPI.showPanelContextMenu(panel.id, panel.type, getScreenPositionFromRect(rect));
+    if (action) {
+      onPanelAction?.(panel.id, action);
+    }
+  };
+
+  const renderBreadcrumbItem = (
+    panel: Panel,
+    pathToParent: string[],
+    isActive: boolean,
+    isCurrent: boolean
+  ) => (
+    <Text
+      key={panel.id}
+      as="span"
+      size="2"
+      color={isActive ? undefined : "gray"}
+      style={{
+        ...itemStyle,
+        backgroundColor: isCurrent && isActive ? "var(--gray-a4)" : undefined,
+      }}
+      onClick={() => onNavigate?.([...pathToParent, panel.id])}
+      onContextMenu={(e: MouseEvent<HTMLSpanElement>) => handlePanelContextMenu(e, panel)}
+      onMouseEnter={(e: MouseEvent<HTMLSpanElement>) => {
+        if (!isCurrent || !isActive) {
+          e.currentTarget.style.backgroundColor = "var(--gray-a3)";
+        }
+      }}
+      onMouseLeave={(e: MouseEvent<HTMLSpanElement>) => {
+        e.currentTarget.style.backgroundColor = isCurrent && isActive ? "var(--gray-a4)" : "";
+      }}
+    >
+      {panel.title}
+    </Text>
+  );
+
   const renderSiblingGroup = (
     siblings: Panel[],
     pathToParent: string[],
-    activeId: string | null
+    activeId: string | null,
+    isCurrent: boolean
   ) => {
     if (siblings.length === 0) return null;
-    const showActive = activeId || siblings[0]?.id || "";
-
-    if (siblings.length === 1) {
-      const single = siblings[0];
-      if (!single) return null;
-      return (
-        <Button
-          key={single.id}
-          variant="ghost"
-          size="1"
-          color={single.id === showActive ? undefined : "gray"}
-          onClick={() => onNavigate?.([...pathToParent, single.id])}
-        >
-          {single.title}
-        </Button>
-      );
-    }
+    const effectiveActiveId = activeId || siblings[0]?.id || "";
 
     return (
-      <Flex align="center" gap="1">
-        {siblings.map((sibling) => (
-          <Button
-            key={sibling.id}
-            variant="ghost"
-            size="1"
-            color={sibling.id === showActive ? undefined : "gray"}
-            onClick={() => onNavigate?.([...pathToParent, sibling.id])}
-          >
-            {sibling.title}
-          </Button>
+      <span style={groupStyle}>
+        {siblings.map((sibling, index) => (
+          <span key={sibling.id} style={{ display: "inline-flex", alignItems: "center" }}>
+            {index > 0 && (
+              <DividerVerticalIcon
+                style={{ color: "var(--gray-7)", width: 12, height: 12, flexShrink: 0 }}
+              />
+            )}
+            {renderBreadcrumbItem(
+              sibling,
+              pathToParent,
+              sibling.id === effectiveActiveId,
+              isCurrent
+            )}
+          </span>
         ))}
-      </Flex>
+      </span>
     );
   };
 
+  const handleHiddenAncestorsClick = async (e: MouseEvent<HTMLButtonElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const items = hiddenAncestors.map((crumb, index) => ({
+      id: String(index),
+      label:
+        crumb.siblings.find((sibling) => sibling.id === crumb.path[crumb.path.length - 1])
+          ?.title ??
+        crumb.siblings[0]?.title ??
+        crumb.path.join(" / "),
+    }));
+    const selected = await window.electronAPI.showContextMenu(items, getScreenPositionFromRect(rect));
+    if (selected !== null) {
+      const crumb = hiddenAncestors.find((_, index) => String(index) === selected);
+      if (crumb) {
+        onNavigate?.(crumb.path);
+      }
+    }
+  };
+
+  const handleHiddenDescendantsClick = async (e: MouseEvent<HTMLButtonElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const items = hiddenDescendants.map((group, index) => ({
+      id: String(index),
+      label:
+        group.children.find((c) => c.id === group.selectedChildId)?.title ??
+        group.children[0]?.title ??
+        "Child",
+    }));
+    const selected = await window.electronAPI.showContextMenu(items, getScreenPositionFromRect(rect));
+    if (selected !== null) {
+      const group = hiddenDescendants.find((_, index) => String(index) === selected);
+      if (group) {
+        const targetId = group.selectedChildId || group.children[0]?.id || "";
+        onNavigate?.([...group.pathToParent, targetId]);
+      }
+    }
+  };
+
   return (
-    <Flex align="center" gap="2" style={{ minWidth: 0, overflow: "hidden" }}>
+    <Flex align="center" gap="1" style={{ minWidth: 0, overflow: "hidden" }}>
       {/* Ancestors */}
-      <Flex align="center" gap="1" style={{ minWidth: 0, overflow: "hidden" }}>
-        {hiddenAncestors.length > 0 && (
-          <>
-            <DropdownMenu.Root>
-              <DropdownMenu.Trigger>
-                <IconButton size="1" variant="ghost" aria-label="More ancestors">
-                  <DotsHorizontalIcon />
-                </IconButton>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Content>
-                {hiddenAncestors.map((crumb) => (
-                  <DropdownMenu.Item
-                    key={crumb.path.join("-")}
-                    onSelect={() => onNavigate?.(crumb.path)}
-                  >
-                    {crumb.siblings.find(
-                      (sibling) => sibling.id === crumb.path[crumb.path.length - 1]
-                    )?.title ??
-                      crumb.siblings[0]?.title ??
-                      crumb.path.join(" / ")}
-                  </DropdownMenu.Item>
-                ))}
-              </DropdownMenu.Content>
-            </DropdownMenu.Root>
-            <ChevronRightIcon />
-          </>
-        )}
-        {visibleAncestors.map((crumb) => (
-          <Flex key={crumb.path.join("-")} align="center" gap="1" style={{ minWidth: 0 }}>
-            {renderSiblingGroup(
-              crumb.siblings,
-              crumb.path.slice(0, -1),
-              crumb.path[crumb.path.length - 1] || null
-            )}
-            <ChevronRightIcon />
-          </Flex>
-        ))}
-      </Flex>
+      {hiddenAncestors.length > 0 && (
+        <>
+          <IconButton
+            size="1"
+            variant="ghost"
+            aria-label="More ancestors"
+            onClick={handleHiddenAncestorsClick}
+          >
+            <DotsHorizontalIcon />
+          </IconButton>
+          <ChevronRightIcon color="var(--gray-8)" />
+        </>
+      )}
+      {visibleAncestors.map((crumb) => (
+        <Flex key={crumb.path.join("-")} align="center" gap="1">
+          {renderSiblingGroup(
+            crumb.siblings,
+            crumb.path.slice(0, -1),
+            crumb.path[crumb.path.length - 1] || null,
+            false
+          )}
+          <ChevronRightIcon color="var(--gray-8)" />
+        </Flex>
+      ))}
 
       {/* Current (with siblings) */}
-      <Card variant="surface" size="1" style={{ display: "inline-flex" }}>
-        {navigationData?.current ? (
-          (renderSiblingGroup(
-            navigationData.current.siblings,
-            navigationData.current.parentPath,
-            navigationData.current.activeId
-          ) ?? (
-            <Text
-              size="2"
-              weight="medium"
-              style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
-            >
-              {navigationData.currentTitle ?? title}
-            </Text>
-          ))
-        ) : (
+      {navigationData?.current ? (
+        renderSiblingGroup(
+          navigationData.current.siblings,
+          navigationData.current.parentPath,
+          navigationData.current.activeId,
+          true
+        )
+      ) : (
+        <span style={groupStyle}>
           <Text
             size="2"
-            weight="medium"
-            style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+            style={{ ...itemStyle, backgroundColor: "var(--gray-a4)" }}
           >
             {navigationData?.currentTitle ?? title}
           </Text>
-        )}
-      </Card>
+        </span>
+      )}
 
       {/* Descendants */}
-      <Flex align="center" gap="1" style={{ minWidth: 0, overflow: "hidden" }}>
-        {visibleDescendants.map((group) => (
-          <Flex key={group.parentId} align="center" gap="1">
-            <ChevronRightIcon />
-            {renderSiblingGroup(group.children, group.pathToParent, group.selectedChildId)}
-          </Flex>
-        ))}
-        {hiddenDescendants.length > 0 && (
-          <>
-            <ChevronRightIcon />
-            <DropdownMenu.Root>
-              <DropdownMenu.Trigger>
-                <IconButton size="1" variant="ghost" aria-label="More descendants">
-                  <DotsHorizontalIcon />
-                </IconButton>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Content>
-                {hiddenDescendants.map((group) => (
-                  <DropdownMenu.Item
-                    key={group.parentId}
-                    onSelect={() =>
-                      onNavigate?.([
-                        ...group.pathToParent,
-                        group.selectedChildId || group.children[0]?.id || "",
-                      ])
-                    }
-                  >
-                    {group.children.find((c) => c.id === group.selectedChildId)?.title ??
-                      group.children[0]?.title ??
-                      "Child"}
-                  </DropdownMenu.Item>
-                ))}
-              </DropdownMenu.Content>
-            </DropdownMenu.Root>
-          </>
-        )}
-      </Flex>
+      {visibleDescendants.map((group) => (
+        <Flex key={group.parentId} align="center" gap="1">
+          <ChevronRightIcon color="var(--gray-8)" />
+          {renderSiblingGroup(group.children, group.pathToParent, group.selectedChildId, false)}
+        </Flex>
+      ))}
+      {hiddenDescendants.length > 0 && (
+        <>
+          <ChevronRightIcon color="var(--gray-8)" />
+          <IconButton
+            size="1"
+            variant="ghost"
+            aria-label="More descendants"
+            onClick={handleHiddenDescendantsClick}
+          >
+            <DotsHorizontalIcon />
+          </IconButton>
+        </>
+      )}
     </Flex>
   );
 }
