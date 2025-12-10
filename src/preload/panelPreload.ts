@@ -281,9 +281,21 @@ ipcRenderer.on(
     } else {
       try {
         const toolResult = await callback(args);
-        result = {
-          content: [{ type: "text", text: typeof toolResult === "string" ? toolResult : JSON.stringify(toolResult) }],
-        };
+        // Check if toolResult is already a proper ToolExecutionResult
+        if (
+          toolResult &&
+          typeof toolResult === "object" &&
+          "content" in toolResult &&
+          Array.isArray((toolResult as ToolExecutionResult).content)
+        ) {
+          // Pass through the full result including any data field
+          result = toolResult as ToolExecutionResult;
+        } else {
+          // Wrap primitive/unknown results
+          result = {
+            content: [{ type: "text", text: typeof toolResult === "string" ? toolResult : JSON.stringify(toolResult) }],
+          };
+        }
       } catch (err) {
         result = {
           content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }],

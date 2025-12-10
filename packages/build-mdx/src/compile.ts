@@ -6,9 +6,13 @@
  */
 
 import { compile } from "@mdx-js/mdx";
-import * as runtime from "react/jsx-runtime";
 import { createElement } from "react";
-import { getEsbuild, BuildError, createOPFSPlugin } from "@natstack/build";
+import {
+  getEsbuild,
+  BuildError,
+  createFsPlugin,
+  executeEsm,
+} from "@natstack/build";
 import type { MDXOptions, MDXResult, AnyComponent } from "./types.js";
 
 /** Error thrown when MDX compilation is aborted */
@@ -21,7 +25,10 @@ export class MDXAbortError extends Error {
 
 /** Error thrown when MDX compilation fails */
 export class MDXCompileError extends Error {
-  constructor(message: string, public readonly cause?: Error) {
+  constructor(
+    message: string,
+    public readonly cause?: Error
+  ) {
     super(message);
     this.name = "MDXCompileError";
   }
@@ -40,7 +47,7 @@ export async function compileMDX(
   content: string,
   options: MDXOptions = {}
 ): Promise<MDXResult> {
-  const { components = {}, scope = {}, signal } = options;
+  const { components = {}, scope = {}, signal, importModule } = options;
 
   // Check if already aborted
   if (signal?.aborted) {
@@ -48,10 +55,11 @@ export async function compileMDX(
   }
 
   // Step 1: Compile MDX to JavaScript
+  // Use "program" output format (ESM) so we can bundle it with esbuild
   let compiled: Awaited<ReturnType<typeof compile>>;
   try {
     compiled = await compile(content, {
-      outputFormat: "function-body",
+      outputFormat: "program",
       development: false,
       // Use the JSX runtime
       jsxImportSource: "react",
@@ -78,8 +86,8 @@ export async function compileMDX(
     throw new MDXAbortError();
   }
 
-  // Create OPFS plugin for import resolution
-  const opfsPlugin = await createOPFSPlugin();
+  // Create filesystem plugin for import resolution
+  const fsPlugin = createFsPlugin();
 
   // Check abort after creating plugin
   if (signal?.aborted) {
@@ -102,12 +110,14 @@ export async function compileMDX(
       target: "es2022",
       // External react since we provide it via runtime
       external: ["react", "react/jsx-runtime", "react/jsx-dev-runtime"],
-      plugins: [opfsPlugin],
+      plugins: [fsPlugin],
     });
 
     if (bundleResult.errors.length > 0) {
       const errorMsg = bundleResult.errors
-        .map((e) => `${e.location?.file || "mdx"}:${e.location?.line || 0}: ${e.text}`)
+        .map(
+          (e) => `${e.location?.file || "mdx"}:${e.location?.line || 0}: ${e.text}`
+        )
         .join("\n");
       throw new BuildError(`MDX bundle failed:\n${errorMsg}`);
     }
@@ -132,63 +142,38 @@ export async function compileMDX(
   }
 
   // Step 3: Execute the bundled code with runtime injected
-  // The compiled MDX with outputFormat: 'function-body' expects certain arguments
   try {
-    // Create a function that takes the MDX runtime arguments
-    // MDX function-body format expects: function(_components) { ... }
-    // and uses jsx/jsxs from the jsx-runtime
+    const result = await executeEsm(bundledCode, {
+      importModule,
+      scope,
+      params: {
+        _components: components,
+      },
+      preamble: `
+// MDX components provider
+const useMDXComponents = () => _components;
+`,
+    });
 
-    // We need to provide the runtime and execute the code
-    const moduleExports: Record<string, unknown> = {};
+    const MDXComponent = result.exports["default"] as AnyComponent;
 
-    // The bundled code is ESM, so we need to handle it as a module
-    // Create a blob URL and dynamically import it
-    const blob = new Blob(
-      [
-        // Provide the jsx runtime as globals since we externalized react
-        `const { jsx, jsxs, Fragment } = ${JSON.stringify({ jsx: "jsx", jsxs: "jsxs", Fragment: "Fragment" })};
-        ${bundledCode}`,
-      ],
-      { type: "application/javascript" }
-    );
-    const blobUrl = URL.createObjectURL(blob);
-
-    // Actually, for function-body output, we need a different approach
-    // Let's use the simpler evaluate() approach but with our bundled imports
-
-    // For now, use Function constructor with the compiled code
-    // The function-body format returns code like:
-    // function _createMdxContent(props) { ... }
-    // export default function MDXContent(props = {}) { ... }
-
-    // We need to execute this in a context where jsx/jsxs are available
-    const executeFn = new Function(
-      "_runtime",
-      "_components",
-      "_scope",
-      `
-      const { jsx, jsxs, Fragment } = _runtime;
-      const { useMDXComponents } = { useMDXComponents: () => _components };
-
-      ${compiledCode}
-
-      return { default: MDXContent, ...arguments[3] };
-      `
-    );
-
-    const result = executeFn(runtime, components, scope, moduleExports);
-    URL.revokeObjectURL(blobUrl);
-
-    const MDXComponent = result.default as AnyComponent;
+    if (!MDXComponent) {
+      throw new MDXCompileError(
+        "MDX compilation produced no default export. The component could not be created."
+      );
+    }
 
     // Wrap component to inject default components
     const WrappedComponent: MDXResult["Component"] = (props) => {
       const mergedComponents = { ...components, ...props.components };
-      return createElement(MDXComponent, { ...props, components: mergedComponents });
+      return createElement(MDXComponent, {
+        ...props,
+        components: mergedComponents,
+      });
     };
 
     // Extract named exports (everything except default)
-    const { default: _, ...namedExports } = result;
+    const { default: _, ...namedExports } = result.exports;
 
     return {
       Component: WrappedComponent,

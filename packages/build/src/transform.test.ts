@@ -63,20 +63,20 @@ describe("transform", () => {
         sourceMaps: false,
       });
 
+      // Default jsx mode is 'automatic' which uses react/jsx-runtime
       expect(mockTransform).toHaveBeenCalledWith("const x: number = 1;", {
         loader: "ts",
         target: "es2022",
         format: "esm",
         sourcemap: false,
         sourcefile: "input.ts",
-        jsxFactory: "React.createElement",
-        jsxFragment: "React.Fragment",
+        jsx: "automatic",
         minify: false,
         keepNames: true,
       });
     });
 
-    it("should use custom JSX factory and fragment", async () => {
+    it("should use custom JSX factory and fragment when jsx='transform'", async () => {
       const mockTransform = vi.fn().mockResolvedValue({
         code: "const x = h();",
         map: "",
@@ -90,6 +90,7 @@ describe("transform", () => {
 
       await transform("<div />", {
         loader: "tsx",
+        jsx: "transform",
         jsxFactory: "h",
         jsxFragment: "Fragment",
         sourceMaps: false,
@@ -98,6 +99,7 @@ describe("transform", () => {
       expect(mockTransform).toHaveBeenCalledWith(
         expect.any(String),
         expect.objectContaining({
+          jsx: "transform",
           jsxFactory: "h",
           jsxFragment: "Fragment",
         })

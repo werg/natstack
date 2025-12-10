@@ -23,6 +23,24 @@ export {
   createFsPlugin,
 } from "./opfs-loader.js";
 
+// ESM transformation helpers
+export {
+  transformEsmForAsyncExecution,
+  EsmTransformError,
+  type EsmTransformOptions,
+} from "./esm-transform.js";
+
+// ESM execution primitive
+export {
+  executeEsm,
+  getExportReturnValue,
+  type ExecuteEsmOptions,
+  type ExecuteEsmResult,
+} from "./execute-esm.js";
+
+// AsyncFunction constructor
+export { AsyncFunction, type AsyncFunctionConstructor } from "./async-function.js";
+
 // Code transformation
 export {
   transform,

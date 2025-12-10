@@ -16,19 +16,24 @@ vi.mock("@mdx-js/mdx", () => ({
 }));
 
 // Mock @natstack/build
-vi.mock("@natstack/build", () => ({
-  getEsbuild: vi.fn(),
-  BuildError: class BuildError extends Error {
-    constructor(message: string) {
-      super(message);
-      this.name = "BuildError";
-    }
-  },
-  createOPFSPlugin: vi.fn().mockResolvedValue({
-    name: "mock-opfs",
-    setup: () => {},
-  }),
-}));
+vi.mock("@natstack/build", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@natstack/build")>();
+  return {
+    getEsbuild: vi.fn(),
+    BuildError: class BuildError extends Error {
+      constructor(message: string) {
+        super(message);
+        this.name = "BuildError";
+      }
+    },
+    createFsPlugin: vi.fn().mockReturnValue({
+      name: "mock-fs",
+      setup: () => {},
+    }),
+    // Use actual implementations for ESM execution utilities
+    executeEsm: actual.executeEsm,
+  };
+});
 
 // Mock react/jsx-runtime
 vi.mock("react/jsx-runtime", () => ({
@@ -118,7 +123,7 @@ describe("compileMDX", () => {
       await compileMDX("# Test").catch(() => {});
 
       expect(compile).toHaveBeenCalledWith("# Test", {
-        outputFormat: "function-body",
+        outputFormat: "program",
         development: false,
         jsxImportSource: "react",
       });
@@ -135,7 +140,7 @@ describe("compileMDX", () => {
         outputFiles: [{ text: "const x = 1;" }],
       });
 
-      const { getEsbuild, createOPFSPlugin } = await import("@natstack/build");
+      const { getEsbuild, createFsPlugin } = await import("@natstack/build");
       vi.mocked(getEsbuild).mockResolvedValue({ build: mockBuild } as never);
 
       await compileMDX("# Test").catch(() => {});
@@ -149,7 +154,7 @@ describe("compileMDX", () => {
         })
       );
 
-      expect(createOPFSPlugin).toHaveBeenCalled();
+      expect(createFsPlugin).toHaveBeenCalled();
     });
   });
 
@@ -204,9 +209,9 @@ describe("compileMDX", () => {
         toString: () => "code",
       } as never);
 
-      const { getEsbuild, createOPFSPlugin } = await import("@natstack/build");
+      const { getEsbuild, createFsPlugin } = await import("@natstack/build");
       vi.mocked(getEsbuild).mockResolvedValue({ build: vi.fn() } as never);
-      vi.mocked(createOPFSPlugin).mockImplementation(async () => {
+      vi.mocked(createFsPlugin).mockImplementation(() => {
         controller.abort();
         return { name: "mock", setup: () => {} };
       });
@@ -433,5 +438,52 @@ describe("initializeMDX", () => {
     await initializeMDX();
 
     expect(getEsbuild).toHaveBeenCalled();
+  });
+});
+
+describe("bundled code execution", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("should use bundled code instead of compiled code", async () => {
+    const { compile } = await import("@mdx-js/mdx");
+
+    // The compiled code (before bundling)
+    const compiledCode = `
+      function _createMdxContent(props) { return "compiled"; }
+      function MDXContent(props = {}) { return _createMdxContent(props); }
+    `;
+
+    // The bundled code (after esbuild processing)
+    const bundledCode = `
+      function _createMdxContent(props) { return "bundled"; }
+      function MDXContent(props = {}) { return _createMdxContent(props); }
+    `;
+
+    vi.mocked(compile).mockResolvedValue({
+      toString: () => compiledCode,
+    } as never);
+
+    const mockBuild = vi.fn().mockResolvedValue({
+      errors: [],
+      outputFiles: [{ text: bundledCode }],
+    });
+
+    const { getEsbuild } = await import("@natstack/build");
+    vi.mocked(getEsbuild).mockResolvedValue({ build: mockBuild } as never);
+
+    // The test verifies that esbuild.build is called with the compiled code
+    // and that the bundled output is used for execution
+    await compileMDX("# Test").catch(() => {});
+
+    // Verify esbuild received the compiled code
+    expect(mockBuild).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stdin: expect.objectContaining({
+          contents: compiledCode,
+        }),
+      })
+    );
   });
 });

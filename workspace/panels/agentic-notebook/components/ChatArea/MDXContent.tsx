@@ -1,5 +1,6 @@
 import { compileMDX, MDXCompileError } from "@natstack/build-mdx";
 import { useState, useEffect, useMemo } from "react";
+import { getImportModule, isInitialized } from "../../eval";
 
 interface MDXContentProps {
   content: string;
@@ -30,9 +31,13 @@ export function MDXContent({ content, components = {} }: MDXContentProps) {
 
     async function compile() {
       try {
+        // Get importModule if runtime is initialized (enables imports in MDX, including React)
+        const importModule = isInitialized() ? getImportModule() : undefined;
+
         // compileMDX() compiles MDX to a React component with OPFS import support
         const result = await compileMDX(content, {
           components: stableComponents,
+          importModule,
         });
 
         if (!cancelled) {

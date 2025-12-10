@@ -25,6 +25,11 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },
+  "dependencies": {
+    "acorn": "^8.12.1",
+    "acorn-jsx": "^5.3.2",
+    "astring": "^1.9.0"
+  },
   "peerDependencies": {
     "esbuild-wasm": "^0.24.0"
   },

@@ -8,7 +8,7 @@ import {
   Button,
   Separator,
 } from "@radix-ui/themes";
-import { useParticipants, useChannelStatus } from "../hooks/useChannel";
+import { useParticipants, useGenerationStatus } from "../hooks/useChannel";
 import { useModelRole } from "../hooks/useAgent";
 import { ThemeToggle } from "./ThemeToggle";
 import type { AnyParticipant, ChannelStatus } from "../types/channel";
@@ -20,14 +20,12 @@ interface ParticipantBarProps {
 /**
  * Get color for participant type.
  */
-function getParticipantColor(type: AnyParticipant["type"]): "gray" | "blue" | "green" | "orange" {
+function getParticipantColor(type: AnyParticipant["type"]): "gray" | "blue" | "green" {
   switch (type) {
     case "user":
       return "blue";
     case "agent":
       return "green";
-    case "kernel":
-      return "orange";
     default:
       return "gray";
   }
@@ -43,8 +41,6 @@ function isParticipantActive(participant: AnyParticipant, status: ChannelStatus)
     case "agent_thinking":
     case "agent_streaming":
       return participant.type === "agent";
-    case "kernel_executing":
-      return participant.type === "kernel";
     default:
       return false;
   }
@@ -61,8 +57,6 @@ function getStatusText(status: ChannelStatus): string {
       return "Thinking...";
     case "agent_streaming":
       return "Responding...";
-    case "kernel_executing":
-      return "Executing...";
     case "error":
       return "Error";
     default:
@@ -103,20 +97,6 @@ function ParticipantConfig({ participant }: { participant: AnyParticipant }) {
     );
   }
 
-  if (participant.type === "kernel") {
-    return (
-      <Box style={{ minWidth: 200 }}>
-        <Text size="2" weight="medium" mb="2">
-          Code Execution
-        </Text>
-        <Separator size="4" mb="2" />
-        <Text size="1" color="gray">
-          Stateless TypeScript/JavaScript execution
-        </Text>
-      </Box>
-    );
-  }
-
   if (participant.type === "user") {
     return (
       <Box style={{ minWidth: 200 }}>
@@ -139,7 +119,7 @@ function ParticipantConfig({ participant }: { participant: AnyParticipant }) {
  */
 export function ParticipantBar({ onToggleSidebar }: ParticipantBarProps) {
   const participants = useParticipants();
-  const status = useChannelStatus();
+  const { status } = useGenerationStatus();
   const statusText = getStatusText(status);
 
   // Filter out system participant from display

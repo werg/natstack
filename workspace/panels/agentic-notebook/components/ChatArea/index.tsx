@@ -1,54 +1,58 @@
 import { useMemo } from "react";
 import { Box } from "@radix-ui/themes";
 import { Virtuoso } from "react-virtuoso";
-import { useMessages } from "../../hooks/useChannel";
+import { useChannelMessages } from "../../hooks/useChannel";
 import { MessageBubble } from "./MessageBubble";
-import type { ChannelMessage } from "../../types/messages";
-import { ToolCallRecord } from "./ToolCallRecord";
-import { MDXToolResult, isRenderMDXResult } from "./MDXToolResult";
-import { CodeCellOutput } from "./CodeCellOutput";
+import type { ChannelMessage, ToolCallContent, ToolResultContent } from "../../types/messages";
+import { ToolResultDisplay } from "./ToolResultDisplay";
 
-type GroupedItem = {
-  root: ChannelMessage;
-  children: ChannelMessage[];
-};
+/**
+ * Represents a displayable item - either a standalone message or a tool call with its result.
+ */
+type DisplayItem =
+  | { type: "message"; message: ChannelMessage }
+  | { type: "tool_pair"; toolCall: ChannelMessage; toolResult?: ChannelMessage };
 
 /**
  * ChatArea - Scrollable message list.
  */
 export function ChatArea() {
-  const messages = useMessages();
+  const { messages } = useChannelMessages();
 
-  const displayItems: GroupedItem[] = useMemo(() => {
-    const idToMessage = new Map<string, ChannelMessage>();
-    messages.forEach((m) => idToMessage.set(m.id, m));
+  const displayItems: DisplayItem[] = useMemo(() => {
+    const items: DisplayItem[] = [];
 
-    const findRoot = (msg: ChannelMessage): ChannelMessage => {
-      let current: ChannelMessage = msg;
-      const visited = new Set<string>();
-      while (current.responseTo && idToMessage.has(current.responseTo) && !visited.has(current.responseTo)) {
-        visited.add(current.responseTo);
-        current = idToMessage.get(current.responseTo)!;
-      }
-      return current;
-    };
-
-    const groupMap = new Map<string, GroupedItem>();
-    const order: string[] = [];
-
+    // Build a map of toolCallId -> tool_result message
+    const toolResultByCallId = new Map<string, ChannelMessage>();
     for (const msg of messages) {
-      const root = msg.responseTo ? findRoot(msg) : msg;
-      const rootId = root.id;
-      if (!groupMap.has(rootId)) {
-        groupMap.set(rootId, { root, children: [] });
-        order.push(rootId);
-      }
-      if (msg.id !== rootId) {
-        groupMap.get(rootId)!.children.push(msg);
+      if (msg.content.type === "tool_result") {
+        toolResultByCallId.set(msg.content.toolCallId, msg);
       }
     }
 
-    return order.map((id) => groupMap.get(id)!).filter(Boolean);
+    // Track which tool_results have been paired
+    const pairedResultIds = new Set<string>();
+
+    for (const msg of messages) {
+      if (msg.content.type === "tool_call") {
+        // Find matching tool_result
+        const toolResult = toolResultByCallId.get(msg.content.toolCallId);
+        if (toolResult) {
+          pairedResultIds.add(toolResult.id);
+        }
+        items.push({ type: "tool_pair", toolCall: msg, toolResult });
+      } else if (msg.content.type === "tool_result") {
+        // Only add unpaired tool_results
+        if (!pairedResultIds.has(msg.id)) {
+          items.push({ type: "message", message: msg });
+        }
+      } else {
+        // Regular messages (text, file_upload, system)
+        items.push({ type: "message", message: msg });
+      }
+    }
+
+    return items;
   }, [messages]);
 
   return (
@@ -65,107 +69,13 @@ export function ChatArea() {
         data={displayItems}
         followOutput="smooth"
         style={{ height: "100%", width: "100%" }}
-        itemContent={(_index, item) => (
-          <Box px="4" py="3">
-            <Box
-              style={{
-                border: "1px solid var(--gray-a6)",
-                borderRadius: "var(--radius-3)",
-                background: "var(--gray-2)",
-                padding: "12px",
-              }}
-            >
-              <MessageBubble message={item.root} />
-              {(() => {
-                // Combine tool call + result pairs within this group
-                const children = [...item.children];
-                const toolCalls = children.filter((c) => c.content.type === "tool_call");
-                const used = new Set<string>();
-                const remaining = children.filter((c) => c.content.type !== "tool_call");
-
-                const pairedToolComponents = toolCalls.map((call) => {
-                  const result = remaining.find(
-                    (c) =>
-                      c.content.type === "tool_result" &&
-                      c.content.toolCallId === call.content.toolCallId
-                  );
-                  if (result) used.add(result.id);
-                  // Attach any code_result that responds to this tool_call (via responseTo chain)
-                  const codeResults = remaining.filter(
-                    (c) =>
-                      c.content.type === "code_result" &&
-                      c.responseTo === call.id
-                  );
-                  const toolResult = result?.content.type === "tool_result" ? result.content : null;
-
-                  // Use MDXToolResult for render_mdx tool calls
-                  const isMDX = isRenderMDXResult(call.content, toolResult);
-
-                  return (
-                    <Box key={call.id} mt="2">
-                      {isMDX ? (
-                        <MDXToolResult call={call.content} result={toolResult} />
-                      ) : (
-                        <ToolCallRecord
-                          call={call.content}
-                          result={toolResult}
-                          defaultCollapsed
-                        />
-                      )}
-                      {codeResults.map((cr) => (
-                        <Box key={cr.id} mt="2">
-                          <CodeCellOutput result={cr.content} defaultCollapsed />
-                        </Box>
-                      ))}
-                    </Box>
-                  );
-                });
-
-                const otherChildren = remaining.filter((c) => !used.has(c.id));
-
-                return (
-                  <>
-                    {pairedToolComponents}
-                    {otherChildren.map((child) => {
-                      if (child.content.type === "tool_result") {
-                        // Use MDXToolResult for render_mdx tool results
-                        if (isRenderMDXResult(null, child.content)) {
-                          return (
-                            <Box key={child.id} mt="2">
-                              <MDXToolResult call={null} result={child.content} />
-                            </Box>
-                          );
-                        }
-                        return (
-                          <Box key={child.id} mt="2">
-                            <ToolCallRecord
-                              call={null}
-                              result={child.content}
-                              defaultCollapsed
-                            />
-                          </Box>
-                        );
-                      }
-                      if (child.content.type === "code_result") {
-                        return (
-                          <Box key={child.id} mt="2">
-                            <CodeCellOutput result={child.content} defaultCollapsed />
-                          </Box>
-                        );
-                      }
-                      if (child.content.type === "code" || child.content.type === "text") {
-                        return (
-                          <Box key={child.id} mt="2">
-                            <MessageBubble message={child} />
-                          </Box>
-                        );
-                      }
-                      return null;
-                    })}
-                  </>
-                );
-              })()}
-            </Box>
+        itemContent={(_index: number, item: DisplayItem) => (
+          <Box px="4" py="2">
+            {item.type === "message" ? (
+              <MessageBubble message={item.message} />
+            ) : (
+              <ToolPairDisplay toolCall={item.toolCall} toolResult={item.toolResult} />
+            )}
           </Box>
         )}
         components={{
@@ -181,12 +91,39 @@ export function ChatArea() {
             </Box>
           ),
         }}
-        computeItemKey={(_index, item) => item.root.id}
+        computeItemKey={(_index: number, item: DisplayItem) =>
+          item.type === "message" ? item.message.id : item.toolCall.id
+        }
       />
     </Box>
   );
 }
 
+/**
+ * Display a tool call with its result.
+ */
+function ToolPairDisplay({
+  toolCall,
+  toolResult,
+}: {
+  toolCall: ChannelMessage;
+  toolResult?: ChannelMessage;
+}) {
+  const callContent = toolCall.content as ToolCallContent;
+  const resultContent = toolResult?.content.type === "tool_result"
+    ? (toolResult.content as ToolResultContent)
+    : null;
+
+  return (
+    <ToolResultDisplay
+      call={callContent}
+      result={resultContent}
+      defaultCollapsed={false}
+    />
+  );
+}
+
 export { MessageBubble } from "./MessageBubble";
-export { ToolCallRecord } from "./ToolCallRecord";
-export { CodeCellOutput } from "./CodeCellOutput";
+export { ToolResultDisplay } from "./ToolResultDisplay";
+export { CodeExecutionOutput } from "./CodeExecutionOutput";
+export { MDXRenderedOutput } from "./MDXRenderedOutput";

@@ -1,11 +1,31 @@
 import { atom } from "jotai";
-import { serializeMessage, deserializeMessage } from "../../types/messages";
 import type { StoredChat, SerializableChatMetadata, SerializedParticipant } from "../../types/storage";
 import { generateChatTitle, generateChatPreview } from "../../types/storage";
+import type { ChannelMessage, SerializableChannelMessage } from "../../types/messages";
 import { channelIdAtom, channelCreatedAtAtom, channelUpdatedAtAtom } from "./coreAtoms";
 import { messagesAtom, messageQueueAtom } from "./messageAtoms";
 import { participantsAtom } from "./participantAtoms";
 import { channelStatusAtom, activeParticipantIdAtom, abortControllerAtom } from "./generationAtoms";
+
+/**
+ * Serialize a message for storage.
+ */
+function serializeMessage(msg: ChannelMessage): SerializableChannelMessage {
+  return {
+    ...msg,
+    timestamp: msg.timestamp.toISOString(),
+  };
+}
+
+/**
+ * Deserialize a message from storage.
+ */
+function deserializeMessage(data: SerializableChannelMessage): ChannelMessage {
+  return {
+    ...data,
+    timestamp: new Date(data.timestamp),
+  };
+}
 
 /**
  * Serialization atoms.
@@ -57,10 +77,6 @@ export const toStoredChatAtom = atom((get) => {
       base.modelRole = p.modelRole;
       base.modelId = p.modelId;
       base.systemPrompt = p.systemPrompt;
-    } else if (p.type === "kernel") {
-      base.sessionId = p.sessionId;
-      base.isReady = p.isReady;
-      base.executionCount = p.executionCount;
     } else if (p.type === "user") {
       base.submitKeyConfig = p.submitKeyConfig;
     }
@@ -98,18 +114,6 @@ export const loadStoredChatAtom = atom(
             modelId: sp.modelId,
             systemPrompt: sp.systemPrompt,
           };
-        } else if (sp.type === "kernel") {
-          participant = {
-            id: sp.id,
-            type: "kernel",
-            displayName: sp.displayName,
-            capabilities: sp.capabilities,
-            avatar: sp.avatar,
-            metadata: sp.metadata,
-            sessionId: sp.sessionId ?? "",
-            isReady: sp.isReady ?? false,
-            executionCount: sp.executionCount ?? 0,
-          };
         } else if (sp.type === "user") {
           participant = {
             id: sp.id,
@@ -121,7 +125,7 @@ export const loadStoredChatAtom = atom(
             submitKeyConfig: sp.submitKeyConfig ?? { submitKey: "Enter", enterBehavior: "submit" },
           };
         } else {
-          // system
+          // system (or legacy kernel types - treat as system)
           participant = {
             id: sp.id,
             type: "system",

@@ -6,21 +6,28 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { evaluate, initializeEval, AbortError, EvalError } from "./evaluate.js";
 
 // Mock dependencies
-vi.mock("@natstack/build", () => ({
-  getEsbuild: vi.fn(),
-  transform: vi.fn(),
-  getLoaderForLanguage: vi.fn().mockReturnValue("tsx"),
-  BuildError: class BuildError extends Error {
-    constructor(message: string) {
-      super(message);
-      this.name = "BuildError";
-    }
-  },
-  createOPFSPlugin: vi.fn().mockResolvedValue({
-    name: "mock-opfs",
-    setup: () => {},
-  }),
-}));
+vi.mock("@natstack/build", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@natstack/build")>();
+  return {
+    getEsbuild: vi.fn(),
+    transform: vi.fn(),
+    getLoaderForLanguage: vi.fn().mockReturnValue("tsx"),
+    BuildError: class BuildError extends Error {
+      constructor(message: string) {
+        super(message);
+        this.name = "BuildError";
+      }
+    },
+    createFsPlugin: vi.fn().mockReturnValue({
+      name: "mock-fs",
+      setup: () => {},
+    }),
+    // Use actual implementations for ESM transform and execution utilities
+    transformEsmForAsyncExecution: actual.transformEsmForAsyncExecution,
+    executeEsm: actual.executeEsm,
+    getExportReturnValue: actual.getExportReturnValue,
+  };
+});
 
 vi.mock("./type-check.js", () => ({
   typeCheckOrThrow: vi.fn().mockResolvedValue(undefined),
@@ -369,5 +376,122 @@ describe("initializeEval", () => {
     await initializeEval();
 
     expect(getEsbuild).toHaveBeenCalled();
+  });
+});
+
+describe("return value capture", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("should capture exports from ESM format with default export", async () => {
+    // Simulate esbuild ESM output with exports - this gets transformed
+    const mockBuild = vi.fn().mockResolvedValue({
+      errors: [],
+      outputFiles: [
+        {
+          text: `var x = 42;
+export default x;`,
+        },
+      ],
+    });
+
+    const mockTransform = vi.fn().mockResolvedValue({
+      code: "export default 42;",
+    });
+
+    const { getEsbuild, transform } = await import("@natstack/build");
+    vi.mocked(getEsbuild).mockResolvedValue({ build: mockBuild } as never);
+    vi.mocked(transform).mockImplementation(mockTransform);
+
+    const result = await evaluate("export default 42;", {
+      language: "typescript",
+    });
+
+    expect(result.returnValue).toBe(42);
+    expect(result.bindings).toHaveProperty("default", 42);
+  });
+
+  it("should capture named exports", async () => {
+    const mockBuild = vi.fn().mockResolvedValue({
+      errors: [],
+      outputFiles: [
+        {
+          text: `var foo = 1;
+var bar = 2;
+export { foo, bar };`,
+        },
+      ],
+    });
+
+    const mockTransform = vi.fn().mockResolvedValue({
+      code: "export const foo = 1; export const bar = 2;",
+    });
+
+    const { getEsbuild, transform } = await import("@natstack/build");
+    vi.mocked(getEsbuild).mockResolvedValue({ build: mockBuild } as never);
+    vi.mocked(transform).mockImplementation(mockTransform);
+
+    const result = await evaluate("export const foo = 1;", {
+      language: "typescript",
+    });
+
+    expect(result.returnValue).toEqual({ foo: 1, bar: 2 });
+    expect(result.bindings).toHaveProperty("foo", 1);
+    expect(result.bindings).toHaveProperty("bar", 2);
+  });
+
+  it("should return default export when present alongside named exports", async () => {
+    const mockBuild = vi.fn().mockResolvedValue({
+      errors: [],
+      outputFiles: [
+        {
+          text: `var value = { x: 123 };
+var helper = "test";
+export default value;
+export { helper };`,
+        },
+      ],
+    });
+
+    const mockTransform = vi.fn().mockResolvedValue({
+      code: "export default { x: 123 }; export const helper = 'test';",
+    });
+
+    const { getEsbuild, transform } = await import("@natstack/build");
+    vi.mocked(getEsbuild).mockResolvedValue({ build: mockBuild } as never);
+    vi.mocked(transform).mockImplementation(mockTransform);
+
+    const result = await evaluate("export default { value: 123 };", {
+      language: "typescript",
+    });
+
+    // Should return default export, not the whole module
+    expect(result.returnValue).toEqual({ x: 123 });
+  });
+
+  it("should return undefined when no exports", async () => {
+    const mockBuild = vi.fn().mockResolvedValue({
+      errors: [],
+      outputFiles: [
+        {
+          text: `var x = 1 + 2;`,
+        },
+      ],
+    });
+
+    const mockTransform = vi.fn().mockResolvedValue({
+      code: "const x = 1 + 2;",
+    });
+
+    const { getEsbuild, transform } = await import("@natstack/build");
+    vi.mocked(getEsbuild).mockResolvedValue({ build: mockBuild } as never);
+    vi.mocked(transform).mockImplementation(mockTransform);
+
+    const result = await evaluate("const x = 1 + 2;", {
+      language: "typescript",
+    });
+
+    expect(result.returnValue).toBeUndefined();
   });
 });

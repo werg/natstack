@@ -11,9 +11,11 @@ export type Loader = "js" | "jsx" | "ts" | "tsx";
 export interface TransformOptions {
   /** The loader to use (determines input language) */
   loader: Loader;
-  /** JSX factory function (default: React.createElement) */
+  /** JSX mode: 'automatic' uses react/jsx-runtime, 'transform' uses React.createElement */
+  jsx?: "automatic" | "transform";
+  /** JSX factory function (only used when jsx='transform', default: React.createElement) */
   jsxFactory?: string;
-  /** JSX fragment function (default: React.Fragment) */
+  /** JSX fragment function (only used when jsx='transform', default: React.Fragment) */
   jsxFragment?: string;
   /** Generate source maps */
   sourceMaps?: boolean;
@@ -54,6 +56,7 @@ export async function transform(
 ): Promise<TransformResult> {
   const {
     loader,
+    jsx = "automatic",
     jsxFactory = "React.createElement",
     jsxFragment = "React.Fragment",
     sourceMaps = true,
@@ -86,8 +89,9 @@ export async function transform(
       format: "esm",
       sourcemap: sourceMaps ? "inline" : false,
       sourcefile: `${sourcefile}.${loader}`,
-      jsxFactory,
-      jsxFragment,
+      // Use automatic JSX runtime (imports from react/jsx-runtime) or classic (React.createElement)
+      jsx,
+      ...(jsx === "transform" ? { jsxFactory, jsxFragment } : {}),
       minify: false,
       keepNames: true,
     });

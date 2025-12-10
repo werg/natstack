@@ -1,11 +1,17 @@
 export {
+  // Composite hooks (preferred API)
+  useChannelMessages,
+  useMessageActions,
+  useGenerationStatus,
+  useGenerationControl,
+  useChannelSerialization,
+  useParticipantActions,
+  // Utility hooks
   useChannel,
-  useMessages,
+  // Direct access hooks
   useParticipants,
-  useChannelStatus,
-  useIsGenerating,
-  useSendMessage,
-  useAbortGeneration,
+  useMessage,
+  useParticipant,
 } from "./useChannel";
 
 export {

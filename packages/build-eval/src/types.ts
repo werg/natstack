@@ -40,6 +40,12 @@ export interface EvalOptions {
 
   /** Context for dependency resolution */
   context?: EvalContext;
+
+  /**
+   * Function to import external modules (bare specifiers like 'react').
+   * If not provided, external imports will fail at runtime.
+   */
+  importModule?: (specifier: string) => Promise<unknown>;
 }
 
 export interface EvalResult {

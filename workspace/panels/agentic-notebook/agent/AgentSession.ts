@@ -6,11 +6,43 @@ import {
 } from "@natstack/ai";
 import type { FileSystem } from "../storage/ChatStore";
 import type { ChannelMessage } from "../types/messages";
+import { isCodeExecutionResult } from "../types/messages";
 import { createFileTools } from "./tools/fileTools";
 import { createEvalTools } from "./tools/evalTools";
 import { createMDXTools } from "./tools/mdxTools";
 import { getSystemPrompt } from "./prompts/systemPrompt";
 import { PromptBuilder } from "./PromptBuilder";
+
+/**
+ * Convert a tool result payload to a small, serializable value for channel storage / prompting.
+ * Prefers textual content; falls back to JSON stringification for objects.
+ */
+function formatResultForMessage(result: unknown): string | number | boolean | null {
+  if (result === undefined) return "";
+  if (result === null || typeof result === "string" || typeof result === "number" || typeof result === "boolean") {
+    return result;
+  }
+
+  // streamText tool results often have a content[] array
+  if (
+    result &&
+    typeof result === "object" &&
+    "content" in (result as Record<string, unknown>) &&
+    Array.isArray((result as { content?: Array<{ text?: string }> }).content)
+  ) {
+    const joined = ((result as { content?: Array<{ text?: string }> }).content ?? [])
+      .map((c) => (typeof c.text === "string" ? c.text : ""))
+      .filter(Boolean)
+      .join("\n");
+    if (joined) return joined;
+  }
+
+  try {
+    return JSON.stringify(result);
+  } catch {
+    return String(result);
+  }
+}
 
 /**
  * Context passed to tool execution.
@@ -159,8 +191,9 @@ export class AgentSession {
             throw new Error(text);
           }
 
-          // Return the text - streamText will serialize it
-          return text;
+          // Return the full result object - streamText will serialize it for the LLM,
+          // but we can access the original object in the tool-result event
+          return result;
         },
       };
     }
@@ -275,7 +308,6 @@ export class AgentSession {
             args: event.args,
           },
           toolStatus: "executing",
-          responseTo: messageId,
         });
         toolCallMessageIds.set(event.toolCallId, toolCallMsgId);
         break;
@@ -292,6 +324,14 @@ export class AgentSession {
         }
 
         // Send tool result message
+        // Extract CodeExecutionData if present (only execute_code returns structured data)
+        const resultData = isCodeExecutionResult(event.result)
+          ? event.result.data
+          : undefined;
+
+        // Only put a serialized/textual result into the message for prompt usage
+        const serializedResult = formatResultForMessage(event.result);
+
         this.adapter.sendMessage({
           participantId: this.participantId,
           participantType: "agent",
@@ -299,10 +339,10 @@ export class AgentSession {
             type: "tool_result",
             toolCallId: event.toolCallId,
             toolName: event.toolName,
-            result: event.result,
+            result: serializedResult,
             isError: event.isError ?? false,
+            data: resultData,
           },
-          responseTo: toolCallMsgId,
         });
         break;
       }

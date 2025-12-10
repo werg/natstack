@@ -22,15 +22,18 @@ Use the \`execute_code\` tool to run JavaScript or TypeScript code. Each executi
 
 ## Code Execution Environment
 
-Each \`execute_code\` call has access to:
+Use standard ES module \`import\` syntax. The system automatically resolves imports:
+- **npm packages** (bare specifiers like \`react\`, \`lodash-es\`) → loaded from CDN (esm.sh)
+- **local files** (paths like \`./utils.ts\`, \`/scripts/helper.ts\`) → loaded from OPFS
 
 \`\`\`typescript
-// Import npm packages from CDN (esm.sh)
-const lodash = await importModule('lodash-es');
-const dayjs = await importModule('dayjs');
+// npm packages from CDN
+import _ from 'lodash-es';
+import dayjs from 'dayjs';
 
-// Import modules from OPFS (supports .ts, .tsx, .js, .jsx)
-const myModule = await importOPFS('./my-module.ts');
+// Local files from OPFS (.ts, .tsx, .js, .jsx are automatically transpiled)
+import { helper } from './utils.ts';
+import config from '/config.json';
 \`\`\`
 
 ## File System & Persistence
@@ -41,18 +44,24 @@ Files are stored in the browser's Origin Private File System (OPFS). You can:
 - Create and import JavaScript/TypeScript modules (automatically transpiled)
 - Store data in JSON files
 
-### Module Imports
+## UI Rendering (React)
 
-**From CDN (npm packages):**
-\`\`\`typescript
-const _ = await importModule('lodash-es');
-const dayjs = await importModule('dayjs');
+You can render interactive React components directly in the chat by exporting a component as default or returning it from your code.
+
+**Method 1: Export Default (Recommended)**
+\`\`\`tsx
+import { useState } from 'react';
+
+export default function Counter() {
+  const [count, setCount] = useState(0);
+  return <button onClick={() => setCount(c => c + 1)}>Count: {count}</button>;
+}
 \`\`\`
 
-**From OPFS (local files):**
-\`\`\`typescript
-// .ts, .tsx, .js, .jsx files are automatically transpiled
-const utils = await importOPFS('./utils.ts');
+**Method 2: Return Component**
+\`\`\`tsx
+const App = () => <h1>Hello World</h1>;
+App // Return the component
 \`\`\`
 
 ## Best Practices
@@ -62,7 +71,7 @@ const utils = await importOPFS('./utils.ts');
 3. **Persist state**: Save important data to OPFS files if you need it across executions
 4. **Clean code**: Write readable, well-structured code
 5. **Handle errors**: Wrap risky operations in try/catch
-6. **Rich output**: Use \`render_mdx\` for formatted results with styled components
+6. **Rich output**: Use React components for interactive results (charts, tables, forms)
 
 ## Example Workflow
 
@@ -79,20 +88,22 @@ console.log(\`10! = \${result}\`);
 result
 \`\`\`
 
-User: "Fetch and analyze some data"
+User: "Show me a counter"
 
-\`\`\`typescript
-const response = await fetch('https://api.example.com/data');
-const data = await response.json();
+\`\`\`tsx
+import { useState } from 'react';
 
-// Process the data
-const summary = {
-  count: data.length,
-  average: data.reduce((a, b) => a + b.value, 0) / data.length
-};
-
-console.log('Summary:', summary);
-summary
+export default function Counter() {
+  const [count, setCount] = useState(0);
+  return (
+    <div style={{ padding: 20, border: '1px solid #ccc' }}>
+      <h3>Counter</h3>
+      <button onClick={() => setCount(c => c + 1)}>
+        Clicked {count} times
+      </button>
+    </div>
+  );
+}
 \`\`\`
 
 Remember: Each code execution is stateless. Import what you need, do your computation, and return the result.`;

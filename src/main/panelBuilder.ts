@@ -110,6 +110,13 @@ const implicitExternals: Record<string, Record<string, string>> = {
     "isomorphic-git": "https://esm.sh/isomorphic-git",
     "isomorphic-git/http/web": "https://esm.sh/isomorphic-git/http/web",
   },
+  // @natstack/build-eval optionally uses typescript for type checking.
+  // TypeScript is marked external because:
+  // 1. It's ~8MB and rarely needed at runtime (type checking is optional)
+  // 2. It has complex CJS internals that are better loaded from CDN
+  "@natstack/build-eval": {
+    "typescript": "https://esm.sh/typescript",
+  },
 };
 
 /**

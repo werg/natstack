@@ -1,12 +1,8 @@
+import { z } from "zod";
 import type { ParticipantType } from "./channel";
 import type { ConsoleEntry } from "../eval";
 
 export type { ConsoleEntry };
-
-/**
- * Code language options.
- */
-export type CodeLanguage = "javascript" | "typescript" | "jsx" | "tsx";
 
 /**
  * Tool execution status.
@@ -27,8 +23,6 @@ export interface ChannelMessage {
   isStreaming?: boolean;
   /** For tool calls: execution status */
   toolStatus?: ToolExecutionStatus;
-  /** For responses (tool_result, code_result): ID of the message this responds to */
-  responseTo?: string;
 }
 
 /**
@@ -43,7 +37,6 @@ export interface SerializableChannelMessage {
   content: MessageContent;
   isStreaming?: boolean;
   toolStatus?: ToolExecutionStatus;
-  responseTo?: string;
 }
 
 /**
@@ -51,13 +44,10 @@ export interface SerializableChannelMessage {
  */
 export type MessageContent =
   | TextContent
-  | CodeContent
-  | CodeResultContent
   | ToolCallContent
   | ToolResultContent
   | FileUploadContent
-  | SystemContent
-  | ReactMountContent;
+  | SystemContent;
 
 /**
  * Plain text content from user or agent.
@@ -70,39 +60,6 @@ export interface TextContent {
 }
 
 /**
- * Code cell content.
- */
-export interface CodeContent {
-  type: "code";
-  code: string;
-  language: CodeLanguage;
-  /** User-submitted vs agent-generated */
-  source: "user" | "agent";
-}
-
-/**
- * Code execution result from kernel.
- */
-export interface CodeResultContent {
-  type: "code_result";
-  success: boolean;
-  /** Last expression value */
-  result?: unknown;
-  /** Error message if failed */
-  error?: string;
-  /** Console output during execution */
-  consoleOutput: ConsoleEntry[];
-  /** If result includes a React component, the mount ID */
-  reactMountId?: string;
-  /** Execution time in milliseconds */
-  executionTime: number;
-  /** Variables declared with const */
-  constNames?: string[];
-  /** Variables declared with let/var */
-  mutableNames?: string[];
-}
-
-/**
  * Tool call from agent.
  */
 export interface ToolCallContent {
@@ -112,6 +69,44 @@ export interface ToolCallContent {
   args: unknown;
 }
 
+// -----------------------------------------------------------------------------
+// Tool Result Data Schemas (Zod)
+// -----------------------------------------------------------------------------
+
+/**
+ * Zod schema for console entries.
+ */
+export const ConsoleEntrySchema = z.object({
+  level: z.enum(["log", "info", "warn", "error", "debug"]),
+  args: z.array(z.unknown()),
+  timestamp: z.number(),
+});
+
+/**
+ * Zod schema for code execution data.
+ */
+export const CodeExecutionDataSchema = z.object({
+  type: z.literal("code_execution"),
+  result: z.unknown().optional(),
+  consoleOutput: z.array(ConsoleEntrySchema),
+  componentId: z.string().optional(),
+  executionTime: z.number(),
+  error: z.string().optional(),
+  code: z.string().optional(),
+});
+
+/**
+ * Data returned from code execution tool.
+ */
+export type CodeExecutionData = z.infer<typeof CodeExecutionDataSchema>;
+
+/**
+ * Type guard for code execution data.
+ */
+export function isCodeExecutionData(data: unknown): data is CodeExecutionData {
+  return CodeExecutionDataSchema.safeParse(data).success;
+}
+
 /**
  * Tool execution result.
  */
@@ -119,8 +114,11 @@ export interface ToolResultContent {
   type: "tool_result";
   toolCallId: string;
   toolName: string;
+  /** Human-readable result text */
   result: unknown;
   isError: boolean;
+  /** Structured data for specialized renderers (e.g., CodeExecutionData) */
+  data?: CodeExecutionData;
 }
 
 /**
@@ -149,18 +147,6 @@ export interface SystemContent {
   type: "system";
   level: "info" | "warning" | "error";
   message: string;
-  /** For kernel state notifications */
-  kernelStateWarning?: boolean;
-}
-
-/**
- * React component mount content.
- */
-export interface ReactMountContent {
-  type: "react_mount";
-  mountId: string;
-  /** Component source code for reference */
-  componentCode?: string;
 }
 
 /**
@@ -170,180 +156,37 @@ export function createMessageId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 }
 
+// -----------------------------------------------------------------------------
+// Tool Result Helpers
+// -----------------------------------------------------------------------------
+
 /**
- * Create a text message.
+ * Base structure for tool results.
  */
-export function createTextMessage(
-  channelId: string,
-  participantId: string,
-  participantType: ParticipantType,
-  text: string,
-  reasoning?: string
-): ChannelMessage {
-  return {
-    id: createMessageId(),
-    channelId,
-    participantId,
-    participantType,
-    timestamp: new Date(),
-    content: {
-      type: "text",
-      text,
-      reasoning,
-    },
-  };
+export interface BaseToolResult {
+  content: Array<{ type: string; text: string }>;
+  isError?: boolean;
 }
 
 /**
- * Create a code message.
+ * Tool result with code execution data.
  */
-export function createCodeMessage(
-  channelId: string,
-  participantId: string,
-  participantType: ParticipantType,
-  code: string,
-  language: CodeLanguage,
-  source: "user" | "agent"
-): ChannelMessage {
-  return {
-    id: createMessageId(),
-    channelId,
-    participantId,
-    participantType,
-    timestamp: new Date(),
-    content: {
-      type: "code",
-      code,
-      language,
-      source,
-    },
-  };
+export interface CodeExecutionToolResult extends BaseToolResult {
+  data: CodeExecutionData;
 }
 
 /**
- * Create a code result message.
+ * Type guard to check if a result is a code execution result.
  */
-export function createCodeResultMessage(
-  channelId: string,
-  participantId: string,
-  success: boolean,
-  result: unknown,
-  consoleOutput: ConsoleEntry[],
-  executionTime: number,
-  error?: string,
-  reactMountId?: string
-): ChannelMessage {
-  return {
-    id: createMessageId(),
-    channelId,
-    participantId,
-    participantType: "kernel",
-    timestamp: new Date(),
-    content: {
-      type: "code_result",
-      success,
-      result,
-      error,
-      consoleOutput,
-      reactMountId,
-      executionTime,
-    },
-  };
-}
-
-/**
- * Create a tool call message.
- */
-export function createToolCallMessage(
-  channelId: string,
-  participantId: string,
-  toolCallId: string,
-  toolName: string,
-  args: unknown
-): ChannelMessage {
-  return {
-    id: createMessageId(),
-    channelId,
-    participantId,
-    participantType: "agent",
-    timestamp: new Date(),
-    content: {
-      type: "tool_call",
-      toolCallId,
-      toolName,
-      args,
-    },
-    toolStatus: "pending",
-  };
-}
-
-/**
- * Create a tool result message.
- */
-export function createToolResultMessage(
-  channelId: string,
-  participantId: string,
-  toolCallId: string,
-  toolName: string,
-  result: unknown,
-  isError: boolean
-): ChannelMessage {
-  return {
-    id: createMessageId(),
-    channelId,
-    participantId,
-    participantType: "agent",
-    timestamp: new Date(),
-    content: {
-      type: "tool_result",
-      toolCallId,
-      toolName,
-      result,
-      isError,
-    },
-  };
-}
-
-/**
- * Create a system message.
- */
-export function createSystemMessage(
-  channelId: string,
-  level: "info" | "warning" | "error",
-  message: string,
-  kernelStateWarning?: boolean
-): ChannelMessage {
-  return {
-    id: createMessageId(),
-    channelId,
-    participantId: "system",
-    participantType: "system",
-    timestamp: new Date(),
-    content: {
-      type: "system",
-      level,
-      message,
-      kernelStateWarning,
-    },
-  };
-}
-
-/**
- * Serialize a message for storage.
- */
-export function serializeMessage(message: ChannelMessage): SerializableChannelMessage {
-  return {
-    ...message,
-    timestamp: message.timestamp.toISOString(),
-  };
-}
-
-/**
- * Deserialize a message from storage.
- */
-export function deserializeMessage(data: SerializableChannelMessage): ChannelMessage {
-  return {
-    ...data,
-    timestamp: new Date(data.timestamp),
-  };
+export function isCodeExecutionResult(
+  result: unknown
+): result is CodeExecutionToolResult {
+  if (
+    typeof result !== "object" ||
+    result === null ||
+    !("data" in result)
+  ) {
+    return false;
+  }
+  return isCodeExecutionData((result as { data: unknown }).data);
 }

@@ -16,13 +16,3 @@ export const isStreamingAtom = atom<boolean>(false);
  */
 export const modelRoleAtom = atom<string>("coding");
 
-/**
- * Available model roles.
- */
-export const availableRolesAtom = atom<string[]>([
-  "fast",
-  "smart",
-  "coding",
-  "cheap",
-]);
-

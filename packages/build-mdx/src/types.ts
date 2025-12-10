@@ -40,6 +40,12 @@ export interface MDXOptions {
 
   /** Context for dependency resolution */
   context?: MDXContext;
+
+  /**
+   * Function to import external modules (bare specifiers like 'lodash-es').
+   * If not provided, external imports (other than react) will fail at runtime.
+   */
+  importModule?: (specifier: string) => Promise<unknown>;
 }
 
 export interface MDXResult {

@@ -20,7 +20,7 @@ import { Sidebar } from "./Sidebar";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { KeyboardShortcutsOverlay } from "./KeyboardShortcutsOverlay";
 import { storageInitializedAtom } from "../state/storageAtoms";
-import { useMessages } from "../hooks/useChannel";
+import { useChannelMessages } from "../hooks/useChannel";
 
 /**
  * Loading spinner component.
@@ -80,7 +80,7 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
   const [isInitializing, setIsInitializing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const themeAppearance = useThemeAppearance();
-  const messages = useMessages();
+  const { messages } = useChannelMessages();
   const setStorageInitialized = useSetAtom(storageInitializedAtom);
 
   // Detect mobile breakpoint

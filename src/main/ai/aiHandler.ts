@@ -551,6 +551,7 @@ export class AIHandler {
           resolve({
             content: result.content,
             isError: result.isError,
+            data: result.data, // Preserve structured data for UI
           });
         });
 
@@ -826,17 +827,25 @@ export class AIHandler {
           const result = await executeToolViaPanel(tc.toolName, tc.args as Record<string, unknown>);
           const resultText = result.content[0]?.text;
           const parsedResult = resultText ? safeJsonParse(resultText) : resultText;
+
+          // If the tool result includes structured data (e.g., code execution with components),
+          // pass through the full result so the panel can access the data field.
+          // Otherwise, just use the parsed text result.
+          const eventResult = result.data !== undefined
+            ? { content: result.content, isError: result.isError, data: result.data }
+            : parsedResult;
+
           toolResults.push({
             toolCallId: tc.toolCallId,
             toolName: tc.toolName,
-            result: parsedResult,
+            result: parsedResult, // For LLM conversation, just use parsed text
             isError: result.isError,
           });
           sendEvent({
             type: "tool-result",
             toolCallId: tc.toolCallId,
             toolName: tc.toolName,
-            result: parsedResult,
+            result: eventResult, // For panel UI, include full result with data
             isError: result.isError,
           });
         } catch (error) {
@@ -956,11 +965,17 @@ export class AIHandler {
       // Send tool-result event
       const resultText = result.content[0]?.text;
       const parsedResult = resultText ? safeJsonParse(resultText) : resultText;
+
+      // If the tool result includes structured data, pass it through
+      const eventResult = result.data !== undefined
+        ? { content: result.content, isError: result.isError, data: result.data }
+        : parsedResult;
+
       sendEvent({
         type: "tool-result",
         toolCallId,
         toolName: simpleToolName,
-        result: parsedResult,
+        result: eventResult,
         isError: result.isError,
       });
 
@@ -1397,10 +1412,16 @@ export class AIHandler {
         try {
           const result = await executeToolViaWorker(tc.toolName, tc.args as Record<string, unknown>);
           const resultText = result.content.map((c) => c.text).join("\n");
+
+          // If the tool result includes structured data, pass it through
+          const eventResult = result.data !== undefined
+            ? { content: result.content, isError: result.isError, data: result.data }
+            : resultText;
+
           toolResults.push({
             toolCallId: tc.toolCallId,
             toolName: tc.toolName,
-            result: resultText,
+            result: resultText, // For LLM conversation, just use text
             isError: result.isError,
           });
 
@@ -1408,7 +1429,7 @@ export class AIHandler {
             type: "tool-result",
             toolCallId: tc.toolCallId,
             toolName: tc.toolName,
-            result: resultText,
+            result: eventResult, // For panel UI, include full result with data
             isError: result.isError,
           });
         } catch (error) {
@@ -1521,11 +1542,16 @@ export class AIHandler {
 
       const result = await executeToolViaWorker(simpleToolName, args);
 
+      // If the tool result includes structured data, pass it through
+      const eventResult = result.data !== undefined
+        ? { content: result.content, isError: result.isError, data: result.data }
+        : result.content.map((c) => c.text).join("\n");
+
       sendEvent({
         type: "tool-result",
         toolCallId,
         toolName: simpleToolName,
-        result: result.content.map((c) => c.text).join("\n"),
+        result: eventResult,
         isError: result.isError,
       });
 

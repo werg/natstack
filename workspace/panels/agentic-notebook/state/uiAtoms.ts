@@ -20,11 +20,6 @@ export const submitKeyConfigAtom = atom<SubmitKeyConfig>({
 });
 
 /**
- * Whether the input is focused.
- */
-export const inputFocusedAtom = atom<boolean>(false);
-
-/**
  * Mobile breakpoint detection.
  */
 export const isMobileAtom = atom<boolean>(false);

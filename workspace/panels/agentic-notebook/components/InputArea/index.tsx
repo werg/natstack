@@ -3,7 +3,7 @@ import { useAtom } from "jotai";
 import { Box, Flex, Button, TextArea, Text, Badge } from "@radix-ui/themes";
 import { StopIcon } from "@radix-ui/react-icons";
 import { inputValueAtom } from "../../state/uiAtoms";
-import { useSendMessage, useIsGenerating, useAbortGeneration, useQueueMessage, useHasQueuedMessages, useProcessQueue } from "../../hooks/useChannel";
+import { useChannelMessages, useMessageActions, useGenerationStatus, useGenerationControl } from "../../hooks/useChannel";
 import { useAgent } from "../../hooks/useAgent";
 import { useInputKeyHandler } from "../../hooks/useKeyboardShortcuts";
 
@@ -39,12 +39,10 @@ export function InputArea() {
   const [inputValue, setInputValue] = useAtom(inputValueAtom);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const sendMessage = useSendMessage();
-  const queueMessage = useQueueMessage();
-  const hasQueuedMessages = useHasQueuedMessages();
-  const processQueue = useProcessQueue();
-  const isGenerating = useIsGenerating();
-  const abortGeneration = useAbortGeneration();
+  const { hasQueuedMessages } = useChannelMessages();
+  const { sendMessage, queueMessage, processQueue } = useMessageActions();
+  const { isGenerating } = useGenerationStatus();
+  const { abortGeneration } = useGenerationControl();
   const { generate } = useAgent();
 
   // Process queued messages when generation completes

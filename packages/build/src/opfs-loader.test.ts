@@ -164,42 +164,6 @@ describe("opfs-loader", () => {
     });
   });
 
-  describe("legacy aliases", () => {
-    it("should export OPFSLoader as alias for FsLoader", async () => {
-      const { FsLoader, OPFSLoader } = await import("./opfs-loader.js");
-      expect(OPFSLoader).toBe(FsLoader);
-    });
-
-    it("should export importFromOPFS as alias for importModule", async () => {
-      const { importModule, importFromOPFS } = await import("./opfs-loader.js");
-      expect(importFromOPFS).toBe(importModule);
-    });
-
-    it("should export clearOPFSCache as alias for clearModuleCache", async () => {
-      const { clearModuleCache, clearOPFSCache } = await import("./opfs-loader.js");
-      expect(clearOPFSCache).toBe(clearModuleCache);
-    });
-
-    it("should export invalidateOPFSModule as alias for invalidateModule", async () => {
-      const { invalidateModule, invalidateOPFSModule } = await import("./opfs-loader.js");
-      expect(invalidateOPFSModule).toBe(invalidateModule);
-    });
-
-    it("should export readOPFSFile as alias for readFile", async () => {
-      const { readFile, readOPFSFile } = await import("./opfs-loader.js");
-      expect(readOPFSFile).toBe(readFile);
-    });
-
-    it("should export writeOPFSFile as alias for writeFile", async () => {
-      const { writeFile, writeOPFSFile } = await import("./opfs-loader.js");
-      expect(writeOPFSFile).toBe(writeFile);
-    });
-
-    it("should export createOPFSPlugin as alias for createFsPlugin", async () => {
-      const { createFsPlugin, createOPFSPlugin } = await import("./opfs-loader.js");
-      expect(createOPFSPlugin).toBe(createFsPlugin);
-    });
-  });
 });
 
 describe("path utilities (internal)", () => {

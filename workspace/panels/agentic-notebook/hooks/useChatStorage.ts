@@ -22,14 +22,12 @@ import type { SyncStatus } from "../types/storage";
 import {
   createUserParticipant,
   createAgentParticipant,
-  createKernelParticipant,
   createSystemParticipant,
 } from "../types/channel";
 
 /** User ID constant */
 const USER_ID = "user";
 const AGENT_ID = "agent";
-const KERNEL_ID = "kernel";
 const SYSTEM_ID = "system";
 
 /**
@@ -75,7 +73,6 @@ export function useChatStorage(panelId: string) {
   const addDefaultParticipants = useCallback(() => {
     addParticipant(createUserParticipant(USER_ID, "You"));
     addParticipant(createAgentParticipant(AGENT_ID, "Assistant", "coding"));
-    addParticipant(createKernelParticipant(KERNEL_ID, "Kernel", ""));
     addParticipant(createSystemParticipant(SYSTEM_ID));
   }, [addParticipant]);
 
@@ -105,18 +102,6 @@ export function useChatStorage(panelId: string) {
 
       // Re-add participants with proper capabilities
       addDefaultParticipants();
-
-      // Add system message about kernel state
-      sendMessage({
-        participantId: SYSTEM_ID,
-        participantType: "system",
-        content: {
-          type: "system",
-          level: "info",
-          message:
-            "Note: Your previous code execution session was not preserved. Variables and state from your last session are not available.",
-        },
-      });
 
       setCurrentChatId(chatId);
       return chatId;

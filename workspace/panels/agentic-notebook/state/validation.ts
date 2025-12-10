@@ -15,8 +15,8 @@ export class MessageValidationError extends Error {
   }
 }
 
-const VALID_PARTICIPANT_TYPES: ParticipantType[] = ["user", "agent", "kernel", "system"];
-const VALID_CONTENT_TYPES = ["text", "code", "code_result", "tool_call", "tool_result", "system"] as const;
+const VALID_PARTICIPANT_TYPES: ParticipantType[] = ["user", "agent", "system"];
+const VALID_CONTENT_TYPES = ["text", "tool_call", "tool_result", "file_upload", "system"] as const;
 
 export function validateMessage(
   message: Omit<ChannelMessage, "id" | "timestamp" | "channelId">
@@ -38,11 +38,6 @@ export function validateMessage(
     case "text":
       if (typeof message.content.text !== "string") {
         throw new MessageValidationError("Text content must have a text string");
-      }
-      break;
-    case "code":
-      if (typeof message.content.code !== "string") {
-        throw new MessageValidationError("Code content must have a code string");
       }
       break;
     case "tool_call":

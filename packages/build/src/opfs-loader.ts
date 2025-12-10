@@ -10,11 +10,17 @@
 
 import * as fs from "fs/promises";
 import { getEsbuild } from "./esbuild-init.js";
+import { executeEsm } from "./execute-esm.js";
 
 type EsbuildWasm = typeof import("esbuild-wasm");
 
 /** Common file extensions to try when resolving extensionless imports */
 const EXTENSION_ORDER = [".ts", ".tsx", ".js", ".jsx", ".json"];
+
+export interface FsImportOptions {
+  /** Resolver for external/bare specifiers (e.g., react, lodash-es) */
+  importModule?: (specifier: string) => Promise<unknown>;
+}
 
 /**
  * Loader for modules stored in the filesystem with support for transitive resolution.
@@ -30,7 +36,7 @@ export class FsLoader {
    * @param path - Path to the module (e.g., "/scripts/helper.ts")
    * @returns The imported module
    */
-  async importModule(path: string): Promise<unknown> {
+  async importModule(path: string, options: FsImportOptions = {}): Promise<unknown> {
     // Auto-initialize on first use (uses shared esbuild instance)
     if (!this.esbuild) {
       this.esbuild = await getEsbuild();
@@ -66,32 +72,25 @@ export class FsLoader {
 
     if (result.errors.length > 0) {
       const errorMsg = result.errors
-        .map((e) => `${e.location?.file || path}:${e.location?.line || 0}: ${e.text}`)
+        .map(
+          (e) => `${e.location?.file || path}:${e.location?.line || 0}: ${e.text}`
+        )
         .join("\n");
       throw new Error(`Build failed:\n${errorMsg}`);
     }
 
-    // Create blob URL and import
     const outputText = result.outputFiles?.[0]?.text;
     if (!outputText) {
       throw new Error("No output from esbuild");
     }
 
-    const blob = new Blob([outputText], {
-      type: "application/javascript",
+    // Execute the bundled ESM code
+    const execResult = await executeEsm(outputText, {
+      importModule: options.importModule,
     });
-    const url = URL.createObjectURL(blob);
 
-    try {
-      const module = await import(/* webpackIgnore: true */ url);
-      // Blob URL can be revoked immediately after import since the module is already loaded
-      URL.revokeObjectURL(url);
-      this.cache.set(cacheKey, module);
-      return module;
-    } catch (error) {
-      URL.revokeObjectURL(url);
-      throw error;
-    }
+    this.cache.set(cacheKey, execResult.exports);
+    return execResult.exports;
   }
 
   /**
@@ -238,6 +237,11 @@ async function resolveWithExtensions(path: string): Promise<string> {
 
 /**
  * Create an esbuild plugin for resolving imports from the filesystem.
+ *
+ * Handles:
+ * - Relative imports (./foo, ../bar) → resolved from OPFS
+ * - Absolute imports (/path/to/file) → resolved from OPFS
+ * - Bare specifiers (react, lodash-es) → marked external for runtime resolution
  */
 function createFsResolverPlugin(): import("esbuild-wasm").Plugin {
   return {
@@ -255,6 +259,12 @@ function createFsResolverPlugin(): import("esbuild-wasm").Plugin {
       build.onResolve({ filter: /^\// }, async (args) => {
         const withExt = await resolveWithExtensions(args.path);
         return { path: withExt, namespace: "fs" };
+      });
+
+      // Mark bare specifiers (npm packages) as external
+      // These will be resolved at runtime via dynamic import or importModule
+      build.onResolve({ filter: /^[^./]/ }, (args) => {
+        return { path: args.path, external: true };
       });
 
       // Load files from fs namespace
@@ -285,8 +295,11 @@ function createFsResolverPlugin(): import("esbuild-wasm").Plugin {
  */
 const sharedLoader = new FsLoader();
 
-export function importModule(path: string): Promise<unknown> {
-  return sharedLoader.importModule(path);
+export function importModule(
+  path: string,
+  options?: FsImportOptions
+): Promise<unknown> {
+  return sharedLoader.importModule(path, options);
 }
 
 export function clearModuleCache(): void {
@@ -304,13 +317,3 @@ export function invalidateModule(path: string): void {
 export function createFsPlugin(): import("esbuild-wasm").Plugin {
   return createFsResolverPlugin();
 }
-
-// Legacy exports for backward compatibility
-// These are aliases to the new names
-export { FsLoader as OPFSLoader };
-export { importModule as importFromOPFS };
-export { clearModuleCache as clearOPFSCache };
-export { invalidateModule as invalidateOPFSModule };
-export { readFile as readOPFSFile };
-export { writeFile as writeOPFSFile };
-export { createFsPlugin as createOPFSPlugin };

@@ -4,7 +4,7 @@ import type { ChannelMessage } from "./messages";
  * Participant type identifiers.
  * Extensible for future multi-user/multi-agent scenarios.
  */
-export type ParticipantType = "user" | "agent" | "kernel" | "system";
+export type ParticipantType = "user" | "agent" | "system";
 
 /**
  * Capabilities a participant can declare.
@@ -52,16 +52,6 @@ export interface AgentParticipant extends Participant {
 }
 
 /**
- * Kernel participant with session info.
- */
-export interface KernelParticipant extends Participant {
-  type: "kernel";
-  sessionId: string;
-  isReady: boolean;
-  executionCount: number;
-}
-
-/**
  * System participant for notifications.
  */
 export interface SystemParticipant extends Participant {
@@ -74,7 +64,6 @@ export interface SystemParticipant extends Participant {
 export type AnyParticipant =
   | UserParticipant
   | AgentParticipant
-  | KernelParticipant
   | SystemParticipant;
 
 /**
@@ -93,7 +82,6 @@ export type ChannelStatus =
   | "user_typing"
   | "agent_thinking"
   | "agent_streaming"
-  | "kernel_executing"
   | "error";
 
 /**
@@ -148,14 +136,6 @@ export const DEFAULT_CAPABILITIES: Record<ParticipantType, ParticipantCapabiliti
     canUploadFiles: false,
     canAbort: false,
   },
-  kernel: {
-    canSendText: false,
-    canSendCode: false,
-    canExecuteCode: true,
-    canCallTools: false,
-    canUploadFiles: false,
-    canAbort: false,
-  },
   system: {
     canSendText: true,
     canSendCode: false,
@@ -201,25 +181,6 @@ export function createAgentParticipant(
     displayName,
     capabilities: DEFAULT_CAPABILITIES.agent,
     modelRole,
-  };
-}
-
-/**
- * Create a kernel participant with default capabilities.
- */
-export function createKernelParticipant(
-  id: string,
-  displayName: string,
-  sessionId: string
-): KernelParticipant {
-  return {
-    id,
-    type: "kernel",
-    displayName,
-    capabilities: DEFAULT_CAPABILITIES.kernel,
-    sessionId,
-    isReady: false,
-    executionCount: 0,
   };
 }
 

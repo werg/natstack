@@ -1,11 +1,15 @@
 import { compileMDX, MDXCompileError } from "@natstack/build-mdx";
 import type { AgentTool } from "../AgentSession";
 import { generateComponentDocs } from "../../components/ChatArea/mdxComponents";
+import { getImportModule, isInitialized } from "../../eval";
 
 /**
  * Tool execution result format.
  */
-type ToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
+type ToolResult = {
+  content: Array<{ type: string; text: string }>;
+  isError?: boolean;
+};
 
 /**
  * Create MDX rendering tools for the agent.
@@ -77,7 +81,9 @@ Note: The tool returns any compilation errors. If rendering fails, check your JS
 
         // Validate the MDX by compiling it - catch syntax errors before claiming success
         try {
-          await compileMDX(content, {});
+          // Pass importModule if runtime is initialized (enables imports in MDX)
+          const importModule = isInitialized() ? getImportModule() : undefined;
+          await compileMDX(content, { importModule });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           const errorType = err instanceof MDXCompileError ? "MDX compilation error" : "Error";
@@ -87,7 +93,7 @@ Note: The tool returns any compilation errors. If rendering fails, check your JS
           };
         }
 
-        // MDX compiled successfully - the UI will render it from the tool call args
+        // MDX compiled successfully - the UI extracts content from call.args
         return {
           content: [{
             type: "text",

@@ -349,6 +349,8 @@ export interface ToolExecutionResult {
   content: Array<{ type: "text"; text: string }>;
   /** Whether the tool execution resulted in an error */
   isError?: boolean;
+  /** Optional structured data (e.g., for code execution results with components) */
+  data?: unknown;
 }
 
 /** Event sent from main to panel with stream chunks */

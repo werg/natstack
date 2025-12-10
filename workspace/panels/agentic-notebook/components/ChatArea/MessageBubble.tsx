@@ -1,44 +1,9 @@
-import { useState, useCallback } from "react";
-import { Box, Card, Flex, Text, IconButton, Tooltip } from "@radix-ui/themes";
-import { CopyIcon, CheckIcon } from "@radix-ui/react-icons";
+import { Box, Card, Flex, Text } from "@radix-ui/themes";
 import type { ChannelMessage } from "../../types/messages";
-import { ToolCallRecord } from "./ToolCallRecord";
-import { MDXToolResult, isRenderMDXResult } from "./MDXToolResult";
-import { CodeCellOutput } from "./CodeCellOutput";
-import { CodeBlock } from "./CodeBlock";
+import { ToolResultDisplay } from "./ToolResultDisplay";
 import { MDXContent } from "./MDXContent";
 import { mdxComponents } from "./mdxComponents";
-
-/**
- * Copy button with success feedback.
- */
-function CopyButton({ text, size = "1" }: { text: string; size?: "1" | "2" }) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error("Failed to copy:", err);
-    }
-  }, [text]);
-
-  return (
-    <Tooltip content={copied ? "Copied!" : "Copy"}>
-      <IconButton
-        size={size}
-        variant="ghost"
-        color={copied ? "green" : "gray"}
-        onClick={handleCopy}
-        style={{ opacity: copied ? 1 : 0.6 }}
-      >
-        {copied ? <CheckIcon /> : <CopyIcon />}
-      </IconButton>
-    </Tooltip>
-  );
-}
+import { CopyButton } from "../shared/CopyButton";
 
 interface MessageBubbleProps {
   message: ChannelMessage;
@@ -69,52 +34,11 @@ function MessageContent({ message }: { message: ChannelMessage }) {
         </Box>
       );
 
-    case "code":
-      return (
-        <Box>
-          <Flex justify="between" align="center" mb="1">
-            <Text size="1" color="gray">
-              {content.language}
-            </Text>
-            <Flex align="center" gap="2">
-              <Text size="1" color="gray">
-                {content.source === "user" ? "User" : "Agent"}
-              </Text>
-              <CopyButton text={content.code} />
-            </Flex>
-          </Flex>
-          <CodeBlock code={content.code} language={content.language} />
-        </Box>
-      );
-
-    case "code_result":
-      return <CodeCellOutput result={content} defaultCollapsed={false} />;
-
     case "tool_call":
-      // Use MDXToolResult for render_mdx tool calls
-      if (isRenderMDXResult(content, null)) {
-        return <MDXToolResult call={content} result={null} />;
-      }
-      return (
-        <ToolCallRecord
-          call={content}
-          result={null}
-          defaultCollapsed={true}
-        />
-      );
+      return <ToolResultDisplay call={content} />;
 
     case "tool_result":
-      // Use MDXToolResult for render_mdx tool results
-      if (isRenderMDXResult(null, content)) {
-        return <MDXToolResult call={null} result={content} />;
-      }
-      return (
-        <ToolCallRecord
-          call={null}
-          result={content}
-          defaultCollapsed={true}
-        />
-      );
+      return <ToolResultDisplay result={content} />;
 
     case "file_upload":
       return (
@@ -146,9 +70,7 @@ function MessageContent({ message }: { message: ChannelMessage }) {
         </Text>
       );
 
-    case "react_mount":
-      // React mount is no longer supported in stateless mode
-      return null;
+
 
     default:
       return <Text size="2">Unknown message type</Text>;
@@ -164,8 +86,6 @@ function getParticipantLabel(type: string): string {
       return "You";
     case "agent":
       return "Assistant";
-    case "kernel":
-      return "Kernel";
     case "system":
       return "System";
     default:
@@ -182,8 +102,6 @@ function getMessageBackground(type: string): string {
       return "var(--blue-a2)";
     case "agent":
       return "var(--gray-a2)";
-    case "kernel":
-      return "var(--orange-a2)";
     case "system":
       return "var(--gray-a1)";
     default:
@@ -232,13 +150,9 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           {getParticipantLabel(message.participantType)}
           {message.isStreaming && " (streaming...)"}
         </Text>
-        {(message.content.type === "text" || message.content.type === "code") && (
+        {message.content.type === "text" && (
           <CopyButton
-            text={
-              message.content.type === "text"
-                ? message.content.text
-                : message.content.code
-            }
+            text={message.content.text}
             size="1"
           />
         )}

@@ -21,6 +21,8 @@ type McpSdkServerConfigWithInstance = ReturnType<typeof createSdkMcpServer>;
 export interface ToolExecutionResult {
   content: Array<{ type: "text"; text: string }>;
   isError?: boolean;
+  /** Optional structured data (e.g., for code execution results with components) */
+  data?: unknown;
 }
 
 /**

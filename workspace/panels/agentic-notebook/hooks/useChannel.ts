@@ -29,7 +29,7 @@ import {
   loadStoredChatAtom,
 } from "../state";
 import type { ChannelMessage, MessageContent } from "../types/messages";
-import type { AnyParticipant, ChannelStatus } from "../types/channel";
+import type { AnyParticipant } from "../types/channel";
 
 // ============ Composable Hooks (Primary API) ============
 
@@ -186,130 +186,6 @@ export function useParticipantActions() {
     addParticipant,
     removeParticipant,
   };
-}
-
-// ============ Legacy Hooks (For Backward Compatibility) ============
-// These will be deprecated in favor of the composable hooks above.
-
-/**
- * @deprecated Use useChannelMessages().messages instead
- */
-export function useMessages(): ChannelMessage[] {
-  return useAtomValue(messagesAtom);
-}
-
-/**
- * @deprecated Use useGenerationStatus().status instead
- */
-export function useChannelStatus(): ChannelStatus {
-  return useAtomValue(channelStatusAtom);
-}
-
-/**
- * @deprecated Use useGenerationStatus().isGenerating instead
- */
-export function useIsGenerating(): boolean {
-  return useAtomValue(isGeneratingAtom);
-}
-
-/**
- * @deprecated Use useGenerationStatus().abortSignal instead
- */
-export function useAbortSignal(): AbortSignal | undefined {
-  return useAtomValue(abortSignalAtom);
-}
-
-/**
- * @deprecated Use useChannelMessages().hasQueuedMessages instead
- */
-export function useHasQueuedMessages(): boolean {
-  return useAtomValue(hasQueuedMessagesAtom);
-}
-
-/**
- * @deprecated Use useMessageActions().sendMessage instead
- */
-export function useSendMessage() {
-  const sendMessage = useSetAtom(sendMessageAtom);
-  return useCallback(
-    (message: Omit<ChannelMessage, "id" | "timestamp" | "channelId">) => {
-      return sendMessage(message);
-    },
-    [sendMessage]
-  );
-}
-
-/**
- * @deprecated Use useMessageActions().queueMessage instead
- */
-export function useQueueMessage() {
-  const queueMessage = useSetAtom(queueMessageAtom);
-  return useCallback(
-    (message: Omit<ChannelMessage, "id" | "timestamp" | "channelId">) => {
-      queueMessage(message);
-    },
-    [queueMessage]
-  );
-}
-
-/**
- * @deprecated Use useMessageActions().processQueue instead
- */
-export function useProcessQueue() {
-  return useSetAtom(processQueueAtom);
-}
-
-/**
- * @deprecated Use useMessageActions().updateMessage instead
- */
-export function useUpdateMessage() {
-  const updateMessage = useSetAtom(updateMessageAtom);
-  return useCallback(
-    (messageId: string, update: Partial<MessageContent>) => {
-      updateMessage({ messageId, update });
-    },
-    [updateMessage]
-  );
-}
-
-/**
- * @deprecated Use useMessageActions().appendToMessage instead
- */
-export function useAppendToMessage() {
-  const appendToMessage = useSetAtom(appendToMessageAtom);
-  return useCallback(
-    (messageId: string, delta: string) => {
-      appendToMessage({ messageId, delta });
-    },
-    [appendToMessage]
-  );
-}
-
-/**
- * @deprecated Use useMessageActions().finishStreaming instead
- */
-export function useFinishStreaming() {
-  return useSetAtom(finishStreamingAtom);
-}
-
-/**
- * @deprecated Use useMessageActions().updateToolStatus instead
- */
-export function useUpdateToolStatus() {
-  const updateToolStatus = useSetAtom(updateToolStatusAtom);
-  return useCallback(
-    (messageId: string, status: ChannelMessage["toolStatus"]) => {
-      updateToolStatus({ messageId, status });
-    },
-    [updateToolStatus]
-  );
-}
-
-/**
- * @deprecated Use useGenerationControl().abortGeneration instead
- */
-export function useAbortGeneration() {
-  return useSetAtom(abortGenerationAtom);
 }
 
 // ============ Direct Access Hooks ============

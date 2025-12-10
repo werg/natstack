@@ -10,16 +10,13 @@ import {
   transform,
   getLoaderForLanguage,
   BuildError,
-  createOPFSPlugin,
+  createFsPlugin,
+  executeEsm,
+  getExportReturnValue,
 } from "@natstack/build";
 import { createConsoleCapture } from "./console-capture.js";
-import { typeCheckOrThrow, isTypeScriptAvailable } from "./type-check.js";
+import { typeCheckOrThrow } from "./type-check.js";
 import type { EvalOptions, EvalResult } from "./types.js";
-
-// Get the AsyncFunction constructor
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
-  ...args: string[]
-) => (...args: unknown[]) => Promise<unknown>;
 
 /** Error thrown when execution is aborted */
 export class AbortError extends Error {
@@ -31,7 +28,10 @@ export class AbortError extends Error {
 
 /** Error thrown when evaluation fails at runtime */
 export class EvalError extends Error {
-  constructor(message: string, public readonly cause?: Error) {
+  constructor(
+    message: string,
+    public readonly cause?: Error
+  ) {
     super(message);
     this.name = "EvalError";
   }
@@ -50,7 +50,13 @@ export async function evaluate(
   code: string,
   options: EvalOptions = { language: "typescript" }
 ): Promise<EvalResult> {
-  const { language, bindings = {}, typeCheck = false, signal } = options;
+  const {
+    language,
+    bindings = {},
+    typeCheck = false,
+    signal,
+    importModule,
+  } = options;
 
   // Check if already aborted
   if (signal?.aborted) {
@@ -88,8 +94,8 @@ export async function evaluate(
     throw new AbortError();
   }
 
-  // Create OPFS plugin for import resolution
-  const opfsPlugin = await createOPFSPlugin();
+  // Create filesystem plugin for import resolution
+  const fsPlugin = createFsPlugin();
 
   // Check abort after creating plugin
   if (signal?.aborted) {
@@ -97,6 +103,7 @@ export async function evaluate(
   }
 
   // Bundle the code to resolve any imports from OPFS
+  // Use ESM format to support top-level await
   const bundleResult = await esbuild.build({
     stdin: {
       contents: transformedCode,
@@ -109,12 +116,14 @@ export async function evaluate(
     write: false,
     platform: "browser",
     target: "es2022",
-    plugins: [opfsPlugin],
+    plugins: [fsPlugin],
   });
 
   if (bundleResult.errors.length > 0) {
     const errorMsg = bundleResult.errors
-      .map((e) => `${e.location?.file || "input"}:${e.location?.line || 0}: ${e.text}`)
+      .map(
+        (e) => `${e.location?.file || "input"}:${e.location?.line || 0}: ${e.text}`
+      )
       .join("\n");
     throw new BuildError(`Build failed:\n${errorMsg}`);
   }
@@ -132,28 +141,25 @@ export async function evaluate(
   // Set up console capture
   const consoleCapture = createConsoleCapture({ forward: false });
 
-  // Create execution context with bindings
-  const scope: Record<string, unknown> = { ...bindings };
-  const exportedBindings: Record<string, unknown> = {};
-
-  // Wrap code to capture exports and provide console
-  const wrappedCode = wrapCodeForExecution(bundledCode, Object.keys(bindings));
-
   try {
-    // Create and execute the async function
-    const fn = new AsyncFunction(
-      "__scope__",
-      "__console__",
-      "__exports__",
-      wrappedCode
-    );
-
-    const returnValue = await fn(scope, consoleCapture.proxy, exportedBindings);
+    // Execute the bundled ESM code
+    const result = await executeEsm(bundledCode, {
+      importModule,
+      scope: bindings,
+      params: {
+        __console__: consoleCapture.proxy,
+      },
+      preamble: "const console = __console__;",
+      epilogue: `
+// Return default export if present, otherwise the whole exports object
+return ${getExportReturnValueCode()};
+`,
+    });
 
     return {
       console: consoleCapture.getOutput(),
-      bindings: exportedBindings,
-      returnValue,
+      bindings: result.exports,
+      returnValue: result.returnValue,
     };
   } catch (error) {
     // Still return console output on error
@@ -169,37 +175,20 @@ export async function evaluate(
     );
 
     // Attach console output to error for debugging
-    (evalError as EvalError & { console?: typeof consoleOutput }).console = consoleOutput;
+    (evalError as EvalError & { console?: typeof consoleOutput }).console =
+      consoleOutput;
 
     throw evalError;
   }
 }
 
 /**
- * Wrap bundled code for execution with proper scope and export capture.
+ * Generate code to extract the return value from exports.
+ * Uses "default" in __exports__ to distinguish between
+ * `export default undefined` and no default export.
  */
-function wrapCodeForExecution(
-  code: string,
-  bindingNames: string[]
-): string {
-  // Destructure injected bindings
-  const bindingDestructure =
-    bindingNames.length > 0
-      ? `const { ${bindingNames.join(", ")} } = __scope__;`
-      : "";
-
-  // The bundled code is ESM format, so we need to handle it specially
-  // We'll execute it and capture any top-level assignments
-  return `
-const console = __console__;
-${bindingDestructure}
-
-// Execute the bundled code
-${code}
-
-// Note: ESM exports are handled by esbuild's bundle output
-// The last expression value is returned automatically
-`;
+function getExportReturnValueCode(): string {
+  return `("default" in __exports__) ? __exports__.default : (Object.keys(__exports__).length > 0 ? __exports__ : undefined)`;
 }
 
 /**

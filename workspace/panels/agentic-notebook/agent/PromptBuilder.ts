@@ -16,7 +16,7 @@ type ContentPart = TextPart | ToolCallPart | ToolResultPart;
  * Responsible for:
  * - Converting ChannelMessage objects to Message[] for streamText
  * - Grouping consecutive messages by role
- * - Formatting different content types (text, code, tool calls/results)
+ * - Formatting different content types (text, tool calls/results)
  */
 export class PromptBuilder {
   private systemPrompt: string;
@@ -110,11 +110,10 @@ export class PromptBuilder {
       case "agent":
         return this.convertAgentMessage(msg);
 
-      case "kernel":
-        return this.convertKernelMessage(msg);
+      case "system":
+        // System messages are not included in prompt
+        return null;
     }
-
-    return null;
   }
 
   /**
@@ -128,17 +127,6 @@ export class PromptBuilder {
       return {
         role: "user",
         content: { type: "text", text: msg.content.text },
-      };
-    }
-
-    if (msg.content.type === "code") {
-      // User code input - format as code block
-      return {
-        role: "user",
-        content: {
-          type: "text",
-          text: `\`\`\`${msg.content.language}\n${msg.content.code}\n\`\`\``,
-        },
       };
     }
 
@@ -183,30 +171,6 @@ export class PromptBuilder {
           result: msg.content.result,
           isError: msg.content.isError,
         },
-      };
-    }
-
-    return null;
-  }
-
-  /**
-   * Convert kernel messages to prompt parts.
-   */
-  private convertKernelMessage(msg: ChannelMessage): {
-    role: "user";
-    content: TextPart;
-  } | null {
-    if (msg.content.type === "code_result") {
-      // Include kernel results as context
-      const output = msg.content.consoleOutput
-        .map((o) => `[${o.level}] ${o.args.join(" ")}`)
-        .join("\n");
-      const resultText = msg.content.success
-        ? `Output:\n${output}${msg.content.result !== undefined ? `\nResult: ${JSON.stringify(msg.content.result)}` : ""}`
-        : `Error: ${msg.content.error}`;
-      return {
-        role: "user",
-        content: { type: "text", text: `[Kernel Result]\n${resultText}` },
       };
     }
 
