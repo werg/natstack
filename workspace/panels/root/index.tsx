@@ -164,6 +164,9 @@ export default function ChildPanelLauncher() {
         type: "app",
         name: "agentic-notebook",
         source: "panels/agentic-notebook",
+        repoArgs: {
+          history: "state/notebook-chats",
+        },
       });
       setStatus(`Launched agentic notebook: ${child.name}`);
     } catch (error) {

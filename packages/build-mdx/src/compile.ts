@@ -143,9 +143,14 @@ export async function compileMDX(
 
   // Step 3: Execute the bundled code with runtime injected
   try {
+    // Merge provided components into scope so they're available as top-level variables
+    // This allows `export default function App() { return <Card>...</Card> }` to work
+    // because Card is in scope, not just available via useMDXComponents
+    const mergedScope = { ...scope, ...components };
+
     const result = await executeEsm(bundledCode, {
       importModule,
-      scope,
+      scope: mergedScope,
       params: {
         _components: components,
       },

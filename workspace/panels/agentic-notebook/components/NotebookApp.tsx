@@ -110,6 +110,21 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
         // Get filesystem and git client
         const fsImpl = fs as unknown as import("../storage/ChatStore").FileSystem;
         const gitConfig = await panel.git.getConfig();
+
+        // Bootstrap is automatic - repos are cloned before panel loads
+        const bootstrapResult = panel.bootstrap;
+        if (!bootstrapResult) {
+          const errorDetail = panel.bootstrapError
+            ? `Bootstrap failed: ${panel.bootstrapError}`
+            : "Bootstrap result not available.\n\n" +
+              "This panel requires repoArgs but bootstrap did not run.\n" +
+              "Check that:\n" +
+              "  1. package.json has: \"natstack\": { \"repoArgs\": [\"history\"] }\n" +
+              "  2. Parent called createChild with: repoArgs: { history: \"path/to/repo\" }";
+          throw new Error(errorDetail);
+        }
+        console.log("[NotebookApp] Bootstrap complete:", bootstrapResult.actions);
+
         const git = new GitClient(fsImpl, {
           serverUrl: gitConfig.serverUrl,
           token: gitConfig.token,
@@ -120,9 +135,15 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
         await initializeEval();
         if (!mounted) return;
 
+        // Get history repo path from bootstrap result (cloned to /args/history)
+        const historyRepoPath = bootstrapResult.argPaths.history;
+        if (!historyRepoPath) {
+          throw new Error("History repo arg not found - did parent provide repoArgs.history?");
+        }
+
         // Initialize storage (OPFS)
-        console.log("[NotebookApp] Initializing storage...");
-        await initialize(fsImpl, git);
+        console.log("[NotebookApp] Initializing storage at", historyRepoPath);
+        await initialize(fsImpl, git, historyRepoPath, gitConfig.serverUrl);
         if (!mounted) return;
         setStorageInitialized(true);
 

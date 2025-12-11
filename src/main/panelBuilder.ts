@@ -49,22 +49,22 @@ const MAX_BUNDLE_SIZE = 50 * 1024 * 1024; // 50 MB for JS bundle
 const MAX_HTML_SIZE = 10 * 1024 * 1024; // 10 MB for HTML
 const MAX_CSS_SIZE = 10 * 1024 * 1024; // 10 MB for CSS
 
-// Keep only fs virtual modules.
-const panelFsModulePath = path.join(__dirname, "panelFsRuntime.js");
-const panelFsPromisesModulePath = path.join(__dirname, "panelFsPromisesRuntime.js");
+// Unified panel runtime module - provides fs, git, and bootstrap APIs
+const panelRuntimePath = path.join(__dirname, "panelRuntime.js");
 
-const fsModuleMap = new Map([
-  ["fs", panelFsModulePath],
-  ["node:fs", panelFsModulePath],
-  ["fs/promises", panelFsPromisesModulePath],
-  ["node:fs/promises", panelFsPromisesModulePath],
-]);
-
-for (const [name, modulePath] of fsModuleMap) {
-  if (!fs.existsSync(modulePath)) {
-    throw new Error(`Runtime module ${name} not found at ${modulePath}`);
-  }
+if (!fs.existsSync(panelRuntimePath)) {
+  throw new Error(`Panel runtime not found at ${panelRuntimePath}`);
 }
+
+// Virtual module mappings - all map to the unified panelRuntime.js
+// The runtime exports different namespaces that we'll select via the plugin
+const virtualModuleMap = new Map([
+  ["fs", panelRuntimePath],
+  ["node:fs", panelRuntimePath],
+  ["fs/promises", panelRuntimePath],
+  ["node:fs/promises", panelRuntimePath],
+  ["@natstack/git", panelRuntimePath],
+]);
 
 const defaultPanelDependencies: Record<string, string> = {
   // Node types for dependencies that expect them
@@ -103,13 +103,11 @@ function getReactDependenciesFromNatstackReact(): Record<string, string> | null 
  * Implicit externals added when certain dependencies are detected.
  * Maps dependency name -> externals to add.
  * This avoids requiring panels to manually specify common externals.
+ *
+ * Note: @natstack/git is NOT here because it's mapped to panelRuntime.js
+ * via the virtual module plugin, which bundles isomorphic-git with Buffer polyfill.
  */
 const implicitExternals: Record<string, Record<string, string>> = {
-  // @natstack/git uses isomorphic-git which needs CDN loading for Buffer polyfills
-  "@natstack/git": {
-    "isomorphic-git": "https://esm.sh/isomorphic-git",
-    "isomorphic-git/http/web": "https://esm.sh/isomorphic-git/http/web",
-  },
   // @natstack/build-eval optionally uses typescript for type checking.
   // TypeScript is marked external because:
   // 1. It's ~8MB and rarely needed at runtime (type checking is optional)
@@ -486,15 +484,46 @@ export class PanelBuilder {
     // Determine if panel uses @natstack/react (enables auto-mount)
     const hasNatstackReact = "@natstack/react" in (manifest.dependencies ?? {});
 
+    // Determine if panel has repoArgs (needs bootstrap)
+    const hasRepoArgs = manifest.repoArgs && manifest.repoArgs.length > 0;
+
     // Create wrapper entry
     const tempEntryPath = path.join(runtimeDir, "_entry.js");
     const relativeUserEntry = path.relative(runtimeDir, entryPath);
 
+    // Build wrapper code with optional bootstrap
     let wrapperCode: string;
+
+    // Bootstrap preamble - runs before user module loads
+    // Import from the unified panel runtime
+    // Wrapped in try-catch to show meaningful errors if bootstrap fails
+    const bootstrapPreamble = hasRepoArgs
+      ? `// Auto-bootstrap: clone repoArgs before panel loads
+import { runPanelBootstrap } from ${JSON.stringify(panelRuntimePath)};
+try {
+  await runPanelBootstrap();
+} catch (bootstrapError) {
+  const msg = bootstrapError instanceof Error ? bootstrapError.message : String(bootstrapError);
+  console.error("[NatStack] Bootstrap failed:", msg);
+  document.body.innerHTML = \`
+    <div style="padding: 20px; font-family: system-ui, sans-serif; color: #dc2626;">
+      <h2 style="margin: 0 0 10px;">Bootstrap Failed</h2>
+      <p style="margin: 0 0 10px;">Failed to initialize panel repositories:</p>
+      <pre style="background: #fef2f2; padding: 10px; border-radius: 4px; overflow: auto;">\${msg}</pre>
+      <p style="margin: 10px 0 0; font-size: 14px; color: #666;">
+        Check that repoArgs were provided by the parent panel and the git server is accessible.
+      </p>
+    </div>
+  \`;
+  throw bootstrapError;
+}
+
+`
+      : "";
+
     if (hasNatstackReact) {
       // Auto-mount wrapper for React panels
-      wrapperCode = `
-import { autoMountReactPanel, shouldAutoMount } from "@natstack/react";
+      wrapperCode = `${bootstrapPreamble}import { autoMountReactPanel, shouldAutoMount } from "@natstack/react";
 import * as userModule from ${JSON.stringify(relativeUserEntry)};
 
 if (shouldAutoMount(userModule)) {
@@ -503,7 +532,7 @@ if (shouldAutoMount(userModule)) {
 `;
     } else {
       // Direct import for non-React panels (panel handles its own mounting)
-      wrapperCode = `import ${JSON.stringify(relativeUserEntry)};\n`;
+      wrapperCode = `${bootstrapPreamble}import ${JSON.stringify(relativeUserEntry)};\n`;
     }
     fs.writeFileSync(tempEntryPath, wrapperCode);
 
@@ -516,6 +545,7 @@ if (shouldAutoMount(userModule)) {
         Object.assign(externals, depExternals);
       }
     }
+
     const externalModules = Object.keys(externals);
 
     // Build with esbuild (write to disk)
@@ -525,7 +555,7 @@ if (shouldAutoMount(userModule)) {
     }
 
     // Only use React dedupe plugin if panel uses @natstack/react
-    const plugins: esbuild.Plugin[] = [this.createFsPlugin()];
+    const plugins: esbuild.Plugin[] = [this.createVirtualModulePlugin()];
     if (hasNatstackReact) {
       plugins.push(this.createReactDedupePlugin(sourcePath));
     }
@@ -558,16 +588,23 @@ if (shouldAutoMount(userModule)) {
   }
 
   /**
-   * Create the fs virtual module plugin for esbuild.
+   * Create the virtual module plugin for esbuild.
+   * Maps fs, @natstack/git, etc. to pre-bundled runtime modules with polyfills.
    */
-  private createFsPlugin(): esbuild.Plugin {
+  private createVirtualModulePlugin(): esbuild.Plugin {
     return {
-      name: "fs-virtual-module",
+      name: "virtual-module",
       setup(build) {
+        // Handle fs modules
         build.onResolve({ filter: /^(fs|node:fs|fs\/promises|node:fs\/promises)$/ }, (args) => {
-          const runtimePath = fsModuleMap.get(args.path);
+          const runtimePath = virtualModuleMap.get(args.path);
           if (!runtimePath) return null;
           return { path: runtimePath };
+        });
+
+        // Handle @natstack/git - use unified panel runtime with Buffer polyfill
+        build.onResolve({ filter: /^@natstack\/git$/ }, () => {
+          return { path: panelRuntimePath };
         });
       },
     };

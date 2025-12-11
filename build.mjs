@@ -59,31 +59,32 @@ const panelPreloadConfig = {
   logOverride,
 };
 
-// Keep only fs runtime configs (these remain as virtual modules for now)
-const panelFsRuntimeConfig = {
-  entryPoints: ["src/panelRuntime/panelFsRuntime.ts"],
-  bundle: true,
-  platform: "browser",
-  target: "es2022",
-  format: "esm",
-  outfile: "dist/panelFsRuntime.js",
-  sourcemap: isDev,
-  minify: !isDev,
-  plugins: typiaPlugins,
-  logOverride,
-};
+// =============================================================================
+// Panel Runtime - Unified bundle for browser panels
+// =============================================================================
+// Single bundle that provides all panel runtime APIs:
+// - fs, fs/promises (ZenFS OPFS backend)
+// - @natstack/git (isomorphic-git with Buffer polyfill)
+// - Bootstrap functionality for auto-cloning repoArgs
+//
+// This unified approach avoids:
+// - Duplicate ZenFS initialization from multiple bundles
+// - Race conditions from IIFE initialization at import time
+// - Complex import path resolution between runtime modules
 
-const panelFsPromisesRuntimeConfig = {
-  entryPoints: ["src/panelRuntime/panelFsPromisesRuntime.ts"],
+const panelRuntimeConfig = {
+  entryPoints: ["src/panelRuntime/index.ts"],
   bundle: true,
   platform: "browser",
   target: "es2022",
   format: "esm",
-  outfile: "dist/panelFsPromisesRuntime.js",
+  outfile: "dist/panelRuntime.js",
   sourcemap: isDev,
   minify: !isDev,
   plugins: typiaPlugins,
   logOverride,
+  // Bundle isomorphic-git with Buffer polyfill
+  inject: ["./src/panelRuntime/buffer-polyfill.js"],
 };
 
 const rendererConfig = {
@@ -216,8 +217,7 @@ async function build() {
     await esbuild.build(mainConfig);
     await esbuild.build(preloadConfig);
     await esbuild.build(panelPreloadConfig);
-    await esbuild.build(panelFsRuntimeConfig);
-    await esbuild.build(panelFsPromisesRuntimeConfig);
+    await esbuild.build(panelRuntimeConfig);
     await esbuild.build(rendererConfig);
     await esbuild.build(utilityProcessConfig);
     await esbuild.build(workerRuntimeConfig);

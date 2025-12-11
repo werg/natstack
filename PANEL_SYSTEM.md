@@ -43,9 +43,7 @@ Panel configuration is specified in `package.json` with a `natstack` field:
     "runtime": "panel",
     "injectHostThemeVariables": true,
     "singletonState": false,
-    "gitDependencies": {
-      "shared": "panels/shared-lib"
-    }
+    "repoArgs": ["history", "components"]
   },
   "dependencies": {
     "@natstack/core": "workspace:*",
@@ -63,7 +61,7 @@ Panel configuration is specified in `package.json` with a `natstack` field:
 | `runtime` | `"panel"` \| `"worker"` | `"panel"` | Determines if built as UI panel or background worker |
 | `injectHostThemeVariables` | boolean | `true` | Inherit NatStack theme CSS variables |
 | `singletonState` | boolean | `false` | Share storage across all instances |
-| `gitDependencies` | object | `{}` | Git repos to clone into panel's OPFS |
+| `repoArgs` | string[] | `[]` | Named repo argument slots that callers must provide via `createChild` |
 
 ## Panel API
 
@@ -209,18 +207,67 @@ panel.browser.stop(browserId): Promise<void>              // Stop loading
 
 ### Git Configuration API
 
-Access git configuration for cloning dependencies:
+Access git configuration:
 
 ```typescript
 const gitConfig = await panel.git.getConfig();
-// Returns: { serverUrl, token, sourceRepo, gitDependencies }
+// Returns: { serverUrl, token, sourceRepo, resolvedRepoArgs }
+```
 
-// Use with @natstack/git
-import { GitClient } from "@natstack/git";
-const git = new GitClient();
-await git.clone(gitConfig.serverUrl, gitConfig.sourceRepo, "/repo", {
-  headers: { Authorization: `Bearer ${gitConfig.token}` }
+### Auto-Bootstrap for repoArgs
+
+Panels that declare `repoArgs` in their manifest get **automatic bootstrapping**. The framework clones the specified repos into OPFS **before** the panel code loads.
+
+**1. Declare repoArgs in package.json:**
+
+```json
+{
+  "natstack": {
+    "title": "My Panel",
+    "entry": "index.tsx",
+    "repoArgs": ["history", "config"]
+  }
+}
+```
+
+**2. Parent passes repo paths when creating child:**
+
+```typescript
+await panel.createChild({
+  type: "app",
+  name: "my-panel",
+  source: "panels/my-panel",
+  repoArgs: {
+    history: "state/my-history",   // cloned to /args/history
+    config: "config/my-settings",  // cloned to /args/config
+  },
 });
+```
+
+**3. Access cloned repos via panel.bootstrap:**
+
+```typescript
+// Bootstrap runs automatically before panel loads!
+// Just access the result:
+const bootstrap = panel.bootstrap;
+
+if (bootstrap) {
+  const historyPath = bootstrap.argPaths.history;  // "/args/history"
+  const configPath = bootstrap.argPaths.config;    // "/args/config"
+
+  // Use with GitClient for git operations
+  const git = new GitClient(fs, {
+    serverUrl: gitConfig.serverUrl,
+    token: gitConfig.token,
+  });
+
+  await git.pull({ dir: historyPath });
+}
+
+// Check for errors
+if (panel.bootstrapError) {
+  console.error("Bootstrap failed:", panel.bootstrapError);
+}
 ```
 
 ### Event Listeners

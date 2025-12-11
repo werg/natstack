@@ -149,7 +149,10 @@ if (authToken) {
           serverUrl: string;
           token: string;
           sourceRepo: string;
-          gitDependencies: Record<string, unknown>;
+          branch?: string;
+          commit?: string;
+          tag?: string;
+          resolvedRepoArgs: Record<string, unknown>;
         };
 
         if (gitConfig.sourceRepo) {
@@ -869,16 +872,16 @@ const bridge = {
      * - serverUrl: Git server base URL (e.g., http://localhost:63524)
      * - token: Bearer token for authentication
      * - sourceRepo: This panel's source repo path (e.g., "panels/my-panel")
-     * - gitDependencies: Git dependencies from manifest (to clone into OPFS)
+     * - resolvedRepoArgs: Repo args (name -> spec) provided by parent at createChild time
      */
     getConfig: (): Promise<{
       serverUrl: string;
       token: string;
       sourceRepo: string;
-      gitDependencies: Record<
-        string,
-        string | { repo: string; branch?: string; commit?: string; tag?: string }
-      >;
+      branch?: string;
+      commit?: string;
+      tag?: string;
+      resolvedRepoArgs: Record<string, string | { repo: string; ref?: string }>;
     }> => {
       return ipcRenderer.invoke("panel-bridge:get-git-config", panelId);
     },

@@ -25,20 +25,18 @@ export function createMDXTools(): AgentTool[] {
 Use this tool when you want to display formatted content with interactive UI components,
 structured layouts, or styled elements beyond plain markdown.
 
-MDX is a superset of Markdown that supports embedded JSX components. The content you provide
-will be compiled and rendered in the chat interface. MDX can also import modules from OPFS.
+MDX is a superset of Markdown that supports embedded JSX components. Use it to enhance your explanatory text with styled components like Cards, Badges, and formatted layouts.
 
 ${componentDocs}
 
-## When to Use This Tool
+## When to Use render_mdx (CONTENT with styling)
 
-- Displaying structured data with Cards and Badges
-- Creating visual layouts with Flex and Box
-- Showing status indicators or labels
-- Highlighting important information
-- Any time plain markdown isn't expressive enough
+- Displaying explanations with Cards and Badges for visual structure
+- Creating styled layouts to present information
+- Status indicators, labels, styled lists
+- Any time plain markdown needs better visual presentation
 
-## Example
+## Example (Correct MDX usage - styled content)
 
 \`\`\`mdx
 Here's the analysis result:
@@ -58,7 +56,7 @@ Here's the analysis result:
 - **Coverage:** 94%
 \`\`\`
 
-Note: The tool returns any compilation errors. If rendering fails, check your JSX syntax.`,
+Note: The tool returns any compilation errors. If rendering fails, check your syntax.`,
       parameters: {
         type: "object",
         properties: {

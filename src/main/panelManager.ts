@@ -308,6 +308,27 @@ export class PanelManager {
       );
     }
 
+    // Validate repoArgs: caller must provide exactly the args declared in manifest
+    const declaredArgs = manifest.repoArgs ?? [];
+    const providedArgs = spec?.repoArgs ? Object.keys(spec.repoArgs) : [];
+
+    if (declaredArgs.length > 0 || providedArgs.length > 0) {
+      const missingArgs = declaredArgs.filter((arg) => !providedArgs.includes(arg));
+      const extraArgs = providedArgs.filter((arg) => !declaredArgs.includes(arg));
+
+      if (missingArgs.length > 0) {
+        throw new Error(
+          `Panel "${relativePath}" requires repoArgs: ${missingArgs.join(", ")}`
+        );
+      }
+      if (extraArgs.length > 0) {
+        throw new Error(
+          `Panel "${relativePath}" does not accept repoArgs: ${extraArgs.join(", ")}` +
+          (declaredArgs.length === 0 ? " (manifest declares no repoArgs)" : "")
+        );
+      }
+    }
+
     const panelId = this.computePanelId({
       relativePath,
       parent,
@@ -345,7 +366,10 @@ export class PanelManager {
             },
             env: panelEnv,
             sourceRepo: relativePath,
-            gitDependencies: manifest.gitDependencies,
+            branch: spec?.branch,
+            commit: spec?.commit,
+            tag: spec?.tag,
+            resolvedRepoArgs: spec?.repoArgs,
             workerOptions: {
               memoryLimitMB: spec?.type === "worker" ? spec.memoryLimitMB : undefined,
             },
@@ -364,7 +388,10 @@ export class PanelManager {
             },
             env: panelEnv,
             sourceRepo: relativePath,
-            gitDependencies: manifest.gitDependencies,
+            branch: spec?.branch,
+            commit: spec?.commit,
+            tag: spec?.tag,
+            resolvedRepoArgs: spec?.repoArgs,
           };
 
       if (isRoot) {
@@ -668,7 +695,7 @@ export class PanelManager {
           css: result.css,
           injectHostThemeVariables: result.manifest?.injectHostThemeVariables !== false,
           sourceRepo: panel.path,
-          gitDependencies: result.manifest?.gitDependencies,
+          repoArgs: result.manifest?.repoArgs,
         });
 
         // Update panel with successful build
@@ -821,13 +848,16 @@ export class PanelManager {
 
   /**
    * Get git configuration for a panel.
-   * Used by panels to clone/pull their source and dependencies via @natstack/git.
+   * Used by panels to clone/pull their source and repo args via @natstack/git.
    */
   getGitConfig(panelId: string): {
     serverUrl: string;
     token: string;
     sourceRepo: string;
-    gitDependencies: Record<string, SharedPanel.GitDependencySpec>;
+    branch?: string;
+    commit?: string;
+    tag?: string;
+    resolvedRepoArgs: Record<string, SharedPanel.RepoArgSpec>;
   } {
     const panel = this.panels.get(panelId);
     if (!panel) {
@@ -847,7 +877,10 @@ export class PanelManager {
       serverUrl: this.gitServer.getBaseUrl(),
       token: this.gitServer.getTokenForPanel(panelId),
       sourceRepo,
-      gitDependencies: panel.gitDependencies ?? {},
+      branch: panel.branch,
+      commit: panel.commit,
+      tag: panel.tag,
+      resolvedRepoArgs: panel.resolvedRepoArgs ?? {},
     };
   }
 

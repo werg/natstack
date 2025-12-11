@@ -23,7 +23,7 @@ export const TOOL_ARG_CONFIG: Record<string, ToolArgConfig> = {
   },
   render_mdx: {
     primaryArg: "content",
-    language: "mdx",
+    language: "tsx",  // MDX is JSX+Markdown; tsx provides better highlighting
     label: "MDX Source",
   },
 };

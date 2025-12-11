@@ -1,6 +1,6 @@
 // Re-export types from shared types (canonical definitions)
 export type {
-  GitDependencySpec,
+  RepoArgSpec,
   RuntimeType,
   PanelType,
   Panel,
@@ -13,27 +13,34 @@ export type {
   WorkerChildSpec,
   BrowserChildSpec,
 } from "../shared/ipc/types.js";
-import type { GitDependencySpec, RuntimeType } from "../shared/ipc/types.js";
+import type { RuntimeType } from "../shared/ipc/types.js";
 
 export interface PanelManifest {
   title: string;
   entry?: string; // Defaults to "index.ts"
   dependencies?: Record<string, string>; // npm package -> version
   /**
-   * Git-based panel dependencies.
-   * These are cloned/pulled into OPFS before the panel runs.
+   * Named repo argument slots that callers must provide when creating this panel.
+   * Each slot name maps to a directory in OPFS at /args/<name>.
    *
    * Example:
-   * ```yaml
-   * gitDependencies:
-   *   shared: "panels/shared"           # shorthand
-   *   utils: "panels/utils#develop"     # branch
-   *   core:                             # full object
-   *     repo: "panels/core"
-   *     tag: "v1.0.0"
+   * ```json
+   * "repoArgs": ["history", "components", "scratchpad"]
+   * ```
+   *
+   * Callers then provide values via createChild:
+   * ```ts
+   * createChild({
+   *   source: "panels/my-panel",
+   *   repoArgs: {
+   *     history: "repos/history#main",
+   *     components: { repo: "repos/ui", ref: "v1.0.0" },
+   *     scratchpad: "repos/scratch"
+   *   }
+   * })
    * ```
    */
-  gitDependencies?: Record<string, GitDependencySpec>;
+  repoArgs?: string[];
   /**
    * External dependencies loaded via import map (CDN).
    * Use this for packages that need browser-specific ESM builds or polyfills.

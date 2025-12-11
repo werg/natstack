@@ -28,10 +28,15 @@ export interface FileSystem {
 }
 
 /**
- * Extended config for ChatStore with git server URL.
+ * Extended config for ChatStore.
+ *
+ * The historyRepoPath is the OPFS path where the history repo is already cloned
+ * by bootstrap (e.g., "/args/history"). This replaces the old gitServerUrl approach.
  */
 export interface ChatStoreConfig extends ChatStorageConfig {
-  /** Git server base URL (e.g., http://localhost:63524) */
+  /** Path in OPFS where the history repo is cloned (e.g., "/args/history") */
+  historyRepoPath: string;
+  /** Git server URL for remote operations (needed if bootstrap didn't run) */
   gitServerUrl?: string;
 }
 
@@ -73,26 +78,24 @@ export class ChatStore {
   }
 
   /**
-   * Get the git remote URL based on configuration.
+   * Get the history repo path in OPFS (cloned by bootstrap).
    */
-  private getGitRemoteUrl(): string {
-    const serverUrl = this.config.gitServerUrl;
-    if (serverUrl) {
-      // Properly form the URL: serverUrl/state/notebook-chats
-      return `${serverUrl.replace(/\/$/, "")}/state/notebook-chats`;
-    }
-    // Fallback (won't work for real git operations)
-    return "state/notebook-chats";
+  private getHistoryRepoPath(): string {
+    return this.config.historyRepoPath;
   }
 
   /**
-   * Initialize the store - clone or pull the repository.
+   * Initialize the store.
+   *
+   * The history repo is already cloned by bootstrap to historyRepoPath.
+   * We just need to ensure the panel's subdirectory exists and pull latest.
    */
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    const repoPath = "/state/notebook-chats";
-    const remoteUrl = this.getGitRemoteUrl();
+    const repoPath = this.getHistoryRepoPath();
+
+    // The repo should already exist (cloned by bootstrap)
     const isRepo = await this.git.isRepo(repoPath);
 
     if (isRepo) {
@@ -104,28 +107,24 @@ export class ChatStore {
         // Continue anyway - we have local data
       }
     } else {
-      // Try to clone the repo
+      // Repo doesn't exist - this shouldn't happen if bootstrap ran correctly
+      // Initialize an empty repo as fallback
+      this.errorReporter("History repo not found at " + repoPath + ", initializing new repo", null);
       try {
         await this.fs.mkdir(repoPath, { recursive: true });
-        await this.git.clone({
-          url: remoteUrl,
-          dir: repoPath,
-          depth: 1,
-        });
-      } catch (error) {
-        // If clone fails (repo doesn't exist), initialize a new repo
-        this.errorReporter("Failed to clone chat history, initializing new repo", error);
-        try {
-          await this.git.init(repoPath);
+        await this.git.init(repoPath);
+        // Add remote if we have a server URL, so sync/push can work
+        if (this.config.gitServerUrl) {
+          const remoteUrl = `${this.config.gitServerUrl.replace(/\/$/, "")}/${repoPath.replace(/^\//, "")}`;
           await this.git.addRemote(repoPath, "origin", remoteUrl);
-        } catch (initError) {
-          this.errorReporter("Failed to initialize git repo", initError);
-          // Continue without git - local only mode
         }
+      } catch (initError) {
+        this.errorReporter("Failed to initialize git repo", initError);
+        // Continue without git - local only mode
       }
     }
 
-    // Ensure panel directory exists
+    // Ensure panel directory exists within the history repo
     await this.fs.mkdir(this.config.basePath, { recursive: true });
     await this.fs.mkdir(`${this.config.basePath}/chats`, { recursive: true });
 
@@ -228,7 +227,7 @@ export class ChatStore {
       return { success: false, error: "Sync already in progress" };
     }
 
-    const repoPath = "/state/notebook-chats";
+    const repoPath = this.getHistoryRepoPath();
     this.isSyncing = true;
     this.syncStatus = "syncing";
 
@@ -261,7 +260,7 @@ export class ChatStore {
       return {
         success: true,
         commitHash,
-        filesChanged: status.files.filter((f: { status: string }) => f.status !== "unmodified").length,
+        filesChanged: status.files.filter((f) => f.status !== "unmodified").length,
       };
     } catch (error) {
       this.syncStatus = "error";
@@ -280,7 +279,7 @@ export class ChatStore {
   async pull(): Promise<void> {
     await this.ensureInitialized();
 
-    const repoPath = "/state/notebook-chats";
+    const repoPath = this.getHistoryRepoPath();
     try {
       await this.git.pull({ dir: repoPath });
     } catch (error) {
@@ -299,7 +298,7 @@ export class ChatStore {
    * Check if there are local changes.
    */
   async hasLocalChanges(): Promise<boolean> {
-    const repoPath = "/state/notebook-chats";
+    const repoPath = this.getHistoryRepoPath();
     try {
       const status = await this.git.status(repoPath);
       return status.dirty;

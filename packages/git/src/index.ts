@@ -30,43 +30,14 @@
  */
 
 export { GitClient, type GitClientFs } from "./client.js";
-export { DependencyResolver } from "./dependencies.js";
 export { bootstrap, hasSource } from "./bootstrap.js";
 
 // createFsAdapter is used internally by GitClient, but exported for advanced use cases
 export { createFsAdapter } from "./fs-adapter.js";
 
-/**
- * Set git commit SHAs in globalThis for cache optimization.
- * This should be called after bootstrap() completes successfully.
- *
- * @param bootstrapResult - The result from bootstrap() containing source and dependency commits
- */
-export function setGitCommits(bootstrapResult: {
-  sourceCommit?: string;
-  depCommits?: Record<string, string>;
-}): void {
-  const global = globalThis as {
-    __natstackSourceCommit?: string;
-    __natstackDepCommits?: Record<string, string>;
-  };
-
-  if (bootstrapResult.sourceCommit) {
-    global.__natstackSourceCommit = bootstrapResult.sourceCommit;
-    console.log(`[Git] Set source commit for cache optimization: ${bootstrapResult.sourceCommit.slice(0, 8)}`);
-  }
-
-  if (bootstrapResult.depCommits && Object.keys(bootstrapResult.depCommits).length > 0) {
-    global.__natstackDepCommits = bootstrapResult.depCommits;
-    const depCount = Object.keys(bootstrapResult.depCommits).length;
-    console.log(`[Git] Set ${depCount} dependency commit(s) for cache optimization`);
-  }
-}
-
-
 export type {
-  GitDependency,
-  ResolvedDependency,
+  RepoArgSpec,
+  NormalizedRepoArg,
   GitClientOptions,
   CloneOptions,
   PullOptions,

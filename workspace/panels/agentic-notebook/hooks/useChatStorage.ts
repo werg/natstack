@@ -48,10 +48,15 @@ export function useChatStorage(panelId: string) {
 
   // Initialize storage
   const initialize = useCallback(
-    async (fs: FileSystem, git: GitClient) => {
+    async (fs: FileSystem, git: GitClient, historyRepoPath: string, gitServerUrl?: string) => {
+      // historyRepoPath is where bootstrap cloned the history repo (e.g., "/args/history")
+      // basePath is the panel-specific subdirectory within it
+      // gitServerUrl is passed as fallback for remote operations if bootstrap didn't run
       const store = new ChatStore(fs, git, {
         panelId,
-        basePath: `/state/notebook-chats/${panelId}`,
+        basePath: `${historyRepoPath}/${panelId}`,
+        historyRepoPath,
+        gitServerUrl,
         maxChats: 100,
       });
 
@@ -106,7 +111,7 @@ export function useChatStorage(panelId: string) {
       setCurrentChatId(chatId);
       return chatId;
     },
-    [chatStore, loadStoredChat, addDefaultParticipants, sendMessage, setCurrentChatId]
+    [chatStore, loadStoredChat, addDefaultParticipants, setCurrentChatId]
   );
 
   // Save current chat

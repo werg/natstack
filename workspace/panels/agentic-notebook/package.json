@@ -5,7 +5,8 @@
   "type": "module",
   "natstack": {
     "title": "Agentic Notebook",
-    "entry": "index.tsx"
+    "entry": "index.tsx",
+    "repoArgs": ["history"]
   },
   "dependencies": {
     "@mdx-js/react": "^3.1.1",

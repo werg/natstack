@@ -1,29 +1,36 @@
 /**
- * Git dependency specification in panel manifest
+ * Repo argument specification for createChild.
+ * Can be a shorthand string or full object.
+ *
+ * Shorthand formats:
+ * - "panels/shared" - defaults to main/master branch
+ * - "panels/shared#develop" - specific branch
+ * - "panels/shared@v1.0.0" - specific tag
+ * - "panels/shared@abc123" - specific commit (7+ hex chars)
  */
-export interface GitDependency {
-  /** Git repository URL or relative path */
-  repo: string;
-  /** Branch name to track */
-  branch?: string;
-  /** Specific commit hash to pin to */
-  commit?: string;
-  /** Tag to pin to */
-  tag?: string;
-}
+export type RepoArgSpec =
+  | string
+  | {
+      /** Git repository path relative to workspace (e.g., "panels/shared") */
+      repo: string;
+      /** Branch, tag, or commit hash to checkout */
+      ref?: string;
+    };
 
 /**
- * Resolved git dependency with computed paths
+ * Normalized repo arg after parsing shorthand
  */
-export interface ResolvedDependency extends GitDependency {
-  /** Name/key of this dependency */
+export interface NormalizedRepoArg {
+  /** Name/key of this repo arg */
   name: string;
+  /** Repository path */
+  repo: string;
+  /** Ref to checkout (branch, tag, or commit) */
+  ref?: string;
   /** Resolved absolute URL for cloning */
   resolvedUrl: string;
-  /** Path in OPFS where this will be cloned */
+  /** Path in OPFS where this will be cloned (/args/<name>) */
   localPath: string;
-  /** The ref to checkout (commit > tag > branch > 'main') */
-  ref: string;
 }
 
 /**

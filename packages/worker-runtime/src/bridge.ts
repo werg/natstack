@@ -99,7 +99,8 @@ export const git = {
    * - serverUrl: Git server base URL (e.g., http://localhost:63524)
    * - token: Bearer token for authentication
    * - sourceRepo: This worker's source repo path (e.g., "workers/my-worker")
-   * - gitDependencies: Git dependencies from manifest (to clone)
+   * - branch/commit/tag: Optional version specifier to sync the source
+   * - resolvedRepoArgs: Repo args (name -> spec) provided by parent at createChild time
    */
   async getConfig(): Promise<GitConfig> {
     return rpc.call<GitConfig>("main", "bridge.getGitConfig");

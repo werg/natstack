@@ -50,8 +50,11 @@ export {
 // Shared Types
 // =============================================================================
 
-import type { GitDependency } from "@natstack/git";
 import type { ZodType } from "zod";
+
+// Re-export RepoArgSpec from @natstack/git (canonical source for git-related types)
+import type { RepoArgSpec } from "@natstack/git";
+export type { RepoArgSpec };
 
 // =============================================================================
 // Event Schema Types (zod-based validation)
@@ -161,6 +164,19 @@ export interface AppChildSpec extends ChildSpecBase, GitVersionFields {
   type: "app";
   /** Emit inline sourcemaps (default: true). Set to false to omit sourcemaps. */
   sourcemap?: boolean;
+  /**
+   * Repo arguments required by the target panel's manifest.
+   * Keys must match the `repoArgs` array in the manifest.
+   *
+   * @example
+   * ```ts
+   * repoArgs: {
+   *   history: "repos/history#main",           // shorthand
+   *   components: { repo: "repos/ui", ref: "v1.0.0" }  // object
+   * }
+   * ```
+   */
+  repoArgs?: Record<string, RepoArgSpec>;
 }
 
 /**
@@ -171,6 +187,11 @@ export interface WorkerChildSpec extends ChildSpecBase, GitVersionFields {
   type: "worker";
   /** Memory limit in MB (default: 1024) */
   memoryLimitMB?: number;
+  /**
+   * Repo arguments required by the target worker's manifest.
+   * Keys must match the `repoArgs` array in the manifest.
+   */
+  repoArgs?: Record<string, RepoArgSpec>;
 }
 
 /**
@@ -198,8 +219,14 @@ export interface GitConfig {
   token: string;
   /** This endpoint's source repo path (e.g., "panels/my-panel") */
   sourceRepo: string;
-  /** Git dependencies from manifest (to clone into OPFS) */
-  gitDependencies: Record<string, string | GitDependency>;
+  /** Optional branch override */
+  branch?: string;
+  /** Optional commit pin */
+  commit?: string;
+  /** Optional tag pin */
+  tag?: string;
+  /** Resolved repo args (name -> spec) provided by parent at createChild time */
+  resolvedRepoArgs: Record<string, RepoArgSpec>;
 }
 
 /**

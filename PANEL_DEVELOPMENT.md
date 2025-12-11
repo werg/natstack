@@ -69,9 +69,7 @@ Every panel requires a `package.json` with a `natstack` field:
     "runtime": "panel",
     "injectHostThemeVariables": true,
     "singletonState": false,
-    "gitDependencies": {
-      "shared": "panels/shared-lib"
-    }
+    "repoArgs": ["history", "components"]
   },
   "dependencies": {
     "@natstack/core": "workspace:*",
@@ -89,7 +87,7 @@ Every panel requires a `package.json` with a `natstack` field:
 | `runtime` | `"panel"` \| `"worker"` | `"panel"` | Build as UI panel or background worker |
 | `injectHostThemeVariables` | boolean | `true` | Inherit NatStack theme CSS variables |
 | `singletonState` | boolean | `false` | Share storage across all instances |
-| `gitDependencies` | object | `{}` | Git repos to clone into panel's OPFS |
+| `repoArgs` | string[] | `[]` | Named repo argument slots that callers must provide via `createChild` |
 
 ### File Structure
 

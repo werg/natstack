@@ -32,6 +32,30 @@ export type WorkerChildSpec = SharedWorkerChildSpec;
 export type BrowserChildSpec = SharedBrowserChildSpec;
 export type GitConfig = SharedGitConfig;
 
+/**
+ * Result of panel bootstrap (cloning source + repoArgs into OPFS).
+ * This is populated automatically by the framework for panels with repoArgs.
+ */
+export interface BootstrapResult {
+  /** Whether bootstrap completed successfully */
+  success: boolean;
+  /** Error message if bootstrap failed */
+  error?: string;
+  /** Path to panel source in OPFS (e.g., "/src") */
+  sourcePath: string;
+  /** Commit SHA of the panel source */
+  sourceCommit?: string;
+  /** Map of repo arg name to local OPFS path (e.g., { history: "/args/history" }) */
+  argPaths: Record<string, string>;
+  /** Map of repo arg name to commit SHA */
+  argCommits: Record<string, string>;
+  /** Actions taken during bootstrap */
+  actions: {
+    source: "cloned" | "pulled" | "unchanged" | "error";
+    args: Record<string, "cloned" | "updated" | "unchanged" | "error">;
+  };
+}
+
 type PanelBridgeEvent = "child-removed" | "focus";
 
 type PanelThemeAppearance = "light" | "dark";
@@ -92,6 +116,10 @@ interface PanelBridge {
 declare global {
   interface Window {
     __natstackPanelBridge?: PanelBridge;
+    /** Bootstrap result populated by panelRuntime before panel loads */
+    __natstackBootstrapResult?: BootstrapResult;
+    /** Bootstrap error message if bootstrap failed */
+    __natstackBootstrapError?: string;
   }
 }
 
@@ -118,11 +146,26 @@ const themeListeners = new Set<(theme: PanelTheme) => void>();
 const childHandles = new Map<string, ChildHandle>();
 const childAddedListeners = new Set<ChildAddedCallback>();
 const childRemovedListeners = new Set<ChildRemovedCallback>();
+// Track cleanup functions per child ID for automatic cleanup on removal
+const childCleanupFunctions = new Map<string, Array<() => void>>();
 
 // Listen for child removal events to clean up handles
 bridge.on("child-removed", (childId) => {
   if (typeof childId === "string") {
-    // Find by ID and remove
+    // Clean up event listeners for this child
+    const cleanups = childCleanupFunctions.get(childId);
+    if (cleanups) {
+      for (const cleanup of cleanups) {
+        try {
+          cleanup();
+        } catch (error) {
+          console.error("[ChildHandle] Error in cleanup:", error);
+        }
+      }
+      childCleanupFunctions.delete(childId);
+    }
+
+    // Find by ID and remove from handles map
     for (const [name, handle] of childHandles) {
       if (handle.id === childId) {
         childHandles.delete(name);
@@ -158,6 +201,9 @@ function createChildHandle<
   // Per-handle event listeners (for cleanup on close)
   const eventUnsubscribers: Array<() => void> = [];
 
+  // Register with module-level cleanup map for automatic cleanup on child-removed
+  childCleanupFunctions.set(id, eventUnsubscribers);
+
   // Create typed call proxy using Proxy
   const callProxy = new Proxy({} as TypedCallProxy<T>, {
     get(_target, method: string) {
@@ -180,6 +226,8 @@ function createChildHandle<
         unsubscribe();
       }
       eventUnsubscribers.length = 0;
+      // Remove from module-level cleanup map
+      childCleanupFunctions.delete(id);
       await bridge.removeChild(id);
     },
 
@@ -581,6 +629,25 @@ const panelAPI = {
   },
 
   async close(): AsyncResult<void> {
+    // Clean up all child handles before closing
+    for (const [, handle] of childHandles) {
+      try {
+        // Unsubscribe event listeners
+        const cleanups = childCleanupFunctions.get(handle.id);
+        if (cleanups) {
+          for (const cleanup of cleanups) {
+            cleanup();
+          }
+        }
+      } catch {
+        // Ignore cleanup errors during close
+      }
+    }
+    childHandles.clear();
+    childCleanupFunctions.clear();
+    childAddedListeners.clear();
+    childRemovedListeners.clear();
+
     return bridge.close();
   },
 
@@ -638,6 +705,44 @@ const panelAPI = {
     async getConfig(): AsyncResult<GitConfig> {
       return bridge.git.getConfig();
     },
+  },
+
+  // ===========================================================================
+  // Bootstrap Result
+  // ===========================================================================
+
+  /**
+   * Bootstrap result for panels with repoArgs.
+   *
+   * For panels that declare `repoArgs` in their manifest, the framework
+   * automatically clones those repos into OPFS before the panel loads.
+   * This property provides access to the paths where repos were cloned.
+   *
+   * @example
+   * ```ts
+   * // In package.json: "natstack": { "repoArgs": ["history"] }
+   * // Parent passes: repoArgs: { history: "state/notebook-chats" }
+   *
+   * // Access the cloned repo path:
+   * const historyPath = panel.bootstrap?.argPaths.history;
+   * // historyPath = "/args/history" (OPFS path where repo was cloned)
+   * ```
+   *
+   * Returns null if:
+   * - Panel has no repoArgs declared
+   * - Bootstrap hasn't run yet (shouldn't happen - runs before panel loads)
+   * - Bootstrap failed (check panel.bootstrapError for details)
+   */
+  get bootstrap(): BootstrapResult | null {
+    return window.__natstackBootstrapResult ?? null;
+  },
+
+  /**
+   * Bootstrap error message if bootstrap failed.
+   * Check this if panel.bootstrap is null but you expected repoArgs.
+   */
+  get bootstrapError(): string | null {
+    return window.__natstackBootstrapError ?? null;
   },
 
   // ===========================================================================

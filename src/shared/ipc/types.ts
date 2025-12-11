@@ -7,9 +7,10 @@ import type {
   WorkerChildSpec,
   BrowserChildSpec,
 } from "@natstack/core";
+import type { RepoArgSpec } from "@natstack/git";
 
-// Re-export ChildSpec types for consumers of this module
-export type { ChildSpec, AppChildSpec, WorkerChildSpec, BrowserChildSpec };
+// Re-export types for consumers of this module
+export type { ChildSpec, AppChildSpec, WorkerChildSpec, BrowserChildSpec, RepoArgSpec };
 
 export type ThemeMode = "light" | "dark" | "system";
 export type ThemeAppearance = "light" | "dark";
@@ -62,32 +63,9 @@ export interface ProtocolBuildArtifacts {
   injectHostThemeVariables?: boolean;
   /** Optional source repo path (workspace-relative) to retain git association */
   sourceRepo?: string;
-  /** Git dependencies from manifest */
-  gitDependencies?: Record<string, GitDependencySpec>;
+  /** Repo args declared in manifest (slot names only) */
+  repoArgs?: string[];
 }
-
-/**
- * Git dependency specification in panel manifest.
- * Can be a shorthand string or full object.
- *
- * Shorthand formats:
- * - "panels/shared" - defaults to main branch
- * - "panels/shared#develop" - specific branch
- * - "panels/shared@v1.0.0" - specific tag
- * - "panels/shared@abc123" - specific commit (7+ hex chars)
- */
-export type GitDependencySpec =
-  | string
-  | {
-      /** Git repository path relative to workspace (e.g., "panels/shared") */
-      repo: string;
-      /** Branch name to track */
-      branch?: string;
-      /** Specific commit hash to pin to */
-      commit?: string;
-      /** Tag to pin to */
-      tag?: string;
-    };
 
 /**
  * A single console log entry from a worker.
@@ -203,13 +181,18 @@ export interface PanelBridgeIpcApi {
 
   /**
    * Get git configuration for a panel.
-   * Used by panels to clone/pull their source and dependencies via @natstack/git.
+   * Used by panels to clone/pull their source and repo args via @natstack/git.
    */
   "panel-bridge:get-git-config": (panelId: string) => {
     serverUrl: string;
     token: string;
     sourceRepo: string;
-    gitDependencies: Record<string, GitDependencySpec>;
+    /** Optional version overrides for source repo */
+    branch?: string;
+    commit?: string;
+    tag?: string;
+    /** Resolved repo args (name -> spec) provided by parent at createChild time */
+    resolvedRepoArgs: Record<string, RepoArgSpec>;
   };
 
   /**
@@ -411,7 +394,11 @@ export interface AppPanel extends PanelBase {
   type: "app";
   path: string; // Workspace-relative source path
   sourceRepo?: string;
-  gitDependencies?: Record<string, GitDependencySpec>;
+  branch?: string;
+  commit?: string;
+  tag?: string;
+  /** Resolved repo args (name -> spec) provided by parent at createChild time */
+  resolvedRepoArgs?: Record<string, RepoArgSpec>;
   injectHostThemeVariables: boolean;
 }
 
@@ -422,7 +409,11 @@ export interface WorkerPanel extends PanelBase {
   type: "worker";
   path: string; // Workspace-relative source path
   sourceRepo?: string;
-  gitDependencies?: Record<string, GitDependencySpec>;
+  branch?: string;
+  commit?: string;
+  tag?: string;
+  /** Resolved repo args (name -> spec) provided by parent at createChild time */
+  resolvedRepoArgs?: Record<string, RepoArgSpec>;
   workerOptions?: { memoryLimitMB?: number };
   consoleLogs?: WorkerConsoleLogEntry[];
 }

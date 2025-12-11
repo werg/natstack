@@ -114,11 +114,18 @@ function ToolPairDisplay({
     ? (toolResult.content as ToolResultContent)
     : null;
 
+  // For tools with prominent output (render_mdx, execute_code), collapse details by default
+  // This keeps focus on the output while allowing users to expand for source/details
+  const hasProminentOutput = !!(resultContent && !resultContent.isError && (
+    callContent.toolName === "render_mdx" ||
+    callContent.toolName === "execute_code"
+  ));
+
   return (
     <ToolResultDisplay
       call={callContent}
       result={resultContent}
-      defaultCollapsed={false}
+      defaultCollapsed={hasProminentOutput}
     />
   );
 }
