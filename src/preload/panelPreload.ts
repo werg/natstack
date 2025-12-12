@@ -580,6 +580,66 @@ async function getRpcPort(targetPanelId: string): Promise<RpcPort> {
   });
 }
 
+// =============================================================================
+// Database Types and Helper
+// =============================================================================
+
+/** Result of a run (INSERT/UPDATE/DELETE) operation */
+interface DbRunResult {
+  changes: number;
+  lastInsertRowid: number | bigint;
+}
+
+/** Database connection with query methods */
+interface PanelDatabase {
+  query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+  run(sql: string, params?: unknown[]): Promise<DbRunResult>;
+  get<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T | null>;
+  exec(sql: string): Promise<void>;
+  close(): Promise<void>;
+}
+
+/**
+ * Create a Database wrapper around a handle.
+ */
+function createPanelDatabase(handle: string, panelId: string): PanelDatabase {
+  let closed = false;
+
+  const assertOpen = () => {
+    if (closed) {
+      throw new Error("Database connection is closed");
+    }
+  };
+
+  return {
+    async query<T>(sql: string, params?: unknown[]): Promise<T[]> {
+      assertOpen();
+      return ipcRenderer.invoke("panel-bridge:db", panelId, "query", [handle, sql, params]);
+    },
+
+    async run(sql: string, params?: unknown[]): Promise<DbRunResult> {
+      assertOpen();
+      return ipcRenderer.invoke("panel-bridge:db", panelId, "run", [handle, sql, params]);
+    },
+
+    async get<T>(sql: string, params?: unknown[]): Promise<T | null> {
+      assertOpen();
+      return ipcRenderer.invoke("panel-bridge:db", panelId, "get", [handle, sql, params]);
+    },
+
+    async exec(sql: string): Promise<void> {
+      assertOpen();
+      await ipcRenderer.invoke("panel-bridge:db", panelId, "exec", [handle, sql]);
+    },
+
+    async close(): Promise<void> {
+      if (closed) return;
+      closed = true;
+      await ipcRenderer.invoke("panel-bridge:db", panelId, "close", [handle]);
+    },
+  };
+}
+
 // Bridge interface exposed to panel code
 const bridge = {
   panelId,
@@ -884,6 +944,38 @@ const bridge = {
       resolvedRepoArgs: Record<string, string | { repo: string; ref?: string }>;
     }> => {
       return ipcRenderer.invoke("panel-bridge:get-git-config", panelId);
+    },
+  },
+
+  // ==========================================================================
+  // Database API
+  // ==========================================================================
+
+  db: {
+    /**
+     * Open a panel-scoped database.
+     * The database file is stored in the panel's partition directory.
+     *
+     * @param name - Database name (alphanumeric, underscore, hyphen only)
+     * @param readOnly - Open in read-only mode (default: false)
+     * @returns Database object with query methods
+     */
+    open: async (name: string, readOnly?: boolean): Promise<PanelDatabase> => {
+      const handle = await ipcRenderer.invoke("panel-bridge:db", panelId, "open", [name, readOnly]);
+      return createPanelDatabase(handle, panelId);
+    },
+
+    /**
+     * Open a shared workspace database.
+     * Shared databases can be accessed by any worker or panel in the workspace.
+     *
+     * @param name - Database name (alphanumeric, underscore, hyphen only)
+     * @param readOnly - Open in read-only mode (default: false)
+     * @returns Database object with query methods
+     */
+    openShared: async (name: string, readOnly?: boolean): Promise<PanelDatabase> => {
+      const handle = await ipcRenderer.invoke("panel-bridge:db", panelId, "openShared", [name, readOnly]);
+      return createPanelDatabase(handle, panelId);
     },
   },
 };

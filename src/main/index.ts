@@ -17,6 +17,7 @@ import { setupMenu } from "./menu.js";
 import { setActiveWorkspace } from "./paths.js";
 import { getWorkerManager } from "./workerManager.js";
 import { registerWorkerHandlers } from "./ipc/workerHandlers.js";
+import { registerDbHandlers } from "./ipc/dbHandlers.js";
 import {
   parseCliWorkspacePath,
   discoverWorkspace,
@@ -392,6 +393,21 @@ handle("panel-bridge:get-git-config", async (event, panelId: string) => {
 });
 
 // =============================================================================
+// Database IPC Handler (panel <-> main) - Single multiplexed channel
+// =============================================================================
+
+import { getDatabaseManager } from "./db/databaseManager.js";
+import { handleDbCall } from "./ipc/dbHandlers.js";
+
+handle("panel-bridge:db", async (event, panelId: string, method: string, args: unknown[]) => {
+  assertAuthorized(event, panelId);
+  const pm = requirePanelManager();
+  const info = pm.getInfo(panelId);
+  // Panels use their partition as scopeId (same partition = shared scope)
+  return handleDbCall(getDatabaseManager(), panelId, info.partition, method, args);
+});
+
+// =============================================================================
 // Browser Panel IPC Handlers
 // =============================================================================
 
@@ -609,6 +625,7 @@ app.on("ready", async () => {
       // Initialize WorkerManager (uses getActiveWorkspace() internally)
       getWorkerManager();
       registerWorkerHandlers(panelManager);
+      registerDbHandlers();
       console.log("[Workers] Manager initialized");
 
       // Initialize AI handler

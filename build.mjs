@@ -24,7 +24,7 @@ const mainConfig = {
   target: "node20",
   format: "cjs",
   outfile: "dist/main.cjs",
-  external: ["electron", "esbuild", "@npmcli/arborist", "isolated-vm"],
+  external: ["electron", "esbuild", "@npmcli/arborist", "isolated-vm", "better-sqlite3"],
   sourcemap: isDev,
   minify: !isDev,
   plugins: typiaPlugins,

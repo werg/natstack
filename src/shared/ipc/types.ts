@@ -241,6 +241,19 @@ export interface PanelBridgeIpcApi {
    * @returns WebSocket URL for CDP connection (e.g., ws://localhost:63525/browser-id?token=xyz)
    */
   "panel-bridge:browser-get-cdp-endpoint": (browserId: string) => string;
+
+  // ===========================================================================
+  // Database IPC Channel (multiplexed)
+  // ===========================================================================
+
+  /**
+   * Database service for panels - multiplexed channel for all SQLite operations.
+   * Methods: open, openShared, query, run, get, exec, close
+   * @param panelId - The panel making the request
+   * @param method - The database method to call
+   * @param args - Arguments for the method
+   */
+  "panel-bridge:db": (panelId: string, method: string, args: unknown[]) => unknown;
 }
 
 // Main-to-panel IPC channels (main -> panel webview via invoke)

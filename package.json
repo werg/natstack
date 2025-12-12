@@ -30,17 +30,20 @@
   "pnpm": {
     "allowedBuilds": [
       "electron",
-      "esbuild"
+      "esbuild",
+      "better-sqlite3"
     ],
     "onlyBuiltDependencies": [
       "electron",
       "esbuild",
-      "node-git-server"
+      "node-git-server",
+      "better-sqlite3"
     ]
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
     "@ryoppippi/unplugin-typia": "^2.6.5",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.10.1",
     "@types/npmcli__arborist": "^6.3.1",
     "@types/react": "^19.2.4",
@@ -75,6 +78,7 @@
     "ai": "6.0.0-beta.114",
     "ai-sdk-provider-claude-code": "^2.2.1",
     "ai-sdk-provider-codex-cli": "^0.6.0",
+    "better-sqlite3": "^12.5.0",
     "dotenv": "^16.4.5",
     "esbuild": "^0.27.0",
     "jotai": "^2.15.1",
