@@ -271,6 +271,20 @@ function createChildHandle<
       };
     },
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    onEvents(listeners: Record<string, ((payload: any) => void) | undefined>): () => void {
+      const unsubs: Array<() => void> = [];
+      for (const [event, listener] of Object.entries(listeners)) {
+        if (typeof listener !== "function") continue;
+        unsubs.push(this.onEvent(event, listener));
+      }
+      return () => {
+        for (const unsub of unsubs) {
+          unsub();
+        }
+      };
+    },
+
     async getCdpEndpoint() {
       return bridge.browser.getCdpEndpoint(id);
     },

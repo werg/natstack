@@ -30,11 +30,17 @@ import { getCentralData } from "./centralData.js";
 import { registerPanelProtocol, setupPanelProtocol } from "./panelProtocol.js";
 import { getMainCacheManager } from "./cacheManager.js";
 import { getCdpServer, type CdpServer } from "./cdpServer.js";
+import { getDatabaseManager } from "./db/databaseManager.js";
+import { handleDbCall } from "./ipc/dbHandlers.js";
+import { handleBridgeCall } from "./ipc/bridgeHandlers.js";
+import { handleBrowserCall } from "./ipc/browserHandlers.js";
+import { handleAiCall } from "./ipc/panelAiHandlers.js";
 import {
   initViewManager,
   getViewManager,
   type ViewManager,
 } from "./viewManager.js";
+import type { RpcMessage, RpcResponse } from "@natstack/rpc";
 
 // =============================================================================
 // Protocol Registration (must happen before app ready)
@@ -343,166 +349,76 @@ handle("panel:close", async (_event, panelId: string) => {
 });
 
 // =============================================================================
-// Panel Bridge IPC Handlers (panel webview <-> main) - Only in main mode
+// Unified RPC Handler (panel <-> main) - Only in main mode
 // =============================================================================
 
-// Create child panel - main process handles git checkout and build
-// Spec-based API: accepts ChildSpec with type discriminator
-handle(
-  "panel-bridge:create-child",
-  async (event, parentId: string, spec: SharedPanel.ChildSpec) => {
-    assertAuthorized(event, parentId);
-    return requirePanelManager().createChild(parentId, spec);
+handle("rpc:call", async (event, panelId: string, message: RpcMessage): Promise<RpcResponse> => {
+  assertAuthorized(event, panelId);
+
+  if (message.type !== "request") {
+    return {
+      type: "response",
+      requestId: "unknown",
+      error: "Invalid RPC message type (expected request)",
+    };
   }
-);
 
-handle("panel-bridge:remove-child", async (event, parentId: string, childId: string) => {
-  assertAuthorized(event, parentId);
-  return requirePanelManager().removeChild(parentId, childId);
+  const { requestId, method, args } = message;
+  const dotIndex = method.indexOf(".");
+  if (dotIndex === -1) {
+    return {
+      type: "response",
+      requestId,
+      error: `Invalid method format: "${method}". Expected "service.method"`,
+    };
+  }
+
+  const service = method.slice(0, dotIndex);
+  const serviceMethod = method.slice(dotIndex + 1);
+
+  const pm = requirePanelManager();
+
+  const route = async (): Promise<unknown> => {
+    switch (service) {
+      case "bridge":
+        return handleBridgeCall(pm, panelId, serviceMethod, args);
+
+      case "db": {
+        const info = pm.getInfo(panelId);
+        return handleDbCall(getDatabaseManager(), panelId, info.partition, serviceMethod, args);
+      }
+
+      case "browser":
+        return handleBrowserCall(getCdpServer(), getViewManager(), panelId, serviceMethod, args);
+
+      case "ai":
+        return handleAiCall(aiHandler, event.sender, panelId, serviceMethod, args);
+
+      default:
+        throw new Error(`Unknown service: ${service}`);
+    }
+  };
+
+  try {
+    const result = await route();
+    return { type: "response", requestId, result };
+  } catch (error) {
+    return {
+      type: "response",
+      requestId,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 });
 
-handle("panel-bridge:set-title", async (event, panelId: string, title: string) => {
-  assertAuthorized(event, panelId);
-  return requirePanelManager().setTitle(panelId, title);
-});
-
-handle("panel-bridge:close", async (event, panelId: string) => {
-  assertAuthorized(event, panelId);
-  return requirePanelManager().closePanel(panelId);
-});
+// =============================================================================
+// Panel Bridge IPC Handlers (panel webview <-> main) - Only in main mode
+// =============================================================================
 
 handle("panel-bridge:register", async (event, panelId: string, authToken: string) => {
   // This is the initial handshake, so we don't use assertAuthorized yet.
   // Instead, we verify the token which proves identity.
   requirePanelManager().verifyAndRegister(panelId, authToken, event.sender.id);
-});
-
-handle("panel-bridge:get-env", async (event, panelId: string) => {
-  assertAuthorized(event, panelId);
-  return requirePanelManager().getEnv(panelId);
-});
-
-handle("panel-bridge:get-info", async (event, panelId: string) => {
-  assertAuthorized(event, panelId);
-  return requirePanelManager().getInfo(panelId);
-});
-
-handle("panel-bridge:get-git-config", async (event, panelId: string) => {
-  assertAuthorized(event, panelId);
-  return requirePanelManager().getGitConfig(panelId);
-});
-
-// =============================================================================
-// Database IPC Handler (panel <-> main) - Single multiplexed channel
-// =============================================================================
-
-import { getDatabaseManager } from "./db/databaseManager.js";
-import { handleDbCall } from "./ipc/dbHandlers.js";
-
-handle("panel-bridge:db", async (event, panelId: string, method: string, args: unknown[]) => {
-  assertAuthorized(event, panelId);
-  const pm = requirePanelManager();
-  const info = pm.getInfo(panelId);
-  // Panels use their partition as scopeId (same partition = shared scope)
-  return handleDbCall(getDatabaseManager(), panelId, info.partition, method, args);
-});
-
-// =============================================================================
-// Browser Panel IPC Handlers
-// =============================================================================
-
-// Helper to get browser webContents and validate it exists
-function requireBrowserWebContents(browserId: string): Electron.WebContents {
-  // Use ViewManager for webContents access
-  const vm = getViewManager();
-  const contents = vm.getWebContents(browserId);
-  if (!contents) {
-    throw new Error(`Browser webContents not found for ${browserId}`);
-  }
-  return contents;
-}
-
-// Helper to verify the sender owns the browser panel
-function assertBrowserOwner(event: Electron.IpcMainInvokeEvent, browserId: string): void {
-  const pm = requirePanelManager();
-
-  // Find which panel the sender belongs to
-  const senderPanelId = pm.findPanelIdBySenderId(event.sender.id);
-  if (!senderPanelId) {
-    throw new Error("Unauthorized: could not determine requesting panel");
-  }
-
-  // Verify the sender panel owns this browser
-  if (!getCdpServer().panelOwnsBrowser(senderPanelId, browserId)) {
-    throw new Error("Access denied: you do not own this browser panel");
-  }
-}
-
-handle("panel-bridge:browser-navigate", async (event, browserId: string, url: string) => {
-  assertBrowserOwner(event, browserId);
-  const contents = requireBrowserWebContents(browserId);
-  try {
-    await contents.loadURL(url);
-  } catch (err) {
-    // ERR_ABORTED (-3) is common during redirects - not a real error
-    const error = err as { code?: string; errno?: number };
-    if (error.errno === -3 || error.code === "ERR_ABORTED") {
-      return; // Navigation was aborted (redirect, user action, etc.) - ignore
-    }
-    throw err;
-  }
-});
-
-handle("panel-bridge:browser-go-back", async (event, browserId: string) => {
-  assertBrowserOwner(event, browserId);
-  const contents = requireBrowserWebContents(browserId);
-  if (contents.canGoBack()) {
-    contents.goBack();
-  }
-});
-
-handle("panel-bridge:browser-go-forward", async (event, browserId: string) => {
-  assertBrowserOwner(event, browserId);
-  const contents = requireBrowserWebContents(browserId);
-  if (contents.canGoForward()) {
-    contents.goForward();
-  }
-});
-
-handle("panel-bridge:browser-reload", async (event, browserId: string) => {
-  assertBrowserOwner(event, browserId);
-  const contents = requireBrowserWebContents(browserId);
-  contents.reload();
-});
-
-handle("panel-bridge:browser-stop", async (event, browserId: string) => {
-  assertBrowserOwner(event, browserId);
-  const contents = requireBrowserWebContents(browserId);
-  contents.stop();
-});
-
-handle("panel-bridge:browser-get-cdp-endpoint", async (event, browserId: string) => {
-  // Need to find which panel is making this request
-  // The requesting panel must be authorized and must own the browser
-  const pm = requirePanelManager();
-
-  // Find the panel ID for this sender
-  const requestingPanelId = pm.findPanelIdBySenderId(event.sender.id);
-  console.log(`[CDP] getCdpEndpoint: event.sender.id=${event.sender.id}, requestingPanelId=${requestingPanelId}, browserId=${browserId}`);
-
-  if (!requestingPanelId) {
-    throw new Error("Unauthorized: could not determine requesting panel");
-  }
-
-  const cdpServer = getCdpServer();
-  const endpoint = cdpServer.getCdpEndpoint(browserId, requestingPanelId);
-  console.log(`[CDP] getCdpEndpoint result: ${endpoint ? "granted" : "denied"}`);
-
-  if (!endpoint) {
-    throw new Error("Access denied: you do not own this browser panel");
-  }
-
-  return endpoint;
 });
 
 // Register a browser webview with the CDP server (called from renderer when webview is ready)
@@ -630,7 +546,7 @@ app.on("ready", async () => {
 
       // Initialize AI handler
       const { AIHandler } = await import("./ai/aiHandler.js");
-      aiHandler = new AIHandler(panelManager);
+      aiHandler = new AIHandler();
       await aiHandler.initialize();
     } catch (error) {
       console.error("Failed to initialize services:", error);

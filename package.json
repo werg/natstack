@@ -67,6 +67,7 @@
     "@natstack/core": "workspace:*",
     "@natstack/panel": "workspace:*",
     "@natstack/react": "workspace:*",
+    "@natstack/rpc": "workspace:*",
     "@natstack/scoped-fs": "workspace:*",
     "@natstack/worker-runtime": "workspace:*",
     "@npmcli/arborist": "^7.4.0",

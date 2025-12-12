@@ -27,7 +27,7 @@ import type {
   ServiceInvokeResponse,
 } from "./workerTypes.js";
 import type { WorkerCreateOptions, WorkerInfo } from "../shared/ipc/types.js";
-import type { RpcMessage, ServiceHandler } from "../shared/rpc/types.js";
+import type { RpcMessage, ServiceHandler } from "@natstack/rpc";
 
 // Default options for workers
 const DEFAULTS = {

@@ -8,58 +8,31 @@
  * for tool execution callbacks.
  */
 
-import type { AIRoleRecord } from "@natstack/ai";
+import type {
+  AIRoleRecord,
+  Message,
+  StreamEvent,
+  StreamTextOptions,
+  ToolDefinition,
+  ToolExecutionResult,
+} from "@natstack/ai";
 import { rpc } from "./rpc.js";
 
-// =============================================================================
-// StreamText Types (matching @natstack/ai)
-// =============================================================================
-
-/** Tool execution result format */
-export interface ToolExecutionResult {
-  content: Array<{ type: "text"; text: string }>;
-  isError?: boolean;
-}
-
-/** Content part types for messages */
-export type TextPart = { type: "text"; text: string };
-export type FilePart = { type: "file"; mimeType: string; data: Uint8Array | string };
-export type ToolCallPart = { type: "tool-call"; toolCallId: string; toolName: string; args: unknown };
-export type ToolResultPart = { type: "tool-result"; toolCallId: string; toolName: string; result: unknown; isError?: boolean };
-
-/** Message types */
-export type SystemMessage = { role: "system"; content: string };
-export type UserMessage = { role: "user"; content: string | Array<TextPart | FilePart> };
-export type AssistantMessage = { role: "assistant"; content: string | Array<TextPart | ToolCallPart> };
-export type ToolMessage = { role: "tool"; content: ToolResultPart[] };
-export type Message = SystemMessage | UserMessage | AssistantMessage | ToolMessage;
-
-/** Tool definition with execute callback */
-export interface ToolDefinition {
-  description?: string;
-  parameters: Record<string, unknown>;
-  execute: (args: Record<string, unknown>) => Promise<unknown>;
-}
-
-/** Options for streamText */
-export interface StreamTextOptions {
-  model: string;
-  messages: Message[];
-  tools?: Record<string, ToolDefinition>;
-  maxSteps?: number;
-  maxOutputTokens?: number;
-  temperature?: number;
-  system?: string;
-}
-
-/** Stream event types */
-export type StreamEvent =
-  | { type: "text-delta"; text: string }
-  | { type: "tool-call"; toolCallId: string; toolName: string; args: unknown }
-  | { type: "tool-result"; toolCallId: string; toolName: string; result: unknown; isError?: boolean }
-  | { type: "step-finish"; stepNumber: number; finishReason: "stop" | "tool-calls" | "length" | "error" }
-  | { type: "finish"; totalSteps: number; usage?: { promptTokens: number; completionTokens: number } }
-  | { type: "error"; error: Error };
+export type {
+  Message,
+  StreamEvent,
+  StreamTextOptions,
+  ToolDefinition,
+  ToolExecutionResult,
+  SystemMessage,
+  UserMessage,
+  AssistantMessage,
+  ToolMessage,
+  TextPart,
+  FilePart,
+  ToolCallPart,
+  ToolResultPart,
+} from "@natstack/ai";
 
 // =============================================================================
 // Serialization Types (for IPC)

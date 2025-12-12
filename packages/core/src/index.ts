@@ -325,6 +325,13 @@ export interface ChildHandle<
    */
   onEvent(event: string, listener: (payload: unknown) => void): () => void;
 
+  /**
+   * Listen for multiple events from this child.
+   * Returns a single cleanup function that unsubscribes all listeners.
+   */
+  onEvents(listeners: Partial<{ [EventName in Extract<keyof E, string>]: (payload: E[EventName]) => void }>): () => void;
+  onEvents(listeners: Record<string, (payload: unknown) => void>): () => void;
+
   // === Automation ===
 
   /**
@@ -432,6 +439,25 @@ export interface ParentHandle<
    */
   onEvent(event: string, listener: (payload: unknown) => void): () => void;
 }
+
+/**
+ * A no-op parent handle for when there's no parent.
+ * Use with nullish coalescing to avoid repetitive null checks:
+ *
+ * @example
+ * ```ts
+ * const parent = panel.getParentWithContract(contract) ?? noopParent;
+ * parent.emit("event", payload); // Safe - silently does nothing if no parent
+ * ```
+ */
+export const noopParent: ParentHandle = {
+  id: "",
+  call: new Proxy({} as ParentHandle["call"], {
+    get: () => () => Promise.reject(new Error("No parent")),
+  }),
+  emit: () => Promise.resolve(),
+  onEvent: () => () => {},
+};
 
 // =============================================================================
 // Panel Contract Types (unified parent-child interface definition)

@@ -74,36 +74,33 @@ export default function ChildPanelLauncher() {
     return unsubscribe;
   }, [rpcChild]);
 
-  // Subscribe to events from the worker using handle.onEvent
+  // Subscribe to events from the worker using handle.onEvents batch API
   useEffect(() => {
     if (!worker) return;
-    const unsubs: Array<() => void> = [];
 
-    unsubs.push(worker.onEvent("counter-changed", (payload) => {
-      const timestamp = new Date().toLocaleTimeString();
-      setWorkerEvents((prev) => [
-        `[${timestamp}] counter-changed: ${JSON.stringify(payload)}`,
-        ...prev.slice(0, 4),
-      ]);
-    }));
-
-    unsubs.push(worker.onEvent("ping-received", (payload) => {
-      const timestamp = new Date().toLocaleTimeString();
-      setWorkerEvents((prev) => [
-        `[${timestamp}] ping-received: ${JSON.stringify(payload)}`,
-        ...prev.slice(0, 4),
-      ]);
-    }));
-
-    unsubs.push(worker.onEvent("reset", (payload) => {
-      const timestamp = new Date().toLocaleTimeString();
-      setWorkerEvents((prev) => [
-        `[${timestamp}] reset: ${JSON.stringify(payload)}`,
-        ...prev.slice(0, 4),
-      ]);
-    }));
-
-    return () => unsubs.forEach((fn) => fn());
+    return worker.onEvents({
+      "counter-changed": (payload) => {
+        const timestamp = new Date().toLocaleTimeString();
+        setWorkerEvents((prev) => [
+          `[${timestamp}] counter-changed: ${JSON.stringify(payload)}`,
+          ...prev.slice(0, 4),
+        ]);
+      },
+      "ping-received": (payload) => {
+        const timestamp = new Date().toLocaleTimeString();
+        setWorkerEvents((prev) => [
+          `[${timestamp}] ping-received: ${JSON.stringify(payload)}`,
+          ...prev.slice(0, 4),
+        ]);
+      },
+      "reset": (payload) => {
+        const timestamp = new Date().toLocaleTimeString();
+        setWorkerEvents((prev) => [
+          `[${timestamp}] reset: ${JSON.stringify(payload)}`,
+          ...prev.slice(0, 4),
+        ]);
+      },
+    });
   }, [worker]);
 
   // Get env variables that were passed from parent

@@ -1,6 +1,5 @@
 // Shared types for typed IPC communication
 
-import type { AIRoleRecord } from "@natstack/ai";
 import type {
   ChildSpec,
   AppChildSpec,
@@ -8,6 +7,7 @@ import type {
   BrowserChildSpec,
 } from "@natstack/core";
 import type { RepoArgSpec } from "@natstack/git";
+import type { RpcMessage, RpcResponse } from "@natstack/rpc";
 
 // Re-export types for consumers of this module
 export type { ChildSpec, AppChildSpec, WorkerChildSpec, BrowserChildSpec, RepoArgSpec };
@@ -163,37 +163,10 @@ export interface ViewIpcApi {
 // Panel bridge IPC channels (panel webview <-> main)
 export interface PanelBridgeIpcApi {
   /**
-   * Create a child panel, worker, or browser from a spec.
-   * Main process handles git checkout and build for app/worker types.
-   * Returns child ID immediately; build happens async.
-   *
-   * For app/worker: Uses manifest's `runtime` field to determine type.
-   * For browser: Creates external URL panel with Playwright automation.
+   * Initial panel <-> main handshake.
+   * After this, panel calls should use `rpc:call` (service.method).
    */
-  "panel-bridge:create-child": (parentId: string, spec: ChildSpec) => string;
-
-  "panel-bridge:remove-child": (parentId: string, childId: string) => void;
-  "panel-bridge:set-title": (panelId: string, title: string) => void;
-  "panel-bridge:close": (panelId: string) => void;
   "panel-bridge:register": (panelId: string, authToken: string) => void;
-  "panel-bridge:get-env": (panelId: string) => Record<string, string>;
-  "panel-bridge:get-info": (panelId: string) => PanelInfo;
-
-  /**
-   * Get git configuration for a panel.
-   * Used by panels to clone/pull their source and repo args via @natstack/git.
-   */
-  "panel-bridge:get-git-config": (panelId: string) => {
-    serverUrl: string;
-    token: string;
-    sourceRepo: string;
-    /** Optional version overrides for source repo */
-    branch?: string;
-    commit?: string;
-    tag?: string;
-    /** Resolved repo args (name -> spec) provided by parent at createChild time */
-    resolvedRepoArgs: Record<string, RepoArgSpec>;
-  };
 
   /**
    * Request an RPC connection to another panel or worker.
@@ -205,55 +178,15 @@ export interface PanelBridgeIpcApi {
    */
   "panel-rpc:connect": (fromId: string, toId: string) => { isWorker: boolean; workerId?: string };
 
-  // ===========================================================================
-  // Browser Panel IPC Channels
-  // ===========================================================================
-
   /**
-   * Navigate browser panel to a URL (human UI control).
+   * Unified RPC entrypoint for panel -> main service calls.
+   * Accepts a standard RpcRequest and returns a matching RpcResponse.
+   *
+   * Method format: "service.method" (e.g., "db.open", "bridge.createChild", "ai.listRoles").
+   *
+   * Note: panel registration/handshake remains on "panel-bridge:register".
    */
-  "panel-bridge:browser-navigate": (panelId: string, url: string) => void;
-
-  /**
-   * Go back in browser history.
-   */
-  "panel-bridge:browser-go-back": (panelId: string) => void;
-
-  /**
-   * Go forward in browser history.
-   */
-  "panel-bridge:browser-go-forward": (panelId: string) => void;
-
-  /**
-   * Reload the current page.
-   */
-  "panel-bridge:browser-reload": (panelId: string) => void;
-
-  /**
-   * Stop loading the current page.
-   */
-  "panel-bridge:browser-stop": (panelId: string) => void;
-
-  /**
-   * Get CDP WebSocket endpoint for Playwright connection.
-   * Only the parent panel that created the browser can access this.
-   * @param browserId - The browser panel's ID
-   * @returns WebSocket URL for CDP connection (e.g., ws://localhost:63525/browser-id?token=xyz)
-   */
-  "panel-bridge:browser-get-cdp-endpoint": (browserId: string) => string;
-
-  // ===========================================================================
-  // Database IPC Channel (multiplexed)
-  // ===========================================================================
-
-  /**
-   * Database service for panels - multiplexed channel for all SQLite operations.
-   * Methods: open, openShared, query, run, get, exec, close
-   * @param panelId - The panel making the request
-   * @param method - The database method to call
-   * @param args - Arguments for the method
-   */
-  "panel-bridge:db": (panelId: string, method: string, args: unknown[]) => unknown;
+  "rpc:call": (panelId: string, message: RpcMessage) => RpcResponse;
 }
 
 // Main-to-panel IPC channels (main -> panel webview via invoke)
@@ -266,22 +199,6 @@ export interface MainToPanelIpcApi {
     toolName: string,
     args: Record<string, unknown>
   ) => ToolExecutionResult;
-}
-
-// AI provider IPC channels (panel webview <-> main)
-// Note: panelId is derived from the IPC sender identity for security
-export interface AIProviderIpcApi {
-  /** Get record of configured roles and their assigned models */
-  "ai:list-roles": () => AIRoleRecord;
-
-  /** Start a streamText generation - unified API for all model types */
-  "ai:stream-text-start": (options: StreamTextOptions, streamId: string) => void;
-
-  /** Cancel an active streaming generation */
-  "ai:stream-cancel": (streamId: string) => void;
-
-  /** Response from panel after executing a tool */
-  "ai:tool-result": (executionId: string, result: ToolExecutionResult) => void;
 }
 
 // =============================================================================
@@ -619,7 +536,6 @@ export type AllIpcApi = AppIpcApi &
   PanelIpcApi &
   ViewIpcApi &
   PanelBridgeIpcApi &
-  AIProviderIpcApi &
   CentralDataIpcApi &
   WorkspaceIpcApi &
   SettingsIpcApi &

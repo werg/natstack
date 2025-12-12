@@ -2,7 +2,7 @@ import { ipcMain, MessageChannelMain } from "electron";
 import { handle } from "./handlers.js";
 import type { PanelManager } from "../panelManager.js";
 import { getWorkerManager } from "../workerManager.js";
-import type { RpcMessage } from "../../shared/rpc/types.js";
+import type { RpcMessage } from "@natstack/rpc";
 import { isViewManagerInitialized, getViewManager } from "../viewManager.js";
 
 export class PanelRpcHandler {

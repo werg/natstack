@@ -19,6 +19,7 @@
  */
 
 import vm from "node:vm";
+import type { RpcEvent, RpcMessage, RpcRequest, RpcResponse } from "@natstack/rpc";
 import type {
   UtilityMessage,
   UtilityWorkerCreateRequest,
@@ -34,31 +35,6 @@ import type {
   ServiceInvokeRequest,
   ServiceInvokeResponse,
 } from "../main/workerTypes.js";
-
-/** RPC message types (matching worker-runtime/src/types.ts) */
-interface RpcRequest {
-  type: "request";
-  requestId: string;
-  fromId: string;
-  method: string;
-  args: unknown[];
-}
-
-interface RpcResponse {
-  type: "response";
-  requestId: string;
-  result?: unknown;
-  error?: string;
-}
-
-interface RpcEvent {
-  type: "event";
-  fromId: string;
-  event: string;
-  payload: unknown;
-}
-
-type RpcMessage = RpcRequest | RpcResponse | RpcEvent;
 
 // Get the parent port for communication with main process
 const parentPort = process.parentPort;
@@ -232,7 +208,7 @@ function handleRpcForward(message: UtilityRpcForward): void {
  * Converts to service:invoke-response format.
  */
 function handleRpcResponseToMain(workerId: string, response: RpcResponse): void {
-  const { requestId, result, error } = response;
+  const { requestId } = response;
 
   // Check if this is a response to a pending invoke from main
   const pending = pendingInvokeFromMain.get(requestId);
@@ -248,8 +224,7 @@ function handleRpcResponseToMain(workerId: string, response: RpcResponse): void 
     type: "service:invoke-response",
     requestId,
     workerId,
-    result,
-    error,
+    ...("error" in response ? { error: response.error } : { result: response.result }),
   };
   parentPort.postMessage(invokeResponse);
 }
@@ -310,12 +285,17 @@ function handleServiceResponse(response: ServiceCallResponse): void {
   const state = workers.get(rpcPending.workerId);
   if (!state) return;
 
-  const rpcResponse: RpcResponse = {
-    type: "response",
-    requestId: response.requestId,
-    result: response.result,
-    error: response.error,
-  };
+  const rpcResponse: RpcResponse = response.error
+    ? {
+        type: "response",
+        requestId: response.requestId,
+        error: response.error,
+      }
+    : {
+        type: "response",
+        requestId: response.requestId,
+        result: response.result,
+      };
   deliverRpcMessage(state, "main", rpcResponse);
 }
 

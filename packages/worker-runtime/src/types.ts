@@ -121,29 +121,7 @@ export type WorkerFetch = (url: string, options?: FetchOptions) => Promise<Fetch
 /**
  * RPC message types.
  */
-export interface RpcRequest {
-  type: "request";
-  requestId: string;
-  fromId: string;
-  method: string;
-  args: unknown[];
-}
-
-export interface RpcResponse {
-  type: "response";
-  requestId: string;
-  result?: unknown;
-  error?: string;
-}
-
-export interface RpcEvent {
-  type: "event";
-  fromId: string;
-  event: string;
-  payload: unknown;
-}
-
-export type RpcMessage = RpcRequest | RpcResponse | RpcEvent;
+export type { RpcMessage } from "@natstack/rpc";
 
 /**
  * Methods that can be exposed via RPC.
@@ -174,7 +152,7 @@ export interface WorkerRpc {
    * @param event - Event name
    * @param payload - Event payload
    */
-  emit(targetId: string, event: string, payload: unknown): void;
+  emit(targetId: string, event: string, payload: unknown): Promise<void>;
 
   /**
    * Listen for events from any endpoint.

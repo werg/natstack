@@ -9,9 +9,11 @@
 
 import { getWorkerManager } from "../workerManager.js";
 import type { PanelManager } from "../panelManager.js";
-import type { ChildSpec, StreamTextOptions } from "../../shared/ipc/types.js";
 import { getCdpServer } from "../cdpServer.js";
 import { isViewManagerInitialized, getViewManager } from "../viewManager.js";
+import { handleBridgeCall } from "./bridgeHandlers.js";
+import { handleAiServiceCall } from "./aiHandlers.js";
+import { getCdpEndpointForCaller } from "./browserHandlers.js";
 
 /**
  * Register worker-related handlers.
@@ -44,34 +46,7 @@ export function registerWorkerHandlers(panelManager: PanelManager): void {
 
   // Register the "bridge" service for panel bridge operations
   workerManager.registerService("bridge", async (workerId, method, args) => {
-    switch (method) {
-      case "createChild": {
-        const [spec] = args as [ChildSpec];
-        return panelManager.createChild(workerId, spec);
-      }
-      case "removeChild": {
-        const [childId] = args as [string];
-        return panelManager.removeChild(workerId, childId);
-      }
-      case "setTitle": {
-        const [title] = args as [string];
-        return panelManager.setTitle(workerId, title);
-      }
-      case "close": {
-        return panelManager.closePanel(workerId);
-      }
-      case "getEnv": {
-        return panelManager.getEnv(workerId);
-      }
-      case "getInfo": {
-        return panelManager.getInfo(workerId);
-      }
-      case "getGitConfig": {
-        return panelManager.getGitConfig(workerId);
-      }
-      default:
-        throw new Error(`Unknown bridge method: ${method}`);
-    }
+    return handleBridgeCall(panelManager, workerId, method, args);
   });
 
   // Register the "ai" service for AI operations (unified streamText API)
@@ -82,30 +57,10 @@ export function registerWorkerHandlers(panelManager: PanelManager): void {
       throw new Error("AI handler not initialized");
     }
 
-    switch (method) {
-      case "listRoles": {
-        return aiHandler.getAvailableRoles();
-      }
-      case "streamTextStart": {
-        const [options, streamId] = args as [StreamTextOptions, string];
-        // Start streaming and route chunks back through workerManager.sendPush
-        void aiHandler.streamTextToWorker(
-          workerManager,
-          workerId,
-          crypto.randomUUID(),
-          options,
-          streamId
-        );
-        return;
-      }
-      case "streamCancel": {
-        const [streamId] = args as [string];
-        aiHandler.cancelStream(streamId);
-        return;
-      }
-      default:
-        throw new Error(`Unknown AI method: ${method}`);
-    }
+    return handleAiServiceCall(aiHandler, method, args, (handler, options, streamId) => {
+      // Start streaming and route chunks back through workerManager.sendPush
+      void handler.streamTextToWorker(workerManager, workerId, crypto.randomUUID(), options, streamId);
+    });
   });
 
   // Register the "browser" service for browser panel control
@@ -115,11 +70,7 @@ export function registerWorkerHandlers(panelManager: PanelManager): void {
     switch (method) {
       case "getCdpEndpoint": {
         const [browserId] = args as [string];
-        const endpoint = cdpServer.getCdpEndpoint(browserId, workerId);
-        if (!endpoint) {
-          throw new Error("Access denied: you do not own this browser panel");
-        }
-        return endpoint;
+        return getCdpEndpointForCaller(cdpServer, browserId, workerId);
       }
       default:
         throw new Error(`Unknown browser method: ${method}`);

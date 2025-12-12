@@ -3,7 +3,7 @@
  * These types are used for communication between main process and utility process.
  *
  * Service calls (fs, network, bridge, ai) use the unified ServiceCallRequest/Response
- * from shared/rpc/types.ts. This file contains worker lifecycle and other utility messages.
+ * from @natstack/rpc. This file contains worker lifecycle and other utility messages.
  */
 
 import type { WorkerCreateOptions, WorkerBuildState } from "../shared/ipc/types.js";
@@ -13,7 +13,7 @@ import type {
   ServicePushEvent,
   ServiceInvokeRequest,
   ServiceInvokeResponse,
-} from "../shared/rpc/types.js";
+} from "@natstack/rpc";
 
 // Re-export service types for convenience
 export type {

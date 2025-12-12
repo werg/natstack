@@ -14,8 +14,6 @@
  */
 
 import { MessageChannelMain } from "electron";
-import { handle } from "../ipc/handlers.js";
-import type { PanelManager } from "../panelManager.js";
 import type { AIRoleRecord, AIModelInfo, AIToolDefinition } from "@natstack/ai";
 import type {
   StreamTextOptions,
@@ -31,6 +29,18 @@ import {
   type ClaudeCodeConversationManager,
 } from "./claudeCodeConversationManager.js";
 import { type ToolExecutionResult } from "./claudeCodeToolProxy.js";
+
+type StreamTargetKind = "panel" | "worker";
+
+interface StreamTarget {
+  kind: StreamTargetKind;
+  targetId: string;
+  isAvailable(): boolean;
+  sendChunk(event: StreamTextEvent): void;
+  sendEnd(): void;
+  executeTool(toolName: string, args: Record<string, unknown>): Promise<ToolExecutionResult>;
+  onUnavailable?(listener: () => void): () => void;
+}
 
 // =============================================================================
 // AI SDK Types
@@ -71,19 +81,6 @@ function safeJsonParse(jsonString: string, fallback?: unknown): unknown {
     return JSON.parse(jsonString);
   } catch {
     return fallback !== undefined ? fallback : jsonString;
-  }
-}
-
-/**
- * Safely stringify to JSON with fallback to String() on error.
- * @param value - Value to stringify
- * @returns JSON string or String(value) on error
- */
-function safeJsonStringify(value: unknown): string {
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
   }
 }
 
@@ -245,9 +242,8 @@ export class AIHandler {
   private modelRoleResolver: import("./modelRoles.js").ModelRoleResolver | null = null;
   private ccConversationManager: ClaudeCodeConversationManager;
 
-  constructor(private panelManager: PanelManager) {
+  constructor() {
     this.ccConversationManager = getClaudeCodeConversationManager();
-    this.registerHandlers();
   }
 
   registerProvider(config: AIProviderConfig): void {
@@ -416,114 +412,48 @@ export class AIHandler {
     return roles;
   }
 
-  private registerHandlers(): void {
-    handle("ai:stream-cancel", async (event, streamId: string) => {
-      const requestId = generateRequestId();
-      this.getPanelId(event, requestId); // Validate authorization
-      this.streamManager.cancelStream(streamId);
+  startPanelStream(
+    sender: Electron.WebContents,
+    panelId: string,
+    options: StreamTextOptions,
+    streamId: string,
+    requestId: string = generateRequestId()
+  ): void {
+    this.logger.info(requestId, "[Main AI] stream-text-start received", {
+      model: options.model,
+      messageCount: options.messages?.length,
+      toolCount: options.tools?.length,
+      streamId,
     });
 
-    handle("ai:list-roles", async (event) => {
-      const requestId = generateRequestId();
-      this.getPanelId(event, requestId); // Validate authorization
-      return this.getAvailableRoles();
-    });
+    const resolvedModelId = this.resolveModelId(options.model);
 
-    // =========================================================================
-    // Unified streamText API
-    // =========================================================================
-
-    handle(
-      "ai:stream-text-start",
-      async (event, options: StreamTextOptions, streamId: string) => {
-        const requestId = generateRequestId();
-        const panelId = this.getPanelId(event, requestId);
-
-        // Debug: Log received options
-        this.logger.info(requestId, "[Main AI] stream-text-start received", {
-          model: options.model,
-          messageCount: options.messages?.length,
-          toolCount: options.tools?.length,
-          streamId,
-        });
-
-        // Resolve model role to actual model ID
-        const resolvedModelId = this.resolveModelId(options.model);
-
-        void this.streamTextToPanel(
-          event.sender,
-          requestId,
-          panelId,
-          resolvedModelId,
-          options,
-          streamId
-        );
-      }
-    );
-
-  }
-
-  /**
-   * Get panel ID from sender and validate authorization.
-   * @throws AIError if sender is not authorized
-   */
-  private getPanelId(event: Electron.IpcMainInvokeEvent, requestId: string): string {
-    const panelId = this.panelManager.getPanelIdForWebContents(event.sender);
-    if (!panelId) {
-      this.logger.warn(requestId, "Unauthorized IPC call from unknown sender");
-      throw createAIError("unauthorized", "Sender is not a registered panel");
-    }
-    this.logger.debug(requestId, "IPC call authorized", { panelId });
-    return panelId;
+    void this.streamTextToPanel(sender, requestId, panelId, resolvedModelId, options, streamId);
   }
 
   // ===========================================================================
   // Unified streamText Implementation
   // ===========================================================================
 
-  /**
-   * Unified streamText implementation with server-side agent loop.
-   * Works for both regular models and Claude Code models.
-   */
-  private async streamTextToPanel(
+  private createPanelTarget(
     sender: Electron.WebContents,
-    requestId: string,
     panelId: string,
-    modelId: string,
-    options: StreamTextOptions,
-    streamId: string
-  ): Promise<void> {
-    const isClaudeCode = modelId.startsWith("claude-code:");
-    const hasTools = options.tools && options.tools.length > 0;
-    const maxSteps = options.maxSteps ?? 10;
-
-    this.logger.info(requestId, "streamText started", {
-      panelId,
-      modelId,
-      streamId,
-      hasTools,
-      maxSteps,
-      isClaudeCode,
-    });
-
-    const abortController = new AbortController();
-    this.streamManager.startTracking(streamId, abortController, requestId);
-
-    const onDestroyed = (): void => {
-      this.logger.info(requestId, "Panel destroyed, cancelling streamText", { streamId });
-      this.streamManager.cleanup(streamId);
-    };
-    sender.on("destroyed", onDestroyed);
-
-    // Helper to send streamText events
-    const sendEvent = (event: StreamTextEvent): void => {
+    streamId: string,
+    requestId: string
+  ): StreamTarget {
+    const sendChunk = (event: StreamTextEvent): void => {
       if (!sender.isDestroyed()) {
         sender.send("ai:stream-text-chunk", { panelId, streamId, chunk: event });
       }
     };
 
-    // Helper to execute a tool via panel callback using bidirectional RPC
-    const executeToolViaPanel = async (
+    const sendEnd = (): void => {
+      if (!sender.isDestroyed()) {
+        sender.send("ai:stream-text-end", { panelId, streamId });
+      }
+    };
+
+    const executeTool = async (
       toolName: string,
       args: Record<string, unknown>
     ): Promise<ToolExecutionResult> => {
@@ -541,7 +471,6 @@ export class AIHandler {
           reject(new Error(`Tool execution timed out: ${toolName}`));
         }, TOOL_EXECUTION_TIMEOUT_MS);
 
-        // Create a MessageChannel for the response
         const { port1, port2 } = new MessageChannelMain();
 
         port1.on("message", (event) => {
@@ -551,91 +480,167 @@ export class AIHandler {
           resolve({
             content: result.content,
             isError: result.isError,
-            data: result.data, // Preserve structured data for UI
+            data: result.data,
           });
         });
 
         port1.start();
-
-        // Send tool execution request with response port
         sender.postMessage("panel:execute-tool", [streamId, toolName, args], [port2]);
       });
     };
 
+    return {
+      kind: "panel",
+      targetId: panelId,
+      isAvailable: () => !sender.isDestroyed(),
+      sendChunk,
+      sendEnd,
+      executeTool,
+      onUnavailable: (listener) => {
+        const onDestroyed = () => listener();
+        sender.on("destroyed", onDestroyed);
+        return () => sender.removeListener("destroyed", onDestroyed);
+      },
+    };
+  }
+
+  private createWorkerTarget(
+    workerManager: {
+      sendPush: (workerId: string, service: string, event: string, payload: unknown) => void;
+      serviceInvoke: (
+        workerId: string,
+        service: string,
+        method: string,
+        args: unknown[],
+        timeoutMs?: number
+      ) => Promise<unknown>;
+    },
+    workerId: string,
+    streamId: string
+  ): StreamTarget {
+    const sendChunk = (event: StreamTextEvent): void => {
+      workerManager.sendPush(workerId, "ai", "stream-text-chunk", { streamId, chunk: event });
+    };
+
+    const sendEnd = (): void => {
+      workerManager.sendPush(workerId, "ai", "stream-text-end", { streamId });
+    };
+
+    const executeTool = async (
+      toolName: string,
+      args: Record<string, unknown>
+    ): Promise<ToolExecutionResult> => {
+      const result = await workerManager.serviceInvoke(
+        workerId,
+        "ai",
+        "executeTool",
+        [streamId, toolName, args],
+        TOOL_EXECUTION_TIMEOUT_MS
+      );
+      return result as ToolExecutionResult;
+    };
+
+    return {
+      kind: "worker",
+      targetId: workerId,
+      isAvailable: () => true,
+      sendChunk,
+      sendEnd,
+      executeTool,
+    };
+  }
+
+  private async streamTextToTarget(
+    target: StreamTarget,
+    requestId: string,
+    modelId: string,
+    options: StreamTextOptions,
+    streamId: string
+  ): Promise<void> {
+    const isClaudeCode = modelId.startsWith("claude-code:");
+    const hasTools = options.tools && options.tools.length > 0;
+    const maxSteps = options.maxSteps ?? 10;
+
+    this.logger.info(requestId, "streamText started", {
+      targetKind: target.kind,
+      targetId: target.targetId,
+      modelId,
+      streamId,
+      hasTools,
+      maxSteps,
+      isClaudeCode,
+    });
+
+    const abortController = new AbortController();
+    this.streamManager.startTracking(streamId, abortController, requestId);
+
+    const unsubscribe = target.onUnavailable?.(() => {
+      this.logger.info(requestId, "Target unavailable, cancelling streamText", { streamId });
+      this.streamManager.cleanup(streamId);
+    });
+
     try {
       if (isClaudeCode && hasTools) {
-        // Route to Claude Code with MCP proxy for tool support
-        await this.streamTextClaudeCode(
-          sender,
+        await this.streamTextClaudeCodeToTarget(
+          target,
           requestId,
-          panelId,
           modelId,
           options,
           streamId,
-          maxSteps,
-          abortController,
-          sendEvent,
-          executeToolViaPanel
+          abortController
         );
       } else if (hasTools) {
-        // Regular model with tools - run agent loop
-        await this.streamTextWithAgentLoop(
-          sender,
+        await this.streamTextWithAgentLoopToTarget(
+          target,
           requestId,
-          panelId,
           modelId,
           options,
-          streamId,
           maxSteps,
-          abortController,
-          sendEvent,
-          executeToolViaPanel
+          abortController
         );
       } else {
-        // Simple case: no tools, just stream
-        await this.streamTextSimple(
-          sender,
-          requestId,
-          panelId,
-          modelId,
-          options,
-          streamId,
-          abortController,
-          sendEvent
-        );
+        await this.streamTextSimpleToTarget(target, modelId, options, abortController);
       }
 
-      if (!sender.isDestroyed()) {
-        sender.send("ai:stream-text-end", { panelId, streamId });
-        this.logger.info(requestId, "streamText completed", { streamId });
-      }
+      target.sendEnd();
+      this.logger.info(requestId, "streamText completed", { streamId });
     } catch (error) {
       this.logger.error(requestId, "streamText error", { streamId }, error as Error);
-      sendEvent({
+      target.sendChunk({
         type: "error",
         error: error instanceof Error ? error.message : String(error),
       });
-      if (!sender.isDestroyed()) {
-        sender.send("ai:stream-text-end", { panelId, streamId });
-      }
+      target.sendEnd();
     } finally {
-      sender.removeListener("destroyed", onDestroyed);
+      unsubscribe?.();
       this.streamManager.cleanup(streamId);
     }
   }
 
   /**
-   * Simple streaming without tools - single model call.
+   * Unified streamText implementation with server-side agent loop.
+   * Works for both regular models and Claude Code models.
    */
-  private async streamTextSimple(
+  private async streamTextToPanel(
     sender: Electron.WebContents,
     requestId: string,
     panelId: string,
     modelId: string,
     options: StreamTextOptions,
-    streamId: string,
-    abortController: AbortController,
-    sendEvent: (event: StreamTextEvent) => void
+    streamId: string
+  ): Promise<void> {
+    const target = this.createPanelTarget(sender, panelId, streamId, requestId);
+    await this.streamTextToTarget(target, requestId, modelId, options, streamId);
+  }
+
+  /**
+   * Simple streaming without tools - single model call.
+   */
+  private async streamTextSimpleToTarget(
+    target: StreamTarget,
+    modelId: string,
+    options: StreamTextOptions,
+    abortController: AbortController
   ): Promise<void> {
     const model = this.registry.getModel(modelId);
 
@@ -656,7 +661,7 @@ export class AIHandler {
 
     try {
       while (true) {
-        if (sender.isDestroyed()) {
+        if (!target.isAvailable() || abortController.signal.aborted) {
           abortController.abort();
           break;
         }
@@ -669,7 +674,7 @@ export class AIHandler {
 
         // Convert to unified event format
         if (type === "text-delta") {
-          sendEvent({ type: "text-delta", text: part["delta"] as string });
+          target.sendChunk({ type: "text-delta", text: part["delta"] as string });
         } else if (type === "finish") {
           totalUsage = {
             promptTokens: (part["usage"] as { promptTokens?: number })?.promptTokens ?? 0,
@@ -681,24 +686,20 @@ export class AIHandler {
       reader.releaseLock();
     }
 
-    sendEvent({ type: "step-finish", stepNumber: 1, finishReason: "stop" });
-    sendEvent({ type: "finish", totalSteps: 1, usage: totalUsage });
+    target.sendChunk({ type: "step-finish", stepNumber: 1, finishReason: "stop" });
+    target.sendChunk({ type: "finish", totalSteps: 1, usage: totalUsage });
   }
 
   /**
    * Streaming with agent loop for regular models with tools.
    */
-  private async streamTextWithAgentLoop(
-    sender: Electron.WebContents,
+  private async streamTextWithAgentLoopToTarget(
+    target: StreamTarget,
     requestId: string,
-    panelId: string,
     modelId: string,
     options: StreamTextOptions,
-    streamId: string,
     maxSteps: number,
-    abortController: AbortController,
-    sendEvent: (event: StreamTextEvent) => void,
-    executeToolViaPanel: (toolName: string, args: Record<string, unknown>) => Promise<ToolExecutionResult>
+    abortController: AbortController
   ): Promise<void> {
     const model = this.registry.getModel(modelId);
 
@@ -715,7 +716,7 @@ export class AIHandler {
     let totalUsage = { promptTokens: 0, completionTokens: 0 };
 
     for (let step = 1; step <= maxSteps; step++) {
-      if (sender.isDestroyed() || abortController.signal.aborted) break;
+      if (!target.isAvailable() || abortController.signal.aborted) break;
 
       // Convert current conversation to SDK format
       const prompt = this.convertStreamTextMessagesToSDK(conversationMessages);
@@ -740,7 +741,7 @@ export class AIHandler {
 
       try {
         while (true) {
-          if (sender.isDestroyed()) {
+          if (!target.isAvailable() || abortController.signal.aborted) {
             abortController.abort();
             break;
           }
@@ -754,7 +755,7 @@ export class AIHandler {
           switch (type) {
             case "text-delta":
               textContent += part["delta"] as string;
-              sendEvent({ type: "text-delta", text: part["delta"] as string });
+              target.sendChunk({ type: "text-delta", text: part["delta"] as string });
               break;
 
             case "tool-input-start": {
@@ -780,7 +781,7 @@ export class AIHandler {
               if (tc) {
                 tc.args = safeJsonParse(argsStr, { raw: argsStr });
                 // Send tool-call event
-                sendEvent({
+                target.sendChunk({
                   type: "tool-call",
                   toolCallId: tc.toolCallId,
                   toolName: tc.toolName,
@@ -811,11 +812,11 @@ export class AIHandler {
       }
 
       // Send step-finish event
-      sendEvent({ type: "step-finish", stepNumber: step, finishReason });
+      target.sendChunk({ type: "step-finish", stepNumber: step, finishReason });
 
       // If no tool calls or finish reason is stop, we're done
       if (toolCalls.length === 0 || finishReason === "stop") {
-        sendEvent({ type: "finish", totalSteps: step, usage: totalUsage });
+        target.sendChunk({ type: "finish", totalSteps: step, usage: totalUsage });
         return;
       }
 
@@ -824,7 +825,7 @@ export class AIHandler {
 
       for (const tc of toolCalls) {
         try {
-          const result = await executeToolViaPanel(tc.toolName, tc.args as Record<string, unknown>);
+          const result = await target.executeTool(tc.toolName, tc.args as Record<string, unknown>);
           const resultText = result.content[0]?.text;
           const parsedResult = resultText ? safeJsonParse(resultText) : resultText;
 
@@ -841,7 +842,7 @@ export class AIHandler {
             result: parsedResult, // For LLM conversation, just use parsed text
             isError: result.isError,
           });
-          sendEvent({
+          target.sendChunk({
             type: "tool-result",
             toolCallId: tc.toolCallId,
             toolName: tc.toolName,
@@ -856,7 +857,7 @@ export class AIHandler {
             result: { error: errorMessage },
             isError: true,
           });
-          sendEvent({
+          target.sendChunk({
             type: "tool-result",
             toolCallId: tc.toolCallId,
             toolName: tc.toolName,
@@ -894,23 +895,19 @@ export class AIHandler {
     }
 
     // Hit max steps
-    sendEvent({ type: "finish", totalSteps: maxSteps, usage: totalUsage });
+    target.sendChunk({ type: "finish", totalSteps: maxSteps, usage: totalUsage });
   }
 
   /**
    * Streaming with Claude Code model and tools via MCP proxy.
    */
-  private async streamTextClaudeCode(
-    sender: Electron.WebContents,
+  private async streamTextClaudeCodeToTarget(
+    target: StreamTarget,
     requestId: string,
-    panelId: string,
     modelId: string,
     options: StreamTextOptions,
     streamId: string,
-    maxSteps: number,
-    abortController: AbortController,
-    sendEvent: (event: StreamTextEvent) => void,
-    executeToolViaPanel: (toolName: string, args: Record<string, unknown>) => Promise<ToolExecutionResult>
+    abortController: AbortController
   ): Promise<void> {
     // Extract the model name (e.g., "claude-code:sonnet" -> "sonnet")
     const ccModelId = modelId.startsWith("claude-code:")
@@ -938,7 +935,7 @@ export class AIHandler {
     // Use an object reference so the callback can access the correct conversation ID
     const conversationRef = { id: "" };
 
-    // Create tool execution callback that wraps executeToolViaPanel
+    // Create tool execution callback that wraps target.executeTool
     const mcpExecuteCallback = async (
       toolName: string,
       args: Record<string, unknown>
@@ -952,18 +949,23 @@ export class AIHandler {
 
       // Send tool-call event
       const toolCallId = crypto.randomUUID();
-      sendEvent({
+      target.sendChunk({
         type: "tool-call",
         toolCallId,
         toolName: simpleToolName,
         args,
       });
 
-      // Execute via panel
-      const result = await executeToolViaPanel(simpleToolName, args);
+      if (!target.isAvailable() || abortController.signal.aborted) {
+        abortController.abort();
+        throw new Error("Target is not available");
+      }
+
+      // Execute via panel/worker
+      const result = await target.executeTool(simpleToolName, args);
 
       // Send tool-result event
-      const resultText = result.content[0]?.text;
+      const resultText = result.content.map((c) => c.text).join("\n");
       const parsedResult = resultText ? safeJsonParse(resultText) : resultText;
 
       // If the tool result includes structured data, pass it through
@@ -971,7 +973,7 @@ export class AIHandler {
         ? { content: result.content, isError: result.isError, data: result.data }
         : parsedResult;
 
-      sendEvent({
+      target.sendChunk({
         type: "tool-result",
         toolCallId,
         toolName: simpleToolName,
@@ -984,7 +986,7 @@ export class AIHandler {
 
     // Create the conversation
     const conversationHandle = this.ccConversationManager.createConversation({
-      panelId,
+      panelId: target.targetId,
       modelId: ccModelId,
       tools: validatedTools,
       executeCallback: mcpExecuteCallback,
@@ -994,6 +996,9 @@ export class AIHandler {
 
     this.logger.info(requestId, "Created streamText Claude Code conversation", {
       conversationId: conversationRef.id,
+      streamId,
+      targetKind: target.kind,
+      targetId: target.targetId,
       toolCount: validatedTools.length,
     });
 
@@ -1018,7 +1023,7 @@ export class AIHandler {
 
       try {
         while (true) {
-          if (sender.isDestroyed()) {
+          if (!target.isAvailable() || abortController.signal.aborted) {
             abortController.abort();
             break;
           }
@@ -1031,7 +1036,7 @@ export class AIHandler {
 
           // Convert to unified event format
           if (type === "text-delta") {
-            sendEvent({ type: "text-delta", text: part["delta"] as string });
+            target.sendChunk({ type: "text-delta", text: part["delta"] as string });
           } else if (type === "finish") {
             const usage = part["usage"] as { promptTokens?: number; completionTokens?: number } | undefined;
             if (usage) {
@@ -1044,8 +1049,8 @@ export class AIHandler {
         reader.releaseLock();
       }
 
-      sendEvent({ type: "step-finish", stepNumber: 1, finishReason: "stop" });
-      sendEvent({ type: "finish", totalSteps: 1, usage: totalUsage });
+      target.sendChunk({ type: "step-finish", stepNumber: 1, finishReason: "stop" });
+      target.sendChunk({ type: "finish", totalSteps: 1, usage: totalUsage });
     } finally {
       // Clean up conversation
       this.ccConversationManager.endConversation(conversationRef.id);
@@ -1156,462 +1161,7 @@ export class AIHandler {
     streamId: string
   ): Promise<void> {
     const modelId = this.resolveModelId(options.model);
-    const isClaudeCode = modelId.startsWith("claude-code:");
-    const hasTools = options.tools && options.tools.length > 0;
-    const maxSteps = options.maxSteps ?? 10;
-
-    this.logger.info(requestId, "streamText to worker started", {
-      workerId,
-      modelId,
-      streamId,
-      hasTools,
-      maxSteps,
-      isClaudeCode,
-    });
-
-    const abortController = new AbortController();
-    this.streamManager.startTracking(streamId, abortController, requestId);
-
-    // Helper to send events to worker
-    const sendEvent = (event: StreamTextEvent): void => {
-      workerManager.sendPush(workerId, "ai", "stream-text-chunk", { streamId, chunk: event });
-    };
-
-    // Tool execution via worker using bidirectional service invoke
-    const executeToolViaWorker = async (
-      toolName: string,
-      args: Record<string, unknown>
-    ): Promise<ToolExecutionResult> => {
-      const result = await workerManager.serviceInvoke(
-        workerId,
-        "ai",
-        "executeTool",
-        [streamId, toolName, args],
-        TOOL_EXECUTION_TIMEOUT_MS
-      );
-      return result as ToolExecutionResult;
-    };
-
-    try {
-      if (isClaudeCode && hasTools) {
-        // Use Claude Code with MCP proxy
-        await this.streamTextClaudeCodeForWorker(
-          requestId,
-          workerId,
-          modelId,
-          options,
-          streamId,
-          maxSteps,
-          abortController,
-          sendEvent,
-          executeToolViaWorker
-        );
-      } else if (hasTools) {
-        // Regular model with tools - agent loop
-        await this.streamTextWithAgentLoopForWorker(
-          requestId,
-          workerId,
-          modelId,
-          options,
-          streamId,
-          maxSteps,
-          abortController,
-          sendEvent,
-          executeToolViaWorker
-        );
-      } else {
-        // Simple streaming without tools
-        await this.streamTextSimpleForWorker(
-          requestId,
-          workerId,
-          modelId,
-          options,
-          streamId,
-          abortController,
-          sendEvent
-        );
-      }
-    } catch (error) {
-      this.logger.error(requestId, "streamText to worker error", { streamId }, error as Error);
-      sendEvent({
-        type: "error",
-        error: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      this.streamManager.cleanup(streamId);
-      workerManager.sendPush(workerId, "ai", "stream-text-end", { streamId });
-    }
-  }
-
-  /**
-   * Simple streaming for workers (no tools).
-   */
-  private async streamTextSimpleForWorker(
-    requestId: string,
-    workerId: string,
-    modelId: string,
-    options: StreamTextOptions,
-    streamId: string,
-    abortController: AbortController,
-    sendEvent: (event: StreamTextEvent) => void
-  ): Promise<void> {
-    const model = this.registry.getModel(modelId);
-    const prompt = this.convertStreamTextMessagesToSDK(options.messages);
-
-    const sdkOptions = {
-      prompt,
-      maxOutputTokens: options.maxOutputTokens,
-      temperature: options.temperature,
-      abortSignal: abortController.signal,
-    };
-
-    const { stream } = (await model.doStream(sdkOptions)) as { stream: ReadableStream<unknown> };
-    const reader = stream.getReader();
-
-    let totalUsage = { promptTokens: 0, completionTokens: 0 };
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const part = value as Record<string, unknown>;
-        const type = part["type"] as string;
-
-        if (type === "text-delta") {
-          sendEvent({ type: "text-delta", text: part["delta"] as string });
-        } else if (type === "finish") {
-          const usage = part["usage"] as { promptTokens?: number; completionTokens?: number } | undefined;
-          if (usage) {
-            totalUsage = {
-              promptTokens: usage.promptTokens ?? 0,
-              completionTokens: usage.completionTokens ?? 0,
-            };
-          }
-        }
-      }
-    } finally {
-      reader.releaseLock();
-    }
-
-    sendEvent({ type: "step-finish", stepNumber: 1, finishReason: "stop" });
-    sendEvent({ type: "finish", totalSteps: 1, usage: totalUsage });
-  }
-
-  /**
-   * Streaming with agent loop for workers.
-   */
-  private async streamTextWithAgentLoopForWorker(
-    requestId: string,
-    _workerId: string,
-    modelId: string,
-    options: StreamTextOptions,
-    _streamId: string,
-    maxSteps: number,
-    abortController: AbortController,
-    sendEvent: (event: StreamTextEvent) => void,
-    executeToolViaWorker: (toolName: string, args: Record<string, unknown>) => Promise<ToolExecutionResult>
-  ): Promise<void> {
-    const model = this.registry.getModel(modelId);
-
-    // Convert tools to SDK format
-    const sdkTools = options.tools?.map((t) => ({
-      type: "function",
-      name: t.name,
-      description: t.description,
-      inputSchema: t.parameters,
-    }));
-
-    // Build conversation messages
-    const conversationMessages = [...options.messages];
-    let totalUsage = { promptTokens: 0, completionTokens: 0 };
-
-    for (let step = 1; step <= maxSteps; step++) {
-      const prompt = this.convertStreamTextMessagesToSDK(conversationMessages);
-
-      const sdkOptions = {
-        prompt,
-        maxOutputTokens: options.maxOutputTokens,
-        temperature: options.temperature,
-        tools: sdkTools,
-        abortSignal: abortController.signal,
-      };
-
-      const { stream } = (await model.doStream(sdkOptions)) as { stream: ReadableStream<unknown> };
-      const reader = stream.getReader();
-
-      let textContent = "";
-      const toolCalls: Array<{ toolCallId: string; toolName: string; args: unknown; argsText: string }> = [];
-      let currentToolCall: { id: string; name: string; argsText: string } | null = null;
-      let finishReason: "stop" | "tool-calls" | "length" | "error" = "stop";
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const part = value as Record<string, unknown>;
-          const type = part["type"] as string;
-
-          if (type === "text-delta") {
-            const delta = part["delta"] as string;
-            textContent += delta;
-            sendEvent({ type: "text-delta", text: delta });
-          } else if (type === "tool-input-start") {
-            currentToolCall = {
-              id: part["id"] as string,
-              name: part["toolName"] as string,
-              argsText: "",
-            };
-          } else if (type === "tool-input-delta" && currentToolCall) {
-            currentToolCall.argsText += part["delta"] as string;
-          } else if (type === "tool-input-end" && currentToolCall) {
-            const args = safeJsonParse(currentToolCall.argsText, {});
-            toolCalls.push({
-              toolCallId: currentToolCall.id,
-              toolName: currentToolCall.name,
-              args,
-              argsText: currentToolCall.argsText,
-            });
-            currentToolCall = null;
-          } else if (type === "finish") {
-            const reason = part["finishReason"] as string;
-            if (reason === "tool-calls") finishReason = "tool-calls";
-            else if (reason === "length") finishReason = "length";
-            else if (reason === "error") finishReason = "error";
-
-            const usage = part["usage"] as { promptTokens?: number; completionTokens?: number } | undefined;
-            if (usage) {
-              totalUsage.promptTokens += usage.promptTokens ?? 0;
-              totalUsage.completionTokens += usage.completionTokens ?? 0;
-            }
-          }
-        }
-      } finally {
-        reader.releaseLock();
-      }
-
-      // If no tool calls, we're done
-      if (toolCalls.length === 0) {
-        sendEvent({ type: "step-finish", stepNumber: step, finishReason });
-        sendEvent({ type: "finish", totalSteps: step, usage: totalUsage });
-        return;
-      }
-
-      // Execute tool calls
-      const toolResults: Array<{ toolCallId: string; toolName: string; result: unknown; isError?: boolean }> = [];
-
-      for (const tc of toolCalls) {
-        sendEvent({
-          type: "tool-call",
-          toolCallId: tc.toolCallId,
-          toolName: tc.toolName,
-          args: tc.args,
-        });
-
-        try {
-          const result = await executeToolViaWorker(tc.toolName, tc.args as Record<string, unknown>);
-          const resultText = result.content.map((c) => c.text).join("\n");
-
-          // If the tool result includes structured data, pass it through
-          const eventResult = result.data !== undefined
-            ? { content: result.content, isError: result.isError, data: result.data }
-            : resultText;
-
-          toolResults.push({
-            toolCallId: tc.toolCallId,
-            toolName: tc.toolName,
-            result: resultText, // For LLM conversation, just use text
-            isError: result.isError,
-          });
-
-          sendEvent({
-            type: "tool-result",
-            toolCallId: tc.toolCallId,
-            toolName: tc.toolName,
-            result: eventResult, // For panel UI, include full result with data
-            isError: result.isError,
-          });
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          toolResults.push({
-            toolCallId: tc.toolCallId,
-            toolName: tc.toolName,
-            result: errorMessage,
-            isError: true,
-          });
-
-          sendEvent({
-            type: "tool-result",
-            toolCallId: tc.toolCallId,
-            toolName: tc.toolName,
-            result: errorMessage,
-            isError: true,
-          });
-        }
-      }
-
-      sendEvent({ type: "step-finish", stepNumber: step, finishReason: "tool-calls" });
-
-      // Add messages to conversation
-      conversationMessages.push({
-        role: "assistant",
-        content: [
-          ...(textContent ? [{ type: "text" as const, text: textContent }] : []),
-          ...toolCalls.map((tc) => ({
-            type: "tool-call" as const,
-            toolCallId: tc.toolCallId,
-            toolName: tc.toolName,
-            args: tc.args,
-          })),
-        ],
-      });
-
-      conversationMessages.push({
-        role: "tool",
-        content: toolResults.map((tr) => ({
-          type: "tool-result" as const,
-          toolCallId: tr.toolCallId,
-          toolName: tr.toolName,
-          result: tr.result,
-          isError: tr.isError,
-        })),
-      });
-    }
-
-    // Hit max steps
-    sendEvent({ type: "finish", totalSteps: maxSteps, usage: totalUsage });
-  }
-
-  /**
-   * Claude Code streaming for workers.
-   */
-  private async streamTextClaudeCodeForWorker(
-    requestId: string,
-    workerId: string,
-    modelId: string,
-    options: StreamTextOptions,
-    streamId: string,
-    maxSteps: number,
-    abortController: AbortController,
-    sendEvent: (event: StreamTextEvent) => void,
-    executeToolViaWorker: (toolName: string, args: Record<string, unknown>) => Promise<ToolExecutionResult>
-  ): Promise<void> {
-    // Extract the model name
-    const ccModelId = modelId.startsWith("claude-code:")
-      ? modelId.substring("claude-code:".length)
-      : modelId;
-
-    if (!options.tools || options.tools.length === 0) {
-      throw createAIError("api_error", "Tools are required for Claude Code streamText");
-    }
-
-    // Convert to AIToolDefinition format
-    const aiTools: AIToolDefinition[] = options.tools.map((t) => ({
-      type: "function",
-      name: t.name,
-      description: t.description,
-      parameters: t.parameters,
-    }));
-
-    const validatedTools = validateToolDefinitions(aiTools);
-    if (!validatedTools || validatedTools.length === 0) {
-      throw createAIError("api_error", "Tools validation failed");
-    }
-
-    const conversationRef = { id: "" };
-
-    // Create MCP callback
-    const mcpExecuteCallback = async (
-      toolName: string,
-      args: Record<string, unknown>
-    ): Promise<ToolExecutionResult> => {
-      let simpleToolName = toolName;
-      const mcpMatch = toolName.match(/^mcp__[^_]+__(.+)$/);
-      if (mcpMatch) {
-        simpleToolName = mcpMatch[1]!;
-      }
-
-      const toolCallId = crypto.randomUUID();
-      sendEvent({
-        type: "tool-call",
-        toolCallId,
-        toolName: simpleToolName,
-        args,
-      });
-
-      const result = await executeToolViaWorker(simpleToolName, args);
-
-      // If the tool result includes structured data, pass it through
-      const eventResult = result.data !== undefined
-        ? { content: result.content, isError: result.isError, data: result.data }
-        : result.content.map((c) => c.text).join("\n");
-
-      sendEvent({
-        type: "tool-result",
-        toolCallId,
-        toolName: simpleToolName,
-        result: eventResult,
-        isError: result.isError,
-      });
-
-      return result;
-    };
-
-    // Create conversation
-    const conversationHandle = this.ccConversationManager.createConversation({
-      panelId: workerId,
-      modelId: ccModelId,
-      tools: validatedTools,
-      executeCallback: mcpExecuteCallback,
-    });
-
-    conversationRef.id = conversationHandle.conversationId;
-
-    try {
-      const model = conversationHandle.getModel();
-      const prompt = this.convertStreamTextMessagesToSDK(options.messages);
-
-      const sdkOptions = {
-        prompt,
-        maxOutputTokens: options.maxOutputTokens,
-        temperature: options.temperature,
-        abortSignal: abortController.signal,
-      };
-
-      const { stream } = (await model.doStream(sdkOptions)) as { stream: ReadableStream<unknown> };
-      const reader = stream.getReader();
-
-      let totalUsage = { promptTokens: 0, completionTokens: 0 };
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const part = value as Record<string, unknown>;
-          const type = part["type"] as string;
-
-          if (type === "text-delta") {
-            sendEvent({ type: "text-delta", text: part["delta"] as string });
-          } else if (type === "finish") {
-            const usage = part["usage"] as { promptTokens?: number; completionTokens?: number } | undefined;
-            if (usage) {
-              totalUsage = {
-                promptTokens: usage.promptTokens ?? 0,
-                completionTokens: usage.completionTokens ?? 0,
-              };
-            }
-          }
-        }
-      } finally {
-        reader.releaseLock();
-      }
-
-      sendEvent({ type: "step-finish", stepNumber: 1, finishReason: "stop" });
-      sendEvent({ type: "finish", totalSteps: 1, usage: totalUsage });
-    } finally {
-      this.ccConversationManager.endConversation(conversationRef.id);
-    }
+    const target = this.createWorkerTarget(workerManager, workerId, streamId);
+    await this.streamTextToTarget(target, requestId, modelId, options, streamId);
   }
 }

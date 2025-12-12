@@ -29,6 +29,7 @@
       "@natstack/git": ["packages/git/src/index.ts"],
       "@natstack/react": ["packages/react/src/index.ts"],
       "@natstack/panel": ["packages/panel/src/index.ts"],
+      "@natstack/rpc": ["packages/rpc/src/index.ts"],
       "@natstack/scoped-fs": ["packages/scoped-fs/src/index.ts"],
       "@natstack/playwright-core": ["packages/playwright-core/src/index.ts"],
       "@natstack/playwright-client": ["packages/playwright-client/src/index.ts"],

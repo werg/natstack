@@ -1,0 +1,13 @@
+{
+  "name": "@natstack-workers/rpc-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "title": "RPC Example Worker",
+    "runtime": "worker"
+  },
+  "dependencies": {
+    "@natstack/worker-runtime": "workspace:*"
+  }
+}

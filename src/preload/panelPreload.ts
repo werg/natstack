@@ -2,6 +2,9 @@ import { contextBridge, ipcRenderer } from "electron";
 import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
 import type { Rpc } from "@natstack/core";
 import { type AIRoleRecord } from "@natstack/ai";
+import { createRpcBridge } from "@natstack/rpc";
+import type { ExposedMethods, RpcBridgeInternal } from "@natstack/rpc";
+import { createPanelTransport } from "./transport.js";
 import {
   type ChildSpec,
   type PanelInfo,
@@ -17,33 +20,6 @@ type PanelEventMessage =
   | { panelId: string; type: "focus" }
   | { panelId: string; type: "theme"; theme: ThemeAppearance };
 
-interface RpcRequest {
-  type: "request";
-  requestId: string;
-  fromId: string;
-  method: string;
-  args: unknown[];
-}
-
-interface RpcEvent {
-  type: "event";
-  fromId: string;
-  event: string;
-  payload: unknown;
-}
-
-type RpcResponse =
-  | {
-      type: "response";
-      requestId: string;
-      result: unknown;
-    }
-  | {
-      type: "response";
-      requestId: string;
-      error: string;
-    };
-
 // Parse panelId from additionalArguments (passed via webPreferences)
 const parsePanelId = (): string | null => {
   const arg = process.argv.find((value) => value.startsWith("--natstack-panel-id="));
@@ -55,6 +31,15 @@ const panelId = parsePanelId();
 if (!panelId) {
   throw new Error("Panel ID missing from additionalArguments");
 }
+
+const rpc = createRpcBridge({
+  selfId: `panel:${panelId}`,
+  transport: createPanelTransport(panelId),
+}) as RpcBridgeInternal;
+
+const callMainRpc = async <T = unknown>(method: string, ...args: unknown[]): Promise<T> => {
+  return rpc.call<T>("main", method, ...args);
+};
 
 const parseEnvArg = (): Record<string, string> => {
   const arg = process.argv.find((value) => value.startsWith(PANEL_ENV_ARG_PREFIX));
@@ -145,7 +130,7 @@ if (authToken) {
     .then(async () => {
       // After registration, get panel info to extract source repo for cache warming
       try {
-        const gitConfig = (await ipcRenderer.invoke("panel-bridge:get-git-config", panelId)) as {
+        const gitConfig = await callMainRpc<{
           serverUrl: string;
           token: string;
           sourceRepo: string;
@@ -153,7 +138,7 @@ if (authToken) {
           commit?: string;
           tag?: string;
           resolvedRepoArgs: Record<string, unknown>;
-        };
+        }>("bridge.getGitConfig");
 
         if (gitConfig.sourceRepo) {
           // Validate and sanitize repo URL before using as cache identifier
@@ -313,274 +298,6 @@ ipcRenderer.on(
 );
 
 // =============================================================================
-// Panel-to-Panel RPC
-// =============================================================================
-
-// Methods exposed by this panel that other panels can call
-let exposedMethods: Rpc.ExposedMethods = {};
-
-// Active RPC connections (MessagePorts) to other panels
-const rpcPorts = new Map<string, MessagePort>();
-
-// Worker RPC connections - uses IPC instead of MessageChannel
-interface WorkerRpcConnection {
-  workerId: string;
-  messageHandlers: Set<(event: { data: unknown }) => void>;
-}
-const workerRpcConnections = new Map<string, WorkerRpcConnection>();
-
-// Pending requests for ports (can be real MessagePort or RpcPort proxy)
-const pendingPortRequests = new Map<
-  string,
-  {
-    resolve: (port: MessagePort | RpcPort) => void;
-    reject: (error: Error) => void;
-    timeout?: NodeJS.Timeout;
-  }[]
->();
-
-// Interface for a MessagePort-like object (works for both real ports and worker proxies)
-interface RpcPort {
-  postMessage(message: unknown): void;
-  addEventListener(type: "message", handler: (event: MessageEvent) => void): void;
-  removeEventListener(type: "message", handler: (event: MessageEvent) => void): void;
-}
-
-// Event listeners for RPC events from other panels
-const rpcEventListeners = new Map<string, Set<(fromPanelId: string, payload: unknown) => void>>();
-
-// Handle incoming RPC messages from workers
-// This single handler processes both RPC requests/responses and events
-ipcRenderer.on(
-  "worker-rpc:message",
-  (_event, { fromId, message }: { fromId: string; message: unknown }) => {
-    // Worker sends fromId as "worker:xxx" - strip the prefix to match our connection key
-    const workerId = fromId.startsWith("worker:") ? fromId.slice(7) : fromId;
-
-    // Type check for message structure
-    const msg = message as { type?: string; event?: string; payload?: unknown } | null;
-
-    // Handle events directly to rpcEventListeners
-    if (msg && msg.type === "event" && typeof msg.event === "string") {
-      const listeners = rpcEventListeners.get(msg.event);
-      if (listeners) {
-        listeners.forEach((listener) => {
-          try {
-            listener(fromId, msg.payload);
-          } catch (error) {
-            console.error(`Error in RPC event listener for "${msg.event}":`, error);
-          }
-        });
-      }
-    }
-
-    // Also dispatch to worker RPC connection handlers (for request/response)
-    const conn = workerRpcConnections.get(workerId);
-    if (conn) {
-      for (const handler of conn.messageHandlers) {
-        try {
-          handler({ data: message });
-        } catch (error) {
-          console.error(`Error in worker RPC message handler:`, error);
-        }
-      }
-    }
-  }
-);
-
-// Handle incoming ports from the main process
-ipcRenderer.on("panel-rpc:port", (event, { targetPanelId }: { targetPanelId: string }) => {
-  const port = event.ports[0];
-  if (!port) return;
-
-  rpcPorts.set(targetPanelId, port);
-  setupPort(targetPanelId, port);
-
-  // Resolve any pending requests
-  const pending = pendingPortRequests.get(targetPanelId);
-  if (pending) {
-    pending.forEach(({ resolve, timeout }) => {
-      if (timeout) {
-        clearTimeout(timeout);
-      }
-      resolve(port);
-    });
-    pendingPortRequests.delete(targetPanelId);
-  }
-});
-
-function setupPort(targetPanelId: string, port: MessagePort) {
-  port.onmessage = (event) => {
-    const message = event.data as Partial<RpcRequest | RpcEvent | RpcResponse>;
-    if (!message || typeof message !== "object" || typeof message.type !== "string") {
-      return;
-    }
-
-    switch (message.type) {
-      case "request":
-        handleRpcRequest(targetPanelId, port, message as RpcRequest);
-        return;
-      case "event":
-        handleRpcEvent(targetPanelId, message as RpcEvent);
-        return;
-      default:
-        return;
-    }
-  };
-  port.start();
-}
-
-function handleRpcRequest(fromPanelId: string, port: MessagePort, request: RpcRequest) {
-  const { requestId, method, args } = request;
-
-  const handler = exposedMethods[method];
-  if (!handler) {
-    port.postMessage({
-      type: "response",
-      requestId,
-      error: `Method "${method}" is not exposed by this panel`,
-    });
-    return;
-  }
-
-  Promise.resolve(handler(...args))
-    .then((result) => {
-      port.postMessage({
-        type: "response",
-        requestId,
-        result,
-      });
-    })
-    .catch((error) => {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      port.postMessage({
-        type: "response",
-        requestId,
-        error: errorMessage,
-      });
-    });
-}
-
-function handleRpcEvent(fromPanelId: string, event: RpcEvent) {
-  const listeners = rpcEventListeners.get(event.event);
-  if (listeners) {
-    listeners.forEach((listener) => {
-      try {
-        listener(fromPanelId, event.payload);
-      } catch (error) {
-        console.error(`Error in RPC event listener for "${event.event}":`, error);
-      }
-    });
-  }
-}
-
-const PORT_TIMEOUT_MS = 60000;
-
-// Create a fake "port" for worker communication that routes via IPC
-function createWorkerRpcPort(workerId: string): RpcPort {
-  // Get or create the worker connection
-  let conn = workerRpcConnections.get(workerId);
-  if (!conn) {
-    conn = { workerId, messageHandlers: new Set() };
-    workerRpcConnections.set(workerId, conn);
-  }
-
-  return {
-    postMessage(message: unknown): void {
-      // Send via IPC to main process which routes to worker
-      ipcRenderer.send("panel-rpc:to-worker", panelId, workerId, message);
-    },
-    addEventListener(type: "message", handler: (event: MessageEvent) => void): void {
-      if (type === "message") {
-        // Store handler that receives our simplified event format
-        conn!.messageHandlers.add(handler as (event: { data: unknown }) => void);
-      }
-    },
-    removeEventListener(type: "message", handler: (event: MessageEvent) => void): void {
-      if (type === "message") {
-        conn!.messageHandlers.delete(handler as (event: { data: unknown }) => void);
-      }
-    },
-  };
-}
-
-// Cache of worker ports (fake ports that route via IPC)
-const workerRpcPorts = new Map<string, RpcPort>();
-
-async function getRpcPort(targetPanelId: string): Promise<RpcPort> {
-  // Check for existing real MessagePort (panel connection)
-  const existingPort = rpcPorts.get(targetPanelId);
-  if (existingPort) return existingPort;
-
-  // Check for existing worker port
-  const existingWorkerPort = workerRpcPorts.get(targetPanelId);
-  if (existingWorkerPort) return existingWorkerPort;
-
-  // If we're already waiting, just add to the list
-  if (pendingPortRequests.has(targetPanelId)) {
-    return new Promise((resolve, reject) => {
-      const pending = pendingPortRequests.get(targetPanelId);
-      if (pending) {
-        pending.push({ resolve, reject });
-      }
-    });
-  }
-
-  // First request: initialize array and start connection
-  return new Promise((resolve, reject) => {
-    const pending: {
-      resolve: (port: RpcPort) => void;
-      reject: (error: Error) => void;
-      timeout?: NodeJS.Timeout;
-    }[] = [{ resolve, reject }];
-    pendingPortRequests.set(targetPanelId, pending);
-
-    const timeout = setTimeout(() => {
-      const pending = pendingPortRequests.get(targetPanelId);
-      pending?.forEach(({ reject }) =>
-        reject(new Error(`Timed out establishing RPC connection to ${targetPanelId}`))
-      );
-      pendingPortRequests.delete(targetPanelId);
-    }, PORT_TIMEOUT_MS);
-    // Attach timeout to all waiters so we can clear on success
-    pending.forEach((entry) => (entry.timeout = timeout));
-
-    ipcRenderer
-      .invoke("panel-rpc:connect", panelId, targetPanelId)
-      .then((result: { isWorker: boolean; workerId?: string }) => {
-        if (result.isWorker && result.workerId) {
-          // Target is a worker - create IPC-based proxy port
-          clearTimeout(timeout);
-          const port = createWorkerRpcPort(result.workerId);
-          workerRpcPorts.set(targetPanelId, port);
-
-          // Resolve all pending requests
-          const pending = pendingPortRequests.get(targetPanelId);
-          if (pending) {
-            pending.forEach(({ resolve, timeout: t }) => {
-              if (t) clearTimeout(t);
-              resolve(port);
-            });
-            pendingPortRequests.delete(targetPanelId);
-          }
-        }
-        // For panels, we wait for the "panel-rpc:port" event which delivers the MessagePort
-      })
-      .catch((error) => {
-        clearTimeout(timeout);
-        console.error(`Failed to establish RPC connection to ${targetPanelId}`, error);
-        const pending = pendingPortRequests.get(targetPanelId);
-        if (pending) {
-          pending.forEach(({ reject }) =>
-            reject(error instanceof Error ? error : new Error(String(error)))
-          );
-          pendingPortRequests.delete(targetPanelId);
-        }
-      });
-  });
-}
-
-// =============================================================================
 // Database Types and Helper
 // =============================================================================
 
@@ -602,7 +319,7 @@ interface PanelDatabase {
 /**
  * Create a Database wrapper around a handle.
  */
-function createPanelDatabase(handle: string, panelId: string): PanelDatabase {
+function createPanelDatabase(handle: string): PanelDatabase {
   let closed = false;
 
   const assertOpen = () => {
@@ -614,34 +331,76 @@ function createPanelDatabase(handle: string, panelId: string): PanelDatabase {
   return {
     async query<T>(sql: string, params?: unknown[]): Promise<T[]> {
       assertOpen();
-      return ipcRenderer.invoke("panel-bridge:db", panelId, "query", [handle, sql, params]);
+      return callMainRpc<T[]>("db.query", handle, sql, params);
     },
 
     async run(sql: string, params?: unknown[]): Promise<DbRunResult> {
       assertOpen();
-      return ipcRenderer.invoke("panel-bridge:db", panelId, "run", [handle, sql, params]);
+      return callMainRpc<DbRunResult>("db.run", handle, sql, params);
     },
 
     async get<T>(sql: string, params?: unknown[]): Promise<T | null> {
       assertOpen();
-      return ipcRenderer.invoke("panel-bridge:db", panelId, "get", [handle, sql, params]);
+      return callMainRpc<T | null>("db.get", handle, sql, params);
     },
 
     async exec(sql: string): Promise<void> {
       assertOpen();
-      await ipcRenderer.invoke("panel-bridge:db", panelId, "exec", [handle, sql]);
+      await callMainRpc("db.exec", handle, sql);
     },
 
     async close(): Promise<void> {
       if (closed) return;
       closed = true;
-      await ipcRenderer.invoke("panel-bridge:db", panelId, "close", [handle]);
+      await callMainRpc("db.close", handle);
     },
   };
 }
 
-// Bridge interface exposed to panel code
-const bridge = {
+const createChild = (spec: ChildSpec): Promise<string> => {
+  return callMainRpc("bridge.createChild", spec);
+};
+
+const removeChild = (childId: string): Promise<void> => {
+  return callMainRpc("bridge.removeChild", childId);
+};
+
+const setTitle = (title: string): Promise<void> => {
+  return callMainRpc("bridge.setTitle", title);
+};
+
+const close = (): Promise<void> => {
+  return callMainRpc("bridge.close");
+};
+
+const getEnv = (): Promise<Record<string, string>> => {
+  return callMainRpc("bridge.getEnv");
+};
+
+const getInfo = (): Promise<PanelInfo> => {
+  return callMainRpc("bridge.getInfo");
+};
+
+const rpcApi = {
+  expose: (methods: Rpc.ExposedMethods): void => {
+    rpc.expose(methods as unknown as ExposedMethods);
+  },
+
+  call: (targetId: string, method: string, ...args: unknown[]): Promise<unknown> => {
+    return rpc.call(targetId, method, ...args);
+  },
+
+  emit: (targetId: string, event: string, payload: unknown): Promise<void> => {
+    return rpc.emit(targetId, event, payload);
+  },
+
+  onEvent: (event: string, listener: (fromPanelId: string, payload: unknown) => void): (() => void) => {
+    return rpc.onEvent(event, listener);
+  },
+};
+
+// Runtime interface exposed to panel code
+const panelRuntime = {
   panelId,
   parentId: syntheticEnv["PARENT_ID"] ?? null,
 
@@ -657,28 +416,24 @@ const bridge = {
    * @param spec - Child specification with type discriminator
    * @returns Panel ID that can be used for communication
    */
-  createChild: (spec: ChildSpec): Promise<string> => {
-    return ipcRenderer.invoke("panel-bridge:create-child", panelId, spec);
-  },
+  createChild,
+  removeChild,
+  setTitle,
+  close,
+  getEnv,
+  getInfo,
 
-  removeChild: (childId: string): Promise<void> => {
-    return ipcRenderer.invoke("panel-bridge:remove-child", panelId, childId);
-  },
-
-  setTitle: (title: string): Promise<void> => {
-    return ipcRenderer.invoke("panel-bridge:set-title", panelId, title);
-  },
-
-  close: (): Promise<void> => {
-    return ipcRenderer.invoke("panel-bridge:close", panelId);
-  },
-
-  getEnv: (): Promise<Record<string, string>> => {
-    return ipcRenderer.invoke("panel-bridge:get-env", panelId);
-  },
-
-  getInfo: (): Promise<PanelInfo> => {
-    return ipcRenderer.invoke("panel-bridge:get-info", panelId);
+  /**
+   * New unified API: ergonomic wrappers grouped under `bridge`.
+   * Legacy top-level methods remain for compatibility.
+   */
+  bridge: {
+    createChild,
+    removeChild,
+    setTitle,
+    close,
+    getEnv,
+    getInfo,
   },
 
   getTree: (): Promise<PanelInfo> => ipcRenderer.invoke("panel:get-tree"),
@@ -711,72 +466,7 @@ const bridge = {
   // Panel-to-Panel RPC API
   // ==========================================================================
 
-  rpc: {
-    expose: (methods: Rpc.ExposedMethods): void => {
-      exposedMethods = { ...exposedMethods, ...methods };
-    },
-
-    call: async (targetPanelId: string, method: string, ...args: unknown[]): Promise<unknown> => {
-      const port = await getRpcPort(targetPanelId);
-      const requestId = crypto.randomUUID();
-
-      return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          port.removeEventListener("message", responseHandler);
-          reject(new Error(`RPC call to ${targetPanelId}.${method} timed out`));
-        }, 30000);
-
-        const responseHandler = (event: MessageEvent) => {
-          const message = event.data as Partial<RpcResponse>;
-          if (!message || typeof message !== "object" || message.type !== "response") return;
-          if (message.requestId !== requestId) return;
-
-          clearTimeout(timeout);
-          port.removeEventListener("message", responseHandler);
-          if ("error" in message) {
-            reject(new Error(message.error as string));
-            return;
-          }
-          resolve((message as { result?: unknown }).result);
-        };
-
-        port.addEventListener("message", responseHandler);
-
-        port.postMessage({
-          type: "request",
-          requestId,
-          fromId: panelId,
-          method,
-          args,
-        });
-      });
-    },
-
-    emit: async (targetPanelId: string, event: string, payload: unknown): Promise<void> => {
-      const port = await getRpcPort(targetPanelId);
-      port.postMessage({
-        type: "event",
-        fromId: panelId,
-        event,
-        payload,
-      });
-    },
-
-    onEvent: (
-      event: string,
-      listener: (fromPanelId: string, payload: unknown) => void
-    ): (() => void) => {
-      const listeners = rpcEventListeners.get(event) ?? new Set();
-      listeners.add(listener);
-      rpcEventListeners.set(event, listeners);
-      return () => {
-        listeners.delete(listener);
-        if (listeners.size === 0) {
-          rpcEventListeners.delete(event);
-        }
-      };
-    },
-  },
+  rpc: rpcApi,
 
   // ==========================================================================
   // AI Provider API
@@ -788,11 +478,11 @@ const bridge = {
     // =========================================================================
 
     listRoles: (): Promise<AIRoleRecord> => {
-      return ipcRenderer.invoke("ai:list-roles");
+      return callMainRpc("ai.listRoles");
     },
 
     streamCancel: (streamId: string): Promise<void> => {
-      return ipcRenderer.invoke("ai:stream-cancel", streamId);
+      return callMainRpc("ai.streamCancel", streamId);
     },
 
     // =========================================================================
@@ -804,24 +494,7 @@ const bridge = {
      * The agent loop runs server-side, tool callbacks execute panel-side.
      */
     streamTextStart: (options: StreamTextOptions, streamId: string): Promise<void> => {
-      // Debug: Log what we're about to send via IPC
-      console.log("[Preload AI] streamTextStart called:", {
-        model: options.model,
-        messageCount: options.messages?.length,
-        toolCount: options.tools?.length,
-        streamId,
-      });
-
-      // Debug: Try JSON stringify to catch serialization issues
-      try {
-        JSON.stringify(options);
-        console.log("[Preload AI] options is JSON-serializable");
-      } catch (e) {
-        console.error("[Preload AI] options failed JSON.stringify:", e);
-        console.error("[Preload AI] options detail:", options);
-      }
-
-      return ipcRenderer.invoke("ai:stream-text-start", options, streamId);
+      return callMainRpc("ai.streamTextStart", options, streamId);
     },
 
     /**
@@ -880,42 +553,42 @@ const bridge = {
      * @returns WebSocket URL for CDP connection
      */
     getCdpEndpoint: (browserId: string): Promise<string> => {
-      return ipcRenderer.invoke("panel-bridge:browser-get-cdp-endpoint", browserId);
+      return callMainRpc("browser.getCdpEndpoint", browserId);
     },
 
     /**
      * Navigate browser panel to a URL (human UI control).
      */
     navigate: (browserId: string, url: string): Promise<void> => {
-      return ipcRenderer.invoke("panel-bridge:browser-navigate", browserId, url);
+      return callMainRpc("browser.navigate", browserId, url);
     },
 
     /**
      * Go back in browser history.
      */
     goBack: (browserId: string): Promise<void> => {
-      return ipcRenderer.invoke("panel-bridge:browser-go-back", browserId);
+      return callMainRpc("browser.goBack", browserId);
     },
 
     /**
      * Go forward in browser history.
      */
     goForward: (browserId: string): Promise<void> => {
-      return ipcRenderer.invoke("panel-bridge:browser-go-forward", browserId);
+      return callMainRpc("browser.goForward", browserId);
     },
 
     /**
      * Reload the current page.
      */
     reload: (browserId: string): Promise<void> => {
-      return ipcRenderer.invoke("panel-bridge:browser-reload", browserId);
+      return callMainRpc("browser.reload", browserId);
     },
 
     /**
      * Stop loading the current page.
      */
     stop: (browserId: string): Promise<void> => {
-      return ipcRenderer.invoke("panel-bridge:browser-stop", browserId);
+      return callMainRpc("browser.stop", browserId);
     },
   },
 
@@ -943,7 +616,7 @@ const bridge = {
       tag?: string;
       resolvedRepoArgs: Record<string, string | { repo: string; ref?: string }>;
     }> => {
-      return ipcRenderer.invoke("panel-bridge:get-git-config", panelId);
+      return callMainRpc("bridge.getGitConfig");
     },
   },
 
@@ -961,8 +634,8 @@ const bridge = {
      * @returns Database object with query methods
      */
     open: async (name: string, readOnly?: boolean): Promise<PanelDatabase> => {
-      const handle = await ipcRenderer.invoke("panel-bridge:db", panelId, "open", [name, readOnly]);
-      return createPanelDatabase(handle, panelId);
+      const handle = await callMainRpc<string>("db.open", name, readOnly);
+      return createPanelDatabase(handle);
     },
 
     /**
@@ -974,10 +647,10 @@ const bridge = {
      * @returns Database object with query methods
      */
     openShared: async (name: string, readOnly?: boolean): Promise<PanelDatabase> => {
-      const handle = await ipcRenderer.invoke("panel-bridge:db", panelId, "openShared", [name, readOnly]);
-      return createPanelDatabase(handle, panelId);
+      const handle = await callMainRpc<string>("db.openShared", name, readOnly);
+      return createPanelDatabase(handle);
     },
   },
 };
 
-contextBridge.exposeInMainWorld("__natstackPanelBridge", bridge);
+contextBridge.exposeInMainWorld("__natstackPanelBridge", panelRuntime);

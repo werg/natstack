@@ -5,12 +5,12 @@
 
 import { useState, useEffect } from "react";
 import { Card, Flex, Heading, Text, Badge, Button } from "@radix-ui/themes";
-import { panel } from "@natstack/panel";
+import { panel, noopParent } from "@natstack/panel";
 import { rpcDemoContract } from "./contract.js";
 
-// Get typed parent handle using the contract
-// This gives us type-checked emit() calls derived from the contract
-const parent = panel.getParentWithContract(rpcDemoContract);
+// Get typed parent handle using the contract, with noopParent fallback
+// This gives us type-checked emit() calls without null checks
+const parent = panel.getParentWithContract(rpcDemoContract) ?? noopParent;
 
 // Internal state
 let counter = 0;
@@ -34,10 +34,8 @@ export default function TypedRpcChild() {
         pingCount++;
         addLog(`ping() called (count: ${pingCount})`);
 
-        // Emit typed event to parent
-        if (parent) {
-          void parent.emit("ping-received", { count: pingCount });
-        }
+        // Emit typed event to parent (noop if no parent)
+        parent.emit("ping-received", { count: pingCount });
 
         return "pong";
       },
@@ -58,13 +56,8 @@ export default function TypedRpcChild() {
         setDisplayCounter(counter);
         addLog(`incrementCounter(${amount}) called, new value: ${counter}`);
 
-        // Emit typed event to parent
-        if (parent) {
-          void parent.emit("counter-changed", {
-            value: counter,
-            previousValue,
-          });
-        }
+        // Emit typed event to parent (noop if no parent)
+        parent.emit("counter-changed", { value: counter, previousValue });
 
         return counter;
       },
@@ -74,12 +67,8 @@ export default function TypedRpcChild() {
         setDisplayCounter(counter);
         addLog("resetCounter() called");
 
-        // Emit typed event to parent
-        if (parent) {
-          void parent.emit("reset", {
-            timestamp: new Date().toISOString(),
-          });
-        }
+        // Emit typed event to parent (noop if no parent)
+        parent.emit("reset", { timestamp: new Date().toISOString() });
       },
 
       async getInfo() {
@@ -92,28 +81,17 @@ export default function TypedRpcChild() {
     addLog("RPC API exposed successfully");
   }, []);
 
-  const handleLocalIncrement = async () => {
+  const handleLocalIncrement = () => {
     const previousValue = counter;
     counter += 1;
     setDisplayCounter(counter);
-
-    if (parent) {
-      void parent.emit("counter-changed", {
-        value: counter,
-        previousValue,
-      });
-    }
+    parent.emit("counter-changed", { value: counter, previousValue });
   };
 
-  const handleLocalReset = async () => {
+  const handleLocalReset = () => {
     counter = 0;
     setDisplayCounter(counter);
-
-    if (parent) {
-      void parent.emit("reset", {
-        timestamp: new Date().toISOString(),
-      });
-    }
+    parent.emit("reset", { timestamp: new Date().toISOString() });
   };
 
   return (
@@ -130,7 +108,7 @@ export default function TypedRpcChild() {
             full type safety.
           </Text>
 
-          {parent && (
+          {parent.id && (
             <Card variant="surface">
               <Text size="2">
                 Parent ID: <Text weight="bold" style={{ fontFamily: "monospace" }}>{parent.id}</Text>
