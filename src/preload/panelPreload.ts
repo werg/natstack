@@ -626,8 +626,8 @@ const panelRuntime = {
 
   db: {
     /**
-     * Open a panel-scoped database.
-     * The database file is stored in the panel's partition directory.
+     * Open a database.
+     * All databases are shared across the workspace.
      *
      * @param name - Database name (alphanumeric, underscore, hyphen only)
      * @param readOnly - Open in read-only mode (default: false)
@@ -635,19 +635,6 @@ const panelRuntime = {
      */
     open: async (name: string, readOnly?: boolean): Promise<PanelDatabase> => {
       const handle = await callMainRpc<string>("db.open", name, readOnly);
-      return createPanelDatabase(handle);
-    },
-
-    /**
-     * Open a shared workspace database.
-     * Shared databases can be accessed by any worker or panel in the workspace.
-     *
-     * @param name - Database name (alphanumeric, underscore, hyphen only)
-     * @param readOnly - Open in read-only mode (default: false)
-     * @returns Database object with query methods
-     */
-    openShared: async (name: string, readOnly?: boolean): Promise<PanelDatabase> => {
-      const handle = await callMainRpc<string>("db.openShared", name, readOnly);
       return createPanelDatabase(handle);
     },
   },

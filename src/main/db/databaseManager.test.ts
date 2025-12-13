@@ -43,82 +43,118 @@ describe("DatabaseManager", () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
-  describe("openScopedDatabase", () => {
-    it("creates database file in scoped directory", () => {
-      const handle = dbManager.openScopedDatabase("test-owner", "test-scope", "mydb");
+  describe("open", () => {
+    it("creates database file in workspace directory", () => {
+      const handle = dbManager.open("test-owner", "mydb");
 
       expect(handle).toBeDefined();
       expect(typeof handle).toBe("string");
 
-      // Verify database file was created in unified path
-      const dbPath = path.join(
-        testDir,
-        "databases",
-        "test-workspace",
-        "scopes",
-        "test-scope",
-        "mydb.db"
-      );
+      const dbPath = path.join(testDir, "databases", "test-workspace", "mydb.db");
       expect(fs.existsSync(dbPath)).toBe(true);
     });
 
-    it("returns same handle for same database path", () => {
-      const handle1 = dbManager.openScopedDatabase("owner1", "test-scope", "mydb");
-      const handle2 = dbManager.openScopedDatabase("owner2", "test-scope", "mydb");
+    it("returns different handles for same database (shared connection)", () => {
+      const handle1 = dbManager.open("owner1", "mydb");
+      const handle2 = dbManager.open("owner2", "mydb");
 
-      // Same scope + db name = same handle (shared access)
-      expect(handle1).toBe(handle2);
-    });
-
-    it("creates different databases for different scopes", () => {
-      const handle1 = dbManager.openScopedDatabase("owner1", "scope1", "mydb");
-      const handle2 = dbManager.openScopedDatabase("owner2", "scope2", "mydb");
-
+      // Different handles, but same underlying connection
       expect(handle1).not.toBe(handle2);
+
+      // Both handles can access the same data
+      dbManager.exec(handle1, "CREATE TABLE test (id INTEGER)");
+      dbManager.run(handle1, "INSERT INTO test (id) VALUES (?)", [42]);
+      const result = dbManager.query<{ id: number }>(handle2, "SELECT id FROM test");
+      expect(result).toHaveLength(1);
+      expect(result[0]!.id).toBe(42);
     });
 
-    it("sanitizes database names and scope IDs", () => {
-      const handle = dbManager.openScopedDatabase("test", "test-scope", "my-db_123");
+    it("allows multiple owners to access same database", () => {
+      const handle1 = dbManager.open("panel:panel1", "shared-data");
+      const handle2 = dbManager.open("worker:worker1", "shared-data");
+
+      // Different handles, but same underlying database file
+      expect(handle1).not.toBe(handle2);
+
+      // Both can access the same data
+      dbManager.exec(handle1, "CREATE TABLE shared_test (value TEXT)");
+      dbManager.run(handle1, "INSERT INTO shared_test (value) VALUES (?)", ["hello"]);
+      const result = dbManager.query<{ value: string }>(handle2, "SELECT value FROM shared_test");
+      expect(result).toHaveLength(1);
+      expect(result[0]!.value).toBe("hello");
+    });
+
+    it("closing one owner's handle doesn't affect other owners", () => {
+      const handle1 = dbManager.open("panel:panel1", "shared-data");
+      const handle2 = dbManager.open("worker:worker1", "shared-data");
+
+      dbManager.exec(handle1, "CREATE TABLE test (id INTEGER)");
+      dbManager.run(handle1, "INSERT INTO test (id) VALUES (?)", [123]);
+      dbManager.close(handle1);
+
+      // handle1 is now invalid
+      expect(() => dbManager.query(handle1, "SELECT 1")).toThrow("Invalid database handle");
+
+      // handle2 should still work
+      const result = dbManager.query<{ id: number }>(handle2, "SELECT id FROM test");
+      expect(result).toHaveLength(1);
+      expect(result[0]!.id).toBe(123);
+    });
+
+    it("closeAllForOwner doesn't affect other owners' handles", () => {
+      const handle1 = dbManager.open("panel:panel1", "shared-data");
+      const handle2 = dbManager.open("worker:worker1", "shared-data");
+
+      dbManager.exec(handle1, "CREATE TABLE test (value TEXT)");
+      dbManager.run(handle1, "INSERT INTO test (value) VALUES (?)", ["preserved"]);
+      dbManager.closeAllForOwner("panel:panel1");
+
+      // Panel's handle is invalid
+      expect(() => dbManager.query(handle1, "SELECT 1")).toThrow("Invalid database handle");
+
+      // Worker's handle still works
+      const result = dbManager.query<{ value: string }>(handle2, "SELECT value FROM test");
+      expect(result).toHaveLength(1);
+      expect(result[0]!.value).toBe("preserved");
+    });
+
+    it("connection closes only when all owners close their handles", () => {
+      const handle1 = dbManager.open("owner1", "shared-data");
+      const handle2 = dbManager.open("owner2", "shared-data");
+      const handle3 = dbManager.open("owner3", "shared-data");
+
+      dbManager.exec(handle1, "CREATE TABLE test (id INTEGER)");
+      dbManager.run(handle1, "INSERT INTO test (id) VALUES (?)", [999]);
+
+      // Close first two handles
+      dbManager.close(handle1);
+      dbManager.close(handle2);
+
+      // handle3 still works (connection still open)
+      const result = dbManager.query<{ id: number }>(handle3, "SELECT id FROM test");
+      expect(result).toHaveLength(1);
+      expect(result[0]!.id).toBe(999);
+
+      // Close last handle
+      dbManager.close(handle3);
+
+      // All handles are now invalid
+      expect(() => dbManager.query(handle3, "SELECT 1")).toThrow("Invalid database handle");
+    });
+
+    it("sanitizes database names", () => {
+      const handle = dbManager.open("test", "my-db_123");
       expect(handle).toBeDefined();
 
       // Should sanitize special characters - path traversal attempt
-      const handle2 = dbManager.openScopedDatabase("test", "test-scope", "../../etc/passwd");
+      const handle2 = dbManager.open("test", "../../etc/passwd");
       expect(handle2).toBeDefined();
 
-      // The sanitized path should stay within the scope directory
-      // Dots and slashes are replaced with underscores, so "../../etc/passwd" -> "______etc_passwd"
-      const dbDir = path.join(testDir, "databases", "test-workspace", "scopes", "test-scope");
+      const dbDir = path.join(testDir, "databases", "test-workspace");
       const files = fs.readdirSync(dbDir);
 
-      // Verify files are in the expected directory (not escaped)
-      expect(files.length).toBeGreaterThanOrEqual(2);
       // The database file should have the sanitized name
       expect(files.some((f) => f.includes("______etc_passwd.db"))).toBe(true);
-
-      // Verify no files were created outside the scope
-      const parentDir = path.join(testDir, "databases", "test-workspace", "scopes");
-      const parentFiles = fs.readdirSync(parentDir);
-      expect(parentFiles).toContain("test-scope");
-      expect(parentFiles.length).toBe(1); // Only test-scope/ subdirectory, nothing escaped
-    });
-  });
-
-  describe("openSharedDatabase", () => {
-    it("creates database in shared directory", () => {
-      const handle = dbManager.openSharedDatabase("panel:test-panel", "shared-data");
-
-      expect(handle).toBeDefined();
-
-      const dbPath = path.join(testDir, "databases", "test-workspace", "shared", "shared-data.db");
-      expect(fs.existsSync(dbPath)).toBe(true);
-    });
-
-    it("allows multiple owners to access same shared database", () => {
-      const handle1 = dbManager.openSharedDatabase("panel:panel1", "shared-data");
-      const handle2 = dbManager.openSharedDatabase("worker:worker1", "shared-data");
-
-      // Same database file, same handle
-      expect(handle1).toBe(handle2);
     });
   });
 
@@ -127,7 +163,7 @@ describe("DatabaseManager", () => {
     let handle: string;
 
     beforeEach(() => {
-      handle = dbManager.openScopedDatabase("test-owner", "test-scope", "testdb");
+      handle = dbManager.open("test-owner", "testdb");
       // Create a test table
       dbManager.exec(
         handle,
@@ -215,16 +251,16 @@ describe("DatabaseManager", () => {
 
   describe("connection management", () => {
     it("close removes connection", () => {
-      const handle = dbManager.openScopedDatabase("test-owner", "test-scope", "testdb");
+      const handle = dbManager.open("test-owner", "testdb");
       dbManager.close(handle);
 
       expect(() => dbManager.query(handle, "SELECT 1")).toThrow("Invalid database handle");
     });
 
     it("closeAllForOwner closes all databases for owner", () => {
-      const handle1 = dbManager.openScopedDatabase("test-owner", "scope1", "db1");
-      const handle2 = dbManager.openScopedDatabase("test-owner", "scope2", "db2");
-      const handle3 = dbManager.openScopedDatabase("other-owner", "scope3", "db3");
+      const handle1 = dbManager.open("test-owner", "db1");
+      const handle2 = dbManager.open("test-owner", "db2");
+      const handle3 = dbManager.open("other-owner", "db3");
 
       dbManager.closeAllForOwner("test-owner");
 
@@ -237,8 +273,8 @@ describe("DatabaseManager", () => {
     });
 
     it("shutdown closes all connections", () => {
-      const handle1 = dbManager.openScopedDatabase("owner1", "scope1", "db1");
-      const handle2 = dbManager.openScopedDatabase("owner2", "scope2", "db2");
+      const handle1 = dbManager.open("owner1", "db1");
+      const handle2 = dbManager.open("owner2", "db2");
 
       dbManager.shutdown();
 
@@ -249,14 +285,14 @@ describe("DatabaseManager", () => {
 
   describe("WAL mode", () => {
     it("enables WAL mode by default", () => {
-      const handle = dbManager.openScopedDatabase("test-owner", "test-scope", "waltest");
+      const handle = dbManager.open("test-owner", "waltest");
 
       const result = dbManager.query<{ journal_mode: string }>(handle, "PRAGMA journal_mode");
       expect(result[0]!.journal_mode).toBe("wal");
     });
 
     it("enables foreign keys by default", () => {
-      const handle = dbManager.openScopedDatabase("test-owner", "test-scope", "fktest");
+      const handle = dbManager.open("test-owner", "fktest");
 
       const result = dbManager.query<{ foreign_keys: number }>(handle, "PRAGMA foreign_keys");
       expect(result[0]!.foreign_keys).toBe(1);
@@ -266,13 +302,13 @@ describe("DatabaseManager", () => {
   describe("read-only mode", () => {
     it("allows opening database in read-only mode", () => {
       // First create the database with data
-      const writeHandle = dbManager.openScopedDatabase("test-owner", "test-scope", "readonly-test");
+      const writeHandle = dbManager.open("test-owner", "readonly-test");
       dbManager.exec(writeHandle, "CREATE TABLE data (id INTEGER PRIMARY KEY, value TEXT)");
       dbManager.run(writeHandle, "INSERT INTO data (value) VALUES (?)", ["test"]);
       dbManager.close(writeHandle);
 
       // Open in read-only mode
-      const readHandle = dbManager.openScopedDatabase("test-owner", "test-scope", "readonly-test", true);
+      const readHandle = dbManager.open("test-owner", "readonly-test", true);
 
       // Reads should work
       const result = dbManager.query<{ value: string }>(readHandle, "SELECT value FROM data");
@@ -287,7 +323,7 @@ describe("DatabaseManager", () => {
 
   describe("error handling", () => {
     it("throws on invalid SQL", () => {
-      const handle = dbManager.openScopedDatabase("test-owner", "test-scope", "testdb");
+      const handle = dbManager.open("test-owner", "testdb");
 
       expect(() => dbManager.exec(handle, "INVALID SQL SYNTAX")).toThrow();
     });
@@ -297,7 +333,7 @@ describe("DatabaseManager", () => {
     });
 
     it("throws on empty database name", () => {
-      expect(() => dbManager.openScopedDatabase("test-owner", "test-scope", "")).toThrow("Invalid database name");
+      expect(() => dbManager.open("test-owner", "")).toThrow("Invalid database name");
     });
 
     it("throws when no workspace is active", async () => {

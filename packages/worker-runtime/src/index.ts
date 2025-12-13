@@ -36,7 +36,7 @@ export { fs } from "./fs.js";
 export { fetch } from "./network.js";
 export { rpc } from "./rpc.js";
 export { parent } from "./parent.js";
-export { db, openDatabase, openSharedDatabase, type Database, type DbRunResult } from "./db.js";
+export { db, openDatabase, type Database, type DbRunResult } from "./db.js";
 
 // Panel bridge operations (child management, git, browser, etc.)
 export {

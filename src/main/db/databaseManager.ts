@@ -2,8 +2,7 @@
  * DatabaseManager - Manages SQLite database connections for workers and panels.
  *
  * Provides connection pooling, path management, and query execution using better-sqlite3.
- * All databases (worker-scoped, panel-scoped, or shared) are stored under a unified
- * path structure: ~/.config/natstack/databases/<workspace>/
+ * All databases are stored under: ~/.config/natstack/databases/<workspace>/
  */
 
 import Database from "better-sqlite3";
@@ -29,55 +28,34 @@ export function getDatabaseManager(): DatabaseManager {
 }
 
 export class DatabaseManager {
-  /** Open database connections keyed by handle */
-  private connections = new Map<string, Database.Database>();
+  /** Connection pool: path → actual database connection */
+  private pathToConnection = new Map<string, Database.Database>();
+
+  /** Reference count per path (how many handles point to this connection) */
+  private pathRefCount = new Map<string, number>();
 
   /** Map handle to database path for cleanup */
   private handleToPath = new Map<string, string>();
 
-  /** Map path to handle to reuse connections */
-  private pathToHandle = new Map<string, string>();
-
-  /** Map handle to owner (worker/panel ID) for access control */
+  /** Map handle to owner (worker/panel ID) for cleanup tracking */
   private handleToOwner = new Map<string, string>();
 
   /**
-   * Open a scoped database for a worker or panel.
-   * Path: ~/.config/natstack/databases/<workspace>/scopes/<scopeId>/<name>.db
+   * Open a database.
+   * Path: ~/.config/natstack/databases/<workspace>/<name>.db
    *
-   * @param ownerId - The worker or panel ID (for access control tracking)
-   * @param scopeId - The scope identifier (worker ID or panel partition)
+   * @param ownerId - The worker or panel ID (for cleanup tracking)
    * @param dbName - The database name
    * @param readOnly - Whether to open in read-only mode
    */
-  openScopedDatabase(ownerId: string, scopeId: string, dbName: string, readOnly = false): string {
+  open(ownerId: string, dbName: string, readOnly = false): string {
     const workspace = getActiveWorkspace();
     if (!workspace) {
       throw new Error("No active workspace");
     }
 
     const configDir = getCentralConfigDirectory();
-    const sanitizedScopeId = this.sanitizeDbName(scopeId);
-    const dbDir = path.join(configDir, "databases", workspace.config.id, "scopes", sanitizedScopeId);
-    fs.mkdirSync(dbDir, { recursive: true });
-
-    const dbPath = path.join(dbDir, this.sanitizeDbName(dbName) + ".db");
-    return this.openDatabase(dbPath, ownerId, readOnly);
-  }
-
-
-  /**
-   * Open a shared workspace database.
-   * Path: ~/.config/natstack/databases/<workspace>/shared/<name>.db
-   */
-  openSharedDatabase(ownerId: string, dbName: string, readOnly = false): string {
-    const workspace = getActiveWorkspace();
-    if (!workspace) {
-      throw new Error("No active workspace");
-    }
-
-    const configDir = getCentralConfigDirectory();
-    const dbDir = path.join(configDir, "databases", workspace.config.id, "shared");
+    const dbDir = path.join(configDir, "databases", workspace.config.id);
     fs.mkdirSync(dbDir, { recursive: true });
 
     const dbPath = path.join(dbDir, this.sanitizeDbName(dbName) + ".db");
@@ -86,28 +64,32 @@ export class DatabaseManager {
 
   /**
    * Open a database at the given path.
-   * Returns existing handle if already open, otherwise creates new connection.
+   * Each caller gets a unique handle, but the underlying connection is shared.
+   * Uses reference counting to close connection only when all handles are closed.
    */
   private openDatabase(dbPath: string, ownerId: string, readOnly: boolean): string {
-    // Return existing handle if database is already open
-    const existingHandle = this.pathToHandle.get(dbPath);
-    if (existingHandle && this.connections.has(existingHandle)) {
-      return existingHandle;
-    }
-
-    const db = new Database(dbPath, { readonly: readOnly });
-
-    // Enable WAL mode for better concurrent access (unless read-only)
-    if (!readOnly) {
-      db.pragma("journal_mode = WAL");
-      db.pragma("synchronous = NORMAL");
-    }
-    db.pragma("foreign_keys = ON");
-
+    // Always create a new handle for each caller
     const handle = crypto.randomUUID();
-    this.connections.set(handle, db);
+
+    // Reuse existing connection or create new one
+    let db = this.pathToConnection.get(dbPath);
+    if (!db) {
+      db = new Database(dbPath, { readonly: readOnly });
+
+      // Enable WAL mode for better concurrent access (unless read-only)
+      if (!readOnly) {
+        db.pragma("journal_mode = WAL");
+        db.pragma("synchronous = NORMAL");
+      }
+      db.pragma("foreign_keys = ON");
+
+      this.pathToConnection.set(dbPath, db);
+      this.pathRefCount.set(dbPath, 0);
+    }
+
+    // Increment ref count and track handle
+    this.pathRefCount.set(dbPath, (this.pathRefCount.get(dbPath) ?? 0) + 1);
     this.handleToPath.set(handle, dbPath);
-    this.pathToHandle.set(dbPath, handle);
     this.handleToOwner.set(handle, ownerId);
 
     return handle;
@@ -154,19 +136,28 @@ export class DatabaseManager {
   }
 
   /**
-   * Close a database connection.
+   * Close a database handle.
+   * The underlying connection is only closed when all handles are released.
    */
   close(handle: string): void {
-    const db = this.connections.get(handle);
-    if (db) {
-      db.close();
-      const dbPath = this.handleToPath.get(handle);
-      this.connections.delete(handle);
-      this.handleToPath.delete(handle);
-      this.handleToOwner.delete(handle);
-      if (dbPath) {
-        this.pathToHandle.delete(dbPath);
-      }
+    const dbPath = this.handleToPath.get(handle);
+    if (!dbPath) return;
+
+    // Clean up handle tracking
+    this.handleToPath.delete(handle);
+    this.handleToOwner.delete(handle);
+
+    // Decrement ref count
+    const refCount = (this.pathRefCount.get(dbPath) ?? 1) - 1;
+
+    if (refCount <= 0) {
+      // Last reference - close actual connection
+      const db = this.pathToConnection.get(dbPath);
+      db?.close();
+      this.pathToConnection.delete(dbPath);
+      this.pathRefCount.delete(dbPath);
+    } else {
+      this.pathRefCount.set(dbPath, refCount);
     }
   }
 
@@ -190,7 +181,7 @@ export class DatabaseManager {
    * Shutdown: close all database connections.
    */
   shutdown(): void {
-    for (const [handle] of this.connections) {
+    for (const handle of [...this.handleToPath.keys()]) {
       this.close(handle);
     }
   }
@@ -199,7 +190,11 @@ export class DatabaseManager {
    * Get a connection by handle, throwing if not found.
    */
   private getConnection(handle: string): Database.Database {
-    const db = this.connections.get(handle);
+    const dbPath = this.handleToPath.get(handle);
+    if (!dbPath) {
+      throw new Error(`Invalid database handle: ${handle}`);
+    }
+    const db = this.pathToConnection.get(dbPath);
     if (!db) {
       throw new Error(`Invalid database handle: ${handle}`);
     }

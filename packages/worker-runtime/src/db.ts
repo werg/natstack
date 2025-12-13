@@ -2,13 +2,13 @@
  * Database API for workers.
  *
  * Provides SQLite database access via RPC to the main process.
- * Databases are scoped per-worker by default, or shared across the workspace.
+ * All databases are shared across the workspace.
  *
  * @example
  * ```typescript
  * import { db } from "@natstack/worker-runtime";
  *
- * // Open a worker-scoped database
+ * // Open a database
  * const database = await db.open("my-data");
  *
  * // Create tables
@@ -31,9 +31,6 @@
  * const notes = await database.query<{ id: number; title: string }>(
  *   "SELECT id, title FROM notes"
  * );
- *
- * // Open a shared workspace database
- * const shared = await db.openShared("workspace-data");
  * ```
  */
 
@@ -122,8 +119,8 @@ function createDatabase(handle: string): Database {
 }
 
 /**
- * Open a worker-scoped database.
- * The database file is stored in the worker's isolated filesystem scope.
+ * Open a database.
+ * All databases are shared across the workspace.
  *
  * @param name - Database name (alphanumeric, underscore, hyphen only)
  * @param readOnly - Open in read-only mode (default: false)
@@ -134,21 +131,8 @@ export async function openDatabase(name: string, readOnly = false): Promise<Data
 }
 
 /**
- * Open a shared workspace database.
- * Shared databases can be accessed by any worker or panel in the workspace.
- *
- * @param name - Database name (alphanumeric, underscore, hyphen only)
- * @param readOnly - Open in read-only mode (default: false)
- */
-export async function openSharedDatabase(name: string, readOnly = false): Promise<Database> {
-  const handle = await rpc.call<string>("main", "db.openShared", name, readOnly);
-  return createDatabase(handle);
-}
-
-/**
  * Database API namespace.
  */
 export const db = {
   open: openDatabase,
-  openShared: openSharedDatabase,
 };

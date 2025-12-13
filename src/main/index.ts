@@ -384,8 +384,7 @@ handle("rpc:call", async (event, panelId: string, message: RpcMessage): Promise<
         return handleBridgeCall(pm, panelId, serviceMethod, args);
 
       case "db": {
-        const info = pm.getInfo(panelId);
-        return handleDbCall(getDatabaseManager(), panelId, info.partition, serviceMethod, args);
+        return handleDbCall(getDatabaseManager(), panelId, serviceMethod, args);
       }
 
       case "browser":

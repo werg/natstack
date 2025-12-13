@@ -13,27 +13,20 @@ import { getDatabaseManager, type DatabaseManager } from "../db/databaseManager.
  * Shared logic for both workers and panels.
  *
  * @param dbManager - The DatabaseManager instance
- * @param ownerId - The owner ID (worker or panel ID) for access control
- * @param scopeId - The scope ID (worker ID or panel partition) for database isolation
+ * @param ownerId - The owner ID (worker or panel ID) for cleanup tracking
  * @param method - The database method to call
  * @param args - Arguments for the method
  */
 export function handleDbCall(
   dbManager: DatabaseManager,
   ownerId: string,
-  scopeId: string,
   method: string,
   args: unknown[]
 ): unknown {
   switch (method) {
     case "open": {
       const [dbName, readOnly] = args as [string, boolean?];
-      return dbManager.openScopedDatabase(ownerId, scopeId, dbName, readOnly ?? false);
-    }
-
-    case "openShared": {
-      const [dbName, readOnly] = args as [string, boolean?];
-      return dbManager.openSharedDatabase(ownerId, dbName, readOnly ?? false);
+      return dbManager.open(ownerId, dbName, readOnly ?? false);
     }
 
     case "query": {
@@ -76,8 +69,7 @@ export function registerDbHandlers(): void {
   const dbManager = getDatabaseManager();
 
   // Register the "db" service for SQLite operations
-  // Workers use their workerId as both ownerId and scopeId
   workerManager.registerService("db", async (workerId, method, args) => {
-    return handleDbCall(dbManager, workerId, workerId, method, args);
+    return handleDbCall(dbManager, workerId, method, args);
   });
 }
