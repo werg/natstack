@@ -47,11 +47,12 @@ export const {
   onFocus,
   expose,
   gitConfig: exportedGitConfig,
+  pubsubConfig: exportedPubsubConfig,
   bootstrapPromise,
 } = runtime;
 
-// Re-export gitConfig (same value as module-level gitConfig, just from runtime)
-export { exportedGitConfig as gitConfig };
+// Re-export gitConfig and pubsubConfig (same values as module-level, just from runtime)
+export { exportedGitConfig as gitConfig, exportedPubsubConfig as pubsubConfig };
 
 // For API compatibility with panels: workers don't need fsReady (RPC is ready immediately),
 // but we export it as a resolved promise so userland code can use the same pattern.

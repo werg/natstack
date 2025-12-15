@@ -7,6 +7,7 @@ import {
   type ChildSpec,
   type EndpointInfo,
   type GitConfig,
+  type PubSubConfig,
   type Rpc,
 } from "../core/index.js";
 import { createParentHandle, createParentHandleFromContract } from "../shared/handles.js";
@@ -29,6 +30,7 @@ export interface RuntimeDeps {
   fetch: FetchProvider;
   setupGlobals?: () => void;
   gitConfig?: GitConfig | null;
+  pubsubConfig?: PubSubConfig | null;
   /** Promise that resolves when bootstrap completes (or null if no bootstrap needed) */
   bootstrapPromise?: Promise<BootstrapResult | null> | null;
 }
@@ -182,6 +184,7 @@ export function createRuntime(deps: RuntimeDeps) {
     expose: rpc.expose.bind(rpc),
 
     gitConfig: deps.gitConfig ?? null,
+    pubsubConfig: deps.pubsubConfig ?? null,
     /** Promise that resolves when bootstrap completes. Resolves to null if no bootstrap needed. */
     bootstrapPromise: deps.bootstrapPromise ?? Promise.resolve(null),
   };

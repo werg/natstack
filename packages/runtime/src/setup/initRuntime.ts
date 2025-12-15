@@ -67,6 +67,7 @@ export function initRuntime(options: InitRuntimeOptions): InitRuntimeResult {
     fetch: options.fetch,
     setupGlobals: options.setupGlobals,
     gitConfig: config.gitConfig,
+    pubsubConfig: config.pubsubConfig,
     // Pass a getter wrapper that defers to bootstrapState.promise
     bootstrapPromise: null,
   });

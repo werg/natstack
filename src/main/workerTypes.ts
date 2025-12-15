@@ -24,6 +24,14 @@ export type {
   ServiceInvokeResponse,
 };
 
+/**
+ * PubSub configuration for real-time messaging.
+ */
+export interface PubSubConfig {
+  serverUrl: string;
+  token: string;
+}
+
 // =============================================================================
 // Worker Lifecycle Messages
 // =============================================================================
@@ -46,6 +54,8 @@ export interface UtilityWorkerCreateRequest {
     parentId?: string | null;
     /** Git configuration for bootstrap */
     gitConfig?: unknown;
+    /** PubSub configuration for real-time messaging */
+    pubsubConfig?: PubSubConfig | null;
   };
 }
 

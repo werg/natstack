@@ -28,6 +28,7 @@ export type { Runtime } from "../setup/createRuntime.js";
 
 export const id = config.id;
 const gitConfig = config.gitConfig;
+const pubsubConfig = config.pubsubConfig;
 
 export const {
   parentId: runtimeParentId,
@@ -56,4 +57,4 @@ export const {
 
 export { runtimeParentId as parentId };
 
-export { fs, fsReady, fetch, gitConfig };
+export { fs, fsReady, fetch, gitConfig, pubsubConfig };

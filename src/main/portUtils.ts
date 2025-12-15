@@ -7,6 +7,7 @@ import * as net from "net";
 export const PORT_RANGES = {
   git: { start: 49152, end: 49252 },
   cdp: { start: 49252, end: 49352 },
+  pubsub: { start: 49452, end: 49552 },
 } as const;
 
 /**

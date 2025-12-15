@@ -15,6 +15,8 @@ import {
 } from "./panelProtocol.js";
 import { getWorkerManager } from "./workerManager.js";
 import { getCdpServer } from "./cdpServer.js";
+import { getPubSubServer } from "./pubsubServer.js";
+import { getTokenManager } from "./tokenManager.js";
 import type { ViewManager } from "./viewManager.js";
 
 export class PanelManager {
@@ -277,7 +279,7 @@ export class PanelManager {
   // Public methods for RPC services
 
   /**
-   * Build env for a panel or worker, injecting git credentials and config.
+   * Build env for a panel or worker, injecting git credentials, pubsub config, etc.
    * The full git config is serialized to JSON so bootstrap can use it without RPC.
    */
   private buildPanelEnv(
@@ -307,11 +309,22 @@ export class PanelManager {
         })
       : "";
 
+    // Build pubsub config for real-time messaging
+    const pubsubServer = getPubSubServer();
+    const pubsubPort = pubsubServer.getPort();
+    const pubsubConfig = pubsubPort
+      ? JSON.stringify({
+          serverUrl: `ws://127.0.0.1:${pubsubPort}`,
+          token: getTokenManager().getOrCreateToken(panelId),
+        })
+      : "";
+
     return {
       ...baseEnv,
       __GIT_SERVER_URL: serverUrl,
       __GIT_TOKEN: gitToken,
       __GIT_CONFIG: gitConfig,
+      __PUBSUB_CONFIG: pubsubConfig,
     };
   }
 
@@ -664,8 +677,21 @@ export class PanelManager {
         throw new Error(buildResult.error ?? "Worker build failed");
       }
 
-      // Send the bundle to the utility process with current theme
-      await workerManager.sendWorkerBundle(worker.id, buildResult.bundle, { theme: this.currentTheme });
+      // Build pubsub config for the worker
+      const pubsubServer = getPubSubServer();
+      const pubsubPort = pubsubServer.getPort();
+      const pubsubConfig = pubsubPort
+        ? {
+            serverUrl: `ws://127.0.0.1:${pubsubPort}`,
+            token: getTokenManager().getOrCreateToken(worker.id),
+          }
+        : null;
+
+      // Send the bundle to the utility process with current theme and pubsub config
+      await workerManager.sendWorkerBundle(worker.id, buildResult.bundle, {
+        theme: this.currentTheme,
+        pubsubConfig,
+      });
 
       // Mark as ready
       worker.artifacts = {

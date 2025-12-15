@@ -4,7 +4,7 @@
  * Both environments receive the same global names.
  */
 
-import type { GitConfig } from "../core/index.js";
+import type { GitConfig, PubSubConfig } from "../core/index.js";
 
 /**
  * Injected globals available in both panel and worker environments.
@@ -20,6 +20,8 @@ declare global {
   const __natstackInitialTheme: "light" | "dark" | undefined;
   /** Git configuration for bootstrap */
   const __natstackGitConfig: GitConfig | null | undefined;
+  /** PubSub configuration for real-time messaging */
+  const __natstackPubSubConfig: PubSubConfig | null | undefined;
   /** Environment variables */
   const __natstackEnv: Record<string, string> | undefined;
 }
@@ -30,6 +32,7 @@ export interface InjectedConfig {
   parentId: string | null;
   initialTheme: "light" | "dark";
   gitConfig: GitConfig | null;
+  pubsubConfig: PubSubConfig | null;
   env: Record<string, string>;
 }
 
@@ -41,6 +44,7 @@ const g = globalThis as unknown as {
   __natstackParentId?: string | null;
   __natstackInitialTheme?: "light" | "dark";
   __natstackGitConfig?: GitConfig | null;
+  __natstackPubSubConfig?: PubSubConfig | null;
   __natstackEnv?: Record<string, string>;
 };
 
@@ -63,6 +67,7 @@ export function getInjectedConfig(): InjectedConfig {
         : null,
     initialTheme: g.__natstackInitialTheme === "dark" ? "dark" : "light",
     gitConfig: g.__natstackGitConfig ?? null,
+    pubsubConfig: g.__natstackPubSubConfig ?? null,
     env: g.__natstackEnv ?? {},
   };
 }

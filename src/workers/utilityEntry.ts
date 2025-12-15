@@ -377,6 +377,7 @@ function createSandbox(
     theme?: "light" | "dark";
     parentId?: string | null;
     gitConfig?: unknown;
+    pubsubConfig?: { serverUrl: string; token: string } | null;
   }
 ): Record<string, unknown> {
   type LogLevel = "log" | "error" | "warn" | "info" | "debug";
@@ -429,6 +430,7 @@ function createSandbox(
     __natstackParentId: options.parentId ?? null,
     __natstackInitialTheme: options.theme ?? "light",
     __natstackGitConfig: options.gitConfig ?? null,
+    __natstackPubSubConfig: options.pubsubConfig ?? null,
     __natstackEnv: options.env,
 
     // RPC bridge - the unified communication mechanism

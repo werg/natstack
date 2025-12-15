@@ -12,6 +12,11 @@ interface GitConfig {
   resolvedRepoArgs: Record<string, unknown>;
 }
 
+interface PubSubConfig {
+  serverUrl: string;
+  token: string;
+}
+
 declare global {
   // Unified NatStack globals
   // eslint-disable-next-line no-var
@@ -24,6 +29,8 @@ declare global {
   var __natstackInitialTheme: "light" | "dark" | undefined;
   // eslint-disable-next-line no-var
   var __natstackGitConfig: GitConfig | null | undefined;
+  // eslint-disable-next-line no-var
+  var __natstackPubSubConfig: PubSubConfig | null | undefined;
   // eslint-disable-next-line no-var
   var __natstackEnv: Record<string, string> | undefined;
   // eslint-disable-next-line no-var
@@ -91,6 +98,19 @@ const parseGitConfig = (env: Record<string, string>): GitConfig | null => {
 };
 const gitConfig = parseGitConfig(syntheticEnv);
 
+// Parse pubsub config from env (passed by main process for real-time messaging)
+const parsePubSubConfig = (env: Record<string, string>): PubSubConfig | null => {
+  const configStr = env["__PUBSUB_CONFIG"];
+  if (!configStr) return null;
+  try {
+    return JSON.parse(configStr) as PubSubConfig;
+  } catch {
+    console.error("[Panel] Failed to parse pubsub config from env");
+    return null;
+  }
+};
+const pubsubConfig = parsePubSubConfig(syntheticEnv);
+
 const authToken = parseAuthToken();
 if (authToken) {
   void ipcRenderer.invoke("panel-bridge:register", panelId, authToken).catch((error: unknown) => {
@@ -110,6 +130,7 @@ contextBridge.exposeInMainWorld("__natstackKind", "panel");
 contextBridge.exposeInMainWorld("__natstackParentId", parentId);
 contextBridge.exposeInMainWorld("__natstackInitialTheme", initialTheme);
 contextBridge.exposeInMainWorld("__natstackGitConfig", gitConfig);
+contextBridge.exposeInMainWorld("__natstackPubSubConfig", pubsubConfig);
 contextBridge.exposeInMainWorld("__natstackEnv", syntheticEnv);
 contextBridge.exposeInMainWorld("__natstackTransport", transport);
 
@@ -119,6 +140,7 @@ globalThis.__natstackKind = "panel";
 globalThis.__natstackParentId = parentId;
 globalThis.__natstackInitialTheme = initialTheme;
 globalThis.__natstackGitConfig = gitConfig;
+globalThis.__natstackPubSubConfig = pubsubConfig;
 globalThis.__natstackEnv = syntheticEnv;
 globalThis.__natstackTransport = transport;
 

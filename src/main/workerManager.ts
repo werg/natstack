@@ -25,6 +25,7 @@ import type {
   ServicePushEvent,
   ServiceInvokeRequest,
   ServiceInvokeResponse,
+  PubSubConfig,
 } from "./workerTypes.js";
 import type { WorkerCreateOptions, WorkerInfo } from "../shared/ipc/types.js";
 import type { RpcMessage, RpcRequest } from "@natstack/rpc";
@@ -705,6 +706,7 @@ export class WorkerManager {
     options?: {
       theme?: "light" | "dark";
       gitConfig?: unknown;
+      pubsubConfig?: PubSubConfig | null;
     }
   ): Promise<void> {
     const worker = this.workers.get(workerId);
@@ -722,6 +724,7 @@ export class WorkerManager {
         theme: options?.theme ?? "light",
         parentId: worker.parentPanelId,
         gitConfig: options?.gitConfig ?? null,
+        pubsubConfig: options?.pubsubConfig ?? null,
       },
     };
 

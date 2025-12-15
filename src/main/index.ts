@@ -29,6 +29,7 @@ import { getCentralData } from "./centralData.js";
 import { registerPanelProtocol, setupPanelProtocol } from "./panelProtocol.js";
 import { getMainCacheManager } from "./cacheManager.js";
 import { getCdpServer, type CdpServer } from "./cdpServer.js";
+import { getPubSubServer, type PubSubServer } from "./pubsubServer.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
 import { handleDbCall } from "./ipc/dbHandlers.js";
 import { handleBridgeCall } from "./ipc/bridgeHandlers.js";
@@ -78,6 +79,7 @@ let appMode: AppMode = hasWorkspaceConfig ? "main" : "chooser";
 let workspace: Workspace | null = null;
 let gitServer: GitServer | null = null;
 let cdpServer: CdpServer | null = null;
+let pubsubServer: PubSubServer | null = null;
 let panelManager: PanelManager | null = null;
 let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
@@ -514,6 +516,11 @@ app.on("ready", async () => {
       const cdpPort = await cdpServer.start();
       console.log(`[CDP] Server started on port ${cdpPort}`);
 
+      // Start PubSub server for real-time messaging
+      pubsubServer = getPubSubServer();
+      const pubsubPort = await pubsubServer.start();
+      console.log(`[PubSub] Server started on port ${pubsubPort}`);
+
       // Initialize RPC handler
       const { PanelRpcHandler } = await import("./ipc/rpcHandler.js");
       new PanelRpcHandler(panelManager);
@@ -578,7 +585,7 @@ app.on("window-all-closed", () => {
 
 // Use will-quit with preventDefault to properly await async shutdown
 app.on("will-quit", (event) => {
-  const hasServersToStop = gitServer || cdpServer;
+  const hasServersToStop = gitServer || cdpServer || pubsubServer;
   if (hasServersToStop) {
     event.preventDefault();
 
@@ -597,6 +604,14 @@ app.on("will-quit", (event) => {
       stopPromises.push(
         gitServer.stop().catch((error) => {
           console.error("Error stopping git server:", error);
+        })
+      );
+    }
+
+    if (pubsubServer) {
+      stopPromises.push(
+        pubsubServer.stop().catch((error) => {
+          console.error("Error stopping PubSub server:", error);
         })
       );
     }
