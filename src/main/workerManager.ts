@@ -27,7 +27,8 @@ import type {
   ServiceInvokeResponse,
 } from "./workerTypes.js";
 import type { WorkerCreateOptions, WorkerInfo } from "../shared/ipc/types.js";
-import type { RpcMessage, RpcRequest, ServiceHandler } from "@natstack/rpc";
+import type { RpcMessage, RpcRequest } from "@natstack/rpc";
+import { getServiceDispatcher, parseServiceMethod } from "./serviceDispatcher.js";
 
 // Default options for workers
 const DEFAULTS = {
@@ -72,9 +73,6 @@ export class WorkerManager {
   private consoleLogCallback: ((workerId: string, level: string, message: string) => void) | null =
     null;
 
-  /** Service handlers registered by service name */
-  private serviceHandlers = new Map<string, ServiceHandler>();
-
   /** Pending service invoke requests waiting for responses */
   private pendingInvokes = new Map<
     string,
@@ -100,15 +98,6 @@ export class WorkerManager {
     callback: (workerId: string, level: string, message: string) => void
   ): void {
     this.consoleLogCallback = callback;
-  }
-
-  /**
-   * Register a service handler.
-   * @param service - Service name (e.g., "fs", "network", "bridge", "ai")
-   * @param handler - Handler function for service calls
-   */
-  registerService(service: string, handler: ServiceHandler): void {
-    this.serviceHandlers.set(service, handler);
   }
 
   /**
@@ -233,20 +222,14 @@ export class WorkerManager {
       return;
     }
 
-    // Look up registered service handler
-    const handler = this.serviceHandlers.get(service);
-    if (!handler) {
-      const response: ServiceCallResponse = {
-        type: "service:response",
-        requestId,
-        error: `Unknown service: ${service}`,
-      };
-      this.utilityProc?.postMessage(response);
-      return;
-    }
-
     try {
-      const result = await handler(workerId, method, args);
+      const dispatcher = getServiceDispatcher();
+      const result = await dispatcher.dispatch(
+        { callerId: workerId, callerKind: "worker" },
+        service,
+        method,
+        args
+      );
       const response: ServiceCallResponse = {
         type: "service:response",
         requestId,
@@ -502,23 +485,21 @@ export class WorkerManager {
         const request = msg as RpcRequest;
         // Convert RPC request to service call
         // Method format: "service.method" (e.g., "bridge.setTitle", "ai.streamText")
-        const dotIndex = request.method.indexOf(".");
-        if (dotIndex === -1) {
+        const parsedMethod = parseServiceMethod(request.method);
+        if (!parsedMethod) {
           // Invalid method format - send error response back
           this.sendRpcErrorToWorker(fromId, request.requestId,
             `Invalid method format: "${request.method}". Expected "service.method"`);
           return;
         }
-        const service = request.method.substring(0, dotIndex);
-        const method = request.method.substring(dotIndex + 1);
 
         // Create a synthetic service call request and handle it
         const serviceRequest: ServiceCallRequest = {
           type: "service:call",
           workerId: fromId,
           requestId: request.requestId,
-          service,
-          method,
+          service: parsedMethod.service,
+          method: parsedMethod.method,
           args: request.args,
         };
         void this.handleServiceCall(serviceRequest);

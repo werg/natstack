@@ -1,12 +1,11 @@
 /**
- * Database service handlers for workers and panels.
+ * Database service handlers.
  *
  * Provides a unified handler for SQLite operations that can be used by both
- * the worker service registration and panel IPC handlers.
+ * panels and workers via the ServiceDispatcher.
  */
 
-import { getWorkerManager } from "../workerManager.js";
-import { getDatabaseManager, type DatabaseManager } from "../db/databaseManager.js";
+import type { DatabaseManager } from "../db/databaseManager.js";
 
 /**
  * Handle a database service call.
@@ -59,17 +58,4 @@ export function handleDbCall(
     default:
       throw new Error(`Unknown db method: ${method}`);
   }
-}
-
-/**
- * Register database service handlers with WorkerManager.
- */
-export function registerDbHandlers(): void {
-  const workerManager = getWorkerManager();
-  const dbManager = getDatabaseManager();
-
-  // Register the "db" service for SQLite operations
-  workerManager.registerService("db", async (workerId, method, args) => {
-    return handleDbCall(dbManager, workerId, method, args);
-  });
 }

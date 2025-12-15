@@ -5,6 +5,7 @@
 
 import type { CdpServer } from "../cdpServer.js";
 import type { ViewManager } from "../viewManager.js";
+import type { CallerKind } from "../serviceDispatcher.js";
 
 export function getCdpEndpointForCaller(cdpServer: CdpServer, browserId: string, callerId: string): string {
   const endpoint = cdpServer.getCdpEndpoint(browserId, callerId);
@@ -15,11 +16,12 @@ export function getCdpEndpointForCaller(cdpServer: CdpServer, browserId: string,
 }
 
 /**
- * Handle browser service calls from panels.
+ * Handle browser service calls from panels and workers.
  *
  * @param cdpServer - CdpServer instance for CDP endpoint management
  * @param viewManager - ViewManager instance for webContents access
- * @param panelId - The calling panel's ID (must own the browser)
+ * @param callerId - The calling panel/worker ID
+ * @param callerKind - Whether the caller is a panel or worker
  * @param method - The method name (e.g., "navigate", "goBack")
  * @param args - The method arguments (first arg is always browserId)
  * @returns The result of the method call
@@ -27,14 +29,20 @@ export function getCdpEndpointForCaller(cdpServer: CdpServer, browserId: string,
 export async function handleBrowserCall(
   cdpServer: CdpServer,
   viewManager: ViewManager,
-  panelId: string,
+  callerId: string,
+  callerKind: CallerKind,
   method: string,
   args: unknown[]
 ): Promise<unknown> {
+  // Workers can only access getCdpEndpoint
+  if (callerKind === "worker" && method !== "getCdpEndpoint") {
+    throw new Error("Workers may only call browser.getCdpEndpoint");
+  }
+
   const [browserId] = args as [string];
 
   const assertOwner = () => {
-    if (!cdpServer.panelOwnsBrowser(panelId, browserId)) {
+    if (!cdpServer.panelOwnsBrowser(callerId, browserId)) {
       throw new Error("Access denied: you do not own this browser panel");
     }
   };
@@ -47,7 +55,7 @@ export async function handleBrowserCall(
 
   switch (method) {
     case "getCdpEndpoint": {
-      return getCdpEndpointForCaller(cdpServer, browserId, panelId);
+      return getCdpEndpointForCaller(cdpServer, browserId, callerId);
     }
     case "navigate": {
       const [, url] = args as [string, string];

@@ -17,7 +17,6 @@ import { setupMenu } from "./menu.js";
 import { setActiveWorkspace } from "./paths.js";
 import { getWorkerManager } from "./workerManager.js";
 import { registerWorkerHandlers } from "./ipc/workerHandlers.js";
-import { registerDbHandlers } from "./ipc/dbHandlers.js";
 import {
   parseCliWorkspacePath,
   discoverWorkspace,
@@ -34,13 +33,15 @@ import { getDatabaseManager } from "./db/databaseManager.js";
 import { handleDbCall } from "./ipc/dbHandlers.js";
 import { handleBridgeCall } from "./ipc/bridgeHandlers.js";
 import { handleBrowserCall } from "./ipc/browserHandlers.js";
-import { handleAiCall } from "./ipc/panelAiHandlers.js";
+import { handleAiServiceCall } from "./ipc/aiHandlers.js";
 import {
   initViewManager,
   getViewManager,
   type ViewManager,
 } from "./viewManager.js";
 import type { RpcMessage, RpcResponse } from "@natstack/rpc";
+import { generateRequestId } from "../shared/logging.js";
+import { getServiceDispatcher, parseServiceMethod } from "./serviceDispatcher.js";
 
 // =============================================================================
 // Protocol Registration (must happen before app ready)
@@ -364,8 +365,8 @@ handle("rpc:call", async (event, panelId: string, message: RpcMessage): Promise<
   }
 
   const { requestId, method, args } = message;
-  const dotIndex = method.indexOf(".");
-  if (dotIndex === -1) {
+  const parsedMethod = parseServiceMethod(method);
+  if (!parsedMethod) {
     return {
       type: "response",
       requestId,
@@ -373,33 +374,11 @@ handle("rpc:call", async (event, panelId: string, message: RpcMessage): Promise<
     };
   }
 
-  const service = method.slice(0, dotIndex);
-  const serviceMethod = method.slice(dotIndex + 1);
-
-  const pm = requirePanelManager();
-
-  const route = async (): Promise<unknown> => {
-    switch (service) {
-      case "bridge":
-        return handleBridgeCall(pm, panelId, serviceMethod, args);
-
-      case "db": {
-        return handleDbCall(getDatabaseManager(), panelId, serviceMethod, args);
-      }
-
-      case "browser":
-        return handleBrowserCall(getCdpServer(), getViewManager(), panelId, serviceMethod, args);
-
-      case "ai":
-        return handleAiCall(aiHandler, event.sender, panelId, serviceMethod, args);
-
-      default:
-        throw new Error(`Unknown service: ${service}`);
-    }
-  };
+  const dispatcher = getServiceDispatcher();
+  const ctx = { callerId: panelId, callerKind: "panel" as const, webContents: event.sender };
 
   try {
-    const result = await route();
+    const result = await dispatcher.dispatch(ctx, parsedMethod.service, parsedMethod.method, args);
     return { type: "response", requestId, result };
   } catch (error) {
     return {
@@ -524,6 +503,8 @@ app.on("ready", async () => {
   // Initialize services only in main mode
   if (appMode === "main" && gitServer && panelManager && workspace) {
     try {
+      const dispatcher = getServiceDispatcher();
+
       // Start git server
       const port = await gitServer.start();
       console.log(`[Git] Server started on port ${port}`);
@@ -538,15 +519,49 @@ app.on("ready", async () => {
       new PanelRpcHandler(panelManager);
 
       // Initialize WorkerManager (uses getActiveWorkspace() internally)
-      getWorkerManager();
+      const workerManager = getWorkerManager();
       registerWorkerHandlers(panelManager);
-      registerDbHandlers();
       console.log("[Workers] Manager initialized");
+
+      dispatcher.register("bridge", async (ctx, serviceMethod, serviceArgs) => {
+        return handleBridgeCall(panelManager, ctx.callerId, serviceMethod, serviceArgs);
+      });
+
+      dispatcher.register("db", async (ctx, serviceMethod, serviceArgs) => {
+        return handleDbCall(getDatabaseManager(), ctx.callerId, serviceMethod, serviceArgs);
+      });
+
+      dispatcher.register("browser", async (ctx, serviceMethod, serviceArgs) => {
+        return handleBrowserCall(
+          getCdpServer(),
+          getViewManager(),
+          ctx.callerId,
+          ctx.callerKind,
+          serviceMethod,
+          serviceArgs
+        );
+      });
 
       // Initialize AI handler
       const { AIHandler } = await import("./ai/aiHandler.js");
       aiHandler = new AIHandler();
       await aiHandler.initialize();
+
+      dispatcher.register("ai", async (ctx, serviceMethod, serviceArgs) => {
+        return handleAiServiceCall(aiHandler, serviceMethod, serviceArgs, (handler, options, streamId) => {
+          if (ctx.callerKind === "panel") {
+            if (!ctx.webContents) {
+              throw new Error("Missing webContents for panel AI stream");
+            }
+            handler.startPanelStream(ctx.webContents, ctx.callerId, options, streamId);
+            return;
+          }
+
+          void handler.streamTextToWorker(workerManager, ctx.callerId, generateRequestId(), options, streamId);
+        });
+      });
+
+      dispatcher.markInitialized();
     } catch (error) {
       console.error("Failed to initialize services:", error);
     }
