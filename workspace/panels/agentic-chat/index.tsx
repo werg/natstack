@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  streamText,
-  getRoles,
+  ai,
   type AIRoleRecord,
   type StreamEvent,
   type ToolDefinition,
@@ -279,7 +278,7 @@ export default function AgenticChat() {
   useEffect(() => {
     void (async () => {
       try {
-        const roleRecord = await getRoles();
+        const roleRecord = await ai.listRoles();
         setRoles(roleRecord);
       } catch (error) {
         setStatus(`Failed to load roles: ${error instanceof Error ? error.message : String(error)}`);
@@ -374,7 +373,7 @@ export default function AgenticChat() {
         const apiMessages = buildMessages(initialMessages);
 
         // Start streaming with the unified API
-        const stream = streamText({
+        const stream = ai.streamText({
           model: selectedRole,
           system: SYSTEM_PROMPT,
           messages: apiMessages,

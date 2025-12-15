@@ -9,8 +9,101 @@ import type {
   RepoStatus,
   FileStatus,
 } from "./types.js";
-import type { FsPromisesLike } from "./fs-adapter.js";
-import { createFsAdapter } from "./fs-adapter.js";
+
+/**
+ * Minimal fs/promises interface expected by GitClient.
+ * Compatible with Node's fs/promises and @natstack/runtime's RuntimeFs.
+ */
+export interface FsPromisesLike {
+  readFile(path: string, encoding?: BufferEncoding): Promise<Uint8Array | string>;
+  writeFile(path: string, data: Uint8Array | string): Promise<void>;
+  unlink(path: string): Promise<void>;
+  readdir(path: string): Promise<string[]>;
+  mkdir(path: string, options?: { recursive?: boolean }): Promise<string | undefined>;
+  rmdir(path: string): Promise<void>;
+  stat(path: string): Promise<{ isDirectory(): boolean; isFile(): boolean }>;
+}
+
+/**
+ * Wrap fs/promises-like interface into isomorphic-git's FsClient format.
+ * Handles quirks: always recursive mkdir, lstat fallback, symlink stubs.
+ */
+function wrapFsForGit(fsPromises: FsPromisesLike): FsClient {
+  let warnedSymlink = false;
+  let warnedReadlink = false;
+
+  const ensureParentDir = async (filePath: string): Promise<void> => {
+    try {
+      const dir = filePath.slice(0, filePath.lastIndexOf("/"));
+      if (dir) {
+        await fsPromises.mkdir(dir, { recursive: true });
+      }
+    } catch {
+      // Best effort
+    }
+  };
+
+  return {
+    promises: {
+      readFile: async (path: string, opts?: unknown) => {
+        if (path === undefined || path === null) {
+          const err = new Error("ENOENT: no such file or directory") as NodeJS.ErrnoException;
+          err.code = "ENOENT";
+          throw err;
+        }
+        const encoding =
+          typeof opts === "string" ? opts : (opts as { encoding?: string } | undefined)?.encoding;
+
+        if (!encoding) {
+          return await fsPromises.readFile(path);
+        }
+        return await fsPromises.readFile(path, encoding as BufferEncoding);
+      },
+
+      writeFile: async (path: string, data: unknown) => {
+        await ensureParentDir(path);
+        return fsPromises.writeFile(path, data as Uint8Array | string);
+      },
+
+      unlink: async (path: string) => fsPromises.unlink(path),
+
+      readdir: async (path: string) => fsPromises.readdir(path),
+
+      mkdir: async (path: string) => fsPromises.mkdir(path, { recursive: true }),
+
+      rmdir: async (path: string) => fsPromises.rmdir(path),
+
+      stat: async (path: string) => fsPromises.stat(path),
+
+      lstat: async (path: string) => fsPromises.stat(path), // OPFS has no symlinks
+
+      readlink: async (path: string) => {
+        if (!warnedReadlink) {
+          console.warn("readlink not supported in OPFS; returning placeholder");
+          warnedReadlink = true;
+        }
+        return path;
+      },
+
+      symlink: async (target: string, linkPath: string) => {
+        if (!warnedSymlink) {
+          console.warn("symlink not supported in OPFS; performing best-effort copy");
+          warnedSymlink = true;
+        }
+        try {
+          const data = await fsPromises.readFile(target);
+          await fsPromises.writeFile(linkPath, data);
+        } catch {
+          // Ignore if source missing
+        }
+      },
+
+      chmod: async () => {
+        // No-op: OPFS doesn't support chmod
+      },
+    },
+  };
+}
 
 /**
  * HTTP client for isomorphic-git with bearer token auth
@@ -90,24 +183,6 @@ async function* toAsyncIterable(
 }
 
 /**
- * Input type for GitClient constructor - accepts either:
- * - A raw fs/promises-like object (e.g., from `import("fs").then(m => m.promises)`)
- * - An already-adapted isomorphic-git FsClient (PromiseFsClient or CallbackFsClient)
- */
-export type GitClientFs = FsPromisesLike | FsClient;
-
-/**
- * Check if the input is already an FsClient (has `promises` property with readFile)
- * vs a raw fs/promises object (has methods like readFile directly on it)
- */
-function isFsClient(fs: GitClientFs): fs is FsClient {
-  // FsClient (PromiseFsClient) has a `promises` object with fs methods
-  // FsPromisesLike has fs methods directly on the object (readFile, mkdir, etc.)
-  const maybePromises = (fs as { promises?: { readFile?: unknown } }).promises;
-  return maybePromises !== undefined && typeof maybePromises.readFile === "function";
-}
-
-/**
  * Git client for panel OPFS operations
  *
  * Wraps isomorphic-git with:
@@ -117,13 +192,8 @@ function isFsClient(fs: GitClientFs): fs is FsClient {
  *
  * @example
  * ```typescript
- * // Pass fs/promises directly - adapter is applied internally
  * import { promises as fsPromises } from "fs";
  * const git = new GitClient(fsPromises, { serverUrl, token });
- *
- * // Or pass an already-adapted FsClient
- * const fs = createFsAdapter(fsPromises);
- * const git = new GitClient(fs, { serverUrl, token });
  * ```
  */
 export class GitClient {
@@ -132,9 +202,8 @@ export class GitClient {
   private serverUrl: string;
   private author: { name: string; email: string };
 
-  constructor(fs: GitClientFs, options: GitClientOptions) {
-    // Auto-adapt if given raw fs/promises, otherwise use as-is
-    this.fs = isFsClient(fs) ? fs : createFsAdapter(fs);
+  constructor(fs: FsPromisesLike, options: GitClientOptions) {
+    this.fs = wrapFsForGit(fs);
     this.serverUrl = options.serverUrl;
     this.http = createHttpClient(options.token);
     this.author = options.author ?? {

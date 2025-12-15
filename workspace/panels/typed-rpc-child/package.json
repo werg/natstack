@@ -7,7 +7,7 @@
     "title": "Typed RPC Child"
   },
   "dependencies": {
-    "@natstack/panel": "workspace:*",
+    "@natstack/runtime": "workspace:*",
     "@natstack/react": "workspace:*"
   }
 }

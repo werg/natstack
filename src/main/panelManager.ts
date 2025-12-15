@@ -1,5 +1,6 @@
 import * as path from "path";
 import { randomBytes } from "crypto";
+import { nativeTheme } from "electron";
 import { PanelBuilder } from "./panelBuilder.js";
 import type { PanelEventPayload, Panel, PanelManifest, BrowserPanel } from "./panelTypes.js";
 import { getActiveWorkspace } from "./paths.js";
@@ -22,7 +23,7 @@ export class PanelManager {
   private panels: Map<string, Panel> = new Map();
   private reservedPanelIds: Set<string> = new Set();
   private rootPanels: Panel[] = [];
-  private currentTheme: "light" | "dark" = "light";
+  private currentTheme: "light" | "dark" = nativeTheme.shouldUseDarkColors ? "dark" : "light";
   private panelsRoot: string;
   private gitServer: GitServer;
 
@@ -132,6 +133,7 @@ export class PanelManager {
       const additionalArgs: string[] = [
         `--natstack-panel-id=${panelId}`,
         `--natstack-auth-token=${authToken}`,
+        `--natstack-theme=${this.currentTheme}`,
       ];
 
       // Add panel env if available
@@ -144,7 +146,7 @@ export class PanelManager {
         }
       }
 
-      this.viewManager.createView({
+      const view = this.viewManager.createView({
         id: panelId,
         type: "panel",
         partition: `persist:${panelId}`, // Isolated partition for app panels
@@ -153,6 +155,13 @@ export class PanelManager {
         injectHostThemeVariables: panel?.type === "app" ? (panel as SharedPanel.AppPanel).injectHostThemeVariables : true,
         additionalArguments: additionalArgs,
       });
+
+      // Register app panels with CDP server for automation/testing (like browsers)
+      if (parentId) {
+        view.webContents.on("dom-ready", () => {
+          getCdpServer().registerBrowser(panelId, view.webContents.id, parentId);
+        });
+      }
     }
   }
 
@@ -268,22 +277,41 @@ export class PanelManager {
   // Public methods for RPC services
 
   /**
-   * Build env for a panel, injecting git credentials for non-worker panels.
+   * Build env for a panel or worker, injecting git credentials and config.
+   * The full git config is serialized to JSON so bootstrap can use it without RPC.
    */
   private buildPanelEnv(
     panelId: string,
-    isWorker: boolean,
-    baseEnv?: Record<string, string>
-  ): Record<string, string> | undefined {
-    if (isWorker) {
-      return baseEnv ? { ...baseEnv } : undefined;
+    baseEnv?: Record<string, string>,
+    gitInfo?: {
+      sourceRepo: string;
+      branch?: string;
+      commit?: string;
+      tag?: string;
+      resolvedRepoArgs?: Record<string, SharedPanel.RepoArgSpec>;
     }
-
+  ): Record<string, string> | undefined {
     const gitToken = this.gitServer.getTokenForPanel(panelId);
+    const serverUrl = this.gitServer.getBaseUrl();
+
+    // Build full git config for bootstrap (eliminates need for RPC during bootstrap)
+    const gitConfig = gitInfo
+      ? JSON.stringify({
+          serverUrl,
+          token: gitToken,
+          sourceRepo: gitInfo.sourceRepo,
+          branch: gitInfo.branch,
+          commit: gitInfo.commit,
+          tag: gitInfo.tag,
+          resolvedRepoArgs: gitInfo.resolvedRepoArgs ?? {},
+        })
+      : "";
+
     return {
       ...baseEnv,
-      __GIT_SERVER_URL: this.gitServer.getBaseUrl(),
+      __GIT_SERVER_URL: serverUrl,
       __GIT_TOKEN: gitToken,
+      __GIT_CONFIG: gitConfig,
     };
   }
 
@@ -349,7 +377,13 @@ export class PanelManager {
     this.reservedPanelIds.add(panelId);
 
     try {
-      const panelEnv = this.buildPanelEnv(panelId, isWorker, spec?.env);
+      const panelEnv = this.buildPanelEnv(panelId, spec?.env, {
+        sourceRepo: relativePath,
+        branch: spec?.branch,
+        commit: spec?.commit,
+        tag: spec?.tag,
+        resolvedRepoArgs: spec?.repoArgs,
+      });
 
       // Create the appropriate panel type based on manifest runtime
       const panel: Panel = isWorker
@@ -630,8 +664,8 @@ export class PanelManager {
         throw new Error(buildResult.error ?? "Worker build failed");
       }
 
-      // Send the bundle to the utility process
-      await workerManager.sendWorkerBundle(worker.id, buildResult.bundle);
+      // Send the bundle to the utility process with current theme
+      await workerManager.sendWorkerBundle(worker.id, buildResult.bundle, { theme: this.currentTheme });
 
       // Mark as ready
       worker.artifacts = {
@@ -761,10 +795,13 @@ export class PanelManager {
     this.notifyPanelTreeUpdate();
   }
 
-  async setTitle(panelId: string, title: string): Promise<void> {
-    const panel = this.panels.get(panelId);
+  async setTitle(callerId: string, title: string): Promise<void> {
+    console.log(`[PanelManager] setTitle called with callerId="${callerId}", title="${title}"`);
+    console.log(`[PanelManager] All panel IDs: ${Array.from(this.panels.keys()).join(", ")}`);
+
+    const panel = this.panels.get(callerId);
     if (!panel) {
-      throw new Error(`Panel not found: ${panelId}`);
+      throw new Error(`Panel not found: ${callerId}`);
     }
 
     panel.title = title;
@@ -846,44 +883,6 @@ export class PanelManager {
     };
   }
 
-  /**
-   * Get git configuration for a panel.
-   * Used by panels to clone/pull their source and repo args via @natstack/git.
-   */
-  getGitConfig(panelId: string): {
-    serverUrl: string;
-    token: string;
-    sourceRepo: string;
-    branch?: string;
-    commit?: string;
-    tag?: string;
-    resolvedRepoArgs: Record<string, SharedPanel.RepoArgSpec>;
-  } {
-    const panel = this.panels.get(panelId);
-    if (!panel) {
-      throw new Error(`Panel not found: ${panelId}`);
-    }
-
-    // Browser panels don't have git configuration
-    if (panel.type === "browser") {
-      throw new Error("Git configuration is not available for browser panels");
-    }
-
-    const sourceRepo = panel.sourceRepo ?? panel.path;
-    if (!sourceRepo) {
-      throw new Error("Git configuration is not available for this panel");
-    }
-    return {
-      serverUrl: this.gitServer.getBaseUrl(),
-      token: this.gitServer.getTokenForPanel(panelId),
-      sourceRepo,
-      branch: panel.branch,
-      commit: panel.commit,
-      tag: panel.tag,
-      resolvedRepoArgs: panel.resolvedRepoArgs ?? {},
-    };
-  }
-
   getSerializablePanelTree(): Panel[] {
     return this.rootPanels.map((panel) => this.serializePanel(panel));
   }
@@ -905,10 +904,27 @@ export class PanelManager {
   }
 
   sendPanelEvent(panelId: string, payload: PanelEventPayload): void {
-    // Use ViewManager to get webContents for the panel
-    if (!this.viewManager) {
-      return;
+    const panel = this.panels.get(panelId);
+    if (!panel) return;
+
+    // Workers have no WebContentsView; route events via service push so they can be consumed as RPC events.
+    if (panel.type === "worker") {
+      const workerManager = getWorkerManager();
+      switch (payload.type) {
+        case "child-removed":
+          workerManager.sendPush(panelId, "runtime", "child-removed", payload.childId);
+          return;
+        case "focus":
+          workerManager.sendPush(panelId, "runtime", "focus", null);
+          return;
+        case "theme":
+          workerManager.sendPush(panelId, "runtime", "theme", payload.theme);
+          return;
+      }
     }
+
+    // Use ViewManager to get webContents for app/browser panels.
+    if (!this.viewManager) return;
 
     const contents = this.viewManager.getWebContents(panelId);
     if (contents && !contents.isDestroyed()) {
@@ -917,11 +933,8 @@ export class PanelManager {
   }
 
   broadcastTheme(theme: "light" | "dark"): void {
-    // Broadcast to all panels that have views (app panels with views, not workers)
     for (const panelId of this.panels.keys()) {
-      if (this.viewManager?.hasView(panelId)) {
-        this.sendPanelEvent(panelId, { type: "theme", theme });
-      }
+      this.sendPanelEvent(panelId, { type: "theme", theme });
     }
   }
 

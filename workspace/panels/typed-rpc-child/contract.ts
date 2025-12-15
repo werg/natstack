@@ -9,7 +9,7 @@
  * Both parent and child import this contract for full type safety.
  */
 
-import { z, defineContract } from "@natstack/core";
+import { z, defineContract } from "@natstack/runtime";
 
 // =============================================================================
 // RPC Methods (what the child exposes)

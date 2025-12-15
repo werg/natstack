@@ -413,11 +413,11 @@ try {
 
 ## Workers
 
-The same API is available in workers via `@natstack/worker-runtime`:
+The same API works in workers (and panels) via `@natstack/ai`:
 
 ```typescript
-import { streamText, tool, getRoles } from "@natstack/worker-runtime";
-// Identical API
+import { ai, tool } from "@natstack/ai";
+// Identical API to panels
 ```
 
 ## Configuration

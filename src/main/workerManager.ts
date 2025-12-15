@@ -27,7 +27,7 @@ import type {
   ServiceInvokeResponse,
 } from "./workerTypes.js";
 import type { WorkerCreateOptions, WorkerInfo } from "../shared/ipc/types.js";
-import type { RpcMessage, ServiceHandler } from "@natstack/rpc";
+import type { RpcMessage, RpcRequest, ServiceHandler } from "@natstack/rpc";
 
 // Default options for workers
 const DEFAULTS = {
@@ -125,6 +125,24 @@ export class WorkerManager {
       serviceName: "natstack-worker-host",
       stdio: "pipe",
     });
+
+    // Forward utility process stdout/stderr to main process console for debugging
+    if (this.utilityProc.stdout) {
+      this.utilityProc.stdout.on("data", (data: Buffer) => {
+        const lines = data.toString().trim().split("\n");
+        for (const line of lines) {
+          if (line) console.log(line);
+        }
+      });
+    }
+    if (this.utilityProc.stderr) {
+      this.utilityProc.stderr.on("data", (data: Buffer) => {
+        const lines = data.toString().trim().split("\n");
+        for (const line of lines) {
+          if (line) console.error(line);
+        }
+      });
+    }
 
     this.utilityProc.on("message", (message: UtilityMessage) => {
       this.handleUtilityMessage(message);
@@ -302,12 +320,16 @@ export class WorkerManager {
         case "stat": {
           const [filePath] = args as [string];
           const stats = await scopedFs.promises.stat(filePath);
+          // Include mode for isomorphic-git compatibility
+          // Default: 0o100644 for files, 0o40755 for directories (includes file type bits)
+          const defaultMode = stats.isDirectory() ? 0o40755 : 0o100644;
           result = {
             isFile: stats.isFile(),
             isDirectory: stats.isDirectory(),
             size: stats.size,
             mtime: stats.mtime.toISOString(),
             ctime: stats.ctime.toISOString(),
+            mode: stats.mode ?? defaultMode,
           };
           break;
         }
@@ -472,6 +494,39 @@ export class WorkerManager {
    */
   private handleRpcForward(message: UtilityRpcForward): void {
     const { fromId, toId, message: rpcMessage } = message;
+    const msg = rpcMessage as RpcMessage;
+
+    // Handle messages to "main" - these are service calls (bridge, ai, fs, etc.)
+    if (toId === "main") {
+      if (msg.type === "request") {
+        const request = msg as RpcRequest;
+        // Convert RPC request to service call
+        // Method format: "service.method" (e.g., "bridge.setTitle", "ai.streamText")
+        const dotIndex = request.method.indexOf(".");
+        if (dotIndex === -1) {
+          // Invalid method format - send error response back
+          this.sendRpcErrorToWorker(fromId, request.requestId,
+            `Invalid method format: "${request.method}". Expected "service.method"`);
+          return;
+        }
+        const service = request.method.substring(0, dotIndex);
+        const method = request.method.substring(dotIndex + 1);
+
+        // Create a synthetic service call request and handle it
+        const serviceRequest: ServiceCallRequest = {
+          type: "service:call",
+          workerId: fromId,
+          requestId: request.requestId,
+          service,
+          method,
+          args: request.args,
+        };
+        void this.handleServiceCall(serviceRequest);
+        return;
+      }
+      // Responses/events to main are not supported
+      return;
+    }
 
     // Check if target is another worker we manage
     if (this.workers.has(toId)) {
@@ -487,6 +542,18 @@ export class WorkerManager {
     }
 
     console.warn(`[WorkerManager] Cannot route RPC to: ${toId}`);
+  }
+
+  /**
+   * Send an RPC error response back to a worker.
+   */
+  private sendRpcErrorToWorker(_workerId: string, requestId: string, error: string): void {
+    const response: ServiceCallResponse = {
+      type: "service:response",
+      requestId,
+      error,
+    };
+    this.utilityProc?.postMessage(response);
   }
 
   /**
@@ -647,8 +714,18 @@ export class WorkerManager {
 
   /**
    * Send a built worker bundle to the utility process.
+   * @param workerId - The worker ID
+   * @param bundle - The compiled JavaScript bundle
+   * @param options - Additional options for the worker
    */
-  async sendWorkerBundle(workerId: string, bundle: string): Promise<void> {
+  async sendWorkerBundle(
+    workerId: string,
+    bundle: string,
+    options?: {
+      theme?: "light" | "dark";
+      gitConfig?: unknown;
+    }
+  ): Promise<void> {
     const worker = this.workers.get(workerId);
     if (!worker) {
       throw new Error(`Worker ${workerId} not found`);
@@ -661,6 +738,9 @@ export class WorkerManager {
       options: {
         memoryLimitMB: worker.options.memoryLimitMB ?? DEFAULTS.memoryLimitMB,
         env: worker.options.env ?? DEFAULTS.env,
+        theme: options?.theme ?? "light",
+        parentId: worker.parentPanelId,
+        gitConfig: options?.gitConfig ?? null,
       },
     };
 

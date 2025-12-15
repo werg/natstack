@@ -5,12 +5,8 @@
  * Integrates with PackageRegistry for project and workspace-level dependencies.
  */
 
-// Define local interfaces that match @natstack/core types
-// We define these locally to avoid TypeScript rootDir issues with monorepo imports
-
 /**
  * Package specification for dependency resolution.
- * Mirrors PackageSpec from @natstack/core.
  */
 export interface PackageSpec {
   /** Git spec: "owner/repo#tag" or "owner/repo@branch" */
@@ -23,7 +19,6 @@ export interface PackageSpec {
 
 /**
  * Package registry interface for dependency lookup.
- * Mirrors PackageRegistry from @natstack/core.
  */
 export interface PackageRegistry {
   /** Get package spec by name */

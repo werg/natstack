@@ -15,7 +15,7 @@
     "@natstack/build-eval": "workspace:*",
     "@natstack/build-mdx": "workspace:*",
     "@natstack/git": "workspace:*",
-    "@natstack/panel": "workspace:*",
+    "@natstack/runtime": "workspace:*",
     "@natstack/react": "workspace:*",
     "jotai": "^2.15.1",
     "react-syntax-highlighter": "^15.6.6",

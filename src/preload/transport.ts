@@ -1,7 +1,20 @@
 import { ipcRenderer } from "electron";
-import { createHandlerRegistry, type RpcMessage, type RpcTransport } from "@natstack/rpc";
+import type { RpcMessage, RpcRequest, RpcResponse } from "@natstack/rpc";
+import type {
+  StreamTextChunkEvent,
+  StreamTextEndEvent,
+  ThemeAppearance,
+  ToolExecutionResult as IPCToolExecutionResult,
+} from "../shared/ipc/types.js";
 
 type EndpointKind = "panel" | "worker";
+
+type AnyMessageHandler = (fromId: string, message: unknown) => void;
+
+type TransportBridge = {
+  send: (targetId: string, message: unknown) => Promise<void>;
+  onMessage: (handler: AnyMessageHandler) => () => void;
+};
 
 const normalizeEndpointId = (targetId: string): string => {
   if (targetId.startsWith("panel:")) return targetId.slice(6);
@@ -9,8 +22,11 @@ const normalizeEndpointId = (targetId: string): string => {
   return targetId;
 };
 
-export function createPanelTransport(panelId: string): RpcTransport {
-  const registry = createHandlerRegistry({ context: "panel" });
+export function createPanelTransportBridge(panelId: string): TransportBridge {
+  const listeners = new Set<AnyMessageHandler>();
+  const bufferedMessages: Array<{ fromId: string; message: RpcMessage }> = [];
+  let transportReady = false;
+  let flushScheduled = false;
 
   const sourceKinds = new Map<string, EndpointKind>();
   const panelPorts = new Map<string, MessagePort>();
@@ -24,14 +40,32 @@ export function createPanelTransport(panelId: string): RpcTransport {
     }>
   >();
 
+  const pendingToolExecPorts = new Map<string, MessagePort>();
+
+  const deliver = (fromId: string, message: RpcMessage) => {
+    if (!transportReady) {
+      bufferedMessages.push({ fromId, message });
+      // Hard cap to avoid unbounded growth if something goes wrong.
+      if (bufferedMessages.length > 500) bufferedMessages.shift();
+      return;
+    }
+    for (const listener of listeners) {
+      try {
+        listener(fromId, message);
+      } catch (error) {
+        console.error("Error in panel transport message handler:", error);
+      }
+    }
+  };
+
   const setupPanelPort = (targetPanelId: string, port: MessagePort) => {
     sourceKinds.set(targetPanelId, "panel");
     port.onmessage = (event) => {
       const message = event.data as RpcMessage;
-      if (!message || typeof message !== "object" || typeof message.type !== "string") {
+      if (!message || typeof message !== "object" || typeof (message as { type?: unknown }).type !== "string") {
         return;
       }
-      registry.deliver(targetPanelId, message);
+      deliver(targetPanelId, message);
     };
     port.start();
   };
@@ -57,17 +91,77 @@ export function createPanelTransport(panelId: string): RpcTransport {
     const sourceId = normalizeEndpointId(payload.fromId);
     sourceKinds.set(sourceId, "worker");
     const message = payload.message as RpcMessage;
-    if (!message || typeof message !== "object" || typeof message.type !== "string") {
+    if (!message || typeof message !== "object" || typeof (message as { type?: unknown }).type !== "string") {
       return;
     }
-    registry.deliver(sourceId, message);
+    deliver(sourceId, message);
   });
+
+  ipcRenderer.on("panel:event", (_event, payload: unknown) => {
+    const msg = payload as { panelId?: string; type?: string; childId?: string; theme?: ThemeAppearance };
+    if (msg.panelId !== panelId) return;
+
+    if (msg.type === "child-removed") {
+      deliver("main", { type: "event", fromId: "main", event: "runtime:child-removed", payload: msg.childId });
+      return;
+    }
+
+    if (msg.type === "focus") {
+      deliver("main", { type: "event", fromId: "main", event: "runtime:focus", payload: null });
+      return;
+    }
+
+    if (msg.type === "theme") {
+      deliver("main", { type: "event", fromId: "main", event: "runtime:theme", payload: msg.theme });
+      return;
+    }
+  });
+
+  ipcRenderer.on("ai:stream-text-chunk", (_event, payload: StreamTextChunkEvent) => {
+    if (payload.panelId !== panelId) return;
+    deliver("main", {
+      type: "event",
+      fromId: "main",
+      event: "ai:stream-text-chunk",
+      payload: { streamId: payload.streamId, chunk: payload.chunk },
+    });
+  });
+
+  ipcRenderer.on("ai:stream-text-end", (_event, payload: StreamTextEndEvent) => {
+    if (payload.panelId !== panelId) return;
+    deliver("main", {
+      type: "event",
+      fromId: "main",
+      event: "ai:stream-text-end",
+      payload: { streamId: payload.streamId },
+    });
+  });
+
+  ipcRenderer.on(
+    "panel:execute-tool",
+    (event: Electron.IpcRendererEvent, message: [string, string, Record<string, unknown>]) => {
+      const port = event.ports[0];
+      if (!port) return;
+
+      const [streamId, toolName, args] = message;
+      const requestId = crypto.randomUUID();
+      pendingToolExecPorts.set(requestId, port);
+
+      const rpcRequest: RpcRequest = {
+        type: "request",
+        requestId,
+        fromId: "main",
+        method: "ai.executeTool",
+        args: [streamId, toolName, args],
+      };
+
+      deliver("main", rpcRequest);
+    }
+  );
 
   const connect = async (targetId: string): Promise<{ kind: EndpointKind; id: string }> => {
     const id = normalizeEndpointId(targetId);
-    if (id === "main") {
-      return { kind: "panel", id: "main" };
-    }
+    if (id === "main") return { kind: "panel", id: "main" };
 
     const kind = sourceKinds.get(id);
     if (kind === "panel" && panelPorts.has(id)) return { kind: "panel", id };
@@ -89,10 +183,8 @@ export function createPanelTransport(panelId: string): RpcTransport {
       pendingConnections.set(id, pending);
 
       const timeout = setTimeout(() => {
-        const pending = pendingConnections.get(id);
-        pending?.forEach(({ reject }) => {
-          reject(new Error(`Timed out establishing RPC connection to ${id}`));
-        });
+        const p = pendingConnections.get(id);
+        p?.forEach(({ reject }) => reject(new Error(`Timed out establishing RPC connection to ${id}`)));
         pendingConnections.delete(id);
       }, 60000);
       pending.forEach((entry) => (entry.timeout = timeout));
@@ -103,24 +195,22 @@ export function createPanelTransport(panelId: string): RpcTransport {
           if (result.isWorker) {
             clearTimeout(timeout);
             sourceKinds.set(id, "worker");
-            const pending = pendingConnections.get(id);
-            if (pending) {
-              pending.forEach(({ resolve, timeout: t }) => {
+            const p = pendingConnections.get(id);
+            if (p) {
+              p.forEach(({ resolve, timeout: t }) => {
                 if (t) clearTimeout(t);
                 resolve({ kind: "worker", id });
               });
               pendingConnections.delete(id);
             }
-            return;
           }
-          // For panels, we wait for "panel-rpc:port" to resolve the promise.
         })
         .catch((error: unknown) => {
           clearTimeout(timeout);
           const err = error instanceof Error ? error : new Error(String(error));
-          const pending = pendingConnections.get(id);
-          if (pending) {
-            pending.forEach(({ reject }) => reject(err));
+          const p = pendingConnections.get(id);
+          if (p) {
+            p.forEach(({ reject }) => reject(err));
             pendingConnections.delete(id);
           }
         });
@@ -139,45 +229,89 @@ export function createPanelTransport(panelId: string): RpcTransport {
     }
     await connect(targetPanelId);
     const connectedPort = panelPorts.get(targetPanelId);
-    if (!connectedPort) {
-      throw new Error(`RPC port missing for panel ${targetPanelId}`);
-    }
+    if (!connectedPort) throw new Error(`RPC port missing for panel ${targetPanelId}`);
     connectedPort.postMessage(message);
   };
 
-  return {
-    async send(targetId: string, message: RpcMessage): Promise<void> {
-      const normalized = normalizeEndpointId(targetId);
+  const send: TransportBridge["send"] = async (targetId, message) => {
+    const rpcMessage = message as RpcMessage;
+    if (!rpcMessage || typeof rpcMessage !== "object" || typeof (rpcMessage as { type?: unknown }).type !== "string") {
+      throw new Error("Invalid RPC message");
+    }
+    const normalized = normalizeEndpointId(targetId);
 
-      if (normalized === "main") {
-        if (message.type !== "request") {
-          throw new Error("Only RPC requests to main are supported");
-        }
+    if (normalized === "main") {
+      if (rpcMessage.type === "request") {
         try {
-          const response = (await ipcRenderer.invoke("rpc:call", panelId, message)) as RpcMessage;
-          registry.deliver("main", response);
+          const response = (await ipcRenderer.invoke("rpc:call", panelId, rpcMessage)) as RpcResponse;
+          deliver("main", response);
         } catch (error) {
           const err = error instanceof Error ? error.message : String(error);
-          registry.deliver("main", { type: "response", requestId: message.requestId, error: err });
+          deliver("main", { type: "response", requestId: rpcMessage.requestId, error: err });
         }
         return;
       }
 
-      const info = await connect(normalized);
-      if (info.kind === "worker") {
-        sendToWorker(info.id, message);
+      if (rpcMessage.type === "response") {
+        const port = pendingToolExecPorts.get(rpcMessage.requestId);
+        if (!port) return;
+        pendingToolExecPorts.delete(rpcMessage.requestId);
+
+        // Handle RPC-level errors (e.g., method not found, RPC timeout)
+        if ("error" in rpcMessage) {
+          port.postMessage({ content: [{ type: "text", text: rpcMessage.error }], isError: true });
+          port.close();
+          return;
+        }
+
+        // Validate that we got a proper tool execution result
+        const result = rpcMessage.result as IPCToolExecutionResult | null | undefined;
+        if (!result || !Array.isArray(result.content)) {
+          port.postMessage({
+            content: [{ type: "text", text: "Tool execution failed: no valid response from panel" }],
+            isError: true,
+          });
+          port.close();
+          return;
+        }
+
+        port.postMessage(result);
+        port.close();
         return;
       }
-      await sendToPanel(info.id, message);
-    },
 
-    onMessage(sourceId: string, handler: (message: RpcMessage) => void): () => void {
-      const id = normalizeEndpointId(sourceId);
-      return registry.onMessage(id, handler);
-    },
+      return;
+    }
 
-    onAnyMessage(handler: (sourceId: string, message: RpcMessage) => void): () => void {
-      return registry.onAnyMessage(handler);
+    const info = await connect(normalized);
+    if (info.kind === "worker") {
+      sendToWorker(info.id, rpcMessage);
+      return;
+    }
+    await sendToPanel(info.id, rpcMessage);
+  };
+
+  return {
+    send,
+    onMessage(handler) {
+      listeners.add(handler);
+      if (!flushScheduled) {
+        flushScheduled = true;
+        queueMicrotask(() => {
+          transportReady = true;
+          for (const buffered of bufferedMessages) {
+            for (const listener of listeners) {
+              try {
+                listener(buffered.fromId, buffered.message);
+              } catch (error) {
+                console.error("Error delivering buffered panel transport message:", error);
+              }
+            }
+          }
+          bufferedMessages.length = 0;
+        });
+      }
+      return () => listeners.delete(handler);
     },
   };
 }

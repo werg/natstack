@@ -18,7 +18,7 @@
     "dev": "tsc --project tsconfig.build.json --watch"
   },
   "dependencies": {
-    "@natstack/core": "workspace:*",
+    "@natstack/runtime": "workspace:*",
     "@radix-ui/themes": "^3.2.1"
   },
   "peerDependencies": {

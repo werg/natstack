@@ -29,11 +29,8 @@
  * ```
  */
 
-export { GitClient, type GitClientFs } from "./client.js";
-export { bootstrap, hasSource } from "./bootstrap.js";
-
-// createFsAdapter is used internally by GitClient, but exported for advanced use cases
-export { createFsAdapter } from "./fs-adapter.js";
+export { GitClient, type FsPromisesLike } from "./client.js";
+export { bootstrap } from "./bootstrap.js";
 
 export type {
   RepoArgSpec,
@@ -48,4 +45,3 @@ export type {
 } from "./types.js";
 
 export type { BootstrapConfig, BootstrapResult } from "./bootstrap.js";
-export type { FsPromisesLike } from "./fs-adapter.js";

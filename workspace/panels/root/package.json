@@ -8,7 +8,7 @@
     "entry": "index.tsx"
   },
   "dependencies": {
-    "@natstack/panel": "workspace:*",
+    "@natstack/runtime": "workspace:*",
     "@natstack/playwright-client": "workspace:*",
     "@natstack/playwright-core": "workspace:*",
     "@natstack/react": "workspace:*"

@@ -238,7 +238,7 @@ root-panel: panels/root
       );
 
       const indexTsx = `import { Button, Card, Flex, Heading, Text } from "@radix-ui/themes";
-import { usePanelTheme, usePanelId } from "@natstack/panel";
+import { usePanelTheme, usePanelId } from "@natstack/react";
 
 export default function RootPanel() {
   const theme = usePanelTheme();

@@ -1,0 +1,13 @@
+# Generated TypeScript output
+src/**/*.js
+src/**/*.d.ts
+src/**/*.map
+
+# Build info
+*.tsbuildinfo
+
+# Dependencies
+node_modules
+
+# Build output (inherited from root but explicit here)
+dist

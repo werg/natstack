@@ -4,14 +4,9 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from "react";
-import {
-  panel as panelAPI,
-  type PanelTheme,
-  type ChildSpec,
-  type ChildHandle,
-  type ParentHandle,
-  type Rpc,
-} from "@natstack/core";
+import * as runtime from "@natstack/runtime";
+import { Rpc } from "@natstack/runtime";
+import type { ChildSpec, ChildHandle, ParentHandle, ThemeAppearance, BootstrapResult } from "@natstack/runtime";
 
 /**
  * Get the panel API object.
@@ -27,7 +22,7 @@ import {
  * ```
  */
 export function usePanel() {
-  return panelAPI;
+  return runtime;
 }
 
 /**
@@ -37,15 +32,15 @@ export function usePanel() {
  * ```tsx
  * function MyPanel() {
  *   const theme = usePanelTheme();
- *   return <div>Current theme: {theme.appearance}</div>;
+ *   return <div>Current theme: {theme}</div>;
  * }
  * ```
  */
-export function usePanelTheme(): PanelTheme {
-  const [theme, setTheme] = useState<PanelTheme>(() => panelAPI.getTheme());
+export function usePanelTheme(): ThemeAppearance {
+  const [theme, setTheme] = useState<ThemeAppearance>(() => runtime.getTheme());
 
   useEffect(() => {
-    const unsubscribe = panelAPI.onThemeChange((nextTheme) => {
+    const unsubscribe = runtime.onThemeChange((nextTheme) => {
       setTheme(nextTheme);
     });
     return unsubscribe;
@@ -70,7 +65,7 @@ export function usePanelEnv(): Record<string, string> {
   const [env, setEnv] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    panelAPI.getEnv().then(setEnv).catch(console.error);
+    runtime.getEnv().then(setEnv).catch(console.error);
   }, []);
 
   return env;
@@ -89,7 +84,7 @@ export function usePanelEnv(): Record<string, string> {
  * ```
  */
 export function usePanelId(): string {
-  return panelAPI.id;
+  return runtime.id;
 }
 
 /**
@@ -107,7 +102,7 @@ export function usePanelPartition(): string | null {
   const [partition, setPartition] = useState<string | null>(null);
 
   useEffect(() => {
-    panelAPI.getPartition().then(setPartition).catch(console.error);
+    runtime.getInfo().then((info) => setPartition(info.partition)).catch(console.error);
   }, []);
 
   return partition;
@@ -134,7 +129,7 @@ export function usePanelRpcGlobalEvent<T = unknown>(
   handler: (fromPanelId: string, payload: T) => void
 ): void {
   useEffect(() => {
-    const unsubscribe = panelAPI.rpc.onEvent(eventName, (fromPanelId, payload) => {
+    const unsubscribe = runtime.rpc.onEvent(eventName, (fromPanelId, payload) => {
       handler(fromPanelId, payload as T);
     });
     return unsubscribe;
@@ -177,7 +172,7 @@ export function usePanelParent<
   E extends Rpc.RpcEventMap = Rpc.RpcEventMap
 >(): ParentHandle<T, E> | null {
   // getParent() returns a cached handle, so useMemo is for React stability
-  return useMemo(() => panelAPI.getParent<T, E>(), []);
+  return useMemo(() => runtime.getParent<T, E>(), []);
 }
 
 // =============================================================================
@@ -229,7 +224,7 @@ export function useChildPanels() {
     T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
     E extends Rpc.RpcEventMap = Rpc.RpcEventMap
   >(spec: ChildSpec): Promise<ChildHandle<T, E>> => {
-    const handle = await panelAPI.createChild<T, E>(spec);
+    const handle = await runtime.createChild<T, E>(spec);
     setChildren((prev) => [...prev, handle as ChildHandle]);
     return handle;
   }, []);
@@ -241,7 +236,7 @@ export function useChildPanels() {
 
   // Listen for child removal events from the system
   useEffect(() => {
-    const unsubscribe = panelAPI.onChildRemoved((childId) => {
+    const unsubscribe = runtime.onChildRemoved((childId) => {
       setChildren((prev) => prev.filter((h) => h.id !== childId));
     });
     return unsubscribe;
@@ -273,7 +268,7 @@ export function usePanelFocus(): boolean {
   const [isFocused, setIsFocused] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = panelAPI.onFocus(() => {
+    const unsubscribe = runtime.onFocus(() => {
       setIsFocused(true);
     });
 
@@ -334,27 +329,26 @@ export function usePanelChild<
   E extends Rpc.RpcEventMap = Rpc.RpcEventMap
 >(name: string): ChildHandle<T, E> | undefined {
   const [handle, setHandle] = useState<ChildHandle<T, E> | undefined>(() =>
-    panelAPI.getChild<T, E>(name)
+    runtime.getChild<T, E>(name)
   );
 
   useEffect(() => {
     // Check if it already exists
-    const existing = panelAPI.getChild<T, E>(name);
+    const existing = runtime.getChild<T, E>(name);
     if (existing) {
       setHandle(existing);
     }
 
     // Subscribe to child added events
-    const unsubAdded = panelAPI.onChildAdded((addedName, addedHandle) => {
+    const unsubAdded = runtime.onChildAdded((addedName, addedHandle) => {
       if (addedName === name) {
         setHandle(addedHandle as ChildHandle<T, E>);
       }
     });
 
     // Subscribe to child removed events
-    const unsubRemoved = panelAPI.onChildRemoved((removedId) => {
-      // Check if the removed child matches our handle
-      const current = panelAPI.getChild<T, E>(name);
+    const unsubRemoved = runtime.onChildRemoved((_removedId) => {
+      const current = runtime.getChild<T, E>(name);
       if (!current) {
         setHandle(undefined);
       }
@@ -395,20 +389,20 @@ export function usePanelChild<
  */
 export function usePanelChildren(): ReadonlyMap<string, ChildHandle> {
   const [children, setChildren] = useState<ReadonlyMap<string, ChildHandle>>(
-    () => new Map(panelAPI.children)
+    () => new Map(runtime.children)
   );
 
   useEffect(() => {
     // Sync initial state
-    setChildren(new Map(panelAPI.children));
+    setChildren(new Map(runtime.children));
 
     // Subscribe to changes
-    const unsubAdded = panelAPI.onChildAdded(() => {
-      setChildren(new Map(panelAPI.children));
+    const unsubAdded = runtime.onChildAdded(() => {
+      setChildren(new Map(runtime.children));
     });
 
-    const unsubRemoved = panelAPI.onChildRemoved(() => {
-      setChildren(new Map(panelAPI.children));
+    const unsubRemoved = runtime.onChildRemoved(() => {
+      setChildren(new Map(runtime.children));
     });
 
     return () => {
@@ -456,7 +450,7 @@ export function usePanelChildren(): ReadonlyMap<string, ChildHandle> {
 export function usePanelCreateChild<
   T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
   E extends Rpc.RpcEventMap = Rpc.RpcEventMap
->(spec: ChildSpec | null): ChildHandle<T, E> | null {
+  >(spec: ChildSpec | null): ChildHandle<T, E> | null {
   const [handle, setHandle] = useState<ChildHandle<T, E> | null>(null);
 
   useEffect(() => {
@@ -468,7 +462,7 @@ export function usePanelCreateChild<
     let mounted = true;
     let createdHandle: ChildHandle<T, E> | null = null;
 
-    panelAPI.createChild<T, E>(spec).then((h) => {
+    runtime.createChild<T, E>(spec).then((h) => {
       if (mounted) {
         createdHandle = h;
         setHandle(h);
@@ -491,4 +485,168 @@ export function usePanelCreateChild<
   }, []);
 
   return handle;
+}
+
+// =============================================================================
+// Bootstrap Hooks
+// =============================================================================
+
+export interface BootstrapState {
+  /** Whether bootstrap is still in progress */
+  loading: boolean;
+  /** Bootstrap result (null if still loading or no bootstrap needed) */
+  result: BootstrapResult | null;
+  /** Error message if bootstrap failed */
+  error: string | null;
+}
+
+/**
+ * Subscribe to bootstrap state.
+ * Returns loading/result/error states for the bootstrap process.
+ *
+ * Bootstrap clones repoArgs repositories before panel code runs.
+ * This hook allows panels to show loading UI while bootstrap completes.
+ *
+ * @returns BootstrapState with loading, result, and error fields
+ *
+ * @example
+ * ```tsx
+ * function MyPanel() {
+ *   const bootstrap = useBootstrap();
+ *
+ *   if (bootstrap.loading) {
+ *     return <div>Cloning repositories...</div>;
+ *   }
+ *
+ *   if (bootstrap.error) {
+ *     return <div>Bootstrap failed: {bootstrap.error}</div>;
+ *   }
+ *
+ *   // Bootstrap complete - can now access cloned repos
+ *   return <div>Ready! Source at {bootstrap.result?.sourcePath}</div>;
+ * }
+ * ```
+ */
+export function useBootstrap(): BootstrapState {
+  const [state, setState] = useState<BootstrapState>(() => ({
+    loading: true,
+    result: null,
+    error: null,
+  }));
+
+  useEffect(() => {
+    let mounted = true;
+
+    const promise = runtime.bootstrapPromise;
+    if (!promise) {
+      // No bootstrap needed
+      setState({ loading: false, result: null, error: null });
+      return;
+    }
+
+    promise
+      .then((result: BootstrapResult | null) => {
+        if (mounted) {
+          setState({ loading: false, result, error: null });
+        }
+      })
+      .catch((err: unknown) => {
+        if (mounted) {
+          const message = err instanceof Error ? err.message : String(err);
+          setState({ loading: false, result: null, error: message });
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  return state;
+}
+
+/**
+ * Get the bootstrap promise for direct awaiting.
+ * Useful for imperative code that needs to wait for bootstrap.
+ *
+ * @returns Promise that resolves to BootstrapResult or null
+ *
+ * @example
+ * ```tsx
+ * async function initializeApp() {
+ *   const bootstrap = await getBootstrapPromise();
+ *   if (bootstrap?.success) {
+ *     console.log("Source at:", bootstrap.sourcePath);
+ *   }
+ * }
+ * ```
+ */
+export function getBootstrapPromise(): Promise<BootstrapResult | null> {
+  return runtime.bootstrapPromise ?? Promise.resolve(null);
+}
+
+// Suspense support for bootstrap
+let bootstrapSuspensePromise: Promise<BootstrapResult | null> | null = null;
+let bootstrapSuspenseResult: BootstrapResult | null = null;
+let bootstrapSuspenseError: unknown = null;
+let bootstrapSuspenseStatus: "pending" | "fulfilled" | "rejected" = "pending";
+
+function getBootstrapSuspense(): BootstrapResult | null {
+  if (bootstrapSuspenseStatus === "fulfilled") {
+    return bootstrapSuspenseResult;
+  }
+  if (bootstrapSuspenseStatus === "rejected") {
+    throw bootstrapSuspenseError;
+  }
+
+  if (!bootstrapSuspensePromise) {
+    const promise = runtime.bootstrapPromise;
+    if (!promise) {
+      bootstrapSuspenseStatus = "fulfilled";
+      bootstrapSuspenseResult = null;
+      return null;
+    }
+
+    bootstrapSuspensePromise = promise
+      .then((result: BootstrapResult | null) => {
+        bootstrapSuspenseStatus = "fulfilled";
+        bootstrapSuspenseResult = result;
+        return result;
+      })
+      .catch((err: unknown) => {
+        bootstrapSuspenseStatus = "rejected";
+        bootstrapSuspenseError = err;
+        throw err;
+      });
+  }
+
+  throw bootstrapSuspensePromise;
+}
+
+/**
+ * Hook for use inside a Suspense boundary that waits for bootstrap.
+ * Throws a promise while loading (for Suspense) or an error if bootstrap failed.
+ *
+ * @returns BootstrapResult or null if no bootstrap was needed
+ * @throws Promise while bootstrap is in progress (for Suspense)
+ * @throws Error if bootstrap failed
+ *
+ * @example
+ * ```tsx
+ * function BootstrappedContent() {
+ *   const bootstrap = useBootstrapSuspense();
+ *   return <div>Source at: {bootstrap?.sourcePath ?? "N/A"}</div>;
+ * }
+ *
+ * function MyPanel() {
+ *   return (
+ *     <Suspense fallback={<div>Loading repos...</div>}>
+ *       <BootstrappedContent />
+ *     </Suspense>
+ *   );
+ * }
+ * ```
+ */
+export function useBootstrapSuspense(): BootstrapResult | null {
+  return getBootstrapSuspense();
 }

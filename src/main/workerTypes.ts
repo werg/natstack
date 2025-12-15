@@ -40,6 +40,12 @@ export interface UtilityWorkerCreateRequest {
   options: {
     memoryLimitMB: number;
     env: Record<string, string>;
+    /** Initial theme appearance */
+    theme?: "light" | "dark";
+    /** Parent panel ID (if worker was spawned from a panel) */
+    parentId?: string | null;
+    /** Git configuration for bootstrap */
+    gitConfig?: unknown;
   };
 }
 

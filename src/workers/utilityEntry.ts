@@ -133,6 +133,7 @@ async function handleWorkerCreate(request: UtilityWorkerCreateRequest): Promise<
     };
     parentPort.postMessage(response);
   } catch (error) {
+    console.error(`[UtilityProcess] Worker ${workerId} creation failed:`, error);
     // Clean up on error
     workers.delete(workerId);
 
@@ -373,6 +374,9 @@ function createSandbox(
   workerId: string,
   options: {
     env: Record<string, string>;
+    theme?: "light" | "dark";
+    parentId?: string | null;
+    gitConfig?: unknown;
   }
 ): Record<string, unknown> {
   type LogLevel = "log" | "error" | "warn" | "info" | "debug";
@@ -419,11 +423,13 @@ function createSandbox(
     __consoleWarn: createLogMethod("warn"),
     __consoleInfo: createLogMethod("info"),
 
-    // Worker identification
-    __workerId: workerId,
-
-    // Environment variables
-    __env: options.env,
+    // Unified NatStack globals
+    __natstackId: workerId,
+    __natstackKind: "worker" as const,
+    __natstackParentId: options.parentId ?? null,
+    __natstackInitialTheme: options.theme ?? "light",
+    __natstackGitConfig: options.gitConfig ?? null,
+    __natstackEnv: options.env,
 
     // RPC bridge - the unified communication mechanism
     __rpcSend: rpcSend,
@@ -493,13 +499,19 @@ function createSandbox(
       getRandomValues: <T extends ArrayBufferView>(array: T): T => crypto.getRandomValues(array),
     },
 
+    // Base64 helpers (used by runtime IPC serialization)
+    atob,
+    btoa,
+
+    // Buffer - needed by isomorphic-git and its dependencies (safe-buffer, sha.js)
+    Buffer,
+
     // Fetch is provided via service call, not direct access
     // This prevents bypassing network restrictions
 
     // Explicitly NOT exposed:
     // - require, import (no module loading)
     // - process (no process access)
-    // - Buffer (use Uint8Array instead)
     // - fs, path, os, etc. (no Node.js APIs)
     // - fetch (use rpc.call("main", "network.fetch", ...) via worker-runtime)
     // - eval, Function constructor (prevent code injection)

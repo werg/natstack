@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { promises as fsPromises } from "fs";
 import { Button, Card, Flex, Text, Heading, Callout, Badge } from "@radix-ui/themes";
-import { panel } from "@natstack/panel";
+import { createChild } from "@natstack/runtime";
 import { usePanelTheme, usePanelId, usePanelPartition } from "@natstack/react";
 
 export default function SharedOPFSPanel() {
@@ -67,9 +67,8 @@ export default function SharedOPFSPanel() {
 
   const launchAnotherSharedPanel = async () => {
     try {
-      const child = await panel.createChild({
+      const child = await createChild({
         type: "app",
-        name: "shared-opfs-sibling",
         source: "panels/shared-opfs-demo",
         env: { PARENT_ID: panelId },
       });
@@ -102,7 +101,7 @@ export default function SharedOPFSPanel() {
                 Partition: {partition ?? "(loading...)"}
               </Text>
               <Text size="1" style={{ fontFamily: "monospace" }}>
-                Theme: {theme.appearance}
+                Theme: {theme}
               </Text>
             </Flex>
           </Card>

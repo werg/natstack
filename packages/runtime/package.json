@@ -1,0 +1,35 @@
+{
+  "name": "@natstack/runtime",
+  "version": "0.1.0",
+  "description": "Unified runtime for NatStack panels and workers",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "natstack-worker": "./dist/worker/index.js",
+      "natstack-panel": "./dist/panel/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "dev": "tsc --project tsconfig.build.json --watch"
+  },
+  "dependencies": {
+    "@natstack/rpc": "workspace:*",
+    "@zenfs/core": "^2.4.4",
+    "@zenfs/dom": "^1.2.5",
+    "buffer": "^6.0.3",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@natstack/git": "workspace:*",
+    "typescript": "^5.9.3"
+  },
+  "files": [
+    "dist"
+  ]
+}
+

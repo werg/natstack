@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@natstack/ai": "workspace:*",
-    "@natstack/panel": "workspace:*",
+    "@natstack/runtime": "workspace:*",
     "@natstack/react": "workspace:*"
   }
 }

@@ -4,9 +4,7 @@ import { Box, Flex, Text, Theme } from "@radix-ui/themes";
 import { Provider as JotaiProvider } from "jotai";
 import { GitClient } from "@natstack/git";
 import * as fs from "fs/promises";
-import { usePanel } from "@natstack/react";
-
-import { useThemeAppearance } from "../hooks/useTheme";
+import { usePanel, usePanelTheme, useBootstrap } from "@natstack/react";
 import { initialize as initializeEval } from "../eval";
 import { useAgent } from "../hooks/useAgent";
 import { useChatStorage } from "../hooks/useChatStorage";
@@ -65,6 +63,7 @@ interface NotebookAppProps {
  */
 export function NotebookApp({ panelId }: NotebookAppProps) {
   const panel = usePanel();
+  const bootstrap = useBootstrap();
   const { initializeAgent, abort } = useAgent();
   const {
     initialize,
@@ -79,7 +78,7 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
   const [isMobile, setIsMobile] = useAtom(isMobileAtom);
   const [isInitializing, setIsInitializing] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const themeAppearance = useThemeAppearance();
+  const themeAppearance = usePanelTheme();
   const { messages } = useChannelMessages();
   const setStorageInitialized = useSetAtom(storageInitializedAtom);
 
@@ -100,6 +99,11 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
 
   // Initialize app
   useEffect(() => {
+    // Wait for bootstrap to complete before initializing
+    if (bootstrap.loading) {
+      return;
+    }
+
     let mounted = true;
 
     const init = async () => {
@@ -107,21 +111,28 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
         console.log("[NotebookApp] Starting initialization...");
         setIsInitializing(true);
 
-        // Get filesystem and git client
+        // Check for bootstrap errors
+        if (bootstrap.error) {
+          throw new Error(`Bootstrap failed: ${bootstrap.error}`);
+        }
+
+        // Get filesystem and git config
         const fsImpl = fs as unknown as import("../storage/ChatStore").FileSystem;
-        const gitConfig = await panel.git.getConfig();
+        const gitConfig = panel.gitConfig;
+        if (!gitConfig) {
+          throw new Error("Git configuration not available");
+        }
 
         // Bootstrap is automatic - repos are cloned before panel loads
-        const bootstrapResult = panel.bootstrap;
+        const bootstrapResult = bootstrap.result;
         if (!bootstrapResult) {
-          const errorDetail = panel.bootstrapError
-            ? `Bootstrap failed: ${panel.bootstrapError}`
-            : "Bootstrap result not available.\n\n" +
-              "This panel requires repoArgs but bootstrap did not run.\n" +
-              "Check that:\n" +
-              "  1. package.json has: \"natstack\": { \"repoArgs\": [\"history\"] }\n" +
-              "  2. Parent called createChild with: repoArgs: { history: \"path/to/repo\" }";
-          throw new Error(errorDetail);
+          throw new Error(
+            "Bootstrap result not available.\n\n" +
+            "This panel requires repoArgs but bootstrap did not run.\n" +
+            "Check that:\n" +
+            "  1. package.json has: \"natstack\": { \"repoArgs\": [\"history\"] }\n" +
+            "  2. Parent called createChild with: repoArgs: { history: \"path/to/repo\" }"
+          );
         }
         console.log("[NotebookApp] Bootstrap complete:", bootstrapResult.actions);
 
@@ -172,7 +183,7 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
     return () => {
       mounted = false;
     };
-  }, [initializeAgent, createNewChat, initialize, panel.git, setStorageInitialized]);
+  }, [bootstrap, initializeAgent, createNewChat, initialize, panel, setStorageInitialized]);
 
   // Keyboard shortcuts
   useKeyboardShortcuts({
@@ -239,7 +250,10 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
     }
   }, [createNewChat, isMobile, setSidebarOpen]);
 
-  if (isInitializing) {
+  if (bootstrap.loading || isInitializing) {
+    const loadingMessage = bootstrap.loading
+      ? "Cloning repositories..."
+      : "Loading notebook...";
     return (
       <Theme accentColor="blue" grayColor="slate" radius="medium" appearance={themeAppearance}>
         <Flex
@@ -250,7 +264,7 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
           style={{ height: "100vh", background: "var(--gray-1)" }}
         >
           <LoadingSpinner size={32} />
-          <Text size="2" color="gray">Loading notebook...</Text>
+          <Text size="2" color="gray">{loadingMessage}</Text>
         </Flex>
       </Theme>
     );

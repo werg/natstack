@@ -20,7 +20,7 @@
       "@natstack/build-mdx": ["../../../packages/build-mdx/dist/index.d.ts"],
       "@natstack/git": ["../../../packages/git/dist/index.d.ts"],
       "@natstack/ai": ["../../../packages/ai/dist/index.d.ts"],
-      "@natstack/panel": ["../../../packages/panel/dist/index.d.ts"],
+      "@natstack/runtime": ["../../../packages/runtime/dist/index.d.ts"],
       "@natstack/react": ["../../../packages/react/dist/index.d.ts"]
     }
   },

@@ -18,7 +18,9 @@
     "dev": "tsc --project tsconfig.build.json --watch"
   },
   "dependencies": {
-    "@natstack/core": "workspace:*"
+    "@natstack/runtime": "workspace:*",
+    "zod": "^3.24.1",
+    "zod-to-json-schema": "^3.25.0"
   },
   "peerDependencies": {
     "ai": "^6.0.0"

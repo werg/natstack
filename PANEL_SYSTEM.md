@@ -46,7 +46,7 @@ Panel configuration is specified in `package.json` with a `natstack` field:
     "repoArgs": ["history", "components"]
   },
   "dependencies": {
-    "@natstack/core": "workspace:*",
+    "@natstack/runtime": "workspace:*",
     "@natstack/react": "workspace:*"
   }
 }
@@ -65,38 +65,79 @@ Panel configuration is specified in `package.json` with a `natstack` field:
 
 ## Panel API
 
-Import the panel API from `@natstack/core`:
+NatStack panels and workers share the same `@natstack/runtime` API surface (selected via build conditions).
 
 ```ts
-import { panel } from "@natstack/core";
+import {
+  // Identity
+  id,
+  parentId,
+
+  // Core services
+  rpc,
+  db,
+  fs,
+  fetch,
+  parent,
+
+  // Parent handles
+  getParent,
+  getParentWithContract,
+
+  // Child management
+  createChild,
+  createChildWithContract,
+  children,
+  getChild,
+  onChildAdded,
+  onChildRemoved,
+
+  // Lifecycle
+  removeChild,
+  setTitle,
+  close,
+  getEnv,
+  getInfo,
+
+  // Theme/focus
+  getTheme,
+  onThemeChange,
+  onFocus,
+
+  // Startup data
+  gitConfig,
+  bootstrap,
+  bootstrapError,
+} from "@natstack/runtime";
 ```
 
 ### Creating Child Panels
 
-Use the spec-based `createChild()` API:
+Use the spec-based `createChild()` API (returns a `ChildHandle`, not just an ID):
 
 ```typescript
 // Create an app panel
-const editorId = await panel.createChild({
+const editor = await createChild({
   type: 'app',
   name: 'editor',
-  path: 'panels/editor',
+  source: 'panels/editor',
   env: { FILE_PATH: '/foo.txt' },
 });
 
 // Create a worker
-const computeId = await panel.createChild({
+const computeWorker = await createChild({
   type: 'worker',
   name: 'compute-worker',
-  path: 'workers/compute',
+  source: 'workers/compute',
   memoryLimitMB: 512,
 });
 
 // Create a browser panel
-const browserId = await panel.createChild({
+const browser = await createChild({
   type: 'browser',
   name: 'web-scraper',
-  url: 'https://example.com',
+  source: 'https://example.com',
+  title: 'Web Scraper',
 });
 ```
 
@@ -106,12 +147,14 @@ const browserId = await panel.createChild({
 ```typescript
 interface AppChildSpec {
   type: 'app';
-  name: string;              // Unique name (becomes part of panel ID)
-  path: string;              // Workspace-relative path to source
+  name?: string;                 // Optional name (stable ID within parent if provided)
+  source: string;                // Workspace-relative path to source
   env?: Record<string, string>;  // Environment variables
+  sourcemap?: boolean;           // Emit inline sourcemaps (default: true)
   branch?: string;           // Git branch to track
   commit?: string;           // Specific commit hash
   tag?: string;              // Git tag to pin to
+  repoArgs?: Record<string, RepoArgSpec>; // Must match child's manifest repoArgs
 }
 ```
 
@@ -119,13 +162,14 @@ interface AppChildSpec {
 ```typescript
 interface WorkerChildSpec {
   type: 'worker';
-  name: string;              // Unique name (becomes part of worker ID)
-  path: string;              // Workspace-relative path to source
+  name?: string;                 // Optional name (stable ID within parent if provided)
+  source: string;                // Workspace-relative path to source
   env?: Record<string, string>;  // Environment variables
   memoryLimitMB?: number;    // Memory limit (default: 1024)
   branch?: string;           // Git branch to track
   commit?: string;           // Specific commit hash
   tag?: string;              // Git tag to pin to
+  repoArgs?: Record<string, RepoArgSpec>; // Must match child's manifest repoArgs
 }
 ```
 
@@ -133,9 +177,9 @@ interface WorkerChildSpec {
 ```typescript
 interface BrowserChildSpec {
   type: 'browser';
-  name: string;              // Unique name (becomes part of panel ID)
-  url: string;               // Initial URL to load
-  title?: string;            // Optional title (defaults to URL hostname)
+  name?: string;                 // Optional name
+  source: string;                // Initial URL to load
+  title?: string;                // Optional title (defaults to URL hostname in UI)
   env?: Record<string, string>;  // Environment variables
 }
 ```
@@ -144,26 +188,27 @@ interface BrowserChildSpec {
 
 ```typescript
 // Set panel title
-await panel.setTitle("My Custom Title");
+await setTitle("My Custom Title");
 
 // Remove a child panel
-await panel.removeChild(childId);
+await editor.close();          // Preferred when you have a handle
+await removeChild(editor.id);  // Also available if you only have the id
 
 // Close current panel
-await panel.close();
+await close();
 
 // Get panel info
-const info = await panel.getInfo();
+const info = await getInfo();
 console.log(info.panelId, info.partition);
 
 // Get environment variables
-const env = await panel.getEnv();
+const env = await getEnv();
 console.log(env.PARENT_ID);
 
 // Theme
-const theme = panel.getTheme(); // { appearance: "light" | "dark" }
-const unsubscribe = panel.onThemeChange((theme) => {
-  console.log("Theme changed:", theme.appearance);
+const theme = getTheme(); // "light" | "dark"
+const unsubscribe = onThemeChange((appearance) => {
+  console.log("Theme changed:", appearance);
 });
 ```
 
@@ -175,18 +220,18 @@ Control browser panels programmatically with Playwright:
 import { chromium } from 'playwright-core';
 
 // Create browser panel
-const browserId = await panel.createChild({
+const browser = await createChild({
   type: 'browser',
   name: 'automation-target',
-  url: 'https://example.com',
+  source: 'https://example.com',
 });
 
 // Get CDP endpoint for Playwright
-const cdpUrl = await panel.browser.getCdpEndpoint(browserId);
+const cdpUrl = await browser.getCdpEndpoint();
 
 // Connect Playwright
-const browser = await chromium.connectOverCDP(cdpUrl);
-const page = browser.contexts()[0].pages()[0];
+const browserConn = await chromium.connectOverCDP(cdpUrl);
+const page = browserConn.contexts()[0].pages()[0];
 
 // Automate!
 await page.click('.button');
@@ -194,15 +239,13 @@ await page.fill('input[name="search"]', 'query');
 const content = await page.textContent('.result');
 ```
 
-#### Browser Methods
+Browser navigation methods live on the returned `ChildHandle`:
 
 ```typescript
-panel.browser.getCdpEndpoint(browserId): Promise<string>  // Get CDP WebSocket URL
-panel.browser.navigate(browserId, url): Promise<void>     // Navigate to URL
-panel.browser.goBack(browserId): Promise<void>            // Go back in history
-panel.browser.goForward(browserId): Promise<void>         // Go forward in history
-panel.browser.reload(browserId): Promise<void>            // Reload page
-panel.browser.stop(browserId): Promise<void>              // Stop loading
+await browser.navigate("https://example.com");
+await browser.goBack();
+await browser.reload();
+await browser.stop();
 ```
 
 ### Git Configuration API
@@ -210,8 +253,8 @@ panel.browser.stop(browserId): Promise<void>              // Stop loading
 Access git configuration:
 
 ```typescript
-const gitConfig = await panel.git.getConfig();
-// Returns: { serverUrl, token, sourceRepo, resolvedRepoArgs }
+if (!gitConfig) throw new Error("Git config not available");
+// { serverUrl, token, sourceRepo, resolvedRepoArgs, branch?, commit?, tag? }
 ```
 
 ### Auto-Bootstrap for repoArgs
@@ -233,7 +276,7 @@ Panels that declare `repoArgs` in their manifest get **automatic bootstrapping**
 **2. Parent passes repo paths when creating child:**
 
 ```typescript
-await panel.createChild({
+await createChild({
   type: "app",
   name: "my-panel",
   source: "panels/my-panel",
@@ -244,16 +287,16 @@ await panel.createChild({
 });
 ```
 
-**3. Access cloned repos via panel.bootstrap:**
+**3. Access cloned repos via `bootstrap`:**
 
 ```typescript
 // Bootstrap runs automatically before panel loads!
 // Just access the result:
-const bootstrap = panel.bootstrap;
+const bootstrapResult = bootstrap;
 
-if (bootstrap) {
-  const historyPath = bootstrap.argPaths.history;  // "/args/history"
-  const configPath = bootstrap.argPaths.config;    // "/args/config"
+if (bootstrapResult && gitConfig) {
+  const historyPath = bootstrapResult.argPaths.history;  // "/args/history"
+  const configPath = bootstrapResult.argPaths.config;    // "/args/config"
 
   // Use with GitClient for git operations
   const git = new GitClient(fs, {
@@ -265,8 +308,8 @@ if (bootstrap) {
 }
 
 // Check for errors
-if (panel.bootstrapError) {
-  console.error("Bootstrap failed:", panel.bootstrapError);
+if (bootstrapError) {
+  console.error("Bootstrap failed:", bootstrapError);
 }
 ```
 
@@ -274,12 +317,12 @@ if (panel.bootstrapError) {
 
 ```typescript
 // Listen for child removal
-const unsubscribe = panel.onChildRemoved((childId) => {
+const unsubscribe = onChildRemoved((childId) => {
   console.log(`Child ${childId} was removed`);
 });
 
 // Listen for focus events
-const unsubscribe = panel.onFocus(() => {
+const unsubscribe = onFocus(() => {
   console.log("Panel received focus");
 });
 ```
@@ -291,10 +334,10 @@ Workers are background processes that run in isolated-vm. They're useful for CPU
 ### Creating a Worker
 
 ```typescript
-const workerId = await panel.createChild({
+const worker = await createChild({
   type: 'worker',
   name: 'my-worker',
-  path: 'workers/compute',
+  source: 'workers/compute',
   memoryLimitMB: 512,
   env: { MODE: 'production' },
 });
@@ -320,13 +363,13 @@ Use RPC to communicate with workers:
 
 ```typescript
 // In parent panel
-const handle = panel.rpc.getHandle<WorkerAPI>(workerId);
-const result = await handle.call.compute(data);
+const worker = await createChild<WorkerAPI>({ type: "worker", source: "workers/compute" });
+const result = await worker.call.compute(data);
 
 // In worker (workers/compute/index.ts)
-import { panel } from "@natstack/core";
+import { rpc } from "@natstack/runtime";
 
-panel.rpc.expose({
+rpc.expose({
   async compute(data: number[]) {
     return data.reduce((a, b) => a + b, 0);
   }
@@ -346,20 +389,19 @@ body {
 
 ### Radix Theme Provider
 
-For Radix UI panels, use the theme provider helper:
+For Radix UI panels, wire host theme appearance into Radix `Theme`:
 
 ```tsx
 import React from "react";
 import { Theme } from "@radix-ui/themes";
-import { panel, createRadixThemeProvider } from "@natstack/core";
-
-const NatstackThemeProvider = createRadixThemeProvider(React, Theme);
+import { usePanelTheme } from "@natstack/react";
 
 export default function App() {
+  const appearance = usePanelTheme(); // "light" | "dark"
   return (
-    <NatstackThemeProvider>
+    <Theme appearance={appearance}>
       {/* panel UI */}
-    </NatstackThemeProvider>
+    </Theme>
   );
 }
 ```
@@ -400,7 +442,7 @@ See these example panels in the repository:
 1. Create a new panel directory in `panels/`
 2. Add a `package.json` with a `natstack` field
 3. Write your panel code in TypeScript
-4. Launch the panel from another panel using `panel.createChild()`
+4. Launch the panel from another panel using `createChild()`
 5. The panel will be built automatically on first load
 
 ### Root Panel Path

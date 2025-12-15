@@ -5,7 +5,7 @@
  * This worker exposes a typed API that can be called by the parent panel.
  */
 
-import { rpc, parent, getWorkerId, setTitle } from "@natstack/worker-runtime";
+import { rpc, parent, setTitle } from "@natstack/runtime";
 
 // Internal state
 let counter = 0;
@@ -32,7 +32,7 @@ function emitToParent(event: string, payload: unknown): void {
 void setTitle("RPC Example Worker");
 
 log("Worker starting...");
-log(`Worker ID: ${getWorkerId()}`);
+log(`Worker ID: ${rpc.selfId}`);
 
 // Expose RPC methods
 rpc.expose({
@@ -81,7 +81,7 @@ rpc.expose({
     uptime: number;
   }> {
     const info = {
-      workerId: getWorkerId(),
+      workerId: rpc.selfId,
       counter,
       uptime: Date.now() - startTime,
     };

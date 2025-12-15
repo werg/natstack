@@ -43,9 +43,6 @@ export async function handleBridgeCall(
     case "getInfo": {
       return pm.getInfo(callerId);
     }
-    case "getGitConfig": {
-      return pm.getGitConfig(callerId);
-    }
     default:
       throw new Error(`Unknown bridge method: ${method}`);
   }

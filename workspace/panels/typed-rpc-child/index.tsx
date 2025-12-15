@@ -5,12 +5,12 @@
 
 import { useState, useEffect } from "react";
 import { Card, Flex, Heading, Text, Badge, Button } from "@radix-ui/themes";
-import { panel, noopParent } from "@natstack/panel";
+import { rpc, getInfo, getParentWithContract, noopParent } from "@natstack/runtime";
 import { rpcDemoContract } from "./contract.js";
 
 // Get typed parent handle using the contract, with noopParent fallback
 // This gives us type-checked emit() calls without null checks
-const parent = panel.getParentWithContract(rpcDemoContract) ?? noopParent;
+const parent = getParentWithContract(rpcDemoContract) ?? noopParent;
 
 // Internal state
 let counter = 0;
@@ -29,7 +29,7 @@ export default function TypedRpcChild() {
   useEffect(() => {
     addLog("Exposing RPC API...");
 
-    panel.rpc.expose({
+    rpc.expose({
       async ping() {
         pingCount++;
         addLog(`ping() called (count: ${pingCount})`);
@@ -72,7 +72,7 @@ export default function TypedRpcChild() {
       },
 
       async getInfo() {
-        const info = await panel.getInfo();
+        const info = await getInfo();
         addLog(`getInfo() called, panelId: ${info.panelId}`);
         return { panelId: info.panelId, counter };
       },

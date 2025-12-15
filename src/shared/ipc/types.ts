@@ -5,7 +5,7 @@ import type {
   AppChildSpec,
   WorkerChildSpec,
   BrowserChildSpec,
-} from "@natstack/core";
+} from "@natstack/runtime";
 import type { RepoArgSpec } from "@natstack/git";
 import type { RpcMessage, RpcResponse } from "@natstack/rpc";
 

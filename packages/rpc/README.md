@@ -232,20 +232,19 @@ The RPC system uses three message types:
 
 ### Panels
 
-Panels use the RPC bridge via the preload script:
+Panels access the RPC bridge via `@natstack/runtime`:
 
 ```typescript
-// Access via window.__natstackRpc
-const rpc = window.__natstackRpc;
+import { rpc } from "@natstack/runtime";
 await rpc.call("main", "bridge.createChild", spec);
 ```
 
 ### Workers
 
-Workers import from `@natstack/worker-runtime`:
+Workers also import from `@natstack/runtime`:
 
 ```typescript
-import { rpc } from "@natstack/worker-runtime";
+import { rpc } from "@natstack/runtime";
 await rpc.call("main", "db.open", "mydb");
 ```
 

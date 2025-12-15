@@ -10,7 +10,6 @@ import {
 } from "@radix-ui/themes";
 import { useParticipants, useGenerationStatus } from "../hooks/useChannel";
 import { useModelRole } from "../hooks/useAgent";
-import { ThemeToggle } from "./ThemeToggle";
 import type { AnyParticipant, ChannelStatus } from "../types/channel";
 
 interface ParticipantBarProps {
@@ -177,15 +176,12 @@ export function ParticipantBar({ onToggleSidebar }: ParticipantBarProps) {
         ))}
       </Flex>
 
-      {/* Right side: status and theme toggle */}
-      <Flex align="center" gap="2">
-        {statusText && (
-          <Text size="1" color="gray">
-            {statusText}
-          </Text>
-        )}
-        <ThemeToggle />
-      </Flex>
+      {/* Right side: status */}
+      {statusText && (
+        <Text size="1" color="gray">
+          {statusText}
+        </Text>
+      )}
     </Flex>
   );
 }

@@ -165,6 +165,7 @@ export type StreamEvent =
 export interface ToolExecutionResult {
   content: Array<{ type: "text"; text: string }>;
   isError?: boolean;
+  data?: unknown;
 }
 
 /**

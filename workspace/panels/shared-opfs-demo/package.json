@@ -9,7 +9,7 @@
     "singletonState": true
   },
   "dependencies": {
-    "@natstack/panel": "workspace:*",
+    "@natstack/runtime": "workspace:*",
     "@natstack/react": "workspace:*"
   }
 }

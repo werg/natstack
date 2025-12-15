@@ -3,11 +3,59 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import Arborist from "@npmcli/arborist";
-import type { PanelManifest, PanelBuildResult } from "./panelTypes.js";
+import type { PanelManifest } from "./panelTypes.js";
 import { getMainCacheManager } from "./cacheManager.js";
 import { isDev } from "./utils.js";
 import { provisionPanelVersion, resolveTargetCommit, type VersionSpec } from "./gitProvisioner.js";
 import type { PanelBuildState } from "../shared/ipc/types.js";
+
+// ===========================================================================
+// Shared Build Plugins
+// ===========================================================================
+
+// FS methods exported by @natstack/runtime
+// Inlined here to avoid importing from @natstack/runtime at build time
+const FS_METHODS = [
+  "readFile",
+  "writeFile",
+  "readdir",
+  "stat",
+  "mkdir",
+  "rmdir",
+  "rm",
+  "unlink",
+  "exists",
+] as const;
+
+/**
+ * Unified fs shim plugin for both panel and worker builds.
+ * Maps `import "fs"` and `import "fs/promises"` to @natstack/runtime.
+ *
+ * @param resolveDir - Directory to use for resolving @natstack/runtime imports
+ */
+function createFsShimPlugin(resolveDir: string): esbuild.Plugin {
+  const methodExports = FS_METHODS.map((m) => `export const ${m} = fs.${m}.bind(fs);`).join("\n");
+
+  return {
+    name: "fs-shim",
+    setup(build) {
+      build.onResolve({ filter: /^(fs|node:fs|fs\/promises|node:fs\/promises)$/ }, (args) => {
+        return { path: args.path, namespace: "natstack-fs-shim" };
+      });
+
+      build.onLoad({ filter: /.*/, namespace: "natstack-fs-shim" }, (args) => {
+        const isPromises = args.path.includes("promises");
+        const contents = `import { fs } from "@natstack/runtime";
+export default fs;
+${isPromises ? "" : "export const promises = fs;"}
+${methodExports}
+`;
+        // resolveDir tells esbuild where to look for @natstack/runtime
+        return { contents, loader: "js", resolveDir };
+      });
+    },
+  };
+}
 
 // ===========================================================================
 // Child Panel Build Types
@@ -49,23 +97,6 @@ const MAX_BUNDLE_SIZE = 50 * 1024 * 1024; // 50 MB for JS bundle
 const MAX_HTML_SIZE = 10 * 1024 * 1024; // 10 MB for HTML
 const MAX_CSS_SIZE = 10 * 1024 * 1024; // 10 MB for CSS
 
-// Unified panel runtime module - provides fs, git, and bootstrap APIs
-const panelRuntimePath = path.join(__dirname, "panelRuntime.js");
-
-if (!fs.existsSync(panelRuntimePath)) {
-  throw new Error(`Panel runtime not found at ${panelRuntimePath}`);
-}
-
-// Virtual module mappings - all map to the unified panelRuntime.js
-// The runtime exports different namespaces that we'll select via the plugin
-const virtualModuleMap = new Map([
-  ["fs", panelRuntimePath],
-  ["node:fs", panelRuntimePath],
-  ["fs/promises", panelRuntimePath],
-  ["node:fs/promises", panelRuntimePath],
-  ["@natstack/git", panelRuntimePath],
-]);
-
 const defaultPanelDependencies: Record<string, string> = {
   // Node types for dependencies that expect them
   "@types/node": "^22.9.0",
@@ -103,9 +134,6 @@ function getReactDependenciesFromNatstackReact(): Record<string, string> | null 
  * Implicit externals added when certain dependencies are detected.
  * Maps dependency name -> externals to add.
  * This avoids requiring panels to manually specify common externals.
- *
- * Note: @natstack/git is NOT here because it's mapped to panelRuntime.js
- * via the virtual module plugin, which bundles isomorphic-git with Buffer polyfill.
  */
 const implicitExternals: Record<string, Record<string, string>> = {
   // @natstack/build-eval optionally uses typescript for type checking.
@@ -192,29 +220,7 @@ export class PanelBuilder {
   private ensureRuntimeDir(panelPath: string): string {
     const runtimeDir = this.getRuntimeDir(panelPath);
     fs.mkdirSync(runtimeDir, { recursive: true });
-
-    // Copy global type definitions to runtime dir for panel TypeScript support
-    this.ensureGlobalTypes(runtimeDir);
-
     return runtimeDir;
-  }
-
-  private ensureGlobalTypes(runtimeDir: string): void {
-    // Copy globals.d.ts from panelRuntime to the panel's .natstack directory
-    const sourceTypesPath = path.join(__dirname, "panelRuntimeGlobals.d.ts");
-    const targetTypesPath = path.join(runtimeDir, "globals.d.ts");
-
-    // The globals.d.ts gets compiled to panelRuntimeGlobals.d.ts in dist
-    if (fs.existsSync(sourceTypesPath)) {
-      const typesContent = fs.readFileSync(sourceTypesPath, "utf-8");
-      const existingContent = fs.existsSync(targetTypesPath)
-        ? fs.readFileSync(targetTypesPath, "utf-8")
-        : null;
-
-      if (existingContent !== typesContent) {
-        fs.writeFileSync(targetTypesPath, typesContent);
-      }
-    }
   }
 
   private resolveHtmlPath(
@@ -491,39 +497,14 @@ export class PanelBuilder {
     const tempEntryPath = path.join(runtimeDir, "_entry.js");
     const relativeUserEntry = path.relative(runtimeDir, entryPath);
 
-    // Build wrapper code with optional bootstrap
+    // Build wrapper code
+    // Bootstrap is now started automatically by @natstack/runtime when the module loads.
+    // Panel code that needs bootstrap results can await `bootstrapPromise` from the runtime.
     let wrapperCode: string;
-
-    // Bootstrap preamble - runs before user module loads
-    // Import from the unified panel runtime
-    // Wrapped in try-catch to show meaningful errors if bootstrap fails
-    const bootstrapPreamble = hasRepoArgs
-      ? `// Auto-bootstrap: clone repoArgs before panel loads
-import { runPanelBootstrap } from ${JSON.stringify(panelRuntimePath)};
-try {
-  await runPanelBootstrap();
-} catch (bootstrapError) {
-  const msg = bootstrapError instanceof Error ? bootstrapError.message : String(bootstrapError);
-  console.error("[NatStack] Bootstrap failed:", msg);
-  document.body.innerHTML = \`
-    <div style="padding: 20px; font-family: system-ui, sans-serif; color: #dc2626;">
-      <h2 style="margin: 0 0 10px;">Bootstrap Failed</h2>
-      <p style="margin: 0 0 10px;">Failed to initialize panel repositories:</p>
-      <pre style="background: #fef2f2; padding: 10px; border-radius: 4px; overflow: auto;">\${msg}</pre>
-      <p style="margin: 10px 0 0; font-size: 14px; color: #666;">
-        Check that repoArgs were provided by the parent panel and the git server is accessible.
-      </p>
-    </div>
-  \`;
-  throw bootstrapError;
-}
-
-`
-      : "";
 
     if (hasNatstackReact) {
       // Auto-mount wrapper for React panels
-      wrapperCode = `${bootstrapPreamble}import { autoMountReactPanel, shouldAutoMount } from "@natstack/react";
+      wrapperCode = `import { autoMountReactPanel, shouldAutoMount } from "@natstack/react";
 import * as userModule from ${JSON.stringify(relativeUserEntry)};
 
 if (shouldAutoMount(userModule)) {
@@ -532,8 +513,11 @@ if (shouldAutoMount(userModule)) {
 `;
     } else {
       // Direct import for non-React panels (panel handles its own mounting)
-      wrapperCode = `${bootstrapPreamble}import ${JSON.stringify(relativeUserEntry)};\n`;
+      wrapperCode = `import ${JSON.stringify(relativeUserEntry)};\n`;
     }
+
+    // hasRepoArgs is still checked to pass git config, but bootstrap is non-blocking
+    void hasRepoArgs; // Suppress unused variable warning
     fs.writeFileSync(tempEntryPath, wrapperCode);
 
     // Get externals from manifest (packages loaded via import map / CDN)
@@ -554,8 +538,9 @@ if (shouldAutoMount(userModule)) {
       log(`External modules (CDN): ${externalModules.join(", ")}`);
     }
 
-    // Only use React dedupe plugin if panel uses @natstack/react
-    const plugins: esbuild.Plugin[] = [this.createVirtualModulePlugin()];
+    // Use unified fs shim plugin and optionally React dedupe plugin
+    // resolveDir points to the runtime dir where @natstack/runtime is installed
+    const plugins: esbuild.Plugin[] = [createFsShimPlugin(runtimeDir)];
     if (hasNatstackReact) {
       plugins.push(this.createReactDedupePlugin(sourcePath));
     }
@@ -565,6 +550,7 @@ if (shouldAutoMount(userModule)) {
       bundle: true,
       platform: "browser",
       target: "es2022",
+      conditions: ["natstack-panel"],
       outfile: bundlePath,
       sourcemap: inlineSourcemap ? "inline" : false,
       keepNames: true,      // Preserve class/function names
@@ -584,29 +570,6 @@ if (shouldAutoMount(userModule)) {
       bundlePath,
       htmlPath,
       dependencyHash,
-    };
-  }
-
-  /**
-   * Create the virtual module plugin for esbuild.
-   * Maps fs, @natstack/git, etc. to pre-bundled runtime modules with polyfills.
-   */
-  private createVirtualModulePlugin(): esbuild.Plugin {
-    return {
-      name: "virtual-module",
-      setup(build) {
-        // Handle fs modules
-        build.onResolve({ filter: /^(fs|node:fs|fs\/promises|node:fs\/promises)$/ }, (args) => {
-          const runtimePath = virtualModuleMap.get(args.path);
-          if (!runtimePath) return null;
-          return { path: runtimePath };
-        });
-
-        // Handle @natstack/git - use unified panel runtime with Buffer polyfill
-        build.onResolve({ filter: /^@natstack\/git$/ }, () => {
-          return { path: panelRuntimePath };
-        });
-      },
     };
   }
 
@@ -974,30 +937,51 @@ if (shouldAutoMount(userModule)) {
       const tempEntryPath = path.join(runtimeDir, "_worker_entry.js");
       const relativeUserEntry = path.relative(runtimeDir, entryPath);
 
-      // Worker wrapper - imports worker-runtime to set up console/globals,
+      // Worker wrapper - imports runtime to set up console/globals,
       // then imports the user module which should call rpc.expose()
       const wrapperCode = `
 // Import worker runtime to set up console and globals
-import "@natstack/worker-runtime";
+import "@natstack/runtime";
 
 // Import user module - it should call rpc.expose() to register methods
 import ${JSON.stringify(relativeUserEntry)};
 `;
       fs.writeFileSync(tempEntryPath, wrapperCode);
 
-      // Build with esbuild for isolated-vm (Node.js-like environment)
+      // Build with esbuild for vm.Script (Node.js sandbox)
+      // IMPORTANT: Must use "iife" format because vm.Script doesn't support ES modules.
+      // ESM format outputs "import/export" statements which cause syntax errors.
+      // Also cannot use externals since vm.Script has no module resolution.
+
+      // Create a shim for the "buffer" module that uses the global Buffer
+      // This is needed because isomorphic-git's dependencies (safe-buffer, sha.js)
+      // use require("buffer") which fails in esbuild's IIFE format without this shim
+      const bufferShimPath = path.join(runtimeDir, "_buffer_shim.js");
+      fs.writeFileSync(
+        bufferShimPath,
+        `// Buffer shim for vm.Script sandbox - uses the global Buffer provided by sandbox
+export const Buffer = globalThis.Buffer;
+export default { Buffer: globalThis.Buffer };
+`
+      );
+
       await esbuild.build({
         entryPoints: [tempEntryPath],
         bundle: true,
-        platform: "node", // Workers run in isolated-vm which is Node-like
+        platform: "node", // Workers run in vm sandbox which is Node-like
         target: "es2022",
+        conditions: ["natstack-worker"],
         outfile: bundlePath,
         sourcemap: false,
-        format: "esm",
+        format: "iife", // Must be iife - vm.Script doesn't support ES modules
         absWorkingDir: sourcePath,
         nodePaths,
-        // No fs plugin needed - workers use @natstack/worker-runtime fs
-        external: ["isomorphic-git", "isomorphic-git/http/web"],
+        plugins: [createFsShimPlugin(runtimeDir)], // Shim fs imports to @natstack/runtime
+        // No externals - everything must be bundled for vm.Script
+        // Alias "buffer" to our shim so require("buffer") works
+        alias: {
+          buffer: bufferShimPath,
+        },
       });
 
       // Read the built bundle

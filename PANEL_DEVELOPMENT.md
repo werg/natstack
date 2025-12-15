@@ -41,7 +41,7 @@ export default function MyApp() {
     "title": "My App"
   },
   "dependencies": {
-    "@natstack/core": "workspace:*",
+    "@natstack/runtime": "workspace:*",
     "@natstack/react": "workspace:*"
   }
 }
@@ -72,7 +72,7 @@ Every panel requires a `package.json` with a `natstack` field:
     "repoArgs": ["history", "components"]
   },
   "dependencies": {
-    "@natstack/core": "workspace:*",
+    "@natstack/runtime": "workspace:*",
     "@natstack/react": "workspace:*"
   }
 }
@@ -110,10 +110,12 @@ NatStack supports three types of panels:
 Standard UI panels built from source code.
 
 ```typescript
-const editorId = await panel.createChild({
+import { createChild } from "@natstack/runtime";
+
+const editor = await createChild({
   type: 'app',
   name: 'editor',
-  path: 'panels/editor',
+  source: 'panels/editor',
   env: { FILE_PATH: '/foo.txt' },
 });
 ```
@@ -123,10 +125,12 @@ const editorId = await panel.createChild({
 Background processes running in isolated-vm. Useful for CPU-intensive tasks.
 
 ```typescript
-const computeId = await panel.createChild({
+import { createChild } from "@natstack/runtime";
+
+const computeWorker = await createChild({
   type: 'worker',
   name: 'compute-worker',
-  path: 'workers/compute',
+  source: 'workers/compute',
   memoryLimitMB: 512,
   env: { MODE: 'production' },
 });
@@ -149,10 +153,12 @@ Worker manifest uses `runtime: "worker"`:
 External URLs with Playwright automation support.
 
 ```typescript
-const browserId = await panel.createChild({
+import { createChild } from "@natstack/runtime";
+
+const browser = await createChild({
   type: 'browser',
   name: 'web-scraper',
-  url: 'https://example.com',
+  source: 'https://example.com',
   title: 'Scraper',
 });
 ```
@@ -167,16 +173,16 @@ NatStack provides React hooks for all panel features. Import from `@natstack/rea
 
 #### `usePanel()`
 
-Get the panel API object:
+Get the NatStack runtime API object:
 
 ```tsx
 import { usePanel } from "@natstack/react";
 
 function MyPanel() {
-  const panel = usePanel();
+  const runtime = usePanel();
 
   const handleRename = async () => {
-    await panel.setTitle("New Title");
+    await runtime.setTitle("New Title");
   };
 
   return <button onClick={handleRename}>Rename Panel</button>;
@@ -191,13 +197,13 @@ Access the current theme and subscribe to changes:
 import { usePanelTheme } from "@natstack/react";
 
 function MyPanel() {
-  const theme = usePanelTheme();
+  const appearance = usePanelTheme();
 
   return (
     <div style={{
-      background: theme.appearance === "dark" ? "#000" : "#fff"
+      background: appearance === "dark" ? "#000" : "#fff"
     }}>
-      Current theme: {theme.appearance}
+      Current theme: {appearance}
     </div>
   );
 }
@@ -311,235 +317,127 @@ function MyPanel() {
 
 ## Typed RPC Communication
 
-NatStack provides fully type-safe RPC communication between panels and workers.
+NatStack’s recommended typed RPC pattern is contract-based:
 
-### Defining the API
+1. Define a shared contract object with `defineContract(...)`
+2. Parent creates the child with `createChildWithContract(contract, ...)`
+3. Child gets a typed parent handle with `getParentWithContract(contract)`
 
-Create an `api.ts` file to export types for parent panels:
+### Defining a Contract
 
-```tsx
-// panels/editor/api.ts
-import type { RpcEventMap } from "@natstack/react";
+```ts
+// panels/editor/contract.ts
+import { z, defineContract } from "@natstack/runtime";
 
-export interface EditorAPI {
+export interface EditorApi {
   getContent(): Promise<string>;
   setContent(text: string): Promise<void>;
   save(path: string): Promise<void>;
-  undo(): Promise<void>;
-  redo(): Promise<void>;
 }
 
-export interface EditorEvents extends RpcEventMap {
-  "content-changed": { text: string; cursor: number };
-  "saved": { path: string; timestamp: string };
-  "error": { message: string };
-}
+export const editorContract = defineContract({
+  source: "panels/editor",
+  child: {
+    methods: {} as EditorApi,
+    emits: {
+      "saved": z.object({ path: z.string(), timestamp: z.string() }),
+    },
+  },
+});
 ```
 
-### Exposing the API (Child Panel)
+### Exposing Methods (Child Panel)
 
 ```tsx
 // panels/editor/index.tsx
 import { useEffect, useState } from "react";
-import { panel, usePanelEnv } from "@natstack/react";
-import type { EditorAPI } from "./api";
+import { rpc, getParentWithContract, noopParent } from "@natstack/runtime";
+import { editorContract } from "./contract.js";
+
+const parent = getParentWithContract(editorContract) ?? noopParent;
 
 export default function Editor() {
   const [content, setContent] = useState("");
-  const env = usePanelEnv();
 
   useEffect(() => {
-    // Expose typed API
-    panel.rpc.expose<EditorAPI>({
+    rpc.expose({
       async getContent() {
         return content;
       },
-
       async setContent(text: string) {
         setContent(text);
       },
-
       async save(path: string) {
-        // Save logic...
-        // Emit typed event
-        if (env.PARENT_ID) {
-          panel.rpc.emit(env.PARENT_ID, "saved", {
-            path,
-            timestamp: new Date().toISOString()
-          });
-        }
+        await parent.emit("saved", { path, timestamp: new Date().toISOString() });
       },
-
-      async undo() { /* ... */ },
-      async redo() { /* ... */ }
     });
-  }, [content, env.PARENT_ID]);
+  }, [content]);
 
-  return <textarea value={content} onChange={e => setContent(e.target.value)} />;
+  return <textarea value={content} onChange={(e) => setContent(e.target.value)} />;
 }
 ```
 
-### Calling the API (Parent Panel)
+### Calling Methods + Listening to Events (Parent Panel)
 
 ```tsx
-// panels/parent/index.tsx
 import { useState, useEffect } from "react";
-import { usePanelRpc, panel } from "@natstack/react";
-import type { EditorAPI, EditorEvents } from "../editor/api";
+import { createChildWithContract, type ChildHandleFromContract } from "@natstack/runtime";
+import { editorContract } from "../editor/contract.js";
 
 export default function Parent() {
-  const [editorId, setEditorId] = useState<string | null>(null);
+  const [editor, setEditor] = useState<ChildHandleFromContract<typeof editorContract> | null>(null);
 
-  // Get typed RPC handle
-  const editorHandle = usePanelRpc<EditorAPI, EditorEvents>(editorId);
-
-  // Listen to typed events
   useEffect(() => {
-    if (!editorHandle) return;
-
-    return editorHandle.on("saved", (payload) => {
-      console.log("File saved:", payload.path);
-      console.log("At:", payload.timestamp); // Fully typed!
+    if (!editor) return;
+    return editor.onEvent("saved", (payload) => {
+      console.log("Saved:", payload.path, payload.timestamp);
     });
-  }, [editorHandle]);
+  }, [editor]);
 
-  const handleLaunch = async () => {
-    const id = await panel.createChild({
-      type: 'app',
-      name: 'editor',
-      path: 'panels/editor',
-    });
-    setEditorId(id);
+  const launchEditor = async () => {
+    const child = await createChildWithContract(editorContract, { name: "editor" });
+    setEditor(child);
   };
 
-  const handleGetContent = async () => {
-    if (!editorHandle) return;
-    const content = await editorHandle.call.getContent(); // Typed!
-    console.log(content);
-  };
-
-  const handleSave = async () => {
-    if (!editorHandle) return;
-    await editorHandle.call.save("/file.txt"); // Typed!
+  const save = async () => {
+    await editor?.call.save("/file.txt");
   };
 
   return (
     <div>
-      {!editorHandle && <button onClick={handleLaunch}>Launch Editor</button>}
-      {editorHandle && (
-        <>
-          <button onClick={handleGetContent}>Get Content</button>
-          <button onClick={handleSave}>Save</button>
-        </>
-      )}
+      <button onClick={launchEditor}>Launch Editor</button>
+      <button onClick={save} disabled={!editor}>Save</button>
     </div>
   );
 }
-```
-
-### RPC Hooks
-
-#### `usePanelRpc()`
-
-Get a typed RPC handle to another panel or worker:
-
-```tsx
-const childHandle = usePanelRpc<ChildAPI, ChildEvents>(childId);
-
-// Fully typed method calls
-await childHandle?.call.methodName(arg1, arg2);
-
-// Fully typed event subscriptions
-childHandle?.on("event-name", (payload) => {
-  // payload is typed!
-});
-```
-
-#### `usePanelRpcEvent()`
-
-Subscribe to a specific event from a panel:
-
-```tsx
-import { usePanelRpcEvent } from "@natstack/react";
-
-usePanelRpcEvent(childId, "data-changed", (payload) => {
-  console.log("Data changed:", payload);
-});
-```
-
-#### `usePanelRpcGlobalEvent()`
-
-Subscribe to events from any panel:
-
-```tsx
-import { usePanelRpcGlobalEvent } from "@natstack/react";
-
-usePanelRpcGlobalEvent("status-update", (fromPanelId, payload) => {
-  console.log(`${fromPanelId} sent:`, payload);
-});
 ```
 
 ---
 
 ## Event System
 
-### Type-Safe Events
+There are two main event patterns:
 
-Define event types using `RpcEventMap`:
+### Typed Events (Recommended)
 
-```tsx
-import type { RpcEventMap } from "@natstack/react";
+Use contracts + `ChildHandle.onEvent(...)` / `ParentHandle.emit(...)` for type-safe events. See “Typed RPC Communication”.
 
-interface MyEvents extends RpcEventMap {
-  "user-login": { userId: string; timestamp: number };
-  "data-sync": { syncedItems: number; errors: string[] };
-  "notification": { level: "info" | "warning" | "error"; message: string };
-}
-```
+### Global Events (Low-Level)
 
-### Emitting Events
+Use `rpc.emit(...)` and `rpc.onEvent(...)` for ad-hoc events between arbitrary endpoints:
 
-```tsx
-import { panel } from "@natstack/react";
+```ts
+import { rpc, parent } from "@natstack/runtime";
 
-// Emit to parent
-const env = await panel.getEnv();
-if (env.PARENT_ID) {
-  panel.rpc.emit(env.PARENT_ID, "user-login", {
-    userId: "123",
-    timestamp: Date.now()
-  });
-}
+// Emit to parent (noop if no parent)
+await parent.emit("user-login", { userId: "123", timestamp: Date.now() });
 
-// Emit to specific panel
-panel.rpc.emit(targetPanelId, "notification", {
-  level: "info",
-  message: "Hello!"
-});
-```
+// Emit to a specific endpoint id
+await rpc.emit("tree/some/panel", "notification", { level: "info", message: "Hello!" });
 
-### Listening to Events
-
-Using the RPC handle:
-
-```tsx
-const handle = usePanelRpc<ChildAPI, ChildEvents>(childId);
-
-useEffect(() => {
-  if (!handle) return;
-
-  return handle.on("user-login", (payload) => {
-    console.log("User logged in:", payload.userId);
-    // payload is fully typed!
-  });
-}, [handle]);
-```
-
-Using the event hook:
-
-```tsx
-usePanelRpcEvent<{ userId: string }>(childId, "user-login", (payload) => {
-  console.log("User logged in:", payload.userId);
+// Listen for events from any endpoint
+const unsubscribe = rpc.onEvent("notification", (fromId, payload) => {
+  console.log("notification from", fromId, payload);
 });
 ```
 
@@ -706,21 +604,21 @@ Control browser panels programmatically with Playwright:
 
 ```typescript
 import { chromium } from 'playwright-core';
-import { panel } from "@natstack/react";
+import { createChild } from "@natstack/runtime";
 
 // Create browser panel
-const browserId = await panel.createChild({
+const browserPanel = await createChild({
   type: 'browser',
   name: 'automation-target',
-  url: 'https://example.com',
+  source: 'https://example.com',
 });
 
 // Get CDP endpoint for Playwright
-const cdpUrl = await panel.browser.getCdpEndpoint(browserId);
+const cdpUrl = await browserPanel.getCdpEndpoint();
 
 // Connect Playwright
-const browser = await chromium.connectOverCDP(cdpUrl);
-const page = browser.contexts()[0].pages()[0];
+const browserConn = await chromium.connectOverCDP(cdpUrl);
+const page = browserConn.contexts()[0].pages()[0];
 
 // Automate!
 await page.click('.button');
@@ -731,12 +629,12 @@ const content = await page.textContent('.result');
 ### Browser API Methods
 
 ```typescript
-panel.browser.getCdpEndpoint(browserId): Promise<string>  // Get CDP WebSocket URL
-panel.browser.navigate(browserId, url): Promise<void>     // Navigate to URL
-panel.browser.goBack(browserId): Promise<void>            // Go back in history
-panel.browser.goForward(browserId): Promise<void>         // Go forward in history
-panel.browser.reload(browserId): Promise<void>            // Reload page
-panel.browser.stop(browserId): Promise<void>              // Stop loading
+await browserPanel.getCdpEndpoint()
+await browserPanel.navigate(url)
+await browserPanel.goBack()
+await browserPanel.goForward()
+await browserPanel.reload()
+await browserPanel.stop()
 ```
 
 ---
@@ -756,28 +654,28 @@ function MyPanel() {
 }
 
 // ❌ Avoid
-import { panel } from "@natstack/react";
+import * as runtime from "@natstack/runtime";
 
 function MyPanel() {
-  const [theme, setTheme] = useState(panel.getTheme());
+  const [theme, setTheme] = useState(runtime.getTheme());
   // Manual subscription management...
 }
 ```
 
-### 2. Define Types for RPC
+### 2. Use Contracts for Typed RPC
 
-Always create an `api.ts` file to export RPC types:
+Prefer `defineContract(...)` + `createChildWithContract(...)` + `getParentWithContract(...)` (see “Typed RPC Communication”).
 
 ```tsx
-// api.ts
-export interface MyAPI {
-  method1(): Promise<string>;
-  method2(arg: number): Promise<void>;
-}
+// contract.ts
+import { z, defineContract } from "@natstack/runtime";
 
-export interface MyEvents extends RpcEventMap {
-  "event1": { data: string };
-}
+export const myContract = defineContract({
+  source: "panels/my-panel",
+  child: {
+    emits: { "event1": z.object({ data: z.string() }) },
+  },
+});
 ```
 
 ### 3. Clean Up Resources
@@ -786,7 +684,7 @@ Hooks handle cleanup automatically, but for manual subscriptions:
 
 ```tsx
 useEffect(() => {
-  const unsubscribe = panel.rpc.onEvent("my-event", handler);
+  const unsubscribe = runtime.rpc.onEvent("my-event", handler);
   return unsubscribe; // Clean up on unmount
 }, []);
 ```
@@ -822,85 +720,101 @@ See the example panels:
 ```typescript
 // App panel spec
 interface AppChildSpec {
-  type: 'app';
-  name: string;                      // Unique name (becomes part of panel ID)
-  path: string;                      // Workspace-relative path to source
+  type: "app";
+  name?: string;                     // Optional name (stable ID within parent if provided)
+  source: string;                    // Workspace-relative path to source
   env?: Record<string, string>;      // Environment variables
+  sourcemap?: boolean;               // Emit inline sourcemaps (default: true)
   branch?: string;                   // Git branch to track
   commit?: string;                   // Specific commit hash
   tag?: string;                      // Git tag to pin to
+  repoArgs?: Record<string, RepoArgSpec>; // Must match child's manifest repoArgs
 }
 
 // Worker spec
 interface WorkerChildSpec {
-  type: 'worker';
-  name: string;                      // Unique name (becomes part of worker ID)
-  path: string;                      // Workspace-relative path to source
+  type: "worker";
+  name?: string;                     // Optional name (stable ID within parent if provided)
+  source: string;                    // Workspace-relative path to source
   env?: Record<string, string>;      // Environment variables
   memoryLimitMB?: number;            // Memory limit (default: 1024)
   branch?: string;                   // Git branch to track
   commit?: string;                   // Specific commit hash
   tag?: string;                      // Git tag to pin to
+  repoArgs?: Record<string, RepoArgSpec>; // Must match child's manifest repoArgs
 }
 
 // Browser panel spec
 interface BrowserChildSpec {
-  type: 'browser';
-  name: string;                      // Unique name (becomes part of panel ID)
-  url: string;                       // Initial URL to load
-  title?: string;                    // Optional title (defaults to URL hostname)
+  type: "browser";
+  name?: string;                     // Optional name
+  source: string;                    // Initial URL to load
+  title?: string;                    // Optional title (defaults to URL hostname in UI)
   env?: Record<string, string>;      // Environment variables
 }
 
 type ChildSpec = AppChildSpec | WorkerChildSpec | BrowserChildSpec;
 ```
 
-### Panel API (`panel`)
+### Runtime API (`@natstack/runtime`)
 
 ```tsx
-import { panel } from "@natstack/react";
+import * as runtime from "@natstack/runtime";
 
-// Core methods
-panel.getId(): string
-panel.createChild(spec: ChildSpec): Promise<string>
-panel.removeChild(childId: string): Promise<void>
-panel.setTitle(title: string): Promise<void>
-panel.close(): Promise<void>
-panel.getTheme(): PanelTheme
-panel.onThemeChange(callback: (theme: PanelTheme) => void): () => void
-panel.getEnv(): Promise<Record<string, string>>
-panel.getPartition(): Promise<string | null>
-panel.getInfo(): Promise<{ panelId: string; partition: string }>
+// Identity
+runtime.id: string
+runtime.parentId: string | null
 
-// RPC methods
-panel.rpc.expose<T>(methods: T): void
-panel.rpc.getHandle<T, E>(panelId: string): PanelRpcHandle<T, E>
-panel.rpc.emit(panelId: string, event: string, payload: unknown): Promise<void>
-panel.rpc.onEvent(event: string, handler: (from: string, payload: unknown) => void): () => void
+// Core services
+runtime.rpc: RpcBridge
+runtime.db: { open(name: string, readOnly?: boolean): Promise<Database> }
+runtime.fs: RuntimeFs
+runtime.fetch: RuntimeFetch
+runtime.parent: ParentHandle
 
-// Git methods
-panel.git.getConfig(): Promise<GitConfig>
+// Parent handles
+runtime.getParent<T, E, EmitE>(): ParentHandle<T, E, EmitE> | null
+runtime.getParentWithContract(contract): ParentHandleFromContract | null
 
-// Browser methods
-panel.browser.getCdpEndpoint(browserId: string): Promise<string>
-panel.browser.navigate(browserId: string, url: string): Promise<void>
-panel.browser.goBack(browserId: string): Promise<void>
-panel.browser.goForward(browserId: string): Promise<void>
-panel.browser.reload(browserId: string): Promise<void>
-panel.browser.stop(browserId: string): Promise<void>
+// Child management
+runtime.createChild(spec: ChildSpec): Promise<ChildHandle>
+runtime.createChildWithContract(contract, options?): Promise<ChildHandleFromContract>
+runtime.children: ReadonlyMap<string, ChildHandle>
+runtime.getChild(name: string): ChildHandle | undefined
+runtime.onChildAdded(cb): () => void
+runtime.onChildRemoved(cb): () => void
+
+// Lifecycle
+runtime.removeChild(childId: string): Promise<void>
+runtime.setTitle(title: string): Promise<void>
+runtime.close(): Promise<void>
+runtime.getEnv(): Promise<Record<string, string>>
+runtime.getInfo(): Promise<{ panelId: string; partition: string }>
+
+// Theme/focus
+runtime.getTheme(): ThemeAppearance
+runtime.onThemeChange(cb: (appearance: ThemeAppearance) => void): () => void
+runtime.onFocus(cb: () => void): () => void
+
+// Startup data (synchronous, set at startup)
+runtime.gitConfig: GitConfig | null
+runtime.bootstrap: BootstrapResult | null
+runtime.bootstrapError: string | null
 ```
 
 ### React Hooks
 
 ```tsx
-usePanel(): PanelAPI
-usePanelTheme(): PanelTheme
+usePanel(): typeof import("@natstack/runtime")
+usePanelTheme(): ThemeAppearance
 usePanelId(): string
 usePanelEnv(): Record<string, string>
 usePanelPartition(): string | null
-usePanelRpc<T, E>(panelId: string | null): PanelRpcHandle<T, E> | null
-usePanelRpcEvent<T>(panelId: string | null, event: string, handler: (payload: T) => void): void
 usePanelRpcGlobalEvent<T>(event: string, handler: (from: string, payload: T) => void): void
-useChildPanels(): { children: string[]; createChild: (spec: ChildSpec) => Promise<string>; removeChild: (id: string) => Promise<void> }
+usePanelParent<T, E>(): ParentHandle<T, E> | null
+useChildPanels(): { children: ChildHandle[]; createChild(spec: ChildSpec): Promise<ChildHandle>; removeChild(handle: ChildHandle): Promise<void> }
 usePanelFocus(): boolean
+usePanelChild<T, E>(name: string): ChildHandle<T, E> | undefined
+usePanelChildren(): ReadonlyMap<string, ChildHandle>
+usePanelCreateChild<T, E>(spec: ChildSpec | null): ChildHandle<T, E> | null
 ```

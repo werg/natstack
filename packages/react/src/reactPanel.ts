@@ -1,6 +1,6 @@
 import type { ComponentType, ReactNode } from "react";
 import type { Root } from "react-dom/client";
-import { panel, createRadixThemeProvider } from "@natstack/core";
+import { getTheme, onThemeChange } from "@natstack/runtime";
 
 export interface ReactPanelOptions {
   rootId?: string;
@@ -23,7 +23,25 @@ export function createReactPanelMount(
 ) {
   const rootId = options?.rootId ?? "root";
   const ThemeProvider = options?.ThemeComponent
-    ? createRadixThemeProvider(ReactLib, options.ThemeComponent)
+    ? (() => {
+        const ThemeComponent = options.ThemeComponent!;
+        return function NatstackRadixThemeProvider({ children }: { children?: ReactNode }): ReactNode {
+          const [theme, setTheme] = ReactLib.useState(() => getTheme());
+
+          ReactLib.useEffect(() => {
+            let mounted = true;
+            const unsubscribe = onThemeChange((nextTheme) => {
+              if (mounted) setTheme(nextTheme);
+            });
+            return () => {
+              mounted = false;
+              unsubscribe();
+            };
+          }, []);
+
+          return ReactLib.createElement(ThemeComponent, { appearance: theme }, children);
+        };
+      })()
     : null;
 
   const Wrapper: ComponentType<{ children: ReactNode }> = ThemeProvider
@@ -69,5 +87,3 @@ export function createReactPanelMount(
     };
   };
 }
-
-export default panel;

@@ -28,9 +28,3 @@ export const isMobileAtom = atom<boolean>(false);
  * Whether keyboard shortcuts overlay is visible.
  */
 export const shortcutsOverlayOpenAtom = atom<boolean>(false);
-
-/**
- * Theme mode (dark, light, or system).
- */
-export type ThemeMode = "light" | "dark" | "system";
-export const themeModeAtom = atom<ThemeMode>("system");

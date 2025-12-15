@@ -1,5 +1,4 @@
-import type { FsClient } from "isomorphic-git";
-import { GitClient } from "./client.js";
+import { GitClient, type FsPromisesLike } from "./client.js";
 import type { RepoArgSpec, NormalizedRepoArg, GitClientOptions } from "./types.js";
 
 /**
@@ -152,7 +151,7 @@ async function cloneWithDefaultBranch(
  * ```
  */
 export async function bootstrap(
-  fs: FsClient,
+  fs: FsPromisesLike,
   config: BootstrapConfig
 ): Promise<BootstrapResult> {
   const sourcePath = config.sourcePath ?? "/src";
@@ -317,27 +316,6 @@ export async function bootstrap(
   }
 
   return result;
-}
-
-/**
- * Check if panel source exists in OPFS
- */
-export async function hasSource(
-  fs: FsClient,
-  sourcePath: string = "/src"
-): Promise<boolean> {
-  try {
-    const fsAny = fs as {
-      promises?: { stat: (p: string) => Promise<unknown> };
-    };
-    if (fsAny.promises?.stat) {
-      await fsAny.promises.stat(sourcePath);
-      return true;
-    }
-    return false;
-  } catch {
-    return false;
-  }
 }
 
 // Re-export types for consumers

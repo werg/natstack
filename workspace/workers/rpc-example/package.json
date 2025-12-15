@@ -8,6 +8,6 @@
     "runtime": "worker"
   },
   "dependencies": {
-    "@natstack/worker-runtime": "workspace:*"
+    "@natstack/runtime": "workspace:*"
   }
 }

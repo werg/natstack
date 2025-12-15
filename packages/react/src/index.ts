@@ -6,7 +6,7 @@
  * - Auto-mount utilities for React panels
  * - React panel mounting helpers
  *
- * Use alongside @natstack/panel for full functionality.
+ * Use alongside @natstack/runtime for full functionality.
  */
 
 // Export React-specific functionality only

@@ -3,7 +3,7 @@
  * Defines the typed interface between parent panels and this worker.
  */
 
-import { z, defineContract } from "@natstack/core";
+import { z, defineContract } from "@natstack/runtime";
 
 /**
  * RPC methods exposed by this worker.

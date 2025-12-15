@@ -1,0 +1,190 @@
+import { createRpcBridge, type RpcBridge, type RpcTransport } from "@natstack/rpc";
+import { createDbClient } from "../shared/db.js";
+import { createChildManager } from "../shared/children.js";
+import {
+  noopParent,
+  type PanelContract,
+  type ChildSpec,
+  type EndpointInfo,
+  type GitConfig,
+  type Rpc,
+} from "../core/index.js";
+import { createParentHandle, createParentHandleFromContract } from "../shared/handles.js";
+import type { ParentHandle, ParentHandleFromContract } from "../core/index.js";
+import type { BootstrapResult, RuntimeFetch, RuntimeFs, ThemeAppearance } from "../types.js";
+
+export type FsFactory = ((rpc: RpcBridge) => RuntimeFs) & { __natstackProvider: "rpc-factory" };
+export type FetchFactory = ((rpc: RpcBridge) => RuntimeFetch) & { __natstackProvider: "rpc-factory" };
+
+export type FsProvider = RuntimeFs | FsFactory;
+export type FetchProvider = RuntimeFetch | FetchFactory;
+
+export interface RuntimeDeps {
+  selfId: string;
+  createTransport: () => RpcTransport;
+  id: string;
+  parentId: string | null;
+  initialTheme: ThemeAppearance;
+  fs: FsProvider;
+  fetch: FetchProvider;
+  setupGlobals?: () => void;
+  gitConfig?: GitConfig | null;
+  /** Promise that resolves when bootstrap completes (or null if no bootstrap needed) */
+  bootstrapPromise?: Promise<BootstrapResult | null> | null;
+}
+
+export function createRuntime(deps: RuntimeDeps) {
+  deps.setupGlobals?.();
+
+  const transport = deps.createTransport();
+  const rpc = createRpcBridge({ selfId: deps.selfId, transport });
+
+  const fs = typeof deps.fs === "function" ? deps.fs(rpc) : deps.fs;
+
+  const isFetchFactory = (provider: FetchProvider): provider is FetchFactory => {
+    return typeof provider === "function" && (provider as any).__natstackProvider === "rpc-factory";
+  };
+  const fetch = isFetchFactory(deps.fetch) ? deps.fetch(rpc) : deps.fetch;
+
+  const callMain = <T>(method: string, ...args: unknown[]) => rpc.call<T>("main", method, ...args);
+
+  const bridge = {
+    async createChild(spec: ChildSpec): Promise<string> {
+      return callMain<string>("bridge.createChild", spec);
+    },
+
+    async removeChild(childId: string): Promise<void> {
+      await callMain<void>("bridge.removeChild", childId);
+    },
+
+    browser: {
+      async getCdpEndpoint(browserId: string): Promise<string> {
+        return callMain<string>("browser.getCdpEndpoint", browserId);
+      },
+      async navigate(browserId: string, url: string): Promise<void> {
+        await callMain<void>("browser.navigate", browserId, url);
+      },
+      async goBack(browserId: string): Promise<void> {
+        await callMain<void>("browser.goBack", browserId);
+      },
+      async goForward(browserId: string): Promise<void> {
+        await callMain<void>("browser.goForward", browserId);
+      },
+      async reload(browserId: string): Promise<void> {
+        await callMain<void>("browser.reload", browserId);
+      },
+      async stop(browserId: string): Promise<void> {
+        await callMain<void>("browser.stop", browserId);
+      },
+    },
+  };
+
+  const db = createDbClient(rpc);
+  const childManager = createChildManager({ rpc, bridge });
+
+  const parentHandleOrNull = deps.parentId ? createParentHandle({ rpc, parentId: deps.parentId }) : null;
+  const parent: ParentHandle = parentHandleOrNull ?? noopParent;
+
+  const getParent = <
+    T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+    E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
+    EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
+  >(): ParentHandle<T, E, EmitE> | null => {
+    return parentHandleOrNull as ParentHandle<T, E, EmitE> | null;
+  };
+
+  const getParentWithContract = <C extends PanelContract>(contract: C): ParentHandleFromContract<C> | null => {
+    return createParentHandleFromContract(getParent(), contract);
+  };
+
+  let currentTheme: ThemeAppearance = deps.initialTheme;
+  const themeListeners = new Set<(theme: ThemeAppearance) => void>();
+
+  const parseThemeAppearance = (payload: unknown): ThemeAppearance | null => {
+    const appearance =
+      typeof payload === "string"
+        ? payload
+        : typeof (payload as { theme?: unknown } | null)?.theme === "string"
+          ? ((payload as { theme: ThemeAppearance }).theme)
+          : null;
+    if (appearance === "light" || appearance === "dark") return appearance;
+    return null;
+  };
+
+  const onThemeEvent = (_fromId: string, payload: unknown) => {
+    const theme = parseThemeAppearance(payload);
+    if (!theme) return;
+    currentTheme = theme;
+    for (const listener of themeListeners) listener(currentTheme);
+  };
+
+  const themeUnsubscribers = [rpc.onEvent("runtime:theme", onThemeEvent)];
+
+  const focusUnsubscribers: Array<() => void> = [];
+
+  const onFocus = (callback: () => void) => {
+    const unsub = rpc.onEvent("runtime:focus", () => callback());
+    focusUnsubscribers.push(unsub);
+    return () => {
+      unsub();
+      const idx = focusUnsubscribers.indexOf(unsub);
+      if (idx !== -1) focusUnsubscribers.splice(idx, 1);
+    };
+  };
+
+  const destroy = () => {
+    childManager.destroy();
+    for (const unsub of themeUnsubscribers) unsub();
+    for (const unsub of focusUnsubscribers) unsub();
+    focusUnsubscribers.length = 0;
+    themeListeners.clear();
+  };
+
+  return {
+    id: deps.id,
+    parentId: deps.parentId,
+
+    rpc,
+    db,
+    fs,
+    fetch,
+
+    parent,
+    getParent,
+    getParentWithContract,
+
+    createChild: childManager.createChild,
+    createChildWithContract: childManager.createChildWithContract,
+    children: childManager.children,
+    getChild: childManager.getChild,
+    onChildAdded: childManager.onChildAdded,
+    onChildRemoved: childManager.onChildRemoved,
+
+    removeChild: bridge.removeChild,
+
+    setTitle: (title: string) => callMain<void>("bridge.setTitle", title),
+    close: async () => {
+      destroy();
+      await callMain<void>("bridge.close");
+    },
+    getEnv: () => callMain<Record<string, string>>("bridge.getEnv"),
+    getInfo: () => callMain<EndpointInfo>("bridge.getInfo"),
+
+    getTheme: () => currentTheme,
+    onThemeChange: (callback: (theme: ThemeAppearance) => void) => {
+      callback(currentTheme);
+      themeListeners.add(callback);
+      return () => themeListeners.delete(callback);
+    },
+
+    onFocus,
+
+    expose: rpc.expose.bind(rpc),
+
+    gitConfig: deps.gitConfig ?? null,
+    /** Promise that resolves when bootstrap completes. Resolves to null if no bootstrap needed. */
+    bootstrapPromise: deps.bootstrapPromise ?? Promise.resolve(null),
+  };
+}
+
+export type Runtime = ReturnType<typeof createRuntime>;

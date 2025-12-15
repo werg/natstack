@@ -1,6 +1,5 @@
 import {
-  streamText,
-  getRoles,
+  ai,
   type StreamEvent,
   type ToolDefinition,
 } from "@natstack/ai";
@@ -126,7 +125,7 @@ export class AgentSession {
    */
   async initialize(): Promise<void> {
     // Load roles to validate the model role
-    const roles = await getRoles();
+    const roles = await ai.listRoles();
     if (!roles[this.modelRole]) {
       throw new Error(`Model role '${this.modelRole}' not available`);
     }
@@ -240,7 +239,7 @@ export class AgentSession {
       console.log("[AgentSession] Invoking streamText API...", tools, messages);
 
       // Use the unified streamText API
-      const stream = streamText({
+      const stream = ai.streamText({
         model: this.modelRole,
         messages,
         tools: Object.keys(tools).length > 0 ? tools : undefined,
@@ -383,7 +382,7 @@ export class AgentSession {
    * Set the model role.
    */
   async setModelRole(role: string): Promise<void> {
-    const roles = await getRoles();
+    const roles = await ai.listRoles();
     if (!roles[role]) {
       throw new Error(`Model role '${role}' not available`);
     }

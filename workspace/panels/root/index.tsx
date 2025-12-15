@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { promises as fsPromises } from "fs";
 import { Button, Card, Flex, Text, Heading, Callout, Separator, Badge, TextField } from "@radix-ui/themes";
-import { panel, type ChildHandle, type ChildHandleFromContract } from "@natstack/panel";
+import { createChild, createChildWithContract, setTitle, type ChildHandle, type ChildHandleFromContract } from "@natstack/runtime";
 import {
   usePanelTheme,
   usePanelId,
@@ -111,7 +111,7 @@ export default function ChildPanelLauncher() {
   const launchChildPanel = async () => {
     try {
       setStatus("Launching child panel...");
-      const child = await panel.createChild({
+      const child = await createChild({
         type: "app",
         name: "another-root",
         source: "panels/root",
@@ -130,7 +130,7 @@ export default function ChildPanelLauncher() {
   const launchSharedOPFSDemo = async () => {
     try {
       setStatus("Launching shared OPFS demo panel...");
-      const child = await panel.createChild({
+      const child = await createChild({
         type: "app",
         source: "panels/shared-opfs-demo",
       });
@@ -143,7 +143,7 @@ export default function ChildPanelLauncher() {
   const launchAgenticChat = async () => {
     try {
       setStatus("Launching agentic chat example...");
-      const child = await panel.createChild({
+      const child = await createChild({
         type: "app",
         name: "agentic-chat",
         source: "panels/agentic-chat",
@@ -157,7 +157,7 @@ export default function ChildPanelLauncher() {
   const launchAgenticNotebook = async () => {
     try {
       setStatus("Launching agentic notebook...");
-      const child = await panel.createChild({
+      const child = await createChild({
         type: "app",
         name: "agentic-notebook",
         source: "panels/agentic-notebook",
@@ -173,7 +173,7 @@ export default function ChildPanelLauncher() {
 
   const setRandomTitle = async () => {
     const title = `Radix Panel ${Math.floor(Math.random() * 1000)}`;
-    await panel.setTitle(title);
+    await setTitle(title);
     setStatus(`Title set to ${title}`);
   };
 
@@ -251,7 +251,7 @@ export default function ChildPanelLauncher() {
     try {
       addRpcLog("Launching RPC demo child panel...");
       // Use the contract-based API for full type safety
-      const child = await panel.createChildWithContract(rpcDemoContract, {
+      const child = await createChildWithContract(rpcDemoContract, {
         name: "typed-rpc-child",
         env: { PARENT_ID: panelId },
       });
@@ -379,7 +379,7 @@ export default function ChildPanelLauncher() {
     try {
       addWorkerLog("Launching RPC example worker...");
       // Use the contract-based API for full type safety
-      const w = await panel.createChildWithContract(rpcExampleWorkerContract, {
+      const w = await createChildWithContract(rpcExampleWorkerContract, {
         name: "rpc-example-worker",
         env: { PARENT_ID: panelId },
         type: "worker",
@@ -522,7 +522,7 @@ export default function ChildPanelLauncher() {
   const launchBrowser = async () => {
     try {
       addBrowserLog("Launching browser panel...");
-      const b = await panel.createChild({
+      const b = await createChild({
         type: "browser",
         name: "demo-browser",
         source: browserUrlInput,
@@ -687,7 +687,7 @@ export default function ChildPanelLauncher() {
             </Badge>
           </Flex>
           <Text size="2">
-            Current theme: <Text weight="bold">{theme.appearance}</Text>
+            Current theme: <Text weight="bold">{theme}</Text>
           </Text>
           <Text size="2">
             Panel ID: <Text weight="bold">{panelId}</Text>

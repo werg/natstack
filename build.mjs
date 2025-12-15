@@ -59,34 +59,6 @@ const panelPreloadConfig = {
   logOverride,
 };
 
-// =============================================================================
-// Panel Runtime - Unified bundle for browser panels
-// =============================================================================
-// Single bundle that provides all panel runtime APIs:
-// - fs, fs/promises (ZenFS OPFS backend)
-// - @natstack/git (isomorphic-git with Buffer polyfill)
-// - Bootstrap functionality for auto-cloning repoArgs
-//
-// This unified approach avoids:
-// - Duplicate ZenFS initialization from multiple bundles
-// - Race conditions from IIFE initialization at import time
-// - Complex import path resolution between runtime modules
-
-const panelRuntimeConfig = {
-  entryPoints: ["src/panelRuntime/index.ts"],
-  bundle: true,
-  platform: "browser",
-  target: "es2022",
-  format: "esm",
-  outfile: "dist/panelRuntime.js",
-  sourcemap: isDev,
-  minify: !isDev,
-  plugins: typiaPlugins,
-  logOverride,
-  // Bundle isomorphic-git with Buffer polyfill
-  inject: ["./src/panelRuntime/buffer-polyfill.js"],
-};
-
 const rendererConfig = {
   entryPoints: ["src/renderer/index.tsx"],
   bundle: true,
@@ -123,9 +95,9 @@ const utilityProcessConfig = {
 };
 
 // Worker runtime shim that gets bundled into worker code
-// This is built from the packages/worker-runtime source
+// This is built from the packages/runtime worker entry
 const workerRuntimeConfig = {
-  entryPoints: ["packages/worker-runtime/src/index.ts"],
+  entryPoints: ["packages/runtime/src/worker/index.ts"],
   bundle: true,
   platform: "browser",  // isolated-vm runs V8 without Node APIs
   target: "es2022",
@@ -138,8 +110,6 @@ const workerRuntimeConfig = {
 
 function copyAssets() {
   fs.copyFileSync("src/renderer/index.html", "dist/index.html");
-  // Copy panel runtime type definitions
-  fs.copyFileSync("src/panelRuntime/globals.d.ts", "dist/panelRuntimeGlobals.d.ts");
 }
 
 async function generateProtocolFiles() {
@@ -217,7 +187,6 @@ async function build() {
     await esbuild.build(mainConfig);
     await esbuild.build(preloadConfig);
     await esbuild.build(panelPreloadConfig);
-    await esbuild.build(panelRuntimeConfig);
     await esbuild.build(rendererConfig);
     await esbuild.build(utilityProcessConfig);
     await esbuild.build(workerRuntimeConfig);
