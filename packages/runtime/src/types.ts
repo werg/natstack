@@ -38,20 +38,3 @@ export interface RuntimeFs {
   exists(path: string): Promise<boolean>;
 }
 
-export interface FetchResponse {
-  status: number;
-  statusText: string;
-  headers: Record<string, string>;
-  body: string;
-  ok: boolean;
-  json<T = unknown>(): T;
-  text(): string;
-}
-
-export interface FetchOptions {
-  method?: string;
-  headers?: Record<string, string>;
-  body?: string;
-}
-
-export type RuntimeFetch = (url: string, options?: FetchOptions) => Promise<FetchResponse>;

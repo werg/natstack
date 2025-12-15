@@ -12,13 +12,11 @@ import {
 } from "../core/index.js";
 import { createParentHandle, createParentHandleFromContract } from "../shared/handles.js";
 import type { ParentHandle, ParentHandleFromContract } from "../core/index.js";
-import type { BootstrapResult, RuntimeFetch, RuntimeFs, ThemeAppearance } from "../types.js";
+import type { BootstrapResult, RuntimeFs, ThemeAppearance } from "../types.js";
 
 export type FsFactory = ((rpc: RpcBridge) => RuntimeFs) & { __natstackProvider: "rpc-factory" };
-export type FetchFactory = ((rpc: RpcBridge) => RuntimeFetch) & { __natstackProvider: "rpc-factory" };
 
 export type FsProvider = RuntimeFs | FsFactory;
-export type FetchProvider = RuntimeFetch | FetchFactory;
 
 export interface RuntimeDeps {
   selfId: string;
@@ -27,7 +25,6 @@ export interface RuntimeDeps {
   parentId: string | null;
   initialTheme: ThemeAppearance;
   fs: FsProvider;
-  fetch: FetchProvider;
   setupGlobals?: () => void;
   gitConfig?: GitConfig | null;
   pubsubConfig?: PubSubConfig | null;
@@ -42,11 +39,6 @@ export function createRuntime(deps: RuntimeDeps) {
   const rpc = createRpcBridge({ selfId: deps.selfId, transport });
 
   const fs = typeof deps.fs === "function" ? deps.fs(rpc) : deps.fs;
-
-  const isFetchFactory = (provider: FetchProvider): provider is FetchFactory => {
-    return typeof provider === "function" && (provider as any).__natstackProvider === "rpc-factory";
-  };
-  const fetch = isFetchFactory(deps.fetch) ? deps.fetch(rpc) : deps.fetch;
 
   const callMain = <T>(method: string, ...args: unknown[]) => rpc.call<T>("main", method, ...args);
 
@@ -149,7 +141,6 @@ export function createRuntime(deps: RuntimeDeps) {
     rpc,
     db,
     fs,
-    fetch,
 
     parent,
     getParent,

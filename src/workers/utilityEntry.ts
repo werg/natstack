@@ -491,6 +491,9 @@ function createSandbox(
     URL,
     URLSearchParams,
 
+    // WebSocket (available in Node 22+, needed for @natstack/pubsub)
+    WebSocket,
+
     // Text encoding (safe)
     TextEncoder,
     TextDecoder,
@@ -508,14 +511,13 @@ function createSandbox(
     // Buffer - needed by isomorphic-git and its dependencies (safe-buffer, sha.js)
     Buffer,
 
-    // Fetch is provided via service call, not direct access
-    // This prevents bypassing network restrictions
+    // Fetch (available in Node 22+)
+    fetch,
 
     // Explicitly NOT exposed:
     // - require, import (no module loading)
     // - process (no process access)
     // - fs, path, os, etc. (no Node.js APIs)
-    // - fetch (use rpc.call("main", "network.fetch", ...) via worker-runtime)
     // - eval, Function constructor (prevent code injection)
   };
 }

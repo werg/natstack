@@ -2,7 +2,7 @@
  * ServiceDispatcher - Unified service dispatch for panels and workers.
  *
  * Both panels (via IPC) and workers (via utility process) call main process
- * services like bridge, ai, db, browser, fs, network. This module provides
+ * services like bridge, ai, db, browser, fs. This module provides
  * a single registry and dispatch mechanism that both code paths use.
  *
  * Benefits:

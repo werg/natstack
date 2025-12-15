@@ -218,11 +218,6 @@ export class WorkerManager {
       return;
     }
 
-    if (service === "network") {
-      await this.handleNetworkServiceCall(workerId, requestId, method, args);
-      return;
-    }
-
     try {
       const dispatcher = getServiceDispatcher();
       const result = await dispatcher.dispatch(
@@ -356,65 +351,6 @@ export class WorkerManager {
         type: "service:response",
         requestId,
         result,
-      };
-      this.utilityProc?.postMessage(response);
-    } catch (error) {
-      const response: ServiceCallResponse = {
-        type: "service:response",
-        requestId,
-        error: error instanceof Error ? error.message : String(error),
-      };
-      this.utilityProc?.postMessage(response);
-    }
-  }
-
-  /**
-   * Handle network service calls (built-in).
-   * Workers have full network access.
-   */
-  private async handleNetworkServiceCall(
-    _workerId: string,
-    requestId: string,
-    method: string,
-    args: unknown[]
-  ): Promise<void> {
-    if (method !== "fetch") {
-      const response: ServiceCallResponse = {
-        type: "service:response",
-        requestId,
-        error: `Unknown network method: ${method}`,
-      };
-      this.utilityProc?.postMessage(response);
-      return;
-    }
-
-    const [url, options] = args as [
-      string,
-      { method?: string; headers?: Record<string, string>; body?: string } | undefined,
-    ];
-
-    try {
-      const fetchResponse = await fetch(url, {
-        method: options?.method || "GET",
-        headers: options?.headers,
-        body: options?.body,
-      });
-
-      const body = await fetchResponse.text();
-      const headers: Record<string, string> = {};
-      fetchResponse.headers.forEach((value, key) => {
-        headers[key] = value;
-      });
-
-      const response: ServiceCallResponse = {
-        type: "service:response",
-        requestId,
-        result: {
-          status: fetchResponse.status,
-          statusText: fetchResponse.statusText,
-          headers,
-          body,
-        },
       };
       this.utilityProc?.postMessage(response);
     } catch (error) {

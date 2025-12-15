@@ -1,7 +1,6 @@
 import { createWorkerTransport } from "./transport.js";
 import { setupWorkerGlobals } from "./globals.js";
 import { createWorkerFs } from "./fs.js";
-import { createWorkerFetch } from "./fetch.js";
 import { initRuntime } from "../setup/initRuntime.js";
 export { decodeBase64, encodeBase64 } from "../shared/base64.js";
 export type { BootstrapResult } from "../shared/bootstrap.js";
@@ -10,7 +9,6 @@ export type { BootstrapResult } from "../shared/bootstrap.js";
 const { runtime, config } = initRuntime({
   createTransport: createWorkerTransport,
   fs: createWorkerFs,
-  fetch: createWorkerFetch,
   setupGlobals: setupWorkerGlobals,
 });
 
@@ -27,7 +25,6 @@ export const {
   rpc,
   db,
   fs,
-  fetch,
   parent,
   getParent,
   getParentWithContract,

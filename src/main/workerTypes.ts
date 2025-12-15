@@ -2,7 +2,7 @@
  * Internal types for worker management in the main process.
  * These types are used for communication between main process and utility process.
  *
- * Service calls (fs, network, bridge, ai) use the unified ServiceCallRequest/Response
+ * Service calls (fs, bridge, ai, db) use the unified ServiceCallRequest/Response
  * from @natstack/rpc. This file contains worker lifecycle and other utility messages.
  */
 
@@ -134,7 +134,7 @@ export interface UtilityWorkerError {
  * Union type for all utility process messages.
  *
  * Messages use the unified service RPC pattern:
- * - service:call - Request from worker to main for any service (fs, network, bridge, ai)
+ * - service:call - Request from worker to main for any service (fs, bridge, ai, db)
  * - service:response - Response from main to worker
  * - service:push - Push event from main to worker (streams)
  * - service:invoke - Request from main to worker (bidirectional RPC)

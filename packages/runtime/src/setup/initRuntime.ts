@@ -5,10 +5,10 @@
  * between panel/index.ts and worker/index.ts.
  */
 
-import { createRuntime, type FsProvider, type FetchProvider } from "./createRuntime.js";
+import { createRuntime, type FsProvider } from "./createRuntime.js";
 import { createBootstrapState, runBootstrap, getBootstrapPromise } from "../shared/bootstrap.js";
 import { getInjectedConfig, type InjectedConfig } from "../shared/globals.js";
-import type { RuntimeFs, RuntimeFetch, BootstrapResult } from "../types.js";
+import type { RuntimeFs, BootstrapResult } from "../types.js";
 import type { RpcTransport } from "@natstack/rpc";
 
 export interface InitRuntimeOptions {
@@ -16,8 +16,6 @@ export interface InitRuntimeOptions {
   createTransport: () => RpcTransport;
   /** Filesystem provider (direct RuntimeFs or factory) */
   fs: FsProvider;
-  /** Fetch provider (direct RuntimeFetch or factory) */
-  fetch: FetchProvider;
   /** Promise that resolves when fs is ready (panel ZenFS), or undefined for workers */
   fsReady?: Promise<void>;
   /** Optional function to set up globals (worker console/env injection) */
@@ -31,8 +29,6 @@ export interface InitRuntimeResult {
   config: InjectedConfig;
   /** The filesystem (resolved from provider) */
   fs: RuntimeFs;
-  /** The fetch function (resolved from provider) */
-  fetch: RuntimeFetch;
   /** Promise that resolves when bootstrap completes, or null if no bootstrap needed */
   bootstrapPromise: Promise<BootstrapResult | null>;
 }
@@ -64,7 +60,6 @@ export function initRuntime(options: InitRuntimeOptions): InitRuntimeResult {
     parentId: config.parentId,
     initialTheme: config.initialTheme,
     fs: options.fs,
-    fetch: options.fetch,
     setupGlobals: options.setupGlobals,
     gitConfig: config.gitConfig,
     pubsubConfig: config.pubsubConfig,
@@ -95,7 +90,6 @@ export function initRuntime(options: InitRuntimeOptions): InitRuntimeResult {
     runtime: wrappedRuntime,
     config,
     fs: runtime.fs,
-    fetch: runtime.fetch,
     bootstrapPromise: getBootstrap(),
   };
 }

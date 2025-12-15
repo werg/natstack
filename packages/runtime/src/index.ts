@@ -3,9 +3,6 @@ export type {
   FileStats,
   MkdirOptions,
   RmOptions,
-  RuntimeFetch,
-  FetchOptions,
-  FetchResponse,
   ThemeAppearance,
   BootstrapResult,
 } from "./types.js";
@@ -34,7 +31,6 @@ export declare const db: {
   open(name: string, readOnly?: boolean): Promise<import("./shared/db.js").Database>;
 };
 export declare const fs: import("./types.js").RuntimeFs;
-export declare const fetch: import("./types.js").RuntimeFetch;
 export declare const parent: import("./core/index.js").ParentHandle;
 
 export declare const id: string;

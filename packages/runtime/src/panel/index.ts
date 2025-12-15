@@ -7,7 +7,6 @@ if (typeof globalThis.Buffer === "undefined") {
 
 import { createPanelTransport } from "./transport.js";
 import { fs, fsReady } from "./zenfs.js"; // Direct import from ZenFS provider (no "fs" shim)
-import { fetch } from "./fetch.js";
 import { initRuntime } from "../setup/initRuntime.js";
 export { decodeBase64, encodeBase64 } from "../shared/base64.js";
 export type { BootstrapResult } from "../shared/bootstrap.js";
@@ -16,7 +15,6 @@ export type { BootstrapResult } from "../shared/bootstrap.js";
 const { runtime, config } = initRuntime({
   createTransport: createPanelTransport,
   fs,
-  fetch,
   fsReady,
 });
 
@@ -57,4 +55,4 @@ export const {
 
 export { runtimeParentId as parentId };
 
-export { fs, fsReady, fetch, gitConfig, pubsubConfig };
+export { fs, fsReady, gitConfig, pubsubConfig };
