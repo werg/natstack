@@ -765,4 +765,187 @@ describe("PubSubClient", () => {
       vi.useRealTimers();
     });
   });
+
+  describe("roster / presence", () => {
+    it("calls onRoster handler when roster message received", () => {
+      let onmessage: ((event: { data: string }) => void) | null = null;
+
+      MockWebSocket.mockImplementation(() => {
+        const ws = {
+          readyState: 1,
+          onopen: null,
+          _onmessage: null as ((event: { data: string }) => void) | null,
+          onerror: null,
+          onclose: null,
+          close: vi.fn(),
+          send: vi.fn(),
+        };
+        Object.defineProperty(ws, "onmessage", {
+          get: () => ws._onmessage,
+          set: (handler: (event: { data: string }) => void) => {
+            ws._onmessage = handler;
+            onmessage = handler;
+          },
+        });
+        return ws;
+      });
+
+      const rosterHandler = vi.fn();
+      const client = connect(`ws://127.0.0.1:${port}`, "token", {
+        channel: "test",
+      });
+      client.onRoster(rosterHandler);
+
+      // Simulate roster message
+      onmessage?.({
+        data: JSON.stringify({
+          kind: "roster",
+          participants: {
+            "user-a": { id: "user-a", metadata: { name: "Alice" } },
+            "user-b": { id: "user-b", metadata: { name: "Bob" } },
+          },
+          ts: 12345,
+        }),
+      });
+
+      expect(rosterHandler).toHaveBeenCalledTimes(1);
+      expect(rosterHandler).toHaveBeenCalledWith({
+        participants: {
+          "user-a": { id: "user-a", metadata: { name: "Alice" } },
+          "user-b": { id: "user-b", metadata: { name: "Bob" } },
+        },
+        ts: 12345,
+      });
+    });
+
+    it("updates roster property when roster message received", () => {
+      let onmessage: ((event: { data: string }) => void) | null = null;
+
+      MockWebSocket.mockImplementation(() => {
+        const ws = {
+          readyState: 1,
+          onopen: null,
+          _onmessage: null as ((event: { data: string }) => void) | null,
+          onerror: null,
+          onclose: null,
+          close: vi.fn(),
+          send: vi.fn(),
+        };
+        Object.defineProperty(ws, "onmessage", {
+          get: () => ws._onmessage,
+          set: (handler: (event: { data: string }) => void) => {
+            ws._onmessage = handler;
+            onmessage = handler;
+          },
+        });
+        return ws;
+      });
+
+      const client = connect(`ws://127.0.0.1:${port}`, "token", {
+        channel: "test",
+      });
+
+      // Initially empty
+      expect(client.roster).toEqual({});
+
+      // Simulate roster message
+      onmessage?.({
+        data: JSON.stringify({
+          kind: "roster",
+          participants: {
+            "user-a": { id: "user-a", metadata: { name: "Alice" } },
+            "user-b": { id: "user-b", metadata: { name: "Bob" } },
+          },
+          ts: 12345,
+        }),
+      });
+
+      expect(client.roster).toEqual({
+        "user-a": { id: "user-a", metadata: { name: "Alice" } },
+        "user-b": { id: "user-b", metadata: { name: "Bob" } },
+      });
+
+      // Roster property returns a copy
+      const roster1 = client.roster;
+      const roster2 = client.roster;
+      expect(roster1).not.toBe(roster2);
+      expect(roster1).toEqual(roster2);
+    });
+
+    it("allows unsubscribing from roster handler", () => {
+      let onmessage: ((event: { data: string }) => void) | null = null;
+
+      MockWebSocket.mockImplementation(() => {
+        const ws = {
+          readyState: 1,
+          onopen: null,
+          _onmessage: null as ((event: { data: string }) => void) | null,
+          onerror: null,
+          onclose: null,
+          close: vi.fn(),
+          send: vi.fn(),
+        };
+        Object.defineProperty(ws, "onmessage", {
+          get: () => ws._onmessage,
+          set: (handler: (event: { data: string }) => void) => {
+            ws._onmessage = handler;
+            onmessage = handler;
+          },
+        });
+        return ws;
+      });
+
+      const rosterHandler = vi.fn();
+      const client = connect(`ws://127.0.0.1:${port}`, "token", {
+        channel: "test",
+      });
+      const unsub = client.onRoster(rosterHandler);
+
+      // First roster update
+      onmessage?.({
+        data: JSON.stringify({
+          kind: "roster",
+          participants: {
+            "user-a": { id: "user-a", metadata: {} },
+          },
+          ts: 12345,
+        }),
+      });
+      expect(rosterHandler).toHaveBeenCalledTimes(1);
+
+      // Unsubscribe
+      unsub();
+
+      // Second roster update - handler should not be called
+      onmessage?.({
+        data: JSON.stringify({
+          kind: "roster",
+          participants: {
+            "user-a": { id: "user-a", metadata: {} },
+            "user-b": { id: "user-b", metadata: {} },
+          },
+          ts: 12346,
+        }),
+      });
+      expect(rosterHandler).toHaveBeenCalledTimes(1);
+
+      // But roster property should still be updated
+      expect(client.roster).toEqual({
+        "user-a": { id: "user-a", metadata: {} },
+        "user-b": { id: "user-b", metadata: {} },
+      });
+    });
+
+    it("includes metadata in URL when provided", () => {
+      const metadata = { name: "Alice", status: "online" };
+      connect(`ws://127.0.0.1:${port}`, "token", {
+        channel: "test",
+        metadata,
+      });
+
+      expect(MockWebSocket).toHaveBeenCalledTimes(1);
+      const url = new URL(MockWebSocket.mock.calls[0][0] as string);
+      expect(url.searchParams.get("metadata")).toBe(JSON.stringify(metadata));
+    });
+  });
 });

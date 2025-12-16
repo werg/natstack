@@ -40,6 +40,33 @@ export interface Message<T = unknown> {
 }
 
 /**
+ * Participant metadata - arbitrary key-value data associated with a connected client.
+ */
+export type ParticipantMetadata = Record<string, unknown>;
+
+/**
+ * A participant in a channel with their metadata.
+ */
+export interface Participant<T extends ParticipantMetadata = ParticipantMetadata> {
+  /** The client's unique ID */
+  id: string;
+  /** Arbitrary metadata provided by the client on connection */
+  metadata: T;
+}
+
+/**
+ * Roster update from the server.
+ * Sent whenever a client joins or leaves the channel.
+ * This is idempotent - it contains the complete current state.
+ */
+export interface RosterUpdate<T extends ParticipantMetadata = ParticipantMetadata> {
+  /** Map of client ID to participant info (including metadata) */
+  participants: Record<string, Participant<T>>;
+  /** Timestamp of the update */
+  ts: number;
+}
+
+/**
  * Options for publishing a message.
  */
 export interface PublishOptions {
@@ -64,11 +91,17 @@ export interface ReconnectConfig {
 /**
  * Options for connecting to a channel.
  */
-export interface ConnectOptions {
+export interface ConnectOptions<T extends ParticipantMetadata = ParticipantMetadata> {
   /** Channel name to subscribe to */
   channel: string;
   /** Replay messages with id > sinceId */
   sinceId?: number;
   /** Enable auto-reconnection. Pass true for defaults, or a config object. Default: false */
   reconnect?: boolean | ReconnectConfig;
+  /** Metadata to associate with this participant. Sent to all other participants in roster updates. */
+  metadata?: T;
+  /** This client's ID (used for skipOwnMessages filtering) */
+  clientId?: string;
+  /** Skip messages sent by this client (echo suppression). Requires clientId to be set. Default: false */
+  skipOwnMessages?: boolean;
 }

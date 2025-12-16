@@ -769,7 +769,6 @@ runtime.parentId: string | null
 runtime.rpc: RpcBridge
 runtime.db: { open(name: string, readOnly?: boolean): Promise<Database> }
 runtime.fs: RuntimeFs
-runtime.fetch: RuntimeFetch
 runtime.parent: ParentHandle
 
 // Parent handles

@@ -5,13 +5,21 @@
  */
 
 import { PubSubError } from "./types.js";
-import type { Message, PublishOptions, ConnectOptions, ReconnectConfig } from "./types.js";
+import type {
+  Message,
+  PublishOptions,
+  ConnectOptions,
+  ReconnectConfig,
+  RosterUpdate,
+  ParticipantMetadata,
+  Participant,
+} from "./types.js";
 
 /**
  * Server message envelope.
  */
 interface ServerMessage {
-  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error";
+  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error" | "roster";
   id?: number;
   type?: string;
   payload?: unknown;
@@ -19,17 +27,18 @@ interface ServerMessage {
   ts?: number;
   ref?: number;
   error?: string;
+  participants?: Record<string, Participant>;
 }
 
 /**
  * PubSub client interface.
  */
-export interface PubSubClient {
+export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadata> {
   /** Async iterator for incoming messages */
   messages(): AsyncIterableIterator<Message>;
 
   /** Publish a message to the channel. Returns the message ID for persisted messages. */
-  publish<T>(type: string, payload: T, options?: PublishOptions): Promise<number | undefined>;
+  publish<P>(type: string, payload: P, options?: PublishOptions): Promise<number | undefined>;
 
   /** Wait for the ready signal (replay complete). Throws if timeout exceeded. */
   ready(timeoutMs?: number): Promise<void>;
@@ -51,6 +60,12 @@ export interface PubSubClient {
 
   /** Register reconnect handler (called after successful reconnection). Returns unsubscribe function. */
   onReconnect(handler: () => void): () => void;
+
+  /** Register roster update handler. Returns unsubscribe function. */
+  onRoster(handler: (roster: RosterUpdate<T>) => void): () => void;
+
+  /** Get the current roster participants (may be empty if no roster update received yet) */
+  readonly roster: Record<string, Participant<T>>;
 }
 
 /** Default reconnection configuration */
@@ -68,8 +83,12 @@ const DEFAULT_RECONNECT_CONFIG: Required<ReconnectConfig> = {
  * @param options - Connection options including channel and optional sinceId
  * @returns A PubSubClient instance
  */
-export function connect(serverUrl: string, token: string, options: ConnectOptions): PubSubClient {
-  const { channel, sinceId: initialSinceId, reconnect } = options;
+export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
+  serverUrl: string,
+  token: string,
+  options: ConnectOptions<T>
+): PubSubClient<T> {
+  const { channel, sinceId: initialSinceId, reconnect, metadata, clientId, skipOwnMessages } = options;
 
   // Parse reconnection config
   const reconnectEnabled = reconnect !== undefined && reconnect !== false;
@@ -100,6 +119,10 @@ export function connect(serverUrl: string, token: string, options: ConnectOption
   const errorHandlers = new Set<(error: Error) => void>();
   const disconnectHandlers = new Set<() => void>();
   const reconnectHandlers = new Set<() => void>();
+  const rosterHandlers = new Set<(roster: RosterUpdate<T>) => void>();
+
+  // Current roster state
+  let currentRoster: Record<string, Participant<T>> = {};
 
   // Ready promise management
   let readyResolve: (() => void) | null = null;
@@ -119,6 +142,9 @@ export function connect(serverUrl: string, token: string, options: ConnectOption
     url.searchParams.set("channel", channel);
     if (withSinceId !== undefined) {
       url.searchParams.set("sinceId", String(withSinceId));
+    }
+    if (metadata !== undefined) {
+      url.searchParams.set("metadata", JSON.stringify(metadata));
     }
     return url.toString();
   }
@@ -160,6 +186,19 @@ export function connect(serverUrl: string, token: string, options: ConnectOption
         break;
       }
 
+      case "roster": {
+        // Update current roster and notify handlers
+        currentRoster = (msg.participants ?? {}) as Record<string, Participant<T>>;
+        const rosterUpdate: RosterUpdate<T> = {
+          participants: currentRoster,
+          ts: msg.ts ?? Date.now(),
+        };
+        for (const handler of rosterHandlers) {
+          handler(rosterUpdate);
+        }
+        break;
+      }
+
       case "replay":
       case "persisted":
       case "ephemeral": {
@@ -176,6 +215,11 @@ export function connect(serverUrl: string, token: string, options: ConnectOption
             pending.resolve(msg.id);
             pendingPublishes.delete(msg.ref);
           }
+        }
+
+        // Skip own messages if configured
+        if (skipOwnMessages && clientId && msg.senderId === clientId) {
+          break;
         }
 
         const message: Message = {
@@ -417,6 +461,13 @@ export function connect(serverUrl: string, token: string, options: ConnectOption
     onReconnect: (handler: () => void) => {
       reconnectHandlers.add(handler);
       return () => reconnectHandlers.delete(handler);
+    },
+    onRoster: (handler: (roster: RosterUpdate<T>) => void) => {
+      rosterHandlers.add(handler);
+      return () => rosterHandlers.delete(handler);
+    },
+    get roster() {
+      return { ...currentRoster };
     },
   };
 }

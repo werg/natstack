@@ -50,10 +50,17 @@ interface Client {
   ws: WebSocket;
   clientId: string;
   channel: string;
+  metadata: Record<string, unknown>;
+}
+
+/** Participant info sent in roster messages */
+interface Participant {
+  id: string;
+  metadata: Record<string, unknown>;
 }
 
 interface ServerMessage {
-  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error";
+  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error" | "roster";
   id?: number;
   type?: string;
   payload?: unknown;
@@ -61,6 +68,8 @@ interface ServerMessage {
   ts?: number;
   ref?: number;
   error?: string;
+  /** For roster messages: map of client ID to participant info */
+  participants?: Record<string, Participant>;
 }
 
 interface ClientMessage {
@@ -247,6 +256,18 @@ export class PubSubServer {
     const channel = url.searchParams.get("channel") ?? "";
     const sinceIdParam = url.searchParams.get("sinceId");
     const sinceId = sinceIdParam ? parseInt(sinceIdParam, 10) : null;
+    const metadataParam = url.searchParams.get("metadata");
+
+    // Parse metadata (defaults to empty object)
+    let metadata: Record<string, unknown> = {};
+    if (metadataParam) {
+      try {
+        metadata = JSON.parse(metadataParam);
+      } catch {
+        ws.close(4003, "invalid metadata");
+        return;
+      }
+    }
 
     // Validate token
     const clientId = this.tokenValidator.validateToken(token);
@@ -260,7 +281,7 @@ export class PubSubServer {
       return;
     }
 
-    const client: Client = { ws, clientId, channel };
+    const client: Client = { ws, clientId, channel, metadata };
 
     // Add to channel
     if (!this.channels.has(channel)) {
@@ -275,6 +296,9 @@ export class PubSubServer {
 
     // Signal ready
     this.send(ws, { kind: "ready" });
+
+    // Broadcast updated roster to all clients in the channel
+    this.broadcastRoster(channel);
 
     // Handle incoming messages
     ws.on("message", (data) => {
@@ -291,6 +315,9 @@ export class PubSubServer {
       this.channels.get(channel)?.delete(client);
       if (this.channels.get(channel)?.size === 0) {
         this.channels.delete(channel);
+      } else {
+        // Broadcast updated roster after removing the client
+        this.broadcastRoster(channel);
       }
     });
   }
@@ -391,6 +418,39 @@ export class PubSubServer {
   private send(ws: WebSocket, msg: ServerMessage): void {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(msg));
+    }
+  }
+
+  /**
+   * Broadcast the current roster (participants with metadata) to all clients in a channel.
+   * This is an idempotent operation - clients receive the full current state.
+   * When a client has multiple connections, uses the metadata from the most recent connection.
+   */
+  private broadcastRoster(channel: string): void {
+    const clients = this.channels.get(channel);
+    if (!clients || clients.size === 0) return;
+
+    // Build participants map (a single clientId may have multiple connections,
+    // we use the last one's metadata - which is fine since it's the same client)
+    const participants: Record<string, Participant> = {};
+    for (const client of clients) {
+      participants[client.clientId] = {
+        id: client.clientId,
+        metadata: client.metadata,
+      };
+    }
+
+    const rosterMsg: ServerMessage = {
+      kind: "roster",
+      participants,
+      ts: Date.now(),
+    };
+
+    const data = JSON.stringify(rosterMsg);
+    for (const client of clients) {
+      if (client.ws.readyState === WebSocket.OPEN) {
+        client.ws.send(data);
+      }
     }
   }
 

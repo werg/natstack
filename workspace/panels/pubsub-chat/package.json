@@ -1,0 +1,16 @@
+{
+  "name": "@natstack-panels/pubsub-chat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "title": "PubSub Chat Demo",
+    "entry": "index.tsx"
+  },
+  "dependencies": {
+    "@natstack/runtime": "workspace:*",
+    "@natstack/react": "workspace:*",
+    "@natstack/pubsub": "workspace:*",
+    "@radix-ui/themes": "^3.2.0"
+  }
+}

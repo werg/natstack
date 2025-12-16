@@ -171,6 +171,20 @@ export default function ChildPanelLauncher() {
     }
   };
 
+  const launchPubSubChatDemo = async () => {
+    try {
+      setStatus("Launching PubSub chat demo...");
+      const child = await createChild({
+        type: "app",
+        name: "pubsub-chat-demo",
+        source: "panels/pubsub-chat",
+      });
+      setStatus(`Launched PubSub chat: ${child.name}`);
+    } catch (error) {
+      setStatus(`Failed to launch: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
   const setRandomTitle = async () => {
     const title = `Radix Panel ${Math.floor(Math.random() * 1000)}`;
     await setTitle(title);
@@ -745,6 +759,9 @@ export default function ChildPanelLauncher() {
             </Button>
             <Button onClick={launchAgenticNotebook} color="blue">
               Launch Agentic Notebook
+            </Button>
+            <Button onClick={launchPubSubChatDemo} color="cyan">
+              Launch PubSub Chat Demo
             </Button>
             <Button variant="soft" onClick={setRandomTitle}>
               Set random title

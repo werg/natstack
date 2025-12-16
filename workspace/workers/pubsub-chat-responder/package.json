@@ -1,0 +1,15 @@
+{
+  "name": "@natstack-workers/pubsub-chat-responder",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "title": "PubSub Chat AI Responder",
+    "runtime": "worker"
+  },
+  "dependencies": {
+    "@natstack/runtime": "workspace:*",
+    "@natstack/ai": "workspace:*",
+    "@natstack/pubsub": "workspace:*"
+  }
+}
