@@ -47,7 +47,7 @@ describe("type-check", () => {
       });
 
       expect(result.errors.length).toBeGreaterThan(0);
-      expect(result.errors[0].message).toContain("string");
+      expect(result.errors[0]!.message).toContain("string");
     });
 
     it("should detect syntax errors", async () => {
@@ -68,9 +68,9 @@ const y: string = 42;`,
       );
 
       expect(result.errors.length).toBeGreaterThan(0);
-      const error = result.errors[0];
-      expect(error.line).toBe(2);
-      expect(error.column).toBeDefined();
+      const error = result.errors[0]!;
+      expect(error!.line).toBe(2);
+      expect(error!.column).toBeDefined();
     });
 
     it("should handle JSX in typescript mode", async () => {
@@ -152,7 +152,7 @@ const x: number = "bad";`,
       });
 
       if (result.errors.length > 0) {
-        expect(result.errors[0].file).toContain(".tsx");
+        expect(result.errors[0]!.file).toContain(".tsx");
       }
     });
   });
@@ -185,8 +185,8 @@ const x: number = "bad";`,
       } catch (e) {
         expect(e).toBeInstanceOf(Error);
         const error = e as Error;
-        expect(error.message).toContain("input.tsx");
-        expect(error.message).toContain("string");
+        expect(error!.message).toContain("input.tsx");
+        expect(error!.message).toContain("string");
       }
     });
 
@@ -203,7 +203,7 @@ const b: string = 42;`,
       } catch (e) {
         const error = e as Error;
         // Should have line:column format
-        expect(error.message).toMatch(/:\d+:\d+:/);
+        expect(error!.message).toMatch(/:\d+:\d+:/);
       }
     });
   });

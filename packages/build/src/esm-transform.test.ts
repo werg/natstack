@@ -26,7 +26,7 @@ async function runTransformed(code: string, importImpl = vi.fn()) {
 describe("transformEsmForAsyncExecution", () => {
   it("captures default exports (expression)", async () => {
     const { exports } = await runTransformed(`export default 42;`);
-    expect(exports.default).toBe(42);
+    expect(exports["default"]).toBe(42);
   });
 
   it("captures named exports and declarations", async () => {
@@ -36,9 +36,9 @@ describe("transformEsmForAsyncExecution", () => {
       export function bar() { return 2; }
     `);
 
-    expect(exports.foo).toBe(1);
-    expect(typeof exports.bar).toBe("function");
-    expect((exports.bar as () => number)()).toBe(2);
+    expect(exports["foo"]).toBe(1);
+    expect(typeof exports["bar"]).toBe("function");
+    expect((exports["bar"] as () => number)()).toBe(2);
   });
 
   it("rewrites bare imports through importModule", async () => {
@@ -53,8 +53,8 @@ describe("transformEsmForAsyncExecution", () => {
     );
 
     expect(importModule).toHaveBeenCalledWith("pkg");
-    expect(exports.def).toBe("DEFAULT");
-    expect(exports.alias).toBe("NAMED");
+    expect(exports["def"]).toBe("DEFAULT");
+    expect(exports["alias"]).toBe("NAMED");
   });
 
   it("supports export * and re-exports", async () => {
@@ -66,8 +66,8 @@ describe("transformEsmForAsyncExecution", () => {
     const { exports } = await runTransformed(`export * from "mod";`, importModule);
 
     expect(importModule).toHaveBeenCalledWith("mod");
-    expect(exports.foo).toBe("bar");
-    expect(exports.default).toBe("defaultVal");
+    expect(exports["foo"]).toBe("bar");
+    expect(exports["default"]).toBe("defaultVal");
   });
 
   it("handles top-level await", async () => {
@@ -76,6 +76,6 @@ describe("transformEsmForAsyncExecution", () => {
       export { value };
     `);
 
-    expect(exports.value).toBe(5);
+    expect(exports["value"]).toBe(5);
   });
 });

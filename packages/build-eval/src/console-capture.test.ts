@@ -25,8 +25,8 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       expect(output).toHaveLength(1);
-      expect(output[0].level).toBe("log");
-      expect(output[0].args).toEqual(["hello", "world"]);
+      expect(output[0]!.level).toBe("log");
+      expect(output[0]!.args).toEqual(["hello", "world"]);
     });
 
     it("should capture console.warn calls", () => {
@@ -35,8 +35,8 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       expect(output).toHaveLength(1);
-      expect(output[0].level).toBe("warn");
-      expect(output[0].args).toEqual(["warning message"]);
+      expect(output[0]!.level).toBe("warn");
+      expect(output[0]!.args).toEqual(["warning message"]);
     });
 
     it("should capture console.error calls", () => {
@@ -45,8 +45,8 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       expect(output).toHaveLength(1);
-      expect(output[0].level).toBe("error");
-      expect(output[0].args).toEqual(["error message"]);
+      expect(output[0]!.level).toBe("error");
+      expect(output[0]!.args).toEqual(["error message"]);
     });
 
     it("should capture console.info calls", () => {
@@ -55,7 +55,7 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       expect(output).toHaveLength(1);
-      expect(output[0].level).toBe("info");
+      expect(output[0]!.level).toBe("info");
     });
 
     it("should capture console.debug calls", () => {
@@ -64,7 +64,7 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       expect(output).toHaveLength(1);
-      expect(output[0].level).toBe("debug");
+      expect(output[0]!.level).toBe("debug");
     });
 
     it("should capture multiple calls in order", () => {
@@ -75,9 +75,9 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       expect(output).toHaveLength(3);
-      expect(output[0].args).toEqual(["first"]);
-      expect(output[1].args).toEqual(["second"]);
-      expect(output[2].args).toEqual(["third"]);
+      expect(output[0]!.args).toEqual(["first"]);
+      expect(output[1]!.args).toEqual(["second"]);
+      expect(output[2]!.args).toEqual(["third"]);
     });
 
     it("should include timestamp", () => {
@@ -86,7 +86,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.log("test");
 
       const output = capture.getOutput();
-      expect(output[0].timestamp).toBe(Date.now());
+      expect(output[0]!.timestamp).toBe(Date.now());
     });
   });
 
@@ -117,10 +117,10 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       expect(output).toHaveLength(1);
-      expect(output[0].level).toBe("debug");
-      expect(output[0].args[0]).toBe("trace message");
+      expect(output[0]!.level).toBe("debug");
+      expect(output[0]!.args[0]).toBe("trace message");
       // Stack trace should be included
-      expect(output[0].args[1]).toMatch(/\n/);
+      expect(output[0]!.args[1]).toMatch(/\n/);
     });
   });
 
@@ -131,8 +131,8 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       expect(output).toHaveLength(1);
-      expect(output[0].level).toBe("log");
-      expect(output[0].args).toEqual([{ key: "value" }]);
+      expect(output[0]!.level).toBe("log");
+      expect(output[0]!.args).toEqual([{ key: "value" }]);
     });
 
     it("should capture dirxml as log", () => {
@@ -141,7 +141,7 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       expect(output).toHaveLength(1);
-      expect(output[0].level).toBe("log");
+      expect(output[0]!.level).toBe("log");
     });
   });
 
@@ -156,8 +156,8 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       expect(output).toHaveLength(1);
-      expect(output[0].level).toBe("log");
-      expect(output[0].args).toEqual(["Table:", data]);
+      expect(output[0]!.level).toBe("log");
+      expect(output[0]!.args).toEqual(["Table:", data]);
     });
 
     it("should filter columns for array data", () => {
@@ -169,7 +169,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.table(data, ["name", "age"]);
 
       const output = capture.getOutput();
-      expect(output[0].args[1]).toEqual([
+      expect(output[0]!.args[1]).toEqual([
         { name: "Alice", age: 30 },
         { name: "Bob", age: 25 },
       ]);
@@ -181,7 +181,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.table(data);
 
       const output = capture.getOutput();
-      expect(output[0].args).toEqual(["Table:", data]);
+      expect(output[0]!.args).toEqual(["Table:", data]);
     });
 
     it("should filter columns for object data", () => {
@@ -190,7 +190,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.table(data, ["a", "c"]);
 
       const output = capture.getOutput();
-      expect(output[0].args[1]).toEqual({ a: 1, c: 3 });
+      expect(output[0]!.args[1]).toEqual({ a: 1, c: 3 });
     });
 
     it("should handle primitive data", () => {
@@ -198,7 +198,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.table("primitive");
 
       const output = capture.getOutput();
-      expect(output[0].args).toEqual(["primitive"]);
+      expect(output[0]!.args).toEqual(["primitive"]);
     });
 
     it("should handle empty array", () => {
@@ -207,7 +207,7 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       // Empty array still gets "Table:" prefix from the else branch
-      expect(output[0].args).toEqual(["Table:", []]);
+      expect(output[0]!.args).toEqual(["Table:", []]);
     });
   });
 
@@ -220,9 +220,9 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       expect(output).toHaveLength(3);
-      expect(output[0].args).toEqual(["default: 1"]);
-      expect(output[1].args).toEqual(["default: 2"]);
-      expect(output[2].args).toEqual(["default: 3"]);
+      expect(output[0]!.args).toEqual(["default: 1"]);
+      expect(output[1]!.args).toEqual(["default: 2"]);
+      expect(output[2]!.args).toEqual(["default: 3"]);
     });
 
     it("should count with custom label", () => {
@@ -231,8 +231,8 @@ describe("createConsoleCapture", () => {
       capture.proxy.count("myCounter");
 
       const output = capture.getOutput();
-      expect(output[0].args).toEqual(["myCounter: 1"]);
-      expect(output[1].args).toEqual(["myCounter: 2"]);
+      expect(output[0]!.args).toEqual(["myCounter: 1"]);
+      expect(output[1]!.args).toEqual(["myCounter: 2"]);
     });
 
     it("should track multiple labels independently", () => {
@@ -242,9 +242,9 @@ describe("createConsoleCapture", () => {
       capture.proxy.count("a");
 
       const output = capture.getOutput();
-      expect(output[0].args).toEqual(["a: 1"]);
-      expect(output[1].args).toEqual(["b: 1"]);
-      expect(output[2].args).toEqual(["a: 2"]);
+      expect(output[0]!.args).toEqual(["a: 1"]);
+      expect(output[1]!.args).toEqual(["b: 1"]);
+      expect(output[2]!.args).toEqual(["a: 2"]);
     });
 
     it("should reset counter", () => {
@@ -255,7 +255,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.count("x");
 
       const output = capture.getOutput();
-      expect(output[2].args).toEqual(["x: 1"]);
+      expect(output[2]!.args).toEqual(["x: 1"]);
     });
   });
 
@@ -269,10 +269,10 @@ describe("createConsoleCapture", () => {
       capture.proxy.log("after group");
 
       const output = capture.getOutput();
-      expect(output[0].args).toEqual(["before group"]);
-      expect(output[1].args).toEqual(["Group Label"]);
-      expect(output[2].args).toEqual(["  ", "inside group"]);
-      expect(output[3].args).toEqual(["after group"]);
+      expect(output[0]!.args).toEqual(["before group"]);
+      expect(output[1]!.args).toEqual(["Group Label"]);
+      expect(output[2]!.args).toEqual(["  ", "inside group"]);
+      expect(output[3]!.args).toEqual(["after group"]);
     });
 
     it("should handle nested groups", () => {
@@ -287,10 +287,10 @@ describe("createConsoleCapture", () => {
       capture.proxy.log("outside");
 
       const output = capture.getOutput();
-      expect(output[1].args).toEqual(["  ", "level 1"]);
-      expect(output[3].args).toEqual(["    ", "level 2"]);
-      expect(output[4].args).toEqual(["  ", "back to level 1"]);
-      expect(output[5].args).toEqual(["outside"]);
+      expect(output[1]!.args).toEqual(["  ", "level 1"]);
+      expect(output[3]!.args).toEqual(["    ", "level 2"]);
+      expect(output[4]!.args).toEqual(["  ", "back to level 1"]);
+      expect(output[5]!.args).toEqual(["outside"]);
     });
 
     it("should handle groupCollapsed", () => {
@@ -300,8 +300,8 @@ describe("createConsoleCapture", () => {
       capture.proxy.groupEnd();
 
       const output = capture.getOutput();
-      expect(output[0].args).toEqual(["[collapsed]", "Collapsed"]);
-      expect(output[1].args).toEqual(["  ", "inside"]);
+      expect(output[0]!.args).toEqual(["[collapsed]", "Collapsed"]);
+      expect(output[1]!.args).toEqual(["  ", "inside"]);
     });
 
     it("should not go below zero depth", () => {
@@ -311,7 +311,7 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       // Should not have indentation
-      expect(output[0].args).toEqual(["test"]);
+      expect(output[0]!.args).toEqual(["test"]);
     });
 
     it("should handle empty group labels", () => {
@@ -322,7 +322,7 @@ describe("createConsoleCapture", () => {
 
       // Empty group should not log a label
       const output = capture.getOutput();
-      expect(output[0].args).toEqual(["  ", "inside"]);
+      expect(output[0]!.args).toEqual(["  ", "inside"]);
     });
   });
 
@@ -337,7 +337,7 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       expect(output).toHaveLength(1);
-      expect(output[0].args[0]).toMatch(/^default: \d+\.\d+ms$/);
+      expect(output[0]!.args[0]).toMatch(/^default: \d+\.\d+ms$/);
     });
 
     it("should track timing with custom label", () => {
@@ -349,7 +349,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.timeEnd("myTimer");
 
       const output = capture.getOutput();
-      expect(output[0].args[0]).toMatch(/^myTimer: \d+\.\d+ms$/);
+      expect(output[0]!.args[0]).toMatch(/^myTimer: \d+\.\d+ms$/);
     });
 
     it("should log intermediate time with timeLog", () => {
@@ -364,7 +364,7 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       expect(output).toHaveLength(2);
-      expect(output[0].args[1]).toBe("checkpoint");
+      expect(output[0]!.args[1]).toBe("checkpoint");
     });
 
     it("should warn when starting duplicate timer", () => {
@@ -374,8 +374,8 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       expect(output).toHaveLength(1);
-      expect(output[0].level).toBe("warn");
-      expect(output[0].args[0]).toContain("already exists");
+      expect(output[0]!.level).toBe("warn");
+      expect(output[0]!.args[0]).toContain("already exists");
     });
 
     it("should warn when ending non-existent timer", () => {
@@ -383,8 +383,8 @@ describe("createConsoleCapture", () => {
       capture.proxy.timeEnd("nonexistent");
 
       const output = capture.getOutput();
-      expect(output[0].level).toBe("warn");
-      expect(output[0].args[0]).toContain("does not exist");
+      expect(output[0]!.level).toBe("warn");
+      expect(output[0]!.args[0]).toContain("does not exist");
     });
 
     it("should warn when logging non-existent timer", () => {
@@ -392,8 +392,8 @@ describe("createConsoleCapture", () => {
       capture.proxy.timeLog("nonexistent");
 
       const output = capture.getOutput();
-      expect(output[0].level).toBe("warn");
-      expect(output[0].args[0]).toContain("does not exist");
+      expect(output[0]!.level).toBe("warn");
+      expect(output[0]!.args[0]).toContain("does not exist");
     });
   });
 
@@ -403,8 +403,8 @@ describe("createConsoleCapture", () => {
       capture.proxy.timeStamp("marker");
 
       const output = capture.getOutput();
-      expect(output[0].level).toBe("debug");
-      expect(output[0].args[0]).toBe("TimeStamp: marker");
+      expect(output[0]!.level).toBe("debug");
+      expect(output[0]!.args[0]).toBe("TimeStamp: marker");
     });
 
     it("should capture timeStamp without label", () => {
@@ -413,7 +413,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.timeStamp();
 
       const output = capture.getOutput();
-      expect(output[0].args[0]).toMatch(/^TimeStamp: \d+$/);
+      expect(output[0]!.args[0]).toMatch(/^TimeStamp: \d+$/);
     });
   });
 
@@ -423,7 +423,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.clear();
 
       const output = capture.getOutput();
-      expect(output[0].args).toEqual(["Console was cleared"]);
+      expect(output[0]!.args).toEqual(["Console was cleared"]);
     });
   });
 
@@ -442,8 +442,8 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       expect(output).toHaveLength(1);
-      expect(output[0].level).toBe("error");
-      expect(output[0].args).toEqual(["Assertion failed:", "assertion failed!"]);
+      expect(output[0]!.level).toBe("error");
+      expect(output[0]!.args).toEqual(["Assertion failed:", "assertion failed!"]);
     });
 
     it("should handle falsy values", () => {
@@ -501,7 +501,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.count("x");
 
       const output = capture.getOutput();
-      expect(output[0].args).toEqual(["x: 1"]);
+      expect(output[0]!.args).toEqual(["x: 1"]);
     });
 
     it("should reset timers", () => {
@@ -511,7 +511,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.timeEnd("t");
 
       const output = capture.getOutput();
-      expect(output[0].level).toBe("warn");
+      expect(output[0]!.level).toBe("warn");
     });
 
     it("should reset group depth", () => {
@@ -523,7 +523,7 @@ describe("createConsoleCapture", () => {
 
       const output = capture.getOutput();
       // Should not be indented
-      expect(output[0].args).toEqual(["test"]);
+      expect(output[0]!.args).toEqual(["test"]);
     });
   });
 });

@@ -16,9 +16,11 @@ import { connect, type PubSubClient, type Message, type RosterUpdate, type Parti
  */
 interface ChatMessage {
   id: string;
-  role: "user" | "assistant";
+  /** Client ID of the sender - used to look up participant metadata */
+  senderId: string;
   content: string;
-  streaming?: boolean;
+  /** True when the message is complete (no more updates expected) */
+  complete?: boolean;
   replyTo?: string;
   error?: string;
   /** True if locally added but not yet confirmed via broadcast */
@@ -30,9 +32,7 @@ interface ChatMessage {
  */
 interface NewMessage {
   id: string;
-  role: "user" | "assistant";
   content: string;
-  streaming?: boolean;
   replyTo?: string;
 }
 
@@ -43,8 +43,8 @@ interface UpdateMessage {
   id: string;
   /** Content to append to existing message */
   content?: string;
-  /** Set to false to mark streaming complete */
-  streaming?: boolean;
+  /** Set to true to mark message as complete */
+  complete?: boolean;
 }
 
 /**
@@ -58,8 +58,7 @@ interface ErrorMessage {
 /** Metadata for participants in this channel */
 interface ChatParticipantMetadata {
   name: string;
-  role: "panel" | "worker";
-  [key: string]: unknown;
+  type: "panel" | "worker";
 }
 
 const CHANNEL_NAME = "pubsub-chat-demo";
@@ -111,7 +110,7 @@ export default function PubSubChatDemo() {
           clientId, // For echo suppression
           metadata: {
             name: "Chat Panel",
-            role: "panel",
+            type: "panel",
           },
         });
         clientRef.current = client;
@@ -155,9 +154,8 @@ export default function PubSubChatDemo() {
             // New message from another client
             return [...prev, {
               id: payload.id,
-              role: payload.role,
+              senderId: msg.senderId,
               content: payload.content,
-              streaming: payload.streaming,
               replyTo: payload.replyTo,
             }];
           });
@@ -171,7 +169,7 @@ export default function PubSubChatDemo() {
               ? {
                   ...m,
                   content: payload.content !== undefined ? m.content + payload.content : m.content,
-                  streaming: payload.streaming ?? m.streaming,
+                  complete: payload.complete ?? m.complete,
                 }
               : m
           ));
@@ -182,7 +180,7 @@ export default function PubSubChatDemo() {
           const payload = msg.payload as ErrorMessage;
           setMessages(prev => prev.map(m =>
             m.id === payload.id
-              ? { ...m, streaming: false, error: payload.error }
+              ? { ...m, complete: true, error: payload.error }
               : m
           ));
           break;
@@ -208,8 +206,9 @@ export default function PubSubChatDemo() {
 
     const chatMsg: ChatMessage = {
       id: messageId,
-      role: "user",
+      senderId: clientId,
       content: text,
+      complete: true, // User messages are complete immediately
       pending: true, // Optimistic - will be confirmed when broadcast arrives
     };
 
@@ -219,7 +218,6 @@ export default function PubSubChatDemo() {
     // Publish to channel (persisted) - we'll receive the broadcast back which converts pending→sent
     await clientRef.current.publish("message", {
       id: messageId,
-      role: "user",
       content: text,
     } satisfies NewMessage);
   }, [input]);
@@ -232,8 +230,14 @@ export default function PubSubChatDemo() {
   };
 
   // Compute participant counts
-  const panelCount = Object.values(participants).filter(p => p.metadata.role === "panel").length;
-  const workerCount = Object.values(participants).filter(p => p.metadata.role === "worker").length;
+  const panelCount = Object.values(participants).filter(p => p.metadata.type === "panel").length;
+  const workerCount = Object.values(participants).filter(p => p.metadata.type === "worker").length;
+
+  // Helper to get sender info from participants roster
+  const getSenderInfo = (senderId: string) => {
+    const participant = participants[senderId];
+    return participant?.metadata ?? { name: "Unknown", type: "panel" as const };
+  };
 
   return (
     <Flex direction="column" style={{ height: "100vh", padding: 16 }} gap="3">
@@ -245,12 +249,12 @@ export default function PubSubChatDemo() {
             {connected ? "Connected" : status}
           </Badge>
           {panelCount > 0 && (
-            <Badge color="blue" title={Object.values(participants).filter(p => p.metadata.role === "panel").map(p => p.metadata.name).join(", ")}>
+            <Badge color="blue" title={Object.values(participants).filter(p => p.metadata.type === "panel").map(p => p.metadata.name).join(", ")}>
               {panelCount} Panel{panelCount !== 1 ? "s" : ""}
             </Badge>
           )}
           {workerCount > 0 && (
-            <Badge color="purple" title={Object.values(participants).filter(p => p.metadata.role === "worker").map(p => p.metadata.name).join(", ")}>
+            <Badge color="purple" title={Object.values(participants).filter(p => p.metadata.type === "worker").map(p => p.metadata.name).join(", ")}>
               {workerCount} Worker{workerCount !== 1 ? "s" : ""}
             </Badge>
           )}
@@ -266,37 +270,42 @@ export default function PubSubChatDemo() {
                 Send a message to start chatting with the AI worker via PubSub
               </Text>
             ) : (
-              messages.map(msg => (
-                <Box
-                  key={msg.id}
-                  style={{
-                    alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
-                    maxWidth: "80%",
-                  }}
-                >
-                  <Card
+              messages.map(msg => {
+                const sender = getSenderInfo(msg.senderId);
+                const isPanel = sender.type === "panel";
+                const isStreaming = !msg.complete && !msg.error;
+                return (
+                  <Box
+                    key={msg.id}
                     style={{
-                      backgroundColor: msg.role === "user"
-                        ? "var(--accent-9)"
-                        : msg.error
-                          ? "var(--red-3)"
-                          : "var(--gray-3)",
-                      opacity: msg.pending ? 0.7 : 1,
+                      alignSelf: isPanel ? "flex-end" : "flex-start",
+                      maxWidth: "80%",
                     }}
                   >
-                    <Text
-                      size="2"
+                    <Card
                       style={{
-                        color: msg.role === "user" ? "white" : msg.error ? "var(--red-11)" : "inherit",
-                        whiteSpace: "pre-wrap",
+                        backgroundColor: isPanel
+                          ? "var(--accent-9)"
+                          : msg.error
+                            ? "var(--red-3)"
+                            : "var(--gray-3)",
+                        opacity: msg.pending ? 0.7 : 1,
                       }}
                     >
-                      {msg.error ? `Error: ${msg.error}` : msg.content || (msg.streaming ? "..." : "")}
-                      {msg.streaming && !msg.error && <span className="cursor">|</span>}
-                    </Text>
-                  </Card>
-                </Box>
-              ))
+                      <Text
+                        size="2"
+                        style={{
+                          color: isPanel ? "white" : msg.error ? "var(--red-11)" : "inherit",
+                          whiteSpace: "pre-wrap",
+                        }}
+                      >
+                        {msg.error ? `Error: ${msg.error}` : msg.content || (isStreaming ? "..." : "")}
+                        {isStreaming && <span className="cursor">|</span>}
+                      </Text>
+                    </Card>
+                  </Box>
+                );
+              })
             )}
             <div ref={scrollRef} />
           </Flex>

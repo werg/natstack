@@ -33,7 +33,7 @@ describe("MDXOptions type", () => {
       },
     };
     expect(options.components).toBeDefined();
-    expect(options.components?.div).toBe(CustomDiv);
+    expect(options.components?.['div']).toBe(CustomDiv);
   });
 
   it("should accept scope option", () => {
@@ -44,7 +44,7 @@ describe("MDXOptions type", () => {
       },
     };
     expect(options.scope).toBeDefined();
-    expect(options.scope?.data).toEqual({ value: 42 });
+    expect(options.scope?.['data']).toEqual({ value: 42 });
   });
 
   it("should accept signal option", () => {
@@ -228,7 +228,7 @@ describe("type composition", () => {
 
     // Test that we can call Component with components
     const CustomParagraph: AnyComponent = () => null;
-    const element = result.Component({ components: { p: CustomParagraph } });
+    const element = (result.Component as (props: any) => any)({ components: { p: CustomParagraph } });
     expect(element).toBeNull();
   });
 
@@ -245,7 +245,7 @@ describe("type composition", () => {
     };
 
     // Components from options should be compatible with Component props
-    const element = result.Component({ components: options.components });
+    const element = (result.Component as (props: any) => any)({ components: options.components });
     expect(element).toBeNull();
   });
 });
@@ -269,7 +269,7 @@ describe("edge cases", () => {
         undefinedValue: undefined,
       },
     };
-    expect(options.scope?.undefinedValue).toBeUndefined();
+    expect(options.scope?.['undefinedValue']).toBeUndefined();
   });
 
   it("should allow nested objects in scope", () => {
@@ -282,6 +282,6 @@ describe("edge cases", () => {
         },
       },
     };
-    expect(options.scope?.nested).toEqual({ deeply: { value: "test" } });
+    expect(options.scope?.['nested']).toEqual({ deeply: { value: "test" } });
   });
 });

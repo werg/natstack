@@ -6,7 +6,7 @@
  */
 
 import { pubsubConfig, setTitle, id } from "@natstack/runtime";
-import { connect, type Message, type PubSubClient } from "@natstack/pubsub";
+import { connect, type PubSubClient } from "@natstack/pubsub";
 import { ai } from "@natstack/ai";
 
 // Set worker title
@@ -20,9 +20,7 @@ const CHANNEL_NAME = "pubsub-chat-demo";
  */
 interface NewMessage {
   id: string;
-  role: "user" | "assistant";
   content: string;
-  streaming?: boolean;
   replyTo?: string;
 }
 
@@ -32,7 +30,8 @@ interface NewMessage {
 interface UpdateMessage {
   id: string;
   content?: string;
-  streaming?: boolean;
+  /** Set to true to mark message as complete */
+  complete?: boolean;
 }
 
 /**
@@ -46,8 +45,7 @@ interface ErrorMessage {
 /** Metadata for participants in this channel (shared with panel) */
 interface ChatParticipantMetadata {
   name: string;
-  role: "panel" | "worker";
-  [key: string]: unknown;
+  type: "panel" | "worker";
 }
 
 function log(message: string): void {
@@ -68,13 +66,13 @@ async function main() {
     reconnect: true,
     metadata: {
       name: "AI Responder",
-      role: "worker",
+      type: "worker",
     },
   });
 
   // Log roster changes
   client.onRoster((roster) => {
-    const names = Object.values(roster.participants).map(p => `${p.metadata.name} (${p.metadata.role})`);
+    const names = Object.values(roster.participants).map(p => `${p.metadata.name} (${p.metadata.type})`);
     log(`Roster updated: ${names.join(", ")}`);
   });
 
@@ -86,9 +84,10 @@ async function main() {
     if (msg.type !== "message") continue;
 
     const payload = msg.payload as NewMessage;
+    const sender = client.roster[msg.senderId];
 
-    // Only respond to user messages (not our own)
-    if (payload.role === "user" && msg.senderId !== id) {
+    // Only respond to messages from panels (not our own or other workers)
+    if (sender?.metadata.type === "panel" && msg.senderId !== id) {
       await handleUserMessage(client, payload.id, payload.content);
     }
   }
@@ -103,12 +102,10 @@ async function handleUserMessage(
 
   const responseId = `response-${userMessageId}`;
 
-  // Create new assistant message (streaming)
+  // Create new message (will stream content via updates)
   await client.publish("message", {
     id: responseId,
-    role: "assistant",
     content: "",
-    streaming: true,
     replyTo: userMessageId,
   } satisfies NewMessage, { persist: false });
 
@@ -134,7 +131,7 @@ async function handleUserMessage(
     // Mark message as complete (persisted for history)
     await client.publish("update-message", {
       id: responseId,
-      streaming: false,
+      complete: true,
     } satisfies UpdateMessage);
 
     log(`Completed response for ${userMessageId}`);

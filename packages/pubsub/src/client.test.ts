@@ -129,7 +129,7 @@ describe("PubSubClient", () => {
 
       // Simulate server sending ready
       setTimeout(() => {
-        onmessage?.({ data: JSON.stringify({ kind: "ready" }) });
+        onmessage!({ data: JSON.stringify({ kind: "ready" }) });
       }, 10);
 
       await expect(client.ready(1000)).resolves.toBeUndefined();
@@ -185,7 +185,7 @@ describe("PubSubClient", () => {
 
       // Send ready
       setTimeout(() => {
-        onmessage?.({ data: JSON.stringify({ kind: "ready" }) });
+        onmessage!({ data: JSON.stringify({ kind: "ready" }) });
       }, 5);
       await client.ready();
 
@@ -194,7 +194,7 @@ describe("PubSubClient", () => {
 
       // Verify send was called
       expect(mockSend).toHaveBeenCalled();
-      const sentMsg = JSON.parse(mockSend.mock.calls[0][0] as string) as {
+      const sentMsg = JSON.parse(mockSend.mock.calls[0]![0] as string) as {
         action: string;
         type: string;
         payload: object;
@@ -208,7 +208,7 @@ describe("PubSubClient", () => {
       expect(sentMsg.ref).toBe(1);
 
       // Simulate response with ref
-      onmessage?.({
+      onmessage!({
         data: JSON.stringify({
           kind: "persisted",
           id: 123,
@@ -276,12 +276,12 @@ describe("PubSubClient", () => {
       client.onError(errorHandler);
 
       // Simulate server error
-      onmessage?.({
+      onmessage!({
         data: JSON.stringify({ kind: "error", error: "test error" }),
       });
 
       expect(errorHandler).toHaveBeenCalledTimes(1);
-      const error = errorHandler.mock.calls[0][0] as PubSubError;
+      const error = errorHandler.mock.calls[0]![0] as PubSubError;
       expect(error).toBeInstanceOf(PubSubError);
       expect(error.message).toBe("test error");
       expect(error.code).toBe("server");
@@ -317,7 +317,7 @@ describe("PubSubClient", () => {
 
       // Send ready
       setTimeout(() => {
-        onmessage?.({ data: JSON.stringify({ kind: "ready" }) });
+        onmessage!({ data: JSON.stringify({ kind: "ready" }) });
       }, 5);
       await client.ready();
 
@@ -325,7 +325,7 @@ describe("PubSubClient", () => {
       const publishPromise = client.publish("test-type", { data: "hello" });
 
       // Simulate server error with ref
-      onmessage?.({
+      onmessage!({
         data: JSON.stringify({ kind: "error", error: "payload not serializable", ref: 1 }),
       });
 
@@ -371,12 +371,12 @@ describe("PubSubClient", () => {
       client.onError(errorHandler);
 
       // Simulate validation error
-      onmessage?.({
+      onmessage!({
         data: JSON.stringify({ kind: "error", error: "invalid message format" }),
       });
 
       expect(errorHandler).toHaveBeenCalledTimes(1);
-      const error = errorHandler.mock.calls[0][0] as PubSubError;
+      const error = errorHandler.mock.calls[0]![0] as PubSubError;
       expect(error.code).toBe("validation");
     });
   });
@@ -456,7 +456,7 @@ describe("PubSubClient", () => {
       expect(wsInstances.length).toBe(1);
 
       // Simulate disconnect
-      wsInstances[0].onclose?.();
+      wsInstances[0]!.onclose?.();
 
       expect(client.reconnecting).toBe(true);
 
@@ -499,14 +499,14 @@ describe("PubSubClient", () => {
       });
 
       // First disconnect
-      wsInstances[0].onclose?.();
+      wsInstances[0]!.onclose?.();
 
       // First reconnect after 100ms
       await vi.advanceTimersByTimeAsync(100);
       expect(wsInstances.length).toBe(2);
 
       // Second disconnect
-      wsInstances[1].onclose?.();
+      wsInstances[1]!.onclose?.();
 
       // Second reconnect should be 200ms (100 * 2^1)
       await vi.advanceTimersByTimeAsync(100);
@@ -551,20 +551,20 @@ describe("PubSubClient", () => {
       client.onError(errorHandler);
 
       // First disconnect -> attempt 1
-      wsInstances[0].onclose?.();
+      wsInstances[0]!.onclose?.();
       await vi.advanceTimersByTimeAsync(100);
       expect(wsInstances.length).toBe(2);
 
       // Second disconnect -> attempt 2
-      wsInstances[1].onclose?.();
+      wsInstances[1]!.onclose?.();
       await vi.advanceTimersByTimeAsync(200);
       expect(wsInstances.length).toBe(3);
 
       // Third disconnect -> exceeds max, should error
-      wsInstances[2].onclose?.();
+      wsInstances[2]!.onclose?.();
 
       expect(errorHandler).toHaveBeenCalledTimes(1);
-      const error = errorHandler.mock.calls[0][0] as PubSubError;
+      const error = errorHandler.mock.calls[0]![0] as PubSubError;
       expect(error.message).toBe("max reconnection attempts exceeded");
       expect(client.reconnecting).toBe(false);
 
@@ -608,12 +608,12 @@ describe("PubSubClient", () => {
       client.onReconnect(reconnectHandler);
 
       // Disconnect
-      wsInstances[0].onclose?.();
+      wsInstances[0]!.onclose?.();
       expect(disconnectHandler).toHaveBeenCalledTimes(1);
 
       // Reconnect
       await vi.advanceTimersByTimeAsync(100);
-      wsInstances[1].onopen?.();
+      wsInstances[1]!.onopen?.();
 
       expect(reconnectHandler).toHaveBeenCalledTimes(1);
 
@@ -654,7 +654,7 @@ describe("PubSubClient", () => {
       });
 
       // Receive a message with ID
-      wsInstances[0].onmessage?.({
+      wsInstances[0]!.onmessage!({
         data: JSON.stringify({
           kind: "persisted",
           id: 42,
@@ -666,12 +666,12 @@ describe("PubSubClient", () => {
       });
 
       // Disconnect and reconnect
-      wsInstances[0].onclose?.();
+      wsInstances[0]!.onclose?.();
       await vi.advanceTimersByTimeAsync(100);
 
       // Check reconnection URL includes lastSeenId
       expect(capturedUrls.length).toBe(2);
-      const reconnectUrl = new URL(capturedUrls[1]);
+      const reconnectUrl = new URL(capturedUrls[1]!);
       expect(reconnectUrl.searchParams.get("sinceId")).toBe("42");
 
       vi.useRealTimers();
@@ -797,7 +797,7 @@ describe("PubSubClient", () => {
       client.onRoster(rosterHandler);
 
       // Simulate roster message
-      onmessage?.({
+      onmessage!({
         data: JSON.stringify({
           kind: "roster",
           participants: {
@@ -849,7 +849,7 @@ describe("PubSubClient", () => {
       expect(client.roster).toEqual({});
 
       // Simulate roster message
-      onmessage?.({
+      onmessage!({
         data: JSON.stringify({
           kind: "roster",
           participants: {
@@ -902,7 +902,7 @@ describe("PubSubClient", () => {
       const unsub = client.onRoster(rosterHandler);
 
       // First roster update
-      onmessage?.({
+      onmessage!({
         data: JSON.stringify({
           kind: "roster",
           participants: {
@@ -917,7 +917,7 @@ describe("PubSubClient", () => {
       unsub();
 
       // Second roster update - handler should not be called
-      onmessage?.({
+      onmessage!({
         data: JSON.stringify({
           kind: "roster",
           participants: {
@@ -944,7 +944,7 @@ describe("PubSubClient", () => {
       });
 
       expect(MockWebSocket).toHaveBeenCalledTimes(1);
-      const url = new URL(MockWebSocket.mock.calls[0][0] as string);
+      const url = new URL(MockWebSocket.mock.calls[0]![0] as string);
       expect(url.searchParams.get("metadata")).toBe(JSON.stringify(metadata));
     });
   });
