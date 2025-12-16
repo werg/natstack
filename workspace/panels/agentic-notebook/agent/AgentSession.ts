@@ -3,7 +3,6 @@ import {
   type StreamEvent,
   type ToolDefinition,
 } from "@natstack/ai";
-import type { FileSystem } from "../storage/ChatStore";
 import type { ChannelMessage } from "../types/messages";
 import { isCodeExecutionResult } from "../types/messages";
 import { createFileTools } from "./tools/fileTools";
@@ -141,8 +140,8 @@ export class AgentSession {
   /**
    * Register file operation tools.
    */
-  registerFileTools(fs: FileSystem): void {
-    const fileTools = createFileTools(fs);
+  registerFileTools(): void {
+    const fileTools = createFileTools();
     for (const tool of fileTools) {
       this.tools.set(tool.name, tool);
     }

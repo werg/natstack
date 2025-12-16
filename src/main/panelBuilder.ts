@@ -3,11 +3,14 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import Arborist from "@npmcli/arborist";
+import * as ts from "typescript";
+import { createRequire } from "module";
 import type { PanelManifest } from "./panelTypes.js";
 import { getMainCacheManager } from "./cacheManager.js";
 import { isDev } from "./utils.js";
 import { provisionPanelVersion, resolveTargetCommit, type VersionSpec } from "./gitProvisioner.js";
 import type { PanelBuildState } from "../shared/ipc/types.js";
+import { createBuildWorkspace, type BuildArtifactKey } from "./build/artifacts.js";
 
 // ===========================================================================
 // Shared Build Plugins
@@ -90,8 +93,6 @@ export interface ChildBuildResult {
   buildLog?: string;
 }
 
-const PANEL_RUNTIME_DIRNAME = ".natstack";
-
 // Bundle size limits (very generous to avoid disrupting normal use)
 const MAX_BUNDLE_SIZE = 50 * 1024 * 1024; // 50 MB for JS bundle
 const MAX_HTML_SIZE = 10 * 1024 * 1024; // 10 MB for HTML
@@ -168,6 +169,8 @@ export interface WorkerBuildResult {
 interface BuildFromSourceOptions {
   /** Absolute path to the panel source directory */
   sourcePath: string;
+  /** Stable key used to locate shared build artifacts (deps) */
+  artifactKey: BuildArtifactKey;
   /** Previous dependency hash for cache optimization */
   previousDependencyHash?: string;
   /** Logger function for build output */
@@ -180,10 +183,12 @@ interface BuildFromSourceResult {
   success: boolean;
   /** The manifest from package.json */
   manifest?: PanelManifest;
-  /** Path to bundle file */
-  bundlePath?: string;
-  /** Path to HTML file */
-  htmlPath?: string;
+  /** Bundled JavaScript code */
+  bundle?: string;
+  /** HTML document */
+  html?: string;
+  /** CSS bundle if generated */
+  css?: string;
   /** Error message on failure */
   error?: string;
   /** Hash of dependencies for caching */
@@ -192,10 +197,6 @@ interface BuildFromSourceResult {
 
 export class PanelBuilder {
   private cacheManager = getMainCacheManager();
-
-  constructor() {
-    // CacheManager handles its own storage directory
-  }
 
   /**
    * Get cached dependency hash for a panel source path.
@@ -213,42 +214,136 @@ export class PanelBuilder {
     await this.cacheManager.set(cacheKey, hash);
   }
 
-  private getRuntimeDir(panelPath: string): string {
-    return path.join(panelPath, PANEL_RUNTIME_DIRNAME);
-  }
-
-  private ensureRuntimeDir(panelPath: string): string {
-    const runtimeDir = this.getRuntimeDir(panelPath);
-    fs.mkdirSync(runtimeDir, { recursive: true });
-    return runtimeDir;
-  }
-
-  private resolveHtmlPath(
-    panelPath: string,
-    title: string,
-    externals?: Record<string, string>
-  ): string {
-    const sourceHtmlPath = path.join(panelPath, "index.html");
-    if (fs.existsSync(sourceHtmlPath)) {
-      return sourceHtmlPath;
+  private readUserCompilerOptions(sourcePath: string): Record<string, unknown> {
+    const tsconfigPath = path.join(sourcePath, "tsconfig.json");
+    if (!fs.existsSync(tsconfigPath)) {
+      return {};
     }
 
-    const runtimeDir = this.ensureRuntimeDir(panelPath);
-    const generatedHtmlPath = path.join(runtimeDir, "index.html");
+    try {
+      const visited = new Set<string>();
+      const read = (configPath: string): Record<string, unknown> => {
+        const resolvedPath = path.resolve(configPath);
+        if (visited.has(resolvedPath)) {
+          return {};
+        }
+        visited.add(resolvedPath);
+
+        const content = fs.readFileSync(resolvedPath, "utf-8");
+        const parsed = ts.parseConfigFileTextToJson(resolvedPath, content);
+        const config = (parsed.config ?? {}) as {
+          extends?: string | string[];
+          compilerOptions?: Record<string, unknown>;
+        };
+
+        const baseExtends = config.extends;
+        let baseOptions: Record<string, unknown> = {};
+        if (typeof baseExtends === "string") {
+          const basePath = this.resolveTsconfigExtends(resolvedPath, baseExtends);
+          if (basePath) {
+            baseOptions = read(basePath);
+          }
+        }
+
+        return { ...baseOptions, ...(config.compilerOptions ?? {}) };
+      };
+
+      return read(tsconfigPath);
+    } catch {
+      return {};
+    }
+  }
+
+  private resolveTsconfigExtends(fromTsconfigPath: string, extendsValue: string): string | null {
+    const baseDir = path.dirname(fromTsconfigPath);
+
+    // Relative/absolute path (most common)
+    const isFileLike =
+      extendsValue.startsWith(".") ||
+      extendsValue.startsWith("/") ||
+      extendsValue.includes(path.sep) ||
+      extendsValue.includes("/");
+    if (isFileLike) {
+      const candidate = path.resolve(baseDir, extendsValue);
+      const withJson = candidate.endsWith(".json") ? candidate : `${candidate}.json`;
+      if (fs.existsSync(candidate)) return candidate;
+      if (fs.existsSync(withJson)) return withJson;
+      return null;
+    }
+
+    // Package-style specifier: best-effort support
+    // (tsc supports resolving node module tsconfigs; we keep this conservative)
+    try {
+      const req = createRequire(import.meta.url);
+      const resolved = req.resolve(extendsValue, { paths: [baseDir] });
+      return resolved;
+    } catch {
+      return null;
+    }
+  }
+
+  private pickSafeCompilerOptions(
+    userCompilerOptions: Record<string, unknown>,
+    kind: "panel" | "worker"
+  ): Record<string, unknown> {
+    const allowlist = new Set<string>([
+      "experimentalDecorators",
+      "emitDecoratorMetadata",
+      "useDefineForClassFields",
+    ]);
+
+    if (kind === "panel") {
+      allowlist.add("jsxImportSource");
+    }
+
+    const safe: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(userCompilerOptions)) {
+      if (allowlist.has(key) && value !== undefined) {
+        safe[key] = value;
+      }
+    }
+    return safe;
+  }
+
+  private writeBuildTsconfig(
+    buildDir: string,
+    sourcePath: string,
+    kind: "panel" | "worker",
+    baseCompilerOptions: Record<string, unknown>
+  ): string {
+    const userOptions = this.readUserCompilerOptions(sourcePath);
+    const safeOverrides = this.pickSafeCompilerOptions(userOptions, kind);
+    const compilerOptions = { ...baseCompilerOptions, ...safeOverrides };
+
+    const tsconfigPath = path.join(buildDir, "tsconfig.json");
+    fs.writeFileSync(
+      tsconfigPath,
+      JSON.stringify(
+        {
+          compilerOptions,
+        },
+        null,
+        2
+      )
+    );
+    return tsconfigPath;
+  }
+
+  private resolveHtml(sourcePath: string, title: string, externals?: Record<string, string>): string {
+    const sourceHtmlPath = path.join(sourcePath, "index.html");
+    if (fs.existsSync(sourceHtmlPath)) {
+      return fs.readFileSync(sourceHtmlPath, "utf-8");
+    }
 
     // Import map for externals declared in natstack.externals
-    // These are loaded via CDN (e.g., esm.sh) instead of bundled
-    const importMap = {
-      imports: externals ?? {},
-    };
-
-    // Only include import map script if there are externals
+    // These are loaded via CDN (e.g., esm.sh) instead of bundled.
+    const importMap = { imports: externals ?? {} };
     const importMapScript =
       Object.keys(importMap.imports).length > 0
         ? `<script type="importmap">${JSON.stringify(importMap)}</script>\n  `
         : "";
 
-    const defaultHtml = `<!DOCTYPE html>
+    return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -262,13 +357,10 @@ export class PanelBuilder {
   <script type="module" src="./bundle.js"></script>
 </body>
 </html>`;
-    fs.writeFileSync(generatedHtmlPath, defaultHtml);
-    return generatedHtmlPath;
   }
 
-  private getNodeResolutionPaths(panelPath: string): string[] {
-    const runtimeNodeModules = path.join(this.getRuntimeDir(panelPath), "node_modules");
-    const localNodeModules = path.join(panelPath, "node_modules");
+  private getNodeResolutionPaths(sourcePath: string, runtimeNodeModules: string): string[] {
+    const localNodeModules = path.join(sourcePath, "node_modules");
     const projectNodeModules = path.join(process.cwd(), "node_modules");
 
     const paths: string[] = [];
@@ -373,7 +465,7 @@ export class PanelBuilder {
   }
 
   private async installDependencies(
-    panelPath: string,
+    depsDir: string,
     dependencies: Record<string, string> | undefined,
     previousHash?: string
   ): Promise<string | undefined> {
@@ -381,8 +473,8 @@ export class PanelBuilder {
       return undefined;
     }
 
-    const runtimeDir = this.ensureRuntimeDir(panelPath);
-    const packageJsonPath = path.join(runtimeDir, "package.json");
+    fs.mkdirSync(depsDir, { recursive: true });
+    const packageJsonPath = path.join(depsDir, "package.json");
 
     // Resolve workspace:* to file: paths
     const resolvedDependencies = this.resolveWorkspaceDependencies(dependencies);
@@ -403,8 +495,8 @@ export class PanelBuilder {
     const serialized = JSON.stringify(desiredPackageJson, null, 2);
     const desiredHash = crypto.createHash("sha256").update(serialized).digest("hex");
 
-    const nodeModulesPath = path.join(runtimeDir, "node_modules");
-    const packageLockPath = path.join(runtimeDir, "package-lock.json");
+    const nodeModulesPath = path.join(depsDir, "node_modules");
+    const packageLockPath = path.join(depsDir, "package-lock.json");
 
     if (previousHash === desiredHash && fs.existsSync(nodeModulesPath)) {
       const existingContent = fs.existsSync(packageJsonPath)
@@ -425,7 +517,7 @@ export class PanelBuilder {
       fs.rmSync(packageLockPath, { recursive: true, force: true });
     }
 
-    const arborist = new Arborist({ path: runtimeDir });
+    const arborist = new Arborist({ path: depsDir });
     await arborist.buildIdealTree();
     await arborist.reify();
 
@@ -444,6 +536,7 @@ export class PanelBuilder {
   private async buildFromSource(options: BuildFromSourceOptions): Promise<BuildFromSourceResult> {
     const {
       sourcePath,
+      artifactKey,
       previousDependencyHash,
       log = console.log.bind(console),
       inlineSourcemap = true,
@@ -469,119 +562,144 @@ export class PanelBuilder {
       };
     }
 
+    const workspace = createBuildWorkspace(artifactKey);
+
     // Install dependencies
-    log(`Installing dependencies...`);
-    const runtimeDependencies = this.mergeRuntimeDependencies(manifest.dependencies);
-    const dependencyHash = await this.installDependencies(
-      sourcePath,
-      runtimeDependencies,
-      previousDependencyHash
-    );
-    log(`Dependencies installed`);
+    try {
+      log(`Installing dependencies...`);
+      const runtimeDependencies = this.mergeRuntimeDependencies(manifest.dependencies);
+      const dependencyHash = await this.installDependencies(
+        workspace.depsDir,
+        runtimeDependencies,
+        previousDependencyHash
+      );
+      log(`Dependencies installed`);
 
-    // Determine entry point
-    const entry = this.resolveEntryPoint(sourcePath, manifest);
-    const entryPath = path.join(sourcePath, entry);
+      // Determine entry point
+      const entry = this.resolveEntryPoint(sourcePath, manifest);
+      const entryPath = path.join(sourcePath, entry);
 
-    const runtimeDir = this.ensureRuntimeDir(sourcePath);
-    const bundlePath = path.join(runtimeDir, "bundle.js");
-    const nodePaths = this.getNodeResolutionPaths(sourcePath);
+      const bundlePath = path.join(workspace.buildDir, "bundle.js");
+      const nodePaths = this.getNodeResolutionPaths(sourcePath, workspace.nodeModulesDir);
 
-    // Determine if panel uses @natstack/react (enables auto-mount)
-    const hasNatstackReact = "@natstack/react" in (manifest.dependencies ?? {});
+      // Determine if panel uses @natstack/react (enables auto-mount)
+      const hasNatstackReact = "@natstack/react" in (manifest.dependencies ?? {});
 
-    // Determine if panel has repoArgs (needs bootstrap)
-    const hasRepoArgs = manifest.repoArgs && manifest.repoArgs.length > 0;
+      // Determine if panel has repoArgs (needs bootstrap)
+      const hasRepoArgs = manifest.repoArgs && manifest.repoArgs.length > 0;
 
-    // Create wrapper entry
-    const tempEntryPath = path.join(runtimeDir, "_entry.js");
-    const relativeUserEntry = path.relative(runtimeDir, entryPath);
+      // Create wrapper entry
+      const tempEntryPath = path.join(workspace.buildDir, "_entry.js");
+      const relativeUserEntry = path.relative(workspace.buildDir, entryPath);
 
-    // Build wrapper code
-    // Bootstrap is now started automatically by @natstack/runtime when the module loads.
-    // Panel code that needs bootstrap results can await `bootstrapPromise` from the runtime.
-    let wrapperCode: string;
+      // Build wrapper code
+      // Bootstrap is now started automatically by @natstack/runtime when the module loads.
+      // Panel code that needs bootstrap results can await `bootstrapPromise` from the runtime.
+      let wrapperCode: string;
 
-    if (hasNatstackReact) {
-      // Auto-mount wrapper for React panels
-      wrapperCode = `import { autoMountReactPanel, shouldAutoMount } from "@natstack/react";
+      if (hasNatstackReact) {
+        // Auto-mount wrapper for React panels
+        wrapperCode = `import { autoMountReactPanel, shouldAutoMount } from "@natstack/react";
 import * as userModule from ${JSON.stringify(relativeUserEntry)};
 
 if (shouldAutoMount(userModule)) {
   autoMountReactPanel(userModule);
 }
 `;
-    } else {
-      // Direct import for non-React panels (panel handles its own mounting)
-      wrapperCode = `import ${JSON.stringify(relativeUserEntry)};\n`;
-    }
+      } else {
+        // Direct import for non-React panels (panel handles its own mounting)
+        wrapperCode = `import ${JSON.stringify(relativeUserEntry)};\n`;
+      }
 
-    // hasRepoArgs is still checked to pass git config, but bootstrap is non-blocking
-    void hasRepoArgs; // Suppress unused variable warning
-    fs.writeFileSync(tempEntryPath, wrapperCode);
+      // hasRepoArgs is still checked to pass git config, but bootstrap is non-blocking
+      void hasRepoArgs; // Suppress unused variable warning
+      fs.writeFileSync(tempEntryPath, wrapperCode);
 
-    // Get externals from manifest (packages loaded via import map / CDN)
-    // Also add implicit externals based on detected dependencies
-    const externals: Record<string, string> = { ...(manifest.externals ?? {}) };
-    const allDependencies = { ...defaultPanelDependencies, ...(manifest.dependencies ?? {}) };
-    for (const [dep, depExternals] of Object.entries(implicitExternals)) {
-      if (dep in allDependencies) {
-        Object.assign(externals, depExternals);
+      // Get externals from manifest (packages loaded via import map / CDN)
+      // Also add implicit externals based on detected dependencies
+      const externals: Record<string, string> = { ...(manifest.externals ?? {}) };
+      const allDependencies = { ...defaultPanelDependencies, ...(manifest.dependencies ?? {}) };
+      for (const [dep, depExternals] of Object.entries(implicitExternals)) {
+        if (dep in allDependencies) {
+          Object.assign(externals, depExternals);
+        }
+      }
+
+      const externalModules = Object.keys(externals);
+
+      // Build with esbuild (write to disk)
+      log(`Building panel...`);
+      if (externalModules.length > 0) {
+        log(`External modules (CDN): ${externalModules.join(", ")}`);
+      }
+
+      // Use unified fs shim plugin and optionally React dedupe plugin.
+      // resolveDir points at the deps dir where @natstack/runtime is installed.
+      const plugins: esbuild.Plugin[] = [createFsShimPlugin(workspace.depsDir)];
+      if (hasNatstackReact) {
+        plugins.push(this.createReactDedupePlugin(workspace.nodeModulesDir));
+      }
+
+      await esbuild.build({
+        entryPoints: [tempEntryPath],
+        bundle: true,
+        platform: "browser",
+        target: "es2022",
+        conditions: ["natstack-panel"],
+        outfile: bundlePath,
+        sourcemap: inlineSourcemap ? "inline" : false,
+        keepNames: true, // Preserve class/function names
+        format: "esm",
+        absWorkingDir: sourcePath,
+        nodePaths,
+        plugins,
+        external: externalModules,
+        // Use a build-owned tsconfig. Only allowlisted user compilerOptions are merged.
+        tsconfig: this.writeBuildTsconfig(workspace.buildDir, sourcePath, "panel", {
+          jsx: "react-jsx",
+          target: "ES2022",
+          useDefineForClassFields: true,
+        }),
+      });
+
+      const bundle = fs.readFileSync(bundlePath, "utf-8");
+      const cssPath = bundlePath.replace(".js", ".css");
+      const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, "utf-8") : undefined;
+      const html = this.resolveHtml(sourcePath, manifest.title, externals);
+
+      log(`Build complete (${bundle.length} bytes JS)`);
+
+      return {
+        success: true,
+        manifest,
+        bundle,
+        html,
+        css,
+        dependencyHash,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      try {
+        await workspace.cleanupBuildDir();
+      } catch {
+        // Best-effort cleanup
       }
     }
-
-    const externalModules = Object.keys(externals);
-
-    // Build with esbuild (write to disk)
-    log(`Building panel...`);
-    if (externalModules.length > 0) {
-      log(`External modules (CDN): ${externalModules.join(", ")}`);
-    }
-
-    // Use unified fs shim plugin and optionally React dedupe plugin
-    // resolveDir points to the runtime dir where @natstack/runtime is installed
-    const plugins: esbuild.Plugin[] = [createFsShimPlugin(runtimeDir)];
-    if (hasNatstackReact) {
-      plugins.push(this.createReactDedupePlugin(sourcePath));
-    }
-
-    await esbuild.build({
-      entryPoints: [tempEntryPath],
-      bundle: true,
-      platform: "browser",
-      target: "es2022",
-      conditions: ["natstack-panel"],
-      outfile: bundlePath,
-      sourcemap: inlineSourcemap ? "inline" : false,
-      keepNames: true,      // Preserve class/function names
-      format: "esm",
-      absWorkingDir: sourcePath,
-      nodePaths,
-      plugins,
-      external: externalModules,
-    });
-
-    const htmlPath = this.resolveHtmlPath(sourcePath, manifest.title, externals);
-    log(`Build complete: ${bundlePath}`);
-
-    return {
-      success: true,
-      manifest,
-      bundlePath,
-      htmlPath,
-      dependencyHash,
-    };
   }
 
   /**
    * Create a plugin to deduplicate React imports.
    * This ensures all React imports (including from dependencies like react-virtuoso)
-   * resolve to the same React instance in .natstack/node_modules.
+   * resolve to the same React instance in the build dependency node_modules.
    *
    * This mirrors how Next.js solves this with webpack resolve.alias.
    */
-  private createReactDedupePlugin(panelPath: string): esbuild.Plugin {
-    const runtimeNodeModules = path.join(this.getRuntimeDir(panelPath), "node_modules");
+  private createReactDedupePlugin(runtimeNodeModules: string): esbuild.Plugin {
+    const resolvedRuntimeNodeModules = path.resolve(runtimeNodeModules);
 
     return {
       name: "react-dedupe",
@@ -589,28 +707,28 @@ if (shouldAutoMount(userModule)) {
         // Force all react imports to resolve to the same instance
         // Use build.resolve() to properly resolve package entry points
         build.onResolve({ filter: /^react(\/.*)?$/ }, async (args) => {
-          // Skip if already resolving from the target directory (prevent infinite recursion)
-          if (args.resolveDir === runtimeNodeModules) {
+          // Skip if already resolving from within the target tree (prevent infinite recursion)
+          if (path.resolve(args.resolveDir).startsWith(resolvedRuntimeNodeModules)) {
             return null; // Let esbuild's default resolver handle it
           }
           // Re-resolve the same import but from the runtime node_modules directory
           // This forces all react imports to use the same physical package
           const result = await build.resolve(args.path, {
             kind: args.kind,
-            resolveDir: runtimeNodeModules,
+            resolveDir: resolvedRuntimeNodeModules,
           });
           return result;
         });
 
         // Force all react-dom imports to resolve to the same instance
         build.onResolve({ filter: /^react-dom(\/.*)?$/ }, async (args) => {
-          // Skip if already resolving from the target directory (prevent infinite recursion)
-          if (args.resolveDir === runtimeNodeModules) {
+          // Skip if already resolving from within the target tree (prevent infinite recursion)
+          if (path.resolve(args.resolveDir).startsWith(resolvedRuntimeNodeModules)) {
             return null;
           }
           const result = await build.resolve(args.path, {
             kind: args.kind,
-            resolveDir: runtimeNodeModules,
+            resolveDir: resolvedRuntimeNodeModules,
           });
           return result;
         });
@@ -714,6 +832,7 @@ if (shouldAutoMount(userModule)) {
 
       const buildResult = await this.buildFromSource({
         sourcePath,
+        artifactKey: { kind: "panel", canonicalPath: canonicalPanelPath, commit: sourceCommit },
         previousDependencyHash,
         log,
         inlineSourcemap: options?.sourcemap !== false,
@@ -739,9 +858,9 @@ if (shouldAutoMount(userModule)) {
         };
       }
 
-      // Step 4: Read built files for protocol serving
-      const bundle = fs.readFileSync(buildResult.bundlePath!, "utf-8");
-      const html = fs.readFileSync(buildResult.htmlPath!, "utf-8");
+      // Step 4: Use in-memory artifacts for protocol serving
+      const bundle = buildResult.bundle!;
+      const html = buildResult.html!;
 
       // Check bundle size limits
       if (bundle.length > MAX_BUNDLE_SIZE) {
@@ -766,21 +885,17 @@ if (shouldAutoMount(userModule)) {
         };
       }
 
-      // Check for CSS bundle
-      const cssPath = buildResult.bundlePath!.replace(".js", ".css");
-      let css: string | undefined;
-      if (fs.existsSync(cssPath)) {
-        css = fs.readFileSync(cssPath, "utf-8");
-        if (css.length > MAX_CSS_SIZE) {
-          const sizeMB = (css.length / 1024 / 1024).toFixed(2);
-          const maxMB = (MAX_CSS_SIZE / 1024 / 1024).toFixed(0);
-          log(`Warning: CSS size (${sizeMB}MB) exceeds limit (${maxMB}MB)`);
-          return {
-            success: false,
-            error: `CSS too large: ${sizeMB}MB (max: ${maxMB}MB)`,
-            buildLog,
-          };
-        }
+      // Check CSS bundle size (if any)
+      const css = buildResult.css;
+      if (css && css.length > MAX_CSS_SIZE) {
+        const sizeMB = (css.length / 1024 / 1024).toFixed(2);
+        const maxMB = (MAX_CSS_SIZE / 1024 / 1024).toFixed(0);
+        log(`Warning: CSS size (${sizeMB}MB) exceeds limit (${maxMB}MB)`);
+        return {
+          success: false,
+          error: `CSS too large: ${sizeMB}MB (max: ${maxMB}MB)`,
+          buildLog,
+        };
       }
 
       log(`Build complete: ${bundle.length} bytes JS${css ? `, ${css.length} bytes CSS` : ""}`);
@@ -845,6 +960,7 @@ if (shouldAutoMount(userModule)) {
     onProgress?: (progress: BuildProgress) => void
   ): Promise<WorkerBuildResult> {
     let cleanup: (() => Promise<void>) | null = null;
+    let buildWorkspace: ReturnType<typeof createBuildWorkspace> | null = null;
     let buildLog = "";
     const canonicalWorkerPath = path.resolve(panelsRoot, workerPath);
 
@@ -904,6 +1020,12 @@ if (shouldAutoMount(userModule)) {
         return { success: false, error: errorMsg, buildLog };
       }
 
+      buildWorkspace = createBuildWorkspace({
+        kind: "worker",
+        canonicalPath: canonicalWorkerPath,
+        commit: sourceCommit,
+      });
+
       // Step 4: Install dependencies
       onProgress?.({ state: "building", message: "Installing dependencies...", log: buildLog });
       log(`Installing dependencies...`);
@@ -913,7 +1035,7 @@ if (shouldAutoMount(userModule)) {
 
       const workerDependencies = this.mergeWorkerDependencies(manifest.dependencies);
       const dependencyHash = await this.installDependencies(
-        sourcePath,
+        buildWorkspace.depsDir,
         workerDependencies,
         previousDependencyHash
       );
@@ -929,13 +1051,12 @@ if (shouldAutoMount(userModule)) {
 
       const entry = this.resolveEntryPoint(sourcePath, manifest);
       const entryPath = path.join(sourcePath, entry);
-      const runtimeDir = this.ensureRuntimeDir(sourcePath);
-      const bundlePath = path.join(runtimeDir, "worker-bundle.js");
-      const nodePaths = this.getNodeResolutionPaths(sourcePath);
+      const bundlePath = path.join(buildWorkspace.buildDir, "worker-bundle.js");
+      const nodePaths = this.getNodeResolutionPaths(sourcePath, buildWorkspace.nodeModulesDir);
 
       // Create wrapper entry that imports user module and sets up worker runtime
-      const tempEntryPath = path.join(runtimeDir, "_worker_entry.js");
-      const relativeUserEntry = path.relative(runtimeDir, entryPath);
+      const tempEntryPath = path.join(buildWorkspace.buildDir, "_worker_entry.js");
+      const relativeUserEntry = path.relative(buildWorkspace.buildDir, entryPath);
 
       // Worker wrapper - imports runtime to set up console/globals,
       // then imports the user module which should call rpc.expose()
@@ -956,7 +1077,7 @@ import ${JSON.stringify(relativeUserEntry)};
       // Create a shim for the "buffer" module that uses the global Buffer
       // This is needed because isomorphic-git's dependencies (safe-buffer, sha.js)
       // use require("buffer") which fails in esbuild's IIFE format without this shim
-      const bufferShimPath = path.join(runtimeDir, "_buffer_shim.js");
+      const bufferShimPath = path.join(buildWorkspace.buildDir, "_buffer_shim.js");
       fs.writeFileSync(
         bufferShimPath,
         `// Buffer shim for vm.Script sandbox - uses the global Buffer provided by sandbox
@@ -976,7 +1097,12 @@ export default { Buffer: globalThis.Buffer };
         format: "iife", // Must be iife - vm.Script doesn't support ES modules
         absWorkingDir: sourcePath,
         nodePaths,
-        plugins: [createFsShimPlugin(runtimeDir)], // Shim fs imports to @natstack/runtime
+        plugins: [createFsShimPlugin(buildWorkspace.depsDir)], // Shim fs imports to @natstack/runtime
+        // Use a build-owned tsconfig. Only allowlisted user compilerOptions are merged.
+        tsconfig: this.writeBuildTsconfig(buildWorkspace.buildDir, sourcePath, "worker", {
+          target: "ES2022",
+          useDefineForClassFields: true,
+        }),
         // No externals - everything must be bundled for vm.Script
         // Alias "buffer" to our shim so require("buffer") works
         alias: {
@@ -992,6 +1118,13 @@ export default { Buffer: globalThis.Buffer };
         const sizeMB = (bundle.length / 1024 / 1024).toFixed(2);
         const maxMB = (MAX_BUNDLE_SIZE / 1024 / 1024).toFixed(0);
         log(`Warning: Bundle size (${sizeMB}MB) exceeds limit (${maxMB}MB)`);
+        if (buildWorkspace) {
+          try {
+            await buildWorkspace.cleanupBuildDir();
+          } catch {
+            // Best-effort
+          }
+        }
         if (cleanup) await cleanup();
         return {
           success: false,
@@ -1013,6 +1146,14 @@ export default { Buffer: globalThis.Buffer };
       await this.cacheManager.set(cacheKey, JSON.stringify(result));
       log(`Cached build result`);
 
+      if (buildWorkspace) {
+        try {
+          await buildWorkspace.cleanupBuildDir();
+        } catch {
+          // Best-effort
+        }
+      }
+
       // Cleanup temp directory
       if (cleanup) {
         await cleanup();
@@ -1025,6 +1166,14 @@ export default { Buffer: globalThis.Buffer };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       log(`Build failed: ${errorMsg}`);
+
+      if (buildWorkspace) {
+        try {
+          await buildWorkspace.cleanupBuildDir();
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
 
       if (cleanup) {
         try {

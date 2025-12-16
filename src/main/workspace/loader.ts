@@ -14,6 +14,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
 import { app } from "electron";
 import YAML from "yaml";
 import dotenv from "dotenv";
@@ -40,7 +41,19 @@ export function getCentralConfigDir(): string {
     return app.getPath("userData");
   } catch {
     // Fallback if app not ready
-    return path.join(process.cwd(), ".natstack");
+    const home = os.homedir();
+    switch (process.platform) {
+      case "win32": {
+        const appData = process.env["APPDATA"] ?? path.join(home, "AppData", "Roaming");
+        return path.join(appData, "natstack");
+      }
+      case "darwin":
+        return path.join(home, "Library", "Application Support", "natstack");
+      default: {
+        const xdgConfig = process.env["XDG_CONFIG_HOME"] ?? path.join(home, ".config");
+        return path.join(xdgConfig, "natstack");
+      }
+    }
   }
 }
 

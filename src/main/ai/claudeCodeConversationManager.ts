@@ -12,7 +12,6 @@ import {
   createToolProxyMcpServer,
   getMcpToolNames,
   type ToolExecuteCallback,
-  type ToolExecutionResult,
 } from "./claudeCodeToolProxy.js";
 import { Logger } from "../../shared/logging.js";
 import { findExecutable } from "./providerFactory.js";

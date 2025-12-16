@@ -7,6 +7,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { execFile } from "child_process";
 import { promisify } from "util";
+import { getGitTempBuildsDirectory } from "./build/artifacts.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -106,18 +107,12 @@ export async function provisionPanelVersion(
   // Create temp directory for the versioned checkout
   onProgress?.({ stage: "checking-out", message: `Checking out ${targetRef}...` });
 
-  const tempDir = await createTempCheckout(absolutePanelPath, resolvedCommit);
+  const { tempDir, cleanup } = await createTempCheckout(absolutePanelPath, resolvedCommit);
 
   return {
     sourcePath: tempDir,
     commit: resolvedCommit,
-    cleanup: async () => {
-      try {
-        await fs.promises.rm(tempDir, { recursive: true, force: true });
-      } catch (error) {
-        console.warn(`[GitProvisioner] Failed to cleanup temp dir: ${tempDir}`, error);
-      }
-    },
+    cleanup,
   };
 }
 
@@ -190,16 +185,32 @@ async function resolveRef(repoPath: string, ref: string): Promise<string> {
  * Create a temporary checkout of a repo at a specific commit.
  * Uses git worktree for efficiency when possible.
  */
-async function createTempCheckout(repoPath: string, commit: string): Promise<string> {
-  // Create temp directory
-  const tempBase = path.join(repoPath, ".natstack", "temp-builds");
-  await fs.promises.mkdir(tempBase, { recursive: true });
-
+async function createTempCheckout(
+  repoPath: string,
+  commit: string
+): Promise<{ tempDir: string; cleanup: () => Promise<void> }> {
+  const tempBase = getGitTempBuildsDirectory(repoPath);
   const tempDir = path.join(tempBase, `build-${commit.slice(0, 8)}-${Date.now()}`);
 
   try {
     // Try using git worktree first (more efficient, shares object store)
     await runGit(["worktree", "add", "--detach", tempDir, commit], repoPath);
+    return {
+      tempDir,
+      cleanup: async () => {
+        try {
+          // Properly unregister the worktree to avoid leaving stale .git/worktrees entries.
+          await runGit(["worktree", "remove", "--force", tempDir], repoPath);
+        } catch (error) {
+          console.warn(`[GitProvisioner] Failed to remove worktree: ${tempDir}`, error);
+          try {
+            await fs.promises.rm(tempDir, { recursive: true, force: true });
+          } catch (rmError) {
+            console.warn(`[GitProvisioner] Failed to cleanup temp dir: ${tempDir}`, rmError);
+          }
+        }
+      },
+    };
   } catch (worktreeError) {
     // Fallback to archive extraction if worktree fails
     console.warn("[GitProvisioner] Worktree failed, falling back to archive:", worktreeError);
@@ -211,9 +222,18 @@ async function createTempCheckout(repoPath: string, commit: string): Promise<str
     await runGit(["archive", "-o", archivePath, commit], repoPath);
     await execFileAsync("tar", ["-xf", archivePath, "-C", tempDir]);
     await fs.promises.rm(archivePath, { force: true });
-  }
 
-  return tempDir;
+    return {
+      tempDir,
+      cleanup: async () => {
+        try {
+          await fs.promises.rm(tempDir, { recursive: true, force: true });
+        } catch (error) {
+          console.warn(`[GitProvisioner] Failed to cleanup temp dir: ${tempDir}`, error);
+        }
+      },
+    };
+  }
 }
 
 async function isWorktreeDirty(repoPath: string): Promise<boolean> {

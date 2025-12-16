@@ -10,7 +10,6 @@ import {
   ScrollArea,
   Spinner,
   Text,
-  TextField,
   Tooltip,
 } from "@radix-ui/themes";
 
@@ -397,8 +396,8 @@ export function PanelStack({
 
   const allPanels = flattenPanels(rootPanels);
 
-  // Debug: log all panels
-  function findPanelById(panelId: string): Panel | null {
+  // Helper to find a panel by ID (used for debugging)
+  function _findPanelById(panelId: string): Panel | null {
     const traverse = (panelList: Panel[]): Panel | null => {
       for (const panel of panelList) {
         if (panel.id === panelId) {
@@ -531,8 +530,8 @@ export function PanelStack({
 
     return () => {
       window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", stopResize, { capture: true } as any);
-      window.removeEventListener("pointercancel", stopResize, { capture: true } as any);
+      window.removeEventListener("pointerup", stopResize, { capture: true } as EventListenerOptions);
+      window.removeEventListener("pointercancel", stopResize, { capture: true } as EventListenerOptions);
     };
   }, [isResizingSidebar]);
 

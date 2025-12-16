@@ -173,7 +173,7 @@ export class ViewManager {
       try {
         ses.protocol.handle("natstack-panel", handleProtocolRequest);
         this.registeredProtocolSessions.add(sessionKey);
-      } catch (error) {
+      } catch {
         // Protocol might already be registered (e.g., defaultSession at app startup)
         // Mark as registered to avoid future attempts
         this.registeredProtocolSessions.add(sessionKey);

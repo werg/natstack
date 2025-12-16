@@ -713,7 +713,7 @@ export class AIHandler {
 
     // Build conversation messages (will be extended with tool results)
     const conversationMessages = [...options.messages];
-    let totalUsage = { promptTokens: 0, completionTokens: 0 };
+    const totalUsage = { promptTokens: 0, completionTokens: 0 };
 
     for (let step = 1; step <= maxSteps; step++) {
       if (!target.isAvailable() || abortController.signal.aborted) break;
@@ -1002,7 +1002,7 @@ export class AIHandler {
       toolCount: validatedTools.length,
     });
 
-    let totalUsage = { promptTokens: 0, completionTokens: 0 };
+    const totalUsage = { promptTokens: 0, completionTokens: 0 };
 
     try {
       const model = conversationHandle.getModel();

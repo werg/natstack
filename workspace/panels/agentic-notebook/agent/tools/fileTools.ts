@@ -1,4 +1,4 @@
-import type { FileSystem } from "../../storage/ChatStore";
+import * as fs from "fs/promises";
 import type { AgentTool } from "../AgentSession";
 
 /**
@@ -72,7 +72,6 @@ const TREE_ENTRY_LIMIT = 500;
  * Build a simple text tree of a directory.
  */
 async function buildFileTree(
-  fs: FileSystem,
   rootPath: string
 ): Promise<{ tree: string; truncated: boolean }> {
   const lines: string[] = [];
@@ -290,7 +289,7 @@ function applyUnifiedDiffPatch(content: string, patch: string): PatchResult {
 /**
  * Create file operation tools for the agent.
  */
-export function createFileTools(fs: FileSystem): AgentTool[] {
+export function createFileTools(): AgentTool[] {
   return [
     {
       name: "read_file",
@@ -317,7 +316,7 @@ export function createFileTools(fs: FileSystem): AgentTool[] {
             };
           }
 
-          const content = await fs.readFile(path, "utf-8");
+          const content = await fs.readFile(path, "utf-8") as string;
 
           // Check size after reading (FileSystem stat doesn't provide size)
           if (content.length > MAX_READ_SIZE) {
@@ -456,7 +455,7 @@ export function createFileTools(fs: FileSystem): AgentTool[] {
           // Read current content
           let content: string;
           try {
-            content = await fs.readFile(path, "utf-8");
+            content = await fs.readFile(path, "utf-8") as string;
           } catch {
             content = "";
           }
@@ -530,7 +529,7 @@ export function createFileTools(fs: FileSystem): AgentTool[] {
             };
           }
 
-          const content = await fs.readFile(path, "utf-8");
+          const content = await fs.readFile(path, "utf-8") as string;
 
           // Count occurrences to ensure uniqueness
           const occurrences = (content.match(new RegExp(escapeRegExp(oldString), "g")) || [])
@@ -657,7 +656,7 @@ export function createFileTools(fs: FileSystem): AgentTool[] {
             };
           }
 
-          const { tree, truncated } = await buildFileTree(fs, path);
+          const { tree, truncated } = await buildFileTree(path);
           const suffix = truncated
             ? `\n\n[truncated after ${TREE_ENTRY_LIMIT} entries]`
             : "";

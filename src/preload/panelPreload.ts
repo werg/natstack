@@ -19,21 +19,21 @@ interface PubSubConfig {
 
 declare global {
   // Unified NatStack globals
-  // eslint-disable-next-line no-var
+   
   var __natstackId: string | undefined;
-  // eslint-disable-next-line no-var
+   
   var __natstackKind: "panel" | "worker" | undefined;
-  // eslint-disable-next-line no-var
+   
   var __natstackParentId: string | null | undefined;
-  // eslint-disable-next-line no-var
+   
   var __natstackInitialTheme: "light" | "dark" | undefined;
-  // eslint-disable-next-line no-var
+   
   var __natstackGitConfig: GitConfig | null | undefined;
-  // eslint-disable-next-line no-var
+   
   var __natstackPubSubConfig: PubSubConfig | null | undefined;
-  // eslint-disable-next-line no-var
+   
   var __natstackEnv: Record<string, string> | undefined;
-  // eslint-disable-next-line no-var
+   
   var __natstackTransport:
     | {
         send: (targetId: string, message: unknown) => Promise<void>;

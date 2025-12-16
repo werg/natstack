@@ -1,5 +1,6 @@
 import * as path from "path";
 import * as fs from "fs";
+import * as os from "os";
 import { app } from "electron";
 import type { Workspace } from "./workspace/types.js";
 
@@ -33,26 +34,51 @@ export function getActiveWorkspace(): Workspace | null {
  * - macOS: ~/Library/Application Support/natstack
  * - Windows: %APPDATA%/natstack
  *
- * Falls back to a .natstack directory in the current working directory if
- * the platform-specific directory cannot be determined or created.
+ * Falls back to OS-conventional locations derived from environment variables,
+ * then finally to a temp directory if the platform directory cannot be used.
  */
 export function getCentralConfigDirectory(): string {
+  const ensureDir = (dir: string): string => {
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  };
+
+  const platformFallback = (): string => {
+    const home = os.homedir();
+
+    try {
+      switch (process.platform) {
+        case "win32": {
+          const appData = process.env["APPDATA"] ?? path.join(home, "AppData", "Roaming");
+          return path.join(appData, "natstack");
+        }
+        case "darwin":
+          return path.join(home, "Library", "Application Support", "natstack");
+        default: {
+          const xdgConfig = process.env["XDG_CONFIG_HOME"] ?? path.join(home, ".config");
+          return path.join(xdgConfig, "natstack");
+        }
+      }
+    } catch {
+      return path.join(os.tmpdir(), "natstack");
+    }
+  };
+
   try {
     // Use Electron's app.getPath('userData') which handles platform differences
     const userDataPath = app.getPath("userData");
 
     // Create the directory if it doesn't exist
-    fs.mkdirSync(userDataPath, { recursive: true });
-
-    return userDataPath;
+    return ensureDir(userDataPath);
   } catch (error) {
-    console.warn("Failed to get platform config directory, using fallback:", error);
+    console.warn("Failed to get Electron userData directory, using fallback:", error);
 
-    // Fallback to local directory
-    const fallbackPath = path.resolve(".natstack");
-    fs.mkdirSync(fallbackPath, { recursive: true });
-
-    return fallbackPath;
+    try {
+      return ensureDir(platformFallback());
+    } catch (fallbackError) {
+      console.warn("Failed to create fallback config directory, using temp dir:", fallbackError);
+      return ensureDir(path.join(os.tmpdir(), "natstack"));
+    }
   }
 }
 
@@ -74,6 +100,33 @@ export function getPanelCacheDirectory(): string {
   fs.mkdirSync(cacheDir, { recursive: true });
 
   return cacheDir;
+}
+
+/**
+ * Get the NatStack state root directory.
+ * - With an active workspace: <workspace>/.cache/
+ * - Otherwise: platform userData directory (or platform fallback)
+ */
+export function getNatstackStateRootDirectory(): string {
+  if (activeWorkspace) {
+    fs.mkdirSync(activeWorkspace.cachePath, { recursive: true });
+    return activeWorkspace.cachePath;
+  }
+
+  return getCentralConfigDirectory();
+}
+
+/**
+ * Get the central build artifacts directory (never inside panel/worker source trees).
+ *
+ * - With an active workspace: <workspace>/.cache/build-artifacts/
+ * - Otherwise: <userData>/build-artifacts/
+ */
+export function getBuildArtifactsDirectory(): string {
+  const stateRoot = getNatstackStateRootDirectory();
+  const artifactsDir = path.join(stateRoot, "build-artifacts");
+  fs.mkdirSync(artifactsDir, { recursive: true });
+  return artifactsDir;
 }
 
 /**
