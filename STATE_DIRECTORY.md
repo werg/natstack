@@ -27,24 +27,26 @@ Stores cached panel builds to avoid rebuilding panels when their source hasn't c
 - To force rebuild all panels
 - To reclaim disk space
 
-## Panel Build Artifacts
+## Build Artifacts (`build-artifacts/`)
 
-In addition to the cache directory, each panel directory contains a `.natstack/` subdirectory with:
+NatStack stores build outputs and dependency installs centrally under the NatStack state root:
 
-- `bundle.js` - Compiled and bundled JavaScript
-- `node_modules/` - Panel-specific dependencies (if any)
+- With an active workspace: `<workspace>/.cache/build-artifacts/`
+- Otherwise: `<userData>/build-artifacts/` (usually `~/.config/natstack/build-artifacts/`)
 
-These are **NOT** stored in the state directory because:
-1. They should live alongside the panel source for quick iteration during development
-2. They're specific to each panel's location
-3. They can be easily regenerated from source
+This avoids creating build directories inside panel/worker repositories.
+
+Typical contents:
+- `panel/<id>/<commit>/deps/` - Per-panel dependency installs (`node_modules/`, `package.json`, lockfile)
+- `worker/<id>/<commit>/deps/` - Per-worker dependency installs
+- `git/<id>/temp-builds/` - Temporary git worktrees/checkouts used for versioned builds
 
 ## Fallback Behavior
 
 If the platform-specific directory cannot be accessed (e.g., permissions issues), NatStack falls back to:
 
 ```
-<current-working-directory>/.natstack/
+<os-config-dir>/natstack/  (or ultimately a temp directory)
 ```
 
 This ensures the app continues to work even in restricted environments.

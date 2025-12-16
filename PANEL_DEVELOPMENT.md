@@ -6,6 +6,7 @@ This guide covers developing mini-apps (panels) for NatStack with the simplified
 
 - [Quick Start](#quick-start)
 - [Panel Basics](#panel-basics)
+- [TypeScript Configuration](#typescript-configuration)
 - [Panel Types](#panel-types)
 - [React Hooks API](#react-hooks-api)
 - [Typed RPC Communication](#typed-rpc-communication)
@@ -98,6 +99,31 @@ panels/my-app/
   ├── api.ts              # Optional: Exported RPC types for parent panels
   └── style.css           # Optional: Custom styles
 ```
+
+---
+
+## TypeScript Configuration
+
+NatStack builds panels/workers with an internal, build-owned `tsconfig.json` so user repositories can’t accidentally (or intentionally) change module resolution or emit behavior for the app.
+
+### What userland can configure
+
+You can add a `tsconfig.json` in your panel/worker repo. NatStack will read it and merge an allowlisted set of “safe” `compilerOptions` into the build config (userland values take priority).
+
+Allowlisted fields:
+
+- **Decorators (legacy TypeScript)**: `experimentalDecorators`, `emitDecoratorMetadata`, `useDefineForClassFields`
+  - Useful for libraries that rely on decorator metadata.
+  - Note: legacy decorators typically expect `useDefineForClassFields: false`.
+- **JSX import source (panels only)**: `jsxImportSource`
+  - Useful for React-compatible tooling like Emotion (`@emotion/react`) without changing the JSX runtime mode.
+
+Explicitly ignored (not merged):
+
+- **Module resolution / graph shape**: `baseUrl`, `paths`, `moduleResolution`, `rootDir`, `outDir`, `typeRoots`, `types`
+- **Output targeting**: `target`, `module`, `lib`
+
+The goal is “userland opt-in for ergonomics” without letting projects redirect imports (e.g. `@natstack/*`) or change the runtime contract.
 
 ---
 

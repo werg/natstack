@@ -26,21 +26,16 @@ declare const process: {
 };
 ```
 
-### 2. Build-Time Distribution
+### 2. Distribution
 
-During the main app build (`build.mjs`):
-- `globals.d.ts` is copied to `dist/panelRuntimeGlobals.d.ts`
+NatStack ships a single ambient `.d.ts` alongside the app build:
+- `dist/panelRuntimeGlobals.d.ts`
 
-When a panel is built (`panelBuilder.ts`):
-- The type definition is copied from `dist/panelRuntimeGlobals.d.ts` to the panel's `.natstack/globals.d.ts`
-- TypeScript automatically picks up `.d.ts` files in the same directory tree
+Panel repos can opt in by referencing this file from `tsconfig.json` (for example via `include` or `files`), or by consuming an equivalent published types package.
 
-### 3. No File Pollution
+### 3. No Repo Artifacts
 
-Unlike the previous approach that wrote `natstack.d.ts` to panel root directories:
-- Type definitions now live in `.natstack/` (the build artifacts directory)
-- Panel source directories remain clean
-- `.natstack/` is already gitignored and considered disposable
+NatStack does not write generated `.d.ts` files into panel/worker repositories (no per-repo `.natstack/` build directories).
 
 ## How It Works
 
@@ -77,34 +72,27 @@ The environment variables are:
 ### Build Process Flow
 
 ```
-1. Main app builds:
-   src/panelRuntime/globals.d.ts
-   → dist/panelRuntimeGlobals.d.ts
-
-2. Panel builds (on-demand):
+1. Main app build emits:
    dist/panelRuntimeGlobals.d.ts
-   → panels/example/.natstack/globals.d.ts
 
-3. TypeScript in panel:
-   Finds .natstack/globals.d.ts
-   → Provides process.env types
+2. Panel repo TypeScript:
+   Includes dist/panelRuntimeGlobals.d.ts
+   → Provides process.env + runtime shims types
 ```
 
 ### File Locations
 
 ```
-src/panelRuntime/globals.d.ts           # Source (version controlled)
-dist/panelRuntimeGlobals.d.ts           # Build output (gitignored)
-panels/*/.natstack/globals.d.ts         # Panel-specific copy (gitignored)
+dist/panelRuntimeGlobals.d.ts           # App build output (gitignored)
 ```
 
 ### Why This Approach?
 
 **Advantages**:
 - ✅ No pollution of panel source directories
-- ✅ Types automatically available when importing `natstack/panel`
+- ✅ Single shared ambient definition file
 - ✅ Minimal type surface (only what panels actually need)
-- ✅ Consistent with build artifact philosophy (everything generated goes in `.natstack/`)
+- ✅ Consistent with centralized build artifacts philosophy
 - ✅ Easy to extend with more browser-safe globals in the future
 
 **Alternatives Considered**:
@@ -132,11 +120,10 @@ To add new browser-safe globals (like `navigator`, `window`, etc.):
 ## Troubleshooting
 
 **"Cannot find name 'process'"**
-- The panel hasn't been built yet. Run the app or trigger a panel build.
-- Check that `.natstack/globals.d.ts` exists in the panel directory.
+- Ensure `dist/panelRuntimeGlobals.d.ts` exists (rebuild the app if needed).
+- Ensure your panel `tsconfig.json` includes `dist/panelRuntimeGlobals.d.ts` (directly or via a shared base config).
 
 **Types not updating**
-- Clear the panel cache: `rm -rf panels/your-panel/.natstack/`
 - Rebuild the main app: `npm run build`
 - Restart your TypeScript language server
 
