@@ -1,3 +1,4 @@
+import * as fs from "fs/promises";
 import { GitClient } from "@natstack/git";
 import type {
   ChatMetadata,
@@ -14,18 +15,6 @@ import {
   getChatIndexPath,
   deserializeChatMetadata,
 } from "../types/storage";
-
-/**
- * Filesystem interface (subset of fs/promises).
- */
-export interface FileSystem {
-  readFile(path: string, encoding: "utf-8"): Promise<string>;
-  writeFile(path: string, data: string): Promise<void>;
-  mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
-  readdir(path: string): Promise<string[]>;
-  unlink(path: string): Promise<void>;
-  stat(path: string): Promise<{ isDirectory(): boolean }>;
-}
 
 /**
  * Extended config for ChatStore.
@@ -54,7 +43,6 @@ export type ErrorReporter = (message: string, error: unknown) => void;
  *   - /index.json - Chat metadata index
  */
 export class ChatStore {
-  private fs: FileSystem;
   private git: GitClient;
   private config: ChatStoreConfig;
   private syncStatus: SyncStatus = "synced";
@@ -63,12 +51,10 @@ export class ChatStore {
   private errorReporter: ErrorReporter;
 
   constructor(
-    fs: FileSystem,
     git: GitClient,
     config: ChatStoreConfig,
     errorReporter?: ErrorReporter
   ) {
-    this.fs = fs;
     this.git = git;
     this.config = config;
     // Default error reporter logs to console but could be connected to UI
@@ -111,7 +97,7 @@ export class ChatStore {
       // Initialize an empty repo as fallback
       this.errorReporter("History repo not found at " + repoPath + ", initializing new repo", null);
       try {
-        await this.fs.mkdir(repoPath, { recursive: true });
+        await fs.mkdir(repoPath, { recursive: true });
         await this.git.init(repoPath);
         // Add remote if we have a server URL, so sync/push can work
         if (this.config.gitServerUrl) {
@@ -125,16 +111,16 @@ export class ChatStore {
     }
 
     // Ensure panel directory exists within the history repo
-    await this.fs.mkdir(this.config.basePath, { recursive: true });
-    await this.fs.mkdir(`${this.config.basePath}/chats`, { recursive: true });
+    await fs.mkdir(this.config.basePath, { recursive: true });
+    await fs.mkdir(`${this.config.basePath}/chats`, { recursive: true });
 
     // Ensure index exists
     const indexPath = getChatIndexPath(this.config.basePath);
     try {
-      await this.fs.readFile(indexPath, "utf-8");
+      await fs.readFile(indexPath, "utf-8");
     } catch {
       // Create empty index
-      await this.fs.writeFile(
+      await fs.writeFile(
         indexPath,
         JSON.stringify(createEmptyChatIndex(), null, 2)
       );
@@ -150,7 +136,7 @@ export class ChatStore {
     await this.ensureInitialized();
 
     const chatPath = getChatFilePath(this.config.basePath, chat.metadata.id);
-    await this.fs.writeFile(chatPath, JSON.stringify(chat, null, 2));
+    await fs.writeFile(chatPath, JSON.stringify(chat, null, 2));
 
     // Update index
     await this.updateIndex(chat.metadata);
@@ -166,7 +152,7 @@ export class ChatStore {
 
     const chatPath = getChatFilePath(this.config.basePath, chatId);
     try {
-      const data = await this.fs.readFile(chatPath, "utf-8");
+      const data = await fs.readFile(chatPath, "utf-8") as string;
       return JSON.parse(data) as StoredChat;
     } catch {
       return null;
@@ -181,7 +167,7 @@ export class ChatStore {
 
     const chatPath = getChatFilePath(this.config.basePath, chatId);
     try {
-      await this.fs.unlink(chatPath);
+      await fs.unlink(chatPath);
     } catch {
       // File might not exist
     }
@@ -318,7 +304,7 @@ export class ChatStore {
   private async loadIndex(): Promise<ChatIndex> {
     const indexPath = getChatIndexPath(this.config.basePath);
     try {
-      const data = await this.fs.readFile(indexPath, "utf-8");
+      const data = await fs.readFile(indexPath, "utf-8") as string;
       return JSON.parse(data) as ChatIndex;
     } catch {
       return createEmptyChatIndex();
@@ -328,7 +314,7 @@ export class ChatStore {
   private async saveIndex(index: ChatIndex): Promise<void> {
     const indexPath = getChatIndexPath(this.config.basePath);
     index.lastUpdated = new Date().toISOString();
-    await this.fs.writeFile(indexPath, JSON.stringify(index, null, 2));
+    await fs.writeFile(indexPath, JSON.stringify(index, null, 2));
   }
 
   private async updateIndex(metadata: SerializableChatMetadata): Promise<void> {
@@ -358,7 +344,7 @@ export class ChatStore {
       for (const chat of removed) {
         const chatPath = getChatFilePath(this.config.basePath, chat.id);
         try {
-          await this.fs.unlink(chatPath);
+          await fs.unlink(chatPath);
         } catch {
           // Ignore errors
         }

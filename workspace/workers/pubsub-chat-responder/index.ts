@@ -47,6 +47,7 @@ interface ErrorMessage {
 interface ChatParticipantMetadata {
   name: string;
   role: "panel" | "worker";
+  [key: string]: unknown;
 }
 
 function log(message: string): void {

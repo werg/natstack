@@ -116,8 +116,7 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
           throw new Error(`Bootstrap failed: ${bootstrap.error}`);
         }
 
-        // Get filesystem and git config
-        const fsImpl = fs as unknown as import("../storage/ChatStore").FileSystem;
+        // Get git config
         const gitConfig = panel.gitConfig;
         if (!gitConfig) {
           throw new Error("Git configuration not available");
@@ -136,7 +135,7 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
         }
         console.log("[NotebookApp] Bootstrap complete:", bootstrapResult.actions);
 
-        const git = new GitClient(fsImpl, {
+        const git = new GitClient(fs, {
           serverUrl: gitConfig.serverUrl,
           token: gitConfig.token,
         });
@@ -154,13 +153,13 @@ export function NotebookApp({ panelId }: NotebookAppProps) {
 
         // Initialize storage (OPFS)
         console.log("[NotebookApp] Initializing storage at", historyRepoPath);
-        await initialize(fsImpl, git, historyRepoPath, gitConfig.serverUrl);
+        await initialize(git, historyRepoPath, gitConfig.serverUrl);
         if (!mounted) return;
         setStorageInitialized(true);
 
-        // Initialize agent with file tools
+        // Initialize agent
         console.log("[NotebookApp] Initializing agent...");
-        await initializeAgent({ fs: fsImpl });
+        await initializeAgent();
         if (!mounted) return;
 
         // Create new chat

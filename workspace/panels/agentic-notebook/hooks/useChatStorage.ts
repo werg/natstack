@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { ChatStore, type FileSystem } from "../storage/ChatStore";
+import { ChatStore } from "../storage/ChatStore";
 import { GitClient } from "@natstack/git";
 import {
   chatStoreAtom,
@@ -48,11 +48,11 @@ export function useChatStorage(panelId: string) {
 
   // Initialize storage
   const initialize = useCallback(
-    async (fs: FileSystem, git: GitClient, historyRepoPath: string, gitServerUrl?: string) => {
+    async (git: GitClient, historyRepoPath: string, gitServerUrl?: string) => {
       // historyRepoPath is where bootstrap cloned the history repo (e.g., "/args/history")
       // basePath is the panel-specific subdirectory within it
       // gitServerUrl is passed as fallback for remote operations if bootstrap didn't run
-      const store = new ChatStore(fs, git, {
+      const store = new ChatStore(git, {
         panelId,
         basePath: `${historyRepoPath}/${panelId}`,
         historyRepoPath,

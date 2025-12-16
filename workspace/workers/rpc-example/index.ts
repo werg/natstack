@@ -46,9 +46,10 @@ rpc.expose({
     return "pong";
   },
 
-  async echo(message: string): Promise<string> {
-    log(`echo("${message}") called`);
-    return `Echo from worker: ${message}`;
+  async echo(message): Promise<string> {
+    const msg = message as string;
+    log(`echo("${msg}") called`);
+    return `Echo from worker: ${msg}`;
   },
 
   async getCounter(): Promise<number> {
@@ -56,10 +57,11 @@ rpc.expose({
     return counter;
   },
 
-  async incrementCounter(amount = 1): Promise<number> {
+  async incrementCounter(amount): Promise<number> {
+    const amt = (amount as number | undefined) ?? 1;
     const previousValue = counter;
-    counter += amount;
-    log(`incrementCounter(${amount}) called, new value: ${counter}`);
+    counter += amt;
+    log(`incrementCounter(${amt}) called, new value: ${counter}`);
 
     // Emit event to parent
     emitToParent("counter-changed", { value: counter, previousValue });
@@ -89,9 +91,10 @@ rpc.expose({
     return info;
   },
 
-  async computeSum(numbers: number[]): Promise<number> {
-    const sum = numbers.reduce((acc, n) => acc + n, 0);
-    log(`computeSum([${numbers.join(", ")}]) = ${sum}`);
+  async computeSum(numbers): Promise<number> {
+    const nums = numbers as number[];
+    const sum = nums.reduce((acc, n) => acc + n, 0);
+    log(`computeSum([${nums.join(", ")}]) = ${sum}`);
     return sum;
   },
 });

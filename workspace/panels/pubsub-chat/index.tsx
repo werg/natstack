@@ -59,6 +59,7 @@ interface ErrorMessage {
 interface ChatParticipantMetadata {
   name: string;
   role: "panel" | "worker";
+  [key: string]: unknown;
 }
 
 const CHANNEL_NAME = "pubsub-chat-demo";

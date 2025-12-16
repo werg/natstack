@@ -18,7 +18,6 @@ import {
   endGenerationAtom,
   abortGenerationAtom,
 } from "../state";
-import type { FileSystem } from "../storage/ChatStore";
 import type { ChannelMessage } from "../types/messages";
 
 /**
@@ -32,7 +31,8 @@ function createChannelAdapter(store: ReturnType<typeof useStore>): ChannelAdapte
     },
 
     sendMessage(message: Omit<ChannelMessage, "id" | "timestamp" | "channelId">): string {
-      return store.set(sendMessageAtom, message);
+      // sendMessageAtom always returns a string for "send" action
+      return store.set(sendMessageAtom, message) as string;
     },
 
     appendToMessage(messageId: string, delta: string): void {
@@ -82,7 +82,7 @@ export function useAgent() {
 
   // Initialize agent
   const initializeAgent = useCallback(
-    async (options?: { fs?: FileSystem }) => {
+    async () => {
       const session = new AgentSession({
         adapter: adapterRef.current!,
         modelRole,
@@ -92,9 +92,7 @@ export function useAgent() {
       await session.initialize();
 
       // Register tools
-      if (options?.fs) {
-        session.registerFileTools(options.fs);
-      }
+      session.registerFileTools();
       session.registerEvalTools();
       session.registerMDXTools();
 
