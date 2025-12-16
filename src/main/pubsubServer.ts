@@ -29,7 +29,7 @@ export interface TokenValidator {
  */
 export interface MessageStore {
   init(): void;
-  insert(channel: string, type: string, payload: string, senderId: string, ts: number): number;
+  insert(channel: string, type: string, payload: string, senderId: string, ts: number, attachment?: Buffer): number;
   query(channel: string, sinceId: number): MessageRow[];
   close(): void;
 }
@@ -68,6 +68,8 @@ interface ServerMessage {
   ts?: number;
   ref?: number;
   error?: string;
+  /** Binary attachment (separate from JSON payload) */
+  attachment?: Buffer;
   /** For roster messages: map of client ID to participant info */
   participants?: Record<string, Participant>;
 }
@@ -87,6 +89,7 @@ interface MessageRow {
   payload: string;
   sender_id: string;
   ts: number;
+  attachment: Buffer | null;
 }
 
 // =============================================================================
@@ -112,20 +115,21 @@ class SqliteMessageStore implements MessageStore {
         type TEXT NOT NULL,
         payload TEXT NOT NULL,
         sender_id TEXT NOT NULL,
-        ts INTEGER NOT NULL
+        ts INTEGER NOT NULL,
+        attachment BLOB
       );
       CREATE INDEX IF NOT EXISTS idx_messages_channel_id ON messages(channel, id);
     `
     );
   }
 
-  insert(channel: string, type: string, payload: string, senderId: string, ts: number): number {
+  insert(channel: string, type: string, payload: string, senderId: string, ts: number, attachment?: Buffer): number {
     if (!this.dbHandle) throw new Error("Store not initialized");
     const db = getDatabaseManager();
     const result = db.run(
       this.dbHandle,
-      "INSERT INTO messages (channel, type, payload, sender_id, ts) VALUES (?, ?, ?, ?, ?)",
-      [channel, type, payload, senderId, ts]
+      "INSERT INTO messages (channel, type, payload, sender_id, ts, attachment) VALUES (?, ?, ?, ?, ?, ?)",
+      [channel, type, payload, senderId, ts, attachment ?? null]
     );
     return Number(result.lastInsertRowid);
   }
@@ -159,9 +163,9 @@ export class InMemoryMessageStore implements MessageStore {
     // No-op for in-memory store
   }
 
-  insert(channel: string, type: string, payload: string, senderId: string, ts: number): number {
+  insert(channel: string, type: string, payload: string, senderId: string, ts: number, attachment?: Buffer): number {
     const id = this.nextId++;
-    this.messages.push({ id, channel, type, payload, sender_id: senderId, ts });
+    this.messages.push({ id, channel, type, payload, sender_id: senderId, ts, attachment: attachment ?? null });
     return id;
   }
 
@@ -300,9 +304,28 @@ export class PubSubServer {
     // Broadcast updated roster to all clients in the channel
     this.broadcastRoster(channel);
 
-    // Handle incoming messages
+    // Handle incoming messages (both text and binary)
     ws.on("message", (data) => {
       try {
+        if (data instanceof Buffer && data.length > 5) {
+          // Try to parse as binary message (first byte is 0 marker)
+          const view = new DataView(data.buffer, data.byteOffset, data.length);
+          const binaryMarker = view.getUint8(0);
+          const metadataLen = view.getUint32(1, true);
+
+          // Only treat as binary if marker is 0 and format is valid
+          if (binaryMarker === 0 && data.length >= 5 + metadataLen) {
+            const metadataBytes = data.subarray(5, 5 + metadataLen);
+            const metadataStr = metadataBytes.toString("utf-8");
+            const metadata = JSON.parse(metadataStr) as ClientMessage;
+            const payloadBuffer = data.subarray(5 + metadataLen);
+
+            this.handleClientBinaryMessage(client, metadata, payloadBuffer);
+            return;
+          }
+        }
+
+        // Fall back to JSON message parsing
         const msg = JSON.parse(data.toString()) as ClientMessage;
         this.handleClientMessage(client, msg);
       } catch {
@@ -328,14 +351,30 @@ export class PubSubServer {
     const rows = this.messageStore.query(channel, sinceId);
 
     for (const row of rows) {
-      this.send(ws, {
-        kind: "replay",
-        id: row.id,
-        type: row.type,
-        payload: JSON.parse(row.payload),
-        senderId: row.sender_id,
-        ts: row.ts,
-      });
+      const payload = JSON.parse(row.payload);
+
+      if (row.attachment) {
+        // Message with attachment - send as binary frame
+        this.sendBinary(ws, {
+          kind: "replay",
+          id: row.id,
+          type: row.type,
+          payload,
+          senderId: row.sender_id,
+          ts: row.ts,
+          attachment: row.attachment,
+        });
+      } else {
+        // Text message - send as JSON
+        this.send(ws, {
+          kind: "replay",
+          id: row.id,
+          type: row.type,
+          payload,
+          senderId: row.sender_id,
+          ts: row.ts,
+        });
+      }
     }
   }
 
@@ -358,7 +397,7 @@ export class PubSubServer {
     }
 
     if (persist && this.messageStore) {
-      // Persist to message store
+      // Persist to message store (no attachment for JSON-only messages)
       const id = this.messageStore.insert(client.channel, type, payloadJson, client.clientId, ts);
 
       // Broadcast to all (including sender)
@@ -392,6 +431,61 @@ export class PubSubServer {
     }
   }
 
+  private handleClientBinaryMessage(client: Client, msg: ClientMessage, attachment: Buffer): void {
+    if (msg.action !== "publish") {
+      this.send(client.ws, { kind: "error", error: "unknown action", ref: msg.ref });
+      return;
+    }
+
+    const { type, payload, persist = true, ref } = msg;
+    const ts = Date.now();
+
+    // Validate payload is serializable
+    let payloadJson: string;
+    try {
+      payloadJson = JSON.stringify(payload);
+    } catch {
+      this.send(client.ws, { kind: "error", error: "payload not serializable", ref });
+      return;
+    }
+
+    if (persist && this.messageStore) {
+      // Persist payload + attachment to message store
+      const id = this.messageStore.insert(client.channel, type, payloadJson, client.clientId, ts, attachment);
+
+      // Broadcast to all (including sender)
+      this.broadcastBinary(
+        client.channel,
+        {
+          kind: "persisted",
+          id,
+          type,
+          payload,
+          senderId: client.clientId,
+          ts,
+          attachment,
+        },
+        client.ws,
+        ref
+      );
+    } else {
+      // Ephemeral - broadcast to all (including sender)
+      this.broadcastBinary(
+        client.channel,
+        {
+          kind: "ephemeral",
+          type,
+          payload,
+          senderId: client.clientId,
+          ts,
+          attachment,
+        },
+        client.ws,
+        ref
+      );
+    }
+  }
+
   private broadcast(
     channel: string,
     msg: ServerMessage,
@@ -418,6 +512,81 @@ export class PubSubServer {
   private send(ws: WebSocket, msg: ServerMessage): void {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(msg));
+    }
+  }
+
+  private sendBinary(ws: WebSocket, msg: ServerMessage): void {
+    if (ws.readyState !== WebSocket.OPEN) return;
+
+    const attachment = msg.attachment!;
+    const metadata = {
+      kind: msg.kind,
+      id: msg.id,
+      type: msg.type,
+      payload: msg.payload,
+      senderId: msg.senderId,
+      ts: msg.ts,
+      ref: msg.ref,
+    };
+
+    const metadataStr = JSON.stringify(metadata);
+    const metadataBytes = Buffer.from(metadataStr, "utf-8");
+    const metadataLen = metadataBytes.length;
+
+    // Create buffer: 1 byte marker (0) + 4 bytes metadata length + metadata + attachment
+    const buffer = Buffer.allocUnsafe(1 + 4 + metadataLen + attachment.length);
+    buffer.writeUInt8(0, 0); // Binary frame marker
+    buffer.writeUInt32LE(metadataLen, 1); // Metadata length
+    metadataBytes.copy(buffer, 5);
+    attachment.copy(buffer, 5 + metadataLen);
+
+    ws.send(buffer);
+  }
+
+  private broadcastBinary(
+    channel: string,
+    msg: ServerMessage,
+    senderWs: WebSocket,
+    senderRef?: number
+  ): void {
+    const clients = this.channels.get(channel);
+    if (!clients) return;
+
+    const attachment = msg.attachment!;
+
+    // Build binary buffers for both sender and others
+    const createBinaryBuffer = (includeRef: boolean): Buffer => {
+      const metadata = {
+        kind: msg.kind,
+        id: msg.id,
+        type: msg.type,
+        payload: msg.payload,
+        senderId: msg.senderId,
+        ts: msg.ts,
+        ...(includeRef && senderRef !== undefined ? { ref: senderRef } : {}),
+      };
+
+      const metadataStr = JSON.stringify(metadata);
+      const metadataBytes = Buffer.from(metadataStr, "utf-8");
+      const metadataLen = metadataBytes.length;
+
+      const buffer = Buffer.allocUnsafe(1 + 4 + metadataLen + attachment.length);
+      buffer.writeUInt8(0, 0);
+      buffer.writeUInt32LE(metadataLen, 1);
+      metadataBytes.copy(buffer, 5);
+      attachment.copy(buffer, 5 + metadataLen);
+
+      return buffer;
+    };
+
+    const bufferForSender = createBinaryBuffer(true);
+    const bufferForOthers = createBinaryBuffer(false);
+
+    for (const client of clients) {
+      if (client.ws.readyState === WebSocket.OPEN) {
+        const buffer = client.ws === senderWs ? bufferForSender : bufferForOthers;
+        client.ws.send(buffer);
+      }
     }
   }
 

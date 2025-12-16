@@ -27,6 +27,8 @@ interface ServerMessage {
   ts?: number;
   ref?: number;
   error?: string;
+  /** Binary attachment (parsed from binary frame) */
+  attachment?: Uint8Array;
   participants?: Record<string, Participant>;
 }
 
@@ -155,8 +157,49 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     }
   }
 
-  function handleMessage(event: MessageEvent): void {
-    const msg = JSON.parse(event.data as string) as ServerMessage;
+  function handleMessage(event: MessageEvent | { data: ArrayBuffer }): void {
+    let msg: ServerMessage;
+
+    // Handle binary messages (messages with attachments)
+    if (event.data instanceof ArrayBuffer) {
+      const buffer = event.data;
+      if (buffer.byteLength < 5) {
+        handleError(new PubSubError("invalid binary message format", "validation"));
+        return;
+      }
+
+      const view = new DataView(buffer);
+      // Byte 0 is a binary marker (0)
+      const metadataLen = view.getUint32(1, true);
+
+      if (buffer.byteLength < 5 + metadataLen) {
+        handleError(new PubSubError("binary message truncated", "validation"));
+        return;
+      }
+
+      // Parse metadata (contains kind, type, payload, senderId, ts, etc.)
+      const metadataBytes = new Uint8Array(buffer, 5, metadataLen);
+      const metadataStr = new TextDecoder().decode(metadataBytes);
+      let metadata: Record<string, unknown> = {};
+      try {
+        metadata = JSON.parse(metadataStr);
+      } catch {
+        handleError(new PubSubError("invalid metadata in binary message", "validation"));
+        return;
+      }
+
+      // Extract binary attachment (copy to avoid issues with buffer reuse)
+      const attachmentStart = 5 + metadataLen;
+      const attachment = new Uint8Array(buffer.slice(attachmentStart));
+
+      msg = {
+        ...metadata,
+        attachment,
+      } as ServerMessage;
+    } else {
+      // Handle text messages (JSON)
+      msg = JSON.parse(event.data as string) as ServerMessage;
+    }
 
     switch (msg.kind) {
       case "ready":
@@ -229,6 +272,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
           payload: msg.payload,
           senderId: msg.senderId!,
           ts: msg.ts!,
+          attachment: msg.attachment,
         };
 
         if (messageResolve) {
@@ -383,13 +427,13 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     return Promise.race([readyPromise, timeoutPromise]);
   }
 
-  async function publish<T>(
+  async function publish<P>(
     type: string,
-    payload: T,
+    payload: P,
     publishOptions: PublishOptions = {}
   ): Promise<number | undefined> {
     const ref = ++refCounter;
-    const { persist = true, timeoutMs = 30000 } = publishOptions;
+    const { persist = true, timeoutMs = 30000, attachment } = publishOptions;
 
     return new Promise((resolve, reject) => {
       if (ws.readyState !== WebSocket.OPEN) {
@@ -417,15 +461,43 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         timeoutId,
       });
 
-      ws.send(
-        JSON.stringify({
+      if (attachment) {
+        // Send as binary frame: metadata JSON + attachment bytes
+        const metadata = JSON.stringify({
           action: "publish",
           type,
           payload,
           persist,
           ref,
-        })
-      );
+        });
+        const metadataBytes = new TextEncoder().encode(metadata);
+        const metadataLen = metadataBytes.length;
+
+        // Create buffer: 1 byte marker (0) + 4 bytes length + metadata + attachment
+        const buffer = new ArrayBuffer(1 + 4 + metadataLen + attachment.length);
+        const view = new DataView(buffer);
+        view.setUint8(0, 0); // Binary frame marker
+        view.setUint32(1, metadataLen, true); // Metadata length (little-endian)
+
+        // Copy metadata
+        new Uint8Array(buffer, 5, metadataLen).set(metadataBytes);
+
+        // Copy attachment
+        new Uint8Array(buffer, 5 + metadataLen).set(attachment);
+
+        ws.send(buffer);
+      } else {
+        // Send as JSON text frame
+        ws.send(
+          JSON.stringify({
+            action: "publish",
+            type,
+            payload,
+            persist,
+            ref,
+          })
+        );
+      }
     });
   }
 

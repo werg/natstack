@@ -948,4 +948,172 @@ describe("PubSubClient", () => {
       expect(url.searchParams.get("metadata")).toBe(JSON.stringify(metadata));
     });
   });
+
+  describe("attachment support", () => {
+    it("sends message with attachment as binary frame", async () => {
+      const mockSend = vi.fn();
+
+      MockWebSocket.mockImplementation(() => ({
+        readyState: 1,
+        onopen: null,
+        onmessage: null,
+        onerror: null,
+        onclose: null,
+        close: vi.fn(),
+        send: mockSend,
+      }));
+
+      const client = connect(`ws://127.0.0.1:${port}`, "token", {
+        channel: "test",
+      });
+
+      // Publish with attachment (don't wait for response)
+      const attachment = new Uint8Array([1, 2, 3, 4, 5]);
+      try {
+        client.publish("image", { name: "test.png" }, { attachment }).catch(() => {
+          // Ignore timeout or other errors in this test
+        });
+      } catch {
+        // Ignore errors
+      }
+
+      // Give time for async operations
+      await new Promise<void>((resolve) => {
+        setTimeout(() => {
+          resolve();
+        }, 50);
+      });
+
+      // Find the binary send call (should have sent as ArrayBuffer)
+      const binarySendCall = mockSend.mock.calls.find((call) => call[0] instanceof ArrayBuffer);
+      expect(binarySendCall).toBeDefined();
+
+      // Verify the buffer format is correct: 1 byte marker + 4 bytes length + metadata + attachment
+      if (binarySendCall) {
+        const buffer = binarySendCall[0] as ArrayBuffer;
+        expect(buffer.byteLength).toBeGreaterThan(9); // At least 1 + 4 + some metadata + 5 byte attachment
+
+        // Verify metadata contains payload
+        const view = new DataView(buffer);
+        const metadataLen = view.getUint32(1, true);
+        const metadataBytes = new Uint8Array(buffer, 5, metadataLen);
+        const metadataStr = new TextDecoder().decode(metadataBytes);
+        const metadata = JSON.parse(metadataStr);
+        expect(metadata.payload).toEqual({ name: "test.png" });
+      }
+    });
+
+    it("parses attachment from server binary frame", () => {
+      let onmessage: ((event: { data: string | ArrayBuffer }) => void) | null = null;
+
+      MockWebSocket.mockImplementation(() => {
+        const ws = {
+          readyState: 1,
+          onopen: null,
+          _onmessage: null as ((event: { data: string | ArrayBuffer }) => void) | null,
+          onerror: null,
+          onclose: null,
+          close: vi.fn(),
+          send: vi.fn(),
+        };
+        Object.defineProperty(ws, "onmessage", {
+          get: () => ws._onmessage,
+          set: (handler: (event: { data: string | ArrayBuffer }) => void) => {
+            ws._onmessage = handler;
+            onmessage = handler;
+          },
+        });
+        return ws;
+      });
+
+      const errorHandler = vi.fn();
+      const client = connect(`ws://127.0.0.1:${port}`, "token", {
+        channel: "test",
+      });
+      client.onError(errorHandler);
+
+      // Create a message with attachment from server
+      const attachment = new Uint8Array([255, 254, 253, 252]);
+      const metadata = JSON.stringify({
+        kind: "persisted",
+        id: 50,
+        type: "image",
+        payload: { name: "photo.jpg", width: 800 },
+        senderId: "other",
+        ts: 12345,
+      });
+      const metadataBytes = Buffer.from(metadata, "utf-8");
+      const serverBuffer = Buffer.allocUnsafe(1 + 4 + metadataBytes.length + attachment.length);
+      serverBuffer.writeUInt8(0, 0);
+      serverBuffer.writeUInt32LE(metadataBytes.length, 1);
+      metadataBytes.copy(serverBuffer, 5);
+      Buffer.from(attachment).copy(serverBuffer, 5 + metadataBytes.length);
+
+      // Send binary message
+      onmessage!({
+        data: serverBuffer.buffer.slice(serverBuffer.byteOffset, serverBuffer.byteOffset + serverBuffer.length)
+      });
+
+      // Should not have errored
+      expect(errorHandler).not.toHaveBeenCalled();
+    });
+
+    it("receives message with both payload and attachment", async () => {
+      let onmessage: ((event: { data: string | ArrayBuffer }) => void) | null = null;
+
+      MockWebSocket.mockImplementation(() => {
+        const ws = {
+          readyState: 1,
+          onopen: null,
+          _onmessage: null as ((event: { data: string | ArrayBuffer }) => void) | null,
+          onerror: null,
+          onclose: null,
+          close: vi.fn(),
+          send: vi.fn(),
+        };
+        Object.defineProperty(ws, "onmessage", {
+          get: () => ws._onmessage,
+          set: (handler: (event: { data: string | ArrayBuffer }) => void) => {
+            ws._onmessage = handler;
+            onmessage = handler;
+          },
+        });
+        return ws;
+      });
+
+      const client = connect(`ws://127.0.0.1:${port}`, "token", {
+        channel: "test",
+      });
+
+      // Create a message with attachment from server
+      const attachment = new Uint8Array([1, 2, 3]);
+      const metadata = JSON.stringify({
+        kind: "ephemeral",
+        type: "data",
+        payload: { filename: "data.bin" },
+        senderId: "other",
+        ts: Date.now(),
+      });
+      const metadataBytes = Buffer.from(metadata, "utf-8");
+      const serverBuffer = Buffer.allocUnsafe(1 + 4 + metadataBytes.length + attachment.length);
+      serverBuffer.writeUInt8(0, 0);
+      serverBuffer.writeUInt32LE(metadataBytes.length, 1);
+      metadataBytes.copy(serverBuffer, 5);
+      Buffer.from(attachment).copy(serverBuffer, 5 + metadataBytes.length);
+
+      // Send the binary message through onmessage
+      onmessage!({
+        data: serverBuffer.buffer.slice(serverBuffer.byteOffset, serverBuffer.byteOffset + serverBuffer.length)
+      });
+
+      // Get the message from the async iterator
+      const iterator = client.messages();
+      const { value: receivedMessage } = await iterator.next();
+
+      // Verify both payload and attachment are present
+      expect(receivedMessage.payload).toEqual({ filename: "data.bin" });
+      expect(receivedMessage.attachment).toBeInstanceOf(Uint8Array);
+      expect(Array.from(receivedMessage.attachment as Uint8Array)).toEqual([1, 2, 3]);
+    });
+  });
 });

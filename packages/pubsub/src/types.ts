@@ -31,12 +31,14 @@ export interface Message<T = unknown> {
   id?: number;
   /** User-defined message type */
   type: string;
-  /** Message payload */
+  /** Message payload (JSON-serializable value) */
   payload: T;
   /** ID of the sender */
   senderId: string;
   /** Timestamp in milliseconds */
   ts: number;
+  /** Binary attachment (separate from JSON payload) */
+  attachment?: Uint8Array;
 }
 
 /**
@@ -74,6 +76,8 @@ export interface PublishOptions {
   persist?: boolean;
   /** Timeout in milliseconds for the publish operation. Default: 30000 */
   timeoutMs?: number;
+  /** Binary attachment to send alongside JSON payload */
+  attachment?: Uint8Array;
 }
 
 /**
