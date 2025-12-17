@@ -81,6 +81,14 @@ export interface PublishOptions {
 }
 
 /**
+ * Options for updating participant metadata.
+ */
+export interface UpdateMetadataOptions {
+  /** Timeout in milliseconds for the update operation. Default: 30000 */
+  timeoutMs?: number;
+}
+
+/**
  * Configuration for automatic reconnection.
  */
 export interface ReconnectConfig {

@@ -4,12 +4,12 @@
   "private": true,
   "type": "module",
   "natstack": {
-    "title": "PubSub Chat AI Responder",
+    "title": "Agentic Chat AI Responder",
     "runtime": "worker"
   },
   "dependencies": {
     "@natstack/runtime": "workspace:*",
     "@natstack/ai": "workspace:*",
-    "@natstack/pubsub": "workspace:*"
+    "@natstack/agentic-messaging": "workspace:*"
   }
 }

@@ -1,49 +1,26 @@
 /**
- * PubSub Chat AI Responder Worker
+ * Agentic Chat AI Responder Worker
  *
- * Demonstrates @natstack/pubsub for real-time messaging.
+ * Demonstrates @natstack/agentic-messaging for real-time messaging.
  * Listens for user messages on a channel and responds using AI streaming.
  */
 
 import { pubsubConfig, setTitle, id } from "@natstack/runtime";
-import { connect, type PubSubClient } from "@natstack/pubsub";
+import {
+  connect,
+  type AgenticClient,
+  type AgenticParticipantMetadata,
+} from "@natstack/agentic-messaging";
 import { ai } from "@natstack/ai";
 
 // Set worker title
 void setTitle("Chat AI Responder");
 
 // Configuration
-const CHANNEL_NAME = "pubsub-chat-demo";
-
-/**
- * Wire format: "message" - creates a new message
- */
-interface NewMessage {
-  id: string;
-  content: string;
-  replyTo?: string;
-}
-
-/**
- * Wire format: "update-message" - updates an existing message
- */
-interface UpdateMessage {
-  id: string;
-  content?: string;
-  /** Set to true to mark message as complete */
-  complete?: boolean;
-}
-
-/**
- * Wire format: "error" - marks a message as errored
- */
-interface ErrorMessage {
-  id: string;
-  error: string;
-}
+const CHANNEL_NAME = "agentic-chat-demo";
 
 /** Metadata for participants in this channel (shared with panel) */
-interface ChatParticipantMetadata {
+interface ChatParticipantMetadata extends AgenticParticipantMetadata {
   name: string;
   type: "panel" | "worker";
 }
@@ -60,7 +37,7 @@ async function main() {
 
   log("Starting chat responder...");
 
-  // Connect to pubsub channel with reconnection and participant metadata
+  // Connect to agentic messaging channel with reconnection and participant metadata
   const client = connect<ChatParticipantMetadata>(pubsubConfig.serverUrl, pubsubConfig.token, {
     channel: CHANNEL_NAME,
     reconnect: true,
@@ -79,35 +56,28 @@ async function main() {
   await client.ready();
   log(`Connected to channel: ${CHANNEL_NAME}`);
 
-  // Process incoming messages
+  // Process incoming messages using typed API
   for await (const msg of client.messages()) {
     if (msg.type !== "message") continue;
 
-    const payload = msg.payload as NewMessage;
     const sender = client.roster[msg.senderId];
 
     // Only respond to messages from panels (not our own or other workers)
     if (sender?.metadata.type === "panel" && msg.senderId !== id) {
-      await handleUserMessage(client, payload.id, payload.content);
+      await handleUserMessage(client, msg.id, msg.content);
     }
   }
 }
 
 async function handleUserMessage(
-  client: PubSubClient<ChatParticipantMetadata>,
+  client: AgenticClient<ChatParticipantMetadata>,
   userMessageId: string,
   userText: string
 ) {
   log(`Received message: ${userText}`);
 
-  const responseId = `response-${userMessageId}`;
-
-  // Create new message (will stream content via updates)
-  await client.publish("message", {
-    id: responseId,
-    content: "",
-    replyTo: userMessageId,
-  } satisfies NewMessage, { persist: false });
+  // Start a new message (empty, will stream content via updates)
+  const responseId = await client.send("", { replyTo: userMessageId, persist: false });
 
   try {
     // Stream AI response using fast model
@@ -121,28 +91,19 @@ async function handleUserMessage(
     for await (const event of stream) {
       if (event.type === "text-delta") {
         // Send content delta (ephemeral - not persisted)
-        await client.publish("update-message", {
-          id: responseId,
-          content: event.text,
-        } satisfies UpdateMessage, { persist: false });
+        await client.update(responseId, event.text, { persist: false });
       }
     }
 
     // Mark message as complete (persisted for history)
-    await client.publish("update-message", {
-      id: responseId,
-      complete: true,
-    } satisfies UpdateMessage);
+    await client.complete(responseId);
 
     log(`Completed response for ${userMessageId}`);
 
-  } catch (error) {
-    console.error(`[Worker] AI error:`, error);
+  } catch (err) {
+    console.error(`[Worker] AI error:`, err);
     // Send error
-    await client.publish("error", {
-      id: responseId,
-      error: error instanceof Error ? error.message : String(error),
-    } satisfies ErrorMessage);
+    await client.error(responseId, err instanceof Error ? err.message : String(err));
   }
 }
 

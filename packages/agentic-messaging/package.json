@@ -1,0 +1,32 @@
+{
+  "name": "@natstack/agentic-messaging",
+  "version": "0.1.0",
+  "description": "Agentic messaging protocol + SDK over @natstack/pubsub",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "dev": "tsc --project tsconfig.build.json --watch",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@natstack/pubsub": "workspace:*",
+    "zod": "^3.24.1",
+    "zod-to-json-schema": "^3.25.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "files": [
+    "dist"
+  ]
+}
+

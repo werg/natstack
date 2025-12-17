@@ -1,15 +1,22 @@
 /**
- * PubSub Chat Demo Panel
+ * Agentic Messaging Chat Demo Panel
  *
- * Demonstrates @natstack/pubsub for real-time messaging between a panel and worker.
- * Messages flow through the PubSub WebSocket server, not via direct RPC.
+ * Demonstrates @natstack/agentic-messaging for real-time messaging between a panel and worker.
+ * Messages flow through the PubSub WebSocket server with protocol validation.
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Button, Card, Flex, Text, TextField, ScrollArea, Box, Badge } from "@radix-ui/themes";
 import { createChild, pubsubConfig, id as clientId, type ChildHandle } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
-import { connect, type PubSubClient, type Message, type RosterUpdate, type Participant } from "@natstack/pubsub";
+import {
+  connect,
+  type AgenticClient,
+  type AgenticParticipantMetadata,
+  type IncomingMessage,
+  type Participant,
+  type RosterUpdate,
+} from "@natstack/agentic-messaging";
 
 /**
  * Chat message as stored locally.
@@ -27,43 +34,15 @@ interface ChatMessage {
   pending?: boolean;
 }
 
-/**
- * Wire format: "message" - creates a new message
- */
-interface NewMessage {
-  id: string;
-  content: string;
-  replyTo?: string;
-}
-
-/**
- * Wire format: "update-message" - updates an existing message
- */
-interface UpdateMessage {
-  id: string;
-  /** Content to append to existing message */
-  content?: string;
-  /** Set to true to mark message as complete */
-  complete?: boolean;
-}
-
-/**
- * Wire format: "error" - marks a message as errored
- */
-interface ErrorMessage {
-  id: string;
-  error: string;
-}
-
 /** Metadata for participants in this channel */
-interface ChatParticipantMetadata {
+interface ChatParticipantMetadata extends AgenticParticipantMetadata {
   name: string;
   type: "panel" | "worker";
 }
 
-const CHANNEL_NAME = "pubsub-chat-demo";
+const CHANNEL_NAME = "agentic-chat-demo";
 
-export default function PubSubChatDemo() {
+export default function AgenticChatDemo() {
   const theme = usePanelTheme();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -72,7 +51,7 @@ export default function PubSubChatDemo() {
   const [status, setStatus] = useState("Initializing...");
   const [participants, setParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
 
-  const clientRef = useRef<PubSubClient<ChatParticipantMetadata> | null>(null);
+  const clientRef = useRef<AgenticClient<ChatParticipantMetadata> | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Scroll to bottom when messages change
@@ -80,10 +59,10 @@ export default function PubSubChatDemo() {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Initialize worker and pubsub connection
+  // Initialize worker and agentic messaging connection
   useEffect(() => {
     let mounted = true;
-    let client: PubSubClient<ChatParticipantMetadata> | null = null;
+    let client: AgenticClient<ChatParticipantMetadata> | null = null;
 
     async function init() {
       if (!pubsubConfig) {
@@ -102,7 +81,7 @@ export default function PubSubChatDemo() {
         if (!mounted) return;
         setWorker(w);
 
-        // 2. Connect to the pubsub channel with participant metadata
+        // 2. Connect to the agentic messaging channel
         setStatus("Connecting to channel...");
         client = connect<ChatParticipantMetadata>(pubsubConfig.serverUrl, pubsubConfig.token, {
           channel: CHANNEL_NAME,
@@ -128,7 +107,7 @@ export default function PubSubChatDemo() {
         setConnected(true);
         setStatus("Connected");
 
-        // 4. Listen for messages
+        // 4. Listen for messages using the typed API
         for await (const msg of client.messages()) {
           if (!mounted) break;
           handleMessage(msg);
@@ -140,36 +119,34 @@ export default function PubSubChatDemo() {
       }
     }
 
-    function handleMessage(msg: Message) {
+    function handleMessage(msg: IncomingMessage) {
       switch (msg.type) {
         case "message": {
-          const payload = msg.payload as NewMessage;
           setMessages(prev => {
             // Check if we already have this message as pending (our own optimistic add)
-            const existingIndex = prev.findIndex(m => m.id === payload.id && m.pending);
+            const existingIndex = prev.findIndex(m => m.id === msg.id && m.pending);
             if (existingIndex !== -1) {
               // Convert pending → sent
               return prev.map((m, i) => i === existingIndex ? { ...m, pending: false } : m);
             }
             // New message from another client
             return [...prev, {
-              id: payload.id,
+              id: msg.id,
               senderId: msg.senderId,
-              content: payload.content,
-              replyTo: payload.replyTo,
+              content: msg.content,
+              replyTo: msg.replyTo,
             }];
           });
           break;
         }
 
         case "update-message": {
-          const payload = msg.payload as UpdateMessage;
           setMessages(prev => prev.map(m =>
-            m.id === payload.id
+            m.id === msg.id
               ? {
                   ...m,
-                  content: payload.content !== undefined ? m.content + payload.content : m.content,
-                  complete: payload.complete ?? m.complete,
+                  content: msg.content !== undefined ? m.content + msg.content : m.content,
+                  complete: msg.complete ?? m.complete,
                 }
               : m
           ));
@@ -177,10 +154,9 @@ export default function PubSubChatDemo() {
         }
 
         case "error": {
-          const payload = msg.payload as ErrorMessage;
           setMessages(prev => prev.map(m =>
-            m.id === payload.id
-              ? { ...m, complete: true, error: payload.error }
+            m.id === msg.id
+              ? { ...m, complete: true, error: msg.error }
               : m
           ));
           break;
@@ -200,26 +176,25 @@ export default function PubSubChatDemo() {
   const sendMessage = useCallback(async () => {
     if (!input.trim() || !clientRef.current?.connected) return;
 
-    const messageId = crypto.randomUUID();
     const text = input.trim();
     setInput("");
 
-    const chatMsg: ChatMessage = {
-      id: messageId,
-      senderId: clientId,
-      content: text,
-      complete: true, // User messages are complete immediately
-      pending: true, // Optimistic - will be confirmed when broadcast arrives
-    };
+    // Use the agentic messaging send() API - it generates the ID for us
+    const messageId = await clientRef.current.send(text);
 
-    // Add to local UI immediately (pending state)
-    setMessages(prev => [...prev, chatMsg]);
-
-    // Publish to channel (persisted) - we'll receive the broadcast back which converts pending→sent
-    await clientRef.current.publish("message", {
-      id: messageId,
-      content: text,
-    } satisfies NewMessage);
+    // We'll receive the broadcast back which adds it to the list
+    // But add optimistically for instant feedback
+    setMessages(prev => {
+      // Only add if not already present (from broadcast)
+      if (prev.some(m => m.id === messageId)) return prev;
+      return [...prev, {
+        id: messageId,
+        senderId: clientId,
+        content: text,
+        complete: true,
+        pending: true,
+      }];
+    });
   }, [input]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -243,7 +218,7 @@ export default function PubSubChatDemo() {
     <Flex direction="column" style={{ height: "100vh", padding: 16 }} gap="3">
       {/* Header */}
       <Flex justify="between" align="center">
-        <Text size="5" weight="bold">PubSub Chat Demo</Text>
+        <Text size="5" weight="bold">Agentic Chat Demo</Text>
         <Flex gap="2" align="center">
           <Badge color={connected ? "green" : "gray"}>
             {connected ? "Connected" : status}
@@ -267,7 +242,7 @@ export default function PubSubChatDemo() {
           <Flex direction="column" gap="2" p="3">
             {messages.length === 0 ? (
               <Text color="gray" size="2">
-                Send a message to start chatting with the AI worker via PubSub
+                Send a message to start chatting with the AI worker
               </Text>
             ) : (
               messages.map(msg => {

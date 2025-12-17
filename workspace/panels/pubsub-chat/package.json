@@ -4,13 +4,13 @@
   "private": true,
   "type": "module",
   "natstack": {
-    "title": "PubSub Chat Demo",
+    "title": "Agentic Chat Demo",
     "entry": "index.tsx"
   },
   "dependencies": {
     "@natstack/runtime": "workspace:*",
     "@natstack/react": "workspace:*",
-    "@natstack/pubsub": "workspace:*",
+    "@natstack/agentic-messaging": "workspace:*",
     "@radix-ui/themes": "^3.2.0"
   }
 }

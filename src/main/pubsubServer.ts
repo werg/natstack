@@ -74,13 +74,21 @@ interface ServerMessage {
   participants?: Record<string, Participant>;
 }
 
-interface ClientMessage {
+interface PublishClientMessage {
   action: "publish";
   persist?: boolean;
   type: string;
   payload: unknown;
   ref?: number;
 }
+
+interface UpdateMetadataClientMessage {
+  action: "update-metadata";
+  payload: unknown;
+  ref?: number;
+}
+
+type ClientMessage = PublishClientMessage | UpdateMetadataClientMessage;
 
 interface MessageRow {
   id: number;
@@ -379,12 +387,24 @@ export class PubSubServer {
   }
 
   private handleClientMessage(client: Client, msg: ClientMessage): void {
-    if (msg.action !== "publish") {
-      this.send(client.ws, { kind: "error", error: "unknown action", ref: msg.ref });
+    const { ref } = msg;
+
+    if (msg.action === "update-metadata") {
+      if (!msg.payload || typeof msg.payload !== "object" || Array.isArray(msg.payload)) {
+        this.send(client.ws, { kind: "error", error: "metadata must be an object", ref });
+        return;
+      }
+      client.metadata = msg.payload as Record<string, unknown>;
+      this.broadcastRoster(client.channel, client.ws, ref);
       return;
     }
 
-    const { type, payload, persist = true, ref } = msg;
+    if (msg.action !== "publish") {
+      this.send(client.ws, { kind: "error", error: "unknown action", ref });
+      return;
+    }
+
+    const { type, payload, persist = true } = msg;
     const ts = Date.now();
 
     // Validate payload is serializable
@@ -595,7 +615,7 @@ export class PubSubServer {
    * This is an idempotent operation - clients receive the full current state.
    * When a client has multiple connections, uses the metadata from the most recent connection.
    */
-  private broadcastRoster(channel: string): void {
+  private broadcastRoster(channel: string, senderWs?: WebSocket, senderRef?: number): void {
     const clients = this.channels.get(channel);
     if (!clients || clients.size === 0) return;
 
@@ -615,11 +635,15 @@ export class PubSubServer {
       ts: Date.now(),
     };
 
-    const data = JSON.stringify(rosterMsg);
+    const dataForOthers = JSON.stringify(rosterMsg);
+    // If senderRef is present, include it only for the sender (correlation/ack).
+    const dataForSender =
+      senderRef !== undefined ? JSON.stringify({ ...rosterMsg, ref: senderRef }) : dataForOthers;
+
     for (const client of clients) {
-      if (client.ws.readyState === WebSocket.OPEN) {
-        client.ws.send(data);
-      }
+      if (client.ws.readyState !== WebSocket.OPEN) continue;
+      const data = senderWs && client.ws === senderWs ? dataForSender : dataForOthers;
+      client.ws.send(data);
     }
   }
 

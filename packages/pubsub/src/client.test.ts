@@ -244,6 +244,71 @@ describe("PubSubClient", () => {
     });
   });
 
+  describe("updateMetadata()", () => {
+    it("sends update-metadata and resolves on roster ack", async () => {
+      let onmessage: ((event: { data: string }) => void) | null = null;
+      const mockSend = vi.fn();
+
+      MockWebSocket.mockImplementation(() => {
+        const ws = {
+          readyState: 1,
+          onopen: null,
+          _onmessage: null as ((event: { data: string }) => void) | null,
+          onerror: null,
+          onclose: null,
+          close: vi.fn(),
+          send: mockSend,
+        };
+        Object.defineProperty(ws, "onmessage", {
+          get: () => ws._onmessage,
+          set: (handler: (event: { data: string }) => void) => {
+            ws._onmessage = handler;
+            onmessage = handler;
+          },
+        });
+        return ws;
+      });
+
+      const client = connect(`ws://127.0.0.1:${port}`, "token", {
+        channel: "test",
+        metadata: { name: "Alice" },
+      });
+
+      // Send ready
+      setTimeout(() => {
+        onmessage!({ data: JSON.stringify({ kind: "ready" }) });
+      }, 5);
+      await client.ready();
+
+      const updatePromise = client.updateMetadata({ name: "Bob" });
+
+      // Verify send was called
+      expect(mockSend).toHaveBeenCalled();
+      const sentMsg = JSON.parse(mockSend.mock.calls.at(-1)![0] as string) as {
+        action: string;
+        payload: object;
+        ref: number;
+      };
+      expect(sentMsg.action).toBe("update-metadata");
+      expect(sentMsg.payload).toEqual({ name: "Bob" });
+      expect(sentMsg.ref).toBe(1);
+
+      // Simulate roster ack with ref
+      onmessage!({
+        data: JSON.stringify({
+          kind: "roster",
+          ref: 1,
+          participants: {
+            me: { id: "me", metadata: { name: "Bob" } },
+          },
+          ts: Date.now(),
+        }),
+      });
+
+      await expect(updatePromise).resolves.toBeUndefined();
+    });
+  });
+
   describe("onError()", () => {
     it("calls error handler on server error with PubSubError", async () => {
       let onmessage: ((event: { data: string }) => void) | null = null;

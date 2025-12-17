@@ -8,6 +8,7 @@ import { PubSubError } from "./types.js";
 import type {
   Message,
   PublishOptions,
+  UpdateMetadataOptions,
   ConnectOptions,
   ReconnectConfig,
   RosterUpdate,
@@ -41,6 +42,9 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
 
   /** Publish a message to the channel. Returns the message ID for persisted messages. */
   publish<P>(type: string, payload: P, options?: PublishOptions): Promise<number | undefined>;
+
+  /** Update this client's participant metadata (triggers roster broadcast). */
+  updateMetadata(metadata: T, options?: UpdateMetadataOptions): Promise<void>;
 
   /** Wait for the ready signal (replay complete). Throws if timeout exceeded. */
   ready(timeoutMs?: number): Promise<void>;
@@ -115,6 +119,11 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   const pendingPublishes = new Map<
     number,
     { resolve: (id?: number) => void; reject: (err: Error) => void; timeoutId: ReturnType<typeof setTimeout> }
+  >();
+
+  const pendingMetadataUpdates = new Map<
+    number,
+    { resolve: () => void; reject: (err: Error) => void; timeoutId: ReturnType<typeof setTimeout> }
   >();
 
   // Event handlers
@@ -217,11 +226,17 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         const error = new PubSubError(errorMsg, code);
 
         if (msg.ref !== undefined) {
-          const pending = pendingPublishes.get(msg.ref);
-          if (pending) {
-            clearTimeout(pending.timeoutId);
-            pending.reject(error);
+          const pendingPublish = pendingPublishes.get(msg.ref);
+          if (pendingPublish) {
+            clearTimeout(pendingPublish.timeoutId);
+            pendingPublish.reject(error);
             pendingPublishes.delete(msg.ref);
+          }
+          const pendingMetadata = pendingMetadataUpdates.get(msg.ref);
+          if (pendingMetadata) {
+            clearTimeout(pendingMetadata.timeoutId);
+            pendingMetadata.reject(error);
+            pendingMetadataUpdates.delete(msg.ref);
           }
         }
 
@@ -238,6 +253,15 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         };
         for (const handler of rosterHandlers) {
           handler(rosterUpdate);
+        }
+
+        if (msg.ref !== undefined) {
+          const pending = pendingMetadataUpdates.get(msg.ref);
+          if (pending) {
+            clearTimeout(pending.timeoutId);
+            pending.resolve();
+            pendingMetadataUpdates.delete(msg.ref);
+          }
         }
         break;
       }
@@ -307,6 +331,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         messageResolve = null;
       }
       rejectPendingPublishes(new PubSubError("connection closed", "connection"));
+      rejectPendingMetadataUpdates(new PubSubError("connection closed", "connection"));
       readyReject?.(new PubSubError("connection closed", "connection"));
       readyResolve = null;
       readyReject = null;
@@ -324,6 +349,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         messageResolve = null;
       }
       rejectPendingPublishes(new PubSubError("connection closed", "connection"));
+      rejectPendingMetadataUpdates(new PubSubError("connection closed", "connection"));
       readyReject?.(new PubSubError("connection closed", "connection"));
       readyResolve = null;
       readyReject = null;
@@ -336,6 +362,14 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
       pending.reject(error);
     }
     pendingPublishes.clear();
+  }
+
+  function rejectPendingMetadataUpdates(error: PubSubError): void {
+    for (const [, pending] of pendingMetadataUpdates) {
+      clearTimeout(pending.timeoutId);
+      pending.reject(error);
+    }
+    pendingMetadataUpdates.clear();
   }
 
   function scheduleReconnect(): void {
@@ -355,6 +389,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         messageResolve = null;
       }
       rejectPendingPublishes(error);
+      rejectPendingMetadataUpdates(error);
       return;
     }
 
@@ -501,6 +536,49 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     });
   }
 
+  async function updateMetadata(
+    newMetadata: T,
+    updateOptions: UpdateMetadataOptions = {}
+  ): Promise<void> {
+    const ref = ++refCounter;
+    const { timeoutMs = 30000 } = updateOptions;
+
+    return new Promise((resolve, reject) => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        reject(new PubSubError("not connected", "connection"));
+        return;
+      }
+
+      const timeoutId = setTimeout(() => {
+        const pending = pendingMetadataUpdates.get(ref);
+        if (pending) {
+          pendingMetadataUpdates.delete(ref);
+          pending.reject(new PubSubError("metadata update timeout", "timeout"));
+        }
+      }, timeoutMs);
+
+      pendingMetadataUpdates.set(ref, {
+        resolve: () => {
+          clearTimeout(timeoutId);
+          resolve();
+        },
+        reject: (err) => {
+          clearTimeout(timeoutId);
+          reject(err);
+        },
+        timeoutId,
+      });
+
+      ws.send(
+        JSON.stringify({
+          action: "update-metadata",
+          payload: newMetadata,
+          ref,
+        })
+      );
+    });
+  }
+
   function close(): void {
     closed = true;
     isReconnecting = false;
@@ -514,6 +592,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   return {
     messages,
     publish,
+    updateMetadata,
     ready,
     close,
     get connected() {
