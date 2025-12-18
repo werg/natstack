@@ -797,3 +797,44 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
     pubsub,
   };
 }
+
+/**
+ * Create tool definitions suitable for agent SDK integration.
+ * Produces stable, conflict-free tool names and a single execute() dispatcher.
+ */
+export function createToolsForAgentSDK(
+  client: AgenticClient,
+  options?: {
+    filter?: (tool: DiscoveredTool) => boolean;
+    namePrefix?: string;
+  }
+): {
+  definitions: Array<{ name: string; description?: string; parameters: JsonSchema }>;
+  execute: (name: string, args: unknown, signal?: AbortSignal) => Promise<unknown>;
+} {
+  const tools = client.discoverToolDefs();
+  const filtered = options?.filter ? tools.filter(options.filter) : tools;
+
+  const prefix = options?.namePrefix ?? "pubsub";
+  const nameMap = new Map<string, DiscoveredTool>();
+
+  const definitions = filtered.map((tool) => {
+    const name = `${prefix}_${tool.providerId}_${tool.name}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+    nameMap.set(name, tool);
+    return {
+      name,
+      description: tool.description ? `[${tool.providerName}] ${tool.description}` : undefined,
+      parameters: tool.parameters,
+    };
+  });
+
+  return {
+    definitions,
+    execute: async (name, args, signal) => {
+      const tool = nameMap.get(name);
+      if (!tool) throw new AgenticError(`Tool not found: ${name}`, "tool-not-found");
+      const result = client.callTool(tool.providerId, tool.name, args, { signal });
+      return (await result.result).content;
+    },
+  };
+}

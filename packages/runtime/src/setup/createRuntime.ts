@@ -1,4 +1,4 @@
-import { createRpcBridge, type RpcBridge, type RpcTransport } from "@natstack/rpc";
+import { createRpcBridge, type RpcTransport } from "@natstack/rpc";
 import { createDbClient } from "../shared/db.js";
 import { createChildManager } from "../shared/children.js";
 import {
@@ -14,17 +14,13 @@ import { createParentHandle, createParentHandleFromContract } from "../shared/ha
 import type { ParentHandle, ParentHandleFromContract } from "../core/index.js";
 import type { BootstrapResult, RuntimeFs, ThemeAppearance } from "../types.js";
 
-export type FsFactory = ((rpc: RpcBridge) => RuntimeFs) & { __natstackProvider: "rpc-factory" };
-
-export type FsProvider = RuntimeFs | FsFactory;
-
 export interface RuntimeDeps {
   selfId: string;
   createTransport: () => RpcTransport;
   id: string;
   parentId: string | null;
   initialTheme: ThemeAppearance;
-  fs: FsProvider;
+  fs: RuntimeFs;
   setupGlobals?: () => void;
   gitConfig?: GitConfig | null;
   pubsubConfig?: PubSubConfig | null;
@@ -38,7 +34,7 @@ export function createRuntime(deps: RuntimeDeps) {
   const transport = deps.createTransport();
   const rpc = createRpcBridge({ selfId: deps.selfId, transport });
 
-  const fs = typeof deps.fs === "function" ? deps.fs(rpc) : deps.fs;
+  const fs = deps.fs;
 
   const callMain = <T>(method: string, ...args: unknown[]) => rpc.call<T>("main", method, ...args);
 

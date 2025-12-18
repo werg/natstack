@@ -63,6 +63,13 @@ export interface PanelManifest {
    * - "worker": Builds for isolated-vm, runs in utility process
    */
   runtime?: RuntimeType;
+  /**
+   * Run worker with full Node.js API access instead of sandboxed vm.Context.
+   * Only applies when runtime is "worker".
+   * - `true`: Unsafe mode with default scoped filesystem
+   * - `string`: Unsafe mode with custom filesystem root (e.g., "/" for full access)
+   */
+  unsafe?: boolean | string;
 }
 
 export interface PanelBuildResult {

@@ -56,8 +56,14 @@ export interface UtilityWorkerCreateRequest {
     gitConfig?: unknown;
     /** PubSub configuration for real-time messaging */
     pubsubConfig?: PubSubConfig | null;
-    /** Run worker with full Node.js API access instead of sandboxed vm.Context */
-    unsafe?: boolean;
+    /**
+     * Run worker with full Node.js API access instead of sandboxed vm.Context.
+     * - `true`: Unsafe mode with default scoped filesystem
+     * - `string`: Unsafe mode with custom filesystem root (e.g., "/" for full access)
+     */
+    unsafe?: boolean | string;
+    /** Absolute path to the scoped filesystem root for this worker */
+    scopePath: string;
   };
 }
 
@@ -190,6 +196,8 @@ export interface WorkerState {
   options: WorkerCreateOptions;
   /** Timestamp when worker was created */
   createdAt: number;
+  /** Absolute path to the scoped filesystem root for this worker */
+  scopePath: string;
 }
 
 /**

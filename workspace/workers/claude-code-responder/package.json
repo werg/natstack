@@ -1,0 +1,17 @@
+{
+  "name": "@natstack-workers/claude-code-responder",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "title": "Claude Code Responder",
+    "runtime": "worker",
+    "unsafe": "/"
+  },
+  "dependencies": {
+    "@natstack/runtime": "workspace:*",
+    "@natstack/agentic-messaging": "workspace:*",
+    "@anthropic-ai/claude-agent-sdk": "*",
+    "zod": "*"
+  }
+}

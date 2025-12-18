@@ -10,7 +10,7 @@
 import { utilityProcess, type UtilityProcess } from "electron";
 import * as path from "path";
 import * as crypto from "crypto";
-import { createScopedFs } from "@natstack/scoped-fs";
+import * as fs from "fs/promises";
 import { getActiveWorkspace, getWorkerScopePath } from "./paths.js";
 import { TOOL_EXECUTION_TIMEOUT_MS, DEFAULT_WORKER_MEMORY_LIMIT_MB } from "../shared/constants.js";
 import type {
@@ -64,8 +64,6 @@ export class WorkerManager {
   /** Active workers keyed by worker ID (without prefix) */
   private workers = new Map<string, WorkerState>();
 
-  /** Scoped filesystem instances per worker (keyed by workerId) */
-  private scopedFsInstances = new Map<string, ReturnType<typeof createScopedFs>>();
 
   /** Callback to route RPC messages to panels */
   private rpcToPanelCallback: RpcToPanelCallback | null = null;
@@ -208,145 +206,21 @@ export class WorkerManager {
 
   /**
    * Handle unified service call from worker.
+   * Note: fs operations are handled directly in the worker via the scoped fs shim,
+   * not through RPC. Only other services (ai, bridge, etc.) go through this path.
    */
   private async handleServiceCall(request: ServiceCallRequest): Promise<void> {
-    const { workerId, requestId, service, method, args } = request;
-
-    // Check for built-in services first
-    if (service === "fs") {
-      await this.handleFsServiceCall(workerId, requestId, method, args);
-      return;
-    }
+    const { requestId, service, method, args } = request;
+    const callerId = request.workerId;
 
     try {
       const dispatcher = getServiceDispatcher();
       const result = await dispatcher.dispatch(
-        { callerId: workerId, callerKind: "worker" },
+        { callerId, callerKind: "worker" },
         service,
         method,
         args
       );
-      const response: ServiceCallResponse = {
-        type: "service:response",
-        requestId,
-        result,
-      };
-      this.utilityProc?.postMessage(response);
-    } catch (error) {
-      const response: ServiceCallResponse = {
-        type: "service:response",
-        requestId,
-        error: error instanceof Error ? error.message : String(error),
-      };
-      this.utilityProc?.postMessage(response);
-    }
-  }
-
-  /**
-   * Handle filesystem service calls (built-in).
-   */
-  private async handleFsServiceCall(
-    workerId: string,
-    requestId: string,
-    method: string,
-    args: unknown[]
-  ): Promise<void> {
-    const scopedFs = this.scopedFsInstances.get(workerId);
-    if (!scopedFs) {
-      const response: ServiceCallResponse = {
-        type: "service:response",
-        requestId,
-        error: `Worker ${workerId} not found or has no scoped filesystem`,
-      };
-      this.utilityProc?.postMessage(response);
-      return;
-    }
-
-    try {
-      let result: unknown;
-
-      switch (method) {
-        case "readFile": {
-          const [filePath, encoding] = args as [string, BufferEncoding | null];
-          if (encoding) {
-            // Text mode: return string with specified encoding
-            result = await scopedFs.promises.readFile(filePath, { encoding });
-          } else {
-            // Binary mode: return base64-encoded string
-            const buffer = await scopedFs.promises.readFile(filePath);
-            result = buffer.toString("base64");
-          }
-          break;
-        }
-        case "writeFile": {
-          const [filePath, data, mode] = args as [string, string, "utf-8" | "base64"];
-          if (mode === "base64") {
-            // Binary mode: decode base64 to buffer
-            const buffer = Buffer.from(data, "base64");
-            await scopedFs.promises.writeFile(filePath, buffer);
-          } else {
-            // Text mode: write string directly
-            await scopedFs.promises.writeFile(filePath, data, { encoding: "utf-8" });
-          }
-          result = undefined;
-          break;
-        }
-        case "readdir": {
-          const [dirPath] = args as [string];
-          result = await scopedFs.promises.readdir(dirPath);
-          break;
-        }
-        case "stat": {
-          const [filePath] = args as [string];
-          const stats = await scopedFs.promises.stat(filePath);
-          // Include mode for isomorphic-git compatibility
-          // Default: 0o100644 for files, 0o40755 for directories (includes file type bits)
-          const defaultMode = stats.isDirectory() ? 0o40755 : 0o100644;
-          result = {
-            isFile: stats.isFile(),
-            isDirectory: stats.isDirectory(),
-            size: stats.size,
-            mtime: stats.mtime.toISOString(),
-            ctime: stats.ctime.toISOString(),
-            mode: stats.mode ?? defaultMode,
-          };
-          break;
-        }
-        case "mkdir": {
-          const [dirPath, options] = args as [string, { recursive?: boolean } | undefined];
-          await scopedFs.promises.mkdir(dirPath, options);
-          result = undefined;
-          break;
-        }
-        case "rm": {
-          const [filePath, options] = args as [
-            string,
-            { recursive?: boolean; force?: boolean } | undefined,
-          ];
-          await scopedFs.promises.rm(filePath, options);
-          result = undefined;
-          break;
-        }
-        case "exists": {
-          const [filePath] = args as [string];
-          try {
-            await scopedFs.promises.access(filePath);
-            result = true;
-          } catch {
-            result = false;
-          }
-          break;
-        }
-        case "unlink": {
-          const [filePath] = args as [string];
-          await scopedFs.promises.unlink(filePath);
-          result = undefined;
-          break;
-        }
-        default:
-          throw new Error(`Unknown fs method: ${method}`);
-      }
-
       const response: ServiceCallResponse = {
         type: "service:response",
         requestId,
@@ -405,7 +279,6 @@ export class WorkerManager {
 
     // Clean up local state after confirmation
     this.workers.delete(message.workerId);
-    this.scopedFsInstances.delete(message.workerId);
   }
 
   /**
@@ -591,6 +464,14 @@ export class WorkerManager {
       ...options,
     };
 
+    // Determine the scoped filesystem path for this worker
+    // - If unsafe is a string, use it as the custom root (e.g., "/" for full access)
+    // - Otherwise, use the default scoped path: <central-config>/worker-scopes/<workspace-id>/<escaped-worker-id>/
+    const scopePath =
+      typeof mergedOptions.unsafe === "string"
+        ? mergedOptions.unsafe
+        : getWorkerScopePath(workspace.config.id, workerId);
+
     // Create worker state
     const worker: WorkerState = {
       id: workerId,
@@ -599,25 +480,25 @@ export class WorkerManager {
       buildState: "building",
       options: mergedOptions,
       createdAt: Date.now(),
+      scopePath,
     };
 
     this.workers.set(workerId, worker);
 
-    // Create scoped filesystem for this worker using auto-generated path
-    // Path: <central-config>/worker-scopes/<workspace-id>/<escaped-worker-id>/
-    // Singleton workers get deterministic IDs, so they'll reuse the same scope path
-    const scopePath = getWorkerScopePath(workspace.config.id, workerId);
-    try {
-      const scopedFs = createScopedFs({ root: scopePath });
-      this.scopedFsInstances.set(workerId, scopedFs);
-    } catch (error) {
-      worker.buildState = "error";
-      worker.error = `Failed to create scoped filesystem: ${error instanceof Error ? error.message : String(error)}`;
-      return {
-        workerId,
-        buildState: worker.buildState,
-        error: worker.error,
-      };
+    // Ensure the scoped filesystem directory exists (only for default scoped paths)
+    // Custom paths like "/" are expected to already exist
+    if (typeof mergedOptions.unsafe !== "string") {
+      try {
+        await fs.mkdir(scopePath, { recursive: true });
+      } catch (error) {
+        worker.buildState = "error";
+        worker.error = `Failed to create scope directory: ${error instanceof Error ? error.message : String(error)}`;
+        return {
+          workerId,
+          buildState: worker.buildState,
+          error: worker.error,
+        };
+      }
     }
 
     // TODO: Build the worker bundle using RuntimeBuilder
@@ -662,6 +543,7 @@ export class WorkerManager {
         gitConfig: options?.gitConfig ?? null,
         pubsubConfig: options?.pubsubConfig ?? null,
         unsafe: worker.options.unsafe,
+        scopePath: worker.scopePath,
       },
     };
 
@@ -681,7 +563,6 @@ export class WorkerManager {
     // If utility process is gone, just clean up locally
     if (!this.utilityProc) {
       this.workers.delete(workerId);
-      this.scopedFsInstances.delete(workerId);
       return;
     }
 

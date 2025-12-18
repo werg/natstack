@@ -54,7 +54,7 @@ interface WorkerState {
     memoryLimitMB: number;
     env: Record<string, string>;
   };
-  unsafe?: boolean;
+  unsafe?: boolean | string;
 }
 
 /** Active worker contexts keyed by worker ID */
@@ -193,7 +193,7 @@ async function handleUnsafeWorkerCreate(
     context,
     workerId,
     options,
-    unsafe: true,
+    unsafe: options.unsafe,
   });
 
   // Compile and run the worker bundle (same as safe workers)
@@ -435,6 +435,7 @@ function createSandbox(
     parentId?: string | null;
     gitConfig?: unknown;
     pubsubConfig?: { serverUrl: string; token: string } | null;
+    scopePath: string;
   }
 ): Record<string, unknown> {
   type LogLevel = "log" | "error" | "warn" | "info" | "debug";
@@ -471,7 +472,7 @@ function createSandbox(
     parentPort.postMessage(forward);
   };
 
-  return {
+  const sandbox: Record<string, unknown> = {
     // Console proxy
     console: consoleProxy,
 
@@ -489,6 +490,7 @@ function createSandbox(
     __natstackGitConfig: options.gitConfig ?? null,
     __natstackPubSubConfig: options.pubsubConfig ?? null,
     __natstackEnv: options.env,
+    // __natstackFsRoot is defined below as immutable
 
     // RPC bridge - the unified communication mechanism
     __rpcSend: rpcSend,
@@ -568,8 +570,29 @@ function createSandbox(
     // Buffer - needed by isomorphic-git and its dependencies (safe-buffer, sha.js)
     Buffer,
 
-    // Fetch (available in Node 22+)
+    // Fetch API (available in Node 22+)
     fetch,
+    Headers,
+    Request,
+    Response,
+    FormData,
+
+    // Binary data types (commonly used by modern libraries)
+    Blob,
+    File,
+
+    // Streams API (many modern libraries use these for data processing)
+    ReadableStream,
+    WritableStream,
+    TransformStream,
+
+    // Cancellation API (needed by async libraries, AI SDKs, etc.)
+    AbortController,
+    AbortSignal,
+
+    // Utility APIs
+    performance,
+    structuredClone,
 
     // Explicitly NOT exposed:
     // - require, import (no module loading)
@@ -577,12 +600,23 @@ function createSandbox(
     // - fs, path, os, etc. (no Node.js APIs)
     // - eval, Function constructor (prevent code injection)
   };
+
+  // Make __natstackFsRoot immutable to prevent sandbox escape
+  // Worker code cannot reassign this to access files outside the scope
+  Object.defineProperty(sandbox, "__natstackFsRoot", {
+    value: options.scopePath,
+    writable: false,
+    configurable: false,
+    enumerable: true,
+  });
+
+  return sandbox;
 }
 
 /**
  * Create a sandbox for an unsafe worker with full Node.js API access.
- * Includes everything from createSandbox plus require, process, child_process, net, etc.
- * Note: `import "fs"` still uses the scoped filesystem via the build-time shim.
+ * Includes everything from createSandbox plus require, process, etc.
+ * Note: import.meta.url is polyfilled at build time via esbuild define.
  */
 function createUnsafeSandbox(
   workerId: string,
@@ -592,15 +626,15 @@ function createUnsafeSandbox(
     parentId?: string | null;
     gitConfig?: unknown;
     pubsubConfig?: { serverUrl: string; token: string } | null;
+    scopePath: string;
   }
 ): Record<string, unknown> {
   // Start with the safe sandbox (all standard globals + natstack globals)
-  const sandbox = createSandbox(workerId, options);
+  const baseSandbox = createSandbox(workerId, options);
 
   // Add Node.js globals (the key difference from safe workers)
-  // Core modules (child_process, net, fs, etc.) are accessed via require()
-  return {
-    ...sandbox,
+  const unsafeSandbox: Record<string, unknown> = {
+    ...baseSandbox,
 
     // Node.js globals (Buffer already in sandbox)
     global: globalThis,
@@ -610,7 +644,40 @@ function createUnsafeSandbox(
     require: require,
     module: module,
     exports: exports,
+
+    // Web APIs available in Node.js (needed by Claude Agent SDK and other libraries)
+    AbortController: globalThis.AbortController,
+    AbortSignal: globalThis.AbortSignal,
+    fetch: globalThis.fetch,
+    Headers: globalThis.Headers,
+    Request: globalThis.Request,
+    Response: globalThis.Response,
+    FormData: globalThis.FormData,
+    Blob: globalThis.Blob,
+    File: globalThis.File,
+    URL: globalThis.URL,
+    URLSearchParams: globalThis.URLSearchParams,
+    ReadableStream: globalThis.ReadableStream,
+    WritableStream: globalThis.WritableStream,
+    TransformStream: globalThis.TransformStream,
+    TextEncoder: globalThis.TextEncoder,
+    TextDecoder: globalThis.TextDecoder,
+    btoa: globalThis.btoa,
+    atob: globalThis.atob,
+    crypto: globalThis.crypto,
+    performance: globalThis.performance,
+    structuredClone: globalThis.structuredClone,
   };
+
+  // Re-define __natstackFsRoot as immutable (spread doesn't preserve property descriptors)
+  Object.defineProperty(unsafeSandbox, "__natstackFsRoot", {
+    value: options.scopePath,
+    writable: false,
+    configurable: false,
+    enumerable: true,
+  });
+
+  return unsafeSandbox;
 }
 
 /**

@@ -26,6 +26,8 @@
     "paths": {
       "@natstack/ai": ["packages/ai/src/index.ts"],
       "@natstack/git": ["packages/git/src/index.ts"],
+      "@natstack/pubsub": ["packages/pubsub/src/index.ts"],
+      "@natstack/agentic-messaging": ["packages/agentic-messaging/src/index.ts"],
       "@natstack/react": ["packages/react/src/index.ts"],
       "@natstack/rpc": ["packages/rpc/src/index.ts"],
       "@natstack/runtime": ["packages/runtime/src/index.ts"],

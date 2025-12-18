@@ -1,6 +1,7 @@
 import * as esbuild from "esbuild";
 import typiaPlugin from "@ryoppippi/unplugin-typia/esbuild";
 import * as fs from "fs";
+import * as path from "path";
 import { execSync } from "child_process";
 
 const isDev = process.env.NODE_ENV === "development";
@@ -106,10 +107,25 @@ const workerRuntimeConfig = {
   sourcemap: isDev,
   minify: !isDev,
   logOverride,
+  // Mark fs as external - it will be resolved at worker bundle time by the scoped fs shim plugin
+  external: ["fs", "node:fs", "fs/promises", "node:fs/promises"],
 };
 
 function copyAssets() {
   fs.copyFileSync("src/renderer/index.html", "dist/index.html");
+}
+
+function copyDirectoryRecursive(srcDir, destDir) {
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    const srcPath = path.join(srcDir, entry.name);
+    const destPath = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      copyDirectoryRecursive(srcPath, destPath);
+    } else if (entry.isFile()) {
+      fs.copyFileSync(srcPath, destPath);
+    }
+  }
 }
 
 async function generateProtocolFiles() {

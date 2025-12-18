@@ -5,7 +5,7 @@
  * between panel/index.ts and worker/index.ts.
  */
 
-import { createRuntime, type FsProvider } from "./createRuntime.js";
+import { createRuntime } from "./createRuntime.js";
 import { createBootstrapState, runBootstrap, getBootstrapPromise } from "../shared/bootstrap.js";
 import { getInjectedConfig, type InjectedConfig } from "../shared/globals.js";
 import type { RuntimeFs, BootstrapResult } from "../types.js";
@@ -14,8 +14,8 @@ import type { RpcTransport } from "@natstack/rpc";
 export interface InitRuntimeOptions {
   /** Function to create the RPC transport */
   createTransport: () => RpcTransport;
-  /** Filesystem provider (direct RuntimeFs or factory) */
-  fs: FsProvider;
+  /** Filesystem implementation */
+  fs: RuntimeFs;
   /** Promise that resolves when fs is ready (panel ZenFS), or undefined for workers */
   fsReady?: Promise<void>;
   /** Optional function to set up globals (worker console/env injection) */

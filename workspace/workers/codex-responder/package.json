@@ -1,0 +1,16 @@
+{
+  "name": "@natstack-workers/codex-responder",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "title": "Codex Responder",
+    "runtime": "worker",
+    "unsafe": "/"
+  },
+  "dependencies": {
+    "@natstack/runtime": "workspace:*",
+    "@natstack/agentic-messaging": "workspace:*",
+    "openai": "*"
+  }
+}

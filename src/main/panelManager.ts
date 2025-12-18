@@ -419,7 +419,7 @@ export class PanelManager {
             resolvedRepoArgs: spec?.repoArgs,
             workerOptions: {
               memoryLimitMB: spec?.type === "worker" ? spec.memoryLimitMB : undefined,
-              unsafe: spec?.type === "worker" ? spec.unsafe : undefined,
+              unsafe: spec?.type === "worker" ? (spec.unsafe ?? manifest.unsafe) : manifest.unsafe,
             },
           }
         : {
@@ -632,13 +632,14 @@ export class PanelManager {
 
     try {
       // Create the worker entry in WorkerManager (sets up scoped FS)
+      // Use worker.workerOptions which already has manifest.unsafe as fallback
       const workerInfo = await workerManager.createWorker(
         this.findParentPanel(worker.id)?.id ?? "",
         worker.path,
         {
           env: spec?.env,
-          memoryLimitMB: spec?.memoryLimitMB,
-          unsafe: spec?.unsafe,
+          memoryLimitMB: worker.workerOptions?.memoryLimitMB,
+          unsafe: worker.workerOptions?.unsafe,
           branch: spec?.branch,
           commit: spec?.commit,
           tag: spec?.tag,
@@ -672,7 +673,8 @@ export class PanelManager {
             buildLog: progress.log,
           };
           this.notifyPanelTreeUpdate();
-        }
+        },
+        { unsafe: worker.workerOptions?.unsafe }
       );
 
       if (!buildResult.success || !buildResult.bundle) {

@@ -84,6 +84,11 @@ export const fs: RuntimeFs = {
     return toFileStats(await zenPromises.stat(path));
   },
 
+  async lstat(path: string): Promise<FileStats> {
+    await fsReady;
+    return toFileStats(await zenPromises.lstat(path));
+  },
+
   async mkdir(path: string, options?: { recursive?: boolean }): Promise<string | undefined> {
     await fsReady;
     await zenPromises.mkdir(path, options);
@@ -113,5 +118,82 @@ export const fs: RuntimeFs = {
   async unlink(path: string): Promise<void> {
     await fsReady;
     await zenPromises.unlink(path);
+  },
+
+  async access(path: string, _mode?: number): Promise<void> {
+    await fsReady;
+    await zenPromises.access(path);
+  },
+
+  async appendFile(path: string, data: string | Uint8Array): Promise<void> {
+    await fsReady;
+    await zenPromises.appendFile(path, data);
+  },
+
+  async copyFile(src: string, dest: string): Promise<void> {
+    await fsReady;
+    await zenPromises.copyFile(src, dest);
+  },
+
+  async rename(oldPath: string, newPath: string): Promise<void> {
+    await fsReady;
+    await zenPromises.rename(oldPath, newPath);
+  },
+
+  async realpath(path: string): Promise<string> {
+    await fsReady;
+    return zenPromises.realpath(path);
+  },
+
+  async open(path: string, flags?: string, mode?: number): Promise<import("../types.js").FileHandle> {
+    await fsReady;
+    const handle = await zenPromises.open(path, flags, mode);
+    return {
+      fd: handle.fd,
+      async read(buffer: Uint8Array, offset: number, length: number, position: number | null): Promise<{ bytesRead: number; buffer: Uint8Array }> {
+        const result = await handle.read(buffer, offset, length, position ?? undefined);
+        return { bytesRead: result.bytesRead, buffer };
+      },
+      async write(buffer: Uint8Array, offset?: number, length?: number, position?: number | null): Promise<{ bytesWritten: number; buffer: Uint8Array }> {
+        const result = await handle.write(buffer, offset, length, position ?? undefined);
+        return { bytesWritten: result.bytesWritten, buffer };
+      },
+      async close(): Promise<void> {
+        await handle.close();
+      },
+      async stat(): Promise<FileStats> {
+        return toFileStats(await handle.stat());
+      },
+    };
+  },
+
+  async readlink(path: string): Promise<string> {
+    await fsReady;
+    return zenPromises.readlink(path);
+  },
+
+  async symlink(target: string, path: string): Promise<void> {
+    await fsReady;
+    await zenPromises.symlink(target, path);
+  },
+
+  async chmod(path: string, mode: number): Promise<void> {
+    await fsReady;
+    await zenPromises.chmod(path, mode);
+  },
+
+  async chown(path: string, uid: number, gid: number): Promise<void> {
+    await fsReady;
+    await zenPromises.chown(path, uid, gid);
+  },
+
+  async utimes(path: string, atime: Date | number, mtime: Date | number): Promise<void> {
+    await fsReady;
+    await zenPromises.utimes(path, atime, mtime);
+  },
+
+  async truncate(path: string, len?: number): Promise<void> {
+    await fsReady;
+    await zenPromises.truncate(path, len);
   },
 };

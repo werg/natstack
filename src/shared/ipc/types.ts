@@ -344,7 +344,7 @@ export interface WorkerPanel extends PanelBase {
   tag?: string;
   /** Resolved repo args (name -> spec) provided by parent at createChild time */
   resolvedRepoArgs?: Record<string, RepoArgSpec>;
-  workerOptions?: { memoryLimitMB?: number; unsafe?: boolean };
+  workerOptions?: { memoryLimitMB?: number; unsafe?: boolean | string };
   consoleLogs?: WorkerConsoleLogEntry[];
 }
 
@@ -388,8 +388,12 @@ export interface WorkerCreateOptions {
   env?: Record<string, string>;
   /** Memory limit in MB (default: 1024) */
   memoryLimitMB?: number;
-  /** Run worker with full Node.js API access instead of sandboxed vm.Context */
-  unsafe?: boolean;
+  /**
+   * Run worker with full Node.js API access instead of sandboxed vm.Context.
+   * - `true`: Unsafe mode with default scoped filesystem
+   * - `string`: Unsafe mode with custom filesystem root (e.g., "/" for full access)
+   */
+  unsafe?: boolean | string;
   /** Branch name to track (e.g., "develop") */
   branch?: string;
   /** Specific commit hash to pin to */

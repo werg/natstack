@@ -113,7 +113,9 @@ export function createChildHandle<
     },
 
     async getCdpEndpoint() {
-      if (type === "worker") throw new Error("getCdpEndpoint() is not available for worker children");
+      if (type !== "app" && type !== "browser") {
+        throw new Error("getCdpEndpoint() is only available for app and browser children");
+      }
       return bridge.browser.getCdpEndpoint(id);
     },
 

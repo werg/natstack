@@ -37,17 +37,22 @@ interface ChatMessage {
 /** Metadata for participants in this channel */
 interface ChatParticipantMetadata extends AgenticParticipantMetadata {
   name: string;
-  type: "panel" | "worker";
+  type: "panel" | "worker" | "claude-code" | "codex";
 }
 
-const CHANNEL_NAME = "agentic-chat-demo";
+type ResponderType = "worker" | "claude-code" | "codex";
+type AppPhase = "setup" | "chat";
 
 export default function AgenticChatDemo() {
   const theme = usePanelTheme();
+  const [phase, setPhase] = useState<AppPhase>("setup");
+  const [channelName, setChannelName] = useState("agentic-chat-demo");
+  const [responderType, setResponderType] = useState<ResponderType>("worker");
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [connected, setConnected] = useState(false);
-  const [worker, setWorker] = useState<ChildHandle | null>(null);
+  const [responder, setResponder] = useState<ChildHandle | null>(null);
   const [status, setStatus] = useState("Initializing...");
   const [participants, setParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
 
@@ -59,10 +64,28 @@ export default function AgenticChatDemo() {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Initialize worker and agentic messaging connection
+  const reset = useCallback(() => {
+    setPhase("setup");
+    setMessages([]);
+    setInput("");
+    setConnected(false);
+    setStatus("Initializing...");
+    setParticipants({});
+    clientRef.current?.close();
+    clientRef.current = null;
+    void responder?.close();
+    setResponder(null);
+  }, [responder]);
+
+  // Initialize responder and agentic messaging connection
   useEffect(() => {
+    if (phase !== "chat") {
+      return;
+    }
+
     let mounted = true;
     let client: AgenticClient<ChatParticipantMetadata> | null = null;
+    let createdResponder: ChildHandle | null = null;
 
     async function init() {
       if (!pubsubConfig) {
@@ -71,20 +94,29 @@ export default function AgenticChatDemo() {
       }
 
       try {
-        // 1. Launch the AI responder worker
-        setStatus("Launching AI worker...");
-        const w = await createChild({
+        // 1. Launch responder worker based on type
+        setStatus(`Launching ${responderType} responder...`);
+        const workerSource = responderType === "worker"
+          ? "workers/pubsub-chat-responder"
+          : responderType === "claude-code"
+            ? "workers/claude-code-responder"
+            : "workers/codex-responder";
+
+        createdResponder = await createChild({
           type: "worker",
-          name: "chat-responder",
-          source: "workers/pubsub-chat-responder",
+          name: `${responderType}-responder`,
+          source: workerSource,
+          // Note: unsafe mode is controlled by the worker's manifest, not here
+          // This allows each worker to specify its own fs root (e.g., "/" for full access)
         });
+
         if (!mounted) return;
-        setWorker(w);
+        setResponder(createdResponder);
 
         // 2. Connect to the agentic messaging channel
         setStatus("Connecting to channel...");
         client = connect<ChatParticipantMetadata>(pubsubConfig.serverUrl, pubsubConfig.token, {
-          channel: CHANNEL_NAME,
+          channel: channelName,
           reconnect: true,
           clientId, // For echo suppression
           metadata: {
@@ -169,9 +201,9 @@ export default function AgenticChatDemo() {
     return () => {
       mounted = false;
       client?.close();
-      worker?.close();
+      void createdResponder?.close();
     };
-  }, []);
+  }, [channelName, phase, responderType]);
 
   const sendMessage = useCallback(async () => {
     if (!input.trim() || !clientRef.current?.connected) return;
@@ -207,6 +239,8 @@ export default function AgenticChatDemo() {
   // Compute participant counts
   const panelCount = Object.values(participants).filter(p => p.metadata.type === "panel").length;
   const workerCount = Object.values(participants).filter(p => p.metadata.type === "worker").length;
+  const claudeCodeCount = Object.values(participants).filter(p => p.metadata.type === "claude-code").length;
+  const codexCount = Object.values(participants).filter(p => p.metadata.type === "codex").length;
 
   // Helper to get sender info from participants roster
   const getSenderInfo = (senderId: string) => {
@@ -214,11 +248,84 @@ export default function AgenticChatDemo() {
     return participant?.metadata ?? { name: "Unknown", type: "panel" as const };
   };
 
+  if (phase === "setup") {
+    return (
+      <Flex direction="column" style={{ height: "100vh", padding: 16 }} gap="3">
+        <Flex justify="between" align="center">
+          <Text size="5" weight="bold">Agentic Chat Demo</Text>
+          <Badge color="gray">Setup</Badge>
+        </Flex>
+
+        <Card>
+          <Flex direction="column" gap="3" p="3">
+            <Text size="3" weight="bold">Responder</Text>
+            <Flex gap="2" wrap="wrap">
+              <Button
+                variant={responderType === "worker" ? "solid" : "soft"}
+                onClick={() => setResponderType("worker")}
+              >
+                Worker (AI SDK)
+              </Button>
+              <Button
+                variant={responderType === "claude-code" ? "solid" : "soft"}
+                onClick={() => setResponderType("claude-code")}
+              >
+                Claude Code
+              </Button>
+              <Button
+                variant={responderType === "codex" ? "solid" : "soft"}
+                onClick={() => setResponderType("codex")}
+              >
+                Codex (GPT-4o)
+              </Button>
+            </Flex>
+
+            <Text size="2" weight="bold">Channel</Text>
+            <TextField.Root
+              placeholder="Channel name"
+              value={channelName}
+              onChange={(e) => setChannelName(e.target.value)}
+            />
+
+            <Text size="1" color="gray">
+              {responderType === "worker"
+                ? "Worker responder uses the NatStack AI SDK to reply to panel messages."
+                : responderType === "claude-code"
+                  ? "Claude Code responder uses the Claude Code SDK (unsafe worker)."
+                  : "Codex responder uses the OpenAI SDK with GPT-4o (unsafe worker)."
+              }
+            </Text>
+
+            <Flex justify="between" align="center" mt="2">
+              <Text size="2" color="gray">
+                {pubsubConfig ? "Ready" : "PubSub not available"}
+              </Text>
+              <Button
+                onClick={() => {
+                  setMessages([]);
+                  setParticipants({});
+                  setStatus("Initializing...");
+                  setPhase("chat");
+                }}
+                disabled={!pubsubConfig || !channelName.trim()}
+              >
+                Start
+              </Button>
+            </Flex>
+          </Flex>
+        </Card>
+      </Flex>
+    );
+  }
+
   return (
     <Flex direction="column" style={{ height: "100vh", padding: 16 }} gap="3">
       {/* Header */}
       <Flex justify="between" align="center">
-        <Text size="5" weight="bold">Agentic Chat Demo</Text>
+        <Flex gap="2" align="center">
+          <Text size="5" weight="bold">Agentic Chat Demo</Text>
+          <Badge color="gray">{channelName}</Badge>
+        </Flex>
         <Flex gap="2" align="center">
           <Badge color={connected ? "green" : "gray"}>
             {connected ? "Connected" : status}
@@ -233,6 +340,19 @@ export default function AgenticChatDemo() {
               {workerCount} Worker{workerCount !== 1 ? "s" : ""}
             </Badge>
           )}
+          {claudeCodeCount > 0 && (
+            <Badge color="orange" title={Object.values(participants).filter(p => p.metadata.type === "claude-code").map(p => p.metadata.name).join(", ")}>
+              {claudeCodeCount} Claude Code
+            </Badge>
+          )}
+          {codexCount > 0 && (
+            <Badge color="teal" title={Object.values(participants).filter(p => p.metadata.type === "codex").map(p => p.metadata.name).join(", ")}>
+              {codexCount} Codex
+            </Badge>
+          )}
+          <Button variant="soft" onClick={reset}>
+            Reset
+          </Button>
         </Flex>
       </Flex>
 
@@ -242,7 +362,7 @@ export default function AgenticChatDemo() {
           <Flex direction="column" gap="2" p="3">
             {messages.length === 0 ? (
               <Text color="gray" size="2">
-                Send a message to start chatting with the AI worker
+                Send a message to start chatting
               </Text>
             ) : (
               messages.map(msg => {
