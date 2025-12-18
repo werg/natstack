@@ -83,6 +83,7 @@ let pubsubServer: PubSubServer | null = null;
 let panelManager: PanelManager | null = null;
 let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
+let workerManagerInitialized = false;
 
 // Export AI handler for use by other modules (will be set during initialization)
 export let aiHandler: import("./ai/aiHandler.js").AIHandler | null = null;
@@ -526,7 +527,8 @@ app.on("ready", async () => {
       new PanelRpcHandler(panelManager);
 
       // Initialize WorkerManager (uses getActiveWorkspace() internally)
-      const workerManager = getWorkerManager();
+      getWorkerManager();
+      workerManagerInitialized = true;
       registerWorkerHandlers(panelManager);
       console.log("[Workers] Manager initialized");
 
@@ -564,7 +566,7 @@ app.on("ready", async () => {
             return;
           }
 
-          void handler.streamTextToWorker(workerManager, ctx.callerId, generateRequestId(), options, streamId);
+          void handler.streamTextToWorker(getWorkerManager(), ctx.callerId, generateRequestId(), options, streamId);
         });
       });
 
@@ -585,8 +587,8 @@ app.on("window-all-closed", () => {
 
 // Use will-quit with preventDefault to properly await async shutdown
 app.on("will-quit", (event) => {
-  const hasServersToStop = gitServer || cdpServer || pubsubServer;
-  if (hasServersToStop) {
+  const hasResourcesToClean = gitServer || cdpServer || pubsubServer || workerManagerInitialized;
+  if (hasResourcesToClean) {
     event.preventDefault();
 
     // Stop all servers in parallel
@@ -614,6 +616,15 @@ app.on("will-quit", (event) => {
           console.error("Error stopping PubSub server:", error);
         })
       );
+    }
+
+    // Shutdown worker manager (kills utility process)
+    if (workerManagerInitialized) {
+      try {
+        getWorkerManager().shutdown();
+      } catch (error) {
+        console.error("Error shutting down worker manager:", error);
+      }
     }
 
     Promise.all(stopPromises).finally(() => {
