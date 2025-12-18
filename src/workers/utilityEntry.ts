@@ -54,6 +54,7 @@ interface WorkerState {
     memoryLimitMB: number;
     env: Record<string, string>;
   };
+  unsafe?: boolean;
 }
 
 /** Active worker contexts keyed by worker ID */
@@ -99,31 +100,13 @@ async function handleWorkerCreate(request: UtilityWorkerCreateRequest): Promise<
   const { workerId, bundle, options } = request;
 
   try {
-    // Create sandbox with restricted globals
-    const sandbox = createSandbox(workerId, options);
-
-    // Create the VM context
-    const context = vm.createContext(sandbox, {
-      name: `worker:${workerId}`,
-    });
-
-    // Set global self-reference after context creation
-    context["global"] = context;
-    context["globalThis"] = context;
-
-    // Store worker state
-    workers.set(workerId, {
-      context,
-      workerId,
-      options,
-    });
-
-    // Compile and run the worker bundle
-    const script = new vm.Script(bundle, {
-      filename: `worker:${workerId}/bundle.js`,
-    });
-
-    script.runInContext(context);
+    if (options.unsafe) {
+      // Unsafe worker: run directly in utility process with full Node.js access
+      await handleUnsafeWorkerCreate(workerId, bundle, options);
+    } else {
+      // Safe worker: run in sandboxed vm.Context
+      await handleSafeWorkerCreate(workerId, bundle, options);
+    }
 
     // Send success response
     const response: UtilityWorkerCreateResponse = {
@@ -145,6 +128,80 @@ async function handleWorkerCreate(request: UtilityWorkerCreateRequest): Promise<
     };
     parentPort.postMessage(response);
   }
+}
+
+/**
+ * Create a safe (sandboxed) worker using vm.Context.
+ */
+async function handleSafeWorkerCreate(
+  workerId: string,
+  bundle: string,
+  options: UtilityWorkerCreateRequest["options"]
+): Promise<void> {
+  // Create sandbox with restricted globals
+  const sandbox = createSandbox(workerId, options);
+
+  // Create the VM context
+  const context = vm.createContext(sandbox, {
+    name: `worker:${workerId}`,
+  });
+
+  // Set global self-reference after context creation
+  context["global"] = context;
+  context["globalThis"] = context;
+
+  // Store worker state
+  workers.set(workerId, {
+    context,
+    workerId,
+    options,
+    unsafe: false,
+  });
+
+  // Compile and run the worker bundle
+  const script = new vm.Script(bundle, {
+    filename: `worker:${workerId}/bundle.js`,
+  });
+
+  script.runInContext(context);
+}
+
+/**
+ * Create an unsafe worker with full Node.js API access.
+ * Uses vm.createContext like safe workers, but with Node.js globals included.
+ * This allows globalThis assignments to work correctly while giving full access.
+ */
+async function handleUnsafeWorkerCreate(
+  workerId: string,
+  bundle: string,
+  options: UtilityWorkerCreateRequest["options"]
+): Promise<void> {
+  // Create sandbox with full Node.js access (unlike safe workers)
+  const sandbox = createUnsafeSandbox(workerId, options);
+
+  // Create the VM context - this makes globalThis point to our sandbox
+  const context = vm.createContext(sandbox, {
+    name: `worker:${workerId}`,
+  });
+
+  // Set global self-reference after context creation
+  context["global"] = context;
+  context["globalThis"] = context;
+
+  // Store worker state
+  workers.set(workerId, {
+    context,
+    workerId,
+    options,
+    unsafe: true,
+  });
+
+  // Compile and run the worker bundle (same as safe workers)
+  const script = new vm.Script(bundle, {
+    filename: `worker:${workerId}/bundle.js`,
+  });
+
+  script.runInContext(context);
 }
 
 /**
@@ -519,6 +576,40 @@ function createSandbox(
     // - process (no process access)
     // - fs, path, os, etc. (no Node.js APIs)
     // - eval, Function constructor (prevent code injection)
+  };
+}
+
+/**
+ * Create a sandbox for an unsafe worker with full Node.js API access.
+ * Includes everything from createSandbox plus require, process, child_process, net, etc.
+ * Note: `import "fs"` still uses the scoped filesystem via the build-time shim.
+ */
+function createUnsafeSandbox(
+  workerId: string,
+  options: {
+    env: Record<string, string>;
+    theme?: "light" | "dark";
+    parentId?: string | null;
+    gitConfig?: unknown;
+    pubsubConfig?: { serverUrl: string; token: string } | null;
+  }
+): Record<string, unknown> {
+  // Start with the safe sandbox (all standard globals + natstack globals)
+  const sandbox = createSandbox(workerId, options);
+
+  // Add Node.js globals (the key difference from safe workers)
+  // Core modules (child_process, net, fs, etc.) are accessed via require()
+  return {
+    ...sandbox,
+
+    // Node.js globals (Buffer already in sandbox)
+    global: globalThis,
+    process: process,
+
+    // Node.js module system
+    require: require,
+    module: module,
+    exports: exports,
   };
 }
 

@@ -661,6 +661,7 @@ export class WorkerManager {
         parentId: worker.parentPanelId,
         gitConfig: options?.gitConfig ?? null,
         pubsubConfig: options?.pubsubConfig ?? null,
+        unsafe: worker.options.unsafe,
       },
     };
 

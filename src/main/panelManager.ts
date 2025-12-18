@@ -419,6 +419,7 @@ export class PanelManager {
             resolvedRepoArgs: spec?.repoArgs,
             workerOptions: {
               memoryLimitMB: spec?.type === "worker" ? spec.memoryLimitMB : undefined,
+              unsafe: spec?.type === "worker" ? spec.unsafe : undefined,
             },
           }
         : {
@@ -637,6 +638,7 @@ export class PanelManager {
         {
           env: spec?.env,
           memoryLimitMB: spec?.memoryLimitMB,
+          unsafe: spec?.unsafe,
           branch: spec?.branch,
           commit: spec?.commit,
           tag: spec?.tag,

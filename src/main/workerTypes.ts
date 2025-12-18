@@ -56,6 +56,8 @@ export interface UtilityWorkerCreateRequest {
     gitConfig?: unknown;
     /** PubSub configuration for real-time messaging */
     pubsubConfig?: PubSubConfig | null;
+    /** Run worker with full Node.js API access instead of sandboxed vm.Context */
+    unsafe?: boolean;
   };
 }
 

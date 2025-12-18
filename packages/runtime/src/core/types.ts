@@ -142,6 +142,12 @@ export interface WorkerChildSpec extends ChildSpecBase, GitVersionFields {
   /** Memory limit in MB (default: 1024) */
   memoryLimitMB?: number;
   /**
+   * Run worker with full Node.js API access instead of sandboxed vm.Context.
+   * Unsafe workers can use require(), process, child_process, etc.
+   * Note: `import "fs"` still uses the scoped filesystem via the build-time shim.
+   */
+  unsafe?: boolean;
+  /**
    * Repo arguments required by the target worker's manifest.
    * Keys must match the `repoArgs` array in the manifest.
    */
