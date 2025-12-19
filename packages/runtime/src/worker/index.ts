@@ -43,7 +43,6 @@ export const {
   removeChild,
   setTitle,
   close,
-  getEnv,
   getInfo,
   getTheme,
   onThemeChange,

@@ -16,13 +16,10 @@ import { ai } from "@natstack/ai";
 // Set worker title
 void setTitle("Chat AI Responder");
 
-// Configuration
-const CHANNEL_NAME = "agentic-chat-demo";
-
 /** Metadata for participants in this channel (shared with panel) */
 interface ChatParticipantMetadata extends AgenticParticipantMetadata {
   name: string;
-  type: "panel" | "worker";
+  type: "panel" | "ai-responder" | "claude-code" | "codex";
 }
 
 function log(message: string): void {
@@ -35,15 +32,18 @@ async function main() {
     return;
   }
 
+  // Get channel from environment (passed by broker via process.env)
+  const channelName = process.env.CHANNEL;
+
   log("Starting chat responder...");
 
   // Connect to agentic messaging channel with reconnection and participant metadata
   const client = connect<ChatParticipantMetadata>(pubsubConfig.serverUrl, pubsubConfig.token, {
-    channel: CHANNEL_NAME,
+    channel: channelName,
     reconnect: true,
     metadata: {
       name: "AI Responder",
-      type: "worker",
+      type: "ai-responder",
     },
   });
 
@@ -54,7 +54,7 @@ async function main() {
   });
 
   await client.ready();
-  log(`Connected to channel: ${CHANNEL_NAME}`);
+  log(`Connected to channel: ${channelName}`);
 
   // Process incoming messages using typed API
   for await (const msg of client.messages()) {

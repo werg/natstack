@@ -156,7 +156,6 @@ export function createRuntime(deps: RuntimeDeps) {
       destroy();
       await callMain<void>("bridge.close");
     },
-    getEnv: () => callMain<Record<string, string>>("bridge.getEnv"),
     getInfo: () => callMain<EndpointInfo>("bridge.getInfo"),
 
     getTheme: () => currentTheme,

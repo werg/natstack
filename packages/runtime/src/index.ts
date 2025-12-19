@@ -70,7 +70,6 @@ export declare function onChildRemoved(callback: (childId: string) => void): () 
 export declare function removeChild(childId: string): Promise<void>;
 export declare function setTitle(title: string): Promise<void>;
 export declare function close(): Promise<void>;
-export declare function getEnv(): Promise<Record<string, string>>;
 export declare function getInfo(): Promise<import("./core/index.js").EndpointInfo>;
 
 export declare function getTheme(): import("./types.js").ThemeAppearance;

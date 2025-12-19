@@ -37,9 +37,6 @@ export async function handleBridgeCall(
     case "close": {
       return pm.closePanel(callerId);
     }
-    case "getEnv": {
-      return pm.getEnv(callerId);
-    }
     case "getInfo": {
       return pm.getInfo(callerId);
     }

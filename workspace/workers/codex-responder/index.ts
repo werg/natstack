@@ -34,11 +34,9 @@ import { randomUUID } from "node:crypto";
 
 void setTitle("Codex Responder");
 
-const CHANNEL_NAME = "agentic-chat-demo";
-
 interface ChatParticipantMetadata extends AgenticParticipantMetadata {
   name: string;
-  type: "panel" | "worker" | "claude-code" | "codex";
+  type: "panel" | "ai-responder" | "claude-code" | "codex";
 }
 
 function log(message: string): void {
@@ -357,11 +355,21 @@ async function main() {
     return;
   }
 
+  // Get channel from environment (passed by broker via process.env)
+  const channelName = process.env.CHANNEL;
+
+  // Parse agent config from environment (passed by broker as JSON)
+  const agentConfig = JSON.parse(process.env.AGENT_CONFIG || "{}") as Record<string, unknown>;
+  const workingDirectory = agentConfig.workingDirectory as string | undefined;
+
   log("Starting Codex responder...");
+  if (workingDirectory) {
+    log(`Working directory: ${workingDirectory}`);
+  }
 
   // Connect to agentic messaging channel
   const client = connect<ChatParticipantMetadata>(pubsubConfig.serverUrl, pubsubConfig.token, {
-    channel: CHANNEL_NAME,
+    channel: channelName,
     reconnect: true,
     metadata: {
       name: "Codex",
@@ -375,7 +383,7 @@ async function main() {
   });
 
   await client.ready();
-  log(`Connected to channel: ${CHANNEL_NAME}`);
+  log(`Connected to channel: ${channelName}`);
 
   // Process incoming messages
   for await (const msg of client.messages()) {
@@ -385,7 +393,7 @@ async function main() {
 
     // Only respond to messages from panels (not our own or other workers)
     if (sender?.metadata.type === "panel" && msg.senderId !== id) {
-      await handleUserMessage(client, msg.id, msg.content);
+      await handleUserMessage(client, msg.id, msg.content, workingDirectory);
     }
   }
 }
@@ -393,7 +401,8 @@ async function main() {
 async function handleUserMessage(
   client: AgenticClient<ChatParticipantMetadata>,
   userMessageId: string,
-  userText: string
+  userText: string,
+  workingDirectory: string | undefined
 ) {
   log(`Received message: ${userText}`);
 
@@ -445,6 +454,7 @@ async function handleUserMessage(
 
     const thread = codex.startThread({
       skipGitRepoCheck: true,
+      ...(workingDirectory && { cwd: workingDirectory }),
     });
 
     // Run with streaming

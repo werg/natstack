@@ -50,28 +50,6 @@ export function usePanelTheme(): ThemeAppearance {
 }
 
 /**
- * Get the panel's environment variables.
- * Loads once on mount.
- *
- * @example
- * ```tsx
- * function MyPanel() {
- *   const env = usePanelEnv();
- *   return <div>Parent ID: {env.PARENT_ID}</div>;
- * }
- * ```
- */
-export function usePanelEnv(): Record<string, string> {
-  const [env, setEnv] = useState<Record<string, string>>({});
-
-  useEffect(() => {
-    runtime.getEnv().then(setEnv).catch(console.error);
-  }, []);
-
-  return env;
-}
-
-/**
  * Get the panel's ID.
  * This is a static value, so it's memoized.
  *

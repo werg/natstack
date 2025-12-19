@@ -594,11 +594,12 @@ function createSandbox(
     performance,
     structuredClone,
 
-    // Explicitly NOT exposed:
-    // - require, import (no module loading)
-    // - process (no process access)
-    // - fs, path, os, etc. (no Node.js APIs)
-    // - eval, Function constructor (prevent code injection)
+    // Custom process object with only injected env (not the real process)
+    // This provides process.env for libraries that expect it, without exposing
+    // the utility process's real environment or other process APIs
+    process: Object.freeze({
+      env: Object.freeze({ ...options.env }),
+    }),
   };
 
   // Make __natstackFsRoot immutable to prevent sandbox escape
@@ -611,6 +612,50 @@ function createSandbox(
   });
 
   return sandbox;
+}
+
+/**
+ * Create a custom process object for workers.
+ * Provides full process API with merged env vars (real env + injected overrides).
+ */
+function createWorkerProcess(env: Record<string, string>): NodeJS.Process {
+  // Merge real process.env with injected env, preferring injected values
+  const mergedEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value === "string") {
+      mergedEnv[key] = value;
+    }
+  }
+  for (const [key, value] of Object.entries(env)) {
+    mergedEnv[key] = value;
+  }
+
+  // Create a frozen copy of the merged env
+  const frozenEnv = Object.freeze(mergedEnv);
+
+  // Create a process-like object that proxies to the real process
+  // but overrides env with the merged view
+  return new Proxy(process, {
+    get(target, prop) {
+      if (prop === "env") {
+        return frozenEnv;
+      }
+      const value = target[prop as keyof typeof target];
+      // Bind functions to the real process
+      if (typeof value === "function") {
+        return value.bind(target);
+      }
+      return value;
+    },
+    set(_target, prop, _value) {
+      if (prop === "env") {
+        // Prevent modification of env
+        return false;
+      }
+      // Allow other properties to be set on the real process
+      return Reflect.set(process, prop, _value);
+    },
+  });
 }
 
 /**
@@ -632,13 +677,17 @@ function createUnsafeSandbox(
   // Start with the safe sandbox (all standard globals + natstack globals)
   const baseSandbox = createSandbox(workerId, options);
 
+  // Create custom process with only injected env
+  const workerProcess = createWorkerProcess(options.env);
+
   // Add Node.js globals (the key difference from safe workers)
   const unsafeSandbox: Record<string, unknown> = {
     ...baseSandbox,
 
     // Node.js globals (Buffer already in sandbox)
     global: globalThis,
-    process: process,
+    // Custom process with merged env (real env + injected overrides)
+    process: workerProcess,
 
     // Node.js module system
     require: require,

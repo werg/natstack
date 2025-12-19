@@ -6,7 +6,6 @@ import {
   usePanelTheme,
   usePanelId,
   usePanelPartition,
-  usePanelEnv,
   usePanelChildren,
 } from "@natstack/react";
 import "./style.css";
@@ -19,7 +18,7 @@ export default function ChildPanelLauncher() {
   const theme = usePanelTheme();
   const panelId = usePanelId();
   const partition = usePanelPartition();
-  const env = usePanelEnv();
+  const env = process.env;
   const children = usePanelChildren();
 
   const [opfsStatus, setOpfsStatus] = useState<string>("");
@@ -182,6 +181,20 @@ export default function ChildPanelLauncher() {
       setStatus(`Launched PubSub chat: ${child.name}`);
     } catch (error) {
       setStatus(`Failed to launch: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const launchAgentManager = async () => {
+    try {
+      setStatus("Launching Agent Manager...");
+      const child = await createChild({
+        type: "app",
+        name: "agent-manager",
+        source: "panels/agent-manager",
+      });
+      setStatus(`Launched Agent Manager: ${child.name}`);
+    } catch (error) {
+      setStatus(`Failed to launch Agent Manager: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -762,6 +775,9 @@ export default function ChildPanelLauncher() {
             </Button>
             <Button onClick={launchPubSubChatDemo} color="cyan">
               Launch PubSub Chat Demo
+            </Button>
+            <Button onClick={launchAgentManager} color="orange">
+              Launch Agent Manager
             </Button>
             <Button variant="soft" onClick={setRandomTitle}>
               Set random title

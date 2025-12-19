@@ -248,25 +248,6 @@ function MyPanel() {
 }
 ```
 
-#### `usePanelEnv()`
-
-Access environment variables passed from parent:
-
-```tsx
-import { usePanelEnv } from "@natstack/react";
-
-function MyPanel() {
-  const env = usePanelEnv();
-
-  return (
-    <div>
-      {env.PARENT_ID && <p>Parent: {env.PARENT_ID}</p>}
-      {env.MESSAGE && <p>Message: {env.MESSAGE}</p>}
-    </div>
-  );
-}
-```
-
 #### `usePanelPartition()`
 
 Get the storage partition name:
@@ -813,7 +794,6 @@ runtime.onChildRemoved(cb): () => void
 runtime.removeChild(childId: string): Promise<void>
 runtime.setTitle(title: string): Promise<void>
 runtime.close(): Promise<void>
-runtime.getEnv(): Promise<Record<string, string>>
 runtime.getInfo(): Promise<{ panelId: string; partition: string }>
 
 // Theme/focus
@@ -833,7 +813,6 @@ runtime.bootstrapError: string | null
 usePanel(): typeof import("@natstack/runtime")
 usePanelTheme(): ThemeAppearance
 usePanelId(): string
-usePanelEnv(): Record<string, string>
 usePanelPartition(): string | null
 usePanelRpcGlobalEvent<T>(event: string, handler: (from: string, payload: T) => void): void
 usePanelParent<T, E>(): ParentHandle<T, E> | null

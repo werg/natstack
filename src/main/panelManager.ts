@@ -633,11 +633,12 @@ export class PanelManager {
     try {
       // Create the worker entry in WorkerManager (sets up scoped FS)
       // Use worker.workerOptions which already has manifest.unsafe as fallback
+      // Use worker.env (built by buildPanelEnv) rather than spec?.env to include all injected config
       const workerInfo = await workerManager.createWorker(
         this.findParentPanel(worker.id)?.id ?? "",
         worker.path,
         {
-          env: spec?.env,
+          env: worker.env,
           memoryLimitMB: worker.workerOptions?.memoryLimitMB,
           unsafe: worker.workerOptions?.unsafe,
           branch: spec?.branch,
@@ -892,14 +893,6 @@ export class PanelManager {
 
     // Notify renderer
     this.notifyPanelTreeUpdate();
-  }
-
-  getEnv(panelId: string): Record<string, string> {
-    const panel = this.panels.get(panelId);
-    if (!panel) {
-      throw new Error(`Panel not found: ${panelId}`);
-    }
-    return panel.env ?? {};
   }
 
   getInfo(panelId: string): SharedPanel.PanelInfo {

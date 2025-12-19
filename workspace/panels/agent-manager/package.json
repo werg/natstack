@@ -1,0 +1,17 @@
+{
+  "name": "@natstack-panels/agent-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "title": "Agent Manager",
+    "entry": "index.tsx",
+    "runtime": "panel"
+  },
+  "dependencies": {
+    "@natstack/runtime": "workspace:*",
+    "@natstack/react": "workspace:*",
+    "@natstack/agentic-messaging": "workspace:*",
+    "@radix-ui/themes": "^3.2.1"
+  }
+}
