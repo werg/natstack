@@ -12,6 +12,15 @@ const child = spawn(electronBinary, args, {
   stdio: "inherit",
 });
 
+// Forward signals to the Electron process for proper shutdown
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => {
+    if (!child.killed) {
+      child.kill(signal);
+    }
+  });
+}
+
 child.on("exit", (code, signal) => {
   if (signal) {
     process.kill(process.pid, signal);

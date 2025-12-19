@@ -84,6 +84,7 @@ let panelManager: PanelManager | null = null;
 let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
 let workerManagerInitialized = false;
+let isCleaningUp = false; // Prevent re-entry in will-quit handler
 
 // Export AI handler for use by other modules (will be set during initialization)
 export let aiHandler: import("./ai/aiHandler.js").AIHandler | null = null;
@@ -587,34 +588,51 @@ app.on("window-all-closed", () => {
 
 // Use will-quit with preventDefault to properly await async shutdown
 app.on("will-quit", (event) => {
+  // Prevent re-entry - if we're already cleaning up, let the app exit
+  if (isCleaningUp) {
+    return;
+  }
+
   const hasResourcesToClean = gitServer || cdpServer || pubsubServer || workerManagerInitialized;
   if (hasResourcesToClean) {
+    isCleaningUp = true;
     event.preventDefault();
+
+    console.log("[App] Shutting down...");
 
     // Stop all servers in parallel
     const stopPromises: Promise<void>[] = [];
 
     if (cdpServer) {
       stopPromises.push(
-        cdpServer.stop().catch((error) => {
-          console.error("Error stopping CDP server:", error);
-        })
+        cdpServer
+          .stop()
+          .then(() => console.log("[App] CDP server stopped"))
+          .catch((error) => {
+            console.error("Error stopping CDP server:", error);
+          })
       );
     }
 
     if (gitServer) {
       stopPromises.push(
-        gitServer.stop().catch((error) => {
-          console.error("Error stopping git server:", error);
-        })
+        gitServer
+          .stop()
+          .then(() => console.log("[App] Git server stopped"))
+          .catch((error) => {
+            console.error("Error stopping git server:", error);
+          })
       );
     }
 
     if (pubsubServer) {
       stopPromises.push(
-        pubsubServer.stop().catch((error) => {
-          console.error("Error stopping PubSub server:", error);
-        })
+        pubsubServer
+          .stop()
+          .then(() => console.log("[App] PubSub server stopped"))
+          .catch((error) => {
+            console.error("Error stopping PubSub server:", error);
+          })
       );
     }
 
@@ -627,7 +645,15 @@ app.on("will-quit", (event) => {
       }
     }
 
+    // Add a timeout to ensure we exit even if cleanup hangs
+    const shutdownTimeout = setTimeout(() => {
+      console.warn("[App] Shutdown timeout - forcing exit");
+      app.exit(1);
+    }, 5000);
+
     Promise.all(stopPromises).finally(() => {
+      clearTimeout(shutdownTimeout);
+      console.log("[App] Shutdown complete");
       app.exit(0);
     });
   }

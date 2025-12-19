@@ -654,10 +654,30 @@ export class PubSubServer {
   async stop(): Promise<void> {
     this.messageStore?.close();
 
+    // Forcefully terminate all WebSocket clients
+    if (this.wss) {
+      for (const client of this.wss.clients) {
+        client.terminate();
+      }
+    }
+
     return new Promise((resolve) => {
       if (this.wss) {
         this.wss.close(() => {
-          this.httpServer?.close(() => resolve());
+          if (this.httpServer) {
+            this.httpServer.close(() => {
+              console.log("[PubSubServer] Stopped");
+              resolve();
+            });
+          } else {
+            console.log("[PubSubServer] Stopped (no HTTP server)");
+            resolve();
+          }
+        });
+      } else if (this.httpServer) {
+        this.httpServer.close(() => {
+          console.log("[PubSubServer] Stopped");
+          resolve();
         });
       } else {
         resolve();
