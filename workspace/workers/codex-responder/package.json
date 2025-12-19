@@ -11,6 +11,8 @@
   "dependencies": {
     "@natstack/runtime": "workspace:*",
     "@natstack/agentic-messaging": "workspace:*",
-    "openai": "*"
+    "@openai/codex-sdk": "*",
+    "@modelcontextprotocol/sdk": "*",
+    "zod": "*"
   }
 }

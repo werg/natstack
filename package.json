@@ -69,6 +69,7 @@
     "@natstack/runtime": "workspace:*",
     "@natstack/scoped-fs": "workspace:*",
     "@npmcli/arborist": "^7.4.0",
+    "@modelcontextprotocol/sdk": "^1.12.1",
     "@openai/codex-sdk": "^0.73.0",
     "@radix-ui/react-icons": "^1.3.2",
     "@radix-ui/themes": "^3.2.1",
