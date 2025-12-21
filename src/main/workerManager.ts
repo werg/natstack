@@ -531,13 +531,19 @@ export class WorkerManager {
       throw new Error(`Worker ${workerId} not found`);
     }
 
+    const workspacePath = getActiveWorkspace()?.path;
+    const workerEnv = { ...(worker.options.env ?? DEFAULTS.env) };
+    if (worker.options.unsafe && workspacePath && !workerEnv["NATSTACK_WORKSPACE"]) {
+      workerEnv["NATSTACK_WORKSPACE"] = workspacePath;
+    }
+
     const request: UtilityWorkerCreateRequest = {
       type: "worker:create",
       workerId,
       bundle,
       options: {
         memoryLimitMB: worker.options.memoryLimitMB ?? DEFAULTS.memoryLimitMB,
-        env: worker.options.env ?? DEFAULTS.env,
+        env: workerEnv,
         theme: options?.theme ?? "light",
         parentId: worker.parentPanelId,
         gitConfig: options?.gitConfig ?? null,

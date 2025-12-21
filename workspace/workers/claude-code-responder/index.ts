@@ -37,7 +37,9 @@ async function main() {
 
   // Parse agent config from environment (passed by broker as JSON)
   const agentConfig = JSON.parse(process.env.AGENT_CONFIG || "{}") as Record<string, unknown>;
-  const workingDirectory = agentConfig.workingDirectory as string | undefined;
+  const configuredWorkingDirectory =
+    typeof agentConfig.workingDirectory === "string" ? agentConfig.workingDirectory.trim() : "";
+  const workingDirectory = configuredWorkingDirectory || process.env["NATSTACK_WORKSPACE"];
 
   log("Starting Claude Code responder...");
   if (workingDirectory) {
