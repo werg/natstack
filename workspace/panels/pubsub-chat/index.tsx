@@ -56,6 +56,7 @@ interface AgentSelection {
 
 export default function AgenticChatDemo() {
   const theme = usePanelTheme();
+  const workspaceRoot = process.env["NATSTACK_WORKSPACE"]?.trim();
   const [phase, setPhase] = useState<AppPhase>("setup");
 
   // Setup phase state
@@ -132,6 +133,8 @@ export default function AgenticChatDemo() {
           for (const param of agentType.parameters ?? []) {
             if (param.default !== undefined) {
               defaultConfig[param.key] = param.default;
+            } else if (param.key === "workingDirectory" && workspaceRoot) {
+              defaultConfig[param.key] = workspaceRoot;
             }
           }
 
@@ -187,6 +190,21 @@ export default function AgenticChatDemo() {
     []
   );
 
+  const buildInviteConfig = useCallback((agent: AgentSelection) => {
+    const filteredConfig: Record<string, string | number | boolean> = {};
+
+    for (const param of agent.agentType.parameters ?? []) {
+      const value = agent.config[param.key];
+      if (value !== undefined && value !== "") {
+        filteredConfig[param.key] = value;
+      } else if (param.default !== undefined) {
+        filteredConfig[param.key] = param.default;
+      }
+    }
+
+    return filteredConfig;
+  }, []);
+
   const startChat = useCallback(async () => {
     const discovery = discoveryRef.current;
     if (!discovery || !pubsubConfig) return;
@@ -226,18 +244,7 @@ export default function AgenticChatDemo() {
     try {
       // Invite all selected agents with their configured parameters
       const invitePromises = selectedAgents.map(async (agent) => {
-        // Filter out empty optional parameters from config
-        const filteredConfig: Record<string, string | number | boolean> = {};
-
-        // First, add all parameters with values or defaults
-        for (const param of agent.agentType.parameters ?? []) {
-          const value = agent.config[param.key];
-          if (value !== undefined && value !== "") {
-            filteredConfig[param.key] = value;
-          } else if (param.default !== undefined) {
-            filteredConfig[param.key] = param.default;
-          }
-        }
+        const filteredConfig = buildInviteConfig(agent);
 
         try {
           const result = discovery.invite(agent.broker.brokerId, agent.agentType.id, newChannelId, {
@@ -333,7 +340,7 @@ export default function AgenticChatDemo() {
       setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
       setPhase("setup");
     }
-  }, [availableAgents]);
+  }, [availableAgents, buildInviteConfig]);
 
   const addAgent = useCallback(async () => {
     const discovery = discoveryRef.current;
@@ -353,14 +360,16 @@ export default function AgenticChatDemo() {
     if (!toInvite) return;
 
     try {
+      const filteredConfig = buildInviteConfig(toInvite);
       const result = discovery.invite(toInvite.broker.brokerId, toInvite.agentType.id, channelId, {
         context: "User invited additional agent to chat",
+        config: filteredConfig,
       });
       await result.response;
     } catch (err) {
       console.error("Failed to invite agent:", err);
     }
-  }, [availableAgents, channelId, participants]);
+  }, [availableAgents, channelId, participants, buildInviteConfig]);
 
   function handleMessage(msg: IncomingMessage) {
     switch (msg.type) {

@@ -318,9 +318,11 @@ export class PanelManager {
           token: getTokenManager().getOrCreateToken(panelId),
         })
       : "";
+    const workspacePath = getActiveWorkspace()?.path;
 
     return {
       ...baseEnv,
+      ...(workspacePath ? { NATSTACK_WORKSPACE: workspacePath } : {}),
       __GIT_SERVER_URL: serverUrl,
       __GIT_TOKEN: gitToken,
       __GIT_CONFIG: gitConfig,

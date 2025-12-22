@@ -445,6 +445,11 @@ async function handleUserMessage(
     if (process.env["OPENAI_API_KEY"]) baseEnv["OPENAI_API_KEY"] = process.env["OPENAI_API_KEY"];
     if (process.env["CODEX_API_KEY"]) baseEnv["CODEX_API_KEY"] = process.env["CODEX_API_KEY"];
     if (codexHome) baseEnv["CODEX_HOME"] = codexHome;
+    const workspaceOverride = workingDirectory ?? process.env["NATSTACK_WORKSPACE"];
+    if (workspaceOverride) {
+      baseEnv["NATSTACK_WORKSPACE"] = workspaceOverride;
+      baseEnv["PWD"] = workspaceOverride;
+    }
 
     // Use globally installed codex from PATH
     // The SDK's vendored binary detection doesn't work in bundled environments,
