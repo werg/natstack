@@ -5,12 +5,20 @@
   "type": "module",
   "natstack": {
     "title": "Agentic Chat Demo",
-    "entry": "index.tsx"
+    "entry": "index.tsx",
+    "exposeModules": [
+      "react",
+      "react/jsx-runtime",
+      "react/jsx-dev-runtime",
+      "@radix-ui/themes"
+    ]
   },
   "dependencies": {
     "@natstack/runtime": "workspace:*",
     "@natstack/react": "workspace:*",
     "@natstack/agentic-messaging": "workspace:*",
-    "@radix-ui/themes": "^3.2.0"
+    "@natstack/eval": "workspace:*",
+    "@radix-ui/themes": "^3.2.0",
+    "@radix-ui/react-icons": "^1.3.2"
   }
 }

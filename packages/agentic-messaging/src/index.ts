@@ -13,3 +13,6 @@ export { connectAsBroker, connectAsSelfBroker } from "./broker.js";
 export { connectForDiscovery, inviteAgent } from "./broker-client.js";
 export type { BrokerClient } from "./broker.js";
 export type { BrokerDiscoveryClient } from "./broker-client.js";
+
+// JSON Schema utilities
+export { jsonSchemaToZod, jsonSchemaToZodRawShape, isRecord } from "./json-schema-to-zod.js";

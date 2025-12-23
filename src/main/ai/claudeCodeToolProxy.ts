@@ -17,8 +17,10 @@ type McpSdkServerConfigWithInstance = ReturnType<typeof createSdkMcpServer>;
 
 /**
  * Result format for tool execution (MCP compatible)
+ * Note: Index signature required by claude-agent-sdk tool callback type
  */
 export interface ToolExecutionResult {
+  [key: string]: unknown;
   content: Array<{ type: "text"; text: string }>;
   isError?: boolean;
   /** Optional structured data (e.g., for code execution results with components) */

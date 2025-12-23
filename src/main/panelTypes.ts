@@ -54,6 +54,11 @@ export interface PanelManifest {
    * ```
    */
   externals?: Record<string, string>;
+  /**
+   * Additional module specifiers to expose via __natstackRequire__.
+   * These modules are bundled even if not directly imported by the panel.
+   */
+  exposeModules?: string[];
   injectHostThemeVariables?: boolean; // Defaults to true
   template?: "html" | "react"; // Optional: choose template helpers
   singletonState?: boolean; // If true, panel uses a singleton partition/id derived from its path

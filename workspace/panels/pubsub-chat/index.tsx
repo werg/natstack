@@ -5,37 +5,38 @@
  * Uses connectForDiscovery to find available agents and invite them to a dynamic channel.
  */
 
-import { useState, useEffect, useRef, useCallback } from "react";
-import { Button, Card, Flex, Text, TextField, ScrollArea, Box, Badge, Checkbox, Select } from "@radix-ui/themes";
+import { useState, useEffect, useRef, useCallback, useMemo, type ComponentType } from "react";
+import { Flex, Text } from "@radix-ui/themes";
 import { pubsubConfig, id as clientId } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
+import { z } from "zod";
 import {
   connect,
-  connectForDiscovery,
   type AgenticClient,
   type AgenticParticipantMetadata,
   type IncomingMessage,
   type Participant,
   type RosterUpdate,
-  type BrokerDiscoveryClient,
-  type DiscoveredBroker,
-  type AgentTypeAdvertisement,
+  type ToolDefinition,
+  type ToolExecutionContext,
 } from "@natstack/agentic-messaging";
-
-const AVAILABILITY_CHANNEL = "agent-availability";
-
-/**
- * Chat message as stored locally.
- */
-interface ChatMessage {
-  id: string;
-  senderId: string;
-  content: string;
-  complete?: boolean;
-  replyTo?: string;
-  error?: string;
-  pending?: boolean;
-}
+import {
+  executeEvalTool,
+  EVAL_DEFAULT_TIMEOUT_MS,
+  EVAL_MAX_TIMEOUT_MS,
+  EVAL_FRAMEWORK_TIMEOUT_MS,
+} from "./eval/evalTool";
+import {
+  compileFeedbackComponent,
+  cleanupFeedbackComponent,
+  type FeedbackComponentProps,
+  type FeedbackUiToolArgs,
+} from "./eval/feedbackUiTool";
+import { useDiscovery } from "./hooks/useDiscovery";
+import { useToolHistory, type ChatMessage } from "./hooks/useToolHistory";
+import type { ToolHistoryEntry } from "./components/ToolHistoryItem";
+import { AgentSetupPhase } from "./components/AgentSetupPhase";
+import { ChatPhase, type ActiveFeedback } from "./components/ChatPhase";
 
 /** Metadata for participants in this channel */
 interface ChatParticipantMetadata extends AgenticParticipantMetadata {
@@ -45,23 +46,10 @@ interface ChatParticipantMetadata extends AgenticParticipantMetadata {
 
 type AppPhase = "setup" | "connecting" | "chat";
 
-/** Agent selection state */
-interface AgentSelection {
-  broker: DiscoveredBroker;
-  agentType: AgentTypeAdvertisement;
-  selected: boolean;
-  /** Parameter values configured by user */
-  config: Record<string, string | number | boolean>;
-}
-
 export default function AgenticChatDemo() {
   const theme = usePanelTheme();
   const workspaceRoot = process.env["NATSTACK_WORKSPACE"]?.trim();
   const [phase, setPhase] = useState<AppPhase>("setup");
-
-  // Setup phase state
-  const [availableAgents, setAvailableAgents] = useState<AgentSelection[]>([]);
-  const [discoveryStatus, setDiscoveryStatus] = useState("Connecting to discovery...");
 
   // Chat phase state
   const [channelId, setChannelId] = useState<string | null>(null);
@@ -70,140 +58,222 @@ export default function AgenticChatDemo() {
   const [connected, setConnected] = useState(false);
   const [status, setStatus] = useState("Initializing...");
   const [participants, setParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
+  const [activeFeedbacks, setActiveFeedbacks] = useState<Map<string, ActiveFeedback>>(new Map());
 
-  const discoveryRef = useRef<BrokerDiscoveryClient | null>(null);
   const clientRef = useRef<AgenticClient<ChatParticipantMetadata> | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const activeFeedbacksRef = useRef(activeFeedbacks);
+  const toolAnyCallUnsubRef = useRef<(() => void) | null>(null);
+  const toolResultUnsubRef = useRef<(() => void) | null>(null);
 
-  // Scroll to bottom when messages change
+  // Use extracted hooks
+  const {
+    discoveryRef,
+    availableAgents,
+    discoveryStatus,
+    toggleAgentSelection,
+    updateAgentConfig,
+    buildInviteConfig,
+  } = useDiscovery({ workspaceRoot });
+
+  const {
+    addToolHistoryEntry,
+    updateToolHistoryEntry,
+    handleToolResult,
+    clearToolHistory,
+  } = useToolHistory({ setMessages, clientId });
+
+  // Feedback management
+  const addFeedback = useCallback((feedback: ActiveFeedback) => {
+    setActiveFeedbacks((prev) => new Map(prev).set(feedback.callId, feedback));
+  }, []);
+
+  const removeFeedback = useCallback((callId: string) => {
+    setActiveFeedbacks((prev) => {
+      const next = new Map(prev);
+      next.delete(callId);
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
-    scrollRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    activeFeedbacksRef.current = activeFeedbacks;
+  }, [activeFeedbacks]);
 
-  // Connect to discovery channel on mount
   useEffect(() => {
-    if (!pubsubConfig) {
-      setDiscoveryStatus("Error: PubSub not available");
-      return;
-    }
-
-    let mounted = true;
-
-    async function initDiscovery() {
-      try {
-        const discovery = await connectForDiscovery(pubsubConfig!.serverUrl, pubsubConfig!.token, {
-          availabilityChannel: AVAILABILITY_CHANNEL,
-          name: "Chat Panel",
-          type: "panel",
-        });
-
-        if (!mounted) {
-          discovery.close();
-          return;
-        }
-
-        discoveryRef.current = discovery;
-
-        // Initial broker discovery
-        updateAvailableAgents(discovery);
-
-        // Subscribe to changes
-        discovery.onBrokersChanged(() => {
-          if (mounted) {
-            updateAvailableAgents(discovery);
-          }
-        });
-
-        setDiscoveryStatus("Connected to discovery");
-      } catch (err) {
-        if (mounted) {
-          setDiscoveryStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-    }
-
-    function updateAvailableAgents(discovery: BrokerDiscoveryClient) {
-      const brokers = discovery.discoverBrokers();
-      const agents: AgentSelection[] = [];
-
-      for (const broker of brokers) {
-        for (const agentType of broker.agentTypes) {
-          // Build default config from parameter definitions
-          const defaultConfig: Record<string, string | number | boolean> = {};
-          for (const param of agentType.parameters ?? []) {
-            if (param.default !== undefined) {
-              defaultConfig[param.key] = param.default;
-            } else if (param.key === "workingDirectory" && workspaceRoot) {
-              defaultConfig[param.key] = workspaceRoot;
-            }
-          }
-
-          agents.push({
-            broker,
-            agentType,
-            selected: false,
-            config: defaultConfig,
-          });
-        }
-      }
-
-      setAvailableAgents((prev) => {
-        // Preserve selection state and config for agents that still exist
-        return agents.map((agent) => {
-          const existing = prev.find(
-            (p) => p.broker.brokerId === agent.broker.brokerId && p.agentType.id === agent.agentType.id
-          );
-          return existing ? { ...agent, selected: existing.selected, config: existing.config } : agent;
-        });
-      });
-    }
-
-    void initDiscovery();
-
     return () => {
-      mounted = false;
-      discoveryRef.current?.close();
-      discoveryRef.current = null;
+      for (const feedback of activeFeedbacksRef.current.values()) {
+        feedback.reject(new Error("Panel closed"));
+      }
     };
   }, []);
 
-  const toggleAgentSelection = useCallback((brokerId: string, agentTypeId: string) => {
-    setAvailableAgents((prev) =>
-      prev.map((agent) =>
-        agent.broker.brokerId === brokerId && agent.agentType.id === agentTypeId
-          ? { ...agent, selected: !agent.selected }
-          : agent
-      )
-    );
-  }, []);
+  const handleFeedbackUiToolCall = useCallback(
+    async (callId: string, args: unknown, ctx: ToolExecutionContext) => {
+      const entry: ToolHistoryEntry = {
+        callId,
+        toolName: "feedback_ui",
+        args,
+        status: "pending",
+        startedAt: Date.now(),
+        callerId: ctx.callerId,
+        handledLocally: true,
+      };
+      addToolHistoryEntry(entry);
 
-  const updateAgentConfig = useCallback(
-    (brokerId: string, agentTypeId: string, key: string, value: string | number | boolean) => {
-      setAvailableAgents((prev) =>
-        prev.map((agent) =>
-          agent.broker.brokerId === brokerId && agent.agentType.id === agentTypeId
-            ? { ...agent, config: { ...agent.config, [key]: value } }
-            : agent
-        )
-      );
+      const result = compileFeedbackComponent(args as FeedbackUiToolArgs);
+
+      if (!result.success) {
+        updateToolHistoryEntry(callId, {
+          status: "error",
+          error: result.error,
+          completedAt: Date.now(),
+        });
+        throw new Error(result.error);
+      }
+
+      const cacheKey = result.cacheKey!;
+
+      return new Promise((resolve, reject) => {
+        const feedback: ActiveFeedback = {
+          callId,
+          Component: result.Component!,
+          createdAt: Date.now(),
+          cacheKey,
+          resolve: (value) => {
+            removeFeedback(callId);
+            cleanupFeedbackComponent(cacheKey);
+            updateToolHistoryEntry(callId, {
+              status: "success",
+              result: value,
+              completedAt: Date.now(),
+            });
+            resolve(value);
+          },
+          reject: (error) => {
+            removeFeedback(callId);
+            cleanupFeedbackComponent(cacheKey);
+            updateToolHistoryEntry(callId, {
+              status: "error",
+              error: error.message,
+              completedAt: Date.now(),
+            });
+            reject(error);
+          },
+        };
+
+        addFeedback(feedback);
+      });
     },
-    []
+    [addFeedback, removeFeedback, addToolHistoryEntry, updateToolHistoryEntry]
   );
 
-  const buildInviteConfig = useCallback((agent: AgentSelection) => {
-    const filteredConfig: Record<string, string | number | boolean> = {};
-
-    for (const param of agent.agentType.parameters ?? []) {
-      const value = agent.config[param.key];
-      if (value !== undefined && value !== "") {
-        filteredConfig[param.key] = value;
-      } else if (param.default !== undefined) {
-        filteredConfig[param.key] = param.default;
-      }
+  const handleFeedbackDismiss = useCallback((callId: string) => {
+    const feedback = activeFeedbacksRef.current.get(callId);
+    if (feedback) {
+      feedback.reject(new Error("User dismissed feedback UI"));
     }
-
-    return filteredConfig;
   }, []);
+
+  const handleFeedbackError = useCallback((callId: string, error: Error) => {
+    const feedback = activeFeedbacksRef.current.get(callId);
+    if (feedback) {
+      feedback.reject(new Error(`Component render error: ${error.message}`));
+    }
+  }, []);
+
+  const evalToolDef = useMemo<ToolDefinition>(
+    () => ({
+      description: `Execute TypeScript/JavaScript code for side-effects.
+
+Console output is streamed in real-time as code executes.
+Async operations (fetch, await, etc.) are automatically awaited.
+Top-level await is supported.
+
+Use standard ESM imports - they're transformed to require() automatically:
+- import { useState } from "react"
+- import { Button } from "@radix-ui/themes"`,
+      parameters: z.object({
+        code: z.string().describe("The TypeScript/JavaScript code to execute"),
+        syntax: z
+          .enum(["typescript", "jsx", "tsx"])
+          .default("tsx")
+          .describe("Target syntax"),
+        timeout: z
+          .number()
+          .default(EVAL_DEFAULT_TIMEOUT_MS)
+          .describe(`Timeout in ms for async operations (default: ${EVAL_DEFAULT_TIMEOUT_MS}, max: ${EVAL_MAX_TIMEOUT_MS}). Set to 0 to skip async waiting.`),
+      }),
+      streaming: true,
+      // Framework safety net - should never fire in normal operation
+      timeout: EVAL_FRAMEWORK_TIMEOUT_MS,
+      execute: async (args, ctx) => {
+        const entry: ToolHistoryEntry = {
+          callId: ctx.callId,
+          toolName: "eval",
+          args,
+          status: "pending",
+          startedAt: Date.now(),
+          callerId: ctx.callerId,
+          handledLocally: true,
+        };
+        addToolHistoryEntry(entry);
+
+        let consoleBuffer = "";
+        let lastFlush = 0;
+        const flushConsole = (force = false) => {
+          const now = Date.now();
+          if (!force && now - lastFlush < 200) return;
+          lastFlush = now;
+          updateToolHistoryEntry(ctx.callId, { consoleOutput: consoleBuffer });
+        };
+
+        try {
+          const result = await executeEvalTool(args, ctx, {
+            onConsoleEntry: (formatted) => {
+              consoleBuffer = consoleBuffer ? `${consoleBuffer}\n${formatted}` : formatted;
+              flushConsole();
+            },
+          });
+          if (!result.success) {
+            if (result.consoleOutput) {
+              consoleBuffer = result.consoleOutput;
+            }
+            flushConsole(true);
+            updateToolHistoryEntry(ctx.callId, {
+              status: "error",
+              error: result.error || "Eval failed",
+              consoleOutput: consoleBuffer,
+              completedAt: Date.now(),
+            });
+            throw new Error(result.error || "Eval failed");
+          }
+          const payload = {
+            consoleOutput: result.consoleOutput || "(no output)",
+            returnValue: result.returnValue,
+          };
+          consoleBuffer = payload.consoleOutput;
+          flushConsole(true);
+          updateToolHistoryEntry(ctx.callId, {
+            status: "success",
+            result: payload,
+            consoleOutput: payload.consoleOutput,
+            completedAt: Date.now(),
+          });
+          return payload;
+        } catch (err) {
+          flushConsole(true);
+          updateToolHistoryEntry(ctx.callId, {
+            status: "error",
+            error: err instanceof Error ? err.message : String(err),
+            consoleOutput: consoleBuffer,
+            completedAt: Date.now(),
+          });
+          throw err;
+        }
+      },
+    }),
+    [addToolHistoryEntry, updateToolHistoryEntry]
+  );
 
   const startChat = useCallback(async () => {
     const discovery = discoveryRef.current;
@@ -242,6 +312,22 @@ export default function AgenticChatDemo() {
     setChannelId(newChannelId);
 
     try {
+      const feedbackUiToolDef: ToolDefinition = {
+        description: `Render an interactive React component to collect user feedback.
+
+Guidelines:
+- Keep UI minimal and functional; avoid decorative styling unless required.
+- Use Radix UI components with default styles; do not set custom colors/backgrounds.
+- The component is already wrapped in a themed container.
+- Call resolveTool(value) on success or rejectTool(error) on failure.
+
+Write a complete component with export default that accepts props.`,
+        parameters: z.object({
+          code: z.string().describe("TSX code that defines a React component with export default"),
+        }),
+        execute: async (args, ctx) => handleFeedbackUiToolCall(ctx.callId, args, ctx),
+      };
+
       // Invite all selected agents with their configured parameters
       const invitePromises = selectedAgents.map(async (agent) => {
         const filteredConfig = buildInviteConfig(agent);
@@ -316,9 +402,37 @@ export default function AgenticChatDemo() {
           name: "Chat Panel",
           type: "panel",
         },
+        tools: {
+          eval: evalToolDef,
+          feedback_ui: feedbackUiToolDef,
+        },
       });
 
       clientRef.current = client;
+      toolAnyCallUnsubRef.current?.();
+      toolResultUnsubRef.current?.();
+
+      // Subscribe to tool calls for remote tools only (locally handled tools
+      // add their own entries in their execute functions to set handledLocally: true)
+      toolAnyCallUnsubRef.current = client.onAnyToolCall((call) => {
+        // Skip if this is a locally handled tool - its execute function will add the entry
+        // We use clientId from @natstack/runtime which matches the client's selfId
+        if (call.providerId === clientId) {
+          return;
+        }
+        addToolHistoryEntry({
+          callId: call.callId,
+          toolName: call.toolName,
+          args: call.args,
+          status: "pending",
+          startedAt: call.ts ?? Date.now(),
+          providerId: call.providerId,
+          callerId: call.senderId,
+          handledLocally: false,
+        });
+      });
+
+      toolResultUnsubRef.current = client.onToolResult(handleToolResult);
 
       // Set up roster handler
       client.onRoster((roster: RosterUpdate<ChatParticipantMetadata>) => {
@@ -340,7 +454,15 @@ export default function AgenticChatDemo() {
       setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
       setPhase("setup");
     }
-  }, [availableAgents, buildInviteConfig]);
+  }, [
+    availableAgents,
+    buildInviteConfig,
+    handleFeedbackUiToolCall,
+    evalToolDef,
+    addToolHistoryEntry,
+    handleToolResult,
+    discoveryRef,
+  ]);
 
   const addAgent = useCallback(async () => {
     const discovery = discoveryRef.current;
@@ -369,7 +491,7 @@ export default function AgenticChatDemo() {
     } catch (err) {
       console.error("Failed to invite agent:", err);
     }
-  }, [availableAgents, channelId, participants, buildInviteConfig]);
+  }, [availableAgents, channelId, participants, buildInviteConfig, discoveryRef]);
 
   function handleMessage(msg: IncomingMessage) {
     switch (msg.type) {
@@ -386,6 +508,7 @@ export default function AgenticChatDemo() {
               senderId: msg.senderId,
               content: msg.content,
               replyTo: msg.replyTo,
+              kind: "message",
             },
           ];
         });
@@ -422,11 +545,16 @@ export default function AgenticChatDemo() {
     setStatus("Initializing...");
     setParticipants({});
     setChannelId(null);
+    clearToolHistory();
+    toolAnyCallUnsubRef.current?.();
+    toolAnyCallUnsubRef.current = null;
+    toolResultUnsubRef.current?.();
+    toolResultUnsubRef.current = null;
     clientRef.current?.close();
     clientRef.current = null;
-  }, []);
+  }, [clearToolHistory]);
 
-  const sendMessage = useCallback(async () => {
+  const sendMessage = useCallback(async (): Promise<void> => {
     if (!input.trim() || !clientRef.current?.connected) return;
 
     const text = input.trim();
@@ -444,215 +572,22 @@ export default function AgenticChatDemo() {
           content: text,
           complete: true,
           pending: true,
+          kind: "message",
         },
       ];
     });
   }, [input]);
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      void sendMessage();
-    }
-  };
-
-  // Compute participant counts
-  const panelCount = Object.values(participants).filter((p) => p.metadata.type === "panel").length;
-  const aiResponderCount = Object.values(participants).filter((p) => p.metadata.type === "ai-responder").length;
-  const claudeCodeCount = Object.values(participants).filter((p) => p.metadata.type === "claude-code").length;
-  const codexCount = Object.values(participants).filter((p) => p.metadata.type === "codex").length;
-
-  const getSenderInfo = (senderId: string) => {
-    const participant = participants[senderId];
-    return participant?.metadata ?? { name: "Unknown", type: "panel" as const };
-  };
-
   // Setup phase - show agent discovery and selection
   if (phase === "setup") {
-    const selectedCount = availableAgents.filter((a) => a.selected).length;
-
     return (
-      <Flex direction="column" style={{ height: "100vh", padding: 16 }} gap="3">
-        <Flex justify="between" align="center">
-          <Text size="5" weight="bold">
-            Agentic Chat
-          </Text>
-          <Badge color="gray">{discoveryStatus}</Badge>
-        </Flex>
-
-        <Card style={{ flex: 1, overflow: "hidden" }}>
-          <Flex direction="column" gap="3" p="3" style={{ height: "100%" }}>
-            <Text size="3" weight="bold">
-              Available Agents
-            </Text>
-            <Text size="2" color="gray">
-              Select agents to invite to your chat session. Make sure Agent Manager is running.
-            </Text>
-
-            <ScrollArea style={{ flex: 1 }}>
-              {availableAgents.length === 0 ? (
-                <Flex direction="column" gap="2" align="center" justify="center" style={{ height: "100%" }}>
-                  <Text size="2" color="gray">
-                    No agents available.
-                  </Text>
-                  <Text size="1" color="gray">
-                    Start the Agent Manager panel to advertise agents.
-                  </Text>
-                </Flex>
-              ) : (
-                <Flex direction="column" gap="2">
-                  {availableAgents.map((agent) => (
-                    <Card
-                      key={`${agent.broker.brokerId}-${agent.agentType.id}`}
-                      variant="surface"
-                    >
-                      <Flex direction="column" gap="2">
-                        <Flex
-                          gap="3"
-                          align="start"
-                          style={{ cursor: "pointer" }}
-                          onClick={() => toggleAgentSelection(agent.broker.brokerId, agent.agentType.id)}
-                        >
-                          <Checkbox checked={agent.selected} />
-                          <Flex direction="column" gap="1" style={{ flex: 1 }}>
-                            <Text weight="medium">{agent.agentType.name}</Text>
-                            <Text size="1" color="gray">
-                              {agent.agentType.description}
-                            </Text>
-                            <Flex gap="1" wrap="wrap" mt="1">
-                              {agent.agentType.tags?.map((tag) => (
-                                <Badge key={tag} size="1" variant="outline">
-                                  {tag}
-                                </Badge>
-                              ))}
-                            </Flex>
-                          </Flex>
-                        </Flex>
-
-                        {/* Parameter inputs - show when agent is selected and has parameters */}
-                        {agent.selected && agent.agentType.parameters && agent.agentType.parameters.length > 0 && (
-                          <Flex direction="column" gap="2" pl="6" pt="2" style={{ borderTop: "1px solid var(--gray-5)" }}>
-                            {agent.agentType.parameters.map((param) => {
-                              // Build placeholder text with default value info
-                              const placeholderText = param.placeholder
-                                ? param.default !== undefined
-                                  ? `${param.placeholder} (default: ${param.default})`
-                                  : param.placeholder
-                                : param.default !== undefined
-                                  ? `Default: ${param.default}`
-                                  : undefined;
-
-                              return (
-                              <Flex key={param.key} direction="column" gap="1">
-                                <Text size="1" weight="medium">
-                                  {param.label}
-                                  {param.required ? (
-                                    <span style={{ color: "var(--red-9)" }}> *</span>
-                                  ) : (
-                                    <span style={{ color: "var(--gray-9)", fontWeight: "normal" }}> (optional)</span>
-                                  )}
-                                </Text>
-                                {param.description && (
-                                  <Text size="1" color="gray">
-                                    {param.description}
-                                  </Text>
-                                )}
-                                {param.type === "string" && (
-                                  <TextField.Root
-                                    size="1"
-                                    placeholder={placeholderText}
-                                    value={String(agent.config[param.key] ?? "")}
-                                    onClick={(e) => e.stopPropagation()}
-                                    onChange={(e) =>
-                                      updateAgentConfig(
-                                        agent.broker.brokerId,
-                                        agent.agentType.id,
-                                        param.key,
-                                        e.target.value
-                                      )
-                                    }
-                                  />
-                                )}
-                                {param.type === "number" && (
-                                  <TextField.Root
-                                    size="1"
-                                    type="number"
-                                    placeholder={placeholderText}
-                                    value={String(agent.config[param.key] ?? "")}
-                                    onClick={(e) => e.stopPropagation()}
-                                    onChange={(e) =>
-                                      updateAgentConfig(
-                                        agent.broker.brokerId,
-                                        agent.agentType.id,
-                                        param.key,
-                                        e.target.value === "" ? "" : Number(e.target.value)
-                                      )
-                                    }
-                                  />
-                                )}
-                                {param.type === "boolean" && (
-                                  <Checkbox
-                                    checked={Boolean(agent.config[param.key])}
-                                    onClick={(e) => e.stopPropagation()}
-                                    onCheckedChange={(checked) =>
-                                      updateAgentConfig(
-                                        agent.broker.brokerId,
-                                        agent.agentType.id,
-                                        param.key,
-                                        Boolean(checked)
-                                      )
-                                    }
-                                  />
-                                )}
-                                {param.type === "select" && param.options && (
-                                  <Select.Root
-                                    size="1"
-                                    value={String(agent.config[param.key] ?? "")}
-                                    onValueChange={(value) =>
-                                      updateAgentConfig(
-                                        agent.broker.brokerId,
-                                        agent.agentType.id,
-                                        param.key,
-                                        value
-                                      )
-                                    }
-                                  >
-                                    <Select.Trigger
-                                      placeholder="Select..."
-                                      onClick={(e) => e.stopPropagation()}
-                                    />
-                                    <Select.Content>
-                                      {param.options.map((option) => (
-                                        <Select.Item key={option.value} value={option.value}>
-                                          {option.label}
-                                        </Select.Item>
-                                      ))}
-                                    </Select.Content>
-                                  </Select.Root>
-                                )}
-                              </Flex>
-                              );
-                            })}
-                          </Flex>
-                        )}
-                      </Flex>
-                    </Card>
-                  ))}
-                </Flex>
-              )}
-            </ScrollArea>
-
-            <Flex justify="between" align="center">
-              <Text size="2" color="gray">
-                {selectedCount} agent{selectedCount !== 1 ? "s" : ""} selected
-              </Text>
-              <Button onClick={() => void startChat()} disabled={selectedCount === 0}>
-                Start Chat
-              </Button>
-            </Flex>
-          </Flex>
-        </Card>
-      </Flex>
+      <AgentSetupPhase
+        discoveryStatus={discoveryStatus}
+        availableAgents={availableAgents}
+        onToggleAgent={toggleAgentSelection}
+        onUpdateConfig={updateAgentConfig}
+        onStartChat={() => void startChat()}
+      />
     );
   }
 
@@ -667,103 +602,21 @@ export default function AgenticChatDemo() {
 
   // Chat phase
   return (
-    <Flex direction="column" style={{ height: "100vh", padding: 16 }} gap="3">
-      {/* Header */}
-      <Flex justify="between" align="center">
-        <Flex gap="2" align="center">
-          <Text size="5" weight="bold">
-            Agentic Chat
-          </Text>
-          <Badge color="gray">{channelId}</Badge>
-        </Flex>
-        <Flex gap="2" align="center">
-          <Badge color={connected ? "green" : "gray"}>{connected ? "Connected" : status}</Badge>
-          {panelCount > 0 && (
-            <Badge color="blue">
-              {panelCount} Panel{panelCount !== 1 ? "s" : ""}
-            </Badge>
-          )}
-          {aiResponderCount > 0 && (
-            <Badge color="purple">
-              {aiResponderCount} AI Responder{aiResponderCount !== 1 ? "s" : ""}
-            </Badge>
-          )}
-          {claudeCodeCount > 0 && <Badge color="orange">{claudeCodeCount} Claude Code</Badge>}
-          {codexCount > 0 && <Badge color="teal">{codexCount} Codex</Badge>}
-          <Button variant="soft" size="1" onClick={() => void addAgent()}>
-            Add Agent
-          </Button>
-          <Button variant="soft" onClick={reset}>
-            Reset
-          </Button>
-        </Flex>
-      </Flex>
-
-      {/* Messages */}
-      <Card style={{ flex: 1, overflow: "hidden" }}>
-        <ScrollArea style={{ height: "100%" }}>
-          <Flex direction="column" gap="2" p="3">
-            {messages.length === 0 ? (
-              <Text color="gray" size="2">
-                Send a message to start chatting
-              </Text>
-            ) : (
-              messages.map((msg) => {
-                const sender = getSenderInfo(msg.senderId);
-                const isPanel = sender.type === "panel";
-                const isStreaming = !msg.complete && !msg.error;
-                return (
-                  <Box
-                    key={msg.id}
-                    style={{
-                      alignSelf: isPanel ? "flex-end" : "flex-start",
-                      maxWidth: "80%",
-                    }}
-                  >
-                    <Card
-                      style={{
-                        backgroundColor: isPanel
-                          ? "var(--accent-9)"
-                          : msg.error
-                            ? "var(--red-3)"
-                            : "var(--gray-3)",
-                        opacity: msg.pending ? 0.7 : 1,
-                      }}
-                    >
-                      <Text
-                        size="2"
-                        style={{
-                          color: isPanel ? "white" : msg.error ? "var(--red-11)" : "inherit",
-                          whiteSpace: "pre-wrap",
-                        }}
-                      >
-                        {msg.error ? `Error: ${msg.error}` : msg.content || (isStreaming ? "..." : "")}
-                        {isStreaming && <span className="cursor">|</span>}
-                      </Text>
-                    </Card>
-                  </Box>
-                );
-              })
-            )}
-            <div ref={scrollRef} />
-          </Flex>
-        </ScrollArea>
-      </Card>
-
-      {/* Input */}
-      <Flex gap="2">
-        <TextField.Root
-          style={{ flex: 1 }}
-          placeholder="Type a message..."
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={!connected}
-        />
-        <Button onClick={() => void sendMessage()} disabled={!connected || !input.trim()}>
-          Send
-        </Button>
-      </Flex>
-    </Flex>
+    <ChatPhase
+      channelId={channelId}
+      connected={connected}
+      status={status}
+      messages={messages}
+      input={input}
+      participants={participants}
+      activeFeedbacks={activeFeedbacks}
+      theme={theme}
+      onInputChange={setInput}
+      onSendMessage={sendMessage}
+      onAddAgent={() => void addAgent()}
+      onReset={reset}
+      onFeedbackDismiss={handleFeedbackDismiss}
+      onFeedbackError={handleFeedbackError}
+    />
   );
 }

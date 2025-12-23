@@ -9,11 +9,11 @@ import { pubsubConfig, setTitle, id } from "@natstack/runtime";
 import {
   connect,
   createToolsForAgentSDK,
+  jsonSchemaToZodRawShape,
   type AgenticClient,
   type AgenticParticipantMetadata,
 } from "@natstack/agentic-messaging";
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
-import { z } from "zod";
 
 void setTitle("Claude Code Responder");
 
@@ -26,6 +26,45 @@ function log(message: string): void {
   console.log(`[Claude Code ${id}] ${message}`);
 }
 
+function formatArgsForLog(args: unknown): string {
+  const seen = new WeakSet();
+  const serialized = JSON.stringify(
+    args,
+    (_key, value) => {
+      if (typeof value === "object" && value !== null) {
+        if (seen.has(value as object)) return "[Circular]";
+        seen.add(value as object);
+      }
+      return value;
+    },
+    2
+  );
+  const maxLen = 2000;
+  if (!serialized) return "<empty>";
+  return serialized.length > maxLen ? `${serialized.slice(0, maxLen)}...` : serialized;
+}
+
+/**
+ * Safely parse AGENT_CONFIG from environment.
+ * Returns empty object if parsing fails.
+ */
+function parseAgentConfig(): Record<string, unknown> {
+  const raw = process.env.AGENT_CONFIG;
+  if (!raw) return {};
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    log(`Warning: AGENT_CONFIG is not an object, using empty config`);
+    return {};
+  } catch (err) {
+    log(`Warning: Failed to parse AGENT_CONFIG: ${err instanceof Error ? err.message : String(err)}`);
+    return {};
+  }
+}
+
 async function main() {
   if (!pubsubConfig) {
     console.error("No pubsub config available");
@@ -36,7 +75,7 @@ async function main() {
   const channelName = process.env.CHANNEL;
 
   // Parse agent config from environment (passed by broker as JSON)
-  const agentConfig = JSON.parse(process.env.AGENT_CONFIG || "{}") as Record<string, unknown>;
+  const agentConfig = parseAgentConfig();
   const configuredWorkingDirectory =
     typeof agentConfig.workingDirectory === "string" ? agentConfig.workingDirectory.trim() : "";
   const workingDirectory = configuredWorkingDirectory || process.env["NATSTACK_WORKSPACE"];
@@ -101,9 +140,9 @@ async function handleUserMessage(
       tool(
         toolDef.name,
         toolDef.description ?? "",
-        toolDef.parameters as z.ZodRawShape,
+        jsonSchemaToZodRawShape(toolDef.parameters),
         async (args: unknown) => {
-          log(`Tool call: ${toolDef.name}`);
+          log(`Tool call: ${toolDef.name} args=${formatArgsForLog(args)}`);
           const result = await executeTool(toolDef.name, args);
           return {
             content: [{ type: "text" as const, text: JSON.stringify(result) }],

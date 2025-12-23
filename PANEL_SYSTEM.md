@@ -43,7 +43,8 @@ Panel configuration is specified in `package.json` with a `natstack` field:
     "runtime": "panel",
     "injectHostThemeVariables": true,
     "singletonState": false,
-    "repoArgs": ["history", "components"]
+    "repoArgs": ["history", "components"],
+    "exposeModules": ["@radix-ui/colors"]
   },
   "dependencies": {
     "@natstack/runtime": "workspace:*",
@@ -62,6 +63,7 @@ Panel configuration is specified in `package.json` with a `natstack` field:
 | `injectHostThemeVariables` | boolean | `true` | Inherit NatStack theme CSS variables |
 | `singletonState` | boolean | `false` | Share storage across all instances |
 | `repoArgs` | string[] | `[]` | Named repo argument slots that callers must provide via `createChild` |
+| `exposeModules` | string[] | `[]` | Extra module specifiers to expose via `__natstackRequire__` (bundled even if not directly imported) |
 
 ## Panel API
 

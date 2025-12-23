@@ -18,6 +18,7 @@ import { pubsubConfig, setTitle, id } from "@natstack/runtime";
 import {
   connect,
   createToolsForAgentSDK,
+  jsonSchemaToZodRawShape,
   type AgenticClient,
   type AgenticParticipantMetadata,
 } from "@natstack/agentic-messaging";
@@ -25,7 +26,6 @@ import { Codex } from "@openai/codex-sdk";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import { z } from "zod";
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -43,6 +43,45 @@ function log(message: string): void {
   console.log(`[Codex Worker ${id}] ${message}`);
 }
 
+function formatArgsForLog(args: unknown): string {
+  const seen = new WeakSet();
+  const serialized = JSON.stringify(
+    args,
+    (_key, value) => {
+      if (typeof value === "object" && value !== null) {
+        if (seen.has(value as object)) return "[Circular]";
+        seen.add(value as object);
+      }
+      return value;
+    },
+    2
+  );
+  const maxLen = 2000;
+  if (!serialized) return "<empty>";
+  return serialized.length > maxLen ? `${serialized.slice(0, maxLen)}...` : serialized;
+}
+
+/**
+ * Safely parse AGENT_CONFIG from environment.
+ * Returns empty object if parsing fails.
+ */
+function parseAgentConfig(): Record<string, unknown> {
+  const raw = process.env.AGENT_CONFIG;
+  if (!raw) return {};
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    log(`Warning: AGENT_CONFIG is not an object, using empty config`);
+    return {};
+  } catch (err) {
+    log(`Warning: Failed to parse AGENT_CONFIG: ${err instanceof Error ? err.message : String(err)}`);
+    return {};
+  }
+}
+
 /**
  * Tool definition for MCP server
  */
@@ -50,93 +89,6 @@ interface ToolDefinition {
   name: string;
   description?: string;
   parameters: Record<string, unknown>;
-}
-
-/**
- * Convert JSON Schema to Zod schema.
- * Simplified conversion that handles common JSON Schema patterns.
- */
-function convertJsonSchemaToZod(schema: Record<string, unknown>): z.ZodType {
-  const type = schema["type"] as string | undefined;
-
-  switch (type) {
-    case "string": {
-      const enumValues = schema["enum"] as string[] | undefined;
-      if (enumValues && enumValues.length > 0) {
-        return z.enum(enumValues as [string, ...string[]]);
-      }
-      return z.string();
-    }
-    case "number":
-      return z.number();
-    case "integer":
-      return z.number().int();
-    case "boolean":
-      return z.boolean();
-    case "array": {
-      const items = schema["items"] as Record<string, unknown> | undefined;
-      if (items) {
-        return z.array(convertJsonSchemaToZod(items));
-      }
-      return z.array(z.unknown());
-    }
-    case "object": {
-      const properties = schema["properties"] as Record<string, Record<string, unknown>> | undefined;
-      const required = (schema["required"] as string[]) || [];
-
-      if (!properties) {
-        return z.record(z.string(), z.unknown());
-      }
-      const shape: Record<string, z.ZodType> = {};
-      for (const [key, propSchema] of Object.entries(properties)) {
-        const zodType = convertJsonSchemaToZod(propSchema);
-        shape[key] = required.includes(key) ? zodType : zodType.optional();
-      }
-      return z.object(shape);
-    }
-    case "null":
-      return z.null();
-    default:
-      // Handle union types
-      if (schema["anyOf"] || schema["oneOf"]) {
-        const variants = (schema["anyOf"] || schema["oneOf"]) as Record<string, unknown>[];
-        if (variants.length === 0) {
-          return z.unknown();
-        } else if (variants.length === 1) {
-          return convertJsonSchemaToZod(variants[0]!);
-        } else {
-          const zodVariants = variants.map(convertJsonSchemaToZod) as [z.ZodType, z.ZodType, ...z.ZodType[]];
-          return z.union(zodVariants);
-        }
-      }
-      return z.unknown();
-  }
-}
-
-/**
- * Convert JSON Schema to a shape object for tool registration.
- */
-function jsonSchemaToShape(schema: Record<string, unknown>): z.ZodRawShape {
-  const type = schema["type"] as string | undefined;
-
-  if (type === "object") {
-    const properties = schema["properties"] as Record<string, Record<string, unknown>> | undefined;
-    const required = (schema["required"] as string[]) || [];
-
-    if (!properties) {
-      return {};
-    }
-
-    const shape: z.ZodRawShape = {};
-    for (const [key, propSchema] of Object.entries(properties)) {
-      const zodType = convertJsonSchemaToZod(propSchema);
-      shape[key] = required.includes(key) ? zodType : zodType.optional();
-    }
-    return shape;
-  }
-
-  // Non-object schemas get wrapped
-  return { input: convertJsonSchemaToZod(schema) };
 }
 
 /**
@@ -161,16 +113,16 @@ async function createMcpHttpServer(
     version: "1.0.0",
   });
 
-  // Register tools
+  // Register tools using the shared JSON Schema to Zod converter
   for (const toolDef of tools) {
-    const inputSchema = jsonSchemaToShape(toolDef.parameters);
+    const inputSchema = jsonSchemaToZodRawShape(toolDef.parameters);
 
     mcpServer.tool(
       toolDef.name,
       toolDef.description ?? `Tool: ${toolDef.name}`,
       inputSchema,
       async (args: Record<string, unknown>) => {
-        log(`Tool call: ${toolDef.name}`);
+        log(`Tool call: ${toolDef.name} args=${formatArgsForLog(args)}`);
         try {
           const result = await executeTool(toolDef.name, args);
           return {
@@ -359,7 +311,7 @@ async function main() {
   const channelName = process.env.CHANNEL;
 
   // Parse agent config from environment (passed by broker as JSON)
-  const agentConfig = JSON.parse(process.env.AGENT_CONFIG || "{}") as Record<string, unknown>;
+  const agentConfig = parseAgentConfig();
   const configuredWorkingDirectory =
     typeof agentConfig.workingDirectory === "string" ? agentConfig.workingDirectory.trim() : "";
   const workingDirectory = configuredWorkingDirectory || process.env["NATSTACK_WORKSPACE"];

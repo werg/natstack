@@ -172,6 +172,32 @@ export interface IncomingToolCall {
 }
 
 /**
+ * An incoming tool result chunk.
+ */
+export interface IncomingToolResult {
+  /** Message kind */
+  kind: "replay" | "persisted" | "ephemeral";
+  /** ID of the sender */
+  senderId: string;
+  /** Timestamp */
+  ts: number;
+  /** Call ID for correlation */
+  callId: string;
+  /** Result content */
+  content?: unknown;
+  /** MIME type for attachment */
+  contentType?: string;
+  /** Whether this is the final chunk */
+  complete: boolean;
+  /** Whether this chunk represents an error */
+  isError: boolean;
+  /** Progress percentage (0-100) */
+  progress?: number;
+  /** Binary attachment (optional) */
+  attachment?: Uint8Array;
+}
+
+/**
  * Final value from a tool call.
  */
 export interface ToolResultValue {
@@ -405,6 +431,15 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
 
   /** Subscribe to roster updates */
   onRoster(handler: (roster: RosterUpdate<T>) => void): () => void;
+
+  /** Subscribe to incoming tool calls for tools provided by this client */
+  onToolCall(handler: (call: IncomingToolCall) => void): () => void;
+
+  /** Subscribe to all incoming tool calls on the channel */
+  onAnyToolCall(handler: (call: IncomingToolCall) => void): () => void;
+
+  /** Subscribe to incoming tool result chunks on the channel */
+  onToolResult(handler: (result: IncomingToolResult) => void): () => void;
 
   // === Connection API ===
 

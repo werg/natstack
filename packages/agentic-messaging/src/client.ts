@@ -10,6 +10,7 @@ import type {
   DiscoveredTool,
   IncomingMessage,
   IncomingToolCall,
+  IncomingToolResult,
   ToolAdvertisement,
   ToolCallResult,
   ToolConflict,
@@ -205,6 +206,9 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
 
   const errorHandlers = new Set<(error: Error) => void>();
   const messagesFanout = createFanout<IncomingMessage>();
+  const toolCallHandlers = new Set<(call: IncomingToolCall) => void>();
+  const anyToolCallHandlers = new Set<(call: IncomingToolCall) => void>();
+  const toolResultHandlers = new Set<(result: IncomingToolResult) => void>();
 
   const callStates = new Map<string, ToolCallState>();
   const providerAbortControllers = new Map<string, AbortController>();
@@ -215,6 +219,31 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
 
   function emitError(error: Error): void {
     for (const handler of errorHandlers) handler(error);
+  }
+
+  function emitToolCall(call: IncomingToolCall): void {
+    for (const handler of toolCallHandlers) handler(call);
+  }
+
+  function emitAnyToolCall(call: IncomingToolCall): void {
+    for (const handler of anyToolCallHandlers) handler(call);
+  }
+
+  function emitToolResult(result: IncomingToolResult): void {
+    for (const handler of toolResultHandlers) handler(result);
+  }
+
+  /**
+   * Emit tool call if it targets this client, then handle it.
+   * Centralizes the selfId check and emission logic.
+   */
+  function emitAndHandleToolCall(call: IncomingToolCall): void {
+    if (call.providerId === selfId) {
+      emitToolCall(call);
+    }
+    handleIncomingToolCall(call).catch((err) =>
+      emitError(err instanceof Error ? err : new Error(String(err)))
+    );
   }
 
   function getToolAdvertisements(fromTools: Record<string, ToolDefinition>): ToolAdvertisement[] {
@@ -260,7 +289,8 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
         // Process any tool calls that arrived before we knew our own ID
         while (pendingToolCalls.length > 0) {
           const call = pendingToolCalls.shift()!;
-          handleIncomingToolCall(call).catch((err) => emitError(err instanceof Error ? err : new Error(String(err))));
+          emitAnyToolCall(call);
+          emitAndHandleToolCall(call);
         }
         break;
       }
@@ -350,6 +380,8 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
 
     const controller = new AbortController();
     providerAbortControllers.set(call.callId, controller);
+    const timeoutMs = tool.timeout;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     const ctx: ToolExecutionContext = {
       callId: call.callId,
@@ -374,9 +406,32 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
         publishToolResult(call.callId, { content: undefined, progress: percent, complete: false, isError: false }),
     };
 
+    // Sentinel for timeout - allows distinguishing timeout from other rejections
+    const TIMEOUT_SENTINEL = Symbol("timeout");
+
     try {
       const parsedArgs = (tool.parameters as z.ZodTypeAny).parse(call.args);
-      const rawResult = await tool.execute(parsedArgs, ctx);
+
+      // Build race competitors
+      const competitors: Promise<unknown>[] = [Promise.resolve(tool.execute(parsedArgs, ctx))];
+
+      if (timeoutMs !== undefined && timeoutMs > 0) {
+        competitors.push(
+          new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(() => {
+              controller.abort();
+              reject(TIMEOUT_SENTINEL);
+            }, timeoutMs);
+          })
+        );
+      }
+
+      const rawResult = await Promise.race(competitors);
+
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
 
       if (controller.signal.aborted) {
         await publishToolError(call.callId, "cancelled", "cancelled");
@@ -400,6 +455,12 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
         await publishToolResult(call.callId, { content: result, complete: true, isError: false });
       }
     } catch (err) {
+      // Handle timeout via sentinel
+      if (err === TIMEOUT_SENTINEL) {
+        await publishToolError(call.callId, "timeout", "timeout");
+        return;
+      }
+      // Handle cancellation (external abort or AbortError from tool)
       const aborted = controller.signal.aborted || (err instanceof Error && err.name === "AbortError");
       if (aborted) {
         await publishToolError(call.callId, "cancelled", "cancelled");
@@ -410,6 +471,9 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
         await publishToolError(call.callId, message, "execution-error");
       }
     } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
       providerAbortControllers.delete(call.callId);
     }
   }
@@ -485,7 +549,8 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
         args: parsed.args,
       };
       if (selfId) {
-        await handleIncomingToolCall(incoming);
+        emitAnyToolCall(incoming);
+        emitAndHandleToolCall(incoming);
       } else {
         pendingToolCalls.push(incoming);
       }
@@ -512,6 +577,21 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
     if (type === "tool-result") {
       const parsed = validateReceive(ToolResultSchema, payload, "ToolResult");
       if (!parsed) return;
+      const complete = parsed.complete ?? false;
+      const isError = parsed.isError ?? false;
+      const incomingResult: IncomingToolResult = {
+        kind,
+        senderId,
+        ts,
+        callId: parsed.callId,
+        content: parsed.content,
+        contentType: parsed.contentType,
+        complete,
+        isError,
+        progress: parsed.progress,
+        attachment,
+      };
+      emitToolResult(incomingResult);
       const state = callStates.get(parsed.callId);
       if (!state) return;
 
@@ -519,8 +599,8 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
         content: parsed.content,
         attachment,
         contentType: parsed.contentType,
-        complete: parsed.complete ?? false,
-        isError: parsed.isError ?? false,
+        complete,
+        isError,
         progress: parsed.progress,
       };
 
@@ -791,6 +871,18 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
     onError: (handler) => {
       errorHandlers.add(handler);
       return () => errorHandlers.delete(handler);
+    },
+    onToolCall: (handler) => {
+      toolCallHandlers.add(handler);
+      return () => toolCallHandlers.delete(handler);
+    },
+    onAnyToolCall: (handler) => {
+      anyToolCallHandlers.add(handler);
+      return () => anyToolCallHandlers.delete(handler);
+    },
+    onToolResult: (handler) => {
+      toolResultHandlers.add(handler);
+      return () => toolResultHandlers.delete(handler);
     },
     onDisconnect: pubsub.onDisconnect,
     onReconnect: pubsub.onReconnect,

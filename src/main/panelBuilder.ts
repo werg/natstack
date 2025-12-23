@@ -244,6 +244,434 @@ ${fsConstants}
   };
 }
 
+/**
+ * Generate a module that imports dependencies and registers them to the module map.
+ * This keeps bundled instances shared while avoiding export shape issues.
+ */
+function generateExposeModuleCode(depsToExpose: string[]): string {
+  if (depsToExpose.length === 0) {
+    return `// === NatStack Module Expose ===\nexport {};\n`;
+  }
+
+  const importLines = depsToExpose.map(
+    (dep, index) => `import * as __mod${index}__ from ${JSON.stringify(dep)};`
+  );
+  const registerLines = depsToExpose.map(
+    (dep, index) =>
+      `globalThis.__natstackModuleMap__[${JSON.stringify(dep)}] = __mod${index}__;`
+  );
+
+  return `// === NatStack Module Expose ===
+${importLines.join("\n")}
+
+globalThis.__natstackModuleMap__ = globalThis.__natstackModuleMap__ || {};
+${registerLines.join("\n")}
+`;
+}
+
+function isBareSpecifier(spec: string): boolean {
+  if (!spec) return false;
+  if (spec.startsWith(".") || spec.startsWith("/")) return false;
+  if (spec.startsWith("data:") || spec.startsWith("node:")) return false;
+  // Exclude virtual/shim modules with protocol-like prefixes (e.g., "natstack-panel-fs-shim:fs")
+  if (spec.includes(":")) return false;
+  // Exclude local file paths with extensions (these are panel-local imports, not npm packages)
+  // This covers .ts, .tsx, .js, .jsx, .mjs, .cjs, .json, .css, .scss, .less, etc.
+  if (/\.\w+$/.test(spec)) return false;
+  return true;
+}
+
+function collectExposedDepsFromMetafile(
+  metafile: esbuild.Metafile,
+  externalModules: Set<string>
+): string[] {
+  const deps = new Set<string>();
+
+  for (const input of Object.values(metafile.inputs)) {
+    for (const imp of input.imports) {
+      if (imp.external) continue;
+      if (!isBareSpecifier(imp.path)) continue;
+      if (externalModules.has(imp.path)) continue;
+      deps.add(imp.path);
+    }
+  }
+
+  return [...deps].sort();
+}
+
+/**
+ * Generate banner that initializes the runtime require function.
+ * This runs before any module code, so the map is ready when registrations happen.
+ */
+function generateModuleMapBanner(): string {
+  return `
+// === NatStack Module Map (runs before all module code) ===
+globalThis.__natstackModuleMap__ = globalThis.__natstackModuleMap__ || {};
+globalThis.__natstackRequire__ = function(id) {
+  var mod = globalThis.__natstackModuleMap__[id];
+  if (mod) return mod;
+  throw new Error('Module "' + id + '" not available via require(). Import it in the panel or add it to the expose list.');
+};
+// === End Module Map ===
+`;
+}
+
+/**
+ * Options for generating the async tracking banner.
+ */
+interface AsyncTrackingBannerOptions {
+  /** Banner comment label (e.g., "NatStack Async Tracking" or "NatStack Async Tracking for Workers") */
+  label: string;
+  /** How to get globalThis (browser needs fallback to window) */
+  globalObjExpr: string;
+  /** Whether to include browser-only API wrappers (clipboard, createImageBitmap) */
+  includeBrowserApis: boolean;
+}
+
+/**
+ * Generate the core async tracking banner code.
+ * This is shared between browser panels and Node.js workers.
+ *
+ * Uses a faceted/context-based approach where each tracking session (context)
+ * has its own isolated set of tracked promises. Contexts can be cleaned up
+ * independently and have optional automatic timeouts to prevent memory leaks.
+ */
+function generateAsyncTrackingBannerCore(options: AsyncTrackingBannerOptions): string {
+  const { label, globalObjExpr, includeBrowserApis } = options;
+
+  // Browser-only API wrappers (clipboard, createImageBitmap)
+  const browserApiWrappers = includeBrowserApis
+    ? `
+  // Wrap clipboard methods (browser only)
+  if (globalObj.navigator && globalObj.navigator.clipboard) {
+    ["read", "readText", "write", "writeText"].forEach(function(method) {
+      var orig = globalObj.navigator.clipboard[method];
+      if (orig) {
+        globalObj.navigator.clipboard[method] = function() {
+          return tagAndTrack(orig.apply(this, arguments));
+        };
+      }
+    });
+  }
+
+  // Wrap createImageBitmap (browser only)
+  var originalCreateImageBitmap = globalObj.createImageBitmap;
+  if (originalCreateImageBitmap) {
+    globalObj.createImageBitmap = function() {
+      return tagAndTrack(originalCreateImageBitmap.apply(this, arguments));
+    };
+  }`
+    : "";
+
+  return `
+// === ${label} (runs before all module code) ===
+(function() {
+  "use strict";
+  var globalObj = ${globalObjExpr};
+  var OriginalPromise = globalObj.Promise;
+  // Store original then BEFORE any wrapping - used by trackInContext to avoid recursion
+  var originalThen = OriginalPromise.prototype.then;
+
+  // WeakSet for promises that should never be tracked (e.g., internal wait promises)
+  var __ignoredPromises__ = new WeakSet();
+  // WeakMap: promise -> context that owns it
+  var __promiseContext__ = new WeakMap();
+
+  // Active tracking contexts (faceted approach)
+  // Each context has its own promise set and can be cleaned up independently
+  var __contexts__ = new Map(); // contextId -> { promises: Set, timeoutId, pauseCount }
+  var __nextContextId__ = 1;
+
+  // Current context for tagging new promises
+  var __currentContext__ = null;
+
+  function createContext(options) {
+    options = options || {};
+    var id = __nextContextId__++;
+    var ctx = {
+      id: id,
+      promises: new Set(),
+      pauseCount: 0,
+      timeoutId: null,
+      maxTimeoutMs: options.maxTimeout || 0, // 0 = no auto-cleanup
+      createdAt: Date.now()
+    };
+
+    // Set up auto-cleanup timeout if configured
+    if (ctx.maxTimeoutMs > 0) {
+      ctx.timeoutId = setTimeout(function() {
+        destroyContext(id);
+      }, ctx.maxTimeoutMs);
+    }
+
+    __contexts__.set(id, ctx);
+    return ctx;
+  }
+
+  function destroyContext(contextId) {
+    var ctx = __contexts__.get(contextId);
+    if (!ctx) return;
+
+    // Clear timeout if set
+    if (ctx.timeoutId) {
+      clearTimeout(ctx.timeoutId);
+      ctx.timeoutId = null;
+    }
+
+    // Clear promise references (WeakMap entries will be GC'd automatically)
+    ctx.promises.clear();
+
+    // Remove context
+    __contexts__.delete(contextId);
+
+    // If this was the current context, clear it
+    if (__currentContext__ && __currentContext__.id === contextId) {
+      __currentContext__ = null;
+    }
+  }
+
+  function trackInContext(ctx, p) {
+    if (!p || typeof p.then !== "function") return p;
+    if (__ignoredPromises__.has(p)) return p;
+
+    // Only track if promise belongs to this context
+    var promiseCtx = __promiseContext__.get(p);
+    if (promiseCtx !== ctx) return p;
+
+    ctx.promises.add(p);
+
+    // Use originalThen (stored before wrapping) to avoid recursion
+    originalThen.call(
+      p,
+      function(value) { ctx.promises.delete(p); return value; },
+      function(err) { ctx.promises.delete(p); throw err; }
+    );
+    return p;
+  }
+
+  globalObj.__natstackAsyncTracking__ = {
+    /** Create a new tracking context. */
+    createContext: function(options) { return createContext(options); },
+
+    /** Start tracking in a context (creates new context and sets as current). */
+    start: function(options) {
+      var ctx = createContext(options);
+      __currentContext__ = ctx;
+      return ctx;
+    },
+
+    /** Enter a tracking context (set as current for new promises). */
+    enter: function(ctx) {
+      if (ctx && __contexts__.has(ctx.id)) {
+        __currentContext__ = ctx;
+      }
+    },
+
+    /** Exit the current tracking context. */
+    exit: function() { __currentContext__ = null; },
+
+    /** Stop and destroy a context, cleaning up all references. */
+    stop: function(ctx) {
+      if (ctx) {
+        destroyContext(ctx.id);
+      } else if (__currentContext__) {
+        destroyContext(__currentContext__.id);
+        __currentContext__ = null;
+      }
+    },
+
+    /** Pause tracking in a context (nested pause supported). */
+    pause: function(ctx) {
+      ctx = ctx || __currentContext__;
+      if (ctx && __contexts__.has(ctx.id)) {
+        ctx.pauseCount += 1;
+      }
+    },
+
+    /** Resume tracking in a context. */
+    resume: function(ctx) {
+      ctx = ctx || __currentContext__;
+      if (ctx && __contexts__.has(ctx.id)) {
+        ctx.pauseCount = Math.max(0, ctx.pauseCount - 1);
+      }
+    },
+
+    /** Mark a promise as ignored (never tracked in any context). */
+    ignore: function(p) {
+      if (p && typeof p === "object") {
+        __ignoredPromises__.add(p);
+      }
+      return p;
+    },
+
+    /** Wait for all promises in a context to settle. */
+    waitAll: function(timeoutMs, ctx) {
+      ctx = ctx || __currentContext__;
+      if (!ctx || !__contexts__.has(ctx.id)) {
+        return OriginalPromise.resolve();
+      }
+
+      var deadline = Date.now() + timeoutMs;
+      var waitPromise = new OriginalPromise(function(resolve, reject) {
+        function check() {
+          // Context may have been destroyed
+          if (!__contexts__.has(ctx.id)) {
+            resolve();
+            return;
+          }
+          if (ctx.promises.size === 0) {
+            resolve();
+          } else if (Date.now() >= deadline) {
+            reject(new Error("Async timeout: " + ctx.promises.size + " promises still pending"));
+          } else {
+            setTimeout(check, 50);
+          }
+        }
+        check();
+      });
+      __ignoredPromises__.add(waitPromise);
+      return waitPromise;
+    },
+
+    /** Get pending promise count for a context. */
+    pending: function(ctx) {
+      ctx = ctx || __currentContext__;
+      if (!ctx || !__contexts__.has(ctx.id)) return 0;
+      return ctx.promises.size;
+    },
+
+    /** Get all active context IDs (for debugging). */
+    activeContexts: function() {
+      return Array.from(__contexts__.keys());
+    }
+  };
+
+  // Wrap Promise constructor
+  function TrackedPromise(executor) {
+    var promise = new OriginalPromise(executor);
+    var ctx = __currentContext__;
+    if (ctx && __contexts__.has(ctx.id) && ctx.pauseCount === 0) {
+      __promiseContext__.set(promise, ctx);
+      trackInContext(ctx, promise);
+    }
+    return promise;
+  }
+  TrackedPromise.prototype = OriginalPromise.prototype;
+  Object.setPrototypeOf(TrackedPromise, OriginalPromise);
+
+  // Wrap Promise.prototype.then to propagate context
+  OriginalPromise.prototype.then = function(onFulfilled, onRejected) {
+    if (__ignoredPromises__.has(this)) {
+      var ignoredResult = originalThen.call(this, onFulfilled, onRejected);
+      __ignoredPromises__.add(ignoredResult);
+      return ignoredResult;
+    }
+
+    var result = originalThen.call(this, onFulfilled, onRejected);
+    var ctx = __promiseContext__.get(this);
+    if (ctx && __contexts__.has(ctx.id)) {
+      __promiseContext__.set(result, ctx);
+      trackInContext(ctx, result);
+    }
+    return result;
+  };
+
+  // Helper to tag and track in current context
+  function tagAndTrack(p) {
+    var ctx = __currentContext__;
+    if (ctx && __contexts__.has(ctx.id) && ctx.pauseCount === 0) {
+      __promiseContext__.set(p, ctx);
+      trackInContext(ctx, p);
+    }
+    return p;
+  }
+
+  // Wrap static Promise methods
+  TrackedPromise.resolve = function(v) { return tagAndTrack(OriginalPromise.resolve(v)); };
+  TrackedPromise.reject = function(v) { return tagAndTrack(OriginalPromise.reject(v)); };
+  TrackedPromise.all = function(v) { return tagAndTrack(OriginalPromise.all(v)); };
+  TrackedPromise.allSettled = function(v) { return tagAndTrack(OriginalPromise.allSettled(v)); };
+  TrackedPromise.race = function(v) { return tagAndTrack(OriginalPromise.race(v)); };
+  TrackedPromise.any = function(v) { return tagAndTrack(OriginalPromise.any(v)); };
+
+  // Copy other static properties
+  Object.getOwnPropertyNames(OriginalPromise).forEach(function(key) {
+    if (Object.prototype.hasOwnProperty.call(TrackedPromise, key)) return;
+    var desc = Object.getOwnPropertyDescriptor(OriginalPromise, key);
+    if (!desc) return;
+    try { Object.defineProperty(TrackedPromise, key, desc); } catch {}
+  });
+  Object.getOwnPropertySymbols(OriginalPromise).forEach(function(sym) {
+    if (Object.prototype.hasOwnProperty.call(TrackedPromise, sym)) return;
+    var desc = Object.getOwnPropertyDescriptor(OriginalPromise, sym);
+    if (!desc) return;
+    try { Object.defineProperty(TrackedPromise, sym, desc); } catch {}
+  });
+
+  globalObj.Promise = TrackedPromise;
+
+  // Wrap fetch
+  var originalFetch = globalObj.fetch;
+  if (originalFetch) {
+    globalObj.fetch = function() {
+      var p = originalFetch.apply(this, arguments);
+      return tagAndTrack(p);
+    };
+  }
+
+  // Wrap Response methods
+  if (globalObj.Response && globalObj.Response.prototype) {
+    ["json", "text", "blob", "arrayBuffer", "formData"].forEach(function(method) {
+      var orig = globalObj.Response.prototype[method];
+      if (orig) {
+        globalObj.Response.prototype[method] = function() {
+          return tagAndTrack(orig.call(this));
+        };
+      }
+    });
+  }
+
+  // Wrap Blob methods
+  if (globalObj.Blob && globalObj.Blob.prototype) {
+    ["text", "arrayBuffer"].forEach(function(method) {
+      var orig = globalObj.Blob.prototype[method];
+      if (orig) {
+        globalObj.Blob.prototype[method] = function() {
+          return tagAndTrack(orig.call(this));
+        };
+      }
+    });
+  }
+${browserApiWrappers}
+})();
+// === End ${label} ===
+`;
+}
+
+/**
+ * Generate the async tracking banner for browser panels.
+ * Includes browser-specific API wrappers (clipboard, createImageBitmap).
+ */
+function generateAsyncTrackingBanner(): string {
+  return generateAsyncTrackingBannerCore({
+    label: "NatStack Async Tracking",
+    globalObjExpr: 'typeof globalThis !== "undefined" ? globalThis : window',
+    includeBrowserApis: true,
+  });
+}
+
+/**
+ * Generate the async tracking banner for Node.js workers.
+ * Node 18+ has fetch, Response, Blob globally but not clipboard/createImageBitmap.
+ */
+function generateWorkerAsyncTrackingBanner(): string {
+  return generateAsyncTrackingBannerCore({
+    label: "NatStack Async Tracking for Workers",
+    globalObjExpr: "globalThis",
+    includeBrowserApis: false,
+  });
+}
+
 // ===========================================================================
 // Child Panel Build Types
 // ===========================================================================
@@ -513,7 +941,12 @@ export class PanelBuilder {
     return tsconfigPath;
   }
 
-  private resolveHtml(sourcePath: string, title: string, externals?: Record<string, string>): string {
+  private resolveHtml(
+    sourcePath: string,
+    title: string,
+    externals?: Record<string, string>,
+    options: { includeCss?: boolean } = {}
+  ): string {
     const sourceHtmlPath = path.join(sourcePath, "index.html");
     if (fs.existsSync(sourceHtmlPath)) {
       return fs.readFileSync(sourceHtmlPath, "utf-8");
@@ -527,6 +960,8 @@ export class PanelBuilder {
         ? `<script type="importmap">${JSON.stringify(importMap)}</script>\n  `
         : "";
 
+    const cssLink = options.includeCss ? `\n  <link rel=\"stylesheet\" href=\"./bundle.css\" />` : "";
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -534,7 +969,7 @@ export class PanelBuilder {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title}</title>
   ${importMapScript}<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/themes@3.2.1/styles.css">
-  <link rel="stylesheet" href="./bundle.css" />
+  ${cssLink}
 </head>
 <body>
   <div id="root"></div>
@@ -772,33 +1207,6 @@ export class PanelBuilder {
       // Determine if panel has repoArgs (needs bootstrap)
       const hasRepoArgs = manifest.repoArgs && manifest.repoArgs.length > 0;
 
-      // Create wrapper entry
-      const tempEntryPath = path.join(workspace.buildDir, "_entry.js");
-      const relativeUserEntry = path.relative(workspace.buildDir, entryPath);
-
-      // Build wrapper code
-      // Bootstrap is now started automatically by @natstack/runtime when the module loads.
-      // Panel code that needs bootstrap results can await `bootstrapPromise` from the runtime.
-      let wrapperCode: string;
-
-      if (hasNatstackReact) {
-        // Auto-mount wrapper for React panels
-        wrapperCode = `import { autoMountReactPanel, shouldAutoMount } from "@natstack/react";
-import * as userModule from ${JSON.stringify(relativeUserEntry)};
-
-if (shouldAutoMount(userModule)) {
-  autoMountReactPanel(userModule);
-}
-`;
-      } else {
-        // Direct import for non-React panels (panel handles its own mounting)
-        wrapperCode = `import ${JSON.stringify(relativeUserEntry)};\n`;
-      }
-
-      // hasRepoArgs is still checked to pass git config, but bootstrap is non-blocking
-      void hasRepoArgs; // Suppress unused variable warning
-      fs.writeFileSync(tempEntryPath, wrapperCode);
-
       // Get externals from manifest (packages loaded via import map / CDN)
       // Also add implicit externals based on detected dependencies
       const externals: Record<string, string> = { ...(manifest.externals ?? {}) };
@@ -810,6 +1218,44 @@ if (shouldAutoMount(userModule)) {
       }
 
       const externalModules = Object.keys(externals);
+      const explicitExposeModules = (manifest.exposeModules ?? [])
+        .filter((spec): spec is string => typeof spec === "string")
+        .map((spec) => spec.trim())
+        .filter((spec) => spec.length > 0 && isBareSpecifier(spec));
+
+      const exposeModulePath = path.join(workspace.buildDir, "_expose.js");
+      let exposeModuleCode = generateExposeModuleCode([]);
+      fs.writeFileSync(exposeModulePath, exposeModuleCode);
+
+      // Create wrapper entry
+      const tempEntryPath = path.join(workspace.buildDir, "_entry.js");
+      const relativeUserEntry = path.relative(workspace.buildDir, entryPath);
+
+      // Build wrapper code
+      // Bootstrap is now started automatically by @natstack/runtime when the module loads.
+      // Panel code that needs bootstrap results can await `bootstrapPromise` from the runtime.
+      let wrapperCode: string;
+
+      if (hasNatstackReact) {
+        // Auto-mount wrapper for React panels
+        wrapperCode = `import "./_expose.js";
+import { autoMountReactPanel, shouldAutoMount } from "@natstack/react";
+import * as userModule from ${JSON.stringify(relativeUserEntry)};
+
+if (shouldAutoMount(userModule)) {
+  autoMountReactPanel(userModule);
+}
+`;
+      } else {
+        // Direct import for non-React panels (panel handles its own mounting)
+        wrapperCode = `import "./_expose.js";
+import ${JSON.stringify(relativeUserEntry)};
+`;
+      }
+
+      // hasRepoArgs is still checked to pass git config, but bootstrap is non-blocking
+      void hasRepoArgs; // Suppress unused variable warning
+      fs.writeFileSync(tempEntryPath, wrapperCode);
 
       // Build with esbuild (write to disk)
       log(`Building panel...`);
@@ -824,7 +1270,9 @@ if (shouldAutoMount(userModule)) {
         plugins.push(this.createReactDedupePlugin(workspace.nodeModulesDir));
       }
 
-      await esbuild.build({
+      const bannerJs = [generateAsyncTrackingBanner(), generateModuleMapBanner()].join("\n");
+
+      const buildResult = await esbuild.build({
         entryPoints: [tempEntryPath],
         bundle: true,
         platform: "browser",
@@ -838,6 +1286,10 @@ if (shouldAutoMount(userModule)) {
         nodePaths,
         plugins,
         external: externalModules,
+        banner: {
+          js: bannerJs,
+        },
+        metafile: true,
         // Use a build-owned tsconfig. Only allowlisted user compilerOptions are merged.
         tsconfig: this.writeBuildTsconfig(workspace.buildDir, sourcePath, "panel", {
           jsx: "react-jsx",
@@ -846,10 +1298,60 @@ if (shouldAutoMount(userModule)) {
         }),
       });
 
+      if (buildResult.metafile) {
+        const externalSet = new Set(externalModules);
+        const depsToExpose = collectExposedDepsFromMetafile(buildResult.metafile, externalSet);
+        for (const spec of explicitExposeModules) {
+          if (!externalSet.has(spec)) {
+            depsToExpose.push(spec);
+          }
+        }
+        const uniqueDeps = [...new Set(depsToExpose)].sort();
+        const nextExposeCode = generateExposeModuleCode(uniqueDeps);
+        if (nextExposeCode !== exposeModuleCode) {
+          exposeModuleCode = nextExposeCode;
+          fs.writeFileSync(exposeModulePath, exposeModuleCode);
+
+          log(`Re-building with ${uniqueDeps.length} exposed modules...`);
+          try {
+            await esbuild.build({
+              entryPoints: [tempEntryPath],
+              bundle: true,
+              platform: "browser",
+              target: "es2022",
+              conditions: ["natstack-panel"],
+              outfile: bundlePath,
+              sourcemap: inlineSourcemap ? "inline" : false,
+              keepNames: true,
+              format: "esm",
+              absWorkingDir: sourcePath,
+              nodePaths,
+              plugins,
+              external: externalModules,
+              banner: {
+                js: bannerJs,
+              },
+              // Use a build-owned tsconfig. Only allowlisted user compilerOptions are merged.
+              tsconfig: this.writeBuildTsconfig(workspace.buildDir, sourcePath, "panel", {
+                jsx: "react-jsx",
+                target: "ES2022",
+                useDefineForClassFields: true,
+              }),
+            });
+          } catch (rebuildError) {
+            // Log but don't fail - the first build output is still usable
+            log(`Warning: Second build pass failed: ${rebuildError instanceof Error ? rebuildError.message : String(rebuildError)}`);
+            log(`Continuing with first build output (exposed modules may not work correctly)`);
+          }
+        }
+      }
+
       const bundle = fs.readFileSync(bundlePath, "utf-8");
       const cssPath = bundlePath.replace(".js", ".css");
       const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, "utf-8") : undefined;
-      const html = this.resolveHtml(sourcePath, manifest.title, externals);
+      const html = this.resolveHtml(sourcePath, manifest.title, externals, {
+        includeCss: Boolean(css),
+      });
 
       log(`Build complete (${bundle.length} bytes JS)`);
 
@@ -1286,6 +1788,10 @@ export default { Buffer: globalThis.Buffer };
       // to locate their own files (e.g., Claude Agent SDK, pkg-dir, etc.)
       plugins.push(createImportMetaPolyfillPlugin(buildWorkspace.nodeModulesDir));
 
+      // Generate worker banners - same globals as panels for unified API
+      // This gives workers __natstackAsyncTracking__ and __natstackRequire__/__natstackModuleMap__
+      const workerBannerJs = [generateWorkerAsyncTrackingBanner(), generateModuleMapBanner()].join("\n");
+
       await esbuild.build({
         entryPoints: [tempEntryPath],
         bundle: true,
@@ -1307,6 +1813,9 @@ export default { Buffer: globalThis.Buffer };
         // Alias "buffer" to our shim so require("buffer") works
         alias: {
           buffer: bufferShimPath,
+        },
+        banner: {
+          js: workerBannerJs,
         },
       });
 
