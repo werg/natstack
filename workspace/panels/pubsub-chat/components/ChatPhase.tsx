@@ -151,8 +151,8 @@ export function ChatPhase({
                   <Box
                     key={msg.id}
                     style={{
+                      maxWidth: "96%",
                       alignSelf: isPanel ? "flex-end" : "flex-start",
-                      maxWidth: "80%",
                     }}
                   >
                     <Card
