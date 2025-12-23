@@ -5,6 +5,8 @@ export const NewMessageSchema = z.object({
   content: z.string(),
   contentType: z.string().optional(),
   replyTo: z.string().uuid().optional(),
+  /** IDs of intended recipients (empty = broadcast to all) */
+  at: z.array(z.string()).optional(),
 });
 
 export const UpdateMessageSchema = z.object({

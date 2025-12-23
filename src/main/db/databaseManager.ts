@@ -2,14 +2,14 @@
  * DatabaseManager - Manages SQLite database connections for workers and panels.
  *
  * Provides connection pooling, path management, and query execution using better-sqlite3.
- * All databases are stored under: ~/.config/natstack/databases/<workspace>/
+ * All databases are stored under: <workspace>/.cache/databases/
  */
 
 import Database from "better-sqlite3";
 import * as path from "path";
 import * as fs from "fs";
 import * as crypto from "crypto";
-import { getCentralConfigDirectory, getActiveWorkspace } from "../paths.js";
+import { getActiveWorkspace } from "../paths.js";
 import type { DbRunResult } from "../../shared/db/types.js";
 
 /**
@@ -42,7 +42,10 @@ export class DatabaseManager {
 
   /**
    * Open a database.
-   * Path: ~/.config/natstack/databases/<workspace>/<name>.db
+   * Path: <workspace>/.cache/databases/<name>.db
+   *
+   * Previously stored in ~/.config/natstack/databases/<workspace>/ but that
+   * location was getting mysteriously deleted during app startup.
    *
    * @param ownerId - The worker or panel ID (for cleanup tracking)
    * @param dbName - The database name
@@ -54,11 +57,28 @@ export class DatabaseManager {
       throw new Error("No active workspace");
     }
 
-    const configDir = getCentralConfigDirectory();
-    const dbDir = path.join(configDir, "databases", workspace.config.id);
+    // Store databases in workspace cache directory instead of central config
+    // This avoids the mysterious deletion happening in ~/.config/natstack/
+    const dbDir = path.join(workspace.cachePath, "databases");
     fs.mkdirSync(dbDir, { recursive: true });
 
     const dbPath = path.join(dbDir, this.sanitizeDbName(dbName) + ".db");
+
+    // Debug: Check if file exists before opening
+    const fileExisted = fs.existsSync(dbPath);
+    let birthTime: Date | null = null;
+    let fileSize = 0;
+    if (fileExisted) {
+      try {
+        const stats = fs.statSync(dbPath);
+        birthTime = stats.birthtime;
+        fileSize = stats.size;
+      } catch {
+        // Ignore stat errors
+      }
+    }
+    console.log(`[DatabaseManager] Opening database: path=${dbPath}, workspaceId=${workspace.config.id}, owner=${ownerId}, fileExisted=${fileExisted}, birthTime=${birthTime?.toISOString()}, size=${fileSize}`);
+
     return this.openDatabase(dbPath, ownerId, readOnly);
   }
 
@@ -76,15 +96,21 @@ export class DatabaseManager {
     if (!db) {
       db = new Database(dbPath, { readonly: readOnly });
 
+      // Debug: Log the actual path better-sqlite3 is using
+      console.log(`[DatabaseManager] Created new connection: requested=${dbPath}, actual=${db.name}, inTransaction=${db.inTransaction}, open=${db.open}, memory=${db.memory}, readonly=${db.readonly}`);
+
       // Enable WAL mode for better concurrent access (unless read-only)
       if (!readOnly) {
-        db.pragma("journal_mode = WAL");
+        const walResult = db.pragma("journal_mode = WAL");
         db.pragma("synchronous = NORMAL");
+        console.log(`[DatabaseManager] Set WAL mode, result:`, walResult);
       }
       db.pragma("foreign_keys = ON");
 
       this.pathToConnection.set(dbPath, db);
       this.pathRefCount.set(dbPath, 0);
+    } else {
+      console.log(`[DatabaseManager] Reusing existing connection for: ${dbPath}`);
     }
 
     // Increment ref count and track handle

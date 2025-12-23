@@ -48,6 +48,7 @@ export const AgentParameterDefinitionSchema = z.object({
 export const AgentTypeAdvertisementSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
+  proposedHandle: z.string().min(1),
   description: z.string(),
   providesTools: z.array(ToolAdvertisementSchema),
   requiresTools: z.array(RequiredToolSpecSchema),
@@ -77,6 +78,7 @@ export const InviteSchema = z.object({
   agentTypeId: z.string().min(1),
   config: z.record(z.unknown()).optional(),
   context: z.string().optional(),
+  handleOverride: z.string().min(1).optional(),
   ts: z.number(),
 });
 

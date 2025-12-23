@@ -84,6 +84,7 @@ export function connectAsBroker(
   const {
     availabilityChannel,
     name,
+    handle,
     agentTypes: initialAgentTypes,
     onInvite,
     onSpawn,
@@ -97,6 +98,7 @@ export function connectAsBroker(
   const metadata: BrokerMetadata = {
     name,
     type: "broker",
+    handle,
     isBroker: true as const,
     agentTypes: currentAgentTypes,
     ...customMetadata,
@@ -139,18 +141,22 @@ export function connectAsBroker(
   // Process invite messages
   void (async () => {
     try {
-      for await (const msg of client.messages()) {
-        if (msg.type !== "message") continue;
+      for await (const event of client.events()) {
+        if (event.type !== "message") continue;
+
+        // Skip replay messages - only process new invites
+        // This prevents re-spawning agents for old invites after restart
+        if (event.kind === "replay") continue;
 
         // Try to parse as invite
         try {
-          const parsed = JSON.parse(msg.content);
+          const parsed = JSON.parse(event.content);
           if (parsed?.type !== "invite") continue;
 
           const invite = InviteSchema.safeParse(parsed.payload);
           if (!invite.success) continue;
 
-          await handleInvite(invite.data, msg.senderId);
+          await handleInvite(invite.data, event.senderId);
         } catch {
           // Not a valid invite message, ignore
         }
@@ -259,8 +265,9 @@ export function connectAsBroker(
 
   async function sendResponse(response: InviteResponse): Promise<void> {
     const validated = InviteResponseSchema.parse(response);
+    // Ephemeral - invite/response are transient control messages, not chat history
     await client.send(JSON.stringify({ type: "invite-response", payload: validated }), {
-      persist: true,
+      persist: false,
     });
   }
 

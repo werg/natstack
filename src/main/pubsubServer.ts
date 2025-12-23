@@ -29,7 +29,7 @@ export interface TokenValidator {
  */
 export interface MessageStore {
   init(): void;
-  insert(channel: string, type: string, payload: string, senderId: string, ts: number, attachment?: Buffer): number;
+  insert(channel: string, type: string, payload: string, senderId: string, ts: number, senderMetadata?: Record<string, unknown>, attachment?: Buffer): number;
   query(channel: string, sinceId: number): MessageRow[];
   close(): void;
 }
@@ -74,6 +74,15 @@ interface ServerMessage {
   participants?: Record<string, Participant>;
 }
 
+/** Presence event types for join/leave tracking */
+type PresenceAction = "join" | "leave";
+
+/** Payload for presence events (type: "presence") */
+interface PresencePayload {
+  action: PresenceAction;
+  metadata: Record<string, unknown>;
+}
+
 interface PublishClientMessage {
   action: "publish";
   persist?: boolean;
@@ -98,6 +107,8 @@ interface MessageRow {
   sender_id: string;
   ts: number;
   attachment: Buffer | null;
+  /** JSON-serialized sender metadata for replay participant reconstruction */
+  sender_metadata: string | null;
 }
 
 // =============================================================================
@@ -124,20 +135,29 @@ class SqliteMessageStore implements MessageStore {
         payload TEXT NOT NULL,
         sender_id TEXT NOT NULL,
         ts INTEGER NOT NULL,
+        sender_metadata TEXT,
         attachment BLOB
       );
       CREATE INDEX IF NOT EXISTS idx_messages_channel_id ON messages(channel, id);
     `
     );
+
+    // Migration: add sender_metadata column if it doesn't exist (for existing databases)
+    try {
+      dbManager.exec(this.dbHandle, `ALTER TABLE messages ADD COLUMN sender_metadata TEXT`);
+    } catch {
+      // Column already exists, ignore
+    }
   }
 
-  insert(channel: string, type: string, payload: string, senderId: string, ts: number, attachment?: Buffer): number {
+  insert(channel: string, type: string, payload: string, senderId: string, ts: number, senderMetadata?: Record<string, unknown>, attachment?: Buffer): number {
     if (!this.dbHandle) throw new Error("Store not initialized");
     const db = getDatabaseManager();
+    const senderMetadataJson = senderMetadata ? JSON.stringify(senderMetadata) : null;
     const result = db.run(
       this.dbHandle,
-      "INSERT INTO messages (channel, type, payload, sender_id, ts, attachment) VALUES (?, ?, ?, ?, ?, ?)",
-      [channel, type, payload, senderId, ts, attachment ?? null]
+      "INSERT INTO messages (channel, type, payload, sender_id, ts, sender_metadata, attachment) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [channel, type, payload, senderId, ts, senderMetadataJson, attachment ?? null]
     );
     return Number(result.lastInsertRowid);
   }
@@ -154,7 +174,18 @@ class SqliteMessageStore implements MessageStore {
 
   close(): void {
     if (this.dbHandle) {
-      getDatabaseManager().close(this.dbHandle);
+      const dbManager = getDatabaseManager();
+
+      // Force WAL checkpoint before closing to ensure all data is written to main db
+      try {
+        dbManager.exec(this.dbHandle, "PRAGMA synchronous = FULL");
+        dbManager.query(this.dbHandle, "PRAGMA wal_checkpoint(TRUNCATE)");
+      } catch {
+        console.warn('WAL checkpoint failed');
+        // WAL checkpoint failed, but we still need to close
+      }
+
+      dbManager.close(this.dbHandle);
       this.dbHandle = null;
     }
   }
@@ -171,9 +202,10 @@ export class InMemoryMessageStore implements MessageStore {
     // No-op for in-memory store
   }
 
-  insert(channel: string, type: string, payload: string, senderId: string, ts: number, attachment?: Buffer): number {
+  insert(channel: string, type: string, payload: string, senderId: string, ts: number, senderMetadata?: Record<string, unknown>, attachment?: Buffer): number {
     const id = this.nextId++;
-    this.messages.push({ id, channel, type, payload, sender_id: senderId, ts, attachment: attachment ?? null });
+    const senderMetadataJson = senderMetadata ? JSON.stringify(senderMetadata) : null;
+    this.messages.push({ id, channel, type, payload, sender_id: senderId, ts, sender_metadata: senderMetadataJson, attachment: attachment ?? null });
     return id;
   }
 
@@ -309,6 +341,9 @@ export class PubSubServer {
     // Signal ready
     this.send(ws, { kind: "ready" });
 
+    // Persist and broadcast join presence event
+    this.persistPresenceEvent(client, "join");
+
     // Broadcast updated roster to all clients in the channel
     this.broadcastRoster(channel);
 
@@ -343,6 +378,9 @@ export class PubSubServer {
 
     // Cleanup on disconnect
     ws.on("close", () => {
+      // Persist leave event before removing from channel
+      this.persistPresenceEvent(client, "leave");
+
       this.channels.get(channel)?.delete(client);
       if (this.channels.get(channel)?.size === 0) {
         this.channels.delete(channel);
@@ -417,7 +455,7 @@ export class PubSubServer {
     }
 
     if (persist && this.messageStore) {
-      // Persist to message store (no attachment for JSON-only messages)
+      // Persist to message store (presence events handle participant reconstruction)
       const id = this.messageStore.insert(client.channel, type, payloadJson, client.clientId, ts);
 
       // Broadcast to all (including sender)
@@ -470,8 +508,8 @@ export class PubSubServer {
     }
 
     if (persist && this.messageStore) {
-      // Persist payload + attachment to message store
-      const id = this.messageStore.insert(client.channel, type, payloadJson, client.clientId, ts, attachment);
+      // Persist payload + attachment to message store (presence events handle participant reconstruction)
+      const id = this.messageStore.insert(client.channel, type, payloadJson, client.clientId, ts, undefined, attachment);
 
       // Broadcast to all (including sender)
       this.broadcastBinary(
@@ -611,6 +649,56 @@ export class PubSubServer {
   }
 
   /**
+   * Persist and broadcast a presence event (join/leave).
+   * These events are stored in the message log and replayed to reconstruct participant history.
+   */
+  private persistPresenceEvent(client: Client, action: PresenceAction): void {
+    if (!this.messageStore) return;
+
+    const ts = Date.now();
+    const payload: PresencePayload = {
+      action,
+      metadata: client.metadata,
+    };
+
+    // Persist the presence event (no sender_metadata needed - metadata is in the payload)
+    // Wrap in try-catch to handle shutdown race condition where store may be closed
+    let messageId: number;
+    try {
+      messageId = this.messageStore.insert(
+        client.channel,
+        "presence",
+        JSON.stringify(payload),
+        client.clientId,
+        ts
+      );
+    } catch {
+      // Store may have been closed during shutdown - this is expected
+      return;
+    }
+
+    // Broadcast to all clients in the channel
+    const clients = this.channels.get(client.channel);
+    if (!clients) return;
+
+    const msg: ServerMessage = {
+      kind: "persisted",
+      id: messageId,
+      type: "presence",
+      payload,
+      senderId: client.clientId,
+      ts,
+    };
+
+    const data = JSON.stringify(msg);
+    for (const c of clients) {
+      if (c.ws.readyState === WebSocket.OPEN) {
+        c.ws.send(data);
+      }
+    }
+  }
+
+  /**
    * Broadcast the current roster (participants with metadata) to all clients in a channel.
    * This is an idempotent operation - clients receive the full current state.
    * When a client has multiple connections, uses the metadata from the most recent connection.
@@ -652,33 +740,28 @@ export class PubSubServer {
   }
 
   async stop(): Promise<void> {
-    this.messageStore?.close();
-
-    // Forcefully terminate all WebSocket clients
+    // Terminate WebSocket clients BEFORE closing the message store
+    // This allows presence "leave" events to be persisted during graceful shutdown
     if (this.wss) {
       for (const client of this.wss.clients) {
         client.terminate();
       }
     }
 
+    // Now close the message store after clients have disconnected
+    this.messageStore?.close();
+
     return new Promise((resolve) => {
       if (this.wss) {
         this.wss.close(() => {
           if (this.httpServer) {
-            this.httpServer.close(() => {
-              console.log("[PubSubServer] Stopped");
-              resolve();
-            });
+            this.httpServer.close(() => resolve());
           } else {
-            console.log("[PubSubServer] Stopped (no HTTP server)");
             resolve();
           }
         });
       } else if (this.httpServer) {
-        this.httpServer.close(() => {
-          console.log("[PubSubServer] Stopped");
-          resolve();
-        });
+        this.httpServer.close(() => resolve());
       } else {
         resolve();
       }

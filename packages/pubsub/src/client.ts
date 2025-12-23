@@ -210,6 +210,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
       msg = JSON.parse(event.data as string) as ServerMessage;
     }
 
+
     switch (msg.kind) {
       case "ready":
         readyResolve?.();
@@ -440,7 +441,8 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   async function* messages(): AsyncIterableIterator<Message> {
     while (!closed) {
       if (messageQueue.length > 0) {
-        yield messageQueue.shift()!;
+        const msg = messageQueue.shift()!;
+        yield msg;
       } else {
         const msg = await new Promise<Message | null>((resolve) => {
           if (closed && !isReconnecting) {
@@ -449,7 +451,9 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
           }
           messageResolve = resolve;
         });
-        if (msg === null) break;
+        if (msg === null) {
+          break;
+        }
         yield msg;
       }
     }

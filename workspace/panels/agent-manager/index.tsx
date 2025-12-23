@@ -34,6 +34,7 @@ const AGENT_TYPES: AgentTypeAdvertisement[] = [
   {
     id: "ai-responder",
     name: "AI Responder",
+    proposedHandle: "ai",
     description: "Fast AI assistant using NatStack AI SDK. Good for quick, helpful responses.",
     providesTools: [],
     requiresTools: [],
@@ -43,6 +44,7 @@ const AGENT_TYPES: AgentTypeAdvertisement[] = [
   {
     id: "claude-code",
     name: "Claude Code",
+    proposedHandle: "claude",
     description:
       "Claude-based agent with access to tools from other participants. Can use discovered tools to help with complex tasks.",
     providesTools: [],
@@ -62,6 +64,7 @@ const AGENT_TYPES: AgentTypeAdvertisement[] = [
   {
     id: "codex",
     name: "Codex",
+    proposedHandle: "codex",
     description:
       "OpenAI Codex agent with MCP tool support. Specialized for code-related tasks with tool access.",
     providesTools: [],
@@ -204,6 +207,7 @@ export default function AgentManager() {
         const broker = connectAsBroker(pubsubConfig!.serverUrl, pubsubConfig!.token, {
           availabilityChannel: AVAILABILITY_CHANNEL,
           name: "Agent Manager",
+          handle: "agent-manager",
           agentTypes: AGENT_TYPES,
           onInvite: async (invite: Invite, senderId: string) => {
             console.log(`[Agent Manager] Received invite from ${senderId} for ${invite.agentTypeId}`);
@@ -218,11 +222,18 @@ export default function AgentManager() {
               const workerSource = getWorkerSource(agentType.id);
               const workerName = `${agentType.id}-${invite.targetChannel.slice(0, 8)}`;
 
-              // Build environment from channel + serialized config
+              // Determine the handle: use override if provided, otherwise use proposed handle
+              const agentHandle = invite.handleOverride ?? agentType.proposedHandle;
+
+              // Build environment from channel + serialized config (including handle)
+              const agentConfig = {
+                ...invite.config,
+                handle: agentHandle,
+              };
               const env: Record<string, string> = {
                 CHANNEL: invite.targetChannel,
                 // Serialize all config parameters into a single JSON env var
-                AGENT_CONFIG: JSON.stringify(invite.config ?? {}),
+                AGENT_CONFIG: JSON.stringify(agentConfig),
               };
 
               console.log(`[Agent Manager] Spawning with env:`, env);

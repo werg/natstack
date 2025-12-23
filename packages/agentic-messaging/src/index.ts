@@ -1,6 +1,6 @@
 export * from "./types.js";
 export * from "./protocol.js";
-export { connect, createToolsForAgentSDK, renamingConflictResolver } from "./client.js";
+export { connect, createToolsForAgentSDK } from "./client.js";
 export type { AgenticClient } from "./types.js";
 
 // Re-export commonly needed types from pubsub so consumers don't need a direct dependency
@@ -23,4 +23,5 @@ export {
   parseAgentConfig,
   createLogger,
   formatArgsForLog,
+  isMessageTargetedAt,
 } from "./responder-utils.js";

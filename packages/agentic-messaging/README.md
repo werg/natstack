@@ -101,27 +101,45 @@ await client.complete(id);
 await client.error(id, "Something went wrong", "internal-error");
 ```
 
-### Receiving Messages
+### Receiving Events
 
 ```typescript
-for await (const msg of client.messages()) {
-  switch (msg.type) {
+// Unified event stream for all incoming data
+for await (const event of client.events()) {
+  switch (event.type) {
     case "message":
-      console.log(`New message: ${msg.content}`);
-      if (msg.attachment) {
+      console.log(`New message: ${event.content}`);
+      if (event.attachment) {
         // Handle binary attachment
       }
       break;
 
     case "update-message":
-      console.log(`Update to ${msg.id}: ${msg.content}`);
-      if (msg.complete) console.log("Message complete");
+      console.log(`Update to ${event.id}: ${event.content}`);
+      if (event.complete) console.log("Message complete");
       break;
 
     case "error":
-      console.error(`Error on ${msg.id}: ${msg.error}`);
+      console.error(`Error on ${event.id}: ${event.error}`);
+      break;
+
+    case "tool-call":
+      console.log(`Tool call: ${event.toolName} from ${event.senderId}`);
+      break;
+
+    case "tool-result":
+      console.log(`Tool result for ${event.callId}: ${event.content}`);
+      break;
+
+    case "presence":
+      console.log(`${event.senderId} ${event.action}ed`);
       break;
   }
+}
+
+// Filter to only receive targeted messages (for agents)
+for await (const event of client.events({ targetedOnly: true })) {
+  // Only yields message events where this client is in the `at` field
 }
 ```
 
@@ -255,43 +273,21 @@ console.log(result.complete, result.isError);
 
 ### AI Integration
 
-Collect tools in a format ready for LLM tool use:
+Use `createToolsForAgentSDK` to collect tools in a format ready for LLM tool use:
 
 ```typescript
-// Get tools for AI SDK
-const tools = client.collectExecutableTools();
+import { createToolsForAgentSDK } from "@natstack/agentic-messaging";
+
+// Get tools for AI SDK - creates stable, prefixed tool names
+const { definitions, execute } = createToolsForAgentSDK(client, {
+  namePrefix: "pubsub",  // Optional: defaults to "pubsub"
+});
 
 // Use with your AI library
 const response = await ai.generateText({
   model: "smart",
   messages: conversation,
   tools,
-});
-```
-
-#### Handling Name Conflicts
-
-When multiple providers advertise tools with the same name:
-
-```typescript
-import { renamingConflictResolver } from "@natstack/agentic-messaging";
-
-// Default: throws on conflict
-const tools = client.collectExecutableTools();
-
-// Use renaming resolver: creates "providerId__toolName" format
-const tools = client.collectExecutableTools(renamingConflictResolver);
-
-// Custom resolver
-const tools = client.collectExecutableTools((conflict) => {
-  // conflict.name: the conflicting tool name
-  // conflict.tools: all tools with this name
-
-  // Return map of providerId -> newName (or undefined to exclude)
-  return {
-    [conflict.tools[0].providerId]: `${conflict.name}_primary`,
-    [conflict.tools[1].providerId]: undefined,  // exclude this one
-  };
 });
 ```
 
@@ -406,14 +402,15 @@ export {
   ToolResultValue,
   ToolResultChunk,
   DiscoveredTool,
-  AIToolDefinition,
-  ToolConflict,
-  ConflictResolver,
+  IncomingEvent,
   IncomingMessage,
   IncomingNewMessage,
   IncomingUpdateMessage,
   IncomingErrorMessage,
   IncomingToolCall,
+  IncomingToolResult,
+  IncomingPresenceEvent,
+  EventFilterOptions,
 } from "@natstack/agentic-messaging";
 ```
 

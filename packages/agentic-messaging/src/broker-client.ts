@@ -110,6 +110,7 @@ export async function connectForDiscovery(
   const {
     availabilityChannel,
     name,
+    handle,
     type,
     inviteTimeoutMs = DEFAULT_INVITE_TIMEOUT_MS,
     reconnect,
@@ -129,7 +130,8 @@ export async function connectForDiscovery(
   const client = agenticConnect<AgenticParticipantMetadata>(serverUrl, token, {
     channel: availabilityChannel,
     reconnect,
-    metadata: { name, type },
+    // sinceId defaults to 0 in connect(), so we'll get replay of broker advertisements
+    metadata: { name, type, handle },
     skipOwnMessages: true,
   });
 
@@ -144,11 +146,11 @@ export async function connectForDiscovery(
   // Process invite response messages
   void (async () => {
     try {
-      for await (const msg of client.messages()) {
-        if (msg.type !== "message") continue;
+      for await (const event of client.events()) {
+        if (event.type !== "message") continue;
 
         try {
-          const parsed = JSON.parse(msg.content);
+          const parsed = JSON.parse(event.content);
           if (parsed?.type !== "invite-response") continue;
 
           const response = InviteResponseSchema.safeParse(parsed.payload);
@@ -296,11 +298,11 @@ export async function connectForDiscovery(
 
       pendingInvites.set(inviteId, { resolve, reject, timeoutId });
 
-      // Send the invite
+      // Send the invite (ephemeral - no need to persist transient control messages)
       const validated = InviteSchema.parse(invite);
       client
         .send(JSON.stringify({ type: "invite", payload: validated }), {
-          persist: true,
+          persist: false,
         })
         .catch((err) => {
           clearTimeout(timeoutId);
@@ -379,6 +381,7 @@ export async function inviteAgent(
     agentTypeId: string;
     targetChannel: string;
     clientName: string;
+    clientHandle: string;
     config?: Record<string, unknown>;
     context?: string;
     timeoutMs?: number;
@@ -387,6 +390,7 @@ export async function inviteAgent(
   const discovery = await connectForDiscovery(serverUrl, token, {
     availabilityChannel: options.availabilityChannel,
     name: options.clientName,
+    handle: options.clientHandle,
     type: "client",
     inviteTimeoutMs: options.timeoutMs,
   });

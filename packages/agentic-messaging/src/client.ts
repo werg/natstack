@@ -5,21 +5,22 @@ import { z } from "zod";
 import type {
   AgenticClient,
   AgenticParticipantMetadata,
-  ConflictResolver,
   ConnectOptions,
   DiscoveredTool,
-  IncomingMessage,
+  EventFilterOptions,
+  IncomingEvent,
+  IncomingNewMessage,
+  IncomingPresenceEvent,
   IncomingToolCall,
   IncomingToolResult,
+  PresenceAction,
   ToolAdvertisement,
   ToolCallResult,
-  ToolConflict,
   ToolDefinition,
   ToolExecutionContext,
   ToolResultChunk,
   ToolResultValue,
   ToolResultWithAttachment,
-  AIToolDefinition,
   JsonSchema,
 } from "./types.js";
 import { AgenticError, ValidationError } from "./types.js";
@@ -33,6 +34,16 @@ import {
 } from "./protocol.js";
 
 const INTERNAL_METADATA_KEY = "_agentic";
+
+/**
+ * Schema for validating participant metadata at connection time.
+ * Ensures required fields are present and have valid values.
+ */
+const AgenticMetadataSchema = z.object({
+  name: z.string().min(1, "name is required"),
+  type: z.string().min(1, "type is required"),
+  handle: z.string().min(1, "handle is required"),
+}).passthrough();
 
 type AnyRecord = Record<string, unknown>;
 
@@ -106,15 +117,52 @@ function createFanout<T>() {
       for (const q of subscribers) q.close(error);
       subscribers.clear();
     },
-    async *subscribe(): AsyncIterableIterator<T> {
+    /**
+     * Subscribe to the fanout. The subscription is registered immediately
+     * (synchronously) when this method is called, before iteration begins.
+     * This ensures no messages are missed between subscribe() and the first await.
+     */
+    subscribe(): AsyncIterableIterator<T> {
       const q = new AsyncQueue<T>();
+      // Register the subscription IMMEDIATELY, not when iteration starts
       subscribers.add(q);
-      try {
-        for await (const v of q) yield v;
-      } finally {
+
+      const cleanup = () => {
         subscribers.delete(q);
         q.close();
-      }
+      };
+
+      // Get a single iterator from the queue to use for all next() calls
+      const queueIterator = q[Symbol.asyncIterator]();
+
+      // Return an async iterator that yields from the queue
+      const iterator: AsyncIterableIterator<T> = {
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+        async next(): Promise<IteratorResult<T>> {
+          try {
+            const result = await queueIterator.next();
+            if (result.done) {
+              cleanup();
+            }
+            return result;
+          } catch (err) {
+            cleanup();
+            throw err;
+          }
+        },
+        async return(value?: T): Promise<IteratorResult<T>> {
+          cleanup();
+          return { value: value as T, done: true };
+        },
+        async throw(err?: unknown): Promise<IteratorResult<T>> {
+          cleanup();
+          throw err;
+        },
+      };
+
+      return iterator;
     },
   };
 }
@@ -157,30 +205,6 @@ function toAgenticErrorFromToolResult(content: unknown): AgenticError {
   return new AgenticError("tool execution failed", "execution-error", content);
 }
 
-/**
- * Default conflict resolver that throws an error on name collision.
- */
-const throwOnConflict: ConflictResolver = (conflict: ToolConflict) => {
-  const providers = conflict.tools.map((t) => t.providerId).join(", ");
-  throw new AgenticError(
-    `Tool name conflict: "${conflict.name}" is provided by multiple sources: ${providers}`,
-    "validation-error"
-  );
-};
-
-/**
- * Conflict resolver that renames tools using `{providerId}__{toolName}` format.
- * Useful when you want to include all tools regardless of name collisions.
- */
-export const renamingConflictResolver: ConflictResolver = (conflict: ToolConflict) => {
-  const result: Record<string, string> = {};
-  for (const tool of conflict.tools) {
-    const base = `${tool.providerId}__${tool.name}`;
-    result[tool.providerId] = base.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
-  }
-  return result;
-};
-
 export interface AgenticClientImpl<T extends AgenticParticipantMetadata = AgenticParticipantMetadata>
   extends AgenticClient<T> {}
 
@@ -191,7 +215,9 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
 ): AgenticClient<T> {
   const {
     channel,
-    sinceId,
+    // Default to sinceId: 0 to replay all messages from the beginning
+    // Pass sinceId: undefined explicitly to skip replay
+    sinceId = 0,
     reconnect,
     metadata: userMetadata,
     tools: initialTools,
@@ -199,16 +225,21 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
     skipOwnMessages,
   } = options;
 
+  // Validate metadata has required fields (name, type, handle)
+  const metadataValidation = AgenticMetadataSchema.safeParse(userMetadata);
+  if (!metadataValidation.success) {
+    const errors = metadataValidation.error.errors.map((e) => e.message).join(", ");
+    throw new AgenticError(`Invalid metadata: ${errors}`, "validation-error", metadataValidation.error.errors);
+  }
+
   const instanceId = randomId();
 
   const tools: Record<string, ToolDefinition> = { ...(initialTools ?? {}) };
   const currentMetadata: AnyRecord = { ...(userMetadata as AnyRecord) };
 
   const errorHandlers = new Set<(error: Error) => void>();
-  const messagesFanout = createFanout<IncomingMessage>();
+  const eventsFanout = createFanout<IncomingEvent>();
   const toolCallHandlers = new Set<(call: IncomingToolCall) => void>();
-  const anyToolCallHandlers = new Set<(call: IncomingToolCall) => void>();
-  const toolResultHandlers = new Set<(result: IncomingToolResult) => void>();
 
   const callStates = new Map<string, ToolCallState>();
   const providerAbortControllers = new Map<string, AbortController>();
@@ -223,14 +254,6 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
 
   function emitToolCall(call: IncomingToolCall): void {
     for (const handler of toolCallHandlers) handler(call);
-  }
-
-  function emitAnyToolCall(call: IncomingToolCall): void {
-    for (const handler of anyToolCallHandlers) handler(call);
-  }
-
-  function emitToolResult(result: IncomingToolResult): void {
-    for (const handler of toolResultHandlers) handler(result);
   }
 
   /**
@@ -279,20 +302,107 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
     emitError(new AgenticError(e.message, "connection-error", e))
   );
 
-  const unsubRoster = pubsub.onRoster((roster: RosterUpdate<T>) => {
-    if (selfId) return;
+  // Track if we've detected a handle conflict (to close connection)
+  let handleConflictError: AgenticError | null = null;
+
+  // Track when we first saw each participant (for conflict resolution)
+  // Earlier timestamp = older participant = wins conflicts
+  const participantFirstSeen = new Map<string, number>();
+
+  /**
+   * Get the handle for a participant, normalized (lowercase, no @ prefix).
+   */
+  function getParticipantHandle(participant: { metadata: unknown }): string | undefined {
+    const meta = participant.metadata as AnyRecord;
+    const handle = meta["handle"];
+    return typeof handle === "string" ? handle.toLowerCase().replace(/^@/, "") : undefined;
+  }
+
+  /**
+   * Check for handle conflicts and detect if we're conflicting with an older participant.
+   * Returns the conflicting participant ID if our handle is taken, undefined otherwise.
+   */
+  function checkHandleConflict(roster: RosterUpdate<T>): string | undefined {
+    if (!selfId) return undefined;
+
+    const ourHandle = getParticipantHandle({ metadata: currentMetadata });
+    if (!ourHandle) return undefined;
+
+    const ourFirstSeen = participantFirstSeen.get(selfId) ?? Date.now();
+
     for (const [id, participant] of Object.entries(roster.participants)) {
-      const meta = participant.metadata as AnyRecord;
-      const internal = meta[INTERNAL_METADATA_KEY];
-      if (isRecord(internal) && internal["instanceId"] === instanceId) {
-        selfId = id;
-        // Process any tool calls that arrived before we knew our own ID
-        while (pendingToolCalls.length > 0) {
-          const call = pendingToolCalls.shift()!;
-          emitAnyToolCall(call);
-          emitAndHandleToolCall(call);
+      if (id === selfId) continue;
+      const theirHandle = getParticipantHandle(participant);
+      if (theirHandle === ourHandle) {
+        // Conflict detected - check who was seen first
+        const theirFirstSeen = participantFirstSeen.get(id) ?? 0;
+        if (theirFirstSeen <= ourFirstSeen) {
+          // They were here first, we should error out
+          return id;
         }
-        break;
+        // We were here first, they should error out (not our problem)
+      }
+    }
+    return undefined;
+  }
+
+  const unsubRoster = pubsub.onRoster((roster: RosterUpdate<T>) => {
+    const now = Date.now();
+
+    // Track first-seen time for all participants
+    for (const id of Object.keys(roster.participants)) {
+      if (!participantFirstSeen.has(id)) {
+        participantFirstSeen.set(id, now);
+      }
+    }
+
+    // Clean up participants that left
+    for (const id of participantFirstSeen.keys()) {
+      if (!(id in roster.participants)) {
+        participantFirstSeen.delete(id);
+      }
+    }
+
+    // Try to find our own ID if we don't have it yet
+    if (!selfId) {
+      for (const [id, participant] of Object.entries(roster.participants)) {
+        const meta = participant.metadata as AnyRecord;
+        const internal = meta[INTERNAL_METADATA_KEY];
+        if (isRecord(internal) && internal["instanceId"] === instanceId) {
+          selfId = id;
+          break;
+        }
+      }
+    }
+
+    // Check for handle conflicts now that we know who we are
+    if (selfId && !handleConflictError) {
+      const conflictingId = checkHandleConflict(roster);
+      if (conflictingId) {
+        const ourHandle = getParticipantHandle({ metadata: currentMetadata });
+        handleConflictError = new AgenticError(
+          `Handle conflict: "@${ourHandle}" is already taken by participant ${conflictingId}`,
+          "handle-conflict",
+          { conflictingId, handle: ourHandle }
+        );
+        emitError(handleConflictError);
+        // Close the connection - we shouldn't stay connected with a conflicting handle
+        pubsub.close();
+        return;
+      }
+    }
+
+    // Process any tool calls that arrived before we knew our own ID
+    if (selfId) {
+      while (pendingToolCalls.length > 0) {
+        const call = pendingToolCalls.shift()!;
+        // Only execute tools for live messages, not replay
+        if (call.kind !== "replay") {
+          emitAndHandleToolCall(call);
+        } else if (call.providerId === selfId) {
+          // Still emit to targeted handlers for replay, just don't execute
+          emitToolCall(call);
+        }
       }
     }
   });
@@ -488,9 +598,11 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
 
     if (type === "message") {
       const parsed = validateReceive(NewMessageSchema, payload, "NewMessage");
-      if (!parsed) return;
-      messagesFanout.emit({
-        type: "message",
+      if (!parsed) {
+        return;
+      }
+      const event = {
+        type: "message" as const,
         kind,
         senderId,
         ts,
@@ -499,15 +611,17 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
         content: parsed.content,
         replyTo: parsed.replyTo,
         contentType: parsed.contentType,
-      });
+        at: parsed.at,
+      };
+      eventsFanout.emit(event);
       return;
     }
 
     if (type === "update-message") {
       const parsed = validateReceive(UpdateMessageSchema, payload, "UpdateMessage");
       if (!parsed) return;
-      messagesFanout.emit({
-        type: "update-message",
+      const event = {
+        type: "update-message" as const,
         kind,
         senderId,
         ts,
@@ -516,15 +630,16 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
         content: parsed.content,
         complete: parsed.complete,
         contentType: parsed.contentType,
-      });
+      };
+      eventsFanout.emit(event);
       return;
     }
 
     if (type === "error") {
       const parsed = validateReceive(ErrorMessageSchema, payload, "ErrorMessage");
       if (!parsed) return;
-      messagesFanout.emit({
-        type: "error",
+      const event = {
+        type: "error" as const,
         kind,
         senderId,
         ts,
@@ -532,7 +647,8 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
         id: parsed.id,
         error: parsed.error,
         code: parsed.code,
-      });
+      };
+      eventsFanout.emit(event);
       return;
     }
 
@@ -548,9 +664,17 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
         providerId: parsed.providerId,
         args: parsed.args,
       };
+      // Emit to unified events stream
+      eventsFanout.emit({ ...incoming, type: "tool-call" });
       if (selfId) {
-        emitAnyToolCall(incoming);
-        emitAndHandleToolCall(incoming);
+        // Only execute tools for live messages, not replay
+        // Replay tool calls are for history reconstruction only
+        if (kind !== "replay") {
+          emitAndHandleToolCall(incoming);
+        } else if (incoming.providerId === selfId) {
+          // Still emit to targeted handlers for replay, just don't execute
+          emitToolCall(incoming);
+        }
       } else {
         pendingToolCalls.push(incoming);
       }
@@ -591,7 +715,8 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
         progress: parsed.progress,
         attachment,
       };
-      emitToolResult(incomingResult);
+      // Emit to unified events stream
+      eventsFanout.emit({ ...incomingResult, type: "tool-result" });
       const state = callStates.get(parsed.callId);
       if (!state) return;
 
@@ -621,6 +746,24 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
       }
       return;
     }
+
+    if (type === "presence") {
+      // Presence events have payload: { action: "join" | "leave", metadata: {...} }
+      const presencePayload = payload as { action?: PresenceAction; metadata?: Record<string, unknown> };
+      if (!presencePayload.action || !presencePayload.metadata) {
+        return;
+      }
+      const presenceEvent: IncomingPresenceEvent = {
+        kind,
+        senderId,
+        ts,
+        action: presencePayload.action,
+        metadata: presencePayload.metadata,
+      };
+      // Emit to unified events stream
+      eventsFanout.emit({ ...presenceEvent, type: "presence" });
+      return;
+    }
   }
 
   void (async () => {
@@ -639,27 +782,131 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
       const error = err instanceof Error ? err : new Error(String(err));
       emitError(error);
     } finally {
-      messagesFanout.close();
+      eventsFanout.close();
       unsubTransportError();
       unsubRoster();
     }
   })();
 
-  function messages(): AsyncIterableIterator<IncomingMessage> {
-    return messagesFanout.subscribe();
+  /**
+   * Check if this client is the only non-panel participant in the channel.
+   */
+  function isSoloResponder(): boolean {
+    if (!selfId) return false;
+    for (const [participantId, participant] of Object.entries(pubsub.roster)) {
+      if (participantId === selfId) continue;
+      const meta = participant.metadata as AnyRecord;
+      if (meta["type"] !== "panel") {
+        // Found another non-panel participant
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Check if an event should be yielded based on filter options.
+   * Only message events with `at` field are subject to filtering.
+   */
+  function shouldYieldEvent(event: IncomingEvent, options: EventFilterOptions): boolean {
+    // Only filter "message" type, always yield other event types
+    if (event.type !== "message") return true;
+
+    // If at is undefined or empty, it's a broadcast - always yield
+    if (!event.at || event.at.length === 0) return true;
+
+    // If at includes this client, yield
+    if (selfId && event.at.includes(selfId)) return true;
+
+    // If respondWhenSolo and we're the only non-panel participant, yield
+    if (options.respondWhenSolo && isSoloResponder()) return true;
+
+    return false;
+  }
+
+  async function* filterEvents(
+    source: AsyncIterableIterator<IncomingEvent>,
+    options: EventFilterOptions
+  ): AsyncIterableIterator<IncomingEvent> {
+    for await (const event of source) {
+      if (shouldYieldEvent(event, options)) {
+        yield event;
+      } else {
+        options.onFiltered?.(event);
+      }
+    }
+  }
+
+  function events(options?: EventFilterOptions): AsyncIterableIterator<IncomingEvent> {
+    const source = eventsFanout.subscribe();
+    if (!options?.targetedOnly) {
+      return source;
+    }
+    return filterEvents(source, options);
+  }
+
+  /**
+   * Resolve @handle mentions to participant IDs.
+   * Handles can be provided with or without the @ prefix.
+   * Unknown handles are silently omitted from the result.
+   */
+  function resolveHandlesImpl(handles: string[]): string[] {
+    const result: string[] = [];
+    for (const handle of handles) {
+      const normalized = handle.toLowerCase().replace(/^@/, "");
+      for (const [participantId, participant] of Object.entries(pubsub.roster)) {
+        const participantHandle = getParticipantHandle(participant);
+        if (participantHandle === normalized) {
+          result.push(participantId);
+          break;
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Get participant ID by handle.
+   * Handle can be provided with or without the @ prefix.
+   */
+  function getParticipantByHandleImpl(handle: string): string | undefined {
+    const normalized = handle.toLowerCase().replace(/^@/, "");
+    for (const [participantId, participant] of Object.entries(pubsub.roster)) {
+      const participantHandle = getParticipantHandle(participant);
+      if (participantHandle === normalized) {
+        return participantId;
+      }
+    }
+    return undefined;
   }
 
   async function send(
     content: string,
-    options?: { replyTo?: string; persist?: boolean; attachment?: Uint8Array; contentType?: string }
+    options?: {
+      replyTo?: string;
+      persist?: boolean;
+      attachment?: Uint8Array;
+      contentType?: string;
+      at?: string[];
+      resolveHandles?: boolean;
+    }
   ): Promise<string> {
     const id = randomId();
+
+    // Resolve @handle mentions to participant IDs if requested
+    let resolvedAt = options?.at;
+    if (options?.resolveHandles && resolvedAt && resolvedAt.length > 0) {
+      resolvedAt = resolveHandlesImpl(resolvedAt);
+    }
+
     const payload = validateSend(
       NewMessageSchema,
-      { id, content, replyTo: options?.replyTo, contentType: options?.contentType },
+      { id, content, replyTo: options?.replyTo, contentType: options?.contentType, at: resolvedAt },
       "NewMessage"
     );
-    await publishValidated("message", payload, { persist: options?.persist, attachment: options?.attachment });
+    // Default to persisting messages (explicit true, not undefined)
+    const persist = options?.persist ?? true;
+    await publishValidated("message", payload, { persist, attachment: options?.attachment });
     return id;
   }
 
@@ -673,7 +920,9 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
       { id, content, complete: options?.complete, contentType: options?.contentType },
       "UpdateMessage"
     );
-    await publishValidated("update-message", payload, { persist: options?.persist, attachment: options?.attachment });
+    // Default to persisting updates (explicit true, not undefined)
+    const persist = options?.persist ?? true;
+    await publishValidated("update-message", payload, { persist, attachment: options?.attachment });
   }
 
   async function complete(id: string): Promise<void> {
@@ -801,53 +1050,8 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
     };
   }
 
-  function collectExecutableTools(onConflict: ConflictResolver = throwOnConflict): Record<string, AIToolDefinition> {
-    const discovered = discoverToolDefs();
-
-    // Group tools by name to detect conflicts
-    const byName = new Map<string, DiscoveredTool[]>();
-    for (const tool of discovered) {
-      const existing = byName.get(tool.name);
-      if (existing) existing.push(tool);
-      else byName.set(tool.name, [tool]);
-    }
-
-    // Build result, resolving conflicts as needed
-    const toolsForAI: Record<string, AIToolDefinition> = {};
-
-    const addTool = (key: string, tool: DiscoveredTool) => {
-      toolsForAI[key] = {
-        description: tool.description,
-        parameters: tool.parameters,
-        execute: async (args, signal) => {
-          const result = callTool(tool.providerId, tool.name, args, { signal });
-          const value = await result.result;
-          return value.content;
-        },
-      };
-    };
-
-    for (const [name, tools] of byName) {
-      if (tools.length === 1) {
-        // No conflict - use original name
-        addTool(name, tools[0]!);
-      } else {
-        // Conflict - invoke resolver
-        const renames = onConflict({ name, tools });
-        for (const tool of tools) {
-          const newName = renames[tool.providerId];
-          if (newName !== undefined) {
-            addTool(newName, tool);
-          }
-        }
-      }
-    }
-
-    return toolsForAI;
-  }
-
   return {
-    messages,
+    events,
     send,
     update,
     complete,
@@ -855,10 +1059,11 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
     discoverToolDefs,
     discoverToolDefsFrom,
     callTool,
-    collectExecutableTools,
     get roster() {
       return pubsub.roster;
     },
+    resolveHandles: resolveHandlesImpl,
+    getParticipantByHandle: getParticipantByHandleImpl,
     onRoster: pubsub.onRoster,
     get connected() {
       return pubsub.connected;
@@ -872,21 +1077,32 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
       errorHandlers.add(handler);
       return () => errorHandlers.delete(handler);
     },
-    onToolCall: (handler) => {
-      toolCallHandlers.add(handler);
-      return () => toolCallHandlers.delete(handler);
-    },
-    onAnyToolCall: (handler) => {
-      anyToolCallHandlers.add(handler);
-      return () => anyToolCallHandlers.delete(handler);
-    },
-    onToolResult: (handler) => {
-      toolResultHandlers.add(handler);
-      return () => toolResultHandlers.delete(handler);
-    },
     onDisconnect: pubsub.onDisconnect,
     onReconnect: pubsub.onReconnect,
     pubsub,
+    get clientId() {
+      return selfId;
+    },
+    sendToolResult: async (
+      callId: string,
+      content: unknown,
+      options?: {
+        complete?: boolean;
+        isError?: boolean;
+        progress?: number;
+        attachment?: Uint8Array;
+        contentType?: string;
+      }
+    ) => {
+      await publishToolResult(callId, {
+        content,
+        complete: options?.complete ?? true,
+        isError: options?.isError ?? false,
+        progress: options?.progress,
+        attachment: options?.attachment,
+        contentType: options?.contentType,
+      });
+    },
   };
 }
 

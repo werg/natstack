@@ -13,13 +13,18 @@ export type JsonSchema = Record<string, unknown>;
 
 /**
  * Participant metadata for agentic messaging.
- * Extends base pubsub metadata with name, type, and optional tool advertisements.
+ * Extends base pubsub metadata with name, type, handle, and optional tool advertisements.
  */
 export interface AgenticParticipantMetadata extends ParticipantMetadata {
   /** Display name for this participant */
   name: string;
   /** Participant type (e.g., "panel", "worker", "agent") */
   type: string;
+  /**
+   * Unique handle for @-mentions (e.g., "claude", "codex", "user").
+   * Must be unique within the channel. Conflicts cause connection errors.
+   */
+  handle: string;
   /** Tools this participant provides (auto-populated from ConnectOptions.tools) */
   tools?: ToolAdvertisement[];
 }
@@ -54,7 +59,8 @@ export type AgenticErrorCode =
   | "timeout"
   | "cancelled"
   | "validation-error"
-  | "connection-error";
+  | "connection-error"
+  | "handle-conflict";
 
 /**
  * Error class for agentic messaging operations.
@@ -95,6 +101,62 @@ export type IncomingMessage =
   | IncomingErrorMessage;
 
 /**
+ * Union type for all incoming event types (messages, tool calls, tool results, presence).
+ * Use the `type` field to discriminate between event types.
+ */
+export type IncomingEvent =
+  | IncomingNewMessage
+  | IncomingUpdateMessage
+  | IncomingErrorMessage
+  | IncomingToolCallEvent
+  | IncomingToolResultEvent
+  | IncomingPresenceEventWithType;
+
+/**
+ * Tool call event with discriminant type field.
+ */
+export interface IncomingToolCallEvent extends IncomingToolCall {
+  type: "tool-call";
+}
+
+/**
+ * Tool result event with discriminant type field.
+ */
+export interface IncomingToolResultEvent extends IncomingToolResult {
+  type: "tool-result";
+}
+
+/**
+ * Presence event with discriminant type field.
+ */
+export interface IncomingPresenceEventWithType extends IncomingPresenceEvent {
+  type: "presence";
+}
+
+/**
+ * Options for filtering events in the events() iterator.
+ */
+export interface EventFilterOptions {
+  /**
+   * Only yield message events where `at` includes this client's ID, or `at` is undefined (broadcast).
+   * When false/undefined, all events are yielded regardless of `at`.
+   * Note: Non-message events (tool-call, tool-result, presence) are always yielded.
+   */
+  targetedOnly?: boolean;
+  /**
+   * When targetedOnly is true, also yield non-targeted messages if this client
+   * is the only non-panel participant in the channel.
+   * Useful for agents that should respond when they're the sole responder.
+   */
+  respondWhenSolo?: boolean;
+  /**
+   * Callback invoked for events that are filtered out.
+   * Useful for logging or debugging filtered events.
+   */
+  onFiltered?: (event: IncomingEvent) => void;
+}
+
+/**
  * Base properties shared by all incoming messages.
  */
 export interface IncomingBase {
@@ -121,6 +183,8 @@ export interface IncomingNewMessage extends IncomingBase {
   replyTo?: string;
   /** MIME type for attachment */
   contentType?: string;
+  /** IDs of intended recipients (empty/undefined = broadcast to all) */
+  at?: string[];
 }
 
 /**
@@ -149,6 +213,28 @@ export interface IncomingErrorMessage extends IncomingBase {
   error: string;
   /** Machine-readable error code */
   code?: string;
+}
+
+/**
+ * Presence event actions.
+ */
+export type PresenceAction = "join" | "leave";
+
+/**
+ * An incoming presence event (join/leave).
+ * These events are persisted and replayed to reconstruct participant history.
+ */
+export interface IncomingPresenceEvent {
+  /** Message kind */
+  kind: "replay" | "persisted" | "ephemeral";
+  /** ID of the participant */
+  senderId: string;
+  /** Timestamp */
+  ts: number;
+  /** The action (join or leave) */
+  action: PresenceAction;
+  /** Participant metadata at the time of the event */
+  metadata: ParticipantMetadata;
 }
 
 /**
@@ -264,36 +350,6 @@ export interface DiscoveredTool {
 }
 
 /**
- * Tool definition formatted for AI SDK integration.
- * Ready to pass to LLM tool-use APIs.
- */
-export interface AIToolDefinition {
-  /** Tool description */
-  description?: string;
-  /** JSON Schema for arguments */
-  parameters: JsonSchema;
-  /** Execute the tool (calls through to callTool) */
-  execute: (args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
-}
-
-/**
- * Information about a tool name conflict when building AI tools.
- */
-export interface ToolConflict {
-  /** The conflicting tool name */
-  name: string;
-  /** All tools that share this name */
-  tools: DiscoveredTool[];
-}
-
-/**
- * Callback to resolve tool name conflicts.
- * Receives conflict info and returns a map of providerId -> resolvedName.
- * Return undefined for a tool to exclude it from the result.
- */
-export type ConflictResolver = (conflict: ToolConflict) => Record<string, string | undefined>;
-
-/**
  * Context provided to tool execute functions.
  * Includes utilities for streaming results, progress, and cancellation.
  */
@@ -357,7 +413,7 @@ export interface ToolDefinition<TArgs extends z.ZodTypeAny = z.ZodTypeAny, TResu
 export interface ConnectOptions<T extends AgenticParticipantMetadata = AgenticParticipantMetadata> {
   /** Channel name to connect to */
   channel: string;
-  /** Replay messages with id > sinceId */
+  /** Replay messages with id > sinceId. Defaults to 0 (replay all). Pass undefined to skip replay. */
   sinceId?: number;
   /** Enable auto-reconnection. Pass true for defaults, or a config object. */
   reconnect?: boolean | { delayMs?: number; maxDelayMs?: number; maxAttempts?: number };
@@ -378,8 +434,17 @@ export interface ConnectOptions<T extends AgenticParticipantMetadata = AgenticPa
 export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticParticipantMetadata> {
   // === Messaging API ===
 
-  /** Async iterator for incoming messages */
-  messages(): AsyncIterableIterator<IncomingMessage>;
+  /**
+   * Async iterator for all incoming events (messages, tool calls, tool results, presence).
+   * Use the `type` field to discriminate between event types:
+   * - "message", "update-message", "error" for chat messages
+   * - "tool-call" for tool invocations
+   * - "tool-result" for tool results
+   * - "presence" for join/leave events
+   *
+   * @param options - Optional filtering options (e.g., targetedOnly for agents)
+   */
+  events(options?: EventFilterOptions): AsyncIterableIterator<IncomingEvent>;
 
   /** Send a new message. Returns the message ID. */
   send(
@@ -389,6 +454,14 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
       persist?: boolean;
       attachment?: Uint8Array;
       contentType?: string;
+      /** IDs of intended recipients (omit for broadcast to all) */
+      at?: string[];
+      /**
+       * Resolve @handle mentions in `at` array to participant IDs.
+       * e.g., ["@claude", "@codex"] -> ["participant-id-1", "participant-id-2"]
+       * Unknown handles are silently ignored.
+       */
+      resolveHandles?: boolean;
     }
   ): Promise<string>;
 
@@ -421,25 +494,27 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
     options?: { signal?: AbortSignal; validateArgs?: z.ZodTypeAny; timeoutMs?: number }
   ): ToolCallResult;
 
-  /** Collect all discovered tools as executable definitions (for LLM integration). */
-  collectExecutableTools(onConflict?: ConflictResolver): Record<string, AIToolDefinition>;
-
   // === Roster API ===
 
   /** Current roster of participants */
   readonly roster: Record<string, Participant<T>>;
 
+  /**
+   * Resolve @handle mentions to participant IDs.
+   * @param handles - Array of handles (with or without @ prefix)
+   * @returns Array of participant IDs (unknown handles are omitted)
+   */
+  resolveHandles(handles: string[]): string[];
+
+  /**
+   * Get participant ID by handle.
+   * @param handle - Handle to look up (with or without @ prefix)
+   * @returns Participant ID or undefined if not found
+   */
+  getParticipantByHandle(handle: string): string | undefined;
+
   /** Subscribe to roster updates */
   onRoster(handler: (roster: RosterUpdate<T>) => void): () => void;
-
-  /** Subscribe to incoming tool calls for tools provided by this client */
-  onToolCall(handler: (call: IncomingToolCall) => void): () => void;
-
-  /** Subscribe to all incoming tool calls on the channel */
-  onAnyToolCall(handler: (call: IncomingToolCall) => void): () => void;
-
-  /** Subscribe to incoming tool result chunks on the channel */
-  onToolResult(handler: (result: IncomingToolResult) => void): () => void;
 
   // === Connection API ===
 
@@ -466,4 +541,26 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
 
   /** Underlying transport client (escape hatch). */
   readonly pubsub: PubSubClient<T>;
+
+  /**
+   * This client's ID on the channel.
+   * May be null briefly after connection before roster is received.
+   */
+  readonly clientId: string | null;
+
+  /**
+   * Send a tool result for a tool call.
+   * Use this when handling tools locally (not via the auto-execute mechanism).
+   */
+  sendToolResult(
+    callId: string,
+    content: unknown,
+    options?: {
+      complete?: boolean;
+      isError?: boolean;
+      progress?: number;
+      attachment?: Uint8Array;
+      contentType?: string;
+    }
+  ): Promise<void>;
 }

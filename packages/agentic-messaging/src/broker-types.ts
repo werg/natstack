@@ -58,6 +58,12 @@ export interface AgentTypeAdvertisement {
   id: string;
   /** Human-readable name */
   name: string;
+  /**
+   * Proposed handle for @-mentions when this agent is spawned.
+   * Can be overridden by the invite's handleOverride field.
+   * Must be unique within the target channel.
+   */
+  proposedHandle: string;
   /** Free-form description for LLM interpretation */
   description: string;
   /** Tools the spawned agent will provide */
@@ -99,6 +105,11 @@ export interface Invite {
   config?: Record<string, unknown>;
   /** Optional context/instructions for the agent */
   context?: string;
+  /**
+   * Override the agent's handle for @-mentions.
+   * If not provided, the agent uses its AgentTypeAdvertisement.proposedHandle.
+   */
+  handleOverride?: string;
   /** Timestamp when invite was sent */
   ts: number;
 }
@@ -222,6 +233,8 @@ export interface BrokerConnectOptions {
   availabilityChannel: string;
   /** Broker display name */
   name: string;
+  /** Unique handle for @-mentions (e.g., "broker", "agent-manager") */
+  handle: string;
   /** Agent types to advertise */
   agentTypes: AgentTypeAdvertisement[];
   /**
@@ -249,6 +262,8 @@ export interface BrokerClientOptions {
   availabilityChannel: string;
   /** Client display name */
   name: string;
+  /** Unique handle for @-mentions */
+  handle: string;
   /** Client type identifier */
   type: string;
   /** Default timeout for invite operations in ms */

@@ -5,7 +5,7 @@
  * responder implementations (Claude Code, Codex, etc.).
  */
 
-import type { AgenticParticipantMetadata } from "./types.js";
+import type { AgenticParticipantMetadata, IncomingNewMessage } from "./types.js";
 
 /**
  * Standard participant metadata for chat-style channels.
@@ -65,4 +65,15 @@ export function formatArgsForLog(args: unknown, maxLen = 2000): string {
   );
   if (!serialized) return "<empty>";
   return serialized.length > maxLen ? `${serialized.slice(0, maxLen)}...` : serialized;
+}
+
+/**
+ * Check if a message is targeted at a specific participant.
+ * Returns true if:
+ * - `at` is undefined or empty (broadcast to all)
+ * - `at` includes the given participantId
+ */
+export function isMessageTargetedAt(msg: IncomingNewMessage, participantId: string): boolean {
+  if (!msg.at || msg.at.length === 0) return true;
+  return msg.at.includes(participantId);
 }

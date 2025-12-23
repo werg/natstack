@@ -5,18 +5,14 @@
  * Uses connectForDiscovery to find available agents and invite them to a dynamic channel.
  */
 
-import { useState, useEffect, useRef, useCallback, useMemo, type ComponentType } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Flex, Text } from "@radix-ui/themes";
-import { pubsubConfig, id as clientId } from "@natstack/runtime";
+import { pubsubConfig, id as panelClientId } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
 import { z } from "zod";
 import {
-  connect,
-  type AgenticClient,
-  type AgenticParticipantMetadata,
-  type IncomingMessage,
+  type IncomingEvent,
   type Participant,
-  type RosterUpdate,
   type ToolDefinition,
   type ToolExecutionContext,
 } from "@natstack/agentic-messaging";
@@ -29,19 +25,21 @@ import {
 import {
   compileFeedbackComponent,
   cleanupFeedbackComponent,
-  type FeedbackComponentProps,
   type FeedbackUiToolArgs,
 } from "./eval/feedbackUiTool";
 import { useDiscovery } from "./hooks/useDiscovery";
+import { useChannelConnection } from "./hooks/useChannelConnection";
 import { useToolHistory, type ChatMessage } from "./hooks/useToolHistory";
 import type { ToolHistoryEntry } from "./components/ToolHistoryItem";
 import { AgentSetupPhase } from "./components/AgentSetupPhase";
 import { ChatPhase, type ActiveFeedback } from "./components/ChatPhase";
+import type { ChatParticipantMetadata } from "./types";
 
-/** Metadata for participants in this channel */
-interface ChatParticipantMetadata extends AgenticParticipantMetadata {
-  name: string;
-  type: "panel" | "ai-responder" | "claude-code" | "codex";
+/** Utility to check if a value looks like ChatParticipantMetadata */
+function isChatParticipantMetadata(value: unknown): value is ChatParticipantMetadata {
+  if (!value || typeof value !== "object") return false;
+  const obj = value as Record<string, unknown>;
+  return typeof obj.name === "string" && typeof obj.type === "string" && typeof obj.handle === "string";
 }
 
 type AppPhase = "setup" | "connecting" | "chat";
@@ -51,19 +49,22 @@ export default function AgenticChatDemo() {
   const workspaceRoot = process.env["NATSTACK_WORKSPACE"]?.trim();
   const [phase, setPhase] = useState<AppPhase>("setup");
 
-  // Chat phase state
-  const [channelId, setChannelId] = useState<string | null>(null);
+  // Chat phase state - generate default channel ID upfront so user can edit it
+  const [channelId, setChannelId] = useState<string>(() => `chat-${crypto.randomUUID().slice(0, 8)}`);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [connected, setConnected] = useState(false);
   const [status, setStatus] = useState("Initializing...");
   const [participants, setParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
+  // Historical participants reconstructed from presence events during replay
+  const [historicalParticipants, setHistoricalParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
+  // Combine historical participants (from replay) with current participants
+  // Current participants take precedence over historical ones
+  const allParticipants = useMemo(() => {
+    return { ...historicalParticipants, ...participants };
+  }, [historicalParticipants, participants]);
   const [activeFeedbacks, setActiveFeedbacks] = useState<Map<string, ActiveFeedback>>(new Map());
 
-  const clientRef = useRef<AgenticClient<ChatParticipantMetadata> | null>(null);
   const activeFeedbacksRef = useRef(activeFeedbacks);
-  const toolAnyCallUnsubRef = useRef<(() => void) | null>(null);
-  const toolResultUnsubRef = useRef<(() => void) | null>(null);
 
   // Use extracted hooks
   const {
@@ -75,12 +76,139 @@ export default function AgenticChatDemo() {
     buildInviteConfig,
   } = useDiscovery({ workspaceRoot });
 
+  // Handlers ref - defined before useToolHistory since we need panelClientId
+  const handlersRef = useRef<{
+    addToolHistoryEntry: (entry: ToolHistoryEntry) => void;
+    handleToolResult: (result: { callId: string; content?: unknown; complete: boolean; isError: boolean; progress?: number }) => void;
+  } | null>(null);
+
+  // Use channel connection hook
+  const {
+    clientRef,
+    connected,
+    connect: connectToChannel,
+    disconnect,
+  } = useChannelConnection({
+    metadata: {
+      name: "Chat Panel",
+      type: "panel",
+      handle: "user",
+    },
+    onEvent: useCallback((event: IncomingEvent) => {
+      // Dispatch based on event type
+      switch (event.type) {
+        case "message": {
+          setMessages((prev) => {
+            // Check if message already exists (pending or not)
+            const existingIndex = prev.findIndex((m) => m.id === event.id);
+            if (existingIndex !== -1) {
+              // If it was pending, mark it as no longer pending
+              if (prev[existingIndex].pending) {
+                return prev.map((m, i) => (i === existingIndex ? { ...m, pending: false } : m));
+              }
+              // Otherwise skip duplicate
+              return prev;
+            }
+            return [
+              ...prev,
+              {
+                id: event.id,
+                senderId: event.senderId,
+                content: event.content,
+                replyTo: event.replyTo,
+                kind: "message",
+              },
+            ];
+          });
+          break;
+        }
+
+        case "update-message": {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === event.id
+                ? {
+                    ...m,
+                    content: event.content !== undefined ? m.content + event.content : m.content,
+                    complete: event.complete ?? m.complete,
+                  }
+                : m
+            )
+          );
+          break;
+        }
+
+        case "error": {
+          setMessages((prev) => prev.map((m) => (m.id === event.id ? { ...m, complete: true, error: event.error } : m)));
+          break;
+        }
+
+        case "tool-call": {
+          // Skip locally handled tools during live execution - their execute function adds the entry
+          // But include them for replay so we show historical tool calls in the UI
+          if (event.kind !== "replay" && event.providerId === panelClientId) {
+            return;
+          }
+          handlersRef.current?.addToolHistoryEntry({
+            callId: event.callId,
+            toolName: event.toolName,
+            args: event.args,
+            status: "pending",
+            startedAt: event.ts ?? Date.now(),
+            providerId: event.providerId,
+            callerId: event.senderId,
+            handledLocally: false,
+          });
+          break;
+        }
+
+        case "tool-result": {
+          handlersRef.current?.handleToolResult({
+            callId: event.callId,
+            content: event.content,
+            complete: event.complete,
+            isError: event.isError,
+            progress: event.progress,
+          });
+          break;
+        }
+
+        case "presence": {
+          if (event.action === "join" && isChatParticipantMetadata(event.metadata)) {
+            setHistoricalParticipants((prev) => ({
+              ...prev,
+              [event.senderId]: {
+                id: event.senderId,
+                metadata: event.metadata as ChatParticipantMetadata,
+              },
+            }));
+          }
+          // We keep the participant in historical for message display purposes
+          // even on leave events
+          break;
+        }
+      }
+    }, [panelClientId]),
+    onRoster: useCallback((roster) => {
+      setParticipants(roster.participants);
+    }, []),
+    onError: useCallback((error) => {
+      console.error("[Chat Panel] Connection error:", error);
+      setStatus(`Error: ${error.message}`);
+    }, []),
+  });
+
   const {
     addToolHistoryEntry,
     updateToolHistoryEntry,
     handleToolResult,
     clearToolHistory,
-  } = useToolHistory({ setMessages, clientId });
+  } = useToolHistory({ setMessages, clientId: panelClientId });
+
+  // Update handlers ref when they change
+  useEffect(() => {
+    handlersRef.current = { addToolHistoryEntry, handleToolResult };
+  }, [addToolHistoryEntry, handleToolResult]);
 
   // Feedback management
   const addFeedback = useCallback((feedback: ActiveFeedback) => {
@@ -307,9 +435,8 @@ Use standard ESM imports - they're transformed to require() automatically:
     setPhase("connecting");
     setStatus("Creating channel and inviting agents...");
 
-    // Generate unique channel ID
-    const newChannelId = `chat-${crypto.randomUUID().slice(0, 8)}`;
-    setChannelId(newChannelId);
+    // Use the channel ID from state (user may have edited it)
+    const targetChannelId = channelId.trim() || `chat-${crypto.randomUUID().slice(0, 8)}`;
 
     try {
       const feedbackUiToolDef: ToolDefinition = {
@@ -333,7 +460,7 @@ Write a complete component with export default that accepts props.`,
         const filteredConfig = buildInviteConfig(agent);
 
         try {
-          const result = discovery.invite(agent.broker.brokerId, agent.agentType.id, newChannelId, {
+          const result = discovery.invite(agent.broker.brokerId, agent.agentType.id, targetChannelId, {
             context: "User wants to chat",
             config: filteredConfig,
           });
@@ -393,63 +520,14 @@ Write a complete component with export default that accepts props.`,
         console.warn(`[Chat] Some agents failed to join: ${failedNames}`);
       }
 
-      // Connect to the work channel
-      const client = connect<ChatParticipantMetadata>(pubsubConfig.serverUrl, pubsubConfig.token, {
-        channel: newChannelId,
-        reconnect: true,
-        clientId,
-        metadata: {
-          name: "Chat Panel",
-          type: "panel",
-        },
-        tools: {
-          eval: evalToolDef,
-          feedback_ui: feedbackUiToolDef,
-        },
+      // Connect using the hook
+      await connectToChannel(targetChannelId, {
+        eval: evalToolDef,
+        feedback_ui: feedbackUiToolDef,
       });
 
-      clientRef.current = client;
-      toolAnyCallUnsubRef.current?.();
-      toolResultUnsubRef.current?.();
-
-      // Subscribe to tool calls for remote tools only (locally handled tools
-      // add their own entries in their execute functions to set handledLocally: true)
-      toolAnyCallUnsubRef.current = client.onAnyToolCall((call) => {
-        // Skip if this is a locally handled tool - its execute function will add the entry
-        // We use clientId from @natstack/runtime which matches the client's selfId
-        if (call.providerId === clientId) {
-          return;
-        }
-        addToolHistoryEntry({
-          callId: call.callId,
-          toolName: call.toolName,
-          args: call.args,
-          status: "pending",
-          startedAt: call.ts ?? Date.now(),
-          providerId: call.providerId,
-          callerId: call.senderId,
-          handledLocally: false,
-        });
-      });
-
-      toolResultUnsubRef.current = client.onToolResult(handleToolResult);
-
-      // Set up roster handler
-      client.onRoster((roster: RosterUpdate<ChatParticipantMetadata>) => {
-        setParticipants(roster.participants);
-      });
-
-      await client.ready();
-      setConnected(true);
       setStatus("Connected");
       setPhase("chat");
-
-      // Listen for messages
-      void (async () => {
-        for await (const msg of client.messages()) {
-          handleMessage(msg);
-        }
-      })();
     } catch (err) {
       setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
       setPhase("setup");
@@ -459,9 +537,9 @@ Write a complete component with export default that accepts props.`,
     buildInviteConfig,
     handleFeedbackUiToolCall,
     evalToolDef,
-    addToolHistoryEntry,
-    handleToolResult,
     discoveryRef,
+    channelId,
+    connectToChannel,
   ]);
 
   const addAgent = useCallback(async () => {
@@ -493,66 +571,18 @@ Write a complete component with export default that accepts props.`,
     }
   }, [availableAgents, channelId, participants, buildInviteConfig, discoveryRef]);
 
-  function handleMessage(msg: IncomingMessage) {
-    switch (msg.type) {
-      case "message": {
-        setMessages((prev) => {
-          const existingIndex = prev.findIndex((m) => m.id === msg.id && m.pending);
-          if (existingIndex !== -1) {
-            return prev.map((m, i) => (i === existingIndex ? { ...m, pending: false } : m));
-          }
-          return [
-            ...prev,
-            {
-              id: msg.id,
-              senderId: msg.senderId,
-              content: msg.content,
-              replyTo: msg.replyTo,
-              kind: "message",
-            },
-          ];
-        });
-        break;
-      }
-
-      case "update-message": {
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === msg.id
-              ? {
-                  ...m,
-                  content: msg.content !== undefined ? m.content + msg.content : m.content,
-                  complete: msg.complete ?? m.complete,
-                }
-              : m
-          )
-        );
-        break;
-      }
-
-      case "error": {
-        setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, complete: true, error: msg.error } : m)));
-        break;
-      }
-    }
-  }
-
   const reset = useCallback(() => {
     setPhase("setup");
     setMessages([]);
     setInput("");
-    setConnected(false);
     setStatus("Initializing...");
     setParticipants({});
-    setChannelId(null);
+    setHistoricalParticipants({});
+    // Generate a new channel ID for the next session
+    setChannelId(`chat-${crypto.randomUUID().slice(0, 8)}`);
     clearToolHistory();
-    toolAnyCallUnsubRef.current?.();
-    toolAnyCallUnsubRef.current = null;
-    toolResultUnsubRef.current?.();
-    toolResultUnsubRef.current = null;
-    clientRef.current?.close();
-    clientRef.current = null;
-  }, [clearToolHistory]);
+    disconnect();
+  }, [clearToolHistory, disconnect]);
 
   const sendMessage = useCallback(async (): Promise<void> => {
     if (!input.trim() || !clientRef.current?.connected) return;
@@ -568,7 +598,7 @@ Write a complete component with export default that accepts props.`,
         ...prev,
         {
           id: messageId,
-          senderId: clientId,
+          senderId: panelClientId,
           content: text,
           complete: true,
           pending: true,
@@ -576,7 +606,7 @@ Write a complete component with export default that accepts props.`,
         },
       ];
     });
-  }, [input]);
+  }, [input, panelClientId, clientRef]);
 
   // Setup phase - show agent discovery and selection
   if (phase === "setup") {
@@ -584,6 +614,8 @@ Write a complete component with export default that accepts props.`,
       <AgentSetupPhase
         discoveryStatus={discoveryStatus}
         availableAgents={availableAgents}
+        channelId={channelId}
+        onChannelIdChange={setChannelId}
         onToggleAgent={toggleAgentSelection}
         onUpdateConfig={updateAgentConfig}
         onStartChat={() => void startChat()}
@@ -608,7 +640,7 @@ Write a complete component with export default that accepts props.`,
       status={status}
       messages={messages}
       input={input}
-      participants={participants}
+      participants={allParticipants}
       activeFeedbacks={activeFeedbacks}
       theme={theme}
       onInputChange={setInput}

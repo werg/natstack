@@ -37,10 +37,14 @@ async function main() {
     typeof agentConfig.workingDirectory === "string" ? agentConfig.workingDirectory.trim() : "";
   const workingDirectory = configuredWorkingDirectory || process.env["NATSTACK_WORKSPACE"];
 
+  // Get handle from config (set by broker from invite), fallback to default
+  const handle = typeof agentConfig.handle === "string" ? agentConfig.handle : "claude";
+
   log("Starting Claude Code responder...");
   if (workingDirectory) {
     log(`Working directory: ${workingDirectory}`);
   }
+  log(`Handle: @${handle}`);
 
   // Connect to agentic messaging channel
   const client = connect<ChatParticipantMetadata>(pubsubConfig.serverUrl, pubsubConfig.token, {
@@ -49,6 +53,7 @@ async function main() {
     metadata: {
       name: "Claude Code",
       type: "claude-code",
+      handle,
     },
   });
 
@@ -60,15 +65,18 @@ async function main() {
   await client.ready();
   log(`Connected to channel: ${channelName}`);
 
-  // Process incoming messages
-  for await (const msg of client.messages()) {
-    if (msg.type !== "message") continue;
+  // Process incoming events using unified API
+  for await (const event of client.events()) {
+    if (event.type !== "message") continue;
 
-    const sender = client.roster[msg.senderId];
+    // Skip replay messages - don't respond to historical messages
+    if (event.kind === "replay") continue;
+
+    const sender = client.roster[event.senderId];
 
     // Only respond to messages from panels (not our own or other workers)
-    if (sender?.metadata.type === "panel" && msg.senderId !== id) {
-      await handleUserMessage(client, msg.id, msg.content, workingDirectory);
+    if (sender?.metadata.type === "panel" && event.senderId !== id) {
+      await handleUserMessage(client, event.id, event.content, workingDirectory);
     }
   }
 }
@@ -89,7 +97,7 @@ async function handleUserMessage(
   log(`Discovered ${toolDefs.length} tools from pubsub participants`);
 
   // Start a new message (empty, will stream content via updates)
-  const responseId = await client.send("", { replyTo: userMessageId, persist: false });
+  const responseId = await client.send("", { replyTo: userMessageId });
 
   try {
     // Convert pubsub tools to Claude Agent SDK MCP tools
@@ -136,8 +144,8 @@ async function handleUserMessage(
         // Extract text content from assistant message
         for (const block of message.message.content) {
           if (block.type === "text") {
-            // Stream content delta
-            await client.update(responseId, block.text, { persist: false });
+            // Stream content delta (persisted for replay)
+            await client.update(responseId, block.text);
           }
         }
       } else if (message.type === "result") {

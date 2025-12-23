@@ -86,15 +86,25 @@ export function ChatPhase({
     }
   };
 
-  // Compute participant counts
-  const panelCount = Object.values(participants).filter((p) => p.metadata.type === "panel").length;
-  const aiResponderCount = Object.values(participants).filter((p) => p.metadata.type === "ai-responder").length;
-  const claudeCodeCount = Object.values(participants).filter((p) => p.metadata.type === "claude-code").length;
-  const codexCount = Object.values(participants).filter((p) => p.metadata.type === "codex").length;
+  // Get color for participant type
+  const getParticipantColor = (type: string) => {
+    switch (type) {
+      case "panel":
+        return "blue";
+      case "ai-responder":
+        return "purple";
+      case "claude-code":
+        return "orange";
+      case "codex":
+        return "teal";
+      default:
+        return "gray";
+    }
+  };
 
   const getSenderInfo = (senderId: string) => {
     const participant = participants[senderId];
-    return participant?.metadata ?? { name: "Unknown", type: "panel" as const };
+    return participant?.metadata ?? { name: "Unknown", type: "panel" as const, handle: "unknown" };
   };
 
   return (
@@ -109,18 +119,11 @@ export function ChatPhase({
         </Flex>
         <Flex gap="2" align="center">
           <Badge color={connected ? "green" : "gray"}>{connected ? "Connected" : status}</Badge>
-          {panelCount > 0 && (
-            <Badge color="blue">
-              {panelCount} Panel{panelCount !== 1 ? "s" : ""}
+          {Object.values(participants).map((p) => (
+            <Badge key={p.id} color={getParticipantColor(p.metadata.type)}>
+              @{p.metadata.handle}
             </Badge>
-          )}
-          {aiResponderCount > 0 && (
-            <Badge color="purple">
-              {aiResponderCount} AI Responder{aiResponderCount !== 1 ? "s" : ""}
-            </Badge>
-          )}
-          {claudeCodeCount > 0 && <Badge color="orange">{claudeCodeCount} Claude Code</Badge>}
-          {codexCount > 0 && <Badge color="teal">{codexCount} Codex</Badge>}
+          ))}
           <Button variant="soft" size="1" onClick={onAddAgent}>
             Add Agent
           </Button>
@@ -139,9 +142,14 @@ export function ChatPhase({
                 Send a message to start chatting
               </Text>
             ) : (
-              messages.map((msg) => {
+              messages.map((msg, index) => {
+                // Debug log to track key issues
+                if (!msg.id) {
+                  console.warn(`[ChatPhase] Message at index ${index} has no id:`, msg);
+                }
+
                 if (msg.kind === "tool" && msg.tool) {
-                  return <ToolHistoryItem key={msg.id} entry={msg.tool} />;
+                  return <ToolHistoryItem key={msg.id || `fallback-tool-${index}`} entry={msg.tool} />;
                 }
 
                 const sender = getSenderInfo(msg.senderId);
@@ -149,7 +157,7 @@ export function ChatPhase({
                 const isStreaming = !msg.complete && !msg.error;
                 return (
                   <Box
-                    key={msg.id}
+                    key={msg.id || `fallback-msg-${index}`}
                     style={{
                       maxWidth: "96%",
                       alignSelf: isPanel ? "flex-end" : "flex-start",

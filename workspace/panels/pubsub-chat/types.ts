@@ -4,6 +4,7 @@ import type { ToolHistoryEntry } from "./components/ToolHistoryItem";
 export interface ChatParticipantMetadata {
   name: string;
   type: "panel" | "ai-responder" | "claude-code" | "codex";
+  handle: string;
 }
 
 /** A chat message in the conversation */

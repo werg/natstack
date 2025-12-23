@@ -9,6 +9,7 @@ import { pubsubConfig, setTitle, id } from "@natstack/runtime";
 import {
   connect,
   createLogger,
+  parseAgentConfig,
   type AgenticClient,
   type ChatParticipantMetadata,
 } from "@natstack/agentic-messaging";
@@ -28,7 +29,14 @@ async function main() {
   // Get channel from environment (passed by broker via process.env)
   const channelName = process.env.CHANNEL;
 
+  // Parse agent config from environment (passed by broker as JSON)
+  const agentConfig = parseAgentConfig();
+
+  // Get handle from config (set by broker from invite), fallback to default
+  const handle = typeof agentConfig.handle === "string" ? agentConfig.handle : "ai";
+
   log("Starting chat responder...");
+  log(`Handle: @${handle}`);
 
   // Connect to agentic messaging channel with reconnection and participant metadata
   const client = connect<ChatParticipantMetadata>(pubsubConfig.serverUrl, pubsubConfig.token, {
@@ -37,6 +45,7 @@ async function main() {
     metadata: {
       name: "AI Responder",
       type: "ai-responder",
+      handle,
     },
   });
 
@@ -49,15 +58,18 @@ async function main() {
   await client.ready();
   log(`Connected to channel: ${channelName}`);
 
-  // Process incoming messages using typed API
-  for await (const msg of client.messages()) {
-    if (msg.type !== "message") continue;
+  // Process incoming events using unified API
+  for await (const event of client.events()) {
+    if (event.type !== "message") continue;
 
-    const sender = client.roster[msg.senderId];
+    // Skip replay messages - don't respond to historical messages
+    if (event.kind === "replay") continue;
+
+    const sender = client.roster[event.senderId];
 
     // Only respond to messages from panels (not our own or other workers)
-    if (sender?.metadata.type === "panel" && msg.senderId !== id) {
-      await handleUserMessage(client, msg.id, msg.content);
+    if (sender?.metadata.type === "panel" && event.senderId !== id) {
+      await handleUserMessage(client, event.id, event.content);
     }
   }
 }
@@ -70,7 +82,7 @@ async function handleUserMessage(
   log(`Received message: ${userText}`);
 
   // Start a new message (empty, will stream content via updates)
-  const responseId = await client.send("", { replyTo: userMessageId, persist: false });
+  const responseId = await client.send("", { replyTo: userMessageId });
 
   try {
     // Stream AI response using fast model
@@ -83,12 +95,12 @@ async function handleUserMessage(
 
     for await (const event of stream) {
       if (event.type === "text-delta") {
-        // Send content delta (ephemeral - not persisted)
-        await client.update(responseId, event.text, { persist: false });
+        // Send content delta (persisted for replay)
+        await client.update(responseId, event.text);
       }
     }
 
-    // Mark message as complete (persisted for history)
+    // Mark message as complete
     await client.complete(responseId);
 
     log(`Completed response for ${userMessageId}`);

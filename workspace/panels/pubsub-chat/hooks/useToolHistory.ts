@@ -104,6 +104,7 @@ export function useToolHistory({ setMessages, clientId }: UseToolHistoryOptions)
 
   const handleToolResult = useCallback(
     (result: IncomingToolResult) => {
+      // Process all results including replay - we want to show historical tool results in the UI
       const entry = toolHistoryRef.current.get(result.callId);
       if (!entry) return;
 

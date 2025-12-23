@@ -41,6 +41,7 @@ export function useDiscovery({ workspaceRoot }: UseDiscoveryOptions = {}) {
         const discovery = await connectForDiscovery(pubsubConfig!.serverUrl, pubsubConfig!.token, {
           availabilityChannel: AVAILABILITY_CHANNEL,
           name: "Chat Panel",
+          handle: "chat-panel",
           type: "panel",
         });
 

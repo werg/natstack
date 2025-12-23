@@ -14,6 +14,8 @@ import type { AgentSelection } from "../hooks/useDiscovery";
 interface AgentSetupPhaseProps {
   discoveryStatus: string;
   availableAgents: AgentSelection[];
+  channelId: string;
+  onChannelIdChange: (channelId: string) => void;
   onToggleAgent: (brokerId: string, agentTypeId: string) => void;
   onUpdateConfig: (brokerId: string, agentTypeId: string, key: string, value: string | number | boolean) => void;
   onStartChat: () => void;
@@ -22,6 +24,8 @@ interface AgentSetupPhaseProps {
 export function AgentSetupPhase({
   discoveryStatus,
   availableAgents,
+  channelId,
+  onChannelIdChange,
   onToggleAgent,
   onUpdateConfig,
   onStartChat,
@@ -76,9 +80,25 @@ export function AgentSetupPhase({
             <Text size="2" color="gray">
               {selectedCount} agent{selectedCount !== 1 ? "s" : ""} selected
             </Text>
-            <Button onClick={onStartChat} disabled={selectedCount === 0}>
-              Start Chat
-            </Button>
+            <Flex gap="2" align="center">
+              <Text size="1" color="gray">
+                Channel:
+              </Text>
+              <TextField.Root
+                size="1"
+                style={{ width: 140 }}
+                value={channelId}
+                onChange={(e) => onChannelIdChange(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && selectedCount > 0) {
+                    onStartChat();
+                  }
+                }}
+              />
+              <Button onClick={onStartChat} disabled={selectedCount === 0}>
+                Start Chat
+              </Button>
+            </Flex>
           </Flex>
         </Flex>
       </Card>

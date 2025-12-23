@@ -37,17 +37,47 @@ function getCacheFilePath(): string {
 export async function loadDiskCache(): Promise<Record<string, DiskCacheEntry>> {
   const cacheFilePath = getCacheFilePath();
 
+  // DEBUG: Check db file at start of loadDiskCache
+  const dbFile = path.join(app.getPath("userData"), "databases", "natstack-dev", "pubsub-messages.db");
+  const fs = await import("fs");
+  console.log(`[DiskCache DEBUG] At loadDiskCache start: dbFile exists=${fs.existsSync(dbFile)}`);
+
   try {
     // Check if file exists using fsPromises.access
     try {
       await fsPromises.access(cacheFilePath);
     } catch {
       console.log("[DiskCache] No cache file found, starting fresh");
+      console.log(`[DiskCache DEBUG] After access check: dbFile exists=${fs.existsSync(dbFile)}`);
       return {};
     }
 
+    console.log(`[DiskCache DEBUG] Before readFile: dbFile exists=${fs.existsSync(dbFile)}`);
+
+    // DEBUG: Check parent directories too
+    const dbDir = path.join(app.getPath("userData"), "databases", "natstack-dev");
+    const dbParentDir = path.join(app.getPath("userData"), "databases");
+    console.log(`[DiskCache DEBUG] Before readFile - dbDir exists=${fs.existsSync(dbDir)}, dbParentDir exists=${fs.existsSync(dbParentDir)}`);
+
     const content = await fsPromises.readFile(cacheFilePath, "utf-8");
+
+    console.log(`[DiskCache DEBUG] After readFile: dbFile exists=${fs.existsSync(dbFile)}`);
+    console.log(`[DiskCache DEBUG] After readFile - dbDir exists=${fs.existsSync(dbDir)}, dbParentDir exists=${fs.existsSync(dbParentDir)}`);
+
+    // DEBUG: If directory is gone, list what's in userData
+    if (!fs.existsSync(dbParentDir)) {
+      console.log(`[DiskCache DEBUG] databases dir is GONE! Listing userData:`);
+      const userDataPath = app.getPath("userData");
+      try {
+        const entries = fs.readdirSync(userDataPath);
+        console.log(`[DiskCache DEBUG] userData contents: ${entries.join(", ")}`);
+      } catch (e) {
+        console.log(`[DiskCache DEBUG] Could not list userData: ${e}`);
+      }
+    }
+
     const data = JSON.parse(content) as DiskCacheData;
+    console.log(`[DiskCache DEBUG] After JSON.parse: dbFile exists=${fs.existsSync(dbFile)}`);
 
     if (data.version !== CACHE_VERSION) {
       console.log(
@@ -58,6 +88,7 @@ export async function loadDiskCache(): Promise<Record<string, DiskCacheEntry>> {
 
     const entryCount = Object.keys(data.entries).length;
     console.log(`[DiskCache] Loaded ${entryCount} entries from disk`);
+    console.log(`[DiskCache DEBUG] At loadDiskCache end: dbFile exists=${fs.existsSync(dbFile)}`);
     return data.entries;
   } catch (error) {
     console.error("[DiskCache] Failed to load cache from disk:", error);

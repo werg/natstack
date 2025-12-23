@@ -2,6 +2,26 @@ import { app, BaseWindow, Menu, nativeTheme, type MenuItemConstructorOptions } f
 import { buildHamburgerMenuTemplate } from "./menu.js";
 import * as path from "path";
 import * as fs from "fs";
+import * as os from "os";
+
+// DEBUG: Check if databases directory exists at the very start of main process
+const earlyDbCheck = (() => {
+  const home = os.homedir();
+  const configDir = path.join(home, ".config", "natstack");
+  const dbDir = path.join(configDir, "databases");
+  const workspaceDbDir = path.join(dbDir, "natstack-dev");
+  const dbFile = path.join(workspaceDbDir, "pubsub-messages.db");
+
+  console.log(`[EARLY CHECK] At main process start:`);
+  console.log(`[EARLY CHECK] - configDir exists: ${fs.existsSync(configDir)}`);
+  console.log(`[EARLY CHECK] - dbDir exists: ${fs.existsSync(dbDir)}`);
+  console.log(`[EARLY CHECK] - workspaceDbDir exists: ${fs.existsSync(workspaceDbDir)}`);
+  console.log(`[EARLY CHECK] - dbFile exists: ${fs.existsSync(dbFile)}`);
+  if (fs.existsSync(dbFile)) {
+    const stats = fs.statSync(dbFile);
+    console.log(`[EARLY CHECK] - dbFile size: ${stats.size}, inode: ${stats.ino}`);
+  }
+})();
 
 // Silence Electron security warnings in dev; panels run in isolated webviews.
 process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
@@ -497,28 +517,64 @@ handle("view:browser-stop", async (_event, browserId: string) => {
 // =============================================================================
 
 app.on("ready", async () => {
+  // DEBUG: Check database file at ready event start
+  const dbCheckAtReady = (() => {
+    const dbFile = path.join(os.homedir(), ".config", "natstack", "databases", "natstack-dev", "pubsub-messages.db");
+    const exists = fs.existsSync(dbFile);
+    console.log(`[READY CHECK] At app.ready start: dbFile exists=${exists}`);
+    if (exists) {
+      const stats = fs.statSync(dbFile);
+      console.log(`[READY CHECK] size=${stats.size}, inode=${stats.ino}, birthTime=${stats.birthtime.toISOString()}`);
+    }
+  })();
+
+  // DEBUG helper to check db file
+  const checkDbFile = (label: string) => {
+    const dbFile = path.join(os.homedir(), ".config", "natstack", "databases", "natstack-dev", "pubsub-messages.db");
+    const exists = fs.existsSync(dbFile);
+    console.log(`[DB CHECK: ${label}] exists=${exists}`);
+  };
+
   // Set up panel protocol handler
+  checkDbFile("before setupPanelProtocol");
   setupPanelProtocol();
+  checkDbFile("after setupPanelProtocol");
 
   // Initialize cache manager (shared across all panels)
   const cacheManager = getMainCacheManager();
+  checkDbFile("before cacheManager.initialize");
   await cacheManager.initialize();
+  checkDbFile("after cacheManager.initialize");
 
   // Initialize services only in main mode
   if (appMode === "main" && gitServer && panelManager && workspace) {
     try {
+      checkDbFile("before getServiceDispatcher");
       const dispatcher = getServiceDispatcher();
+      checkDbFile("after getServiceDispatcher");
 
       // Start git server
+      checkDbFile("before gitServer.start");
       const port = await gitServer.start();
       console.log(`[Git] Server started on port ${port}`);
+      checkDbFile("after gitServer.start");
 
       // Start CDP server for browser automation
+      checkDbFile("before cdpServer.start");
       cdpServer = getCdpServer();
       const cdpPort = await cdpServer.start();
       console.log(`[CDP] Server started on port ${cdpPort}`);
+      checkDbFile("after cdpServer.start");
 
       // Start PubSub server for real-time messaging
+      // DEBUG: Check right before pubsub server starts
+      const dbFileBeforePubsub = path.join(os.homedir(), ".config", "natstack", "databases", "natstack-dev", "pubsub-messages.db");
+      console.log(`[BEFORE PUBSUB] dbFile exists=${fs.existsSync(dbFileBeforePubsub)}`);
+      if (fs.existsSync(dbFileBeforePubsub)) {
+        const stats = fs.statSync(dbFileBeforePubsub);
+        console.log(`[BEFORE PUBSUB] size=${stats.size}, inode=${stats.ino}`);
+      }
+
       pubsubServer = getPubSubServer();
       const pubsubPort = await pubsubServer.start();
       console.log(`[PubSub] Server started on port ${pubsubPort}`);
