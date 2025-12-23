@@ -10,60 +10,17 @@ import {
   connect,
   createToolsForAgentSDK,
   jsonSchemaToZodRawShape,
+  parseAgentConfig,
+  createLogger,
+  formatArgsForLog,
   type AgenticClient,
-  type AgenticParticipantMetadata,
+  type ChatParticipantMetadata,
 } from "@natstack/agentic-messaging";
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 
 void setTitle("Claude Code Responder");
 
-interface ChatParticipantMetadata extends AgenticParticipantMetadata {
-  name: string;
-  type: "panel" | "ai-responder" | "claude-code" | "codex";
-}
-
-function log(message: string): void {
-  console.log(`[Claude Code ${id}] ${message}`);
-}
-
-function formatArgsForLog(args: unknown): string {
-  const seen = new WeakSet();
-  const serialized = JSON.stringify(
-    args,
-    (_key, value) => {
-      if (typeof value === "object" && value !== null) {
-        if (seen.has(value as object)) return "[Circular]";
-        seen.add(value as object);
-      }
-      return value;
-    },
-    2
-  );
-  const maxLen = 2000;
-  if (!serialized) return "<empty>";
-  return serialized.length > maxLen ? `${serialized.slice(0, maxLen)}...` : serialized;
-}
-
-/**
- * Safely parse AGENT_CONFIG from environment.
- * Returns empty object if parsing fails.
- */
-function parseAgentConfig(): Record<string, unknown> {
-  const raw = process.env.AGENT_CONFIG;
-  if (!raw) return {};
-
-  try {
-    const parsed = JSON.parse(raw);
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-    log(`Warning: AGENT_CONFIG is not an object, using empty config`);
-    return {};
-  } catch (err) {
-    log(`Warning: Failed to parse AGENT_CONFIG: ${err instanceof Error ? err.message : String(err)}`);
-    return {};
-  }
-}
+const log = createLogger("Claude Code", id);
 
 async function main() {
   if (!pubsubConfig) {

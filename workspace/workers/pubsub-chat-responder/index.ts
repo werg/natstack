@@ -8,23 +8,16 @@
 import { pubsubConfig, setTitle, id } from "@natstack/runtime";
 import {
   connect,
+  createLogger,
   type AgenticClient,
-  type AgenticParticipantMetadata,
+  type ChatParticipantMetadata,
 } from "@natstack/agentic-messaging";
 import { ai } from "@natstack/ai";
 
 // Set worker title
 void setTitle("Chat AI Responder");
 
-/** Metadata for participants in this channel (shared with panel) */
-interface ChatParticipantMetadata extends AgenticParticipantMetadata {
-  name: string;
-  type: "panel" | "ai-responder" | "claude-code" | "codex";
-}
-
-function log(message: string): void {
-  console.log(`[Worker ${id}] ${message}`);
-}
+const log = createLogger("Worker", id);
 
 async function main() {
   if (!pubsubConfig) {

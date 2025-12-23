@@ -16,3 +16,11 @@ export type { BrokerDiscoveryClient } from "./broker-client.js";
 
 // JSON Schema utilities
 export { jsonSchemaToZod, jsonSchemaToZodRawShape, isRecord } from "./json-schema-to-zod.js";
+
+// Responder utilities
+export {
+  type ChatParticipantMetadata,
+  parseAgentConfig,
+  createLogger,
+  formatArgsForLog,
+} from "./responder-utils.js";
