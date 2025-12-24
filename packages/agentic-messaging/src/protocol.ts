@@ -42,10 +42,17 @@ export const ToolCancelSchema = z.object({
   callId: z.string().uuid(),
 });
 
+export const ExecutionPauseSchema = z.object({
+  messageId: z.string().uuid(),
+  status: z.enum(["paused", "resumed", "cancelled"]),
+  reason: z.string().optional(),
+});
+
 export type NewMessage = z.infer<typeof NewMessageSchema>;
 export type UpdateMessage = z.infer<typeof UpdateMessageSchema>;
 export type ErrorMessage = z.infer<typeof ErrorMessageSchema>;
 export type ToolCall = z.infer<typeof ToolCallSchema>;
 export type ToolResult = z.infer<typeof ToolResultSchema>;
 export type ToolCancel = z.infer<typeof ToolCancelSchema>;
+export type ExecutionPause = z.infer<typeof ExecutionPauseSchema>;
 

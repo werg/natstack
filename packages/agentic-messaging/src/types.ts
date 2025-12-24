@@ -101,6 +101,25 @@ export type IncomingMessage =
   | IncomingErrorMessage;
 
 /**
+ * Execution pause event with discriminant type field.
+ */
+export interface IncomingExecutionPauseEvent {
+  type: "execution-pause";
+  /** Message ID being paused */
+  messageId: string;
+  /** Current pause status */
+  status: PauseStatus;
+  /** Optional reason for the pause */
+  reason?: string;
+  /** Message kind */
+  kind: "replay" | "persisted" | "ephemeral";
+  /** ID of the sender */
+  senderId: string;
+  /** Timestamp in milliseconds */
+  ts: number;
+}
+
+/**
  * Union type for all incoming event types (messages, tool calls, tool results, presence).
  * Use the `type` field to discriminate between event types.
  */
@@ -110,7 +129,8 @@ export type IncomingEvent =
   | IncomingErrorMessage
   | IncomingToolCallEvent
   | IncomingToolResultEvent
-  | IncomingPresenceEventWithType;
+  | IncomingPresenceEventWithType
+  | IncomingExecutionPauseEvent;
 
 /**
  * Tool call event with discriminant type field.
@@ -564,3 +584,8 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
     }
   ): Promise<void>;
 }
+
+/**
+ * Status of an execution pause.
+ */
+export type PauseStatus = "paused" | "resumed" | "cancelled";

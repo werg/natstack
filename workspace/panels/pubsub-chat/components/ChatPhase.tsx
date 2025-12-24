@@ -1,10 +1,13 @@
 import { useState, useRef, useEffect, useCallback, type ComponentType } from "react";
 import { Badge, Box, Button, Callout, Card, Flex, ScrollArea, Text, TextField, Theme } from "@radix-ui/themes";
+import { DotFilledIcon } from "@radix-ui/react-icons";
 import type { Participant } from "@natstack/agentic-messaging";
 import { ToolHistoryItem } from "./ToolHistoryItem";
 import { FeedbackContainer } from "./FeedbackContainer";
+import { TypingIndicator } from "./TypingIndicator";
 import type { FeedbackComponentProps } from "../eval/feedbackUiTool";
 import type { ChatMessage, ChatParticipantMetadata } from "../types";
+import "../styles.css";
 
 // Re-export for backwards compatibility
 export type { ChatMessage };
@@ -34,6 +37,7 @@ interface ChatPhaseProps {
   onReset: () => void;
   onFeedbackDismiss: (callId: string) => void;
   onFeedbackError: (callId: string, error: Error) => void;
+  onInterrupt?: (agentId: string, messageId: string) => void;
 }
 
 export function ChatPhase({
@@ -51,6 +55,7 @@ export function ChatPhase({
   onReset,
   onFeedbackDismiss,
   onFeedbackError,
+  onInterrupt,
 }: ChatPhaseProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -78,6 +83,13 @@ export function ChatPhase({
       console.error("Failed to send message:", error);
     }
   }, [onSendMessage]);
+
+  const handleInterruptMessage = useCallback(
+    (msgId: string, senderId: string) => {
+      onInterrupt?.(senderId, msgId);
+    },
+    [onInterrupt]
+  );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -119,11 +131,34 @@ export function ChatPhase({
         </Flex>
         <Flex gap="2" align="center">
           <Badge color={connected ? "green" : "gray"}>{connected ? "Connected" : status}</Badge>
-          {Object.values(participants).map((p) => (
-            <Badge key={p.id} color={getParticipantColor(p.metadata.type)}>
-              @{p.metadata.handle}
-            </Badge>
-          ))}
+          {Object.values(participants).map((p) => {
+            // Check if this agent has an active message
+            const agentMessages = messages.filter((m) => m.senderId === p.id && m.kind === "message");
+            const hasActive = agentMessages.some((m) => !m.complete && !m.error);
+
+            return (
+              <Badge
+                key={p.id}
+                color={getParticipantColor(p.metadata.type)}
+                style={{ position: "relative", paddingRight: hasActive ? 24 : undefined }}
+              >
+                @{p.metadata.handle}
+                {hasActive && (
+                  <span
+                    style={{
+                      marginLeft: 4,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      animation: "pulse 1.5s ease-in-out infinite",
+                    }}
+                    title="Agent working"
+                  >
+                    <DotFilledIcon style={{ fontSize: 12, color: "currentColor" }} />
+                  </span>
+                )}
+              </Badge>
+            );
+          })}
           <Button variant="soft" size="1" onClick={onAddAgent}>
             Add Agent
           </Button>
@@ -154,7 +189,9 @@ export function ChatPhase({
 
                 const sender = getSenderInfo(msg.senderId);
                 const isPanel = sender.type === "panel";
-                const isStreaming = !msg.complete && !msg.error;
+                // Only show streaming for messages that are actively being streamed (not pending local messages, not errors)
+                const isStreaming = msg.kind === "message" && !msg.complete && !msg.error && !msg.pending;
+
                 return (
                   <Box
                     key={msg.id || `fallback-msg-${index}`}
@@ -173,16 +210,24 @@ export function ChatPhase({
                         opacity: msg.pending ? 0.7 : 1,
                       }}
                     >
-                      <Text
-                        size="2"
-                        style={{
-                          color: isPanel ? "white" : msg.error ? "var(--red-11)" : "inherit",
-                          whiteSpace: "pre-wrap",
-                        }}
-                      >
-                        {msg.error ? `Error: ${msg.error}` : msg.content || (isStreaming ? "..." : "")}
-                        {isStreaming && <span className="cursor">|</span>}
-                      </Text>
+                      <Flex direction="column" gap="2">
+                        <Text
+                          size="2"
+                          style={{
+                            color: isPanel ? "white" : msg.error ? "var(--red-11)" : "inherit",
+                            whiteSpace: "pre-wrap",
+                          }}
+                        >
+                          {msg.error ? `Error: ${msg.error}` : msg.content || (isStreaming ? "" : "")}
+                        </Text>
+                        {isStreaming && (
+                          <TypingIndicator
+                            isPaused={false}
+                            showInterruptButton={true}
+                            onInterrupt={() => handleInterruptMessage(msg.id, msg.senderId)}
+                          />
+                        )}
+                      </Flex>
                     </Card>
                   </Box>
                 );

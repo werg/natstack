@@ -5,7 +5,7 @@
  * Uses connectForDiscovery to find available agents and invite them to a dynamic channel.
  */
 
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { Flex, Text } from "@radix-ui/themes";
 import { pubsubConfig, id as panelClientId } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
@@ -15,6 +15,7 @@ import {
   type Participant,
   type ToolDefinition,
   type ToolExecutionContext,
+  createPauseToolDefinition,
 } from "@natstack/agentic-messaging";
 import {
   executeEvalTool,
@@ -30,6 +31,7 @@ import {
 import { useDiscovery } from "./hooks/useDiscovery";
 import { useChannelConnection } from "./hooks/useChannelConnection";
 import { useToolHistory, type ChatMessage } from "./hooks/useToolHistory";
+import { useFeedbackManager } from "./hooks/useFeedbackManager";
 import type { ToolHistoryEntry } from "./components/ToolHistoryItem";
 import { AgentSetupPhase } from "./components/AgentSetupPhase";
 import { ChatPhase, type ActiveFeedback } from "./components/ChatPhase";
@@ -44,16 +46,135 @@ function isChatParticipantMetadata(value: unknown): value is ChatParticipantMeta
 
 type AppPhase = "setup" | "connecting" | "chat";
 
+/**
+ * Constants for the application
+ */
+const INITIAL_STATUS = "Initializing...";
+const generateChannelId = () => `chat-${crypto.randomUUID().slice(0, 8)}`;
+
+/**
+ * Handles incoming agentic events and updates appropriate state.
+ * Pure function to keep event logic separate from component.
+ */
+function dispatchAgenticEvent(
+  event: IncomingEvent,
+  handlers: {
+    setMessages: (updater: (prev: ChatMessage[]) => ChatMessage[]) => void;
+    setHistoricalParticipants: (updater: (prev: Record<string, Participant<ChatParticipantMetadata>>) => Record<string, Participant<ChatParticipantMetadata>>) => void;
+    addToolHistoryEntry: (entry: ToolHistoryEntry) => void;
+    handleToolResult: (result: { callId: string; content?: unknown; complete: boolean; isError: boolean; progress?: number }) => void;
+  },
+  panelClientId: string
+): void {
+  switch (event.type) {
+    case "message": {
+      handlers.setMessages((prev) => {
+        const existingIndex = prev.findIndex((m) => m.id === event.id);
+        if (existingIndex !== -1) {
+          if (prev[existingIndex].pending) {
+            return prev.map((m, i) => (i === existingIndex ? { ...m, pending: false } : m));
+          }
+          return prev;
+        }
+        return [
+          ...prev,
+          {
+            id: event.id,
+            senderId: event.senderId,
+            content: event.content,
+            replyTo: event.replyTo,
+            kind: "message",
+            complete: event.kind === "replay",
+          },
+        ];
+      });
+      break;
+    }
+
+    case "update-message": {
+      handlers.setMessages((prev) =>
+        prev.map((m) =>
+          m.id === event.id
+            ? {
+                ...m,
+                content: event.content !== undefined ? m.content + event.content : m.content,
+                complete: event.complete ?? m.complete,
+              }
+            : m
+        )
+      );
+      break;
+    }
+
+    case "error": {
+      handlers.setMessages((prev) => prev.map((m) => (m.id === event.id ? { ...m, complete: true, error: event.error } : m)));
+      break;
+    }
+
+    case "tool-call": {
+      if (event.kind !== "replay" && event.providerId === panelClientId) {
+        return;
+      }
+      handlers.addToolHistoryEntry({
+        callId: event.callId,
+        toolName: event.toolName,
+        args: event.args,
+        status: "pending",
+        startedAt: event.ts ?? Date.now(),
+        providerId: event.providerId,
+        callerId: event.senderId,
+        handledLocally: false,
+      });
+      break;
+    }
+
+    case "tool-result": {
+      handlers.handleToolResult({
+        callId: event.callId,
+        content: event.content,
+        complete: event.complete,
+        isError: event.isError,
+        progress: event.progress,
+      });
+      break;
+    }
+
+    case "presence": {
+      if (event.action === "join" && isChatParticipantMetadata(event.metadata)) {
+        handlers.setHistoricalParticipants((prev) => ({
+          ...prev,
+          [event.senderId]: {
+            id: event.senderId,
+            metadata: event.metadata as ChatParticipantMetadata,
+          },
+        }));
+      }
+      break;
+    }
+
+    case "execution-pause": {
+      handlers.setMessages((prev) =>
+        prev.map((m) =>
+          m.id === event.messageId
+            ? { ...m, complete: true }
+            : m
+        )
+      );
+      break;
+    }
+  }
+}
+
 export default function AgenticChatDemo() {
   const theme = usePanelTheme();
   const workspaceRoot = process.env["NATSTACK_WORKSPACE"]?.trim();
   const [phase, setPhase] = useState<AppPhase>("setup");
 
   // Chat phase state - generate default channel ID upfront so user can edit it
-  const [channelId, setChannelId] = useState<string>(() => `chat-${crypto.randomUUID().slice(0, 8)}`);
+  const [channelId, setChannelId] = useState<string>(generateChannelId);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [status, setStatus] = useState("Initializing...");
+  const [status, setStatus] = useState(INITIAL_STATUS);
   const [participants, setParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
   // Historical participants reconstructed from presence events during replay
   const [historicalParticipants, setHistoricalParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
@@ -62,9 +183,15 @@ export default function AgenticChatDemo() {
   const allParticipants = useMemo(() => {
     return { ...historicalParticipants, ...participants };
   }, [historicalParticipants, participants]);
-  const [activeFeedbacks, setActiveFeedbacks] = useState<Map<string, ActiveFeedback>>(new Map());
 
-  const activeFeedbacksRef = useRef(activeFeedbacks);
+  // Use feedback manager hook for UI feedback lifecycle
+  const {
+    activeFeedbacks,
+    addFeedback,
+    removeFeedback,
+    dismissFeedback,
+    handleFeedbackError,
+  } = useFeedbackManager();
 
   // Use extracted hooks
   const {
@@ -76,13 +203,14 @@ export default function AgenticChatDemo() {
     buildInviteConfig,
   } = useDiscovery({ workspaceRoot });
 
-  // Handlers ref - defined before useToolHistory since we need panelClientId
-  const handlersRef = useRef<{
-    addToolHistoryEntry: (entry: ToolHistoryEntry) => void;
-    handleToolResult: (result: { callId: string; content?: unknown; complete: boolean; isError: boolean; progress?: number }) => void;
-  } | null>(null);
+  const {
+    addToolHistoryEntry,
+    updateToolHistoryEntry,
+    handleToolResult,
+    clearToolHistory,
+  } = useToolHistory({ setMessages, clientId: panelClientId });
 
-  // Use channel connection hook
+  // Use channel connection hook with event handler that uses extracted helper
   const {
     clientRef,
     connected,
@@ -94,101 +222,21 @@ export default function AgenticChatDemo() {
       type: "panel",
       handle: "user",
     },
-    onEvent: useCallback((event: IncomingEvent) => {
-      // Dispatch based on event type
-      switch (event.type) {
-        case "message": {
-          setMessages((prev) => {
-            // Check if message already exists (pending or not)
-            const existingIndex = prev.findIndex((m) => m.id === event.id);
-            if (existingIndex !== -1) {
-              // If it was pending, mark it as no longer pending
-              if (prev[existingIndex].pending) {
-                return prev.map((m, i) => (i === existingIndex ? { ...m, pending: false } : m));
-              }
-              // Otherwise skip duplicate
-              return prev;
-            }
-            return [
-              ...prev,
-              {
-                id: event.id,
-                senderId: event.senderId,
-                content: event.content,
-                replyTo: event.replyTo,
-                kind: "message",
-              },
-            ];
-          });
-          break;
-        }
-
-        case "update-message": {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === event.id
-                ? {
-                    ...m,
-                    content: event.content !== undefined ? m.content + event.content : m.content,
-                    complete: event.complete ?? m.complete,
-                  }
-                : m
-            )
-          );
-          break;
-        }
-
-        case "error": {
-          setMessages((prev) => prev.map((m) => (m.id === event.id ? { ...m, complete: true, error: event.error } : m)));
-          break;
-        }
-
-        case "tool-call": {
-          // Skip locally handled tools during live execution - their execute function adds the entry
-          // But include them for replay so we show historical tool calls in the UI
-          if (event.kind !== "replay" && event.providerId === panelClientId) {
-            return;
-          }
-          handlersRef.current?.addToolHistoryEntry({
-            callId: event.callId,
-            toolName: event.toolName,
-            args: event.args,
-            status: "pending",
-            startedAt: event.ts ?? Date.now(),
-            providerId: event.providerId,
-            callerId: event.senderId,
-            handledLocally: false,
-          });
-          break;
-        }
-
-        case "tool-result": {
-          handlersRef.current?.handleToolResult({
-            callId: event.callId,
-            content: event.content,
-            complete: event.complete,
-            isError: event.isError,
-            progress: event.progress,
-          });
-          break;
-        }
-
-        case "presence": {
-          if (event.action === "join" && isChatParticipantMetadata(event.metadata)) {
-            setHistoricalParticipants((prev) => ({
-              ...prev,
-              [event.senderId]: {
-                id: event.senderId,
-                metadata: event.metadata as ChatParticipantMetadata,
-              },
-            }));
-          }
-          // We keep the participant in historical for message display purposes
-          // even on leave events
-          break;
-        }
-      }
-    }, [panelClientId]),
+    onEvent: useCallback(
+      (event: IncomingEvent) => {
+        dispatchAgenticEvent(
+          event,
+          {
+            setMessages,
+            setHistoricalParticipants,
+            addToolHistoryEntry,
+            handleToolResult,
+          },
+          panelClientId
+        );
+      },
+      [setMessages, setHistoricalParticipants, addToolHistoryEntry, handleToolResult, panelClientId]
+    ),
     onRoster: useCallback((roster) => {
       setParticipants(roster.participants);
     }, []),
@@ -198,42 +246,6 @@ export default function AgenticChatDemo() {
     }, []),
   });
 
-  const {
-    addToolHistoryEntry,
-    updateToolHistoryEntry,
-    handleToolResult,
-    clearToolHistory,
-  } = useToolHistory({ setMessages, clientId: panelClientId });
-
-  // Update handlers ref when they change
-  useEffect(() => {
-    handlersRef.current = { addToolHistoryEntry, handleToolResult };
-  }, [addToolHistoryEntry, handleToolResult]);
-
-  // Feedback management
-  const addFeedback = useCallback((feedback: ActiveFeedback) => {
-    setActiveFeedbacks((prev) => new Map(prev).set(feedback.callId, feedback));
-  }, []);
-
-  const removeFeedback = useCallback((callId: string) => {
-    setActiveFeedbacks((prev) => {
-      const next = new Map(prev);
-      next.delete(callId);
-      return next;
-    });
-  }, []);
-
-  useEffect(() => {
-    activeFeedbacksRef.current = activeFeedbacks;
-  }, [activeFeedbacks]);
-
-  useEffect(() => {
-    return () => {
-      for (const feedback of activeFeedbacksRef.current.values()) {
-        feedback.reject(new Error("Panel closed"));
-      }
-    };
-  }, []);
 
   const handleFeedbackUiToolCall = useCallback(
     async (callId: string, args: unknown, ctx: ToolExecutionContext) => {
@@ -296,18 +308,8 @@ export default function AgenticChatDemo() {
   );
 
   const handleFeedbackDismiss = useCallback((callId: string) => {
-    const feedback = activeFeedbacksRef.current.get(callId);
-    if (feedback) {
-      feedback.reject(new Error("User dismissed feedback UI"));
-    }
-  }, []);
-
-  const handleFeedbackError = useCallback((callId: string, error: Error) => {
-    const feedback = activeFeedbacksRef.current.get(callId);
-    if (feedback) {
-      feedback.reject(new Error(`Component render error: ${error.message}`));
-    }
-  }, []);
+    dismissFeedback(callId);
+  }, [dismissFeedback]);
 
   const evalToolDef = useMemo<ToolDefinition>(
     () => ({
@@ -551,11 +553,6 @@ Write a complete component with export default that accepts props.`,
       (a) => !Object.values(participants).some((p) => p.metadata.type === a.agentType.id)
     );
 
-    if (notInChat.length === 0) {
-      return;
-    }
-
-    // Invite first available agent not in chat
     const toInvite = notInChat[0];
     if (!toInvite) return;
 
@@ -575,12 +572,17 @@ Write a complete component with export default that accepts props.`,
     setPhase("setup");
     setMessages([]);
     setInput("");
-    setStatus("Initializing...");
+    setStatus(INITIAL_STATUS);
     setParticipants({});
     setHistoricalParticipants({});
     // Generate a new channel ID for the next session
-    setChannelId(`chat-${crypto.randomUUID().slice(0, 8)}`);
+    setChannelId(generateChannelId());
     clearToolHistory();
+    // Cleanup feedbacks via reducer - no need to capture state in dependency
+    dispatchFeedback({
+      type: "cleanup-all",
+      payload: [], // Reducer will get current state from closure
+    });
     disconnect();
   }, [clearToolHistory, disconnect]);
 
@@ -607,6 +609,21 @@ Write a complete component with export default that accepts props.`,
       ];
     });
   }, [input, panelClientId, clientRef]);
+
+  const handleInterruptAgent = useCallback(
+    async (agentId: string, messageId: string) => {
+      if (!clientRef.current) return;
+      try {
+        // Call pause tool via RPC - this interrupts the agent
+        await clientRef.current.callTool(agentId, "pause", {
+          reason: "User interrupted execution",
+        });
+      } catch (error) {
+        console.error("Failed to interrupt agent:", error);
+      }
+    },
+    [clientRef]
+  );
 
   // Setup phase - show agent discovery and selection
   if (phase === "setup") {
@@ -649,6 +666,7 @@ Write a complete component with export default that accepts props.`,
       onReset={reset}
       onFeedbackDismiss={handleFeedbackDismiss}
       onFeedbackError={handleFeedbackError}
+      onInterrupt={handleInterruptAgent}
     />
   );
 }

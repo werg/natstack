@@ -25,3 +25,14 @@ export {
   formatArgsForLog,
   isMessageTargetedAt,
 } from "./responder-utils.js";
+
+// Execution pause/resume utilities
+export {
+  createPauseToolDefinition,
+} from "./execution.js";
+
+// Interrupt handler for responders
+export {
+  createInterruptHandler,
+  type InterruptHandlerOptions,
+} from "./interrupt-handler.js";

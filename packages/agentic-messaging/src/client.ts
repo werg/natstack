@@ -26,6 +26,7 @@ import type {
 import { AgenticError, ValidationError } from "./types.js";
 import {
   ErrorMessageSchema,
+  ExecutionPauseSchema,
   NewMessageSchema,
   ToolCallSchema,
   ToolCancelSchema,
@@ -270,14 +271,27 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
   }
 
   function getToolAdvertisements(fromTools: Record<string, ToolDefinition>): ToolAdvertisement[] {
-    return Object.entries(fromTools).map(([name, def]) => ({
-      name,
-      description: def.description,
-      parameters: zodToJsonSchema(def.parameters),
-      returns: def.returns ? zodToJsonSchema(def.returns) : undefined,
-      streaming: def.streaming ?? false,
-      timeout: def.timeout,
-    }));
+    return Object.entries(fromTools).map(([name, def]) => {
+      // Handle both Zod schemas and plain JSON schema objects
+      const parameters = def.parameters && typeof def.parameters === "object" && !("_def" in def.parameters)
+        ? (def.parameters as JsonSchema) // Already a JSON schema
+        : zodToJsonSchema(def.parameters as z.ZodTypeAny); // Convert Zod schema
+
+      const returns = def.returns
+        ? (def.returns && typeof def.returns === "object" && !("_def" in def.returns)
+          ? (def.returns as JsonSchema)
+          : zodToJsonSchema(def.returns as z.ZodTypeAny))
+        : undefined;
+
+      return {
+        name,
+        description: def.description,
+        parameters,
+        returns,
+        streaming: def.streaming ?? false,
+        timeout: def.timeout,
+      };
+    });
   }
 
   function buildMetadataWithTools(): AnyRecord {
@@ -520,7 +534,10 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
     const TIMEOUT_SENTINEL = Symbol("timeout");
 
     try {
-      const parsedArgs = (tool.parameters as z.ZodTypeAny).parse(call.args);
+      // Handle both Zod schemas and plain JSON schema objects
+      const parsedArgs = tool.parameters && "_def" in tool.parameters
+        ? (tool.parameters as z.ZodTypeAny).parse(call.args)  // Zod schema
+        : call.args;  // Plain JSON schema - pass through as-is
 
       // Build race competitors
       const competitors: Promise<unknown>[] = [Promise.resolve(tool.execute(parsedArgs, ctx))];
@@ -744,6 +761,22 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
         }
         callStates.delete(parsed.callId);
       }
+      return;
+    }
+
+    if (type === "execution-pause") {
+      const parsed = validateReceive(ExecutionPauseSchema, payload, "ExecutionPause");
+      if (!parsed) return;
+      const event = {
+        type: "execution-pause" as const,
+        kind,
+        senderId,
+        ts,
+        messageId: parsed.messageId,
+        status: parsed.status,
+        reason: parsed.reason,
+      };
+      eventsFanout.emit(event);
       return;
     }
 

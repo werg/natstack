@@ -22,6 +22,8 @@ import {
   parseAgentConfig,
   createLogger,
   formatArgsForLog,
+  createInterruptHandler,
+  createPauseToolDefinition,
   type AgenticClient,
   type ChatParticipantMetadata,
 } from "@natstack/agentic-messaging";
@@ -291,6 +293,11 @@ async function main() {
       type: "codex",
       handle,
     },
+    tools: {
+      pause: createPauseToolDefinition(async () => {
+        // Pause event is published by interrupt handler
+      }),
+    },
   });
 
   client.onRoster((roster) => {
@@ -353,6 +360,18 @@ async function handleUserMessage(
       codexHome = createCodexConfig(mcpServerUrl);
     }
 
+    // Set up RPC pause handler - monitors for pause tool calls
+    const interruptHandler = createInterruptHandler({
+      client,
+      messageId: userMessageId,
+      onPause: (reason) => {
+        log(`Pause RPC received: ${reason}`);
+      }
+    });
+
+    // Start monitoring for pause events in background
+    void interruptHandler.monitor();
+
     // Initialize Codex SDK with custom config location
     // Only pass through necessary env vars to avoid leaking sensitive data
     // Filter out undefined values to avoid passing them to the subprocess
@@ -388,6 +407,11 @@ async function handleUserMessage(
     const itemTextLengths = new Map<string, number>();
 
     for await (const event of events) {
+      // Break if pause RPC was received
+      if (interruptHandler.isPaused()) {
+        log(`Execution paused, stopping event processing`);
+        break;
+      }
       switch (event.type) {
         case "item.updated": {
           // Handle text content from agent messages (streaming)
@@ -440,10 +464,12 @@ async function handleUserMessage(
       }
     }
   } catch (err) {
+    // Pause tool returns successfully, so we shouldn't see pause-related errors
+    // Any error here is a real error that should be reported
     console.error(`[Codex Worker] Error:`, err);
     await client.error(responseId, err instanceof Error ? err.message : String(err));
   } finally {
-    // Cleanup
+    // Cleanup resources
     if (mcpServer) {
       await mcpServer.close();
     }

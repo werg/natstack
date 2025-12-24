@@ -13,10 +13,12 @@ import {
   parseAgentConfig,
   createLogger,
   formatArgsForLog,
+  createInterruptHandler,
+  createPauseToolDefinition,
   type AgenticClient,
   type ChatParticipantMetadata,
 } from "@natstack/agentic-messaging";
-import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
+import { query, tool, createSdkMcpServer, type Query } from "@anthropic-ai/claude-agent-sdk";
 
 void setTitle("Claude Code Responder");
 
@@ -54,6 +56,11 @@ async function main() {
       name: "Claude Code",
       type: "claude-code",
       handle,
+    },
+    tools: {
+      pause: createPauseToolDefinition(async () => {
+        // Pause event is published by interrupt handler
+      }),
     },
   });
 
@@ -100,6 +107,23 @@ async function handleUserMessage(
   const responseId = await client.send("", { replyTo: userMessageId });
 
   try {
+    // Keep reference to the query for interrupt handling via RPC pause mechanism
+    let queryInstance: Query | null = null;
+
+    // Set up RPC pause handler - monitors for pause tool calls
+    const interruptHandler = createInterruptHandler({
+      client,
+      messageId: userMessageId,
+      onPause: async (reason) => {
+        log(`Pause RPC received: ${reason}`);
+        // Break out of the query loop via isPaused() check
+        // The pause tool returns successfully (not an error)
+      }
+    });
+
+    // Start monitoring for pause events in background
+    void interruptHandler.monitor();
+
     // Convert pubsub tools to Claude Agent SDK MCP tools
     const mcpTools = toolDefs.map((toolDef) =>
       tool(
@@ -116,35 +140,53 @@ async function handleUserMessage(
       )
     );
 
-    // Create MCP server with pubsub tools
-    const pubsubServer = mcpTools.length > 0
-      ? createSdkMcpServer({
-          name: "pubsub",
-          version: "1.0.0",
-          tools: mcpTools,
-        })
-      : undefined;
+    // Create MCP server with only pubsub tools (NOT pause - that's RPC only)
+    const pubsubServer = createSdkMcpServer({
+      name: "pubsub",
+      version: "1.0.0",
+      tools: mcpTools,
+    });
 
     // Determine allowed tools
     const allowedTools = mcpTools.map((t) => `mcp__pubsub__${t.name}`);
 
     // Query Claude using the Agent SDK
-    for await (const message of query({
+    queryInstance = query({
       prompt: userText,
       options: {
-        ...(pubsubServer && { mcpServers: { pubsub: pubsubServer } }),
+        mcpServers: { pubsub: pubsubServer },
         ...(allowedTools.length > 0 && { allowedTools }),
         // Disable built-in tools - we only want pubsub tools
         disallowedTools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebSearch", "WebFetch", "Task"],
         // Set working directory if provided via config
         ...(workingDirectory && { cwd: workingDirectory }),
+        // Enable streaming of partial messages for token-by-token delivery
+        includePartialMessages: true,
       },
-    })) {
-      if (message.type === "assistant") {
-        // Extract text content from assistant message
+    });
+
+    for await (const message of queryInstance) {
+      // Check if pause was requested and break early
+      if (interruptHandler.isPaused()) {
+        log("Execution paused, breaking out of query loop");
+        break;
+      }
+
+      if (message.type === "stream_event") {
+        // Handle streaming message events (token-by-token with includePartialMessages: true)
+        const event = message.event as { type: string; delta?: { type: string; text?: string } };
+
+        // Only handle text deltas from content blocks
+        if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
+          if (event.delta.text) {
+            // Send each text delta immediately (real streaming)
+            await client.update(responseId, event.delta.text);
+          }
+        }
+      } else if (message.type === "assistant") {
+        // Fallback for complete assistant messages (shouldn't occur with includePartialMessages: true)
         for (const block of message.message.content) {
           if (block.type === "text") {
-            // Stream content delta (persisted for replay)
             await client.update(responseId, block.text);
           }
         }
@@ -156,10 +198,12 @@ async function handleUserMessage(
       }
     }
 
-    // Mark message as complete
+    // Mark message as complete (whether interrupted or finished normally)
     await client.complete(responseId);
     log(`Completed response for ${userMessageId}`);
   } catch (err) {
+    // Pause tool returns successfully, so we shouldn't see pause-related errors
+    // Any error here is a real error that should be reported
     console.error(`[Claude Code] Error:`, err);
     await client.error(responseId, err instanceof Error ? err.message : String(err));
   }

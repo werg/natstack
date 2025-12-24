@@ -10,6 +10,8 @@ import {
   connect,
   createLogger,
   parseAgentConfig,
+  createInterruptHandler,
+  createPauseToolDefinition,
   type AgenticClient,
   type ChatParticipantMetadata,
 } from "@natstack/agentic-messaging";
@@ -46,6 +48,11 @@ async function main() {
       name: "AI Responder",
       type: "ai-responder",
       handle,
+    },
+    tools: {
+      pause: createPauseToolDefinition(async () => {
+        // Pause event is published by interrupt handler
+      }),
     },
   });
 
@@ -84,7 +91,20 @@ async function handleUserMessage(
   // Start a new message (empty, will stream content via updates)
   const responseId = await client.send("", { replyTo: userMessageId });
 
+  // Set up interrupt handler to monitor for pause requests
+  const interruptHandler = createInterruptHandler({
+    client,
+    messageId: userMessageId,
+    onPause: (reason) => {
+      log(`Pause RPC received: ${reason}`);
+    }
+  });
+
+  // Start monitoring for pause events in background
+  void interruptHandler.monitor();
+
   try {
+
     // Stream AI response using fast model
     const stream = ai.streamText({
       model: "fast",
@@ -94,6 +114,12 @@ async function handleUserMessage(
     });
 
     for await (const event of stream) {
+      // Check if pause was requested
+      if (interruptHandler.isPaused()) {
+        log("Execution paused, stopping stream");
+        break;
+      }
+
       if (event.type === "text-delta") {
         // Send content delta (persisted for replay)
         await client.update(responseId, event.text);
@@ -106,8 +132,9 @@ async function handleUserMessage(
     log(`Completed response for ${userMessageId}`);
 
   } catch (err) {
+    // Pause tool returns successfully, so we shouldn't see pause-related errors
+    // Any error here is a real error that should be reported
     console.error(`[Worker] AI error:`, err);
-    // Send error
     await client.error(responseId, err instanceof Error ? err.message : String(err));
   }
 }
