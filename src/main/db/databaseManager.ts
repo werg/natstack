@@ -2,7 +2,7 @@
  * DatabaseManager - Manages SQLite database connections for workers and panels.
  *
  * Provides connection pooling, path management, and query execution using better-sqlite3.
- * All databases are stored under: <workspace>/.cache/databases/
+ * All databases are stored under: <workspace>/.databases/
  */
 
 import Database from "better-sqlite3";
@@ -42,10 +42,10 @@ export class DatabaseManager {
 
   /**
    * Open a database.
-   * Path: <workspace>/.cache/databases/<name>.db
+   * Path: <workspace>/.databases/<name>.db
    *
-   * Previously stored in ~/.config/natstack/databases/<workspace>/ but that
-   * location was getting mysteriously deleted during app startup.
+   * Databases are stored in workspace-specific .databases/ directory, not in .cache/
+   * because they are persistent data that should not be cleared by cache operations.
    *
    * @param ownerId - The worker or panel ID (for cleanup tracking)
    * @param dbName - The database name
@@ -57,9 +57,9 @@ export class DatabaseManager {
       throw new Error("No active workspace");
     }
 
-    // Store databases in workspace cache directory instead of central config
-    // This avoids the mysterious deletion happening in ~/.config/natstack/
-    const dbDir = path.join(workspace.cachePath, "databases");
+    // Store databases in workspace .databases directory, not in .cache/
+    // Databases are persistent data, not temporary cache
+    const dbDir = path.join(workspace.path, ".databases");
     fs.mkdirSync(dbDir, { recursive: true });
 
     const dbPath = path.join(dbDir, this.sanitizeDbName(dbName) + ".db");

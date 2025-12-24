@@ -34,7 +34,7 @@ import { handle } from "./ipc/handlers.js";
 import type * as SharedPanel from "../shared/ipc/types.js";
 import type { PanelContextMenuAction } from "../shared/ipc/types.js";
 import { setupMenu } from "./menu.js";
-import { setActiveWorkspace } from "./paths.js";
+import { setActiveWorkspace, getBuildArtifactsDirectory } from "./paths.js";
 import { getWorkerManager } from "./workerManager.js";
 import { registerWorkerHandlers } from "./ipc/workerHandlers.js";
 import {
@@ -222,11 +222,17 @@ handle("app:get-panel-preload-path", async () => {
 });
 
 handle("app:clear-build-cache", async () => {
-  // Clear main-process cache and repo manifest
+  // Clear main-process cache and build artifacts
   const cacheManager = getMainCacheManager();
   await cacheManager.clear();
 
-  console.log("[App] Build cache cleared");
+  // Clear build artifacts
+  const artifactsDir = getBuildArtifactsDirectory();
+  if (fs.existsSync(artifactsDir)) {
+    fs.rmSync(artifactsDir, { recursive: true, force: true });
+  }
+
+  console.log("[App] Build cache and artifacts cleared");
 });
 
 // =============================================================================

@@ -118,13 +118,16 @@ export function getNatstackStateRootDirectory(): string {
 
 /**
  * Get the central build artifacts directory (never inside panel/worker source trees).
+ * Always stored in the central config location, not workspace-specific.
  *
- * - With an active workspace: <workspace>/.cache/build-artifacts/
- * - Otherwise: <userData>/build-artifacts/
+ * Location: <userData>/build-artifacts/
+ * - Linux: ~/.config/natstack/build-artifacts/
+ * - macOS: ~/Library/Application Support/natstack/build-artifacts/
+ * - Windows: %APPDATA%/natstack/build-artifacts/
  */
 export function getBuildArtifactsDirectory(): string {
-  const stateRoot = getNatstackStateRootDirectory();
-  const artifactsDir = path.join(stateRoot, "build-artifacts");
+  const centralConfigDir = getCentralConfigDirectory();
+  const artifactsDir = path.join(centralConfigDir, "build-artifacts");
   fs.mkdirSync(artifactsDir, { recursive: true });
   return artifactsDir;
 }

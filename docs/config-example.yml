@@ -23,19 +23,8 @@ models:
 
 cache:
   # Main Process Cache (Global Storage)
-  # These entries are shared across all panels via selective loading
   maxEntries: 100000           # Maximum number of cache entries (default: 100000)
   maxSize: 5368709120          # Maximum total size in bytes (default: 5GB)
-
-  # Panel Cache (Per-Panel Limits)
-  # Each panel loads only the cache entries it needs from the main process
-  maxEntriesPerPanel: 50000    # Maximum entries per panel (default: 50000)
-  maxSizePerPanel: 2147483648  # Maximum size per panel in bytes (default: 2GB)
-
-  # Repo Manifest Tracking
-  # Tracks which cache entries each git repo uses during runtime
-  maxKeysPerRepo: 5000         # Maximum cache keys tracked per repo (default: 5000)
-  maxRepos: 100                # Maximum repos to track (default: 100)
 
   # Cache Expiration
   # Only applies in development mode (production never expires)

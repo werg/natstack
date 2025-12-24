@@ -90,14 +90,6 @@ export interface CacheConfig {
   maxEntries?: number;
   /** Maximum total cache size in bytes in main process (default: 5GB) */
   maxSize?: number;
-  /** Maximum entries per panel (default: 50000) */
-  maxEntriesPerPanel?: number;
-  /** Maximum size per panel in bytes (default: 2GB) */
-  maxSizePerPanel?: number;
-  /** Maximum cache keys per repo manifest (default: 5000) */
-  maxKeysPerRepo?: number;
-  /** Maximum repos to track in manifest (default: 100) */
-  maxRepos?: number;
   /** Cache expiration in dev mode, in milliseconds (default: 5 minutes) */
   expirationMs?: number;
 }

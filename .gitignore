@@ -48,4 +48,4 @@ release
 # Workspace secrets and state
 workspace/.env
 workspace/.secrets.yml
-workspace/state/.cache/
+workspace/.databases/
