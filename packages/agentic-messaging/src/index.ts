@@ -36,3 +36,11 @@ export {
   createInterruptHandler,
   type InterruptHandlerOptions,
 } from "./interrupt-handler.js";
+
+// Session management for conversation resumption
+export {
+  SessionManager,
+  type SessionManagerOptions,
+  type SessionState,
+  type ConversationMessage,
+} from "./session-manager.js";

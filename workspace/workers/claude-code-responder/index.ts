@@ -15,6 +15,7 @@ import {
   formatArgsForLog,
   createInterruptHandler,
   createPauseToolDefinition,
+  SessionManager,
   type AgenticClient,
   type ChatParticipantMetadata,
 } from "@natstack/agentic-messaging";
@@ -42,11 +43,35 @@ async function main() {
   // Get handle from config (set by broker from invite), fallback to default
   const handle = typeof agentConfig.handle === "string" ? agentConfig.handle : "claude";
 
+  // Get workspace ID from environment
+  const workspaceId = process.env["NATSTACK_WORKSPACE_ID"] || "default";
+
   log("Starting Claude Code responder...");
   if (workingDirectory) {
     log(`Working directory: ${workingDirectory}`);
   }
   log(`Handle: @${handle}`);
+
+  // Initialize session manager for conversation resumption
+  const sessionManager = new SessionManager({
+    workspaceId,
+    channelName,
+    agentHandle: handle,
+    sdkType: "claude-agent-sdk",
+    workingDirectory,
+  });
+
+  try {
+    await sessionManager.initialize();
+    const sessionState = await sessionManager.getOrCreateSession();
+    log(`Session initialized: ${sessionState.sessionKey}`);
+    if (sessionState.sdkSessionId) {
+      log(`Resuming from previous session: ${sessionState.sdkSessionId}`);
+    }
+  } catch (err) {
+    console.error("Failed to initialize session manager:", err);
+    // Continue anyway - session management is optional
+  }
 
   // Connect to agentic messaging channel
   const client = connect<ChatParticipantMetadata>(pubsubConfig.serverUrl, pubsubConfig.token, {
@@ -83,8 +108,15 @@ async function main() {
 
     // Only respond to messages from panels (not our own or other workers)
     if (sender?.metadata.type === "panel" && event.senderId !== id) {
-      await handleUserMessage(client, event.id, event.content, workingDirectory);
+      await handleUserMessage(client, event.id, event.content, workingDirectory, sessionManager);
     }
+  }
+
+  // Clean up session manager on shutdown
+  try {
+    await sessionManager.close();
+  } catch (err) {
+    console.error("Failed to close session manager:", err);
   }
 }
 
@@ -92,7 +124,8 @@ async function handleUserMessage(
   client: AgenticClient<ChatParticipantMetadata>,
   userMessageId: string,
   userText: string,
-  workingDirectory: string | undefined
+  workingDirectory: string | undefined,
+  sessionManager: SessionManager
 ) {
   log(`Received message: ${userText}`);
 
@@ -150,20 +183,28 @@ async function handleUserMessage(
     // Determine allowed tools
     const allowedTools = mcpTools.map((t) => `mcp__pubsub__${t.name}`);
 
+    // Get session state for resumption
+    const sessionState = sessionManager.getSessionState();
+    const queryOptions: Parameters<typeof query>[0]["options"] = {
+      mcpServers: { pubsub: pubsubServer },
+      ...(allowedTools.length > 0 && { allowedTools }),
+      // Disable built-in tools - we only want pubsub tools
+      disallowedTools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebSearch", "WebFetch", "Task"],
+      // Set working directory if provided via config
+      ...(workingDirectory && { cwd: workingDirectory }),
+      // Enable streaming of partial messages for token-by-token delivery
+      includePartialMessages: true,
+      // Resume from previous session if available
+      ...(sessionState?.sdkSessionId && { resume: sessionState.sdkSessionId }),
+    };
+
     // Query Claude using the Agent SDK
     queryInstance = query({
       prompt: userText,
-      options: {
-        mcpServers: { pubsub: pubsubServer },
-        ...(allowedTools.length > 0 && { allowedTools }),
-        // Disable built-in tools - we only want pubsub tools
-        disallowedTools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebSearch", "WebFetch", "Task"],
-        // Set working directory if provided via config
-        ...(workingDirectory && { cwd: workingDirectory }),
-        // Enable streaming of partial messages for token-by-token delivery
-        includePartialMessages: true,
-      },
+      options: queryOptions,
     });
+
+    let capturedSessionId: string | undefined;
 
     for await (const message of queryInstance) {
       // Check if pause was requested and break early
@@ -194,7 +235,22 @@ async function handleUserMessage(
         if (message.subtype !== "success") {
           throw new Error(`Query failed: ${message.subtype}`);
         }
+        // Capture session ID from result for future resumption
+        if ((message as unknown as Record<string, unknown>).session_id) {
+          capturedSessionId = String((message as unknown as Record<string, unknown>).session_id);
+        }
         log(`Query completed. Cost: $${message.total_cost_usd?.toFixed(4) ?? "unknown"}`);
+      }
+    }
+
+    // Store session ID in session manager if captured
+    if (capturedSessionId) {
+      try {
+        // Use a placeholder pubsub message ID - in a real scenario this would come from pubsub
+        await sessionManager.commitMessage(0, capturedSessionId);
+        log(`Session ID stored: ${capturedSessionId}`);
+      } catch (err) {
+        console.error("Failed to store session ID:", err);
       }
     }
 

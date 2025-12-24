@@ -12,6 +12,7 @@ import {
   parseAgentConfig,
   createInterruptHandler,
   createPauseToolDefinition,
+  SessionManager,
   type AgenticClient,
   type ChatParticipantMetadata,
 } from "@natstack/agentic-messaging";
@@ -37,8 +38,28 @@ async function main() {
   // Get handle from config (set by broker from invite), fallback to default
   const handle = typeof agentConfig.handle === "string" ? agentConfig.handle : "ai";
 
+  // Get workspace ID from environment
+  const workspaceId = process.env["NATSTACK_WORKSPACE_ID"] || "default";
+
   log("Starting chat responder...");
   log(`Handle: @${handle}`);
+
+  // Initialize session manager for conversation resumption with manual history
+  const sessionManager = new SessionManager({
+    workspaceId,
+    channelName,
+    agentHandle: handle,
+    sdkType: "manual",
+  });
+
+  try {
+    await sessionManager.initialize();
+    const sessionState = await sessionManager.getOrCreateSession();
+    log(`Session initialized: ${sessionState.sessionKey}`);
+  } catch (err) {
+    console.error("Failed to initialize session manager:", err);
+    // Continue anyway - session management is optional
+  }
 
   // Connect to agentic messaging channel with reconnection and participant metadata
   const client = connect<ChatParticipantMetadata>(pubsubConfig.serverUrl, pubsubConfig.token, {
@@ -76,15 +97,23 @@ async function main() {
 
     // Only respond to messages from panels (not our own or other workers)
     if (sender?.metadata.type === "panel" && event.senderId !== id) {
-      await handleUserMessage(client, event.id, event.content);
+      await handleUserMessage(client, event.id, event.content, sessionManager);
     }
+  }
+
+  // Clean up session manager on shutdown
+  try {
+    await sessionManager.close();
+  } catch (err) {
+    console.error("Failed to close session manager:", err);
   }
 }
 
 async function handleUserMessage(
   client: AgenticClient<ChatParticipantMetadata>,
   userMessageId: string,
-  userText: string
+  userText: string,
+  sessionManager: SessionManager
 ) {
   log(`Received message: ${userText}`);
 
@@ -104,14 +133,41 @@ async function handleUserMessage(
   void interruptHandler.monitor();
 
   try {
+    // Build conversation history from previous messages (limit to last 20 messages for token efficiency)
+    let conversationHistory: Array<{ role: "user" | "assistant"; content: string }> = [];
+    try {
+      conversationHistory = await sessionManager.getConversationHistory(20);
+      if (conversationHistory.length > 0) {
+        log(`Loaded ${conversationHistory.length} previous messages from history`);
+      }
+    } catch (err) {
+      // Continue without history if load fails
+      console.error("Failed to load conversation history:", err);
+    }
+
+    // Add current user message to history
+    const messages = [
+      ...conversationHistory,
+      { role: "user" as const, content: userText }
+    ];
 
     // Stream AI response using fast model
     const stream = ai.streamText({
       model: "fast",
       system: "You are a helpful, concise assistant. Keep responses brief and friendly.",
-      messages: [{ role: "user", content: userText }],
+      messages,
       maxOutputTokens: 500,
     });
+
+    // Store user message in history
+    try {
+      await sessionManager.storeMessage(userMessageId, 0, "user", userText);
+    } catch (err) {
+      console.error("Failed to store user message:", err);
+    }
+
+    // Accumulate assistant response for storage
+    let assistantResponse = "";
 
     for await (const event of stream) {
       // Check if pause was requested
@@ -121,8 +177,21 @@ async function handleUserMessage(
       }
 
       if (event.type === "text-delta") {
+        // Accumulate response
+        assistantResponse += event.text;
         // Send content delta (persisted for replay)
         await client.update(responseId, event.text);
+      }
+    }
+
+    // Store complete assistant response in history
+    if (assistantResponse) {
+      try {
+        await sessionManager.storeMessage(responseId, 0, "assistant", assistantResponse);
+        // Commit message to session
+        await sessionManager.commitMessage(0);
+      } catch (err) {
+        console.error("Failed to store assistant message:", err);
       }
     }
 

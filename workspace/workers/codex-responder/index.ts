@@ -24,6 +24,7 @@ import {
   formatArgsForLog,
   createInterruptHandler,
   createPauseToolDefinition,
+  SessionManager,
   type AgenticClient,
   type ChatParticipantMetadata,
 } from "@natstack/agentic-messaging";
@@ -278,11 +279,35 @@ async function main() {
   // Get handle from config (set by broker from invite), fallback to default
   const handle = typeof agentConfig.handle === "string" ? agentConfig.handle : "codex";
 
+  // Get workspace ID from environment
+  const workspaceId = process.env["NATSTACK_WORKSPACE_ID"] || "default";
+
   log("Starting Codex responder...");
   if (workingDirectory) {
     log(`Working directory: ${workingDirectory}`);
   }
   log(`Handle: @${handle}`);
+
+  // Initialize session manager for conversation resumption
+  const sessionManager = new SessionManager({
+    workspaceId,
+    channelName,
+    agentHandle: handle,
+    sdkType: "codex-sdk",
+    workingDirectory,
+  });
+
+  try {
+    await sessionManager.initialize();
+    const sessionState = await sessionManager.getOrCreateSession();
+    log(`Session initialized: ${sessionState.sessionKey}`);
+    if (sessionState.sdkSessionId) {
+      log(`Resuming from previous session: ${sessionState.sdkSessionId}`);
+    }
+  } catch (err) {
+    console.error("Failed to initialize session manager:", err);
+    // Continue anyway - session management is optional
+  }
 
   // Connect to agentic messaging channel
   const client = connect<ChatParticipantMetadata>(pubsubConfig.serverUrl, pubsubConfig.token, {
@@ -319,8 +344,15 @@ async function main() {
 
     // Only respond to messages from panels (not our own or other workers)
     if (sender?.metadata.type === "panel" && event.senderId !== id) {
-      await handleUserMessage(client, event.id, event.content, workingDirectory);
+      await handleUserMessage(client, event.id, event.content, workingDirectory, sessionManager);
     }
+  }
+
+  // Clean up session manager on shutdown
+  try {
+    await sessionManager.close();
+  } catch (err) {
+    console.error("Failed to close session manager:", err);
   }
 }
 
@@ -328,7 +360,8 @@ async function handleUserMessage(
   client: AgenticClient<ChatParticipantMetadata>,
   userMessageId: string,
   userText: string,
-  workingDirectory: string | undefined
+  workingDirectory: string | undefined,
+  sessionManager: SessionManager
 ) {
   log(`Received message: ${userText}`);
 
@@ -395,10 +428,24 @@ async function handleUserMessage(
       env: Object.keys(baseEnv).length > 0 ? baseEnv : undefined,
     });
 
-    const thread = codex.startThread({
-      skipGitRepoCheck: true,
-      ...(workingDirectory && { cwd: workingDirectory }),
-    });
+    // Get session state for resumption
+    const sessionState = sessionManager.getSessionState();
+    let thread: ReturnType<typeof codex.startThread> | ReturnType<typeof codex.resumeThread>;
+
+    if (sessionState?.sdkSessionId) {
+      // Resume from previous thread if available
+      log(`Resuming Codex thread: ${sessionState.sdkSessionId}`);
+      thread = codex.resumeThread(sessionState.sdkSessionId, {
+        skipGitRepoCheck: true,
+        ...(workingDirectory && { cwd: workingDirectory }),
+      });
+    } else {
+      // Start new thread
+      thread = codex.startThread({
+        skipGitRepoCheck: true,
+        ...(workingDirectory && { cwd: workingDirectory }),
+      });
+    }
 
     // Run with streaming
     const { events } = await thread.runStreamed(userText);
@@ -413,6 +460,22 @@ async function handleUserMessage(
         break;
       }
       switch (event.type) {
+        case "thread.started": {
+          // Capture thread ID from first turn event
+          const threadEvent = event as unknown as Record<string, unknown>;
+          if (threadEvent.thread_id) {
+            const threadId = String(threadEvent.thread_id);
+            try {
+              // Use a placeholder pubsub message ID - in a real scenario this would come from pubsub
+              await sessionManager.commitMessage(0, threadId);
+              log(`Thread ID stored: ${threadId}`);
+            } catch (err) {
+              console.error("Failed to store thread ID:", err);
+            }
+          }
+          break;
+        }
+
         case "item.updated": {
           // Handle text content from agent messages (streaming)
           // AgentMessageItem has: { id, type: "agent_message", text: string }
