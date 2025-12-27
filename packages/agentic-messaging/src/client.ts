@@ -1,19 +1,28 @@
-import { connect as connectPubSub, type Message as PubSubMessage, type RosterUpdate } from "@natstack/pubsub";
+import {
+  connect as connectPubSub,
+  type PubSubMessage,
+  type RosterUpdate,
+} from "@natstack/pubsub";
 import { zodToJsonSchema as convertZodToJsonSchema } from "zod-to-json-schema";
 import { z } from "zod";
 
 import type {
   AgenticClient,
   AgenticParticipantMetadata,
+  AggregatedEvent,
   ConnectOptions,
+  ConversationMessage,
   DiscoveredTool,
   EventFilterOptions,
+  EventStreamItem,
+  EventStreamOptions,
   IncomingEvent,
   IncomingNewMessage,
   IncomingPresenceEvent,
   IncomingToolCall,
   IncomingToolResult,
   PresenceAction,
+  SendResult,
   ToolAdvertisement,
   ToolCallResult,
   ToolDefinition,
@@ -22,8 +31,12 @@ import type {
   ToolResultValue,
   ToolResultWithAttachment,
   JsonSchema,
+  MissedContext,
+  FormatOptions,
 } from "./types.js";
 import { AgenticError, ValidationError } from "./types.js";
+import { aggregateReplayEvents, formatMissedContext } from "./missed-context.js";
+import { SessionDb, type SessionRow } from "./session-db.js";
 import {
   ErrorMessageSchema,
   ExecutionPauseSchema,
@@ -209,28 +222,130 @@ function toAgenticErrorFromToolResult(content: unknown): AgenticError {
 export interface AgenticClientImpl<T extends AgenticParticipantMetadata = AgenticParticipantMetadata>
   extends AgenticClient<T> {}
 
-export function connect<T extends AgenticParticipantMetadata = AgenticParticipantMetadata>(
-  serverUrl: string,
-  token: string,
+/**
+ * Connect to an agentic messaging channel.
+ *
+ * This is the main entry point for the agentic messaging system. It establishes
+ * a WebSocket connection to the pubsub server, registers tools, and sets up
+ * session persistence if a workspace ID is provided.
+ *
+ * The returned promise resolves after:
+ * 1. WebSocket connection is established
+ * 2. Initial replay is complete (messages collected or streamed based on replayMode)
+ * 3. Session state is loaded (if workspaceId provided)
+ *
+ * @param options - Connection configuration
+ * @param options.serverUrl - WebSocket server URL (e.g., "ws://127.0.0.1:49452")
+ * @param options.token - Authentication token for the pubsub server
+ * @param options.channel - Channel name to join
+ * @param options.handle - Unique handle for @-mentions (must be unique within channel)
+ * @param options.name - Display name for this participant
+ * @param options.type - Participant type (e.g., "panel", "worker", "agent", "claude-code")
+ * @param options.extraMetadata - Additional metadata to include in presence
+ * @param options.workspaceId - Workspace ID for session persistence (optional)
+ * @param options.reconnect - Auto-reconnect on disconnect (boolean or ReconnectConfig)
+ * @param options.replayMode - How to handle replay: "collect" (aggregate), "stream" (emit), or "skip"
+ * @param options.tools - Tools this participant provides (auto-executed on tool-call)
+ * @param options.clientId - Custom client ID (defaults to random UUID)
+ * @param options.skipOwnMessages - Skip messages sent by this client in events()
+ *
+ * @returns Promise resolving to an AgenticClient instance
+ *
+ * @throws {AgenticError} With code "validation-error" if metadata is invalid
+ * @throws {AgenticError} With code "handle-conflict" if handle already in use
+ * @throws {AgenticError} With code "connection-error" if connection fails
+ *
+ * @example
+ * ```typescript
+ * // Basic connection
+ * const client = await connect({
+ *   serverUrl: "ws://localhost:49452",
+ *   token: "my-token",
+ *   channel: "my-channel",
+ *   handle: "my-agent",
+ *   name: "My Agent",
+ *   type: "agent",
+ * });
+ *
+ * // With session persistence and tools
+ * const client = await connect({
+ *   serverUrl,
+ *   token,
+ *   channel: "chat-room",
+ *   handle: "assistant",
+ *   name: "AI Assistant",
+ *   type: "worker",
+ *   workspaceId: process.env.WORKSPACE_ID,
+ *   reconnect: true,
+ *   tools: {
+ *     search: {
+ *       description: "Search for files",
+ *       parameters: z.object({ query: z.string() }),
+ *       execute: async (args) => ({ results: [] }),
+ *     },
+ *   },
+ * });
+ * ```
+ */
+export async function connect<T extends AgenticParticipantMetadata = AgenticParticipantMetadata>(
   options: ConnectOptions<T>
-): AgenticClient<T> {
+): Promise<AgenticClient<T>> {
   const {
+    serverUrl,
+    token,
     channel,
-    // Default to sinceId: 0 to replay all messages from the beginning
-    // Pass sinceId: undefined explicitly to skip replay
-    sinceId = 0,
+    handle,
+    name,
+    type,
+    extraMetadata,
+    workspaceId,
     reconnect,
-    metadata: userMetadata,
+    replayMode = "collect",
     tools: initialTools,
     clientId,
     skipOwnMessages,
   } = options;
+
+  const userMetadata: AnyRecord = {
+    name,
+    type,
+    handle,
+    ...(extraMetadata ?? {}),
+  };
 
   // Validate metadata has required fields (name, type, handle)
   const metadataValidation = AgenticMetadataSchema.safeParse(userMetadata);
   if (!metadataValidation.success) {
     const errors = metadataValidation.error.errors.map((e) => e.message).join(", ");
     throw new AgenticError(`Invalid metadata: ${errors}`, "validation-error", metadataValidation.error.errors);
+  }
+
+  let sessionDb: SessionDb | undefined;
+  let sessionRow: SessionRow | undefined;
+
+  if (workspaceId) {
+    try {
+      sessionDb = new SessionDb(workspaceId, channel, handle);
+      await sessionDb.initialize();
+      sessionRow = await sessionDb.getOrCreateSession();
+    } catch (err) {
+      console.warn("[AgenticClient] Session DB unavailable:", err);
+      sessionDb = undefined;
+      sessionRow = undefined;
+    }
+  }
+
+  // Determine replay starting point:
+  // - undefined: No replay (skip mode) - server sends no historical messages
+  // - checkpoint: Resume from last committed position (session resumption)
+  // - 0: Replay everything from beginning (new session or no checkpoint)
+  let sinceId: number | undefined;
+  if (replayMode === "skip") {
+    sinceId = undefined;
+  } else if (sessionRow?.checkpointPubsubId !== undefined) {
+    sinceId = sessionRow.checkpointPubsubId;
+  } else {
+    sinceId = 0;
   }
 
   const instanceId = randomId();
@@ -241,6 +356,13 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
   const errorHandlers = new Set<(error: Error) => void>();
   const eventsFanout = createFanout<IncomingEvent>();
   const toolCallHandlers = new Set<(call: IncomingToolCall) => void>();
+
+  const replayEvents: IncomingEvent[] = [];
+  let missedMessages: AggregatedEvent[] = [];
+
+  let checkpoint = sessionRow?.checkpointPubsubId;
+  let sdkSessionId = sessionRow?.sdkSessionId;
+  let status: "active" | "interrupted" | undefined = sessionRow?.status;
 
   const callStates = new Map<string, ToolCallState>();
   const providerAbortControllers = new Map<string, AbortController>();
@@ -400,6 +522,9 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
           { conflictingId, handle: ourHandle }
         );
         emitError(handleConflictError);
+        if (!initialReplayComplete) {
+          readyReject(handleConflictError);
+        }
         // Close the connection - we shouldn't stay connected with a conflicting handle
         pubsub.close();
         return;
@@ -448,9 +573,9 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
     type: string,
     payload: unknown,
     options?: { persist?: boolean; attachment?: Uint8Array }
-  ): Promise<void> {
+  ): Promise<number | undefined> {
     try {
-      await pubsub.publish(type, payload, options);
+      return await pubsub.publish(type, payload, options);
     } catch (err) {
       throw new AgenticError(
         err instanceof Error ? err.message : String(err),
@@ -610,97 +735,106 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
     await executeToolCall(call);
   }
 
-  async function handleIncoming(pubsubMsg: PubSubMessage): Promise<void> {
-    const { type, payload, attachment, senderId, ts, kind } = pubsubMsg;
+  function normalizeSenderMetadata(
+    metadata: Record<string, unknown> | undefined
+  ): { name?: string; type?: string; handle?: string } | undefined {
+    if (!metadata) return undefined;
+    const result: { name?: string; type?: string; handle?: string } = {};
+    if (typeof metadata["name"] === "string") result.name = metadata["name"] as string;
+    if (typeof metadata["type"] === "string") result.type = metadata["type"] as string;
+    if (typeof metadata["handle"] === "string") result.handle = metadata["handle"] as string;
+    return Object.keys(result).length > 0 ? result : undefined;
+  }
+
+  function parseIncoming(pubsubMsg: PubSubMessage): IncomingEvent | null {
+    const {
+      type,
+      payload,
+      attachment,
+      senderId,
+      ts,
+      kind,
+      id: pubsubId,
+      senderMetadata,
+    } = pubsubMsg;
+    const normalizedSender = normalizeSenderMetadata(senderMetadata);
 
     if (type === "message") {
       const parsed = validateReceive(NewMessageSchema, payload, "NewMessage");
       if (!parsed) {
-        return;
+        return null;
       }
-      const event = {
-        type: "message" as const,
+      return {
+        type: "message",
         kind,
         senderId,
         ts,
         attachment,
+        pubsubId,
+        senderMetadata: normalizedSender,
         id: parsed.id,
         content: parsed.content,
         replyTo: parsed.replyTo,
         contentType: parsed.contentType,
         at: parsed.at,
       };
-      eventsFanout.emit(event);
-      return;
     }
 
     if (type === "update-message") {
       const parsed = validateReceive(UpdateMessageSchema, payload, "UpdateMessage");
-      if (!parsed) return;
-      const event = {
-        type: "update-message" as const,
+      if (!parsed) return null;
+      return {
+        type: "update-message",
         kind,
         senderId,
         ts,
         attachment,
+        pubsubId,
+        senderMetadata: normalizedSender,
         id: parsed.id,
         content: parsed.content,
         complete: parsed.complete,
         contentType: parsed.contentType,
       };
-      eventsFanout.emit(event);
-      return;
     }
 
     if (type === "error") {
       const parsed = validateReceive(ErrorMessageSchema, payload, "ErrorMessage");
-      if (!parsed) return;
-      const event = {
-        type: "error" as const,
+      if (!parsed) return null;
+      return {
+        type: "error",
         kind,
         senderId,
         ts,
         attachment,
+        pubsubId,
+        senderMetadata: normalizedSender,
         id: parsed.id,
         error: parsed.error,
         code: parsed.code,
       };
-      eventsFanout.emit(event);
-      return;
     }
 
     if (type === "tool-call") {
       const parsed = validateReceive(ToolCallSchema, payload, "ToolCall");
-      if (!parsed) return;
-      const incoming: IncomingToolCall = {
+      if (!parsed) return null;
+      return {
+        type: "tool-call",
         kind,
         senderId,
         ts,
+        pubsubId,
+        senderMetadata: normalizedSender,
         callId: parsed.callId,
         toolName: parsed.toolName,
         providerId: parsed.providerId,
         args: parsed.args,
       };
-      // Emit to unified events stream
-      eventsFanout.emit({ ...incoming, type: "tool-call" });
-      if (selfId) {
-        // Only execute tools for live messages, not replay
-        // Replay tool calls are for history reconstruction only
-        if (kind !== "replay") {
-          emitAndHandleToolCall(incoming);
-        } else if (incoming.providerId === selfId) {
-          // Still emit to targeted handlers for replay, just don't execute
-          emitToolCall(incoming);
-        }
-      } else {
-        pendingToolCalls.push(incoming);
-      }
-      return;
     }
 
     if (type === "tool-cancel") {
       const parsed = validateReceive(ToolCancelSchema, payload, "ToolCancel");
-      if (!parsed) return;
+      if (!parsed) return null;
       const controller = providerAbortControllers.get(parsed.callId);
       controller?.abort();
       const state = callStates.get(parsed.callId);
@@ -708,22 +842,28 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
         state.complete = true;
         state.isError = true;
         const error = new AgenticError("cancelled", "cancelled");
-        state.stream.emit({ content: { error: "cancelled", code: "cancelled" }, complete: true, isError: true });
+        state.stream.emit({
+          content: { error: "cancelled", code: "cancelled" },
+          complete: true,
+          isError: true,
+        });
         state.stream.close();
         state.reject(error);
       }
-      return;
+      return null;
     }
 
     if (type === "tool-result") {
       const parsed = validateReceive(ToolResultSchema, payload, "ToolResult");
-      if (!parsed) return;
+      if (!parsed) return null;
       const complete = parsed.complete ?? false;
       const isError = parsed.isError ?? false;
       const incomingResult: IncomingToolResult = {
         kind,
         senderId,
         ts,
+        pubsubId,
+        senderMetadata: normalizedSender,
         callId: parsed.callId,
         content: parsed.content,
         contentType: parsed.contentType,
@@ -732,10 +872,9 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
         progress: parsed.progress,
         attachment,
       };
-      // Emit to unified events stream
-      eventsFanout.emit({ ...incomingResult, type: "tool-result" });
+
       const state = callStates.get(parsed.callId);
-      if (!state) return;
+      if (!state) return { ...incomingResult, type: "tool-result" };
 
       const chunk: ToolResultChunk = {
         content: parsed.content,
@@ -757,53 +896,147 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
         if (chunk.isError) {
           state.reject(toAgenticErrorFromToolResult(chunk.content));
         } else {
-          state.resolve({ content: chunk.content, attachment: chunk.attachment, contentType: chunk.contentType });
+          state.resolve({
+            content: chunk.content,
+            attachment: chunk.attachment,
+            contentType: chunk.contentType,
+          });
         }
         callStates.delete(parsed.callId);
       }
-      return;
+
+      return { ...incomingResult, type: "tool-result" };
     }
 
     if (type === "execution-pause") {
       const parsed = validateReceive(ExecutionPauseSchema, payload, "ExecutionPause");
-      if (!parsed) return;
-      const event = {
-        type: "execution-pause" as const,
+      if (!parsed) return null;
+      return {
+        type: "execution-pause",
         kind,
         senderId,
         ts,
+        pubsubId,
+        senderMetadata: normalizedSender,
         messageId: parsed.messageId,
         status: parsed.status,
         reason: parsed.reason,
       };
-      eventsFanout.emit(event);
-      return;
     }
 
     if (type === "presence") {
-      // Presence events have payload: { action: "join" | "leave", metadata: {...} }
       const presencePayload = payload as { action?: PresenceAction; metadata?: Record<string, unknown> };
       if (!presencePayload.action || !presencePayload.metadata) {
-        return;
+        return null;
       }
       const presenceEvent: IncomingPresenceEvent = {
         kind,
         senderId,
         ts,
+        pubsubId,
+        senderMetadata: normalizedSender,
         action: presencePayload.action,
         metadata: presencePayload.metadata,
       };
-      // Emit to unified events stream
-      eventsFanout.emit({ ...presenceEvent, type: "presence" });
-      return;
+      return { ...presenceEvent, type: "presence" };
     }
+
+    return null;
   }
+
+  let readySettled = false;
+  let readyResolve!: () => void;
+  let readyReject!: (err: Error) => void;
+  const readyPromise = new Promise<void>((resolve, reject) => {
+    readyResolve = () => {
+      if (readySettled) return;
+      readySettled = true;
+      resolve();
+    };
+    readyReject = (error: Error) => {
+      if (readySettled) return;
+      readySettled = true;
+      reject(error);
+    };
+  });
+  let initialReplayComplete = false;
+  let bufferingReplay = replayMode !== "skip";
+  let pendingReplay: IncomingEvent[] = replayEvents;
+
+  const unsubReconnect = pubsub.onReconnect(() => {
+    if (replayMode === "skip") return;
+    bufferingReplay = true;
+    pendingReplay = [];
+  });
+
+  const unsubDisconnect = pubsub.onDisconnect(() => {
+    if (workspaceId) {
+      status = "interrupted";
+      if (sessionDb) {
+        void sessionDb.markInterrupted();
+      }
+    }
+    if (!initialReplayComplete) {
+      readyReject(new AgenticError("connection closed", "connection-error"));
+    }
+  });
 
   void (async () => {
     try {
       for await (const msg of pubsub.messages()) {
         try {
-          await handleIncoming(msg);
+          if (msg.kind === "ready") {
+            if (replayMode !== "skip") {
+              const aggregated = aggregateReplayEvents(pendingReplay);
+              if (!initialReplayComplete) {
+                missedMessages = aggregated;
+              } else if (aggregated.length > 0) {
+                missedMessages = [...missedMessages, ...aggregated];
+              }
+            }
+
+            bufferingReplay = false;
+            pendingReplay = [];
+
+            if (!initialReplayComplete) {
+              initialReplayComplete = true;
+              readyResolve();
+            }
+            continue;
+          }
+
+          const event = parseIncoming(msg);
+          if (!event) continue;
+
+          if (event.type === "tool-call") {
+            if (selfId) {
+              if (event.kind !== "replay") {
+                emitAndHandleToolCall(event);
+              } else if (event.providerId === selfId) {
+                emitToolCall(event);
+              }
+            } else {
+              pendingToolCalls.push(event);
+            }
+          }
+
+          // Buffer replay events until "ready" signal is received.
+          // Replay events are collected into pendingReplay, then aggregated when ready.
+          // If bufferingReplay is false but we receive a replay event, this indicates
+          // a reconnection scenario where replay started again mid-stream.
+          if (event.kind === "replay") {
+            if (replayMode === "skip") {
+              continue;
+            }
+            if (!bufferingReplay) {
+              bufferingReplay = true;
+              pendingReplay = [];
+            }
+            pendingReplay.push(event);
+            continue;
+          }
+
+          eventsFanout.emit(event);
         } catch (err) {
           // Don't let a single bad message kill the entire processing loop
           const error = err instanceof Error ? err : new Error(String(err));
@@ -813,11 +1046,16 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
     } catch (err) {
       // Transport-level error (e.g., connection closed)
       const error = err instanceof Error ? err : new Error(String(err));
+      if (!initialReplayComplete) {
+        readyReject(error);
+      }
       emitError(error);
     } finally {
       eventsFanout.close();
       unsubTransportError();
       unsubRoster();
+      unsubReconnect();
+      unsubDisconnect();
     }
   })();
 
@@ -857,25 +1095,40 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
     return false;
   }
 
-  async function* filterEvents(
-    source: AsyncIterableIterator<IncomingEvent>,
-    options: EventFilterOptions
-  ): AsyncIterableIterator<IncomingEvent> {
-    for await (const event of source) {
-      if (shouldYieldEvent(event, options)) {
-        yield event;
-      } else {
-        options.onFiltered?.(event);
-      }
-    }
+  function isIncomingEvent(event: EventStreamItem): event is IncomingEvent {
+    return "kind" in event;
   }
 
-  function events(options?: EventFilterOptions): AsyncIterableIterator<IncomingEvent> {
+  function events(options?: EventStreamOptions): AsyncIterableIterator<EventStreamItem> {
     const source = eventsFanout.subscribe();
-    if (!options?.targetedOnly) {
-      return source;
-    }
-    return filterEvents(source, options);
+    const includeReplay = options?.includeReplay ?? false;
+    const includeEphemeral = options?.includeEphemeral ?? false;
+
+    return (async function* () {
+      if (includeReplay && replayMode !== "skip") {
+        const replaySeed: EventStreamItem[] =
+          replayMode === "stream" ? replayEvents : missedMessages;
+        for (const item of replaySeed) {
+          if (isIncomingEvent(item)) {
+            if (!includeEphemeral && item.kind === "ephemeral") continue;
+            if (options?.targetedOnly && !shouldYieldEvent(item, options)) {
+              options.onFiltered?.(item);
+              continue;
+            }
+          }
+          yield item;
+        }
+      }
+
+      for await (const event of source) {
+        if (!includeEphemeral && event.kind === "ephemeral") continue;
+        if (options?.targetedOnly && !shouldYieldEvent(event, options)) {
+          options.onFiltered?.(event);
+          continue;
+        }
+        yield event;
+      }
+    })();
   }
 
   /**
@@ -923,7 +1176,7 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
       at?: string[];
       resolveHandles?: boolean;
     }
-  ): Promise<string> {
+  ): Promise<SendResult> {
     const id = randomId();
 
     // Resolve @handle mentions to participant IDs if requested
@@ -939,15 +1192,18 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
     );
     // Default to persisting messages (explicit true, not undefined)
     const persist = options?.persist ?? true;
-    await publishValidated("message", payload, { persist, attachment: options?.attachment });
-    return id;
+    const pubsubId = await publishValidated("message", payload, {
+      persist,
+      attachment: options?.attachment,
+    });
+    return { messageId: id, pubsubId };
   }
 
   async function update(
     id: string,
     content: string,
     options?: { complete?: boolean; persist?: boolean; attachment?: Uint8Array; contentType?: string }
-  ): Promise<void> {
+  ): Promise<number | undefined> {
     const payload = validateSend(
       UpdateMessageSchema,
       { id, content, complete: options?.complete, contentType: options?.contentType },
@@ -955,17 +1211,20 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
     );
     // Default to persisting updates (explicit true, not undefined)
     const persist = options?.persist ?? true;
-    await publishValidated("update-message", payload, { persist, attachment: options?.attachment });
+    return await publishValidated("update-message", payload, {
+      persist,
+      attachment: options?.attachment,
+    });
   }
 
-  async function complete(id: string): Promise<void> {
+  async function complete(id: string): Promise<number | undefined> {
     const payload = validateSend(UpdateMessageSchema, { id, complete: true }, "UpdateMessage");
-    await publishValidated("update-message", payload, { persist: true });
+    return await publishValidated("update-message", payload, { persist: true });
   }
 
-  async function error(id: string, err: string, code?: string): Promise<void> {
+  async function error(id: string, err: string, code?: string): Promise<number | undefined> {
     const payload = validateSend(ErrorMessageSchema, { id, error: err, code }, "ErrorMessage");
-    await publishValidated("error", payload, { persist: true });
+    return await publishValidated("error", payload, { persist: true });
   }
 
   function discoverToolDefsFrom(providerId: string): DiscoveredTool[] {
@@ -1083,12 +1342,130 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
     };
   }
 
+  function requireSessionEnabled(method: string): void {
+    if (!workspaceId) {
+      throw new AgenticError(`${method} requires workspaceId`, "validation-error");
+    }
+  }
+
+  function getSessionDbOrWarn(method: string): SessionDb | undefined {
+    if (!sessionDb) {
+      console.warn(`[AgenticClient] ${method} skipped (session DB unavailable)`);
+      return undefined;
+    }
+    return sessionDb;
+  }
+
+  function getSessionDbOrThrow(method: string): SessionDb {
+    if (!sessionDb) {
+      throw new Error(`[AgenticClient] ${method} failed (session DB unavailable)`);
+    }
+    return sessionDb;
+  }
+
+  async function commitCheckpoint(pubsubId: number): Promise<void> {
+    requireSessionEnabled("commitCheckpoint");
+    const db = getSessionDbOrWarn("commitCheckpoint");
+    if (!db) return;
+    await db.commitCheckpoint(pubsubId);
+    checkpoint = pubsubId;
+    status = "active";
+  }
+
+  async function updateSdkSession(sessionId: string): Promise<void> {
+    requireSessionEnabled("updateSdkSession");
+    const db = getSessionDbOrWarn("updateSdkSession");
+    if (!db) return;
+    await db.updateSdkSession(sessionId);
+    sdkSessionId = sessionId;
+    status = "active";
+  }
+
+  async function clearSdkSession(): Promise<void> {
+    requireSessionEnabled("clearSdkSession");
+    const db = getSessionDbOrWarn("clearSdkSession");
+    if (!db) return;
+    await db.clearSdkSession();
+    sdkSessionId = undefined;
+  }
+
+  async function storeMessage(role: "user" | "assistant", content: string): Promise<void> {
+    requireSessionEnabled("storeMessage");
+    const db = getSessionDbOrThrow("storeMessage");
+    await db.storeMessage(role, content);
+  }
+
+  async function getHistory(limit?: number): Promise<ConversationMessage[]> {
+    requireSessionEnabled("getHistory");
+    const db = getSessionDbOrThrow("getHistory");
+    return await db.getHistory(limit);
+  }
+
+  async function clearHistory(): Promise<void> {
+    requireSessionEnabled("clearHistory");
+    const db = getSessionDbOrThrow("clearHistory");
+    await db.clearHistory();
+  }
+
+  function formatMissedContextImpl(options?: FormatOptions): MissedContext {
+    return formatMissedContext(missedMessages, options);
+  }
+
+  function getMissedByType<K extends AggregatedEvent["type"]>(
+    type: K
+  ): Extract<AggregatedEvent, { type: K }>[] {
+    return missedMessages.filter((event) => event.type === type) as Extract<
+      AggregatedEvent,
+      { type: K }
+    >[];
+  }
+
+  try {
+    await readyPromise;
+  } catch (err) {
+    pubsub.close();
+    if (sessionDb) {
+      await sessionDb.close();
+    }
+    throw err;
+  }
+
   return {
+    handle,
+    get clientId() {
+      return selfId;
+    },
+    get sessionEnabled() {
+      return sessionDb !== undefined;
+    },
+    get sessionKey() {
+      return sessionDb?.getSessionKey();
+    },
+    get checkpoint() {
+      return checkpoint;
+    },
+    get sdkSessionId() {
+      return sdkSessionId;
+    },
+    get status() {
+      return status;
+    },
+    get missedMessages() {
+      return missedMessages;
+    },
+    formatMissedContext: formatMissedContextImpl,
+    getMissedByType,
     events,
+    commitCheckpoint,
+    updateSdkSession,
+    clearSdkSession,
     send,
     update,
     complete,
     error,
+    storeMessage,
+    getHistory,
+    clearHistory,
     discoverToolDefs,
     discoverToolDefsFrom,
     callTool,
@@ -1104,8 +1481,12 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
     get reconnecting() {
       return pubsub.reconnecting;
     },
-    ready: pubsub.ready,
-    close: pubsub.close,
+    close: async () => {
+      pubsub.close();
+      if (sessionDb) {
+        await sessionDb.close();
+      }
+    },
     onError: (handler) => {
       errorHandlers.add(handler);
       return () => errorHandlers.delete(handler);
@@ -1113,9 +1494,6 @@ export function connect<T extends AgenticParticipantMetadata = AgenticParticipan
     onDisconnect: pubsub.onDisconnect,
     onReconnect: pubsub.onReconnect,
     pubsub,
-    get clientId() {
-      return selfId;
-    },
     sendToolResult: async (
       callId: string,
       content: unknown,

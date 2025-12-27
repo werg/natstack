@@ -24,7 +24,7 @@ export class PubSubError extends Error {
 /**
  * A message received from the PubSub server.
  */
-export interface Message<T = unknown> {
+export interface PubSubMessage<T = unknown> {
   /** Message kind: replay (historical), persisted (new + saved), or ephemeral (not saved) */
   kind: "replay" | "persisted" | "ephemeral";
   /** Message ID (only present for persisted/replay messages) */
@@ -39,7 +39,18 @@ export interface Message<T = unknown> {
   ts: number;
   /** Binary attachment (separate from JSON payload) */
   attachment?: Uint8Array;
+  /** Sender metadata snapshot (if available) */
+  senderMetadata?: Record<string, unknown>;
 }
+
+/**
+ * Stream marker emitted after replay completes.
+ */
+export interface ReadyMessage {
+  kind: "ready";
+}
+
+export type Message<T = unknown> = PubSubMessage<T> | ReadyMessage;
 
 /**
  * Participant metadata - arbitrary key-value data associated with a connected client.

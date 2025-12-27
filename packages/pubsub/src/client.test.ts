@@ -245,7 +245,7 @@ describe("PubSubClient", () => {
   });
 
   describe("updateMetadata()", () => {
-    it("sends update-metadata and resolves on roster ack", async () => {
+    it("sends update-metadata and resolves on presence ack", async () => {
       let onmessage: ((event: { data: string }) => void) | null = null;
       const mockSend = vi.fn();
 
@@ -293,14 +293,15 @@ describe("PubSubClient", () => {
       expect(sentMsg.payload).toEqual({ name: "Bob" });
       expect(sentMsg.ref).toBe(1);
 
-      // Simulate roster ack with ref
+      // Simulate presence update ack with ref
       onmessage!({
         data: JSON.stringify({
-          kind: "roster",
+          kind: "persisted",
+          id: 1,
           ref: 1,
-          participants: {
-            me: { id: "me", metadata: { name: "Bob" } },
-          },
+          type: "presence",
+          payload: { action: "update", metadata: { name: "Bob" } },
+          senderId: "me",
           ts: Date.now(),
         }),
       });
@@ -832,7 +833,7 @@ describe("PubSubClient", () => {
   });
 
   describe("roster / presence", () => {
-    it("calls onRoster handler when roster message received", () => {
+    it("calls onRoster handler when presence events received", () => {
       let onmessage: ((event: { data: string }) => void) | null = null;
 
       MockWebSocket.mockImplementation(() => {
@@ -861,29 +862,39 @@ describe("PubSubClient", () => {
       });
       client.onRoster(rosterHandler);
 
-      // Simulate roster message
       onmessage!({
         data: JSON.stringify({
-          kind: "roster",
-          participants: {
-            "user-a": { id: "user-a", metadata: { name: "Alice" } },
-            "user-b": { id: "user-b", metadata: { name: "Bob" } },
-          },
+          kind: "persisted",
+          id: 1,
+          type: "presence",
+          payload: { action: "join", metadata: { name: "Alice" } },
+          senderId: "user-a",
           ts: 12345,
         }),
       });
 
-      expect(rosterHandler).toHaveBeenCalledTimes(1);
-      expect(rosterHandler).toHaveBeenCalledWith({
+      onmessage!({
+        data: JSON.stringify({
+          kind: "persisted",
+          id: 2,
+          type: "presence",
+          payload: { action: "join", metadata: { name: "Bob" } },
+          senderId: "user-b",
+          ts: 12346,
+        }),
+      });
+
+      expect(rosterHandler).toHaveBeenCalledTimes(2);
+      expect(rosterHandler).toHaveBeenLastCalledWith({
         participants: {
           "user-a": { id: "user-a", metadata: { name: "Alice" } },
           "user-b": { id: "user-b", metadata: { name: "Bob" } },
         },
-        ts: 12345,
+        ts: 12346,
       });
     });
 
-    it("updates roster property when roster message received", () => {
+    it("updates roster property when presence events received", () => {
       let onmessage: ((event: { data: string }) => void) | null = null;
 
       MockWebSocket.mockImplementation(() => {
@@ -913,15 +924,24 @@ describe("PubSubClient", () => {
       // Initially empty
       expect(client.roster).toEqual({});
 
-      // Simulate roster message
       onmessage!({
         data: JSON.stringify({
-          kind: "roster",
-          participants: {
-            "user-a": { id: "user-a", metadata: { name: "Alice" } },
-            "user-b": { id: "user-b", metadata: { name: "Bob" } },
-          },
+          kind: "persisted",
+          id: 1,
+          type: "presence",
+          payload: { action: "join", metadata: { name: "Alice" } },
+          senderId: "user-a",
           ts: 12345,
+        }),
+      });
+      onmessage!({
+        data: JSON.stringify({
+          kind: "persisted",
+          id: 2,
+          type: "presence",
+          payload: { action: "join", metadata: { name: "Bob" } },
+          senderId: "user-b",
+          ts: 12346,
         }),
       });
 
@@ -966,13 +986,14 @@ describe("PubSubClient", () => {
       });
       const unsub = client.onRoster(rosterHandler);
 
-      // First roster update
+      // First presence update
       onmessage!({
         data: JSON.stringify({
-          kind: "roster",
-          participants: {
-            "user-a": { id: "user-a", metadata: {} },
-          },
+          kind: "persisted",
+          id: 1,
+          type: "presence",
+          payload: { action: "join", metadata: {} },
+          senderId: "user-a",
           ts: 12345,
         }),
       });
@@ -981,14 +1002,14 @@ describe("PubSubClient", () => {
       // Unsubscribe
       unsub();
 
-      // Second roster update - handler should not be called
+      // Second presence update - handler should not be called
       onmessage!({
         data: JSON.stringify({
-          kind: "roster",
-          participants: {
-            "user-a": { id: "user-a", metadata: {} },
-            "user-b": { id: "user-b", metadata: {} },
-          },
+          kind: "persisted",
+          id: 2,
+          type: "presence",
+          payload: { action: "join", metadata: {} },
+          senderId: "user-b",
           ts: 12346,
         }),
       });

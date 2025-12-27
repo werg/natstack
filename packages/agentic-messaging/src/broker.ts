@@ -5,7 +5,7 @@
  */
 
 import { connect as agenticConnect } from "./client.js";
-import type { AgenticClient } from "./types.js";
+import type { AgenticClient, EventStreamItem, IncomingEvent } from "./types.js";
 import type {
   AgentTypeAdvertisement,
   BrokerConnectOptions,
@@ -21,6 +21,10 @@ function randomId(): string {
   const cryptoObj = (globalThis as unknown as { crypto?: Crypto }).crypto;
   if (cryptoObj?.randomUUID) return cryptoObj.randomUUID();
   throw new Error("crypto.randomUUID not available");
+}
+
+function isIncomingEvent(event: EventStreamItem): event is IncomingEvent {
+  return "kind" in event;
 }
 
 /**
@@ -40,10 +44,7 @@ export interface BrokerClient {
   updateAgentTypes(agentTypes: AgentTypeAdvertisement[]): Promise<void>;
 
   /** Close the broker connection */
-  close(): void;
-
-  /** Wait for ready (replay complete) */
-  ready(timeoutMs?: number): Promise<void>;
+  close(): Promise<void>;
 
   /** Subscribe to errors */
   onError(handler: (error: Error) => void): () => void;
@@ -76,11 +77,11 @@ export interface BrokerClient {
  * });
  * ```
  */
-export function connectAsBroker(
+export async function connectAsBroker(
   serverUrl: string,
   token: string,
   options: BrokerConnectOptions
-): BrokerClient {
+): Promise<BrokerClient> {
   const {
     availabilityChannel,
     name,
@@ -95,7 +96,7 @@ export function connectAsBroker(
   let currentAgentTypes = [...initialAgentTypes];
   let brokerId: string | null = null;
 
-  const metadata: BrokerMetadata = {
+  const baseMetadata: BrokerMetadata = {
     name,
     type: "broker",
     handle,
@@ -104,10 +105,19 @@ export function connectAsBroker(
     ...customMetadata,
   };
 
-  const client = agenticConnect<BrokerMetadata>(serverUrl, token, {
+  const client = await agenticConnect<BrokerMetadata>({
+    serverUrl,
+    token,
     channel: availabilityChannel,
+    handle,
+    name,
+    type: "broker",
+    extraMetadata: {
+      isBroker: true as const,
+      agentTypes: currentAgentTypes,
+      ...customMetadata,
+    },
     reconnect,
-    metadata,
     skipOwnMessages: true,
   });
 
@@ -141,8 +151,8 @@ export function connectAsBroker(
   // Process invite messages
   void (async () => {
     try {
-      for await (const event of client.events()) {
-        if (event.type !== "message") continue;
+      for await (const event of client.events({ includeEphemeral: true })) {
+        if (!isIncomingEvent(event) || event.type !== "message") continue;
 
         // Skip replay messages - only process new invites
         // This prevents re-spawning agents for old invites after restart
@@ -273,9 +283,11 @@ export function connectAsBroker(
 
   async function updateAgentTypes(newAgentTypes: AgentTypeAdvertisement[]): Promise<void> {
     currentAgentTypes = [...newAgentTypes];
-    // Update metadata via pubsub updateMetadata
+    const rosterMetadata =
+      (brokerId && client.pubsub.roster[brokerId]?.metadata) || baseMetadata;
     await client.pubsub.updateMetadata({
-      ...metadata,
+      ...rosterMetadata,
+      isBroker: true,
       agentTypes: currentAgentTypes,
     } as BrokerMetadata);
   }
@@ -289,8 +301,7 @@ export function connectAsBroker(
       return currentAgentTypes;
     },
     updateAgentTypes,
-    close: () => client.close(),
-    ready: (timeoutMs?: number) => client.ready(timeoutMs),
+    close: async () => client.close(),
     onError: (handler: (error: Error) => void) => client.onError(handler),
   };
 }
@@ -313,23 +324,27 @@ export function connectAsBroker(
  *   },
  *   onInvite: async (invite) => {
  *     // Connect myself to the target channel
- *     const workClient = connect(serverUrl, token, {
+ *     const workClient = await connect({
+ *       serverUrl,
+ *       token,
  *       channel: invite.targetChannel,
- *       metadata: { name: "Chat Agent", type: "agent" },
+ *       handle: "chat-agent",
+ *       name: "Chat Agent",
+ *       type: "agent",
  *     });
  *     return { accept: true, agentId: workClient.pubsub.clientId };
  *   },
  * });
  * ```
  */
-export function connectAsSelfBroker(
+export async function connectAsSelfBroker(
   serverUrl: string,
   token: string,
   options: Omit<BrokerConnectOptions, "agentTypes" | "onSpawn"> & {
     agentType: AgentTypeAdvertisement;
   }
-): BrokerClient {
-  return connectAsBroker(serverUrl, token, {
+): Promise<BrokerClient> {
+  return await connectAsBroker(serverUrl, token, {
     ...options,
     agentTypes: [options.agentType],
   });

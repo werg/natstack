@@ -15,11 +15,13 @@ import {
   formatArgsForLog,
   createInterruptHandler,
   createPauseToolDefinition,
-  SessionManager,
+  DEFAULT_MISSED_CONTEXT_MAX_CHARS,
+  formatMissedContext,
   type AgenticClient,
   type ChatParticipantMetadata,
+  type IncomingNewMessage,
 } from "@natstack/agentic-messaging";
-import { query, tool, createSdkMcpServer, type Query } from "@anthropic-ai/claude-agent-sdk";
+import { query, tool, createSdkMcpServer, type Query, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 
 void setTitle("Claude Code Responder");
 
@@ -44,7 +46,7 @@ async function main() {
   const handle = typeof agentConfig.handle === "string" ? agentConfig.handle : "claude";
 
   // Get workspace ID from environment
-  const workspaceId = process.env["NATSTACK_WORKSPACE_ID"] || "default";
+  const workspaceId = process.env["NATSTACK_WORKSPACE_ID"];
 
   log("Starting Claude Code responder...");
   if (workingDirectory) {
@@ -52,36 +54,16 @@ async function main() {
   }
   log(`Handle: @${handle}`);
 
-  // Initialize session manager for conversation resumption
-  const sessionManager = new SessionManager({
-    workspaceId,
-    channelName,
-    agentHandle: handle,
-    sdkType: "claude-agent-sdk",
-    workingDirectory,
-  });
-
-  try {
-    await sessionManager.initialize();
-    const sessionState = await sessionManager.getOrCreateSession();
-    log(`Session initialized: ${sessionState.sessionKey}`);
-    if (sessionState.sdkSessionId) {
-      log(`Resuming from previous session: ${sessionState.sdkSessionId}`);
-    }
-  } catch (err) {
-    console.error("Failed to initialize session manager:", err);
-    // Continue anyway - session management is optional
-  }
-
   // Connect to agentic messaging channel
-  const client = connect<ChatParticipantMetadata>(pubsubConfig.serverUrl, pubsubConfig.token, {
+  const client = await connect<ChatParticipantMetadata>({
+    serverUrl: pubsubConfig.serverUrl,
+    token: pubsubConfig.token,
     channel: channelName,
+    handle,
+    name: "Claude Code",
+    type: "claude-code",
+    workspaceId,
     reconnect: true,
-    metadata: {
-      name: "Claude Code",
-      type: "claude-code",
-      handle,
-    },
     tools: {
       pause: createPauseToolDefinition(async () => {
         // Pause event is published by interrupt handler
@@ -94,11 +76,27 @@ async function main() {
     log(`Roster updated: ${names.join(", ")}`);
   });
 
-  await client.ready();
   log(`Connected to channel: ${channelName}`);
+  if (client.sessionKey) {
+    log(`Session: ${client.sessionKey} (${client.status})`);
+    log(`Checkpoint: ${client.checkpoint ?? "none"}, SDK: ${client.sdkSessionId ?? "none"}`);
+  }
+
+  let lastMissedPubsubId = 0;
+  const buildMissedContext = () => {
+    const missed = client.missedMessages.filter((event) => event.pubsubId > lastMissedPubsubId);
+    if (missed.length === 0) return null;
+    return formatMissedContext(missed, { maxChars: DEFAULT_MISSED_CONTEXT_MAX_CHARS });
+  };
+
+  let pendingMissedContext = buildMissedContext();
+
+  client.onReconnect(() => {
+    pendingMissedContext = buildMissedContext();
+  });
 
   // Process incoming events using unified API
-  for await (const event of client.events()) {
+  for await (const event of client.events({ targetedOnly: true, respondWhenSolo: true })) {
     if (event.type !== "message") continue;
 
     // Skip replay messages - don't respond to historical messages
@@ -108,26 +106,24 @@ async function main() {
 
     // Only respond to messages from panels (not our own or other workers)
     if (sender?.metadata.type === "panel" && event.senderId !== id) {
-      await handleUserMessage(client, event.id, event.content, workingDirectory, sessionManager);
+      let prompt = event.content;
+      if (pendingMissedContext && pendingMissedContext.count > 0) {
+        prompt = `<missed_context>\n${pendingMissedContext.formatted}\n</missed_context>\n\n${prompt}`;
+        lastMissedPubsubId = pendingMissedContext.lastPubsubId;
+        pendingMissedContext = null;
+      }
+      await handleUserMessage(client, event, prompt, workingDirectory);
     }
-  }
-
-  // Clean up session manager on shutdown
-  try {
-    await sessionManager.close();
-  } catch (err) {
-    console.error("Failed to close session manager:", err);
   }
 }
 
 async function handleUserMessage(
   client: AgenticClient<ChatParticipantMetadata>,
-  userMessageId: string,
-  userText: string,
-  workingDirectory: string | undefined,
-  sessionManager: SessionManager
+  incoming: IncomingNewMessage,
+  prompt: string,
+  workingDirectory: string | undefined
 ) {
-  log(`Received message: ${userText}`);
+  log(`Received message: ${incoming.content}`);
 
   // Create tools from other pubsub participants
   const { definitions: toolDefs, execute: executeTool } = createToolsForAgentSDK(client, {
@@ -137,7 +133,7 @@ async function handleUserMessage(
   log(`Discovered ${toolDefs.length} tools from pubsub participants`);
 
   // Start a new message (empty, will stream content via updates)
-  const responseId = await client.send("", { replyTo: userMessageId });
+  const { messageId: responseId } = await client.send("", { replyTo: incoming.id });
 
   try {
     // Keep reference to the query for interrupt handling via RPC pause mechanism
@@ -146,7 +142,7 @@ async function handleUserMessage(
     // Set up RPC pause handler - monitors for pause tool calls
     const interruptHandler = createInterruptHandler({
       client,
-      messageId: userMessageId,
+      messageId: incoming.id,
       onPause: async (reason) => {
         log(`Pause RPC received: ${reason}`);
         // Break out of the query loop via isPaused() check
@@ -184,7 +180,6 @@ async function handleUserMessage(
     const allowedTools = mcpTools.map((t) => `mcp__pubsub__${t.name}`);
 
     // Get session state for resumption
-    const sessionState = sessionManager.getSessionState();
     const queryOptions: Parameters<typeof query>[0]["options"] = {
       mcpServers: { pubsub: pubsubServer },
       ...(allowedTools.length > 0 && { allowedTools }),
@@ -195,16 +190,18 @@ async function handleUserMessage(
       // Enable streaming of partial messages for token-by-token delivery
       includePartialMessages: true,
       // Resume from previous session if available
-      ...(sessionState?.sdkSessionId && { resume: sessionState.sdkSessionId }),
+      ...(client.sdkSessionId && { resume: client.sdkSessionId }),
     };
 
     // Query Claude using the Agent SDK
     queryInstance = query({
-      prompt: userText,
+      prompt,
       options: queryOptions,
     });
 
     let capturedSessionId: string | undefined;
+    let checkpointCommitted = false;
+    let sawStreamedText = false;
 
     for await (const message of queryInstance) {
       // Check if pause was requested and break early
@@ -215,20 +212,28 @@ async function handleUserMessage(
 
       if (message.type === "stream_event") {
         // Handle streaming message events (token-by-token with includePartialMessages: true)
-        const event = message.event as { type: string; delta?: { type: string; text?: string } };
+        const streamEvent = message.event as { type: string; delta?: { type: string; text?: string } };
 
         // Only handle text deltas from content blocks
-        if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
-          if (event.delta.text) {
+        if (streamEvent.type === "content_block_delta" && streamEvent.delta?.type === "text_delta") {
+          if (streamEvent.delta.text) {
             // Send each text delta immediately (real streaming)
-            await client.update(responseId, event.delta.text);
+            await client.update(responseId, streamEvent.delta.text);
+            sawStreamedText = true;
+
+            if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
+              await client.commitCheckpoint(incoming.pubsubId);
+              checkpointCommitted = true;
+            }
           }
         }
       } else if (message.type === "assistant") {
-        // Fallback for complete assistant messages (shouldn't occur with includePartialMessages: true)
-        for (const block of message.message.content) {
-          if (block.type === "text") {
-            await client.update(responseId, block.text);
+        // Fallback for complete assistant messages when no streaming deltas were seen.
+        if (!sawStreamedText) {
+          for (const block of message.message.content) {
+            if (block.type === "text") {
+              await client.update(responseId, block.text);
+            }
           }
         }
       } else if (message.type === "result") {
@@ -236,27 +241,31 @@ async function handleUserMessage(
           throw new Error(`Query failed: ${message.subtype}`);
         }
         // Capture session ID from result for future resumption
-        if ((message as unknown as Record<string, unknown>).session_id) {
-          capturedSessionId = String((message as unknown as Record<string, unknown>).session_id);
+        // session_id is present on success results (typed as SDKResultMessage)
+        const resultMessage = message as SDKResultMessage;
+        if (resultMessage.subtype === "success" && resultMessage.session_id) {
+          capturedSessionId = resultMessage.session_id;
         }
         log(`Query completed. Cost: $${message.total_cost_usd?.toFixed(4) ?? "unknown"}`);
       }
     }
 
-    // Store session ID in session manager if captured
-    if (capturedSessionId) {
-      try {
-        // Use a placeholder pubsub message ID - in a real scenario this would come from pubsub
-        await sessionManager.commitMessage(0, capturedSessionId);
-        log(`Session ID stored: ${capturedSessionId}`);
-      } catch (err) {
-        console.error("Failed to store session ID:", err);
-      }
+    if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
+      await client.commitCheckpoint(incoming.pubsubId);
+      checkpointCommitted = true;
+    }
+
+    // Store session ID for resumption
+    if (capturedSessionId && client.sessionKey) {
+      await client.updateSdkSession(capturedSessionId);
+      log(`Session ID stored: ${capturedSessionId}`);
+    } else if (capturedSessionId) {
+      log("Skipping session update (workspaceId not set)");
     }
 
     // Mark message as complete (whether interrupted or finished normally)
     await client.complete(responseId);
-    log(`Completed response for ${userMessageId}`);
+    log(`Completed response for ${incoming.id}`);
   } catch (err) {
     // Pause tool returns successfully, so we shouldn't see pause-related errors
     // Any error here is a real error that should be reported

@@ -58,7 +58,9 @@ export function useChannelConnection({
     }
     unsubscribersRef.current = [];
 
-    clientRef.current?.close();
+    if (clientRef.current) {
+      void clientRef.current.close();
+    }
     clientRef.current = null;
     setClient(null);
     setStatus("disconnected");
@@ -78,48 +80,45 @@ export function useChannelConnection({
 
       setStatus("connecting");
 
-      const newClient = connect<ChatParticipantMetadata>(
-        pubsubConfig.serverUrl,
-        pubsubConfig.token,
-        {
+      try {
+        const newClient = await connect<ChatParticipantMetadata>({
+          serverUrl: pubsubConfig.serverUrl,
+          token: pubsubConfig.token,
           channel: channelId,
+          handle: metadata.handle,
+          name: metadata.name,
+          type: metadata.type,
           reconnect: true,
           clientId: panelClientId,
-          metadata,
           tools,
-        }
-      );
+          replayMode: "stream",
+        });
 
-      clientRef.current = newClient;
+        clientRef.current = newClient;
 
-      // Set up subscriptions IMMEDIATELY (before await ready())
-      // This ensures handlers are registered before replay completes
-      const unsubs: Array<() => void> = [];
+        const unsubs: Array<() => void> = [];
 
-      // Set up unified event handling - single loop for all event types
-      const eventIterator = newClient.events();
-      let eventLoopRunning = true;
-      void (async () => {
-        for await (const event of eventIterator) {
-          if (!eventLoopRunning) break;
-          callbacksRef.current.onEvent?.(event);
-        }
-      })();
-      unsubs.push(() => {
-        eventLoopRunning = false;
-      });
+        // Set up unified event handling - single loop for all event types
+        const eventIterator = newClient.events({ includeReplay: true });
+        let eventLoopRunning = true;
+        void (async () => {
+          for await (const event of eventIterator) {
+            if (!eventLoopRunning) break;
+            callbacksRef.current.onEvent?.(event as IncomingEvent);
+          }
+        })();
+        unsubs.push(() => {
+          eventLoopRunning = false;
+        });
 
-      // Set up roster handler (roster is separate from the events stream)
-      unsubs.push(
-        newClient.onRoster((roster: RosterUpdate<ChatParticipantMetadata>) => {
-          callbacksRef.current.onRoster?.(roster);
-        })
-      );
+        // Set up roster handler (roster is separate from the events stream)
+        unsubs.push(
+          newClient.onRoster((roster: RosterUpdate<ChatParticipantMetadata>) => {
+            callbacksRef.current.onRoster?.(roster);
+          })
+        );
 
-      unsubscribersRef.current = unsubs;
-
-      try {
-        await newClient.ready();
+        unsubscribersRef.current = unsubs;
         setClient(newClient);
         setStatus("connected");
         return newClient;

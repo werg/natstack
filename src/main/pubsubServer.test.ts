@@ -149,7 +149,7 @@ describe("PubSub Server", () => {
   it("returns persisted message with id when persist=true", async () => {
     const client = await createClient("valid-token", "test-channel");
     await waitForMessage(client); // ready
-    await waitForMessage(client); // roster
+    await waitForMessage(client); // join presence
 
     client.ws.send(
       JSON.stringify({
@@ -175,7 +175,7 @@ describe("PubSub Server", () => {
   it("returns ephemeral message without id when persist=false", async () => {
     const client = await createClient("valid-token", "test-channel");
     await waitForMessage(client); // ready
-    await waitForMessage(client); // roster
+    await waitForMessage(client); // join presence
 
     client.ws.send(
       JSON.stringify({
@@ -202,10 +202,11 @@ describe("PubSub Server", () => {
     const clientB = await createClient("client-b-token", "chat");
 
     await waitForMessage(clientA); // ready
-    await waitForMessage(clientA); // initial roster
+    await waitForMessage(clientA); // join presence (A)
+    await waitForMessage(clientB); // replay join (A)
     await waitForMessage(clientB); // ready
-    await waitForMessage(clientA); // updated roster (B joined)
-    await waitForMessage(clientB); // roster
+    await waitForMessage(clientB); // join presence (B)
+    await waitForMessage(clientA); // join presence (B)
 
     clientA.ws.send(
       JSON.stringify({
@@ -231,7 +232,7 @@ describe("PubSub Server", () => {
   it("returns error for invalid JSON", async () => {
     const client = await createClient("valid-token", "test-channel");
     await waitForMessage(client); // ready
-    await waitForMessage(client); // roster
+    await waitForMessage(client); // join presence
 
     client.ws.send("not json");
 
@@ -246,7 +247,7 @@ describe("PubSub Server", () => {
   it("returns error for unknown action", async () => {
     const client = await createClient("valid-token", "test-channel");
     await waitForMessage(client); // ready
-    await waitForMessage(client); // roster
+    await waitForMessage(client); // join presence
 
     client.ws.send(JSON.stringify({ action: "unknown" }));
 
@@ -261,7 +262,7 @@ describe("PubSub Server", () => {
   it("returns error with ref when publish fails", async () => {
     const client = await createClient("valid-token", "test-channel");
     await waitForMessage(client); // ready
-    await waitForMessage(client); // roster
+    await waitForMessage(client); // join presence
 
     client.ws.send(JSON.stringify({ action: "unknown", ref: 42 }));
 
@@ -281,7 +282,7 @@ describe("PubSub Server", () => {
     // First client publishes some messages
     const client1 = await createClient("valid-token", replayChannel);
     await waitForMessage(client1); // ready
-    await waitForMessage(client1); // roster
+    await waitForMessage(client1); // join presence
 
     // Publish 3 messages
     client1.ws.send(
@@ -316,7 +317,11 @@ describe("PubSub Server", () => {
     // Second client connects with sinceId = msg1.id (should get msg2 and msg3)
     const client2 = await createClient("valid-token", replayChannel, msg1.id);
 
-    // Should receive replay messages before ready
+    const replayPresence = (await waitForMessage(client2)) as {
+      kind: string;
+      type?: string;
+      payload?: { action?: string };
+    };
     const replay1 = (await waitForMessage(client2)) as {
       kind: string;
       id: number;
@@ -328,8 +333,10 @@ describe("PubSub Server", () => {
       payload: { text: string };
     };
     const ready = (await waitForMessage(client2)) as { kind: string };
-    const roster = (await waitForMessage(client2)) as { kind: string };
+    const joinPresence = (await waitForMessage(client2)) as { kind: string; type?: string };
 
+    expect(replayPresence.kind).toBe("replay");
+    expect(replayPresence.type).toBe("presence");
     expect(replay1.kind).toBe("replay");
     expect(replay1.id).toBe(msg2.id);
     expect(replay1.payload.text).toBe("message 2");
@@ -339,14 +346,14 @@ describe("PubSub Server", () => {
     expect(replay2.payload.text).toBe("message 3");
 
     expect(ready.kind).toBe("ready");
-    expect(roster.kind).toBe("roster");
+    expect(joinPresence.kind).toBe("persisted");
   });
 
   it("stores messages in the message store", async () => {
     const storeChannel = "store-test-" + Date.now();
     const client = await createClient("valid-token", storeChannel);
     await waitForMessage(client); // ready
-    await waitForMessage(client); // roster
+    await waitForMessage(client); // join presence
 
     client.ws.send(
       JSON.stringify({
@@ -366,139 +373,88 @@ describe("PubSub Server", () => {
     expect(JSON.parse(ourMessage!.payload)).toEqual({ value: 123 });
   });
 
-  describe("roster / presence", () => {
-    interface Participant {
-      id: string;
-      metadata: Record<string, unknown>;
-    }
-
-    it("sends roster message after ready when client connects", async () => {
-      const rosterChannel = "roster-test-" + Date.now();
-      const client = await createClient("valid-token", rosterChannel);
+  describe("presence", () => {
+    it("sends join presence after ready when client connects", async () => {
+      const presenceChannel = "presence-join-" + Date.now();
+      const client = await createClient("valid-token", presenceChannel);
 
       const ready = await waitForMessage(client);
       expect(ready).toEqual({ kind: "ready" });
 
-      const roster = (await waitForMessage(client)) as {
+      const join = (await waitForMessage(client)) as {
         kind: string;
-        participants: Record<string, Participant>;
-        ts: number;
+        type?: string;
+        payload?: { action?: string; metadata?: Record<string, unknown> };
+        senderId?: string;
       };
-      expect(roster.kind).toBe("roster");
-      expect(roster.participants["test-client-id"]).toBeDefined();
-      expect(roster.participants["test-client-id"]!.id).toBe("test-client-id");
-      expect(roster.ts).toBeDefined();
+
+      expect(join.kind).toBe("persisted");
+      expect(join.type).toBe("presence");
+      expect(join.payload?.action).toBe("join");
+      expect(join.senderId).toBe("test-client-id");
     });
 
-    it("broadcasts updated roster when second client joins", async () => {
-      const rosterChannel = "roster-join-" + Date.now();
+    it("replays presence history to new joiners", async () => {
+      const presenceChannel = "presence-history-" + Date.now();
 
-      // First client connects
-      const clientA = await createClient("client-a-token", rosterChannel);
+      const clientA = await createClient("client-a-token", presenceChannel);
       await waitForMessage(clientA); // ready
-      const rosterA1 = (await waitForMessage(clientA)) as {
+      await waitForMessage(clientA); // join presence (A)
+
+      const clientB = await createClient("client-b-token", presenceChannel);
+      const replay = (await waitForMessage(clientB)) as {
         kind: string;
-        participants: Record<string, Participant>;
+        type?: string;
+        senderId?: string;
       };
-      expect(rosterA1.kind).toBe("roster");
-      expect(Object.keys(rosterA1.participants)).toEqual(["client-a"]);
+      const ready = (await waitForMessage(clientB)) as { kind: string };
+      const joinB = (await waitForMessage(clientB)) as { kind: string; senderId?: string };
+      const joinForA = (await waitForMessage(clientA)) as { kind: string; senderId?: string };
 
-      // Second client connects
-      const clientB = await createClient("client-b-token", rosterChannel);
-      await waitForMessage(clientB); // ready
-
-      // Both clients should receive updated roster with both members
-      const [rosterA2, rosterB1] = (await Promise.all([
-        waitForMessage(clientA),
-        waitForMessage(clientB),
-      ])) as [
-        { kind: string; participants: Record<string, Participant> },
-        { kind: string; participants: Record<string, Participant> },
-      ];
-
-      expect(rosterA2.kind).toBe("roster");
-      expect(Object.keys(rosterA2.participants).sort()).toEqual(["client-a", "client-b"]);
-
-      expect(rosterB1.kind).toBe("roster");
-      expect(Object.keys(rosterB1.participants).sort()).toEqual(["client-a", "client-b"]);
+      expect(replay.kind).toBe("replay");
+      expect(replay.type).toBe("presence");
+      expect(replay.senderId).toBe("client-a");
+      expect(ready.kind).toBe("ready");
+      expect(joinB.kind).toBe("persisted");
+      expect(joinB.senderId).toBe("client-b");
+      expect(joinForA.senderId).toBe("client-b");
     });
 
-    it("broadcasts updated roster when client disconnects", async () => {
-      const rosterChannel = "roster-leave-" + Date.now();
+    it("broadcasts leave presence when last connection closes", async () => {
+      const presenceChannel = "presence-leave-" + Date.now();
 
-      // Two clients connect
-      const clientA = await createClient("client-a-token", rosterChannel);
+      const clientA = await createClient("client-a-token", presenceChannel);
       await waitForMessage(clientA); // ready
-      await waitForMessage(clientA); // initial roster
+      await waitForMessage(clientA); // join presence (A)
 
-      const clientB = await createClient("client-b-token", rosterChannel);
+      const clientB = await createClient("client-b-token", presenceChannel);
+      await waitForMessage(clientB); // replay join (A)
       await waitForMessage(clientB); // ready
-      await waitForMessage(clientA); // roster update for A
-      await waitForMessage(clientB); // roster for B
+      await waitForMessage(clientB); // join presence (B)
+      await waitForMessage(clientA); // join presence (B)
 
-      // Client B disconnects
       clientB.ws.close();
 
-      // Client A should receive roster with only themselves
-      const rosterAfterLeave = (await waitForMessage(clientA)) as {
+      const leave = (await waitForMessage(clientA)) as {
         kind: string;
-        participants: Record<string, Participant>;
+        type?: string;
+        payload?: { action?: string };
+        senderId?: string;
       };
-      expect(rosterAfterLeave.kind).toBe("roster");
-      expect(Object.keys(rosterAfterLeave.participants)).toEqual(["client-a"]);
+
+      expect(leave.kind).toBe("persisted");
+      expect(leave.type).toBe("presence");
+      expect(leave.payload?.action).toBe("leave");
+      expect(leave.senderId).toBe("client-b");
     });
 
-    it("roster contains unique client IDs even with multiple connections", async () => {
-      const rosterChannel = "roster-unique-" + Date.now();
+    it("includes metadata in presence payloads", async () => {
+      const presenceChannel = "presence-metadata-" + Date.now();
 
-      // Same client connects twice (using same token/clientId)
-      const conn1 = await createClient("client-a-token", rosterChannel);
-      await waitForMessage(conn1); // ready
-      const roster1 = (await waitForMessage(conn1)) as {
-        kind: string;
-        participants: Record<string, Participant>;
-      };
-      expect(Object.keys(roster1.participants)).toEqual(["client-a"]);
-
-      const conn2 = await createClient("client-a-token", rosterChannel);
-      await waitForMessage(conn2); // ready
-
-      // Both connections receive roster update
-      const [roster1Update, roster2] = (await Promise.all([
-        waitForMessage(conn1),
-        waitForMessage(conn2),
-      ])) as [
-        { kind: string; participants: Record<string, Participant> },
-        { kind: string; participants: Record<string, Participant> },
-      ];
-
-      // Should still only show one client-a (deduplicated)
-      expect(Object.keys(roster1Update.participants)).toEqual(["client-a"]);
-      expect(Object.keys(roster2.participants)).toEqual(["client-a"]);
-    });
-
-    it("does not broadcast roster when last client in channel disconnects", async () => {
-      const rosterChannel = "roster-empty-" + Date.now();
-
-      const client = await createClient("valid-token", rosterChannel);
-      await waitForMessage(client); // ready
-      await waitForMessage(client); // roster
-
-      // Close the connection - no one to receive the roster update
-      client.ws.close();
-
-      // No error should occur (channel is deleted when empty)
-      // This test mainly ensures no crash happens
-    });
-
-    it("includes metadata in roster participants", async () => {
-      const rosterChannel = "roster-metadata-" + Date.now();
-
-      // Create client with metadata in URL
       const metadata = { name: "Alice", status: "online" };
       const params = new URLSearchParams({
         token: "client-a-token",
-        channel: rosterChannel,
+        channel: presenceChannel,
         metadata: JSON.stringify(metadata),
       });
       const ws = new WebSocket(`ws://127.0.0.1:${port}/?${params.toString()}`);
@@ -513,18 +469,15 @@ describe("PubSub Server", () => {
         ws.on("error", reject);
       });
 
-      // Wait for ready and roster
       await new Promise((r) => setTimeout(r, 100));
-      const roster = messages.find(
-        (m) => (m as { kind: string }).kind === "roster"
+      const presence = messages.find(
+        (m) => (m as { type?: string }).type === "presence"
       ) as {
-        kind: string;
-        participants: Record<string, Participant>;
+        payload?: { metadata?: Record<string, unknown> };
       };
 
-      expect(roster).toBeDefined();
-      expect(roster.participants["client-a"]).toBeDefined();
-      expect(roster.participants["client-a"]!.metadata).toEqual(metadata);
+      expect(presence).toBeDefined();
+      expect(presence.payload?.metadata).toEqual(metadata);
     });
   });
 });

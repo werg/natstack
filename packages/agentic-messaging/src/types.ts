@@ -117,6 +117,14 @@ export interface IncomingExecutionPauseEvent {
   senderId: string;
   /** Timestamp in milliseconds */
   ts: number;
+  /** Server-assigned ID for checkpointing */
+  pubsubId?: number;
+  /** Sender metadata snapshot (if available) */
+  senderMetadata?: {
+    name?: string;
+    type?: string;
+    handle?: string;
+  };
 }
 
 /**
@@ -188,6 +196,14 @@ export interface IncomingBase {
   ts: number;
   /** Binary attachment (optional) */
   attachment?: Uint8Array;
+  /** Server-assigned ID for checkpointing */
+  pubsubId?: number;
+  /** Sender metadata snapshot (if available) */
+  senderMetadata?: {
+    name?: string;
+    type?: string;
+    handle?: string;
+  };
 }
 
 /**
@@ -238,10 +254,10 @@ export interface IncomingErrorMessage extends IncomingBase {
 /**
  * Presence event actions.
  */
-export type PresenceAction = "join" | "leave";
+export type PresenceAction = "join" | "leave" | "update";
 
 /**
- * An incoming presence event (join/leave).
+ * An incoming presence event (join/leave/update).
  * These events are persisted and replayed to reconstruct participant history.
  */
 export interface IncomingPresenceEvent {
@@ -251,7 +267,15 @@ export interface IncomingPresenceEvent {
   senderId: string;
   /** Timestamp */
   ts: number;
-  /** The action (join or leave) */
+  /** Server-assigned ID for checkpointing */
+  pubsubId?: number;
+  /** Sender metadata snapshot (if available) */
+  senderMetadata?: {
+    name?: string;
+    type?: string;
+    handle?: string;
+  };
+  /** The action */
   action: PresenceAction;
   /** Participant metadata at the time of the event */
   metadata: ParticipantMetadata;
@@ -267,6 +291,14 @@ export interface IncomingToolCall {
   senderId: string;
   /** Timestamp */
   ts: number;
+  /** Server-assigned ID for checkpointing */
+  pubsubId?: number;
+  /** Sender metadata snapshot (if available) */
+  senderMetadata?: {
+    name?: string;
+    type?: string;
+    handle?: string;
+  };
   /** Unique call ID for correlation */
   callId: string;
   /** Name of the tool being called */
@@ -287,6 +319,14 @@ export interface IncomingToolResult {
   senderId: string;
   /** Timestamp */
   ts: number;
+  /** Server-assigned ID for checkpointing */
+  pubsubId?: number;
+  /** Sender metadata snapshot (if available) */
+  senderMetadata?: {
+    name?: string;
+    type?: string;
+    handle?: string;
+  };
   /** Call ID for correlation */
   callId: string;
   /** Result content */
@@ -301,6 +341,63 @@ export interface IncomingToolResult {
   progress?: number;
   /** Binary attachment (optional) */
   attachment?: Uint8Array;
+}
+
+/**
+ * Aggregated replay event base.
+ */
+export interface AggregatedEventBase {
+  pubsubId: number;
+  senderId: string;
+  senderName?: string;
+  senderType?: string;
+  senderHandle?: string;
+  ts: number;
+}
+
+export interface AggregatedMessage extends AggregatedEventBase {
+  type: "message";
+  id: string;
+  content: string;
+  complete: boolean;
+  incomplete: boolean;
+  replyTo?: string;
+}
+
+export interface AggregatedToolCall extends AggregatedEventBase {
+  type: "tool-call";
+  callId: string;
+  toolName: string;
+  providerId: string;
+  providerName?: string;
+  args: unknown;
+}
+
+export interface AggregatedToolResult extends AggregatedEventBase {
+  type: "tool-result";
+  callId: string;
+  toolName?: string;
+  status: "success" | "error" | "incomplete";
+  content?: unknown;
+  errorMessage?: string;
+}
+
+export type AggregatedEvent = AggregatedMessage | AggregatedToolCall | AggregatedToolResult;
+
+export interface FormatOptions {
+  maxChars?: number;
+  format?: "yaml" | "markdown";
+  includeToolArgs?: boolean;
+  includeToolResults?: boolean;
+  maxToolResultChars?: number;
+}
+
+export interface MissedContext {
+  count: number;
+  formatted: string;
+  lastPubsubId: number;
+  wasElided: boolean;
+  events: AggregatedEvent[];
 }
 
 /**
@@ -431,20 +528,58 @@ export interface ToolDefinition<TArgs extends z.ZodTypeAny = z.ZodTypeAny, TResu
  * Options for connecting to an agentic messaging channel.
  */
 export interface ConnectOptions<T extends AgenticParticipantMetadata = AgenticParticipantMetadata> {
+  /** Pubsub server URL */
+  serverUrl: string;
+  /** Authentication token */
+  token: string;
   /** Channel name to connect to */
   channel: string;
-  /** Replay messages with id > sinceId. Defaults to 0 (replay all). Pass undefined to skip replay. */
-  sinceId?: number;
-  /** Enable auto-reconnection. Pass true for defaults, or a config object. */
-  reconnect?: boolean | { delayMs?: number; maxDelayMs?: number; maxAttempts?: number };
-  /** Participant metadata (name, type, and any custom fields) */
-  metadata: Omit<T, "tools"> & Partial<Pick<T, "tools">>;
+
+  /** Unique handle for @-mentions */
+  handle: string;
+  /** Display name */
+  name: string;
+  /** Participant type */
+  type: string;
+
+  /** Additional metadata (optional) */
+  extraMetadata?: Record<string, unknown>;
+
+  /** Workspace ID for session persistence (optional) */
+  workspaceId?: string;
+
   /** Tools this participant provides. Automatically executed when called. */
   tools?: Record<string, ToolDefinition>;
+
+  /** Enable auto-reconnection. Pass true for defaults, or a config object. */
+  reconnect?: boolean | { delayMs?: number; maxDelayMs?: number; maxAttempts?: number };
+
+  /** Replay behavior: collect (default), stream, or skip */
+  replayMode?: "collect" | "stream" | "skip";
+
   /** This client's ID (for skipOwnMessages filtering) */
   clientId?: string;
   /** Skip messages sent by this client (echo suppression) */
   skipOwnMessages?: boolean;
+}
+
+export interface SendResult {
+  /** UUID for message correlation */
+  messageId: string;
+  /** Server-assigned ID for checkpointing */
+  pubsubId: number | undefined;
+}
+
+export interface EventStreamOptions extends EventFilterOptions {
+  includeReplay?: boolean;
+  includeEphemeral?: boolean;
+}
+
+export type EventStreamItem = IncomingEvent | AggregatedEvent;
+
+export interface ConversationMessage {
+  role: "user" | "assistant";
+  content: string;
 }
 
 /**
@@ -452,21 +587,34 @@ export interface ConnectOptions<T extends AgenticParticipantMetadata = AgenticPa
  * Provides messaging, tool discovery, and tool invocation APIs.
  */
 export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticParticipantMetadata> {
-  // === Messaging API ===
+  // === Identity ===
+  readonly handle: string;
+  readonly clientId: string | null;
 
-  /**
-   * Async iterator for all incoming events (messages, tool calls, tool results, presence).
-   * Use the `type` field to discriminate between event types:
-   * - "message", "update-message", "error" for chat messages
-   * - "tool-call" for tool invocations
-   * - "tool-result" for tool results
-   * - "presence" for join/leave events
-   *
-   * @param options - Optional filtering options (e.g., targetedOnly for agents)
-   */
-  events(options?: EventFilterOptions): AsyncIterableIterator<IncomingEvent>;
+  // === Session State (undefined if workspaceId not provided) ===
+  /** Whether session persistence is enabled and operational */
+  readonly sessionEnabled: boolean;
+  readonly sessionKey: string | undefined;
+  readonly checkpoint: number | undefined;
+  readonly sdkSessionId: string | undefined;
+  readonly status: "active" | "interrupted" | undefined;
 
-  /** Send a new message. Returns the message ID. */
+  // === Replay ===
+  readonly missedMessages: AggregatedEvent[];
+  formatMissedContext(options?: FormatOptions): MissedContext;
+  getMissedByType<K extends AggregatedEvent["type"]>(
+    type: K
+  ): Extract<AggregatedEvent, { type: K }>[];
+
+  // === Events ===
+  events(options?: EventStreamOptions): AsyncIterableIterator<EventStreamItem>;
+
+  // === Two-Phase Commit ===
+  commitCheckpoint(pubsubId: number): Promise<void>;
+  updateSdkSession(sessionId: string): Promise<void>;
+  clearSdkSession(): Promise<void>;
+
+  // === Messaging ===
   send(
     content: string,
     options?: {
@@ -476,37 +624,29 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
       contentType?: string;
       /** IDs of intended recipients (omit for broadcast to all) */
       at?: string[];
-      /**
-       * Resolve @handle mentions in `at` array to participant IDs.
-       * e.g., ["@claude", "@codex"] -> ["participant-id-1", "participant-id-2"]
-       * Unknown handles are silently ignored.
-       */
+      /** Resolve @handle mentions to participant IDs */
       resolveHandles?: boolean;
     }
-  ): Promise<string>;
+  ): Promise<SendResult>;
 
-  /** Update an existing message (for streaming) */
   update(
     id: string,
     content: string,
     options?: { complete?: boolean; persist?: boolean; attachment?: Uint8Array; contentType?: string }
-  ): Promise<void>;
+  ): Promise<number | undefined>;
 
-  /** Mark a message as complete */
-  complete(id: string): Promise<void>;
+  complete(id: string): Promise<number | undefined>;
 
-  /** Mark a message as errored */
-  error(id: string, error: string, code?: string): Promise<void>;
+  error(id: string, error: string, code?: string): Promise<number | undefined>;
 
-  // === Tool Discovery & Invocation API ===
+  // === Manual History ===
+  storeMessage(role: "user" | "assistant", content: string): Promise<void>;
+  getHistory(limit?: number): Promise<ConversationMessage[]>;
+  clearHistory(): Promise<void>;
 
-  /** Discover tool definitions advertised by all participants. */
+  // === Tool Discovery & Invocation ===
   discoverToolDefs(): DiscoveredTool[];
-
-  /** Discover tool definitions advertised by a specific participant. */
   discoverToolDefsFrom(providerId: string): DiscoveredTool[];
-
-  /** Call a tool on another participant. Returns a handle for the result. */
   callTool(
     providerId: string,
     toolName: string,
@@ -514,64 +654,22 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
     options?: { signal?: AbortSignal; validateArgs?: z.ZodTypeAny; timeoutMs?: number }
   ): ToolCallResult;
 
-  // === Roster API ===
-
-  /** Current roster of participants */
+  // === Roster ===
   readonly roster: Record<string, Participant<T>>;
-
-  /**
-   * Resolve @handle mentions to participant IDs.
-   * @param handles - Array of handles (with or without @ prefix)
-   * @returns Array of participant IDs (unknown handles are omitted)
-   */
   resolveHandles(handles: string[]): string[];
-
-  /**
-   * Get participant ID by handle.
-   * @param handle - Handle to look up (with or without @ prefix)
-   * @returns Participant ID or undefined if not found
-   */
   getParticipantByHandle(handle: string): string | undefined;
-
-  /** Subscribe to roster updates */
   onRoster(handler: (roster: RosterUpdate<T>) => void): () => void;
 
-  // === Connection API ===
-
-  /** Whether currently connected */
+  // === Lifecycle ===
   readonly connected: boolean;
-
-  /** Whether currently attempting to reconnect */
   readonly reconnecting: boolean;
-
-  /** Wait for the ready signal (replay complete) */
-  ready(timeoutMs?: number): Promise<void>;
-
-  /** Close the connection */
-  close(): void;
-
-  /** Subscribe to errors */
+  close(): Promise<void>;
   onError(handler: (error: Error) => void): () => void;
-
-  /** Subscribe to disconnect events */
   onDisconnect(handler: () => void): () => void;
-
-  /** Subscribe to reconnect events */
   onReconnect(handler: () => void): () => void;
 
-  /** Underlying transport client (escape hatch). */
+  // === Low-level ===
   readonly pubsub: PubSubClient<T>;
-
-  /**
-   * This client's ID on the channel.
-   * May be null briefly after connection before roster is received.
-   */
-  readonly clientId: string | null;
-
-  /**
-   * Send a tool result for a tool call.
-   * Use this when handling tools locally (not via the auto-execute mechanism).
-   */
   sendToolResult(
     callId: string,
     content: unknown,

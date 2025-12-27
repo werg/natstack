@@ -67,38 +67,57 @@ describe("@natstack/agentic-messaging", () => {
   it("callTool() publishes tool-call and resolves on tool-result", async () => {
     const ws = createWsHarness();
 
-    const client = connect("ws://127.0.0.1:1234", "token", {
+    const clientPromise = connect({
+      serverUrl: "ws://127.0.0.1:1234",
+      token: "token",
       channel: "test",
-      metadata: { name: "Me", type: "agent" },
+      handle: "me",
+      name: "Me",
+      type: "agent",
     });
 
-    ws.onmessage!({ data: JSON.stringify({ kind: "ready" }) });
+    const selfMetadata = JSON.parse(new URL(ws.capturedUrl!).searchParams.get("metadata")!) as Record<
+      string,
+      unknown
+    >;
 
+    ws.onmessage!({ data: JSON.stringify({ kind: "ready" }) });
     ws.onmessage!({
       data: JSON.stringify({
-        kind: "roster",
-        participants: {
-          providerA: {
-            id: "providerA",
-            metadata: {
-              name: "Provider A",
-              type: "worker",
-              tools: [
-                {
-                  name: "search",
-                  description: "Search",
-                  parameters: { type: "object", properties: { q: { type: "string" } } },
-                  streaming: false,
-                },
-              ],
-            },
+        kind: "persisted",
+        id: 1,
+        type: "presence",
+        payload: { action: "join", metadata: selfMetadata },
+        senderId: "me",
+        ts: Date.now(),
+      }),
+    });
+    ws.onmessage!({
+      data: JSON.stringify({
+        kind: "persisted",
+        id: 2,
+        type: "presence",
+        payload: {
+          action: "join",
+          metadata: {
+            name: "Provider A",
+            type: "worker",
+            tools: [
+              {
+                name: "search",
+                description: "Search",
+                parameters: { type: "object", properties: { q: { type: "string" } } },
+                streaming: false,
+              },
+            ],
           },
         },
+        senderId: "providerA",
         ts: Date.now(),
       }),
     });
 
-    await client.ready();
+    const client = await clientPromise;
 
     const result = client.callTool("providerA", "search", { q: "hello" });
 
@@ -147,9 +166,13 @@ describe("@natstack/agentic-messaging", () => {
   it("auto-executes provided tools and publishes streaming tool-results", async () => {
     const ws = createWsHarness({ autoAckPublishes: true });
 
-    const client = connect("ws://127.0.0.1:1234", "token", {
+    const clientPromise = connect({
+      serverUrl: "ws://127.0.0.1:1234",
+      token: "token",
       channel: "test",
-      metadata: { name: "Provider", type: "worker" },
+      handle: "me",
+      name: "Provider",
+      type: "worker",
       tools: {
         greet: {
           description: "Greet someone",
@@ -170,16 +193,29 @@ describe("@natstack/agentic-messaging", () => {
     ws.onmessage!({ data: JSON.stringify({ kind: "ready" }) });
     ws.onmessage!({
       data: JSON.stringify({
-        kind: "roster",
-        participants: {
-          me: { id: "me", metadata: selfMetadata },
-          caller: { id: "caller", metadata: { name: "Caller", type: "agent" } },
+        kind: "persisted",
+        id: 1,
+        type: "presence",
+        payload: { action: "join", metadata: selfMetadata },
+        senderId: "me",
+        ts: Date.now(),
+      }),
+    });
+    ws.onmessage!({
+      data: JSON.stringify({
+        kind: "persisted",
+        id: 2,
+        type: "presence",
+        payload: {
+          action: "join",
+          metadata: { name: "Caller", type: "agent", handle: "caller" },
         },
+        senderId: "caller",
         ts: Date.now(),
       }),
     });
 
-    await client.ready();
+    const client = await clientPromise;
 
     const callId = crypto.randomUUID();
     ws.onmessage!({
@@ -207,9 +243,13 @@ describe("@natstack/agentic-messaging", () => {
   it("tools in connect options are advertised in initial metadata", async () => {
     const ws = createWsHarness();
 
-    connect("ws://127.0.0.1:1234", "token", {
+    const clientPromise = connect({
+      serverUrl: "ws://127.0.0.1:1234",
+      token: "token",
       channel: "test",
-      metadata: { name: "Provider", type: "worker" },
+      handle: "provider",
+      name: "Provider",
+      type: "worker",
       tools: {
         ping: {
           description: "Ping",
@@ -232,5 +272,9 @@ describe("@natstack/agentic-messaging", () => {
     expect(Array.isArray(metadata.tools)).toBe(true);
     expect(metadata.tools[0]!.name).toBe("ping");
     expect(metadata.tools[0]!.description).toBe("Ping");
+
+    ws.onmessage!({ data: JSON.stringify({ kind: "ready" }) });
+    const client = await clientPromise;
+    await client.close();
   });
 });

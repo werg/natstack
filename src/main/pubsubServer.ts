@@ -31,6 +31,7 @@ export interface MessageStore {
   init(): void;
   insert(channel: string, type: string, payload: string, senderId: string, ts: number, senderMetadata?: Record<string, unknown>, attachment?: Buffer): number;
   query(channel: string, sinceId: number): MessageRow[];
+  queryByType(channel: string, types: string[], sinceId?: number): MessageRow[];
   close(): void;
 }
 
@@ -40,27 +41,33 @@ export interface MessageStore {
 export interface PubSubServerOptions {
   /** Token validator (defaults to global TokenManager) */
   tokenValidator?: TokenValidator;
-  /** Message store (defaults to SQLite via DatabaseManager) */
-  messageStore?: MessageStore | null;
+  /** Message store implementation */
+  messageStore: MessageStore;
   /** Port to listen on (defaults to dynamic allocation) */
   port?: number;
 }
 
-interface Client {
+interface ClientConnection {
   ws: WebSocket;
   clientId: string;
   channel: string;
   metadata: Record<string, unknown>;
 }
 
-/** Participant info sent in roster messages */
-interface Participant {
+/** Participant state tracked per channel */
+interface ParticipantState {
   id: string;
   metadata: Record<string, unknown>;
+  connections: number;
+}
+
+interface ChannelState {
+  clients: Set<ClientConnection>;
+  participants: Map<string, ParticipantState>;
 }
 
 interface ServerMessage {
-  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error" | "roster";
+  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error";
   id?: number;
   type?: string;
   payload?: unknown;
@@ -70,12 +77,12 @@ interface ServerMessage {
   error?: string;
   /** Binary attachment (separate from JSON payload) */
   attachment?: Buffer;
-  /** For roster messages: map of client ID to participant info */
-  participants?: Record<string, Participant>;
+  /** Sender metadata snapshot (if available) */
+  senderMetadata?: Record<string, unknown>;
 }
 
 /** Presence event types for join/leave tracking */
-type PresenceAction = "join" | "leave";
+type PresenceAction = "join" | "leave" | "update";
 
 /** Payload for presence events (type: "presence") */
 interface PresencePayload {
@@ -109,6 +116,14 @@ interface MessageRow {
   attachment: Buffer | null;
   /** JSON-serialized sender metadata for replay participant reconstruction */
   sender_metadata: string | null;
+}
+
+function metadataEquals(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
 }
 
 // =============================================================================
@@ -172,6 +187,18 @@ class SqliteMessageStore implements MessageStore {
     );
   }
 
+  queryByType(channel: string, types: string[], sinceId = 0): MessageRow[] {
+    if (!this.dbHandle) return [];
+    if (types.length === 0) return [];
+    const db = getDatabaseManager();
+    const placeholders = types.map(() => "?").join(", ");
+    return db.query<MessageRow>(
+      this.dbHandle,
+      `SELECT * FROM messages WHERE channel = ? AND id > ? AND type IN (${placeholders}) ORDER BY id ASC`,
+      [channel, sinceId, ...types]
+    );
+  }
+
   close(): void {
     if (this.dbHandle) {
       const dbManager = getDatabaseManager();
@@ -213,6 +240,14 @@ export class InMemoryMessageStore implements MessageStore {
     return this.messages.filter((m) => m.channel === channel && m.id > sinceId);
   }
 
+  queryByType(channel: string, types: string[], sinceId = 0): MessageRow[] {
+    if (types.length === 0) return [];
+    const typeSet = new Set(types);
+    return this.messages.filter(
+      (m) => m.channel === channel && m.id > sinceId && typeSet.has(m.type)
+    );
+  }
+
   close(): void {
     this.messages = [];
     this.nextId = 1;
@@ -247,15 +282,15 @@ export class PubSubServer {
   private wss: WebSocketServer | null = null;
   private httpServer: HttpServer | null = null;
   private port: number | null = null;
-  private channels = new Map<string, Set<Client>>();
+  private channels = new Map<string, ChannelState>();
 
   private tokenValidator: TokenValidator;
-  private messageStore: MessageStore | null;
+  private messageStore: MessageStore;
   private requestedPort: number | undefined;
 
-  constructor(options: PubSubServerOptions = {}) {
+  constructor(options: PubSubServerOptions) {
     this.tokenValidator = options.tokenValidator ?? getTokenManager();
-    this.messageStore = options.messageStore === undefined ? new SqliteMessageStore() : options.messageStore;
+    this.messageStore = options.messageStore;
     this.requestedPort = options.port;
   }
 
@@ -274,7 +309,7 @@ export class PubSubServer {
     }
 
     this.wss = new WebSocketServer({ server: this.httpServer });
-    this.messageStore?.init();
+    this.messageStore.init();
 
     this.wss.on("connection", (ws, req) => this.handleConnection(ws, req));
 
@@ -291,6 +326,15 @@ export class PubSubServer {
         resolve(this.port!);
       });
     });
+  }
+
+  private getOrCreateChannelState(channel: string): ChannelState {
+    let state = this.channels.get(channel);
+    if (!state) {
+      state = { clients: new Set(), participants: new Map() };
+      this.channels.set(channel, state);
+    }
+    return state;
   }
 
   private handleConnection(ws: WebSocket, req: IncomingMessage): void {
@@ -325,27 +369,44 @@ export class PubSubServer {
       return;
     }
 
-    const client: Client = { ws, clientId, channel, metadata };
+    const client: ClientConnection = { ws, clientId, channel, metadata };
 
-    // Add to channel
-    if (!this.channels.has(channel)) {
-      this.channels.set(channel, new Set());
+    const channelState = this.getOrCreateChannelState(channel);
+    channelState.clients.add(client);
+
+    const existingParticipant = channelState.participants.get(clientId);
+    const metadataChanged = !!existingParticipant && !metadataEquals(existingParticipant.metadata, metadata);
+
+    if (existingParticipant) {
+      existingParticipant.connections += 1;
+      if (metadataChanged) {
+        existingParticipant.metadata = metadata;
+      }
+    } else {
+      channelState.participants.set(clientId, {
+        id: clientId,
+        metadata,
+        connections: 1,
+      });
     }
-    this.channels.get(channel)!.add(client);
+
+    // Send roster-op history before any normal replay
+    this.replayRosterOps(ws, channel);
 
     // Replay if requested
-    if (sinceId !== null && this.messageStore) {
+    if (sinceId !== null) {
       this.replayMessages(ws, channel, sinceId);
     }
 
-    // Signal ready
+    // Signal ready (end of replay)
     this.send(ws, { kind: "ready" });
 
-    // Persist and broadcast join presence event
-    this.persistPresenceEvent(client, "join");
-
-    // Broadcast updated roster to all clients in the channel
-    this.broadcastRoster(channel);
+    // Persist and broadcast join or update presence event
+    if (!existingParticipant) {
+      this.publishPresenceEvent(client, "join", metadata);
+    } else if (metadataChanged) {
+      this.publishPresenceEvent(client, "update", metadata);
+    }
 
     // Handle incoming messages (both text and binary)
     ws.on("message", (data) => {
@@ -378,26 +439,33 @@ export class PubSubServer {
 
     // Cleanup on disconnect
     ws.on("close", () => {
-      // Persist leave event before removing from channel
-      this.persistPresenceEvent(client, "leave");
+      const state = this.channels.get(channel);
+      if (!state) return;
 
-      this.channels.get(channel)?.delete(client);
-      if (this.channels.get(channel)?.size === 0) {
+      state.clients.delete(client);
+
+      const participant = state.participants.get(clientId);
+      if (participant) {
+        participant.connections -= 1;
+        if (participant.connections <= 0) {
+          state.participants.delete(clientId);
+          // Persist leave event after last connection closes
+          this.publishPresenceEvent(client, "leave", participant.metadata);
+        }
+      }
+
+      if (state.clients.size === 0) {
         this.channels.delete(channel);
-      } else {
-        // Broadcast updated roster after removing the client
-        this.broadcastRoster(channel);
       }
     });
   }
 
   private replayMessages(ws: WebSocket, channel: string, sinceId: number): void {
-    if (!this.messageStore) return;
-
     const rows = this.messageStore.query(channel, sinceId);
 
     for (const row of rows) {
       const payload = JSON.parse(row.payload);
+      const senderMetadata = row.sender_metadata ? JSON.parse(row.sender_metadata) : undefined;
 
       if (row.attachment) {
         // Message with attachment - send as binary frame
@@ -408,6 +476,7 @@ export class PubSubServer {
           payload,
           senderId: row.sender_id,
           ts: row.ts,
+          senderMetadata,
           attachment: row.attachment,
         });
       } else {
@@ -419,12 +488,13 @@ export class PubSubServer {
           payload,
           senderId: row.sender_id,
           ts: row.ts,
+          senderMetadata,
         });
       }
     }
   }
 
-  private handleClientMessage(client: Client, msg: ClientMessage): void {
+  private handleClientMessage(client: ClientConnection, msg: ClientMessage): void {
     const { ref } = msg;
 
     if (msg.action === "update-metadata") {
@@ -433,7 +503,14 @@ export class PubSubServer {
         return;
       }
       client.metadata = msg.payload as Record<string, unknown>;
-      this.broadcastRoster(client.channel, client.ws, ref);
+      const state = this.channels.get(client.channel);
+      if (state) {
+        const participant = state.participants.get(client.clientId);
+        if (participant) {
+          participant.metadata = client.metadata;
+        }
+      }
+      this.publishPresenceEvent(client, "update", client.metadata, ref);
       return;
     }
 
@@ -454,9 +531,16 @@ export class PubSubServer {
       return;
     }
 
-    if (persist && this.messageStore) {
+    if (persist) {
       // Persist to message store (presence events handle participant reconstruction)
-      const id = this.messageStore.insert(client.channel, type, payloadJson, client.clientId, ts);
+      const id = this.messageStore.insert(
+        client.channel,
+        type,
+        payloadJson,
+        client.clientId,
+        ts,
+        client.metadata
+      );
 
       // Broadcast to all (including sender)
       this.broadcast(
@@ -468,6 +552,7 @@ export class PubSubServer {
           payload,
           senderId: client.clientId,
           ts,
+          senderMetadata: client.metadata,
         },
         client.ws,
         ref
@@ -482,6 +567,7 @@ export class PubSubServer {
           payload,
           senderId: client.clientId,
           ts,
+          senderMetadata: client.metadata,
         },
         client.ws,
         ref
@@ -489,7 +575,7 @@ export class PubSubServer {
     }
   }
 
-  private handleClientBinaryMessage(client: Client, msg: ClientMessage, attachment: Buffer): void {
+  private handleClientBinaryMessage(client: ClientConnection, msg: ClientMessage, attachment: Buffer): void {
     if (msg.action !== "publish") {
       this.send(client.ws, { kind: "error", error: "unknown action", ref: msg.ref });
       return;
@@ -507,9 +593,17 @@ export class PubSubServer {
       return;
     }
 
-    if (persist && this.messageStore) {
+    if (persist) {
       // Persist payload + attachment to message store (presence events handle participant reconstruction)
-      const id = this.messageStore.insert(client.channel, type, payloadJson, client.clientId, ts, undefined, attachment);
+      const id = this.messageStore.insert(
+        client.channel,
+        type,
+        payloadJson,
+        client.clientId,
+        ts,
+        client.metadata,
+        attachment
+      );
 
       // Broadcast to all (including sender)
       this.broadcastBinary(
@@ -521,6 +615,7 @@ export class PubSubServer {
           payload,
           senderId: client.clientId,
           ts,
+          senderMetadata: client.metadata,
           attachment,
         },
         client.ws,
@@ -536,6 +631,7 @@ export class PubSubServer {
           payload,
           senderId: client.clientId,
           ts,
+          senderMetadata: client.metadata,
           attachment,
         },
         client.ws,
@@ -550,8 +646,8 @@ export class PubSubServer {
     senderWs: WebSocket,
     senderRef?: number
   ): void {
-    const clients = this.channels.get(channel);
-    if (!clients) return;
+    const state = this.channels.get(channel);
+    if (!state) return;
 
     // Message without ref for non-senders
     const dataForOthers = JSON.stringify(msg);
@@ -559,7 +655,7 @@ export class PubSubServer {
     const dataForSender =
       senderRef !== undefined ? JSON.stringify({ ...msg, ref: senderRef }) : dataForOthers;
 
-    for (const client of clients) {
+    for (const client of state.clients) {
       if (client.ws.readyState === WebSocket.OPEN) {
         const data = client.ws === senderWs ? dataForSender : dataForOthers;
         client.ws.send(data);
@@ -585,6 +681,7 @@ export class PubSubServer {
       senderId: msg.senderId,
       ts: msg.ts,
       ref: msg.ref,
+      senderMetadata: msg.senderMetadata,
     };
 
     const metadataStr = JSON.stringify(metadata);
@@ -607,8 +704,8 @@ export class PubSubServer {
     senderWs: WebSocket,
     senderRef?: number
   ): void {
-    const clients = this.channels.get(channel);
-    if (!clients) return;
+    const state = this.channels.get(channel);
+    if (!state) return;
 
     const attachment = msg.attachment!;
 
@@ -621,6 +718,7 @@ export class PubSubServer {
         payload: msg.payload,
         senderId: msg.senderId,
         ts: msg.ts,
+        senderMetadata: msg.senderMetadata,
         ...(includeRef && senderRef !== undefined ? { ref: senderRef } : {}),
       };
 
@@ -640,7 +738,7 @@ export class PubSubServer {
     const bufferForSender = createBinaryBuffer(true);
     const bufferForOthers = createBinaryBuffer(false);
 
-    for (const client of clients) {
+    for (const client of state.clients) {
       if (client.ws.readyState === WebSocket.OPEN) {
         const buffer = client.ws === senderWs ? bufferForSender : bufferForOthers;
         client.ws.send(buffer);
@@ -648,21 +746,47 @@ export class PubSubServer {
     }
   }
 
-  /**
-   * Persist and broadcast a presence event (join/leave).
-   * These events are stored in the message log and replayed to reconstruct participant history.
-   */
-  private persistPresenceEvent(client: Client, action: PresenceAction): void {
-    if (!this.messageStore) return;
+  private replayRosterOps(ws: WebSocket, channel: string): void {
+    const rows = this.messageStore.queryByType(channel, ["presence"], 0);
 
+    for (const row of rows) {
+      const payload = JSON.parse(row.payload);
+      const senderMetadata = row.sender_metadata ? JSON.parse(row.sender_metadata) : undefined;
+
+      const msg: ServerMessage = {
+        kind: "replay",
+        id: row.id,
+        type: row.type,
+        payload,
+        senderId: row.sender_id,
+        ts: row.ts,
+        senderMetadata,
+      };
+
+      if (row.attachment) {
+        this.sendBinary(ws, { ...msg, attachment: row.attachment });
+      } else {
+        this.send(ws, msg);
+      }
+    }
+  }
+
+  /**
+   * Persist and broadcast a presence event (join/leave/update).
+   * These events are stored in the message log and replayed to reconstruct roster history.
+   */
+  private publishPresenceEvent(
+    client: ClientConnection,
+    action: PresenceAction,
+    metadata: Record<string, unknown>,
+    senderRef?: number
+  ): void {
     const ts = Date.now();
     const payload: PresencePayload = {
       action,
-      metadata: client.metadata,
+      metadata,
     };
 
-    // Persist the presence event (no sender_metadata needed - metadata is in the payload)
-    // Wrap in try-catch to handle shutdown race condition where store may be closed
     let messageId: number;
     try {
       messageId = this.messageStore.insert(
@@ -670,16 +794,12 @@ export class PubSubServer {
         "presence",
         JSON.stringify(payload),
         client.clientId,
-        ts
+        ts,
+        metadata
       );
     } catch {
-      // Store may have been closed during shutdown - this is expected
       return;
     }
-
-    // Broadcast to all clients in the channel
-    const clients = this.channels.get(client.channel);
-    if (!clients) return;
 
     const msg: ServerMessage = {
       kind: "persisted",
@@ -688,51 +808,10 @@ export class PubSubServer {
       payload,
       senderId: client.clientId,
       ts,
+      senderMetadata: metadata,
     };
 
-    const data = JSON.stringify(msg);
-    for (const c of clients) {
-      if (c.ws.readyState === WebSocket.OPEN) {
-        c.ws.send(data);
-      }
-    }
-  }
-
-  /**
-   * Broadcast the current roster (participants with metadata) to all clients in a channel.
-   * This is an idempotent operation - clients receive the full current state.
-   * When a client has multiple connections, uses the metadata from the most recent connection.
-   */
-  private broadcastRoster(channel: string, senderWs?: WebSocket, senderRef?: number): void {
-    const clients = this.channels.get(channel);
-    if (!clients || clients.size === 0) return;
-
-    // Build participants map (a single clientId may have multiple connections,
-    // we use the last one's metadata - which is fine since it's the same client)
-    const participants: Record<string, Participant> = {};
-    for (const client of clients) {
-      participants[client.clientId] = {
-        id: client.clientId,
-        metadata: client.metadata,
-      };
-    }
-
-    const rosterMsg: ServerMessage = {
-      kind: "roster",
-      participants,
-      ts: Date.now(),
-    };
-
-    const dataForOthers = JSON.stringify(rosterMsg);
-    // If senderRef is present, include it only for the sender (correlation/ack).
-    const dataForSender =
-      senderRef !== undefined ? JSON.stringify({ ...rosterMsg, ref: senderRef }) : dataForOthers;
-
-    for (const client of clients) {
-      if (client.ws.readyState !== WebSocket.OPEN) continue;
-      const data = senderWs && client.ws === senderWs ? dataForSender : dataForOthers;
-      client.ws.send(data);
-    }
+    this.broadcast(client.channel, msg, client.ws, senderRef);
   }
 
   getPort(): number | null {
@@ -749,7 +828,7 @@ export class PubSubServer {
     }
 
     // Now close the message store after clients have disconnected
-    this.messageStore?.close();
+    this.messageStore.close();
 
     return new Promise((resolve) => {
       if (this.wss) {
@@ -773,7 +852,7 @@ let pubsubServer: PubSubServer | null = null;
 
 export function getPubSubServer(): PubSubServer {
   if (!pubsubServer) {
-    pubsubServer = new PubSubServer();
+    pubsubServer = new PubSubServer({ messageStore: new SqliteMessageStore() });
   }
   return pubsubServer;
 }

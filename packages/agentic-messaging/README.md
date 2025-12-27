@@ -15,9 +15,13 @@ import { connect } from "@natstack/agentic-messaging";
 import { z } from "zod";
 
 // Connect as a tool provider
-const client = connect(serverUrl, token, {
+const client = await connect({
+  serverUrl,
+  token,
   channel: "my-channel",
-  metadata: { name: "My Worker", type: "worker" },
+  handle: "my-worker",
+  name: "My Worker",
+  type: "worker",
   tools: {
     greet: {
       description: "Say hello",
@@ -26,8 +30,6 @@ const client = connect(serverUrl, token, {
     },
   },
 });
-
-await client.ready();
 ```
 
 ## Overview
@@ -45,16 +47,23 @@ A single participant can act as any combination of these roles.
 ```typescript
 import { connect, type AgenticClient } from "@natstack/agentic-messaging";
 
-const client = connect(serverUrl, token, {
+const client = await connect({
   // Required
+  serverUrl,
+  token,
   channel: "my-channel",
-  metadata: { name: "My Agent", type: "agent" },
+  handle: "my-agent",
+  name: "My Agent",
+  type: "agent",
 
   // Optional: tools this participant provides
   tools: { /* ... */ },
 
-  // Optional: replay messages since this ID
-  sinceId: 12345,
+  // Optional: session persistence
+  workspaceId: "my-workspace",
+
+  // Optional: replay behavior ("collect" | "stream" | "skip")
+  replayMode: "collect",
 
   // Optional: auto-reconnect on disconnect
   reconnect: true,  // or { delayMs: 1000, maxDelayMs: 30000, maxAttempts: 10 }
@@ -63,20 +72,20 @@ const client = connect(serverUrl, token, {
   clientId: "my-client-id",
   skipOwnMessages: true,
 });
-
-await client.ready();
 ```
 
 ## Messaging API
 
 ### Sending Messages
 
+`send()` returns both the client-generated message ID and the server-assigned pubsub ID (undefined for ephemeral messages).
+
 ```typescript
 // Send a simple message
-const messageId = await client.send("Hello, world!");
+const { messageId, pubsubId } = await client.send("Hello, world!");
 
 // Send with options
-const id = await client.send("Check this out", {
+const { messageId: replyId } = await client.send("Check this out", {
   replyTo: previousMessageId,
   persist: true,  // default
   attachment: imageBytes,
@@ -86,19 +95,21 @@ const id = await client.send("Check this out", {
 
 ### Streaming Messages
 
+`update()`, `complete()`, and `error()` return the pubsub ID for the persisted update (or undefined if not persisted).
+
 ```typescript
 // Start a message
-const id = await client.send("Thinking", { persist: false });
+const { messageId } = await client.send("Thinking", { persist: false });
 
 // Stream updates
-await client.update(id, "...");
-await client.update(id, " more content");
+await client.update(messageId, "...");
+await client.update(messageId, " more content");
 
 // Mark complete
-await client.complete(id);
+await client.complete(messageId);
 
 // Or mark as error
-await client.error(id, "Something went wrong", "internal-error");
+await client.error(messageId, "Something went wrong", "internal-error");
 ```
 
 ### Receiving Events
@@ -141,6 +152,11 @@ for await (const event of client.events()) {
 for await (const event of client.events({ targetedOnly: true })) {
   // Only yields message events where this client is in the `at` field
 }
+
+// Include replay or ephemeral events if desired
+for await (const event of client.events({ includeReplay: true, includeEphemeral: true })) {
+  // Replay events are either aggregated (collect) or raw (stream)
+}
 ```
 
 ## Tool Provider API
@@ -150,9 +166,13 @@ Tools are declared at connection time and automatically executed when called:
 ```typescript
 import { z } from "zod";
 
-const client = connect(serverUrl, token, {
+const client = await connect({
+  serverUrl,
+  token,
   channel: "tools-channel",
-  metadata: { name: "Tool Provider", type: "worker" },
+  handle: "tool-provider",
+  name: "Tool Provider",
+  type: "worker",
   tools: {
     search: {
       description: "Search for files",
@@ -213,6 +233,140 @@ interface ToolExecutionContext {
   streamWithAttachment(content: unknown, attachment: Uint8Array, options?: { contentType?: string }): Promise<void>;
   resultWithAttachment<T>(content: T, attachment: Uint8Array, options?: { contentType?: string }): ToolResultWithAttachment<T>;
   progress(percent: number): Promise<void>;
+}
+```
+
+### Streaming Tool Patterns
+
+#### Progress Reporting
+
+```typescript
+tools: {
+  analyze: {
+    description: "Analyze a large dataset",
+    parameters: z.object({ datasetId: z.string() }),
+    streaming: true,
+    async execute(args, ctx) {
+      const chunks = await loadDataset(args.datasetId);
+      const results = [];
+
+      for (let i = 0; i < chunks.length; i++) {
+        if (ctx.signal.aborted) break;
+
+        // Report progress as percentage
+        await ctx.progress(Math.round((i / chunks.length) * 100));
+
+        results.push(await processChunk(chunks[i]));
+      }
+
+      return { results, total: results.length };
+    },
+  },
+}
+```
+
+#### Streaming Partial Results
+
+```typescript
+tools: {
+  search: {
+    description: "Search files with streaming results",
+    parameters: z.object({ pattern: z.string() }),
+    streaming: true,
+    async execute(args, ctx) {
+      const matches = [];
+
+      for await (const file of globStream(args.pattern)) {
+        if (ctx.signal.aborted) break;
+
+        // Stream each result as it's found
+        await ctx.stream({ file, found: true });
+        matches.push(file);
+      }
+
+      // Final result includes all matches
+      return { matches, count: matches.length };
+    },
+  },
+}
+```
+
+#### Binary Attachments
+
+```typescript
+tools: {
+  screenshot: {
+    description: "Take a screenshot",
+    parameters: z.object({ selector: z.string().optional() }),
+    async execute(args, ctx) {
+      const imageBuffer = await captureScreen(args.selector);
+
+      // Return metadata with binary attachment
+      return ctx.resultWithAttachment(
+        { width: 1920, height: 1080, format: "png" },
+        imageBuffer,
+        { contentType: "image/png" }
+      );
+    },
+  },
+
+  streamImages: {
+    description: "Generate images progressively",
+    parameters: z.object({ prompts: z.array(z.string()) }),
+    streaming: true,
+    async execute(args, ctx) {
+      const results = [];
+
+      for (const prompt of args.prompts) {
+        if (ctx.signal.aborted) break;
+
+        const image = await generateImage(prompt);
+
+        // Stream each image with its binary data
+        await ctx.streamWithAttachment(
+          { prompt, index: results.length },
+          image,
+          { contentType: "image/png" }
+        );
+
+        results.push(prompt);
+      }
+
+      return { generated: results.length };
+    },
+  },
+}
+```
+
+#### Handling Cancellation
+
+```typescript
+tools: {
+  longRunning: {
+    description: "A cancellable long-running task",
+    parameters: z.object({ iterations: z.number() }),
+    streaming: true,
+    async execute(args, ctx) {
+      const results = [];
+
+      for (let i = 0; i < args.iterations; i++) {
+        // Check for cancellation before each step
+        if (ctx.signal.aborted) {
+          // Return partial results on cancellation
+          return {
+            results,
+            cancelled: true,
+            completedIterations: i
+          };
+        }
+
+        await ctx.progress(Math.round((i / args.iterations) * 100));
+        results.push(await doWork(i));
+      }
+
+      return { results, cancelled: false, completedIterations: args.iterations };
+    },
+  },
 }
 ```
 
@@ -316,8 +470,7 @@ const unsubscribe = client.onRoster((update) => {
 // Check connection status
 console.log(client.connected, client.reconnecting);
 
-// Wait for ready (replay complete)
-await client.ready(30000);  // timeout in ms
+// connect() resolves after initial replay completes
 
 // Event handlers
 client.onError((error) => console.error("Error:", error));
@@ -363,6 +516,178 @@ client.onError((error) => {
 });
 ```
 
+## Broker API
+
+Brokers advertise available agent types and spawn agents on demand. Use brokers to build multi-agent systems where agents are created dynamically.
+
+### Connecting as a Broker
+
+```typescript
+import { connectAsBroker, type AgentTypeAdvertisement } from "@natstack/agentic-messaging";
+
+const broker = await connectAsBroker(serverUrl, token, {
+  availabilityChannel: "agents-available",
+  name: "My Broker",
+  handle: "broker",
+  agentTypes: [
+    {
+      type: "claude-code",
+      name: "Claude Code",
+      description: "AI coding assistant",
+      capabilities: ["code", "tools"],
+    },
+    {
+      type: "codex",
+      name: "Codex",
+      description: "OpenAI Codex agent",
+      capabilities: ["code"],
+    },
+  ],
+  onSpawn: async (agentType, targetChannel, config) => {
+    // Spawn the requested agent type
+    const agentId = await spawnWorker(agentType, targetChannel, config);
+    return { agentId };
+  },
+});
+
+// Update available agent types dynamically
+await broker.updateAgentTypes(newAgentTypes);
+
+// Clean up
+await broker.close();
+```
+
+### Self-Broker Pattern
+
+For agents that broker themselves (single agent type):
+
+```typescript
+import { connectAsSelfBroker } from "@natstack/agentic-messaging";
+
+const broker = await connectAsSelfBroker(serverUrl, token, {
+  availabilityChannel: "agents-available",
+  name: "Claude Code",
+  handle: "claude",
+  agentType: {
+    type: "claude-code",
+    name: "Claude Code",
+    description: "AI coding assistant",
+  },
+  onInvite: async (invite) => {
+    // Connect myself to the target channel
+    const workClient = await connect({
+      serverUrl,
+      token,
+      channel: invite.targetChannel,
+      handle: "claude",
+      name: "Claude Code",
+      type: "claude-code",
+    });
+    return { accept: true, agentId: workClient.clientId };
+  },
+});
+```
+
+### Discovering and Inviting Agents
+
+```typescript
+import { connectForDiscovery, inviteAgent } from "@natstack/agentic-messaging";
+
+// Connect to discover available brokers
+const discovery = await connectForDiscovery(serverUrl, token, {
+  availabilityChannel: "agents-available",
+  name: "My Panel",
+  handle: "panel",
+  type: "panel",
+});
+
+// Discover available agent types
+const brokers = await discovery.discoverBrokers();
+for (const broker of brokers) {
+  console.log(`${broker.name} offers: ${broker.agentTypes.map(a => a.name).join(", ")}`);
+}
+
+// Invite an agent to a channel
+const response = await discovery.invite(brokerId, "claude-code", "my-chat-channel", {
+  workingDirectory: "/path/to/project",
+});
+
+if (response.accept) {
+  console.log(`Agent joined with ID: ${response.agentId}`);
+}
+
+// Or use the convenience function
+const result = await inviteAgent(serverUrl, token, {
+  availabilityChannel: "agents-available",
+  brokerId,
+  agentType: "claude-code",
+  targetChannel: "my-chat-channel",
+});
+```
+
+## Utility Functions
+
+### Schema Conversion
+
+Convert between JSON Schema and Zod for tool interoperability:
+
+```typescript
+import { jsonSchemaToZod, jsonSchemaToZodRawShape } from "@natstack/agentic-messaging";
+
+// Convert JSON Schema to Zod schema
+const zodSchema = jsonSchemaToZod(jsonSchema);
+
+// Convert to raw shape for z.object()
+const shape = jsonSchemaToZodRawShape(jsonSchema);
+const schema = z.object(shape);
+```
+
+### Message Targeting
+
+Check if a message is targeted at a specific participant:
+
+```typescript
+import { isMessageTargetedAt } from "@natstack/agentic-messaging";
+
+for await (const event of client.events()) {
+  if (event.type === "message") {
+    const isForMe = isMessageTargetedAt(event, client.clientId, "my-handle");
+    if (isForMe) {
+      // Handle targeted message
+    }
+  }
+}
+```
+
+### Execution Pause/Resume
+
+For agents that support pausing mid-execution:
+
+```typescript
+import { createPauseToolDefinition, createInterruptHandler } from "@natstack/agentic-messaging";
+
+const client = await connect({
+  // ...
+  tools: {
+    pause: createPauseToolDefinition(async () => {
+      // Called when pause is requested
+    }),
+  },
+});
+
+// In your message handler
+const handler = createInterruptHandler({
+  client,
+  messageId: incomingMessage.id,
+  onPause: async (reason) => {
+    console.log(`Paused: ${reason}`);
+    // Stop current processing
+  },
+});
+
+void handler.monitor(); // Start monitoring in background
+```
+
 ## Protocol Messages
 
 All messages are validated using Zod schemas. The protocol uses these message types:
@@ -375,6 +700,7 @@ All messages are validated using Zod schemas. The protocol uses these message ty
 | `tool-call` | Tool invocation request |
 | `tool-result` | Tool result (can stream) |
 | `tool-cancel` | Cancel a tool call |
+| `execution-pause` | Pause/interrupt agent execution |
 
 ## Design Principles
 

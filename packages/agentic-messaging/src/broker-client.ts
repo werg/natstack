@@ -62,10 +62,7 @@ export interface BrokerDiscoveryClient {
   onBrokersChanged(handler: (brokers: DiscoveredBroker[]) => void): () => void;
 
   /** Close the connection */
-  close(): void;
-
-  /** Wait for ready (replay complete) */
-  ready(timeoutMs?: number): Promise<void>;
+  close(): Promise<void>;
 }
 
 /**
@@ -127,11 +124,14 @@ export async function connectForDiscovery(
 
   const brokerChangeHandlers = new Set<(brokers: DiscoveredBroker[]) => void>();
 
-  const client = agenticConnect<AgenticParticipantMetadata>(serverUrl, token, {
+  const client = await agenticConnect<AgenticParticipantMetadata>({
+    serverUrl,
+    token,
     channel: availabilityChannel,
+    handle,
+    name,
+    type,
     reconnect,
-    // sinceId defaults to 0 in connect(), so we'll get replay of broker advertisements
-    metadata: { name, type, handle },
     skipOwnMessages: true,
   });
 
@@ -146,7 +146,7 @@ export async function connectForDiscovery(
   // Process invite response messages
   void (async () => {
     try {
-      for await (const event of client.events()) {
+      for await (const event of client.events({ includeEphemeral: true })) {
         if (event.type !== "message") continue;
 
         try {
@@ -337,9 +337,6 @@ export async function connectForDiscovery(
     return () => brokerChangeHandlers.delete(handler);
   }
 
-  // Wait for initial ready
-  await client.ready();
-
   return {
     client,
     discoverBrokers,
@@ -347,8 +344,7 @@ export async function connectForDiscovery(
     findAgentTypes,
     invite,
     onBrokersChanged,
-    close: () => client.close(),
-    ready: (timeoutMs?: number) => client.ready(timeoutMs),
+    close: async () => client.close(),
   };
 }
 
@@ -404,6 +400,6 @@ export async function inviteAgent(
 
     return await result.response;
   } finally {
-    discovery.close();
+    await discovery.close();
   }
 }

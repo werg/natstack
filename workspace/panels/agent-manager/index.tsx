@@ -204,7 +204,7 @@ export default function AgentManager() {
       setStatus("Connecting to availability channel...");
 
       try {
-        const broker = connectAsBroker(pubsubConfig!.serverUrl, pubsubConfig!.token, {
+        const broker = await connectAsBroker(pubsubConfig!.serverUrl, pubsubConfig!.token, {
           availabilityChannel: AVAILABILITY_CHANNEL,
           name: "Agent Manager",
           handle: "agent-manager",
@@ -289,8 +289,6 @@ export default function AgentManager() {
 
         brokerRef.current = broker;
 
-        await broker.ready();
-
         if (mounted) {
           setConnected(true);
           setStatus("Connected");
@@ -306,7 +304,9 @@ export default function AgentManager() {
 
     return () => {
       mounted = false;
-      brokerRef.current?.close();
+      if (brokerRef.current) {
+        void brokerRef.current.close();
+      }
       brokerRef.current = null;
     };
   }, [addLogEntry]);

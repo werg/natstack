@@ -37,10 +37,10 @@ export {
   type InterruptHandlerOptions,
 } from "./interrupt-handler.js";
 
-// Session management for conversation resumption
+// Missed ontext utilities
 export {
-  SessionManager,
-  type SessionManagerOptions,
-  type SessionState,
-  type ConversationMessage,
-} from "./session-manager.js";
+  aggregateReplayEvents,
+  formatMissedContext,
+  DEFAULT_MISSED_CONTEXT_MAX_CHARS,
+  DEFAULT_TOOL_RESULT_MAX_CHARS,
+} from "./missed-context.js";

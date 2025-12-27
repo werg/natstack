@@ -24,9 +24,10 @@ import {
   formatArgsForLog,
   createInterruptHandler,
   createPauseToolDefinition,
-  SessionManager,
+  formatMissedContext,
   type AgenticClient,
   type ChatParticipantMetadata,
+  type IncomingNewMessage,
 } from "@natstack/agentic-messaging";
 import { Codex } from "@openai/codex-sdk";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -280,7 +281,7 @@ async function main() {
   const handle = typeof agentConfig.handle === "string" ? agentConfig.handle : "codex";
 
   // Get workspace ID from environment
-  const workspaceId = process.env["NATSTACK_WORKSPACE_ID"] || "default";
+  const workspaceId = process.env["NATSTACK_WORKSPACE_ID"];
 
   log("Starting Codex responder...");
   if (workingDirectory) {
@@ -288,36 +289,16 @@ async function main() {
   }
   log(`Handle: @${handle}`);
 
-  // Initialize session manager for conversation resumption
-  const sessionManager = new SessionManager({
-    workspaceId,
-    channelName,
-    agentHandle: handle,
-    sdkType: "codex-sdk",
-    workingDirectory,
-  });
-
-  try {
-    await sessionManager.initialize();
-    const sessionState = await sessionManager.getOrCreateSession();
-    log(`Session initialized: ${sessionState.sessionKey}`);
-    if (sessionState.sdkSessionId) {
-      log(`Resuming from previous session: ${sessionState.sdkSessionId}`);
-    }
-  } catch (err) {
-    console.error("Failed to initialize session manager:", err);
-    // Continue anyway - session management is optional
-  }
-
   // Connect to agentic messaging channel
-  const client = connect<ChatParticipantMetadata>(pubsubConfig.serverUrl, pubsubConfig.token, {
+  const client = await connect<ChatParticipantMetadata>({
+    serverUrl: pubsubConfig.serverUrl,
+    token: pubsubConfig.token,
     channel: channelName,
+    handle,
+    name: "Codex",
+    type: "codex",
+    workspaceId,
     reconnect: true,
-    metadata: {
-      name: "Codex",
-      type: "codex",
-      handle,
-    },
     tools: {
       pause: createPauseToolDefinition(async () => {
         // Pause event is published by interrupt handler
@@ -330,11 +311,27 @@ async function main() {
     log(`Roster updated: ${names.join(", ")}`);
   });
 
-  await client.ready();
   log(`Connected to channel: ${channelName}`);
+  if (client.sessionKey) {
+    log(`Session: ${client.sessionKey} (${client.status})`);
+    log(`Checkpoint: ${client.checkpoint ?? "none"}, SDK: ${client.sdkSessionId ?? "none"}`);
+  }
+
+  let lastMissedPubsubId = 0;
+  const buildMissedContext = () => {
+    const missed = client.missedMessages.filter((event) => event.pubsubId > lastMissedPubsubId);
+    if (missed.length === 0) return null;
+    return formatMissedContext(missed, { maxChars: 8000 });
+  };
+
+  let pendingMissedContext = buildMissedContext();
+
+  client.onReconnect(() => {
+    pendingMissedContext = buildMissedContext();
+  });
 
   // Process incoming events using unified API
-  for await (const event of client.events()) {
+  for await (const event of client.events({ targetedOnly: true, respondWhenSolo: true })) {
     if (event.type !== "message") continue;
 
     // Skip replay messages - don't respond to historical messages
@@ -344,26 +341,24 @@ async function main() {
 
     // Only respond to messages from panels (not our own or other workers)
     if (sender?.metadata.type === "panel" && event.senderId !== id) {
-      await handleUserMessage(client, event.id, event.content, workingDirectory, sessionManager);
+      let prompt = event.content;
+      if (pendingMissedContext && pendingMissedContext.count > 0) {
+        prompt = `<missed_context>\n${pendingMissedContext.formatted}\n</missed_context>\n\n${prompt}`;
+        lastMissedPubsubId = pendingMissedContext.lastPubsubId;
+        pendingMissedContext = null;
+      }
+      await handleUserMessage(client, event, prompt, workingDirectory);
     }
-  }
-
-  // Clean up session manager on shutdown
-  try {
-    await sessionManager.close();
-  } catch (err) {
-    console.error("Failed to close session manager:", err);
   }
 }
 
 async function handleUserMessage(
   client: AgenticClient<ChatParticipantMetadata>,
-  userMessageId: string,
-  userText: string,
-  workingDirectory: string | undefined,
-  sessionManager: SessionManager
+  incoming: IncomingNewMessage,
+  prompt: string,
+  workingDirectory: string | undefined
 ) {
-  log(`Received message: ${userText}`);
+  log(`Received message: ${incoming.content}`);
 
   // Create tools from other pubsub participants
   const { definitions: toolDefs, execute: executeTool } = createToolsForAgentSDK(client, {
@@ -373,7 +368,7 @@ async function handleUserMessage(
   log(`Discovered ${toolDefs.length} tools from pubsub participants`);
 
   // Start a new message (empty, will stream content via updates)
-  const responseId = await client.send("", { replyTo: userMessageId });
+  const { messageId: responseId } = await client.send("", { replyTo: incoming.id });
 
   // Convert tool definitions for MCP server
   const mcpTools: ToolDefinition[] = toolDefs.map((t) => ({
@@ -396,7 +391,7 @@ async function handleUserMessage(
     // Set up RPC pause handler - monitors for pause tool calls
     const interruptHandler = createInterruptHandler({
       client,
-      messageId: userMessageId,
+      messageId: incoming.id,
       onPause: (reason) => {
         log(`Pause RPC received: ${reason}`);
       }
@@ -428,14 +423,12 @@ async function handleUserMessage(
       env: Object.keys(baseEnv).length > 0 ? baseEnv : undefined,
     });
 
-    // Get session state for resumption
-    const sessionState = sessionManager.getSessionState();
     let thread: ReturnType<typeof codex.startThread> | ReturnType<typeof codex.resumeThread>;
 
-    if (sessionState?.sdkSessionId) {
+    if (client.sdkSessionId) {
       // Resume from previous thread if available
-      log(`Resuming Codex thread: ${sessionState.sdkSessionId}`);
-      thread = codex.resumeThread(sessionState.sdkSessionId, {
+      log(`Resuming Codex thread: ${client.sdkSessionId}`);
+      thread = codex.resumeThread(client.sdkSessionId, {
         skipGitRepoCheck: true,
         ...(workingDirectory && { cwd: workingDirectory }),
       });
@@ -448,10 +441,12 @@ async function handleUserMessage(
     }
 
     // Run with streaming
-    const { events } = await thread.runStreamed(userText);
+    const { events } = await thread.runStreamed(prompt);
 
     // Track text length per item to compute deltas correctly
     const itemTextLengths = new Map<string, number>();
+
+    let checkpointCommitted = false;
 
     for await (const event of events) {
       // Break if pause RPC was received
@@ -465,12 +460,9 @@ async function handleUserMessage(
           const threadEvent = event as unknown as Record<string, unknown>;
           if (threadEvent.thread_id) {
             const threadId = String(threadEvent.thread_id);
-            try {
-              // Use a placeholder pubsub message ID - in a real scenario this would come from pubsub
-              await sessionManager.commitMessage(0, threadId);
+            if (client.sessionKey) {
+              await client.updateSdkSession(threadId);
               log(`Thread ID stored: ${threadId}`);
-            } catch (err) {
-              console.error("Failed to store thread ID:", err);
             }
           }
           break;
@@ -486,6 +478,11 @@ async function handleUserMessage(
               const delta = item.text.slice(prevLength);
               await client.update(responseId, delta);
               itemTextLengths.set(item.id, item.text.length);
+
+              if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
+                await client.commitCheckpoint(incoming.pubsubId);
+                checkpointCommitted = true;
+              }
             }
           }
           break;
@@ -500,15 +497,24 @@ async function handleUserMessage(
               const delta = item.text.slice(prevLength);
               await client.update(responseId, delta);
               itemTextLengths.set(item.id, item.text.length);
+
+              if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
+                await client.commitCheckpoint(incoming.pubsubId);
+                checkpointCommitted = true;
+              }
             }
           }
           break;
         }
 
         case "turn.completed":
+          if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
+            await client.commitCheckpoint(incoming.pubsubId);
+            checkpointCommitted = true;
+          }
           // Mark message as complete
           await client.complete(responseId);
-          log(`Completed response for ${userMessageId}`);
+          log(`Completed response for ${incoming.id}`);
           break;
 
         case "turn.failed": {

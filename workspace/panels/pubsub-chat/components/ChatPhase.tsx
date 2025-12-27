@@ -189,8 +189,10 @@ export function ChatPhase({
 
                 const sender = getSenderInfo(msg.senderId);
                 const isPanel = sender.type === "panel";
-                // Only show streaming for messages that are actively being streamed (not pending local messages, not errors)
-                const isStreaming = msg.kind === "message" && !msg.complete && !msg.error && !msg.pending;
+                // Only show streaming for messages that are actively being streamed (not pending local messages)
+                const isStreaming = msg.kind === "message" && !msg.complete && !msg.pending;
+                const hasError = Boolean(msg.error);
+                const hasContent = msg.content.length > 0;
 
                 return (
                   <Box
@@ -214,12 +216,17 @@ export function ChatPhase({
                         <Text
                           size="2"
                           style={{
-                            color: isPanel ? "white" : msg.error ? "var(--red-11)" : "inherit",
+                            color: isPanel ? "white" : "inherit",
                             whiteSpace: "pre-wrap",
                           }}
                         >
-                          {msg.error ? `Error: ${msg.error}` : msg.content || (isStreaming ? "" : "")}
+                          {hasContent ? msg.content : ""}
                         </Text>
+                        {hasError && (
+                          <Text size="2" style={{ color: "var(--red-11)", whiteSpace: "pre-wrap" }}>
+                            {`Error: ${msg.error}`}
+                          </Text>
+                        )}
                         {isStreaming && (
                           <TypingIndicator
                             isPaused={false}

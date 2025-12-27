@@ -5,7 +5,7 @@
  * Uses connectForDiscovery to find available agents and invite them to a dynamic channel.
  */
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { Flex, Text } from "@radix-ui/themes";
 import { pubsubConfig, id as panelClientId } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
@@ -64,15 +64,21 @@ function dispatchAgenticEvent(
     addToolHistoryEntry: (entry: ToolHistoryEntry) => void;
     handleToolResult: (result: { callId: string; content?: unknown; complete: boolean; isError: boolean; progress?: number }) => void;
   },
-  panelClientId: string
+  selfId: string | null
 ): void {
+  const isSelf = !!selfId && event.senderId === selfId;
+  const isPanelSender = event.senderMetadata?.type === "panel" || isSelf;
   switch (event.type) {
     case "message": {
       handlers.setMessages((prev) => {
         const existingIndex = prev.findIndex((m) => m.id === event.id);
         if (existingIndex !== -1) {
           if (prev[existingIndex].pending) {
-            return prev.map((m, i) => (i === existingIndex ? { ...m, pending: false } : m));
+            const updated = { ...prev[existingIndex], pending: false };
+            if (isPanelSender) {
+              updated.complete = true;
+            }
+            return prev.map((m, i) => (i === existingIndex ? updated : m));
           }
           return prev;
         }
@@ -84,7 +90,7 @@ function dispatchAgenticEvent(
             content: event.content,
             replyTo: event.replyTo,
             kind: "message",
-            complete: event.kind === "replay",
+            complete: event.kind === "replay" || isPanelSender,
           },
         ];
       });
@@ -112,7 +118,7 @@ function dispatchAgenticEvent(
     }
 
     case "tool-call": {
-      if (event.kind !== "replay" && event.providerId === panelClientId) {
+      if (event.kind !== "replay" && event.providerId === selfId) {
         return;
       }
       handlers.addToolHistoryEntry({
@@ -169,6 +175,7 @@ export default function AgenticChatDemo() {
   const theme = usePanelTheme();
   const workspaceRoot = process.env["NATSTACK_WORKSPACE"]?.trim();
   const [phase, setPhase] = useState<AppPhase>("setup");
+  const selfIdRef = useRef<string | null>(null);
 
   // Chat phase state - generate default channel ID upfront so user can edit it
   const [channelId, setChannelId] = useState<string>(generateChannelId);
@@ -214,6 +221,7 @@ export default function AgenticChatDemo() {
   const {
     clientRef,
     connected,
+    clientId,
     connect: connectToChannel,
     disconnect,
   } = useChannelConnection({
@@ -224,6 +232,7 @@ export default function AgenticChatDemo() {
     },
     onEvent: useCallback(
       (event: IncomingEvent) => {
+        const selfId = selfIdRef.current ?? panelClientId;
         dispatchAgenticEvent(
           event,
           {
@@ -232,10 +241,17 @@ export default function AgenticChatDemo() {
             addToolHistoryEntry,
             handleToolResult,
           },
-          panelClientId
+          selfId
         );
       },
-      [setMessages, setHistoricalParticipants, addToolHistoryEntry, handleToolResult, panelClientId]
+      [
+        setMessages,
+        setHistoricalParticipants,
+        addToolHistoryEntry,
+        handleToolResult,
+        panelClientId,
+        selfIdRef,
+      ]
     ),
     onRoster: useCallback((roster) => {
       setParticipants(roster.participants);
@@ -245,6 +261,10 @@ export default function AgenticChatDemo() {
       setStatus(`Error: ${error.message}`);
     }, []),
   });
+
+  useEffect(() => {
+    selfIdRef.current = clientId;
+  }, [clientId]);
 
 
   const handleFeedbackUiToolCall = useCallback(
@@ -592,7 +612,8 @@ Write a complete component with export default that accepts props.`,
     const text = input.trim();
     setInput("");
 
-    const messageId = await clientRef.current.send(text);
+    const { messageId } = await clientRef.current.send(text);
+    const selfId = clientRef.current.clientId ?? panelClientId;
 
     setMessages((prev) => {
       if (prev.some((m) => m.id === messageId)) return prev;
@@ -600,7 +621,7 @@ Write a complete component with export default that accepts props.`,
         ...prev,
         {
           id: messageId,
-          senderId: panelClientId,
+          senderId: selfId,
           content: text,
           complete: true,
           pending: true,

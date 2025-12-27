@@ -12,9 +12,10 @@ import {
   parseAgentConfig,
   createInterruptHandler,
   createPauseToolDefinition,
-  SessionManager,
+  formatMissedContext,
   type AgenticClient,
   type ChatParticipantMetadata,
+  type IncomingNewMessage,
 } from "@natstack/agentic-messaging";
 import { ai } from "@natstack/ai";
 
@@ -39,37 +40,21 @@ async function main() {
   const handle = typeof agentConfig.handle === "string" ? agentConfig.handle : "ai";
 
   // Get workspace ID from environment
-  const workspaceId = process.env["NATSTACK_WORKSPACE_ID"] || "default";
+  const workspaceId = process.env["NATSTACK_WORKSPACE_ID"];
 
   log("Starting chat responder...");
   log(`Handle: @${handle}`);
 
-  // Initialize session manager for conversation resumption with manual history
-  const sessionManager = new SessionManager({
-    workspaceId,
-    channelName,
-    agentHandle: handle,
-    sdkType: "manual",
-  });
-
-  try {
-    await sessionManager.initialize();
-    const sessionState = await sessionManager.getOrCreateSession();
-    log(`Session initialized: ${sessionState.sessionKey}`);
-  } catch (err) {
-    console.error("Failed to initialize session manager:", err);
-    // Continue anyway - session management is optional
-  }
-
   // Connect to agentic messaging channel with reconnection and participant metadata
-  const client = connect<ChatParticipantMetadata>(pubsubConfig.serverUrl, pubsubConfig.token, {
+  const client = await connect<ChatParticipantMetadata>({
+    serverUrl: pubsubConfig.serverUrl,
+    token: pubsubConfig.token,
     channel: channelName,
+    handle,
+    name: "AI Responder",
+    type: "ai-responder",
+    workspaceId,
     reconnect: true,
-    metadata: {
-      name: "AI Responder",
-      type: "ai-responder",
-      handle,
-    },
     tools: {
       pause: createPauseToolDefinition(async () => {
         // Pause event is published by interrupt handler
@@ -83,11 +68,27 @@ async function main() {
     log(`Roster updated: ${names.join(", ")}`);
   });
 
-  await client.ready();
   log(`Connected to channel: ${channelName}`);
+  if (client.sessionKey) {
+    log(`Session: ${client.sessionKey} (${client.status})`);
+    log(`Checkpoint: ${client.checkpoint ?? "none"}`);
+  }
+
+  let lastMissedPubsubId = 0;
+  const buildMissedContext = () => {
+    const missed = client.missedMessages.filter((event) => event.pubsubId > lastMissedPubsubId);
+    if (missed.length === 0) return null;
+    return formatMissedContext(missed, { maxChars: 8000 });
+  };
+
+  let pendingMissedContext = buildMissedContext();
+
+  client.onReconnect(() => {
+    pendingMissedContext = buildMissedContext();
+  });
 
   // Process incoming events using unified API
-  for await (const event of client.events()) {
+  for await (const event of client.events({ targetedOnly: true, respondWhenSolo: true })) {
     if (event.type !== "message") continue;
 
     // Skip replay messages - don't respond to historical messages
@@ -97,33 +98,31 @@ async function main() {
 
     // Only respond to messages from panels (not our own or other workers)
     if (sender?.metadata.type === "panel" && event.senderId !== id) {
-      await handleUserMessage(client, event.id, event.content, sessionManager);
+      let prompt = event.content;
+      if (pendingMissedContext && pendingMissedContext.count > 0) {
+        prompt = `<missed_context>\n${pendingMissedContext.formatted}\n</missed_context>\n\n${prompt}`;
+        lastMissedPubsubId = pendingMissedContext.lastPubsubId;
+        pendingMissedContext = null;
+      }
+      await handleUserMessage(client, event, prompt);
     }
-  }
-
-  // Clean up session manager on shutdown
-  try {
-    await sessionManager.close();
-  } catch (err) {
-    console.error("Failed to close session manager:", err);
   }
 }
 
 async function handleUserMessage(
   client: AgenticClient<ChatParticipantMetadata>,
-  userMessageId: string,
-  userText: string,
-  sessionManager: SessionManager
+  incoming: IncomingNewMessage,
+  prompt: string
 ) {
-  log(`Received message: ${userText}`);
+  log(`Received message: ${incoming.content}`);
 
   // Start a new message (empty, will stream content via updates)
-  const responseId = await client.send("", { replyTo: userMessageId });
+  const { messageId: responseId } = await client.send("", { replyTo: incoming.id });
 
   // Set up interrupt handler to monitor for pause requests
   const interruptHandler = createInterruptHandler({
     client,
-    messageId: userMessageId,
+    messageId: incoming.id,
     onPause: (reason) => {
       log(`Pause RPC received: ${reason}`);
     }
@@ -136,7 +135,7 @@ async function handleUserMessage(
     // Build conversation history from previous messages (limit to last 20 messages for token efficiency)
     let conversationHistory: Array<{ role: "user" | "assistant"; content: string }> = [];
     try {
-      conversationHistory = await sessionManager.getConversationHistory(20);
+      conversationHistory = await client.getHistory(20);
       if (conversationHistory.length > 0) {
         log(`Loaded ${conversationHistory.length} previous messages from history`);
       }
@@ -148,7 +147,7 @@ async function handleUserMessage(
     // Add current user message to history
     const messages = [
       ...conversationHistory,
-      { role: "user" as const, content: userText }
+      { role: "user" as const, content: prompt }
     ];
 
     // Stream AI response using fast model
@@ -161,13 +160,14 @@ async function handleUserMessage(
 
     // Store user message in history
     try {
-      await sessionManager.storeMessage(userMessageId, 0, "user", userText);
+      await client.storeMessage("user", incoming.content);
     } catch (err) {
       console.error("Failed to store user message:", err);
     }
 
     // Accumulate assistant response for storage
     let assistantResponse = "";
+    let checkpointCommitted = false;
 
     for await (const event of stream) {
       // Check if pause was requested
@@ -181,24 +181,31 @@ async function handleUserMessage(
         assistantResponse += event.text;
         // Send content delta (persisted for replay)
         await client.update(responseId, event.text);
+
+        if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
+          await client.commitCheckpoint(incoming.pubsubId);
+          checkpointCommitted = true;
+        }
       }
     }
 
     // Store complete assistant response in history
     if (assistantResponse) {
       try {
-        await sessionManager.storeMessage(responseId, 0, "assistant", assistantResponse);
-        // Commit message to session
-        await sessionManager.commitMessage(0);
+        await client.storeMessage("assistant", assistantResponse);
       } catch (err) {
         console.error("Failed to store assistant message:", err);
       }
     }
 
+    if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
+      await client.commitCheckpoint(incoming.pubsubId);
+    }
+
     // Mark message as complete
     await client.complete(responseId);
 
-    log(`Completed response for ${userMessageId}`);
+    log(`Completed response for ${incoming.id}`);
 
   } catch (err) {
     // Pause tool returns successfully, so we shouldn't see pause-related errors

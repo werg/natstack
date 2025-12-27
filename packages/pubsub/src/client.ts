@@ -7,6 +7,7 @@
 import { PubSubError } from "./types.js";
 import type {
   Message,
+  PubSubMessage,
   PublishOptions,
   UpdateMetadataOptions,
   ConnectOptions,
@@ -20,7 +21,7 @@ import type {
  * Server message envelope.
  */
 interface ServerMessage {
-  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error" | "roster";
+  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error";
   id?: number;
   type?: string;
   payload?: unknown;
@@ -30,7 +31,14 @@ interface ServerMessage {
   error?: string;
   /** Binary attachment (parsed from binary frame) */
   attachment?: Uint8Array;
-  participants?: Record<string, Participant>;
+  senderMetadata?: Record<string, unknown>;
+}
+
+type PresenceAction = "join" | "leave" | "update";
+
+interface PresencePayload {
+  action?: PresenceAction;
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -134,6 +142,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
 
   // Current roster state
   let currentRoster: Record<string, Participant<T>> = {};
+  const rosterOpIds = new Set<number>();
 
   // Ready promise management
   let readyResolve: (() => void) | null = null;
@@ -163,6 +172,15 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   function handleError(error: PubSubError): void {
     for (const handler of errorHandlers) {
       handler(error);
+    }
+  }
+
+  function enqueueMessage(message: Message): void {
+    if (messageResolve) {
+      messageResolve(message);
+      messageResolve = null;
+    } else {
+      messageQueue.push(message);
     }
   }
 
@@ -216,6 +234,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         readyResolve?.();
         readyResolve = null;
         readyReject = null;
+        enqueueMessage({ kind: "ready" });
         break;
 
       case "error": {
@@ -245,34 +264,61 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         break;
       }
 
-      case "roster": {
-        // Update current roster and notify handlers
-        currentRoster = (msg.participants ?? {}) as Record<string, Participant<T>>;
-        const rosterUpdate: RosterUpdate<T> = {
-          participants: currentRoster,
-          ts: msg.ts ?? Date.now(),
-        };
-        for (const handler of rosterHandlers) {
-          handler(rosterUpdate);
-        }
-
-        if (msg.ref !== undefined) {
-          const pending = pendingMetadataUpdates.get(msg.ref);
-          if (pending) {
-            clearTimeout(pending.timeoutId);
-            pending.resolve();
-            pendingMetadataUpdates.delete(msg.ref);
-          }
-        }
-        break;
-      }
-
       case "replay":
       case "persisted":
       case "ephemeral": {
         // Track last seen ID for reconnection
         if (msg.id !== undefined) {
           lastSeenId = msg.id;
+        }
+
+        const isPresence = msg.type === "presence";
+        let presenceAction: PresenceAction | undefined;
+
+        if (isPresence) {
+          const payload = msg.payload as PresencePayload;
+          presenceAction = payload?.action;
+
+          if (msg.id !== undefined) {
+            if (rosterOpIds.has(msg.id)) {
+              return;
+            }
+            rosterOpIds.add(msg.id);
+          }
+
+          if (presenceAction === "join" || presenceAction === "update") {
+            if (payload?.metadata) {
+              currentRoster = {
+                ...currentRoster,
+                [msg.senderId!]: {
+                  id: msg.senderId!,
+                  metadata: payload.metadata as T,
+                },
+              };
+            }
+          } else if (presenceAction === "leave") {
+            const { [msg.senderId!]: _removed, ...rest } = currentRoster;
+            currentRoster = rest;
+          }
+
+          if (presenceAction) {
+            const rosterUpdate: RosterUpdate<T> = {
+              participants: currentRoster,
+              ts: msg.ts ?? Date.now(),
+            };
+            for (const handler of rosterHandlers) {
+              handler(rosterUpdate);
+            }
+          }
+
+          if (msg.ref !== undefined && presenceAction === "update") {
+            const pending = pendingMetadataUpdates.get(msg.ref);
+            if (pending) {
+              clearTimeout(pending.timeoutId);
+              pending.resolve();
+              pendingMetadataUpdates.delete(msg.ref);
+            }
+          }
         }
 
         // Resolve pending publish if this is our own message
@@ -285,12 +331,12 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
           }
         }
 
-        // Skip own messages if configured
-        if (skipOwnMessages && clientId && msg.senderId === clientId) {
+        // Skip own messages if configured (but never skip roster ops)
+        if (skipOwnMessages && clientId && msg.senderId === clientId && !isPresence) {
           break;
         }
 
-        const message: Message = {
+        const message: PubSubMessage = {
           kind: msg.kind,
           id: msg.id,
           type: msg.type!,
@@ -298,14 +344,10 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
           senderId: msg.senderId!,
           ts: msg.ts!,
           attachment: msg.attachment,
+          senderMetadata: msg.senderMetadata,
         };
 
-        if (messageResolve) {
-          messageResolve(message);
-          messageResolve = null;
-        } else {
-          messageQueue.push(message);
-        }
+        enqueueMessage(message);
         break;
       }
     }
