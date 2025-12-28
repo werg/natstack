@@ -577,7 +577,7 @@ function install(globalObject, config = {}) {
       globalObject.Intl = api[method];
     } else if (method === "performance") {
       globalObject.performance = api[method];
-      const kEventTimeStamp = /* @__PURE__ */ Symbol("playwrightEventTimeStamp");
+      const kEventTimeStamp = Symbol("playwrightEventTimeStamp");
       Object.defineProperty(Event.prototype, "timeStamp", {
         get() {
           var _a2;

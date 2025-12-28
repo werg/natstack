@@ -3987,7 +3987,7 @@ function matchesTextValue(text, template) {
     return !!text.match(regex);
   return false;
 }
-var cachedRegexSymbol = /* @__PURE__ */ Symbol("cachedRegex");
+var cachedRegexSymbol = Symbol("cachedRegex");
 function cachedRegex(template) {
   if (template[cachedRegexSymbol] !== void 0)
     return template[cachedRegexSymbol];
@@ -6138,7 +6138,7 @@ function getByRoleSelector(role, options = {}) {
 }
 
 // packages/playwright-injected/src/consoleApi.ts
-var selectorSymbol = /* @__PURE__ */ Symbol("selector");
+var selectorSymbol = Symbol("selector");
 selectorSymbol;
 var _Locator = class _Locator {
   constructor(injectedScript, selector, options) {
@@ -7023,7 +7023,7 @@ var InjectedScript = class {
     }
   }
   async _checkElementIsStable(node) {
-    const continuePolling = /* @__PURE__ */ Symbol("continuePolling");
+    const continuePolling = Symbol("continuePolling");
     let lastRect;
     let stableRafCounter = 0;
     let lastTime = 0;

@@ -49,6 +49,3 @@ release
 workspace/.env
 workspace/.secrets.yml
 workspace/.databases/
-
-# Playwright
-packages/playwright-core/src/generated/
