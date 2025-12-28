@@ -34,7 +34,7 @@ export function TitleBar({ title, onNavigate, onPanelAction }: TitleBarProps) {
 
   const handleHamburgerClick = (e: MouseEvent<HTMLButtonElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    void window.electronAPI.showHamburgerMenu(getScreenPositionFromRect(rect));
+    void window.electronAPI.showHamburgerMenu(getWindowPositionFromRect(rect));
   };
 
   return (
@@ -117,14 +117,14 @@ const MAX_VISIBLE_ANCESTORS = 2;
 const MAX_VISIBLE_DESC_GROUPS = 2;
 
 /**
- * Convert element bounding rect to screen coordinates for native menu positioning.
- * Uses window.screenX/Y for proper multi-monitor support.
- * Note: For context menus (right-click), use event.screenX/screenY directly instead.
+ * Get window-relative position from element bounding rect for native menu positioning.
+ * Returns coordinates relative to the window's content area.
+ * The main process will handle conversion to screen coordinates.
  */
-function getScreenPositionFromRect(rect: DOMRect): { x: number; y: number } {
+function getWindowPositionFromRect(rect: DOMRect): { x: number; y: number } {
   return {
-    x: Math.round(window.screenX + rect.left + window.scrollX),
-    y: Math.round(window.screenY + rect.bottom + window.scrollY),
+    x: Math.round(rect.left),
+    y: Math.round(rect.bottom),
   };
 }
 
@@ -169,7 +169,7 @@ function BreadcrumbBar({
   ) => {
     e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
-    const action = await window.electronAPI.showPanelContextMenu(panel.id, panel.type, getScreenPositionFromRect(rect));
+    const action = await window.electronAPI.showPanelContextMenu(panel.id, panel.type, getWindowPositionFromRect(rect));
     if (action) {
       onPanelAction?.(panel.id, action);
     }
@@ -245,7 +245,7 @@ function BreadcrumbBar({
         crumb.siblings[0]?.title ??
         crumb.path.join(" / "),
     }));
-    const selected = await window.electronAPI.showContextMenu(items, getScreenPositionFromRect(rect));
+    const selected = await window.electronAPI.showContextMenu(items, getWindowPositionFromRect(rect));
     if (selected !== null) {
       const crumb = hiddenAncestors.find((_, index) => String(index) === selected);
       if (crumb) {
@@ -263,7 +263,7 @@ function BreadcrumbBar({
         group.children[0]?.title ??
         "Child",
     }));
-    const selected = await window.electronAPI.showContextMenu(items, getScreenPositionFromRect(rect));
+    const selected = await window.electronAPI.showContextMenu(items, getWindowPositionFromRect(rect));
     if (selected !== null) {
       const group = hiddenDescendants.find((_, index) => String(index) === selected);
       if (group) {

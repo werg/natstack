@@ -161,9 +161,11 @@ console.log(`[App] Starting in ${appMode} mode`);
 
 function createWindow(): void {
   // Create BaseWindow (no webContents of its own)
+  // Start hidden to avoid layout flash - shown after shell content loads
   mainWindow = new BaseWindow({
     width: 1200,
     height: appMode === "main" ? 600 : 500,
+    show: false,
     titleBarStyle: "hidden",
     ...(process.platform !== "darwin"
       ? {
@@ -251,7 +253,8 @@ handle("menu:show-hamburger", async (_event, position: { x: number; y: number })
 
   const template = buildHamburgerMenuTemplate(shellContents, clearBuildCache);
   const menu = Menu.buildFromTemplate(template);
-  menu.popup({ x: position.x, y: position.y });
+  // Use window option so Electron converts content-relative coords to screen coords
+  menu.popup({ window: vm.getWindow(), x: position.x, y: position.y });
 });
 
 handle(
@@ -261,6 +264,7 @@ handle(
     items: Array<{ id: string; label: string }>,
     position: { x: number; y: number }
   ): Promise<string | null> => {
+    const vm = getViewManager();
     return new Promise((resolve) => {
       const template: MenuItemConstructorOptions[] = items.map((item) => ({
         label: item.label,
@@ -268,7 +272,9 @@ handle(
       }));
 
       const menu = Menu.buildFromTemplate(template);
+      // Use window option so Electron converts content-relative coords to screen coords
       menu.popup({
+        window: vm.getWindow(),
         x: position.x,
         y: position.y,
         callback: () => resolve(null), // User dismissed menu without selecting
@@ -285,6 +291,7 @@ handle(
     panelType: string,
     position: { x: number; y: number }
   ): Promise<PanelContextMenuAction | null> => {
+    const vm = getViewManager();
     return new Promise((resolve) => {
       const template: MenuItemConstructorOptions[] = [];
 
@@ -312,7 +319,9 @@ handle(
       });
 
       const menu = Menu.buildFromTemplate(template);
+      // Use window option so Electron converts content-relative coords to screen coords
       menu.popup({
+        window: vm.getWindow(),
         x: position.x,
         y: position.y,
         callback: () => resolve(null),

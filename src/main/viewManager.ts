@@ -117,6 +117,15 @@ export class ViewManager {
     // Load shell HTML
     void this.shellView.webContents.loadFile(options.shellHtmlPath);
 
+    // Show window and finalize bounds after shell content loads
+    this.shellView.webContents.on("did-finish-load", () => {
+      this.updateShellBounds();
+      // Show window now that content is ready (avoids layout flash)
+      if (!this.window.isVisible()) {
+        this.window.show();
+      }
+    });
+
     if (options.devTools) {
       this.shellView.webContents.openDevTools();
     }
