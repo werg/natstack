@@ -6,6 +6,7 @@
   "description": "A horizontally stacked panel app built with Electron and TypeScript",
   "main": "dist/main.cjs",
   "scripts": {
+    "postinstall": "electron-rebuild",
     "prebuild": "node scripts/generate-channels.mjs && node scripts/generate-injected.mjs",
     "build": "NODE_ENV=production node build.mjs",
     "dev": "pnpm type-check & NODE_ENV=development node build.mjs && node scripts/run-electron.mjs --workspace=workspace",
@@ -41,8 +42,8 @@
     ]
   },
   "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
     "@eslint/js": "^9.39.1",
-    "@ryoppippi/unplugin-typia": "^2.6.5",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.10.1",
     "@types/npmcli__arborist": "^6.3.1",
