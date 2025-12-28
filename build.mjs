@@ -1,18 +1,9 @@
 import * as esbuild from "esbuild";
-import typiaPlugin from "@ryoppippi/unplugin-typia/esbuild";
 import * as fs from "fs";
 import * as path from "path";
 import { execSync } from "child_process";
 
 const isDev = process.env.NODE_ENV === "development";
-
-const typiaPlugins = [
-  typiaPlugin({
-    tsconfig: "tsconfig.json",
-    cache: true,
-    log: false,
-  }),
-];
 
 const logOverride = {
   "suspicious-logical-operator": "silent",
@@ -28,7 +19,6 @@ const mainConfig = {
   external: ["electron", "esbuild", "@npmcli/arborist", "isolated-vm", "better-sqlite3"],
   sourcemap: isDev,
   minify: !isDev,
-  plugins: typiaPlugins,
   logOverride,
 };
 
@@ -42,7 +32,6 @@ const preloadConfig = {
   external: ["electron"],
   sourcemap: isDev,
   minify: !isDev,
-  plugins: typiaPlugins,
   logOverride,
 };
 
@@ -56,7 +45,6 @@ const panelPreloadConfig = {
   external: ["electron"],
   sourcemap: isDev,
   minify: !isDev,
-  plugins: typiaPlugins,
   logOverride,
 };
 
@@ -68,7 +56,6 @@ const rendererConfig = {
   outfile: "dist/renderer.js",
   sourcemap: isDev,
   minify: !isDev,
-  plugins: typiaPlugins,
   logOverride,
   loader: {
     ".html": "text",
@@ -91,7 +78,6 @@ const utilityProcessConfig = {
   external: ["electron", "isolated-vm"],
   sourcemap: isDev,
   minify: !isDev,
-  plugins: typiaPlugins,
   logOverride,
 };
 

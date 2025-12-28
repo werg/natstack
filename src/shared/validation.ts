@@ -1,29 +1,27 @@
-import typia, { type IValidation } from "typia";
+import { z } from "zod";
 import { createAIError } from "./errors.js";
 import type { AIToolDefinition } from "@natstack/ai";
 
 /**
- * Typia-backed validation helpers for AI payloads.
+ * Zod-backed validation helpers for AI payloads.
  * Throws AIError with helpful context on validation failure.
  */
 
-const toolValidator = typia.createValidate<AIToolDefinition[]>();
+const AIToolDefinitionSchema = z.object({
+  type: z.literal("function"),
+  name: z.string(),
+  description: z.string().optional(),
+  parameters: z.record(z.unknown()),
+});
 
-function formatValidationError(error: IValidation.IError): string {
-  const path = error.path ?? "input";
-  const expected = error.expected ?? "unknown";
-  const value = JSON.stringify(error.value);
-  return `${path}: expected ${expected}, received ${value}`;
-}
-
-function assertWithValidator<T>(context: string, result: IValidation<T>): T {
-  if (result.success) return result.data;
-  const first = result.errors[0];
-  const detail = first ? formatValidationError(first) : "unknown validation error";
-  throw createAIError("internal_error", `${context} validation failed (${detail})`);
-}
+const AIToolDefinitionArraySchema = z.array(AIToolDefinitionSchema);
 
 export function validateToolDefinitions(tools: unknown): AIToolDefinition[] | undefined {
   if (tools === undefined) return undefined;
-  return assertWithValidator("AI tool definitions", toolValidator(tools));
+  const result = AIToolDefinitionArraySchema.safeParse(tools);
+  if (result.success) return result.data;
+  const firstError = result.error.errors[0];
+  const path = firstError?.path.join(".") || "input";
+  const message = firstError?.message || "unknown validation error";
+  throw createAIError("internal_error", `AI tool definitions validation failed (${path}: ${message})`);
 }
