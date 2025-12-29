@@ -4,20 +4,20 @@
  * Types for agent broker discovery and invitation protocol.
  */
 
-import type { AgenticParticipantMetadata, ToolAdvertisement } from "./types.js";
+import type { AgenticParticipantMetadata, MethodAdvertisement } from "./types.js";
 
 /**
- * Specification for a tool that an agent requires.
+ * Specification for a method that an agent requires.
  * Can match by exact name or pattern.
  */
-export interface RequiredToolSpec {
-  /** Tool name (exact match) */
+export interface RequiredMethodSpec {
+  /** Method name (exact match) */
   name?: string;
-  /** Tool name pattern (regex) */
+  /** Method name pattern (regex) */
   pattern?: string;
-  /** Description of why this tool is needed */
+  /** Description of why this method is needed */
   description?: string;
-  /** Whether this tool is required (true) or optional (false) */
+  /** Whether this method is required (true) or optional (false) */
   required: boolean;
 }
 
@@ -66,10 +66,10 @@ export interface AgentTypeAdvertisement {
   proposedHandle: string;
   /** Free-form description for LLM interpretation */
   description: string;
-  /** Tools the spawned agent will provide */
-  providesTools: ToolAdvertisement[];
-  /** Tools the spawned agent requires from other participants */
-  requiresTools: RequiredToolSpec[];
+  /** Methods the spawned agent will provide */
+  providesMethods: MethodAdvertisement[];
+  /** Methods the spawned agent requires from other participants */
+  requiresMethods: RequiredMethodSpec[];
   /** Configurable parameters for this agent type */
   parameters?: AgentParameterDefinition[];
   /** Optional tags for filtering/categorization */
@@ -278,10 +278,10 @@ export interface BrokerClientOptions {
 export interface BrokerQuery {
   /** Filter by agent type tags (OR matching) */
   tags?: string[];
-  /** Filter by tools the agent provides (by name) */
-  providesTools?: string[];
-  /** Filter by tools the agent requires (by name) */
-  requiresTools?: string[];
+  /** Filter by methods the agent provides (by name) */
+  providesMethods?: string[];
+  /** Filter by methods the agent requires (by name) */
+  requiresMethods?: string[];
   /** Free-text search in descriptions */
   descriptionContains?: string;
 }

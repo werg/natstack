@@ -22,14 +22,14 @@ export const ErrorMessageSchema = z.object({
   code: z.string().optional(),
 });
 
-export const ToolCallSchema = z.object({
+export const MethodCallSchema = z.object({
   callId: z.string().uuid(),
-  toolName: z.string().min(1),
+  methodName: z.string().min(1),
   providerId: z.string().min(1),
   args: z.unknown(),
 });
 
-export const ToolResultSchema = z.object({
+export const MethodResultSchema = z.object({
   callId: z.string().uuid(),
   content: z.unknown().optional(),
   contentType: z.string().optional(),
@@ -38,7 +38,7 @@ export const ToolResultSchema = z.object({
   progress: z.number().min(0).max(100).optional(),
 });
 
-export const ToolCancelSchema = z.object({
+export const MethodCancelSchema = z.object({
   callId: z.string().uuid(),
 });
 
@@ -51,8 +51,8 @@ export const ExecutionPauseSchema = z.object({
 export type NewMessage = z.infer<typeof NewMessageSchema>;
 export type UpdateMessage = z.infer<typeof UpdateMessageSchema>;
 export type ErrorMessage = z.infer<typeof ErrorMessageSchema>;
-export type ToolCall = z.infer<typeof ToolCallSchema>;
-export type ToolResult = z.infer<typeof ToolResultSchema>;
-export type ToolCancel = z.infer<typeof ToolCancelSchema>;
+export type MethodCall = z.infer<typeof MethodCallSchema>;
+export type MethodResult = z.infer<typeof MethodResultSchema>;
+export type MethodCancel = z.infer<typeof MethodCancelSchema>;
 export type ExecutionPause = z.infer<typeof ExecutionPauseSchema>;
 

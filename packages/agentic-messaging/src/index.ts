@@ -28,7 +28,7 @@ export {
 
 // Execution pause/resume utilities
 export {
-  createPauseToolDefinition,
+  createPauseMethodDefinition,
 } from "./execution.js";
 
 // Interrupt handler for responders
@@ -37,10 +37,10 @@ export {
   type InterruptHandlerOptions,
 } from "./interrupt-handler.js";
 
-// Missed ontext utilities
+// Missed context utilities
 export {
   aggregateReplayEvents,
   formatMissedContext,
   DEFAULT_MISSED_CONTEXT_MAX_CHARS,
-  DEFAULT_TOOL_RESULT_MAX_CHARS,
+  DEFAULT_METHOD_RESULT_MAX_CHARS,
 } from "./missed-context.js";

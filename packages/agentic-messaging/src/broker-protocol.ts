@@ -7,9 +7,9 @@
 import { z } from "zod";
 
 /**
- * Schema for required tool specification in agent type advertisements.
+ * Schema for required method specification in agent type advertisements.
  */
-export const RequiredToolSpecSchema = z.object({
+export const RequiredMethodSpecSchema = z.object({
   name: z.string().min(1).optional(),
   pattern: z.string().optional(),
   description: z.string().optional(),
@@ -17,9 +17,9 @@ export const RequiredToolSpecSchema = z.object({
 });
 
 /**
- * Schema for tool advertisement (matching existing ToolAdvertisement structure).
+ * Schema for method advertisement (matching existing MethodAdvertisement structure).
  */
-export const ToolAdvertisementSchema = z.object({
+export const MethodAdvertisementSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   parameters: z.record(z.unknown()),
@@ -50,8 +50,8 @@ export const AgentTypeAdvertisementSchema = z.object({
   name: z.string().min(1),
   proposedHandle: z.string().min(1),
   description: z.string(),
-  providesTools: z.array(ToolAdvertisementSchema),
-  requiresTools: z.array(RequiredToolSpecSchema),
+  providesMethods: z.array(MethodAdvertisementSchema),
+  requiresMethods: z.array(RequiredMethodSpecSchema),
   parameters: z.array(AgentParameterDefinitionSchema).optional(),
   tags: z.array(z.string()).optional(),
   version: z.string().optional(),
@@ -66,7 +66,7 @@ export const BrokerMetadataSchema = z.object({
   isBroker: z.literal(true),
   agentTypes: z.array(AgentTypeAdvertisementSchema),
   brokerVersion: z.string().optional(),
-  tools: z.array(ToolAdvertisementSchema).optional(),
+  methods: z.array(MethodAdvertisementSchema).optional(),
 });
 
 /**

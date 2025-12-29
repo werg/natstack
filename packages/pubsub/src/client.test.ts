@@ -284,7 +284,8 @@ describe("PubSubClient", () => {
 
       // Verify send was called
       expect(mockSend).toHaveBeenCalled();
-      const sentMsg = JSON.parse(mockSend.mock.calls.at(-1)![0] as string) as {
+      const calls = mockSend.mock.calls;
+      const sentMsg = JSON.parse(calls[calls.length - 1]![0] as string) as {
         action: string;
         payload: object;
         ref: number;

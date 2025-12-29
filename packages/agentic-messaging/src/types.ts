@@ -1,19 +1,19 @@
 /**
  * @natstack/agentic-messaging types
  *
- * Agentic messaging protocol for tool discovery, invocation, and streaming
+ * Agentic messaging protocol for method discovery, invocation, and streaming
  * results between distributed participants over pubsub.
  */
 
 import type { Participant, ParticipantMetadata, PubSubClient, RosterUpdate } from "@natstack/pubsub";
 import type { z } from "zod";
 
-/** JSON Schema representation for tool parameters/returns. */
+/** JSON Schema representation for method parameters/returns. */
 export type JsonSchema = Record<string, unknown>;
 
 /**
  * Participant metadata for agentic messaging.
- * Extends base pubsub metadata with name, type, handle, and optional tool advertisements.
+ * Extends base pubsub metadata with name, type, handle, and optional method advertisements.
  */
 export interface AgenticParticipantMetadata extends ParticipantMetadata {
   /** Display name for this participant */
@@ -25,24 +25,24 @@ export interface AgenticParticipantMetadata extends ParticipantMetadata {
    * Must be unique within the channel. Conflicts cause connection errors.
    */
   handle: string;
-  /** Tools this participant provides (auto-populated from ConnectOptions.tools) */
-  tools?: ToolAdvertisement[];
+  /** Methods this participant provides (auto-populated from ConnectOptions.methods) */
+  methods?: MethodAdvertisement[];
 }
 
 /**
- * Tool advertisement in participant metadata.
- * Describes a tool that can be invoked on this participant.
+ * Method advertisement in participant metadata.
+ * Describes a method that can be invoked on this participant.
  */
-export interface ToolAdvertisement {
-  /** Tool name (unique within this provider) */
+export interface MethodAdvertisement {
+  /** Method name (unique within this provider) */
   name: string;
   /** Human-readable description */
   description?: string;
-  /** JSON Schema for tool arguments */
+  /** JSON Schema for method arguments */
   parameters: JsonSchema;
   /** JSON Schema for return value */
   returns?: JsonSchema;
-  /** Whether this tool can stream partial results */
+  /** Whether this method can stream partial results */
   streaming?: boolean;
   /** Suggested timeout in milliseconds */
   timeout?: number;
@@ -52,7 +52,7 @@ export interface ToolAdvertisement {
  * Error codes for agentic operations.
  */
 export type AgenticErrorCode =
-  | "tool-not-found"
+  | "method-not-found"
   | "provider-not-found"
   | "provider-offline"
   | "execution-error"
@@ -128,30 +128,30 @@ export interface IncomingExecutionPauseEvent {
 }
 
 /**
- * Union type for all incoming event types (messages, tool calls, tool results, presence).
+ * Union type for all incoming event types (messages, method calls, method results, presence).
  * Use the `type` field to discriminate between event types.
  */
 export type IncomingEvent =
   | IncomingNewMessage
   | IncomingUpdateMessage
   | IncomingErrorMessage
-  | IncomingToolCallEvent
-  | IncomingToolResultEvent
+  | IncomingMethodCallEvent
+  | IncomingMethodResultEvent
   | IncomingPresenceEventWithType
   | IncomingExecutionPauseEvent;
 
 /**
- * Tool call event with discriminant type field.
+ * Method call event with discriminant type field.
  */
-export interface IncomingToolCallEvent extends IncomingToolCall {
-  type: "tool-call";
+export interface IncomingMethodCallEvent extends IncomingMethodCall {
+  type: "method-call";
 }
 
 /**
- * Tool result event with discriminant type field.
+ * Method result event with discriminant type field.
  */
-export interface IncomingToolResultEvent extends IncomingToolResult {
-  type: "tool-result";
+export interface IncomingMethodResultEvent extends IncomingMethodResult {
+  type: "method-result";
 }
 
 /**
@@ -168,7 +168,7 @@ export interface EventFilterOptions {
   /**
    * Only yield message events where `at` includes this client's ID, or `at` is undefined (broadcast).
    * When false/undefined, all events are yielded regardless of `at`.
-   * Note: Non-message events (tool-call, tool-result, presence) are always yielded.
+   * Note: Non-message events (method-call, method-result, presence) are always yielded.
    */
   targetedOnly?: boolean;
   /**
@@ -282,9 +282,9 @@ export interface IncomingPresenceEvent {
 }
 
 /**
- * An incoming tool call (for tool providers).
+ * An incoming method call (for method providers).
  */
-export interface IncomingToolCall {
+export interface IncomingMethodCall {
   /** Message kind */
   kind: "replay" | "persisted" | "ephemeral";
   /** ID of the caller */
@@ -301,18 +301,18 @@ export interface IncomingToolCall {
   };
   /** Unique call ID for correlation */
   callId: string;
-  /** Name of the tool being called */
-  toolName: string;
+  /** Name of the method being called */
+  methodName: string;
   /** Target provider ID (this client) */
   providerId: string;
-  /** Tool arguments */
+  /** Method arguments */
   args: unknown;
 }
 
 /**
- * An incoming tool result chunk.
+ * An incoming method result chunk.
  */
-export interface IncomingToolResult {
+export interface IncomingMethodResult {
   /** Message kind */
   kind: "replay" | "persisted" | "ephemeral";
   /** ID of the sender */
@@ -364,32 +364,32 @@ export interface AggregatedMessage extends AggregatedEventBase {
   replyTo?: string;
 }
 
-export interface AggregatedToolCall extends AggregatedEventBase {
-  type: "tool-call";
+export interface AggregatedMethodCall extends AggregatedEventBase {
+  type: "method-call";
   callId: string;
-  toolName: string;
+  methodName: string;
   providerId: string;
   providerName?: string;
   args: unknown;
 }
 
-export interface AggregatedToolResult extends AggregatedEventBase {
-  type: "tool-result";
+export interface AggregatedMethodResult extends AggregatedEventBase {
+  type: "method-result";
   callId: string;
-  toolName?: string;
+  methodName?: string;
   status: "success" | "error" | "incomplete";
   content?: unknown;
   errorMessage?: string;
 }
 
-export type AggregatedEvent = AggregatedMessage | AggregatedToolCall | AggregatedToolResult;
+export type AggregatedEvent = AggregatedMessage | AggregatedMethodCall | AggregatedMethodResult;
 
 export interface FormatOptions {
   maxChars?: number;
   format?: "yaml" | "markdown";
-  includeToolArgs?: boolean;
-  includeToolResults?: boolean;
-  maxToolResultChars?: number;
+  includeMethodArgs?: boolean;
+  includeMethodResults?: boolean;
+  maxMethodResultChars?: number;
 }
 
 export interface MissedContext {
@@ -401,9 +401,9 @@ export interface MissedContext {
 }
 
 /**
- * Final value from a tool call.
+ * Final value from a method call.
  */
-export interface ToolResultValue {
+export interface MethodResultValue {
   /** Result content (JSON-serializable) */
   content: unknown;
   /** Binary attachment */
@@ -413,9 +413,9 @@ export interface ToolResultValue {
 }
 
 /**
- * A chunk from a streaming tool result.
+ * A chunk from a streaming method result.
  */
-export interface ToolResultChunk extends ToolResultValue {
+export interface MethodResultChunk extends MethodResultValue {
   /** Whether this is the final chunk */
   complete: boolean;
   /** Whether this chunk represents an error */
@@ -425,17 +425,17 @@ export interface ToolResultChunk extends ToolResultValue {
 }
 
 /**
- * Handle for an in-flight tool call.
+ * Handle for an in-flight method call.
  * Provides access to the result, streaming chunks, and cancellation.
  */
-export interface ToolCallResult {
+export interface MethodCallHandle {
   /** Unique call ID */
   readonly callId: string;
   /** Promise that resolves with the final result */
-  readonly result: Promise<ToolResultValue>;
+  readonly result: Promise<MethodResultValue>;
   /** Async iterator for streaming chunks */
-  readonly stream: AsyncIterable<ToolResultChunk>;
-  /** Cancel the tool call */
+  readonly stream: AsyncIterable<MethodResultChunk>;
+  /** Cancel the method call */
   cancel(): Promise<void>;
   /** Whether the call has completed */
   readonly complete: boolean;
@@ -444,33 +444,33 @@ export interface ToolCallResult {
 }
 
 /**
- * A discovered tool from the roster.
- * Contains all information needed to invoke the tool.
+ * A discovered method from the roster.
+ * Contains all information needed to invoke the method.
  */
-export interface DiscoveredTool {
+export interface DiscoveredMethod {
   /** Provider's client ID */
   providerId: string;
   /** Provider's display name */
   providerName: string;
-  /** Tool name */
+  /** Method name */
   name: string;
-  /** Tool description */
+  /** Method description */
   description?: string;
   /** JSON Schema for arguments */
   parameters: JsonSchema;
   /** JSON Schema for return value */
   returns?: JsonSchema;
-  /** Whether tool supports streaming */
+  /** Whether method supports streaming */
   streaming: boolean;
   /** Suggested timeout in ms */
   timeout?: number;
 }
 
 /**
- * Context provided to tool execute functions.
+ * Context provided to method execute functions.
  * Includes utilities for streaming results, progress, and cancellation.
  */
-export interface ToolExecutionContext {
+export interface MethodExecutionContext {
   /** Unique call ID */
   callId: string;
   /** Caller's client ID */
@@ -490,38 +490,38 @@ export interface ToolExecutionContext {
     content: T,
     attachment: Uint8Array,
     options?: { contentType?: string }
-  ): ToolResultWithAttachment<T>;
+  ): MethodResultWithAttachment<T>;
   /** Report progress (0-100) */
   progress(percent: number): Promise<void>;
 }
 
 /**
- * A tool result with an attached binary payload.
+ * A method result with an attached binary payload.
  * Returned from context.resultWithAttachment().
  */
-export interface ToolResultWithAttachment<T> {
+export interface MethodResultWithAttachment<T> {
   content: T;
   attachment: Uint8Array;
   contentType?: string;
 }
 
 /**
- * Definition for a tool this client provides.
- * Tools are registered at connection time via ConnectOptions.tools.
+ * Definition for a method this client provides.
+ * Methods are registered at connection time via ConnectOptions.methods.
  */
-export interface ToolDefinition<TArgs extends z.ZodTypeAny = z.ZodTypeAny, TResult = unknown> {
+export interface MethodDefinition<TArgs extends z.ZodTypeAny = z.ZodTypeAny, TResult = unknown> {
   /** Human-readable description */
   description?: string;
   /** Zod schema for argument validation */
   parameters: TArgs;
   /** Zod schema for result validation (optional) */
   returns?: z.ZodTypeAny;
-  /** Whether this tool streams partial results */
+  /** Whether this method streams partial results */
   streaming?: boolean;
   /** Suggested timeout in milliseconds */
   timeout?: number;
-  /** Execute the tool. Automatically called when tool is invoked. */
-  execute: (args: z.infer<TArgs>, context: ToolExecutionContext) => Promise<TResult>;
+  /** Execute the method. Automatically called when method is invoked. */
+  execute: (args: z.infer<TArgs>, context: MethodExecutionContext) => Promise<TResult>;
 }
 
 /**
@@ -548,8 +548,8 @@ export interface ConnectOptions<T extends AgenticParticipantMetadata = AgenticPa
   /** Workspace ID for session persistence (optional) */
   workspaceId?: string;
 
-  /** Tools this participant provides. Automatically executed when called. */
-  tools?: Record<string, ToolDefinition>;
+  /** Methods this participant provides. Automatically executed when called. */
+  methods?: Record<string, MethodDefinition>;
 
   /** Enable auto-reconnection. Pass true for defaults, or a config object. */
   reconnect?: boolean | { delayMs?: number; maxDelayMs?: number; maxAttempts?: number };
@@ -644,15 +644,15 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   getHistory(limit?: number): Promise<ConversationMessage[]>;
   clearHistory(): Promise<void>;
 
-  // === Tool Discovery & Invocation ===
-  discoverToolDefs(): DiscoveredTool[];
-  discoverToolDefsFrom(providerId: string): DiscoveredTool[];
-  callTool(
+  // === Method Discovery & Invocation ===
+  discoverMethodDefs(): DiscoveredMethod[];
+  discoverMethodDefsFrom(providerId: string): DiscoveredMethod[];
+  callMethod(
     providerId: string,
-    toolName: string,
+    methodName: string,
     args: unknown,
     options?: { signal?: AbortSignal; validateArgs?: z.ZodTypeAny; timeoutMs?: number }
-  ): ToolCallResult;
+  ): MethodCallHandle;
 
   // === Roster ===
   readonly roster: Record<string, Participant<T>>;
@@ -670,7 +670,7 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
 
   // === Low-level ===
   readonly pubsub: PubSubClient<T>;
-  sendToolResult(
+  sendMethodResult(
     callId: string,
     content: unknown,
     options?: {

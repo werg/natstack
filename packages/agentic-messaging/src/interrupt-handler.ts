@@ -1,7 +1,7 @@
 /**
  * Interrupt handler for agent execution.
  *
- * Monitors for RPC pause tool calls and provides interrupt state.
+ * Monitors for RPC pause method calls and provides interrupt state.
  * Used by responder workers to support user interruption.
  */
 
@@ -16,7 +16,7 @@ export interface InterruptHandlerOptions<T extends AgenticParticipantMetadata = 
 /**
  * Creates an interrupt monitor for agent execution.
  *
- * Monitors for RPC pause tool calls and provides interrupt state.
+ * Monitors for RPC pause method calls and provides interrupt state.
  * The monitor runs concurrently with the main execution loop and can be checked
  * via isPaused() to determine when to stop processing.
  *
@@ -61,7 +61,7 @@ export function createInterruptHandler<T extends AgenticParticipantMetadata = Ag
       for await (const event of options.client.events()) {
         if (!monitoringActive) break;
 
-        if (event.type === "tool-call" && event.toolName === "pause" && !paused) {
+        if (event.type === "method-call" && event.methodName === "pause" && !paused) {
           paused = true;
           const args = event.args as Record<string, unknown> | undefined;
           const reason = (args?.["reason"] as string | undefined) || "Execution interrupted";

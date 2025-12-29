@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, type ComponentType } from "re
 import { Badge, Box, Button, Callout, Card, Flex, ScrollArea, Text, TextField, Theme } from "@radix-ui/themes";
 import { DotFilledIcon } from "@radix-ui/react-icons";
 import type { Participant } from "@natstack/agentic-messaging";
-import { ToolHistoryItem } from "./ToolHistoryItem";
+import { MethodHistoryItem } from "./MethodHistoryItem";
 import { FeedbackContainer } from "./FeedbackContainer";
 import { TypingIndicator } from "./TypingIndicator";
 import type { FeedbackComponentProps } from "../eval/feedbackUiTool";
@@ -183,8 +183,8 @@ export function ChatPhase({
                   console.warn(`[ChatPhase] Message at index ${index} has no id:`, msg);
                 }
 
-                if (msg.kind === "tool" && msg.tool) {
-                  return <ToolHistoryItem key={msg.id || `fallback-tool-${index}`} entry={msg.tool} />;
+                if (msg.kind === "method" && msg.method) {
+                  return <MethodHistoryItem key={msg.id || `fallback-method-${index}`} entry={msg.method} />;
                 }
 
                 const sender = getSenderInfo(msg.senderId);

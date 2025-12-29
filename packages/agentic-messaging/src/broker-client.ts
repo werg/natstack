@@ -81,7 +81,7 @@ export interface BrokerDiscoveryClient {
  *
  * // Query by capability
  * const codingBrokers = discovery.queryBrokers({
- *   providesTools: ["execute_code"],
+ *   providesMethods: ["execute_code"],
  *   tags: ["coding"],
  * });
  *
@@ -208,18 +208,18 @@ export async function connectForDiscovery(
       }
     }
 
-    // Provides tools matching (AND)
-    if (query.providesTools && query.providesTools.length > 0) {
-      const providedNames = agentType.providesTools.map((t) => t.name);
-      if (!query.providesTools.every((t) => providedNames.includes(t))) {
+    // Provides methods matching (AND)
+    if (query.providesMethods && query.providesMethods.length > 0) {
+      const providedNames = agentType.providesMethods.map((m) => m.name);
+      if (!query.providesMethods.every((m) => providedNames.includes(m))) {
         return false;
       }
     }
 
-    // Requires tools matching (AND)
-    if (query.requiresTools && query.requiresTools.length > 0) {
-      const requiredNames = agentType.requiresTools.filter((t) => t.name).map((t) => t.name!);
-      if (!query.requiresTools.every((t) => requiredNames.includes(t))) {
+    // Requires methods matching (AND)
+    if (query.requiresMethods && query.requiresMethods.length > 0) {
+      const requiredNames = agentType.requiresMethods.filter((m) => m.name).map((m) => m.name!);
+      if (!query.requiresMethods.every((m) => requiredNames.includes(m))) {
         return false;
       }
     }

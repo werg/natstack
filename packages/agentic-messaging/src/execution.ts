@@ -1,21 +1,21 @@
 /**
  * Execution pause/resume functionality for agents.
  *
- * This module provides a pause tool that agents can use to pause execution
+ * This module provides a pause method that agents can use to pause execution
  * for user input or clarification.
  */
 
 /**
- * Factory function to create a pause tool definition.
+ * Factory function to create a pause method definition.
  *
- * The pause tool returns successfully and signals execution to halt.
+ * The pause method returns successfully and signals execution to halt.
  * The calling code (responder worker) should monitor isPaused() or listen
- * for the pause event to stop processing when this tool is called.
+ * for the pause event to stop processing when this method is called.
  *
  * @param publishPause - Callback to publish pause event to channel with messageId
- * @returns A tool definition for pausing execution
+ * @returns A method definition for pausing execution
  */
-export function createPauseToolDefinition(
+export function createPauseMethodDefinition(
   publishPause: (messageId: string, reason: string) => Promise<void>
 ) {
   return {

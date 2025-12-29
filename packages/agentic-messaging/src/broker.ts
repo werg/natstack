@@ -62,8 +62,8 @@ export interface BrokerClient {
  *     id: "code-assistant",
  *     name: "Code Assistant",
  *     description: "An agent that helps with coding tasks",
- *     providesTools: [{ name: "execute_code", parameters: {...}, description: "Execute code" }],
- *     requiresTools: [{ name: "file_read", required: true }],
+ *     providesMethods: [{ name: "execute_code", parameters: {...}, description: "Execute code" }],
+ *     requiresMethods: [{ name: "file_read", required: true }],
  *   }],
  *   onInvite: async (invite, senderId) => {
  *     // Custom acceptance logic
@@ -319,8 +319,8 @@ export async function connectAsBroker(
  *     id: "chat-agent",
  *     name: "Chat Agent",
  *     description: "A conversational agent",
- *     providesTools: [...],
- *     requiresTools: [],
+ *     providesMethods: [...],
+ *     requiresMethods: [],
  *   },
  *   onInvite: async (invite) => {
  *     // Connect myself to the target channel

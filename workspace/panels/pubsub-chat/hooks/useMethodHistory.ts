@@ -1,36 +1,36 @@
 import { useCallback, useRef } from "react";
-import type { IncomingToolResult } from "@natstack/agentic-messaging";
-import type { ToolHistoryEntry } from "../components/ToolHistoryItem";
+import type { IncomingMethodResult } from "@natstack/agentic-messaging";
+import type { MethodHistoryEntry } from "../components/MethodHistoryItem";
 import type { ChatMessage } from "../types";
 
 // Re-export for backwards compatibility
 export type { ChatMessage };
 
-/** Maximum number of tool history entries to retain */
-const MAX_TOOL_HISTORY_SIZE = 10000;
+/** Maximum number of method history entries to retain */
+const MAX_METHOD_HISTORY_SIZE = 10000;
 
-interface UseToolHistoryOptions {
+interface UseMethodHistoryOptions {
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
   clientId: string;
 }
 
-export function useToolHistory({ setMessages, clientId }: UseToolHistoryOptions) {
-  const toolHistoryRef = useRef(new Map<string, ToolHistoryEntry>());
+export function useMethodHistory({ setMessages, clientId }: UseMethodHistoryOptions) {
+  const methodHistoryRef = useRef(new Map<string, MethodHistoryEntry>());
 
   /**
    * Prune oldest completed entries if we exceed the limit.
    * Only removes entries that are complete (success/error), keeping pending ones.
    */
   const pruneIfNeeded = useCallback(() => {
-    const map = toolHistoryRef.current;
-    if (map.size <= MAX_TOOL_HISTORY_SIZE) return;
+    const map = methodHistoryRef.current;
+    if (map.size <= MAX_METHOD_HISTORY_SIZE) return;
 
     // Find completed entries sorted by startedAt (oldest first)
     const completedEntries = Array.from(map.entries())
       .filter(([, entry]) => entry.status === "success" || entry.status === "error")
       .sort((a, b) => (a[1].startedAt ?? 0) - (b[1].startedAt ?? 0));
 
-    const toRemove = map.size - MAX_TOOL_HISTORY_SIZE;
+    const toRemove = map.size - MAX_METHOD_HISTORY_SIZE;
     const idsToRemove = completedEntries.slice(0, toRemove).map(([id]) => id);
 
     for (const id of idsToRemove) {
@@ -40,32 +40,32 @@ export function useToolHistory({ setMessages, clientId }: UseToolHistoryOptions)
     // Also remove corresponding messages
     if (idsToRemove.length > 0) {
       const removeSet = new Set(idsToRemove);
-      setMessages((prev) => prev.filter((msg) => !(msg.kind === "tool" && msg.tool && removeSet.has(msg.tool.callId))));
+      setMessages((prev) => prev.filter((msg) => !(msg.kind === "method" && msg.method && removeSet.has(msg.method.callId))));
     }
   }, [setMessages]);
 
-  const addToolHistoryEntry = useCallback(
-    (entry: ToolHistoryEntry) => {
-      const existing = toolHistoryRef.current.get(entry.callId);
+  const addMethodHistoryEntry = useCallback(
+    (entry: MethodHistoryEntry) => {
+      const existing = methodHistoryRef.current.get(entry.callId);
       if (existing) {
         const merged = { ...existing, ...entry };
-        toolHistoryRef.current.set(entry.callId, merged);
+        methodHistoryRef.current.set(entry.callId, merged);
         setMessages((prev) =>
           prev.map((msg) =>
-            msg.kind === "tool" && msg.tool?.callId === entry.callId ? { ...msg, tool: merged } : msg
+            msg.kind === "method" && msg.method?.callId === entry.callId ? { ...msg, method: merged } : msg
           )
         );
         return;
       }
-      toolHistoryRef.current.set(entry.callId, entry);
+      methodHistoryRef.current.set(entry.callId, entry);
       setMessages((prev) => [
         ...prev,
         {
-          id: `tool-${entry.callId}`,
+          id: `method-${entry.callId}`,
           senderId: clientId,
           content: "",
-          kind: "tool",
-          tool: entry,
+          kind: "method",
+          method: entry,
           complete: true,
         },
       ]);
@@ -76,16 +76,16 @@ export function useToolHistory({ setMessages, clientId }: UseToolHistoryOptions)
     [setMessages, clientId, pruneIfNeeded]
   );
 
-  const updateToolHistoryEntry = useCallback(
-    (callId: string, updates: Partial<ToolHistoryEntry>) => {
-      const current = toolHistoryRef.current.get(callId);
+  const updateMethodHistoryEntry = useCallback(
+    (callId: string, updates: Partial<MethodHistoryEntry>) => {
+      const current = methodHistoryRef.current.get(callId);
       if (current) {
-        toolHistoryRef.current.set(callId, { ...current, ...updates });
+        methodHistoryRef.current.set(callId, { ...current, ...updates });
       }
       setMessages((prev) =>
         prev.map((msg) =>
-          msg.kind === "tool" && msg.tool?.callId === callId
-            ? { ...msg, tool: { ...msg.tool, ...updates } }
+          msg.kind === "method" && msg.method?.callId === callId
+            ? { ...msg, method: { ...msg.method, ...updates } }
             : msg
         )
       );
@@ -93,23 +93,23 @@ export function useToolHistory({ setMessages, clientId }: UseToolHistoryOptions)
     [setMessages]
   );
 
-  const appendToolConsoleOutput = useCallback(
+  const appendMethodConsoleOutput = useCallback(
     (callId: string, line: string) => {
-      const current = toolHistoryRef.current.get(callId);
+      const current = methodHistoryRef.current.get(callId);
       const next = current?.consoleOutput ? `${current.consoleOutput}\n${line}` : line;
-      updateToolHistoryEntry(callId, { consoleOutput: next });
+      updateMethodHistoryEntry(callId, { consoleOutput: next });
     },
-    [updateToolHistoryEntry]
+    [updateMethodHistoryEntry]
   );
 
-  const handleToolResult = useCallback(
-    (result: IncomingToolResult) => {
-      // Process all results including replay - we want to show historical tool results in the UI
-      const entry = toolHistoryRef.current.get(result.callId);
+  const handleMethodResult = useCallback(
+    (result: IncomingMethodResult) => {
+      // Process all results including replay - we want to show historical method results in the UI
+      const entry = methodHistoryRef.current.get(result.callId);
       if (!entry) return;
 
       if (result.progress !== undefined) {
-        updateToolHistoryEntry(result.callId, { progress: result.progress });
+        updateMethodHistoryEntry(result.callId, { progress: result.progress });
       }
 
       const content = result.content as Record<string, unknown> | undefined;
@@ -118,7 +118,7 @@ export function useToolHistory({ setMessages, clientId }: UseToolHistoryOptions)
 
       if (isConsoleChunk) {
         if (!entry.handledLocally || !entry.consoleOutput) {
-          appendToolConsoleOutput(result.callId, content["content"] as string);
+          appendMethodConsoleOutput(result.callId, content["content"] as string);
         }
         return;
       }
@@ -126,13 +126,13 @@ export function useToolHistory({ setMessages, clientId }: UseToolHistoryOptions)
       if (!result.complete) return;
 
       if (result.isError) {
-        let errorMessage = "Tool execution failed";
+        let errorMessage = "Method execution failed";
         if (typeof result.content === "string") {
           errorMessage = result.content;
         } else if (content && typeof content["error"] === "string") {
           errorMessage = content["error"] as string;
         }
-        updateToolHistoryEntry(result.callId, {
+        updateMethodHistoryEntry(result.callId, {
           status: "error",
           error: errorMessage,
           completedAt: Date.now(),
@@ -140,25 +140,25 @@ export function useToolHistory({ setMessages, clientId }: UseToolHistoryOptions)
         return;
       }
 
-      updateToolHistoryEntry(result.callId, {
+      updateMethodHistoryEntry(result.callId, {
         status: "success",
         result: result.content,
         completedAt: Date.now(),
       });
     },
-    [appendToolConsoleOutput, updateToolHistoryEntry]
+    [appendMethodConsoleOutput, updateMethodHistoryEntry]
   );
 
-  const clearToolHistory = useCallback(() => {
-    toolHistoryRef.current.clear();
+  const clearMethodHistory = useCallback(() => {
+    methodHistoryRef.current.clear();
   }, []);
 
   return {
-    toolHistoryRef,
-    addToolHistoryEntry,
-    updateToolHistoryEntry,
-    appendToolConsoleOutput,
-    handleToolResult,
-    clearToolHistory,
+    methodHistoryRef,
+    addMethodHistoryEntry,
+    updateMethodHistoryEntry,
+    appendMethodConsoleOutput,
+    handleMethodResult,
+    clearMethodHistory,
   };
 }

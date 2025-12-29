@@ -12,24 +12,24 @@ import type {
   AggregatedEvent,
   ConnectOptions,
   ConversationMessage,
-  DiscoveredTool,
+  DiscoveredMethod,
   EventFilterOptions,
   EventStreamItem,
   EventStreamOptions,
   IncomingEvent,
   IncomingNewMessage,
   IncomingPresenceEvent,
-  IncomingToolCall,
-  IncomingToolResult,
+  IncomingMethodCall,
+  IncomingMethodResult,
   PresenceAction,
   SendResult,
-  ToolAdvertisement,
-  ToolCallResult,
-  ToolDefinition,
-  ToolExecutionContext,
-  ToolResultChunk,
-  ToolResultValue,
-  ToolResultWithAttachment,
+  MethodAdvertisement,
+  MethodCallHandle,
+  MethodDefinition,
+  MethodExecutionContext,
+  MethodResultChunk,
+  MethodResultValue,
+  MethodResultWithAttachment,
   JsonSchema,
   MissedContext,
   FormatOptions,
@@ -41,9 +41,9 @@ import {
   ErrorMessageSchema,
   ExecutionPauseSchema,
   NewMessageSchema,
-  ToolCallSchema,
-  ToolCancelSchema,
-  ToolResultSchema,
+  MethodCallSchema,
+  MethodCancelSchema,
+  MethodResultSchema,
   UpdateMessageSchema,
 } from "./protocol.js";
 
@@ -65,7 +65,7 @@ function isRecord(value: unknown): value is AnyRecord {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function isToolResultWithAttachment(value: unknown): value is ToolResultWithAttachment<unknown> {
+function isMethodResultWithAttachment(value: unknown): value is MethodResultWithAttachment<unknown> {
   return isRecord(value) && value["attachment"] instanceof Uint8Array && "content" in value;
 }
 
@@ -181,25 +181,25 @@ function createFanout<T>() {
   };
 }
 
-interface ToolCallState {
+interface MethodCallState {
   readonly callId: string;
-  readonly chunks: ToolResultChunk[];
-  readonly stream: ReturnType<typeof createFanout<ToolResultChunk>>;
-  readonly resolve: (value: ToolResultValue) => void;
+  readonly chunks: MethodResultChunk[];
+  readonly stream: ReturnType<typeof createFanout<MethodResultChunk>>;
+  readonly resolve: (value: MethodResultValue) => void;
   readonly reject: (error: Error) => void;
   complete: boolean;
   isError: boolean;
 }
 
-function createToolCallState(callId: string) {
-  let resolve!: (value: ToolResultValue) => void;
+function createMethodCallState(callId: string) {
+  let resolve!: (value: MethodResultValue) => void;
   let reject!: (error: Error) => void;
-  const result = new Promise<ToolResultValue>((res, rej) => {
+  const result = new Promise<MethodResultValue>((res, rej) => {
     resolve = res;
     reject = rej;
   });
-  const stream = createFanout<ToolResultChunk>();
-  const state: ToolCallState = {
+  const stream = createFanout<MethodResultChunk>();
+  const state: MethodCallState = {
     callId,
     chunks: [],
     stream,
@@ -211,12 +211,12 @@ function createToolCallState(callId: string) {
   return { state, result };
 }
 
-function toAgenticErrorFromToolResult(content: unknown): AgenticError {
+function toAgenticErrorFromMethodResult(content: unknown): AgenticError {
   if (isRecord(content) && typeof content["error"] === "string") {
     const code = typeof content["code"] === "string" ? content["code"] : "execution-error";
     return new AgenticError(content["error"], code as never, content);
   }
-  return new AgenticError("tool execution failed", "execution-error", content);
+  return new AgenticError("method execution failed", "execution-error", content);
 }
 
 export interface AgenticClientImpl<T extends AgenticParticipantMetadata = AgenticParticipantMetadata>
@@ -245,7 +245,7 @@ export interface AgenticClientImpl<T extends AgenticParticipantMetadata = Agenti
  * @param options.workspaceId - Workspace ID for session persistence (optional)
  * @param options.reconnect - Auto-reconnect on disconnect (boolean or ReconnectConfig)
  * @param options.replayMode - How to handle replay: "collect" (aggregate), "stream" (emit), or "skip"
- * @param options.tools - Tools this participant provides (auto-executed on tool-call)
+ * @param options.methods - Methods this participant provides (auto-executed on method-call)
  * @param options.clientId - Custom client ID (defaults to random UUID)
  * @param options.skipOwnMessages - Skip messages sent by this client in events()
  *
@@ -277,7 +277,7 @@ export interface AgenticClientImpl<T extends AgenticParticipantMetadata = Agenti
  *   type: "worker",
  *   workspaceId: process.env.WORKSPACE_ID,
  *   reconnect: true,
- *   tools: {
+ *   methods: {
  *     search: {
  *       description: "Search for files",
  *       parameters: z.object({ query: z.string() }),
@@ -301,7 +301,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     workspaceId,
     reconnect,
     replayMode = "collect",
-    tools: initialTools,
+    methods: initialMethods,
     clientId,
     skipOwnMessages,
   } = options;
@@ -350,12 +350,12 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
 
   const instanceId = randomId();
 
-  const tools: Record<string, ToolDefinition> = { ...(initialTools ?? {}) };
+  const methods: Record<string, MethodDefinition> = { ...(initialMethods ?? {}) };
   const currentMetadata: AnyRecord = { ...(userMetadata as AnyRecord) };
 
   const errorHandlers = new Set<(error: Error) => void>();
   const eventsFanout = createFanout<IncomingEvent>();
-  const toolCallHandlers = new Set<(call: IncomingToolCall) => void>();
+  const methodCallHandlers = new Set<(call: IncomingMethodCall) => void>();
 
   const replayEvents: IncomingEvent[] = [];
   let missedMessages: AggregatedEvent[] = [];
@@ -364,10 +364,10 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
   let sdkSessionId = sessionRow?.sdkSessionId;
   let status: "active" | "interrupted" | undefined = sessionRow?.status;
 
-  const callStates = new Map<string, ToolCallState>();
+  const callStates = new Map<string, MethodCallState>();
   const providerAbortControllers = new Map<string, AbortController>();
-  /** Tool calls waiting for selfId to be resolved (for auto-execution) */
-  const pendingToolCalls: IncomingToolCall[] = [];
+  /** Method calls waiting for selfId to be resolved (for auto-execution) */
+  const pendingMethodCalls: IncomingMethodCall[] = [];
 
   let selfId: string | null = null;
 
@@ -375,25 +375,25 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     for (const handler of errorHandlers) handler(error);
   }
 
-  function emitToolCall(call: IncomingToolCall): void {
-    for (const handler of toolCallHandlers) handler(call);
+  function emitMethodCall(call: IncomingMethodCall): void {
+    for (const handler of methodCallHandlers) handler(call);
   }
 
   /**
-   * Emit tool call if it targets this client, then handle it.
+   * Emit method call if it targets this client, then handle it.
    * Centralizes the selfId check and emission logic.
    */
-  function emitAndHandleToolCall(call: IncomingToolCall): void {
+  function emitAndHandleMethodCall(call: IncomingMethodCall): void {
     if (call.providerId === selfId) {
-      emitToolCall(call);
+      emitMethodCall(call);
     }
-    handleIncomingToolCall(call).catch((err) =>
+    handleIncomingMethodCall(call).catch((err) =>
       emitError(err instanceof Error ? err : new Error(String(err)))
     );
   }
 
-  function getToolAdvertisements(fromTools: Record<string, ToolDefinition>): ToolAdvertisement[] {
-    return Object.entries(fromTools).map(([name, def]) => {
+  function getMethodAdvertisements(fromMethods: Record<string, MethodDefinition>): MethodAdvertisement[] {
+    return Object.entries(fromMethods).map(([name, def]) => {
       // Handle both Zod schemas and plain JSON schema objects
       const parameters = def.parameters && typeof def.parameters === "object" && !("_def" in def.parameters)
         ? (def.parameters as JsonSchema) // Already a JSON schema
@@ -416,11 +416,11 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     });
   }
 
-  function buildMetadataWithTools(): AnyRecord {
-    const advertisedTools = Object.keys(tools).length > 0 ? getToolAdvertisements(tools) : undefined;
+  function buildMetadataWithMethods(): AnyRecord {
+    const advertisedMethods = Object.keys(methods).length > 0 ? getMethodAdvertisements(methods) : undefined;
     return {
       ...currentMetadata,
-      tools: advertisedTools,
+      methods: advertisedMethods,
       [INTERNAL_METADATA_KEY]: { instanceId, v: 1 },
     };
   }
@@ -429,7 +429,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     channel,
     sinceId,
     reconnect,
-    metadata: buildMetadataWithTools() as T,
+    metadata: buildMetadataWithMethods() as T,
     clientId,
     skipOwnMessages,
   });
@@ -531,16 +531,16 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       }
     }
 
-    // Process any tool calls that arrived before we knew our own ID
+    // Process any method calls that arrived before we knew our own ID
     if (selfId) {
-      while (pendingToolCalls.length > 0) {
-        const call = pendingToolCalls.shift()!;
-        // Only execute tools for live messages, not replay
+      while (pendingMethodCalls.length > 0) {
+        const call = pendingMethodCalls.shift()!;
+        // Only execute methods for live messages, not replay
         if (call.kind !== "replay") {
-          emitAndHandleToolCall(call);
+          emitAndHandleMethodCall(call);
         } else if (call.providerId === selfId) {
           // Still emit to targeted handlers for replay, just don't execute
-          emitToolCall(call);
+          emitMethodCall(call);
         }
       }
     }
@@ -585,16 +585,16 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     }
   }
 
-  async function publishToolResult(
+  async function publishMethodResult(
     callId: string,
-    chunk: Omit<ToolResultChunk, "attachment" | "contentType"> & {
+    chunk: Omit<MethodResultChunk, "attachment" | "contentType"> & {
       content?: unknown;
       attachment?: Uint8Array;
       contentType?: string;
     }
   ): Promise<void> {
     const payload = validateSend(
-      ToolResultSchema,
+      MethodResultSchema,
       {
         callId,
         content: chunk.content,
@@ -603,43 +603,43 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         isError: chunk.isError,
         progress: chunk.progress,
       },
-      "ToolResult"
+      "MethodResult"
     );
 
-    await pubsub.publish("tool-result", payload, {
+    await pubsub.publish("method-result", payload, {
       persist: true,
       attachment: chunk.attachment,
     });
   }
 
-  async function publishToolError(callId: string, message: string, code: string): Promise<void> {
-    await publishToolResult(callId, {
+  async function publishMethodError(callId: string, message: string, code: string): Promise<void> {
+    await publishMethodResult(callId, {
       content: { error: message, code },
       complete: true,
       isError: true,
     });
   }
 
-  async function executeToolCall(call: IncomingToolCall): Promise<void> {
-    const tool = tools[call.toolName];
-    if (!tool) {
-      await publishToolError(call.callId, `Tool not found: ${call.toolName}`, "tool-not-found");
+  async function executeMethodCall(call: IncomingMethodCall): Promise<void> {
+    const method = methods[call.methodName];
+    if (!method) {
+      await publishMethodError(call.callId, `Method not found: ${call.methodName}`, "method-not-found");
       return;
     }
 
     const controller = new AbortController();
     providerAbortControllers.set(call.callId, controller);
-    const timeoutMs = tool.timeout;
+    const timeoutMs = method.timeout;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-    const ctx: ToolExecutionContext = {
+    const ctx: MethodExecutionContext = {
       callId: call.callId,
       callerId: call.senderId,
       signal: controller.signal,
       stream: async (content) =>
-        publishToolResult(call.callId, { content, complete: false, isError: false }),
+        publishMethodResult(call.callId, { content, complete: false, isError: false }),
       streamWithAttachment: async (content, attachment, options) =>
-        publishToolResult(call.callId, {
+        publishMethodResult(call.callId, {
           content,
           attachment,
           contentType: options?.contentType,
@@ -652,7 +652,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         contentType: options?.contentType,
       }),
       progress: async (percent) =>
-        publishToolResult(call.callId, { content: undefined, progress: percent, complete: false, isError: false }),
+        publishMethodResult(call.callId, { content: undefined, progress: percent, complete: false, isError: false }),
     };
 
     // Sentinel for timeout - allows distinguishing timeout from other rejections
@@ -660,12 +660,12 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
 
     try {
       // Handle both Zod schemas and plain JSON schema objects
-      const parsedArgs = tool.parameters && "_def" in tool.parameters
-        ? (tool.parameters as z.ZodTypeAny).parse(call.args)  // Zod schema
+      const parsedArgs = method.parameters && "_def" in method.parameters
+        ? (method.parameters as z.ZodTypeAny).parse(call.args)  // Zod schema
         : call.args;  // Plain JSON schema - pass through as-is
 
       // Build race competitors
-      const competitors: Promise<unknown>[] = [Promise.resolve(tool.execute(parsedArgs, ctx))];
+      const competitors: Promise<unknown>[] = [Promise.resolve(method.execute(parsedArgs, ctx))];
 
       if (timeoutMs !== undefined && timeoutMs > 0) {
         competitors.push(
@@ -686,17 +686,17 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       }
 
       if (controller.signal.aborted) {
-        await publishToolError(call.callId, "cancelled", "cancelled");
+        await publishMethodError(call.callId, "cancelled", "cancelled");
         return;
       }
 
       let result: unknown = rawResult;
-      if (tool.returns) {
-        result = (tool.returns as z.ZodTypeAny).parse(rawResult);
+      if (method.returns) {
+        result = (method.returns as z.ZodTypeAny).parse(rawResult);
       }
 
-      if (isToolResultWithAttachment(result)) {
-        await publishToolResult(call.callId, {
+      if (isMethodResultWithAttachment(result)) {
+        await publishMethodResult(call.callId, {
           content: result.content,
           attachment: result.attachment,
           contentType: result.contentType,
@@ -704,23 +704,23 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
           isError: false,
         });
       } else {
-        await publishToolResult(call.callId, { content: result, complete: true, isError: false });
+        await publishMethodResult(call.callId, { content: result, complete: true, isError: false });
       }
     } catch (err) {
       // Handle timeout via sentinel
       if (err === TIMEOUT_SENTINEL) {
-        await publishToolError(call.callId, "timeout", "timeout");
+        await publishMethodError(call.callId, "timeout", "timeout");
         return;
       }
-      // Handle cancellation (external abort or AbortError from tool)
+      // Handle cancellation (external abort or AbortError from method)
       const aborted = controller.signal.aborted || (err instanceof Error && err.name === "AbortError");
       if (aborted) {
-        await publishToolError(call.callId, "cancelled", "cancelled");
+        await publishMethodError(call.callId, "cancelled", "cancelled");
       } else if (err instanceof z.ZodError) {
-        await publishToolError(call.callId, err.message, "validation-error");
+        await publishMethodError(call.callId, err.message, "validation-error");
       } else {
         const message = err instanceof Error ? err.message : String(err);
-        await publishToolError(call.callId, message, "execution-error");
+        await publishMethodError(call.callId, message, "execution-error");
       }
     } finally {
       if (timeoutId) {
@@ -730,9 +730,9 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     }
   }
 
-  async function handleIncomingToolCall(call: IncomingToolCall): Promise<void> {
+  async function handleIncomingMethodCall(call: IncomingMethodCall): Promise<void> {
     if (!selfId || call.providerId !== selfId) return;
-    await executeToolCall(call);
+    await executeMethodCall(call);
   }
 
   function normalizeSenderMetadata(
@@ -815,25 +815,25 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       };
     }
 
-    if (type === "tool-call") {
-      const parsed = validateReceive(ToolCallSchema, payload, "ToolCall");
+    if (type === "method-call") {
+      const parsed = validateReceive(MethodCallSchema, payload, "MethodCall");
       if (!parsed) return null;
       return {
-        type: "tool-call",
+        type: "method-call",
         kind,
         senderId,
         ts,
         pubsubId,
         senderMetadata: normalizedSender,
         callId: parsed.callId,
-        toolName: parsed.toolName,
+        methodName: parsed.methodName,
         providerId: parsed.providerId,
         args: parsed.args,
       };
     }
 
-    if (type === "tool-cancel") {
-      const parsed = validateReceive(ToolCancelSchema, payload, "ToolCancel");
+    if (type === "method-cancel") {
+      const parsed = validateReceive(MethodCancelSchema, payload, "MethodCancel");
       if (!parsed) return null;
       const controller = providerAbortControllers.get(parsed.callId);
       controller?.abort();
@@ -853,12 +853,12 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       return null;
     }
 
-    if (type === "tool-result") {
-      const parsed = validateReceive(ToolResultSchema, payload, "ToolResult");
+    if (type === "method-result") {
+      const parsed = validateReceive(MethodResultSchema, payload, "MethodResult");
       if (!parsed) return null;
       const complete = parsed.complete ?? false;
       const isError = parsed.isError ?? false;
-      const incomingResult: IncomingToolResult = {
+      const incomingResult: IncomingMethodResult = {
         kind,
         senderId,
         ts,
@@ -874,9 +874,9 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       };
 
       const state = callStates.get(parsed.callId);
-      if (!state) return { ...incomingResult, type: "tool-result" };
+      if (!state) return { ...incomingResult, type: "method-result" };
 
-      const chunk: ToolResultChunk = {
+      const chunk: MethodResultChunk = {
         content: parsed.content,
         attachment,
         contentType: parsed.contentType,
@@ -894,7 +894,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         state.stream.close();
 
         if (chunk.isError) {
-          state.reject(toAgenticErrorFromToolResult(chunk.content));
+          state.reject(toAgenticErrorFromMethodResult(chunk.content));
         } else {
           state.resolve({
             content: chunk.content,
@@ -905,7 +905,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         callStates.delete(parsed.callId);
       }
 
-      return { ...incomingResult, type: "tool-result" };
+      return { ...incomingResult, type: "method-result" };
     }
 
     if (type === "execution-pause") {
@@ -1008,15 +1008,15 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
           const event = parseIncoming(msg);
           if (!event) continue;
 
-          if (event.type === "tool-call") {
+          if (event.type === "method-call") {
             if (selfId) {
               if (event.kind !== "replay") {
-                emitAndHandleToolCall(event);
+                emitAndHandleMethodCall(event);
               } else if (event.providerId === selfId) {
-                emitToolCall(event);
+                emitMethodCall(event);
               }
             } else {
-              pendingToolCalls.push(event);
+              pendingMethodCalls.push(event);
             }
           }
 
@@ -1227,55 +1227,55 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     return await publishValidated("error", payload, { persist: true });
   }
 
-  function discoverToolDefsFrom(providerId: string): DiscoveredTool[] {
+  function discoverMethodDefsFrom(providerId: string): DiscoveredMethod[] {
     const participant = pubsub.roster[providerId];
     if (!participant) return [];
     const meta = participant.metadata as AnyRecord;
-    const advertised = Array.isArray(meta["tools"]) ? (meta["tools"] as ToolAdvertisement[]) : [];
+    const advertised = Array.isArray(meta["methods"]) ? (meta["methods"] as MethodAdvertisement[]) : [];
     const providerName = typeof meta["name"] === "string" ? meta["name"] : providerId;
-    return advertised.map((t) => ({
+    return advertised.map((m) => ({
       providerId,
       providerName,
-      name: t.name,
-      description: t.description,
-      parameters: t.parameters,
-      returns: t.returns,
-      streaming: t.streaming ?? false,
-      timeout: t.timeout,
+      name: m.name,
+      description: m.description,
+      parameters: m.parameters,
+      returns: m.returns,
+      streaming: m.streaming ?? false,
+      timeout: m.timeout,
     }));
   }
 
-  function discoverToolDefs(): DiscoveredTool[] {
-    return Object.keys(pubsub.roster).flatMap((id) => discoverToolDefsFrom(id));
+  function discoverMethodDefs(): DiscoveredMethod[] {
+    return Object.keys(pubsub.roster).flatMap((id) => discoverMethodDefsFrom(id));
   }
 
-  function callTool(
+  function callMethod(
     providerId: string,
-    toolName: string,
+    methodName: string,
     args: unknown,
     callOptions?: { signal?: AbortSignal; validateArgs?: z.ZodTypeAny; timeoutMs?: number }
-  ): ToolCallResult {
+  ): MethodCallHandle {
     const provider = pubsub.roster[providerId];
     if (!provider) throw new AgenticError(`Provider not found: ${providerId}`, "provider-not-found");
 
     const meta = provider.metadata as AnyRecord;
-    const advertised = Array.isArray(meta["tools"]) ? (meta["tools"] as ToolAdvertisement[]) : [];
-    const toolAd = advertised.find((t: ToolAdvertisement) => t.name === toolName);
-    if (advertised.length > 0 && !toolAd) {
-      throw new AgenticError(`Tool not found: ${providerId}:${toolName}`, "tool-not-found");
+    const advertised = Array.isArray(meta["methods"]) ? (meta["methods"] as MethodAdvertisement[]) : [];
+    const methodAd = advertised.find((m: MethodAdvertisement) => m.name === methodName);
+    if (advertised.length > 0 && !methodAd) {
+      throw new AgenticError(`Method not found: ${providerId}:${methodName}`, "method-not-found");
     }
 
     const callId = randomId();
-    const { state, result } = createToolCallState(callId);
+    const { state, result } = createMethodCallState(callId);
     callStates.set(callId, state);
 
     if (callOptions?.validateArgs) {
       args = callOptions.validateArgs.parse(args);
     }
 
-    const payload = validateSend(ToolCallSchema, { callId, toolName, providerId, args }, "ToolCall");
+    const payload = validateSend(MethodCallSchema, { callId, methodName, providerId, args }, "MethodCall");
 
-    void pubsub.publish("tool-call", payload, { persist: true }).catch((e: unknown) => {
+    void pubsub.publish("method-call", payload, { persist: true }).catch((e: unknown) => {
       const err = e instanceof Error ? e : new Error(String(e));
       state.complete = true;
       state.isError = true;
@@ -1297,12 +1297,12 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       state.stream.close();
       state.reject(new AgenticError(reason, reason));
       callStates.delete(callId);
-      const cancelPayload = validateSend(ToolCancelSchema, { callId }, "ToolCancel");
-      await pubsub.publish("tool-cancel", cancelPayload, { persist: true });
+      const cancelPayload = validateSend(MethodCancelSchema, { callId }, "MethodCancel");
+      await pubsub.publish("method-cancel", cancelPayload, { persist: true });
     };
 
     // Set up timeout - use explicit option, fall back to advertised timeout
-    const timeoutMs = callOptions?.timeoutMs ?? toolAd?.timeout;
+    const timeoutMs = callOptions?.timeoutMs ?? methodAd?.timeout;
     if (timeoutMs !== undefined && timeoutMs > 0) {
       timeoutId = setTimeout(() => {
         timeoutId = null;
@@ -1466,9 +1466,9 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     storeMessage,
     getHistory,
     clearHistory,
-    discoverToolDefs,
-    discoverToolDefsFrom,
-    callTool,
+    discoverMethodDefs,
+    discoverMethodDefsFrom,
+    callMethod,
     get roster() {
       return pubsub.roster;
     },
@@ -1494,7 +1494,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     onDisconnect: pubsub.onDisconnect,
     onReconnect: pubsub.onReconnect,
     pubsub,
-    sendToolResult: async (
+    sendMethodResult: async (
       callId: string,
       content: unknown,
       options?: {
@@ -1505,7 +1505,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         contentType?: string;
       }
     ) => {
-      await publishToolResult(callId, {
+      await publishMethodResult(callId, {
         content,
         complete: options?.complete ?? true,
         isError: options?.isError ?? false,
@@ -1520,39 +1520,41 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
 /**
  * Create tool definitions suitable for agent SDK integration.
  * Produces stable, conflict-free tool names and a single execute() dispatcher.
+ * Note: This function maintains the "tools" naming because it produces output
+ * for LLM SDK integration where "tools" is the standard terminology.
  */
 export function createToolsForAgentSDK(
   client: AgenticClient,
   options?: {
-    filter?: (tool: DiscoveredTool) => boolean;
+    filter?: (method: DiscoveredMethod) => boolean;
     namePrefix?: string;
   }
 ): {
   definitions: Array<{ name: string; description?: string; parameters: JsonSchema }>;
   execute: (name: string, args: unknown, signal?: AbortSignal) => Promise<unknown>;
 } {
-  const tools = client.discoverToolDefs();
-  const filtered = options?.filter ? tools.filter(options.filter) : tools;
+  const methods = client.discoverMethodDefs();
+  const filtered = options?.filter ? methods.filter(options.filter) : methods;
 
   const prefix = options?.namePrefix ?? "pubsub";
-  const nameMap = new Map<string, DiscoveredTool>();
+  const nameMap = new Map<string, DiscoveredMethod>();
 
-  const definitions = filtered.map((tool) => {
-    const name = `${prefix}_${tool.providerId}_${tool.name}`.replace(/[^a-zA-Z0-9_-]/g, "_");
-    nameMap.set(name, tool);
+  const definitions = filtered.map((method) => {
+    const name = `${prefix}_${method.providerId}_${method.name}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+    nameMap.set(name, method);
     return {
       name,
-      description: tool.description ? `[${tool.providerName}] ${tool.description}` : undefined,
-      parameters: tool.parameters,
+      description: method.description ? `[${method.providerName}] ${method.description}` : undefined,
+      parameters: method.parameters,
     };
   });
 
   return {
     definitions,
     execute: async (name, args, signal) => {
-      const tool = nameMap.get(name);
-      if (!tool) throw new AgenticError(`Tool not found: ${name}`, "tool-not-found");
-      const result = client.callTool(tool.providerId, tool.name, args, { signal });
+      const method = nameMap.get(name);
+      if (!method) throw new AgenticError(`Method not found: ${name}`, "method-not-found");
+      const result = client.callMethod(method.providerId, method.name, args, { signal });
       return (await result.result).content;
     },
   };

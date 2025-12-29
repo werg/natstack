@@ -14,7 +14,7 @@ import {
   createLogger,
   formatArgsForLog,
   createInterruptHandler,
-  createPauseToolDefinition,
+  createPauseMethodDefinition,
   DEFAULT_MISSED_CONTEXT_MAX_CHARS,
   formatMissedContext,
   type AgenticClient,
@@ -64,8 +64,8 @@ async function main() {
     type: "claude-code",
     workspaceId,
     reconnect: true,
-    tools: {
-      pause: createPauseToolDefinition(async () => {
+    methods: {
+      pause: createPauseMethodDefinition(async () => {
         // Pause event is published by interrupt handler
       }),
     },

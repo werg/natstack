@@ -11,7 +11,7 @@ import {
   createLogger,
   parseAgentConfig,
   createInterruptHandler,
-  createPauseToolDefinition,
+  createPauseMethodDefinition,
   formatMissedContext,
   type AgenticClient,
   type ChatParticipantMetadata,
@@ -55,8 +55,8 @@ async function main() {
     type: "ai-responder",
     workspaceId,
     reconnect: true,
-    tools: {
-      pause: createPauseToolDefinition(async () => {
+    methods: {
+      pause: createPauseMethodDefinition(async () => {
         // Pause event is published by interrupt handler
       }),
     },

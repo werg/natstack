@@ -1,4 +1,4 @@
-import type { ToolExecutionContext } from "@natstack/agentic-messaging";
+import type { MethodExecutionContext } from "@natstack/agentic-messaging";
 import {
   transformCode,
   execute,
@@ -192,7 +192,7 @@ export interface EvalToolResult {
  */
 export async function executeEvalTool(
   args: EvalToolArgs,
-  ctx: ToolExecutionContext,
+  ctx: MethodExecutionContext,
   options?: { onConsoleEntry?: (formatted: string) => void }
 ): Promise<EvalToolResult> {
   const { code, syntax = "tsx" } = args;

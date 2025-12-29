@@ -1,13 +1,13 @@
 import type {
   AggregatedEvent,
   AggregatedMessage,
-  AggregatedToolCall,
-  AggregatedToolResult,
+  AggregatedMethodCall,
+  AggregatedMethodResult,
   FormatOptions,
   IncomingEvent,
   IncomingNewMessage,
-  IncomingToolCallEvent,
-  IncomingToolResultEvent,
+  IncomingMethodCallEvent,
+  IncomingMethodResultEvent,
   IncomingUpdateMessage,
   MissedContext,
 } from "./types.js";
@@ -15,8 +15,8 @@ import type {
 /** Default maximum characters for formatted missed context */
 export const DEFAULT_MISSED_CONTEXT_MAX_CHARS = 20000;
 
-/** Default maximum characters for tool result content in missed context */
-export const DEFAULT_TOOL_RESULT_MAX_CHARS = 20000;
+/** Default maximum characters for method result content in missed context */
+export const DEFAULT_METHOD_RESULT_MAX_CHARS = 20000;
 
 function formatSender(event: AggregatedEvent): string {
   if (event.senderHandle) return `@${event.senderHandle}`;
@@ -94,11 +94,11 @@ function aggregateMessage(
   };
 }
 
-function aggregateToolCall(call: IncomingToolCallEvent): AggregatedToolCall | null {
+function aggregateMethodCall(call: IncomingMethodCallEvent): AggregatedMethodCall | null {
   if (call.pubsubId === undefined) return null;
   const sender = extractSenderFields(call);
   return {
-    type: "tool-call",
+    type: "method-call",
     pubsubId: call.pubsubId,
     senderId: call.senderId,
     senderName: sender.senderName,
@@ -106,7 +106,7 @@ function aggregateToolCall(call: IncomingToolCallEvent): AggregatedToolCall | nu
     senderHandle: sender.senderHandle,
     ts: call.ts,
     callId: call.callId,
-    toolName: call.toolName,
+    methodName: call.methodName,
     providerId: call.providerId,
     args: call.args,
   };
@@ -118,11 +118,11 @@ function extractErrorMessage(content: unknown): string | undefined {
   return typeof error === "string" ? error : undefined;
 }
 
-function aggregateToolResult(
+function aggregateMethodResult(
   callId: string,
-  chunks: IncomingToolResultEvent[],
-  toolName?: string
-): AggregatedToolResult | null {
+  chunks: IncomingMethodResultEvent[],
+  methodName?: string
+): AggregatedMethodResult | null {
   if (chunks.length === 0) return null;
   const finalChunk = chunks.find((chunk) => chunk.complete);
   const firstChunk = chunks[0];
@@ -138,7 +138,7 @@ function aggregateToolResult(
     : "incomplete";
 
   return {
-    type: "tool-result",
+    type: "method-result",
     pubsubId,
     senderId: firstChunk.senderId,
     senderName: sender.senderName,
@@ -146,7 +146,7 @@ function aggregateToolResult(
     senderHandle: sender.senderHandle,
     ts: firstChunk.ts,
     callId,
-    toolName,
+    methodName,
     status,
     content: finalChunk?.content,
     errorMessage: finalChunk?.isError ? extractErrorMessage(finalChunk.content) : undefined,
@@ -158,8 +158,8 @@ export function aggregateReplayEvents(events: IncomingEvent[]): AggregatedEvent[
     string,
     { initial?: IncomingNewMessage; updates: IncomingUpdateMessage[] }
   >();
-  const toolCalls = new Map<string, IncomingToolCallEvent>();
-  const toolResults = new Map<string, IncomingToolResultEvent[]>();
+  const methodCalls = new Map<string, IncomingMethodCallEvent>();
+  const methodResults = new Map<string, IncomingMethodResultEvent[]>();
 
   for (const event of events) {
     switch (event.type) {
@@ -175,13 +175,13 @@ export function aggregateReplayEvents(events: IncomingEvent[]): AggregatedEvent[
         messageGroups.set(event.id, group);
         break;
       }
-      case "tool-call":
-        toolCalls.set(event.callId, event);
+      case "method-call":
+        methodCalls.set(event.callId, event);
         break;
-      case "tool-result": {
-        const group = toolResults.get(event.callId) ?? [];
+      case "method-result": {
+        const group = methodResults.get(event.callId) ?? [];
         group.push(event);
-        toolResults.set(event.callId, group);
+        methodResults.set(event.callId, group);
         break;
       }
       default:
@@ -197,14 +197,14 @@ export function aggregateReplayEvents(events: IncomingEvent[]): AggregatedEvent[
     if (result) aggregated.push(result);
   }
 
-  for (const call of toolCalls.values()) {
-    const result = aggregateToolCall(call);
+  for (const call of methodCalls.values()) {
+    const result = aggregateMethodCall(call);
     if (result) aggregated.push(result);
   }
 
-  for (const [callId, chunks] of toolResults.entries()) {
-    const toolName = toolCalls.get(callId)?.toolName;
-    const result = aggregateToolResult(callId, chunks, toolName);
+  for (const [callId, chunks] of methodResults.entries()) {
+    const methodName = methodCalls.get(callId)?.methodName;
+    const result = aggregateMethodResult(callId, chunks, methodName);
     if (result) aggregated.push(result);
   }
 
@@ -218,9 +218,9 @@ export function formatMissedContext(
 ): MissedContext {
   const maxChars = options.maxChars ?? DEFAULT_MISSED_CONTEXT_MAX_CHARS;
   const format = options.format ?? "yaml";
-  const includeToolArgs = options.includeToolArgs ?? true;
-  const includeToolResults = options.includeToolResults ?? true;
-  const maxToolResultChars = options.maxToolResultChars ?? DEFAULT_TOOL_RESULT_MAX_CHARS;
+  const includeMethodArgs = options.includeMethodArgs ?? true;
+  const includeMethodResults = options.includeMethodResults ?? true;
+  const maxMethodResultChars = options.maxMethodResultChars ?? DEFAULT_METHOD_RESULT_MAX_CHARS;
 
   const included: AggregatedEvent[] = [];
   let formatted = "";
@@ -246,17 +246,17 @@ export function formatMissedContext(
     if (format === "markdown") {
       if (event.type === "message") {
         entry = `- message from ${sender}:\n  ${event.content.replace(/\n/g, "\n  ")}`;
-      } else if (event.type === "tool-call") {
-        const args = includeToolArgs ? stringifyValue(event.args) : "omitted";
-        entry = `- tool-call from ${sender}: ${event.toolName}\n  args: ${args.replace(/\n/g, "\n  ")}`;
-      } else if (event.type === "tool-result") {
-        const content = includeToolResults
-          ? truncate(stringifyValue(event.content), maxToolResultChars).text
+      } else if (event.type === "method-call") {
+        const args = includeMethodArgs ? stringifyValue(event.args) : "omitted";
+        entry = `- method-call from ${sender}: ${event.methodName}\n  args: ${args.replace(/\n/g, "\n  ")}`;
+      } else if (event.type === "method-result") {
+        const content = includeMethodResults
+          ? truncate(stringifyValue(event.content), maxMethodResultChars).text
           : "omitted";
         const statusLine = `status: ${event.status}`;
         const contentLine = `content: ${content.replace(/\n/g, "\n  ")}`;
         const errorLine = event.errorMessage ? `error: ${event.errorMessage}` : "";
-        entry = `- tool-result from ${sender}: ${event.toolName ?? event.callId}\n  ${statusLine}\n  ${contentLine}`;
+        entry = `- method-result from ${sender}: ${event.methodName ?? event.callId}\n  ${statusLine}\n  ${contentLine}`;
         if (errorLine) entry += `\n  ${errorLine}`;
       }
     } else {
@@ -267,24 +267,24 @@ export function formatMissedContext(
           "  content: |",
           indentLines(event.content, 4),
         ].join("\n");
-      } else if (event.type === "tool-call") {
-        const argsText = includeToolArgs ? stringifyValue(event.args) : "omitted";
+      } else if (event.type === "method-call") {
+        const argsText = includeMethodArgs ? stringifyValue(event.args) : "omitted";
         entry = [
-          "- type: tool-call",
+          "- type: method-call",
           `  from: ${sender}`,
-          `  tool: ${event.toolName}`,
+          `  method: ${event.methodName}`,
           `  providerId: ${event.providerId}`,
           "  args: |",
           indentLines(argsText, 4),
         ].join("\n");
-      } else if (event.type === "tool-result") {
-        const contentText = includeToolResults
-          ? truncate(stringifyValue(event.content), maxToolResultChars).text
+      } else if (event.type === "method-result") {
+        const contentText = includeMethodResults
+          ? truncate(stringifyValue(event.content), maxMethodResultChars).text
           : "omitted";
         entry = [
-          "- type: tool-result",
+          "- type: method-result",
           `  from: ${sender}`,
-          `  tool: ${event.toolName ?? event.callId}`,
+          `  method: ${event.methodName ?? event.callId}`,
           `  status: ${event.status}`,
           "  content: |",
           indentLines(contentText, 4),

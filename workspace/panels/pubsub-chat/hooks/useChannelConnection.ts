@@ -5,7 +5,7 @@ import {
   type AgenticClient,
   type RosterUpdate,
   type IncomingEvent,
-  type ToolDefinition,
+  type MethodDefinition,
 } from "@natstack/agentic-messaging";
 import type { ChatParticipantMetadata } from "../types";
 
@@ -13,7 +13,7 @@ export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "er
 
 export interface UseChannelConnectionOptions {
   metadata: ChatParticipantMetadata;
-  /** Called for each event (messages, tool calls, tool results, presence) */
+  /** Called for each event (messages, method calls, method results, presence) */
   onEvent?: (event: IncomingEvent) => void;
   /** Called when roster changes */
   onRoster?: (roster: RosterUpdate<ChatParticipantMetadata>) => void;
@@ -30,7 +30,7 @@ export interface UseChannelConnectionResult {
   clientId: string | null;
   /** The panel's static ID from runtime */
   panelClientId: string;
-  connect: (channelId: string, tools: Record<string, ToolDefinition>) => Promise<AgenticClient<ChatParticipantMetadata>>;
+  connect: (channelId: string, methods: Record<string, MethodDefinition>) => Promise<AgenticClient<ChatParticipantMetadata>>;
   disconnect: () => void;
 }
 
@@ -67,7 +67,7 @@ export function useChannelConnection({
   }, []);
 
   const connectToChannel = useCallback(
-    async (channelId: string, tools: Record<string, ToolDefinition>): Promise<AgenticClient<ChatParticipantMetadata>> => {
+    async (channelId: string, methods: Record<string, MethodDefinition>): Promise<AgenticClient<ChatParticipantMetadata>> => {
       if (!pubsubConfig) {
         const error = new Error("PubSub configuration not available");
         callbacksRef.current.onError?.(error);
@@ -90,7 +90,7 @@ export function useChannelConnection({
           type: metadata.type,
           reconnect: true,
           clientId: panelClientId,
-          tools,
+          methods,
           replayMode: "stream",
         });
 

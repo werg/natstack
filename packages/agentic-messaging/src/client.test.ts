@@ -64,7 +64,7 @@ describe("@natstack/agentic-messaging", () => {
     MockWebSocket.mockReset();
   });
 
-  it("callTool() publishes tool-call and resolves on tool-result", async () => {
+  it("callMethod() publishes method-call and resolves on method-result", async () => {
     const ws = createWsHarness();
 
     const clientPromise = connect({
@@ -102,7 +102,7 @@ describe("@natstack/agentic-messaging", () => {
           metadata: {
             name: "Provider A",
             type: "worker",
-            tools: [
+            methods: [
               {
                 name: "search",
                 description: "Search",
@@ -119,20 +119,21 @@ describe("@natstack/agentic-messaging", () => {
 
     const client = await clientPromise;
 
-    const result = client.callTool("providerA", "search", { q: "hello" });
+    const result = client.callMethod("providerA", "search", { q: "hello" });
 
-    const sent = JSON.parse(ws.mockSend.mock.calls.at(-1)![0] as string) as {
+    const calls = ws.mockSend.mock.calls;
+    const sent = JSON.parse(calls[calls.length - 1]![0] as string) as {
       action: string;
       type: string;
-      payload: { callId: string; toolName: string; providerId: string; args: unknown };
+      payload: { callId: string; methodName: string; providerId: string; args: unknown };
       persist: boolean;
       ref: number;
     };
     expect(sent.action).toBe("publish");
-    expect(sent.type).toBe("tool-call");
+    expect(sent.type).toBe("method-call");
     expect(sent.persist).toBe(true);
     expect(sent.payload.providerId).toBe("providerA");
-    expect(sent.payload.toolName).toBe("search");
+    expect(sent.payload.methodName).toBe("search");
     expect(sent.payload.args).toEqual({ q: "hello" });
     expect(sent.payload.callId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -150,7 +151,7 @@ describe("@natstack/agentic-messaging", () => {
       data: JSON.stringify({
         kind: "persisted",
         id: 10,
-        type: "tool-result",
+        type: "method-result",
         payload: { callId: sent.payload.callId, content: { ok: true }, complete: true },
         senderId: "providerA",
         ts: Date.now(),
@@ -163,7 +164,7 @@ describe("@natstack/agentic-messaging", () => {
     expect((chunks[0] as { complete: boolean }).complete).toBe(true);
   });
 
-  it("auto-executes provided tools and publishes streaming tool-results", async () => {
+  it("auto-executes provided methods and publishes streaming method-results", async () => {
     const ws = createWsHarness({ autoAckPublishes: true });
 
     const clientPromise = connect({
@@ -173,7 +174,7 @@ describe("@natstack/agentic-messaging", () => {
       handle: "me",
       name: "Provider",
       type: "worker",
-      tools: {
+      methods: {
         greet: {
           description: "Greet someone",
           parameters: z.object({ name: z.string() }),
@@ -222,8 +223,8 @@ describe("@natstack/agentic-messaging", () => {
       data: JSON.stringify({
         kind: "persisted",
         id: 1,
-        type: "tool-call",
-        payload: { callId, toolName: "greet", providerId: "me", args: { name: "Bob" } },
+        type: "method-call",
+        payload: { callId, methodName: "greet", providerId: "me", args: { name: "Bob" } },
         senderId: "caller",
         ts: Date.now(),
       }),
@@ -231,16 +232,16 @@ describe("@natstack/agentic-messaging", () => {
 
     await new Promise((r) => setTimeout(r, 10));
 
-    const toolResultPublishes = ws.mockSend.mock.calls
+    const methodResultPublishes = ws.mockSend.mock.calls
       .map((c) => JSON.parse(c[0] as string) as { action: string; type: string; payload: any })
-      .filter((m) => m.action === "publish" && m.type === "tool-result" && m.payload.callId === callId);
+      .filter((m) => m.action === "publish" && m.type === "method-result" && m.payload.callId === callId);
 
-    expect(toolResultPublishes.length).toBe(2);
-    expect(toolResultPublishes[0]!.payload.complete).toBe(false);
-    expect(toolResultPublishes[1]!.payload.complete).toBe(true);
+    expect(methodResultPublishes.length).toBe(2);
+    expect(methodResultPublishes[0]!.payload.complete).toBe(false);
+    expect(methodResultPublishes[1]!.payload.complete).toBe(true);
   });
 
-  it("tools in connect options are advertised in initial metadata", async () => {
+  it("methods in connect options are advertised in initial metadata", async () => {
     const ws = createWsHarness();
 
     const clientPromise = connect({
@@ -250,7 +251,7 @@ describe("@natstack/agentic-messaging", () => {
       handle: "provider",
       name: "Provider",
       type: "worker",
-      tools: {
+      methods: {
         ping: {
           description: "Ping",
           parameters: z.object({ value: z.string() }),
@@ -266,12 +267,12 @@ describe("@natstack/agentic-messaging", () => {
     const metadata = JSON.parse(url.searchParams.get("metadata")!) as {
       name: string;
       type: string;
-      tools: Array<{ name: string; description: string }>;
+      methods: Array<{ name: string; description: string }>;
     };
     expect(metadata.name).toBe("Provider");
-    expect(Array.isArray(metadata.tools)).toBe(true);
-    expect(metadata.tools[0]!.name).toBe("ping");
-    expect(metadata.tools[0]!.description).toBe("Ping");
+    expect(Array.isArray(metadata.methods)).toBe(true);
+    expect(metadata.methods[0]!.name).toBe("ping");
+    expect(metadata.methods[0]!.description).toBe("Ping");
 
     ws.onmessage!({ data: JSON.stringify({ kind: "ready" }) });
     const client = await clientPromise;

@@ -1,13 +1,13 @@
 import { useState, useMemo } from "react";
 import { Badge, Box, Card, Code, Flex, Text } from "@radix-ui/themes";
 
-export type ToolCallStatus = "pending" | "success" | "error";
+export type MethodCallStatus = "pending" | "success" | "error";
 
-export interface ToolHistoryEntry {
+export interface MethodHistoryEntry {
   callId: string;
-  toolName: string;
+  methodName: string;
   args: unknown;
-  status: ToolCallStatus;
+  status: MethodCallStatus;
   consoleOutput?: string;
   result?: unknown;
   error?: string;
@@ -19,13 +19,13 @@ export interface ToolHistoryEntry {
   progress?: number;
 }
 
-const TOOL_STATUS_COLOR: Record<ToolCallStatus, "gray" | "green" | "red"> = {
+const METHOD_STATUS_COLOR: Record<MethodCallStatus, "gray" | "green" | "red"> = {
   pending: "gray",
   success: "green",
   error: "red",
 };
 
-function summarizeToolArgs(args: unknown): string {
+function summarizeMethodArgs(args: unknown): string {
   if (typeof args === "object" && args !== null && "code" in (args as Record<string, unknown>)) {
     const code = (args as Record<string, unknown>)["code"];
     if (typeof code === "string") {
@@ -42,7 +42,7 @@ function summarizeToolArgs(args: unknown): string {
   }
 }
 
-function formatToolMeta(entry: ToolHistoryEntry): { label: string; value: string }[] {
+function formatMethodMeta(entry: MethodHistoryEntry): { label: string; value: string }[] {
   const items: { label: string; value: string }[] = [];
   if (entry.callerId) items.push({ label: "caller", value: entry.callerId });
   if (entry.handledLocally !== undefined) {
@@ -262,14 +262,14 @@ function PlainTextDisplay({ content }: { content: string }) {
   );
 }
 
-interface ToolHistoryItemProps {
-  entry: ToolHistoryEntry;
+interface MethodHistoryItemProps {
+  entry: MethodHistoryEntry;
 }
 
-export function ToolHistoryItem({ entry }: ToolHistoryItemProps) {
+export function MethodHistoryItem({ entry }: MethodHistoryItemProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const summary = useMemo(() => summarizeToolArgs(entry.args), [entry.args]);
-  const metaItems = useMemo(() => formatToolMeta(entry), [entry]);
+  const summary = useMemo(() => summarizeMethodArgs(entry.args), [entry.args]);
+  const metaItems = useMemo(() => formatMethodMeta(entry), [entry]);
 
   return (
     <Box style={{ maxWidth: "96%", alignSelf: "flex-start" }}>
@@ -290,11 +290,11 @@ export function ToolHistoryItem({ entry }: ToolHistoryItemProps) {
           <Text color="gray" style={{ display: "flex", alignItems: "center" }}>
             <ChevronIcon expanded={isExpanded} />
           </Text>
-          <Badge color={TOOL_STATUS_COLOR[entry.status]} size="1">
+          <Badge color={METHOD_STATUS_COLOR[entry.status]} size="1">
             {entry.status}
           </Badge>
           <Text size="2" weight="medium">
-            Tool: {entry.toolName}
+            Method: {entry.methodName}
           </Text>
           {!isExpanded && (
             <Text

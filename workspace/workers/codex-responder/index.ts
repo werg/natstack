@@ -23,7 +23,7 @@ import {
   createLogger,
   formatArgsForLog,
   createInterruptHandler,
-  createPauseToolDefinition,
+  createPauseMethodDefinition,
   formatMissedContext,
   type AgenticClient,
   type ChatParticipantMetadata,
@@ -299,8 +299,8 @@ async function main() {
     type: "codex",
     workspaceId,
     reconnect: true,
-    tools: {
-      pause: createPauseToolDefinition(async () => {
+    methods: {
+      pause: createPauseMethodDefinition(async () => {
         // Pause event is published by interrupt handler
       }),
     },

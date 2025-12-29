@@ -1,4 +1,4 @@
-import type { ToolHistoryEntry } from "./components/ToolHistoryItem";
+import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 
 /** Metadata for participants in this channel */
 export interface ChatParticipantMetadata {
@@ -12,10 +12,10 @@ export interface ChatMessage {
   id: string;
   senderId: string;
   content: string;
-  kind?: "message" | "tool";
+  kind?: "message" | "method";
   complete?: boolean;
   replyTo?: string;
   error?: string;
   pending?: boolean;
-  tool?: ToolHistoryEntry;
+  method?: MethodHistoryEntry;
 }

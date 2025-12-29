@@ -13,9 +13,9 @@ import { z } from "zod";
 import {
   type IncomingEvent,
   type Participant,
-  type ToolDefinition,
-  type ToolExecutionContext,
-  createPauseToolDefinition,
+  type MethodDefinition,
+  type MethodExecutionContext,
+  createPauseMethodDefinition,
 } from "@natstack/agentic-messaging";
 import {
   executeEvalTool,
@@ -30,9 +30,9 @@ import {
 } from "./eval/feedbackUiTool";
 import { useDiscovery } from "./hooks/useDiscovery";
 import { useChannelConnection } from "./hooks/useChannelConnection";
-import { useToolHistory, type ChatMessage } from "./hooks/useToolHistory";
+import { useMethodHistory, type ChatMessage } from "./hooks/useMethodHistory";
 import { useFeedbackManager } from "./hooks/useFeedbackManager";
-import type { ToolHistoryEntry } from "./components/ToolHistoryItem";
+import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 import { AgentSetupPhase } from "./components/AgentSetupPhase";
 import { ChatPhase, type ActiveFeedback } from "./components/ChatPhase";
 import type { ChatParticipantMetadata } from "./types";
@@ -61,8 +61,8 @@ function dispatchAgenticEvent(
   handlers: {
     setMessages: (updater: (prev: ChatMessage[]) => ChatMessage[]) => void;
     setHistoricalParticipants: (updater: (prev: Record<string, Participant<ChatParticipantMetadata>>) => Record<string, Participant<ChatParticipantMetadata>>) => void;
-    addToolHistoryEntry: (entry: ToolHistoryEntry) => void;
-    handleToolResult: (result: { callId: string; content?: unknown; complete: boolean; isError: boolean; progress?: number }) => void;
+    addMethodHistoryEntry: (entry: MethodHistoryEntry) => void;
+    handleMethodResult: (result: { callId: string; content?: unknown; complete: boolean; isError: boolean; progress?: number }) => void;
   },
   selfId: string | null
 ): void {
@@ -117,13 +117,13 @@ function dispatchAgenticEvent(
       break;
     }
 
-    case "tool-call": {
+    case "method-call": {
       if (event.kind !== "replay" && event.providerId === selfId) {
         return;
       }
-      handlers.addToolHistoryEntry({
+      handlers.addMethodHistoryEntry({
         callId: event.callId,
-        toolName: event.toolName,
+        methodName: event.methodName,
         args: event.args,
         status: "pending",
         startedAt: event.ts ?? Date.now(),
@@ -134,8 +134,8 @@ function dispatchAgenticEvent(
       break;
     }
 
-    case "tool-result": {
-      handlers.handleToolResult({
+    case "method-result": {
+      handlers.handleMethodResult({
         callId: event.callId,
         content: event.content,
         complete: event.complete,
@@ -211,11 +211,11 @@ export default function AgenticChatDemo() {
   } = useDiscovery({ workspaceRoot });
 
   const {
-    addToolHistoryEntry,
-    updateToolHistoryEntry,
-    handleToolResult,
-    clearToolHistory,
-  } = useToolHistory({ setMessages, clientId: panelClientId });
+    addMethodHistoryEntry,
+    updateMethodHistoryEntry,
+    handleMethodResult,
+    clearMethodHistory,
+  } = useMethodHistory({ setMessages, clientId: panelClientId });
 
   // Use channel connection hook with event handler that uses extracted helper
   const {
@@ -238,8 +238,8 @@ export default function AgenticChatDemo() {
           {
             setMessages,
             setHistoricalParticipants,
-            addToolHistoryEntry,
-            handleToolResult,
+            addMethodHistoryEntry,
+            handleMethodResult,
           },
           selfId
         );
@@ -247,8 +247,8 @@ export default function AgenticChatDemo() {
       [
         setMessages,
         setHistoricalParticipants,
-        addToolHistoryEntry,
-        handleToolResult,
+        addMethodHistoryEntry,
+        handleMethodResult,
         panelClientId,
         selfIdRef,
       ]
@@ -267,23 +267,23 @@ export default function AgenticChatDemo() {
   }, [clientId]);
 
 
-  const handleFeedbackUiToolCall = useCallback(
-    async (callId: string, args: unknown, ctx: ToolExecutionContext) => {
-      const entry: ToolHistoryEntry = {
+  const handleFeedbackUiMethodCall = useCallback(
+    async (callId: string, args: unknown, ctx: MethodExecutionContext) => {
+      const entry: MethodHistoryEntry = {
         callId,
-        toolName: "feedback_ui",
+        methodName: "feedback_ui",
         args,
         status: "pending",
         startedAt: Date.now(),
         callerId: ctx.callerId,
         handledLocally: true,
       };
-      addToolHistoryEntry(entry);
+      addMethodHistoryEntry(entry);
 
       const result = compileFeedbackComponent(args as FeedbackUiToolArgs);
 
       if (!result.success) {
-        updateToolHistoryEntry(callId, {
+        updateMethodHistoryEntry(callId, {
           status: "error",
           error: result.error,
           completedAt: Date.now(),
@@ -302,7 +302,7 @@ export default function AgenticChatDemo() {
           resolve: (value) => {
             removeFeedback(callId);
             cleanupFeedbackComponent(cacheKey);
-            updateToolHistoryEntry(callId, {
+            updateMethodHistoryEntry(callId, {
               status: "success",
               result: value,
               completedAt: Date.now(),
@@ -312,7 +312,7 @@ export default function AgenticChatDemo() {
           reject: (error) => {
             removeFeedback(callId);
             cleanupFeedbackComponent(cacheKey);
-            updateToolHistoryEntry(callId, {
+            updateMethodHistoryEntry(callId, {
               status: "error",
               error: error.message,
               completedAt: Date.now(),
@@ -324,14 +324,14 @@ export default function AgenticChatDemo() {
         addFeedback(feedback);
       });
     },
-    [addFeedback, removeFeedback, addToolHistoryEntry, updateToolHistoryEntry]
+    [addFeedback, removeFeedback, addMethodHistoryEntry, updateMethodHistoryEntry]
   );
 
   const handleFeedbackDismiss = useCallback((callId: string) => {
     dismissFeedback(callId);
   }, [dismissFeedback]);
 
-  const evalToolDef = useMemo<ToolDefinition>(
+  const evalMethodDef = useMemo<MethodDefinition>(
     () => ({
       description: `Execute TypeScript/JavaScript code for side-effects.
 
@@ -357,16 +357,16 @@ Use standard ESM imports - they're transformed to require() automatically:
       // Framework safety net - should never fire in normal operation
       timeout: EVAL_FRAMEWORK_TIMEOUT_MS,
       execute: async (args, ctx) => {
-        const entry: ToolHistoryEntry = {
+        const entry: MethodHistoryEntry = {
           callId: ctx.callId,
-          toolName: "eval",
+          methodName: "eval",
           args,
           status: "pending",
           startedAt: Date.now(),
           callerId: ctx.callerId,
           handledLocally: true,
         };
-        addToolHistoryEntry(entry);
+        addMethodHistoryEntry(entry);
 
         let consoleBuffer = "";
         let lastFlush = 0;
@@ -374,7 +374,7 @@ Use standard ESM imports - they're transformed to require() automatically:
           const now = Date.now();
           if (!force && now - lastFlush < 200) return;
           lastFlush = now;
-          updateToolHistoryEntry(ctx.callId, { consoleOutput: consoleBuffer });
+          updateMethodHistoryEntry(ctx.callId, { consoleOutput: consoleBuffer });
         };
 
         try {
@@ -389,7 +389,7 @@ Use standard ESM imports - they're transformed to require() automatically:
               consoleBuffer = result.consoleOutput;
             }
             flushConsole(true);
-            updateToolHistoryEntry(ctx.callId, {
+            updateMethodHistoryEntry(ctx.callId, {
               status: "error",
               error: result.error || "Eval failed",
               consoleOutput: consoleBuffer,
@@ -403,7 +403,7 @@ Use standard ESM imports - they're transformed to require() automatically:
           };
           consoleBuffer = payload.consoleOutput;
           flushConsole(true);
-          updateToolHistoryEntry(ctx.callId, {
+          updateMethodHistoryEntry(ctx.callId, {
             status: "success",
             result: payload,
             consoleOutput: payload.consoleOutput,
@@ -412,7 +412,7 @@ Use standard ESM imports - they're transformed to require() automatically:
           return payload;
         } catch (err) {
           flushConsole(true);
-          updateToolHistoryEntry(ctx.callId, {
+          updateMethodHistoryEntry(ctx.callId, {
             status: "error",
             error: err instanceof Error ? err.message : String(err),
             consoleOutput: consoleBuffer,
@@ -422,7 +422,7 @@ Use standard ESM imports - they're transformed to require() automatically:
         }
       },
     }),
-    [addToolHistoryEntry, updateToolHistoryEntry]
+    [addMethodHistoryEntry, updateMethodHistoryEntry]
   );
 
   const startChat = useCallback(async () => {
@@ -461,7 +461,7 @@ Use standard ESM imports - they're transformed to require() automatically:
     const targetChannelId = channelId.trim() || `chat-${crypto.randomUUID().slice(0, 8)}`;
 
     try {
-      const feedbackUiToolDef: ToolDefinition = {
+      const feedbackUiMethodDef: MethodDefinition = {
         description: `Render an interactive React component to collect user feedback.
 
 Guidelines:
@@ -474,7 +474,7 @@ Write a complete component with export default that accepts props.`,
         parameters: z.object({
           code: z.string().describe("TSX code that defines a React component with export default"),
         }),
-        execute: async (args, ctx) => handleFeedbackUiToolCall(ctx.callId, args, ctx),
+        execute: async (args, ctx) => handleFeedbackUiMethodCall(ctx.callId, args, ctx),
       };
 
       // Invite all selected agents with their configured parameters
@@ -544,8 +544,8 @@ Write a complete component with export default that accepts props.`,
 
       // Connect using the hook
       await connectToChannel(targetChannelId, {
-        eval: evalToolDef,
-        feedback_ui: feedbackUiToolDef,
+        eval: evalMethodDef,
+        feedback_ui: feedbackUiMethodDef,
       });
 
       setStatus("Connected");
@@ -557,8 +557,8 @@ Write a complete component with export default that accepts props.`,
   }, [
     availableAgents,
     buildInviteConfig,
-    handleFeedbackUiToolCall,
-    evalToolDef,
+    handleFeedbackUiMethodCall,
+    evalMethodDef,
     discoveryRef,
     channelId,
     connectToChannel,
@@ -597,14 +597,14 @@ Write a complete component with export default that accepts props.`,
     setHistoricalParticipants({});
     // Generate a new channel ID for the next session
     setChannelId(generateChannelId());
-    clearToolHistory();
+    clearMethodHistory();
     // Cleanup feedbacks via reducer - no need to capture state in dependency
     dispatchFeedback({
       type: "cleanup-all",
       payload: [], // Reducer will get current state from closure
     });
     disconnect();
-  }, [clearToolHistory, disconnect]);
+  }, [clearMethodHistory, disconnect]);
 
   const sendMessage = useCallback(async (): Promise<void> => {
     if (!input.trim() || !clientRef.current?.connected) return;
@@ -635,8 +635,8 @@ Write a complete component with export default that accepts props.`,
     async (agentId: string, messageId: string) => {
       if (!clientRef.current) return;
       try {
-        // Call pause tool via RPC - this interrupts the agent
-        await clientRef.current.callTool(agentId, "pause", {
+        // Call pause method via RPC - this interrupts the agent
+        await clientRef.current.callMethod(agentId, "pause", {
           reason: "User interrupted execution",
         });
       } catch (error) {

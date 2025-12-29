@@ -1,6 +1,6 @@
 # @natstack/agentic-messaging
 
-Agentic messaging protocol and SDK over `@natstack/pubsub`. Enables tool discovery, invocation, and streaming results between distributed participants.
+Agentic messaging protocol and SDK over `@natstack/pubsub`. Enables method discovery, invocation, and streaming results between distributed participants.
 
 ## Installation
 
@@ -14,7 +14,7 @@ pnpm add @natstack/agentic-messaging
 import { connect } from "@natstack/agentic-messaging";
 import { z } from "zod";
 
-// Connect as a tool provider
+// Connect as a method provider
 const client = await connect({
   serverUrl,
   token,
@@ -22,7 +22,7 @@ const client = await connect({
   handle: "my-worker",
   name: "My Worker",
   type: "worker",
-  tools: {
+  methods: {
     greet: {
       description: "Say hello",
       parameters: z.object({ name: z.string() }),
@@ -37,8 +37,8 @@ const client = await connect({
 This package builds on `@natstack/pubsub` to provide:
 
 - **Message consumers** - Send/receive chat-like messages with streaming support
-- **Tool providers** - Advertise and execute tools with automatic dispatch
-- **Tool users** - Discover and invoke tools on other participants
+- **Method providers** - Advertise and execute methods with automatic dispatch
+- **Method users** - Discover and invoke methods on other participants
 
 A single participant can act as any combination of these roles.
 
@@ -56,8 +56,8 @@ const client = await connect({
   name: "My Agent",
   type: "agent",
 
-  // Optional: tools this participant provides
-  tools: { /* ... */ },
+  // Optional: methods this participant provides
+  methods: { /* ... */ },
 
   // Optional: session persistence
   workspaceId: "my-workspace",
@@ -134,12 +134,12 @@ for await (const event of client.events()) {
       console.error(`Error on ${event.id}: ${event.error}`);
       break;
 
-    case "tool-call":
-      console.log(`Tool call: ${event.toolName} from ${event.senderId}`);
+    case "method-call":
+      console.log(`Method call: ${event.methodName} from ${event.senderId}`);
       break;
 
-    case "tool-result":
-      console.log(`Tool result for ${event.callId}: ${event.content}`);
+    case "method-result":
+      console.log(`Method result for ${event.callId}: ${event.content}`);
       break;
 
     case "presence":
@@ -159,9 +159,9 @@ for await (const event of client.events({ includeReplay: true, includeEphemeral:
 }
 ```
 
-## Tool Provider API
+## Method Provider API
 
-Tools are declared at connection time and automatically executed when called:
+Methods are declared at connection time and automatically executed when called:
 
 ```typescript
 import { z } from "zod";
@@ -169,11 +169,11 @@ import { z } from "zod";
 const client = await connect({
   serverUrl,
   token,
-  channel: "tools-channel",
-  handle: "tool-provider",
-  name: "Tool Provider",
+  channel: "methods-channel",
+  handle: "method-provider",
+  name: "Method Provider",
   type: "worker",
-  tools: {
+  methods: {
     search: {
       description: "Search for files",
       parameters: z.object({
@@ -221,27 +221,27 @@ const client = await connect({
 });
 ```
 
-### ToolExecutionContext
+### MethodExecutionContext
 
 ```typescript
-interface ToolExecutionContext {
+interface MethodExecutionContext {
   callId: string;              // Unique call identifier
   callerId: string;            // ID of the calling participant
   signal: AbortSignal;         // Aborted when caller cancels
 
   stream(content: unknown): Promise<void>;
   streamWithAttachment(content: unknown, attachment: Uint8Array, options?: { contentType?: string }): Promise<void>;
-  resultWithAttachment<T>(content: T, attachment: Uint8Array, options?: { contentType?: string }): ToolResultWithAttachment<T>;
+  resultWithAttachment<T>(content: T, attachment: Uint8Array, options?: { contentType?: string }): MethodResultWithAttachment<T>;
   progress(percent: number): Promise<void>;
 }
 ```
 
-### Streaming Tool Patterns
+### Streaming Method Patterns
 
 #### Progress Reporting
 
 ```typescript
-tools: {
+methods: {
   analyze: {
     description: "Analyze a large dataset",
     parameters: z.object({ datasetId: z.string() }),
@@ -268,7 +268,7 @@ tools: {
 #### Streaming Partial Results
 
 ```typescript
-tools: {
+methods: {
   search: {
     description: "Search files with streaming results",
     parameters: z.object({ pattern: z.string() }),
@@ -294,7 +294,7 @@ tools: {
 #### Binary Attachments
 
 ```typescript
-tools: {
+methods: {
   screenshot: {
     description: "Take a screenshot",
     parameters: z.object({ selector: z.string().optional() }),
@@ -341,7 +341,7 @@ tools: {
 #### Handling Cancellation
 
 ```typescript
-tools: {
+methods: {
   longRunning: {
     description: "A cancellable long-running task",
     parameters: z.object({ iterations: z.number() }),
@@ -370,19 +370,19 @@ tools: {
 }
 ```
 
-## Tool User API
+## Method User API
 
-### Discovering Tools
+### Discovering Methods
 
 ```typescript
-// Get all tools from all participants
-const allTools = client.discoverToolDefs();
+// Get all methods from all participants
+const allMethods = client.discoverMethodDefs();
 
-// Get tools from a specific participant
-const providerTools = client.discoverToolDefsFrom(providerId);
+// Get methods from a specific participant
+const providerMethods = client.discoverMethodDefsFrom(providerId);
 
-// Each discovered tool includes:
-interface DiscoveredTool {
+// Each discovered method includes:
+interface DiscoveredMethod {
   providerId: string;
   providerName: string;
   name: string;
@@ -394,10 +394,10 @@ interface DiscoveredTool {
 }
 ```
 
-### Calling Tools
+### Calling Methods
 
 ```typescript
-const result = client.callTool(providerId, "search", { pattern: "*.ts" }, {
+const result = client.callMethod(providerId, "search", { pattern: "*.ts" }, {
   signal: abortController.signal,  // optional
   timeoutMs: 60000,                // optional, overrides advertised timeout
   validateArgs: searchArgsSchema,  // optional Zod schema
@@ -453,8 +453,8 @@ const participants = client.roster;
 
 for (const [id, participant] of Object.entries(participants)) {
   console.log(`${participant.metadata.name} (${participant.metadata.type})`);
-  if (participant.metadata.tools) {
-    console.log(`  Tools: ${participant.metadata.tools.map(t => t.name).join(", ")}`);
+  if (participant.metadata.methods) {
+    console.log(`  Methods: ${participant.metadata.methods.map(m => m.name).join(", ")}`);
   }
 }
 
@@ -490,11 +490,11 @@ client.pubsub.publish("custom-type", { data: "raw" });
 import { AgenticError, ValidationError } from "@natstack/agentic-messaging";
 
 try {
-  const result = await client.callTool(providerId, "search", args).result;
+  const result = await client.callMethod(providerId, "search", args).result;
 } catch (error) {
   if (error instanceof AgenticError) {
     switch (error.code) {
-      case "tool-not-found":
+      case "method-not-found":
       case "provider-not-found":
       case "provider-offline":
       case "execution-error":
@@ -664,12 +664,12 @@ for await (const event of client.events()) {
 For agents that support pausing mid-execution:
 
 ```typescript
-import { createPauseToolDefinition, createInterruptHandler } from "@natstack/agentic-messaging";
+import { createPauseMethodDefinition, createInterruptHandler } from "@natstack/agentic-messaging";
 
 const client = await connect({
   // ...
-  tools: {
-    pause: createPauseToolDefinition(async () => {
+  methods: {
+    pause: createPauseMethodDefinition(async () => {
       // Called when pause is requested
     }),
   },
@@ -697,18 +697,18 @@ All messages are validated using Zod schemas. The protocol uses these message ty
 | `message` | New chat message |
 | `update-message` | Update to existing message (streaming) |
 | `error` | Error on a message |
-| `tool-call` | Tool invocation request |
-| `tool-result` | Tool result (can stream) |
-| `tool-cancel` | Cancel a tool call |
+| `method-call` | Method invocation request |
+| `method-result` | Method result (can stream) |
+| `method-cancel` | Cancel a method call |
 | `execution-pause` | Pause/interrupt agent execution |
 
 ## Design Principles
 
 1. **Validated protocol** - All messages validated at send and receive time
-2. **Presence-based discovery** - Tools advertised via roster metadata
-3. **Streaming-first** - Tool results can stream incrementally
+2. **Presence-based discovery** - Methods advertised via roster metadata
+3. **Streaming-first** - Method results can stream incrementally
 4. **Correlation-based** - Parallel execution via call ID correlation
-5. **Persistent by default** - Tool calls and results persisted for replay
+5. **Persistent by default** - Method calls and results persisted for replay
 6. **Binary attachments** - Native binary support without base64 overhead
 
 ## TypeScript Types
@@ -722,19 +722,19 @@ export {
   AgenticErrorCode,
   ValidationError,
   ConnectOptions,
-  ToolDefinition,
-  ToolExecutionContext,
-  ToolCallResult,
-  ToolResultValue,
-  ToolResultChunk,
-  DiscoveredTool,
+  MethodDefinition,
+  MethodExecutionContext,
+  MethodCallHandle,
+  MethodResultValue,
+  MethodResultChunk,
+  DiscoveredMethod,
   IncomingEvent,
   IncomingMessage,
   IncomingNewMessage,
   IncomingUpdateMessage,
   IncomingErrorMessage,
-  IncomingToolCall,
-  IncomingToolResult,
+  IncomingMethodCall,
+  IncomingMethodResult,
   IncomingPresenceEvent,
   EventFilterOptions,
 } from "@natstack/agentic-messaging";
