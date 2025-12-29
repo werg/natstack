@@ -15,6 +15,7 @@ import {
   formatArgsForLog,
   createInterruptHandler,
   createPauseMethodDefinition,
+  createRichTextChatSystemPrompt,
   DEFAULT_MISSED_CONTEXT_MAX_CHARS,
   formatMissedContext,
   type AgenticClient,
@@ -182,6 +183,7 @@ async function handleUserMessage(
     // Get session state for resumption
     const queryOptions: Parameters<typeof query>[0]["options"] = {
       mcpServers: { pubsub: pubsubServer },
+      systemPrompt: createRichTextChatSystemPrompt(),
       ...(allowedTools.length > 0 && { allowedTools }),
       // Disable built-in tools - we only want pubsub tools
       disallowedTools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebSearch", "WebFetch", "Task"],

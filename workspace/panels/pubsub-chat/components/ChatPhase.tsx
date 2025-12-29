@@ -5,6 +5,7 @@ import type { Participant } from "@natstack/agentic-messaging";
 import { MethodHistoryItem } from "./MethodHistoryItem";
 import { FeedbackContainer } from "./FeedbackContainer";
 import { TypingIndicator } from "./TypingIndicator";
+import { MessageContent } from "./MessageContent";
 import type { FeedbackComponentProps } from "../eval/feedbackUiTool";
 import type { ChatMessage, ChatParticipantMetadata } from "../types";
 import "../styles.css";
@@ -213,15 +214,11 @@ export function ChatPhase({
                       }}
                     >
                       <Flex direction="column" gap="2">
-                        <Text
-                          size="2"
-                          style={{
-                            color: isPanel ? "white" : "inherit",
-                            whiteSpace: "pre-wrap",
-                          }}
-                        >
-                          {hasContent ? msg.content : ""}
-                        </Text>
+                        {hasContent && (
+                          <Box style={{ color: isPanel ? "white" : "inherit" }}>
+                            <MessageContent content={msg.content} isStreaming={isStreaming} />
+                          </Box>
+                        )}
                         {hasError && (
                           <Text size="2" style={{ color: "var(--red-11)", whiteSpace: "pre-wrap" }}>
                             {`Error: ${msg.error}`}

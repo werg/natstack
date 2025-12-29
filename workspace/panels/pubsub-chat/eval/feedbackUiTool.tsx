@@ -135,38 +135,42 @@ export const feedbackUiToolDefinition = {
   name: "feedback_ui",
   description: `Render an interactive React component to collect user feedback.
 
-The component receives these props:
-- \`resolveTool(value)\` - Call when user completes interaction successfully
-- \`rejectTool(error)\` - Call to report an error
+## Available Libraries
+- **@radix-ui/themes** - Full styled component library (Button, Card, TextField, Dialog, Table, etc.)
+- **@radix-ui/react-icons** - 300+ icons
+- **All @radix-ui/react-* primitives** - Accordion, Toast, NavigationMenu, Form, etc.
+- **@natstack/runtime** - Access to NatStack runtime helpers (e.g. \`buildChildLink\`)
 
-Guidelines:
-- Keep UI minimal and functional; avoid decorative styling unless required.
-- Use Radix UI components with default styles; do not set custom colors/backgrounds.
-- The component is already wrapped in a themed container.
+Use standard Radix UI APIs. The component is wrapped in a themed container.
 
-The user sees the UI until they trigger resolveTool/rejectTool, or click the X button to dismiss.
+## Links (NatStack)
+- Clicking a \`natstack-child:///panels/...\` or \`natstack-child:///workers/...\` link creates a child panel/worker.
+- Clicking an \`https://...\` link creates a browser child panel (from app panels).
+- Prefer generating child URLs with \`buildChildLink(source, gitRef?)\` when writing code.
 
-Write a complete component with export default that accepts props:
+## Component Contract
+\`\`\`tsx
+interface Props {
+  resolveTool: (value: unknown) => void;  // Call to complete successfully
+  rejectTool: (error: Error) => void;     // Call to report error
+}
+\`\`\`
 
+## Example
 \`\`\`tsx
 import { useState } from "react";
 import { Button, Card, Flex, Text, TextField } from "@radix-ui/themes";
+import { buildChildLink } from "@natstack/runtime";
 
-export default function FeedbackForm({ resolveTool, rejectTool }) {
+export default function FeedbackForm({ resolveTool }) {
   const [name, setName] = useState("");
-
   return (
     <Card>
       <Flex direction="column" gap="3">
         <Text>What's your name?</Text>
-        <TextField.Root
-          value={name}
-          onChange={e => setName(e.target.value)}
-          placeholder="Enter name..."
-        />
-        <Button onClick={() => resolveTool({ name })}>
-          Submit
-        </Button>
+        <TextField.Root value={name} onChange={e => setName(e.target.value)} placeholder="Enter name..." />
+        <Button onClick={() => resolveTool({ name })}>Submit</Button>
+        <a href={buildChildLink("panels/agent-manager")}>Open Agent Manager</a>
       </Flex>
     </Card>
   );

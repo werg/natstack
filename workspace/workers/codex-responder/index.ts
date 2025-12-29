@@ -25,6 +25,7 @@ import {
   createInterruptHandler,
   createPauseMethodDefinition,
   formatMissedContext,
+  createRichTextChatSystemPrompt,
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
@@ -441,7 +442,8 @@ async function handleUserMessage(
     }
 
     // Run with streaming
-    const { events } = await thread.runStreamed(prompt);
+    const promptWithSystem = `${createRichTextChatSystemPrompt()}\n\n${prompt}`;
+    const { events } = await thread.runStreamed(promptWithSystem);
 
     // Track text length per item to compute deltas correctly
     const itemTextLengths = new Map<string, number>();

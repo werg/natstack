@@ -74,3 +74,72 @@
     opacity: 0.4;
   }
 }
+
+/* Markdown code blocks (rehype-highlight / highlight.js) */
+.ns-codeblock {
+  padding: 12px;
+  border-radius: var(--radius-3);
+  overflow-x: auto;
+  background: var(--gray-2);
+  border: 1px solid var(--gray-6);
+  color: var(--gray-12);
+  white-space: pre;
+  font-family: var(--code-font-family, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace);
+  font-size: var(--font-size-2);
+  line-height: var(--line-height-2);
+}
+
+[data-theme="dark"] .ns-codeblock {
+  background: var(--gray-3);
+  border-color: var(--gray-6);
+}
+
+.ns-codeblock code.hljs {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.ns-codeblock .hljs-comment,
+.ns-codeblock .hljs-quote {
+  color: var(--gray-10);
+  font-style: italic;
+}
+
+.ns-codeblock .hljs-keyword,
+.ns-codeblock .hljs-selector-tag,
+.ns-codeblock .hljs-literal,
+.ns-codeblock .hljs-symbol,
+.ns-codeblock .hljs-name {
+  color: var(--purple-11);
+}
+
+.ns-codeblock .hljs-string,
+.ns-codeblock .hljs-title,
+.ns-codeblock .hljs-section,
+.ns-codeblock .hljs-attribute,
+.ns-codeblock .hljs-template-tag,
+.ns-codeblock .hljs-template-variable,
+.ns-codeblock .hljs-type {
+  color: var(--green-11);
+}
+
+.ns-codeblock .hljs-number,
+.ns-codeblock .hljs-bullet,
+.ns-codeblock .hljs-meta,
+.ns-codeblock .hljs-link {
+  color: var(--blue-11);
+}
+
+.ns-codeblock .hljs-built_in,
+.ns-codeblock .hljs-builtin-name {
+  color: var(--orange-11);
+}
+
+.ns-codeblock .hljs-emphasis {
+  font-style: italic;
+}
+
+.ns-codeblock .hljs-strong {
+  font-weight: 600;
+}

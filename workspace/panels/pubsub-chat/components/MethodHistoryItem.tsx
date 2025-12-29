@@ -294,7 +294,7 @@ export function MethodHistoryItem({ entry }: MethodHistoryItemProps) {
             {entry.status}
           </Badge>
           <Text size="2" weight="medium">
-            Method: {entry.methodName}
+            {entry.methodName}
           </Text>
           {!isExpanded && (
             <Text

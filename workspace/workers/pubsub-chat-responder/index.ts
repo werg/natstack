@@ -13,6 +13,7 @@ import {
   createInterruptHandler,
   createPauseMethodDefinition,
   formatMissedContext,
+  createRichTextChatSystemPrompt,
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
@@ -153,7 +154,7 @@ async function handleUserMessage(
     // Stream AI response using fast model
     const stream = ai.streamText({
       model: "fast",
-      system: "You are a helpful, concise assistant. Keep responses brief and friendly.",
+      system: createRichTextChatSystemPrompt(),
       messages,
       maxOutputTokens: 500,
     });
