@@ -18,22 +18,7 @@ interface PubSubConfig {
 }
 
 declare global {
-  // Unified NatStack globals
-   
-  var __natstackId: string | undefined;
-   
-  var __natstackKind: "panel" | "worker" | undefined;
-   
-  var __natstackParentId: string | null | undefined;
-   
-  var __natstackInitialTheme: "light" | "dark" | undefined;
-   
-  var __natstackGitConfig: GitConfig | null | undefined;
-   
-  var __natstackPubSubConfig: PubSubConfig | null | undefined;
-   
-  var __natstackEnv: Record<string, string> | undefined;
-   
+  // Only declare __natstackTransport here - other globals are declared in @natstack/runtime
   var __natstackTransport:
     | {
         send: (targetId: string, message: unknown) => Promise<void>;
@@ -135,14 +120,16 @@ contextBridge.exposeInMainWorld("__natstackEnv", syntheticEnv);
 contextBridge.exposeInMainWorld("__natstackTransport", transport);
 
 // Also set globals in preload context (useful for debugging)
-globalThis.__natstackId = panelId;
-globalThis.__natstackKind = "panel";
-globalThis.__natstackParentId = parentId;
-globalThis.__natstackInitialTheme = initialTheme;
-globalThis.__natstackGitConfig = gitConfig;
-globalThis.__natstackPubSubConfig = pubsubConfig;
-globalThis.__natstackEnv = syntheticEnv;
-globalThis.__natstackTransport = transport;
+// Use type assertion since globals are declared in @natstack/runtime with different GitConfig type
+const g = globalThis as Record<string, unknown>;
+g["__natstackId"] = panelId;
+g["__natstackKind"] = "panel";
+g["__natstackParentId"] = parentId;
+g["__natstackInitialTheme"] = initialTheme;
+g["__natstackGitConfig"] = gitConfig;
+g["__natstackPubSubConfig"] = pubsubConfig;
+g["__natstackEnv"] = syntheticEnv;
+g["__natstackTransport"] = transport;
 
 // DevTools keyboard shortcut (Cmd/Ctrl+Shift+I)
 window.addEventListener("keydown", (event) => {

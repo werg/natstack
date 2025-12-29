@@ -36,8 +36,8 @@ const AGENT_TYPES: AgentTypeAdvertisement[] = [
     name: "AI Responder",
     proposedHandle: "ai",
     description: "Fast AI assistant using NatStack AI SDK. Good for quick, helpful responses.",
-    providesTools: [],
-    requiresTools: [],
+    providesMethods: [],
+    requiresMethods: [],
     parameters: [],
     tags: ["chat", "ai", "fast"],
   },
@@ -47,8 +47,8 @@ const AGENT_TYPES: AgentTypeAdvertisement[] = [
     proposedHandle: "claude",
     description:
       "Claude-based agent with access to tools from other participants. Can use discovered tools to help with complex tasks.",
-    providesTools: [],
-    requiresTools: [],
+    providesMethods: [],
+    requiresMethods: [],
     parameters: [
       {
         key: "workingDirectory",
@@ -67,8 +67,8 @@ const AGENT_TYPES: AgentTypeAdvertisement[] = [
     proposedHandle: "codex",
     description:
       "OpenAI Codex agent with MCP tool support. Specialized for code-related tasks with tool access.",
-    providesTools: [],
-    requiresTools: [],
+    providesMethods: [],
+    requiresMethods: [],
     parameters: [
       {
         key: "workingDirectory",
@@ -371,8 +371,8 @@ export default function AgentManager() {
                     <JsonInspector
                       data={{
                         parameters: agentType.parameters,
-                        providesTools: agentType.providesTools,
-                        requiresTools: agentType.requiresTools,
+                        providesMethods: agentType.providesMethods,
+                        requiresMethods: agentType.requiresMethods,
                       }}
                       label="View metadata"
                     />

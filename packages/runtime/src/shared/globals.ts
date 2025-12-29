@@ -11,19 +11,19 @@ import type { GitConfig, PubSubConfig } from "../core/index.js";
  */
 declare global {
   /** Unique identifier for this panel or worker */
-  const __natstackId: string | undefined;
+  var __natstackId: string | undefined;
   /** Environment kind: "panel" or "worker" */
-  const __natstackKind: "panel" | "worker" | undefined;
+  var __natstackKind: "panel" | "worker" | undefined;
   /** Parent panel ID if this is a child panel/worker */
-  const __natstackParentId: string | null | undefined;
+  var __natstackParentId: string | null | undefined;
   /** Initial theme appearance */
-  const __natstackInitialTheme: "light" | "dark" | undefined;
+  var __natstackInitialTheme: "light" | "dark" | undefined;
   /** Git configuration for bootstrap */
-  const __natstackGitConfig: GitConfig | null | undefined;
+  var __natstackGitConfig: GitConfig | null | undefined;
   /** PubSub configuration for real-time messaging */
-  const __natstackPubSubConfig: PubSubConfig | null | undefined;
+  var __natstackPubSubConfig: PubSubConfig | null | undefined;
   /** Environment variables */
-  const __natstackEnv: Record<string, string> | undefined;
+  var __natstackEnv: Record<string, string> | undefined;
 }
 
 export interface InjectedConfig {

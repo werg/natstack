@@ -14,7 +14,7 @@ describe("execute", () => {
     it("executes simple code", () => {
       const result = execute(`exports.value = 42;`, { require: mockRequire });
 
-      expect(result.exports.value).toBe(42);
+      expect(result.exports["value"]).toBe(42);
     });
 
     it("returns the return value of the code", () => {
@@ -36,7 +36,7 @@ describe("execute", () => {
         require: mockRequire,
       });
 
-      expect(typeof result.exports.default).toBe("function");
+      expect(typeof result.exports["default"]).toBe("function");
     });
   });
 
@@ -47,7 +47,7 @@ describe("execute", () => {
         { require: mockRequire }
       );
 
-      expect(result.exports.val).toBe(42);
+      expect(result.exports["val"]).toBe(42);
     });
 
     it("throws when require is not available", () => {
@@ -75,7 +75,7 @@ describe("execute", () => {
       const logs: string[] = [];
       const mockConsole = {
         log: (...args: unknown[]) => logs.push(args.join(" ")),
-      } as Console;
+      } as unknown as Console;
 
       execute(`console.log("hello", "world");`, {
         require: mockRequire,
@@ -104,7 +104,7 @@ describe("execute", () => {
         bindings: { myValue: 21 },
       });
 
-      expect(result.exports.doubled).toBe(42);
+      expect(result.exports["doubled"]).toBe(42);
     });
 
     it("supports multiple bindings", () => {
@@ -113,7 +113,7 @@ describe("execute", () => {
         bindings: { a: 1, b: 2, c: 3 },
       });
 
-      expect(result.exports.sum).toBe(6);
+      expect(result.exports["sum"]).toBe(6);
     });
 
     it("bindings can be functions", () => {
@@ -122,7 +122,7 @@ describe("execute", () => {
         bindings: { myFn: (x: number) => x * 2 },
       });
 
-      expect(result.exports.result).toBe(10);
+      expect(result.exports["result"]).toBe(10);
     });
   });
 

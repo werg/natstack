@@ -14,8 +14,8 @@ describe("createConsoleCapture", () => {
 
       const entries = capture.getEntries();
       expect(entries).toHaveLength(1);
-      expect(entries[0].level).toBe("log");
-      expect(entries[0].args).toEqual(["hello", "world"]);
+      expect(entries[0]!.level).toBe("log");
+      expect(entries[0]!.args).toEqual(["hello", "world"]);
     });
 
     it("captures warn calls", () => {
@@ -23,7 +23,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.warn("warning!");
 
       const entries = capture.getEntries();
-      expect(entries[0].level).toBe("warn");
+      expect(entries[0]!.level).toBe("warn");
     });
 
     it("captures error calls", () => {
@@ -31,7 +31,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.error("error!");
 
       const entries = capture.getEntries();
-      expect(entries[0].level).toBe("error");
+      expect(entries[0]!.level).toBe("error");
     });
 
     it("captures info calls", () => {
@@ -39,7 +39,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.info("info");
 
       const entries = capture.getEntries();
-      expect(entries[0].level).toBe("info");
+      expect(entries[0]!.level).toBe("info");
     });
 
     it("captures debug calls", () => {
@@ -47,7 +47,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.debug("debug");
 
       const entries = capture.getEntries();
-      expect(entries[0].level).toBe("debug");
+      expect(entries[0]!.level).toBe("debug");
     });
 
     it("handles table as log", () => {
@@ -55,7 +55,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.table([1, 2, 3]);
 
       const entries = capture.getEntries();
-      expect(entries[0].level).toBe("log");
+      expect(entries[0]!.level).toBe("log");
     });
 
     it("handles dir as log", () => {
@@ -63,7 +63,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.dir({ a: 1 });
 
       const entries = capture.getEntries();
-      expect(entries[0].level).toBe("log");
+      expect(entries[0]!.level).toBe("log");
     });
 
     it("handles assert with false condition", () => {
@@ -71,8 +71,8 @@ describe("createConsoleCapture", () => {
       capture.proxy.assert(false, "assertion failed");
 
       const entries = capture.getEntries();
-      expect(entries[0].level).toBe("error");
-      expect(entries[0].args).toContain("Assertion failed:");
+      expect(entries[0]!.level).toBe("error");
+      expect(entries[0]!.args).toContain("Assertion failed:");
     });
 
     it("handles assert with true condition (no-op)", () => {
@@ -115,7 +115,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.log("test");
 
       const entries = capture.getEntries();
-      expect(entries[0].timestamp).toBe(new Date("2024-01-01T12:00:00Z").getTime());
+      expect(entries[0]!.timestamp).toBe(new Date("2024-01-01T12:00:00Z").getTime());
     });
   });
 
@@ -139,9 +139,9 @@ describe("createConsoleCapture", () => {
       capture.proxy.log("third");
 
       const entries = capture.getEntries();
-      expect(entries[0].args).toEqual(["first"]);
-      expect(entries[1].args).toEqual(["second"]);
-      expect(entries[2].args).toEqual(["third"]);
+      expect(entries[0]!.args).toEqual(["first"]);
+      expect(entries[1]!.args).toEqual(["second"]);
+      expect(entries[2]!.args).toEqual(["third"]);
     });
   });
 
@@ -154,7 +154,7 @@ describe("createConsoleCapture", () => {
       capture.proxy.log("test");
 
       expect(callback).toHaveBeenCalledTimes(1);
-      expect(callback.mock.calls[0][0].args).toEqual(["test"]);
+      expect(callback.mock.calls[0]![0].args).toEqual(["test"]);
     });
 
     it("supports multiple subscribers", () => {
@@ -262,7 +262,7 @@ describe("formatConsoleEntry", () => {
 
   it("handles circular references", () => {
     const obj: Record<string, unknown> = { a: 1 };
-    obj.self = obj;
+    obj["self"] = obj;
 
     const entry: ConsoleEntry = {
       level: "log",

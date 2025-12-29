@@ -153,23 +153,6 @@ export default function ChildPanelLauncher() {
     }
   };
 
-  const launchAgenticNotebook = async () => {
-    try {
-      setStatus("Launching agentic notebook...");
-      const child = await createChild({
-        type: "app",
-        name: "agentic-notebook",
-        source: "panels/agentic-notebook",
-        repoArgs: {
-          history: "state/notebook-chats",
-        },
-      });
-      setStatus(`Launched agentic notebook: ${child.name}`);
-    } catch (error) {
-      setStatus(`Failed to launch agentic notebook: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-
   const launchPubSubChatDemo = async () => {
     try {
       setStatus("Launching PubSub chat demo...");
@@ -769,9 +752,6 @@ export default function ChildPanelLauncher() {
             </Button>
             <Button onClick={launchAgenticChat} color="green">
               Launch Agentic Chat
-            </Button>
-            <Button onClick={launchAgenticNotebook} color="blue">
-              Launch Agentic Notebook
             </Button>
             <Button onClick={launchPubSubChatDemo} color="cyan">
               Launch PubSub Chat Demo

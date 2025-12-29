@@ -32,13 +32,9 @@
       "@natstack/rpc": ["packages/rpc/src/index.ts"],
       "@natstack/runtime": ["packages/runtime/src/index.ts"],
       "@natstack/scoped-fs": ["packages/scoped-fs/src/index.ts"],
-      "@natstack/playwright-core": ["packages/playwright-core/src/index.ts"],
-      "@natstack/playwright-client": ["packages/playwright-client/src/index.ts"],
-      "@natstack/playwright-protocol": ["packages/playwright-protocol/src/index.ts"],
-      "@natstack/playwright-injected": ["packages/playwright-injected/src/index.ts"],
-      "@protocol/*": ["packages/playwright-protocol/src/*"]
+      "@natstack/eval": ["packages/eval/src/index.ts"]
     }
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src/**/*", "packages/**/*"],
+  "exclude": ["node_modules", "dist", "**/dist", "packages/playwright-*"]
 }
