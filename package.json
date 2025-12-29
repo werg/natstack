@@ -17,7 +17,9 @@
     "format:check": "prettier --check 'src/**/*.{ts,tsx,css,html,json}'",
     "type-check": "tsc --noEmit",
     "type-check:watch": "tsc --noEmit --watch --preserveWatchOutput",
+    "pretest": "npm rebuild better-sqlite3",
     "test": "vitest run",
+    "posttest": "electron-rebuild -f -w better-sqlite3 -o better-sqlite3",
     "test:watch": "vitest"
   },
   "keywords": [

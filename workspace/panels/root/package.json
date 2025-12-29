@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "natstack": {
+    "type": "app",
     "title": "Root Panel",
     "entry": "index.tsx"
   },

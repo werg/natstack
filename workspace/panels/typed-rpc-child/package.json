@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "natstack": {
+    "type": "app",
     "title": "Typed RPC Child"
   },
   "dependencies": {

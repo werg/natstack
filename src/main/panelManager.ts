@@ -18,6 +18,21 @@ import { getCdpServer } from "./cdpServer.js";
 import { getPubSubServer } from "./pubsubServer.js";
 import { getTokenManager } from "./tokenManager.js";
 import type { ViewManager } from "./viewManager.js";
+import { parseChildUrl } from "./childProtocol.js";
+
+type ChildCreateOptions = {
+  name?: string;
+  env?: Record<string, string>;
+  gitRef?: string;
+  repoArgs?: Record<string, SharedPanel.RepoArgSpec>;
+  memoryLimitMB?: number;
+  unsafe?: boolean | string;
+  sourcemap?: boolean;
+  /** Legacy fields (still supported programmatically) */
+  branch?: string;
+  commit?: string;
+  tag?: string;
+};
 
 export class PanelManager {
   private builder: PanelBuilder;
@@ -123,6 +138,9 @@ export class PanelManager {
 
       // Track browser state changes
       this.setupBrowserStateTracking(panelId, view.webContents);
+
+      // Intercept natstack-child:// and new-window navigations for child creation
+      this.setupChildLinkInterception(panelId, view.webContents, "browser");
     } else {
       // App panels: isolated partition, panel preload with auth token and env
       const authToken = randomBytes(32).toString("hex");
@@ -164,6 +182,9 @@ export class PanelManager {
           getCdpServer().registerBrowser(panelId, view.webContents.id, parentId);
         });
       }
+
+      // Intercept natstack-child:// and http(s) link clicks to create children
+      this.setupChildLinkInterception(panelId, view.webContents, "panel");
     }
   }
 
@@ -225,6 +246,68 @@ export class PanelManager {
 
     contents.on("page-title-updated", (_event, title) => {
       queueStateUpdate({ pageTitle: title });
+    });
+  }
+
+  private handleChildCreationError(parentId: string, error: unknown, url: string): void {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[PanelManager] Failed to create child from ${url}:`, error);
+    this.sendPanelEvent(parentId, { type: "child-creation-error", url, error: message });
+  }
+
+  private setupChildLinkInterception(
+    panelId: string,
+    contents: Electron.WebContents,
+    viewType: "panel" | "browser"
+  ): void {
+    // Intercept new-window requests (middle click / ctrl+click / target="_blank").
+    contents.setWindowOpenHandler((details) => {
+      const url = details.url;
+
+      if (url.startsWith("natstack-child:")) {
+        try {
+          const { source, gitRef } = parseChildUrl(url);
+          this.createChild(panelId, source, gitRef ? { gitRef } : undefined).catch((err) =>
+            this.handleChildCreationError(panelId, err, url)
+          );
+        } catch (err) {
+          this.handleChildCreationError(panelId, err, url);
+        }
+        return { action: "deny" };
+      }
+
+      if (/^https?:/i.test(url)) {
+        this.createBrowserChild(panelId, url).catch((err) =>
+          this.handleChildCreationError(panelId, err, url)
+        );
+        return { action: "deny" };
+      }
+
+      return { action: "deny" };
+    });
+
+    // Intercept in-place navigations to natstack-child:// (and http(s) for app panels).
+    contents.on("will-navigate", (event, url) => {
+      if (url.startsWith("natstack-child:")) {
+        event.preventDefault();
+        try {
+          const { source, gitRef } = parseChildUrl(url);
+          this.createChild(panelId, source, gitRef ? { gitRef } : undefined).catch((err) =>
+            this.handleChildCreationError(panelId, err, url)
+          );
+        } catch (err) {
+          this.handleChildCreationError(panelId, err, url);
+        }
+        return;
+      }
+
+      if (viewType === "panel" && /^https?:/i.test(url)) {
+        event.preventDefault();
+        this.createBrowserChild(panelId, url).catch((err) =>
+          this.handleChildCreationError(panelId, err, url)
+        );
+      }
+      // Browser views: allow normal http(s) navigation in place.
     });
   }
 
@@ -337,15 +420,15 @@ export class PanelManager {
     manifest: PanelManifest;
     relativePath: string;
     parent: Panel | null;
-    spec?: SharedPanel.AppChildSpec | SharedPanel.WorkerChildSpec;
+    options?: ChildCreateOptions;
     isRoot?: boolean;
-  }): string {
-    const { manifest, relativePath, parent, spec, isRoot } = params;
+  }): { id: string; type: SharedPanel.PanelType; title: string } {
+    const { manifest, relativePath, parent, options, isRoot } = params;
 
     const isSingleton = manifest.singletonState === true;
-    const isWorker = manifest.runtime === "worker";
+    const isWorker = manifest.type === "worker";
 
-    if (isSingleton && spec?.name) {
+    if (isSingleton && options?.name) {
       throw new Error(
         `Panel at "${relativePath}" has singletonState and cannot have its ID overridden`
       );
@@ -353,7 +436,7 @@ export class PanelManager {
 
     // Validate repoArgs: caller must provide exactly the args declared in manifest
     const declaredArgs = manifest.repoArgs ?? [];
-    const providedArgs = spec?.repoArgs ? Object.keys(spec.repoArgs) : [];
+    const providedArgs = options?.repoArgs ? Object.keys(options.repoArgs) : [];
 
     if (declaredArgs.length > 0 || providedArgs.length > 0) {
       const missingArgs = declaredArgs.filter((arg) => !providedArgs.includes(arg));
@@ -375,7 +458,7 @@ export class PanelManager {
     const panelId = this.computePanelId({
       relativePath,
       parent,
-      requestedId: spec?.name,
+      requestedId: options?.name,
       singletonState: isSingleton,
       isRoot,
     });
@@ -384,7 +467,11 @@ export class PanelManager {
       if (isSingleton && parent) {
         parent.selectedChildId = panelId;
         this.notifyPanelTreeUpdate();
-        return panelId;
+        const existing = this.panels.get(panelId);
+        if (!existing) {
+          throw new Error(`Singleton panel not found after selection: ${panelId}`);
+        }
+        return { id: panelId, type: existing.type, title: existing.title };
       }
       throw new Error(`A panel with id "${panelId}" is already running`);
     }
@@ -392,12 +479,16 @@ export class PanelManager {
     this.reservedPanelIds.add(panelId);
 
     try {
-      const panelEnv = this.buildPanelEnv(panelId, spec?.env, {
+      const branch = options?.gitRef ?? options?.branch;
+      const commit = options?.commit;
+      const tag = options?.tag;
+
+      const panelEnv = this.buildPanelEnv(panelId, options?.env, {
         sourceRepo: relativePath,
-        branch: spec?.branch,
-        commit: spec?.commit,
-        tag: spec?.tag,
-        resolvedRepoArgs: spec?.repoArgs,
+        branch,
+        commit,
+        tag,
+        resolvedRepoArgs: options?.repoArgs,
       });
 
       // Create the appropriate panel type based on manifest runtime
@@ -415,13 +506,13 @@ export class PanelManager {
             },
             env: panelEnv,
             sourceRepo: relativePath,
-            branch: spec?.branch,
-            commit: spec?.commit,
-            tag: spec?.tag,
-            resolvedRepoArgs: spec?.repoArgs,
+            branch,
+            commit,
+            tag,
+            resolvedRepoArgs: options?.repoArgs,
             workerOptions: {
-              memoryLimitMB: spec?.type === "worker" ? spec.memoryLimitMB : undefined,
-              unsafe: spec?.type === "worker" ? (spec.unsafe ?? manifest.unsafe) : manifest.unsafe,
+              memoryLimitMB: options?.memoryLimitMB,
+              unsafe: options?.unsafe ?? manifest.unsafe,
             },
           }
         : {
@@ -438,10 +529,10 @@ export class PanelManager {
             },
             env: panelEnv,
             sourceRepo: relativePath,
-            branch: spec?.branch,
-            commit: spec?.commit,
-            tag: spec?.tag,
-            resolvedRepoArgs: spec?.repoArgs,
+            branch,
+            commit,
+            tag,
+            resolvedRepoArgs: options?.repoArgs,
           };
 
       if (isRoot) {
@@ -458,34 +549,33 @@ export class PanelManager {
       this.notifyPanelTreeUpdate();
 
       if (panel.type === "worker") {
-        void this.buildWorkerAsync(panel, spec?.type === "worker" ? spec : undefined);
+        void this.buildWorkerAsync(panel, { branch, commit, tag });
       } else if (panel.type === "app") {
-        void this.buildPanelAsync(panel, spec?.type === "app" ? spec : undefined);
+        void this.buildPanelAsync(panel, { branch, commit, tag, sourcemap: options?.sourcemap });
       }
 
-      return panel.id;
+      return { id: panel.id, type: panel.type, title: panel.title };
     } finally {
       this.reservedPanelIds.delete(panelId);
     }
   }
 
   /**
-   * Create a child panel, worker, or browser from a spec.
+   * Create a child app/worker from a manifest source path.
    * Main process handles git checkout and build asynchronously for app/worker types.
-   * Returns child ID immediately; build happens in background.
+   * Returns child info immediately; build happens in background.
    */
-  async createChild(parentId: string, spec: SharedPanel.ChildSpec): Promise<string> {
+  async createChild(
+    parentId: string,
+    source: string,
+    options?: ChildCreateOptions
+  ): Promise<{ id: string; type: SharedPanel.PanelType; title: string }> {
     const parent = this.panels.get(parentId);
     if (!parent) {
       throw new Error(`Parent panel not found: ${parentId}`);
     }
 
-    // Handle browser panels separately (no manifest/build needed)
-    if (spec.type === "browser") {
-      return this.createBrowserChild(parentId, spec);
-    }
-
-    const { relativePath, absolutePath } = this.normalizePanelPath(spec.source);
+    const { relativePath, absolutePath } = this.normalizePanelPath(source);
 
     // Read manifest to check singleton state and get title
     let manifest: PanelManifest;
@@ -493,7 +583,7 @@ export class PanelManager {
       manifest = this.builder.loadManifest(absolutePath);
     } catch (error) {
       throw new Error(
-        `Failed to load manifest for ${spec.source}: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to load manifest for ${source}: ${error instanceof Error ? error.message : String(error)}`
       );
     }
 
@@ -501,7 +591,7 @@ export class PanelManager {
       manifest,
       relativePath,
       parent,
-      spec,
+      options,
     });
   }
 
@@ -509,10 +599,10 @@ export class PanelManager {
    * Create a browser child panel that loads an external URL.
    * Browser panels don't require manifest or build - they load external content directly.
    */
-  private async createBrowserChild(
+  async createBrowserChild(
     parentId: string,
-    spec: SharedPanel.BrowserChildSpec
-  ): Promise<string> {
+    url: string
+  ): Promise<{ id: string; type: SharedPanel.PanelType; title: string }> {
     const parent = this.panels.get(parentId);
     if (!parent) {
       throw new Error(`Parent panel not found: ${parentId}`);
@@ -521,9 +611,9 @@ export class PanelManager {
     // Validate URL protocol
     let parsedUrl: URL;
     try {
-      parsedUrl = new URL(spec.source);
+      parsedUrl = new URL(url);
     } catch {
-      throw new Error(`Invalid URL format: "${spec.source}"`);
+      throw new Error(`Invalid URL format: "${url}"`);
     }
 
     if (!["http:", "https:"].includes(parsedUrl.protocol)) {
@@ -532,8 +622,8 @@ export class PanelManager {
       );
     }
 
-    // Generate a random name if not provided
-    const browserName = spec.name ?? `browser-${this.generatePanelNonce()}`;
+    // Always generate a unique name (callers can label via UI/title instead).
+    const browserName = `browser-${this.generatePanelNonce()}`;
 
     const panelId = this.computePanelId({
       relativePath: `browser/${browserName}`,
@@ -550,16 +640,16 @@ export class PanelManager {
     const panel: SharedPanel.BrowserPanel = {
       type: "browser",
       id: panelId,
-      title: spec.title ?? parsedUrl.hostname,
-      url: spec.source,
+      title: parsedUrl.hostname,
+      url,
       children: [],
       selectedChildId: null,
       artifacts: {
         buildState: "ready",
       },
-      env: spec.env,
+      env: undefined,
       browserState: {
-        pageTitle: spec.title ?? parsedUrl.hostname,
+        pageTitle: parsedUrl.hostname,
         isLoading: true,
         canGoBack: false,
         canGoForward: false,
@@ -572,11 +662,11 @@ export class PanelManager {
     this.panels.set(panel.id, panel);
 
     // Create WebContentsView for the browser
-    this.createViewForPanel(panel.id, spec.source, "browser");
+    this.createViewForPanel(panel.id, url, "browser");
 
     this.notifyPanelTreeUpdate();
 
-    return panel.id;
+    return { id: panel.id, type: panel.type, title: panel.title };
   }
 
   /**
@@ -628,14 +718,14 @@ export class PanelManager {
    */
   private async buildWorkerAsync(
     worker: SharedPanel.WorkerPanel,
-    spec?: SharedPanel.WorkerChildSpec
+    version?: { branch?: string; commit?: string; tag?: string }
   ): Promise<void> {
     const workerManager = getWorkerManager();
 
     try {
       // Create the worker entry in WorkerManager (sets up scoped FS)
       // Use worker.workerOptions which already has manifest.unsafe as fallback
-      // Use worker.env (built by buildPanelEnv) rather than spec?.env to include all injected config
+      // Use worker.env (built by buildPanelEnv) rather than the creation options to include all injected config
       const workerInfo = await workerManager.createWorker(
         this.findParentPanel(worker.id)?.id ?? "",
         worker.path,
@@ -643,9 +733,9 @@ export class PanelManager {
           env: worker.env,
           memoryLimitMB: worker.workerOptions?.memoryLimitMB,
           unsafe: worker.workerOptions?.unsafe,
-          branch: spec?.branch,
-          commit: spec?.commit,
-          tag: spec?.tag,
+          branch: version?.branch,
+          commit: version?.commit,
+          tag: version?.tag,
         },
         worker.id // Pass the tree node ID so WorkerManager uses it
       );
@@ -655,19 +745,19 @@ export class PanelManager {
       }
 
       // Build the worker bundle using PanelBuilder
-      const version =
-        spec?.branch || spec?.commit || spec?.tag
+      const buildVersion =
+        version?.branch || version?.commit || version?.tag
           ? {
-              branch: spec.branch,
-              commit: spec.commit,
-              tag: spec.tag,
+              branch: version.branch,
+              commit: version.commit,
+              tag: version.tag,
             }
           : undefined;
 
       const buildResult = await this.builder.buildWorker(
         this.panelsRoot,
         worker.path,
-        version,
+        buildVersion,
         (progress) => {
           worker.artifacts = {
             ...worker.artifacts,
@@ -724,22 +814,22 @@ export class PanelManager {
    */
   private async buildPanelAsync(
     panel: SharedPanel.AppPanel,
-    spec?: SharedPanel.AppChildSpec
+    options?: { branch?: string; commit?: string; tag?: string; sourcemap?: boolean }
   ): Promise<void> {
     try {
-      const version =
-        spec?.branch || spec?.commit || spec?.tag
+      const buildVersion =
+        options?.branch || options?.commit || options?.tag
           ? {
-              branch: spec.branch,
-              commit: spec.commit,
-              tag: spec.tag,
+              branch: options.branch,
+              commit: options.commit,
+              tag: options.tag,
             }
           : undefined;
 
       const result = await this.builder.buildPanel(
         this.panelsRoot,
         panel.path,
-        version,
+        buildVersion,
         (progress) => {
           // Update panel state with progress
           panel.artifacts = {
@@ -750,7 +840,7 @@ export class PanelManager {
           };
           this.notifyPanelTreeUpdate();
         },
-        { sourcemap: spec?.sourcemap !== false }
+        { sourcemap: options?.sourcemap !== false }
       );
 
       if (result.success && result.bundle && result.html) {
@@ -938,6 +1028,12 @@ export class PanelManager {
       switch (payload.type) {
         case "child-removed":
           workerManager.sendPush(panelId, "runtime", "child-removed", payload.childId);
+          return;
+        case "child-creation-error":
+          workerManager.sendPush(panelId, "runtime", "child-creation-error", {
+            url: payload.url,
+            error: payload.error,
+          });
           return;
         case "focus":
           workerManager.sendPush(panelId, "runtime", "focus", null);

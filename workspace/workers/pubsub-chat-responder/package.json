@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "natstack": {
+    "type": "worker",
     "title": "Agentic Chat AI Responder",
     "runtime": "worker"
   },

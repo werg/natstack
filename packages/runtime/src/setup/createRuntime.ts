@@ -4,7 +4,8 @@ import { createChildManager } from "../shared/children.js";
 import {
   noopParent,
   type PanelContract,
-  type ChildSpec,
+  type CreateChildOptions,
+  type ChildCreationResult,
   type EndpointInfo,
   type GitConfig,
   type PubSubConfig,
@@ -39,8 +40,15 @@ export function createRuntime(deps: RuntimeDeps) {
   const callMain = <T>(method: string, ...args: unknown[]) => rpc.call<T>("main", method, ...args);
 
   const bridge = {
-    async createChild(spec: ChildSpec): Promise<string> {
-      return callMain<string>("bridge.createChild", spec);
+    async createChild(
+      source: string,
+      options?: Omit<CreateChildOptions, "eventSchemas">
+    ): Promise<ChildCreationResult> {
+      return callMain<ChildCreationResult>("bridge.createChild", source, options);
+    },
+
+    async createBrowserChild(url: string): Promise<ChildCreationResult> {
+      return callMain<ChildCreationResult>("bridge.createBrowserChild", url);
     },
 
     async removeChild(childId: string): Promise<void> {
@@ -130,6 +138,17 @@ export function createRuntime(deps: RuntimeDeps) {
     themeListeners.clear();
   };
 
+  const onChildCreationError = (
+    callback: (error: { url: string; error: string }) => void
+  ): (() => void) => {
+    return rpc.onEvent("runtime:child-creation-error", (fromId, payload) => {
+      if (fromId !== "main") return;
+      const data = payload as { url?: unknown; error?: unknown } | null;
+      if (!data || typeof data.url !== "string" || typeof data.error !== "string") return;
+      callback({ url: data.url, error: data.error });
+    });
+  };
+
   return {
     id: deps.id,
     parentId: deps.parentId,
@@ -143,11 +162,13 @@ export function createRuntime(deps: RuntimeDeps) {
     getParentWithContract,
 
     createChild: childManager.createChild,
+    createBrowserChild: childManager.createBrowserChild,
     createChildWithContract: childManager.createChildWithContract,
     children: childManager.children,
     getChild: childManager.getChild,
     onChildAdded: childManager.onChildAdded,
     onChildRemoved: childManager.onChildRemoved,
+    onChildCreationError,
 
     removeChild: bridge.removeChild,
 

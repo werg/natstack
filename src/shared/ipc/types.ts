@@ -1,6 +1,8 @@
 // Shared types for typed IPC communication
 
 import type {
+  CreateChildOptions,
+  ChildCreationResult,
   ChildSpec,
   AppChildSpec,
   WorkerChildSpec,
@@ -10,7 +12,15 @@ import type { RepoArgSpec } from "@natstack/git";
 import type { RpcMessage, RpcResponse } from "@natstack/rpc";
 
 // Re-export types for consumers of this module
-export type { ChildSpec, AppChildSpec, WorkerChildSpec, BrowserChildSpec, RepoArgSpec };
+export type {
+  CreateChildOptions,
+  ChildCreationResult,
+  ChildSpec,
+  AppChildSpec,
+  WorkerChildSpec,
+  BrowserChildSpec,
+  RepoArgSpec,
+};
 
 export type ThemeMode = "light" | "dark" | "system";
 export type ThemeAppearance = "light" | "dark";

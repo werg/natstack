@@ -8,6 +8,7 @@ This guide covers developing mini-apps (panels) for NatStack with the simplified
 - [Panel Basics](#panel-basics)
 - [TypeScript Configuration](#typescript-configuration)
 - [Panel Types](#panel-types)
+- [Child Links & Protocols](#child-links--protocols)
 - [React Hooks API](#react-hooks-api)
 - [Typed RPC Communication](#typed-rpc-communication)
 - [Event System](#event-system)
@@ -65,9 +66,9 @@ Every panel requires a `package.json` with a `natstack` field:
   "private": true,
   "type": "module",
   "natstack": {
+    "type": "app",
     "title": "My Panel",
     "entry": "index.tsx",
-    "runtime": "panel",
     "injectHostThemeVariables": true,
     "singletonState": false,
     "repoArgs": ["history", "components"],
@@ -84,9 +85,10 @@ Every panel requires a `package.json` with a `natstack` field:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `type` | `"app"` \| `"worker"` | **Required** | What kind of child this manifest creates (used by `createChild` and `natstack-child://` links) |
 | `title` | string | **Required** | Display name shown in panel UI |
 | `entry` | string | `index.tsx` | Entry point file |
-| `runtime` | `"panel"` \| `"worker"` | `"panel"` | Build as UI panel or background worker |
+| `runtime` | `"panel"` \| `"worker"` | `"panel"` | **Deprecated** legacy field (use `type` instead) |
 | `injectHostThemeVariables` | boolean | `true` | Inherit NatStack theme CSS variables |
 | `singletonState` | boolean | `false` | Share storage across all instances |
 | `repoArgs` | string[] | `[]` | Named repo argument slots that callers must provide via `createChild` |
@@ -133,63 +135,87 @@ The goal is “userland opt-in for ergonomics” without letting projects redire
 
 NatStack supports three types of panels:
 
-### App Panels (`type: "app"`)
+### App Panels (`natstack.type: "app"`)
 
 Standard UI panels built from source code.
 
 ```typescript
 import { createChild } from "@natstack/runtime";
 
-const editor = await createChild({
-  type: 'app',
-  name: 'editor',
-  source: 'panels/editor',
-  env: { FILE_PATH: '/foo.txt' },
+// Panel type is determined by the target panel's manifest (natstack.type).
+const editor = await createChild("panels/editor", {
+  name: "editor",
+  env: { FILE_PATH: "/foo.txt" },
 });
 ```
 
-### Worker Panels (`type: "worker"`)
+### Worker Panels (`natstack.type: "worker"`)
 
 Background processes running in isolated-vm. Useful for CPU-intensive tasks.
 
 ```typescript
 import { createChild } from "@natstack/runtime";
 
-const computeWorker = await createChild({
-  type: 'worker',
-  name: 'compute-worker',
-  source: 'workers/compute',
+// Still uses createChild(); manifest chooses worker vs app.
+const computeWorker = await createChild("workers/compute", {
+  name: "compute-worker",
   memoryLimitMB: 512,
-  env: { MODE: 'production' },
+  env: { MODE: "production" },
 });
 ```
 
-Worker manifest uses `runtime: "worker"`:
+Worker manifest uses `type: "worker"` (and may also include legacy `runtime: "worker"`):
 
 ```json
 {
   "name": "@natstack-workers/compute",
   "natstack": {
     "title": "Compute Worker",
+    "type": "worker",
     "runtime": "worker"
   }
 }
 ```
 
-### Browser Panels (`type: "browser"`)
+### Browser Panels
 
 External URLs with Playwright automation support.
 
 ```typescript
-import { createChild } from "@natstack/runtime";
+import { createBrowserChild } from "@natstack/runtime";
 
-const browser = await createChild({
-  type: 'browser',
-  name: 'web-scraper',
-  source: 'https://example.com',
-  title: 'Scraper',
-});
+const browser = await createBrowserChild("https://example.com");
 ```
+
+---
+
+## Child Links & Protocols
+
+NatStack supports both programmatic child creation and link-based child creation.
+
+### Programmatic
+
+- Use `createChild("panels/…", options?)` to create an app/worker child (type comes from the target manifest).
+- Use `createBrowserChild("https://…")` to create a browser child.
+
+### Link-based (`natstack-child:///…`)
+
+You can create children by navigating/clicking `natstack-child:///…` URLs:
+
+```
+natstack-child:///panels/editor
+natstack-child:///panels/editor#HEAD
+natstack-child:///panels/editor#master
+```
+
+- The path is the workspace-relative source (e.g. `panels/editor` or `workers/compute`).
+- The optional `#fragment` is treated as a git ref (`gitRef`) for provisioning.
+- Use `buildChildLink(source, gitRef?)` from `@natstack/runtime` to generate these URLs safely.
+
+### Internal protocol (`natstack-panel://`)
+
+`natstack-panel://` is an internal, main-process-served scheme used to load built panel HTML/JS.
+It is not intended as a user-facing API and requires a per-panel access token embedded in the URL.
 
 ---
 
@@ -273,35 +299,27 @@ Manage child panels with automatic cleanup:
 import { useChildPanels } from "@natstack/react";
 
 function MyPanel() {
-  const { children, createChild, removeChild } = useChildPanels();
+  const { children, createChild, createBrowserChild, removeChild } = useChildPanels();
 
   const handleAddAppPanel = async () => {
-    const childId = await createChild({
-      type: 'app',
-      name: 'example',
-      path: 'panels/example',
-      env: { MESSAGE: "Hello from parent!" }
+    const child = await createChild("panels/example", {
+      name: "example",
+      env: { MESSAGE: "Hello from parent!" },
     });
-    console.log("Created child:", childId);
+    console.log("Created child:", child.id);
   };
 
   const handleAddWorker = async () => {
-    const workerId = await createChild({
-      type: 'worker',
-      name: 'compute',
-      path: 'workers/compute',
+    const worker = await createChild("workers/compute", {
+      name: "compute",
       memoryLimitMB: 512,
     });
-    console.log("Created worker:", workerId);
+    console.log("Created worker:", worker.id);
   };
 
   const handleAddBrowser = async () => {
-    const browserId = await createChild({
-      type: 'browser',
-      name: 'scraper',
-      url: 'https://example.com',
-    });
-    console.log("Created browser:", browserId);
+    const browser = await createBrowserChild("https://example.com");
+    console.log("Created browser:", browser.id);
   };
 
   return (
@@ -310,10 +328,10 @@ function MyPanel() {
       <button onClick={handleAddWorker}>Add Worker</button>
       <button onClick={handleAddBrowser}>Add Browser</button>
       <ul>
-        {children.map(childId => (
-          <li key={childId}>
-            {childId}
-            <button onClick={() => removeChild(childId)}>Remove</button>
+        {children.map((child) => (
+          <li key={child.id}>
+            {child.name} ({child.type})
+            <button onClick={() => removeChild(child)}>Remove</button>
           </li>
         ))}
       </ul>
@@ -613,14 +631,10 @@ Control browser panels programmatically with Playwright:
 
 ```typescript
 import { chromium } from 'playwright-core';
-import { createChild } from "@natstack/runtime";
+import { createBrowserChild } from "@natstack/runtime";
 
 // Create browser panel
-const browserPanel = await createChild({
-  type: 'browser',
-  name: 'automation-target',
-  source: 'https://example.com',
-});
+const browserPanel = await createBrowserChild("https://example.com");
 
 // Get CDP endpoint for Playwright
 const cdpUrl = await browserPanel.getCdpEndpoint();
@@ -724,45 +738,25 @@ See the example panels:
 
 ## API Reference
 
-### Child Spec Types
+### Child Creation API
 
 ```typescript
-// App panel spec
-interface AppChildSpec {
-  type: "app";
-  name?: string;                     // Optional name (stable ID within parent if provided)
-  source: string;                    // Workspace-relative path to source
-  env?: Record<string, string>;      // Environment variables
-  sourcemap?: boolean;               // Emit inline sourcemaps (default: true)
-  branch?: string;                   // Git branch to track
-  commit?: string;                   // Specific commit hash
-  tag?: string;                      // Git tag to pin to
-  repoArgs?: Record<string, RepoArgSpec>; // Must match child's manifest repoArgs
-}
+// App/worker child (type comes from the target manifest's natstack.type)
+await createChild("panels/editor", {
+  name?: string;
+  env?: Record<string, string>;
+  gitRef?: string; // encoded in natstack-child URLs via #fragment
+  repoArgs?: Record<string, RepoArgSpec>;
+  sourcemap?: boolean; // app only
+  memoryLimitMB?: number; // worker only
+  unsafe?: boolean | string; // worker only
+});
 
-// Worker spec
-interface WorkerChildSpec {
-  type: "worker";
-  name?: string;                     // Optional name (stable ID within parent if provided)
-  source: string;                    // Workspace-relative path to source
-  env?: Record<string, string>;      // Environment variables
-  memoryLimitMB?: number;            // Memory limit (default: 1024)
-  branch?: string;                   // Git branch to track
-  commit?: string;                   // Specific commit hash
-  tag?: string;                      // Git tag to pin to
-  repoArgs?: Record<string, RepoArgSpec>; // Must match child's manifest repoArgs
-}
+// Browser child
+await createBrowserChild("https://example.com");
 
-// Browser panel spec
-interface BrowserChildSpec {
-  type: "browser";
-  name?: string;                     // Optional name
-  source: string;                    // Initial URL to load
-  title?: string;                    // Optional title (defaults to URL hostname in UI)
-  env?: Record<string, string>;      // Environment variables
-}
-
-type ChildSpec = AppChildSpec | WorkerChildSpec | BrowserChildSpec;
+// Link helper for <a href="...">
+buildChildLink("panels/editor", "HEAD"); // -> natstack-child:///panels/editor#HEAD
 ```
 
 ### Runtime API (`@natstack/runtime`)
@@ -785,7 +779,10 @@ runtime.getParent<T, E, EmitE>(): ParentHandle<T, E, EmitE> | null
 runtime.getParentWithContract(contract): ParentHandleFromContract | null
 
 // Child management
-runtime.createChild(spec: ChildSpec): Promise<ChildHandle>
+runtime.createChild(source: string, options?): Promise<ChildHandle>
+runtime.createBrowserChild(url: string): Promise<ChildHandle>
+runtime.buildChildLink(source: string, gitRef?): string
+runtime.onChildCreationError(cb: ({ url: string; error: string }) => void): () => void
 runtime.createChildWithContract(contract, options?): Promise<ChildHandleFromContract>
 runtime.children: ReadonlyMap<string, ChildHandle>
 runtime.getChild(name: string): ChildHandle | undefined
@@ -818,9 +815,9 @@ usePanelId(): string
 usePanelPartition(): string | null
 usePanelRpcGlobalEvent<T>(event: string, handler: (from: string, payload: T) => void): void
 usePanelParent<T, E>(): ParentHandle<T, E> | null
-useChildPanels(): { children: ChildHandle[]; createChild(spec: ChildSpec): Promise<ChildHandle>; removeChild(handle: ChildHandle): Promise<void> }
+useChildPanels(): { children: ChildHandle[]; createChild(source: string, options?): Promise<ChildHandle>; createBrowserChild(url: string): Promise<ChildHandle>; removeChild(handle: ChildHandle): Promise<void> }
 usePanelFocus(): boolean
 usePanelChild<T, E>(name: string): ChildHandle<T, E> | undefined
 usePanelChildren(): ReadonlyMap<string, ChildHandle>
-usePanelCreateChild<T, E>(spec: ChildSpec | null): ChildHandle<T, E> | null
+usePanelCreateChild<T, E>(spec: null | { kind: "browser"; url: string } | { kind?: "appOrWorker"; source: string; options?: CreateChildOptions }): ChildHandle<T, E> | null
 ```

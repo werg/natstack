@@ -8,6 +8,8 @@ export type {
 } from "./types.js";
 
 export type {
+  CreateChildOptions,
+  ChildCreationResult,
   ChildSpec,
   AppChildSpec,
   WorkerChildSpec,
@@ -50,11 +52,20 @@ export declare function createChild<
   T extends import("./core/index.js").Rpc.ExposedMethods = import("./core/index.js").Rpc.ExposedMethods,
   E extends import("./core/index.js").Rpc.RpcEventMap = import("./core/index.js").Rpc.RpcEventMap,
   EmitE extends import("./core/index.js").Rpc.RpcEventMap = import("./core/index.js").Rpc.RpcEventMap
->(spec: import("./core/index.js").ChildSpec): Promise<import("./core/index.js").ChildHandle<T, E, EmitE>>;
+>(
+  source: string,
+  options?: import("./core/index.js").CreateChildOptions
+): Promise<import("./core/index.js").ChildHandle<T, E, EmitE>>;
+
+export declare function createBrowserChild<
+  T extends import("./core/index.js").Rpc.ExposedMethods = import("./core/index.js").Rpc.ExposedMethods,
+  E extends import("./core/index.js").Rpc.RpcEventMap = import("./core/index.js").Rpc.RpcEventMap,
+  EmitE extends import("./core/index.js").Rpc.RpcEventMap = import("./core/index.js").Rpc.RpcEventMap
+>(url: string): Promise<import("./core/index.js").ChildHandle<T, E, EmitE>>;
 
 export declare function createChildWithContract<C extends import("./core/index.js").PanelContract>(
   contract: C,
-  options?: { name?: string; env?: Record<string, string>; type?: "app" | "worker" }
+  options?: { name?: string; env?: Record<string, string> }
 ): Promise<import("./core/index.js").ChildHandleFromContract<C>>;
 
 export declare const children: ReadonlyMap<string, import("./core/index.js").ChildHandle>;
@@ -78,6 +89,10 @@ export declare function onThemeChange(
 ): () => void;
 
 export declare function onFocus(callback: () => void): () => void;
+
+export declare function onChildCreationError(
+  callback: (error: { url: string; error: string }) => void
+): () => void;
 
 export declare const expose: <T extends import("./core/index.js").Rpc.ExposedMethods>(methods: T) => void;
 
@@ -113,3 +128,5 @@ export declare const noopParent: typeof import("./core/defineContract.js").noopP
 
 export declare const encodeBase64: typeof import("./shared/base64.js").encodeBase64;
 export declare const decodeBase64: typeof import("./shared/base64.js").decodeBase64;
+
+export declare const buildChildLink: typeof import("./core/childLinks.js").buildChildLink;

@@ -4,7 +4,7 @@
  */
 
 import type { PanelManager } from "../panelManager.js";
-import type { ChildSpec } from "../../shared/ipc/types.js";
+import type { CreateChildOptions } from "../../shared/ipc/types.js";
 
 /**
  * Handle bridge service calls from panels.
@@ -23,8 +23,12 @@ export async function handleBridgeCall(
 ): Promise<unknown> {
   switch (method) {
     case "createChild": {
-      const [spec] = args as [ChildSpec];
-      return pm.createChild(callerId, spec);
+      const [source, options] = args as [string, CreateChildOptions | undefined];
+      return pm.createChild(callerId, source, options);
+    }
+    case "createBrowserChild": {
+      const [url] = args as [string];
+      return pm.createBrowserChild(callerId, url);
     }
     case "removeChild": {
       const [childId] = args as [string];

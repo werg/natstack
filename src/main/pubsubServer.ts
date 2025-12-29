@@ -257,6 +257,12 @@ export class InMemoryMessageStore implements MessageStore {
   getAll(): MessageRow[] {
     return [...this.messages];
   }
+
+  /** For testing: clear all messages between tests */
+  clear(): void {
+    this.messages = [];
+    this.nextId = 1;
+  }
 }
 
 /**

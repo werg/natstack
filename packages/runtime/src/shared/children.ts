@@ -1,8 +1,8 @@
 import type {
-  BrowserChildSpec,
   ChildHandle,
   ChildHandleFromContract,
-  ChildSpec,
+  CreateChildOptions,
+  ChildCreationResult,
   EventSchemaMap,
   InferEventMap,
   PanelContract,
@@ -16,7 +16,11 @@ export type ChildManager = ReturnType<typeof createChildManager>;
 export function createChildManager(options: {
   rpc: RpcBridge;
   bridge: {
-    createChild(spec: ChildSpec): Promise<string>;
+    createChild(
+      source: string,
+      options?: Omit<CreateChildOptions, "eventSchemas">
+    ): Promise<ChildCreationResult>;
+    createBrowserChild(url: string): Promise<ChildCreationResult>;
     removeChild(childId: string): Promise<void>;
     browser: {
       getCdpEndpoint(browserId: string): Promise<string>;
@@ -84,24 +88,59 @@ export function createChildManager(options: {
     E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
     EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
   >(
-    spec: ChildSpec
+    source: string,
+    options?: CreateChildOptions
   ): Promise<ChildHandle<T, E, EmitE>> => {
-    const { eventSchemas, ...bridgeSpec } = spec as ChildSpec & { eventSchemas?: EventSchemaMap };
-    const childId = await bridge.createChild(bridgeSpec as ChildSpec);
+    const { eventSchemas, ...bridgeOptions } = options ?? {};
+    const result = await bridge.createChild(source, bridgeOptions);
 
-    const type = spec.type;
-    const name = spec.name ?? childId.split("/").pop() ?? childId;
-    const title = spec.type === "browser" ? (spec as BrowserChildSpec).title ?? name : name;
+    const name = options?.name ?? result.id.split("/").pop() ?? result.id;
+    const title = result.title ?? name;
 
     const handle = createChildHandle<T, E, EmitE>({
       rpc,
       bridge,
-      id: childId,
-      type,
+      id: result.id,
+      type: result.type,
       name,
       title,
-      source: spec.source,
+      source,
       eventSchemas: eventSchemas as EventSchemaMap | undefined,
+      onCleanupRegister: registerCleanup,
+    });
+
+    childHandles.set(name, handle as ChildHandle);
+    for (const listener of childAddedListeners) {
+      try {
+        listener(name, handle as ChildHandle);
+      } catch (error) {
+        console.error("[ChildHandle] Error in child-added listener:", error);
+      }
+    }
+    return handle;
+  };
+
+  const createBrowserChild = async <
+    T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+    E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
+    EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
+  >(
+    url: string
+  ): Promise<ChildHandle<T, E, EmitE>> => {
+    const result = await bridge.createBrowserChild(url);
+
+    const name = result.id.split("/").pop() ?? result.id;
+    const title = result.title ?? name;
+
+    const handle = createChildHandle<T, E, EmitE>({
+      rpc,
+      bridge,
+      id: result.id,
+      type: result.type,
+      name,
+      title,
+      source: url,
+      eventSchemas: undefined,
       onCleanupRegister: registerCleanup,
     });
 
@@ -118,16 +157,8 @@ export function createChildManager(options: {
 
   const createChildWithContract = async <C extends PanelContract>(
     contract: C,
-    options?: { name?: string; env?: Record<string, string>; type?: "app" | "worker" }
+    options?: { name?: string; env?: Record<string, string> }
   ): Promise<ChildHandleFromContract<C>> => {
-    const spec: ChildSpec = {
-      type: options?.type ?? "app",
-      source: contract.source,
-      name: options?.name,
-      env: options?.env,
-      eventSchemas: contract.child?.emits,
-    } as ChildSpec;
-
     type ChildMethods = C extends PanelContract<infer M, infer _CE, infer _PM, infer _PE> ? M : Rpc.ExposedMethods;
     type ChildEmits = C extends PanelContract<infer _CM, infer CE, infer _PM, infer _PE>
       ? InferEventMap<CE>
@@ -136,12 +167,17 @@ export function createChildManager(options: {
       ? InferEventMap<PE>
       : Rpc.RpcEventMap;
 
-    const handle = await createChild<ChildMethods, ChildEmits, ParentEmits>(spec);
+    const handle = await createChild<ChildMethods, ChildEmits, ParentEmits>(contract.source, {
+      name: options?.name,
+      env: options?.env,
+      eventSchemas: contract.child?.emits,
+    });
     return createChildHandleFromContract(handle as ChildHandle, contract) as ChildHandleFromContract<C>;
   };
 
   return {
     createChild,
+    createBrowserChild,
     createChildWithContract,
 
     get children(): ReadonlyMap<string, ChildHandle> {

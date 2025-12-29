@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "natstack": {
+    "type": "app",
     "title": "Agent Manager",
     "entry": "index.tsx",
     "runtime": "panel"

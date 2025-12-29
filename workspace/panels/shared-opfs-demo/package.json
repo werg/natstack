@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "natstack": {
+    "type": "app",
     "title": "Shared OPFS Panel",
     "entry": "index.tsx",
     "singletonState": true

@@ -1,5 +1,6 @@
 import { protocol, session } from "electron";
 import type { ProtocolBuildArtifacts } from "../shared/ipc/types.js";
+import { randomBytes } from "crypto";
 
 /**
  * Protocol-served panel content storage
@@ -14,6 +15,15 @@ const protocolPanels = new Map<
     css?: string;
   }
 >();
+
+/**
+ * Per-panel access tokens for natstack-panel:// resources.
+ * These prevent other webContents from fetching a panel's HTML/JS by guessing its panelId.
+ *
+ * Note: tokens are intentionally embedded into natstack-panel URLs as a query param,
+ * so the panel can fetch its own resources. Tokens are high-entropy and per-panel.
+ */
+const protocolPanelTokens = new Map<string, string>();
 
 /**
  * Track which partitions have had the protocol handler registered
@@ -41,6 +51,13 @@ export function registerPanelProtocol(): void {
         stream: true,
       },
     },
+    {
+      scheme: "natstack-child",
+      privileges: {
+        standard: true,
+        secure: true,
+      },
+    },
   ]);
 }
 
@@ -58,6 +75,15 @@ export function handleProtocolRequest(request: Request): Response {
   const panelId = decodeURIComponent(pathParts[0] || "");
   const pathname = "/" + pathParts.slice(1).join("/") || "/";
 
+  const expectedToken = protocolPanelTokens.get(panelId);
+  const providedToken = url.searchParams.get("token") ?? "";
+  if (!expectedToken || providedToken !== expectedToken) {
+    return new Response("Unauthorized", {
+      status: 403,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
+
   const panelContent = protocolPanels.get(panelId);
   if (!panelContent) {
     console.error(`[PanelProtocol] Panel not found: ${panelId}`);
@@ -69,7 +95,7 @@ export function handleProtocolRequest(request: Request): Response {
 
   // Route based on pathname
   if (pathname === "/" || pathname === "/index.html") {
-    const htmlWithBundle = injectBundleIntoHtml(panelContent.html, panelId);
+    const htmlWithBundle = injectBundleIntoHtml(panelContent.html, panelId, expectedToken);
     return new Response(htmlWithBundle, {
       status: 200,
       headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -154,10 +180,11 @@ export async function registerProtocolForPartition(partition: string): Promise<v
  * Inject bundle script into HTML
  * Replaces placeholder or appends before </body>
  */
-function injectBundleIntoHtml(html: string, panelId: string): string {
+function injectBundleIntoHtml(html: string, panelId: string, token: string): string {
   const encodedPanelId = encodeURIComponent(panelId);
-  const bundleUrl = `natstack-panel://panel/${encodedPanelId}/bundle.js`;
-  const cssUrl = `natstack-panel://panel/${encodedPanelId}/bundle.css`;
+  const encodedToken = encodeURIComponent(token);
+  const bundleUrl = `natstack-panel://panel/${encodedPanelId}/bundle.js?token=${encodedToken}`;
+  const cssUrl = `natstack-panel://panel/${encodedPanelId}/bundle.css?token=${encodedToken}`;
   const bundleScript = `<script type="module" src="${bundleUrl}"></script>`;
 
   let result = html;
@@ -191,19 +218,31 @@ export function storeProtocolPanel(panelId: string, artifacts: ProtocolBuildArti
     css: artifacts.css,
   });
 
+  // Ensure a stable per-panel token exists.
+  if (!protocolPanelTokens.has(panelId)) {
+    protocolPanelTokens.set(panelId, randomBytes(32).toString("hex"));
+  }
+
   console.log(`[PanelProtocol] Stored panel: ${panelId}`);
 
   // Return the URL for this panel
   // Use the new format with encoded panelId to handle '/' in panel IDs
   const encodedPanelId = encodeURIComponent(panelId);
-  return `natstack-panel://panel/${encodedPanelId}/index.html`;
+  const token = protocolPanelTokens.get(panelId)!;
+  const encodedToken = encodeURIComponent(token);
+  return `natstack-panel://panel/${encodedPanelId}/index.html?token=${encodedToken}`;
 }
 
+/**
+ * Set (or rotate) the access token for a protocol-served panel.
+ * The token must be included as `?token=...` in all natstack-panel:// requests.
+ */
 /**
  * Remove panel content from protocol serving
  */
 export function removeProtocolPanel(panelId: string): void {
   protocolPanels.delete(panelId);
+  protocolPanelTokens.delete(panelId);
 }
 
 /**
@@ -218,5 +257,10 @@ export function isProtocolPanel(panelId: string): boolean {
  */
 export function getProtocolPanelUrl(panelId: string): string {
   const encodedPanelId = encodeURIComponent(panelId);
-  return `natstack-panel://panel/${encodedPanelId}/index.html`;
+  const token = protocolPanelTokens.get(panelId);
+  if (!token) {
+    throw new Error(`Protocol panel token not found for ${panelId}`);
+  }
+  const encodedToken = encodeURIComponent(token);
+  return `natstack-panel://panel/${encodedPanelId}/index.html?token=${encodedToken}`;
 }

@@ -6,7 +6,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import * as runtime from "@natstack/runtime";
 import { Rpc } from "@natstack/runtime";
-import type { ChildSpec, ChildHandle, ParentHandle, ThemeAppearance, BootstrapResult } from "@natstack/runtime";
+import type { CreateChildOptions, ChildHandle, ParentHandle, ThemeAppearance, BootstrapResult } from "@natstack/runtime";
 
 /**
  * Get the panel API object.
@@ -201,8 +201,17 @@ export function useChildPanels() {
   const createChild = useCallback(async <
     T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
     E extends Rpc.RpcEventMap = Rpc.RpcEventMap
-  >(spec: ChildSpec): Promise<ChildHandle<T, E>> => {
-    const handle = await runtime.createChild<T, E>(spec);
+  >(source: string, options?: CreateChildOptions): Promise<ChildHandle<T, E>> => {
+    const handle = await runtime.createChild<T, E>(source, options);
+    setChildren((prev) => [...prev, handle as ChildHandle]);
+    return handle;
+  }, []);
+
+  const createBrowserChild = useCallback(async <
+    T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+    E extends Rpc.RpcEventMap = Rpc.RpcEventMap
+  >(url: string): Promise<ChildHandle<T, E>> => {
+    const handle = await runtime.createBrowserChild<T, E>(url);
     setChildren((prev) => [...prev, handle as ChildHandle]);
     return handle;
   }, []);
@@ -223,6 +232,7 @@ export function useChildPanels() {
   return {
     children,
     createChild,
+    createBrowserChild,
     removeChild,
   };
 }
@@ -428,7 +438,12 @@ export function usePanelChildren(): ReadonlyMap<string, ChildHandle> {
 export function usePanelCreateChild<
   T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
   E extends Rpc.RpcEventMap = Rpc.RpcEventMap
-  >(spec: ChildSpec | null): ChildHandle<T, E> | null {
+  >(
+  spec:
+    | null
+    | { kind: "browser"; url: string }
+    | { kind?: "appOrWorker"; source: string; options?: CreateChildOptions }
+): ChildHandle<T, E> | null {
   const [handle, setHandle] = useState<ChildHandle<T, E> | null>(null);
 
   useEffect(() => {
@@ -440,7 +455,12 @@ export function usePanelCreateChild<
     let mounted = true;
     let createdHandle: ChildHandle<T, E> | null = null;
 
-    runtime.createChild<T, E>(spec).then((h) => {
+    const createPromise =
+      spec.kind === "browser"
+        ? runtime.createBrowserChild<T, E>(spec.url)
+        : runtime.createChild<T, E>(spec.source, spec.options);
+
+    createPromise.then((h) => {
       if (mounted) {
         createdHandle = h;
         setHandle(h);

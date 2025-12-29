@@ -1013,6 +1013,19 @@ export class PanelBuilder {
       throw new Error("natstack.title must be specified in package.json");
     }
 
+    // natstack.type is required (canonical). For compatibility, infer from legacy runtime if present.
+    if (!manifest.type) {
+      if (manifest.runtime === "worker") {
+        manifest.type = "worker";
+      } else if (manifest.runtime === "panel" || typeof manifest.runtime === "undefined") {
+        manifest.type = "app";
+      }
+    }
+
+    if (manifest.runtime && manifest.runtime === "worker" && manifest.type !== "worker") {
+      throw new Error(`natstack.type must be "worker" when natstack.runtime is "worker"`);
+    }
+
     // Merge package.json dependencies with natstack.dependencies
     if (packageJson.dependencies) {
       manifest.dependencies = {

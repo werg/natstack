@@ -1,7 +1,16 @@
 import { useState, useCallback, useEffect } from "react";
 import { promises as fsPromises } from "fs";
 import { Button, Card, Flex, Text, Heading, Callout, Separator, Badge, TextField } from "@radix-ui/themes";
-import { createChild, createChildWithContract, setTitle, type ChildHandle, type ChildHandleFromContract } from "@natstack/runtime";
+import {
+  buildChildLink,
+  createChild,
+  createBrowserChild,
+  createChildWithContract,
+  onChildCreationError,
+  setTitle,
+  type ChildHandle,
+  type ChildHandleFromContract,
+} from "@natstack/runtime";
 import {
   usePanelTheme,
   usePanelId,
@@ -45,6 +54,9 @@ export default function ChildPanelLauncher() {
   const [browserUrlInput, setBrowserUrlInput] = useState("https://example.com");
   const [screenshotDataUrl, setScreenshotDataUrl] = useState<string | null>(null);
 
+  const [childLinkGitRef, setChildLinkGitRef] = useState<string>("");
+  const [childLinkErrors, setChildLinkErrors] = useState<string[]>([]);
+
   const addRpcLog = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
     setRpcLog((prev) => [`[${timestamp}] ${message}`, ...prev.slice(0, 9)]);
@@ -58,6 +70,13 @@ export default function ChildPanelLauncher() {
   const addBrowserLog = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
     setBrowserLog((prev) => [`[${timestamp}] ${message}`, ...prev.slice(0, 19)]);
+  }, []);
+
+  useEffect(() => {
+    return onChildCreationError(({ url, error }) => {
+      const timestamp = new Date().toLocaleTimeString();
+      setChildLinkErrors((prev) => [`[${timestamp}] ${url}: ${error}`, ...prev].slice(0, 5));
+    });
   }, []);
 
   // Subscribe to events from the RPC child using handle.onEvent
@@ -110,10 +129,8 @@ export default function ChildPanelLauncher() {
   const launchChildPanel = async () => {
     try {
       setStatus("Launching child panel...");
-      const child = await createChild({
-        type: "app",
+      const child = await createChild("panels/root", {
         name: "another-root",
-        source: "panels/root",
         env: {
           PARENT_ID: panelId,
           LAUNCH_TIME: new Date().toISOString(),
@@ -129,10 +146,7 @@ export default function ChildPanelLauncher() {
   const launchSharedOPFSDemo = async () => {
     try {
       setStatus("Launching shared OPFS demo panel...");
-      const child = await createChild({
-        type: "app",
-        source: "panels/shared-opfs-demo",
-      });
+      const child = await createChild("panels/shared-opfs-demo");
       setStatus(`Launched shared OPFS demo: ${child.name}`);
     } catch (error) {
       setStatus(`Failed to launch: ${error instanceof Error ? error.message : String(error)}`);
@@ -142,11 +156,7 @@ export default function ChildPanelLauncher() {
   const launchAgenticChat = async () => {
     try {
       setStatus("Launching agentic chat example...");
-      const child = await createChild({
-        type: "app",
-        name: "agentic-chat",
-        source: "panels/agentic-chat",
-      });
+      const child = await createChild("panels/agentic-chat", { name: "agentic-chat" });
       setStatus(`Launched agentic chat: ${child.name}`);
     } catch (error) {
       setStatus(`Failed to launch agentic chat: ${error instanceof Error ? error.message : String(error)}`);
@@ -156,11 +166,7 @@ export default function ChildPanelLauncher() {
   const launchPubSubChatDemo = async () => {
     try {
       setStatus("Launching PubSub chat demo...");
-      const child = await createChild({
-        type: "app",
-        name: "pubsub-chat-demo",
-        source: "panels/pubsub-chat",
-      });
+      const child = await createChild("panels/pubsub-chat", { name: "pubsub-chat-demo" });
       setStatus(`Launched PubSub chat: ${child.name}`);
     } catch (error) {
       setStatus(`Failed to launch: ${error instanceof Error ? error.message : String(error)}`);
@@ -170,11 +176,7 @@ export default function ChildPanelLauncher() {
   const launchAgentManager = async () => {
     try {
       setStatus("Launching Agent Manager...");
-      const child = await createChild({
-        type: "app",
-        name: "agent-manager",
-        source: "panels/agent-manager",
-      });
+      const child = await createChild("panels/agent-manager", { name: "agent-manager" });
       setStatus(`Launched Agent Manager: ${child.name}`);
     } catch (error) {
       setStatus(`Failed to launch Agent Manager: ${error instanceof Error ? error.message : String(error)}`);
@@ -392,7 +394,6 @@ export default function ChildPanelLauncher() {
       const w = await createChildWithContract(rpcExampleWorkerContract, {
         name: "rpc-example-worker",
         env: { PARENT_ID: panelId },
-        type: "worker",
       });
       setWorker(w);
       addWorkerLog(`Worker launched: ${w.name} (${w.id})`);
@@ -532,12 +533,7 @@ export default function ChildPanelLauncher() {
   const launchBrowser = async () => {
     try {
       addBrowserLog("Launching browser panel...");
-      const b = await createChild({
-        type: "browser",
-        name: "demo-browser",
-        source: browserUrlInput,
-        title: "Demo Browser",
-      });
+      const b = await createBrowserChild(browserUrlInput);
       setBrowser(b);
       addBrowserLog(`Browser launched: ${b.name} (${b.id})`);
     } catch (error) {
@@ -766,6 +762,74 @@ export default function ChildPanelLauncher() {
           {status && (
             <Callout.Root color="blue">
               <Callout.Text>{status}</Callout.Text>
+            </Callout.Root>
+          )}
+
+          {/* Link Interception Demo */}
+          <Heading size="5">Link Interception Demo</Heading>
+          <Text size="2" color="gray">
+            Click these links to verify link-based child creation. In app panels, any <code>http(s)</code> link
+            creates a browser child, and any <code>natstack-child:///…</code> link creates an app/worker child
+            (type comes from the target manifest).
+          </Text>
+          <Card variant="surface">
+            <Flex direction="column" gap="2">
+              <Text size="2">
+                <a href={buildChildLink("panels/typed-rpc-child")}>
+                  Open Typed RPC Child (natstack-child)
+                </a>
+              </Text>
+              <Text size="2">
+                <a href={buildChildLink("workers/rpc-example")}>
+                  Start RPC Example Worker (natstack-child)
+                </a>
+              </Text>
+              <Text size="2">
+                <a href={buildChildLink("panels/root", "HEAD")}>
+                  Open Root Panel @ gitRef "HEAD" (always valid)
+                </a>
+              </Text>
+              <Flex gap="2" align="end" wrap="wrap">
+                <Flex direction="column" gap="1" style={{ minWidth: "220px" }}>
+                  <Text size="1" weight="bold">Optional gitRef:</Text>
+                  <TextField.Root
+                    placeholder="e.g. master, main, v1.2.3, abc123"
+                    value={childLinkGitRef}
+                    onChange={(e) => setChildLinkGitRef(e.target.value)}
+                    size="1"
+                  />
+                </Flex>
+                <Button asChild variant="soft" size="1">
+                  <a
+                    href={buildChildLink("panels/root", childLinkGitRef.trim() || undefined)}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open Root Panel (gitRef)
+                  </a>
+                </Button>
+              </Flex>
+              <Text size="2">
+                <a href="https://example.com">
+                  Open https://example.com (should create browser child)
+                </a>
+              </Text>
+              <Text size="2">
+                <a href={buildChildLink("panels/does-not-exist")} target="_blank" rel="noreferrer">
+                  Open invalid child source (should trigger onChildCreationError)
+                </a>
+              </Text>
+            </Flex>
+          </Card>
+          {childLinkErrors.length > 0 && (
+            <Callout.Root color="red">
+              <Callout.Text>
+                {childLinkErrors.map((line) => (
+                  <div key={line} style={{ fontFamily: "monospace" }}>
+                    {line}
+                  </div>
+                ))}
+              </Callout.Text>
             </Callout.Root>
           )}
 

@@ -238,12 +238,7 @@ export default function AgentManager() {
 
               console.log(`[Agent Manager] Spawning with env:`, env);
 
-              const handle = await createChild({
-                type: "worker",
-                name: workerName,
-                source: workerSource,
-                env,
-              });
+              const handle = await createChild(workerSource, { name: workerName, env });
 
               // Track the active agent
               const activeAgent: ActiveAgent = {

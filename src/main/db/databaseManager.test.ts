@@ -11,11 +11,12 @@ import * as path from "path";
 import * as os from "os";
 
 // Mock the paths module before importing DatabaseManager
+// These values are updated in beforeEach to point to the real temp directory
 const mockWorkspace = {
   config: { id: "test-workspace" },
-  path: "/mock/workspace",
-  cachePath: "/mock/cache",
-  gitReposPath: "/mock/git",
+  path: "",  // Will be set to testDir in beforeEach
+  cachePath: "",
+  gitReposPath: "",
 };
 
 let testDir: string;
@@ -34,6 +35,10 @@ describe("DatabaseManager", () => {
   beforeEach(() => {
     // Create a unique temp directory for each test
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-db-test-"));
+    // Update mock to use the real temp directory
+    mockWorkspace.path = testDir;
+    mockWorkspace.cachePath = path.join(testDir, ".cache");
+    mockWorkspace.gitReposPath = path.join(testDir, ".git-repos");
     dbManager = new DatabaseManager();
   });
 
@@ -50,7 +55,8 @@ describe("DatabaseManager", () => {
       expect(handle).toBeDefined();
       expect(typeof handle).toBe("string");
 
-      const dbPath = path.join(testDir, "databases", "test-workspace", "mydb.db");
+      // Implementation stores at: <workspace.path>/.databases/<name>.db
+      const dbPath = path.join(testDir, ".databases", "mydb.db");
       expect(fs.existsSync(dbPath)).toBe(true);
     });
 
@@ -150,7 +156,8 @@ describe("DatabaseManager", () => {
       const handle2 = dbManager.open("test", "../../etc/passwd");
       expect(handle2).toBeDefined();
 
-      const dbDir = path.join(testDir, "databases", "test-workspace");
+      // Implementation stores at: <workspace.path>/.databases/
+      const dbDir = path.join(testDir, ".databases");
       const files = fs.readdirSync(dbDir);
 
       // The database file should have the sanitized name

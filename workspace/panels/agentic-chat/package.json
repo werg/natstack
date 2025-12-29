@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "natstack": {
+    "type": "app",
     "title": "Agentic Chat (AI SDK)",
     "entry": "index.tsx"
   },

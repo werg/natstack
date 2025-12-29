@@ -178,7 +178,33 @@ export async function resolveTargetCommit(
  * Resolve a ref (branch, tag, or commit) to a full commit SHA.
  */
 async function resolveRef(repoPath: string, ref: string): Promise<string> {
-  return runGit(["rev-parse", ref], repoPath);
+  try {
+    return await runGit(["rev-parse", ref], repoPath);
+  } catch (error) {
+    const candidates: string[] = [];
+    if (ref === "main") candidates.push("master");
+    if (ref === "master") candidates.push("main");
+
+    // If the user passed a plain branch name that doesn't exist locally, try origin/<branch>.
+    if (!ref.includes("/") && !ref.startsWith("refs/")) {
+      candidates.push(`origin/${ref}`);
+    }
+
+    for (const candidate of candidates) {
+      try {
+        return await runGit(["rev-parse", candidate], repoPath);
+      } catch {
+        // continue
+      }
+    }
+
+    const msg = error instanceof Error ? error.message : String(error);
+    const hint =
+      ref === "main" || ref === "master"
+        ? `Hint: this repo may use "${ref === "main" ? "master" : "main"}" instead of "${ref}".`
+        : `Hint: if you meant the default branch, omit the gitRef fragment (no "#...").`;
+    throw new Error(`${msg}\n${hint}`);
+  }
 }
 
 /**

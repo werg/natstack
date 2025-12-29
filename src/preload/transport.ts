@@ -98,11 +98,28 @@ export function createPanelTransportBridge(panelId: string): TransportBridge {
   });
 
   ipcRenderer.on("panel:event", (_event, payload: unknown) => {
-    const msg = payload as { panelId?: string; type?: string; childId?: string; theme?: ThemeAppearance };
+    const msg = payload as {
+      panelId?: string;
+      type?: string;
+      childId?: string;
+      theme?: ThemeAppearance;
+      url?: string;
+      error?: string;
+    };
     if (msg.panelId !== panelId) return;
 
     if (msg.type === "child-removed") {
       deliver("main", { type: "event", fromId: "main", event: "runtime:child-removed", payload: msg.childId });
+      return;
+    }
+
+    if (msg.type === "child-creation-error") {
+      deliver("main", {
+        type: "event",
+        fromId: "main",
+        event: "runtime:child-creation-error",
+        payload: { url: msg.url, error: msg.error },
+      });
       return;
     }
 

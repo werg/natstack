@@ -55,6 +55,42 @@ export type InferEventMap<T extends EventSchemaMap> = {
 // =============================================================================
 
 /**
+ * Options for creating an app/worker child.
+ * The type ("app" vs "worker") is determined by the target manifest in main.
+ */
+export interface CreateChildOptions {
+  /** Optional name for this child (becomes part of the panel ID). If omitted, a random ID is generated. */
+  name?: string;
+  /** Environment variables to pass to the child */
+  env?: Record<string, string>;
+  /** Git ref to provision (branch, tag, or commit SHA). Encoded in natstack-child URLs via #fragment. */
+  gitRef?: string;
+  /** Repo arguments required by the target manifest */
+  repoArgs?: Record<string, RepoArgSpec>;
+  /** Worker-only: memory limit in MB */
+  memoryLimitMB?: number;
+  /** Worker-only: unsafe mode configuration */
+  unsafe?: boolean | string;
+  /** App-only: emit inline sourcemaps (default: true). Set to false to omit sourcemaps. */
+  sourcemap?: boolean;
+  /** Optional zod schemas for validating event payloads from this child (runtime-only; not sent to main). */
+  eventSchemas?: EventSchemaMap;
+
+  /** Legacy git fields (still supported programmatically). Prefer `gitRef`. */
+  branch?: string;
+  /** @deprecated Prefer `gitRef`. */
+  commit?: string;
+  /** @deprecated Prefer `gitRef`. */
+  tag?: string;
+}
+
+export interface ChildCreationResult {
+  id: string;
+  type: "app" | "worker" | "browser";
+  title: string;
+}
+
+/**
  * Base fields shared by all child spec types.
  * Extended by AppChildSpec, WorkerChildSpec, and BrowserChildSpec.
  */

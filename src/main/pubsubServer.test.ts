@@ -57,6 +57,8 @@ describe("PubSub Server", () => {
     openClients.length = 0;
     // Give time for cleanup
     await new Promise((r) => setTimeout(r, 50));
+    // Clear message store between tests to prevent cross-test pollution
+    messageStore.clear();
   });
 
   interface ClientConnection {
@@ -313,30 +315,51 @@ describe("PubSub Server", () => {
     const msg3 = (await waitForMessage(client1)) as { id: number };
 
     client1.ws.close();
+    // Wait for leave presence to be persisted
+    await new Promise((r) => setTimeout(r, 100));
 
     // Second client connects with sinceId = msg1.id (should get msg2 and msg3)
     const client2 = await createClient("valid-token", replayChannel, msg1.id);
 
-    const replayPresence = (await waitForMessage(client2)) as {
+    // Roster ops replay: join + leave presence for client1
+    const replayJoin = (await waitForMessage(client2)) as {
       kind: string;
       type?: string;
       payload?: { action?: string };
     };
+    const replayLeave = (await waitForMessage(client2)) as {
+      kind: string;
+      type?: string;
+      payload?: { action?: string };
+    };
+    // Message replays (sinceId filters to msg2 and msg3)
+    // Note: leave presence may be replayed again by replayMessages if its id > sinceId
     const replay1 = (await waitForMessage(client2)) as {
       kind: string;
       id: number;
-      payload: { text: string };
+      type?: string;
+      payload: { text?: string };
     };
     const replay2 = (await waitForMessage(client2)) as {
       kind: string;
       id: number;
-      payload: { text: string };
+      type?: string;
+      payload: { text?: string };
+    };
+    // Leave presence may be replayed again (id > sinceId)
+    const replay3 = (await waitForMessage(client2)) as {
+      kind: string;
+      type?: string;
     };
     const ready = (await waitForMessage(client2)) as { kind: string };
     const joinPresence = (await waitForMessage(client2)) as { kind: string; type?: string };
 
-    expect(replayPresence.kind).toBe("replay");
-    expect(replayPresence.type).toBe("presence");
+    expect(replayJoin.kind).toBe("replay");
+    expect(replayJoin.type).toBe("presence");
+    expect(replayJoin.payload?.action).toBe("join");
+    expect(replayLeave.kind).toBe("replay");
+    expect(replayLeave.type).toBe("presence");
+    expect(replayLeave.payload?.action).toBe("leave");
     expect(replay1.kind).toBe("replay");
     expect(replay1.id).toBe(msg2.id);
     expect(replay1.payload.text).toBe("message 2");
@@ -344,6 +367,10 @@ describe("PubSub Server", () => {
     expect(replay2.kind).toBe("replay");
     expect(replay2.id).toBe(msg3.id);
     expect(replay2.payload.text).toBe("message 3");
+
+    // Leave presence replayed again (its id > sinceId)
+    expect(replay3.kind).toBe("replay");
+    expect(replay3.type).toBe("presence");
 
     expect(ready.kind).toBe("ready");
     expect(joinPresence.kind).toBe("persisted");
@@ -365,9 +392,9 @@ describe("PubSub Server", () => {
 
     await waitForMessage(client); // persisted response
 
-    // Check the message was stored
+    // Check the message was stored (filter by type to skip presence messages)
     const stored = messageStore.getAll();
-    const ourMessage = stored.find((m) => m.channel === storeChannel);
+    const ourMessage = stored.find((m) => m.channel === storeChannel && m.type === "test");
     expect(ourMessage).toBeDefined();
     expect(ourMessage!.type).toBe("test");
     expect(JSON.parse(ourMessage!.payload)).toEqual({ value: 123 });

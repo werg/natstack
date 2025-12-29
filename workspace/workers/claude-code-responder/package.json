@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "natstack": {
+    "type": "worker",
     "title": "Claude Code Responder",
     "runtime": "worker",
     "unsafe": "/"

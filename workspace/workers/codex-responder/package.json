@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "natstack": {
+    "type": "worker",
     "title": "Codex Responder",
     "runtime": "worker",
     "unsafe": "/"
