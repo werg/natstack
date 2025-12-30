@@ -27,6 +27,7 @@ import {
   compileFeedbackComponent,
   cleanupFeedbackComponent,
   type FeedbackUiToolArgs,
+  type FeedbackResult,
 } from "./eval/feedbackUiTool";
 import { useDiscovery } from "./hooks/useDiscovery";
 import { useChannelConnection } from "./hooks/useChannelConnection";
@@ -293,31 +294,40 @@ export default function AgenticChatDemo() {
 
       const cacheKey = result.cacheKey!;
 
-      return new Promise((resolve, reject) => {
+      return new Promise<FeedbackResult>((resolve) => {
         const feedback: ActiveFeedback = {
           callId,
           Component: result.Component!,
           createdAt: Date.now(),
           cacheKey,
-          resolve: (value) => {
+          complete: (feedbackResult: FeedbackResult) => {
             removeFeedback(callId);
             cleanupFeedbackComponent(cacheKey);
-            updateMethodHistoryEntry(callId, {
-              status: "success",
-              result: value,
-              completedAt: Date.now(),
-            });
-            resolve(value);
-          },
-          reject: (error) => {
-            removeFeedback(callId);
-            cleanupFeedbackComponent(cacheKey);
-            updateMethodHistoryEntry(callId, {
-              status: "error",
-              error: error.message,
-              completedAt: Date.now(),
-            });
-            reject(error);
+
+            // Update method history based on result type
+            if (feedbackResult.type === "submit") {
+              updateMethodHistoryEntry(callId, {
+                status: "success",
+                result: feedbackResult.value,
+                completedAt: Date.now(),
+              });
+            } else if (feedbackResult.type === "cancel") {
+              updateMethodHistoryEntry(callId, {
+                status: "success",
+                result: null,
+                completedAt: Date.now(),
+              });
+            } else {
+              // error case
+              updateMethodHistoryEntry(callId, {
+                status: "error",
+                error: feedbackResult.message,
+                completedAt: Date.now(),
+              });
+            }
+
+            // Always resolve - caller handles the discriminated union
+            resolve(feedbackResult);
           },
         };
 
@@ -468,7 +478,7 @@ Guidelines:
 - Keep UI minimal and functional; avoid decorative styling unless required.
 - Use Radix UI components with default styles; do not set custom colors/backgrounds.
 - The component is already wrapped in a themed container.
-- Call resolveTool(value) on success or rejectTool(error) on failure.
+- Call onSubmit(value) on success, onCancel() to cancel, or onError(message) on failure.
 
 Write a complete component with export default that accepts props.`,
         parameters: z.object({
@@ -646,6 +656,17 @@ Write a complete component with export default that accepts props.`,
     [clientRef]
   );
 
+  const handleCallMethod = useCallback(
+    (providerId: string, methodName: string, args: unknown) => {
+      if (!clientRef.current) return;
+      // Fire and forget - results will appear in method history if tracked
+      void clientRef.current.callMethod(providerId, methodName, args).catch((error: unknown) => {
+        console.error(`Failed to call method ${methodName} on ${providerId}:`, error);
+      });
+    },
+    [clientRef]
+  );
+
   // Setup phase - show agent discovery and selection
   if (phase === "setup") {
     return (
@@ -688,6 +709,7 @@ Write a complete component with export default that accepts props.`,
       onFeedbackDismiss={handleFeedbackDismiss}
       onFeedbackError={handleFeedbackError}
       onInterrupt={handleInterruptAgent}
+      onCallMethod={handleCallMethod}
     />
   );
 }

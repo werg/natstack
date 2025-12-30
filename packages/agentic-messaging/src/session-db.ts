@@ -8,6 +8,7 @@ export interface SessionRow {
   checkpointPubsubId: number | undefined;
   sdkSessionId: string | undefined;
   status: "active" | "interrupted";
+  settings: Record<string, unknown> | undefined;
 }
 
 interface SessionRowDb {
@@ -15,6 +16,7 @@ interface SessionRowDb {
   checkpoint_pubsub_id: number | null;
   sdk_session_id: string | null;
   status: string;
+  settings: string | null;
 }
 
 interface HistoryRow {
@@ -49,18 +51,27 @@ export class SessionDb {
     if (!this.db) throw new Error("SessionDb not initialized");
 
     const existing = await this.db.get<SessionRowDb>(
-      `SELECT session_key, checkpoint_pubsub_id, sdk_session_id, status
+      `SELECT session_key, checkpoint_pubsub_id, sdk_session_id, status, settings
        FROM agentic_sessions
        WHERE session_key = ?`,
       [this.sessionKey]
     );
 
     if (existing) {
+      let parsedSettings: Record<string, unknown> | undefined;
+      if (existing.settings) {
+        try {
+          parsedSettings = JSON.parse(existing.settings);
+        } catch {
+          // Ignore parse errors, use undefined
+        }
+      }
       this.sessionRow = {
         sessionKey: existing.session_key,
         checkpointPubsubId: existing.checkpoint_pubsub_id ?? undefined,
         sdkSessionId: existing.sdk_session_id ?? undefined,
         status: existing.status === "interrupted" ? "interrupted" : "active",
+        settings: parsedSettings,
       };
       return this.sessionRow;
     }
@@ -78,6 +89,7 @@ export class SessionDb {
       checkpointPubsubId: undefined,
       sdkSessionId: undefined,
       status: "active",
+      settings: undefined,
     };
 
     return this.sessionRow;
@@ -127,6 +139,39 @@ export class SessionDb {
 
     if (this.sessionRow) {
       this.sessionRow.sdkSessionId = undefined;
+    }
+  }
+
+  async updateSettings(settings: Record<string, unknown>): Promise<void> {
+    if (!this.db) throw new Error("SessionDb not initialized");
+    const now = Date.now();
+    const settingsJson = JSON.stringify(settings);
+    await this.db.run(
+      `UPDATE agentic_sessions
+       SET settings = ?, updated_at = ?
+       WHERE session_key = ?`,
+      [settingsJson, now, this.sessionKey]
+    );
+
+    if (this.sessionRow) {
+      this.sessionRow.settings = settings;
+    }
+  }
+
+  async getSettings<T = Record<string, unknown>>(): Promise<T | null> {
+    if (!this.db) throw new Error("SessionDb not initialized");
+
+    const row = await this.db.get<{ settings: string | null }>(
+      `SELECT settings FROM agentic_sessions WHERE session_key = ?`,
+      [this.sessionKey]
+    );
+
+    if (!row?.settings) return null;
+
+    try {
+      return JSON.parse(row.settings) as T;
+    } catch {
+      return null;
     }
   }
 
@@ -206,6 +251,7 @@ export class SessionDb {
         checkpoint_pubsub_id INTEGER,
         sdk_session_id TEXT,
         status TEXT NOT NULL,
+        settings TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );

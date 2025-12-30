@@ -63,6 +63,24 @@ export interface PanelManifest {
    * These modules are bundled even if not directly imported by the panel.
    */
   exposeModules?: string[];
+  /**
+   * Module specifiers that must resolve to a single instance across the bundle.
+   * Use this for packages that use React context or other singleton patterns.
+   *
+   * By default, React, React DOM, and @radix-ui packages are deduplicated.
+   * Add other packages here if you encounter context/singleton issues.
+   *
+   * Example:
+   * ```json
+   * "dedupeModules": ["@chakra-ui/react", "jotai", "@tanstack/react-query"]
+   * ```
+   *
+   * Patterns supported:
+   * - Exact match: "lodash"
+   * - Package with subpaths: "lodash" matches "lodash" and "lodash/debounce"
+   * - Scoped packages: "@scope/package" matches "@scope/package" and "@scope/package/sub"
+   */
+  dedupeModules?: string[];
   injectHostThemeVariables?: boolean; // Defaults to true
   template?: "html" | "react"; // Optional: choose template helpers
   singletonState?: boolean; // If true, panel uses a singleton partition/id derived from its path

@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect, useCallback, type ComponentType } from "react";
 import { Badge, Box, Button, Callout, Card, Flex, ScrollArea, Text, TextField, Theme } from "@radix-ui/themes";
-import { DotFilledIcon } from "@radix-ui/react-icons";
 import type { Participant } from "@natstack/agentic-messaging";
 import { MethodHistoryItem } from "./MethodHistoryItem";
 import { FeedbackContainer } from "./FeedbackContainer";
 import { TypingIndicator } from "./TypingIndicator";
 import { MessageContent } from "./MessageContent";
-import type { FeedbackComponentProps } from "../eval/feedbackUiTool";
+import { ParticipantBadgeMenu } from "./ParticipantBadgeMenu";
+import type { FeedbackComponentProps, FeedbackResult } from "../eval/feedbackUiTool";
 import type { ChatMessage, ChatParticipantMetadata } from "../types";
 import "../styles.css";
 
@@ -16,8 +16,8 @@ export type { ChatMessage };
 export interface ActiveFeedback {
   callId: string;
   Component: ComponentType<FeedbackComponentProps>;
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
+  /** Complete the feedback with a result (submit, cancel, or error) */
+  complete: (result: FeedbackResult) => void;
   createdAt: number;
   /** Cache key for cleanup after feedback completion */
   cacheKey: string;
@@ -39,6 +39,7 @@ interface ChatPhaseProps {
   onFeedbackDismiss: (callId: string) => void;
   onFeedbackError: (callId: string, error: Error) => void;
   onInterrupt?: (agentId: string, messageId: string) => void;
+  onCallMethod?: (providerId: string, methodName: string, args: unknown) => void;
 }
 
 export function ChatPhase({
@@ -57,6 +58,7 @@ export function ChatPhase({
   onFeedbackDismiss,
   onFeedbackError,
   onInterrupt,
+  onCallMethod,
 }: ChatPhaseProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -99,29 +101,14 @@ export function ChatPhase({
     }
   };
 
-  // Get color for participant type
-  const getParticipantColor = (type: string) => {
-    switch (type) {
-      case "panel":
-        return "blue";
-      case "ai-responder":
-        return "purple";
-      case "claude-code":
-        return "orange";
-      case "codex":
-        return "teal";
-      default:
-        return "gray";
-    }
-  };
-
   const getSenderInfo = (senderId: string) => {
     const participant = participants[senderId];
     return participant?.metadata ?? { name: "Unknown", type: "panel" as const, handle: "unknown" };
   };
 
   return (
-    <Flex direction="column" style={{ height: "100vh", padding: 16 }} gap="3">
+    <Theme appearance={theme}>
+      <Flex direction="column" style={{ height: "100vh", padding: 16 }} gap="3">
       {/* Header */}
       <Flex justify="between" align="center">
         <Flex gap="2" align="center">
@@ -138,26 +125,12 @@ export function ChatPhase({
             const hasActive = agentMessages.some((m) => !m.complete && !m.error);
 
             return (
-              <Badge
+              <ParticipantBadgeMenu
                 key={p.id}
-                color={getParticipantColor(p.metadata.type)}
-                style={{ position: "relative", paddingRight: hasActive ? 24 : undefined }}
-              >
-                @{p.metadata.handle}
-                {hasActive && (
-                  <span
-                    style={{
-                      marginLeft: 4,
-                      display: "inline-flex",
-                      alignItems: "center",
-                      animation: "pulse 1.5s ease-in-out infinite",
-                    }}
-                    title="Agent working"
-                  >
-                    <DotFilledIcon style={{ fontSize: 12, color: "currentColor" }} />
-                  </span>
-                )}
-              </Badge>
+                participant={p}
+                hasActiveMessage={hasActive}
+                onCallMethod={onCallMethod ?? (() => {})}
+              />
             );
           })}
           <Button variant="soft" size="1" onClick={onAddAgent}>
@@ -243,28 +216,30 @@ export function ChatPhase({
       </Card>
 
       {activeFeedbacks.size > 0 && (
-        <Theme appearance={theme}>
-          <Flex direction="column" gap="2">
-            {Array.from(activeFeedbacks.values()).map((feedback) => {
-              // Guard against invalid/missing components
-              const FeedbackComponent = feedback.Component;
-              if (!FeedbackComponent || typeof FeedbackComponent !== "function") {
-                // Report the error and skip rendering
-                onFeedbackError(feedback.callId, new Error("Invalid feedback component"));
-                return null;
-              }
-              return (
-                <FeedbackContainer
-                  key={feedback.callId}
-                  onDismiss={() => onFeedbackDismiss(feedback.callId)}
-                  onError={(error) => onFeedbackError(feedback.callId, error)}
-                >
-                  <FeedbackComponent resolveTool={feedback.resolve} rejectTool={feedback.reject} />
-                </FeedbackContainer>
-              );
-            })}
-          </Flex>
-        </Theme>
+        <Flex direction="column" gap="2">
+          {Array.from(activeFeedbacks.values()).map((feedback) => {
+            // Guard against invalid/missing components
+            const FeedbackComponent = feedback.Component;
+            if (!FeedbackComponent || typeof FeedbackComponent !== "function") {
+              // Report the error and skip rendering
+              onFeedbackError(feedback.callId, new Error("Invalid feedback component"));
+              return null;
+            }
+            return (
+              <FeedbackContainer
+                key={feedback.callId}
+                onDismiss={() => onFeedbackDismiss(feedback.callId)}
+                onError={(error) => onFeedbackError(feedback.callId, error)}
+              >
+                <FeedbackComponent
+                  onSubmit={(value) => feedback.complete({ type: "submit", value })}
+                  onCancel={() => feedback.complete({ type: "cancel" })}
+                  onError={(message) => feedback.complete({ type: "error", message })}
+                />
+              </FeedbackContainer>
+            );
+          })}
+        </Flex>
       )}
 
       {/* Error display */}
@@ -290,6 +265,7 @@ export function ChatPhase({
           Send
         </Button>
       </Flex>
-    </Flex>
+      </Flex>
+    </Theme>
   );
 }

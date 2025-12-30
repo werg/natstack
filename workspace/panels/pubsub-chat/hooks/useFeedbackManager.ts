@@ -33,7 +33,8 @@ function feedbackReducer(
     case "dismiss": {
       const feedback = state.get(action.payload);
       if (feedback) {
-        feedback.reject(new Error("User dismissed feedback UI"));
+        // User dismissed = cancel (not an error)
+        feedback.complete({ type: "cancel" });
       }
       const next = new Map(state);
       next.delete(action.payload);
@@ -42,7 +43,8 @@ function feedbackReducer(
     case "error": {
       const feedback = state.get(action.payload.callId);
       if (feedback) {
-        feedback.reject(new Error(`Component render error: ${action.payload.error.message}`));
+        // Component render error
+        feedback.complete({ type: "error", message: `Component render error: ${action.payload.error.message}` });
       }
       const next = new Map(state);
       next.delete(action.payload.callId);
@@ -51,7 +53,7 @@ function feedbackReducer(
     case "cleanup-all": {
       // Cleanup all remaining feedbacks on unmount
       for (const feedback of state.values()) {
-        feedback.reject(new Error("Panel closed"));
+        feedback.complete({ type: "error", message: "Panel closed" });
       }
       return new Map();
     }

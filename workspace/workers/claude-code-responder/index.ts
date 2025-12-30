@@ -22,11 +22,105 @@ import {
   type ChatParticipantMetadata,
   type IncomingNewMessage,
 } from "@natstack/agentic-messaging";
-import { query, tool, createSdkMcpServer, type Query, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
+import { z } from "zod";
+import { query, tool, createSdkMcpServer, type Query, type SDKResultMessage, type CanUseTool, type PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 
 void setTitle("Claude Code Responder");
 
 const log = createLogger("Claude Code", id);
+
+/** Worker-local settings interface */
+interface ClaudeCodeWorkerSettings {
+  model?: string;
+  maxThinkingTokens?: number;
+  permissionMode?: string;
+}
+
+/** Current settings state */
+let currentSettings: ClaudeCodeWorkerSettings = {};
+
+/**
+ * Escape a string value for safe interpolation into a TSX template string.
+ * Handles quotes, backslashes, and template literal special chars.
+ */
+function escapeTsxString(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/`/g, "\\`")
+    .replace(/\$/g, "\\$");
+}
+
+/** Reference to the current query instance for model discovery */
+let activeQueryInstance: Query | null = null;
+
+/**
+ * Generate TSX for permission approval UI
+ */
+function generatePermissionPromptTsx(
+  toolName: string,
+  input: Record<string, unknown>,
+  decisionReason?: string
+): string {
+  const inputJson = JSON.stringify(input, null, 2);
+  const escapedInput = inputJson.replace(/`/g, "\\`").replace(/\$/g, "\\$");
+  const escapedReason = decisionReason?.replace(/`/g, "\\`").replace(/\$/g, "\\$") ?? "";
+
+  return `
+import { useState } from "react";
+import { Box, Button, Callout, Code, Flex, Heading, ScrollArea, Text } from "@radix-ui/themes";
+import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
+
+export default function PermissionPrompt({ onSubmit, onCancel }) {
+  const toolName = "${toolName}";
+  const inputJson = \`${escapedInput}\`;
+  const reason = \`${escapedReason}\`;
+
+  return (
+    <Box>
+      <Flex align="center" gap="2" mb="3">
+        <ExclamationTriangleIcon width={20} height={20} color="var(--amber-9)" />
+        <Heading size="4">Permission Required</Heading>
+      </Flex>
+
+      {reason && (
+        <Callout.Root color="amber" mb="3">
+          <Callout.Text>{reason}</Callout.Text>
+        </Callout.Root>
+      )}
+
+      <Flex direction="column" gap="3">
+        <Box>
+          <Text size="2" weight="medium" mb="1">Tool</Text>
+          <Code size="2">{toolName}</Code>
+        </Box>
+
+        <Box>
+          <Text size="2" weight="medium" mb="1">Input</Text>
+          <ScrollArea style={{ maxHeight: 200 }}>
+            <Code size="1" style={{ whiteSpace: "pre-wrap", display: "block" }}>
+              {inputJson}
+            </Code>
+          </ScrollArea>
+        </Box>
+
+        <Flex gap="3" mt="3" justify="end">
+          <Button variant="soft" color="gray" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button variant="soft" color="red" onClick={() => onSubmit({ allow: false })}>
+            Deny
+          </Button>
+          <Button color="green" onClick={() => onSubmit({ allow: true })}>
+            Allow
+          </Button>
+        </Flex>
+      </Flex>
+    </Box>
+  );
+}
+`;
+}
 
 async function main() {
   if (!pubsubConfig) {
@@ -69,6 +163,183 @@ async function main() {
       pause: createPauseMethodDefinition(async () => {
         // Pause event is published by interrupt handler
       }),
+      settings: {
+        description: "Configure Claude Code settings",
+        parameters: z.object({}),
+        menu: true,
+        execute: async () => {
+          // Find the chat panel participant
+          const panel = Object.values(client.roster).find(
+            (p) => p.metadata.type === "panel"
+          );
+          if (!panel) throw new Error("No panel found");
+
+          // Fetch models dynamically from SDK if we have an active query
+          let modelOptions: Array<{ value: string; displayName: string }> = [];
+          try {
+            if (activeQueryInstance) {
+              modelOptions = await activeQueryInstance.supportedModels();
+            }
+          } catch (err) {
+            log(`Failed to fetch models: ${err}`);
+          }
+
+          // Fallback to known Claude models if dynamic discovery unavailable
+          if (modelOptions.length === 0) {
+            modelOptions = [
+              { value: "claude-opus-4-5-20251101", displayName: "Claude Opus 4.5" },
+              { value: "claude-sonnet-4-5-20250929", displayName: "Claude Sonnet 4.5" },
+              { value: "claude-haiku-4-5-20251001", displayName: "Claude Haiku 4.5" },
+              { value: "claude-opus-4-1-20250805", displayName: "Claude Opus 4.1" },
+              { value: "claude-sonnet-4-20250514", displayName: "Claude Sonnet 4" },
+              { value: "claude-opus-4-20250514", displayName: "Claude Opus 4" },
+            ];
+          }
+
+          // Generate SDK-specific settings UI
+          const modelSelectItems = modelOptions.map(m =>
+            `<Select.Item key="${m.value}" value="${m.value}">${m.displayName}</Select.Item>`
+          ).join("\n              ");
+
+          const settingsTsx = `
+import { useState } from "react";
+import { Box, Button, Callout, Flex, Heading, Select, Slider, Text, SegmentedControl } from "@radix-ui/themes";
+import { InfoCircledIcon } from "@radix-ui/react-icons";
+
+const PERMISSION_MODES = [
+  { value: "default", label: "Default", description: "Ask for permission on each tool use" },
+  { value: "acceptEdits", label: "Accept Edits", description: "Auto-approve file edits, ask for others" },
+  { value: "bypassPermissions", label: "Bypass", description: "Skip all permission prompts (dangerous)" },
+  { value: "plan", label: "Plan", description: "Planning mode - no tool execution" },
+  { value: "delegate", label: "Delegate", description: "Delegate decisions to a sub-agent" },
+  { value: "dontAsk", label: "Don't Ask", description: "Use tool defaults without prompting" },
+];
+
+export default function SettingsForm({ onSubmit, onCancel }) {
+  const [model, setModel] = useState("${escapeTsxString(currentSettings.model ?? "claude-sonnet-4-5-20250929")}");
+  const [thinkingBudget, setThinkingBudget] = useState(${currentSettings.maxThinkingTokens ?? 10240});
+  const [permissionMode, setPermissionMode] = useState("${escapeTsxString(currentSettings.permissionMode ?? "default")}");
+
+  const handleSubmit = () => {
+    onSubmit({
+      model: model || undefined,
+      maxThinkingTokens: thinkingBudget,
+      permissionMode: permissionMode === "default" ? undefined : permissionMode,
+    });
+  };
+
+  const selectedMode = PERMISSION_MODES.find(m => m.value === permissionMode);
+
+  return (
+    <Box>
+      <Heading size="4" mb="4">Claude Code Settings</Heading>
+
+      <Flex direction="column" gap="5">
+        {/* Model Selection */}
+        <Flex direction="column" gap="2">
+          <Text size="2" weight="medium">Model</Text>
+          <Select.Root value={model} onValueChange={setModel}>
+            <Select.Trigger placeholder="Select a model..." />
+            <Select.Content>
+              ${modelSelectItems}
+            </Select.Content>
+          </Select.Root>
+          <Text size="1" color="gray">Claude model for code generation</Text>
+        </Flex>
+
+        {/* Thinking Budget Slider */}
+        <Flex direction="column" gap="2">
+          <Flex justify="between" align="center">
+            <Text size="2" weight="medium">Thinking Budget</Text>
+            <Text size="2" color="gray">{thinkingBudget === 0 ? "Disabled" : \`\${thinkingBudget.toLocaleString()} tokens\`}</Text>
+          </Flex>
+          <Slider
+            value={[thinkingBudget]}
+            onValueChange={([v]) => setThinkingBudget(v)}
+            min={0}
+            max={32000}
+            step={1024}
+          />
+          <Flex justify="between">
+            <Text size="1" color="gray">Off</Text>
+            <Text size="1" color="gray">Maximum</Text>
+          </Flex>
+        </Flex>
+
+        {/* Permission Mode */}
+        <Flex direction="column" gap="2">
+          <Text size="2" weight="medium">Permission Mode</Text>
+          <SegmentedControl.Root value={permissionMode} onValueChange={setPermissionMode}>
+            {PERMISSION_MODES.slice(0, 3).map(mode => (
+              <SegmentedControl.Item key={mode.value} value={mode.value}>
+                {mode.label}
+              </SegmentedControl.Item>
+            ))}
+          </SegmentedControl.Root>
+          <SegmentedControl.Root value={permissionMode} onValueChange={setPermissionMode}>
+            {PERMISSION_MODES.slice(3).map(mode => (
+              <SegmentedControl.Item key={mode.value} value={mode.value}>
+                {mode.label}
+              </SegmentedControl.Item>
+            ))}
+          </SegmentedControl.Root>
+          {selectedMode && (
+            <Text size="1" color="gray">{selectedMode.description}</Text>
+          )}
+          {permissionMode === "bypassPermissions" && (
+            <Callout.Root color="red" size="1">
+              <Callout.Icon>
+                <InfoCircledIcon />
+              </Callout.Icon>
+              <Callout.Text>Bypassing permissions allows unrestricted tool execution</Callout.Text>
+            </Callout.Root>
+          )}
+        </Flex>
+
+        {/* Actions */}
+        <Flex gap="3" mt="2" justify="end">
+          <Button variant="soft" color="gray" onClick={onCancel}>Cancel</Button>
+          <Button onClick={handleSubmit}>Save</Button>
+        </Flex>
+      </Flex>
+    </Box>
+  );
+}
+`;
+
+          // Call feedback_ui on the panel
+          const handle = client.callMethod(panel.id, "feedback_ui", { code: settingsTsx });
+          const result = await handle.result;
+          const feedbackResult = result.content as { type: string; value?: unknown; message?: string };
+
+          // Handle the three cases: submit, cancel, error
+          if (feedbackResult.type === "cancel") {
+            log("Settings cancelled");
+            return { success: false, cancelled: true };
+          }
+
+          if (feedbackResult.type === "error") {
+            log(`Settings error: ${feedbackResult.message}`);
+            return { success: false, error: feedbackResult.message };
+          }
+
+          // Apply new settings (submit case)
+          const newSettings = feedbackResult.value as ClaudeCodeWorkerSettings;
+          Object.assign(currentSettings, newSettings);
+          log(`Settings updated: ${JSON.stringify(currentSettings)}`);
+
+          // Persist settings if session is available
+          if (client.sessionKey) {
+            try {
+              await client.updateSettings(currentSettings);
+            } catch (err) {
+              log(`Failed to persist settings: ${err}`);
+            }
+          }
+
+          return { success: true, settings: currentSettings };
+        },
+      },
     },
   });
 
@@ -81,6 +352,17 @@ async function main() {
   if (client.sessionKey) {
     log(`Session: ${client.sessionKey} (${client.status})`);
     log(`Checkpoint: ${client.checkpoint ?? "none"}, SDK: ${client.sdkSessionId ?? "none"}`);
+
+    // Load persisted settings
+    try {
+      const savedSettings = await client.getSettings<ClaudeCodeWorkerSettings>();
+      if (savedSettings) {
+        currentSettings = savedSettings;
+        log(`Loaded settings: ${JSON.stringify(currentSettings)}`);
+      }
+    } catch (err) {
+      log(`Failed to load settings: ${err}`);
+    }
   }
 
   let lastMissedPubsubId = 0;
@@ -180,6 +462,79 @@ async function handleUserMessage(
     // Determine allowed tools
     const allowedTools = mcpTools.map((t) => `mcp__pubsub__${t.name}`);
 
+    // Create permission handler that prompts user via feedback_ui
+    const canUseTool: CanUseTool = async (toolName, input, options) => {
+      log(`Permission requested for tool: ${toolName}`);
+
+      // Find the chat panel participant
+      const panel = Object.values(client.roster).find(
+        (p) => p.metadata.type === "panel"
+      );
+
+      if (!panel) {
+        // No panel to ask - deny by default
+        log(`No panel found, denying permission for ${toolName}`);
+        return {
+          behavior: "deny" as const,
+          message: "No panel available to request permission",
+          toolUseID: options.toolUseID,
+        };
+      }
+
+      try {
+        // Generate and show permission UI
+        const promptTsx = generatePermissionPromptTsx(toolName, input, options.decisionReason);
+        const handle = client.callMethod(panel.id, "feedback_ui", { code: promptTsx });
+        const result = await handle.result;
+        const feedbackResult = result.content as { type: string; value?: unknown; message?: string };
+
+        // Handle the three cases: submit, cancel, error
+        if (feedbackResult.type === "cancel") {
+          log(`Permission prompt cancelled for ${toolName}`);
+          return {
+            behavior: "deny" as const,
+            message: "User cancelled permission prompt",
+            toolUseID: options.toolUseID,
+          };
+        }
+
+        if (feedbackResult.type === "error") {
+          log(`Permission prompt error for ${toolName}: ${feedbackResult.message}`);
+          return {
+            behavior: "deny" as const,
+            message: `Permission prompt error: ${feedbackResult.message}`,
+            toolUseID: options.toolUseID,
+          };
+        }
+
+        // Submit case - extract the decision
+        const decision = feedbackResult.value as { allow: boolean };
+
+        if (decision.allow) {
+          log(`Permission granted for ${toolName}`);
+          return {
+            behavior: "allow" as const,
+            updatedInput: input,
+            toolUseID: options.toolUseID,
+          };
+        } else {
+          log(`Permission denied for ${toolName}`);
+          return {
+            behavior: "deny" as const,
+            message: "User denied permission",
+            toolUseID: options.toolUseID,
+          };
+        }
+      } catch (err) {
+        log(`Permission prompt failed: ${err}`);
+        return {
+          behavior: "deny" as const,
+          message: `Permission prompt failed: ${err instanceof Error ? err.message : String(err)}`,
+          toolUseID: options.toolUseID,
+        };
+      }
+    };
+
     // Get session state for resumption
     const queryOptions: Parameters<typeof query>[0]["options"] = {
       mcpServers: { pubsub: pubsubServer },
@@ -193,6 +548,13 @@ async function handleUserMessage(
       includePartialMessages: true,
       // Resume from previous session if available
       ...(client.sdkSessionId && { resume: client.sdkSessionId }),
+      // Apply user settings
+      ...(currentSettings.model && { model: currentSettings.model }),
+      ...(currentSettings.maxThinkingTokens && { maxThinkingTokens: currentSettings.maxThinkingTokens }),
+      ...(currentSettings.permissionMode && { permissionMode: currentSettings.permissionMode }),
+      ...(currentSettings.permissionMode === "bypassPermissions" && { allowDangerouslySkipPermissions: true }),
+      // Wire permission prompts to feedback_ui (only for default/dontAsk modes)
+      ...(!currentSettings.permissionMode || currentSettings.permissionMode === "default" ? { canUseTool } : {}),
     };
 
     // Query Claude using the Agent SDK
@@ -200,6 +562,9 @@ async function handleUserMessage(
       prompt,
       options: queryOptions,
     });
+
+    // Store reference for settings method to use for model discovery
+    activeQueryInstance = queryInstance;
 
     let capturedSessionId: string | undefined;
     let checkpointCommitted = false;

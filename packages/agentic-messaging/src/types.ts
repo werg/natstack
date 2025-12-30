@@ -46,6 +46,8 @@ export interface MethodAdvertisement {
   streaming?: boolean;
   /** Suggested timeout in milliseconds */
   timeout?: number;
+  /** Whether to show this method in participant menu UI */
+  menu?: boolean;
 }
 
 /**
@@ -520,6 +522,8 @@ export interface MethodDefinition<TArgs extends z.ZodTypeAny = z.ZodTypeAny, TRe
   streaming?: boolean;
   /** Suggested timeout in milliseconds */
   timeout?: number;
+  /** Whether to show this method in participant menu UI */
+  menu?: boolean;
   /** Execute the method. Automatically called when method is invoked. */
   execute: (args: z.infer<TArgs>, context: MethodExecutionContext) => Promise<TResult>;
 }
@@ -643,6 +647,10 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   storeMessage(role: "user" | "assistant", content: string): Promise<void>;
   getHistory(limit?: number): Promise<ConversationMessage[]>;
   clearHistory(): Promise<void>;
+
+  // === Settings Persistence ===
+  updateSettings(settings: Record<string, unknown>): Promise<void>;
+  getSettings<T = Record<string, unknown>>(): Promise<T | null>;
 
   // === Method Discovery & Invocation ===
   discoverMethodDefs(): DiscoveredMethod[];

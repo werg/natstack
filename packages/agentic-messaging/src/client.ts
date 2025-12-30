@@ -412,6 +412,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         returns,
         streaming: def.streaming ?? false,
         timeout: def.timeout,
+        menu: def.menu ?? false,
       };
     });
   }
@@ -1407,6 +1408,18 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     await db.clearHistory();
   }
 
+  async function updateSettings(settings: Record<string, unknown>): Promise<void> {
+    requireSessionEnabled("updateSettings");
+    const db = getSessionDbOrThrow("updateSettings");
+    await db.updateSettings(settings);
+  }
+
+  async function getSettings<T = Record<string, unknown>>(): Promise<T | null> {
+    requireSessionEnabled("getSettings");
+    const db = getSessionDbOrThrow("getSettings");
+    return await db.getSettings<T>();
+  }
+
   function formatMissedContextImpl(options?: FormatOptions): MissedContext {
     return formatMissedContext(missedMessages, options);
   }
@@ -1466,6 +1479,8 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     storeMessage,
     getHistory,
     clearHistory,
+    updateSettings,
+    getSettings,
     discoverMethodDefs,
     discoverMethodDefsFrom,
     callMethod,

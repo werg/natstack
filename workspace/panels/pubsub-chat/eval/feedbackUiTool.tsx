@@ -26,13 +26,27 @@ export interface FeedbackUiToolResult {
 }
 
 /**
+ * Result returned from a feedback component.
+ * Discriminated union with three cases:
+ * - submit: user submitted data successfully
+ * - cancel: user cancelled (empty case, no data)
+ * - error: an error occurred (includes message)
+ */
+export type FeedbackResult =
+  | { type: "submit"; value: unknown }
+  | { type: "cancel" }
+  | { type: "error"; message: string };
+
+/**
  * Props passed to the feedback component.
  */
 export interface FeedbackComponentProps {
-  /** Call to resolve the tool with a value */
-  resolveTool: (value: unknown) => void;
-  /** Call to reject the tool with an error */
-  rejectTool: (error: Error) => void;
+  /** Call when user submits data successfully */
+  onSubmit: (value: unknown) => void;
+  /** Call when user cancels (no data) */
+  onCancel: () => void;
+  /** Call when an error occurs */
+  onError: (message: string) => void;
 }
 
 /**
@@ -85,14 +99,14 @@ export function compileFeedbackComponent(args: FeedbackUiToolArgs): FeedbackUiTo
 }
 
 /**
- * Create a component factory that injects resolveTool/rejectTool at render time.
+ * Create a component factory that injects onSubmit/onCancel/onError at render time.
  * Uses cacheKey (the transformed code) to look up or store the compiled component.
  */
 function createComponentFactory(
   cacheKey: string
 ): ComponentType<FeedbackComponentProps> {
   return function FeedbackWrapper(props: FeedbackComponentProps) {
-    const { resolveTool, rejectTool } = props;
+    const { onSubmit, onCancel, onError } = props;
     const resolvedRef = useRef(false);
 
     // Use useMemo with cacheKey to ensure stable component reference
@@ -106,25 +120,31 @@ function createComponentFactory(
       return compiled;
     }, []);
 
-    const safeResolveTool = useCallback(
+    const safeOnSubmit = useCallback(
       (value: unknown) => {
         if (resolvedRef.current) return;
         resolvedRef.current = true;
-        resolveTool(value);
+        onSubmit(value);
       },
-      [resolveTool]
+      [onSubmit]
     );
 
-    const safeRejectTool = useCallback(
-      (error: Error) => {
+    const safeOnCancel = useCallback(() => {
+      if (resolvedRef.current) return;
+      resolvedRef.current = true;
+      onCancel();
+    }, [onCancel]);
+
+    const safeOnError = useCallback(
+      (message: string) => {
         if (resolvedRef.current) return;
         resolvedRef.current = true;
-        rejectTool(error);
+        onError(message);
       },
-      [rejectTool]
+      [onError]
     );
 
-    return <CompiledComponent resolveTool={safeResolveTool} rejectTool={safeRejectTool} />;
+    return <CompiledComponent onSubmit={safeOnSubmit} onCancel={safeOnCancel} onError={safeOnError} />;
   };
 }
 
@@ -151,10 +171,16 @@ Use standard Radix UI APIs. The component is wrapped in a themed container.
 ## Component Contract
 \`\`\`tsx
 interface Props {
-  resolveTool: (value: unknown) => void;  // Call to complete successfully
-  rejectTool: (error: Error) => void;     // Call to report error
+  onSubmit: (value: unknown) => void;  // User submitted data
+  onCancel: () => void;                // User cancelled (no data)
+  onError: (message: string) => void;  // An error occurred
 }
 \`\`\`
+
+The caller receives a discriminated union result:
+- \`{ type: "submit", value: ... }\` - user submitted
+- \`{ type: "cancel" }\` - user cancelled
+- \`{ type: "error", message: "..." }\` - error occurred
 
 ## Example
 \`\`\`tsx
@@ -162,14 +188,17 @@ import { useState } from "react";
 import { Button, Card, Flex, Text, TextField } from "@radix-ui/themes";
 import { buildChildLink } from "@natstack/runtime";
 
-export default function FeedbackForm({ resolveTool }) {
+export default function FeedbackForm({ onSubmit, onCancel }) {
   const [name, setName] = useState("");
   return (
     <Card>
       <Flex direction="column" gap="3">
         <Text>What's your name?</Text>
         <TextField.Root value={name} onChange={e => setName(e.target.value)} placeholder="Enter name..." />
-        <Button onClick={() => resolveTool({ name })}>Submit</Button>
+        <Flex gap="2">
+          <Button variant="soft" color="gray" onClick={onCancel}>Cancel</Button>
+          <Button onClick={() => onSubmit({ name })}>Submit</Button>
+        </Flex>
         <a href={buildChildLink("panels/agent-manager")}>Open Agent Manager</a>
       </Flex>
     </Card>

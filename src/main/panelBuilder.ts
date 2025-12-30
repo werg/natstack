@@ -1276,11 +1276,12 @@ import ${JSON.stringify(relativeUserEntry)};
         log(`External modules (CDN): ${externalModules.join(", ")}`);
       }
 
-      // Use panel fs shim plugin (maps to @natstack/runtime) and optionally React dedupe plugin.
+      // Use panel fs shim plugin (maps to @natstack/runtime) and optionally dedupe plugin.
       // resolveDir points at the deps dir where @natstack/runtime is installed.
       const plugins: esbuild.Plugin[] = [createPanelFsShimPlugin(workspace.depsDir)];
       if (hasNatstackReact) {
-        plugins.push(this.createReactDedupePlugin(workspace.nodeModulesDir));
+        // Dedupe React, Radix UI, and any manifest-specified packages
+        plugins.push(this.createDedupePlugin(workspace.nodeModulesDir, manifest.dedupeModules));
       }
 
       const bannerJs = [generateAsyncTrackingBanner(), generateModuleMapBanner()].join("\n");
@@ -1391,46 +1392,100 @@ import ${JSON.stringify(relativeUserEntry)};
   }
 
   /**
-   * Create a plugin to deduplicate React imports.
-   * This ensures all React imports (including from dependencies like react-virtuoso)
-   * resolve to the same React instance in the build dependency node_modules.
+   * Default packages that are always deduplicated.
+   * These are packages known to use React context or other singleton patterns.
+   */
+  private static readonly DEFAULT_DEDUPE_PACKAGES = [
+    "react",
+    "react-dom",
+    "@radix-ui/themes",
+    "@radix-ui/react-*", // Wildcard for all Radix primitives
+  ];
+
+  /**
+   * Convert a package specifier to a regex pattern for matching imports.
+   * Supports exact matches, subpaths, and simple wildcards.
+   *
+   * Examples:
+   * - "lodash" -> matches "lodash" and "lodash/debounce"
+   * - "@scope/pkg" -> matches "@scope/pkg" and "@scope/pkg/sub"
+   * - "@radix-ui/react-*" -> matches "@radix-ui/react-select", "@radix-ui/react-dialog/sub"
+   */
+  private packageToRegex(pkg: string): RegExp {
+    // Escape regex special characters except *
+    const escaped = pkg.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+
+    if (escaped.includes("*")) {
+      // Wildcard pattern: @radix-ui/react-* -> @radix-ui/react-[^/]+
+      const pattern = escaped.replace(/\*/g, "[^/]+");
+      return new RegExp(`^${pattern}(\\/.*)?$`);
+    } else {
+      // Exact package with optional subpaths
+      return new RegExp(`^${escaped}(\\/.*)?$`);
+    }
+  }
+
+  /**
+   * Create a plugin to deduplicate module imports.
+   * This ensures all imports of specified packages (including from dependencies)
+   * resolve to the same instance in the build dependency node_modules.
+   *
+   * This is critical for packages that use React context or other singleton patterns
+   * because context only works when provider and consumer use the same module instance.
    *
    * This mirrors how Next.js solves this with webpack resolve.alias.
+   *
+   * @param runtimeNodeModules - The node_modules directory to resolve from
+   * @param additionalPackages - Extra packages to dedupe (from manifest.dedupeModules)
    */
-  private createReactDedupePlugin(runtimeNodeModules: string): esbuild.Plugin {
+  private createDedupePlugin(
+    runtimeNodeModules: string,
+    additionalPackages: string[] = []
+  ): esbuild.Plugin {
     const resolvedRuntimeNodeModules = path.resolve(runtimeNodeModules);
 
-    return {
-      name: "react-dedupe",
-      setup(build) {
-        // Force all react imports to resolve to the same instance
-        // Use build.resolve() to properly resolve package entry points
-        build.onResolve({ filter: /^react(\/.*)?$/ }, async (args) => {
-          // Skip if already resolving from within the target tree (prevent infinite recursion)
-          if (path.resolve(args.resolveDir).startsWith(resolvedRuntimeNodeModules)) {
-            return null; // Let esbuild's default resolver handle it
-          }
-          // Re-resolve the same import but from the runtime node_modules directory
-          // This forces all react imports to use the same physical package
-          const result = await build.resolve(args.path, {
-            kind: args.kind,
-            resolveDir: resolvedRuntimeNodeModules,
-          });
-          return result;
-        });
+    // Combine default packages with manifest-specified ones
+    const allPackages = [...PanelBuilder.DEFAULT_DEDUPE_PACKAGES, ...additionalPackages];
 
-        // Force all react-dom imports to resolve to the same instance
-        build.onResolve({ filter: /^react-dom(\/.*)?$/ }, async (args) => {
-          // Skip if already resolving from within the target tree (prevent infinite recursion)
-          if (path.resolve(args.resolveDir).startsWith(resolvedRuntimeNodeModules)) {
+    // Convert to regex patterns, deduplicating
+    const seen = new Set<string>();
+    const patterns: RegExp[] = [];
+    for (const pkg of allPackages) {
+      if (!seen.has(pkg)) {
+        seen.add(pkg);
+        patterns.push(this.packageToRegex(pkg));
+      }
+    }
+
+    return {
+      name: "module-dedupe",
+      setup(build) {
+        // Create a resolver for each pattern
+        for (const pattern of patterns) {
+          build.onResolve({ filter: pattern }, async (args) => {
+            // Skip if already resolving from within the target tree (prevent infinite recursion)
+            if (path.resolve(args.resolveDir).startsWith(resolvedRuntimeNodeModules)) {
+              return null;
+            }
+            // Try to resolve from the runtime node_modules directory
+            // This forces all matching imports to use the same physical package
+            try {
+              const result = await build.resolve(args.path, {
+                kind: args.kind,
+                resolveDir: resolvedRuntimeNodeModules,
+              });
+              // Only use the result if resolution succeeded (no errors)
+              // If the package doesn't exist in runtime node_modules, fall back to default
+              if (!result.errors || result.errors.length === 0) {
+                return result;
+              }
+            } catch {
+              // Resolution failed, fall back to default resolver
+            }
+            // Let esbuild's default resolver handle it
             return null;
-          }
-          const result = await build.resolve(args.path, {
-            kind: args.kind,
-            resolveDir: resolvedRuntimeNodeModules,
           });
-          return result;
-        });
+        }
       },
     };
   }
