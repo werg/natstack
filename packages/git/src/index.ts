@@ -29,7 +29,7 @@
  * ```
  */
 
-export { GitClient, type FsPromisesLike } from "./client.js";
+export { GitClient, GitAuthError, type FsPromisesLike } from "./client.js";
 export { bootstrap } from "./bootstrap.js";
 
 export type {
@@ -42,6 +42,23 @@ export type {
   CommitOptions,
   FileStatus,
   RepoStatus,
+  StashEntry,
+  FileDiff,
+  Hunk,
+  DiffLine,
+  HunkSelection,
+  StageHunksOptions,
+  BranchInfo,
+  CreateBranchOptions,
+  RemoteStatus,
+  GitProgress,
+  BlameLine,
+  FileHistoryEntry,
+  BinaryDiffInfo,
+  ImageDiff,
+  ConflictInfo,
+  ConflictMarker,
+  ConflictResolution,
 } from "./types.js";
 
 export type { BootstrapConfig, BootstrapResult } from "./bootstrap.js";

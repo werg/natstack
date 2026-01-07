@@ -22,6 +22,8 @@ export const electronAPI = {
     ipcRenderer.invoke("panel:open-devtools", panelId),
   reloadPanel: (panelId: string): Promise<void> => ipcRenderer.invoke("panel:reload", panelId),
   closePanel: (panelId: string): Promise<void> => ipcRenderer.invoke("panel:close", panelId),
+  retryDirtyBuild: (panelId: string): Promise<void> =>
+    ipcRenderer.invoke("panel:retry-dirty-build", panelId),
   updateBrowserState: (
     browserId: string,
     state: { url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean }
@@ -166,7 +168,14 @@ export const electronAPI = {
   },
 };
 
-contextBridge.exposeInMainWorld("electronAPI", electronAPI);
+// Expose API to renderer - use contextBridge if available, otherwise direct window assignment
+// (contextBridge requires contextIsolation, which is disabled for shell renderer)
+try {
+  contextBridge.exposeInMainWorld("electronAPI", electronAPI);
+} catch {
+  // contextIsolation is disabled, attach directly to window
+  (window as Window & { electronAPI: typeof electronAPI }).electronAPI = electronAPI;
+}
 
 declare global {
   interface Window {

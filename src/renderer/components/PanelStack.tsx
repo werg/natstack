@@ -16,6 +16,7 @@ import {
 import type { StatusNavigationData, TitleNavigationData } from "./navigationTypes";
 import type { WorkerConsoleLogEntry, PanelContextMenuAction } from "../../shared/ipc/types";
 import { useNavigation } from "./NavigationContext";
+import { DirtyRepoView } from "./DirtyRepoView";
 
 interface PanelStackProps {
   onTitleChange?: (title: string) => void;
@@ -744,6 +745,18 @@ export function PanelStack({
                               {artifacts.error}
                             </Text>
                           </Flex>
+                        );
+                      }
+
+                      // Show DirtyRepoView when panel has uncommitted changes
+                      if (artifacts?.buildState === "dirty" && artifacts.dirtyRepoPath) {
+                        return (
+                          <DirtyRepoView
+                            key={panel.id}
+                            panelId={panel.id}
+                            repoPath={artifacts.dirtyRepoPath}
+                            onRetryBuild={() => window.electronAPI.retryDirtyBuild(panel.id)}
+                          />
                         );
                       }
 

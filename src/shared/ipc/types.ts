@@ -40,7 +40,7 @@ export interface PanelInfo {
  * Build state for panels built by main process.
  * Used to show placeholder UI during build.
  */
-export type PanelBuildState = "pending" | "cloning" | "building" | "ready" | "error";
+export type PanelBuildState = "pending" | "cloning" | "building" | "ready" | "error" | "dirty";
 
 export interface PanelArtifacts {
   htmlPath?: string;
@@ -52,6 +52,8 @@ export interface PanelArtifacts {
   buildProgress?: string;
   /** Detailed build log (esbuild output, errors, etc.) */
   buildLog?: string;
+  /** Absolute path to dirty repo (when buildState === "dirty") */
+  dirtyRepoPath?: string;
 }
 
 /**
@@ -69,6 +71,8 @@ export interface ProtocolBuildArtifacts {
   singletonState?: boolean;
   /** CSS bundle if any */
   css?: string;
+  /** Additional asset files (path -> content + encoding) */
+  assets?: Record<string, { content: string; encoding?: "utf8" | "base64" }>;
   /** Whether to inject host theme variables (defaults to true) */
   injectHostThemeVariables?: boolean;
   /** Optional source repo path (workspace-relative) to retain git association */
@@ -113,6 +117,8 @@ export interface PanelIpcApi {
   "panel:reload": (panelId: string) => void;
   /** Close a panel and its children */
   "panel:close": (panelId: string) => void;
+  /** Retry build for a panel that was blocked by dirty worktree */
+  "panel:retry-dirty-build": (panelId: string) => void;
   /**
    * Register a browser panel's webview with the CDP server.
    * Called by renderer when a browser webview's dom-ready fires.
@@ -387,7 +393,7 @@ export type RuntimeType = "panel" | "worker";
 /**
  * Build state for workers (same as panels).
  */
-export type WorkerBuildState = "pending" | "cloning" | "building" | "ready" | "error";
+export type WorkerBuildState = "pending" | "cloning" | "building" | "ready" | "error" | "dirty";
 
 /**
  * Options for creating a worker from a panel.

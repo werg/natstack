@@ -91,12 +91,13 @@ export class ViewManager {
     this.panelPreloadPath = options.panelPreload;
 
     // Create shell view (React UI) - fills entire window
+    // nodeIntegration enabled for direct fs/git access (shell is trusted app UI)
     this.shellView = new WebContentsView({
       webPreferences: {
         preload: options.shellPreload,
-        nodeIntegration: false,
-        contextIsolation: true,
-        sandbox: true,
+        nodeIntegration: true,
+        contextIsolation: false,
+        sandbox: false,
       },
     });
 

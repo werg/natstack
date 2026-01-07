@@ -1,6 +1,41 @@
 import { protocol, session } from "electron";
+import * as path from "path";
 import type { ProtocolBuildArtifacts } from "../shared/ipc/types.js";
 import { randomBytes } from "crypto";
+
+type PanelAssets = NonNullable<ProtocolBuildArtifacts["assets"]>;
+
+/** MIME types for serving panel assets */
+const ASSET_MIME_TYPES: Record<string, string> = {
+  ".js": "application/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".map": "application/json; charset=utf-8",
+  ".wasm": "application/wasm",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".avif": "image/avif",
+  ".svg": "image/svg+xml; charset=utf-8",
+  ".ico": "image/x-icon",
+  ".bmp": "image/bmp",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".otf": "font/otf",
+  ".eot": "application/vnd.ms-fontobject",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".ogg": "audio/ogg",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".pdf": "application/pdf",
+  ".txt": "text/plain; charset=utf-8",
+};
 
 /**
  * Protocol-served panel content storage
@@ -13,6 +48,7 @@ const protocolPanels = new Map<
     html: string;
     bundle: string;
     css?: string;
+    assets?: PanelAssets;
   }
 >();
 
@@ -75,15 +111,6 @@ export function handleProtocolRequest(request: Request): Response {
   const panelId = decodeURIComponent(pathParts[0] || "");
   const pathname = "/" + pathParts.slice(1).join("/") || "/";
 
-  const expectedToken = protocolPanelTokens.get(panelId);
-  const providedToken = url.searchParams.get("token") ?? "";
-  if (!expectedToken || providedToken !== expectedToken) {
-    return new Response("Unauthorized", {
-      status: 403,
-      headers: { "Content-Type": "text/plain" },
-    });
-  }
-
   const panelContent = protocolPanels.get(panelId);
   if (!panelContent) {
     console.error(`[PanelProtocol] Panel not found: ${panelId}`);
@@ -93,9 +120,26 @@ export function handleProtocolRequest(request: Request): Response {
     });
   }
 
+  const expectedToken = protocolPanelTokens.get(panelId);
+  const providedToken = url.searchParams.get("token") ?? "";
+  const isCorePath =
+    pathname === "/" ||
+    pathname === "/index.html" ||
+    pathname === "/bundle.js" ||
+    pathname === "/bundle.css";
+  const hasValidToken = Boolean(expectedToken && providedToken === expectedToken);
+  const hasValidRefererToken = !isCorePath && Boolean(expectedToken && isAuthorizedByReferer(request, expectedToken));
+
+  if (!hasValidToken && !hasValidRefererToken) {
+    return new Response("Unauthorized", {
+      status: 403,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
+
   // Route based on pathname
   if (pathname === "/" || pathname === "/index.html") {
-    const htmlWithBundle = injectBundleIntoHtml(panelContent.html, panelId, expectedToken);
+    const htmlWithBundle = injectBundleIntoHtml(panelContent.html, panelId, expectedToken ?? "");
     return new Response(htmlWithBundle, {
       status: 200,
       headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -113,6 +157,14 @@ export function handleProtocolRequest(request: Request): Response {
     return new Response(panelContent.css, {
       status: 200,
       headers: { "Content-Type": "text/css; charset=utf-8" },
+    });
+  }
+
+  const assetContent = getAssetContent(panelContent.assets, pathname);
+  if (assetContent) {
+    return new Response(assetContent.content, {
+      status: 200,
+      headers: { "Content-Type": assetContent.contentType },
     });
   }
 
@@ -208,6 +260,20 @@ function injectBundleIntoHtml(html: string, panelId: string, token: string): str
   return result;
 }
 
+function isAuthorizedByReferer(request: Request, expectedToken: string): boolean {
+  const referer = request.headers.get("referer") ?? request.headers.get("referrer");
+  if (!referer) return false;
+  try {
+    const refererUrl = new URL(referer);
+    if (refererUrl.protocol !== "natstack-panel:" && refererUrl.protocol !== "natstack-child:") {
+      return false;
+    }
+    return refererUrl.searchParams.get("token") === expectedToken;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Store panel content for protocol serving
  */
@@ -216,6 +282,7 @@ export function storeProtocolPanel(panelId: string, artifacts: ProtocolBuildArti
     html: artifacts.html,
     bundle: artifacts.bundle,
     css: artifacts.css,
+    assets: artifacts.assets,
   });
 
   // Ensure a stable per-panel token exists.
@@ -223,7 +290,9 @@ export function storeProtocolPanel(panelId: string, artifacts: ProtocolBuildArti
     protocolPanelTokens.set(panelId, randomBytes(32).toString("hex"));
   }
 
-  console.log(`[PanelProtocol] Stored panel: ${panelId}`);
+  const assetCount = artifacts.assets ? Object.keys(artifacts.assets).length : 0;
+  const assetSuffix = assetCount > 0 ? ` (assets: ${assetCount})` : "";
+  console.log(`[PanelProtocol] Stored panel: ${panelId}${assetSuffix}`);
 
   // Return the URL for this panel
   // Use the new format with encoded panelId to handle '/' in panel IDs
@@ -231,6 +300,29 @@ export function storeProtocolPanel(panelId: string, artifacts: ProtocolBuildArti
   const token = protocolPanelTokens.get(panelId)!;
   const encodedToken = encodeURIComponent(token);
   return `natstack-panel://panel/${encodedPanelId}/index.html?token=${encodedToken}`;
+}
+
+function getAssetContent(
+  assets: PanelAssets | undefined,
+  pathname: string
+): { content: string | ArrayBuffer; contentType: string } | null {
+  if (!assets) return null;
+  const normalized = pathname.startsWith("/") ? pathname : `/${pathname}`;
+  const asset = assets[normalized] ?? assets[normalized.slice(1)];
+  if (!asset) return null;
+
+  const ext = path.extname(normalized).toLowerCase();
+  const contentType = ASSET_MIME_TYPES[ext] ?? "application/octet-stream";
+
+  const encoding = asset.encoding ?? "utf8";
+  const content = encoding === "base64" ? decodeBase64ToArrayBuffer(asset.content) : asset.content;
+
+  return { content, contentType };
+}
+
+function decodeBase64ToArrayBuffer(value: string): ArrayBuffer {
+  const buffer = Buffer.from(value, "base64");
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
 }
 
 /**

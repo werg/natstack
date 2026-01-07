@@ -9,8 +9,9 @@ import type { PanelManifest } from "./panelTypes.js";
 import { getMainCacheManager } from "./cacheManager.js";
 import { isDev } from "./utils.js";
 import { provisionPanelVersion, resolveTargetCommit, type VersionSpec } from "./gitProvisioner.js";
-import type { PanelBuildState } from "../shared/ipc/types.js";
+import type { PanelBuildState, ProtocolBuildArtifacts } from "../shared/ipc/types.js";
 import { createBuildWorkspace, type BuildArtifactKey } from "./build/artifacts.js";
+import { collectWorkersFromDependencies, workersToArray } from "../shared/collectWorkers.js";
 
 // ===========================================================================
 // Shared Build Plugins
@@ -685,6 +686,9 @@ export interface BuildProgress {
   log?: string;
 }
 
+type PanelAssetMap = NonNullable<ProtocolBuildArtifacts["assets"]>;
+type PanelAssetEntry = PanelAssetMap[string];
+
 /**
  * Result of building a child panel.
  * Includes in-memory artifacts for serving via natstack-panel:// protocol.
@@ -697,6 +701,8 @@ export interface ChildBuildResult {
   html?: string;
   /** CSS bundle if any */
   css?: string;
+  /** Additional asset files (path -> content + encoding) */
+  assets?: PanelAssetMap;
   /** Panel manifest */
   manifest?: PanelManifest;
   /** Error message if build failed */
@@ -719,6 +725,43 @@ const defaultWorkerDependencies: Record<string, string> = {
   // Node types for dependencies that expect them
   "@types/node": "^22.9.0",
 };
+
+const PANEL_ASSET_LOADERS: Record<string, esbuild.Loader> = {
+  ".png": "file",
+  ".jpg": "file",
+  ".jpeg": "file",
+  ".gif": "file",
+  ".webp": "file",
+  ".avif": "file",
+  ".svg": "file",
+  ".ico": "file",
+  ".bmp": "file",
+  ".tif": "file",
+  ".tiff": "file",
+  ".woff": "file",
+  ".woff2": "file",
+  ".ttf": "file",
+  ".otf": "file",
+  ".eot": "file",
+  ".mp3": "file",
+  ".wav": "file",
+  ".ogg": "file",
+  ".mp4": "file",
+  ".webm": "file",
+  ".wasm": "file",
+  ".pdf": "file",
+};
+
+const TEXT_ASSET_EXTENSIONS = new Set([
+  ".js",
+  ".css",
+  ".json",
+  ".map",
+  ".svg",
+  ".txt",
+  ".md",
+  ".html",
+]);
 
 /**
  * Get React dependencies from @natstack/react's peerDependencies.
@@ -801,6 +844,8 @@ interface BuildFromSourceResult {
   html?: string;
   /** CSS bundle if generated */
   css?: string;
+  /** Additional asset files (path -> content + encoding) */
+  assets?: PanelAssetMap;
   /** Error message on failure */
   error?: string;
   /** Hash of dependencies for caching */
@@ -1300,6 +1345,8 @@ import ${JSON.stringify(relativeUserEntry)};
         nodePaths,
         plugins,
         external: externalModules,
+        loader: PANEL_ASSET_LOADERS,
+        assetNames: "assets/[name]-[hash]",
         banner: {
           js: bannerJs,
         },
@@ -1311,6 +1358,7 @@ import ${JSON.stringify(relativeUserEntry)};
           useDefineForClassFields: true,
         }),
       });
+      let buildMetafile = buildResult.metafile;
 
       if (buildResult.metafile) {
         const externalSet = new Set(externalModules);
@@ -1328,7 +1376,7 @@ import ${JSON.stringify(relativeUserEntry)};
 
           log(`Re-building with ${uniqueDeps.length} exposed modules...`);
           try {
-            await esbuild.build({
+            const rebuildResult = await esbuild.build({
               entryPoints: [tempEntryPath],
               bundle: true,
               platform: "browser",
@@ -1342,9 +1390,12 @@ import ${JSON.stringify(relativeUserEntry)};
               nodePaths,
               plugins,
               external: externalModules,
+              loader: PANEL_ASSET_LOADERS,
+              assetNames: "assets/[name]-[hash]",
               banner: {
                 js: bannerJs,
               },
+              metafile: true,
               // Use a build-owned tsconfig. Only allowlisted user compilerOptions are merged.
               tsconfig: this.writeBuildTsconfig(workspace.buildDir, sourcePath, "panel", {
                 jsx: "react-jsx",
@@ -1352,6 +1403,9 @@ import ${JSON.stringify(relativeUserEntry)};
                 useDefineForClassFields: true,
               }),
             });
+            if (rebuildResult.metafile) {
+              buildMetafile = rebuildResult.metafile;
+            }
           } catch (rebuildError) {
             // Log but don't fail - the first build output is still usable
             log(`Warning: Second build pass failed: ${rebuildError instanceof Error ? rebuildError.message : String(rebuildError)}`);
@@ -1363,6 +1417,25 @@ import ${JSON.stringify(relativeUserEntry)};
       const bundle = fs.readFileSync(bundlePath, "utf-8");
       const cssPath = bundlePath.replace(".js", ".css");
       const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, "utf-8") : undefined;
+      const panelAssets = this.collectPanelAssets(buildMetafile, workspace.buildDir, bundlePath, cssPath, log);
+
+      // Build workers declared by dependencies (via natstack.workers in package.json)
+      let dependencyWorkerAssets: PanelAssetMap | undefined;
+      try {
+        dependencyWorkerAssets = await this.buildDependencyWorkerAssets(
+          workspace.nodeModulesDir,
+          nodePaths,
+          workspace.buildDir,
+          log
+        );
+      } catch (assetError) {
+        log?.(
+          `Warning: Dependency worker build failed: ${
+            assetError instanceof Error ? assetError.message : String(assetError)
+          }`
+        );
+      }
+      const assets = this.mergeAssetMaps(panelAssets, dependencyWorkerAssets);
       const html = this.resolveHtml(sourcePath, manifest.title, externals, {
         includeCss: Boolean(css),
       });
@@ -1375,6 +1448,7 @@ import ${JSON.stringify(relativeUserEntry)};
         bundle,
         html,
         css,
+        assets,
         dependencyHash,
       };
     } catch (error) {
@@ -1488,6 +1562,126 @@ import ${JSON.stringify(relativeUserEntry)};
         }
       },
     };
+  }
+
+  private mergeAssetMaps(...assetSets: Array<PanelAssetMap | undefined>): PanelAssetMap | undefined {
+    const merged: PanelAssetMap = {};
+    for (const assetSet of assetSets) {
+      if (!assetSet) continue;
+      Object.assign(merged, assetSet);
+    }
+    return Object.keys(merged).length > 0 ? merged : undefined;
+  }
+
+  private collectPanelAssets(
+    metafile: esbuild.Metafile | undefined,
+    buildDir: string,
+    bundlePath: string,
+    cssPath: string,
+    log?: (message: string) => void
+  ): PanelAssetMap | undefined {
+    if (!metafile) return undefined;
+    const outputs = Object.keys(metafile.outputs ?? {});
+    if (outputs.length === 0) return undefined;
+
+    const ignoredOutputs = new Set<string>([
+      path.resolve(bundlePath),
+      path.resolve(cssPath),
+    ]);
+    const assets: PanelAssetMap = {};
+
+    for (const output of outputs) {
+      const resolvedOutput = path.isAbsolute(output) ? output : path.join(buildDir, output);
+      const absoluteOutput = path.resolve(resolvedOutput);
+      if (ignoredOutputs.has(absoluteOutput)) continue;
+      if (!fs.existsSync(absoluteOutput)) continue;
+
+      const relative = path.relative(buildDir, absoluteOutput);
+      if (relative.startsWith("..")) continue;
+      const assetPath = `/${relative.replace(/\\/g, "/")}`;
+      const ext = path.extname(relative).toLowerCase();
+      const isText = TEXT_ASSET_EXTENSIONS.has(ext);
+      const content = isText
+        ? fs.readFileSync(absoluteOutput, "utf-8")
+        : fs.readFileSync(absoluteOutput).toString("base64");
+      const entry: PanelAssetEntry = isText ? { content } : { content, encoding: "base64" };
+      assets[assetPath] = entry;
+    }
+
+    const assetCount = Object.keys(assets).length;
+    if (assetCount === 0) {
+      return undefined;
+    }
+
+    log?.(`Bundled ${assetCount} panel asset${assetCount === 1 ? "" : "s"}.`);
+    return assets;
+  }
+
+  /**
+   * Build web workers declared by dependencies via natstack.workers in package.json.
+   * Scans the panel's node_modules for worker declarations and bundles them as assets.
+   */
+  private async buildDependencyWorkerAssets(
+    nodeModulesDir: string,
+    nodePaths: string[],
+    buildDir: string,
+    log?: (message: string) => void
+  ): Promise<PanelAssetMap | undefined> {
+    // Collect workers from the panel's dependencies
+    const workers = collectWorkersFromDependencies(nodeModulesDir, {
+      log: (msg) => log?.(msg),
+    });
+
+    const workerEntries = workersToArray(workers);
+    if (workerEntries.length === 0) {
+      return undefined;
+    }
+
+    const req = createRequire(__filename);
+    const resolveWithPaths = (specifier: string): string | null => {
+      try {
+        return req.resolve(specifier, { paths: nodePaths });
+      } catch {
+        return null;
+      }
+    };
+
+    const assets: PanelAssetMap = {};
+
+    for (const entry of workerEntries) {
+      const entryPath = resolveWithPaths(entry.specifier);
+      if (!entryPath || !fs.existsSync(entryPath)) {
+        log?.(`Warning: Could not resolve worker: ${entry.specifier} (declared by ${entry.declaredBy})`);
+        continue;
+      }
+
+      // Create output directory based on worker path (e.g., "monaco/editor.worker.js")
+      const outfile = path.join(buildDir, entry.name);
+      fs.mkdirSync(path.dirname(outfile), { recursive: true });
+
+      await esbuild.build({
+        entryPoints: [entryPath],
+        bundle: true,
+        platform: "browser",
+        target: "es2022",
+        format: "esm",
+        outfile,
+        sourcemap: false,
+        logLevel: "silent",
+        nodePaths,
+        conditions: ["natstack-panel"],
+      });
+
+      assets[`/${entry.name}`] = { content: fs.readFileSync(outfile, "utf-8") };
+    }
+
+    if (Object.keys(assets).length === 0) {
+      return undefined;
+    }
+
+    const packages = [...new Set(workerEntries.map((e) => e.declaredBy))];
+    log?.(`Bundled ${Object.keys(assets).length} worker assets from: ${packages.join(", ")}`);
+    return assets;
   }
 
   private mergeRuntimeDependencies(
@@ -1660,6 +1854,7 @@ import ${JSON.stringify(relativeUserEntry)};
         bundle,
         html,
         css,
+        assets: buildResult.assets,
         manifest: buildResult.manifest,
         buildLog,
       };

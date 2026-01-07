@@ -2,11 +2,24 @@ import * as esbuild from "esbuild";
 import * as fs from "fs";
 import * as path from "path";
 import { execSync } from "child_process";
+import { createRequire } from "module";
+import { collectWorkersFromDependencies, workersToArray } from "./src/shared/collectWorkers.mjs";
 
 const isDev = process.env.NODE_ENV === "development";
 
 const logOverride = {
   "suspicious-logical-operator": "silent",
+};
+
+
+// Plugin to mark node: prefixed imports as external (for browser platform builds)
+const nodeBuiltinsExternalPlugin = {
+  name: "node-builtins-external",
+  setup(build) {
+    build.onResolve({ filter: /^node:/ }, (args) => {
+      return { path: args.path, external: true };
+    });
+  },
 };
 
 const mainConfig = {
@@ -51,8 +64,10 @@ const panelPreloadConfig = {
 const rendererConfig = {
   entryPoints: ["src/renderer/index.tsx"],
   bundle: true,
-  platform: "browser",
-  target: "es2020",
+  // Shell has nodeIntegration enabled, so we can use Node.js platform
+  platform: "node",
+  target: "node20",
+  format: "cjs",
   outfile: "dist/renderer.js",
   sourcemap: isDev,
   minify: !isDev,
@@ -60,7 +75,19 @@ const rendererConfig = {
   loader: {
     ".html": "text",
     ".css": "css",
+    // Monaco editor assets
+    ".ttf": "dataurl",
+    ".woff": "dataurl",
+    ".woff2": "dataurl",
+    ".eot": "dataurl",
+    ".svg": "dataurl",
   },
+  // Define process.env.NODE_ENV at build time (React checks this before Node globals are available)
+  define: {
+    "process.env.NODE_ENV": isDev ? '"development"' : '"production"',
+  },
+  // Electron is external; fs modules are external since DirtyRepoView uses direct Node.js fs
+  external: ["electron", "fs", "fs/promises", "path"],
 };
 
 // =============================================================================
@@ -94,7 +121,9 @@ const workerRuntimeConfig = {
   minify: !isDev,
   logOverride,
   // Mark fs as external - it will be resolved at worker bundle time by the scoped fs shim plugin
+  // node: imports are external - they're only used in Node.js code paths that workers don't call
   external: ["fs", "node:fs", "fs/promises", "node:fs/promises"],
+  plugins: [nodeBuiltinsExternalPlugin],
 };
 
 function copyAssets() {
@@ -150,6 +179,58 @@ async function buildWorkspacePackages() {
 }
 
 /**
+ * Build web workers declared by dependencies via natstack.workers in package.json.
+ * Scans node_modules for worker declarations and bundles them.
+ */
+async function buildDependencyWorkers() {
+  const req = createRequire(import.meta.url);
+  const nodeModulesDir = path.join(process.cwd(), "node_modules");
+
+  // Collect workers from dependencies (workspace packages are symlinked here)
+  const workers = collectWorkersFromDependencies(nodeModulesDir, {
+    log: (msg) => console.warn(`[build] ${msg}`),
+  });
+
+  const workerEntries = workersToArray(workers);
+  if (workerEntries.length === 0) {
+    return;
+  }
+
+  let builtCount = 0;
+  for (const entry of workerEntries) {
+    let entryPath;
+    try {
+      entryPath = req.resolve(entry.specifier);
+    } catch {
+      console.warn(`[build] Could not resolve worker: ${entry.specifier} (declared by ${entry.declaredBy})`);
+      continue;
+    }
+
+    // Create output directory based on worker path (e.g., "monaco/editor.worker.js" -> "dist/monaco/")
+    const outfile = path.join("dist", entry.name);
+    fs.mkdirSync(path.dirname(outfile), { recursive: true });
+
+    await esbuild.build({
+      entryPoints: [entryPath],
+      bundle: true,
+      platform: "browser",
+      target: "es2022",
+      format: "esm",
+      outfile,
+      sourcemap: isDev,
+      minify: !isDev,
+      logLevel: "silent",
+    });
+    builtCount += 1;
+  }
+
+  if (builtCount > 0) {
+    const packages = [...new Set(workerEntries.map((e) => e.declaredBy))];
+    console.log(`[build] Bundled ${builtCount} worker assets from: ${packages.join(", ")}`);
+  }
+}
+
+/**
  * Build dependency graph
  * Defines explicit dependencies between build steps to ensure correct ordering
  */
@@ -192,6 +273,7 @@ async function build() {
     await esbuild.build(rendererConfig);
     await esbuild.build(utilityProcessConfig);
     await esbuild.build(workerRuntimeConfig);
+    await buildDependencyWorkers();
 
     // ========================================================================
     // STEP 3: Copy static assets

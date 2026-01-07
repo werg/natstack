@@ -1,0 +1,30 @@
+/**
+ * Radix UI Themes overrides
+ */
+
+/* Constrain dropdown menus to reasonable height */
+.rt-DropdownMenuContent {
+  max-height: var(--radix-dropdown-menu-content-available-height, 300px);
+  overflow-y: auto;
+}
+
+/* Responsive file overview panels: stack vertically on narrow viewports */
+@media (max-width: 500px) {
+  .file-overview-panels {
+    grid-template-columns: 1fr;
+    max-height: none;
+  }
+  /* Override inline grid-template-columns with higher specificity */
+  .file-overview-panels[style] {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Accordion chevron rotation animation */
+.accordion-trigger[data-state="open"] .accordion-chevron {
+  transform: rotate(0deg);
+}
+
+.accordion-trigger[data-state="closed"] .accordion-chevron {
+  transform: rotate(-90deg);
+}

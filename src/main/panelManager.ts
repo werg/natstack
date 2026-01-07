@@ -19,6 +19,7 @@ import { getPubSubServer } from "./pubsubServer.js";
 import { getTokenManager } from "./tokenManager.js";
 import type { ViewManager } from "./viewManager.js";
 import { parseChildUrl } from "./childProtocol.js";
+import { checkWorktreeClean } from "./gitProvisioner.js";
 
 type ChildCreateOptions = {
   name?: string;
@@ -723,6 +724,22 @@ export class PanelManager {
     const workerManager = getWorkerManager();
 
     try {
+      // Check for dirty worktree before building (only for non-versioned builds)
+      if (!version?.branch && !version?.commit && !version?.tag) {
+        const absolutePanelPath = path.resolve(this.panelsRoot, worker.path);
+        const { clean, path: repoPath } = await checkWorktreeClean(absolutePanelPath);
+
+        if (!clean) {
+          worker.artifacts = {
+            buildState: "dirty",
+            dirtyRepoPath: repoPath,
+            buildProgress: "Uncommitted changes detected",
+          };
+          this.notifyPanelTreeUpdate();
+          return;
+        }
+      }
+
       // Create the worker entry in WorkerManager (sets up scoped FS)
       // Use worker.workerOptions which already has manifest.unsafe as fallback
       // Use worker.env (built by buildPanelEnv) rather than the creation options to include all injected config
@@ -817,6 +834,22 @@ export class PanelManager {
     options?: { branch?: string; commit?: string; tag?: string; sourcemap?: boolean }
   ): Promise<void> {
     try {
+      // Check for dirty worktree before building (only for non-versioned builds)
+      if (!options?.branch && !options?.commit && !options?.tag) {
+        const absolutePanelPath = path.resolve(this.panelsRoot, panel.path);
+        const { clean, path: repoPath } = await checkWorktreeClean(absolutePanelPath);
+
+        if (!clean) {
+          panel.artifacts = {
+            buildState: "dirty",
+            dirtyRepoPath: repoPath,
+            buildProgress: "Uncommitted changes detected",
+          };
+          this.notifyPanelTreeUpdate();
+          return;
+        }
+      }
+
       const buildVersion =
         options?.branch || options?.commit || options?.tag
           ? {
@@ -850,6 +883,7 @@ export class PanelManager {
           html: result.html,
           title: result.manifest?.title ?? panel.title,
           css: result.css,
+          assets: result.assets,
           injectHostThemeVariables: result.manifest?.injectHostThemeVariables !== false,
           sourceRepo: panel.path,
           repoArgs: result.manifest?.repoArgs,
@@ -985,6 +1019,44 @@ export class PanelManager {
 
     // Notify renderer
     this.notifyPanelTreeUpdate();
+  }
+
+  /**
+   * Retry a build for a panel that was blocked by dirty worktree.
+   * Called after user commits or discards changes in the Git UI.
+   */
+  async retryBuild(panelId: string): Promise<void> {
+    const panel = this.panels.get(panelId);
+    if (!panel) {
+      throw new Error(`Panel not found: ${panelId}`);
+    }
+
+    if (panel.artifacts.buildState !== "dirty") {
+      // Not in dirty state, nothing to retry
+      return;
+    }
+
+    // Reset state and retry build
+    panel.artifacts = {
+      buildState: "building",
+      buildProgress: "Retrying build...",
+    };
+    this.notifyPanelTreeUpdate();
+
+    // Call appropriate build method based on panel type
+    if (panel.type === "worker") {
+      await this.buildWorkerAsync(panel as SharedPanel.WorkerPanel, {
+        branch: panel.branch,
+        commit: panel.commit,
+        tag: panel.tag,
+      });
+    } else if (panel.type === "app") {
+      await this.buildPanelAsync(panel as SharedPanel.AppPanel, {
+        branch: panel.branch,
+        commit: panel.commit,
+        tag: panel.tag,
+      });
+    }
   }
 
   getInfo(panelId: string): SharedPanel.PanelInfo {

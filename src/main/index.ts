@@ -1,4 +1,4 @@
-import { app, BaseWindow, Menu, nativeTheme, type MenuItemConstructorOptions } from "electron";
+import { app, BaseWindow, Menu, nativeTheme, ipcMain, type MenuItemConstructorOptions } from "electron";
 import { buildHamburgerMenuTemplate } from "./menu.js";
 import * as path from "path";
 import * as fs from "fs";
@@ -386,6 +386,11 @@ handle("panel:reload", async (_event, panelId: string) => {
 handle("panel:close", async (_event, panelId: string) => {
   const pm = requirePanelManager();
   await pm.closePanel(panelId);
+});
+
+handle("panel:retry-dirty-build", async (_event, panelId: string) => {
+  const pm = requirePanelManager();
+  await pm.retryBuild(panelId);
 });
 
 // =============================================================================

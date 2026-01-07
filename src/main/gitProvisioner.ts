@@ -262,9 +262,21 @@ async function createTempCheckout(
   }
 }
 
-async function isWorktreeDirty(repoPath: string): Promise<boolean> {
+/**
+ * Check if a git worktree has uncommitted changes.
+ */
+export async function isWorktreeDirty(repoPath: string): Promise<boolean> {
   const status = await runGit(["status", "--porcelain"], repoPath);
   return status.trim().length > 0;
+}
+
+/**
+ * Check if worktree is clean and return the result with the path.
+ * Use this instead of assertCleanWorktree when you want to handle dirty state gracefully.
+ */
+export async function checkWorktreeClean(repoPath: string): Promise<{ clean: boolean; path: string }> {
+  const dirty = await isWorktreeDirty(repoPath);
+  return { clean: !dirty, path: repoPath };
 }
 
 async function assertCleanWorktree(repoPath: string): Promise<void> {
