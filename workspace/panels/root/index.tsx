@@ -183,6 +183,16 @@ export default function ChildPanelLauncher() {
     }
   };
 
+  const launchUnsafeFsDemo = async () => {
+    try {
+      setStatus("Launching Unsafe FS Demo...");
+      const child = await createChild("panels/unsafe-fs-demo", { name: "unsafe-fs-demo" });
+      setStatus(`Launched Unsafe FS Demo: ${child.name}`);
+    } catch (error) {
+      setStatus(`Failed to launch Unsafe FS Demo: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
   const setRandomTitle = async () => {
     const title = `Radix Panel ${Math.floor(Math.random() * 1000)}`;
     await setTitle(title);
@@ -755,6 +765,9 @@ export default function ChildPanelLauncher() {
             <Button onClick={launchAgentManager} color="orange">
               Launch Agent Manager
             </Button>
+            <Button onClick={launchUnsafeFsDemo} color="red">
+              🔓 Launch Unsafe FS Demo
+            </Button>
             <Button variant="soft" onClick={setRandomTitle}>
               Set random title
             </Button>
@@ -782,6 +795,11 @@ export default function ChildPanelLauncher() {
               <Text size="2">
                 <a href={buildChildLink("workers/rpc-example")}>
                   Start RPC Example Worker (natstack-child)
+                </a>
+              </Text>
+              <Text size="2">
+                <a href={buildChildLink("panels/unsafe-fs-demo")}>
+                  🔓 Open Unsafe FS Demo (real Node.js fs access)
                 </a>
               </Text>
               <Text size="2">

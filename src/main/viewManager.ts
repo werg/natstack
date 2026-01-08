@@ -50,6 +50,12 @@ export interface ViewConfig {
   injectHostThemeVariables?: boolean;
   /** Additional arguments to pass to the preload script */
   additionalArguments?: string[];
+  /**
+   * Run panel with full Node.js API access.
+   * - `true`: Unsafe mode with default scoped filesystem
+   * - `string`: Unsafe mode with custom filesystem root (e.g., "/" for full access)
+   */
+  unsafe?: boolean | string;
 }
 
 interface ManagedView {
@@ -74,6 +80,7 @@ export class ViewManager {
   private views = new Map<string, ManagedView>();
   private shellView: WebContentsView;
   private panelPreloadPath: string;
+  private unsafePanelPreloadPath: string;
   private currentThemeCss: string | null = null;
   /** Per-view locks to prevent concurrent withViewVisible operations */
   private visibilityLocks = new Map<string, Promise<unknown>>();
@@ -89,6 +96,11 @@ export class ViewManager {
   }) {
     this.window = options.window;
     this.panelPreloadPath = options.panelPreload;
+    // Calculate unsafe panel preload path (same directory, different file)
+    this.unsafePanelPreloadPath = options.panelPreload.replace(
+      /panelPreload\.(c?js)$/,
+      "unsafePanelPreload.$1"
+    );
 
     // Create shell view (React UI) - fills entire window
     // nodeIntegration enabled for direct fs/git access (shell is trusted app UI)
@@ -191,11 +203,12 @@ export class ViewManager {
       }
     }
 
-    // Build webPreferences based on view type
+    // Build webPreferences based on view type and unsafe flag
+    const isUnsafe = config.unsafe !== undefined;
     const webPreferences: Electron.WebPreferences = {
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
+      nodeIntegration: isUnsafe,
+      contextIsolation: !isUnsafe,
+      sandbox: !isUnsafe,
       session: ses,
       webviewTag: false,
     };
@@ -206,7 +219,10 @@ export class ViewManager {
     } else if (config.preload) {
       webPreferences.preload = config.preload;
     } else {
-      webPreferences.preload = this.panelPreloadPath;
+      // Use unsafe preload for unsafe panels, regular preload otherwise
+      webPreferences.preload = isUnsafe
+        ? this.unsafePanelPreloadPath
+        : this.panelPreloadPath;
     }
 
     // Pass additional arguments to preload script

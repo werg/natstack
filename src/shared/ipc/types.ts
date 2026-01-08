@@ -40,7 +40,7 @@ export interface PanelInfo {
  * Build state for panels built by main process.
  * Used to show placeholder UI during build.
  */
-export type PanelBuildState = "pending" | "cloning" | "building" | "ready" | "error" | "dirty";
+export type PanelBuildState = "pending" | "cloning" | "building" | "ready" | "error" | "dirty" | "not-git-repo";
 
 export interface PanelArtifacts {
   htmlPath?: string;
@@ -54,6 +54,8 @@ export interface PanelArtifacts {
   buildLog?: string;
   /** Absolute path to dirty repo (when buildState === "dirty") */
   dirtyRepoPath?: string;
+  /** Absolute path to non-git directory (when buildState === "not-git-repo") */
+  notGitRepoPath?: string;
 }
 
 /**
@@ -119,6 +121,8 @@ export interface PanelIpcApi {
   "panel:close": (panelId: string) => void;
   /** Retry build for a panel that was blocked by dirty worktree */
   "panel:retry-dirty-build": (panelId: string) => void;
+  /** Initialize git repo for panel blocked by not-git-repo state */
+  "panel:init-git-repo": (panelId: string) => void;
   /**
    * Register a browser panel's webview with the CDP server.
    * Called by renderer when a browser webview's dom-ready fires.
@@ -346,6 +350,12 @@ export interface AppPanel extends PanelBase {
   /** Resolved repo args (name -> spec) provided by parent at createChild time */
   resolvedRepoArgs?: Record<string, RepoArgSpec>;
   injectHostThemeVariables: boolean;
+  /**
+   * Run panel with full Node.js API access instead of browser sandbox.
+   * - `true`: Unsafe mode with default scoped filesystem
+   * - `string`: Unsafe mode with custom filesystem root (e.g., "/" for full access)
+   */
+  unsafe?: boolean | string;
 }
 
 /**

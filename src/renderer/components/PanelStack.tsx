@@ -17,6 +17,7 @@ import type { StatusNavigationData, TitleNavigationData } from "./navigationType
 import type { WorkerConsoleLogEntry, PanelContextMenuAction } from "../../shared/ipc/types";
 import { useNavigation } from "./NavigationContext";
 import { DirtyRepoView } from "./DirtyRepoView";
+import { GitInitView } from "./GitInitView";
 
 interface PanelStackProps {
   onTitleChange?: (title: string) => void;
@@ -745,6 +746,18 @@ export function PanelStack({
                               {artifacts.error}
                             </Text>
                           </Flex>
+                        );
+                      }
+
+                      // Show GitInitView when panel folder is not a git repository
+                      if (artifacts?.buildState === "not-git-repo" && artifacts.notGitRepoPath) {
+                        return (
+                          <GitInitView
+                            key={panel.id}
+                            panelId={panel.id}
+                            repoPath={artifacts.notGitRepoPath}
+                            onContinueBuild={() => window.electronAPI.initGitRepo(panel.id)}
+                          />
                         );
                       }
 

@@ -393,6 +393,11 @@ handle("panel:retry-dirty-build", async (_event, panelId: string) => {
   await pm.retryBuild(panelId);
 });
 
+handle("panel:init-git-repo", async (_event, panelId: string) => {
+  const pm = requirePanelManager();
+  await pm.initializeGitRepo(panelId);
+});
+
 // =============================================================================
 // Unified RPC Handler (panel <-> main) - Only in main mode
 // =============================================================================

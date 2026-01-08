@@ -161,3 +161,25 @@ export function getWorkerScopePath(workspaceId: string, workerId: string): strin
 
   return scopePath;
 }
+
+/**
+ * Get the scoped filesystem root directory for an unsafe app panel.
+ * Creates a directory at: <central-config>/panel-scopes/<workspace-id>/<escaped-panel-id>/
+ *
+ * This provides each unsafe panel with its own isolated filesystem sandbox when unsafe=true.
+ * Panels with unsafe="/" will use "/" as their scope path (full system access).
+ *
+ * @param workspaceId - The workspace ID from workspace config
+ * @param panelId - The panel's tree node ID (may contain slashes)
+ * @returns Absolute path to the panel's scope directory
+ */
+export function getPanelScopePath(workspaceId: string, panelId: string): string {
+  const configDir = getCentralConfigDirectory();
+  const escapedPanelId = escapeWorkerIdForPath(panelId); // Reuse worker ID escaping logic
+  const scopePath = path.join(configDir, "panel-scopes", workspaceId, escapedPanelId);
+
+  // Create the directory if it doesn't exist
+  fs.mkdirSync(scopePath, { recursive: true });
+
+  return scopePath;
+}

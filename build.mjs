@@ -61,6 +61,19 @@ const panelPreloadConfig = {
   logOverride,
 };
 
+const unsafePanelPreloadConfig = {
+  entryPoints: ["src/preload/unsafePanelPreload.ts"],
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "cjs",
+  outfile: "dist/unsafePanelPreload.cjs",
+  external: ["electron"],
+  sourcemap: isDev,
+  minify: !isDev,
+  logOverride,
+};
+
 const rendererConfig = {
   entryPoints: ["src/renderer/index.tsx"],
   bundle: true,
@@ -270,6 +283,7 @@ async function build() {
     await esbuild.build(mainConfig);
     await esbuild.build(preloadConfig);
     await esbuild.build(panelPreloadConfig);
+    await esbuild.build(unsafePanelPreloadConfig);
     await esbuild.build(rendererConfig);
     await esbuild.build(utilityProcessConfig);
     await esbuild.build(workerRuntimeConfig);

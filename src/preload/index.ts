@@ -24,6 +24,8 @@ export const electronAPI = {
   closePanel: (panelId: string): Promise<void> => ipcRenderer.invoke("panel:close", panelId),
   retryDirtyBuild: (panelId: string): Promise<void> =>
     ipcRenderer.invoke("panel:retry-dirty-build", panelId),
+  initGitRepo: (panelId: string): Promise<void> =>
+    ipcRenderer.invoke("panel:init-git-repo", panelId),
   updateBrowserState: (
     browserId: string,
     state: { url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean }

@@ -832,6 +832,12 @@ interface BuildFromSourceOptions {
   log?: (message: string) => void;
   /** Whether to emit inline sourcemaps (default: true) */
   inlineSourcemap?: boolean;
+  /**
+   * Run panel with full Node.js API access instead of browser sandbox.
+   * - `true`: Unsafe mode with default scoped filesystem
+   * - `string`: Unsafe mode with custom filesystem root (e.g., "/" for full access)
+   */
+  unsafe?: boolean | string;
 }
 
 interface BuildFromSourceResult {
@@ -990,7 +996,7 @@ export class PanelBuilder {
     sourcePath: string,
     title: string,
     externals?: Record<string, string>,
-    options: { includeCss?: boolean } = {}
+    options: { includeCss?: boolean; unsafe?: boolean } = {}
   ): string {
     const sourceHtmlPath = path.join(sourcePath, "index.html");
     if (fs.existsSync(sourceHtmlPath)) {
@@ -1007,6 +1013,11 @@ export class PanelBuilder {
 
     const cssLink = options.includeCss ? `\n  <link rel=\"stylesheet\" href=\"./bundle.css\" />` : "";
 
+    // Script type must match bundle format:
+    // - Unsafe panels: CJS format (require()) → no type attribute (classic script)
+    // - Safe panels: ESM format (import/export) → type="module" required
+    const scriptType = options.unsafe ? "" : ' type="module"';
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1018,7 +1029,7 @@ export class PanelBuilder {
 </head>
 <body>
   <div id="root"></div>
-  <script type="module" src="./bundle.js"></script>
+  <script${scriptType} src="./bundle.js"></script>
 </body>
 </html>`;
   }
@@ -1217,6 +1228,7 @@ export class PanelBuilder {
       previousDependencyHash,
       log = console.log.bind(console),
       inlineSourcemap = true,
+      unsafe,
     } = options;
 
     // Check if panel directory exists
@@ -1276,6 +1288,10 @@ export class PanelBuilder {
       }
 
       const externalModules = Object.keys(externals);
+      // For unsafe panels with platform: "node", don't manually mark Node.js built-ins as external
+      // esbuild will handle them correctly as built-ins provided by the Node.js runtime
+      // (This matches the pattern used by the renderer/shell which also uses platform: "node")
+
       const explicitExposeModules = (manifest.exposeModules ?? [])
         .filter((spec): spec is string => typeof spec === "string")
         .map((spec) => spec.trim())
@@ -1321,9 +1337,13 @@ import ${JSON.stringify(relativeUserEntry)};
         log(`External modules (CDN): ${externalModules.join(", ")}`);
       }
 
-      // Use panel fs shim plugin (maps to @natstack/runtime) and optionally dedupe plugin.
+      // Use panel fs shim plugin (maps to @natstack/runtime) for safe panels.
+      // For unsafe panels, skip the shim to allow direct Node.js fs access.
       // resolveDir points at the deps dir where @natstack/runtime is installed.
-      const plugins: esbuild.Plugin[] = [createPanelFsShimPlugin(workspace.depsDir)];
+      const plugins: esbuild.Plugin[] = [];
+      if (!unsafe) {
+        plugins.push(createPanelFsShimPlugin(workspace.depsDir));
+      }
       if (hasNatstackReact) {
         // Dedupe React, Radix UI, and any manifest-specified packages
         plugins.push(this.createDedupePlugin(workspace.nodeModulesDir, manifest.dedupeModules));
@@ -1331,16 +1351,19 @@ import ${JSON.stringify(relativeUserEntry)};
 
       const bannerJs = [generateAsyncTrackingBanner(), generateModuleMapBanner()].join("\n");
 
-      const buildResult = await esbuild.build({
+      // Helper to create consistent esbuild configuration
+      const createBuildConfig = (): esbuild.BuildOptions => ({
         entryPoints: [tempEntryPath],
         bundle: true,
-        platform: "browser",
+        // Use "node" platform for unsafe panels to enable Node.js built-in modules
+        platform: unsafe ? "node" : "browser",
         target: "es2022",
         conditions: ["natstack-panel"],
         outfile: bundlePath,
         sourcemap: inlineSourcemap ? "inline" : false,
         keepNames: true, // Preserve class/function names
-        format: "esm",
+        // CJS format required for unsafe panels: nodeIntegration only patches require(), not ES imports
+        format: unsafe ? "cjs" : "esm",
         absWorkingDir: sourcePath,
         nodePaths,
         plugins,
@@ -1358,6 +1381,8 @@ import ${JSON.stringify(relativeUserEntry)};
           useDefineForClassFields: true,
         }),
       });
+
+      const buildResult = await esbuild.build(createBuildConfig());
       let buildMetafile = buildResult.metafile;
 
       if (buildResult.metafile) {
@@ -1376,33 +1401,7 @@ import ${JSON.stringify(relativeUserEntry)};
 
           log(`Re-building with ${uniqueDeps.length} exposed modules...`);
           try {
-            const rebuildResult = await esbuild.build({
-              entryPoints: [tempEntryPath],
-              bundle: true,
-              platform: "browser",
-              target: "es2022",
-              conditions: ["natstack-panel"],
-              outfile: bundlePath,
-              sourcemap: inlineSourcemap ? "inline" : false,
-              keepNames: true,
-              format: "esm",
-              absWorkingDir: sourcePath,
-              nodePaths,
-              plugins,
-              external: externalModules,
-              loader: PANEL_ASSET_LOADERS,
-              assetNames: "assets/[name]-[hash]",
-              banner: {
-                js: bannerJs,
-              },
-              metafile: true,
-              // Use a build-owned tsconfig. Only allowlisted user compilerOptions are merged.
-              tsconfig: this.writeBuildTsconfig(workspace.buildDir, sourcePath, "panel", {
-                jsx: "react-jsx",
-                target: "ES2022",
-                useDefineForClassFields: true,
-              }),
-            });
+            const rebuildResult = await esbuild.build(createBuildConfig());
             if (rebuildResult.metafile) {
               buildMetafile = rebuildResult.metafile;
             }
@@ -1438,6 +1437,7 @@ import ${JSON.stringify(relativeUserEntry)};
       const assets = this.mergeAssetMaps(panelAssets, dependencyWorkerAssets);
       const html = this.resolveHtml(sourcePath, manifest.title, externals, {
         includeCss: Boolean(css),
+        unsafe: Boolean(unsafe),
       });
 
       log(`Build complete (${bundle.length} bytes JS)`);
@@ -1722,7 +1722,7 @@ import ${JSON.stringify(relativeUserEntry)};
     panelPath: string,
     version?: VersionSpec,
     onProgress?: (progress: BuildProgress) => void,
-    options?: { sourcemap?: boolean }
+    options?: { sourcemap?: boolean; unsafe?: boolean | string }
   ): Promise<ChildBuildResult> {
     let cleanup: (() => Promise<void>) | null = null;
     let buildLog = "";
@@ -1784,6 +1784,7 @@ import ${JSON.stringify(relativeUserEntry)};
         previousDependencyHash,
         log,
         inlineSourcemap: options?.sourcemap !== false,
+        unsafe: options?.unsafe,
       });
 
       // Save the new dependency hash for next time

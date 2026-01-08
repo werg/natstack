@@ -92,10 +92,13 @@ export interface PanelManifest {
    */
   runtime?: RuntimeType;
   /**
-   * Run worker with full Node.js API access instead of sandboxed vm.Context.
-   * Only applies when runtime is "worker".
+   * Run with full Node.js API access instead of sandbox.
+   * - For app panels: Enables nodeIntegration, disables browser sandbox, provides real fs module
+   * - For workers: Uses full Node.js vm.Context instead of restricted sandbox
    * - `true`: Unsafe mode with default scoped filesystem
    * - `string`: Unsafe mode with custom filesystem root (e.g., "/" for full access)
+   *
+   * ⚠️ Security Warning: Unsafe mode grants full system access. Use only for trusted first-party code.
    */
   unsafe?: boolean | string;
 }

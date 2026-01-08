@@ -3,7 +3,7 @@ import { randomBytes } from "crypto";
 import { nativeTheme } from "electron";
 import { PanelBuilder } from "./panelBuilder.js";
 import type { PanelEventPayload, Panel, PanelManifest, BrowserPanel } from "./panelTypes.js";
-import { getActiveWorkspace } from "./paths.js";
+import { getActiveWorkspace, getPanelScopePath } from "./paths.js";
 import type { GitServer } from "./gitServer.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
 import * as SharedPanel from "../shared/ipc/types.js";
@@ -19,7 +19,7 @@ import { getPubSubServer } from "./pubsubServer.js";
 import { getTokenManager } from "./tokenManager.js";
 import type { ViewManager } from "./viewManager.js";
 import { parseChildUrl } from "./childProtocol.js";
-import { checkWorktreeClean } from "./gitProvisioner.js";
+import { checkWorktreeClean, checkGitRepository } from "./gitProvisioner.js";
 
 type ChildCreateOptions = {
   name?: string;
@@ -167,6 +167,21 @@ export class PanelManager {
         }
       }
 
+      // Get unsafe flag for app panels
+      const unsafeFlag = panel?.type === "app" ? (panel as SharedPanel.AppPanel).unsafe : undefined;
+
+      // Calculate and add scope path for unsafe panels
+      if (unsafeFlag !== undefined) {
+        const workspace = getActiveWorkspace();
+        if (workspace) {
+          const scopePath =
+            typeof unsafeFlag === "string"
+              ? unsafeFlag // Custom root (e.g., "/" for full access)
+              : getPanelScopePath(workspace.config.id, panelId); // Default scoped path
+          additionalArgs.push(`--natstack-scope-path=${scopePath}`);
+        }
+      }
+
       const view = this.viewManager.createView({
         id: panelId,
         type: "panel",
@@ -175,6 +190,7 @@ export class PanelManager {
         parentId: parentId ?? undefined,
         injectHostThemeVariables: panel?.type === "app" ? (panel as SharedPanel.AppPanel).injectHostThemeVariables : true,
         additionalArguments: additionalArgs,
+        unsafe: unsafeFlag,
       });
 
       // Register app panels with CDP server for automation/testing (like browsers)
@@ -524,6 +540,7 @@ export class PanelManager {
             children: [],
             selectedChildId: null,
             injectHostThemeVariables: manifest.injectHostThemeVariables !== false,
+            unsafe: options?.unsafe ?? manifest.unsafe,
             artifacts: {
               buildState: "building",
               buildProgress: "Starting build...",
@@ -724,15 +741,30 @@ export class PanelManager {
     const workerManager = getWorkerManager();
 
     try {
-      // Check for dirty worktree before building (only for non-versioned builds)
+      // Check if panel directory is a git repo first (only for non-versioned builds)
       if (!version?.branch && !version?.commit && !version?.tag) {
         const absolutePanelPath = path.resolve(this.panelsRoot, worker.path);
-        const { clean, path: repoPath } = await checkWorktreeClean(absolutePanelPath);
+
+        // Stage 1: Check if it's a git repo
+        const { isRepo, path: repoPath } = await checkGitRepository(absolutePanelPath);
+
+        if (!isRepo) {
+          worker.artifacts = {
+            buildState: "not-git-repo",
+            notGitRepoPath: repoPath,
+            buildProgress: "Panel folder must be the root of a git repository",
+          };
+          this.notifyPanelTreeUpdate();
+          return;
+        }
+
+        // Stage 2: Check for dirty worktree
+        const { clean, path: cleanRepoPath } = await checkWorktreeClean(absolutePanelPath);
 
         if (!clean) {
           worker.artifacts = {
             buildState: "dirty",
-            dirtyRepoPath: repoPath,
+            dirtyRepoPath: cleanRepoPath,
             buildProgress: "Uncommitted changes detected",
           };
           this.notifyPanelTreeUpdate();
@@ -834,15 +866,30 @@ export class PanelManager {
     options?: { branch?: string; commit?: string; tag?: string; sourcemap?: boolean }
   ): Promise<void> {
     try {
-      // Check for dirty worktree before building (only for non-versioned builds)
+      // Check if panel directory is a git repo first (only for non-versioned builds)
       if (!options?.branch && !options?.commit && !options?.tag) {
         const absolutePanelPath = path.resolve(this.panelsRoot, panel.path);
-        const { clean, path: repoPath } = await checkWorktreeClean(absolutePanelPath);
+
+        // Stage 1: Check if it's a git repo
+        const { isRepo, path: repoPath } = await checkGitRepository(absolutePanelPath);
+
+        if (!isRepo) {
+          panel.artifacts = {
+            buildState: "not-git-repo",
+            notGitRepoPath: repoPath,
+            buildProgress: "Panel folder must be the root of a git repository",
+          };
+          this.notifyPanelTreeUpdate();
+          return;
+        }
+
+        // Stage 2: Check for dirty worktree
+        const { clean, path: cleanRepoPath } = await checkWorktreeClean(absolutePanelPath);
 
         if (!clean) {
           panel.artifacts = {
             buildState: "dirty",
-            dirtyRepoPath: repoPath,
+            dirtyRepoPath: cleanRepoPath,
             buildProgress: "Uncommitted changes detected",
           };
           this.notifyPanelTreeUpdate();
@@ -873,7 +920,7 @@ export class PanelManager {
           };
           this.notifyPanelTreeUpdate();
         },
-        { sourcemap: options?.sourcemap !== false }
+        { sourcemap: options?.sourcemap !== false, unsafe: panel.unsafe }
       );
 
       if (result.success && result.bundle && result.html) {
@@ -1056,6 +1103,54 @@ export class PanelManager {
         commit: panel.commit,
         tag: panel.tag,
       });
+    }
+  }
+
+  /**
+   * Initialize git repo after user clicks initialize in GitInitView.
+   * Re-runs build checks which will now pass git repo check and go to dirty check.
+   */
+  async initializeGitRepo(panelId: string): Promise<void> {
+    const panel = this.panels.get(panelId);
+    if (!panel) {
+      throw new Error(`Panel not found: ${panelId}`);
+    }
+
+    if (panel.artifacts.buildState !== "not-git-repo") {
+      // Not in not-git-repo state, nothing to initialize
+      return;
+    }
+
+    // Reset state and re-run build
+    panel.artifacts = {
+      buildState: "building",
+      buildProgress: "Checking repository status...",
+    };
+    this.notifyPanelTreeUpdate();
+
+    try {
+      // Call appropriate build method based on panel type
+      if (panel.type === "worker") {
+        await this.buildWorkerAsync(panel as SharedPanel.WorkerPanel, {
+          branch: panel.branch,
+          commit: panel.commit,
+          tag: panel.tag,
+        });
+      } else if (panel.type === "app") {
+        await this.buildPanelAsync(panel as SharedPanel.AppPanel, {
+          branch: panel.branch,
+          commit: panel.commit,
+          tag: panel.tag,
+        });
+      }
+    } catch (error) {
+      // Build failed - set error state and notify
+      panel.artifacts = {
+        buildState: "error",
+        buildProgress: `Build failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+      this.notifyPanelTreeUpdate();
+      throw error; // Re-throw to notify caller
     }
   }
 

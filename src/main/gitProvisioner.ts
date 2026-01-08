@@ -279,6 +279,42 @@ export async function checkWorktreeClean(repoPath: string): Promise<{ clean: boo
   return { clean: !dirty, path: repoPath };
 }
 
+/**
+ * Internal helper: Check if a directory is the root of a git repository.
+ * Returns true only if the directory is the actual root, not a subdirectory within a repo.
+ *
+ * Note: Use checkGitRepository() instead for the public API with structured output.
+ */
+async function isGitRepository(repoPath: string): Promise<boolean> {
+  // First check if .git exists in this directory
+  const gitDir = path.join(repoPath, ".git");
+  if (!fs.existsSync(gitDir)) {
+    return false;
+  }
+
+  // Verify this is the root of the repo, not a subdirectory
+  try {
+    const gitRoot = await runGit(["rev-parse", "--show-toplevel"], repoPath);
+    const normalizedRepoPath = path.resolve(repoPath);
+    const normalizedGitRoot = path.resolve(gitRoot);
+    return normalizedRepoPath === normalizedGitRoot;
+  } catch {
+    // If git command fails, not a valid git repo
+    return false;
+  }
+}
+
+/**
+ * Check if a directory is a git repository and return detailed result.
+ * Returns both the boolean result and the checked path for consistency with checkWorktreeClean().
+ *
+ * This is the primary public API for git repository checks.
+ */
+export async function checkGitRepository(repoPath: string): Promise<{ isRepo: boolean; path: string }> {
+  const isRepo = await isGitRepository(repoPath);
+  return { isRepo, path: repoPath };
+}
+
 async function assertCleanWorktree(repoPath: string): Promise<void> {
   if (await isWorktreeDirty(repoPath)) {
     throw new Error(
