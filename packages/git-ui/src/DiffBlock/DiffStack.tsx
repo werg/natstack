@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback } from "react";
+import React, { useRef, useEffect, useCallback, useMemo } from "react";
 import { useAtomValue } from "jotai";
 import { Box, Callout, Flex, Text, Separator, Button, Spinner, Card } from "@radix-ui/themes";
 import { ExclamationTriangleIcon, ReloadIcon, CheckCircledIcon } from "@radix-ui/react-icons";
@@ -14,7 +14,7 @@ interface DiffStackProps {
   files: FileChange[];
   getDiff: (path: string, options?: { force?: boolean }) => Promise<FileDiffType | null>;
   refreshId?: number;
-  selectedFile: string | null;
+  selectedFiles: Set<string>;
   expandedFiles: Set<string>;
   onToggleExpand: (path: string) => void;
   largeDiffThreshold: number;
@@ -108,6 +108,16 @@ function EmptyState() {
         </Callout.Text>
       </Callout.Root>
     </Box>
+  );
+}
+
+function NoSelectionState() {
+  return (
+    <Flex align="center" justify="center" p="6">
+      <Text size="2" color="gray">
+        Select files from the tree to view their diffs
+      </Text>
+    </Flex>
   );
 }
 
@@ -211,7 +221,7 @@ export function DiffStack({
   files,
   getDiff,
   refreshId,
-  selectedFile,
+  selectedFiles,
   expandedFiles,
   onToggleExpand,
   largeDiffThreshold,
@@ -255,15 +265,20 @@ export function DiffStack({
     return storeDiffs.get(cacheKey);
   }, [storeDiffs, cacheKeyFor]);
 
-  // Scroll to selected file
+  // Scroll to first selected file when selection changes
   useEffect(() => {
-    if (selectedFile && fileRefs.current.has(selectedFile)) {
-      fileRefs.current.get(selectedFile)?.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-      });
+    if (selectedFiles.size === 0) return;
+    // Get the first selected file that exists in our refs
+    for (const path of selectedFiles) {
+      if (fileRefs.current.has(path)) {
+        fileRefs.current.get(path)?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+        break;
+      }
     }
-  }, [selectedFile]);
+  }, [selectedFiles]);
 
   // Cleanup refs on unmount to prevent memory leaks
   useEffect(() => {
@@ -294,12 +309,12 @@ export function DiffStack({
     [loadDiff]
   );
 
-  // Load selected file diff
+  // Load diffs for all selected files
   useEffect(() => {
-    if (selectedFile) {
-      loadDiff(selectedFile);
+    for (const path of selectedFiles) {
+      loadDiff(path);
     }
-  }, [selectedFile, loadDiff]);
+  }, [selectedFiles, loadDiff]);
 
   // Force-refresh visible diffs when refreshId changes
   useEffect(() => {
@@ -398,16 +413,26 @@ export function DiffStack({
   const viewOptions = diffViewOptions ?? localOptions;
   const setViewOptions = onDiffViewOptionsChange ?? setLocalOptions;
 
+  // Filter to only show selected files
+  const filesToRender = useMemo(
+    () => files.filter((f) => selectedFiles.has(f.path)),
+    [files, selectedFiles]
+  );
+
   if (files.length === 0) {
     return <EmptyState />;
   }
 
+  if (filesToRender.length === 0) {
+    return <NoSelectionState />;
+  }
+
   return (
-    <Box ref={containerRef} p="3">
+    <Box ref={containerRef}>
       {showControls && (
         <DiffViewControls options={viewOptions} onChange={setViewOptions} />
       )}
-      {files.map((file, index) => {
+      {filesToRender.map((file, index) => {
         const cacheEntry = getCachedEntry(file.path);
         const diff = cacheEntry?.diff;
         const cacheKey = cacheKeyFor(file.path);
@@ -421,11 +446,10 @@ export function DiffStack({
           <Box
             key={`${diffType}:${file.path}`}
             ref={(el) => registerRef(file.path, el)}
-            mb="4"
             data-path={file.path}
             data-focused={focusedFile === file.path || undefined}
           >
-            {index > 0 && <Separator size="4" mb="4" />}
+            {index > 0 && <Separator size="4" />}
 
             <FileDiffContainer
               file={file}

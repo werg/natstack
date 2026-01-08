@@ -20,7 +20,11 @@ interface CompactFileSearchProps {
  * Always visible, expands to fill available width.
  * Only shows status options that have files, hides filter buttons if only one status.
  */
-export function CompactFileSearch({ filter, onFilterChange, statusCounts }: CompactFileSearchProps) {
+export function CompactFileSearch({
+  filter,
+  onFilterChange,
+  statusCounts,
+}: CompactFileSearchProps) {
   const activeStatuses = filter.status ?? [];
 
   // Only include statuses that have files

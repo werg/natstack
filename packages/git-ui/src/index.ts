@@ -72,6 +72,8 @@ export { useGitRemote } from "./hooks/useGitRemote";
 export { useFileBlame } from "./hooks/useFileBlame";
 export { useFileHistory } from "./hooks/useFileHistory";
 export { useConflicts } from "./hooks/useConflicts";
+export { useFileSelection } from "./hooks/useFileSelection";
+export type { UseFileSelectionOptions, UseFileSelectionResult } from "./hooks/useFileSelection";
 
 export { GitStatusHeader } from "./GitStatusHeader";
 export type { GitStatusHeaderProps } from "./GitStatusHeader";
@@ -92,6 +94,7 @@ export { ConflictResolutionView } from "./ConflictResolutionView";
 export { ThreeWayMergeEditor } from "./ThreeWayMergeEditor";
 export { ConflictMarkerButtons } from "./ConflictMarkerButtons";
 export { MonacoErrorBoundary } from "./MonacoErrorBoundary";
+export { ErrorBoundary } from "./ErrorBoundary";
 export { LoadingState } from "./LoadingState";
 export type { LoadingStateProps } from "./LoadingState";
 
@@ -115,6 +118,15 @@ export type { SettingsDialogProps } from "./SettingsDialog";
 
 export { FileOverview } from "./FileOverview";
 export type { FileOverviewProps } from "./FileOverview";
+
+export { CompactHeader } from "./CompactHeader";
+export type { CompactHeaderProps } from "./CompactHeader";
+
+export { CreateFileDialog } from "./CreateFileDialog";
+export type { CreateFileDialogProps } from "./CreateFileDialog";
+
+export { DeleteConfirmDialog } from "./DeleteConfirmDialog";
+export type { DeleteConfirmDialogProps } from "./DeleteConfirmDialog";
 
 // =============================================================================
 // Store (Public API - only expose what consumers need)

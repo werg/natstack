@@ -4,7 +4,6 @@ import * as Collapsible from "@radix-ui/react-collapsible";
 import {
   ChevronRightIcon,
   ChevronDownIcon,
-  FileIcon,
   PlusIcon,
   MinusIcon,
   DoubleArrowRightIcon,
@@ -36,6 +35,10 @@ export interface FileOverviewProps {
   hasStaged: boolean;
   commitLoading?: boolean;
   commitInputRef?: RefObject<HTMLTextAreaElement | null>;
+  /** Controlled commit message - if provided, component becomes controlled */
+  commitMessage?: string;
+  /** Callback when commit message changes - required if commitMessage is provided */
+  onCommitMessageChange?: (message: string) => void;
 
   // File selection (triggers diff expansion below)
   onSelectFile: (path: string, section: "staged" | "unstaged") => void;
@@ -160,9 +163,6 @@ function OverviewTreeNode({
         px="1"
         onClick={() => onSelect(node.path)}
       >
-        <Box flexShrink="0">
-          <FileIcon width={12} height={12} />
-        </Box>
         <Box flexGrow="1" minWidth="0">
           <Text size="1" truncate>
             {node.name}
@@ -254,12 +254,20 @@ export function FileOverview({
   hasStaged,
   commitLoading,
   commitInputRef,
+  commitMessage: controlledMessage,
+  onCommitMessageChange,
   onSelectFile,
   selectedFile,
   selectedSection,
   actionLoading,
 }: FileOverviewProps) {
-  const [commitMessage, setCommitMessage] = useState("");
+  // Support both controlled and uncontrolled commit message
+  const [uncontrolledMessage, setUncontrolledMessage] = useState("");
+  const isControlled = controlledMessage !== undefined;
+  const commitMessage = isControlled ? controlledMessage : uncontrolledMessage;
+  const setCommitMessage = isControlled
+    ? (msg: string) => onCommitMessageChange?.(msg)
+    : setUncontrolledMessage;
   const [commitError, setCommitError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const setTextareaRef = useCallback(
@@ -284,7 +292,7 @@ export function FileOverview({
     } catch (err) {
       setCommitError(err instanceof Error ? err.message : String(err));
     }
-  }, [commitMessage, hasStaged, commitLoading, onCommit]);
+  }, [commitMessage, hasStaged, commitLoading, onCommit, setCommitMessage]);
 
   // Keyboard shortcut: Ctrl/Cmd+Enter to commit
   const handleCommitKeyDown = useCallback(
@@ -398,7 +406,7 @@ export function FileOverview({
           maxHeight: 300,
         }}
       >
-        {/* Unstaged Panel */}
+        {/* Changes Panel */}
         <Card
           size="1"
           onDragOver={(e) => handleDragOver(e, "unstaged")}
@@ -416,7 +424,7 @@ export function FileOverview({
           <Flex align="center" justify="between" px="2" py="1">
             <Flex align="center" gap="2">
               <Text size="1" weight="medium">
-                Unstaged
+                Changes
               </Text>
               <Badge size="1" variant="soft" color="gray">
                 {unstagedFiles.length}

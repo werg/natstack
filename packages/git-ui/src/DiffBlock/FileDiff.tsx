@@ -1,10 +1,11 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
-import { Box, Text, Card, Flex, Button, Separator } from "@radix-ui/themes";
+import { Box, Text, Flex, Button, Separator } from "@radix-ui/themes";
 import { DiffEditorDirect } from "./DiffEditorDirect";
 import { FileDiffHeader } from "./FileDiffHeader";
 import { HunkHeader } from "./HunkHeader";
 import { LineSelectionOverlay } from "./LineSelectionOverlay";
 import { BinaryFileDiff } from "./BinaryFileDiff";
+import { FileContentView } from "./FileContentView";
 import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { MonacoErrorBoundary } from "../MonacoErrorBoundary";
 import { useHunkSelection } from "../hooks/useHunkSelection";
@@ -221,9 +222,20 @@ export function FileDiff({
     );
   }, [diff]);
 
+  // For unmodified files, show simple file viewer (no diff to display)
+  if (file.status === "unmodified") {
+    return (
+      <FileContentView
+        file={file}
+        content={diff.newContent || diff.oldContent}
+        theme={theme}
+      />
+    );
+  }
+
   if (diff.binary) {
     return (
-      <Card size="2">
+      <Box>
         <FileDiffHeader
           file={file}
           onStageFile={onStageFile}
@@ -232,12 +244,12 @@ export function FileDiff({
           partiallyStaged={partiallyStaged}
         />
         <BinaryFileDiff diff={diff} />
-      </Card>
+      </Box>
     );
   }
 
   return (
-    <Card size="2">
+    <Box>
       <FileDiffHeader
         file={file}
         onStageFile={onStageFile}
@@ -364,6 +376,6 @@ export function FileDiff({
         onDiscard={handleDialogDiscard}
         onSave={hasUnsavedChanges ? handleDialogSave : undefined}
       />
-    </Card>
+    </Box>
   );
 }

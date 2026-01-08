@@ -1,10 +1,9 @@
 import { useState, useMemo } from "react";
-import { Box, Flex, Text, Badge, Button, Spinner, ContextMenu, ScrollArea } from "@radix-ui/themes";
+import { Box, Flex, Text, Badge, Button, IconButton, Spinner, ContextMenu, ScrollArea } from "@radix-ui/themes";
 import * as Collapsible from "@radix-ui/react-collapsible";
 import {
   ChevronRightIcon,
   ChevronDownIcon,
-  FileIcon,
   PlusIcon,
   MinusIcon,
   TrashIcon,
@@ -19,12 +18,14 @@ export interface FileTreeContextMenuActions {
   onUnstageFile?: (path: string) => void;
   onDiscardFile?: (path: string) => void;
   onCopyPath?: (path: string) => void;
+  onCreateFile?: (parentPath: string | null) => void;
+  onDeleteFile?: (path: string, isDirectory: boolean) => void;
 }
 
 interface FileTreeProps {
   files: FileChange[];
-  selectedFile: string | null;
-  onSelect: (path: string) => void;
+  selectedFiles: Set<string>;
+  onSelect: (path: string, event: React.MouseEvent) => void;
   largeFolderThreshold: number;
   contextMenuActions?: FileTreeContextMenuActions;
   /** Path of keyboard-focused file for visual indication */
@@ -38,6 +39,8 @@ interface FileTreeProps {
 }
 
 function getStatusBadge(status: FileChange["status"]) {
+  // Don't show badge for unmodified files
+  if (status === "unmodified") return null;
   return (
     <Badge size="1" variant="soft">
       {STATUS_LABELS[status]}
@@ -75,6 +78,10 @@ function FileContextMenu({
     return <>{children}</>;
   }
 
+  const parentPath = file.path.includes("/")
+    ? file.path.slice(0, file.path.lastIndexOf("/"))
+    : null;
+
   return (
     <ContextMenu.Root>
       <ContextMenu.Trigger>{children}</ContextMenu.Trigger>
@@ -94,11 +101,62 @@ function FileContextMenu({
             <CopyIcon /> Copy path
           </ContextMenu.Item>
         )}
+        {actions.onCreateFile && (
+          <>
+            <ContextMenu.Separator />
+            <ContextMenu.Item onSelect={() => actions.onCreateFile!(parentPath)}>
+              <PlusIcon /> New file here...
+            </ContextMenu.Item>
+          </>
+        )}
         {actions.onDiscardFile && !file.staged && (
           <>
             <ContextMenu.Separator />
             <ContextMenu.Item color="red" onSelect={() => actions.onDiscardFile!(file.path)}>
               <TrashIcon /> {file.status === "added" ? "Delete file" : "Discard changes"}
+            </ContextMenu.Item>
+          </>
+        )}
+        {actions.onDeleteFile && file.status === "unmodified" && (
+          <>
+            {!actions.onDiscardFile && <ContextMenu.Separator />}
+            <ContextMenu.Item color="red" onSelect={() => actions.onDeleteFile!(file.path, false)}>
+              <TrashIcon /> Delete file
+            </ContextMenu.Item>
+          </>
+        )}
+      </ContextMenu.Content>
+    </ContextMenu.Root>
+  );
+}
+
+function DirectoryContextMenu({
+  path,
+  children,
+  actions,
+}: {
+  path: string;
+  children: React.ReactNode;
+  actions?: FileTreeContextMenuActions;
+}) {
+  if (!actions?.onCreateFile && !actions?.onDeleteFile) {
+    return <>{children}</>;
+  }
+
+  return (
+    <ContextMenu.Root>
+      <ContextMenu.Trigger>{children}</ContextMenu.Trigger>
+      <ContextMenu.Content>
+        {actions.onCreateFile && (
+          <ContextMenu.Item onSelect={() => actions.onCreateFile!(path)}>
+            <PlusIcon /> New file...
+          </ContextMenu.Item>
+        )}
+        {actions.onDeleteFile && (
+          <>
+            <ContextMenu.Separator />
+            <ContextMenu.Item color="red" onSelect={() => actions.onDeleteFile!(path, true)}>
+              <TrashIcon /> Delete directory
             </ContextMenu.Item>
           </>
         )}
@@ -109,78 +167,11 @@ function FileContextMenu({
 
 const INDENT_SIZE = 16;
 
-/** Renders tree line guides for a node */
-function TreeLines({ depth, isLast, parentLines }: { depth: number; isLast: boolean; parentLines: boolean[] }) {
-  if (depth === 0) return null;
-
-  return (
-    <Box style={{ position: "relative", display: "flex", flexShrink: 0 }}>
-      {/* Vertical lines from ancestors */}
-      {parentLines.map((showLine, i) => (
-        <Box
-          key={i}
-          style={{
-            width: INDENT_SIZE,
-            height: "100%",
-            position: "relative",
-          }}
-        >
-          {showLine && (
-            <Box
-              style={{
-                position: "absolute",
-                left: INDENT_SIZE / 2 - 0.5,
-                top: 0,
-                bottom: 0,
-                width: 1,
-                background: "var(--gray-a6)",
-              }}
-            />
-          )}
-        </Box>
-      ))}
-      {/* Current level connector */}
-      <Box
-        style={{
-          width: INDENT_SIZE,
-          height: "100%",
-          position: "relative",
-        }}
-      >
-        {/* Vertical line (stops at middle for last item) */}
-        <Box
-          style={{
-            position: "absolute",
-            left: INDENT_SIZE / 2 - 0.5,
-            top: 0,
-            bottom: isLast ? "50%" : 0,
-            width: 1,
-            background: "var(--gray-a6)",
-          }}
-        />
-        {/* Horizontal branch */}
-        <Box
-          style={{
-            position: "absolute",
-            left: INDENT_SIZE / 2 - 0.5,
-            top: "50%",
-            width: INDENT_SIZE / 2,
-            height: 1,
-            background: "var(--gray-a6)",
-          }}
-        />
-      </Box>
-    </Box>
-  );
-}
-
 function TreeNodeComponent({
   node,
-  selectedFile,
+  selectedFiles,
   onSelect,
   depth = 0,
-  isLast = true,
-  parentLines = [],
   largeFolderThreshold,
   contextMenuActions,
   focusedPath,
@@ -189,11 +180,9 @@ function TreeNodeComponent({
   partiallyStagedFiles,
 }: {
   node: TreeNode;
-  selectedFile: string | null;
-  onSelect: (path: string) => void;
+  selectedFiles: Set<string>;
+  onSelect: (path: string, event: React.MouseEvent) => void;
   depth?: number;
-  isLast?: boolean;
-  parentLines?: boolean[];
   largeFolderThreshold: number;
   contextMenuActions?: FileTreeContextMenuActions;
   focusedPath?: string | null;
@@ -208,33 +197,54 @@ function TreeNodeComponent({
     node.isDirectory && node.children.length > largeFolderThreshold;
   const shouldCollapse = isLargeFolder && !forceExpanded;
 
-  // Build parent lines for children (include current level's line if not last)
-  const childParentLines = depth > 0 ? [...parentLines, !isLast] : [];
-
   if (node.isDirectory) {
+    const directoryHeader = (
+      <Flex
+        align="center"
+        style={{ paddingLeft: depth * INDENT_SIZE, minWidth: "max-content" }}
+        role="treeitem"
+        aria-expanded={expanded && !shouldCollapse}
+        aria-label={`${node.name} directory`}
+      >
+        <Collapsible.Trigger asChild>
+          <Flex align="center" gap="1" style={{ cursor: "pointer" }}>
+            {expanded ? <ChevronDownIcon width={12} height={12} /> : <ChevronRightIcon width={12} height={12} />}
+            <Text size="1">{highlightMatch(`${node.name}/`, highlightQuery)}</Text>
+            {isLargeFolder && (
+              <Badge size="1" variant="soft">
+                {node.children.length}
+              </Badge>
+            )}
+          </Flex>
+        </Collapsible.Trigger>
+        {contextMenuActions?.onCreateFile && (
+          <IconButton
+            size="1"
+            variant="ghost"
+            onClick={(e) => {
+              e.stopPropagation();
+              contextMenuActions.onCreateFile!(node.path);
+            }}
+            aria-label="New file in this directory"
+            title="New file in this directory"
+          >
+            <PlusIcon />
+          </IconButton>
+        )}
+      </Flex>
+    );
+
     return (
       <Collapsible.Root
         open={expanded && !shouldCollapse}
         onOpenChange={setExpanded}
       >
-        <Flex align="center" minHeight="24px">
-          <TreeLines depth={depth} isLast={isLast} parentLines={parentLines} />
-          <Collapsible.Trigger asChild>
-            <Flex align="center" gap="1" flexGrow="1" style={{ cursor: "pointer" }}>
-              {expanded ? <ChevronDownIcon width={12} height={12} /> : <ChevronRightIcon width={12} height={12} />}
-              <Text size="1">{highlightMatch(`${node.name}/`, highlightQuery)}</Text>
-              {isLargeFolder && (
-                <Badge size="1" variant="soft">
-                  {node.children.length}
-                </Badge>
-              )}
-            </Flex>
-          </Collapsible.Trigger>
-        </Flex>
+        <DirectoryContextMenu path={node.path} actions={contextMenuActions}>
+          {directoryHeader}
+        </DirectoryContextMenu>
 
         {shouldCollapse ? (
-          <Flex align="center" minHeight="24px">
-            <TreeLines depth={depth + 1} isLast={true} parentLines={childParentLines} />
+          <Flex align="center" style={{ paddingLeft: (depth + 1) * INDENT_SIZE, minWidth: "max-content" }}>
             <Button
               size="1"
               variant="ghost"
@@ -245,15 +255,13 @@ function TreeNodeComponent({
           </Flex>
         ) : (
           <Collapsible.Content>
-            {node.children.map((child, index) => (
+            {node.children.map((child) => (
               <TreeNodeComponent
                 key={child.path}
                 node={child}
-                selectedFile={selectedFile}
+                selectedFiles={selectedFiles}
                 onSelect={onSelect}
                 depth={depth + 1}
-                isLast={index === node.children.length - 1}
-                parentLines={childParentLines}
                 largeFolderThreshold={largeFolderThreshold}
                 contextMenuActions={contextMenuActions}
                 focusedPath={focusedPath}
@@ -269,31 +277,34 @@ function TreeNodeComponent({
   }
 
   // File node
-  const isFileSelected = selectedFile === node.path;
+  const isFileSelected = selectedFiles.has(node.path);
   const isFileFocused = focusedPath === node.path;
   const isFilePending = pendingFiles?.has(node.path) ?? false;
   const isPartiallyStaged = partiallyStagedFiles?.has(node.path) ?? false;
+  const isUnmodified = node.file?.status === "unmodified";
 
   const fileContent = (
-    <Flex align="center" minHeight="24px">
-      <TreeLines depth={depth} isLast={isLast} parentLines={parentLines} />
+    <Box style={{ paddingLeft: depth * INDENT_SIZE }} role="treeitem" aria-selected={isFileSelected}>
       <Button
-        variant={isFileSelected ? "soft" : "ghost"}
+        variant="ghost"
         size="1"
-        onClick={() => onSelect(node.path)}
+        onClick={(e) => onSelect(node.path, e)}
         disabled={isFilePending}
         data-focused={isFileFocused || undefined}
+        data-state={isFileSelected ? "selected" : undefined}
         aria-label={isPartiallyStaged ? `${node.name} (partially staged)` : node.name}
+        aria-disabled={isFilePending}
         style={{
-          flex: 1,
           justifyContent: "flex-start",
-          opacity: isFilePending ? 0.6 : 1,
-          height: 24,
-          padding: "0 4px",
+          backgroundColor: isFileSelected ? "var(--accent-a3)" : undefined,
         }}
       >
-        {isFilePending ? <Spinner size="1" /> : <FileIcon width={12} height={12} />}
-        <Text size="1" weight={isFileSelected ? "medium" : undefined}>
+        {isFilePending ? (
+          <Spinner size="1" />
+        ) : (
+          <Box style={{ width: 12, height: 12, flexShrink: 0 }} />
+        )}
+        <Text size="1" weight={isFileSelected ? "medium" : undefined} color={isUnmodified ? "gray" : undefined}>
           {highlightMatch(node.name, highlightQuery)}
         </Text>
         {node.file && getStatusBadge(node.file.status)}
@@ -303,7 +314,7 @@ function TreeNodeComponent({
           </Badge>
         )}
       </Button>
-    </Flex>
+    </Box>
   );
 
   if (node.file && contextMenuActions) {
@@ -319,7 +330,7 @@ function TreeNodeComponent({
 
 export function FileTree({
   files,
-  selectedFile,
+  selectedFiles,
   onSelect,
   largeFolderThreshold,
   contextMenuActions,
@@ -339,13 +350,12 @@ export function FileTree({
     >
       <ScrollArea size="1">
         <Flex direction="column" gap="0" px="1" py="1">
-          {tree.children.map((node, index) => (
+          {tree.children.map((node) => (
             <TreeNodeComponent
               key={node.path}
               node={node}
-              selectedFile={selectedFile}
+              selectedFiles={selectedFiles}
               onSelect={onSelect}
-              isLast={index === tree.children.length - 1}
               largeFolderThreshold={largeFolderThreshold}
               contextMenuActions={contextMenuActions}
               focusedPath={focusedPath}
@@ -354,6 +364,18 @@ export function FileTree({
               partiallyStagedFiles={partiallyStagedFiles}
             />
           ))}
+          {/* Root-level add button */}
+          {contextMenuActions?.onCreateFile && (
+            <Button
+              size="1"
+              variant="ghost"
+              onClick={() => contextMenuActions.onCreateFile!(null)}
+              style={{ justifyContent: "flex-start" }}
+            >
+              <PlusIcon />
+              New...
+            </Button>
+          )}
         </Flex>
       </ScrollArea>
     </Box>

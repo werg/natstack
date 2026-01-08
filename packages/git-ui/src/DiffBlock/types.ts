@@ -14,14 +14,16 @@ export const STATUS_LABELS: Record<UIFileStatus, string> = {
   modified: "M",
   deleted: "D",
   renamed: "R",
+  unmodified: "",
 };
 
 /** Semantic colors for file status badges */
-export const STATUS_COLORS: Record<UIFileStatus, "green" | "yellow" | "red" | "blue"> = {
+export const STATUS_COLORS: Record<UIFileStatus, "green" | "yellow" | "red" | "blue" | "gray"> = {
   added: "green",
   modified: "yellow",
   deleted: "red",
   renamed: "blue",
+  unmodified: "gray",
 };
 
 export interface DiffViewOptions {
@@ -80,4 +82,8 @@ export interface DiffBlockProps {
   onDiffViewOptionsChange?: (options: DiffViewOptions) => void;
   /** Custom diff cache key factory */
   diffKey?: (path: string) => string;
+  /** Callback to create a new file or directory */
+  onCreateFile?: (parentPath: string | null) => void;
+  /** Callback to delete a file or directory */
+  onDeleteFile?: (path: string, isDirectory: boolean) => void;
 }

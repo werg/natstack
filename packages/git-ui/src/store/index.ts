@@ -43,6 +43,9 @@ export {
   diffErrorsAtom,
   blameCacheAtom,
   historyCacheAtom,
+  allTrackedFilesAtom,
+  headerMinimizedAtom,
+  emptyDirectoriesAtom,
 } from "./atoms";
 export type { BlameCacheEntry, HistoryCacheEntry } from "./atoms";
 
@@ -50,6 +53,7 @@ export type { BlameCacheEntry, HistoryCacheEntry } from "./atoms";
 export {
   stagedFilesAtom,
   unstagedFilesAtom,
+  changesTreeFilesAtom,
   partiallyStagedFilesAtom,
   hasStagedAtom,
   hasChangesAtom,
@@ -74,6 +78,8 @@ export {
   unstageAllAtom,
   discardFileAtom,
   saveFileAtom,
+  createFileAtom,
+  deletePathAtom,
   commitAtom,
   createStashAtom,
   applyStashAtom,

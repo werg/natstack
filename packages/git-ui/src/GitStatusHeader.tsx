@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Flex, Text, Button, IconButton, Tooltip, Kbd } from "@radix-ui/themes";
-import { Cross2Icon, ReloadIcon, GearIcon, KeyboardIcon } from "@radix-ui/react-icons";
+import { Cross2Icon, ReloadIcon, GearIcon, KeyboardIcon, ChevronUpIcon } from "@radix-ui/react-icons";
 import { BranchSelector } from "./BranchSelector";
 import { RemoteOperationsBar } from "./RemoteOperationsBar";
 import { AuthErrorDialog } from "./AuthErrorDialog";
@@ -13,6 +13,7 @@ export interface GitStatusHeaderProps {
   onCommit?: () => void;
   onClose?: () => void;
   onRefresh?: () => void;
+  onMinimize?: () => void;
   hasStaged: boolean;
   loading?: boolean;
   diffViewOptions?: DiffViewOptions;
@@ -27,6 +28,7 @@ export function GitStatusHeader({
   onCommit,
   onClose,
   onRefresh,
+  onMinimize,
   hasStaged,
   loading,
   diffViewOptions,
@@ -99,6 +101,18 @@ export function GitStatusHeader({
             >
               Commit
             </Button>
+          </Tooltip>
+        )}
+        {onMinimize && (
+          <Tooltip content="Minimize header">
+            <IconButton
+              size="1"
+              variant="ghost"
+              onClick={onMinimize}
+              aria-label="Minimize header"
+            >
+              <ChevronUpIcon />
+            </IconButton>
           </Tooltip>
         )}
         {onClose && (

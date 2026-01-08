@@ -38,12 +38,15 @@ export function buildTree(files: FileChange[]): TreeNode {
 
       let child = current.children.find((c) => c.name === part);
       if (!child) {
+        // For directory entries (isDirectory: true), the entire path is a directory
+        const isDirectory = file.isDirectory ? true : !isLast;
         child = {
           name: part,
           path: childPath,
-          isDirectory: !isLast,
+          isDirectory,
           children: [],
-          file: isLast ? file : undefined,
+          // Only set file reference for actual files (not directories)
+          file: isLast && !file.isDirectory ? file : undefined,
         };
         current.children.push(child);
       }

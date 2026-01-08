@@ -63,6 +63,23 @@ export const focusedSectionAtom = atom<"staged" | "unstaged">("unstaged");
  */
 export const focusedIndexAtom = atom<number>(0);
 
+/**
+ * All tracked files in the repository (from git ls-files equivalent)
+ * Always shown in the file tree
+ */
+export const allTrackedFilesAtom = atom<string[]>([]);
+
+/**
+ * Whether the header is minimized to show more diff content
+ */
+export const headerMinimizedAtom = atom<boolean>(false);
+
+/**
+ * Empty directories created by the user (not tracked by git)
+ * These need to be displayed even though they have no files
+ */
+export const emptyDirectoriesAtom = atom<Set<string>>(new Set<string>());
+
 // =============================================================================
 // Metadata Atoms
 // =============================================================================

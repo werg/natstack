@@ -21,6 +21,8 @@ import {
   focusedIndexAtom,
   loadingDiffsAtom,
   diffErrorsAtom,
+  allTrackedFilesAtom,
+  emptyDirectoriesAtom,
 } from "./atoms";
 import { unstagedFilesAtom, stagedFilesAtom } from "./selectors";
 import type { FileState, RefreshTrigger, DiffState } from "./types";
@@ -105,6 +107,79 @@ export const deleteDiffCacheForPathsAtom = atom(null, (_, set, paths: string[]) 
 // =============================================================================
 
 /**
+ * Recursively scan for all directories in the repository.
+ * Returns a set of directory paths relative to the repo root.
+ */
+async function scanDirectories(
+  fs: import("./types").FsPromisesLike,
+  baseDir: string,
+  relativePath: string = ""
+): Promise<Set<string>> {
+  const directories = new Set<string>();
+  const fullPath = relativePath ? `${baseDir}/${relativePath}` : baseDir;
+
+  try {
+    const entries = await fs.readdir(fullPath);
+
+    for (const entry of entries) {
+      // Skip .git directory and other hidden files/directories
+      if (entry.startsWith(".")) continue;
+
+      const entryRelativePath = relativePath ? `${relativePath}/${entry}` : entry;
+      const entryFullPath = `${baseDir}/${entryRelativePath}`;
+
+      try {
+        const stat = await fs.stat(entryFullPath);
+        if (stat.isDirectory()) {
+          directories.add(entryRelativePath);
+          // Recursively scan subdirectories
+          const subDirs = await scanDirectories(fs, baseDir, entryRelativePath);
+          for (const subDir of subDirs) {
+            directories.add(subDir);
+          }
+        }
+      } catch {
+        // Skip entries we can't stat (permission errors, etc.)
+        continue;
+      }
+    }
+  } catch {
+    // If we can't read the directory, return empty set
+  }
+
+  return directories;
+}
+
+/**
+ * Determine which directories are empty (contain no files, only possibly empty subdirs).
+ * A directory is empty if it has no files in it or any subdirectory.
+ */
+function findEmptyDirectories(
+  allDirectories: Set<string>,
+  filePaths: string[]
+): Set<string> {
+  const emptyDirs = new Set<string>();
+  const filePathsSet = new Set(filePaths);
+
+  for (const dir of allDirectories) {
+    // Check if any file path starts with this directory path
+    let hasFiles = false;
+    for (const filePath of filePathsSet) {
+      if (filePath.startsWith(dir + "/") || filePath === dir) {
+        hasFiles = true;
+        break;
+      }
+    }
+
+    if (!hasFiles) {
+      emptyDirs.add(dir);
+    }
+  }
+
+  return emptyDirs;
+}
+
+/**
  * Refresh git status from the repository.
  *
  * PRINCIPLE: Git is the source of truth. We always fetch fresh state and
@@ -116,7 +191,7 @@ export const refreshStatusAtom = atom(
     const config = get(configAtom);
     if (!config) return;
 
-    const { dir, gitClient } = config;
+    const { dir, gitClient, fs } = config;
 
     // Debounce interval-based refreshes
     if (trigger.type === "interval") {
@@ -141,8 +216,17 @@ export const refreshStatusAtom = atom(
 
       // Build new files map from git state - this is the source of truth
       const newFiles = new Map<string, FileState>();
+      const trackedFiles: string[] = [];
+      const allFilePaths: string[] = [];
 
       for (const file of repoStatus.files) {
+        allFilePaths.push(file.path);
+
+        // Track all non-ignored files for the "show all files" feature
+        if (file.status !== "ignored") {
+          trackedFiles.push(file.path);
+        }
+
         if (file.status === "unmodified" || file.status === "ignored") continue;
 
         newFiles.set(file.path, {
@@ -153,11 +237,23 @@ export const refreshStatusAtom = atom(
         });
       }
 
+      // Scan filesystem for all directories
+      const allDirectories = await scanDirectories(fs, dir);
+
+      // Find which directories are empty (no files)
+      const emptyDirectories = findEmptyDirectories(allDirectories, allFilePaths);
+
+      // Update empty directories atom
+      set(emptyDirectoriesAtom, emptyDirectories);
+
       // ALWAYS replace filesAtom with fresh git state
       // No conditional updates - simple and correct
       set(filesAtom, newFiles);
       set(branchAtom, repoStatus.branch);
       set(lastRefreshAtom, Date.now());
+
+      // Update tracked files (always shown now)
+      set(allTrackedFilesAtom, trackedFiles);
 
       // Note: We don't clear diff cache on regular refresh.
       // Diffs are invalidated by user actions (stage/unstage/etc).
@@ -606,6 +702,126 @@ export const saveFileAtom = atom(null, async (get, set, path: string, content: s
     onNotify?.({
       type: "error",
       title: "Failed to save file",
+      description: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  } finally {
+    set(actionLoadingAtom, false);
+  }
+});
+
+/**
+ * Create a new file or directory
+ */
+export const createFileAtom = atom(
+  null,
+  async (get, set, { path, isDirectory }: { path: string; isDirectory: boolean }) => {
+    const config = get(configAtom);
+    if (!config) return;
+
+    const { dir, fs, onNotify } = config;
+
+    // Security: validate and normalize path
+    const safePath = validatePath(path);
+    const fullPath = `${dir}/${safePath}`;
+
+    set(actionLoadingAtom, true);
+
+    try {
+      if (isDirectory) {
+        await fs.mkdir(fullPath, { recursive: true });
+      } else {
+        // Ensure parent directory exists (only if there's a "/" in the path)
+        const lastSlash = safePath.lastIndexOf("/");
+        if (lastSlash > 0) {
+          const parentDir = safePath.slice(0, lastSlash);
+          await fs.mkdir(`${dir}/${parentDir}`, { recursive: true });
+        }
+        await fs.writeFile(fullPath, "");
+      }
+
+      // Refresh will scan filesystem and update emptyDirectoriesAtom automatically
+      await set(refreshStatusAtom);
+
+      const name = safePath.split("/").pop() || safePath;
+      onNotify?.({
+        type: "success",
+        title: `Created ${isDirectory ? "directory" : "file"}`,
+        description: name,
+      });
+    } catch (err) {
+      onNotify?.({
+        type: "error",
+        title: `Failed to create ${isDirectory ? "directory" : "file"}`,
+        description: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    } finally {
+      set(actionLoadingAtom, false);
+    }
+  }
+);
+
+/**
+ * Helper to recursively delete a directory
+ */
+async function deleteRecursive(
+  fs: import("./types").FsPromisesLike,
+  path: string
+): Promise<void> {
+  const entries = await fs.readdir(path);
+  for (const entry of entries) {
+    const entryPath = `${path}/${entry}`;
+    const stat = await fs.stat(entryPath);
+    if (stat.isDirectory()) {
+      await deleteRecursive(fs, entryPath);
+    } else {
+      await fs.unlink(entryPath);
+    }
+  }
+  await fs.rmdir(path);
+}
+
+/**
+ * Delete a file or directory
+ */
+export const deletePathAtom = atom(null, async (get, set, path: string) => {
+  const config = get(configAtom);
+  if (!config) return;
+
+  const { dir, fs, onNotify } = config;
+
+  // Security: validate and normalize path
+  const safePath = validatePath(path);
+  const fullPath = `${dir}/${safePath}`;
+
+  set(actionLoadingAtom, true);
+
+  try {
+    const stat = await fs.stat(fullPath);
+    const isDirectory = stat.isDirectory();
+
+    if (isDirectory) {
+      await deleteRecursive(fs, fullPath);
+    } else {
+      await fs.unlink(fullPath);
+    }
+
+    // Clear diff cache for deleted path
+    set(deleteDiffCacheForPathsAtom, [safePath]);
+
+    await set(refreshStatusAtom);
+
+    const name = safePath.split("/").pop() || safePath;
+    onNotify?.({
+      type: "success",
+      title: `Deleted ${isDirectory ? "directory" : "file"}`,
+      description: name,
+    });
+  } catch (err) {
+    onNotify?.({
+      type: "error",
+      title: "Failed to delete",
       description: err instanceof Error ? err.message : String(err),
     });
     throw err;

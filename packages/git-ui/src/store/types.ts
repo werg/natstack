@@ -8,11 +8,9 @@ import type { FileDiff, StashEntry, GitClient, FsPromisesLike } from "@natstack/
  * - "modified" ← git "modified" or any unknown status
  * - "deleted" ← git "deleted"
  * - "renamed" ← detected when oldPath differs from path
- *
- * Note: git also returns "unmodified" and "ignored" which are filtered out
- * before reaching the UI store.
+ * - "unmodified" ← tracked file with no changes (used when showing all files)
  */
-export type UIFileStatus = "added" | "modified" | "deleted" | "renamed";
+export type UIFileStatus = "added" | "modified" | "deleted" | "renamed" | "unmodified";
 
 /**
  * Normalized file state stored in the files Map
@@ -88,6 +86,8 @@ export interface FileChange {
   additions?: number;
   /** Number of deleted lines (computed from diff when available) */
   deletions?: number;
+  /** True for empty directory entries (no files inside yet) */
+  isDirectory?: boolean;
 }
 
 // Re-export types from @natstack/git

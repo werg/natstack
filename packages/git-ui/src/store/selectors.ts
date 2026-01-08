@@ -8,6 +8,8 @@ import {
   showUnstageConfirmAtom,
   dropStashIndexAtom,
   showCommitFormAtom,
+  allTrackedFilesAtom,
+  emptyDirectoriesAtom,
 } from "./atoms";
 import type { FileChange, FileState } from "./types";
 
@@ -61,6 +63,56 @@ export const unstagedFilesAtom = atom((get) => {
   }
 
   // Sort by path for consistent ordering
+  result.sort((a, b) => a.path.localeCompare(b.path));
+  return result;
+});
+
+/**
+ * Files to display in the Changes section tree.
+ * Includes changed files, all tracked files, and empty directories.
+ */
+export const changesTreeFilesAtom = atom((get) => {
+  const unstagedFiles = get(unstagedFilesAtom);
+  const emptyDirs = get(emptyDirectoriesAtom);
+  const allTracked = get(allTrackedFilesAtom);
+
+  // Collect all file paths to check which directories are actually empty
+  const allFilePaths = new Set(unstagedFiles.map((f) => f.path));
+
+  // Filter empty directories - remove ones that now have files inside
+  const actuallyEmptyDirs: FileChange[] = [];
+  for (const dirPath of emptyDirs) {
+    // Check if any file path starts with this directory
+    let hasFiles = false;
+    for (const filePath of allFilePaths) {
+      if (filePath.startsWith(dirPath + "/")) {
+        hasFiles = true;
+        break;
+      }
+    }
+    if (!hasFiles) {
+      actuallyEmptyDirs.push({
+        path: dirPath,
+        status: "added" as const,
+        staged: false,
+        isDirectory: true,
+      });
+    }
+  }
+
+  const changedPaths = new Set(unstagedFiles.map((f) => f.path));
+
+  // Create FileChange entries for unchanged files
+  const unchangedFiles: FileChange[] = allTracked
+    .filter((path) => !changedPaths.has(path))
+    .map((path) => ({
+      path,
+      status: "unmodified" as const,
+      staged: false,
+    }));
+
+  // Combine and sort
+  const result = [...unstagedFiles, ...unchangedFiles, ...actuallyEmptyDirs];
   result.sort((a, b) => a.path.localeCompare(b.path));
   return result;
 });

@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { Box, Flex, Text, IconButton, Separator, Tooltip } from "@radix-ui/themes";
 import * as Collapsible from "@radix-ui/react-collapsible";
 import {
@@ -10,6 +10,8 @@ import {
 import { FileTree, type FileTreeContextMenuActions } from "./FileTree";
 import { DiffStack } from "./DiffStack";
 import { CompactFileSearch } from "./FileSearchBar";
+import { ErrorBoundary } from "../ErrorBoundary";
+import { useFileSelection } from "../hooks/useFileSelection";
 import type { DiffBlockProps, FileFilter, FileChange } from "./types";
 import {
   FILE_TREE_WIDTH,
@@ -48,6 +50,8 @@ export function DiffBlock({
   diffViewOptions,
   onDiffViewOptionsChange,
   diffKey,
+  onCreateFile,
+  onDeleteFile,
 }: DiffBlockProps) {
   const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
   const [treeVisible, setTreeVisible] = useState(defaultTreeVisible);
@@ -57,9 +61,6 @@ export function DiffBlock({
   // Use external filter if provided, otherwise use internal state
   const filter = externalFilter ?? internalFilter;
   const setFilter = externalOnFilterChange ?? setInternalFilter;
-
-  // Internal selection state - only used when focusedPath is not provided (uncontrolled mode)
-  const [uncontrolledSelection, setUncontrolledSelection] = useState<string | null>(null);
 
   // Filter files based on search query
   const filteredFiles = useMemo(() => {
@@ -78,35 +79,15 @@ export function DiffBlock({
         acc[file.status] = (acc[file.status] ?? 0) + 1;
         return acc;
       },
-      { added: 0, modified: 0, deleted: 0, renamed: 0 }
+      { added: 0, modified: 0, deleted: 0, renamed: 0, unmodified: 0 }
     );
   }, [files]);
 
-  // Selection mode: controlled (focusedPath provided) or uncontrolled (internal state)
-  // When focusedPath is provided, it takes precedence over internal state
-  const selectedFile = focusedPath ?? uncontrolledSelection;
-
-  // Auto-select first file when list changes and nothing is selected (uncontrolled mode only)
-  useEffect(() => {
-    // Skip if controlled by focusedPath
-    if (focusedPath !== undefined && focusedPath !== null) return;
-
-    if (filteredFiles.length === 0) {
-      if (uncontrolledSelection !== null) {
-        setUncontrolledSelection(null);
-      }
-      return;
-    }
-
-    // Auto-select first file if nothing selected or current selection is invalid
-    if (!uncontrolledSelection || !filteredFiles.some((file) => file.path === uncontrolledSelection)) {
-      setUncontrolledSelection(filteredFiles[0]?.path ?? null);
-    }
-  }, [filteredFiles, uncontrolledSelection, focusedPath]);
-
-  const handleFileSelect = useCallback((path: string) => {
-    setUncontrolledSelection(path);
-  }, []);
+  // Use file selection hook for multi-select behavior
+  const { selectedFiles, handleFileSelect } = useFileSelection({
+    files: filteredFiles,
+    focusedPath,
+  });
 
   const handleToggleExpand = useCallback((path: string) => {
     setExpandedFiles((prev) => {
@@ -119,7 +100,7 @@ export function DiffBlock({
 
   // Build context menu actions object (file-level actions only for tree)
   const contextMenuActions = useMemo<FileTreeContextMenuActions | undefined>(() => {
-    if (!onStageFile && !onUnstageFile && !onDiscardFile && !onCopyPath) {
+    if (!onStageFile && !onUnstageFile && !onDiscardFile && !onCopyPath && !onCreateFile && !onDeleteFile) {
       return undefined;
     }
     return {
@@ -127,8 +108,10 @@ export function DiffBlock({
       onUnstageFile,
       onDiscardFile,
       onCopyPath,
+      onCreateFile,
+      onDeleteFile,
     };
-  }, [onStageFile, onUnstageFile, onDiscardFile, onCopyPath]);
+  }, [onStageFile, onUnstageFile, onDiscardFile, onCopyPath, onCreateFile, onDeleteFile]);
 
   const content = (
     <Flex flexGrow="1" overflow="hidden">
@@ -153,16 +136,19 @@ export function DiffBlock({
                     </IconButton>
                   </Tooltip>
                 </Flex>
-                <FileTree
-                  files={filteredFiles}
-                  selectedFile={selectedFile}
-                  onSelect={handleFileSelect}
-                  largeFolderThreshold={largeFolderThreshold}
-                  contextMenuActions={contextMenuActions}
-                  focusedPath={focusedPath}
-                  highlightQuery={filter.search}
-                  pendingFiles={pendingFiles}
-                />
+                <ErrorBoundary>
+                  <FileTree
+                    files={filteredFiles}
+                    selectedFiles={selectedFiles}
+                    onSelect={handleFileSelect}
+                    largeFolderThreshold={largeFolderThreshold}
+                    contextMenuActions={contextMenuActions}
+                    focusedPath={focusedPath}
+                    highlightQuery={filter.search}
+                    pendingFiles={pendingFiles}
+                    partiallyStagedFiles={partiallyStagedFiles}
+                  />
+                </ErrorBoundary>
               </Box>
             ) : (
               <Tooltip content="Show file tree">
@@ -192,7 +178,7 @@ export function DiffBlock({
             files={filteredFiles}
             getDiff={getDiff}
             refreshId={refreshId}
-            selectedFile={selectedFile}
+            selectedFiles={selectedFiles}
             expandedFiles={expandedFiles}
             onToggleExpand={handleToggleExpand}
             largeDiffThreshold={largeDiffThreshold}
