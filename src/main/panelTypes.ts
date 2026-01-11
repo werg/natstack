@@ -83,7 +83,6 @@ export interface PanelManifest {
   dedupeModules?: string[];
   injectHostThemeVariables?: boolean; // Defaults to true
   template?: "html" | "react"; // Optional: choose template helpers
-  singletonState?: boolean; // If true, panel uses a singleton partition/id derived from its path
   /**
    * Runtime type for this manifest.
    * - "panel" (default): Builds for browser, serves via webview

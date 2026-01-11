@@ -24,6 +24,10 @@ export type {
   PanelContract,
   ParentHandleFromContract,
   TypedCallProxy,
+  BuildChildLinkOptions,
+  SessionMode,
+  SessionType,
+  ParsedSessionId,
 } from "./core/index.js";
 
 export type { Runtime } from "./setup/createRuntime.js";
@@ -37,6 +41,8 @@ export declare const parent: import("./core/index.js").ParentHandle;
 
 export declare const id: string;
 export declare const parentId: string | null;
+/** Session ID for storage partition (format: {mode}_{type}_{identifier}) */
+export declare const sessionId: string;
 
 export declare function getParent<
   T extends import("./core/index.js").Rpc.ExposedMethods = import("./core/index.js").Rpc.ExposedMethods,
@@ -130,3 +136,11 @@ export declare const encodeBase64: typeof import("./shared/base64.js").encodeBas
 export declare const decodeBase64: typeof import("./shared/base64.js").decodeBase64;
 
 export declare const buildChildLink: typeof import("./core/childLinks.js").buildChildLink;
+
+// Session utilities
+export declare const parseSessionId: typeof import("./core/session.js").parseSessionId;
+export declare const isValidSessionId: typeof import("./core/session.js").isValidSessionId;
+export declare const isSafeSession: typeof import("./core/session.js").isSafeSession;
+export declare const isUnsafeSession: typeof import("./core/session.js").isUnsafeSession;
+export declare const isAutoSession: typeof import("./core/session.js").isAutoSession;
+export declare const isNamedSession: typeof import("./core/session.js").isNamedSession;

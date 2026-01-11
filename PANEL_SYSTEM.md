@@ -42,7 +42,6 @@ Panel configuration is specified in `package.json` with a `natstack` field:
     "entry": "index.tsx",
     "runtime": "panel",
     "injectHostThemeVariables": true,
-    "singletonState": false,
     "repoArgs": ["history", "components"],
     "exposeModules": ["@radix-ui/colors"]
   },
@@ -61,7 +60,6 @@ Panel configuration is specified in `package.json` with a `natstack` field:
 | `entry` | string | `index.tsx` | Entry point file |
 | `runtime` | `"panel"` \| `"worker"` | `"panel"` | Determines if built as UI panel or background worker |
 | `injectHostThemeVariables` | boolean | `true` | Inherit NatStack theme CSS variables |
-| `singletonState` | boolean | `false` | Share storage across all instances |
 | `repoArgs` | string[] | `[]` | Named repo argument slots that callers must provide via `createChild` |
 | `exposeModules` | string[] | `[]` | Extra module specifiers to expose via `__natstackRequire__` (bundled even if not directly imported) |
 
@@ -456,6 +454,6 @@ NatStack picks the initial root panel path in this order:
 ## Notes
 
 - Panels are isolated in separate webviews
-- Each panel has its own persistent session storage (unless `singletonState: true`)
+- Each panel has its own persistent session-based storage (see OPFS_PARTITIONS.md)
 - Workers run in WebContentsView with a built-in console UI for logging
 - Browser panels support full Playwright automation via CDP

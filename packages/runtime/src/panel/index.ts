@@ -22,6 +22,14 @@ export * as Rpc from "../core/rpc.js";
 export { z } from "../core/zod.js";
 export { defineContract, noopParent } from "../core/defineContract.js";
 export { buildChildLink } from "../core/childLinks.js";
+export {
+  parseSessionId,
+  isValidSessionId,
+  isSafeSession,
+  isUnsafeSession,
+  isAutoSession,
+  isNamedSession,
+} from "../core/session.js";
 export type * from "../core/types.js";
 export type { Runtime } from "../setup/createRuntime.js";
 
@@ -53,6 +61,7 @@ export const {
   onFocus,
   expose,
   bootstrapPromise,
+  sessionId,
 } = runtime;
 
 export { runtimeParentId as parentId };

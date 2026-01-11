@@ -32,6 +32,7 @@ export interface AppInfo {
 export interface PanelInfo {
   panelId: string;
   partition: string;
+  sessionId: string;
 }
 
 // Panel-related types (shared between main and renderer)
@@ -69,8 +70,6 @@ export interface ProtocolBuildArtifacts {
   html: string;
   /** Panel title from manifest */
   title: string;
-  /** Whether this panel should use a singleton partition/id */
-  singletonState?: boolean;
   /** CSS bundle if any */
   css?: string;
   /** Additional asset files (path -> content + encoding) */
@@ -320,6 +319,8 @@ export interface BrowserState {
 interface PanelBase {
   id: string;
   title: string;
+  /** Session ID for storage partition (format: {mode}_{type}_{identifier}) */
+  sessionId: string;
   children: Panel[];
   selectedChildId: string | null;
   artifacts: PanelArtifacts;

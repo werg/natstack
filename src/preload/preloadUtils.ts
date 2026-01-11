@@ -20,6 +20,7 @@ declare global {
         onMessage: (handler: (fromId: string, message: unknown) => void) => () => void;
       }
     | undefined;
+  var __natstackSessionId: string | undefined;
 }
 
 // =============================================================================
@@ -40,6 +41,9 @@ export const ARG_SCOPE_PATH = "--natstack-scope-path=";
 
 /** Argument prefix for kind (panel or worker) */
 export const ARG_KIND = "--natstack-kind=";
+
+/** Argument prefix for session ID */
+export const ARG_SESSION_ID = "--natstack-session-id=";
 
 // =============================================================================
 // Environment variable keys
@@ -75,6 +79,7 @@ export interface PubSubConfig {
 
 export interface ParsedPreloadConfig {
   panelId: string;
+  sessionId: string;
   kind: NatstackKind;
   authToken: string | undefined;
   initialTheme: "light" | "dark";
@@ -116,6 +121,11 @@ export function parseKind(): NatstackKind {
   const arg = process.argv.find((value) => value.startsWith(ARG_KIND));
   const kind = arg?.split("=")[1];
   return kind === "worker" ? "worker" : "panel";
+}
+
+export function parseSessionId(): string {
+  const arg = process.argv.find((value) => value.startsWith(ARG_SESSION_ID));
+  return arg ? (arg.split("=")[1] ?? "") : "";
 }
 
 export function parseEnvArg(): Record<string, string> {
@@ -175,6 +185,7 @@ export function parsePreloadConfig(): ParsedPreloadConfig {
 
   return {
     panelId,
+    sessionId: parseSessionId(),
     kind,
     authToken: parseAuthToken(),
     initialTheme: parseTheme(),
@@ -234,6 +245,7 @@ export function setPreloadGlobals(
 ): void {
   const g = globalThis as Record<string, unknown>;
   g["__natstackId"] = config.panelId;
+  g["__natstackSessionId"] = config.sessionId;
   g["__natstackKind"] = config.kind;
   g["__natstackParentId"] = config.parentId;
   g["__natstackInitialTheme"] = config.initialTheme;
@@ -257,6 +269,7 @@ export function exposeGlobalsViaContextBridge(
 
   // NatStack globals for @natstack/runtime
   contextBridge.exposeInMainWorld("__natstackId", config.panelId);
+  contextBridge.exposeInMainWorld("__natstackSessionId", config.sessionId);
   contextBridge.exposeInMainWorld("__natstackKind", config.kind);
   contextBridge.exposeInMainWorld("__natstackParentId", config.parentId);
   contextBridge.exposeInMainWorld("__natstackInitialTheme", config.initialTheme);
@@ -275,6 +288,7 @@ export function setUnsafeGlobals(
   transport: ReturnType<typeof createTransport>
 ): void {
   globalThis.__natstackId = config.panelId;
+  globalThis.__natstackSessionId = config.sessionId;
   globalThis.__natstackKind = config.kind;
   globalThis.__natstackParentId = config.parentId;
   globalThis.__natstackInitialTheme = config.initialTheme;

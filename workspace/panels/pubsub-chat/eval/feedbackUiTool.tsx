@@ -166,7 +166,7 @@ Use standard Radix UI APIs. The component is wrapped in a themed container.
 ## Links (NatStack)
 - Clicking a \`natstack-child:///panels/...\` or \`natstack-child:///workers/...\` link creates a child panel/worker.
 - Clicking an \`https://...\` link creates a browser child panel (from app panels).
-- Prefer generating child URLs with \`buildChildLink(source, gitRef?)\` when writing code.
+- Prefer generating child URLs with \`buildChildLink(source, options?)\` where options can include \`{ gitRef, sessionId }\`.
 
 ## Component Contract
 \`\`\`tsx

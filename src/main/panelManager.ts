@@ -3,7 +3,7 @@ import { randomBytes } from "crypto";
 import { nativeTheme } from "electron";
 import { PanelBuilder } from "./panelBuilder.js";
 import type { PanelEventPayload, Panel, PanelManifest, BrowserPanel } from "./panelTypes.js";
-import { getActiveWorkspace, getPanelScopePath } from "./paths.js";
+import { getActiveWorkspace, getSessionScopePath } from "./paths.js";
 import type { GitServer } from "./gitServer.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
 import * as SharedPanel from "../shared/ipc/types.js";
@@ -28,11 +28,77 @@ type ChildCreateOptions = {
   repoArgs?: Record<string, SharedPanel.RepoArgSpec>;
   unsafe?: boolean | string;
   sourcemap?: boolean;
+  /** Explicit session ID to join (must match panel's safe/unsafe mode) */
+  sessionId?: string;
+  /** Force creation of a new named session instead of deriving from panel ID */
+  newSession?: boolean;
   /** Legacy fields (still supported programmatically) */
   branch?: string;
   commit?: string;
   tag?: string;
 };
+
+// =============================================================================
+// Session ID Utilities
+// =============================================================================
+
+type SessionMode = "safe" | "unsafe";
+type SessionType = "auto" | "named";
+
+interface ParsedSessionId {
+  mode: SessionMode;
+  type: SessionType;
+  identifier: string;
+}
+
+/**
+ * Parse a session ID into its components.
+ * Format: {mode}_{type}_{identifier}
+ * Examples: safe_auto_tree~panels~editor, unsafe_named_lx8f2k-abc123
+ */
+function parseSessionId(sessionId: string): ParsedSessionId | null {
+  const match = sessionId.match(/^(safe|unsafe)_(auto|named)_(.+)$/);
+  if (!match || !match[1] || !match[2] || !match[3]) return null;
+  return {
+    mode: match[1] as SessionMode,
+    type: match[2] as SessionType,
+    identifier: match[3],
+  };
+}
+
+/**
+ * Derive an auto session ID from a panel's tree path.
+ * These are deterministic and resumable - same path = same session.
+ */
+function deriveAutoSessionId(mode: SessionMode, panelId: string): string {
+  const escaped = panelId.replace(/\//g, "~");
+  return `${mode}_auto_${escaped}`;
+}
+
+/**
+ * Generate a random named session ID.
+ * These are non-resumable - each call creates a new unique session.
+ */
+function generateNamedSessionId(mode: SessionMode): string {
+  const id = `${Date.now().toString(36)}-${randomBytes(6).toString("hex")}`;
+  return `${mode}_named_${id}`;
+}
+
+/**
+ * Validate an explicit session ID from user input.
+ * Throws if the session ID is invalid or mode doesn't match.
+ */
+function validateSessionId(sessionId: string, expectedMode: SessionMode): void {
+  const parsed = parseSessionId(sessionId);
+  if (!parsed) {
+    throw new Error(`Invalid session ID format: ${sessionId}`);
+  }
+  if (parsed.mode !== expectedMode) {
+    throw new Error(
+      `Session mode mismatch: ${sessionId} is ${parsed.mode}, expected ${expectedMode}`
+    );
+  }
+}
 
 export class PanelManager {
   private builder: PanelBuilder;
@@ -98,9 +164,13 @@ export class PanelManager {
   /**
    * Create a WebContentsView for a panel or browser.
    * Called when panel build is ready or browser is created.
+   * @param panelId - The panel's tree ID
+   * @param url - The URL to load
+   * @param type - The view type
+   * @param sessionId - The session ID for partition (required for panel/worker, ignored for browser)
    * @throws Error if ViewManager is not set
    */
-  createViewForPanel(panelId: string, url: string, type: "panel" | "browser" | "worker"): void {
+  createViewForPanel(panelId: string, url: string, type: "panel" | "browser" | "worker", sessionId?: string): void {
     if (!this.viewManager) {
       throw new Error(`[PanelManager] ViewManager not set, cannot create view for ${panelId}`);
     }
@@ -153,6 +223,7 @@ export class PanelManager {
         `--natstack-auth-token=${authToken}`,
         `--natstack-theme=${this.currentTheme}`,
         `--natstack-kind=worker`,
+        `--natstack-session-id=${sessionId ?? ""}`,
       ];
 
       // Add worker env if available
@@ -177,7 +248,7 @@ export class PanelManager {
           const scopePath =
             typeof unsafeFlag === "string"
               ? unsafeFlag // Custom root (e.g., "/" for full access)
-              : getPanelScopePath(workspace.config.id, panelId); // Default scoped path
+              : getSessionScopePath(workspace.config.id, sessionId ?? panelId); // Session-based scope
           additionalArgs.push(`--natstack-scope-path=${scopePath}`);
         }
       }
@@ -185,7 +256,7 @@ export class PanelManager {
       this.viewManager.createView({
         id: panelId,
         type: "worker",
-        partition: `persist:${panelId}`, // Isolated partition for workers
+        partition: `persist:${sessionId ?? panelId}`, // Session-based partition
         url: url,
         parentId: parentId ?? undefined,
         injectHostThemeVariables: true,
@@ -206,6 +277,7 @@ export class PanelManager {
         `--natstack-auth-token=${authToken}`,
         `--natstack-theme=${this.currentTheme}`,
         `--natstack-kind=panel`,
+        `--natstack-session-id=${sessionId ?? ""}`,
       ];
 
       // Add panel env if available
@@ -228,7 +300,7 @@ export class PanelManager {
           const scopePath =
             typeof unsafeFlag === "string"
               ? unsafeFlag // Custom root (e.g., "/" for full access)
-              : getPanelScopePath(workspace.config.id, panelId); // Default scoped path
+              : getSessionScopePath(workspace.config.id, sessionId ?? panelId); // Session-based scope
           additionalArgs.push(`--natstack-scope-path=${scopePath}`);
         }
       }
@@ -236,7 +308,7 @@ export class PanelManager {
       const view = this.viewManager.createView({
         id: panelId,
         type: "panel",
-        partition: `persist:${panelId}`, // Isolated partition for app panels
+        partition: `persist:${sessionId ?? panelId}`, // Session-based partition
         url: url,
         parentId: parentId ?? undefined,
         injectHostThemeVariables: panel?.type === "app" ? (panel as SharedPanel.AppPanel).injectHostThemeVariables : true,
@@ -334,8 +406,8 @@ export class PanelManager {
 
       if (url.startsWith("natstack-child:")) {
         try {
-          const { source, gitRef } = parseChildUrl(url);
-          this.createChild(panelId, source, gitRef ? { gitRef } : undefined).catch((err) =>
+          const { source, gitRef, sessionId } = parseChildUrl(url);
+          this.createChild(panelId, source, { gitRef, sessionId }).catch((err) =>
             this.handleChildCreationError(panelId, err, url)
           );
         } catch (err) {
@@ -359,8 +431,8 @@ export class PanelManager {
       if (url.startsWith("natstack-child:")) {
         event.preventDefault();
         try {
-          const { source, gitRef } = parseChildUrl(url);
-          this.createChild(panelId, source, gitRef ? { gitRef } : undefined).catch((err) =>
+          const { source, gitRef, sessionId } = parseChildUrl(url);
+          this.createChild(panelId, source, { gitRef, sessionId }).catch((err) =>
             this.handleChildCreationError(panelId, err, url)
           );
         } catch (err) {
@@ -399,17 +471,12 @@ export class PanelManager {
     relativePath: string;
     parent?: Panel | null;
     requestedId?: string;
-    singletonState?: boolean;
     isRoot?: boolean;
   }): string {
-    const { relativePath, parent, requestedId, singletonState, isRoot } = params;
+    const { relativePath, parent, requestedId, isRoot } = params;
 
-    // Escape slashes in path to avoid collisions (e.g., children of singletons)
+    // Escape slashes in path to avoid collisions
     const escapedPath = relativePath.replace(/\//g, "~");
-
-    if (singletonState) {
-      return `singleton/${escapedPath}`;
-    }
 
     if (isRoot) {
       return `tree/${escapedPath}`;
@@ -425,6 +492,35 @@ export class PanelManager {
 
     const autoSegment = this.generatePanelNonce();
     return `${parentPrefix}/${escapedPath}/${autoSegment}`;
+  }
+
+  /**
+   * Resolve session ID for a panel based on options and mode.
+   * - If explicit sessionId provided: validate and use it
+   * - If newSession: generate random named session
+   * - Default: derive auto session from panel ID (deterministic, resumable)
+   */
+  private resolveSession(
+    panelId: string,
+    options: ChildCreateOptions | undefined,
+    isUnsafe: boolean
+  ): string {
+    const mode: SessionMode = isUnsafe ? "unsafe" : "safe";
+
+    // Explicit session provided - validate and use it
+    if (options?.sessionId) {
+      validateSessionId(options.sessionId, mode);
+      return options.sessionId;
+    }
+
+    // Force new isolated session (random named session)
+    if (options?.newSession) {
+      return generateNamedSessionId(mode);
+    }
+
+    // Default: derive from panel ID (deterministic auto session)
+    // Same panel path = same session = resumed OPFS state
+    return deriveAutoSessionId(mode, panelId);
   }
 
   // Public methods for RPC services
@@ -517,14 +613,9 @@ export class PanelManager {
   }): { id: string; type: SharedPanel.PanelType; title: string } {
     const { manifest, relativePath, parent, options, isRoot } = params;
 
-    const isSingleton = manifest.singletonState === true;
     const isWorker = manifest.type === "worker";
-
-    if (isSingleton && options?.name) {
-      throw new Error(
-        `Panel at "${relativePath}" has singletonState and cannot have its ID overridden`
-      );
-    }
+    // Determine unsafe mode from manifest or options
+    const unsafeFlag = options?.unsafe ?? manifest.unsafe;
 
     // Validate repoArgs: caller must provide exactly the args declared in manifest
     const declaredArgs = manifest.repoArgs ?? [];
@@ -551,20 +642,14 @@ export class PanelManager {
       relativePath,
       parent,
       requestedId: options?.name,
-      singletonState: isSingleton,
       isRoot,
     });
 
+    // Resolve session ID based on panel ID and options
+    const isUnsafe = unsafeFlag !== undefined;
+    const sessionId = this.resolveSession(panelId, options, isUnsafe);
+
     if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
-      if (isSingleton && parent) {
-        parent.selectedChildId = panelId;
-        this.notifyPanelTreeUpdate();
-        const existing = this.panels.get(panelId);
-        if (!existing) {
-          throw new Error(`Singleton panel not found after selection: ${panelId}`);
-        }
-        return { id: panelId, type: existing.type, title: existing.title };
-      }
       throw new Error(`A panel with id "${panelId}" is already running`);
     }
 
@@ -588,6 +673,7 @@ export class PanelManager {
         ? {
             type: "worker",
             id: panelId,
+            sessionId,
             title: manifest.title,
             path: relativePath,
             children: [],
@@ -609,6 +695,7 @@ export class PanelManager {
         : {
             type: "app",
             id: panelId,
+            sessionId,
             title: manifest.title,
             path: relativePath,
             children: [],
@@ -721,9 +808,11 @@ export class PanelManager {
       relativePath: `browser/${browserName}`,
       parent,
       requestedId: browserName,
-      singletonState: false,
       isRoot: false,
     });
+
+    // Browser panels are always safe (no Node.js access)
+    const sessionId = this.resolveSession(panelId, undefined, false);
 
     if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
       throw new Error(`A panel with id "${panelId}" is already running`);
@@ -732,6 +821,7 @@ export class PanelManager {
     const panel: SharedPanel.BrowserPanel = {
       type: "browser",
       id: panelId,
+      sessionId,
       title: parsedUrl.hostname,
       url,
       children: [],
@@ -753,8 +843,8 @@ export class PanelManager {
     parent.selectedChildId = panel.id;
     this.panels.set(panel.id, panel);
 
-    // Create WebContentsView for the browser
-    this.createViewForPanel(panel.id, url, "browser");
+    // Create WebContentsView for the browser (browsers don't use session-based partitions)
+    this.createViewForPanel(panel.id, url, "browser", panel.sessionId);
 
     this.notifyPanelTreeUpdate();
 
@@ -896,7 +986,7 @@ export class PanelManager {
         // Create WebContentsView for this worker
         const srcUrl = new URL(htmlUrl);
         srcUrl.searchParams.set("panelId", worker.id);
-        this.createViewForPanel(worker.id, srcUrl.toString(), "worker");
+        this.createViewForPanel(worker.id, srcUrl.toString(), "worker", worker.sessionId);
       } else {
         // Build failed
         worker.artifacts = {
@@ -1141,7 +1231,7 @@ export class PanelManager {
         // Create WebContentsView for this panel
         const srcUrl = new URL(htmlUrl);
         srcUrl.searchParams.set("panelId", panel.id);
-        this.createViewForPanel(panel.id, srcUrl.toString(), "panel");
+        this.createViewForPanel(panel.id, srcUrl.toString(), "panel", panel.sessionId);
       } else {
         // Build failed
         panel.artifacts = {
@@ -1326,7 +1416,8 @@ export class PanelManager {
     }
     return {
       panelId: panel.id,
-      partition: panel.id,
+      partition: panel.sessionId, // Partition is now based on session, not panel ID
+      sessionId: panel.sessionId,
     };
   }
 

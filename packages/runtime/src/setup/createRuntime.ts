@@ -19,6 +19,7 @@ export interface RuntimeDeps {
   selfId: string;
   createTransport: () => RpcTransport;
   id: string;
+  sessionId: string;
   parentId: string | null;
   initialTheme: ThemeAppearance;
   fs: RuntimeFs;
@@ -192,6 +193,8 @@ export function createRuntime(deps: RuntimeDeps) {
 
     gitConfig: deps.gitConfig ?? null,
     pubsubConfig: deps.pubsubConfig ?? null,
+    /** Session ID for storage partition (format: {mode}_{type}_{identifier}) */
+    sessionId: deps.sessionId,
     /** Promise that resolves when bootstrap completes. Resolves to null if no bootstrap needed. */
     bootstrapPromise: deps.bootstrapPromise ?? Promise.resolve(null),
   };

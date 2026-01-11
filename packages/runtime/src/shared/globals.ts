@@ -12,6 +12,8 @@ import type { GitConfig, PubSubConfig } from "../core/index.js";
 declare global {
   /** Unique identifier for this panel or worker */
   var __natstackId: string | undefined;
+  /** Session ID for storage partition (format: {mode}_{type}_{identifier}) */
+  var __natstackSessionId: string | undefined;
   /** Environment kind: "panel" or "worker" */
   var __natstackKind: "panel" | "worker" | undefined;
   /** Parent panel ID if this is a child panel/worker */
@@ -28,6 +30,7 @@ declare global {
 
 export interface InjectedConfig {
   id: string;
+  sessionId: string;
   kind: "panel" | "worker";
   parentId: string | null;
   initialTheme: "light" | "dark";
@@ -40,6 +43,7 @@ export interface InjectedConfig {
 // where globals are set on the context object
 const g = globalThis as unknown as {
   __natstackId?: string;
+  __natstackSessionId?: string;
   __natstackKind?: "panel" | "worker";
   __natstackParentId?: string | null;
   __natstackInitialTheme?: "light" | "dark";
@@ -60,6 +64,7 @@ export function getInjectedConfig(): InjectedConfig {
 
   return {
     id: g.__natstackId,
+    sessionId: g.__natstackSessionId ?? "",
     kind: g.__natstackKind ?? "panel",
     parentId:
       typeof g.__natstackParentId === "string" && g.__natstackParentId.length > 0

@@ -70,7 +70,6 @@ Every panel requires a `package.json` with a `natstack` field:
     "title": "My Panel",
     "entry": "index.tsx",
     "injectHostThemeVariables": true,
-    "singletonState": false,
     "repoArgs": ["history", "components"],
     "exposeModules": ["@radix-ui/colors"]
   },
@@ -90,7 +89,6 @@ Every panel requires a `package.json` with a `natstack` field:
 | `entry` | string | `index.tsx` | Entry point file |
 | `runtime` | `"panel"` \| `"worker"` | `"panel"` | **Deprecated** legacy field (use `type` instead) |
 | `injectHostThemeVariables` | boolean | `true` | Inherit NatStack theme CSS variables |
-| `singletonState` | boolean | `false` | Share storage across all instances |
 | `repoArgs` | string[] | `[]` | Named repo argument slots that callers must provide via `createChild` |
 | `exposeModules` | string[] | `[]` | Extra module specifiers to expose via `__natstackRequire__` (bundled even if not directly imported) |
 
@@ -509,10 +507,11 @@ export default function FileManager() {
 
 ### Storage Isolation
 
-Each panel has its own OPFS partition:
+Each panel has its own OPFS partition based on its session:
 
-- **Isolated by default**: Each panel instance gets unique storage
-- **Singleton mode**: Set `singletonState: true` in `natstack` field to share across instances
+- **Auto sessions**: By default, panels derive session from their tree path (deterministic, resumable)
+- **Shared sessions**: Use `sessionId` option in `createChild` to share storage across panels
+- **Isolated sessions**: Use `newSession: true` in `createChild` for fresh, isolated storage
 
 ---
 

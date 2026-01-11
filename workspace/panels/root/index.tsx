@@ -16,6 +16,7 @@ import {
   usePanelId,
   usePanelPartition,
   usePanelChildren,
+  useSessionId,
 } from "@natstack/react";
 import "./style.css";
 
@@ -27,6 +28,7 @@ export default function ChildPanelLauncher() {
   const theme = usePanelTheme();
   const panelId = usePanelId();
   const partition = usePanelPartition();
+  const sessionId = useSessionId();
   const env = process.env;
   const children = usePanelChildren();
 
@@ -143,16 +145,6 @@ export default function ChildPanelLauncher() {
     }
   };
 
-  const launchSharedOPFSDemo = async () => {
-    try {
-      setStatus("Launching shared OPFS demo panel...");
-      const child = await createChild("panels/shared-opfs-demo");
-      setStatus(`Launched shared OPFS demo: ${child.name}`);
-    } catch (error) {
-      setStatus(`Failed to launch: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-
   const launchAgenticChat = async () => {
     try {
       setStatus("Launching agentic chat example...");
@@ -190,6 +182,16 @@ export default function ChildPanelLauncher() {
       setStatus(`Launched Unsafe FS Demo: ${child.name}`);
     } catch (error) {
       setStatus(`Failed to launch Unsafe FS Demo: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const launchSessionDemo = async () => {
+    try {
+      setStatus("Launching Session Demo...");
+      const child = await createChild("panels/session-demo", { name: "session-demo" });
+      setStatus(`Launched Session Demo: ${child.name}`);
+    } catch (error) {
+      setStatus(`Failed to launch Session Demo: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -713,17 +715,22 @@ export default function ChildPanelLauncher() {
               {partition ?? "loading..."}
             </Text>
           </Text>
+          <Text size="2">
+            Session ID: <Text weight="bold" style={{ fontFamily: "monospace" }}>
+              {sessionId}
+            </Text>
+          </Text>
           <Card variant="surface">
             <Flex direction="column" gap="2">
-              <Text size="2" weight="bold">Partition Rules:</Text>
+              <Text size="2" weight="bold">Session Rules:</Text>
               <Text size="1" color="gray">
-                • <Text weight="bold">Tree panels:</Text> Children can set <Text weight="bold">panelId</Text> and get <Text weight="bold">tree/&lt;parent-id-without-tree-prefix&gt;/&lt;panelId&gt;</Text>.
+                • <Text weight="bold">Auto sessions:</Text> By default, panels derive session from their tree path (<Text weight="bold">safe_auto_panels~editor</Text>). Resumable across restarts.
               </Text>
               <Text size="1" color="gray">
-                • <Text weight="bold">Singleton panels:</Text> Manifests with <Text weight="bold">singletonState: true</Text> use <Text weight="bold">singleton/&lt;relative-path&gt;</Text> and cannot be overridden.
+                • <Text weight="bold">Named sessions:</Text> Use <Text weight="bold">sessionId</Text> option to share storage across panels, or <Text weight="bold">newSession: true</Text> for isolated storage.
               </Text>
               <Text size="1" color="gray">
-                • <Text weight="bold">One per partition:</Text> Creating a panel for an existing partition ID throws and the parent call fails.
+                • <Text weight="bold">Session format:</Text> <Text weight="bold">{"{mode}_{type}_{id}"}</Text> where mode is safe/unsafe, type is auto/named.
               </Text>
             </Flex>
           </Card>
@@ -753,9 +760,6 @@ export default function ChildPanelLauncher() {
           )}
           <Flex gap="3" wrap="wrap">
             <Button onClick={launchChildPanel}>Launch Root Panel</Button>
-            <Button onClick={launchSharedOPFSDemo} color="purple">
-              Launch Shared OPFS Demo
-            </Button>
             <Button onClick={launchAgenticChat} color="green">
               Launch Agentic Chat
             </Button>
@@ -767,6 +771,9 @@ export default function ChildPanelLauncher() {
             </Button>
             <Button onClick={launchUnsafeFsDemo} color="red">
               🔓 Launch Unsafe FS Demo
+            </Button>
+            <Button onClick={launchSessionDemo} color="purple">
+              Launch Session Demo
             </Button>
             <Button variant="soft" onClick={setRandomTitle}>
               Set random title
@@ -803,7 +810,7 @@ export default function ChildPanelLauncher() {
                 </a>
               </Text>
               <Text size="2">
-                <a href={buildChildLink("panels/root", "HEAD")}>
+                <a href={buildChildLink("panels/root", { gitRef: "HEAD" })}>
                   Open Root Panel @ gitRef "HEAD" (always valid)
                 </a>
               </Text>
@@ -819,7 +826,7 @@ export default function ChildPanelLauncher() {
                 </Flex>
                 <Button asChild variant="soft" size="1">
                   <a
-                    href={buildChildLink("panels/root", childLinkGitRef.trim() || undefined)}
+                    href={buildChildLink("panels/root", { gitRef: childLinkGitRef.trim() || undefined })}
                     target="_blank"
                     rel="noreferrer"
                   >
@@ -856,12 +863,12 @@ export default function ChildPanelLauncher() {
           {/* OPFS Demo Section */}
           <Heading size="5">OPFS Demo</Heading>
           <Text size="2" color="gray">
-            This panel writes to "example.txt". Each partition (which equals the panel ID) has its own OPFS. Reusing the same panel ID (tree/singleton) shares storage; new IDs get fresh storage.
+            This panel writes to "example.txt". Each session has its own OPFS partition. Panels sharing a session share storage; use <Text weight="bold">newSession: true</Text> for isolated storage.
           </Text>
           {message && message.includes("share OPFS") && (
             <Callout.Root color="orange">
               <Callout.Text>
-                This instance is using partition {partition ?? "(loading)"} — files are shared with any panel using the same ID.
+                This instance is using partition {partition ?? "(loading)"} — files are shared with any panel using the same session.
               </Callout.Text>
             </Callout.Root>
           )}

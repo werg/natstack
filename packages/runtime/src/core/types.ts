@@ -73,6 +73,10 @@ export interface CreateChildOptions {
   sourcemap?: boolean;
   /** Optional zod schemas for validating event payloads from this child (runtime-only; not sent to main). */
   eventSchemas?: EventSchemaMap;
+  /** Explicit session ID to share OPFS with another panel (must match panel's safe/unsafe mode). */
+  sessionId?: string;
+  /** Force creation of a new named session instead of deriving from panel ID. */
+  newSession?: boolean;
 
   /** Legacy git fields (still supported programmatically). Prefer `gitRef`. */
   branch?: string;
@@ -145,8 +149,8 @@ interface GitVersionFields {
 
 /**
  * Spec for creating an app panel child.
- * Name is optional - if omitted, a random ID is generated.
- * Singleton panels (singletonState: true in manifest) cannot have a name override.
+ * Name is optional - if omitted, session is auto-derived from tree path.
+ * Use `sessionId` to share storage across panels, or `newSession: true` for isolation.
  */
 export interface AppChildSpec extends ChildSpecBase, GitVersionFields {
   type: "app";
@@ -236,8 +240,10 @@ export interface PubSubConfig {
 export interface EndpointInfo {
   /** The endpoint's unique ID */
   panelId: string;
-  /** Storage partition name (for isolated storage) */
+  /** Storage partition name (derived from sessionId) */
   partition: string;
+  /** Session ID (format: {mode}_{type}_{identifier}) */
+  sessionId: string;
 }
 
 // =============================================================================

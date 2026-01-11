@@ -66,6 +66,27 @@ export function usePanelId(): string {
 }
 
 /**
+ * Get the panel's session ID.
+ * Session ID format: {mode}_{type}_{identifier}
+ * - mode: "safe" | "unsafe" - security context
+ * - type: "auto" | "named" - auto = tree-derived, named = explicit
+ * - identifier: tree path or random string
+ *
+ * Panels/workers with the same session share OPFS state.
+ *
+ * @example
+ * ```tsx
+ * function MyPanel() {
+ *   const sessionId = useSessionId();
+ *   return <div>Session: {sessionId}</div>;
+ * }
+ * ```
+ */
+export function useSessionId(): string {
+  return runtime.sessionId;
+}
+
+/**
  * Get the panel's partition name.
  *
  * @example

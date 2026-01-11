@@ -38,7 +38,7 @@ export interface ViewConfig {
   id: string;
   /** View type for tracking */
   type: "shell" | "panel" | "browser" | "worker";
-  /** Session partition (e.g., "persist:panelId"). Omit for default session. */
+  /** Session partition (e.g., "persist:safe_auto_tree~panels~editor"). Omit for default session. */
   partition?: string;
   /** Preload script path. Set to null to disable preload (for browsers). */
   preload?: string | null;
