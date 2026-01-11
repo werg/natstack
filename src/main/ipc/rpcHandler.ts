@@ -1,8 +1,6 @@
-import { ipcMain, MessageChannelMain } from "electron";
+import { MessageChannelMain } from "electron";
 import { handle } from "./handlers.js";
 import type { PanelManager } from "../panelManager.js";
-import { getWorkerManager } from "../workerManager.js";
-import type { RpcMessage } from "@natstack/rpc";
 import { isViewManagerInitialized, getViewManager } from "../viewManager.js";
 
 export class PanelRpcHandler {
@@ -15,14 +13,6 @@ export class PanelRpcHandler {
       this.assertAuthorized(event, fromPanelId);
       this.assertCanCommunicate(fromPanelId, toPanelId);
 
-      // Check if target is a worker
-      const targetPanel = this.panelManager.getPanel(toPanelId);
-      if (targetPanel?.type === "worker") {
-        // For workers, we use a proxy approach via IPC
-        // The panel will send messages via "panel-rpc:to-worker" and receive via "worker-rpc:message"
-        return { isWorker: true, workerId: toPanelId };
-      }
-
       // Create a MessageChannelMain for direct communication
       const { port1, port2 } = new MessageChannelMain();
 
@@ -34,32 +24,7 @@ export class PanelRpcHandler {
 
       // Send port2 to the target (toPanel)
       targetContents.postMessage("panel-rpc:port", { targetPanelId: fromPanelId }, [port2]);
-
-      return { isWorker: false };
     });
-
-    // Handle messages from panel to worker
-    ipcMain.on(
-      "panel-rpc:to-worker",
-      (event, fromPanelId: string, toWorkerId: string, message: RpcMessage) => {
-        // Verify the sender
-        const senderPanelId = this.panelManager.getPanelIdForWebContents(event.sender);
-        if (senderPanelId !== fromPanelId) {
-          return;
-        }
-
-        // Verify communication is allowed
-        try {
-          this.assertCanCommunicate(fromPanelId, toWorkerId);
-        } catch {
-          return;
-        }
-
-        // Route to worker via WorkerManager
-        const workerManager = getWorkerManager();
-        workerManager.routeRpcToWorker(fromPanelId, toWorkerId, message);
-      }
-    );
   }
 
   private assertAuthorized(event: Electron.IpcMainInvokeEvent, panelId: string): void {

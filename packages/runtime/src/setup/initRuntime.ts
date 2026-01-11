@@ -1,8 +1,9 @@
 /**
  * Unified runtime initialization for panels and workers.
  *
- * This module extracts common initialization logic to reduce duplication
- * between panel/index.ts and worker/index.ts.
+ * Both panels and workers run in WebContentsView with browser environment.
+ * Workers use the same initialization as panels, with `__natstackKind === "worker"`
+ * set by the worker preload script.
  */
 
 import { createRuntime } from "./createRuntime.js";
@@ -14,11 +15,11 @@ import type { RpcTransport } from "@natstack/rpc";
 export interface InitRuntimeOptions {
   /** Function to create the RPC transport */
   createTransport: () => RpcTransport;
-  /** Filesystem implementation */
+  /** Filesystem implementation (ZenFS for both panels and workers) */
   fs: RuntimeFs;
-  /** Promise that resolves when fs is ready (panel ZenFS), or undefined for workers */
+  /** Promise that resolves when fs is ready (async ZenFS initialization) */
   fsReady?: Promise<void>;
-  /** Optional function to set up globals (worker console/env injection) */
+  /** Optional function to set up globals before runtime initialization */
   setupGlobals?: () => void;
 }
 
@@ -39,7 +40,7 @@ export interface InitRuntimeResult {
 export function initRuntime(options: InitRuntimeOptions): InitRuntimeResult {
   const config = getInjectedConfig();
 
-  // Apply globals setup if provided (worker console/env injection)
+  // Apply globals setup if provided
   options.setupGlobals?.();
 
   // Create bootstrap state - this will hold the promise once runBootstrap starts

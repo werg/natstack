@@ -67,8 +67,6 @@ export interface CreateChildOptions {
   gitRef?: string;
   /** Repo arguments required by the target manifest */
   repoArgs?: Record<string, RepoArgSpec>;
-  /** Worker-only: memory limit in MB */
-  memoryLimitMB?: number;
   /** Worker-only: unsafe mode configuration */
   unsafe?: boolean | string;
   /** App-only: emit inline sourcemaps (default: true). Set to false to omit sourcemaps. */
@@ -175,12 +173,9 @@ export interface AppChildSpec extends ChildSpecBase, GitVersionFields {
  */
 export interface WorkerChildSpec extends ChildSpecBase, GitVersionFields {
   type: "worker";
-  /** Memory limit in MB (default: 1024) */
-  memoryLimitMB?: number;
   /**
-   * Run worker with full Node.js API access instead of sandboxed vm.Context.
+   * Run worker with full Node.js API access instead of browser sandbox.
    * Unsafe workers can use require(), process, child_process, etc.
-   * Note: `import "fs"` still uses the scoped filesystem via the build-time shim.
    */
   unsafe?: boolean;
   /**

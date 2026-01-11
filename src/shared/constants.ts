@@ -25,10 +25,23 @@ export const MAX_STREAM_DURATION_MS = 10 * 60 * 1000;
 export const DEFAULT_MAX_STEPS = 10;
 
 // =============================================================================
-// Worker Defaults
+// Content Security Policy
 // =============================================================================
 
 /**
- * Default memory limit for workers in megabytes.
+ * Permissive CSP for panels and workers.
+ * Allows connections to localhost services (git, pubsub) and external APIs.
  */
-export const DEFAULT_WORKER_MEMORY_LIMIT_MB = 1024;
+export const PANEL_CSP = [
+  "default-src 'self' natstack-panel: https: data: blob:",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' natstack-panel: https:",
+  "style-src 'self' 'unsafe-inline' https:",
+  "img-src 'self' natstack-panel: https: data: blob:",
+  "font-src 'self' https: data:",
+  "connect-src 'self' ws://127.0.0.1:* wss://127.0.0.1:* http://127.0.0.1:* https://127.0.0.1:* ws: wss: https:",
+].join("; ");
+
+/**
+ * CSP meta tag for HTML injection.
+ */
+export const PANEL_CSP_META = `<meta http-equiv="Content-Security-Policy" content="${PANEL_CSP}">`;

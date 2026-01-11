@@ -12,165 +12,11 @@ import { provisionPanelVersion, resolveTargetCommit, type VersionSpec } from "./
 import type { PanelBuildState, ProtocolBuildArtifacts } from "../shared/ipc/types.js";
 import { createBuildWorkspace, type BuildArtifactKey } from "./build/artifacts.js";
 import { collectWorkersFromDependencies, workersToArray } from "../shared/collectWorkers.js";
+import { PANEL_CSP_META } from "../shared/constants.js";
 
 // ===========================================================================
 // Shared Build Plugins
 // ===========================================================================
-
-// Path to the scoped fs shim file (loaded at build time for syntax highlighting and maintainability)
-const SCOPED_FS_SHIM_PATH = path.join(__dirname, "build", "scopedFsShim.js");
-
-// Cache the shim contents to avoid repeated file reads during builds
-let _scopedFsShimCache: string | null = null;
-
-function getScopedFsShim(): string {
-  if (_scopedFsShimCache === null) {
-    _scopedFsShimCache = fs.readFileSync(SCOPED_FS_SHIM_PATH, "utf-8");
-  }
-  return _scopedFsShimCache;
-}
-
-/**
- * Create a scoped filesystem shim plugin for worker builds.
- *
- * This plugin injects a complete fs implementation that:
- * 1. Uses the real Node.js fs module (available in the utility process)
- * 2. Scopes all paths to __natstackFsRoot (set at runtime by the utility process)
- * 3. Supports both sync and async methods
- *
- * The shim validates paths to prevent escape from the scoped root.
- * The actual shim code is in src/main/build/scopedFsShim.js for better maintainability.
- */
-function createScopedFsShimPlugin(): esbuild.Plugin {
-  // Load the shim from external file (cached)
-  const scopedFsShim = getScopedFsShim();
-
-  // fs/promises version - just exports the promises object
-  const scopedFsPromisesShim = `
-const scopedFs = require("__natstack_scoped_fs__");
-module.exports = scopedFs.promises;
-module.exports.default = scopedFs.promises;
-`;
-
-  return {
-    name: "scoped-fs-shim",
-    setup(build) {
-      // Mark our virtual module as having side effects so it's not tree-shaken
-      build.onResolve({ filter: /^__natstack_scoped_fs__$/ }, () => {
-        return { path: "__natstack_scoped_fs__", namespace: "natstack-scoped-fs" };
-      });
-
-      // Map __natstack_real_fs__ and __natstack_real_path__ to real Node.js modules
-      // These are used internally by the shim to avoid circular dependency
-      build.onResolve({ filter: /^__natstack_real_fs__$/ }, () => {
-        return { path: "fs", external: true };
-      });
-      build.onResolve({ filter: /^__natstack_real_path__$/ }, () => {
-        return { path: "path", external: true };
-      });
-
-      // Intercept fs imports
-      build.onResolve({ filter: /^(fs|node:fs)$/ }, (args) => {
-        return { path: args.path, namespace: "natstack-scoped-fs" };
-      });
-
-      // Intercept fs/promises imports
-      build.onResolve({ filter: /^(fs\/promises|node:fs\/promises)$/ }, (args) => {
-        return { path: args.path, namespace: "natstack-scoped-fs-promises" };
-      });
-
-      // Load the scoped fs shim
-      build.onLoad({ filter: /.*/, namespace: "natstack-scoped-fs" }, () => {
-        return { contents: scopedFsShim, loader: "js" };
-      });
-
-      // Load the fs/promises shim
-      build.onLoad({ filter: /.*/, namespace: "natstack-scoped-fs-promises" }, () => {
-        return { contents: scopedFsPromisesShim, loader: "js" };
-      });
-    },
-  };
-}
-
-/**
- * Known packages that use import.meta.url to locate their own files.
- * Maps package name -> relative path to the main module that uses import.meta.url.
- * When these packages are detected, the polyfill points to their actual location.
- */
-const IMPORT_META_PACKAGES: Record<string, string> = {
-  "@anthropic-ai/claude-agent-sdk": "sdk.mjs",
-  // Add more packages here as needed, e.g.:
-  // "some-package": "dist/index.mjs",
-};
-
-/**
- * Create a plugin to polyfill import.meta.url for workers.
- *
- * When esbuild bundles code with IIFE format, it replaces `import.meta` with an empty object:
- *   var import_meta = {};
- *
- * This breaks libraries that use `import.meta.url` to find their own installation directory
- * (e.g., to spawn subprocesses or load resources relative to themselves).
- *
- * This plugin patches the output bundle to replace the empty object with a polyfilled version
- * pointing to the actual dependency installation path. It has two strategies:
- *
- * 1. **Known packages**: For packages in IMPORT_META_PACKAGES, it points to the exact module
- *    location so fileURLToPath(import.meta.url) returns the right directory.
- *
- * 2. **Generic fallback**: Points to node_modules root, which works for most cases where
- *    code just needs a valid file:// URL (e.g., for URL resolution).
- *
- * Note: This plugin operates on the output bundle, not source files, using the onEnd hook.
- *
- * @param nodeModulesDir - Path to the node_modules where dependencies are installed
- */
-function createImportMetaPolyfillPlugin(nodeModulesDir: string): esbuild.Plugin {
-  return {
-    name: "import-meta-polyfill",
-    setup(build) {
-      build.onEnd(async () => {
-        const outfile = build.initialOptions.outfile;
-        if (!outfile) return;
-
-        const content = fs.readFileSync(outfile, "utf-8");
-
-        // Check if the bundle contains the empty import_meta pattern
-        if (!/var import_meta\s*=\s*\{\s*\};/.test(content)) {
-          return; // No import.meta usage, nothing to polyfill
-        }
-
-        // Try to find a known package that uses import.meta.url
-        let importMetaUrl: string | null = null;
-
-        for (const [pkg, modulePath] of Object.entries(IMPORT_META_PACKAGES)) {
-          const pkgPath = path.join(nodeModulesDir, pkg, modulePath);
-          if (fs.existsSync(pkgPath)) {
-            importMetaUrl = `file://${pkgPath.replace(/\\/g, "/")}`;
-            break;
-          }
-        }
-
-        // Fallback to a generic path in node_modules
-        if (!importMetaUrl) {
-          importMetaUrl = `file://${nodeModulesDir.replace(/\\/g, "/")}/worker.js`;
-        }
-
-        const polyfill = `var import_meta = { url: ${JSON.stringify(importMetaUrl)} };`;
-
-        // Replace the empty import_meta assignment
-        const patched = content.replace(
-          /var import_meta\s*=\s*\{\s*\};/,
-          polyfill
-        );
-
-        if (patched !== content) {
-          fs.writeFileSync(outfile, patched);
-        }
-      });
-    },
-  };
-}
 
 /**
  * Create a panel fs shim plugin that maps fs imports to @natstack/runtime.
@@ -327,6 +173,49 @@ interface AsyncTrackingBannerOptions {
   globalObjExpr: string;
   /** Whether to include browser-only API wrappers (clipboard, createImageBitmap) */
   includeBrowserApis: boolean;
+}
+
+/**
+ * Generate a compatibility patch for running Node.js code in Electron's hybrid environment.
+ *
+ * In Electron with nodeIntegration, we have a mix of browser and Node.js APIs.
+ * Some Node.js APIs (like events.setMaxListeners) don't recognize browser globals
+ * (like AbortSignal) even though they're functionally equivalent.
+ *
+ * This patch makes Node.js's events module tolerate browser AbortSignal.
+ */
+function generateNodeCompatibilityPatch(): string {
+  return `
+// === Node.js Compatibility Patch ===
+// Patch events.setMaxListeners to accept browser AbortSignal
+// (Node.js events module doesn't recognize browser's AbortSignal as EventTarget)
+(function() {
+  if (typeof require === 'function' && typeof AbortSignal !== 'undefined') {
+    try {
+      var nodeEvents = require('events');
+      if (nodeEvents && typeof nodeEvents.setMaxListeners === 'function') {
+        var originalSetMaxListeners = nodeEvents.setMaxListeners;
+        nodeEvents.setMaxListeners = function(n) {
+          var eventTargets = Array.prototype.slice.call(arguments, 1);
+          // Filter to targets that Node.js events module can handle
+          var compatibleTargets = eventTargets.filter(function(t) {
+            // Accept EventEmitters and Node.js EventTargets, skip browser AbortSignals
+            return t instanceof nodeEvents.EventEmitter ||
+                   (t && t.constructor && t.constructor.name !== 'AbortSignal');
+          });
+          if (compatibleTargets.length > 0) {
+            return originalSetMaxListeners.apply(this, [n].concat(compatibleTargets));
+          }
+          // If only AbortSignals, just return (ignore the call gracefully)
+          return;
+        };
+      }
+    } catch (e) {
+      // Ignore - events module not available
+    }
+  }
+})();
+`;
 }
 
 /**
@@ -658,18 +547,6 @@ function generateAsyncTrackingBanner(): string {
     label: "NatStack Async Tracking",
     globalObjExpr: 'typeof globalThis !== "undefined" ? globalThis : window',
     includeBrowserApis: true,
-  });
-}
-
-/**
- * Generate the async tracking banner for Node.js workers.
- * Node 18+ has fetch, Response, Blob globally but not clipboard/createImageBitmap.
- */
-function generateWorkerAsyncTrackingBanner(): string {
-  return generateAsyncTrackingBannerCore({
-    label: "NatStack Async Tracking for Workers",
-    globalObjExpr: "globalThis",
-    includeBrowserApis: false,
   });
 }
 
@@ -1023,6 +900,7 @@ export class PanelBuilder {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  ${PANEL_CSP_META}
   <title>${title}</title>
   ${importMapScript}<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/themes@3.2.1/styles.css">
   ${cssLink}
@@ -1349,7 +1227,10 @@ import ${JSON.stringify(relativeUserEntry)};
         plugins.push(this.createDedupePlugin(workspace.nodeModulesDir, manifest.dedupeModules));
       }
 
-      const bannerJs = [generateAsyncTrackingBanner(), generateModuleMapBanner()].join("\n");
+      // For unsafe panels, include Node.js compatibility patch to handle hybrid browser/Node.js environment
+      const bannerJs = unsafe
+        ? [generateNodeCompatibilityPatch(), generateAsyncTrackingBanner(), generateModuleMapBanner()].join("\n")
+        : [generateAsyncTrackingBanner(), generateModuleMapBanner()].join("\n");
 
       // Helper to create consistent esbuild configuration
       const createBuildConfig = (): esbuild.BuildOptions => ({
@@ -1374,6 +1255,9 @@ import ${JSON.stringify(relativeUserEntry)};
           js: bannerJs,
         },
         metafile: true,
+        // For CJS (unsafe panels), dynamic import() must be transformed to require()
+        // because WebContentsView doesn't have an ESM loader to resolve bare specifiers.
+        supported: unsafe ? { "dynamic-import": false } : undefined,
         // Use a build-owned tsconfig. Only allowlisted user compilerOptions are merged.
         tsconfig: this.writeBuildTsconfig(workspace.buildDir, sourcePath, "panel", {
           jsx: "react-jsx",
@@ -1896,14 +1780,14 @@ import ${JSON.stringify(relativeUserEntry)};
 
   /**
    * Build a worker from a workspace path with optional version specifier.
-   * Workers are built for isolated-vm (Node.js target) and return just a JS bundle.
+   * Workers are built for browser target (WebContentsView) and return just a JS bundle.
    *
    * @param panelsRoot - Absolute path to workspace root
    * @param workerPath - Relative path to worker within workspace
    * @param version - Optional version specifier (branch, commit, or tag)
    * @param onProgress - Optional progress callback for UI updates
    * @param options - Build options
-   * @param options.unsafe - If true or a string path, skip the scoped fs shim
+   * @param options.unsafe - If true or a string path, run with Node.js integration
    */
   async buildWorker(
     panelsRoot: string,
@@ -2022,64 +1906,53 @@ import ${JSON.stringify(relativeUserEntry)};
 `;
       fs.writeFileSync(tempEntryPath, wrapperCode);
 
-      // Build with esbuild for vm.Script (Node.js sandbox)
-      // IMPORTANT: Must use "iife" format because vm.Script doesn't support ES modules.
-      // ESM format outputs "import/export" statements which cause syntax errors.
-      // Also cannot use externals since vm.Script has no module resolution.
-
-      // Create a shim for the "buffer" module that uses the global Buffer
-      // This is needed because isomorphic-git's dependencies (safe-buffer, sha.js)
-      // use require("buffer") which fails in esbuild's IIFE format without this shim
-      const bufferShimPath = path.join(buildWorkspace.buildDir, "_buffer_shim.js");
-      fs.writeFileSync(
-        bufferShimPath,
-        `// Buffer shim for vm.Script sandbox - uses the global Buffer provided by sandbox
-export const Buffer = globalThis.Buffer;
-export default { Buffer: globalThis.Buffer };
-`
-      );
-
-      // Apply scoped fs shim only for safe workers (not unsafe)
-      // Unsafe workers get direct access to the real filesystem
-      // The shim reads __natstackFsRoot at runtime to determine the scope path
+      // Workers are now WebContentsView-based (like panels).
+      // Safe workers use ZenFS (OPFS) via the panel fs shim plugin.
+      // Unsafe workers get Node.js integration (nodeIntegration: true in WebContentsView).
       const plugins: esbuild.Plugin[] = [];
+
+      // For safe workers, use panel fs shim to route fs calls to ZenFS
       if (!options?.unsafe) {
-        plugins.push(createScopedFsShimPlugin());
+        plugins.push(createPanelFsShimPlugin(buildWorkspace.depsDir));
       }
 
-      // Polyfill import.meta.url for all workers (safe and unsafe)
-      // esbuild's IIFE format makes import.meta empty, but many packages need it
-      // to locate their own files (e.g., Claude Agent SDK, pkg-dir, etc.)
-      plugins.push(createImportMetaPolyfillPlugin(buildWorkspace.nodeModulesDir));
+      // Generate banners - include Node.js compatibility patch for unsafe workers
+      const bannerJs = options?.unsafe
+        ? [generateNodeCompatibilityPatch(), generateAsyncTrackingBanner(), generateModuleMapBanner()].join("\n")
+        : [generateAsyncTrackingBanner(), generateModuleMapBanner()].join("\n");
 
-      // Generate worker banners - same globals as panels for unified API
-      // This gives workers __natstackAsyncTracking__ and __natstackRequire__/__natstackModuleMap__
-      const workerBannerJs = [generateWorkerAsyncTrackingBanner(), generateModuleMapBanner()].join("\n");
+      // Build configuration
+      // Workers intentionally use the "natstack-panel" condition to share the same
+      // @natstack/runtime entry point as panels. Both run in WebContentsView and use
+      // the same transport, fs abstraction, and bootstrap sequence.
+      //
+      // Platform/format differences:
+      // - Safe workers: browser platform + ESM (standard browser environment)
+      // - Unsafe workers: node platform + CJS (nodeIntegration enabled, require() available)
 
       await esbuild.build({
         entryPoints: [tempEntryPath],
         bundle: true,
-        platform: "node", // Workers run in vm sandbox which is Node-like
+        platform: options?.unsafe ? "node" : "browser",
         target: "es2022",
-        conditions: ["natstack-worker"],
+        conditions: ["natstack-panel"],
         outfile: bundlePath,
-        sourcemap: false,
-        format: "iife", // Must be iife - vm.Script doesn't support ES modules
+        sourcemap: "inline",
+        keepNames: true,
+        format: options?.unsafe ? "cjs" : "esm",
         absWorkingDir: sourcePath,
         nodePaths,
         plugins,
-        // Use a build-owned tsconfig. Only allowlisted user compilerOptions are merged.
         tsconfig: this.writeBuildTsconfig(buildWorkspace.buildDir, sourcePath, "worker", {
           target: "ES2022",
           useDefineForClassFields: true,
         }),
-        // No externals - everything must be bundled for vm.Script
-        // Alias "buffer" to our shim so require("buffer") works
-        alias: {
-          buffer: bufferShimPath,
-        },
+        // For CJS (unsafe workers), dynamic import() must be transformed to require()
+        // because WebContentsView doesn't have an ESM loader to resolve bare specifiers.
+        // Setting 'dynamic-import': false tells esbuild to transform import() to require().
+        supported: options?.unsafe ? { "dynamic-import": false } : undefined,
         banner: {
-          js: workerBannerJs,
+          js: bannerJs,
         },
       });
 

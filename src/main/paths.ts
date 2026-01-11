@@ -133,49 +133,27 @@ export function getBuildArtifactsDirectory(): string {
 }
 
 /**
- * Escape a worker ID for use in a filesystem path.
+ * Escape an ID for use in a filesystem path.
  * Replaces slashes with double underscores to avoid directory traversal.
  */
-function escapeWorkerIdForPath(workerId: string): string {
-  return workerId.replace(/\//g, "__");
+function escapeIdForPath(id: string): string {
+  return id.replace(/\//g, "__");
 }
 
 /**
- * Get the filesystem scope path for a worker.
- * Creates a directory at: <central-config>/worker-scopes/<workspace-id>/<escaped-worker-id>/
- *
- * This provides each worker with its own isolated filesystem sandbox.
- * Singleton workers will get the same path across restarts since their ID is deterministic.
- *
- * @param workspaceId - The workspace ID from workspace config
- * @param workerId - The worker's tree node ID (may contain slashes)
- * @returns Absolute path to the worker's scope directory
- */
-export function getWorkerScopePath(workspaceId: string, workerId: string): string {
-  const configDir = getCentralConfigDirectory();
-  const escapedWorkerId = escapeWorkerIdForPath(workerId);
-  const scopePath = path.join(configDir, "worker-scopes", workspaceId, escapedWorkerId);
-
-  // Create the directory if it doesn't exist
-  fs.mkdirSync(scopePath, { recursive: true });
-
-  return scopePath;
-}
-
-/**
- * Get the scoped filesystem root directory for an unsafe app panel.
+ * Get the scoped filesystem root directory for an unsafe panel or worker.
  * Creates a directory at: <central-config>/panel-scopes/<workspace-id>/<escaped-panel-id>/
  *
- * This provides each unsafe panel with its own isolated filesystem sandbox when unsafe=true.
- * Panels with unsafe="/" will use "/" as their scope path (full system access).
+ * This provides each unsafe panel/worker with its own isolated filesystem sandbox when unsafe=true.
+ * Panels or workers with unsafe="/" will use "/" as their scope path (full system access).
  *
  * @param workspaceId - The workspace ID from workspace config
- * @param panelId - The panel's tree node ID (may contain slashes)
- * @returns Absolute path to the panel's scope directory
+ * @param panelId - The panel or worker's tree node ID (may contain slashes)
+ * @returns Absolute path to the scope directory
  */
 export function getPanelScopePath(workspaceId: string, panelId: string): string {
   const configDir = getCentralConfigDirectory();
-  const escapedPanelId = escapeWorkerIdForPath(panelId); // Reuse worker ID escaping logic
+  const escapedPanelId = escapeIdForPath(panelId);
   const scopePath = path.join(configDir, "panel-scopes", workspaceId, escapedPanelId);
 
   // Create the directory if it doesn't exist

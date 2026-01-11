@@ -14,7 +14,7 @@ import {
 } from "@radix-ui/themes";
 
 import type { StatusNavigationData, TitleNavigationData } from "./navigationTypes";
-import type { WorkerConsoleLogEntry, PanelContextMenuAction } from "../../shared/ipc/types";
+import type { PanelContextMenuAction } from "../../shared/ipc/types";
 import { useNavigation } from "./NavigationContext";
 import { DirtyRepoView } from "./DirtyRepoView";
 import { GitInitView } from "./GitInitView";
@@ -569,7 +569,7 @@ export function PanelStack({
     }
     previousVisiblePanelId.current = panelId;
 
-    // For app panels, only interact with view if htmlPath is set (view is created after build)
+    // For app/worker panels, only interact with view if htmlPath is set (view is created after build)
     // Browser panels don't have htmlPath but do have views
     // Panels with errors or still building have no view to show
     const hasView = visiblePanel?.type === "browser" || !!htmlPath;
@@ -774,75 +774,6 @@ export function PanelStack({
                       }
 
                       if (!artifacts?.htmlPath) {
-                        // Workers don't have htmlPath - show console output
-                        if (panel.type === "worker") {
-                          const logs = panel.consoleLogs ?? [];
-                          return (
-                            <Flex
-                              key={panel.id}
-                              direction="column"
-                              height="100%"
-                              p="3"
-                              style={{ overflow: "hidden" }}
-                            >
-                              <Flex align="center" gap="2" mb="2">
-                                <Badge color="orange" variant="soft">
-                                  Worker
-                                </Badge>
-                                <Text size="2" weight="bold">
-                                  {panel.title}
-                                </Text>
-                              </Flex>
-                              <Card
-                                variant="surface"
-                                style={{
-                                  flex: 1,
-                                  overflow: "hidden",
-                                  backgroundColor: "var(--gray-2)",
-                                }}
-                              >
-                                <ScrollArea
-                                  type="auto"
-                                  scrollbars="vertical"
-                                  style={{ height: "100%" }}
-                                >
-                                  <Flex direction="column" gap="1" p="2">
-                                    {logs.length === 0 ? (
-                                      <Text size="2" color="gray">
-                                        No console output yet...
-                                      </Text>
-                                    ) : (
-                                      logs.map((log: WorkerConsoleLogEntry, idx: number) => {
-                                        const time = new Date(log.timestamp).toLocaleTimeString();
-                                        const color =
-                                          log.level === "error"
-                                            ? "red"
-                                            : log.level === "warn"
-                                              ? "orange"
-                                              : "gray";
-                                        return (
-                                          <Text
-                                            key={idx}
-                                            size="1"
-                                            color={color}
-                                            style={{
-                                              fontFamily: "monospace",
-                                              whiteSpace: "pre-wrap",
-                                              wordBreak: "break-word",
-                                            }}
-                                          >
-                                            <Text color="gray">[{time}]</Text> {log.message}
-                                          </Text>
-                                        );
-                                      })
-                                    )}
-                                  </Flex>
-                                </ScrollArea>
-                              </Card>
-                            </Flex>
-                          );
-                        }
-
                         // Browser panels - WebContentsView is managed by main process, no in-shell toolbar
                         if (panel.type === "browser") {
                           return (
@@ -853,7 +784,7 @@ export function PanelStack({
                           );
                         }
 
-                        // Regular panel loading state (while build is in progress)
+                        // Panel/worker loading state (while build is in progress)
                         // Once build completes, ViewManager creates the WebContentsView
                         return (
                           <Flex
@@ -864,7 +795,9 @@ export function PanelStack({
                             height="100%"
                           >
                             <Spinner size="3" />
-                            <Text mt="3">Preparing panel...</Text>
+                            <Text mt="3">
+                              {panel.type === "worker" ? "Building worker..." : "Preparing panel..."}
+                            </Text>
                           </Flex>
                         );
                       }

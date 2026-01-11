@@ -29,7 +29,7 @@ export function createBootstrapState(): BootstrapState {
 }
 
 export interface RunBootstrapOptions {
-  /** Filesystem implementation (panel's ZenFS or worker's RPC-based fs) */
+  /** Filesystem implementation (ZenFS for both panels and workers) */
   fs: RuntimeFs;
   /** Git configuration with server URL, token, and repoArgs */
   gitConfig: GitConfig | null;

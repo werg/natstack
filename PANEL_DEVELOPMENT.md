@@ -151,7 +151,7 @@ const editor = await createChild("panels/editor", {
 
 ### Worker Panels (`natstack.type: "worker"`)
 
-Background processes running in isolated-vm. Useful for CPU-intensive tasks.
+Background processes running in WebContentsView with built-in console UI. Useful for long-running tasks.
 
 ```typescript
 import { createChild } from "@natstack/runtime";
@@ -159,7 +159,6 @@ import { createChild } from "@natstack/runtime";
 // Still uses createChild(); manifest chooses worker vs app.
 const computeWorker = await createChild("workers/compute", {
   name: "compute-worker",
-  memoryLimitMB: 512,
   env: { MODE: "production" },
 });
 ```
@@ -312,7 +311,6 @@ function MyPanel() {
   const handleAddWorker = async () => {
     const worker = await createChild("workers/compute", {
       name: "compute",
-      memoryLimitMB: 512,
     });
     console.log("Created worker:", worker.id);
   };
@@ -748,7 +746,6 @@ await createChild("panels/editor", {
   gitRef?: string; // encoded in natstack-child URLs via #fragment
   repoArgs?: Record<string, RepoArgSpec>;
   sourcemap?: boolean; // app only
-  memoryLimitMB?: number; // worker only
   unsafe?: boolean | string; // worker only
 });
 

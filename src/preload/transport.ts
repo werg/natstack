@@ -7,8 +7,6 @@ import type {
   ToolExecutionResult as IPCToolExecutionResult,
 } from "../shared/ipc/types.js";
 
-type EndpointKind = "panel" | "worker";
-
 type AnyMessageHandler = (fromId: string, message: unknown) => void;
 
 type TransportBridge = {
@@ -17,24 +15,28 @@ type TransportBridge = {
 };
 
 const normalizeEndpointId = (targetId: string): string => {
+  // Strip "panel:" or "worker:" prefix if present (workers now use same transport as panels)
   if (targetId.startsWith("panel:")) return targetId.slice(6);
   if (targetId.startsWith("worker:")) return targetId.slice(7);
   return targetId;
 };
 
-export function createPanelTransportBridge(panelId: string): TransportBridge {
+/**
+ * Create a transport bridge for RPC communication.
+ * Used by both panels and workers to communicate with main process and other views.
+ */
+export function createTransportBridge(viewId: string): TransportBridge {
   const listeners = new Set<AnyMessageHandler>();
   const bufferedMessages: Array<{ fromId: string; message: RpcMessage }> = [];
   let transportReady = false;
   let flushScheduled = false;
 
-  const sourceKinds = new Map<string, EndpointKind>();
   const panelPorts = new Map<string, MessagePort>();
 
   const pendingConnections = new Map<
     string,
     Array<{
-      resolve: (info: { kind: EndpointKind; id: string }) => void;
+      resolve: (id: string) => void;
       reject: (error: Error) => void;
       timeout?: NodeJS.Timeout;
     }>
@@ -59,7 +61,6 @@ export function createPanelTransportBridge(panelId: string): TransportBridge {
   };
 
   const setupPanelPort = (targetPanelId: string, port: MessagePort) => {
-    sourceKinds.set(targetPanelId, "panel");
     port.onmessage = (event) => {
       const message = event.data as RpcMessage;
       if (!message || typeof message !== "object" || typeof (message as { type?: unknown }).type !== "string") {
@@ -82,19 +83,9 @@ export function createPanelTransportBridge(panelId: string): TransportBridge {
 
     pending.forEach(({ resolve, timeout }) => {
       if (timeout) clearTimeout(timeout);
-      resolve({ kind: "panel", id: targetPanelId });
+      resolve(targetPanelId);
     });
     pendingConnections.delete(targetPanelId);
-  });
-
-  ipcRenderer.on("worker-rpc:message", (_event, payload: { fromId: string; message: unknown }) => {
-    const sourceId = normalizeEndpointId(payload.fromId);
-    sourceKinds.set(sourceId, "worker");
-    const message = payload.message as RpcMessage;
-    if (!message || typeof message !== "object" || typeof (message as { type?: unknown }).type !== "string") {
-      return;
-    }
-    deliver(sourceId, message);
   });
 
   ipcRenderer.on("panel:event", (_event, payload: unknown) => {
@@ -106,7 +97,7 @@ export function createPanelTransportBridge(panelId: string): TransportBridge {
       url?: string;
       error?: string;
     };
-    if (msg.panelId !== panelId) return;
+    if (msg.panelId !== viewId) return;
 
     if (msg.type === "child-removed") {
       deliver("main", { type: "event", fromId: "main", event: "runtime:child-removed", payload: msg.childId });
@@ -135,7 +126,7 @@ export function createPanelTransportBridge(panelId: string): TransportBridge {
   });
 
   ipcRenderer.on("ai:stream-text-chunk", (_event, payload: StreamTextChunkEvent) => {
-    if (payload.panelId !== panelId) return;
+    if (payload.panelId !== viewId) return;
     deliver("main", {
       type: "event",
       fromId: "main",
@@ -145,7 +136,7 @@ export function createPanelTransportBridge(panelId: string): TransportBridge {
   });
 
   ipcRenderer.on("ai:stream-text-end", (_event, payload: StreamTextEndEvent) => {
-    if (payload.panelId !== panelId) return;
+    if (payload.panelId !== viewId) return;
     deliver("main", {
       type: "event",
       fromId: "main",
@@ -176,14 +167,14 @@ export function createPanelTransportBridge(panelId: string): TransportBridge {
     }
   );
 
-  const connect = async (targetId: string): Promise<{ kind: EndpointKind; id: string }> => {
+  const connect = async (targetId: string): Promise<string> => {
     const id = normalizeEndpointId(targetId);
-    if (id === "main") return { kind: "panel", id: "main" };
+    if (id === "main") return "main";
 
-    const kind = sourceKinds.get(id);
-    if (kind === "panel" && panelPorts.has(id)) return { kind: "panel", id };
-    if (kind === "worker") return { kind: "worker", id };
+    // Already have a port for this target
+    if (panelPorts.has(id)) return id;
 
+    // Check if already waiting for this connection
     const existingPending = pendingConnections.get(id);
     if (existingPending) {
       return new Promise((resolve, reject) => {
@@ -191,9 +182,10 @@ export function createPanelTransportBridge(panelId: string): TransportBridge {
       });
     }
 
+    // Start new connection request
     return new Promise((resolve, reject) => {
       const pending = [{ resolve, reject }] as Array<{
-        resolve: (info: { kind: EndpointKind; id: string }) => void;
+        resolve: (id: string) => void;
         reject: (error: Error) => void;
         timeout?: NodeJS.Timeout;
       }>;
@@ -206,36 +198,17 @@ export function createPanelTransportBridge(panelId: string): TransportBridge {
       }, 60000);
       pending.forEach((entry) => (entry.timeout = timeout));
 
-      ipcRenderer
-        .invoke("panel-rpc:connect", panelId, id)
-        .then((result: { isWorker: boolean; workerId?: string }) => {
-          if (result.isWorker) {
-            clearTimeout(timeout);
-            sourceKinds.set(id, "worker");
-            const p = pendingConnections.get(id);
-            if (p) {
-              p.forEach(({ resolve, timeout: t }) => {
-                if (t) clearTimeout(t);
-                resolve({ kind: "worker", id });
-              });
-              pendingConnections.delete(id);
-            }
-          }
-        })
-        .catch((error: unknown) => {
-          clearTimeout(timeout);
-          const err = error instanceof Error ? error : new Error(String(error));
-          const p = pendingConnections.get(id);
-          if (p) {
-            p.forEach(({ reject }) => reject(err));
-            pendingConnections.delete(id);
-          }
-        });
+      // Request connection - port will arrive via panel-rpc:port handler
+      ipcRenderer.invoke("panel-rpc:connect", viewId, id).catch((error: unknown) => {
+        clearTimeout(timeout);
+        const err = error instanceof Error ? error : new Error(String(error));
+        const p = pendingConnections.get(id);
+        if (p) {
+          p.forEach(({ reject }) => reject(err));
+          pendingConnections.delete(id);
+        }
+      });
     });
-  };
-
-  const sendToWorker = (workerId: string, message: RpcMessage) => {
-    ipcRenderer.send("panel-rpc:to-worker", panelId, workerId, message);
   };
 
   const sendToPanel = async (targetPanelId: string, message: RpcMessage) => {
@@ -260,7 +233,7 @@ export function createPanelTransportBridge(panelId: string): TransportBridge {
     if (normalized === "main") {
       if (rpcMessage.type === "request") {
         try {
-          const response = (await ipcRenderer.invoke("rpc:call", panelId, rpcMessage)) as RpcResponse;
+          const response = (await ipcRenderer.invoke("rpc:call", viewId, rpcMessage)) as RpcResponse;
           deliver("main", response);
         } catch (error) {
           const err = error instanceof Error ? error.message : String(error);
@@ -300,12 +273,7 @@ export function createPanelTransportBridge(panelId: string): TransportBridge {
       return;
     }
 
-    const info = await connect(normalized);
-    if (info.kind === "worker") {
-      sendToWorker(info.id, rpcMessage);
-      return;
-    }
-    await sendToPanel(info.id, rpcMessage);
+    await sendToPanel(normalized, rpcMessage);
   };
 
   return {

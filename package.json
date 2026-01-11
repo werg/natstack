@@ -72,7 +72,6 @@
     "@natstack/react": "workspace:*",
     "@natstack/rpc": "workspace:*",
     "@natstack/runtime": "workspace:*",
-    "@natstack/scoped-fs": "workspace:*",
     "@npmcli/arborist": "^7.4.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@openai/codex-sdk": "^0.73.0",

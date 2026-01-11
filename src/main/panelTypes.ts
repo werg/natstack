@@ -87,14 +87,14 @@ export interface PanelManifest {
   /**
    * Runtime type for this manifest.
    * - "panel" (default): Builds for browser, serves via webview
-   * - "worker": Builds for isolated-vm, runs in utility process
+   * - "worker": Builds for browser, runs in background WebContentsView
    * @deprecated Use `type` ("app" | "worker") instead.
    */
   runtime?: RuntimeType;
   /**
    * Run with full Node.js API access instead of sandbox.
    * - For app panels: Enables nodeIntegration, disables browser sandbox, provides real fs module
-   * - For workers: Uses full Node.js vm.Context instead of restricted sandbox
+   * - For workers: Enables nodeIntegration in worker WebContentsView, provides real fs module
    * - `true`: Unsafe mode with default scoped filesystem
    * - `string`: Unsafe mode with custom filesystem root (e.g., "/" for full access)
    *

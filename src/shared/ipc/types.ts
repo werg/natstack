@@ -82,16 +82,6 @@ export interface ProtocolBuildArtifacts {
   /** Repo args declared in manifest (slot names only) */
   repoArgs?: string[];
 }
-
-/**
- * A single console log entry from a worker.
- */
-export interface WorkerConsoleLogEntry {
-  timestamp: number;
-  level: string;
-  message: string;
-}
-
 // Panel interface moved to discriminated union types section below
 // See: AppPanel, WorkerPanel, BrowserPanel, Panel
 
@@ -194,9 +184,8 @@ export interface PanelBridgeIpcApi {
    * The type (panel vs worker) is determined by looking up the ID in the tree.
    * @param fromId - Source endpoint ID
    * @param toId - Target endpoint ID
-   * @returns Info about the connection (whether target is a worker)
    */
-  "panel-rpc:connect": (fromId: string, toId: string) => { isWorker: boolean; workerId?: string };
+  "panel-rpc:connect": (fromId: string, toId: string) => void;
 
   /**
    * Unified RPC entrypoint for panel -> main service calls.
@@ -310,7 +299,7 @@ export interface StreamTextEndEvent {
 /**
  * Panel type discriminator.
  * - "app": Built webview from source code
- * - "worker": Isolated-vm background process
+ * - "worker": Background process in hidden WebContentsView
  * - "browser": External URL with Playwright automation
  */
 export type PanelType = "app" | "worker" | "browser";
@@ -359,7 +348,7 @@ export interface AppPanel extends PanelBase {
 }
 
 /**
- * Worker panel - isolated-vm background process.
+ * Worker panel - background process in WebContentsView with built-in console UI.
  */
 export interface WorkerPanel extends PanelBase {
   type: "worker";
@@ -370,8 +359,7 @@ export interface WorkerPanel extends PanelBase {
   tag?: string;
   /** Resolved repo args (name -> spec) provided by parent at createChild time */
   resolvedRepoArgs?: Record<string, RepoArgSpec>;
-  workerOptions?: { memoryLimitMB?: number; unsafe?: boolean | string };
-  consoleLogs?: WorkerConsoleLogEntry[];
+  workerOptions?: { unsafe?: boolean | string };
 }
 
 /**
@@ -407,15 +395,12 @@ export type WorkerBuildState = "pending" | "cloning" | "building" | "ready" | "e
 
 /**
  * Options for creating a worker from a panel.
- * Note: scopePath is auto-generated based on workspace ID and worker ID.
  */
 export interface WorkerCreateOptions {
   /** Environment variables to pass to the worker */
   env?: Record<string, string>;
-  /** Memory limit in MB (default: 1024) */
-  memoryLimitMB?: number;
   /**
-   * Run worker with full Node.js API access instead of sandboxed vm.Context.
+   * Run worker with full Node.js API access instead of browser sandbox.
    * - `true`: Unsafe mode with default scoped filesystem
    * - `string`: Unsafe mode with custom filesystem root (e.g., "/" for full access)
    */

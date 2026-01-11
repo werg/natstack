@@ -29,7 +29,7 @@ const mainConfig = {
   target: "node20",
   format: "cjs",
   outfile: "dist/main.cjs",
-  external: ["electron", "esbuild", "@npmcli/arborist", "isolated-vm", "better-sqlite3"],
+  external: ["electron", "esbuild", "@npmcli/arborist", "better-sqlite3"],
   sourcemap: isDev,
   minify: !isDev,
   logOverride,
@@ -48,26 +48,26 @@ const preloadConfig = {
   logOverride,
 };
 
-const panelPreloadConfig = {
-  entryPoints: ["src/preload/panelPreload.ts"],
+const safePreloadConfig = {
+  entryPoints: ["src/preload/safePreload.ts"],
   bundle: true,
   platform: "node",
   target: "node20",
   format: "cjs",
-  outfile: "dist/panelPreload.cjs",
+  outfile: "dist/safePreload.cjs",
   external: ["electron"],
   sourcemap: isDev,
   minify: !isDev,
   logOverride,
 };
 
-const unsafePanelPreloadConfig = {
-  entryPoints: ["src/preload/unsafePanelPreload.ts"],
+const unsafePreloadConfig = {
+  entryPoints: ["src/preload/unsafePreload.ts"],
   bundle: true,
   platform: "node",
   target: "node20",
   format: "cjs",
-  outfile: "dist/unsafePanelPreload.cjs",
+  outfile: "dist/unsafePreload.cjs",
   external: ["electron"],
   sourcemap: isDev,
   minify: !isDev,
@@ -101,42 +101,6 @@ const rendererConfig = {
   },
   // Electron is external; fs modules are external since DirtyRepoView uses direct Node.js fs
   external: ["electron", "fs", "fs/promises", "path"],
-};
-
-// =============================================================================
-// Worker-related build configs
-// =============================================================================
-
-// Utility process that hosts isolated-vm isolates
-const utilityProcessConfig = {
-  entryPoints: ["src/workers/utilityEntry.ts"],
-  bundle: true,
-  platform: "node",
-  target: "node20",
-  format: "cjs",
-  outfile: "dist/utilityProcess.cjs",
-  external: ["electron", "isolated-vm"],
-  sourcemap: isDev,
-  minify: !isDev,
-  logOverride,
-};
-
-// Worker runtime shim that gets bundled into worker code
-// This is built from the packages/runtime worker entry
-const workerRuntimeConfig = {
-  entryPoints: ["packages/runtime/src/worker/index.ts"],
-  bundle: true,
-  platform: "browser",  // isolated-vm runs V8 without Node APIs
-  target: "es2022",
-  format: "esm",
-  outfile: "dist/workerRuntime.js",
-  sourcemap: isDev,
-  minify: !isDev,
-  logOverride,
-  // Mark fs as external - it will be resolved at worker bundle time by the scoped fs shim plugin
-  // node: imports are external - they're only used in Node.js code paths that workers don't call
-  external: ["fs", "node:fs", "fs/promises", "node:fs/promises"],
-  plugins: [nodeBuiltinsExternalPlugin],
 };
 
 function copyAssets() {
@@ -282,11 +246,9 @@ async function build() {
     // Required by: None (final outputs)
     await esbuild.build(mainConfig);
     await esbuild.build(preloadConfig);
-    await esbuild.build(panelPreloadConfig);
-    await esbuild.build(unsafePanelPreloadConfig);
+    await esbuild.build(safePreloadConfig);
+    await esbuild.build(unsafePreloadConfig);
     await esbuild.build(rendererConfig);
-    await esbuild.build(utilityProcessConfig);
-    await esbuild.build(workerRuntimeConfig);
     await buildDependencyWorkers();
 
     // ========================================================================

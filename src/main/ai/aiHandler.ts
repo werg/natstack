@@ -30,10 +30,7 @@ import {
 } from "./claudeCodeConversationManager.js";
 import { type ToolExecutionResult } from "./claudeCodeToolProxy.js";
 
-type StreamTargetKind = "panel" | "worker";
-
 interface StreamTarget {
-  kind: StreamTargetKind;
   targetId: string;
   isAvailable(): boolean;
   sendChunk(event: StreamTextEvent): void;
@@ -490,7 +487,6 @@ export class AIHandler {
     };
 
     return {
-      kind: "panel",
       targetId: panelId,
       isAvailable: () => !sender.isDestroyed(),
       sendChunk,
@@ -501,52 +497,6 @@ export class AIHandler {
         sender.on("destroyed", onDestroyed);
         return () => sender.removeListener("destroyed", onDestroyed);
       },
-    };
-  }
-
-  private createWorkerTarget(
-    workerManager: {
-      sendPush: (workerId: string, service: string, event: string, payload: unknown) => void;
-      serviceInvoke: (
-        workerId: string,
-        service: string,
-        method: string,
-        args: unknown[],
-        timeoutMs?: number
-      ) => Promise<unknown>;
-    },
-    workerId: string,
-    streamId: string
-  ): StreamTarget {
-    const sendChunk = (event: StreamTextEvent): void => {
-      workerManager.sendPush(workerId, "ai", "stream-text-chunk", { streamId, chunk: event });
-    };
-
-    const sendEnd = (): void => {
-      workerManager.sendPush(workerId, "ai", "stream-text-end", { streamId });
-    };
-
-    const executeTool = async (
-      toolName: string,
-      args: Record<string, unknown>
-    ): Promise<ToolExecutionResult> => {
-      const result = await workerManager.serviceInvoke(
-        workerId,
-        "ai",
-        "executeTool",
-        [streamId, toolName, args],
-        TOOL_EXECUTION_TIMEOUT_MS
-      );
-      return result as ToolExecutionResult;
-    };
-
-    return {
-      kind: "worker",
-      targetId: workerId,
-      isAvailable: () => true,
-      sendChunk,
-      sendEnd,
-      executeTool,
     };
   }
 
@@ -562,7 +512,6 @@ export class AIHandler {
     const maxSteps = options.maxSteps ?? 10;
 
     this.logger.info(requestId, "streamText started", {
-      targetKind: target.kind,
       targetId: target.targetId,
       modelId,
       streamId,
@@ -997,7 +946,6 @@ export class AIHandler {
     this.logger.info(requestId, "Created streamText Claude Code conversation", {
       conversationId: conversationRef.id,
       streamId,
-      targetKind: target.kind,
       targetId: target.targetId,
       toolCount: validatedTools.length,
     });
@@ -1135,33 +1083,13 @@ export class AIHandler {
   }
 
   // ===========================================================================
-  // Worker Support Methods
+  // Stream Management
   // ===========================================================================
 
   /**
    * Cancel a stream by ID.
-   * Used by worker handlers to cancel streams.
    */
   public cancelStream(streamId: string): void {
     this.streamManager.cancelStream(streamId);
-  }
-
-  /**
-   * Stream text to a worker (instead of a panel webContents).
-   * Routes events through workerManager.sendPush and tool execution via serviceInvoke.
-   */
-  public async streamTextToWorker(
-    workerManager: {
-      sendPush: (workerId: string, service: string, event: string, payload: unknown) => void;
-      serviceInvoke: (workerId: string, service: string, method: string, args: unknown[], timeoutMs?: number) => Promise<unknown>;
-    },
-    workerId: string,
-    requestId: string,
-    options: StreamTextOptions,
-    streamId: string
-  ): Promise<void> {
-    const modelId = this.resolveModelId(options.model);
-    const target = this.createWorkerTarget(workerManager, workerId, streamId);
-    await this.streamTextToTarget(target, requestId, modelId, options, streamId);
   }
 }

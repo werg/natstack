@@ -13,20 +13,19 @@ import {
   removeProtocolPanel,
   isProtocolPanel,
 } from "./panelProtocol.js";
-import { getWorkerManager } from "./workerManager.js";
 import { getCdpServer } from "./cdpServer.js";
 import { getPubSubServer } from "./pubsubServer.js";
 import { getTokenManager } from "./tokenManager.js";
 import type { ViewManager } from "./viewManager.js";
 import { parseChildUrl } from "./childProtocol.js";
 import { checkWorktreeClean, checkGitRepository } from "./gitProvisioner.js";
+import { PANEL_CSP_META } from "../shared/constants.js";
 
 type ChildCreateOptions = {
   name?: string;
   env?: Record<string, string>;
   gitRef?: string;
   repoArgs?: Record<string, SharedPanel.RepoArgSpec>;
-  memoryLimitMB?: number;
   unsafe?: boolean | string;
   sourcemap?: boolean;
   /** Legacy fields (still supported programmatically) */
@@ -101,7 +100,7 @@ export class PanelManager {
    * Called when panel build is ready or browser is created.
    * @throws Error if ViewManager is not set
    */
-  createViewForPanel(panelId: string, url: string, type: "panel" | "browser"): void {
+  createViewForPanel(panelId: string, url: string, type: "panel" | "browser" | "worker"): void {
     if (!this.viewManager) {
       throw new Error(`[PanelManager] ViewManager not set, cannot create view for ${panelId}`);
     }
@@ -142,6 +141,57 @@ export class PanelManager {
 
       // Intercept natstack-child:// and new-window navigations for child creation
       this.setupChildLinkInterception(panelId, view.webContents, "browser");
+    } else if (type === "worker") {
+      // Worker panels: isolated partition, worker preload with auth token and env
+      const authToken = randomBytes(32).toString("hex");
+      this.pendingAuthTokens.set(panelId, { token: authToken, createdAt: Date.now() });
+      this.cleanupExpiredAuthTokens();
+
+      // Build additional arguments for preload
+      const additionalArgs: string[] = [
+        `--natstack-panel-id=${panelId}`,
+        `--natstack-auth-token=${authToken}`,
+        `--natstack-theme=${this.currentTheme}`,
+        `--natstack-kind=worker`,
+      ];
+
+      // Add worker env if available
+      if (panel?.env && Object.keys(panel.env).length > 0) {
+        try {
+          const encodedEnv = Buffer.from(JSON.stringify(panel.env), "utf-8").toString("base64");
+          additionalArgs.push(`--natstack-panel-env=${encodedEnv}`);
+        } catch (error) {
+          console.error(`[PanelManager] Failed to encode env for worker ${panelId}`, error);
+        }
+      }
+
+      // Get unsafe flag for workers (undefined = safe worker using ZenFS)
+      const unsafeFlag = panel?.type === "worker" ? (panel as SharedPanel.WorkerPanel).workerOptions?.unsafe : undefined;
+
+      // Calculate and add scope path for unsafe workers.
+      // Safe workers (unsafeFlag === undefined) use ZenFS and don't need a scope path.
+      // Unsafe workers get either a custom root (string) or the default scoped path (true).
+      if (unsafeFlag) {
+        const workspace = getActiveWorkspace();
+        if (workspace) {
+          const scopePath =
+            typeof unsafeFlag === "string"
+              ? unsafeFlag // Custom root (e.g., "/" for full access)
+              : getPanelScopePath(workspace.config.id, panelId); // Default scoped path
+          additionalArgs.push(`--natstack-scope-path=${scopePath}`);
+        }
+      }
+
+      this.viewManager.createView({
+        id: panelId,
+        type: "worker",
+        partition: `persist:${panelId}`, // Isolated partition for workers
+        url: url,
+        parentId: parentId ?? undefined,
+        injectHostThemeVariables: true,
+        additionalArguments: additionalArgs,
+        unsafe: unsafeFlag,
+      });
     } else {
       // App panels: isolated partition, panel preload with auth token and env
       const authToken = randomBytes(32).toString("hex");
@@ -155,6 +205,7 @@ export class PanelManager {
         `--natstack-panel-id=${panelId}`,
         `--natstack-auth-token=${authToken}`,
         `--natstack-theme=${this.currentTheme}`,
+        `--natstack-kind=panel`,
       ];
 
       // Add panel env if available
@@ -420,7 +471,31 @@ export class PanelManager {
       : "";
     const workspacePath = getActiveWorkspace()?.path;
 
+    // Pass critical environment variables that Node.js APIs depend on
+    // (e.g., os.homedir() needs HOME, child processes need PATH)
+    // Also include XDG paths used by SDKs on Linux for config/data storage
+    const criticalEnv: Record<string, string> = {};
+    for (const key of [
+      "HOME",
+      "USER",
+      "PATH",
+      "TMPDIR",
+      "TEMP",
+      "TMP",
+      "SHELL",
+      "XDG_CONFIG_HOME",
+      "XDG_DATA_HOME",
+      "XDG_CACHE_HOME",
+      "XDG_STATE_HOME",
+      "XDG_RUNTIME_DIR",
+    ]) {
+      if (process.env[key]) {
+        criticalEnv[key] = process.env[key]!;
+      }
+    }
+
     return {
+      ...criticalEnv,
       ...baseEnv,
       ...(workspacePath ? { NATSTACK_WORKSPACE: workspacePath } : {}),
       __GIT_SERVER_URL: serverUrl,
@@ -528,7 +603,6 @@ export class PanelManager {
             tag,
             resolvedRepoArgs: options?.repoArgs,
             workerOptions: {
-              memoryLimitMB: options?.memoryLimitMB,
               unsafe: options?.unsafe ?? manifest.unsafe,
             },
           }
@@ -732,14 +806,12 @@ export class PanelManager {
 
   /**
    * Build a worker asynchronously and update its state.
-   * Workers are built via PanelBuilder and then sent to the utility process.
+   * Workers run as WebContentsView instances with worker host UI.
    */
   private async buildWorkerAsync(
     worker: SharedPanel.WorkerPanel,
     version?: { branch?: string; commit?: string; tag?: string }
   ): Promise<void> {
-    const workerManager = getWorkerManager();
-
     try {
       // Check if panel directory is a git repo first (only for non-versioned builds)
       if (!version?.branch && !version?.commit && !version?.tag) {
@@ -752,7 +824,7 @@ export class PanelManager {
           worker.artifacts = {
             buildState: "not-git-repo",
             notGitRepoPath: repoPath,
-            buildProgress: "Panel folder must be the root of a git repository",
+            buildProgress: "Worker folder must be the root of a git repository",
           };
           this.notifyPanelTreeUpdate();
           return;
@@ -772,28 +844,6 @@ export class PanelManager {
         }
       }
 
-      // Create the worker entry in WorkerManager (sets up scoped FS)
-      // Use worker.workerOptions which already has manifest.unsafe as fallback
-      // Use worker.env (built by buildPanelEnv) rather than the creation options to include all injected config
-      const workerInfo = await workerManager.createWorker(
-        this.findParentPanel(worker.id)?.id ?? "",
-        worker.path,
-        {
-          env: worker.env,
-          memoryLimitMB: worker.workerOptions?.memoryLimitMB,
-          unsafe: worker.workerOptions?.unsafe,
-          branch: version?.branch,
-          commit: version?.commit,
-          tag: version?.tag,
-        },
-        worker.id // Pass the tree node ID so WorkerManager uses it
-      );
-
-      if (workerInfo.error) {
-        throw new Error(workerInfo.error);
-      }
-
-      // Build the worker bundle using PanelBuilder
       const buildVersion =
         version?.branch || version?.commit || version?.tag
           ? {
@@ -803,11 +853,12 @@ export class PanelManager {
             }
           : undefined;
 
-      const buildResult = await this.builder.buildWorker(
+      const result = await this.builder.buildWorker(
         this.panelsRoot,
         worker.path,
         buildVersion,
         (progress) => {
+          // Update worker state with progress
           worker.artifacts = {
             ...worker.artifacts,
             buildState: progress.state,
@@ -819,32 +870,43 @@ export class PanelManager {
         { unsafe: worker.workerOptions?.unsafe }
       );
 
-      if (!buildResult.success || !buildResult.bundle) {
-        throw new Error(buildResult.error ?? "Worker build failed");
+      if (result.success && result.bundle) {
+        // Generate worker host HTML that executes the bundle
+        const workerHostHtml = this.generateWorkerHostHtml(
+          result.manifest?.title ?? worker.title,
+          Boolean(worker.workerOptions?.unsafe)
+        );
+
+        // Store worker content for protocol serving
+        const htmlUrl = storeProtocolPanel(worker.id, {
+          bundle: result.bundle,
+          html: workerHostHtml,
+          title: result.manifest?.title ?? worker.title,
+          sourceRepo: worker.path,
+        });
+
+        // Update worker with successful build
+        worker.artifacts = {
+          htmlPath: htmlUrl,
+          buildState: "ready",
+          buildProgress: "Worker ready",
+          buildLog: result.buildLog,
+        };
+
+        // Create WebContentsView for this worker
+        const srcUrl = new URL(htmlUrl);
+        srcUrl.searchParams.set("panelId", worker.id);
+        this.createViewForPanel(worker.id, srcUrl.toString(), "worker");
+      } else {
+        // Build failed
+        worker.artifacts = {
+          error: result.error ?? "Build failed",
+          buildState: "error",
+          buildProgress: result.error ?? "Build failed",
+          buildLog: result.buildLog,
+        };
       }
 
-      // Build pubsub config for the worker
-      const pubsubServer = getPubSubServer();
-      const pubsubPort = pubsubServer.getPort();
-      const pubsubConfig = pubsubPort
-        ? {
-            serverUrl: `ws://127.0.0.1:${pubsubPort}`,
-            token: getTokenManager().getOrCreateToken(worker.id),
-          }
-        : null;
-
-      // Send the bundle to the utility process with current theme and pubsub config
-      await workerManager.sendWorkerBundle(worker.id, buildResult.bundle, {
-        theme: this.currentTheme,
-        pubsubConfig,
-      });
-
-      // Mark as ready
-      worker.artifacts = {
-        buildState: "ready",
-        buildProgress: "Worker ready",
-        buildLog: buildResult.buildLog,
-      };
       this.notifyPanelTreeUpdate();
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -855,6 +917,138 @@ export class PanelManager {
       };
       this.notifyPanelTreeUpdate();
     }
+  }
+
+  /**
+   * Generate worker host HTML that loads and executes the worker bundle.
+   */
+  private generateWorkerHostHtml(title: string, unsafe: boolean): string {
+    // Escape HTML special characters to prevent XSS
+    const escapeHtml = (str: string) =>
+      str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    const safeTitle = escapeHtml(title);
+
+    // Escape for JavaScript context - prevent </script> injection by escaping < characters
+    const escapeForJs = (str: string) => JSON.stringify(str).replace(/</g, "\\u003c");
+    const jsSafeTitle = escapeForJs(title);
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  ${PANEL_CSP_META}
+  <title>${safeTitle}</title>
+  <style>
+    :root {
+      /* Worker console color scheme */
+      --worker-bg: #1e1e1e;
+      --worker-fg: #d4d4d4;
+      --worker-status-bg: #252526;
+      --worker-border: #3c3c3c;
+      --worker-status-running: #4ec9b0;
+      --worker-status-error: #f48771;
+      --worker-status-stopped: #808080;
+      --worker-log-warn: #dcdcaa;
+      --worker-log-error: #f48771;
+      --worker-log-info: #9cdcfe;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--worker-bg);
+      color: var(--worker-fg);
+      height: 100vh;
+      overflow: hidden;
+    }
+    #status {
+      position: fixed; top: 0; left: 0; right: 0;
+      padding: 4px 8px;
+      background: var(--worker-status-bg);
+      border-bottom: 1px solid var(--worker-border);
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    #status-indicator {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--worker-status-running);
+    }
+    #console {
+      position: fixed; top: 28px; left: 0; right: 0; bottom: 0;
+      overflow-y: auto;
+      padding: 8px;
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .log-entry { padding: 2px 0; white-space: pre-wrap; word-break: break-word; }
+    .log { color: var(--worker-fg); }
+    .warn { color: var(--worker-log-warn); }
+    .error { color: var(--worker-log-error); }
+    .info { color: var(--worker-log-info); }
+  </style>
+</head>
+<body>
+  <div id="status">
+    <div id="status-indicator"></div>
+    <span id="status-text">Initializing...</span>
+  </div>
+  <div id="console"></div>
+  <script>
+    // Worker host - executes the bundle with console output UI
+    const statusText = document.getElementById("status-text");
+    const statusIndicator = document.getElementById("status-indicator");
+    const consoleEl = document.getElementById("console");
+    const isUnsafe = ${unsafe ? "true" : "false"};
+
+    // Get CSS variable values for status colors
+    const rootStyles = getComputedStyle(document.documentElement);
+    const statusColors = {
+      running: rootStyles.getPropertyValue("--worker-status-running").trim(),
+      error: rootStyles.getPropertyValue("--worker-status-error").trim(),
+      stopped: rootStyles.getPropertyValue("--worker-status-stopped").trim()
+    };
+
+    function setStatus(status, text) {
+      statusText.textContent = text;
+      statusIndicator.style.background = statusColors[status] || statusColors.running;
+    }
+
+    function appendLog(level, ...args) {
+      const entry = document.createElement("div");
+      entry.className = "log-entry " + level;
+      entry.textContent = args.map(arg =>
+        typeof arg === "object" ? JSON.stringify(arg, null, 2) : String(arg)
+      ).join(" ");
+      consoleEl.appendChild(entry);
+      consoleEl.scrollTop = consoleEl.scrollHeight;
+    }
+
+    // Proxy console to show in UI
+    const origConsole = { ...console };
+    console.log = (...args) => { appendLog("log", ...args); origConsole.log(...args); };
+    console.warn = (...args) => { appendLog("warn", ...args); origConsole.warn(...args); };
+    console.error = (...args) => { appendLog("error", ...args); origConsole.error(...args); };
+    console.info = (...args) => { appendLog("info", ...args); origConsole.info(...args); };
+
+    // Global error handler to catch bundle initialization errors
+    window.onerror = (message, source, lineno, colno, error) => {
+      setStatus("error", "Worker crashed");
+      appendLog("error", "Uncaught error:", error?.message || message);
+      if (source) appendLog("error", "  at " + source + ":" + lineno + ":" + colno);
+    };
+    window.onunhandledrejection = (event) => {
+      setStatus("error", "Worker crashed");
+      appendLog("error", "Unhandled rejection:", event.reason?.message || event.reason);
+    };
+
+    setStatus("running", ${jsSafeTitle});
+  </script>
+  ${unsafe ? '<script src="./bundle.js"></script>' : '<script type="module" src="./bundle.js"></script>'}
+</body>
+</html>`;
   }
 
   /**
@@ -1014,35 +1208,6 @@ export class PanelManager {
     this.notifyPanelTreeUpdate();
   }
 
-  /**
-   * Add a console log entry to a worker panel.
-   * Keeps only the last 100 log entries to avoid memory bloat.
-   */
-  addWorkerConsoleLog(workerId: string, level: string, message: string): void {
-    const panel = this.panels.get(workerId);
-    if (!panel || panel.type !== "worker") {
-      return; // Silently ignore if not a worker
-    }
-
-    if (!panel.consoleLogs) {
-      panel.consoleLogs = [];
-    }
-
-    panel.consoleLogs.push({
-      timestamp: Date.now(),
-      level,
-      message,
-    });
-
-    // Keep only the last 100 entries
-    if (panel.consoleLogs.length > 100) {
-      panel.consoleLogs = panel.consoleLogs.slice(-100);
-    }
-
-    // Notify renderer about the update
-    this.notifyPanelTreeUpdate();
-  }
-
   async closePanel(panelId: string): Promise<void> {
     // Find parent
     const parent = this.findParentPanel(panelId);
@@ -1189,29 +1354,7 @@ export class PanelManager {
     const panel = this.panels.get(panelId);
     if (!panel) return;
 
-    // Workers have no WebContentsView; route events via service push so they can be consumed as RPC events.
-    if (panel.type === "worker") {
-      const workerManager = getWorkerManager();
-      switch (payload.type) {
-        case "child-removed":
-          workerManager.sendPush(panelId, "runtime", "child-removed", payload.childId);
-          return;
-        case "child-creation-error":
-          workerManager.sendPush(panelId, "runtime", "child-creation-error", {
-            url: payload.url,
-            error: payload.error,
-          });
-          return;
-        case "focus":
-          workerManager.sendPush(panelId, "runtime", "focus", null);
-          return;
-        case "theme":
-          workerManager.sendPush(panelId, "runtime", "theme", payload.theme);
-          return;
-      }
-    }
-
-    // Use ViewManager to get webContents for app/browser panels.
+    // Use ViewManager to get webContents for all panels (app, browser, worker).
     if (!this.viewManager) return;
 
     const contents = this.viewManager.getWebContents(panelId);
@@ -1240,10 +1383,7 @@ export class PanelManager {
     // Cleanup based on panel type
     switch (panel.type) {
       case "worker":
-        // Terminate the worker (fire-and-forget is acceptable here since
-        // terminateWorker handles cleanup and we don't need to block panel removal)
-        getWorkerManager().terminateWorker(panelId);
-        // Revoke CDP token for this worker (cleans up browser ownership)
+        // Worker panels are now WebContentsView-based, cleanup via ViewManager below
         getCdpServer().revokeTokenForPanel(panelId);
         break;
 

@@ -37,7 +37,7 @@ export interface ViewConfig {
   /** Unique view ID (typically panel ID) */
   id: string;
   /** View type for tracking */
-  type: "shell" | "panel" | "browser";
+  type: "shell" | "panel" | "browser" | "worker";
   /** Session partition (e.g., "persist:panelId"). Omit for default session. */
   partition?: string;
   /** Preload script path. Set to null to disable preload (for browsers). */
@@ -61,7 +61,7 @@ export interface ViewConfig {
 interface ManagedView {
   id: string;
   view: WebContentsView;
-  type: "shell" | "panel" | "browser";
+  type: "shell" | "panel" | "browser" | "worker";
   parentId?: string;
   visible: boolean;
   bounds: ViewBounds;
@@ -79,8 +79,8 @@ export class ViewManager {
   private window: BaseWindow;
   private views = new Map<string, ManagedView>();
   private shellView: WebContentsView;
-  private panelPreloadPath: string;
-  private unsafePanelPreloadPath: string;
+  private safePreloadPath: string;
+  private unsafePreloadPath: string;
   private currentThemeCss: string | null = null;
   /** Per-view locks to prevent concurrent withViewVisible operations */
   private visibilityLocks = new Map<string, Promise<unknown>>();
@@ -90,16 +90,16 @@ export class ViewManager {
   constructor(options: {
     window: BaseWindow;
     shellPreload: string;
-    panelPreload: string;
+    safePreload: string;
     shellHtmlPath: string;
     devTools?: boolean;
   }) {
     this.window = options.window;
-    this.panelPreloadPath = options.panelPreload;
-    // Calculate unsafe panel preload path (same directory, different file)
-    this.unsafePanelPreloadPath = options.panelPreload.replace(
-      /panelPreload\.(c?js)$/,
-      "unsafePanelPreload.$1"
+    this.safePreloadPath = options.safePreload;
+    // Calculate unsafe preload path (same directory, different file)
+    this.unsafePreloadPath = options.safePreload.replace(
+      /safePreload\.(c?js)$/,
+      "unsafePreload.$1"
     );
 
     // Create shell view (React UI) - fills entire window
@@ -213,16 +213,16 @@ export class ViewManager {
       webviewTag: false,
     };
 
-    // Set preload: use provided preload, fall back to panel preload, or omit if null
+    // Set preload: use provided preload, fall back to safe/unsafe preload, or omit if null
     if (config.preload === null) {
       // Explicitly no preload (for browsers)
     } else if (config.preload) {
       webPreferences.preload = config.preload;
     } else {
-      // Use unsafe preload for unsafe panels, regular preload otherwise
+      // Both panels and workers use consolidated preloads (kind is passed via --natstack-kind)
       webPreferences.preload = isUnsafe
-        ? this.unsafePanelPreloadPath
-        : this.panelPreloadPath;
+        ? this.unsafePreloadPath
+        : this.safePreloadPath;
     }
 
     // Pass additional arguments to preload script
@@ -742,7 +742,7 @@ let viewManager: ViewManager | null = null;
 export function initViewManager(options: {
   window: BaseWindow;
   shellPreload: string;
-  panelPreload: string;
+  safePreload: string;
   shellHtmlPath: string;
   devTools?: boolean;
 }): ViewManager {

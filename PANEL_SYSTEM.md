@@ -11,7 +11,7 @@ NatStack supports three types of panels:
 | Type | Description | Use Case |
 |------|-------------|----------|
 | `app` | Built webview from source code | UI components, editors, dashboards |
-| `worker` | Isolated-vm background process | CPU-intensive tasks, long-running computations |
+| `worker` | Background process with console UI | Long-running tasks, background computations |
 | `browser` | External URL with Playwright automation | Web scraping, testing, automation |
 
 ## Panel Structure
@@ -131,7 +131,6 @@ const computeWorker = await createChild({
   type: 'worker',
   name: 'compute-worker',
   source: 'workers/compute',
-  memoryLimitMB: 512,
 });
 
 // Create a browser panel
@@ -167,10 +166,10 @@ interface WorkerChildSpec {
   name?: string;                 // Optional name (stable ID within parent if provided)
   source: string;                // Workspace-relative path to source
   env?: Record<string, string>;  // Environment variables
-  memoryLimitMB?: number;    // Memory limit (default: 1024)
-  branch?: string;           // Git branch to track
-  commit?: string;           // Specific commit hash
-  tag?: string;              // Git tag to pin to
+  unsafe?: boolean | string;     // Run with Node.js APIs; string = custom fs root path
+  branch?: string;               // Git branch to track
+  commit?: string;               // Specific commit hash
+  tag?: string;                  // Git tag to pin to
   repoArgs?: Record<string, RepoArgSpec>; // Must match child's manifest repoArgs
 }
 ```
@@ -331,7 +330,7 @@ const unsubscribe = onFocus(() => {
 
 ## Workers
 
-Workers are background processes that run in isolated-vm. They're useful for CPU-intensive tasks that shouldn't block the UI.
+Workers are background processes that run in a WebContentsView with a built-in console UI. They're useful for long-running tasks that shouldn't block the main panel UI.
 
 ### Creating a Worker
 
@@ -340,7 +339,6 @@ const worker = await createChild({
   type: 'worker',
   name: 'my-worker',
   source: 'workers/compute',
-  memoryLimitMB: 512,
   env: { MODE: 'production' },
 });
 ```
@@ -459,5 +457,5 @@ NatStack picks the initial root panel path in this order:
 
 - Panels are isolated in separate webviews
 - Each panel has its own persistent session storage (unless `singletonState: true`)
-- Workers run in isolated-vm with configurable memory limits
+- Workers run in WebContentsView with a built-in console UI for logging
 - Browser panels support full Playwright automation via CDP

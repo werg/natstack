@@ -6,7 +6,7 @@ if (typeof globalThis.Buffer === "undefined") {
 }
 
 import { createPanelTransport } from "./transport.js";
-import { fs, fsReady } from "./zenfs.js"; // Direct import from ZenFS provider (no "fs" shim)
+import { fs, fsReady } from "./fs.js"; // Conditional fs: Node.js for unsafe, ZenFS for safe
 import { initRuntime } from "../setup/initRuntime.js";
 export { decodeBase64, encodeBase64 } from "../shared/base64.js";
 export type { BootstrapResult } from "../shared/bootstrap.js";

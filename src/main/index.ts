@@ -35,8 +35,6 @@ import type * as SharedPanel from "../shared/ipc/types.js";
 import type { PanelContextMenuAction } from "../shared/ipc/types.js";
 import { setupMenu } from "./menu.js";
 import { setActiveWorkspace, getBuildArtifactsDirectory } from "./paths.js";
-import { getWorkerManager } from "./workerManager.js";
-import { registerWorkerHandlers } from "./ipc/workerHandlers.js";
 import {
   parseCliWorkspacePath,
   discoverWorkspace,
@@ -103,7 +101,6 @@ let pubsubServer: PubSubServer | null = null;
 let panelManager: PanelManager | null = null;
 let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
-let workerManagerInitialized = false;
 let isCleaningUp = false; // Prevent re-entry in will-quit handler
 
 // Export AI handler for use by other modules (will be set during initialization)
@@ -178,7 +175,7 @@ function createWindow(): void {
   viewManager = initViewManager({
     window: mainWindow,
     shellPreload: path.join(__dirname, "preload.cjs"),
-    panelPreload: path.join(__dirname, "panelPreload.cjs"),
+    safePreload: path.join(__dirname, "safePreload.cjs"),
     shellHtmlPath: path.join(__dirname, "index.html"),
     devTools: isDev(),
   });
@@ -608,12 +605,6 @@ app.on("ready", async () => {
       const { PanelRpcHandler } = await import("./ipc/rpcHandler.js");
       new PanelRpcHandler(panelManager);
 
-      // Initialize WorkerManager (uses getActiveWorkspace() internally)
-      getWorkerManager();
-      workerManagerInitialized = true;
-      registerWorkerHandlers(panelManager);
-      console.log("[Workers] Manager initialized");
-
       dispatcher.register("bridge", async (ctx, serviceMethod, serviceArgs) => {
         return handleBridgeCall(panelManager, ctx.callerId, serviceMethod, serviceArgs);
       });
@@ -640,15 +631,10 @@ app.on("ready", async () => {
 
       dispatcher.register("ai", async (ctx, serviceMethod, serviceArgs) => {
         return handleAiServiceCall(aiHandler, serviceMethod, serviceArgs, (handler, options, streamId) => {
-          if (ctx.callerKind === "panel") {
-            if (!ctx.webContents) {
-              throw new Error("Missing webContents for panel AI stream");
-            }
-            handler.startPanelStream(ctx.webContents, ctx.callerId, options, streamId);
-            return;
+          if (!ctx.webContents) {
+            throw new Error("Missing webContents for AI stream");
           }
-
-          void handler.streamTextToWorker(getWorkerManager(), ctx.callerId, generateRequestId(), options, streamId);
+          handler.startPanelStream(ctx.webContents, ctx.callerId, options, streamId);
         });
       });
 
@@ -674,7 +660,7 @@ app.on("will-quit", (event) => {
     return;
   }
 
-  const hasResourcesToClean = gitServer || cdpServer || pubsubServer || workerManagerInitialized;
+  const hasResourcesToClean = gitServer || cdpServer || pubsubServer;
   if (hasResourcesToClean) {
     isCleaningUp = true;
     event.preventDefault();
@@ -715,15 +701,6 @@ app.on("will-quit", (event) => {
             console.error("Error stopping PubSub server:", error);
           })
       );
-    }
-
-    // Shutdown worker manager (kills utility process)
-    if (workerManagerInitialized) {
-      try {
-        getWorkerManager().shutdown();
-      } catch (error) {
-        console.error("Error shutting down worker manager:", error);
-      }
     }
 
     // Add a timeout to ensure we exit even if cleanup hangs

@@ -5,6 +5,7 @@
  * Discovers tools from other participants via agentic-messaging and provides them to Claude.
  */
 
+import { execSync } from "child_process";
 import { pubsubConfig, setTitle, id } from "@natstack/runtime";
 import {
   connect,
@@ -24,6 +25,24 @@ import {
 } from "@natstack/agentic-messaging";
 import { z } from "zod";
 import { query, tool, createSdkMcpServer, type Query, type SDKResultMessage, type CanUseTool, type PermissionResult } from "@anthropic-ai/claude-agent-sdk";
+
+/**
+ * Find an executable in the system PATH.
+ * Cross-platform: uses `where` on Windows, `which` on Unix-like systems.
+ */
+function findExecutable(name: string): string | undefined {
+  const isWindows = process.platform === "win32";
+  const command = isWindows ? `where ${name}` : `which ${name}`;
+
+  try {
+    const result = execSync(command, { encoding: "utf-8" }).trim();
+    // `where` on Windows may return multiple lines; take the first one
+    const firstLine = result.split(/\r?\n/)[0];
+    return firstLine || undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 void setTitle("Claude Code Responder");
 
@@ -144,6 +163,15 @@ async function main() {
   const workspaceId = process.env["NATSTACK_WORKSPACE_ID"];
 
   log("Starting Claude Code responder...");
+
+  // Find the claude executable path for the SDK
+  const claudeExecutable = findExecutable("claude");
+  if (!claudeExecutable) {
+    console.error("Claude Code CLI not found in PATH. Please install claude-code.");
+    return;
+  }
+  log(`Claude executable: ${claudeExecutable}`);
+
   if (workingDirectory) {
     log(`Working directory: ${workingDirectory}`);
   }
@@ -395,7 +423,7 @@ export default function SettingsForm({ onSubmit, onCancel }) {
         lastMissedPubsubId = pendingMissedContext.lastPubsubId;
         pendingMissedContext = null;
       }
-      await handleUserMessage(client, event, prompt, workingDirectory);
+      await handleUserMessage(client, event, prompt, workingDirectory, claudeExecutable);
     }
   }
 }
@@ -404,7 +432,8 @@ async function handleUserMessage(
   client: AgenticClient<ChatParticipantMetadata>,
   incoming: IncomingNewMessage,
   prompt: string,
-  workingDirectory: string | undefined
+  workingDirectory: string | undefined,
+  claudeExecutable: string
 ) {
   log(`Received message: ${incoming.content}`);
 
@@ -539,6 +568,8 @@ async function handleUserMessage(
     const queryOptions: Parameters<typeof query>[0]["options"] = {
       mcpServers: { pubsub: pubsubServer },
       systemPrompt: createRichTextChatSystemPrompt(),
+      // Provide explicit path to Claude Code CLI (required for bundled workers)
+      pathToClaudeCodeExecutable: claudeExecutable,
       ...(allowedTools.length > 0 && { allowedTools }),
       // Disable built-in tools - we only want pubsub tools
       disallowedTools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebSearch", "WebFetch", "Task"],
@@ -636,7 +667,11 @@ async function handleUserMessage(
   } catch (err) {
     // Pause tool returns successfully, so we shouldn't see pause-related errors
     // Any error here is a real error that should be reported
-    console.error(`[Claude Code] Error:`, err);
+    const errorDetails = err instanceof Error
+      ? { message: err.message, stack: err.stack, name: err.name, ...err }
+      : err;
+    console.error(`[Claude Code] Error:`, JSON.stringify(errorDetails, null, 2));
+    console.error(`[Claude Code] Full error object:`, err);
     await client.error(responseId, err instanceof Error ? err.message : String(err));
   }
 }
