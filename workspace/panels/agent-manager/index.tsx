@@ -1,9 +1,8 @@
 /**
- * Agent Manager Panel
+ * Agent Preferences Panel
  *
- * Acts as a broker in the agent discovery system.
- * Advertises available agent types on the availability channel and spawns
- * workers when clients send invites.
+ * Configure default settings for AI agents. Also serves as a broker
+ * that spawns workers when clients invite agents.
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -17,19 +16,92 @@ import {
   Button,
   ScrollArea,
   Code,
+  Separator,
+  Tabs,
 } from "@radix-ui/themes";
-import { createChild, pubsubConfig, type ChildHandle } from "@natstack/runtime";
-import { usePanelTheme } from "@natstack/react";
+import { ChevronDownIcon, ChevronRightIcon } from "@radix-ui/react-icons";
+import { createChild, pubsubConfig, db, type ChildHandle } from "@natstack/runtime";
+import { usePanelTheme, ParameterEditor } from "@natstack/react";
 import {
   connectAsBroker,
+  CLAUDE_CODE_PARAMETERS,
+  AI_RESPONDER_PARAMETERS,
+  CODEX_PARAMETERS,
   type BrokerClient,
   type AgentTypeAdvertisement,
   type Invite,
 } from "@natstack/agentic-messaging";
 
 const AVAILABILITY_CHANNEL = "agent-availability";
+const PREFERENCES_DB_NAME = "agent-preferences";
 
-/** Agent type definitions */
+/** Persisted defaults structure - keyed by agent type ID */
+type AgentDefaults = Record<string, Record<string, string | number | boolean>>;
+
+/** Preferences database singleton */
+let preferencesDbPromise: Promise<Awaited<ReturnType<typeof db.open>>> | null = null;
+
+async function getPreferencesDb() {
+  if (!preferencesDbPromise) {
+    preferencesDbPromise = (async () => {
+      const database = await db.open(PREFERENCES_DB_NAME);
+      await database.exec(`
+        CREATE TABLE IF NOT EXISTS agent_preferences (
+          agent_type_id TEXT PRIMARY KEY,
+          settings TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      return database;
+    })();
+  }
+  return preferencesDbPromise;
+}
+
+/** Load all agent defaults from SQLite */
+async function loadAgentDefaults(): Promise<AgentDefaults> {
+  try {
+    const database = await getPreferencesDb();
+    const rows = await database.query<{ agent_type_id: string; settings: string }>(
+      "SELECT agent_type_id, settings FROM agent_preferences"
+    );
+    const result: AgentDefaults = {};
+    for (const row of rows) {
+      try {
+        result[row.agent_type_id] = JSON.parse(row.settings);
+      } catch {
+        // Skip malformed entries
+      }
+    }
+    return result;
+  } catch (err) {
+    console.warn("[AgentPreferences] Failed to load defaults:", err);
+    return {};
+  }
+}
+
+/** Save defaults for a specific agent type to SQLite */
+async function saveAgentDefaults(
+  agentTypeId: string,
+  settings: Record<string, string | number | boolean>
+): Promise<void> {
+  try {
+    const database = await getPreferencesDb();
+    const settingsJson = JSON.stringify(settings);
+    const now = Date.now();
+    await database.run(
+      `INSERT INTO agent_preferences (agent_type_id, settings, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(agent_type_id) DO UPDATE SET settings = ?, updated_at = ?`,
+      [agentTypeId, settingsJson, now, settingsJson, now]
+    );
+  } catch (err) {
+    console.warn("[AgentPreferences] Failed to save defaults:", err);
+  }
+}
+
+
+/** Agent type definitions - using centralized parameter configs */
 const AGENT_TYPES: AgentTypeAdvertisement[] = [
   {
     id: "ai-responder",
@@ -38,47 +110,27 @@ const AGENT_TYPES: AgentTypeAdvertisement[] = [
     description: "Fast AI assistant using NatStack AI SDK. Good for quick, helpful responses.",
     providesMethods: [],
     requiresMethods: [],
-    parameters: [],
+    parameters: AI_RESPONDER_PARAMETERS,
     tags: ["chat", "ai", "fast"],
   },
   {
     id: "claude-code",
     name: "Claude Code",
     proposedHandle: "claude",
-    description:
-      "Claude-based agent with access to tools from other participants. Can use discovered tools to help with complex tasks.",
+    description: "Claude-based coding agent with tool access for complex development tasks.",
     providesMethods: [],
     requiresMethods: [],
-    parameters: [
-      {
-        key: "workingDirectory",
-        label: "Working Directory",
-        description: "The directory where Claude Code will operate. Leave empty for default.",
-        type: "string",
-        required: false,
-        placeholder: "/path/to/project",
-      },
-    ],
+    parameters: CLAUDE_CODE_PARAMETERS,
     tags: ["chat", "coding", "tools", "claude"],
   },
   {
     id: "codex",
     name: "Codex",
     proposedHandle: "codex",
-    description:
-      "OpenAI Codex agent with MCP tool support. Specialized for code-related tasks with tool access.",
+    description: "OpenAI Codex agent specialized for code tasks with MCP tool support.",
     providesMethods: [],
     requiresMethods: [],
-    parameters: [
-      {
-        key: "workingDirectory",
-        label: "Working Directory",
-        description: "The directory where Codex will operate. Leave empty for default.",
-        type: "string",
-        required: false,
-        placeholder: "/path/to/project",
-      },
-    ],
+    parameters: CODEX_PARAMETERS,
     tags: ["chat", "coding", "tools", "openai"],
   },
 ];
@@ -106,7 +158,6 @@ interface InviteLogEntry {
   senderId: string;
   accepted: boolean;
   error?: string;
-  /** Full invite config for inspection */
   config?: Record<string, unknown>;
 }
 
@@ -117,8 +168,39 @@ interface ActiveAgent {
   channel: string;
   handle: ChildHandle;
   startedAt: Date;
-  /** Config passed to this agent */
   config?: Record<string, unknown>;
+}
+
+/** Collapsible section component */
+function CollapsibleSection({
+  title,
+  count,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  count?: number;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <Flex direction="column" gap="2">
+      <Flex
+        align="center"
+        gap="2"
+        style={{ cursor: "pointer", userSelect: "none" }}
+        onClick={() => setOpen(!open)}
+      >
+        {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
+        <Text size="2" color="gray" weight="medium">
+          {title}
+          {count !== undefined && ` (${count})`}
+        </Text>
+      </Flex>
+      {open && children}
+    </Flex>
+  );
 }
 
 /** Collapsible JSON viewer component */
@@ -160,15 +242,36 @@ function JsonInspector({ data, label }: { data: unknown; label?: string }) {
   );
 }
 
-export default function AgentManager() {
+export default function AgentPreferences() {
   const theme = usePanelTheme();
   const [connected, setConnected] = useState(false);
   const [status, setStatus] = useState("Initializing...");
   const [activeAgents, setActiveAgents] = useState<ActiveAgent[]>([]);
   const [inviteLog, setInviteLog] = useState<InviteLogEntry[]>([]);
+  const [agentDefaults, setAgentDefaults] = useState<AgentDefaults>({});
 
   const brokerRef = useRef<BrokerClient | null>(null);
   const activeAgentsRef = useRef<ActiveAgent[]>([]);
+
+  // Load defaults from SQLite on mount
+  useEffect(() => {
+    void loadAgentDefaults().then(setAgentDefaults);
+  }, []);
+
+  // Update a default value for an agent type
+  const updateDefault = useCallback((agentTypeId: string, key: string, value: string | number | boolean) => {
+    setAgentDefaults((prev) => {
+      const updated = {
+        ...prev,
+        [agentTypeId]: {
+          ...(prev[agentTypeId] ?? {}),
+          [key]: value,
+        },
+      };
+      void saveAgentDefaults(agentTypeId, updated[agentTypeId]);
+      return updated;
+    });
+  }, []);
 
   const addLogEntry = useCallback((entry: Omit<InviteLogEntry, "id" | "timestamp">) => {
     setInviteLog((prev) => [
@@ -177,7 +280,7 @@ export default function AgentManager() {
         id: crypto.randomUUID(),
         timestamp: new Date(),
       },
-      ...prev.slice(0, 49), // Keep last 50 entries
+      ...prev.slice(0, 49),
     ]);
   }, []);
 
@@ -201,46 +304,37 @@ export default function AgentManager() {
     let mounted = true;
 
     async function init() {
-      setStatus("Connecting to availability channel...");
+      setStatus("Connecting...");
 
       try {
         const broker = await connectAsBroker(pubsubConfig!.serverUrl, pubsubConfig!.token, {
           availabilityChannel: AVAILABILITY_CHANNEL,
-          name: "Agent Manager",
-          handle: "agent-manager",
+          name: "Agent Preferences",
+          handle: "agent-preferences",
           agentTypes: AGENT_TYPES,
           onInvite: async (invite: Invite, senderId: string) => {
-            console.log(`[Agent Manager] Received invite from ${senderId} for ${invite.agentTypeId}`);
-            // Accept all invites - spawn will happen in onSpawn
+            console.log(`[AgentPreferences] Received invite from ${senderId} for ${invite.agentTypeId}`);
             return { accept: true };
           },
           onSpawn: async (invite: Invite, agentType: AgentTypeAdvertisement) => {
-            console.log(`[Agent Manager] Spawning ${agentType.id} for channel ${invite.targetChannel}`);
-            console.log(`[Agent Manager] Config:`, invite.config);
+            console.log(`[AgentPreferences] Spawning ${agentType.id} for channel ${invite.targetChannel}`);
 
             try {
               const workerSource = getWorkerSource(agentType.id);
               const workerName = `${agentType.id}-${invite.targetChannel.slice(0, 8)}`;
-
-              // Determine the handle: use override if provided, otherwise use proposed handle
               const agentHandle = invite.handleOverride ?? agentType.proposedHandle;
 
-              // Build environment from channel + serialized config (including handle)
               const agentConfig = {
                 ...invite.config,
                 handle: agentHandle,
               };
               const env: Record<string, string> = {
                 CHANNEL: invite.targetChannel,
-                // Serialize all config parameters into a single JSON env var
                 AGENT_CONFIG: JSON.stringify(agentConfig),
               };
 
-              console.log(`[Agent Manager] Spawning with env:`, env);
-
               const handle = await createChild(workerSource, { name: workerName, env });
 
-              // Track the active agent
               const activeAgent: ActiveAgent = {
                 id: handle.id,
                 agentTypeId: agentType.id,
@@ -255,7 +349,7 @@ export default function AgentManager() {
                 addLogEntry({
                   agentTypeId: agentType.id,
                   targetChannel: invite.targetChannel,
-                  senderId: invite.inviteId, // Use inviteId as sender reference
+                  senderId: invite.inviteId,
                   accepted: true,
                   config: invite.config,
                 });
@@ -264,7 +358,7 @@ export default function AgentManager() {
               return { agentId: handle.id };
             } catch (err) {
               const errorMsg = err instanceof Error ? err.message : String(err);
-              console.error(`[Agent Manager] Failed to spawn agent:`, err);
+              console.error(`[AgentPreferences] Failed to spawn agent:`, err);
 
               if (mounted) {
                 addLogEntry({
@@ -322,190 +416,149 @@ export default function AgentManager() {
 
   return (
     <Box
-      p="4"
+      p="3"
       style={{
         height: "100vh",
         backgroundColor: theme === "dark" ? "var(--gray-1)" : "var(--gray-2)",
       }}
     >
-      <Flex direction="column" gap="4" style={{ height: "100%" }}>
+      <Flex direction="column" gap="3" style={{ height: "100%" }}>
         {/* Header */}
         <Flex justify="between" align="center">
-          <Heading size="5">Agent Manager</Heading>
-          <Badge color={connected ? "green" : "gray"} variant="soft">
-            {connected ? "Connected" : status}
+          <Heading size="4">Agent Preferences</Heading>
+          <Badge size="1" color={connected ? "green" : "gray"} variant="soft">
+            {connected ? "Ready" : status}
           </Badge>
         </Flex>
 
-        {/* Agent Types */}
-        <Card>
-          <Flex direction="column" gap="3">
-            <Text weight="medium" size="2" color="gray">
-              Advertised Agent Types ({AGENT_TYPES.length})
-            </Text>
-            <Flex direction="column" gap="2">
-              {AGENT_TYPES.map((agentType) => (
-                <Card key={agentType.id} variant="surface">
-                  <Flex direction="column" gap="2">
-                    <Flex justify="between" align="start" gap="3">
-                      <Flex direction="column" gap="1">
-                        <Text weight="medium">{agentType.name}</Text>
-                        <Text size="1" color="gray">
-                          {agentType.description}
-                        </Text>
-                        <Flex gap="1" wrap="wrap" mt="1">
-                          {agentType.tags?.map((tag) => (
-                            <Badge key={tag} size="1" variant="outline">
-                              {tag}
-                            </Badge>
-                          ))}
-                        </Flex>
-                      </Flex>
-                      <Badge size="1" color="gray">{agentType.id}</Badge>
-                    </Flex>
-                    <JsonInspector
-                      data={{
-                        parameters: agentType.parameters,
-                        providesMethods: agentType.providesMethods,
-                        requiresMethods: agentType.requiresMethods,
-                      }}
-                      label="View metadata"
-                    />
-                  </Flex>
-                </Card>
-              ))}
-            </Flex>
-          </Flex>
-        </Card>
+        {/* Tabbed Content */}
+        <Tabs.Root defaultValue="preferences" style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <Tabs.List size="2">
+            <Tabs.Trigger value="preferences">Preferences</Tabs.Trigger>
+            <Tabs.Trigger value="agents">
+              Active Agents
+              {activeAgents.length > 0 && (
+                <Badge size="1" ml="2" color="green">{activeAgents.length}</Badge>
+              )}
+            </Tabs.Trigger>
+          </Tabs.List>
 
-        {/* Active Agents */}
-        <Card style={{ flex: 1, minHeight: 0 }}>
-          <Flex direction="column" gap="3" style={{ height: "100%" }}>
-            <Flex justify="between" align="center">
-              <Text weight="medium" size="2" color="gray">
-                Active Agents ({activeAgents.length})
-              </Text>
-            </Flex>
-            <ScrollArea style={{ flex: 1 }}>
-              {activeAgents.length === 0 ? (
-                <Text size="2" color="gray">
-                  No active agents. Agents will appear here when clients invite them.
-                </Text>
-              ) : (
-                <Flex direction="column" gap="2">
-                  {activeAgents.map((agent) => (
-                    <Card key={agent.id} variant="surface">
-                      <Flex direction="column" gap="2">
+          <Box pt="3" style={{ flex: 1, overflow: "hidden" }}>
+            {/* Preferences Tab */}
+            <Tabs.Content value="preferences" style={{ height: "100%" }}>
+              <ScrollArea style={{ height: "100%" }}>
+                <Flex direction="column" gap="4" pr="3">
+                  {AGENT_TYPES.map((agentType) => (
+                    <Card key={agentType.id}>
+                      <Flex direction="column" gap="3">
+                        {/* Agent header */}
                         <Flex justify="between" align="center">
-                          <Flex direction="column" gap="1">
-                            <Text size="2" weight="medium">
-                              {AGENT_TYPES.find((t) => t.id === agent.agentTypeId)?.name || agent.agentTypeId}
-                            </Text>
-                            <Text size="1" color="gray">
-                              Channel: {agent.channel}
-                            </Text>
-                            <Text size="1" color="gray">
-                              Started: {agent.startedAt.toLocaleTimeString()}
-                            </Text>
-                          </Flex>
-                          <Flex gap="2" align="center">
-                            <Badge color="green" variant="soft">
-                              Running
-                            </Badge>
-                            <Button size="1" variant="soft" color="red" onClick={() => stopAgent(agent.id)}>
-                              Stop
-                            </Button>
-                          </Flex>
+                          <Text size="4" weight="bold">{agentType.name}</Text>
                         </Flex>
-                        <JsonInspector
-                          data={{
-                            id: agent.id,
-                            agentTypeId: agent.agentTypeId,
-                            channel: agent.channel,
-                            config: agent.config,
-                          }}
-                          label="View details"
-                        />
+                        <Text size="2" color="gray">{agentType.description}</Text>
+
+                        {/* Parameters - always visible */}
+                        {agentType.parameters && agentType.parameters.length > 0 && (
+                          <>
+                            <Separator size="4" />
+                            <ParameterEditor
+                              parameters={agentType.parameters}
+                              values={agentDefaults[agentType.id] ?? {}}
+                              onChange={(key: string, value: string | number | boolean) => updateDefault(agentType.id, key, value)}
+                            />
+                          </>
+                        )}
                       </Flex>
                     </Card>
                   ))}
                 </Flex>
-              )}
-            </ScrollArea>
-          </Flex>
-        </Card>
+              </ScrollArea>
+            </Tabs.Content>
 
-        {/* Invite Log */}
-        <Card style={{ maxHeight: "300px" }}>
-          <Flex direction="column" gap="2">
-            <Text weight="medium" size="2" color="gray">
-              Invite Log ({inviteLog.length})
-            </Text>
-            <ScrollArea style={{ maxHeight: "250px" }}>
-              {inviteLog.length === 0 ? (
-                <Text size="1" color="gray">
-                  No invites yet.
-                </Text>
-              ) : (
-                <Flex direction="column" gap="2">
-                  {inviteLog.map((entry) => (
-                    <Card
-                      key={entry.id}
-                      variant="surface"
-                      style={{
-                        borderLeft: entry.accepted
-                          ? "3px solid var(--green-9)"
-                          : "3px solid var(--red-9)",
-                      }}
-                    >
-                      <Flex direction="column" gap="1">
-                        <Flex justify="between" align="center">
-                          <Flex gap="2" align="center">
-                            <Badge color={entry.accepted ? "green" : "red"} size="1">
-                              {entry.accepted ? "✓ Accepted" : "✗ Failed"}
-                            </Badge>
-                            <Text size="1" weight="medium">
-                              {AGENT_TYPES.find((t) => t.id === entry.agentTypeId)?.name || entry.agentTypeId}
-                            </Text>
-                          </Flex>
-                          <Text size="1" color="gray">
-                            {entry.timestamp.toLocaleTimeString()}
-                          </Text>
-                        </Flex>
-                        <Text size="1" color="gray">
-                          Channel: {entry.targetChannel}
+            {/* Active Agents Tab */}
+            <Tabs.Content value="agents" style={{ height: "100%" }}>
+              <ScrollArea style={{ height: "100%" }}>
+                <Flex direction="column" gap="4" pr="3">
+                  {/* Running Agents */}
+                  <Flex direction="column" gap="3">
+                    <Text size="2" weight="medium" color="gray">
+                      Running Agents
+                    </Text>
+                    {activeAgents.length === 0 ? (
+                      <Card variant="surface">
+                        <Text size="2" color="gray">
+                          No active agents. Start a chat in the Agentic Chat panel to spawn agents.
                         </Text>
-                        {entry.error && (
+                      </Card>
+                    ) : (
+                      activeAgents.map((agent) => (
+                        <Card key={agent.id} variant="surface">
+                          <Flex justify="between" align="center">
+                            <Flex direction="column" gap="1">
+                              <Text size="2" weight="medium">
+                                {AGENT_TYPES.find((t) => t.id === agent.agentTypeId)?.name || agent.agentTypeId}
+                              </Text>
+                              <Text size="1" color="gray">
+                                Started {agent.startedAt.toLocaleTimeString()}
+                              </Text>
+                            </Flex>
+                            <Flex gap="2" align="center">
+                              <Badge color="green" variant="soft" size="1">Running</Badge>
+                              <Button size="1" variant="soft" color="red" onClick={() => stopAgent(agent.id)}>
+                                Stop
+                              </Button>
+                            </Flex>
+                          </Flex>
+                        </Card>
+                      ))
+                    )}
+                  </Flex>
+
+                  {/* Invite History - Collapsible */}
+                  <CollapsibleSection title="Invite History" count={inviteLog.length}>
+                    <Flex direction="column" gap="2">
+                      {inviteLog.length === 0 ? (
+                        <Text size="1" color="gray">No invites yet.</Text>
+                      ) : (
+                        inviteLog.map((entry) => (
                           <Card
+                            key={entry.id}
                             variant="surface"
                             style={{
-                              backgroundColor: "var(--red-3)",
-                              padding: "8px",
+                              borderLeft: entry.accepted
+                                ? "3px solid var(--green-9)"
+                                : "3px solid var(--red-9)",
                             }}
                           >
-                            <Text size="1" color="red" weight="medium">
-                              Error: {entry.error}
-                            </Text>
+                            <Flex direction="column" gap="1">
+                              <Flex justify="between" align="center">
+                                <Flex gap="2" align="center">
+                                  <Badge color={entry.accepted ? "green" : "red"} size="1">
+                                    {entry.accepted ? "OK" : "Failed"}
+                                  </Badge>
+                                  <Text size="1" weight="medium">
+                                    {AGENT_TYPES.find((t) => t.id === entry.agentTypeId)?.name || entry.agentTypeId}
+                                  </Text>
+                                </Flex>
+                                <Text size="1" color="gray">
+                                  {entry.timestamp.toLocaleTimeString()}
+                                </Text>
+                              </Flex>
+                              {entry.error && (
+                                <Text size="1" color="red">Error: {entry.error}</Text>
+                              )}
+                              <JsonInspector data={entry.config} label="Config" />
+                            </Flex>
                           </Card>
-                        )}
-                        <JsonInspector
-                          data={{
-                            inviteId: entry.senderId,
-                            agentTypeId: entry.agentTypeId,
-                            targetChannel: entry.targetChannel,
-                            config: entry.config,
-                            error: entry.error,
-                          }}
-                          label="View full details"
-                        />
-                      </Flex>
-                    </Card>
-                  ))}
+                        ))
+                      )}
+                    </Flex>
+                  </CollapsibleSection>
                 </Flex>
-              )}
-            </ScrollArea>
-          </Flex>
-        </Card>
+              </ScrollArea>
+            </Tabs.Content>
+          </Box>
+        </Tabs.Root>
       </Flex>
     </Box>
   );

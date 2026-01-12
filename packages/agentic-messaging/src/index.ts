@@ -10,6 +10,17 @@ export type { Participant, RosterUpdate, ParticipantMetadata } from "@natstack/p
 // Broker exports
 export * from "./broker-types.js";
 export * from "./broker-protocol.js";
+export type {
+  FeedbackUiSchemaArgs,
+  FeedbackUiCodeArgs,
+  FeedbackUiArgs,
+} from "./broker-protocol.js";
+export {
+  isFeedbackUiSchemaArgs,
+  isFeedbackUiCodeArgs,
+  FeedbackUiSchemaArgsSchema,
+  FeedbackUiCodeArgsSchema,
+} from "./broker-protocol.js";
 export { connectAsBroker, connectAsSelfBroker } from "./broker.js";
 export { connectForDiscovery, inviteAgent } from "./broker-client.js";
 export type { BrokerClient } from "./broker.js";
@@ -45,4 +56,14 @@ export {
   DEFAULT_MISSED_CONTEXT_MAX_CHARS,
   DEFAULT_METHOD_RESULT_MAX_CHARS,
 } from "./missed-context.js";
+
+// Centralized agent configurations
+export {
+  CLAUDE_CODE_PARAMETERS,
+  AI_RESPONDER_PARAMETERS,
+  CODEX_PARAMETERS,
+  getParameterDefaults,
+  CLAUDE_MODEL_FALLBACKS,
+  AI_ROLE_FALLBACKS,
+} from "./agent-configs.js";
 

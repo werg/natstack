@@ -14,6 +14,8 @@ import {
   createPauseMethodDefinition,
   formatMissedContext,
   createRichTextChatSystemPrompt,
+  AI_RESPONDER_PARAMETERS,
+  AI_ROLE_FALLBACKS,
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
@@ -33,20 +35,8 @@ interface FastAiWorkerSettings {
   maxOutputTokens?: number;
 }
 
-/** Current settings state */
+/** Current settings state - initialized from agent config and persisted settings */
 let currentSettings: FastAiWorkerSettings = {};
-
-/**
- * Escape a string value for safe interpolation into a TSX template string.
- * Handles quotes, backslashes, and template literal special chars.
- */
-function escapeTsxString(value: string): string {
-  return value
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"')
-    .replace(/`/g, "\\`")
-    .replace(/\$/g, "\\$");
-}
 
 async function main() {
   if (!pubsubConfig) {
@@ -105,116 +95,26 @@ async function main() {
           } catch (err) {
             log(`Failed to fetch roles: ${err}`);
             // Fallback to basic options
-            roleOptions = [
-              { value: "fast", label: "Fast" },
-              { value: "smart", label: "Smart" },
-              { value: "coding", label: "Coding" },
-            ];
+            roleOptions = AI_ROLE_FALLBACKS;
           }
 
-          // Generate SDK-specific settings UI with role options
-          const roleSelectItems = roleOptions.map(r =>
-            `<Select.Item key="${r.value}" value="${r.value}">${r.label}</Select.Item>`
-          ).join("\n              ");
+          // Build fields with dynamic model role options
+          const fields = AI_RESPONDER_PARAMETERS.map((f) => {
+            // Override modelRole options with dynamic list if available
+            if (f.key === "modelRole" && roleOptions.length > 0) {
+              return { ...f, options: roleOptions };
+            }
+            return f;
+          });
 
-          const settingsTsx = `
-import { useState } from "react";
-import { Box, Button, Flex, Heading, Select, Slider, Text } from "@radix-ui/themes";
-
-const TOKEN_PRESETS = [
-  { value: 256, label: "Short" },
-  { value: 512, label: "Medium" },
-  { value: 1024, label: "Long" },
-  { value: 2048, label: "Very Long" },
-  { value: 4096, label: "Maximum" },
-];
-
-export default function SettingsForm({ onSubmit, onCancel }) {
-  const [role, setRole] = useState("${escapeTsxString(currentSettings.modelRole ?? "fast")}");
-  const [temperature, setTemperature] = useState(${currentSettings.temperature ?? 0.7});
-  const [maxTokens, setMaxTokens] = useState(${currentSettings.maxOutputTokens ?? 1024});
-
-  const handleSubmit = () => {
-    onSubmit({
-      modelRole: role,
-      temperature,
-      maxOutputTokens: maxTokens,
-    });
-  };
-
-  const getTokenLabel = (tokens) => {
-    const preset = TOKEN_PRESETS.find(p => p.value === tokens);
-    return preset ? preset.label : \`\${tokens} tokens\`;
-  };
-
-  return (
-    <Box>
-      <Heading size="4" mb="4">AI Responder Settings</Heading>
-
-      <Flex direction="column" gap="5">
-        {/* Model Role Selection */}
-        <Flex direction="column" gap="2">
-          <Text size="2" weight="medium">Model Role</Text>
-          <Select.Root value={role} onValueChange={setRole}>
-            <Select.Trigger placeholder="Select a role..." />
-            <Select.Content>
-              ${roleSelectItems}
-            </Select.Content>
-          </Select.Root>
-          <Text size="1" color="gray">Optimized model configuration for different tasks</Text>
-        </Flex>
-
-        {/* Temperature Slider */}
-        <Flex direction="column" gap="2">
-          <Flex justify="between" align="center">
-            <Text size="2" weight="medium">Temperature</Text>
-            <Text size="2" color="gray">{temperature.toFixed(1)}</Text>
-          </Flex>
-          <Slider
-            value={[temperature]}
-            onValueChange={([v]) => setTemperature(v)}
-            min={0}
-            max={2}
-            step={0.1}
-          />
-          <Flex justify="between">
-            <Text size="1" color="gray">Precise</Text>
-            <Text size="1" color="gray">Creative</Text>
-          </Flex>
-        </Flex>
-
-        {/* Max Output Tokens */}
-        <Flex direction="column" gap="2">
-          <Flex justify="between" align="center">
-            <Text size="2" weight="medium">Response Length</Text>
-            <Text size="2" color="gray">{getTokenLabel(maxTokens)}</Text>
-          </Flex>
-          <Slider
-            value={[maxTokens]}
-            onValueChange={([v]) => setMaxTokens(v)}
-            min={256}
-            max={4096}
-            step={256}
-          />
-          <Flex justify="between">
-            <Text size="1" color="gray">Brief</Text>
-            <Text size="1" color="gray">Detailed</Text>
-          </Flex>
-        </Flex>
-
-        {/* Actions */}
-        <Flex gap="3" mt="2" justify="end">
-          <Button variant="soft" color="gray" onClick={onCancel}>Cancel</Button>
-          <Button onClick={handleSubmit}>Save</Button>
-        </Flex>
-      </Flex>
-    </Box>
-  );
-}
-`;
-
-          // Call feedback_ui on the panel
-          const handle = client.callMethod(panel.id, "feedback_ui", { code: settingsTsx });
+          // Call feedback_ui on the panel using schema format
+          const handle = client.callMethod(panel.id, "feedback_ui", {
+            schema: {
+              title: "AI Responder Settings",
+              fields,
+              values: currentSettings,
+            },
+          });
           const result = await handle.result;
           const feedbackResult = result.content as { type: string; value?: unknown; message?: string };
 
@@ -256,20 +156,36 @@ export default function SettingsForm({ onSubmit, onCancel }) {
   });
 
   log(`Connected to channel: ${channelName}`);
+
+  // Initialize settings with proper precedence:
+  // 1. Apply initialization config (from pre-connection UI)
+  const initConfigSettings: FastAiWorkerSettings = {};
+  if (typeof agentConfig.modelRole === "string") initConfigSettings.modelRole = agentConfig.modelRole;
+  if (typeof agentConfig.temperature === "number") initConfigSettings.temperature = agentConfig.temperature;
+  if (typeof agentConfig.maxOutputTokens === "number") initConfigSettings.maxOutputTokens = agentConfig.maxOutputTokens;
+  Object.assign(currentSettings, initConfigSettings);
+  if (Object.keys(initConfigSettings).length > 0) {
+    log(`Applied init config: ${JSON.stringify(initConfigSettings)}`);
+  }
+
+  // 2. Apply persisted settings (runtime changes from previous sessions)
   if (client.sessionKey) {
     log(`Session: ${client.sessionKey} (${client.status})`);
     log(`Checkpoint: ${client.checkpoint ?? "none"}`);
 
-    // Load persisted settings
     try {
       const savedSettings = await client.getSettings<FastAiWorkerSettings>();
       if (savedSettings) {
-        currentSettings = savedSettings;
-        log(`Loaded settings: ${JSON.stringify(currentSettings)}`);
+        Object.assign(currentSettings, savedSettings);
+        log(`Applied persisted settings: ${JSON.stringify(savedSettings)}`);
       }
     } catch (err) {
       log(`Failed to load settings: ${err}`);
     }
+  }
+
+  if (Object.keys(currentSettings).length > 0) {
+    log(`Final settings: ${JSON.stringify(currentSettings)}`);
   }
 
   let lastMissedPubsubId = 0;

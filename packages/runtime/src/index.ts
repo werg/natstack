@@ -135,6 +135,25 @@ export declare const noopParent: typeof import("./core/defineContract.js").noopP
 export declare const encodeBase64: typeof import("./shared/base64.js").encodeBase64;
 export declare const decodeBase64: typeof import("./shared/base64.js").decodeBase64;
 
+// Form schema types and utilities
+export type {
+  FieldValue,
+  FieldType,
+  ConditionOperator,
+  FieldCondition,
+  FieldOption,
+  SliderNotch,
+  FieldWarning,
+  FieldDefinition,
+  FormSchema,
+} from "./shared/form-schema.js";
+export declare const evaluateCondition: typeof import("./shared/form-schema.js").evaluateCondition;
+export declare const isFieldVisible: typeof import("./shared/form-schema.js").isFieldVisible;
+export declare const isFieldEnabled: typeof import("./shared/form-schema.js").isFieldEnabled;
+export declare const getFieldWarning: typeof import("./shared/form-schema.js").getFieldWarning;
+export declare const groupFields: typeof import("./shared/form-schema.js").groupFields;
+export declare const getFieldDefaults: typeof import("./shared/form-schema.js").getFieldDefaults;
+
 export declare const buildChildLink: typeof import("./core/childLinks.js").buildChildLink;
 
 // Session utilities

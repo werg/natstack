@@ -5,6 +5,7 @@
  */
 
 import type { AgenticParticipantMetadata, MethodAdvertisement } from "./types.js";
+import type { FieldDefinition } from "@natstack/runtime";
 
 /**
  * Specification for a method that an agent requires.
@@ -19,34 +20,6 @@ export interface RequiredMethodSpec {
   description?: string;
   /** Whether this method is required (true) or optional (false) */
   required: boolean;
-}
-
-/**
- * Parameter type for agent configuration.
- */
-export type AgentParameterType = "string" | "number" | "boolean" | "select";
-
-/**
- * Definition for a configurable parameter that an agent accepts.
- * Used by clients to render appropriate input UI.
- */
-export interface AgentParameterDefinition {
-  /** Parameter key (used in config object) */
-  key: string;
-  /** Human-readable label */
-  label: string;
-  /** Description of what this parameter does */
-  description?: string;
-  /** Parameter type */
-  type: AgentParameterType;
-  /** Whether this parameter is required */
-  required: boolean;
-  /** Default value */
-  default?: string | number | boolean;
-  /** For "select" type: available options */
-  options?: Array<{ value: string; label: string }>;
-  /** For "string" type: placeholder text */
-  placeholder?: string;
 }
 
 /**
@@ -71,7 +44,7 @@ export interface AgentTypeAdvertisement {
   /** Methods the spawned agent requires from other participants */
   requiresMethods: RequiredMethodSpec[];
   /** Configurable parameters for this agent type */
-  parameters?: AgentParameterDefinition[];
+  parameters?: FieldDefinition[];
   /** Optional tags for filtering/categorization */
   tags?: string[];
   /** Optional version string */

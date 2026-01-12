@@ -154,7 +154,10 @@ export async function connectForDiscovery(
           if (parsed?.type !== "invite-response") continue;
 
           const response = InviteResponseSchema.safeParse(parsed.payload);
-          if (!response.success) continue;
+          if (!response.success) {
+            console.warn(`[broker-client] Invalid invite response:`, response.error.format());
+            continue;
+          }
 
           const pending = pendingInvites.get(response.data.inviteId);
           if (pending) {
@@ -186,7 +189,13 @@ export async function connectForDiscovery(
       if (metadata?.["isBroker"] !== true) continue;
 
       const parsed = BrokerMetadataSchema.safeParse(metadata);
-      if (!parsed.success) continue;
+      if (!parsed.success) {
+        console.warn(
+          `[broker-client] Invalid broker metadata from ${id} (${metadata?.["name"] ?? "unknown"}):`,
+          parsed.error.format()
+        );
+        continue;
+      }
 
       brokers.push({
         brokerId: id,

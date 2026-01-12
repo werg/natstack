@@ -164,7 +164,10 @@ export async function connectAsBroker(
           if (parsed?.type !== "invite") continue;
 
           const invite = InviteSchema.safeParse(parsed.payload);
-          if (!invite.success) continue;
+          if (!invite.success) {
+            console.warn(`[broker] Invalid invite from ${event.senderId}:`, invite.error.format());
+            continue;
+          }
 
           await handleInvite(invite.data, event.senderId);
         } catch {

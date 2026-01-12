@@ -26,6 +26,7 @@ import {
   createPauseMethodDefinition,
   formatMissedContext,
   createRichTextChatSystemPrompt,
+  CODEX_PARAMETERS,
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
@@ -48,26 +49,35 @@ const log = createLogger("Codex Worker", id);
 /** Worker-local settings interface */
 interface CodexWorkerSettings {
   model?: string;
-  reasoningEffort?: "minimal" | "low" | "medium" | "high";
-  sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
+  reasoningEffort?: number; // 0=minimal, 1=low, 2=medium, 3=high
+  sandboxMode?: number; // 0=read-only, 1=workspace-write, 2=danger-full-access
   networkAccessEnabled?: boolean;
   webSearchEnabled?: boolean;
 }
 
-/** Current settings state */
-let currentSettings: CodexWorkerSettings = {};
-
-/**
- * Escape a string value for safe interpolation into a TSX template string.
- * Handles quotes, backslashes, and template literal special chars.
- */
-function escapeTsxString(value: string): string {
-  return value
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"')
-    .replace(/`/g, "\\`")
-    .replace(/\$/g, "\\$");
+/** Map reasoning effort slider value to SDK string */
+function getReasoningEffort(level: number | undefined): "minimal" | "low" | "medium" | "high" | undefined {
+  switch (level) {
+    case 0: return "minimal";
+    case 1: return "low";
+    case 2: return "medium";
+    case 3: return "high";
+    default: return undefined;
+  }
 }
+
+/** Map sandbox mode slider value to SDK string */
+function getSandboxMode(level: number | undefined): "read-only" | "workspace-write" | "danger-full-access" | undefined {
+  switch (level) {
+    case 0: return "read-only";
+    case 1: return "workspace-write";
+    case 2: return "danger-full-access";
+    default: return undefined;
+  }
+}
+
+/** Current settings state - initialized from agent config and persisted settings */
+let currentSettings: CodexWorkerSettings = {};
 
 /**
  * Tool definition for MCP server
@@ -340,157 +350,17 @@ async function main() {
           );
           if (!panel) throw new Error("No panel found");
 
-          // Generate SDK-specific settings UI with Codex model options
-          const settingsTsx = `
-import { useState } from "react";
-import { Box, Button, Flex, Heading, RadioGroup, SegmentedControl, Select, Switch, Text } from "@radix-ui/themes";
+          // Build fields (filter out workingDirectory which is set at init only)
+          const fields = CODEX_PARAMETERS.filter((p) => p.key !== "workingDirectory");
 
-const CODEX_MODELS = [
-  { value: "gpt-5.2-codex", label: "GPT-5.2 Codex", group: "Recommended", description: "Most advanced agentic coding model" },
-  { value: "gpt-5.1-codex-max", label: "GPT-5.1 Codex Max", group: "Recommended", description: "Long-horizon agentic coding" },
-  { value: "gpt-5.1-codex-mini", label: "GPT-5.1 Codex Mini", group: "Recommended", description: "Cost-effective coding" },
-  { value: "gpt-5.2", label: "GPT-5.2", group: "General", description: "Best general agentic model" },
-  { value: "gpt-5.1", label: "GPT-5.1", group: "Legacy", description: "Previous generation" },
-  { value: "gpt-5.1-codex", label: "GPT-5.1 Codex", group: "Legacy", description: "Previous Codex model" },
-];
-
-export default function SettingsForm({ onSubmit, onCancel }) {
-  const [model, setModel] = useState("${escapeTsxString(currentSettings.model ?? "gpt-5.2-codex")}");
-  const [reasoningEffort, setReasoningEffort] = useState("${escapeTsxString(currentSettings.reasoningEffort ?? "medium")}");
-  const [sandboxMode, setSandboxMode] = useState("${escapeTsxString(currentSettings.sandboxMode ?? "workspace-write")}");
-  const [networkAccess, setNetworkAccess] = useState(${currentSettings.networkAccessEnabled ?? false});
-  const [webSearch, setWebSearch] = useState(${currentSettings.webSearchEnabled ?? false});
-
-  const handleSubmit = () => {
-    onSubmit({
-      model: model || undefined,
-      reasoningEffort,
-      sandboxMode,
-      networkAccessEnabled: networkAccess,
-      webSearchEnabled: webSearch,
-    });
-  };
-
-  const selectedModel = CODEX_MODELS.find(m => m.value === model);
-
-  return (
-    <Box>
-      <Heading size="4" mb="4">Codex Settings</Heading>
-
-      <Flex direction="column" gap="5">
-        {/* Model Selection */}
-        <Flex direction="column" gap="2">
-          <Text size="2" weight="medium">Model</Text>
-          <Select.Root value={model} onValueChange={setModel}>
-            <Select.Trigger placeholder="Select a model..." />
-            <Select.Content>
-              <Select.Group>
-                <Select.Label>Recommended</Select.Label>
-                {CODEX_MODELS.filter(m => m.group === "Recommended").map(m => (
-                  <Select.Item key={m.value} value={m.value}>{m.label}</Select.Item>
-                ))}
-              </Select.Group>
-              <Select.Separator />
-              <Select.Group>
-                <Select.Label>General Purpose</Select.Label>
-                {CODEX_MODELS.filter(m => m.group === "General").map(m => (
-                  <Select.Item key={m.value} value={m.value}>{m.label}</Select.Item>
-                ))}
-              </Select.Group>
-              <Select.Separator />
-              <Select.Group>
-                <Select.Label>Legacy</Select.Label>
-                {CODEX_MODELS.filter(m => m.group === "Legacy").map(m => (
-                  <Select.Item key={m.value} value={m.value}>{m.label}</Select.Item>
-                ))}
-              </Select.Group>
-            </Select.Content>
-          </Select.Root>
-          {selectedModel && (
-            <Text size="1" color="gray">{selectedModel.description}</Text>
-          )}
-        </Flex>
-
-        {/* Reasoning Effort */}
-        <Flex direction="column" gap="2">
-          <Text size="2" weight="medium">Reasoning Effort</Text>
-          <SegmentedControl.Root value={reasoningEffort} onValueChange={setReasoningEffort}>
-            <SegmentedControl.Item value="minimal">Minimal</SegmentedControl.Item>
-            <SegmentedControl.Item value="low">Low</SegmentedControl.Item>
-            <SegmentedControl.Item value="medium">Medium</SegmentedControl.Item>
-            <SegmentedControl.Item value="high">High</SegmentedControl.Item>
-          </SegmentedControl.Root>
-          <Text size="1" color="gray">Higher effort = more thorough but slower</Text>
-        </Flex>
-
-        {/* Sandbox Mode */}
-        <Flex direction="column" gap="2">
-          <Text size="2" weight="medium">Sandbox Mode</Text>
-          <RadioGroup.Root value={sandboxMode} onValueChange={setSandboxMode}>
-            <Flex direction="column" gap="2">
-              <Text as="label" size="2">
-                <Flex gap="2" align="center">
-                  <RadioGroup.Item value="read-only" />
-                  <Flex direction="column">
-                    <Text weight="medium">Read Only</Text>
-                    <Text size="1" color="gray">Can only read files, no modifications</Text>
-                  </Flex>
-                </Flex>
-              </Text>
-              <Text as="label" size="2">
-                <Flex gap="2" align="center">
-                  <RadioGroup.Item value="workspace-write" />
-                  <Flex direction="column">
-                    <Text weight="medium">Workspace Write</Text>
-                    <Text size="1" color="gray">Can modify files in workspace only</Text>
-                  </Flex>
-                </Flex>
-              </Text>
-              <Text as="label" size="2">
-                <Flex gap="2" align="center">
-                  <RadioGroup.Item value="danger-full-access" />
-                  <Flex direction="column">
-                    <Text weight="medium" color="red">Full Access</Text>
-                    <Text size="1" color="gray">Unrestricted file system access (dangerous)</Text>
-                  </Flex>
-                </Flex>
-              </Text>
-            </Flex>
-          </RadioGroup.Root>
-        </Flex>
-
-        {/* Capability Toggles */}
-        <Flex direction="column" gap="3">
-          <Text size="2" weight="medium">Capabilities</Text>
-          <Flex justify="between" align="center">
-            <Flex direction="column">
-              <Text size="2">Network Access</Text>
-              <Text size="1" color="gray">Allow outbound network requests</Text>
-            </Flex>
-            <Switch checked={networkAccess} onCheckedChange={setNetworkAccess} />
-          </Flex>
-          <Flex justify="between" align="center">
-            <Flex direction="column">
-              <Text size="2">Web Search</Text>
-              <Text size="1" color="gray">Enable web search capabilities</Text>
-            </Flex>
-            <Switch checked={webSearch} onCheckedChange={setWebSearch} />
-          </Flex>
-        </Flex>
-
-        {/* Actions */}
-        <Flex gap="3" mt="2" justify="end">
-          <Button variant="soft" color="gray" onClick={onCancel}>Cancel</Button>
-          <Button onClick={handleSubmit}>Save</Button>
-        </Flex>
-      </Flex>
-    </Box>
-  );
-}
-`;
-
-          // Call feedback_ui on the panel
-          const handle = client.callMethod(panel.id, "feedback_ui", { code: settingsTsx });
+          // Call feedback_ui on the panel using schema format
+          const handle = client.callMethod(panel.id, "feedback_ui", {
+            schema: {
+              title: "Codex Settings",
+              fields,
+              values: currentSettings,
+            },
+          });
           const result = await handle.result;
           const feedbackResult = result.content as { type: string; value?: unknown; message?: string };
 
@@ -531,20 +401,38 @@ export default function SettingsForm({ onSubmit, onCancel }) {
   });
 
   log(`Connected to channel: ${channelName}`);
+
+  // Initialize settings with proper precedence:
+  // 1. Apply initialization config (from pre-connection UI)
+  const initConfigSettings: CodexWorkerSettings = {};
+  if (typeof agentConfig.model === "string") initConfigSettings.model = agentConfig.model;
+  if (typeof agentConfig.reasoningEffort === "number") initConfigSettings.reasoningEffort = agentConfig.reasoningEffort;
+  if (typeof agentConfig.sandboxMode === "number") initConfigSettings.sandboxMode = agentConfig.sandboxMode;
+  if (typeof agentConfig.networkAccessEnabled === "boolean") initConfigSettings.networkAccessEnabled = agentConfig.networkAccessEnabled;
+  if (typeof agentConfig.webSearchEnabled === "boolean") initConfigSettings.webSearchEnabled = agentConfig.webSearchEnabled;
+  Object.assign(currentSettings, initConfigSettings);
+  if (Object.keys(initConfigSettings).length > 0) {
+    log(`Applied init config: ${JSON.stringify(initConfigSettings)}`);
+  }
+
+  // 2. Apply persisted settings (runtime changes from previous sessions)
   if (client.sessionKey) {
     log(`Session: ${client.sessionKey} (${client.status})`);
     log(`Checkpoint: ${client.checkpoint ?? "none"}, SDK: ${client.sdkSessionId ?? "none"}`);
 
-    // Load persisted settings
     try {
       const savedSettings = await client.getSettings<CodexWorkerSettings>();
       if (savedSettings) {
-        currentSettings = savedSettings;
-        log(`Loaded settings: ${JSON.stringify(currentSettings)}`);
+        Object.assign(currentSettings, savedSettings);
+        log(`Applied persisted settings: ${JSON.stringify(savedSettings)}`);
       }
     } catch (err) {
       log(`Failed to load settings: ${err}`);
     }
+  }
+
+  if (Object.keys(currentSettings).length > 0) {
+    log(`Final settings: ${JSON.stringify(currentSettings)}`);
   }
 
   let lastMissedPubsubId = 0;
@@ -656,12 +544,14 @@ async function handleUserMessage(
     let thread: ReturnType<typeof codex.startThread> | ReturnType<typeof codex.resumeThread>;
 
     // Build thread options with user settings
+    const reasoningEffort = getReasoningEffort(currentSettings.reasoningEffort);
+    const sandboxMode = getSandboxMode(currentSettings.sandboxMode);
     const threadOptions = {
       skipGitRepoCheck: true,
       ...(workingDirectory && { cwd: workingDirectory }),
       ...(currentSettings.model && { model: currentSettings.model }),
-      ...(currentSettings.reasoningEffort && { modelReasoningEffort: currentSettings.reasoningEffort }),
-      ...(currentSettings.sandboxMode && { sandboxMode: currentSettings.sandboxMode }),
+      ...(reasoningEffort && { modelReasoningEffort: reasoningEffort }),
+      ...(sandboxMode && { sandboxMode }),
       ...(currentSettings.networkAccessEnabled !== undefined && { networkAccessEnabled: currentSettings.networkAccessEnabled }),
       ...(currentSettings.webSearchEnabled !== undefined && { webSearchEnabled: currentSettings.webSearchEnabled }),
     };

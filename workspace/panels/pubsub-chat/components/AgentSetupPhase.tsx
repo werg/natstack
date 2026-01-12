@@ -5,10 +5,10 @@ import {
   Checkbox,
   Flex,
   ScrollArea,
-  Select,
   Text,
   TextField,
 } from "@radix-ui/themes";
+import { ParameterEditor } from "@natstack/react";
 import type { AgentSelection } from "../hooks/useDiscovery";
 
 interface AgentSetupPhaseProps {
@@ -136,78 +136,15 @@ function AgentCard({ agent, onToggle, onUpdateConfig }: AgentCardProps) {
         {/* Parameter inputs - show when agent is selected and has parameters */}
         {agent.selected && agent.agentType.parameters && agent.agentType.parameters.length > 0 && (
           <Flex direction="column" gap="2" pl="6" pt="2" style={{ borderTop: "1px solid var(--gray-5)" }}>
-            {agent.agentType.parameters.map((param) => {
-              // Build placeholder text with default value info
-              const placeholderText = param.placeholder
-                ? param.default !== undefined
-                  ? `${param.placeholder} (default: ${param.default})`
-                  : param.placeholder
-                : param.default !== undefined
-                  ? `Default: ${param.default}`
-                  : undefined;
-
-              return (
-                <Flex key={param.key} direction="column" gap="1">
-                  <Text size="1" weight="medium">
-                    {param.label}
-                    {param.required ? (
-                      <span style={{ color: "var(--red-9)" }}> *</span>
-                    ) : (
-                      <span style={{ color: "var(--gray-9)", fontWeight: "normal" }}> (optional)</span>
-                    )}
-                  </Text>
-                  {param.description && (
-                    <Text size="1" color="gray">
-                      {param.description}
-                    </Text>
-                  )}
-                  {param.type === "string" && (
-                    <TextField.Root
-                      size="1"
-                      placeholder={placeholderText}
-                      value={String(agent.config[param.key] ?? "")}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => onUpdateConfig(param.key, e.target.value)}
-                    />
-                  )}
-                  {param.type === "number" && (
-                    <TextField.Root
-                      size="1"
-                      type="number"
-                      placeholder={placeholderText}
-                      value={String(agent.config[param.key] ?? "")}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) =>
-                        onUpdateConfig(param.key, e.target.value === "" ? "" : Number(e.target.value))
-                      }
-                    />
-                  )}
-                  {param.type === "boolean" && (
-                    <Checkbox
-                      checked={Boolean(agent.config[param.key])}
-                      onClick={(e) => e.stopPropagation()}
-                      onCheckedChange={(checked) => onUpdateConfig(param.key, Boolean(checked))}
-                    />
-                  )}
-                  {param.type === "select" && param.options && (
-                    <Select.Root
-                      size="1"
-                      value={String(agent.config[param.key] ?? "")}
-                      onValueChange={(value) => onUpdateConfig(param.key, value)}
-                    >
-                      <Select.Trigger placeholder="Select..." onClick={(e) => e.stopPropagation()} />
-                      <Select.Content>
-                        {param.options.map((option) => (
-                          <Select.Item key={option.value} value={option.value}>
-                            {option.label}
-                          </Select.Item>
-                        ))}
-                      </Select.Content>
-                    </Select.Root>
-                  )}
-                </Flex>
-              );
-            })}
+            <ParameterEditor
+              parameters={agent.agentType.parameters}
+              values={agent.config}
+              onChange={onUpdateConfig}
+              size="1"
+              showGroups={false}
+              showRequiredIndicators={true}
+              stopPropagation={true}
+            />
           </Flex>
         )}
       </Flex>

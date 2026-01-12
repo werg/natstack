@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect, useCallback, type ComponentType } from "react";
 import { Badge, Box, Button, Callout, Card, Flex, ScrollArea, Text, TextField, Theme } from "@radix-ui/themes";
 import type { Participant } from "@natstack/agentic-messaging";
+import type { FieldDefinition, FieldValue } from "@natstack/runtime";
 import { MethodHistoryItem } from "./MethodHistoryItem";
 import { FeedbackContainer } from "./FeedbackContainer";
+import { FeedbackFormRenderer } from "./FeedbackFormRenderer";
 import { TypingIndicator } from "./TypingIndicator";
 import { MessageContent } from "./MessageContent";
 import { ParticipantBadgeMenu } from "./ParticipantBadgeMenu";
@@ -13,15 +15,42 @@ import "../styles.css";
 // Re-export for backwards compatibility
 export type { ChatMessage };
 
-export interface ActiveFeedback {
+/**
+ * Base interface for active feedback items
+ */
+interface ActiveFeedbackBase {
   callId: string;
-  Component: ComponentType<FeedbackComponentProps>;
   /** Complete the feedback with a result (submit, cancel, or error) */
   complete: (result: FeedbackResult) => void;
   createdAt: number;
+}
+
+/**
+ * TSX code-based feedback (compiled React component)
+ */
+export interface ActiveFeedbackTsx extends ActiveFeedbackBase {
+  type: "tsx";
+  Component: ComponentType<FeedbackComponentProps>;
   /** Cache key for cleanup after feedback completion */
   cacheKey: string;
 }
+
+/**
+ * Schema-based feedback (uses FormRenderer)
+ */
+export interface ActiveFeedbackSchema extends ActiveFeedbackBase {
+  type: "schema";
+  title: string;
+  fields: FieldDefinition[];
+  values: Record<string, FieldValue>;
+  submitLabel?: string;
+  cancelLabel?: string;
+}
+
+/**
+ * Discriminated union of all feedback types
+ */
+export type ActiveFeedback = ActiveFeedbackTsx | ActiveFeedbackSchema;
 
 interface ChatPhaseProps {
   channelId: string | null;
@@ -218,7 +247,29 @@ export function ChatPhase({
       {activeFeedbacks.size > 0 && (
         <Flex direction="column" gap="2">
           {Array.from(activeFeedbacks.values()).map((feedback) => {
-            // Guard against invalid/missing components
+            // Render schema-based feedbacks using FeedbackFormRenderer
+            if (feedback.type === "schema") {
+              return (
+                <FeedbackContainer
+                  key={feedback.callId}
+                  onDismiss={() => onFeedbackDismiss(feedback.callId)}
+                  onError={(error) => onFeedbackError(feedback.callId, error)}
+                >
+                  <FeedbackFormRenderer
+                    title={feedback.title}
+                    fields={feedback.fields}
+                    initialValues={feedback.values}
+                    submitLabel={feedback.submitLabel}
+                    cancelLabel={feedback.cancelLabel}
+                    onSubmit={(value) => feedback.complete({ type: "submit", value })}
+                    onCancel={() => feedback.complete({ type: "cancel" })}
+                    onError={(message) => feedback.complete({ type: "error", message })}
+                  />
+                </FeedbackContainer>
+              );
+            }
+
+            // Render TSX-based feedbacks (type === "tsx")
             const FeedbackComponent = feedback.Component;
             if (!FeedbackComponent || typeof FeedbackComponent !== "function") {
               // Report the error and skip rendering

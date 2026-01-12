@@ -19,6 +19,8 @@ import {
   createRichTextChatSystemPrompt,
   DEFAULT_MISSED_CONTEXT_MAX_CHARS,
   formatMissedContext,
+  CLAUDE_CODE_PARAMETERS,
+  CLAUDE_MODEL_FALLBACKS,
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
@@ -52,23 +54,33 @@ const log = createLogger("Claude Code", id);
 interface ClaudeCodeWorkerSettings {
   model?: string;
   maxThinkingTokens?: number;
-  permissionMode?: string;
+  // New conditional permission fields
+  executionMode?: "plan" | "edit";
+  autonomyLevel?: number; // 0=Ask, 1=Auto-edits, 2=Full Auto
 }
-
-/** Current settings state */
-let currentSettings: ClaudeCodeWorkerSettings = {};
 
 /**
- * Escape a string value for safe interpolation into a TSX template string.
- * Handles quotes, backslashes, and template literal special chars.
+ * Convert executionMode + autonomyLevel to SDK permissionMode
  */
-function escapeTsxString(value: string): string {
-  return value
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"')
-    .replace(/`/g, "\\`")
-    .replace(/\$/g, "\\$");
+function getPermissionMode(settings: ClaudeCodeWorkerSettings): string | undefined {
+  // Plan mode
+  if (settings.executionMode === "plan") {
+    return "plan";
+  }
+  // Edit mode - map autonomy level to permission mode
+  if (settings.executionMode === "edit" || settings.autonomyLevel !== undefined) {
+    switch (settings.autonomyLevel) {
+      case 0: return "default";      // Ask for everything
+      case 1: return "acceptEdits";  // Auto-approve edits
+      case 2: return "bypassPermissions"; // Full auto
+      default: return "default";
+    }
+  }
+  return undefined;
 }
+
+/** Current settings state - initialized from agent config and persisted settings */
+let currentSettings: ClaudeCodeWorkerSettings = {};
 
 /** Reference to the current query instance for model discovery */
 let activeQueryInstance: Query | null = null;
@@ -203,10 +215,11 @@ async function main() {
           if (!panel) throw new Error("No panel found");
 
           // Fetch models dynamically from SDK if we have an active query
-          let modelOptions: Array<{ value: string; displayName: string }> = [];
+          let modelOptions: Array<{ value: string; label: string }> = [];
           try {
             if (activeQueryInstance) {
-              modelOptions = await activeQueryInstance.supportedModels();
+              const sdkModels = await activeQueryInstance.supportedModels();
+              modelOptions = sdkModels.map((m) => ({ value: m.value, label: m.displayName }));
             }
           } catch (err) {
             log(`Failed to fetch models: ${err}`);
@@ -214,129 +227,28 @@ async function main() {
 
           // Fallback to known Claude models if dynamic discovery unavailable
           if (modelOptions.length === 0) {
-            modelOptions = [
-              { value: "claude-opus-4-5-20251101", displayName: "Claude Opus 4.5" },
-              { value: "claude-sonnet-4-5-20250929", displayName: "Claude Sonnet 4.5" },
-              { value: "claude-haiku-4-5-20251001", displayName: "Claude Haiku 4.5" },
-              { value: "claude-opus-4-1-20250805", displayName: "Claude Opus 4.1" },
-              { value: "claude-sonnet-4-20250514", displayName: "Claude Sonnet 4" },
-              { value: "claude-opus-4-20250514", displayName: "Claude Opus 4" },
-            ];
+            modelOptions = CLAUDE_MODEL_FALLBACKS;
           }
 
-          // Generate SDK-specific settings UI
-          const modelSelectItems = modelOptions.map(m =>
-            `<Select.Item key="${m.value}" value="${m.value}">${m.displayName}</Select.Item>`
-          ).join("\n              ");
+          // Build fields with dynamic model options
+          const fields = CLAUDE_CODE_PARAMETERS
+            .filter((p) => p.key !== "workingDirectory") // workingDirectory is set at init only
+            .map((f) => {
+              // Override model options with dynamic list if available
+              if (f.key === "model" && modelOptions.length > 0) {
+                return { ...f, options: modelOptions };
+              }
+              return f;
+            });
 
-          const settingsTsx = `
-import { useState } from "react";
-import { Box, Button, Callout, Flex, Heading, Select, Slider, Text, SegmentedControl } from "@radix-ui/themes";
-import { InfoCircledIcon } from "@radix-ui/react-icons";
-
-const PERMISSION_MODES = [
-  { value: "default", label: "Default", description: "Ask for permission on each tool use" },
-  { value: "acceptEdits", label: "Accept Edits", description: "Auto-approve file edits, ask for others" },
-  { value: "bypassPermissions", label: "Bypass", description: "Skip all permission prompts (dangerous)" },
-  { value: "plan", label: "Plan", description: "Planning mode - no tool execution" },
-  { value: "delegate", label: "Delegate", description: "Delegate decisions to a sub-agent" },
-  { value: "dontAsk", label: "Don't Ask", description: "Use tool defaults without prompting" },
-];
-
-export default function SettingsForm({ onSubmit, onCancel }) {
-  const [model, setModel] = useState("${escapeTsxString(currentSettings.model ?? "claude-sonnet-4-5-20250929")}");
-  const [thinkingBudget, setThinkingBudget] = useState(${currentSettings.maxThinkingTokens ?? 10240});
-  const [permissionMode, setPermissionMode] = useState("${escapeTsxString(currentSettings.permissionMode ?? "default")}");
-
-  const handleSubmit = () => {
-    onSubmit({
-      model: model || undefined,
-      maxThinkingTokens: thinkingBudget,
-      permissionMode: permissionMode === "default" ? undefined : permissionMode,
-    });
-  };
-
-  const selectedMode = PERMISSION_MODES.find(m => m.value === permissionMode);
-
-  return (
-    <Box>
-      <Heading size="4" mb="4">Claude Code Settings</Heading>
-
-      <Flex direction="column" gap="5">
-        {/* Model Selection */}
-        <Flex direction="column" gap="2">
-          <Text size="2" weight="medium">Model</Text>
-          <Select.Root value={model} onValueChange={setModel}>
-            <Select.Trigger placeholder="Select a model..." />
-            <Select.Content>
-              ${modelSelectItems}
-            </Select.Content>
-          </Select.Root>
-          <Text size="1" color="gray">Claude model for code generation</Text>
-        </Flex>
-
-        {/* Thinking Budget Slider */}
-        <Flex direction="column" gap="2">
-          <Flex justify="between" align="center">
-            <Text size="2" weight="medium">Thinking Budget</Text>
-            <Text size="2" color="gray">{thinkingBudget === 0 ? "Disabled" : \`\${thinkingBudget.toLocaleString()} tokens\`}</Text>
-          </Flex>
-          <Slider
-            value={[thinkingBudget]}
-            onValueChange={([v]) => setThinkingBudget(v)}
-            min={0}
-            max={32000}
-            step={1024}
-          />
-          <Flex justify="between">
-            <Text size="1" color="gray">Off</Text>
-            <Text size="1" color="gray">Maximum</Text>
-          </Flex>
-        </Flex>
-
-        {/* Permission Mode */}
-        <Flex direction="column" gap="2">
-          <Text size="2" weight="medium">Permission Mode</Text>
-          <SegmentedControl.Root value={permissionMode} onValueChange={setPermissionMode}>
-            {PERMISSION_MODES.slice(0, 3).map(mode => (
-              <SegmentedControl.Item key={mode.value} value={mode.value}>
-                {mode.label}
-              </SegmentedControl.Item>
-            ))}
-          </SegmentedControl.Root>
-          <SegmentedControl.Root value={permissionMode} onValueChange={setPermissionMode}>
-            {PERMISSION_MODES.slice(3).map(mode => (
-              <SegmentedControl.Item key={mode.value} value={mode.value}>
-                {mode.label}
-              </SegmentedControl.Item>
-            ))}
-          </SegmentedControl.Root>
-          {selectedMode && (
-            <Text size="1" color="gray">{selectedMode.description}</Text>
-          )}
-          {permissionMode === "bypassPermissions" && (
-            <Callout.Root color="red" size="1">
-              <Callout.Icon>
-                <InfoCircledIcon />
-              </Callout.Icon>
-              <Callout.Text>Bypassing permissions allows unrestricted tool execution</Callout.Text>
-            </Callout.Root>
-          )}
-        </Flex>
-
-        {/* Actions */}
-        <Flex gap="3" mt="2" justify="end">
-          <Button variant="soft" color="gray" onClick={onCancel}>Cancel</Button>
-          <Button onClick={handleSubmit}>Save</Button>
-        </Flex>
-      </Flex>
-    </Box>
-  );
-}
-`;
-
-          // Call feedback_ui on the panel
-          const handle = client.callMethod(panel.id, "feedback_ui", { code: settingsTsx });
+          // Call feedback_ui on the panel using schema format
+          const handle = client.callMethod(panel.id, "feedback_ui", {
+            schema: {
+              title: "Claude Code Settings",
+              fields,
+              values: currentSettings,
+            },
+          });
           const result = await handle.result;
           const feedbackResult = result.content as { type: string; value?: unknown; message?: string };
 
@@ -377,20 +289,37 @@ export default function SettingsForm({ onSubmit, onCancel }) {
   });
 
   log(`Connected to channel: ${channelName}`);
+
+  // Initialize settings with proper precedence:
+  // 1. Apply initialization config (from pre-connection UI)
+  const initConfigSettings: ClaudeCodeWorkerSettings = {};
+  if (typeof agentConfig.model === "string") initConfigSettings.model = agentConfig.model;
+  if (typeof agentConfig.maxThinkingTokens === "number") initConfigSettings.maxThinkingTokens = agentConfig.maxThinkingTokens;
+  if (typeof agentConfig.executionMode === "string") initConfigSettings.executionMode = agentConfig.executionMode as "plan" | "edit";
+  if (typeof agentConfig.autonomyLevel === "number") initConfigSettings.autonomyLevel = agentConfig.autonomyLevel;
+  Object.assign(currentSettings, initConfigSettings);
+  if (Object.keys(initConfigSettings).length > 0) {
+    log(`Applied init config: ${JSON.stringify(initConfigSettings)}`);
+  }
+
+  // 2. Apply persisted settings (runtime changes from previous sessions)
   if (client.sessionKey) {
     log(`Session: ${client.sessionKey} (${client.status})`);
     log(`Checkpoint: ${client.checkpoint ?? "none"}, SDK: ${client.sdkSessionId ?? "none"}`);
 
-    // Load persisted settings
     try {
       const savedSettings = await client.getSettings<ClaudeCodeWorkerSettings>();
       if (savedSettings) {
-        currentSettings = savedSettings;
-        log(`Loaded settings: ${JSON.stringify(currentSettings)}`);
+        Object.assign(currentSettings, savedSettings);
+        log(`Applied persisted settings: ${JSON.stringify(savedSettings)}`);
       }
     } catch (err) {
       log(`Failed to load settings: ${err}`);
     }
+  }
+
+  if (Object.keys(currentSettings).length > 0) {
+    log(`Final settings: ${JSON.stringify(currentSettings)}`);
   }
 
   let lastMissedPubsubId = 0;
@@ -582,10 +511,16 @@ async function handleUserMessage(
       // Apply user settings
       ...(currentSettings.model && { model: currentSettings.model }),
       ...(currentSettings.maxThinkingTokens && { maxThinkingTokens: currentSettings.maxThinkingTokens }),
-      ...(currentSettings.permissionMode && { permissionMode: currentSettings.permissionMode }),
-      ...(currentSettings.permissionMode === "bypassPermissions" && { allowDangerouslySkipPermissions: true }),
-      // Wire permission prompts to feedback_ui (only for default/dontAsk modes)
-      ...(!currentSettings.permissionMode || currentSettings.permissionMode === "default" ? { canUseTool } : {}),
+      // Convert executionMode + autonomyLevel to SDK permissionMode
+      ...(() => {
+        const permissionMode = getPermissionMode(currentSettings);
+        return {
+          ...(permissionMode && { permissionMode }),
+          ...(permissionMode === "bypassPermissions" && { allowDangerouslySkipPermissions: true }),
+          // Wire permission prompts to feedback_ui (only for default mode)
+          ...(!permissionMode || permissionMode === "default" ? { canUseTool } : {}),
+        };
+      })(),
     };
 
     // Query Claude using the Agent SDK

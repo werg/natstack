@@ -34,24 +34,27 @@ function feedbackReducer(
       const feedback = state.get(action.payload);
       if (feedback) {
         // User dismissed = cancel (not an error)
+        // complete() will call removeFeedback() which removes from map
         feedback.complete({ type: "cancel" });
       }
-      const next = new Map(state);
-      next.delete(action.payload);
-      return next;
+      // Don't remove here - the complete callback handles removal via removeFeedback()
+      return state;
     }
     case "error": {
       const feedback = state.get(action.payload.callId);
       if (feedback) {
         // Component render error
+        // complete() will call removeFeedback() which removes from map
         feedback.complete({ type: "error", message: `Component render error: ${action.payload.error.message}` });
       }
-      const next = new Map(state);
-      next.delete(action.payload.callId);
-      return next;
+      // Don't remove here - the complete callback handles removal via removeFeedback()
+      return state;
     }
     case "cleanup-all": {
-      // Cleanup all remaining feedbacks on unmount
+      // Cleanup all remaining feedbacks on unmount.
+      // We immediately clear the map and call complete() on each.
+      // The complete callbacks will dispatch remove actions, but those are
+      // no-ops on the already-empty map.
       for (const feedback of state.values()) {
         feedback.complete({ type: "error", message: "Panel closed" });
       }

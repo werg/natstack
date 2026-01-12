@@ -10,6 +10,25 @@ import { fs, fsReady } from "./fs.js"; // Conditional fs: Node.js for unsafe, Ze
 import { initRuntime } from "../setup/initRuntime.js";
 export { decodeBase64, encodeBase64 } from "../shared/base64.js";
 export type { BootstrapResult } from "../shared/bootstrap.js";
+export {
+  evaluateCondition,
+  isFieldVisible,
+  isFieldEnabled,
+  getFieldWarning,
+  groupFields,
+  getFieldDefaults,
+} from "../shared/form-schema.js";
+export type {
+  FieldValue,
+  FieldType,
+  ConditionOperator,
+  FieldCondition,
+  FieldOption,
+  SliderNotch,
+  FieldWarning,
+  FieldDefinition,
+  FormSchema,
+} from "../shared/form-schema.js";
 
 // Initialize runtime with panel-specific providers
 const { runtime, config } = initRuntime({
