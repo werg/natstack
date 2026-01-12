@@ -5,7 +5,7 @@
  * with a build-specific header and "Continue Build" button.
  */
 
-import { useMemo, useCallback, useState, useEffect } from "react";
+import { useMemo, useCallback, useState, useEffect, useRef } from "react";
 import { useAtomValue } from "jotai";
 import { Flex, Button, Tooltip, Callout } from "@radix-ui/themes";
 import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
@@ -32,6 +32,7 @@ export function DirtyRepoView({ repoPath, onRetryBuild, onNotify }: DirtyRepoVie
     []
   );
   const [isRetrying, setIsRetrying] = useState(false);
+  const hasAutoRetried = useRef(false);
   const theme = useAtomValue(effectiveThemeAtom);
 
   // Use the git status hook to track if repo is clean
@@ -56,6 +57,22 @@ export function DirtyRepoView({ repoPath, onRetryBuild, onNotify }: DirtyRepoVie
     setIsRetrying(true);
     onRetryBuild();
   }, [onRetryBuild]);
+
+  // Auto-retry build when repo becomes clean (only once per dirty->clean transition)
+  // Wait until loading is complete to avoid flickering during initial status fetch
+  useEffect(() => {
+    if (isClean && initialized && !loading && !hasAutoRetried.current) {
+      hasAutoRetried.current = true;
+      handleRetryBuild();
+    }
+  }, [isClean, initialized, loading, handleRetryBuild]);
+
+  // Reset auto-retry flag when repo becomes dirty again
+  useEffect(() => {
+    if (!isClean && !loading) {
+      hasAutoRetried.current = false;
+    }
+  }, [isClean, loading]);
 
   // Forward notifications to parent if handler provided, otherwise silently ignore
   const handleNotify = useCallback((notification: GitNotification) => {
