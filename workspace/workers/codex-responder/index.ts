@@ -353,13 +353,11 @@ async function main() {
           // Build fields (filter out workingDirectory which is set at init only)
           const fields = CODEX_PARAMETERS.filter((p) => p.key !== "workingDirectory");
 
-          // Call feedback_ui on the panel using schema format
-          const handle = client.callMethod(panel.id, "feedback_ui", {
-            schema: {
-              title: "Codex Settings",
-              fields,
-              values: currentSettings,
-            },
+          // Call feedback_form on the panel
+          const handle = client.callMethod(panel.id, "feedback_form", {
+            title: "Codex Settings",
+            fields,
+            values: currentSettings,
           });
           const result = await handle.result;
           const feedbackResult = result.content as { type: string; value?: unknown; message?: string };

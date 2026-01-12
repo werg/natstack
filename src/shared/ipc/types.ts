@@ -88,30 +88,10 @@ export interface ProtocolBuildArtifacts {
 // IPC Channel Definitions
 // =============================================================================
 
-// App-related IPC channels (renderer <-> main)
-export interface AppIpcApi {
-  "app:get-info": () => AppInfo;
-  "app:get-system-theme": () => ThemeAppearance;
-  "app:set-theme-mode": (mode: ThemeMode) => void;
-  "app:open-devtools": () => void;
-  "app:get-panel-preload-path": () => string;
-  "app:clear-build-cache": () => void;
-}
-
 // Panel-related IPC channels (renderer <-> main)
+// Note: Most panel operations now use RPC via shell-rpc:call or rpc:call.
+// These are the remaining direct IPC channels.
 export interface PanelIpcApi {
-  "panel:get-tree": () => Panel[];
-  "panel:notify-focus": (panelId: string) => void;
-  "panel:update-theme": (theme: ThemeAppearance) => void;
-  "panel:open-devtools": (panelId: string) => void;
-  /** Reload a panel's webview */
-  "panel:reload": (panelId: string) => void;
-  /** Close a panel and its children */
-  "panel:close": (panelId: string) => void;
-  /** Retry build for a panel that was blocked by dirty worktree */
-  "panel:retry-dirty-build": (panelId: string) => void;
-  /** Initialize git repo for panel blocked by not-git-repo state */
-  "panel:init-git-repo": (panelId: string) => void;
   /**
    * Register a browser panel's webview with the CDP server.
    * Called by renderer when a browser webview's dom-ready fires.
@@ -127,46 +107,11 @@ export interface PanelIpcApi {
     browserId: string,
     state: Partial<BrowserState> & { url?: string }
   ) => void;
-}
-
-// View management IPC channels (renderer <-> main for WebContentsView bounds/visibility)
-export interface ViewIpcApi {
   /**
-   * Set bounds for a WebContentsView.
-   * Called from renderer when layout changes (resize, panel switch).
+   * Open devtools for a panel.
+   * Called by panel preload keyboard shortcut (Cmd/Ctrl+Shift+I).
    */
-  "view:set-bounds": (
-    viewId: string,
-    bounds: { x: number; y: number; width: number; height: number }
-  ) => void;
-  /**
-   * Set visibility of a WebContentsView.
-   */
-  "view:set-visible": (viewId: string, visible: boolean) => void;
-  /**
-   * Set theme CSS to inject into views that have injectHostThemeVariables enabled.
-   */
-  "view:set-theme-css": (css: string) => void;
-  /**
-   * Navigate a browser view to a URL.
-   */
-  "view:browser-navigate": (browserId: string, url: string) => void;
-  /**
-   * Go back in browser history.
-   */
-  "view:browser-go-back": (browserId: string) => void;
-  /**
-   * Go forward in browser history.
-   */
-  "view:browser-go-forward": (browserId: string) => void;
-  /**
-   * Reload a browser view.
-   */
-  "view:browser-reload": (browserId: string) => void;
-  /**
-   * Stop loading a browser view.
-   */
-  "view:browser-stop": (browserId: string) => void;
+  "panel:open-devtools": (panelId: string) => void;
 }
 
 // Panel bridge IPC channels (panel webview <-> main)
@@ -490,75 +435,21 @@ export interface SettingsData {
   hasConfiguredProviders: boolean;
 }
 
-// =============================================================================
-// Workspace & Settings IPC Channels
-// =============================================================================
-
-// Central data IPC channels (workspace chooser, recent workspaces)
-export interface CentralDataIpcApi {
-  "central:get-recent-workspaces": () => RecentWorkspace[];
-  "central:add-recent-workspace": (path: string) => void;
-  "central:remove-recent-workspace": (path: string) => void;
-}
-
-// Workspace management IPC channels
-export interface WorkspaceIpcApi {
-  "workspace:validate-path": (path: string) => WorkspaceValidation;
-  "workspace:open-folder-dialog": () => string | null;
-  "workspace:create": (path: string, name: string) => WorkspaceValidation;
-  "workspace:select": (path: string) => void;
-}
-
-// Settings IPC channels
-export interface SettingsIpcApi {
-  "settings:get-data": () => SettingsData;
-  "settings:set-api-key": (providerId: string, apiKey: string) => void;
-  "settings:remove-api-key": (providerId: string) => void;
-  "settings:set-model-role": (role: string, modelSpec: string) => void;
-  /** Enable a CLI-auth provider (like claude-code) */
-  "settings:enable-provider": (providerId: string) => void;
-  /** Disable a CLI-auth provider */
-  "settings:disable-provider": (providerId: string) => void;
-}
-
-// App mode IPC channels
-export interface AppModeIpcApi {
-  "app:get-mode": () => AppMode;
-}
-
-// Menu IPC channels (native menus that render above WebContentsViews)
-export interface MenuIpcApi {
-  /** Show the hamburger menu at the given position */
-  "menu:show-hamburger": (position: { x: number; y: number }) => void;
-  /** Show a context menu with dynamic items, returns selected item ID or null */
-  "menu:show-context": (
-    items: Array<{ id: string; label: string }>,
-    position: { x: number; y: number }
-  ) => string | null;
-  /**
-   * Show a panel context menu (tab-like) with standard actions.
-   * Returns the action that was selected, or null if dismissed.
-   */
-  "menu:show-panel-context": (
-    panelId: string,
-    panelType: PanelType,
-    position: { x: number; y: number }
-  ) => PanelContextMenuAction | null;
-}
-
 /** Actions available in panel context menus */
 export type PanelContextMenuAction = "reload" | "close" | "close-siblings" | "close-subtree";
 
-// Combined API for type utilities
-export type AllIpcApi = AppIpcApi &
-  PanelIpcApi &
-  ViewIpcApi &
-  PanelBridgeIpcApi &
-  CentralDataIpcApi &
-  WorkspaceIpcApi &
-  SettingsIpcApi &
-  AppModeIpcApi &
-  MenuIpcApi;
+// Shell IPC channels (shell renderer -> main for service calls)
+// Note: Most shell operations now use RPC via shell-rpc:call.
+export interface ShellIpcApi {
+  /**
+   * RPC call from shell renderer (unified RPC transport).
+   * Allows shell to use @natstack/runtime packages directly.
+   */
+  "shell-rpc:call": (message: RpcMessage) => RpcResponse;
+}
+
+// Combined API for type utilities (remaining IPC channels)
+export type AllIpcApi = PanelIpcApi & PanelBridgeIpcApi & ShellIpcApi;
 
 // =============================================================================
 // Type utilities for extracting channel info

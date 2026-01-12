@@ -11,7 +11,8 @@ import type { CSSProperties, MouseEvent } from "react";
 
 import { useNavigation } from "./NavigationContext";
 import type { NavigationMode, StatusNavigationData, TitleNavigationData } from "./navigationTypes";
-import type { PanelContextMenuAction } from "../../shared/ipc/types";
+import type { Panel, PanelContextMenuAction } from "../../shared/ipc/types";
+import { menu } from "../shell/client";
 
 interface TitleBarProps {
   title: string;
@@ -34,7 +35,7 @@ export function TitleBar({ title, onNavigate, onPanelAction }: TitleBarProps) {
 
   const handleHamburgerClick = (e: MouseEvent<HTMLButtonElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    void window.electronAPI.showHamburgerMenu(getWindowPositionFromRect(rect));
+    void menu.showHamburger(getWindowPositionFromRect(rect));
   };
 
   return (
@@ -169,7 +170,7 @@ function BreadcrumbBar({
   ) => {
     e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
-    const action = await window.electronAPI.showPanelContextMenu(panel.id, panel.type, getWindowPositionFromRect(rect));
+    const action = await menu.showPanelContext(panel.id, panel.type, getWindowPositionFromRect(rect));
     if (action) {
       onPanelAction?.(panel.id, action);
     }
@@ -245,7 +246,7 @@ function BreadcrumbBar({
         crumb.siblings[0]?.title ??
         crumb.path.join(" / "),
     }));
-    const selected = await window.electronAPI.showContextMenu(items, getWindowPositionFromRect(rect));
+    const selected = await menu.showContext(items, getWindowPositionFromRect(rect));
     if (selected !== null) {
       const crumb = hiddenAncestors.find((_, index) => String(index) === selected);
       if (crumb) {
@@ -263,7 +264,7 @@ function BreadcrumbBar({
         group.children[0]?.title ??
         "Child",
     }));
-    const selected = await window.electronAPI.showContextMenu(items, getWindowPositionFromRect(rect));
+    const selected = await menu.showContext(items, getWindowPositionFromRect(rect));
     if (selected !== null) {
       const group = hiddenDescendants.find((_, index) => String(index) === selected);
       if (group) {

@@ -1,5 +1,6 @@
 import { atom } from "jotai";
 import type { AppMode, RecentWorkspace, SettingsData } from "../../shared/ipc/types.js";
+import { app, central, settings, workspace } from "../shell/client.js";
 
 // =============================================================================
 // App Mode State
@@ -15,7 +16,7 @@ export const appModeAtom = atom<AppMode>("chooser");
  */
 export const loadAppModeAtom = atom(null, async (_get, set) => {
   try {
-    const mode = await window.electronAPI.getAppMode();
+    const mode = await app.getMode();
     set(appModeAtom, mode);
   } catch (error) {
     console.error("Failed to load app mode:", error);
@@ -42,7 +43,7 @@ export const workspacesLoadingAtom = atom(false);
 export const loadRecentWorkspacesAtom = atom(null, async (_get, set) => {
   set(workspacesLoadingAtom, true);
   try {
-    const workspaces = await window.electronAPI.getRecentWorkspaces();
+    const workspaces = await central.getRecentWorkspaces();
     set(recentWorkspacesAtom, workspaces);
   } catch (error) {
     console.error("Failed to load recent workspaces:", error);
@@ -56,7 +57,7 @@ export const loadRecentWorkspacesAtom = atom(null, async (_get, set) => {
  */
 export const removeRecentWorkspaceAtom = atom(null, async (get, set, path: string) => {
   try {
-    await window.electronAPI.removeRecentWorkspace(path);
+    await central.removeRecentWorkspace(path);
     // Update local state
     const current = get(recentWorkspacesAtom);
     set(
@@ -77,7 +78,7 @@ export const removeRecentWorkspaceAtom = atom(null, async (get, set, path: strin
  */
 export const selectWorkspaceAtom = atom(null, async (_get, _set, path: string) => {
   try {
-    await window.electronAPI.selectWorkspace(path);
+    await workspace.select(path);
     // App will relaunch, no need to update state
   } catch (error) {
     console.error("Failed to select workspace:", error);
@@ -110,7 +111,7 @@ export const settingsDialogOpenAtom = atom(false);
 export const loadSettingsAtom = atom(null, async (_get, set) => {
   set(settingsLoadingAtom, true);
   try {
-    const data = await window.electronAPI.getSettingsData();
+    const data = await settings.getData();
     set(settingsDataAtom, data);
   } catch (error) {
     console.error("Failed to load settings:", error);
@@ -126,9 +127,9 @@ export const setApiKeyAtom = atom(
   null,
   async (_get, set, params: { providerId: string; apiKey: string }) => {
     try {
-      await window.electronAPI.setApiKey(params.providerId, params.apiKey);
+      await settings.setApiKey(params.providerId, params.apiKey);
       // Reload settings to reflect change
-      const data = await window.electronAPI.getSettingsData();
+      const data = await settings.getData();
       set(settingsDataAtom, data);
     } catch (error) {
       console.error("Failed to set API key:", error);
@@ -142,9 +143,9 @@ export const setApiKeyAtom = atom(
  */
 export const removeApiKeyAtom = atom(null, async (_get, set, providerId: string) => {
   try {
-    await window.electronAPI.removeApiKey(providerId);
+    await settings.removeApiKey(providerId);
     // Reload settings to reflect change
-    const data = await window.electronAPI.getSettingsData();
+    const data = await settings.getData();
     set(settingsDataAtom, data);
   } catch (error) {
     console.error("Failed to remove API key:", error);
@@ -159,9 +160,9 @@ export const setModelRoleAtom = atom(
   null,
   async (_get, set, params: { role: string; modelSpec: string }) => {
     try {
-      await window.electronAPI.setModelRole(params.role, params.modelSpec);
+      await settings.setModelRole(params.role, params.modelSpec);
       // Reload settings to reflect change
-      const data = await window.electronAPI.getSettingsData();
+      const data = await settings.getData();
       set(settingsDataAtom, data);
     } catch (error) {
       console.error("Failed to set model role:", error);
@@ -175,9 +176,9 @@ export const setModelRoleAtom = atom(
  */
 export const enableProviderAtom = atom(null, async (_get, set, providerId: string) => {
   try {
-    await window.electronAPI.enableProvider(providerId);
+    await settings.enableProvider(providerId);
     // Reload settings to reflect change
-    const data = await window.electronAPI.getSettingsData();
+    const data = await settings.getData();
     set(settingsDataAtom, data);
   } catch (error) {
     console.error("Failed to enable provider:", error);
@@ -190,9 +191,9 @@ export const enableProviderAtom = atom(null, async (_get, set, providerId: strin
  */
 export const disableProviderAtom = atom(null, async (_get, set, providerId: string) => {
   try {
-    await window.electronAPI.disableProvider(providerId);
+    await settings.disableProvider(providerId);
     // Reload settings to reflect change
-    const data = await window.electronAPI.getSettingsData();
+    const data = await settings.getData();
     set(settingsDataAtom, data);
   } catch (error) {
     console.error("Failed to disable provider:", error);
@@ -271,7 +272,7 @@ export const createWorkspaceAtom = atom(null, async (get, set) => {
   set(wizardErrorAtom, null);
 
   try {
-    const result = await window.electronAPI.createWorkspace(
+    const result = await workspace.create(
       formData.folderPath,
       formData.workspaceName
     );
@@ -282,7 +283,7 @@ export const createWorkspaceAtom = atom(null, async (get, set) => {
     }
 
     // Select the newly created workspace (triggers app relaunch)
-    await window.electronAPI.selectWorkspace(result.path);
+    await workspace.select(result.path);
     return result;
   } catch (error) {
     set(wizardErrorAtom, error instanceof Error ? error.message : String(error));

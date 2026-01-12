@@ -35,4 +35,3 @@ export async function handleAiServiceCall(
       throw new Error(`Unknown AI method: ${method}`);
   }
 }
-

@@ -14,8 +14,8 @@ declare global {
   var __natstackId: string | undefined;
   /** Session ID for storage partition (format: {mode}_{type}_{identifier}) */
   var __natstackSessionId: string | undefined;
-  /** Environment kind: "panel" or "worker" */
-  var __natstackKind: "panel" | "worker" | undefined;
+  /** Environment kind: "panel", "worker", or "shell" */
+  var __natstackKind: "panel" | "worker" | "shell" | undefined;
   /** Parent panel ID if this is a child panel/worker */
   var __natstackParentId: string | null | undefined;
   /** Initial theme appearance */
@@ -31,7 +31,7 @@ declare global {
 export interface InjectedConfig {
   id: string;
   sessionId: string;
-  kind: "panel" | "worker";
+  kind: "panel" | "worker" | "shell";
   parentId: string | null;
   initialTheme: "light" | "dark";
   gitConfig: GitConfig | null;
@@ -44,7 +44,7 @@ export interface InjectedConfig {
 const g = globalThis as unknown as {
   __natstackId?: string;
   __natstackSessionId?: string;
-  __natstackKind?: "panel" | "worker";
+  __natstackKind?: "panel" | "worker" | "shell";
   __natstackParentId?: string | null;
   __natstackInitialTheme?: "light" | "dark";
   __natstackGitConfig?: GitConfig | null;

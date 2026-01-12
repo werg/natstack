@@ -1,6 +1,6 @@
 # @natstack/rpc
 
-Unified RPC bridge for NatStack panels and workers. This package provides the core communication layer that enables panels and workers to call methods and emit events to each other using a consistent API.
+Unified RPC bridge for NatStack panels, workers, and shell. This package provides the core communication layer that enables all parts of the application to call methods and emit events using a consistent API.
 
 ## Installation
 
@@ -248,4 +248,26 @@ import { rpc } from "@natstack/runtime";
 await rpc.call("main", "db.open", "mydb");
 ```
 
-Both use identical APIs - the transport implementation handles platform differences.
+### Shell
+
+The shell renderer uses RPC to communicate with main process services:
+
+```typescript
+import { rpc } from "@natstack/runtime";
+
+// Call main process services
+const info = await rpc.call<AppInfo>("main", "app.getInfo");
+const tree = await rpc.call<Panel[]>("main", "panel.getTree");
+
+// Subscribe to events
+await rpc.call("main", "events.subscribe", "panel-tree-updated");
+
+// Listen for events
+rpc.onEvent("event:panel-tree-updated", (fromId, payload) => {
+  console.log("Panel tree updated:", payload);
+});
+```
+
+The shell uses the same `@natstack/runtime` package. Environment detection (`__natstackKind === "shell"`) selects the shell transport which routes calls through `shell-rpc:call`.
+
+All three consumers (panels, workers, shell) use identical APIs - the transport implementation handles platform differences.

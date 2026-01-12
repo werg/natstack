@@ -11,15 +11,12 @@ export type { Participant, RosterUpdate, ParticipantMetadata } from "@natstack/p
 export * from "./broker-types.js";
 export * from "./broker-protocol.js";
 export type {
-  FeedbackUiSchemaArgs,
-  FeedbackUiCodeArgs,
-  FeedbackUiArgs,
+  FeedbackFormArgs,
+  FeedbackCustomArgs,
 } from "./broker-protocol.js";
 export {
-  isFeedbackUiSchemaArgs,
-  isFeedbackUiCodeArgs,
-  FeedbackUiSchemaArgsSchema,
-  FeedbackUiCodeArgsSchema,
+  FeedbackFormArgsSchema,
+  FeedbackCustomArgsSchema,
 } from "./broker-protocol.js";
 export { connectAsBroker, connectAsSelfBroker } from "./broker.js";
 export { connectForDiscovery, inviteAgent } from "./broker-client.js";

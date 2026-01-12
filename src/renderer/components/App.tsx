@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { Theme, Dialog } from "@radix-ui/themes";
 
@@ -11,6 +11,7 @@ import {
   workspaceChooserDialogOpenAtom,
 } from "../state/appModeAtoms";
 import { effectiveThemeAtom, loadThemePreferenceAtom } from "../state/themeAtoms";
+import { useShellEvent } from "../shell/useShellEvent";
 import { PanelApp } from "./PanelApp";
 import { WorkspaceChooser } from "./WorkspaceChooser";
 import { WorkspaceWizard } from "./WorkspaceWizard";
@@ -33,38 +34,23 @@ export function App() {
     loadThemePreference();
   }, [loadAppMode, loadThemePreference]);
 
-  // Listen for system theme changes
-  useEffect(() => {
-    if (typeof window.electronAPI === "undefined") return;
-
-    const cleanup = window.electronAPI.onSystemThemeChanged(() => {
-      loadThemePreference();
-    });
-
-    return cleanup;
+  // Listen for system theme changes via shell event
+  const handleThemeChanged = useCallback(() => {
+    loadThemePreference();
   }, [loadThemePreference]);
+  useShellEvent("system-theme-changed", handleThemeChanged);
 
-  // Listen for settings menu event
-  useEffect(() => {
-    if (typeof window.electronAPI === "undefined") return;
-
-    const cleanup = window.electronAPI.onOpenSettings(() => {
-      setSettingsOpen(true);
-    });
-
-    return cleanup;
+  // Listen for settings menu event via shell event
+  const handleOpenSettings = useCallback(() => {
+    setSettingsOpen(true);
   }, [setSettingsOpen]);
+  useShellEvent("open-settings", handleOpenSettings);
 
-  // Listen for workspace chooser menu event
-  useEffect(() => {
-    if (typeof window.electronAPI === "undefined") return;
-
-    const cleanup = window.electronAPI.onOpenWorkspaceChooser(() => {
-      setWorkspaceChooserOpen(true);
-    });
-
-    return cleanup;
+  // Listen for workspace chooser menu event via shell event
+  const handleOpenWorkspaceChooser = useCallback(() => {
+    setWorkspaceChooserOpen(true);
   }, [setWorkspaceChooserOpen]);
+  useShellEvent("open-workspace-chooser", handleOpenWorkspaceChooser);
 
   return (
     <Theme appearance={effectiveTheme} radius="none">

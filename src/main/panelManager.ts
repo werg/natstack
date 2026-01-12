@@ -20,6 +20,7 @@ import type { ViewManager } from "./viewManager.js";
 import { parseChildUrl } from "./childProtocol.js";
 import { checkWorktreeClean, checkGitRepository } from "./gitProvisioner.js";
 import { PANEL_CSP_META } from "../shared/constants.js";
+import { eventService } from "./services/eventsService.js";
 
 type ChildCreateOptions = {
   name?: string;
@@ -1568,10 +1569,7 @@ export class PanelManager {
       if (this.treeUpdatePending && this.viewManager) {
         this.treeUpdatePending = false;
         const tree = this.getSerializablePanelTree();
-        const shellContents = this.viewManager.getShellWebContents();
-        if (!shellContents.isDestroyed()) {
-          shellContents.send("panel:tree-updated", tree);
-        }
+        eventService.emit("panel-tree-updated", tree);
       }
     }, this.TREE_UPDATE_DEBOUNCE_MS);
   }

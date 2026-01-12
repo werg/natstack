@@ -14,7 +14,9 @@ import {
 } from "@radix-ui/themes";
 
 import type { StatusNavigationData, TitleNavigationData } from "./navigationTypes";
-import type { PanelContextMenuAction } from "../../shared/ipc/types";
+import type { Panel, PanelContextMenuAction } from "../../shared/ipc/types";
+import { useShellEvent } from "../shell/useShellEvent";
+import { panel as panelService, view, menu } from "../shell/client";
 import { useNavigation } from "./NavigationContext";
 import { DirtyRepoView } from "./DirtyRepoView";
 import { GitInitView } from "./GitInitView";
@@ -90,7 +92,7 @@ function PanelTreeSidebar({ rootPanels, visiblePath, onSelect, onPanelAction }: 
     e.preventDefault();
     e.stopPropagation();
     const { screenX, screenY } = e;
-    const action = await window.electronAPI.showPanelContextMenu(
+    const action = await menu.showPanelContext(
       panel.id,
       panel.type,
       { x: Math.round(screenX), y: Math.round(screenY) }
@@ -118,7 +120,7 @@ function PanelTreeSidebar({ rootPanels, visiblePath, onSelect, onPanelAction }: 
 
       // Get tooltip content based on panel type
       const tooltipContent =
-        panel.type === "browser" ? panel.url : "path" in panel ? panel.path : panel.id;
+        panel.type === "browser" ? panel.url : panel.path;
 
       return (
         <Box key={panel.id} style={{ paddingLeft: `calc(${ancestry.length} * var(--space-2))` }}>
@@ -224,18 +226,18 @@ export function PanelStack({
     const css = captureHostThemeCss();
     setHostThemeCss(css);
 
-    void window.electronAPI.updatePanelTheme(hostTheme).catch((error) => {
+    void panelService.updateTheme(hostTheme).catch((error) => {
       console.error("Failed to broadcast panel theme", error);
     });
   }, [hostTheme]);
 
-  // Listen for panel tree updates from main process
+  // Initialize panel tree on mount
   useEffect(() => {
     let mounted = true;
 
     const initializeTree = async () => {
       try {
-        const currentTree = await window.electronAPI.getPanelTree();
+        const currentTree = await panelService.getTree();
         if (mounted) {
           setRootPanels(currentTree);
           if (currentTree.length > 0) {
@@ -250,32 +252,34 @@ export function PanelStack({
 
     void initializeTree();
 
-    const cleanup = window.electronAPI.onPanelTreeUpdated((updatedRootPanels) => {
-      setIsTreeReady(true);
-      setRootPanels(updatedRootPanels);
-
-      setVisiblePanelPath((prevPath) => {
-        if (updatedRootPanels.length === 0) {
-          return [];
-        }
-
-        if (prevPath.length === 0) {
-          return [updatedRootPanels[0]!.id];
-        }
-
-        if (!findPanelByPathInTree(updatedRootPanels, prevPath)) {
-          return [updatedRootPanels[0]!.id];
-        }
-
-        return prevPath;
-      });
-    });
-
     return () => {
       mounted = false;
-      cleanup();
     };
   }, []);
+
+  // Listen for panel tree updates via shell event
+  const handlePanelTreeUpdated = useCallback((updatedRootPanels: unknown) => {
+    const panels = updatedRootPanels as Panel[];
+    setIsTreeReady(true);
+    setRootPanels(panels);
+
+    setVisiblePanelPath((prevPath) => {
+      if (panels.length === 0) {
+        return [];
+      }
+
+      if (prevPath.length === 0) {
+        return [panels[0]!.id];
+      }
+
+      if (!findPanelByPathInTree(panels, prevPath)) {
+        return [panels[0]!.id];
+      }
+
+      return prevPath;
+    });
+  }, []);
+  useShellEvent("panel-tree-updated", handlePanelTreeUpdated);
 
   // CDP visibility toggle is no longer needed with WebContentsView architecture.
   // WebContentsViews are always composited even when not visible on screen,
@@ -466,23 +470,23 @@ export function PanelStack({
     async (panelId: string, action: PanelContextMenuAction) => {
       switch (action) {
         case "reload":
-          await window.electronAPI.reloadPanel(panelId);
+          await panelService.reload(panelId);
           break;
         case "close":
-          await window.electronAPI.closePanel(panelId);
+          await panelService.close(panelId);
           break;
         case "close-siblings": {
           // Close all siblings except this one in parallel for better UX
           const siblings = findSiblings(panelId);
           const closePromises = siblings
             .filter((sibling) => sibling.id !== panelId)
-            .map((sibling) => window.electronAPI.closePanel(sibling.id));
+            .map((sibling) => panelService.close(sibling.id));
           await Promise.all(closePromises);
           break;
         }
         case "close-subtree":
           // Close the panel and all its descendants (closePanel handles recursion)
-          await window.electronAPI.closePanel(panelId);
+          await panelService.close(panelId);
           break;
       }
     },
@@ -544,7 +548,7 @@ export function PanelStack({
       return;
     }
 
-    void window.electronAPI.notifyPanelFocused(panelId).catch((error) => {
+    void panelService.notifyFocused(panelId).catch((error) => {
       console.error("Failed to notify panel focus", error);
     });
   }, [visiblePanel?.id]);
@@ -565,7 +569,7 @@ export function PanelStack({
 
     // Hide previous panel's view when switching panels
     if (previousVisiblePanelId.current && previousVisiblePanelId.current !== panelId) {
-      void window.electronAPI.setViewVisible(previousVisiblePanelId.current, false);
+      void view.setVisible(previousVisiblePanelId.current, false);
     }
     previousVisiblePanelId.current = panelId;
 
@@ -586,7 +590,7 @@ export function PanelStack({
         width: Math.round(rect.width),
         height: Math.round(rect.height),
       };
-      void window.electronAPI.setViewBounds(panelId, bounds);
+      void view.setBounds(panelId, bounds);
     };
 
     // Wait for next paint cycle before first bounds report to ensure DOM is settled
@@ -595,7 +599,7 @@ export function PanelStack({
     });
 
     // Show current panel's view
-    void window.electronAPI.setViewVisible(panelId, true);
+    void view.setVisible(panelId, true);
 
     // Set up ResizeObserver to track container size changes
     const observer = new ResizeObserver(() => {
@@ -613,7 +617,7 @@ export function PanelStack({
   // Send theme CSS to main process for injection into views
   useEffect(() => {
     if (hostThemeCss) {
-      void window.electronAPI.setViewThemeCss(hostThemeCss);
+      void view.setThemeCss(hostThemeCss);
     }
   }, [hostThemeCss]);
 
@@ -623,7 +627,7 @@ export function PanelStack({
       return;
     }
 
-    void window.electronAPI.openPanelDevTools(panelId).catch((error) => {
+    void panelService.openDevTools(panelId).catch((error) => {
       console.error("Failed to open panel devtools", error);
     });
   }, [visiblePanel?.id]);
@@ -756,7 +760,7 @@ export function PanelStack({
                             key={panel.id}
                             panelId={panel.id}
                             repoPath={artifacts.notGitRepoPath}
-                            onContinueBuild={() => window.electronAPI.initGitRepo(panel.id)}
+                            onContinueBuild={() => panelService.initGitRepo(panel.id)}
                           />
                         );
                       }
@@ -768,7 +772,7 @@ export function PanelStack({
                             key={panel.id}
                             panelId={panel.id}
                             repoPath={artifacts.dirtyRepoPath}
-                            onRetryBuild={() => window.electronAPI.retryDirtyBuild(panel.id)}
+                            onRetryBuild={() => panelService.retryDirtyBuild(panel.id)}
                           />
                         );
                       }

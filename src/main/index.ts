@@ -1,5 +1,4 @@
-import { app, BaseWindow, Menu, nativeTheme, ipcMain, type MenuItemConstructorOptions } from "electron";
-import { buildHamburgerMenuTemplate } from "./menu.js";
+import { app, BaseWindow, nativeTheme } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
@@ -32,9 +31,8 @@ import { resolveInitialRootPanelPath, parseCliRootPanelPath } from "./rootPanelR
 import { GitServer } from "./gitServer.js";
 import { handle } from "./ipc/handlers.js";
 import type * as SharedPanel from "../shared/ipc/types.js";
-import type { PanelContextMenuAction } from "../shared/ipc/types.js";
 import { setupMenu } from "./menu.js";
-import { setActiveWorkspace, getBuildArtifactsDirectory } from "./paths.js";
+import { setActiveWorkspace } from "./paths.js";
 import {
   parseCliWorkspacePath,
   discoverWorkspace,
@@ -42,12 +40,12 @@ import {
   loadCentralEnv,
 } from "./workspace/loader.js";
 import type { Workspace, AppMode } from "./workspace/types.js";
-import { setAppMode } from "./ipc/workspaceHandlers.js";
 import { getCentralData } from "./centralData.js";
 import { registerPanelProtocol, setupPanelProtocol } from "./panelProtocol.js";
 import { getMainCacheManager } from "./cacheManager.js";
 import { getCdpServer, type CdpServer } from "./cdpServer.js";
 import { getPubSubServer, type PubSubServer } from "./pubsubServer.js";
+import { eventService } from "./services/eventsService.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
 import { handleDbCall } from "./ipc/dbHandlers.js";
 import { handleBridgeCall } from "./ipc/bridgeHandlers.js";
@@ -60,7 +58,21 @@ import {
 } from "./viewManager.js";
 import type { RpcMessage, RpcResponse } from "@natstack/rpc";
 import { generateRequestId } from "../shared/logging.js";
-import { getServiceDispatcher, parseServiceMethod } from "./serviceDispatcher.js";
+import { getServiceDispatcher, parseServiceMethod, SHELL_CALLER_ID } from "./serviceDispatcher.js";
+import { checkServiceAccess } from "./servicePolicy.js";
+import {
+  handleAppService,
+  handlePanelService,
+  handleViewService,
+  handleMenuService,
+  handleWorkspaceService,
+  handleCentralService,
+  handleSettingsService,
+  setShellServicesPanelManager,
+  setShellServicesAppMode,
+  setShellServicesAiHandler,
+} from "./ipc/shellServices.js";
+import { handleEventsService } from "./services/eventsService.js";
 
 // =============================================================================
 // Protocol Registration (must happen before app ready)
@@ -149,7 +161,7 @@ if (appMode === "main" && hasWorkspaceConfig) {
   }
 }
 
-setAppMode(appMode);
+setShellServicesAppMode(appMode);
 console.log(`[App] Starting in ${appMode} mode`);
 
 // =============================================================================
@@ -195,139 +207,6 @@ function createWindow(): void {
 }
 
 // =============================================================================
-// App IPC Handlers (renderer <-> main) - Always available
-// =============================================================================
-
-handle("app:get-info", async () => {
-  return { version: app.getVersion() };
-});
-
-handle("app:get-system-theme", async () => {
-  return nativeTheme.shouldUseDarkColors ? "dark" : "light";
-});
-
-handle("app:set-theme-mode", async (_event, mode: SharedPanel.ThemeMode) => {
-  nativeTheme.themeSource = mode;
-});
-
-handle("app:open-devtools", async () => {
-  if (viewManager) {
-    viewManager.openDevTools("shell");
-  }
-});
-
-handle("app:get-panel-preload-path", async () => {
-  return path.join(__dirname, "panelPreload.cjs");
-});
-
-handle("app:clear-build-cache", async () => {
-  // Clear main-process cache and build artifacts
-  const cacheManager = getMainCacheManager();
-  await cacheManager.clear();
-
-  // Clear build artifacts
-  const artifactsDir = getBuildArtifactsDirectory();
-  if (fs.existsSync(artifactsDir)) {
-    fs.rmSync(artifactsDir, { recursive: true, force: true });
-  }
-
-  console.log("[App] Build cache and artifacts cleared");
-});
-
-// =============================================================================
-// Native Menu IPC Handlers (for menus that need to render above WebContentsViews)
-// =============================================================================
-
-handle("menu:show-hamburger", async (_event, position: { x: number; y: number }) => {
-  const vm = getViewManager();
-  const shellContents = vm.getShellWebContents();
-
-  const clearBuildCache = async () => {
-    const cacheManager = getMainCacheManager();
-    await cacheManager.clear();
-    console.log("[App] Build cache cleared via menu");
-  };
-
-  const template = buildHamburgerMenuTemplate(shellContents, clearBuildCache);
-  const menu = Menu.buildFromTemplate(template);
-  // Use window option so Electron converts content-relative coords to screen coords
-  menu.popup({ window: vm.getWindow(), x: position.x, y: position.y });
-});
-
-handle(
-  "menu:show-context",
-  async (
-    _event,
-    items: Array<{ id: string; label: string }>,
-    position: { x: number; y: number }
-  ): Promise<string | null> => {
-    const vm = getViewManager();
-    return new Promise((resolve) => {
-      const template: MenuItemConstructorOptions[] = items.map((item) => ({
-        label: item.label,
-        click: () => resolve(item.id),
-      }));
-
-      const menu = Menu.buildFromTemplate(template);
-      // Use window option so Electron converts content-relative coords to screen coords
-      menu.popup({
-        window: vm.getWindow(),
-        x: position.x,
-        y: position.y,
-        callback: () => resolve(null), // User dismissed menu without selecting
-      });
-    });
-  }
-);
-
-handle(
-  "menu:show-panel-context",
-  async (
-    _event,
-    _panelId: string,
-    panelType: string,
-    position: { x: number; y: number }
-  ): Promise<PanelContextMenuAction | null> => {
-    const vm = getViewManager();
-    return new Promise((resolve) => {
-      const template: MenuItemConstructorOptions[] = [];
-
-      // Reload - only for app and browser panels (workers don't have a view to reload)
-      if (panelType === "app" || panelType === "browser") {
-        template.push({
-          label: "Reload",
-          click: () => resolve("reload"),
-        });
-        template.push({ type: "separator" });
-      }
-
-      // Close actions - available for all panel types
-      template.push({
-        label: "Close",
-        click: () => resolve("close"),
-      });
-      template.push({
-        label: "Close Siblings",
-        click: () => resolve("close-siblings"),
-      });
-      template.push({
-        label: "Close Subtree",
-        click: () => resolve("close-subtree"),
-      });
-
-      const menu = Menu.buildFromTemplate(template);
-      // Use window option so Electron converts content-relative coords to screen coords
-      menu.popup({
-        window: vm.getWindow(),
-        x: position.x,
-        y: position.y,
-        callback: () => resolve(null),
-      });
-    });
-  }
-);
-
-// =============================================================================
 // Panel IPC Handlers (renderer <-> main) - Only in main mode
 // =============================================================================
 
@@ -347,53 +226,6 @@ function assertAuthorized(event: Electron.IpcMainInvokeEvent, panelId: string): 
     throw new Error(`Unauthorized: Sender ${senderPanelId} cannot act as ${panelId}`);
   }
 }
-
-handle("panel:get-tree", async () => {
-  return requirePanelManager().getSerializablePanelTree();
-});
-
-handle("panel:notify-focus", async (_event, panelId: string) => {
-  requirePanelManager().sendPanelEvent(panelId, { type: "focus" });
-});
-
-handle("panel:update-theme", async (_event, theme: SharedPanel.ThemeAppearance) => {
-  const pm = requirePanelManager();
-  pm.setCurrentTheme(theme);
-  pm.broadcastTheme(theme);
-});
-
-handle("panel:open-devtools", async (_event, panelId: string) => {
-  requirePanelManager();
-  const vm = getViewManager();
-  if (!vm.hasView(panelId)) {
-    throw new Error(`No view found for panel ${panelId}`);
-  }
-  vm.openDevTools(panelId);
-});
-
-handle("panel:reload", async (_event, panelId: string) => {
-  requirePanelManager();
-  const vm = getViewManager();
-  if (!vm.hasView(panelId)) {
-    throw new Error(`No view found for panel ${panelId}`);
-  }
-  vm.reload(panelId);
-});
-
-handle("panel:close", async (_event, panelId: string) => {
-  const pm = requirePanelManager();
-  await pm.closePanel(panelId);
-});
-
-handle("panel:retry-dirty-build", async (_event, panelId: string) => {
-  const pm = requirePanelManager();
-  await pm.retryBuild(panelId);
-});
-
-handle("panel:init-git-repo", async (_event, panelId: string) => {
-  const pm = requirePanelManager();
-  await pm.initializeGitRepo(panelId);
-});
 
 // =============================================================================
 // Unified RPC Handler (panel <-> main) - Only in main mode
@@ -420,11 +252,24 @@ handle("rpc:call", async (event, panelId: string, message: RpcMessage): Promise<
     };
   }
 
+  const { service, method: serviceMethod } = parsedMethod;
+
+  // Check service access policy for panels
+  try {
+    checkServiceAccess(service, "panel");
+  } catch (error) {
+    return {
+      type: "response",
+      requestId,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+
   const dispatcher = getServiceDispatcher();
   const ctx = { callerId: panelId, callerKind: "panel" as const, webContents: event.sender };
 
   try {
-    const result = await dispatcher.dispatch(ctx, parsedMethod.service, parsedMethod.method, args);
+    const result = await dispatcher.dispatch(ctx, service, serviceMethod, args);
     return { type: "response", requestId, result };
   } catch (error) {
     return {
@@ -479,59 +324,77 @@ handle(
   }
 );
 
+// Open devtools for a panel (called from panel preload keyboard shortcut)
+handle("panel:open-devtools", async (event, panelId: string) => {
+  assertAuthorized(event, panelId);
+  const vm = getViewManager();
+  vm.openDevTools(panelId);
+});
+
 // =============================================================================
-// View Management IPC Handlers (renderer <-> main)
+// Shell RPC Handler (unified RPC transport for shell)
 // =============================================================================
 
-handle(
-  "view:set-bounds",
-  async (
-    _event,
-    viewId: string,
-    bounds: { x: number; y: number; width: number; height: number }
-  ) => {
-    const vm = getViewManager();
-    vm.setViewBounds(viewId, bounds);
+handle("shell-rpc:call", async (event, message: RpcMessage): Promise<RpcResponse> => {
+  // Verify caller is the shell WebContents (security check)
+  const vm = getViewManager();
+  const shellContents = vm.getShellWebContents();
+  if (event.sender !== shellContents) {
+    return {
+      type: "response",
+      requestId: (message as { requestId?: string }).requestId ?? "unknown",
+      error: "Unauthorized: only shell can call shell-rpc:call",
+    };
   }
-);
 
-handle("view:set-visible", async (_event, viewId: string, visible: boolean) => {
-  const vm = getViewManager();
-  vm.setViewVisible(viewId, visible);
-});
-
-handle(
-  "view:set-theme-css",
-  async (_event, css: string) => {
-    const vm = getViewManager();
-    vm.setThemeCss(css);
+  if (message.type !== "request") {
+    return {
+      type: "response",
+      requestId: (message as { requestId?: string }).requestId ?? "unknown",
+      error: "Invalid RPC message type (expected request)",
+    };
   }
-);
 
-// Browser navigation via ViewManager (for renderer UI controls)
-handle("view:browser-navigate", async (_event, browserId: string, url: string) => {
-  const vm = getViewManager();
-  await vm.navigateView(browserId, url);
-});
+  const { requestId, method, args } = message;
+  const parsedMethod = parseServiceMethod(method);
+  if (!parsedMethod) {
+    return {
+      type: "response",
+      requestId,
+      error: `Invalid method format: "${method}". Expected "service.method"`,
+    };
+  }
 
-handle("view:browser-go-back", async (_event, browserId: string) => {
-  const vm = getViewManager();
-  vm.goBack(browserId);
-});
+  const { service, method: serviceMethod } = parsedMethod;
 
-handle("view:browser-go-forward", async (_event, browserId: string) => {
-  const vm = getViewManager();
-  vm.goForward(browserId);
-});
+  // Check service access policy
+  try {
+    checkServiceAccess(service, "shell");
+  } catch (error) {
+    return {
+      type: "response",
+      requestId,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 
-handle("view:browser-reload", async (_event, browserId: string) => {
-  const vm = getViewManager();
-  vm.reload(browserId);
-});
+  const dispatcher = getServiceDispatcher();
+  const ctx = {
+    callerId: SHELL_CALLER_ID,
+    callerKind: "shell" as const,
+    webContents: event.sender,
+  };
 
-handle("view:browser-stop", async (_event, browserId: string) => {
-  const vm = getViewManager();
-  vm.stop(browserId);
+  try {
+    const result = await dispatcher.dispatch(ctx, service, serviceMethod, args);
+    return { type: "response", requestId, result };
+  } catch (error) {
+    return {
+      type: "response",
+      requestId,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 });
 
 // =============================================================================
@@ -568,11 +431,25 @@ app.on("ready", async () => {
   await cacheManager.initialize();
   checkDbFile("after cacheManager.initialize");
 
+  // Register shell services (available in both modes)
+  const dispatcher = getServiceDispatcher();
+  dispatcher.register("app", handleAppService);
+  dispatcher.register("view", handleViewService);
+  dispatcher.register("menu", handleMenuService);
+  dispatcher.register("workspace", handleWorkspaceService);
+  dispatcher.register("central", handleCentralService);
+  dispatcher.register("settings", handleSettingsService);
+  dispatcher.register("events", handleEventsService);
+  setShellServicesAppMode(appMode);
+
   // Initialize services only in main mode
   if (appMode === "main" && gitServer && panelManager && workspace) {
     try {
+      // Register panel service (requires panel manager)
+      dispatcher.register("panel", handlePanelService);
+      setShellServicesPanelManager(panelManager);
+
       checkDbFile("before getServiceDispatcher");
-      const dispatcher = getServiceDispatcher();
       checkDbFile("after getServiceDispatcher");
 
       // Start git server
@@ -628,6 +505,7 @@ app.on("ready", async () => {
       const { AIHandler } = await import("./ai/aiHandler.js");
       aiHandler = new AIHandler();
       await aiHandler.initialize();
+      setShellServicesAiHandler(aiHandler);
 
       dispatcher.register("ai", async (ctx, serviceMethod, serviceArgs) => {
         return handleAiServiceCall(aiHandler, serviceMethod, serviceArgs, (handler, options, streamId) => {
@@ -637,11 +515,16 @@ app.on("ready", async () => {
           handler.startPanelStream(ctx.webContents, ctx.callerId, options, streamId);
         });
       });
-
-      dispatcher.markInitialized();
     } catch (error) {
       console.error("Failed to initialize services:", error);
     }
+
+    // Always mark initialized in main mode so registered services work
+    // (even if some services failed to initialize)
+    dispatcher.markInitialized();
+  } else {
+    // In chooser mode, mark initialized so shell services work
+    dispatcher.markInitialized();
   }
 
   void createWindow();
@@ -723,18 +606,11 @@ app.on("activate", () => {
   }
 });
 
-// Listen for system theme changes and notify renderer
+// Listen for system theme changes and notify subscribers
 nativeTheme.on("updated", () => {
-  if (viewManager) {
-    const shellContents = viewManager.getShellWebContents();
-    if (!shellContents.isDestroyed()) {
-      shellContents.send(
-        "system-theme-changed",
-        nativeTheme.shouldUseDarkColors ? "dark" : "light"
-      );
-    }
-  }
+  eventService.emit(
+    "system-theme-changed",
+    nativeTheme.shouldUseDarkColors ? "dark" : "light"
+  );
 });
 
-// Import workspace handlers to register them
-import "./ipc/workspaceHandlers.js";

@@ -77,6 +77,14 @@ export interface GitStatusViewProps {
   onNotify?: (notification: GitNotification) => void;
   /** Theme for Monaco editor in diff views */
   theme?: "light" | "dark";
+  /**
+   * Optional callback to generate a commit message using AI.
+   * If provided, enables the "AI Commit" button that stages all changes
+   * and generates a commit message based on the diff.
+   * @param diff - The staged diff text
+   * @returns The generated commit message
+   */
+  onGenerateCommitMessage?: (diff: string) => Promise<string>;
 }
 
 /**
@@ -90,6 +98,7 @@ export function GitStatusView({
   onClose,
   onNotify,
   theme,
+  onGenerateCommitMessage,
 }: GitStatusViewProps) {
   // Container ref for scoped keyboard handling
   const containerRef = useRef<HTMLDivElement>(null);
@@ -463,6 +472,9 @@ export function GitStatusView({
               selectedFile={overviewSelectedFile}
               selectedSection={overviewSelectedSection}
               actionLoading={actionLoading}
+              onGenerateCommitMessage={onGenerateCommitMessage}
+              gitClient={gitClient}
+              dir={dir}
             />
           )}
         </>

@@ -1,186 +1,133 @@
-import { contextBridge, ipcRenderer } from "electron";
-import type * as Panel from "../shared/ipc/types.js";
+import { ipcRenderer } from "electron";
+import type { RpcMessage, RpcRequest, RpcResponse } from "@natstack/rpc";
+import type { StreamTextChunkEvent, StreamTextEndEvent } from "../shared/ipc/types.js";
 
-// Create the API object that will be exposed to the renderer
-export const electronAPI = {
-  // App methods
-  getInfo: (): Promise<Panel.AppInfo> => ipcRenderer.invoke("app:get-info"),
-  getSystemTheme: (): Promise<Panel.ThemeMode> => ipcRenderer.invoke("app:get-system-theme"),
-  setThemeMode: (mode: Panel.ThemeMode): Promise<void> =>
-    ipcRenderer.invoke("app:set-theme-mode", mode),
-  openAppDevTools: (): Promise<void> => ipcRenderer.invoke("app:open-devtools"),
-  getPanelPreloadPath: (): Promise<string> => ipcRenderer.invoke("app:get-panel-preload-path"),
-  clearBuildCache: (): Promise<void> => ipcRenderer.invoke("app:clear-build-cache"),
+// =============================================================================
+// Shell RPC Transport
+// =============================================================================
+// The shell uses a simplified transport that only communicates with main.
+// Unlike panels, shell doesn't need panel-to-panel MessagePort connections.
 
-  // Panel methods
-  getPanelTree: (): Promise<Panel.Panel[]> => ipcRenderer.invoke("panel:get-tree"),
-  notifyPanelFocused: (panelId: string): Promise<void> =>
-    ipcRenderer.invoke("panel:notify-focus", panelId),
-  updatePanelTheme: (theme: Panel.ThemeAppearance): Promise<void> =>
-    ipcRenderer.invoke("panel:update-theme", theme),
-  openPanelDevTools: (panelId: string): Promise<void> =>
-    ipcRenderer.invoke("panel:open-devtools", panelId),
-  reloadPanel: (panelId: string): Promise<void> => ipcRenderer.invoke("panel:reload", panelId),
-  closePanel: (panelId: string): Promise<void> => ipcRenderer.invoke("panel:close", panelId),
-  retryDirtyBuild: (panelId: string): Promise<void> =>
-    ipcRenderer.invoke("panel:retry-dirty-build", panelId),
-  initGitRepo: (panelId: string): Promise<void> =>
-    ipcRenderer.invoke("panel:init-git-repo", panelId),
-  updateBrowserState: (
-    browserId: string,
-    state: { url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean }
-  ): Promise<void> => ipcRenderer.invoke("panel:update-browser-state", browserId, state),
+type AnyMessageHandler = (fromId: string, message: unknown) => void;
 
-  // View management (for WebContentsView bounds/visibility)
-  setViewBounds: (
-    viewId: string,
-    bounds: { x: number; y: number; width: number; height: number }
-  ): Promise<void> => ipcRenderer.invoke("view:set-bounds", viewId, bounds),
-  setViewVisible: (viewId: string, visible: boolean): Promise<void> =>
-    ipcRenderer.invoke("view:set-visible", viewId, visible),
-  setViewThemeCss: (css: string): Promise<void> =>
-    ipcRenderer.invoke("view:set-theme-css", css),
-
-  // Browser navigation (for renderer UI controls)
-  browserNavigate: (browserId: string, url: string): Promise<void> =>
-    ipcRenderer.invoke("view:browser-navigate", browserId, url),
-  browserGoBack: (browserId: string): Promise<void> =>
-    ipcRenderer.invoke("view:browser-go-back", browserId),
-  browserGoForward: (browserId: string): Promise<void> =>
-    ipcRenderer.invoke("view:browser-go-forward", browserId),
-  browserReload: (browserId: string): Promise<void> =>
-    ipcRenderer.invoke("view:browser-reload", browserId),
-  browserStop: (browserId: string): Promise<void> =>
-    ipcRenderer.invoke("view:browser-stop", browserId),
-
-  // Event listeners (one-way events from main)
-  onSystemThemeChanged: (callback: (theme: Panel.ThemeMode) => void): (() => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, theme: Panel.ThemeMode) => {
-      callback(theme);
-    };
-    ipcRenderer.on("system-theme-changed", listener);
-    return () => {
-      ipcRenderer.removeListener("system-theme-changed", listener);
-    };
-  },
-
-  onPanelTreeUpdated: (callback: (rootPanels: Panel.Panel[]) => void): (() => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, rootPanels: Panel.Panel[]) => {
-      callback(rootPanels);
-    };
-    ipcRenderer.on("panel:tree-updated", listener);
-    return () => {
-      ipcRenderer.removeListener("panel:tree-updated", listener);
-    };
-  },
-
-  // CDP visibility toggle removed - WebContentsView architecture doesn't need it
-
-  // =============================================================================
-  // Workspace Chooser Methods
-  // =============================================================================
-
-  // App mode
-  getAppMode: (): Promise<Panel.AppMode> => ipcRenderer.invoke("app:get-mode"),
-
-  // Recent workspaces
-  getRecentWorkspaces: (): Promise<Panel.RecentWorkspace[]> =>
-    ipcRenderer.invoke("central:get-recent-workspaces"),
-  removeRecentWorkspace: (path: string): Promise<void> =>
-    ipcRenderer.invoke("central:remove-recent-workspace", path),
-
-  // Workspace management
-  validateWorkspacePath: (path: string): Promise<Panel.WorkspaceValidation> =>
-    ipcRenderer.invoke("workspace:validate-path", path),
-  openFolderDialog: (): Promise<string | null> =>
-    ipcRenderer.invoke("workspace:open-folder-dialog"),
-  createWorkspace: (path: string, name: string): Promise<Panel.WorkspaceValidation> =>
-    ipcRenderer.invoke("workspace:create", path, name),
-  selectWorkspace: (path: string): Promise<void> => ipcRenderer.invoke("workspace:select", path),
-
-  // =============================================================================
-  // Settings Methods
-  // =============================================================================
-
-  getSettingsData: (): Promise<Panel.SettingsData> => ipcRenderer.invoke("settings:get-data"),
-  setApiKey: (providerId: string, apiKey: string): Promise<void> =>
-    ipcRenderer.invoke("settings:set-api-key", providerId, apiKey),
-  removeApiKey: (providerId: string): Promise<void> =>
-    ipcRenderer.invoke("settings:remove-api-key", providerId),
-  setModelRole: (role: string, modelSpec: string): Promise<void> =>
-    ipcRenderer.invoke("settings:set-model-role", role, modelSpec),
-  enableProvider: (providerId: string): Promise<void> =>
-    ipcRenderer.invoke("settings:enable-provider", providerId),
-  disableProvider: (providerId: string): Promise<void> =>
-    ipcRenderer.invoke("settings:disable-provider", providerId),
-
-  // Settings menu event
-  onOpenSettings: (callback: () => void): (() => void) => {
-    const listener = () => {
-      callback();
-    };
-    ipcRenderer.on("open-settings", listener);
-    return () => {
-      ipcRenderer.removeListener("open-settings", listener);
-    };
-  },
-
-  // Workspace chooser menu event
-  onOpenWorkspaceChooser: (callback: () => void): (() => void) => {
-    const listener = () => {
-      callback();
-    };
-    ipcRenderer.on("open-workspace-chooser", listener);
-    return () => {
-      ipcRenderer.removeListener("open-workspace-chooser", listener);
-    };
-  },
-
-  // =============================================================================
-  // Native Menu Methods (for menus that render above WebContentsViews)
-  // =============================================================================
-
-  /** Show the hamburger menu at the given screen position */
-  showHamburgerMenu: (position: { x: number; y: number }): Promise<void> =>
-    ipcRenderer.invoke("menu:show-hamburger", position),
-
-  /** Show a context menu with dynamic items, returns selected item ID or null if dismissed */
-  showContextMenu: (
-    items: Array<{ id: string; label: string }>,
-    position: { x: number; y: number }
-  ): Promise<string | null> => ipcRenderer.invoke("menu:show-context", items, position),
-
-  /** Show a panel context menu with tab-like actions (reload, close, etc.) */
-  showPanelContextMenu: (
-    panelId: string,
-    panelType: Panel.PanelType,
-    position: { x: number; y: number }
-  ): Promise<Panel.PanelContextMenuAction | null> =>
-    ipcRenderer.invoke("menu:show-panel-context", panelId, panelType, position),
-
-  /** Listen for menu action to toggle panel devtools */
-  onTogglePanelDevTools: (callback: () => void): (() => void) => {
-    const listener = () => {
-      callback();
-    };
-    ipcRenderer.on("menu:toggle-panel-devtools", listener);
-    return () => {
-      ipcRenderer.removeListener("menu:toggle-panel-devtools", listener);
-    };
-  },
+type ShellTransportBridge = {
+  send: (targetId: string, message: unknown) => Promise<void>;
+  onMessage: (handler: AnyMessageHandler) => () => void;
 };
 
-// Expose API to renderer - use contextBridge if available, otherwise direct window assignment
-// (contextBridge requires contextIsolation, which is disabled for shell renderer)
-try {
-  contextBridge.exposeInMainWorld("electronAPI", electronAPI);
-} catch {
-  // contextIsolation is disabled, attach directly to window
-  (window as Window & { electronAPI: typeof electronAPI }).electronAPI = electronAPI;
+function createShellTransport(): ShellTransportBridge {
+  const listeners = new Set<AnyMessageHandler>();
+  const bufferedMessages: Array<{ fromId: string; message: RpcMessage }> = [];
+  let transportReady = false;
+  let flushScheduled = false;
+
+  const deliver = (fromId: string, message: RpcMessage) => {
+    if (!transportReady) {
+      bufferedMessages.push({ fromId, message });
+      if (bufferedMessages.length > 500) bufferedMessages.shift();
+      return;
+    }
+    for (const listener of listeners) {
+      try {
+        listener(fromId, message);
+      } catch (error) {
+        console.error("Error in shell transport message handler:", error);
+      }
+    }
+  };
+
+  // Handle events from main (event subscriptions)
+  ipcRenderer.on("shell-rpc:event", (_event, payload: RpcMessage) => {
+    deliver("main", payload);
+  });
+
+  // Handle AI streaming events
+  ipcRenderer.on("ai:stream-text-chunk", (_event, payload: StreamTextChunkEvent) => {
+    deliver("main", {
+      type: "event",
+      fromId: "main",
+      event: "ai:stream-text-chunk",
+      payload: { streamId: payload.streamId, chunk: payload.chunk },
+    });
+  });
+
+  ipcRenderer.on("ai:stream-text-end", (_event, payload: StreamTextEndEvent) => {
+    deliver("main", {
+      type: "event",
+      fromId: "main",
+      event: "ai:stream-text-end",
+      payload: { streamId: payload.streamId },
+    });
+  });
+
+  const send: ShellTransportBridge["send"] = async (targetId, message) => {
+    const rpcMessage = message as RpcMessage;
+    if (
+      !rpcMessage ||
+      typeof rpcMessage !== "object" ||
+      typeof (rpcMessage as { type?: unknown }).type !== "string"
+    ) {
+      throw new Error("Invalid RPC message");
+    }
+
+    // Shell can only send to main
+    if (targetId !== "main") {
+      throw new Error(`Shell can only send RPC messages to 'main', not '${targetId}'`);
+    }
+
+    if (rpcMessage.type === "request") {
+      try {
+        const response = (await ipcRenderer.invoke("shell-rpc:call", rpcMessage)) as RpcResponse;
+        deliver("main", response);
+      } catch (error) {
+        const err = error instanceof Error ? error.message : String(error);
+        deliver("main", {
+          type: "response",
+          requestId: (rpcMessage as RpcRequest).requestId,
+          error: err,
+        });
+      }
+      return;
+    }
+  };
+
+  return {
+    send,
+    onMessage(handler) {
+      listeners.add(handler);
+      if (!flushScheduled) {
+        flushScheduled = true;
+        queueMicrotask(() => {
+          transportReady = true;
+          for (const buffered of bufferedMessages) {
+            for (const listener of listeners) {
+              try {
+                listener(buffered.fromId, buffered.message);
+              } catch (error) {
+                console.error("Error delivering buffered shell transport message:", error);
+              }
+            }
+          }
+          bufferedMessages.length = 0;
+        });
+      }
+      return () => listeners.delete(handler);
+    },
+  };
 }
 
+// Create the shell transport
+const shellTransport = createShellTransport();
+
+// Set up NatStack globals for @natstack/runtime packages
+// The shell is identified as "shell" and has a fixed session
+// Note: Other globals (__natstackId, etc.) are declared by @natstack/runtime
 declare global {
-  interface Window {
-    electronAPI: typeof electronAPI;
-  }
+  var __natstackTransport: ShellTransportBridge | undefined;
 }
+
+// Set globals directly (shell uses contextIsolation: false)
+globalThis.__natstackTransport = shellTransport;
+globalThis.__natstackId = "shell";
+globalThis.__natstackSessionId = "shell-session";
+globalThis.__natstackKind = "shell";

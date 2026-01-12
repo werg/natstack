@@ -15,10 +15,11 @@ import {
   type Participant,
   type MethodDefinition,
   type MethodExecutionContext,
+  type FeedbackFormArgs,
+  type FeedbackCustomArgs,
   createPauseMethodDefinition,
-  isFeedbackUiSchemaArgs,
-  FeedbackUiSchemaArgsSchema,
-  FeedbackUiCodeArgsSchema,
+  FeedbackFormArgsSchema,
+  FeedbackCustomArgsSchema,
 } from "@natstack/agentic-messaging";
 import {
   executeEvalTool,
@@ -271,11 +272,35 @@ export default function AgenticChatDemo() {
   }, [clientId]);
 
 
-  const handleFeedbackUiMethodCall = useCallback(
-    async (callId: string, args: unknown, ctx: MethodExecutionContext) => {
+  // Helper to handle feedback result and update method history
+  const handleFeedbackResult = useCallback((callId: string, feedbackResult: FeedbackResult) => {
+    if (feedbackResult.type === "submit") {
+      updateMethodHistoryEntry(callId, {
+        status: "success",
+        result: feedbackResult.value,
+        completedAt: Date.now(),
+      });
+    } else if (feedbackResult.type === "cancel") {
+      updateMethodHistoryEntry(callId, {
+        status: "success",
+        result: null,
+        completedAt: Date.now(),
+      });
+    } else {
+      // error case
+      updateMethodHistoryEntry(callId, {
+        status: "error",
+        error: feedbackResult.message,
+        completedAt: Date.now(),
+      });
+    }
+  }, [updateMethodHistoryEntry]);
+
+  const handleFeedbackFormCall = useCallback(
+    async (callId: string, args: FeedbackFormArgs, ctx: MethodExecutionContext) => {
       const entry: MethodHistoryEntry = {
         callId,
-        methodName: "feedback_ui",
+        methodName: "feedback_form",
         args,
         status: "pending",
         startedAt: Date.now(),
@@ -284,57 +309,43 @@ export default function AgenticChatDemo() {
       };
       addMethodHistoryEntry(entry);
 
-      // Helper to handle feedback result and update method history
-      const handleFeedbackResult = (feedbackResult: FeedbackResult) => {
-        if (feedbackResult.type === "submit") {
-          updateMethodHistoryEntry(callId, {
-            status: "success",
-            result: feedbackResult.value,
-            completedAt: Date.now(),
-          });
-        } else if (feedbackResult.type === "cancel") {
-          updateMethodHistoryEntry(callId, {
-            status: "success",
-            result: null,
-            completedAt: Date.now(),
-          });
-        } else {
-          // error case
-          updateMethodHistoryEntry(callId, {
-            status: "error",
-            error: feedbackResult.message,
-            completedAt: Date.now(),
-          });
-        }
+      return new Promise<FeedbackResult>((resolve) => {
+        const feedback: ActiveFeedbackSchema = {
+          type: "schema",
+          callId,
+          title: args.title,
+          fields: args.fields,
+          values: args.values ?? {},
+          submitLabel: args.submitLabel,
+          cancelLabel: args.cancelLabel,
+          createdAt: Date.now(),
+          complete: (feedbackResult: FeedbackResult) => {
+            removeFeedback(callId);
+            handleFeedbackResult(callId, feedbackResult);
+            resolve(feedbackResult);
+          },
+        };
+
+        addFeedback(feedback);
+      });
+    },
+    [addFeedback, removeFeedback, addMethodHistoryEntry, handleFeedbackResult]
+  );
+
+  const handleFeedbackCustomCall = useCallback(
+    async (callId: string, args: FeedbackCustomArgs, ctx: MethodExecutionContext) => {
+      const entry: MethodHistoryEntry = {
+        callId,
+        methodName: "feedback_custom",
+        args,
+        status: "pending",
+        startedAt: Date.now(),
+        callerId: ctx.callerId,
+        handledLocally: true,
       };
+      addMethodHistoryEntry(entry);
 
-      // Check if schema format (preferred for forms)
-      if (isFeedbackUiSchemaArgs(args)) {
-        const { schema } = args;
-
-        return new Promise<FeedbackResult>((resolve) => {
-          const feedback: ActiveFeedbackSchema = {
-            type: "schema",
-            callId,
-            title: schema.title,
-            fields: schema.fields,
-            values: schema.values ?? {},
-            submitLabel: schema.submitLabel,
-            cancelLabel: schema.cancelLabel,
-            createdAt: Date.now(),
-            complete: (feedbackResult: FeedbackResult) => {
-              removeFeedback(callId);
-              handleFeedbackResult(feedbackResult);
-              resolve(feedbackResult);
-            },
-          };
-
-          addFeedback(feedback);
-        });
-      }
-
-      // TSX format - compile component
-      const result = compileFeedbackComponent(args as FeedbackUiToolArgs);
+      const result = compileFeedbackComponent({ code: args.code } as FeedbackUiToolArgs);
 
       if (!result.success) {
         updateMethodHistoryEntry(callId, {
@@ -357,7 +368,7 @@ export default function AgenticChatDemo() {
           complete: (feedbackResult: FeedbackResult) => {
             removeFeedback(callId);
             cleanupFeedbackComponent(cacheKey);
-            handleFeedbackResult(feedbackResult);
+            handleFeedbackResult(callId, feedbackResult);
             resolve(feedbackResult);
           },
         };
@@ -365,7 +376,7 @@ export default function AgenticChatDemo() {
         addFeedback(feedback);
       });
     },
-    [addFeedback, removeFeedback, addMethodHistoryEntry, updateMethodHistoryEntry]
+    [addFeedback, removeFeedback, addMethodHistoryEntry, updateMethodHistoryEntry, handleFeedbackResult]
   );
 
   const handleFeedbackDismiss = useCallback((callId: string) => {
@@ -502,56 +513,32 @@ Use standard ESM imports - they're transformed to require() automatically:
     const targetChannelId = channelId.trim() || `chat-${crypto.randomUUID().slice(0, 8)}`;
 
     try {
-      const feedbackUiMethodDef: MethodDefinition = {
-        description: `Show a form to collect user input. Returns when user submits or cancels.
+      const feedbackFormMethodDef: MethodDefinition = {
+        description: `Show a form to collect user input.
 
 **Result:** \`{ type: "submit", value: { fieldKey: userValue, ... } }\` or \`{ type: "cancel" }\`
 
-## Example
+**Example:**
 \`\`\`json
-{
-  "schema": {
-    "title": "Confirm Action",
-    "fields": [
-      { "key": "reason", "label": "Reason", "type": "string", "required": true }
-    ]
-  }
-}
+{ "title": "Confirm", "fields": [{ "key": "reason", "label": "Reason", "type": "string" }] }
 \`\`\`
 
-## Field Types
-- **string**: text input
-- **number**: numeric input
-- **boolean**: toggle switch
-- **select**: dropdown with \`options: [{ value, label }]\`
-- **slider**: range with \`min\`, \`max\`, \`step\`
-- **segmented**: button group with \`options: [{ value, label }]\`
+**Field types:** string, number, boolean, select (needs \`options\`), slider (\`min\`/\`max\`), segmented (\`options\`)
+**Field props:** \`key\` (required), \`label\` (required), \`type\` (required), \`default\`, \`required\`, \`description\`
+**Pre-populate:** Add \`values: { "key": "existing value" }\``,
+        parameters: FeedbackFormArgsSchema,
+        execute: async (args, ctx) => handleFeedbackFormCall(ctx.callId, args as FeedbackFormArgs, ctx),
+      };
 
-## Field Properties
-- \`key\` (required): field identifier, returned in result
-- \`label\` (required): display text
-- \`type\` (required): one of the types above
-- \`default\`: initial value if not in \`values\`
-- \`required\`: if true, form validates before submit
-- \`description\`: help text shown below field
+      const feedbackCustomMethodDef: MethodDefinition = {
+        description: `Show a custom React UI. For advanced cases only - prefer feedback_form for standard forms.
 
-## Pre-populating Values
-Use \`values\` to show current/existing values:
-\`\`\`json
-{ "schema": { "title": "Edit", "fields": [...], "values": { "reason": "existing text" } } }
-\`\`\`
+**Result:** \`{ type: "submit", value: ... }\` or \`{ type: "cancel" }\`
 
-## TSX Format (Advanced)
-For custom UIs beyond standard forms, pass \`code\` with a React component:
-\`\`\`json
-{ "code": "import { useState } from 'react';\\nimport { Button, Flex, Text } from '@radix-ui/themes';\\n\\nexport default function({ onSubmit, onCancel }) {\\n  return (\\n    <Flex direction=\\"column\\" gap=\\"3\\">\\n      <Text>Custom UI here</Text>\\n      <Flex gap=\\"2\\">\\n        <Button variant=\\"soft\\" onClick={onCancel}>Cancel</Button>\\n        <Button onClick={() => onSubmit({ confirmed: true })}>Confirm</Button>\\n      </Flex>\\n    </Flex>\\n  );\\n}" }
-\`\`\`
-Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\`. Call \`onSubmit(value)\` or \`onCancel()\`.`,
-        parameters: z.union([
-          FeedbackUiSchemaArgsSchema,
-          FeedbackUiCodeArgsSchema,
-        ]),
-        execute: async (args, ctx) => handleFeedbackUiMethodCall(ctx.callId, args, ctx),
+Component receives \`onSubmit(value)\`, \`onCancel()\`, \`onError(msg)\` props.
+Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
+        parameters: FeedbackCustomArgsSchema,
+        execute: async (args, ctx) => handleFeedbackCustomCall(ctx.callId, args as FeedbackCustomArgs, ctx),
       };
 
       // Invite all selected agents with their configured parameters
@@ -622,7 +609,8 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\`. Call \`on
       // Connect using the hook
       await connectToChannel(targetChannelId, {
         eval: evalMethodDef,
-        feedback_ui: feedbackUiMethodDef,
+        feedback_form: feedbackFormMethodDef,
+        feedback_custom: feedbackCustomMethodDef,
       });
 
       setStatus("Connected");
@@ -634,7 +622,8 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\`. Call \`on
   }, [
     availableAgents,
     buildInviteConfig,
-    handleFeedbackUiMethodCall,
+    handleFeedbackFormCall,
+    handleFeedbackCustomCall,
     evalMethodDef,
     discoveryRef,
     channelId,

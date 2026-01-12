@@ -241,13 +241,11 @@ async function main() {
               return f;
             });
 
-          // Call feedback_ui on the panel using schema format
-          const handle = client.callMethod(panel.id, "feedback_ui", {
-            schema: {
-              title: "Claude Code Settings",
-              fields,
-              values: currentSettings,
-            },
+          // Call feedback_form on the panel
+          const handle = client.callMethod(panel.id, "feedback_form", {
+            title: "Claude Code Settings",
+            fields,
+            values: currentSettings,
           });
           const result = await handle.result;
           const feedbackResult = result.content as { type: string; value?: unknown; message?: string };
@@ -442,7 +440,7 @@ async function handleUserMessage(
       try {
         // Generate and show permission UI
         const promptTsx = generatePermissionPromptTsx(toolName, input, options.decisionReason);
-        const handle = client.callMethod(panel.id, "feedback_ui", { code: promptTsx });
+        const handle = client.callMethod(panel.id, "feedback_custom", { code: promptTsx });
         const result = await handle.result;
         const feedbackResult = result.content as { type: string; value?: unknown; message?: string };
 

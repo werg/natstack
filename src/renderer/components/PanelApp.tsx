@@ -4,6 +4,8 @@ import { Flex, Theme } from "@radix-ui/themes";
 
 import { effectiveThemeAtom, loadThemePreferenceAtom } from "../state/themeAtoms";
 import { NavigationProvider, useNavigation } from "./NavigationContext";
+import { useShellEvent } from "../shell/useShellEvent";
+import { app } from "../shell/client";
 import { PanelStack } from "./PanelStack";
 import { TitleBar } from "./TitleBar";
 import type { PanelContextMenuAction } from "../../shared/ipc/types";
@@ -49,12 +51,11 @@ function PanelAppContent() {
     return () => window.removeEventListener("keydown", handler);
   }, [openPanelDevTools]);
 
-  // Listen for panel devtools toggle from native menu
-  useEffect(() => {
-    return window.electronAPI.onTogglePanelDevTools(() => {
-      openPanelDevTools();
-    });
+  // Listen for panel devtools toggle from native menu via shell event
+  const handleTogglePanelDevTools = useCallback(() => {
+    openPanelDevTools();
   }, [openPanelDevTools]);
+  useShellEvent("toggle-panel-devtools", handleTogglePanelDevTools);
 
   return (
     <Theme appearance={effectiveTheme} radius="none">
@@ -95,34 +96,23 @@ export function useThemeSynchronizer(): "light" | "dark" {
     loadThemePreference();
   }, [loadThemePreference]);
 
-  // Listen for system theme changes from Electron
-  useEffect(() => {
-    if (typeof window.electronAPI === "undefined") {
-      return;
-    }
-
-    const cleanup = window.electronAPI.onSystemThemeChanged(() => {
-      // Force re-evaluation of system theme
-      // The effectiveThemeAtom will automatically pick up the new system preference
-      loadThemePreference();
-    });
-
-    return cleanup;
+  // Listen for system theme changes via shell event
+  const handleThemeChanged = useCallback(() => {
+    // Force re-evaluation of system theme
+    // The effectiveThemeAtom will automatically pick up the new system preference
+    loadThemePreference();
   }, [loadThemePreference]);
+  useShellEvent("system-theme-changed", handleThemeChanged);
 
   // Sync initial theme with Electron on mount
   useEffect(() => {
-    if (typeof window.electronAPI === "undefined") {
-      return;
-    }
-
     void (async () => {
       try {
-        await window.electronAPI.getSystemTheme();
+        await app.getSystemTheme();
         // Only set if we're in system mode
         const savedMode = localStorage.getItem("theme-mode");
         if (!savedMode || savedMode === "system") {
-          await window.electronAPI.setThemeMode("system");
+          await app.setThemeMode("system");
         }
       } catch (error) {
         console.error("Failed to sync theme with Electron:", error);

@@ -11,6 +11,7 @@ import { Flex, Button, Tooltip, Callout } from "@radix-ui/themes";
 import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import { GitStatusView, useGitStatus, type GitNotification } from "@natstack/git-ui";
 import { GitClient } from "@natstack/git";
+import { ai } from "@natstack/ai";
 import * as fs from "fs/promises";
 import { effectiveThemeAtom } from "../state/themeAtoms";
 
@@ -79,6 +80,29 @@ export function DirtyRepoView({ repoPath, onRetryBuild, onNotify }: DirtyRepoVie
     onNotify?.(notification);
   }, [onNotify]);
 
+  // AI commit message generation using @natstack/ai directly
+  const handleGenerateCommitMessage = useCallback(async (diff: string): Promise<string> => {
+    const systemPrompt = `You are a helpful assistant that generates concise, descriptive git commit messages.
+Based on the provided diff, generate a commit message following these guidelines:
+- First line: Brief summary (50 chars or less if possible, max 72 chars)
+- If needed, add a blank line followed by more detailed explanation
+- Use imperative mood ("Add feature" not "Added feature")
+- Focus on WHY the change was made, not just WHAT changed
+- Be specific but concise
+
+Respond with ONLY the commit message, no additional text or formatting.`;
+
+    const result = await ai.generateText({
+      model: "fast",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: `Generate a commit message for these changes:\n\n${diff}` },
+      ],
+    });
+
+    return result;
+  }, []);
+
   return (
     <Flex direction="column" style={{ height: "100%", minHeight: 0 }}>
       {/* Build-specific header with Continue button */}
@@ -118,6 +142,7 @@ export function DirtyRepoView({ repoPath, onRetryBuild, onNotify }: DirtyRepoVie
           gitClient={gitClient}
           onNotify={handleNotify}
           theme={theme}
+          onGenerateCommitMessage={handleGenerateCommitMessage}
         />
       </Flex>
     </Flex>

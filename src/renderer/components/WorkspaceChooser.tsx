@@ -13,6 +13,7 @@ import {
   wizardDialogOpenAtom,
   wizardFormDataAtom,
 } from "../state/appModeAtoms";
+import { workspace } from "../shell/client";
 import type { RecentWorkspace } from "../../shared/ipc/types";
 
 export function WorkspaceChooser() {
@@ -32,11 +33,11 @@ export function WorkspaceChooser() {
 
   const handleOpenFolder = async () => {
     try {
-      const folderPath = await window.electronAPI.openFolderDialog();
+      const folderPath = await workspace.openFolderDialog();
       if (!folderPath) return;
 
       // Validate the selected folder
-      const validation = await window.electronAPI.validateWorkspacePath(folderPath);
+      const validation = await workspace.validatePath(folderPath);
 
       if (validation.hasConfig) {
         // Valid workspace - open it directly

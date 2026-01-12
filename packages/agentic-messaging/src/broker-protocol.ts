@@ -160,73 +160,39 @@ export type BrokerMetadataMessage = z.infer<typeof BrokerMetadataSchema>;
 // ============================================================================
 
 /**
- * Schema-based feedback UI arguments.
- * Use this format for standard forms - it's simpler and more secure than TSX.
+ * Arguments for feedback_form method.
+ * Use this for standard forms with JSON schema-defined fields.
  */
-export interface FeedbackUiSchemaArgs {
-  schema: {
-    title: string;
-    fields: z.infer<typeof FieldDefinitionSchema>[];
-    values?: Record<string, string | number | boolean>;
-    submitLabel?: string;
-    cancelLabel?: string;
-  };
+export interface FeedbackFormArgs {
+  title: string;
+  fields: z.infer<typeof FieldDefinitionSchema>[];
+  values?: Record<string, string | number | boolean>;
+  submitLabel?: string;
+  cancelLabel?: string;
 }
 
 /**
- * TSX code-based feedback UI arguments.
+ * Arguments for feedback_custom method.
  * Use this for complex custom UIs with custom layout, validation, or interactions.
  */
-export interface FeedbackUiCodeArgs {
+export interface FeedbackCustomArgs {
   code: string;
 }
 
 /**
- * Union type for feedback_ui method arguments.
- * Supports both schema-based and TSX code-based formats.
+ * Zod schema for feedback_form method arguments.
  */
-export type FeedbackUiArgs = FeedbackUiSchemaArgs | FeedbackUiCodeArgs;
-
-/**
- * Type guard to check if args are schema-based feedback UI arguments.
- */
-export function isFeedbackUiSchemaArgs(args: unknown): args is FeedbackUiSchemaArgs {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    "schema" in args &&
-    typeof (args as FeedbackUiSchemaArgs).schema === "object"
-  );
-}
-
-/**
- * Type guard to check if args are TSX code-based feedback UI arguments.
- */
-export function isFeedbackUiCodeArgs(args: unknown): args is FeedbackUiCodeArgs {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    "code" in args &&
-    typeof (args as FeedbackUiCodeArgs).code === "string"
-  );
-}
-
-/**
- * Zod schema for schema-based feedback UI validation.
- */
-export const FeedbackUiSchemaArgsSchema = z.object({
-  schema: z.object({
-    title: z.string(),
-    fields: z.array(FieldDefinitionSchema),
-    values: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
-    submitLabel: z.string().optional(),
-    cancelLabel: z.string().optional(),
-  }),
+export const FeedbackFormArgsSchema = z.object({
+  title: z.string(),
+  fields: z.array(FieldDefinitionSchema),
+  values: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+  submitLabel: z.string().optional(),
+  cancelLabel: z.string().optional(),
 });
 
 /**
- * Zod schema for TSX code-based feedback UI validation.
+ * Zod schema for feedback_custom method arguments.
  */
-export const FeedbackUiCodeArgsSchema = z.object({
+export const FeedbackCustomArgsSchema = z.object({
   code: z.string(),
 });

@@ -107,13 +107,11 @@ async function main() {
             return f;
           });
 
-          // Call feedback_ui on the panel using schema format
-          const handle = client.callMethod(panel.id, "feedback_ui", {
-            schema: {
-              title: "AI Responder Settings",
-              fields,
-              values: currentSettings,
-            },
+          // Call feedback_form on the panel
+          const handle = client.callMethod(panel.id, "feedback_form", {
+            title: "AI Responder Settings",
+            fields,
+            values: currentSettings,
           });
           const result = await handle.result;
           const feedbackResult = result.content as { type: string; value?: unknown; message?: string };

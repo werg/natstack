@@ -10,8 +10,10 @@ import {
   DoubleArrowLeftIcon,
   InfoCircledIcon,
   CheckCircledIcon,
+  MagicWandIcon,
 } from "@radix-ui/react-icons";
 import type { FileChange } from "./DiffBlock/types";
+import type { GitClient } from "@natstack/git";
 import { STATUS_LABELS, STATUS_COLORS } from "./DiffBlock/types";
 import { buildTree, type TreeNode } from "./utils";
 
@@ -27,7 +29,7 @@ export interface FileOverviewProps {
   // Stage/unstage actions
   onStageFile: (path: string) => void;
   onUnstageFile: (path: string) => void;
-  onStageAll: () => void;
+  onStageAll: () => Promise<void>;
   onUnstageAll: () => void;
 
   // Commit
@@ -47,6 +49,19 @@ export interface FileOverviewProps {
 
   // Loading states
   actionLoading?: boolean;
+
+  // AI commit message generation
+  /**
+   * Optional callback to generate a commit message using AI.
+   * If provided, enables the "AI Commit" button.
+   * @param diff - The staged diff text
+   * @returns The generated commit message
+   */
+  onGenerateCommitMessage?: (diff: string) => Promise<string>;
+  /** Git client needed for getting the diff - required if onGenerateCommitMessage is provided */
+  gitClient?: GitClient;
+  /** Repository directory - required if onGenerateCommitMessage is provided */
+  dir?: string;
 }
 
 interface OverviewTreeProps {
@@ -260,6 +275,9 @@ export function FileOverview({
   selectedFile,
   selectedSection,
   actionLoading,
+  onGenerateCommitMessage,
+  gitClient,
+  dir,
 }: FileOverviewProps) {
   // Support both controlled and uncontrolled commit message
   const [uncontrolledMessage, setUncontrolledMessage] = useState("");
@@ -269,6 +287,7 @@ export function FileOverview({
     ? (msg: string) => onCommitMessageChange?.(msg)
     : setUncontrolledMessage;
   const [commitError, setCommitError] = useState<string | null>(null);
+  const [aiGenerating, setAiGenerating] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const setTextareaRef = useCallback(
     (node: HTMLTextAreaElement | null) => {
@@ -280,6 +299,83 @@ export function FileOverview({
     [commitInputRef]
   );
   const [dragOverPanel, setDragOverPanel] = useState<"staged" | "unstaged" | null>(null);
+
+  // AI commit: stage all → get diff → generate message → set message
+  const handleAiCommit = useCallback(async () => {
+    if (!onGenerateCommitMessage || !gitClient || !dir) return;
+    if (aiGenerating || actionLoading) return;
+
+    setAiGenerating(true);
+    setCommitError(null);
+
+    try {
+      // Stage all unstaged files if any
+      if (unstagedFiles.length > 0) {
+        await onStageAll();
+      }
+
+      // Get all files that will be staged (current staged + unstaged that were just staged)
+      // Dedupe by path since partially-staged files appear in both lists
+      const filesToDiff = unstagedFiles.length > 0
+        ? [...new Map([...stagedFiles, ...unstagedFiles].map(f => [f.path, f])).values()]
+        : stagedFiles;
+
+      if (filesToDiff.length === 0) {
+        setCommitError("No changes to generate commit message for");
+        return;
+      }
+
+      // Get diff for each staged file and combine
+      const diffParts: string[] = [];
+      for (const file of filesToDiff) {
+        try {
+          const fileDiff = await gitClient.getStagedDiff(dir, file.path);
+          if (fileDiff.hunks && fileDiff.hunks.length > 0) {
+            // Format diff for AI consumption
+            diffParts.push(`--- ${file.path} (${file.status})`);
+            for (const hunk of fileDiff.hunks) {
+              diffParts.push(`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`);
+              for (const line of hunk.lines) {
+                const prefix = line.type === "add" ? "+" : line.type === "delete" ? "-" : " ";
+                diffParts.push(`${prefix}${line.content}`);
+              }
+            }
+            diffParts.push("");
+          }
+        } catch {
+          // Skip files that fail to diff (might be binary, etc.)
+          diffParts.push(`--- ${file.path} (${file.status}) [diff unavailable]`);
+        }
+      }
+
+      const combinedDiff = diffParts.join("\n");
+      if (combinedDiff.trim().length === 0) {
+        setCommitError("No diff content available for staged changes");
+        return;
+      }
+
+      // Generate commit message
+      const generatedMessage = await onGenerateCommitMessage(combinedDiff);
+      setCommitMessage(generatedMessage.trim());
+
+      // Focus the textarea so user can review/edit
+      textareaRef.current?.focus();
+    } catch (err) {
+      setCommitError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAiGenerating(false);
+    }
+  }, [
+    onGenerateCommitMessage,
+    gitClient,
+    dir,
+    aiGenerating,
+    actionLoading,
+    unstagedFiles,
+    stagedFiles,
+    onStageAll,
+    setCommitMessage,
+  ]);
 
   const handleCommit = useCallback(async () => {
     const message = commitMessage.trim();
@@ -372,17 +468,34 @@ export function FileOverview({
             fieldSizing: "content",
           }}
         />
-        <Tooltip content={<Flex align="center" gap="2">Commit changes <Kbd size="1">⌘</Kbd><Kbd size="1">↵</Kbd></Flex>}>
-          <Button
-            size="2"
-            onClick={() => void handleCommit()}
-            disabled={!hasStaged || !commitMessage.trim() || commitLoading}
-            loading={commitLoading}
-            style={{ alignSelf: "flex-start" }}
-          >
-            Commit
-          </Button>
-        </Tooltip>
+        <Flex gap="2" align="start">
+          {onGenerateCommitMessage && (
+            <Tooltip content="Stage all changes and generate commit message with AI">
+              <Button
+                size="2"
+                variant="soft"
+                onClick={() => void handleAiCommit()}
+                disabled={aiGenerating || actionLoading || (stagedFiles.length === 0 && unstagedFiles.length === 0)}
+                loading={aiGenerating}
+                style={{ alignSelf: "flex-start" }}
+              >
+                <MagicWandIcon />
+                AI Commit
+              </Button>
+            </Tooltip>
+          )}
+          <Tooltip content={<Flex align="center" gap="2">Commit changes <Kbd size="1">⌘</Kbd><Kbd size="1">↵</Kbd></Flex>}>
+            <Button
+              size="2"
+              onClick={() => void handleCommit()}
+              disabled={!hasStaged || !commitMessage.trim() || commitLoading}
+              loading={commitLoading}
+              style={{ alignSelf: "flex-start" }}
+            >
+              Commit
+            </Button>
+          </Tooltip>
+        </Flex>
       </Flex>
       {commitError && (
         <Text size="1" color="red">

@@ -11,6 +11,7 @@ import {
   resetWizardAtom,
   createWorkspaceAtom,
 } from "../state/appModeAtoms";
+import { workspace } from "../shell/client";
 
 export function WorkspaceWizard() {
   const isOpen = useAtomValue(wizardDialogOpenAtom);
@@ -32,9 +33,9 @@ export function WorkspaceWizard() {
 
   const handleSelectFolder = async () => {
     try {
-      const folderPath = await window.electronAPI.openFolderDialog();
+      const folderPath = await workspace.openFolderDialog();
       if (folderPath) {
-        const validation = await window.electronAPI.validateWorkspacePath(folderPath);
+        const validation = await workspace.validatePath(folderPath);
         setFormData({
           ...formData,
           folderPath: validation.path,

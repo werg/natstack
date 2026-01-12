@@ -1,4 +1,5 @@
 import { app, Menu, shell, MenuItemConstructorOptions, type WebContents } from "electron";
+import { eventService } from "./services/eventsService.js";
 
 /**
  * Build common menu items that are shared between the app menu and hamburger popup.
@@ -18,18 +19,14 @@ export function buildCommonMenuItems(
       label: "Switch Workspace...",
       accelerator: "CmdOrCtrl+Shift+O",
       click: () => {
-        if (shellContents && !shellContents.isDestroyed()) {
-          shellContents.send("open-workspace-chooser");
-        }
+        eventService.emit("open-workspace-chooser");
       },
     },
     {
       label: "Settings...",
       accelerator: "CmdOrCtrl+,",
       click: () => {
-        if (shellContents && !shellContents.isDestroyed()) {
-          shellContents.send("open-settings");
-        }
+        eventService.emit("open-settings");
       },
     },
   ];
@@ -53,9 +50,7 @@ export function buildCommonMenuItems(
       label: "Toggle Panel DevTools",
       accelerator: "CmdOrCtrl+Shift+I",
       click: () => {
-        if (shellContents && !shellContents.isDestroyed()) {
-          shellContents.send("menu:toggle-panel-devtools");
-        }
+        eventService.emit("toggle-panel-devtools");
       },
     },
     {
@@ -140,9 +135,7 @@ export function setupMenu(mainWindow: Electron.BaseWindow, shellContents: WebCon
           label: "Switch Workspace...",
           accelerator: "CmdOrCtrl+Shift+O",
           click: () => {
-            if (shellContents && !shellContents.isDestroyed()) {
-              shellContents.send("open-workspace-chooser");
-            }
+            eventService.emit("open-workspace-chooser");
           },
         },
         { type: "separator" },
@@ -150,9 +143,7 @@ export function setupMenu(mainWindow: Electron.BaseWindow, shellContents: WebCon
           label: "Settings...",
           accelerator: "CmdOrCtrl+,",
           click: () => {
-            if (shellContents && !shellContents.isDestroyed()) {
-              shellContents.send("open-settings");
-            }
+            eventService.emit("open-settings");
           },
         },
         { type: "separator" },

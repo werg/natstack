@@ -17,9 +17,3 @@ declare namespace JSX {
 }
 
 type Panel = import("main/panelTypes").Panel;
-
-type ElectronAPI = typeof import("../preload/index").electronAPI;
-
-interface Window {
-  electronAPI: ElectronAPI;
-}
