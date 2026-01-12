@@ -90,7 +90,7 @@ export interface ParsedPreloadConfig {
   pubsubConfig: PubSubConfig | null;
 }
 
-export type NatstackKind = "panel" | "worker";
+export type NatstackKind = "panel" | "worker" | "shell";
 
 // =============================================================================
 // Parsing functions
@@ -120,7 +120,9 @@ export function parseScopePath(): string | null {
 export function parseKind(): NatstackKind {
   const arg = process.argv.find((value) => value.startsWith(ARG_KIND));
   const kind = arg?.split("=")[1];
-  return kind === "worker" ? "worker" : "panel";
+  if (kind === "worker") return "worker";
+  if (kind === "shell") return "shell";
+  return "panel";
 }
 
 export function parseSessionId(): string {

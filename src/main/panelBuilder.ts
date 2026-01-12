@@ -151,7 +151,7 @@ function collectExposedDepsFromMetafile(
  * This runs before any module code, so the map is ready when registrations happen.
  * Supports both sync require (for pre-bundled modules) and async require (for dynamic loading via CDN).
  */
-function generateModuleMapBanner(): string {
+export function generateModuleMapBanner(): string {
   return `
 // === NatStack Module Map (runs before all module code) ===
 globalThis.__natstackModuleMap__ = globalThis.__natstackModuleMap__ || {};
@@ -235,7 +235,7 @@ interface AsyncTrackingBannerOptions {
  *
  * This patch makes Node.js's events module tolerate browser AbortSignal.
  */
-function generateNodeCompatibilityPatch(): string {
+export function generateNodeCompatibilityPatch(): string {
   return `
 // === Node.js Compatibility Patch ===
 // Patch events.setMaxListeners to accept browser AbortSignal
@@ -593,7 +593,7 @@ ${browserApiWrappers}
  * Generate the async tracking banner for browser panels.
  * Includes browser-specific API wrappers (clipboard, createImageBitmap).
  */
-function generateAsyncTrackingBanner(): string {
+export function generateAsyncTrackingBanner(): string {
   return generateAsyncTrackingBannerCore({
     label: "NatStack Async Tracking",
     globalObjExpr: 'typeof globalThis !== "undefined" ? globalThis : window',

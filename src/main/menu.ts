@@ -1,4 +1,4 @@
-import { app, Menu, shell, MenuItemConstructorOptions, type WebContents } from "electron";
+import { app, Menu, MenuItemConstructorOptions, type WebContents } from "electron";
 import { eventService } from "./services/eventsService.js";
 
 /**
@@ -23,10 +23,10 @@ export function buildCommonMenuItems(
       },
     },
     {
-      label: "Settings...",
-      accelerator: "CmdOrCtrl+,",
+      label: "Model Provider Config...",
+      accelerator: "CmdOrCtrl+Shift+M",
       click: () => {
-        eventService.emit("open-settings");
+        eventService.emit("navigate-about", { page: "model-provider-config" });
       },
     },
   ];
@@ -140,10 +140,10 @@ export function setupMenu(mainWindow: Electron.BaseWindow, shellContents: WebCon
         },
         { type: "separator" },
         {
-          label: "Settings...",
-          accelerator: "CmdOrCtrl+,",
+          label: "Model Provider Config...",
+          accelerator: "CmdOrCtrl+Shift+M",
           click: () => {
-            eventService.emit("open-settings");
+            eventService.emit("navigate-about", { page: "model-provider-config" });
           },
         },
         { type: "separator" },
@@ -213,9 +213,23 @@ export function setupMenu(mainWindow: Electron.BaseWindow, shellContents: WebCon
       role: "help",
       submenu: [
         {
-          label: "Learn More",
-          click: async () => {
-            await shell.openExternal("https://electronjs.org");
+          label: "Keyboard Shortcuts",
+          accelerator: "CmdOrCtrl+/",
+          click: () => {
+            eventService.emit("navigate-about", { page: "keyboard-shortcuts" });
+          },
+        },
+        { type: "separator" },
+        {
+          label: "Documentation",
+          click: () => {
+            eventService.emit("navigate-about", { page: "help" });
+          },
+        },
+        {
+          label: "About NatStack",
+          click: () => {
+            eventService.emit("navigate-about", { page: "about" });
           },
         },
       ],

@@ -844,6 +844,28 @@ export default function ChildPanelLauncher() {
                   Open invalid child source (should trigger onChildCreationError)
                 </a>
               </Text>
+              <Separator size="4" my="2" />
+              <Text size="2" weight="bold">Shell Pages (via natstack-about:// links):</Text>
+              <Text size="2">
+                <a href="natstack-about://model-provider-config">
+                  Open Model Provider Config
+                </a>
+              </Text>
+              <Text size="2">
+                <a href="natstack-about://keyboard-shortcuts">
+                  Open Keyboard Shortcuts
+                </a>
+              </Text>
+              <Text size="2">
+                <a href="natstack-about://help">
+                  Open Help
+                </a>
+              </Text>
+              <Text size="2">
+                <a href="natstack-about://about">
+                  Open About
+                </a>
+              </Text>
             </Flex>
           </Card>
           {childLinkErrors.length > 0 && (

@@ -18,6 +18,7 @@ import type {
   WorkspaceValidation,
   SettingsData,
   AppMode,
+  ShellPage,
 } from "../../shared/ipc/types.js";
 
 // =============================================================================
@@ -48,6 +49,8 @@ export const panel = {
   initGitRepo: (panelId: string) => rpc.call<void>("main", "panel.initGitRepo", panelId),
   updateBrowserState: (browserId: string, state: Partial<BrowserState> & { url?: string }) =>
     rpc.call<void>("main", "panel.updateBrowserState", browserId, state),
+  createShellPanel: (page: ShellPage) =>
+    rpc.call<{ id: string; type: PanelType; title: string }>("main", "panel.createShellPanel", page),
 };
 
 // =============================================================================

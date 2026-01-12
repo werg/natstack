@@ -94,6 +94,16 @@ export function registerPanelProtocol(): void {
         secure: true,
       },
     },
+    {
+      scheme: "natstack-about",
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        corsEnabled: true,
+        stream: true,
+      },
+    },
   ]);
 }
 

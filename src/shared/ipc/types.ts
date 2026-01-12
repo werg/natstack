@@ -245,8 +245,14 @@ export interface StreamTextEndEvent {
  * - "app": Built webview from source code
  * - "worker": Background process in hidden WebContentsView
  * - "browser": External URL with Playwright automation
+ * - "shell": System pages (settings, about, etc.) with full shell access
  */
-export type PanelType = "app" | "worker" | "browser";
+export type PanelType = "app" | "worker" | "browser" | "shell";
+
+/**
+ * Shell panel page types.
+ */
+export type ShellPage = "model-provider-config" | "about" | "keyboard-shortcuts" | "help";
 
 /**
  * Browser panel navigation state.
@@ -320,9 +326,20 @@ export interface BrowserPanel extends PanelBase {
 }
 
 /**
+ * Shell panel - system pages with full shell access (settings, about, etc.).
+ */
+export interface ShellPanel extends PanelBase {
+  type: "shell";
+  /** The shell page being displayed */
+  page: ShellPage;
+  /** Shell panels always inject host theme */
+  injectHostThemeVariables: true;
+}
+
+/**
  * Union type of all panel types.
  */
-export type Panel = AppPanel | WorkerPanel | BrowserPanel;
+export type Panel = AppPanel | WorkerPanel | BrowserPanel | ShellPanel;
 
 // =============================================================================
 // Isolated Worker Types

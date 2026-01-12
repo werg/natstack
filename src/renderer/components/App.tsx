@@ -1,21 +1,19 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useCallback } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { Theme, Dialog } from "@radix-ui/themes";
 
 import {
   appModeAtom,
   loadAppModeAtom,
-  settingsDialogOpenAtom,
-  settingsDataAtom,
-  loadSettingsAtom,
   workspaceChooserDialogOpenAtom,
 } from "../state/appModeAtoms";
 import { effectiveThemeAtom, loadThemePreferenceAtom } from "../state/themeAtoms";
 import { useShellEvent } from "../shell/useShellEvent";
+import { panel } from "../shell/client";
+import type { ShellPage } from "../../shared/ipc/types";
 import { PanelApp } from "./PanelApp";
 import { WorkspaceChooser } from "./WorkspaceChooser";
 import { WorkspaceWizard } from "./WorkspaceWizard";
-import { SettingsDialog } from "./SettingsDialog";
 
 /**
  * Root App component that routes between workspace chooser and main panel app.
@@ -25,7 +23,6 @@ export function App() {
   const effectiveTheme = useAtomValue(effectiveThemeAtom);
   const loadAppMode = useSetAtom(loadAppModeAtom);
   const loadThemePreference = useSetAtom(loadThemePreferenceAtom);
-  const setSettingsOpen = useSetAtom(settingsDialogOpenAtom);
   const setWorkspaceChooserOpen = useSetAtom(workspaceChooserDialogOpenAtom);
 
   // Load app mode and theme preference on mount
@@ -40,17 +37,22 @@ export function App() {
   }, [loadThemePreference]);
   useShellEvent("system-theme-changed", handleThemeChanged);
 
-  // Listen for settings menu event via shell event
-  const handleOpenSettings = useCallback(() => {
-    setSettingsOpen(true);
-  }, [setSettingsOpen]);
-  useShellEvent("open-settings", handleOpenSettings);
-
   // Listen for workspace chooser menu event via shell event
   const handleOpenWorkspaceChooser = useCallback(() => {
     setWorkspaceChooserOpen(true);
   }, [setWorkspaceChooserOpen]);
   useShellEvent("open-workspace-chooser", handleOpenWorkspaceChooser);
+
+  // Listen for navigate-about menu event via shell event
+  const handleNavigateAbout = useCallback(async (payload: { page: ShellPage }) => {
+    try {
+      const result = await panel.createShellPanel(payload.page);
+      window.dispatchEvent(new CustomEvent("shell-panel-created", { detail: { panelId: result.id } }));
+    } catch (error) {
+      console.error(`[App] Failed to create shell panel for ${payload.page}:`, error);
+    }
+  }, []);
+  useShellEvent("navigate-about", handleNavigateAbout);
 
   return (
     <Theme appearance={effectiveTheme} radius="none">
@@ -60,65 +62,28 @@ export function App() {
 }
 
 /**
- * Chooser mode: shows workspace selector with settings dialog.
- * If no providers are configured, settings dialog opens in setup mode.
+ * Chooser mode: shows workspace selector.
  */
 function ChooserMode() {
-  const settingsData = useAtomValue(settingsDataAtom);
-  const loadSettings = useSetAtom(loadSettingsAtom);
-  const [initialLoadDone, setInitialLoadDone] = useState(false);
-
-  // Load settings on mount to check if setup is needed
-  useEffect(() => {
-    void loadSettings().then(() => setInitialLoadDone(true));
-  }, [loadSettings]);
-
-  // Determine if we need setup mode (no providers configured)
-  const needsSetup =
-    initialLoadDone && settingsData !== null && !settingsData.hasConfiguredProviders;
-
   return (
     <>
       <WorkspaceChooser />
       <WorkspaceWizard />
-      <SettingsDialog isSetupMode={needsSetup} />
     </>
   );
 }
 
 /**
- * Main mode: shows panel app with dialogs for workspace chooser, wizard, and settings.
- * If no providers are configured, settings dialog opens in setup mode on startup.
+ * Main mode: shows panel app with dialogs for workspace chooser and wizard.
  */
 function MainMode() {
-  const settingsData = useAtomValue(settingsDataAtom);
-  const loadSettings = useSetAtom(loadSettingsAtom);
-  const setSettingsOpen = useSetAtom(settingsDialogOpenAtom);
   const workspaceChooserOpen = useAtomValue(workspaceChooserDialogOpenAtom);
   const setWorkspaceChooserOpen = useSetAtom(workspaceChooserDialogOpenAtom);
-  const [initialLoadDone, setInitialLoadDone] = useState(false);
-
-  // Load settings on mount to check if setup is needed
-  useEffect(() => {
-    void loadSettings().then(() => setInitialLoadDone(true));
-  }, [loadSettings]);
-
-  // Check if we need setup mode (no providers configured)
-  const needsSetup =
-    initialLoadDone && settingsData !== null && !settingsData.hasConfiguredProviders;
-
-  // Open settings dialog on startup if no providers configured
-  useEffect(() => {
-    if (needsSetup) {
-      setSettingsOpen(true);
-    }
-  }, [needsSetup, setSettingsOpen]);
 
   return (
     <>
       <PanelApp />
       <WorkspaceWizard />
-      <SettingsDialog isSetupMode={needsSetup} />
 
       {/* Workspace Chooser Dialog (for switching workspaces in main mode) */}
       <Dialog.Root open={workspaceChooserOpen} onOpenChange={setWorkspaceChooserOpen}>

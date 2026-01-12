@@ -120,7 +120,11 @@ function PanelTreeSidebar({ rootPanels, visiblePath, onSelect, onPanelAction }: 
 
       // Get tooltip content based on panel type
       const tooltipContent =
-        panel.type === "browser" ? panel.url : panel.path;
+        panel.type === "browser"
+          ? panel.url
+          : panel.type === "shell"
+            ? `Shell: ${panel.page}`
+            : panel.path;
 
       return (
         <Box key={panel.id} style={{ paddingLeft: `calc(${ancestry.length} * var(--space-2))` }}>
@@ -574,9 +578,9 @@ export function PanelStack({
     previousVisiblePanelId.current = panelId;
 
     // For app/worker panels, only interact with view if htmlPath is set (view is created after build)
-    // Browser panels don't have htmlPath but do have views
+    // Browser and shell panels don't have htmlPath but do have views
     // Panels with errors or still building have no view to show
-    const hasView = visiblePanel?.type === "browser" || !!htmlPath;
+    const hasView = visiblePanel?.type === "browser" || visiblePanel?.type === "shell" || !!htmlPath;
     if (!hasView) {
       return;
     }
@@ -778,8 +782,8 @@ export function PanelStack({
                       }
 
                       if (!artifacts?.htmlPath) {
-                        // Browser panels - WebContentsView is managed by main process, no in-shell toolbar
-                        if (panel.type === "browser") {
+                        // Browser and shell panels - WebContentsView is managed by main process, no in-shell toolbar
+                        if (panel.type === "browser" || panel.type === "shell") {
                           return (
                             <Box
                               key={panel.id}

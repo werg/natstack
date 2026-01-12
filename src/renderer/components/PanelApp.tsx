@@ -57,6 +57,22 @@ function PanelAppContent() {
   }, [openPanelDevTools]);
   useShellEvent("toggle-panel-devtools", handleTogglePanelDevTools);
 
+  // Listen for shell panel created event to navigate to the new panel
+  useEffect(() => {
+    const handleShellPanelCreated = (event: Event) => {
+      const customEvent = event as CustomEvent<{ panelId: string }>;
+      const { panelId } = customEvent.detail;
+      if (panelId) {
+        navigate([panelId]);
+      }
+    };
+
+    window.addEventListener("shell-panel-created", handleShellPanelCreated);
+    return () => {
+      window.removeEventListener("shell-panel-created", handleShellPanelCreated);
+    };
+  }, [navigate]);
+
   return (
     <Theme appearance={effectiveTheme} radius="none">
       <Flex direction="column" height="100vh" style={{ overflow: "hidden" }}>

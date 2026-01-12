@@ -28,6 +28,7 @@ import type {
   ProviderInfo,
   AvailableProvider,
   ModelRoleConfig,
+  ShellPage,
 } from "../../shared/ipc/types.js";
 import type { SupportedProvider } from "../workspace/types.js";
 import { getViewManager } from "../viewManager.js";
@@ -50,6 +51,7 @@ import {
   hasProviderApiKey,
   usesCliAuth,
 } from "../ai/providerFactory.js";
+import { fetchModelsForProvider, type FetchedModel } from "../ai/modelFetcher.js";
 
 // These will be set during initialization to avoid circular dependencies
 let _panelManager: import("../panelManager.js").PanelManager | null = null;
@@ -109,6 +111,19 @@ function hasConfiguredProviders(): boolean {
     }
     return hasProviderApiKey(providerId);
   });
+}
+
+/**
+ * Get the API key for a provider from environment or secrets.
+ */
+function getApiKeyForProvider(
+  providerId: SupportedProvider,
+  envVars: Record<SupportedProvider, string>,
+  secrets: Record<string, string>
+): string | undefined {
+  const envVar = envVars[providerId];
+  // Check process.env first (from .env or shell), then secrets
+  return process.env[envVar] || secrets[providerId];
 }
 
 // =============================================================================
@@ -236,6 +251,11 @@ export async function handlePanelService(
       }];
       pm.updateBrowserState(browserId, state);
       return;
+    }
+
+    case "createShellPanel": {
+      const page = args[0] as ShellPage;
+      return pm.createShellPanel(page);
     }
 
     default:
@@ -366,7 +386,7 @@ export async function handleMenuService(
       return new Promise<PanelContextMenuAction | null>((resolve) => {
         const template: MenuItemConstructorOptions[] = [];
 
-        if (panelType === "app" || panelType === "browser") {
+        if (panelType === "app" || panelType === "browser" || panelType === "shell") {
           template.push({
             label: "Reload",
             click: () => resolve("reload"),
@@ -633,14 +653,48 @@ export async function handleSettingsService(
       const envVars = getProviderEnvVars();
       const secrets = loadSecrets();
 
-      // Build provider info list
+      // Fetch models dynamically for configured providers (in parallel)
+      const fetchedModels = new Map<SupportedProvider, FetchedModel[]>();
+      const fetchPromises = supportedProviders.map(async (providerId) => {
+        const cliAuth = usesCliAuth(providerId);
+        const hasKey = hasProviderApiKey(providerId);
+        const isEnabled = cliAuth ? secrets[providerId] === "enabled" : false;
+
+        // Only fetch for providers with API keys or enabled CLI providers
+        if (hasKey || (cliAuth && isEnabled)) {
+          const apiKey = getApiKeyForProvider(providerId, envVars, secrets);
+          if (apiKey || cliAuth) {
+            try {
+              const models = await fetchModelsForProvider(providerId, apiKey ?? "");
+              if (models && models.length > 0) {
+                fetchedModels.set(providerId, models);
+              }
+            } catch (error) {
+              console.warn(`[Settings] Failed to fetch models for ${providerId}:`, error);
+            }
+          }
+        }
+      });
+
+      // Wait for all fetches with a timeout
+      await Promise.race([
+        Promise.all(fetchPromises),
+        new Promise((resolve) => setTimeout(resolve, 15000)), // 15s overall timeout
+      ]);
+
+      // Build provider info list with fetched or default models
       const providers: ProviderInfo[] = supportedProviders.map((providerId) => {
         const cliAuth = usesCliAuth(providerId);
+        const fetched = fetchedModels.get(providerId);
+        const models = fetched
+          ? fetched.map((m) => m.id)
+          : getDefaultModelsForProvider(providerId).map((m) => m.id);
+
         return {
           id: providerId,
           name: getProviderDisplayName(providerId),
           hasApiKey: hasProviderApiKey(providerId),
-          models: getDefaultModelsForProvider(providerId).map((m) => m.id),
+          models,
           usesCliAuth: cliAuth,
           isEnabled: cliAuth ? secrets[providerId] === "enabled" : undefined,
         };

@@ -21,6 +21,8 @@ import { parseChildUrl } from "./childProtocol.js";
 import { checkWorktreeClean, checkGitRepository } from "./gitProvisioner.js";
 import { PANEL_CSP_META } from "../shared/constants.js";
 import { eventService } from "./services/eventsService.js";
+import { getAboutBuilder, getShellPageTitle } from "./aboutBuilder.js";
+import { getAboutPageUrl, hasAboutPage, registerAboutProtocolForPartition, isValidShellPage } from "./aboutProtocol.js";
 
 type ChildCreateOptions = {
   name?: string;
@@ -427,13 +429,31 @@ export class PanelManager {
       return { action: "deny" };
     });
 
-    // Intercept in-place navigations to natstack-child:// (and http(s) for app panels).
+    // Intercept in-place navigations:
+    // - natstack-child:// → app/worker children
+    // - natstack-about:// → shell children (like http → browser)
+    // - http(s):// in app panels → browser children
     contents.on("will-navigate", (event, url) => {
       if (url.startsWith("natstack-child:")) {
         event.preventDefault();
         try {
           const { source, gitRef, sessionId } = parseChildUrl(url);
           this.createChild(panelId, source, { gitRef, sessionId }).catch((err) =>
+            this.handleChildCreationError(panelId, err, url)
+          );
+        } catch (err) {
+          this.handleChildCreationError(panelId, err, url);
+        }
+        return;
+      }
+
+      // natstack-about:// links create shell children (parallel to http → browser)
+      if (url.startsWith("natstack-about:")) {
+        event.preventDefault();
+        try {
+          const parsed = new URL(url);
+          const page = parsed.hostname; // e.g., "about", "help", "model-provider-config"
+          this.createChild(panelId, `shell:${page}`).catch((err) =>
             this.handleChildCreationError(panelId, err, url)
           );
         } catch (err) {
@@ -741,7 +761,11 @@ export class PanelManager {
   }
 
   /**
-   * Create a child app/worker from a manifest source path.
+   * Create a child panel from a source path.
+   * Supports:
+   * - App/worker panels from manifest source paths (e.g., "panels/editor")
+   * - Shell pages with "shell:" prefix (e.g., "shell:about", "shell:model-provider-config")
+   *
    * Main process handles git checkout and build asynchronously for app/worker types.
    * Returns child info immediately; build happens in background.
    */
@@ -753,6 +777,16 @@ export class PanelManager {
     const parent = this.panels.get(parentId);
     if (!parent) {
       throw new Error(`Parent panel not found: ${parentId}`);
+    }
+
+    // Check for shell page source (e.g., "shell:about" or "shell/about")
+    const shellMatch = source.match(/^shell[:/](.+)$/);
+    if (shellMatch && shellMatch[1]) {
+      const page = shellMatch[1];
+      if (!isValidShellPage(page)) {
+        throw new Error(`Invalid shell page: ${page}. Valid pages: model-provider-config, about, keyboard-shortcuts, help`);
+      }
+      return this.createShellChild(parent, page as SharedPanel.ShellPage, options);
     }
 
     const { relativePath, absolutePath } = this.normalizePanelPath(source);
@@ -853,6 +887,79 @@ export class PanelManager {
   }
 
   /**
+   * Create a shell panel as a child of an existing panel.
+   * Shell panels are pre-built system pages (model-provider-config, about, keyboard-shortcuts, help)
+   * that have full shell-level access to services.
+   */
+  private async createShellChild(
+    parent: Panel,
+    page: SharedPanel.ShellPage,
+    options?: ChildCreateOptions
+  ): Promise<{ id: string; type: SharedPanel.PanelType; title: string }> {
+    // Build the about page if not already built
+    let url: string;
+    if (hasAboutPage(page)) {
+      url = getAboutPageUrl(page);
+    } else {
+      try {
+        url = await getAboutBuilder().buildAndStorePage(page);
+      } catch (error) {
+        throw new Error(
+          `Failed to build shell page ${page}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+
+    const title = getShellPageTitle(page);
+
+    // Generate unique panel ID as child of parent
+    const panelId = this.computePanelId({
+      relativePath: `shell/${page}`,
+      parent,
+      requestedId: options?.name,
+      isRoot: false,
+    });
+
+    if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
+      throw new Error(`A panel with id "${panelId}" is already running`);
+    }
+
+    // Shell panels use unsafe mode for full service access
+    const sessionId = this.resolveSession(panelId, options, true);
+
+    const panel: SharedPanel.ShellPanel = {
+      type: "shell",
+      id: panelId,
+      sessionId,
+      title,
+      page,
+      children: [],
+      selectedChildId: null,
+      artifacts: {
+        buildState: "ready",
+      },
+      env: options?.env,
+      injectHostThemeVariables: true,
+    };
+
+    // Add as child of parent
+    parent.children.push(panel);
+    parent.selectedChildId = panel.id;
+    this.panels.set(panel.id, panel);
+
+    // Register the about protocol for the shell panel's partition
+    const partition = `persist:${panel.sessionId}`;
+    await registerAboutProtocolForPartition(partition);
+
+    // Create WebContentsView for the shell panel
+    this.createViewForShellPanel(panel, url);
+
+    this.notifyPanelTreeUpdate();
+
+    return { id: panel.id, type: panel.type, title: panel.title };
+  }
+
+  /**
    * Update browser panel state (URL, loading, navigation capabilities).
    * Called when the renderer forwards webview events.
    */
@@ -893,6 +1000,127 @@ export class PanelManager {
     }
 
     this.notifyPanelTreeUpdate();
+  }
+
+  /**
+   * Create a shell panel for system pages (model-provider-config, about, etc.).
+   * Shell panels have full access to shell services and appear in the panel tree.
+   * Only one instance per page type (navigating to existing shows it, not creates new).
+   */
+  async createShellPanel(
+    page: SharedPanel.ShellPage
+  ): Promise<{ id: string; type: SharedPanel.PanelType; title: string }> {
+    const panelId = `shell:${page}`;
+
+    // Check if shell panel already exists for this page
+    const existing = this.panels.get(panelId);
+    if (existing) {
+      // Navigate to existing panel instead of creating new
+      return { id: existing.id, type: existing.type, title: existing.title };
+    }
+
+    // Build the about page if not already built
+    let url: string;
+    if (hasAboutPage(page)) {
+      url = getAboutPageUrl(page);
+    } else {
+      try {
+        url = await getAboutBuilder().buildAndStorePage(page);
+      } catch (error) {
+        throw new Error(
+          `Failed to build shell page ${page}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+
+    const title = getShellPageTitle(page);
+
+    // Shell panels use unsafe mode for full service access
+    const sessionId = `unsafe_auto_shell~${page}`;
+
+    const panel: SharedPanel.ShellPanel = {
+      type: "shell",
+      id: panelId,
+      sessionId,
+      title,
+      page,
+      children: [],
+      selectedChildId: null,
+      artifacts: {
+        buildState: "ready",
+      },
+      env: undefined,
+      injectHostThemeVariables: true,
+    };
+
+    // Add to root panels (shell panels are top-level)
+    this.rootPanels.push(panel);
+    this.panels.set(panel.id, panel);
+
+    // Register the about protocol for the shell panel's partition
+    const partition = `persist:${panel.sessionId}`;
+    await registerAboutProtocolForPartition(partition);
+
+    // Create WebContentsView for the shell panel
+    this.createViewForShellPanel(panel, url);
+
+    this.notifyPanelTreeUpdate();
+
+    return { id: panel.id, type: panel.type, title: panel.title };
+  }
+
+  /**
+   * Create a WebContentsView for a shell panel.
+   * Shell panels run with unsafe mode (nodeIntegration) for full service access.
+   */
+  private createViewForShellPanel(panel: SharedPanel.ShellPanel, url: string): void {
+    if (!this.viewManager) {
+      throw new Error(`[PanelManager] ViewManager not set, cannot create view for ${panel.id}`);
+    }
+
+    if (this.viewManager.hasView(panel.id)) {
+      return; // View already exists
+    }
+
+    const authToken = randomBytes(32).toString("hex");
+    this.pendingAuthTokens.set(panel.id, { token: authToken, createdAt: Date.now() });
+    this.cleanupExpiredAuthTokens();
+
+    const additionalArgs: string[] = [
+      `--natstack-panel-id=${panel.id}`,
+      `--natstack-auth-token=${authToken}`,
+      `--natstack-theme=${this.currentTheme}`,
+      `--natstack-kind=shell`,
+      `--natstack-session-id=${panel.sessionId}`,
+    ];
+
+    // Shell panels get full filesystem access
+    const workspace = getActiveWorkspace();
+    if (workspace) {
+      additionalArgs.push(`--natstack-scope-path=/`);
+    }
+
+    this.viewManager.createView({
+      id: panel.id,
+      type: "panel",
+      partition: `persist:${panel.sessionId}`,
+      url,
+      injectHostThemeVariables: true,
+      additionalArguments: additionalArgs,
+      unsafe: "/", // Full filesystem access
+    });
+  }
+
+  /**
+   * Find a shell panel by its page type.
+   */
+  findShellPanel(page: SharedPanel.ShellPage): SharedPanel.ShellPanel | null {
+    const panelId = `shell:${page}`;
+    const panel = this.panels.get(panelId);
+    if (panel?.type === "shell") {
+      return panel as SharedPanel.ShellPanel;
+    }
+    return null;
   }
 
   /**
@@ -1285,9 +1513,6 @@ export class PanelManager {
   }
 
   async setTitle(callerId: string, title: string): Promise<void> {
-    console.log(`[PanelManager] setTitle called with callerId="${callerId}", title="${title}"`);
-    console.log(`[PanelManager] All panel IDs: ${Array.from(this.panels.keys()).join(", ")}`);
-
     const panel = this.panels.get(callerId);
     if (!panel) {
       throw new Error(`Panel not found: ${callerId}`);

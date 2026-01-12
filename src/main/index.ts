@@ -42,6 +42,7 @@ import {
 import type { Workspace, AppMode } from "./workspace/types.js";
 import { getCentralData } from "./centralData.js";
 import { registerPanelProtocol, setupPanelProtocol } from "./panelProtocol.js";
+import { setupAboutProtocol } from "./aboutProtocol.js";
 import { getMainCacheManager } from "./cacheManager.js";
 import { getCdpServer, type CdpServer } from "./cdpServer.js";
 import { getPubSubServer, type PubSubServer } from "./pubsubServer.js";
@@ -254,9 +255,15 @@ handle("rpc:call", async (event, panelId: string, message: RpcMessage): Promise<
 
   const { service, method: serviceMethod } = parsedMethod;
 
-  // Check service access policy for panels
+  // Determine caller kind based on panel type
+  // Shell panels (type: "shell") get shell-level access to services
+  const pm = requirePanelManager();
+  const panel = pm.getPanel(panelId);
+  const callerKind = (panel?.type === "shell" ? "shell" : "panel") as import("./serviceDispatcher.js").CallerKind;
+
+  // Check service access policy
   try {
-    checkServiceAccess(service, "panel");
+    checkServiceAccess(service, callerKind);
   } catch (error) {
     return {
       type: "response",
@@ -266,7 +273,7 @@ handle("rpc:call", async (event, panelId: string, message: RpcMessage): Promise<
   }
 
   const dispatcher = getServiceDispatcher();
-  const ctx = { callerId: panelId, callerKind: "panel" as const, webContents: event.sender };
+  const ctx = { callerId: panelId, callerKind, webContents: event.sender };
 
   try {
     const result = await dispatcher.dispatch(ctx, service, serviceMethod, args);
@@ -423,6 +430,7 @@ app.on("ready", async () => {
   // Set up panel protocol handler
   checkDbFile("before setupPanelProtocol");
   setupPanelProtocol();
+  setupAboutProtocol();
   checkDbFile("after setupPanelProtocol");
 
   // Initialize cache manager (shared across all panels)

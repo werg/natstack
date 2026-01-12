@@ -438,6 +438,12 @@ export class AIHandler {
     streamId: string,
     requestId: string
   ): StreamTarget {
+    // Increase max listeners to avoid warnings when multiple streams target the same WebContents
+    const currentMax = sender.getMaxListeners();
+    if (currentMax < 50) {
+      sender.setMaxListeners(50);
+    }
+
     const sendChunk = (event: StreamTextEvent): void => {
       if (!sender.isDestroyed()) {
         sender.send("ai:stream-text-chunk", { panelId, streamId, chunk: event });

@@ -5,16 +5,18 @@
  * Keep them in sync by importing from this single source of truth.
  */
 
+import type { ShellPage } from "./types.js";
+
 /**
  * Known event names that can be subscribed to.
  */
 export type EventName =
   | "system-theme-changed"
   | "panel-tree-updated"
-  | "open-settings"
   | "open-workspace-chooser"
   | "toggle-panel-devtools"
-  | "panel-initialization-error";
+  | "panel-initialization-error"
+  | "navigate-about";
 
 /**
  * Event payloads for type safety.
@@ -22,10 +24,10 @@ export type EventName =
 export interface EventPayloads {
   "system-theme-changed": "light" | "dark";
   "panel-tree-updated": unknown[]; // Panel tree array
-  "open-settings": void;
   "open-workspace-chooser": void;
   "toggle-panel-devtools": void;
   "panel-initialization-error": { path: string; error: string };
+  "navigate-about": { page: ShellPage };
 }
 
 /**
@@ -34,10 +36,10 @@ export interface EventPayloads {
 export const VALID_EVENT_NAMES: EventName[] = [
   "system-theme-changed",
   "panel-tree-updated",
-  "open-settings",
   "open-workspace-chooser",
   "toggle-panel-devtools",
   "panel-initialization-error",
+  "navigate-about",
 ];
 
 /**
