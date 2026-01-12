@@ -19,12 +19,14 @@ import {
   createRichTextChatSystemPrompt,
   DEFAULT_MISSED_CONTEXT_MAX_CHARS,
   formatMissedContext,
-  CLAUDE_CODE_PARAMETERS,
-  CLAUDE_MODEL_FALLBACKS,
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
 } from "@natstack/agentic-messaging";
+import {
+  CLAUDE_CODE_PARAMETERS,
+  CLAUDE_MODEL_FALLBACKS,
+} from "@natstack/agentic-messaging/config";
 import { z } from "zod";
 import { query, tool, createSdkMcpServer, type Query, type SDKResultMessage, type CanUseTool, type PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 

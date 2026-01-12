@@ -28,6 +28,26 @@ export function getDefaultRequire(): ((id: string) => unknown) | undefined {
 }
 
 /**
+ * Get the async require function from the global scope.
+ * Returns undefined if not available.
+ */
+export function getAsyncRequire(): ((id: string) => Promise<unknown>) | undefined {
+  return (globalThis as Record<string, unknown>)["__natstackRequireAsync__"] as
+    | ((id: string) => Promise<unknown>)
+    | undefined;
+}
+
+/**
+ * Get the preload modules function from the global scope.
+ * Returns undefined if not available.
+ */
+export function getPreloadModules(): ((ids: string[]) => Promise<unknown[]>) | undefined {
+  return (globalThis as Record<string, unknown>)["__natstackPreloadModules__"] as
+    | ((ids: string[]) => Promise<unknown[]>)
+    | undefined;
+}
+
+/**
  * Result of validating module requires.
  */
 export interface ValidateRequiresResult {
@@ -73,6 +93,74 @@ export function validateRequires(
   }
 
   return { valid: true };
+}
+
+/**
+ * Result of preloading module requires.
+ */
+export interface PreloadRequiresResult {
+  success: boolean;
+  /** Module that failed to load (if unsuccessful) */
+  failedModule?: string;
+  /** Error message (if unsuccessful) */
+  error?: string;
+}
+
+/**
+ * Preload all required modules asynchronously before execution.
+ * Uses __natstackRequireAsync__ to load modules from CDN if not pre-bundled.
+ *
+ * @param requires - Array of module specifiers to preload
+ * @returns Promise that resolves when all modules are loaded
+ */
+export async function preloadRequires(requires: string[]): Promise<PreloadRequiresResult> {
+  const preloadFn = getPreloadModules();
+  const asyncRequire = getAsyncRequire();
+
+  // If preload function is available, use it for parallel loading
+  if (preloadFn) {
+    try {
+      await preloadFn(requires);
+      return { success: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // Try to extract the module name from the error
+      const match = message.match(/Module "([^"]+)"/);
+      return {
+        success: false,
+        failedModule: match?.[1],
+        error: message,
+      };
+    }
+  }
+
+  // Fall back to sequential async require
+  if (asyncRequire) {
+    for (const spec of requires) {
+      try {
+        await asyncRequire(spec);
+      } catch (err) {
+        return {
+          success: false,
+          failedModule: spec,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+    return { success: true };
+  }
+
+  // No async loading available - fall back to sync validation
+  const syncResult = validateRequires(requires);
+  if (!syncResult.valid) {
+    return {
+      success: false,
+      failedModule: syncResult.missingModule,
+      error: syncResult.error,
+    };
+  }
+
+  return { success: true };
 }
 
 export function execute(code: string, options: ExecuteOptions = {}): ExecuteResult {

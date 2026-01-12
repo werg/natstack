@@ -26,11 +26,11 @@ import {
   createPauseMethodDefinition,
   formatMissedContext,
   createRichTextChatSystemPrompt,
-  CODEX_PARAMETERS,
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
 } from "@natstack/agentic-messaging";
+import { CODEX_PARAMETERS } from "@natstack/agentic-messaging/config";
 import { z } from "zod";
 import { Codex } from "@openai/codex-sdk";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";

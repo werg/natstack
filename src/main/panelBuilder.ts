@@ -149,15 +149,66 @@ function collectExposedDepsFromMetafile(
 /**
  * Generate banner that initializes the runtime require function.
  * This runs before any module code, so the map is ready when registrations happen.
+ * Supports both sync require (for pre-bundled modules) and async require (for dynamic loading via CDN).
  */
 function generateModuleMapBanner(): string {
   return `
 // === NatStack Module Map (runs before all module code) ===
 globalThis.__natstackModuleMap__ = globalThis.__natstackModuleMap__ || {};
+globalThis.__natstackModuleLoadingPromises__ = globalThis.__natstackModuleLoadingPromises__ || {};
+
+// Synchronous require - only works for pre-bundled modules
 globalThis.__natstackRequire__ = function(id) {
   var mod = globalThis.__natstackModuleMap__[id];
   if (mod) return mod;
-  throw new Error('Module "' + id + '" not available via require(). Import it in the panel or add it to the expose list.');
+  throw new Error('Module "' + id + '" not available via require(). Use __natstackRequireAsync__ for dynamic loading or add it to exposeModules.');
+};
+
+// Async require - loads from CDN if not pre-bundled
+globalThis.__natstackRequireAsync__ = async function(id) {
+  // Return immediately if already loaded
+  if (globalThis.__natstackModuleMap__[id]) {
+    return globalThis.__natstackModuleMap__[id];
+  }
+
+  // Check if already loading
+  if (globalThis.__natstackModuleLoadingPromises__[id]) {
+    return globalThis.__natstackModuleLoadingPromises__[id];
+  }
+
+  // Load from esm.sh CDN with timeout
+  var loadPromise = (async function() {
+    var timeoutMs = 30000; // 30 second timeout
+    var timeoutPromise = new Promise(function(_, reject) {
+      setTimeout(function() {
+        reject(new Error('Timeout loading module "' + id + '" from CDN after ' + timeoutMs + 'ms'));
+      }, timeoutMs);
+    });
+
+    try {
+      var mod = await Promise.race([
+        import('https://esm.sh/' + id + '?external=react,react-dom'),
+        timeoutPromise
+      ]);
+      globalThis.__natstackModuleMap__[id] = mod;
+      return mod;
+    } catch (err) {
+      // Clear cached promise on failure to allow retry
+      delete globalThis.__natstackModuleLoadingPromises__[id];
+      var message = err && typeof err === 'object' && 'message' in err ? err.message : String(err);
+      throw new Error('Failed to load module "' + id + '" from CDN: ' + message);
+    }
+  })();
+
+  globalThis.__natstackModuleLoadingPromises__[id] = loadPromise;
+  return loadPromise;
+};
+
+// Pre-load multiple modules in parallel
+globalThis.__natstackPreloadModules__ = async function(moduleIds) {
+  return Promise.all(moduleIds.map(function(id) {
+    return globalThis.__natstackRequireAsync__(id);
+  }));
 };
 // === End Module Map ===
 `;
@@ -1175,8 +1226,27 @@ export class PanelBuilder {
         .map((spec) => spec.trim())
         .filter((spec) => spec.length > 0 && isBareSpecifier(spec));
 
+      // Check cache for previously discovered expose modules to avoid two-pass build
+      // Note: Use spread to avoid mutating the original array
+      const exposeCacheKey = `expose:${artifactKey.canonicalPath}:${dependencyHash}:${[...explicitExposeModules].sort().join(",")}`;
+      const cachedExposeModules = this.cacheManager.get(exposeCacheKey, isDev());
+      let cachedModulesList: string[] | null = null;
+
       const exposeModulePath = path.join(workspace.buildDir, "_expose.js");
-      let exposeModuleCode = generateExposeModuleCode([]);
+      let exposeModuleCode: string;
+
+      if (cachedExposeModules) {
+        try {
+          cachedModulesList = JSON.parse(cachedExposeModules) as string[];
+          exposeModuleCode = generateExposeModuleCode(cachedModulesList);
+          log(`Using cached expose modules (${cachedModulesList.length} modules)`);
+        } catch {
+          // Cache parse failed, start with empty
+          exposeModuleCode = generateExposeModuleCode([]);
+        }
+      } else {
+        exposeModuleCode = generateExposeModuleCode([]);
+      }
       fs.writeFileSync(exposeModulePath, exposeModuleCode);
 
       // Create wrapper entry
@@ -1278,22 +1348,37 @@ import ${JSON.stringify(relativeUserEntry)};
           }
         }
         const uniqueDeps = [...new Set(depsToExpose)].sort();
-        const nextExposeCode = generateExposeModuleCode(uniqueDeps);
-        if (nextExposeCode !== exposeModuleCode) {
-          exposeModuleCode = nextExposeCode;
-          fs.writeFileSync(exposeModulePath, exposeModuleCode);
 
-          log(`Re-building with ${uniqueDeps.length} exposed modules...`);
-          try {
-            const rebuildResult = await esbuild.build(createBuildConfig());
-            if (rebuildResult.metafile) {
-              buildMetafile = rebuildResult.metafile;
+        // Check if we need to rebuild
+        const arraysEqual = (a: string[], b: string[]) =>
+          a.length === b.length && a.every((v, i) => v === b[i]);
+
+        if (cachedModulesList && arraysEqual(uniqueDeps, cachedModulesList)) {
+          // Cache hit - no rebuild needed
+          log(`Expose modules cache hit (skipped second build pass)`);
+        } else {
+          // Need to check if expose code changed
+          const nextExposeCode = generateExposeModuleCode(uniqueDeps);
+          if (nextExposeCode !== exposeModuleCode) {
+            exposeModuleCode = nextExposeCode;
+            fs.writeFileSync(exposeModulePath, exposeModuleCode);
+
+            log(`Re-building with ${uniqueDeps.length} exposed modules...`);
+            try {
+              const rebuildResult = await esbuild.build(createBuildConfig());
+              if (rebuildResult.metafile) {
+                buildMetafile = rebuildResult.metafile;
+              }
+            } catch (rebuildError) {
+              // Log but don't fail - the first build output is still usable
+              log(`Warning: Second build pass failed: ${rebuildError instanceof Error ? rebuildError.message : String(rebuildError)}`);
+              log(`Continuing with first build output (exposed modules may not work correctly)`);
             }
-          } catch (rebuildError) {
-            // Log but don't fail - the first build output is still usable
-            log(`Warning: Second build pass failed: ${rebuildError instanceof Error ? rebuildError.message : String(rebuildError)}`);
-            log(`Continuing with first build output (exposed modules may not work correctly)`);
           }
+
+          // Save to cache for next build
+          await this.cacheManager.set(exposeCacheKey, JSON.stringify(uniqueDeps));
+          log(`Cached expose modules for future builds`);
         }
       }
 

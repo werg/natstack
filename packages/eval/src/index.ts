@@ -3,8 +3,16 @@ export { transformCode } from "./transform.js";
 export type { TransformOptions, TransformResult } from "./transform.js";
 
 // Execute transformed code
-export { execute, executeDefault, validateRequires, getDefaultRequire } from "./execute.js";
-export type { ExecuteOptions, ExecuteResult, ValidateRequiresResult } from "./execute.js";
+export {
+  execute,
+  executeDefault,
+  validateRequires,
+  preloadRequires,
+  getDefaultRequire,
+  getAsyncRequire,
+  getPreloadModules,
+} from "./execute.js";
+export type { ExecuteOptions, ExecuteResult, ValidateRequiresResult, PreloadRequiresResult } from "./execute.js";
 
 // Console capture for streaming
 export {

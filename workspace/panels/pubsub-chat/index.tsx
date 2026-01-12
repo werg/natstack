@@ -15,12 +15,14 @@ import {
   type Participant,
   type MethodDefinition,
   type MethodExecutionContext,
+  createPauseMethodDefinition,
+} from "@natstack/agentic-messaging";
+import {
   type FeedbackFormArgs,
   type FeedbackCustomArgs,
-  createPauseMethodDefinition,
   FeedbackFormArgsSchema,
   FeedbackCustomArgsSchema,
-} from "@natstack/agentic-messaging";
+} from "@natstack/agentic-messaging/broker";
 import {
   executeEvalTool,
   EVAL_DEFAULT_TIMEOUT_MS,
@@ -345,7 +347,7 @@ export default function AgenticChatDemo() {
       };
       addMethodHistoryEntry(entry);
 
-      const result = compileFeedbackComponent({ code: args.code } as FeedbackUiToolArgs);
+      const result = await compileFeedbackComponent({ code: args.code } as FeedbackUiToolArgs);
 
       if (!result.success) {
         updateMethodHistoryEntry(callId, {

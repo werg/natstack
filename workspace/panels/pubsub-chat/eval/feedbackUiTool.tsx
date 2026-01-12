@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef } from "react";
 import type { ComponentType } from "react";
-import { transformCode, executeDefault, validateRequires } from "@natstack/eval";
+import { transformCode, executeDefault, preloadRequires } from "@natstack/eval";
 
 /**
  * Execute and extract the default export as a React component.
@@ -66,19 +66,20 @@ export function cleanupFeedbackComponent(cacheKey: string): void {
 
 /**
  * Compile a feedback UI component from TSX code.
+ * Asynchronously preloads required modules (including dynamic loading from CDN if needed).
  */
-export function compileFeedbackComponent(args: FeedbackUiToolArgs): FeedbackUiToolResult {
+export async function compileFeedbackComponent(args: FeedbackUiToolArgs): Promise<FeedbackUiToolResult> {
   const { code } = args;
 
   try {
     const transformed = transformCode(code, { syntax: "tsx" });
 
-    // Validate all required modules are available before execution
-    const validation = validateRequires(transformed.requires);
-    if (!validation.valid) {
+    // Preload all required modules (async - may load from CDN if not pre-bundled)
+    const preloadResult = await preloadRequires(transformed.requires);
+    if (!preloadResult.success) {
       return {
         success: false,
-        error: validation.error,
+        error: preloadResult.error,
       };
     }
 

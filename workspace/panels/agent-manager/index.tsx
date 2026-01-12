@@ -24,13 +24,15 @@ import { createChild, pubsubConfig, db, type ChildHandle } from "@natstack/runti
 import { usePanelTheme, ParameterEditor } from "@natstack/react";
 import {
   connectAsBroker,
-  CLAUDE_CODE_PARAMETERS,
-  AI_RESPONDER_PARAMETERS,
-  CODEX_PARAMETERS,
   type BrokerClient,
   type AgentTypeAdvertisement,
   type Invite,
-} from "@natstack/agentic-messaging";
+} from "@natstack/agentic-messaging/broker";
+import {
+  CLAUDE_CODE_PARAMETERS,
+  AI_RESPONDER_PARAMETERS,
+  CODEX_PARAMETERS,
+} from "@natstack/agentic-messaging/config";
 
 const AVAILABILITY_CHANNEL = "agent-availability";
 const PREFERENCES_DB_NAME = "agent-preferences";

@@ -5,7 +5,7 @@ import {
   type BrokerDiscoveryClient,
   type DiscoveredBroker,
   type AgentTypeAdvertisement,
-} from "@natstack/agentic-messaging";
+} from "@natstack/agentic-messaging/broker";
 
 const AVAILABILITY_CHANNEL = "agent-availability";
 const PREFERENCES_DB_NAME = "agent-preferences";

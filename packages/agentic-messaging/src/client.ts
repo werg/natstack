@@ -36,7 +36,8 @@ import type {
 } from "./types.js";
 import { AgenticError, ValidationError } from "./types.js";
 import { aggregateReplayEvents, formatMissedContext } from "./missed-context.js";
-import { SessionDb, type SessionRow } from "./session-db.js";
+// SessionDb is lazily imported to reduce bundle size when session persistence is not used
+import type { SessionDb, SessionRow } from "./session-db.js";
 import {
   ErrorMessageSchema,
   ExecutionPauseSchema,
@@ -325,6 +326,8 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
 
   if (workspaceId) {
     try {
+      // Lazy import SessionDb to reduce bundle size when session persistence is not used
+      const { SessionDb } = await import("./session-db.js");
       sessionDb = new SessionDb(workspaceId, channel, handle);
       await sessionDb.initialize();
       sessionRow = await sessionDb.getOrCreateSession();

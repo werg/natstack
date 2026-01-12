@@ -14,12 +14,14 @@ import {
   createPauseMethodDefinition,
   formatMissedContext,
   createRichTextChatSystemPrompt,
-  AI_RESPONDER_PARAMETERS,
-  AI_ROLE_FALLBACKS,
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
 } from "@natstack/agentic-messaging";
+import {
+  AI_RESPONDER_PARAMETERS,
+  AI_ROLE_FALLBACKS,
+} from "@natstack/agentic-messaging/config";
 import { z } from "zod";
 import { ai } from "@natstack/ai";
 
