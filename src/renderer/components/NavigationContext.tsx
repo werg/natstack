@@ -1,15 +1,20 @@
 import { createContext, useContext, useState, useCallback, useMemo, type ReactNode } from "react";
-import type { NavigationMode, StatusNavigationData, TitleNavigationData } from "./navigationTypes";
+import type {
+  NavigationMode,
+  LazyTitleNavigationData,
+  LazyStatusNavigationData,
+} from "./navigationTypes";
 
 interface NavigationContextValue {
   mode: NavigationMode;
   setMode: (mode: NavigationMode) => void;
-  titleNavigation: TitleNavigationData | null;
-  setTitleNavigation: (data: TitleNavigationData | null) => void;
-  statusNavigation: StatusNavigationData | null;
-  setStatusNavigation: (data: StatusNavigationData | null) => void;
-  navigate: (path: string[]) => void;
-  registerNavigate: (fn: (path: string[]) => void) => void;
+  // ID-based lazy navigation
+  lazyTitleNavigation: LazyTitleNavigationData | null;
+  setLazyTitleNavigation: (data: LazyTitleNavigationData | null) => void;
+  lazyStatusNavigation: LazyStatusNavigationData | null;
+  setLazyStatusNavigation: (data: LazyStatusNavigationData | null) => void;
+  navigateToId: (panelId: string) => void;
+  registerNavigateToId: (fn: (panelId: string) => void) => void;
 }
 
 const NavigationContext = createContext<NavigationContextValue | null>(null);
@@ -28,33 +33,41 @@ interface NavigationProviderProps {
 
 export function NavigationProvider({ children }: NavigationProviderProps) {
   const [mode, setMode] = useState<NavigationMode>("stack");
-  const [titleNavigation, setTitleNavigation] = useState<TitleNavigationData | null>(null);
-  const [statusNavigation, setStatusNavigation] = useState<StatusNavigationData | null>(null);
-  const [navigateFn, setNavigateFn] = useState<(path: string[]) => void>(() => () => {});
 
-  const navigate = useCallback(
-    (path: string[]) => {
-      navigateFn(path);
+  // ID-based lazy navigation state
+  const [lazyTitleNavigation, setLazyTitleNavigation] = useState<LazyTitleNavigationData | null>(null);
+  const [lazyStatusNavigation, setLazyStatusNavigation] = useState<LazyStatusNavigationData | null>(null);
+  const [navigateToIdFn, setNavigateToIdFn] = useState<(panelId: string) => void>(() => () => {});
+
+  const navigateToId = useCallback(
+    (panelId: string) => {
+      navigateToIdFn(panelId);
     },
-    [navigateFn]
+    [navigateToIdFn]
   );
 
-  const registerNavigate = useCallback((fn: (path: string[]) => void) => {
-    setNavigateFn(() => fn);
+  const registerNavigateToId = useCallback((fn: (panelId: string) => void) => {
+    setNavigateToIdFn(() => fn);
   }, []);
 
   const value = useMemo<NavigationContextValue>(
     () => ({
       mode,
       setMode,
-      titleNavigation,
-      setTitleNavigation,
-      statusNavigation,
-      setStatusNavigation,
-      navigate,
-      registerNavigate,
+      lazyTitleNavigation,
+      setLazyTitleNavigation,
+      lazyStatusNavigation,
+      setLazyStatusNavigation,
+      navigateToId,
+      registerNavigateToId,
     }),
-    [mode, titleNavigation, statusNavigation, navigate, registerNavigate]
+    [
+      mode,
+      lazyTitleNavigation,
+      lazyStatusNavigation,
+      navigateToId,
+      registerNavigateToId,
+    ]
   );
 
   return <NavigationContext.Provider value={value}>{children}</NavigationContext.Provider>;

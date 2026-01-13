@@ -204,7 +204,7 @@ export class ViewManager {
     }
 
     // Build webPreferences based on view type and unsafe flag
-    const isUnsafe = config.unsafe !== undefined;
+    const isUnsafe = Boolean(config.unsafe);
     const webPreferences: Electron.WebPreferences = {
       nodeIntegration: isUnsafe,
       contextIsolation: !isUnsafe,

@@ -1,23 +1,25 @@
-import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
-import { CaretDownIcon, CaretRightIcon } from "@radix-ui/react-icons";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
-  Badge,
   Box,
   Card,
   Flex,
   Heading,
-  IconButton,
-  ScrollArea,
   Spinner,
   Text,
-  Tooltip,
 } from "@radix-ui/themes";
 
-import type { StatusNavigationData, TitleNavigationData } from "./navigationTypes";
-import type { Panel, PanelContextMenuAction } from "../../shared/ipc/types";
-import { useShellEvent } from "../shell/useShellEvent";
-import { panel as panelService, view, menu } from "../shell/client";
+import type { LazyTitleNavigationData, LazyStatusNavigationData } from "./navigationTypes";
+import type { PanelContextMenuAction } from "../../shared/ipc/types";
+import {
+  useRootPanels,
+  useFullPanel,
+  useAncestors,
+  useSiblings,
+  useDescendantSiblingGroups,
+} from "../shell/hooks/PanelTreeContext";
+import { panel as panelService, view } from "../shell/client";
 import { useNavigation } from "./NavigationContext";
+import { LazyPanelTreeSidebar } from "./LazyPanelTreeSidebar";
 import { DirtyRepoView } from "./DirtyRepoView";
 import { GitInitView } from "./GitInitView";
 
@@ -25,7 +27,7 @@ interface PanelStackProps {
   onTitleChange?: (title: string) => void;
   hostTheme: "light" | "dark";
   onRegisterDevToolsHandler?: (handler: () => void) => void;
-  onRegisterNavigate?: (navigate: (path: string[]) => void) => void;
+  onRegisterNavigateToId?: (navigate: (panelId: string) => void) => void;
   onRegisterPanelAction?: (handler: (panelId: string, action: PanelContextMenuAction) => void) => void;
 }
 
@@ -57,167 +59,23 @@ function captureHostThemeCss(): string {
   return `${cssVariables}\n${baseline}`;
 }
 
-interface PanelTreeSidebarProps {
-  rootPanels: Panel[];
-  visiblePath: string[];
-  onSelect: (path: string[]) => void;
-  onPanelAction?: (panelId: string, action: PanelContextMenuAction) => void;
-}
-
-function PanelTreeSidebar({ rootPanels, visiblePath, onSelect, onPanelAction }: PanelTreeSidebarProps) {
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
-
-  useEffect(() => {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      visiblePath.forEach((id) => next.add(id));
-      return next;
-    });
-  }, [visiblePath]);
-
-  const toggleExpanded = (panelId: string) => {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(panelId)) {
-        next.delete(panelId);
-      } else {
-        next.add(panelId);
-      }
-      return next;
-    });
-  };
-
-  const handleContextMenu = async (e: React.MouseEvent, panel: Panel) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const { screenX, screenY } = e;
-    const action = await menu.showPanelContext(
-      panel.id,
-      panel.type,
-      { x: Math.round(screenX), y: Math.round(screenY) }
-    );
-    if (action) {
-      onPanelAction?.(panel.id, action);
-    }
-  };
-
-  const renderNodes = (panels: Panel[], ancestry: string[]): ReactNode =>
-    panels.map((panel) => {
-      const path = [...ancestry, panel.id];
-      const isActive =
-        path.length === visiblePath.length &&
-        path.every((value, index) => visiblePath[index] === value);
-      const isExpanded = expandedIds.has(panel.id) || panel.children.length === 0;
-      const backgroundColor =
-        isActive && hoveredId === panel.id
-          ? "var(--gray-a5)"
-          : isActive
-            ? "var(--gray-a4)"
-            : hoveredId === panel.id
-              ? "var(--gray-a3)"
-              : undefined;
-
-      // Get tooltip content based on panel type
-      const tooltipContent =
-        panel.type === "browser"
-          ? panel.url
-          : panel.type === "shell"
-            ? `Shell: ${panel.page}`
-            : panel.path;
-
-      return (
-        <Box key={panel.id} style={{ paddingLeft: `calc(${ancestry.length} * var(--space-2))` }}>
-          <Tooltip content={tooltipContent} side="right">
-            <Flex
-              align="center"
-              gap="2"
-              px="2"
-              py="1"
-              style={{
-                cursor: "pointer",
-                backgroundColor,
-                transition: "background-color 120ms ease-out",
-              }}
-              data-active={isActive ? "true" : "false"}
-              onClick={() => onSelect(path)}
-              onContextMenu={(e) => handleContextMenu(e, panel)}
-              onMouseEnter={() => setHoveredId(panel.id)}
-              onMouseLeave={() =>
-                setHoveredId((current) => (current === panel.id ? null : current))
-              }
-            >
-              {panel.children.length > 0 ? (
-                <IconButton
-                  size="1"
-                  variant="ghost"
-                  color="gray"
-                  aria-label={isExpanded ? "Collapse section" : "Expand section"}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    toggleExpanded(panel.id);
-                  }}
-                >
-                  {isExpanded ? <CaretDownIcon /> : <CaretRightIcon />}
-                </IconButton>
-              ) : (
-                <Box style={{ width: "24px", height: "24px", minWidth: "24px", flexShrink: 0 }} />
-              )}
-              <Text
-                size="2"
-                weight={isActive ? "medium" : "regular"}
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {panel.title}
-              </Text>
-              {panel.children.length > 0 ? (
-                <Badge size="1" variant="soft" color="gray" radius="full">
-                  {panel.children.length}
-                </Badge>
-              ) : null}
-            </Flex>
-          </Tooltip>
-          {isExpanded && panel.children.length > 0 ? renderNodes(panel.children, path) : null}
-        </Box>
-      );
-    });
-
-  if (rootPanels.length === 0) {
-    return (
-      <Flex height="100%" align="center" justify="center">
-        <Text color="gray">No panels yet</Text>
-      </Flex>
-    );
-  }
-
-  return (
-    <ScrollArea type="auto" scrollbars="vertical" style={{ height: "100%" }}>
-      <Flex direction="column" gap="1" p="1">
-        {renderNodes(rootPanels, [])}
-      </Flex>
-    </ScrollArea>
-  );
-}
 
 export function PanelStack({
   onTitleChange,
   hostTheme,
   onRegisterDevToolsHandler,
-  onRegisterNavigate,
+  onRegisterNavigateToId,
   onRegisterPanelAction,
 }: PanelStackProps) {
-  // Debug: log component render
+  const {
+    mode: navigationMode,
+    setLazyTitleNavigation,
+    setLazyStatusNavigation,
+    registerNavigateToId,
+  } = useNavigation();
 
-  const { mode: navigationMode, setTitleNavigation, setStatusNavigation } = useNavigation();
-  const [rootPanels, setRootPanels] = useState<Panel[]>([]);
-  const [visiblePanelPath, setVisiblePanelPath] = useState<string[]>([]);
-  const [isTreeReady, setIsTreeReady] = useState(false);
+  // ID-based visible panel state
+  const [visiblePanelId, setVisiblePanelId] = useState<string | null>(null);
   const [hostThemeCss, setHostThemeCss] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState<number>(260);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
@@ -225,7 +83,17 @@ export function PanelStack({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const resizePointerIdRef = useRef<number | null>(null);
 
-  // Browser navigation helpers
+  // Lazy data hooks
+  const { panels: rootPanels, loading: rootLoading } = useRootPanels();
+  const { panel: visiblePanel, loading: panelLoading } = useFullPanel(visiblePanelId);
+  const { ancestors } = useAncestors(visiblePanelId);
+  const { siblings } = useSiblings(visiblePanelId);
+  const { groups: descendantGroups } = useDescendantSiblingGroups(visiblePanelId);
+
+  // Ancestor IDs for tree auto-expansion
+  const ancestorIds = useMemo(() => ancestors.map((a) => a.id), [ancestors]);
+
+  // Theme CSS initialization
   useEffect(() => {
     const css = captureHostThemeCss();
     setHostThemeCss(css);
@@ -235,266 +103,96 @@ export function PanelStack({
     });
   }, [hostTheme]);
 
-  // Initialize panel tree on mount
+  // Initial panel selection - set visible panel when root panels load
   useEffect(() => {
-    let mounted = true;
-
-    const initializeTree = async () => {
-      try {
-        const currentTree = await panelService.getTree();
-        if (mounted) {
-          setRootPanels(currentTree);
-          if (currentTree.length > 0) {
-            setIsTreeReady(true);
-            setVisiblePanelPath([currentTree[0]!.id]);
-          }
-        }
-      } catch (error) {
-        console.error("Failed to load initial panel tree", error);
-      }
-    };
-
-    void initializeTree();
-
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  // Listen for panel tree updates via shell event
-  const handlePanelTreeUpdated = useCallback((updatedRootPanels: unknown) => {
-    const panels = updatedRootPanels as Panel[];
-    setIsTreeReady(true);
-    setRootPanels(panels);
-
-    setVisiblePanelPath((prevPath) => {
-      if (panels.length === 0) {
-        return [];
-      }
-
-      if (prevPath.length === 0) {
-        return [panels[0]!.id];
-      }
-
-      if (!findPanelByPathInTree(panels, prevPath)) {
-        return [panels[0]!.id];
-      }
-
-      return prevPath;
-    });
-  }, []);
-  useShellEvent("panel-tree-updated", handlePanelTreeUpdated);
-
-  // CDP visibility toggle is no longer needed with WebContentsView architecture.
-  // WebContentsViews are always composited even when not visible on screen,
-  // so screenshots work without visibility hacks.
-
-  const findPanelByPathInTree = (tree: Panel[], path: string[]): Panel | null => {
-    if (path.length === 0) return null;
-
-    let current: Panel | undefined = tree.find((p) => p.id === path[0]);
-    if (!current) return null;
-
-    for (let i = 1; i < path.length; i++) {
-      current = current.children.find((c: Panel) => c.id === path[i]);
-      if (!current) return null;
+    if (!visiblePanelId && rootPanels.length > 0) {
+      setVisiblePanelId(rootPanels[0]!.id);
     }
+  }, [rootPanels, visiblePanelId]);
 
-    return current;
-  };
-
-  // Get the panel at a specific path using current state
-  const getPanelByPath = useCallback(
-    (path: string[]): Panel | null => findPanelByPathInTree(rootPanels, path),
-    [rootPanels]
-  );
-
-  const visiblePanel = useMemo(
-    () => getPanelByPath(visiblePanelPath),
-    [getPanelByPath, visiblePanelPath]
-  );
-
-  const fullPath = useMemo(() => {
-    const path: Panel[] = [];
-    for (let i = 0; i < visiblePanelPath.length; i++) {
-      const panel = getPanelByPath(visiblePanelPath.slice(0, i + 1));
-      if (panel) path.push(panel);
+  // Handle panel deletion - fall back to first root if current panel is gone
+  useEffect(() => {
+    // If we have a visible panel ID but no panel data and loading is done, panel was deleted
+    if (visiblePanelId && !visiblePanel && !panelLoading && rootPanels.length > 0) {
+      setVisiblePanelId(rootPanels[0]!.id);
     }
-    return path;
-  }, [getPanelByPath, visiblePanelPath]);
+  }, [visiblePanelId, visiblePanel, panelLoading, rootPanels]);
 
-  const titleNavigationData = useMemo<TitleNavigationData | null>(() => {
+  // Build lazy title navigation data
+  const lazyTitleNavigationData = useMemo<LazyTitleNavigationData | null>(() => {
     if (!visiblePanel) {
       return null;
     }
 
-    const ancestors = fullPath.slice(0, -1).map((_, index) => {
-      const parent = index > 0 ? getPanelByPath(visiblePanelPath.slice(0, index)) : null;
-      const siblings = index === 0 ? rootPanels : parent?.children || [];
-      return {
-        path: visiblePanelPath.slice(0, index + 1),
-        siblings,
-      };
-    });
-
-    const parentPath = visiblePanelPath.slice(0, -1);
-    const parent = parentPath.length > 0 ? getPanelByPath(parentPath) : null;
-    const siblings = parentPath.length === 0 ? rootPanels : parent?.children || [];
-
-    const current =
-      siblings.length > 0
-        ? {
-            parentPath,
-            siblings,
-            activeId: visiblePanel.id,
-          }
-        : null;
-
     return {
       ancestors,
-      current,
+      currentSiblings: siblings,
+      currentId: visiblePanel.id,
       currentTitle: visiblePanel.title,
     };
-  }, [fullPath, getPanelByPath, rootPanels, visiblePanel, visiblePanelPath]);
+  }, [ancestors, siblings, visiblePanel]);
 
-  const statusNavigationData = useMemo<StatusNavigationData>(() => {
-    const descendantGroups: StatusNavigationData["descendantGroups"] = [];
-    let currentPanel: Panel | null = visiblePanel;
-    const pathToParent = [...visiblePanelPath];
-
-    while (currentPanel && currentPanel.children.length > 0) {
-      if (currentPanel.selectedChildId) {
-        descendantGroups.push({
-          pathToParent: [...pathToParent],
-          children: currentPanel.children,
-          selectedChildId: currentPanel.selectedChildId,
-          parentId: currentPanel.id,
-        });
-        pathToParent.push(currentPanel.selectedChildId);
-        currentPanel =
-          currentPanel.children.find((c: Panel) => c.id === currentPanel!.selectedChildId) || null;
-      } else {
-        break;
-      }
+  // Build lazy status navigation data
+  const lazyStatusNavigationData = useMemo<LazyStatusNavigationData | null>(() => {
+    if (!visiblePanelId) {
+      return null;
     }
 
-    return { descendantGroups };
-  }, [visiblePanel, visiblePanelPath]);
+    return {
+      descendantGroups,
+      visiblePanelId,
+    };
+  }, [descendantGroups, visiblePanelId]);
+
+  // Update navigation context with lazy data
+  useEffect(() => {
+    setLazyTitleNavigation(lazyTitleNavigationData);
+  }, [setLazyTitleNavigation, lazyTitleNavigationData]);
 
   useEffect(() => {
-    setTitleNavigation(titleNavigationData);
-  }, [setTitleNavigation, titleNavigationData]);
+    setLazyStatusNavigation(lazyStatusNavigationData);
+  }, [setLazyStatusNavigation, lazyStatusNavigationData]);
 
-  useEffect(() => {
-    setStatusNavigation(statusNavigationData);
-  }, [setStatusNavigation, statusNavigationData]);
-
-  // Flatten all panels into a single array for rendering all webviews
-  const flattenPanels = (panels: Panel[]): Panel[] => {
-    const result: Panel[] = [];
-    const traverse = (panelList: Panel[]) => {
-      for (const panel of panelList) {
-        result.push(panel);
-        if (panel.children.length > 0) {
-          traverse(panel.children);
-        }
-      }
-    };
-    traverse(panels);
-    return result;
-  };
-
-  const allPanels = flattenPanels(rootPanels);
-
-  // Helper to find a panel by ID (used for debugging)
-  function _findPanelById(panelId: string): Panel | null {
-    const traverse = (panelList: Panel[]): Panel | null => {
-      for (const panel of panelList) {
-        if (panel.id === panelId) {
-          return panel;
-        }
-        if (panel.children.length > 0) {
-          const found = traverse(panel.children);
-          if (found) {
-            return found;
-          }
-        }
-      }
-      return null;
-    };
-
-    return traverse(rootPanels);
-  }
-
-  // Navigate to a specific panel in the tree
-  const navigateToPanel = useCallback(
-    (path: string[]) => {
-      if (!Array.isArray(path) || path.length === 0) {
+  // Navigate to a specific panel by ID
+  const navigateToPanelId = useCallback(
+    (panelId: string) => {
+      if (!panelId) {
         return;
       }
-      setVisiblePanelPath(path);
+      setVisiblePanelId(panelId);
     },
-    [setVisiblePanelPath]
+    []
   );
 
+  // Register navigate function with context
   useEffect(() => {
-    if (!onRegisterNavigate) return;
-    onRegisterNavigate(navigateToPanel);
-  }, [onRegisterNavigate, navigateToPanel]);
+    registerNavigateToId(navigateToPanelId);
+  }, [registerNavigateToId, navigateToPanelId]);
 
-  // Helper to find siblings of a panel (panels with the same parent)
-  const findSiblings = useCallback(
-    (panelId: string): Panel[] => {
-      // Check if panel is a root panel
-      const isRoot = rootPanels.some((p) => p.id === panelId);
-      if (isRoot) {
-        return rootPanels;
-      }
+  // Register navigate function with parent
+  useEffect(() => {
+    if (!onRegisterNavigateToId) return;
+    onRegisterNavigateToId(navigateToPanelId);
+  }, [onRegisterNavigateToId, navigateToPanelId]);
 
-      // Find parent by traversing tree
-      const findParent = (panels: Panel[]): Panel | null => {
-        for (const panel of panels) {
-          if (panel.children.some((c: Panel) => c.id === panelId)) {
-            return panel;
-          }
-          const found = findParent(panel.children);
-          if (found) return found;
-        }
-        return null;
-      };
-
-      const parent = findParent(rootPanels);
-      return parent?.children ?? [];
-    },
-    [rootPanels]
-  );
-
-  // Handle panel context menu actions (reload, close, etc.)
+  // Handle panel context menu actions (reload, unload)
   const handlePanelAction = useCallback(
     async (panelId: string, action: PanelContextMenuAction) => {
       switch (action) {
         case "reload":
           await panelService.reload(panelId);
           break;
-        case "close":
-          await panelService.close(panelId);
+        case "unload":
+          // Unload panel resources but keep in tree (can be re-loaded later)
+          await panelService.unload(panelId);
           break;
-        case "close-siblings": {
-          // Close all siblings except this one in parallel for better UX
-          const siblings = findSiblings(panelId);
-          const closePromises = siblings
-            .filter((sibling) => sibling.id !== panelId)
-            .map((sibling) => panelService.close(sibling.id));
-          await Promise.all(closePromises);
-          break;
-        }
-        case "close-subtree":
-          // Close the panel and all its descendants (closePanel handles recursion)
-          await panelService.close(panelId);
+        case "pin":
+          // Pin panel by moving it to be a child of the pinned root
+          await panelService.pinPanel(panelId);
           break;
       }
     },
-    [findSiblings]
+    []
   );
 
   // Register panel action handler with parent
@@ -579,8 +277,10 @@ export function PanelStack({
 
     // For app/worker panels, only interact with view if htmlPath is set (view is created after build)
     // Browser and shell panels don't have htmlPath but do have views
-    // Panels with errors or still building have no view to show
-    const hasView = visiblePanel?.type === "browser" || visiblePanel?.type === "shell" || !!htmlPath;
+    // Panels with errors, still building, or unloaded (pending) have no view to show
+    const buildState = visiblePanel?.artifacts?.buildState;
+    const isUnloaded = buildState === "pending" || buildState === "building" || buildState === "error";
+    const hasView = !isUnloaded && (visiblePanel?.type === "browser" || visiblePanel?.type === "shell" || !!htmlPath);
     if (!hasView) {
       return;
     }
@@ -615,8 +315,8 @@ export function PanelStack({
       cancelAnimationFrame(rafId);
       observer.disconnect();
     };
-    // Re-run when panel ID changes OR when htmlPath is set (view becomes ready)
-  }, [visiblePanel?.id, visiblePanel?.type, visiblePanel?.artifacts?.htmlPath]);
+    // Re-run when panel ID changes, htmlPath is set (view becomes ready), or buildState changes
+  }, [visiblePanel?.id, visiblePanel?.type, visiblePanel?.artifacts?.htmlPath, visiblePanel?.artifacts?.buildState]);
 
   // Send theme CSS to main process for injection into views
   useEffect(() => {
@@ -651,7 +351,7 @@ export function PanelStack({
   const isTreeNavigation = navigationMode === "tree";
 
   // Show loading state while initializing
-  if (!isTreeReady) {
+  if (rootLoading && rootPanels.length === 0) {
     return (
       <Flex direction="column" align="center" justify="center" style={{ flex: 1, height: "100%" }}>
         <Spinner size="3" />
@@ -660,13 +360,94 @@ export function PanelStack({
     );
   }
 
-  if (!visiblePanel) {
+  if (!visiblePanel && !panelLoading) {
     return (
       <Flex direction="column" align="center" justify="center" style={{ flex: 1, height: "100%" }}>
         <Text>No panels available.</Text>
       </Flex>
     );
   }
+
+  // Helper to render panel content based on its state
+  const renderPanelContent = () => {
+    if (!visiblePanel) {
+      return (
+        <Flex direction="column" align="center" justify="center" height="100%">
+          <Spinner size="3" />
+          <Text mt="3">Loading panel...</Text>
+        </Flex>
+      );
+    }
+
+    const artifacts = visiblePanel.artifacts;
+
+    // Error state
+    if (artifacts?.error) {
+      return (
+        <Flex
+          direction="column"
+          align="center"
+          justify="center"
+          height="100%"
+          p="4"
+        >
+          <Text color="red" size="4" weight="bold" mb="2">
+            Panel Build Error
+          </Text>
+          <Text color="red" size="2" style={{ fontFamily: "monospace" }}>
+            {artifacts.error}
+          </Text>
+        </Flex>
+      );
+    }
+
+    // Show GitInitView when panel folder is not a git repository
+    if (artifacts?.buildState === "not-git-repo" && artifacts.notGitRepoPath) {
+      return (
+        <GitInitView
+          panelId={visiblePanel.id}
+          repoPath={artifacts.notGitRepoPath}
+          onContinueBuild={() => panelService.initGitRepo(visiblePanel.id)}
+        />
+      );
+    }
+
+    // Show DirtyRepoView when panel has uncommitted changes
+    if (artifacts?.buildState === "dirty" && artifacts.dirtyRepoPath) {
+      return (
+        <DirtyRepoView
+          panelId={visiblePanel.id}
+          repoPath={artifacts.dirtyRepoPath}
+          onRetryBuild={() => panelService.retryDirtyBuild(visiblePanel.id)}
+        />
+      );
+    }
+
+    if (!artifacts?.htmlPath) {
+      // Browser and shell panels - WebContentsView is managed by main process
+      if (visiblePanel.type === "browser" || visiblePanel.type === "shell") {
+        return <Box style={{ flex: 1, position: "relative", height: "100%" }} />;
+      }
+
+      // Panel/worker loading state (while build is in progress)
+      return (
+        <Flex
+          direction="column"
+          align="center"
+          justify="center"
+          height="100%"
+        >
+          <Spinner size="3" />
+          <Text mt="3">
+            {visiblePanel.type === "worker" ? "Building worker..." : "Preparing panel..."}
+          </Text>
+        </Flex>
+      );
+    }
+
+    // Panel is ready - WebContentsView is managed by main process
+    return <Box style={{ flex: 1, position: "relative", height: "100%" }} />;
+  };
 
   return (
     <Flex
@@ -697,10 +478,10 @@ export function PanelStack({
                   {rootPanels.length} root{rootPanels.length === 1 ? "" : "s"}
                 </Text>
               </Flex>
-              <PanelTreeSidebar
-                rootPanels={rootPanels}
-                visiblePath={visiblePanelPath}
-                onSelect={navigateToPanel}
+              <LazyPanelTreeSidebar
+                selectedId={visiblePanelId}
+                ancestorIds={ancestorIds}
+                onSelect={navigateToPanelId}
                 onPanelAction={handlePanelAction}
               />
             </Flex>
@@ -723,103 +504,16 @@ export function PanelStack({
           />
         )}
 
-        {/* Current Panel with Tab Siblings */}
-        {visiblePanel && (
-          <Flex direction="column" flexGrow="1" gap="0" minHeight="0">
-            {/* Panel Content */}
-            <Card size="3" style={{ flexGrow: 1, overflow: "hidden", padding: 0 }}>
-              <Flex direction="column" gap="0" height="100%">
-                <Box ref={panelContentRef} style={{ flexGrow: 1, position: "relative", minHeight: 0, height: "100%" }}>
-                  {/* Panel content area - WebContentsViews are positioned over this by main process */}
-                  {/* We still render some content for workers/errors, but app/browser panels are managed by ViewManager */}
-                  {allPanels.map((panel) => {
-                    const artifacts = panel.artifacts;
-                    const isVisible = visiblePanel ? panel.id === visiblePanel.id : false;
-
-                    if (isVisible) {
-                      if (artifacts?.error) {
-                        return (
-                          <Flex
-                            key={panel.id}
-                            direction="column"
-                            align="center"
-                            justify="center"
-                            height="100%"
-                            p="4"
-                          >
-                            <Text color="red" size="4" weight="bold" mb="2">
-                              Panel Build Error
-                            </Text>
-                            <Text color="red" size="2" style={{ fontFamily: "monospace" }}>
-                              {artifacts.error}
-                            </Text>
-                          </Flex>
-                        );
-                      }
-
-                      // Show GitInitView when panel folder is not a git repository
-                      if (artifacts?.buildState === "not-git-repo" && artifacts.notGitRepoPath) {
-                        return (
-                          <GitInitView
-                            key={panel.id}
-                            panelId={panel.id}
-                            repoPath={artifacts.notGitRepoPath}
-                            onContinueBuild={() => panelService.initGitRepo(panel.id)}
-                          />
-                        );
-                      }
-
-                      // Show DirtyRepoView when panel has uncommitted changes
-                      if (artifacts?.buildState === "dirty" && artifacts.dirtyRepoPath) {
-                        return (
-                          <DirtyRepoView
-                            key={panel.id}
-                            panelId={panel.id}
-                            repoPath={artifacts.dirtyRepoPath}
-                            onRetryBuild={() => panelService.retryDirtyBuild(panel.id)}
-                          />
-                        );
-                      }
-
-                      if (!artifacts?.htmlPath) {
-                        // Browser and shell panels - WebContentsView is managed by main process, no in-shell toolbar
-                        if (panel.type === "browser" || panel.type === "shell") {
-                          return (
-                            <Box
-                              key={panel.id}
-                              style={{ flex: 1, position: "relative", height: "100%" }}
-                            />
-                          );
-                        }
-
-                        // Panel/worker loading state (while build is in progress)
-                        // Once build completes, ViewManager creates the WebContentsView
-                        return (
-                          <Flex
-                            key={panel.id}
-                            direction="column"
-                            align="center"
-                            justify="center"
-                            height="100%"
-                          >
-                            <Spinner size="3" />
-                            <Text mt="3">
-                              {panel.type === "worker" ? "Building worker..." : "Preparing panel..."}
-                            </Text>
-                          </Flex>
-                        );
-                      }
-                    }
-
-                    // Non-visible panels: no UI needed, WebContentsViews are managed by main process
-                    // Return null for hidden app/browser panels (ViewManager handles visibility)
-                    return null;
-                  })}
-                </Box>
-              </Flex>
-            </Card>
-          </Flex>
-        )}
+        {/* Current Panel Content */}
+        <Flex direction="column" flexGrow="1" gap="0" minHeight="0">
+          <Card size="3" style={{ flexGrow: 1, overflow: "hidden", padding: 0 }}>
+            <Flex direction="column" gap="0" height="100%">
+              <Box ref={panelContentRef} style={{ flexGrow: 1, position: "relative", minHeight: 0, height: "100%" }}>
+                {renderPanelContent()}
+              </Box>
+            </Flex>
+          </Card>
+        </Flex>
       </Flex>
     </Flex>
   );

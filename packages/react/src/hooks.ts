@@ -179,8 +179,9 @@ export function usePanelParent<
 // =============================================================================
 
 /**
- * Manage child panels with automatic cleanup.
+ * Manage child panels.
  * Returns ChildHandles for unified interaction with children.
+ * Note: Panels cannot be closed/removed - they are permanent history.
  *
  * @example
  * ```tsx
@@ -189,7 +190,7 @@ export function usePanelParent<
  * }
  *
  * function MyPanel() {
- *   const { children, createChild, removeChild } = useChildPanels();
+ *   const { children, createChild } = useChildPanels();
  *
  *   const handleAddChild = async () => {
  *     const editor = await createChild<EditorApi>({
@@ -207,7 +208,6 @@ export function usePanelParent<
  *         {children.map(handle => (
  *           <li key={handle.id}>
  *             {handle.name} ({handle.type})
- *             <button onClick={() => handle.close()}>Close</button>
  *           </li>
  *         ))}
  *       </ul>
@@ -237,24 +237,10 @@ export function useChildPanels() {
     return handle;
   }, []);
 
-  const removeChild = useCallback(async (handle: ChildHandle): Promise<void> => {
-    await handle.close();
-    setChildren((prev) => prev.filter((h) => h.id !== handle.id));
-  }, []);
-
-  // Listen for child removal events from the system
-  useEffect(() => {
-    const unsubscribe = runtime.onChildRemoved((childId) => {
-      setChildren((prev) => prev.filter((h) => h.id !== childId));
-    });
-    return unsubscribe;
-  }, []);
-
   return {
     children,
     createChild,
     createBrowserChild,
-    removeChild,
   };
 }
 
@@ -355,10 +341,9 @@ export function usePanelChild<
       }
     });
 
-    // Subscribe to child removed events
-    const unsubRemoved = runtime.onChildRemoved((_removedId) => {
-      const current = runtime.getChild<T, E>(name);
-      if (!current) {
+    // Subscribe to child removed events (for ephemeral children)
+    const unsubRemoved = runtime.onChildRemoved((removedName) => {
+      if (removedName === name) {
         setHandle(undefined);
       }
     });
@@ -376,6 +361,8 @@ export function usePanelChild<
  * Get all children as a Map with automatic updates.
  * Useful for rendering a list of children or iterating over them.
  *
+ * Note: Ephemeral children can be closed/removed. The map updates automatically.
+ *
  * @returns ReadonlyMap of child names to ChildHandles
  *
  * @example
@@ -387,8 +374,7 @@ export function usePanelChild<
  *     <ul>
  *       {[...children.entries()].map(([name, handle]) => (
  *         <li key={handle.id}>
- *           {name} ({handle.type})
- *           <button onClick={() => handle.close()}>Close</button>
+ *           {name} ({handle.type}) - {handle.title}
  *         </li>
  *       ))}
  *     </ul>
@@ -405,11 +391,12 @@ export function usePanelChildren(): ReadonlyMap<string, ChildHandle> {
     // Sync initial state
     setChildren(new Map(runtime.children));
 
-    // Subscribe to changes
+    // Subscribe to child added events
     const unsubAdded = runtime.onChildAdded(() => {
       setChildren(new Map(runtime.children));
     });
 
+    // Subscribe to child removed events (for ephemeral children)
     const unsubRemoved = runtime.onChildRemoved(() => {
       setChildren(new Map(runtime.children));
     });
@@ -424,8 +411,12 @@ export function usePanelChildren(): ReadonlyMap<string, ChildHandle> {
 }
 
 /**
- * Create and manage a child with automatic cleanup on unmount.
- * The child is created when the hook is first called and closed when the component unmounts.
+ * Create a child panel on first mount.
+ * The child is created when the hook is first called.
+ *
+ * Note: Panels are permanent history and persist across component unmounts.
+ * The handle is set to null on unmount to prevent state updates, but the
+ * panel itself remains in the tree.
  *
  * @typeParam T - RPC methods the child exposes
  * @typeParam E - RPC event map for typed events
@@ -474,7 +465,6 @@ export function usePanelCreateChild<
     }
 
     let mounted = true;
-    let createdHandle: ChildHandle<T, E> | null = null;
 
     const createPromise =
       spec.kind === "browser"
@@ -483,21 +473,16 @@ export function usePanelCreateChild<
 
     createPromise.then((h) => {
       if (mounted) {
-        createdHandle = h;
         setHandle(h);
-      } else {
-        // Component unmounted before creation finished, close the child
-        void h.close();
       }
+      // Note: Panels are permanent history - no cleanup on unmount
     }).catch((error) => {
       console.error("[usePanelCreateChild] Failed to create child:", error);
     });
 
     return () => {
       mounted = false;
-      if (createdHandle) {
-        void createdHandle.close();
-      }
+      // Note: Panels are permanent history - no cleanup on unmount
     };
   // We intentionally only run this once on mount
   // eslint-disable-next-line react-hooks/exhaustive-deps

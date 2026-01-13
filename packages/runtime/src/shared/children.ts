@@ -1,5 +1,6 @@
 import type {
   ChildHandle,
+  EphemeralChildHandle,
   ChildHandleFromContract,
   CreateChildOptions,
   ChildCreationResult,
@@ -9,7 +10,10 @@ import type {
   Rpc,
 } from "../core/index.js";
 import type { RpcBridge } from "@natstack/rpc";
-import { createChildHandle, createChildHandleFromContract } from "./handles.js";
+import { createChildHandle, createEphemeralChildHandle, createChildHandleFromContract } from "./handles.js";
+
+/** Options with ephemeral: true for type-safe overloads */
+export type EphemeralCreateChildOptions = CreateChildOptions & { ephemeral: true };
 
 export type ChildManager = ReturnType<typeof createChildManager>;
 
@@ -21,7 +25,7 @@ export function createChildManager(options: {
       options?: Omit<CreateChildOptions, "eventSchemas">
     ): Promise<ChildCreationResult>;
     createBrowserChild(url: string): Promise<ChildCreationResult>;
-    removeChild(childId: string): Promise<void>;
+    closeChild(childId: string): Promise<void>;
     browser: {
       getCdpEndpoint(browserId: string): Promise<string>;
       navigate(browserId: string, url: string): Promise<void>;
@@ -36,68 +40,55 @@ export function createChildManager(options: {
 
   const childHandles = new Map<string, ChildHandle>();
   const childAddedListeners = new Set<(name: string, handle: ChildHandle) => void>();
-  const childRemovedListeners = new Set<(name: string, childId: string) => void>();
-  const childCleanupFunctions = new Map<string, Array<() => void>>();
+  const childRemovedListeners = new Set<(name: string) => void>();
 
-  const registerCleanup = (childId: string, cleanup: () => void) => {
-    const existing = childCleanupFunctions.get(childId) ?? [];
-    existing.push(cleanup);
-    childCleanupFunctions.set(childId, existing);
-  };
-
-  const handleChildRemoved = (childId: string) => {
-    const cleanups = childCleanupFunctions.get(childId);
-    if (cleanups) {
-      for (const cleanup of cleanups) {
-        try {
-          cleanup();
-        } catch (error) {
-          console.error("[ChildHandle] Error in cleanup:", error);
-        }
-      }
-      childCleanupFunctions.delete(childId);
-    }
-
-    for (const [name, handle] of childHandles) {
-      if (handle.id === childId) {
-        childHandles.delete(name);
-        for (const listener of childRemovedListeners) {
-          try {
-            listener(name, childId);
-          } catch (error) {
-            console.error("[ChildHandle] Error in child-removed listener:", error);
-          }
-        }
-        break;
+  /** Remove a child handle and notify listeners */
+  function removeChild(name: string): void {
+    if (!childHandles.has(name)) return;
+    childHandles.delete(name);
+    for (const listener of childRemovedListeners) {
+      try {
+        listener(name);
+      } catch (error) {
+        console.error("[ChildHandle] Error in child-removed listener:", error);
       }
     }
-  };
+  }
 
-  const onChildRemovedEvent = (_fromId: string, payload: unknown) => {
-    const childId = typeof payload === "string" ? payload : (payload as { childId?: unknown })?.childId;
-    if (typeof childId !== "string") return;
-    handleChildRemoved(childId);
-  };
-
-  const runtimeUnsubscribers = [
-    rpc.onEvent("runtime:child-removed", onChildRemovedEvent),
-  ];
-
-  const createChild = async <
+  // Overload: ephemeral: true returns EphemeralChildHandle
+  async function createChild<
+    T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+    E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
+    EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
+  >(
+    source: string,
+    options: EphemeralCreateChildOptions
+  ): Promise<EphemeralChildHandle<T, E, EmitE>>;
+  // Overload: without ephemeral: true returns ChildHandle
+  async function createChild<
     T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
     E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
     EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
   >(
     source: string,
     options?: CreateChildOptions
-  ): Promise<ChildHandle<T, E, EmitE>> => {
+  ): Promise<ChildHandle<T, E, EmitE>>;
+  // Implementation
+  async function createChild<
+    T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+    E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
+    EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
+  >(
+    source: string,
+    options?: CreateChildOptions
+  ): Promise<ChildHandle<T, E, EmitE> | EphemeralChildHandle<T, E, EmitE>> {
     const { eventSchemas, ...bridgeOptions } = options ?? {};
     const result = await bridge.createChild(source, bridgeOptions);
 
     const name = options?.name ?? result.id.split("/").pop() ?? result.id;
     const title = result.title ?? name;
 
-    const handle = createChildHandle<T, E, EmitE>({
+    const handleOptions = {
       rpc,
       bridge,
       id: result.id,
@@ -106,8 +97,14 @@ export function createChildManager(options: {
       title,
       source,
       eventSchemas: eventSchemas as EventSchemaMap | undefined,
-      onCleanupRegister: registerCleanup,
-    });
+    };
+
+    const handle = options?.ephemeral
+      ? createEphemeralChildHandle<T, E, EmitE>({
+          ...handleOptions,
+          onClose: () => removeChild(name),
+        })
+      : createChildHandle<T, E, EmitE>(handleOptions);
 
     childHandles.set(name, handle as ChildHandle);
     for (const listener of childAddedListeners) {
@@ -118,7 +115,7 @@ export function createChildManager(options: {
       }
     }
     return handle;
-  };
+  }
 
   const createBrowserChild = async <
     T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
@@ -141,7 +138,6 @@ export function createChildManager(options: {
       title,
       source: url,
       eventSchemas: undefined,
-      onCleanupRegister: registerCleanup,
     });
 
     childHandles.set(name, handle as ChildHandle);
@@ -196,26 +192,13 @@ export function createChildManager(options: {
       return () => childAddedListeners.delete(callback);
     },
 
-    onChildRemoved(callback: (childId: string) => void): () => void {
-      const listener = (_name: string, childId: string) => callback(childId);
-      childRemovedListeners.add(listener);
-      return () => childRemovedListeners.delete(listener);
+    onChildRemoved(callback: (name: string) => void): () => void {
+      childRemovedListeners.add(callback);
+      return () => childRemovedListeners.delete(callback);
     },
 
     destroy(): void {
-      for (const unsub of runtimeUnsubscribers) unsub();
-
-      for (const cleanups of childCleanupFunctions.values()) {
-        for (const cleanup of cleanups) {
-          try {
-            cleanup();
-          } catch (error) {
-            console.error("[ChildHandle] Error in cleanup:", error);
-          }
-        }
-      }
       childHandles.clear();
-      childCleanupFunctions.clear();
       childAddedListeners.clear();
       childRemovedListeners.clear();
     },

@@ -276,6 +276,8 @@ interface PanelBase {
   selectedChildId: string | null;
   artifacts: PanelArtifacts;
   env?: Record<string, string>;
+  /** If true, panel can be closed and is not persisted to SQLite */
+  ephemeral?: boolean;
 }
 
 /**
@@ -453,7 +455,87 @@ export interface SettingsData {
 }
 
 /** Actions available in panel context menus */
-export type PanelContextMenuAction = "reload" | "close" | "close-siblings" | "close-subtree";
+export type PanelContextMenuAction = "reload" | "unload" | "pin";
+
+// =============================================================================
+// Panel Move/Drag-and-Drop Types
+// =============================================================================
+
+/**
+ * Request to move a panel to a new parent at a specific position.
+ * Used for drag-and-drop reordering and reparenting.
+ */
+export interface MovePanelRequest {
+  panelId: string;
+  /** New parent ID, or null to make it a root panel */
+  newParentId: string | null;
+  /** Target position among siblings (0-indexed) */
+  targetPosition: number;
+}
+
+/**
+ * Request for paginated children.
+ */
+export interface GetChildrenPaginatedRequest {
+  parentId: string;
+  offset: number;
+  limit: number;
+}
+
+/**
+ * Response for paginated children.
+ */
+export interface PaginatedChildren {
+  children: PanelSummary[];
+  total: number;
+  hasMore: boolean;
+}
+
+/**
+ * Response for paginated root panels.
+ */
+export interface PaginatedRootPanels {
+  panels: PanelSummary[];
+  total: number;
+  hasMore: boolean;
+}
+
+// =============================================================================
+// Panel Summary Types (for tree queries and UI)
+// =============================================================================
+
+/**
+ * Panel summary for tree queries (minimal data for UI).
+ */
+export interface PanelSummary {
+  id: string;
+  type: PanelType;
+  title: string;
+  childCount: number;
+  buildState?: string;
+  position: number;
+  ephemeral?: boolean;
+}
+
+/**
+ * Panel ancestor for breadcrumb rendering.
+ */
+export interface PanelAncestor {
+  id: string;
+  title: string;
+  type: PanelType;
+  depth: number;
+}
+
+/**
+ * Sibling group at a descendant level for breadcrumb rendering.
+ */
+export interface DescendantSiblingGroup {
+  depth: number;
+  parentId: string;
+  selectedId: string;
+  siblings: PanelSummary[];
+}
 
 // Shell IPC channels (shell renderer -> main for service calls)
 // Note: Most shell operations now use RPC via shell-rpc:call.

@@ -10,22 +10,29 @@ import { Box, Flex, IconButton, Text, Tooltip } from "@radix-ui/themes";
 import type { CSSProperties, MouseEvent } from "react";
 
 import { useNavigation } from "./NavigationContext";
-import type { NavigationMode, StatusNavigationData, TitleNavigationData } from "./navigationTypes";
-import type { Panel, PanelContextMenuAction } from "../../shared/ipc/types";
+import type {
+  NavigationMode,
+  LazyTitleNavigationData,
+  LazyStatusNavigationData,
+  PanelSummary,
+  PanelAncestor,
+  DescendantSiblingGroup,
+} from "./navigationTypes";
+import type { PanelContextMenuAction } from "../../shared/ipc/types";
 import { menu } from "../shell/client";
 
 interface TitleBarProps {
   title: string;
-  onNavigate?: (path: string[]) => void;
+  onNavigateToId?: (panelId: string) => void;
   onPanelAction?: (panelId: string, action: PanelContextMenuAction) => void;
 }
 
-export function TitleBar({ title, onNavigate, onPanelAction }: TitleBarProps) {
+export function TitleBar({ title, onNavigateToId, onPanelAction }: TitleBarProps) {
   const {
     mode: navigationMode,
     setMode,
-    titleNavigation: navigationData,
-    statusNavigation,
+    lazyTitleNavigation: navigationData,
+    lazyStatusNavigation: statusNavigation,
   } = useNavigation();
 
   const handleNavigationToggle = () => {
@@ -94,7 +101,7 @@ export function TitleBar({ title, onNavigate, onPanelAction }: TitleBarProps) {
             title={title}
             navigationData={navigationData}
             statusNavigation={statusNavigation}
-            onNavigate={onNavigate}
+            onNavigateToId={onNavigateToId}
             onPanelAction={onPanelAction}
           />
         </Box>
@@ -108,9 +115,9 @@ export function TitleBar({ title, onNavigate, onPanelAction }: TitleBarProps) {
 
 interface BreadcrumbBarProps {
   title: string;
-  navigationData?: TitleNavigationData | null;
-  statusNavigation?: StatusNavigationData | null;
-  onNavigate?: (path: string[]) => void;
+  navigationData?: LazyTitleNavigationData | null;
+  statusNavigation?: LazyStatusNavigationData | null;
+  onNavigateToId?: (panelId: string) => void;
   onPanelAction?: (panelId: string, action: PanelContextMenuAction) => void;
 }
 
@@ -152,21 +159,22 @@ function BreadcrumbBar({
   title,
   navigationData,
   statusNavigation,
-  onNavigate,
+  onNavigateToId,
   onPanelAction,
 }: BreadcrumbBarProps) {
   const ancestors = navigationData?.ancestors ?? [];
+  const currentSiblings = navigationData?.currentSiblings ?? [];
   const descendantGroups = statusNavigation?.descendantGroups ?? [];
 
   const visibleAncestors = ancestors.slice(-MAX_VISIBLE_ANCESTORS);
   const hiddenAncestors = ancestors.slice(0, ancestors.length - visibleAncestors.length);
 
-  const visibleDescendants = descendantGroups.slice(0, MAX_VISIBLE_DESC_GROUPS);
-  const hiddenDescendants = descendantGroups.slice(visibleDescendants.length);
+  const visibleDescendantGroups = descendantGroups.slice(0, MAX_VISIBLE_DESC_GROUPS);
+  const hiddenDescendantGroups = descendantGroups.slice(visibleDescendantGroups.length);
 
   const handlePanelContextMenu = async (
     e: MouseEvent<HTMLSpanElement>,
-    panel: Panel
+    panel: PanelSummary | PanelAncestor
   ) => {
     e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
@@ -177,8 +185,7 @@ function BreadcrumbBar({
   };
 
   const renderBreadcrumbItem = (
-    panel: Panel,
-    pathToParent: string[],
+    panel: PanelSummary,
     isActive: boolean,
     isCurrent: boolean
   ) => (
@@ -191,7 +198,7 @@ function BreadcrumbBar({
         ...itemStyle,
         backgroundColor: isCurrent && isActive ? "var(--gray-a4)" : undefined,
       }}
-      onClick={() => onNavigate?.([...pathToParent, panel.id])}
+      onClick={() => onNavigateToId?.(panel.id)}
       onContextMenu={(e: MouseEvent<HTMLSpanElement>) => handlePanelContextMenu(e, panel)}
       onMouseEnter={(e: MouseEvent<HTMLSpanElement>) => {
         if (!isCurrent || !isActive) {
@@ -206,9 +213,27 @@ function BreadcrumbBar({
     </Text>
   );
 
+  const renderAncestorItem = (ancestor: PanelAncestor) => (
+    <Text
+      key={ancestor.id}
+      as="span"
+      size="2"
+      style={itemStyle}
+      onClick={() => onNavigateToId?.(ancestor.id)}
+      onContextMenu={(e: MouseEvent<HTMLSpanElement>) => handlePanelContextMenu(e, ancestor)}
+      onMouseEnter={(e: MouseEvent<HTMLSpanElement>) => {
+        e.currentTarget.style.backgroundColor = "var(--gray-a3)";
+      }}
+      onMouseLeave={(e: MouseEvent<HTMLSpanElement>) => {
+        e.currentTarget.style.backgroundColor = "";
+      }}
+    >
+      {ancestor.title}
+    </Text>
+  );
+
   const renderSiblingGroup = (
-    siblings: Panel[],
-    pathToParent: string[],
+    siblings: PanelSummary[],
     activeId: string | null,
     isCurrent: boolean
   ) => {
@@ -226,7 +251,6 @@ function BreadcrumbBar({
             )}
             {renderBreadcrumbItem(
               sibling,
-              pathToParent,
               sibling.id === effectiveActiveId,
               isCurrent
             )}
@@ -238,40 +262,53 @@ function BreadcrumbBar({
 
   const handleHiddenAncestorsClick = async (e: MouseEvent<HTMLButtonElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const items = hiddenAncestors.map((crumb, index) => ({
-      id: String(index),
-      label:
-        crumb.siblings.find((sibling) => sibling.id === crumb.path[crumb.path.length - 1])
-          ?.title ??
-        crumb.siblings[0]?.title ??
-        crumb.path.join(" / "),
+    const items = hiddenAncestors.map((ancestor) => ({
+      id: ancestor.id,
+      label: ancestor.title,
     }));
     const selected = await menu.showContext(items, getWindowPositionFromRect(rect));
     if (selected !== null) {
-      const crumb = hiddenAncestors.find((_, index) => String(index) === selected);
-      if (crumb) {
-        onNavigate?.(crumb.path);
-      }
+      onNavigateToId?.(selected);
     }
   };
 
   const handleHiddenDescendantsClick = async (e: MouseEvent<HTMLButtonElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const items = hiddenDescendants.map((group, index) => ({
-      id: String(index),
-      label:
-        group.children.find((c) => c.id === group.selectedChildId)?.title ??
-        group.children[0]?.title ??
-        "Child",
-    }));
+    // For hidden descendant groups, show the selected panel from each group
+    const items = hiddenDescendantGroups.map((group) => {
+      const selectedPanel = group.siblings.find((s) => s.id === group.selectedId);
+      return {
+        id: group.selectedId,
+        label: selectedPanel?.title ?? "Unknown",
+      };
+    });
     const selected = await menu.showContext(items, getWindowPositionFromRect(rect));
     if (selected !== null) {
-      const group = hiddenDescendants.find((_, index) => String(index) === selected);
-      if (group) {
-        const targetId = group.selectedChildId || group.children[0]?.id || "";
-        onNavigate?.([...group.pathToParent, targetId]);
-      }
+      onNavigateToId?.(selected);
     }
+  };
+
+  const renderDescendantSiblingGroup = (group: DescendantSiblingGroup) => {
+    if (group.siblings.length === 0) return null;
+
+    return (
+      <span style={groupStyle}>
+        {group.siblings.map((sibling, index) => (
+          <span key={sibling.id} style={{ display: "inline-flex", alignItems: "center" }}>
+            {index > 0 && (
+              <DividerVerticalIcon
+                style={{ color: "var(--gray-7)", width: 12, height: 12, flexShrink: 0 }}
+              />
+            )}
+            {renderBreadcrumbItem(
+              sibling,
+              sibling.id === group.selectedId,
+              false
+            )}
+          </span>
+        ))}
+      </span>
+    );
   };
 
   return (
@@ -290,24 +327,20 @@ function BreadcrumbBar({
           <ChevronRightIcon color="var(--gray-8)" />
         </>
       )}
-      {visibleAncestors.map((crumb) => (
-        <Flex key={crumb.path.join("-")} align="center" gap="1">
-          {renderSiblingGroup(
-            crumb.siblings,
-            crumb.path.slice(0, -1),
-            crumb.path[crumb.path.length - 1] || null,
-            false
-          )}
+      {visibleAncestors.map((ancestor) => (
+        <Flex key={ancestor.id} align="center" gap="1">
+          <span style={groupStyle}>
+            {renderAncestorItem(ancestor)}
+          </span>
           <ChevronRightIcon color="var(--gray-8)" />
         </Flex>
       ))}
 
       {/* Current (with siblings) */}
-      {navigationData?.current ? (
+      {currentSiblings.length > 0 ? (
         renderSiblingGroup(
-          navigationData.current.siblings,
-          navigationData.current.parentPath,
-          navigationData.current.activeId,
+          currentSiblings,
+          navigationData?.currentId ?? null,
           true
         )
       ) : (
@@ -321,14 +354,14 @@ function BreadcrumbBar({
         </span>
       )}
 
-      {/* Descendants */}
-      {visibleDescendants.map((group) => (
-        <Flex key={group.parentId} align="center" gap="1">
+      {/* Descendants (sibling groups) */}
+      {visibleDescendantGroups.map((group) => (
+        <Flex key={`desc-${group.depth}`} align="center" gap="1">
           <ChevronRightIcon color="var(--gray-8)" />
-          {renderSiblingGroup(group.children, group.pathToParent, group.selectedChildId, false)}
+          {renderDescendantSiblingGroup(group)}
         </Flex>
       ))}
-      {hiddenDescendants.length > 0 && (
+      {hiddenDescendantGroups.length > 0 && (
         <>
           <ChevronRightIcon color="var(--gray-8)" />
           <IconButton

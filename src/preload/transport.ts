@@ -99,11 +99,6 @@ export function createTransportBridge(viewId: string): TransportBridge {
     };
     if (msg.panelId !== viewId) return;
 
-    if (msg.type === "child-removed") {
-      deliver("main", { type: "event", fromId: "main", event: "runtime:child-removed", payload: msg.childId });
-      return;
-    }
-
     if (msg.type === "child-creation-error") {
       deliver("main", {
         type: "event",

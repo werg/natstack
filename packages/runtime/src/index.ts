@@ -263,12 +263,10 @@ export const onChildAdded = notInShell("onChildAdded") as (
 ) => () => void;
 
 export const onChildRemoved = notInShell("onChildRemoved") as (
-  callback: (childId: string) => void
+  callback: (name: string) => void
 ) => () => void;
 
-export const removeChild = notInShell("removeChild") as (childId: string) => Promise<void>;
 export const setTitle = notInShell("setTitle") as (title: string) => Promise<void>;
-export const close = notInShell("close") as () => Promise<void>;
 export const getInfo = notInShell("getInfo") as () => Promise<import("./core/index.js").EndpointInfo>;
 
 export const getTheme = (() => "light") as () => import("./types.js").ThemeAppearance;

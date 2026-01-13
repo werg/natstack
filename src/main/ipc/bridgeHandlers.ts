@@ -1,6 +1,6 @@
 /**
  * Bridge service handlers for panel RPC calls.
- * Handles panel lifecycle operations like createChild, removeChild, etc.
+ * Handles panel lifecycle operations like createChild, setTitle, etc.
  */
 
 import type { PanelManager } from "../panelManager.js";
@@ -30,19 +30,21 @@ export async function handleBridgeCall(
       const [url] = args as [string];
       return pm.createBrowserChild(callerId, url);
     }
-    case "removeChild": {
-      const [childId] = args as [string];
-      return pm.removeChild(callerId, childId);
-    }
     case "setTitle": {
       const [title] = args as [string];
       return pm.setTitle(callerId, title);
     }
-    case "close": {
-      return pm.closePanel(callerId);
-    }
     case "getInfo": {
       return pm.getInfo(callerId);
+    }
+    case "closeChild": {
+      const [childId] = args as [string];
+      // Verify caller is the parent of the child
+      const parentId = pm.findParentId(childId);
+      if (parentId !== callerId) {
+        throw new Error(`Panel "${callerId}" is not the parent of "${childId}"`);
+      }
+      return pm.closePanel(childId);
     }
     default:
       throw new Error(`Unknown bridge method: ${method}`);

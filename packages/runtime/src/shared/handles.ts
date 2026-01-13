@@ -1,5 +1,6 @@
 import type {
   ChildHandle,
+  EphemeralChildHandle,
   EventSchemaMap,
   ParentHandle,
   PanelContract,
@@ -21,38 +22,35 @@ function createCallProxy<T extends Rpc.ExposedMethods>(
   });
 }
 
+/** Bridge methods needed for child handle operations */
+export interface ChildHandleBridge {
+  browser: {
+    getCdpEndpoint(browserId: string): Promise<string>;
+    navigate(browserId: string, url: string): Promise<void>;
+    goBack(browserId: string): Promise<void>;
+    goForward(browserId: string): Promise<void>;
+    reload(browserId: string): Promise<void>;
+    stop(browserId: string): Promise<void>;
+  };
+  closeChild(childId: string): Promise<void>;
+}
+
 export function createChildHandle<
   T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
   E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
   EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
 >(options: {
   rpc: RpcBridge;
-  bridge: {
-    removeChild(childId: string): Promise<void>;
-    browser: {
-      getCdpEndpoint(browserId: string): Promise<string>;
-      navigate(browserId: string, url: string): Promise<void>;
-      goBack(browserId: string): Promise<void>;
-      goForward(browserId: string): Promise<void>;
-      reload(browserId: string): Promise<void>;
-      stop(browserId: string): Promise<void>;
-    };
-  };
+  bridge: ChildHandleBridge;
   id: string;
   type: "app" | "worker" | "browser";
   name: string;
   title: string;
   source: string;
   eventSchemas?: EventSchemaMap;
-  onCleanupRegister?: (childId: string, cleanup: () => void) => void;
 }): ChildHandle<T, E, EmitE> {
   const { rpc, bridge, id, type, name, title, source, eventSchemas } = options;
   const eventUnsubscribers: Array<() => void> = [];
-
-  const trackCleanup = (cleanup: () => void) => {
-    eventUnsubscribers.push(cleanup);
-    options.onCleanupRegister?.(id, cleanup);
-  };
 
   const call = createCallProxy<T>(rpc, id);
 
@@ -62,12 +60,6 @@ export function createChildHandle<
     name,
     title,
     source,
-
-    async close() {
-      for (const unsub of [...eventUnsubscribers]) unsub();
-      eventUnsubscribers.length = 0;
-      await bridge.removeChild(id);
-    },
 
     call,
 
@@ -94,7 +86,7 @@ export function createChildHandle<
         listener(payload);
       });
 
-      trackCleanup(unsubscribe);
+      eventUnsubscribers.push(unsubscribe);
 
       return () => {
         unsubscribe();
@@ -140,6 +132,37 @@ export function createChildHandle<
       await bridge.browser.stop(id);
     },
   } as ChildHandle<T, E, EmitE>;
+}
+
+/**
+ * Create an ephemeral child handle with close() method.
+ * Used when createChild is called with ephemeral: true.
+ */
+export function createEphemeralChildHandle<
+  T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+  E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
+  EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
+>(options: {
+  rpc: RpcBridge;
+  bridge: ChildHandleBridge;
+  id: string;
+  type: "app" | "worker" | "browser";
+  name: string;
+  title: string;
+  source: string;
+  eventSchemas?: EventSchemaMap;
+  onClose?: () => void;
+}): EphemeralChildHandle<T, E, EmitE> {
+  const baseHandle = createChildHandle<T, E, EmitE>(options);
+
+  return {
+    ...baseHandle,
+    async close() {
+      await options.bridge.closeChild(options.id);
+      // Clean up handle after successful close
+      options.onClose?.();
+    },
+  };
 }
 
 export function createParentHandle<

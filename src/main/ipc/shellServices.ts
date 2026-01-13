@@ -30,6 +30,8 @@ import type {
   ModelRoleConfig,
   ShellPage,
 } from "../../shared/ipc/types.js";
+import { getPanelPersistence } from "../db/panelPersistence.js";
+import { getPanelSearchIndex } from "../db/panelSearchIndex.js";
 import type { SupportedProvider } from "../workspace/types.js";
 import { getViewManager } from "../viewManager.js";
 import { getMainCacheManager } from "../cacheManager.js";
@@ -195,6 +197,25 @@ export async function handlePanelService(
     case "notifyFocused": {
       const panelId = args[0] as string;
       pm.sendPanelEvent(panelId, { type: "focus" });
+      // Update the selected path in both in-memory tree and database
+      // for breadcrumb navigation, and log focused event for analytics
+      try {
+        // Update in-memory tree first
+        pm.updateSelectedPath(panelId);
+        // Persist to database
+        const persistence = getPanelPersistence();
+        persistence.updateSelectedPath(panelId);
+        persistence.logEvent(panelId, "focused");
+        getPanelSearchIndex().incrementAccessCount(panelId);
+        // Notify UI of the selected path change
+        pm.notifyPanelTreeUpdate();
+
+        // If panel was unloaded (pending state), rebuild it on focus
+        // This is async but we don't need to wait for it
+        void pm.rebuildUnloadedPanel(panelId);
+      } catch (error) {
+        console.error(`[Panel] Failed to update selected path for ${panelId}:`, error);
+      }
       return;
     }
 
@@ -217,15 +238,17 @@ export async function handlePanelService(
     case "reload": {
       const panelId = args[0] as string;
       if (!vm.hasView(panelId)) {
-        throw new Error(`No view found for panel ${panelId}`);
+        // Panel may have been unloaded - try to rebuild it
+        await pm.rebuildUnloadedPanel(panelId);
+        return;
       }
       vm.reload(panelId);
       return;
     }
 
-    case "close": {
+    case "unload": {
       const panelId = args[0] as string;
-      await pm.closePanel(panelId);
+      await pm.unloadPanel(panelId);
       return;
     }
 
@@ -256,6 +279,63 @@ export async function handlePanelService(
     case "createShellPanel": {
       const page = args[0] as ShellPage;
       return pm.createShellPanel(page);
+    }
+
+    case "movePanel": {
+      const { panelId, newParentId, targetPosition } = args[0] as {
+        panelId: string;
+        newParentId: string | null;
+        targetPosition: number;
+      };
+      pm.movePanel(panelId, newParentId, targetPosition);
+      return;
+    }
+
+    case "getChildrenPaginated": {
+      const { parentId, offset, limit } = args[0] as {
+        parentId: string;
+        offset: number;
+        limit: number;
+      };
+      const persistence = getPanelPersistence();
+      return persistence.getChildrenPaginated(parentId, offset, limit);
+    }
+
+    case "getRootPanelsPaginated": {
+      const { offset, limit } = args[0] as { offset: number; limit: number };
+      const persistence = getPanelPersistence();
+      return persistence.getRootPanelsPaginated(offset, limit);
+    }
+
+    case "pinPanel": {
+      const panelId = args[0] as string;
+      const pinnedRootId = pm.getPinnedRootId();
+      if (!pinnedRootId) {
+        throw new Error("No pinned root panel exists");
+      }
+      // Move panel to be first child of pinned root (position 0)
+      pm.movePanel(panelId, pinnedRootId, 0);
+      return;
+    }
+
+    case "getPinnedRootId": {
+      return pm.getPinnedRootId();
+    }
+
+    case "getCollapsedIds": {
+      return pm.getCollapsedIds();
+    }
+
+    case "setCollapsed": {
+      const [panelId, collapsed] = args as [string, boolean];
+      pm.setCollapsed(panelId, collapsed);
+      return;
+    }
+
+    case "expandIds": {
+      const [panelIds] = args as [string[]];
+      pm.expandIds(panelIds);
+      return;
     }
 
     default:
@@ -378,11 +458,18 @@ export async function handleMenuService(
     }
 
     case "showPanelContext": {
-      const [_panelId, panelType, position] = args as [
+      const [panelId, panelType, position] = args as [
         string,
         string,
         { x: number; y: number }
       ];
+      const pm = requirePanelManager();
+      const pinnedRootId = pm.getPinnedRootId();
+
+      // Check if panel is already pinned (is the pinned root or a child of it)
+      const isPinnedRoot = panelId === pinnedRootId;
+      const isAlreadyPinned = isPinnedRoot || (pinnedRootId && pm.isDescendantOf(panelId, pinnedRootId));
+
       return new Promise<PanelContextMenuAction | null>((resolve) => {
         const template: MenuItemConstructorOptions[] = [];
 
@@ -394,17 +481,18 @@ export async function handleMenuService(
           template.push({ type: "separator" });
         }
 
+        // Add "Pin" option for panels not already in pinned subtree
+        if (!isAlreadyPinned && pinnedRootId) {
+          template.push({
+            label: "Pin to Sidebar",
+            click: () => resolve("pin"),
+          });
+          template.push({ type: "separator" });
+        }
+
         template.push({
-          label: "Close",
-          click: () => resolve("close"),
-        });
-        template.push({
-          label: "Close Siblings",
-          click: () => resolve("close-siblings"),
-        });
-        template.push({
-          label: "Close Subtree",
-          click: () => resolve("close-subtree"),
+          label: "Unload",
+          click: () => resolve("unload"),
         });
 
         const menu = Menu.buildFromTemplate(template);

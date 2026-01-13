@@ -23,6 +23,9 @@ import { PANEL_CSP_META } from "../shared/constants.js";
 import { eventService } from "./services/eventsService.js";
 import { getAboutBuilder, getShellPageTitle } from "./aboutBuilder.js";
 import { getAboutPageUrl, hasAboutPage, registerAboutProtocolForPartition, isValidShellPage } from "./aboutProtocol.js";
+import { getPanelPersistence } from "./db/panelPersistence.js";
+import { getPanelSearchIndex } from "./db/panelSearchIndex.js";
+import { extractAndIndexPageContent } from "./db/pageContentExtractor.js";
 
 type ChildCreateOptions = {
   name?: string;
@@ -35,6 +38,8 @@ type ChildCreateOptions = {
   sessionId?: string;
   /** Force creation of a new named session instead of deriving from panel ID */
   newSession?: boolean;
+  /** If true, panel can be closed and is not persisted to SQLite */
+  ephemeral?: boolean;
   /** Legacy fields (still supported programmatically) */
   branch?: string;
   commit?: string;
@@ -103,6 +108,17 @@ function validateSessionId(sessionId: string, expectedMode: SessionMode): void {
   }
 }
 
+/**
+ * PanelManager - Manages the panel tree lifecycle.
+ *
+ * Panel tree data flow:
+ * 1. SQLite DB (source of truth, persisted)
+ * 2. PanelManager.panels Map (in-memory for fast access)
+ * 3. Renderer PanelTreeContext (via panel-tree-updated events)
+ *
+ * On startup: DB -> PanelManager -> Event -> Renderer
+ * On changes: PanelManager -> DB (persist) + Event (notify renderer)
+ */
 export class PanelManager {
   private builder: PanelBuilder;
   private viewManager: ViewManager | null = null;
@@ -131,26 +147,165 @@ export class PanelManager {
 
   /**
    * Set the ViewManager for creating and managing panel views.
-   * Must be called after window creation. This triggers deferred root panel initialization.
+   * Must be called after window creation. This triggers panel tree initialization.
    */
   setViewManager(vm: ViewManager): void {
     this.viewManager = vm;
 
-    // Now that ViewManager is set, initialize the root panel if deferred
-    if (this.initialRootPanelPath) {
-      const rootPath = this.initialRootPanelPath;
-      this.initialRootPanelPath = null; // Clear to prevent re-initialization
-      this.initializeRootPanel(rootPath).catch((error) => {
-        console.error("[PanelManager] Failed to initialize root panel:", error);
-        // Notify shell about the failure so user sees feedback
-        const shellContents = vm.getShellWebContents();
-        if (!shellContents.isDestroyed()) {
-          shellContents.send("panel:initialization-error", {
-            path: rootPath,
-            error: error instanceof Error ? error.message : String(error),
-          });
+    // Try to load existing panel tree from database first
+    this.initializePanelTree().catch((error) => {
+      console.error("[PanelManager] Failed to initialize panel tree:", error);
+      const shellContents = vm.getShellWebContents();
+      if (!shellContents.isDestroyed()) {
+        shellContents.send("panel:initialization-error", {
+          path: this.initialRootPanelPath ?? "",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+  }
+
+  /**
+   * Initialize the panel tree - load from DB if exists, otherwise create from initial path.
+   */
+  private async initializePanelTree(): Promise<void> {
+    const persistence = getPanelPersistence();
+
+    try {
+      // Try to load existing panels from database
+      const existingPanels = persistence.getFullTree();
+
+      if (existingPanels.length > 0) {
+        // Restore panels from database
+        console.log(`[PanelManager] Restoring ${existingPanels.length} root panel(s) from database`);
+        this.rootPanels = existingPanels;
+
+        // Rebuild the panels map
+        const buildPanelsMap = (panels: Panel[]) => {
+          for (const panel of panels) {
+            this.panels.set(panel.id, panel);
+            if (panel.children.length > 0) {
+              buildPanelsMap(panel.children);
+            }
+          }
+        };
+        buildPanelsMap(existingPanels);
+
+        // Create views for panels that have build artifacts ready
+        this.restorePanelViews(existingPanels);
+
+        this.notifyPanelTreeUpdate();
+      } else if (this.initialRootPanelPath) {
+        // No existing panels, create from initial path
+        const rootPath = this.initialRootPanelPath;
+        this.initialRootPanelPath = null;
+        await this.initializeRootPanel(rootPath);
+      }
+    } catch (error) {
+      console.error("[PanelManager] Failed to load panel tree from database:", error);
+      // Reset to clean state
+      this.rootPanels = [];
+      this.panels.clear();
+
+      // Fall back to initial root panel if available
+      if (this.initialRootPanelPath) {
+        const rootPath = this.initialRootPanelPath;
+        this.initialRootPanelPath = null;
+        await this.initializeRootPanel(rootPath);
+      }
+      // Re-throw to let setViewManager's catch block handle notification
+      throw error;
+    }
+  }
+
+  /**
+   * Recursively restore panels from database.
+   * App/worker panels are restored as unloaded and rebuild on focus.
+   * Browser/shell panels recreate views directly.
+   */
+  private restorePanelViews(panels: Panel[]): void {
+    for (const panel of panels) {
+      try {
+        if (panel.type === "app") {
+          // App panels rebuild only when focused/loaded.
+          this.markPanelUnloaded(panel);
+        } else if (panel.type === "worker") {
+          // Worker panels rebuild only when focused/loaded.
+          this.markPanelUnloaded(panel);
+        } else if (panel.type === "browser") {
+          // Browser panel - can create view directly
+          const browserPanel = panel as SharedPanel.BrowserPanel;
+          this.createViewForPanel(panel.id, browserPanel.url, "browser", panel.sessionId);
+        } else if (panel.type === "shell") {
+          // Shell panel - can create view directly using about protocol
+          const shellPanel = panel as SharedPanel.ShellPanel;
+          void this.restoreShellPanel(shellPanel);
         }
-      });
+      } catch (error) {
+        console.error(`[PanelManager] Failed to restore panel ${panel.id}:`, error);
+      }
+
+      // Recursively restore children
+      if (panel.children.length > 0) {
+        this.restorePanelViews(panel.children);
+      }
+    }
+  }
+
+  /**
+   * Mark a panel as unloaded so it rebuilds when focused.
+   * Keeps error/dirty states intact to avoid losing actionable UI.
+   */
+  private markPanelUnloaded(panel: Panel): void {
+    const buildState = panel.artifacts?.buildState;
+    if (buildState === "dirty" || buildState === "not-git-repo" || buildState === "error") {
+      return;
+    }
+
+    const hasBuildArtifacts = Boolean(panel.artifacts?.htmlPath || panel.artifacts?.bundlePath);
+    if (buildState === "pending" && !hasBuildArtifacts) {
+      return;
+    }
+
+    panel.artifacts = {
+      buildState: "pending",
+      buildProgress: "Panel unloaded - will rebuild when focused",
+    };
+    this.persistArtifacts(panel.id, panel.artifacts);
+  }
+
+  /**
+   * Restore a shell panel by building its page and creating the view.
+   */
+  private async restoreShellPanel(panel: SharedPanel.ShellPanel): Promise<void> {
+    try {
+      // Build the about page
+      let url: string;
+      if (hasAboutPage(panel.page)) {
+        url = getAboutPageUrl(panel.page);
+      } else {
+        url = await getAboutBuilder().buildAndStorePage(panel.page);
+      }
+
+      // Register the about protocol for the shell panel's partition
+      const partition = `persist:${panel.sessionId}`;
+      await registerAboutProtocolForPartition(partition);
+
+      // Create the view
+      this.createViewForShellPanel(panel, url);
+
+      // Mark as ready and persist
+      panel.artifacts = { buildState: "ready" };
+      this.persistArtifacts(panel.id, panel.artifacts);
+      this.notifyPanelTreeUpdate();
+    } catch (error) {
+      console.error(`[PanelManager] Failed to restore shell panel ${panel.id}:`, error);
+      panel.artifacts = {
+        buildState: "error",
+        buildProgress: `Restore failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+      this.persistArtifacts(panel.id, panel.artifacts);
+      this.notifyPanelTreeUpdate();
     }
   }
 
@@ -212,6 +367,11 @@ export class PanelManager {
       // Track browser state changes
       this.setupBrowserStateTracking(panelId, view.webContents);
 
+      // Extract and index page content for search
+      view.webContents.on("did-finish-load", () => {
+        extractAndIndexPageContent(panelId, view.webContents);
+      });
+
       // Intercept natstack-child:// and new-window navigations for child creation
       this.setupChildLinkInterception(panelId, view.webContents, "browser");
     } else if (type === "worker") {
@@ -243,7 +403,7 @@ export class PanelManager {
       const unsafeFlag = panel?.type === "worker" ? (panel as SharedPanel.WorkerPanel).workerOptions?.unsafe : undefined;
 
       // Calculate and add scope path for unsafe workers.
-      // Safe workers (unsafeFlag === undefined) use ZenFS and don't need a scope path.
+      // Safe workers (falsey unsafeFlag) use ZenFS and don't need a scope path.
       // Unsafe workers get either a custom root (string) or the default scoped path (true).
       if (unsafeFlag) {
         const workspace = getActiveWorkspace();
@@ -297,7 +457,7 @@ export class PanelManager {
       const unsafeFlag = panel?.type === "app" ? (panel as SharedPanel.AppPanel).unsafe : undefined;
 
       // Calculate and add scope path for unsafe panels
-      if (unsafeFlag !== undefined) {
+      if (unsafeFlag) {
         const workspace = getActiveWorkspace();
         if (workspace) {
           const scopePath =
@@ -409,8 +569,8 @@ export class PanelManager {
 
       if (url.startsWith("natstack-child:")) {
         try {
-          const { source, gitRef, sessionId } = parseChildUrl(url);
-          this.createChild(panelId, source, { gitRef, sessionId }).catch((err) =>
+          const { source, gitRef, sessionId, ephemeral } = parseChildUrl(url);
+          this.createChild(panelId, source, { gitRef, sessionId, ephemeral }).catch((err) =>
             this.handleChildCreationError(panelId, err, url)
           );
         } catch (err) {
@@ -437,8 +597,8 @@ export class PanelManager {
       if (url.startsWith("natstack-child:")) {
         event.preventDefault();
         try {
-          const { source, gitRef, sessionId } = parseChildUrl(url);
-          this.createChild(panelId, source, { gitRef, sessionId }).catch((err) =>
+          const { source, gitRef, sessionId, ephemeral } = parseChildUrl(url);
+          this.createChild(panelId, source, { gitRef, sessionId, ephemeral }).catch((err) =>
             this.handleChildCreationError(panelId, err, url)
           );
         } catch (err) {
@@ -667,7 +827,7 @@ export class PanelManager {
     });
 
     // Resolve session ID based on panel ID and options
-    const isUnsafe = unsafeFlag !== undefined;
+    const isUnsafe = Boolean(unsafeFlag);
     const sessionId = this.resolveSession(panelId, options, isUnsafe);
 
     if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
@@ -712,6 +872,7 @@ export class PanelManager {
             workerOptions: {
               unsafe: options?.unsafe ?? manifest.unsafe,
             },
+            ephemeral: options?.ephemeral,
           }
         : {
             type: "app",
@@ -733,18 +894,22 @@ export class PanelManager {
             commit,
             tag,
             resolvedRepoArgs: options?.repoArgs,
+            ephemeral: options?.ephemeral,
           };
 
       if (isRoot) {
         this.rootPanels = [panel];
         this.panels = new Map([[panel.id, panel]]);
       } else if (parent) {
-        parent.children.push(panel);
+        parent.children.unshift(panel); // Prepend for newest-first ordering
         parent.selectedChildId = panel.id;
         this.panels.set(panel.id, panel);
       } else {
         this.panels.set(panel.id, panel);
       }
+
+      // Persist to database
+      this.persistPanel(panel, parent?.id ?? null);
 
       this.notifyPanelTreeUpdate();
 
@@ -757,6 +922,151 @@ export class PanelManager {
       return { id: panel.id, type: panel.type, title: panel.title };
     } finally {
       this.reservedPanelIds.delete(panelId);
+    }
+  }
+
+  /**
+   * Persist a panel to the database.
+   * Ephemeral panels are skipped (not persisted).
+   */
+  private persistPanel(panel: Panel, parentId: string | null): void {
+    // Skip persistence for ephemeral panels
+    if (panel.ephemeral) {
+      return;
+    }
+
+    try {
+      const persistence = getPanelPersistence();
+
+      // Check if panel already exists (e.g., on app restart)
+      const existingPanel = persistence.getPanel(panel.id);
+      const shouldCreate = !existingPanel;
+
+      if (shouldCreate) {
+        if (panel.type === "app") {
+          const appPanel = panel as SharedPanel.AppPanel;
+          persistence.createPanel({
+            id: panel.id,
+            type: "app",
+            title: panel.title,
+            sessionId: panel.sessionId,
+            parentId,
+            typeData: {
+              path: appPanel.path,
+              sourceRepo: appPanel.sourceRepo,
+              branch: appPanel.branch,
+              commit: appPanel.commit,
+              tag: appPanel.tag,
+              resolvedRepoArgs: appPanel.resolvedRepoArgs,
+              injectHostThemeVariables: appPanel.injectHostThemeVariables,
+              unsafe: appPanel.unsafe,
+            },
+            artifacts: panel.artifacts,
+          });
+        } else if (panel.type === "worker") {
+          const workerPanel = panel as SharedPanel.WorkerPanel;
+          persistence.createPanel({
+            id: panel.id,
+            type: "worker",
+            title: panel.title,
+            sessionId: panel.sessionId,
+            parentId,
+            typeData: {
+              path: workerPanel.path,
+              sourceRepo: workerPanel.sourceRepo,
+              branch: workerPanel.branch,
+              commit: workerPanel.commit,
+              tag: workerPanel.tag,
+              resolvedRepoArgs: workerPanel.resolvedRepoArgs,
+              workerOptions: workerPanel.workerOptions,
+            },
+            artifacts: panel.artifacts,
+          });
+        } else if (panel.type === "browser") {
+          const browserPanel = panel as SharedPanel.BrowserPanel;
+          persistence.createPanel({
+            id: panel.id,
+            type: "browser",
+            title: panel.title,
+            sessionId: panel.sessionId,
+            parentId,
+            typeData: {
+              url: browserPanel.url,
+              browserState: browserPanel.browserState,
+              injectHostThemeVariables: false,
+            },
+            artifacts: panel.artifacts,
+          });
+        } else if (panel.type === "shell") {
+          const shellPanel = panel as SharedPanel.ShellPanel;
+          persistence.createPanel({
+            id: panel.id,
+            type: "shell",
+            title: panel.title,
+            sessionId: panel.sessionId,
+            parentId,
+            typeData: {
+              page: shellPanel.page,
+              injectHostThemeVariables: true,
+            },
+            artifacts: panel.artifacts,
+          });
+        }
+
+        // Log created event
+        persistence.logEvent(panel.id, "created", { type: panel.type });
+
+        // Set parent's selected_child_id to this new child
+        // This ensures breadcrumbs show the newly created child as selected
+        if (parentId) {
+          persistence.setSelectedChild(parentId, panel.id);
+          // Also update the in-memory parent panel
+          const inMemoryParent = this.panels.get(parentId);
+          if (inMemoryParent) {
+            inMemoryParent.selectedChildId = panel.id;
+          }
+        }
+      }
+
+      // Index panel for search
+      try {
+        const searchIndex = getPanelSearchIndex();
+        if (panel.type === "app") {
+          const appPanel = panel as SharedPanel.AppPanel;
+          searchIndex.indexPanel({
+            id: panel.id,
+            type: "app",
+            title: panel.title,
+            path: appPanel.path,
+          });
+        } else if (panel.type === "worker") {
+          const workerPanel = panel as SharedPanel.WorkerPanel;
+          searchIndex.indexPanel({
+            id: panel.id,
+            type: "worker",
+            title: panel.title,
+            path: workerPanel.path,
+          });
+        } else if (panel.type === "browser") {
+          const browserPanel = panel as SharedPanel.BrowserPanel;
+          searchIndex.indexPanel({
+            id: panel.id,
+            type: "browser",
+            title: panel.title,
+            url: browserPanel.url,
+          });
+        } else if (panel.type === "shell") {
+          searchIndex.indexPanel({
+            id: panel.id,
+            type: "shell",
+            title: panel.title,
+          });
+        }
+      } catch (indexError) {
+        console.error(`[PanelManager] Failed to index panel ${panel.id}:`, indexError);
+      }
+    } catch (error) {
+      console.error(`[PanelManager] Failed to persist panel ${panel.id}:`, error);
     }
   }
 
@@ -777,6 +1087,16 @@ export class PanelManager {
     const parent = this.panels.get(parentId);
     if (!parent) {
       throw new Error(`Parent panel not found: ${parentId}`);
+    }
+
+    // Ephemeral parents can only have ephemeral children.
+    // This ensures closePanel can recursively close all descendants without
+    // needing complex reparenting logic for non-ephemeral children.
+    if (parent.ephemeral) {
+      if (options?.ephemeral === false) {
+        throw new Error("Cannot create non-ephemeral child under ephemeral parent");
+      }
+      options = { ...options, ephemeral: true };
     }
 
     // Check for shell page source (e.g., "shell:about" or "shell/about")
@@ -812,6 +1132,7 @@ export class PanelManager {
   /**
    * Create a browser child panel that loads an external URL.
    * Browser panels don't require manifest or build - they load external content directly.
+   * Browser children inherit ephemeral status from their parent.
    */
   async createBrowserChild(
     parentId: string,
@@ -821,6 +1142,10 @@ export class PanelManager {
     if (!parent) {
       throw new Error(`Parent panel not found: ${parentId}`);
     }
+
+    // Browser children inherit ephemeral status from parent.
+    // This ensures ephemeral parents only have ephemeral children.
+    const ephemeral = parent.ephemeral ? true : undefined;
 
     // Validate URL protocol
     let parsedUrl: URL;
@@ -872,11 +1197,15 @@ export class PanelManager {
         canGoForward: false,
       },
       injectHostThemeVariables: false,
+      ephemeral,
     };
 
-    parent.children.push(panel);
+    parent.children.unshift(panel); // Prepend for newest-first ordering
     parent.selectedChildId = panel.id;
     this.panels.set(panel.id, panel);
+
+    // Persist to database
+    this.persistPanel(panel, parentId);
 
     // Create WebContentsView for the browser (browsers don't use session-based partitions)
     this.createViewForPanel(panel.id, url, "browser", panel.sessionId);
@@ -884,6 +1213,53 @@ export class PanelManager {
     this.notifyPanelTreeUpdate();
 
     return { id: panel.id, type: panel.type, title: panel.title };
+  }
+
+  /**
+   * Close an ephemeral panel and remove it from the tree.
+   * - Only ephemeral panels can be closed (throws for non-ephemeral)
+   * - All children are closed recursively (children of ephemeral panels are always ephemeral)
+   */
+  async closePanel(panelId: string): Promise<void> {
+    const panel = this.panels.get(panelId);
+    if (!panel) {
+      throw new Error(`Panel not found: ${panelId}`);
+    }
+    if (!panel.ephemeral) {
+      throw new Error(`Only ephemeral panels can be closed. Panel "${panelId}" is not ephemeral.`);
+    }
+
+    // Close all children first (copy to avoid mutation during iteration).
+    // All children of ephemeral panels are guaranteed to be ephemeral,
+    // so this recursion will succeed without reparenting logic.
+    const childrenToClose = [...panel.children];
+    for (const child of childrenToClose) {
+      await this.closePanel(child.id);
+    }
+
+    // Find the parent
+    const parent = this.findParentPanel(panelId);
+
+    // Remove this panel from parent's children
+    if (parent) {
+      parent.children = parent.children.filter((c) => c.id !== panelId);
+      // Clear selectedChildId if it pointed to this panel
+      if (parent.selectedChildId === panelId) {
+        parent.selectedChildId = null;
+      }
+    } else {
+      // It's a root panel
+      this.rootPanels = this.rootPanels.filter((p) => p.id !== panelId);
+    }
+
+    // Destroy the view
+    this.viewManager?.destroyView(panelId);
+
+    // Remove from panels map
+    this.panels.delete(panelId);
+
+    // Notify tree update
+    this.notifyPanelTreeUpdate();
   }
 
   /**
@@ -940,12 +1316,16 @@ export class PanelManager {
       },
       env: options?.env,
       injectHostThemeVariables: true,
+      ephemeral: true, // Shell panels are always ephemeral
     };
 
-    // Add as child of parent
-    parent.children.push(panel);
+    // Add as child of parent (prepend for newest-first ordering)
+    parent.children.unshift(panel);
     parent.selectedChildId = panel.id;
     this.panels.set(panel.id, panel);
+
+    // Persist to database
+    this.persistPanel(panel, parent.id);
 
     // Register the about protocol for the shell panel's partition
     const partition = `persist:${panel.sessionId}`;
@@ -997,6 +1377,39 @@ export class PanelManager {
     }
     if (state.canGoForward !== undefined) {
       panel.browserState.canGoForward = state.canGoForward;
+    }
+
+    // Persist state changes to database
+    try {
+      const persistence = getPanelPersistence();
+      if (state.pageTitle !== undefined) {
+        persistence.setTitle(browserId, state.pageTitle);
+      }
+      if (state.url !== undefined || state.isLoading !== undefined ||
+          state.canGoBack !== undefined || state.canGoForward !== undefined) {
+        persistence.updatePanel(browserId, {
+          typeData: {
+            url: panel.url,
+            browserState: panel.browserState,
+            injectHostThemeVariables: false,
+          },
+        });
+      }
+    } catch (error) {
+      console.error(`[PanelManager] Failed to persist browser state for ${browserId}:`, error);
+    }
+
+    // Update search index for URL and title changes
+    try {
+      const searchIndex = getPanelSearchIndex();
+      if (state.pageTitle !== undefined) {
+        searchIndex.updateTitle(browserId, state.pageTitle);
+      }
+      if (state.url !== undefined) {
+        searchIndex.updateUrl(browserId, state.url);
+      }
+    } catch (error) {
+      console.error(`[PanelManager] Failed to update search index for ${browserId}:`, error);
     }
 
     this.notifyPanelTreeUpdate();
@@ -1051,11 +1464,15 @@ export class PanelManager {
       },
       env: undefined,
       injectHostThemeVariables: true,
+      ephemeral: true, // Shell panels are always ephemeral
     };
 
     // Add to root panels (shell panels are top-level)
     this.rootPanels.push(panel);
     this.panels.set(panel.id, panel);
+
+    // Persist to database
+    this.persistPanel(panel, null);
 
     // Register the about protocol for the shell panel's partition
     const partition = `persist:${panel.sessionId}`;
@@ -1145,6 +1562,7 @@ export class PanelManager {
             notGitRepoPath: repoPath,
             buildProgress: "Worker folder must be the root of a git repository",
           };
+          this.persistArtifacts(worker.id, worker.artifacts);
           this.notifyPanelTreeUpdate();
           return;
         }
@@ -1158,6 +1576,7 @@ export class PanelManager {
             dirtyRepoPath: cleanRepoPath,
             buildProgress: "Uncommitted changes detected",
           };
+          this.persistArtifacts(worker.id, worker.artifacts);
           this.notifyPanelTreeUpdate();
           return;
         }
@@ -1211,6 +1630,7 @@ export class PanelManager {
           buildProgress: "Worker ready",
           buildLog: result.buildLog,
         };
+        this.persistArtifacts(worker.id, worker.artifacts);
 
         // Create WebContentsView for this worker
         const srcUrl = new URL(htmlUrl);
@@ -1224,6 +1644,7 @@ export class PanelManager {
           buildProgress: result.error ?? "Build failed",
           buildLog: result.buildLog,
         };
+        this.persistArtifacts(worker.id, worker.artifacts);
       }
 
       this.notifyPanelTreeUpdate();
@@ -1234,6 +1655,7 @@ export class PanelManager {
         buildState: "error",
         buildProgress: errorMsg,
       };
+      this.persistArtifacts(worker.id, worker.artifacts);
       this.notifyPanelTreeUpdate();
     }
   }
@@ -1392,6 +1814,7 @@ export class PanelManager {
             notGitRepoPath: repoPath,
             buildProgress: "Panel folder must be the root of a git repository",
           };
+          this.persistArtifacts(panel.id, panel.artifacts);
           this.notifyPanelTreeUpdate();
           return;
         }
@@ -1405,6 +1828,7 @@ export class PanelManager {
             dirtyRepoPath: cleanRepoPath,
             buildProgress: "Uncommitted changes detected",
           };
+          this.persistArtifacts(panel.id, panel.artifacts);
           this.notifyPanelTreeUpdate();
           return;
         }
@@ -1456,6 +1880,7 @@ export class PanelManager {
           buildProgress: "Build complete",
           buildLog: result.buildLog,
         };
+        this.persistArtifacts(panel.id, panel.artifacts);
 
         // Create WebContentsView for this panel
         const srcUrl = new URL(htmlUrl);
@@ -1469,6 +1894,7 @@ export class PanelManager {
           buildProgress: result.error ?? "Build failed",
           buildLog: result.buildLog,
         };
+        this.persistArtifacts(panel.id, panel.artifacts);
       }
 
       this.notifyPanelTreeUpdate();
@@ -1479,37 +1905,158 @@ export class PanelManager {
         buildState: "error",
         buildProgress: errorMsg,
       };
+      this.persistArtifacts(panel.id, panel.artifacts);
       this.notifyPanelTreeUpdate();
     }
   }
 
-  async removeChild(parentId: string, childId: string): Promise<void> {
-    const parent = this.panels.get(parentId);
-    if (!parent) {
-      throw new Error(`Parent panel not found: ${parentId}`);
+  /**
+   * Persist artifacts to the database.
+   */
+  private persistArtifacts(panelId: string, artifacts: SharedPanel.PanelArtifacts): void {
+    try {
+      getPanelPersistence().updateArtifacts(panelId, artifacts);
+    } catch (error) {
+      console.error(`[PanelManager] Failed to persist artifacts for ${panelId}:`, error);
+    }
+  }
+
+  /**
+   * Unload a panel and all its descendants (release resources but keep in tree).
+   * The panel stays in the database and can be re-loaded later.
+   */
+  async unloadPanel(panelId: string): Promise<void> {
+    const panel = this.panels.get(panelId);
+    if (!panel) {
+      throw new Error(`Panel not found: ${panelId}`);
     }
 
-    const childIndex = parent.children.findIndex((c) => c.id === childId);
-    if (childIndex === -1) {
-      throw new Error(`Child panel not found: ${childId}`);
+    // Prevent unloading panels in the pinned subtree
+    if (this.isPinnedSubtree(panelId)) {
+      console.log(`[PanelManager] Cannot unload pinned panel ${panelId}`);
+      return;
     }
 
-    // Remove child
-    parent.children.splice(childIndex, 1);
-
-    // Update selected child
-    if (parent.selectedChildId === childId) {
-      const firstChild = parent.children[0];
-      parent.selectedChildId = firstChild ? firstChild.id : null;
-    }
-
-    // Remove from panels map (and all descendants)
-    this.removePanelRecursive(childId);
-
-    this.sendPanelEvent(parent.id, { type: "child-removed", childId });
+    // Unload this panel and all its descendants (resources AND artifacts)
+    this.unloadPanelTree(panelId);
 
     // Notify renderer
     this.notifyPanelTreeUpdate();
+  }
+
+  /**
+   * Recursively unload a panel tree - releases resources and resets artifacts.
+   * Preserves error/dirty/not-git-repo states so users can still see actionable UI.
+   */
+  private unloadPanelTree(panelId: string): void {
+    const panel = this.panels.get(panelId);
+    if (!panel) return;
+
+    // Recursively unload children first
+    for (const child of panel.children) {
+      this.unloadPanelTree(child.id);
+    }
+
+    // Release resources for this panel
+    this.unloadPanelResources(panelId);
+
+    // Preserve error/dirty/not-git-repo states - these have actionable UI
+    const buildState = panel.artifacts?.buildState;
+    if (buildState === "dirty" || buildState === "not-git-repo" || buildState === "error") {
+      return;
+    }
+
+    // Don't reset if already pending without build artifacts
+    const hasBuildArtifacts = Boolean(panel.artifacts?.htmlPath || panel.artifacts?.bundlePath);
+    if (buildState === "pending" && !hasBuildArtifacts) {
+      return;
+    }
+
+    // Reset the build state to indicate it needs to be rebuilt
+    panel.artifacts = {
+      buildState: "pending",
+      buildProgress: "Panel unloaded - will rebuild when focused",
+    };
+
+    // Persist the new state
+    this.persistArtifacts(panelId, panel.artifacts);
+  }
+
+  /**
+   * Rebuild an app panel by reconstructing its env and triggering the build.
+   */
+  private async rebuildAppPanel(appPanel: SharedPanel.AppPanel): Promise<void> {
+    appPanel.env = this.buildPanelEnv(appPanel.id, undefined, {
+      sourceRepo: appPanel.sourceRepo ?? appPanel.path,
+      branch: appPanel.branch,
+      commit: appPanel.commit,
+      tag: appPanel.tag,
+      resolvedRepoArgs: appPanel.resolvedRepoArgs,
+    });
+    await this.buildPanelAsync(appPanel, {
+      branch: appPanel.branch,
+      commit: appPanel.commit,
+      tag: appPanel.tag,
+    });
+  }
+
+  /**
+   * Rebuild a worker panel by reconstructing its env and triggering the build.
+   */
+  private async rebuildWorkerPanel(workerPanel: SharedPanel.WorkerPanel): Promise<void> {
+    workerPanel.env = this.buildPanelEnv(workerPanel.id, undefined, {
+      sourceRepo: workerPanel.sourceRepo ?? workerPanel.path,
+      branch: workerPanel.branch,
+      commit: workerPanel.commit,
+      tag: workerPanel.tag,
+      resolvedRepoArgs: workerPanel.resolvedRepoArgs,
+    });
+    await this.buildWorkerAsync(workerPanel, {
+      branch: workerPanel.branch,
+      commit: workerPanel.commit,
+      tag: workerPanel.tag,
+    });
+  }
+
+  /**
+   * Rebuild an unloaded panel. Called when user focuses or reloads a panel
+   * that was previously unloaded.
+   */
+  async rebuildUnloadedPanel(panelId: string): Promise<void> {
+    const panel = this.panels.get(panelId);
+    if (!panel) {
+      throw new Error(`Panel not found: ${panelId}`);
+    }
+
+    // Only rebuild if panel is in pending state (unloaded)
+    if (panel.artifacts.buildState !== "pending") {
+      return;
+    }
+
+    // Set building state
+    panel.artifacts = {
+      buildState: "building",
+      buildProgress: "Rebuilding panel...",
+    };
+    this.notifyPanelTreeUpdate();
+
+    // Rebuild based on panel type
+    if (panel.type === "app") {
+      await this.rebuildAppPanel(panel as SharedPanel.AppPanel);
+    } else if (panel.type === "worker") {
+      await this.rebuildWorkerPanel(panel as SharedPanel.WorkerPanel);
+    } else if (panel.type === "browser") {
+      // Browser panels can be recreated directly
+      const browserPanel = panel as SharedPanel.BrowserPanel;
+      this.createViewForPanel(panel.id, browserPanel.url, "browser", panel.sessionId);
+      panel.artifacts = { buildState: "ready" };
+      this.persistArtifacts(panelId, panel.artifacts);
+      this.notifyPanelTreeUpdate();
+    } else if (panel.type === "shell") {
+      // Shell panels can be recreated directly
+      const shellPanel = panel as SharedPanel.ShellPanel;
+      await this.restoreShellPanel(shellPanel);
+    }
   }
 
   async setTitle(callerId: string, title: string): Promise<void> {
@@ -1520,30 +2067,19 @@ export class PanelManager {
 
     panel.title = title;
 
-    // Notify renderer
-    this.notifyPanelTreeUpdate();
-  }
-
-  async closePanel(panelId: string): Promise<void> {
-    // Find parent
-    const parent = this.findParentPanel(panelId);
-    if (parent) {
-      const childIndex = parent.children.findIndex((c) => c.id === panelId);
-      if (childIndex !== -1) {
-        parent.children.splice(childIndex, 1);
-
-        // Update selected child
-        if (parent.selectedChildId === panelId) {
-          const firstChild = parent.children[0];
-          parent.selectedChildId = firstChild ? firstChild.id : null;
-        }
-
-        this.sendPanelEvent(parent.id, { type: "child-removed", childId: panelId });
-      }
+    // Persist to database
+    try {
+      getPanelPersistence().setTitle(callerId, title);
+    } catch (error) {
+      console.error(`[PanelManager] Failed to persist title for ${callerId}:`, error);
     }
 
-    // Remove from panels map
-    this.removePanelRecursive(panelId);
+    // Update search index with new title
+    try {
+      getPanelSearchIndex().updateTitle(callerId, title);
+    } catch (error) {
+      console.error(`[PanelManager] Failed to update search index title for ${callerId}:`, error);
+    }
 
     // Notify renderer
     this.notifyPanelTreeUpdate();
@@ -1688,14 +2224,14 @@ export class PanelManager {
 
   // Private methods
 
-  private removePanelRecursive(panelId: string): void {
+  /**
+   * Unload panel resources (release WebContentsView, tokens, etc.) but keep panel in tree.
+   * Called by unloadPanelTree for each panel in the subtree.
+   * Note: Does NOT recurse into children - caller handles recursion.
+   */
+  private unloadPanelResources(panelId: string): void {
     const panel = this.panels.get(panelId);
     if (!panel) return;
-
-    // Remove all children first
-    for (const child of panel.children) {
-      this.removePanelRecursive(child.id);
-    }
 
     // Cleanup based on panel type
     switch (panel.type) {
@@ -1727,13 +2263,12 @@ export class PanelManager {
         break;
     }
 
-    // Destroy the WebContentsView
+    // Destroy the WebContentsView (but keep panel in memory/tree)
     if (this.viewManager?.hasView(panelId)) {
       this.viewManager.destroyView(panelId);
     }
 
-    // Remove from panels map
-    this.panels.delete(panelId);
+    // Note: We intentionally do NOT delete from this.panels - panel stays in tree
   }
 
   private findParentPanel(childId: string): Panel | null {
@@ -1752,6 +2287,179 @@ export class PanelManager {
   findParentId(childId: string): string | null {
     const parent = this.findParentPanel(childId);
     return parent?.id ?? null;
+  }
+
+  /**
+   * Check if a panel is in the pinned subtree (first root panel or its descendants).
+   * Panels in the pinned subtree are always kept loaded.
+   */
+  isPinnedSubtree(panelId: string): boolean {
+    const pinnedRootId = this.rootPanels[0]?.id;
+    if (!pinnedRootId) return false;
+    if (panelId === pinnedRootId) return true;
+    return this.isDescendantOf(panelId, pinnedRootId);
+  }
+
+  /**
+   * Check if a panel is a descendant of another panel.
+   */
+  isDescendantOf(panelId: string, potentialAncestorId: string): boolean {
+    const visited = new Set<string>();
+    const MAX_DEPTH = 100;
+    let depth = 0;
+
+    let currentId: string | null = panelId;
+    while (currentId && depth < MAX_DEPTH) {
+      if (visited.has(currentId)) {
+        console.error(`[PanelManager] Cycle detected at ${currentId}`);
+        return false;
+      }
+      visited.add(currentId);
+
+      const parent = this.findParentPanel(currentId);
+      if (!parent) return false;
+      if (parent.id === potentialAncestorId) return true;
+
+      currentId = parent.id;
+      depth++;
+    }
+
+    return false;
+  }
+
+  /**
+   * Move a panel to a new parent at a specific position.
+   * Used for drag-and-drop reordering and reparenting.
+   */
+  movePanel(panelId: string, newParentId: string | null, targetPosition: number): void {
+    const panel = this.panels.get(panelId);
+    if (!panel) {
+      throw new Error(`Panel not found: ${panelId}`);
+    }
+
+    // Validate: can't move panel into its own descendants
+    if (newParentId && this.isDescendantOf(newParentId, panelId)) {
+      throw new Error("Cannot move panel into its own subtree");
+    }
+
+    // Validate newParentId exists BEFORE modifying the tree.
+    // This prevents orphaning the panel if validation fails.
+    let newParent: SharedPanel.Panel | undefined;
+    if (newParentId) {
+      newParent = this.panels.get(newParentId);
+      if (!newParent) {
+        throw new Error(`New parent panel not found: ${newParentId}`);
+      }
+      // Non-ephemeral panels cannot be moved into ephemeral parents.
+      // Ephemeral parents can only have ephemeral children.
+      if (newParent.ephemeral && !panel.ephemeral) {
+        throw new Error("Cannot move non-ephemeral panel into ephemeral parent");
+      }
+    }
+
+    // Remove from current parent's children array
+    const currentParent = this.findParentPanel(panelId);
+    if (currentParent) {
+      const idx = currentParent.children.findIndex((c) => c.id === panelId);
+      if (idx >= 0) {
+        currentParent.children.splice(idx, 1);
+      }
+      // Clear selectedChildId if it pointed to the moved panel
+      if (currentParent.selectedChildId === panelId) {
+        currentParent.selectedChildId = null;
+      }
+    } else {
+      // It's a root panel - remove from rootPanels
+      const idx = this.rootPanels.findIndex((p) => p.id === panelId);
+      if (idx >= 0) {
+        this.rootPanels.splice(idx, 1);
+      }
+    }
+
+    // Add to new parent at target position
+    if (newParent) {
+      // Clamp position to valid range
+      const clampedPosition = Math.max(0, Math.min(targetPosition, newParent.children.length));
+      newParent.children.splice(clampedPosition, 0, panel);
+    } else {
+      // Moving to root level
+      const clampedPosition = Math.max(0, Math.min(targetPosition, this.rootPanels.length));
+      this.rootPanels.splice(clampedPosition, 0, panel);
+    }
+
+    // Persist to database (skip for ephemeral panels - they're not in SQLite)
+    if (!panel.ephemeral) {
+      const persistence = getPanelPersistence();
+      persistence.movePanel(panelId, newParentId, targetPosition);
+    }
+
+    // Notify renderer
+    this.notifyPanelTreeUpdate();
+  }
+
+  /**
+   * Get the first root panel ID (the "pinned" root).
+   */
+  getPinnedRootId(): string | null {
+    return this.rootPanels[0]?.id ?? null;
+  }
+
+  // =========================================================================
+  // Collapse State
+  // =========================================================================
+
+  /**
+   * Get all collapsed panel IDs for the current workspace.
+   */
+  getCollapsedIds(): string[] {
+    return getPanelPersistence().getCollapsedIds();
+  }
+
+  /**
+   * Set collapse state for a single panel.
+   */
+  setCollapsed(panelId: string, collapsed: boolean): void {
+    getPanelPersistence().setCollapsed(panelId, collapsed);
+  }
+
+  /**
+   * Expand multiple panels (set collapsed = false).
+   */
+  expandIds(panelIds: string[]): void {
+    getPanelPersistence().setCollapsedBatch(panelIds, false);
+  }
+
+  /**
+   * Update the selected path in the in-memory tree when a panel is focused.
+   * Walks up from the focused panel and sets each ancestor's selectedChildId.
+   */
+  updateSelectedPath(focusedPanelId: string): void {
+    const visited = new Set<string>();
+    const MAX_DEPTH = 100;
+    let currentId: string | null = focusedPanelId;
+    let depth = 0;
+
+    while (currentId && depth < MAX_DEPTH) {
+      if (visited.has(currentId)) {
+        console.error(`[PanelManager] Cycle detected in panel tree at ${currentId}`);
+        break;
+      }
+      visited.add(currentId);
+
+      const parent = this.findParentPanel(currentId);
+      if (!parent) break;
+
+      // Update the parent's selectedChildId to point to current
+      parent.selectedChildId = currentId;
+
+      // Move up to the parent
+      currentId = parent.id;
+      depth++;
+    }
+
+    if (depth >= MAX_DEPTH) {
+      console.error(`[PanelManager] Max depth exceeded in updateSelectedPath`);
+    }
   }
 
   /**

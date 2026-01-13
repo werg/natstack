@@ -19,6 +19,10 @@ import type {
   SettingsData,
   AppMode,
   ShellPage,
+  MovePanelRequest,
+  GetChildrenPaginatedRequest,
+  PaginatedChildren,
+  PaginatedRootPanels,
 } from "../../shared/ipc/types.js";
 
 // =============================================================================
@@ -44,13 +48,31 @@ export const panel = {
   updateTheme: (theme: ThemeAppearance) => rpc.call<void>("main", "panel.updateTheme", theme),
   openDevTools: (panelId: string) => rpc.call<void>("main", "panel.openDevTools", panelId),
   reload: (panelId: string) => rpc.call<void>("main", "panel.reload", panelId),
-  close: (panelId: string) => rpc.call<void>("main", "panel.close", panelId),
+  unload: (panelId: string) => rpc.call<void>("main", "panel.unload", panelId),
   retryDirtyBuild: (panelId: string) => rpc.call<void>("main", "panel.retryDirtyBuild", panelId),
   initGitRepo: (panelId: string) => rpc.call<void>("main", "panel.initGitRepo", panelId),
   updateBrowserState: (browserId: string, state: Partial<BrowserState> & { url?: string }) =>
     rpc.call<void>("main", "panel.updateBrowserState", browserId, state),
   createShellPanel: (page: ShellPage) =>
     rpc.call<{ id: string; type: PanelType; title: string }>("main", "panel.createShellPanel", page),
+  // Drag-and-drop and tree management
+  movePanel: (request: MovePanelRequest) =>
+    rpc.call<void>("main", "panel.movePanel", request),
+  getChildrenPaginated: (request: GetChildrenPaginatedRequest) =>
+    rpc.call<PaginatedChildren>("main", "panel.getChildrenPaginated", request),
+  getRootPanelsPaginated: (offset: number, limit: number) =>
+    rpc.call<PaginatedRootPanels>("main", "panel.getRootPanelsPaginated", { offset, limit }),
+  pinPanel: (panelId: string) =>
+    rpc.call<void>("main", "panel.pinPanel", panelId),
+  getPinnedRootId: () =>
+    rpc.call<string | null>("main", "panel.getPinnedRootId"),
+  // Collapse state persistence
+  getCollapsedIds: () =>
+    rpc.call<string[]>("main", "panel.getCollapsedIds"),
+  setCollapsed: (panelId: string, collapsed: boolean) =>
+    rpc.call<void>("main", "panel.setCollapsed", panelId, collapsed),
+  expandIds: (panelIds: string[]) =>
+    rpc.call<void>("main", "panel.expandIds", panelIds),
 };
 
 // =============================================================================

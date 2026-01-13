@@ -113,7 +113,6 @@ export interface PanelBuildResult {
 export type { PanelArtifacts } from "../shared/ipc/types.js";
 
 export type PanelEventPayload =
-  | { type: "child-removed"; childId: string }
   | { type: "child-creation-error"; url: string; error: string }
   | { type: "focus" }
   | { type: "theme"; theme: "light" | "dark" };

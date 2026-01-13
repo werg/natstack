@@ -4,6 +4,7 @@ import { Flex, Theme } from "@radix-ui/themes";
 
 import { effectiveThemeAtom, loadThemePreferenceAtom } from "../state/themeAtoms";
 import { NavigationProvider, useNavigation } from "./NavigationContext";
+import { PanelTreeProvider, PanelDndProvider } from "../shell/hooks/index.js";
 import { useShellEvent } from "../shell/useShellEvent";
 import { app } from "../shell/client";
 import { PanelStack } from "./PanelStack";
@@ -12,9 +13,13 @@ import type { PanelContextMenuAction } from "../../shared/ipc/types";
 
 export function PanelApp() {
   return (
-    <NavigationProvider>
-      <PanelAppContent />
-    </NavigationProvider>
+    <PanelTreeProvider>
+      <PanelDndProvider>
+        <NavigationProvider>
+          <PanelAppContent />
+        </NavigationProvider>
+      </PanelDndProvider>
+    </PanelTreeProvider>
   );
 }
 
@@ -28,7 +33,7 @@ function PanelAppContent() {
     () => {}
   );
 
-  const { navigate, registerNavigate } = useNavigation();
+  const { navigateToId, registerNavigateToId } = useNavigation();
 
   // Stable callbacks that delegate to refs
   const openPanelDevTools = useCallback(() => openPanelDevToolsRef.current(), []);
@@ -63,7 +68,7 @@ function PanelAppContent() {
       const customEvent = event as CustomEvent<{ panelId: string }>;
       const { panelId } = customEvent.detail;
       if (panelId) {
-        navigate([panelId]);
+        navigateToId(panelId);
       }
     };
 
@@ -71,19 +76,19 @@ function PanelAppContent() {
     return () => {
       window.removeEventListener("shell-panel-created", handleShellPanelCreated);
     };
-  }, [navigate]);
+  }, [navigateToId]);
 
   return (
     <Theme appearance={effectiveTheme} radius="none">
       <Flex direction="column" height="100vh" style={{ overflow: "hidden" }}>
-        <TitleBar title={currentTitle} onNavigate={navigate} onPanelAction={handlePanelAction} />
+        <TitleBar title={currentTitle} onNavigateToId={navigateToId} onPanelAction={handlePanelAction} />
         <PanelStack
           onTitleChange={setCurrentTitle}
           hostTheme={effectiveTheme}
           onRegisterDevToolsHandler={(handler) => {
             openPanelDevToolsRef.current = handler;
           }}
-          onRegisterNavigate={registerNavigate}
+          onRegisterNavigateToId={registerNavigateToId}
           onRegisterPanelAction={(handler) => {
             handlePanelActionRef.current = handler;
           }}

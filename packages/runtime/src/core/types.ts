@@ -77,6 +77,8 @@ export interface CreateChildOptions {
   sessionId?: string;
   /** Force creation of a new named session instead of deriving from panel ID. */
   newSession?: boolean;
+  /** If true, panel can be closed and is not persisted to SQLite */
+  ephemeral?: boolean;
 
   /** Legacy git fields (still supported programmatically). Prefer `gitRef`. */
   branch?: string;
@@ -287,11 +289,6 @@ export interface ChildHandle<
   /** Source: panel path for app/worker, URL for browser */
   readonly source: string;
 
-  // === Lifecycle ===
-
-  /** Remove this child from parent */
-  close(): Promise<void>;
-
   // === RPC ===
 
   /**
@@ -364,6 +361,22 @@ export interface ChildHandle<
 }
 
 /**
+ * Handle for an ephemeral child panel, which includes the close() method.
+ * Returned by createChild when ephemeral: true is passed.
+ */
+export interface EphemeralChildHandle<
+  T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+  E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
+  EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
+> extends ChildHandle<T, E, EmitE> {
+  /**
+   * Close this child panel and remove it from the tree.
+   * All children are closed recursively (ephemeral panels can only have ephemeral children).
+   */
+  close(): Promise<void>;
+}
+
+/**
  * Callback for child lifecycle events.
  */
 export type ChildAddedCallback<T extends Rpc.ExposedMethods = Rpc.ExposedMethods> = (
@@ -371,7 +384,7 @@ export type ChildAddedCallback<T extends Rpc.ExposedMethods = Rpc.ExposedMethods
   handle: ChildHandle<T>
 ) => void;
 
-export type ChildRemovedCallback = (name: string, childId: string) => void;
+export type ChildRemovedCallback = (name: string) => void;
 
 // =============================================================================
 // ParentHandle Types (for child→parent communication)

@@ -52,8 +52,8 @@ export function createRuntime(deps: RuntimeDeps) {
       return callMain<ChildCreationResult>("bridge.createBrowserChild", url);
     },
 
-    async removeChild(childId: string): Promise<void> {
-      await callMain<void>("bridge.removeChild", childId);
+    async closeChild(childId: string): Promise<void> {
+      await callMain<void>("bridge.closeChild", childId);
     },
 
     browser: {
@@ -171,13 +171,7 @@ export function createRuntime(deps: RuntimeDeps) {
     onChildRemoved: childManager.onChildRemoved,
     onChildCreationError,
 
-    removeChild: bridge.removeChild,
-
     setTitle: (title: string) => callMain<void>("bridge.setTitle", title),
-    close: async () => {
-      destroy();
-      await callMain<void>("bridge.close");
-    },
     getInfo: () => callMain<EndpointInfo>("bridge.getInfo"),
 
     getTheme: () => currentTheme,
