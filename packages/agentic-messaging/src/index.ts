@@ -39,6 +39,10 @@ export {
   DEFAULT_METHOD_RESULT_MAX_CHARS,
 } from "./missed-context.js";
 
+// Tool approval utilities
+export { requestToolApproval, needsApprovalForTool, extractMethodName } from "./tool-approval.js";
+export type { ApprovalOptions } from "./tool-approval.js";
+
 // For broker functionality, use: import { ... } from "@natstack/agentic-messaging/broker"
 // For agent configs, use: import { ... } from "@natstack/agentic-messaging/config"
 // For session persistence, use: import { ... } from "@natstack/agentic-messaging/session"

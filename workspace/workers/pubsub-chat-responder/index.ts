@@ -14,10 +14,14 @@ import {
   createPauseMethodDefinition,
   formatMissedContext,
   createRichTextChatSystemPrompt,
+  createToolsForAgentSDK,
+  requestToolApproval,
+  needsApprovalForTool,
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
 } from "@natstack/agentic-messaging";
+import type { Message, ToolResultPart, ToolDefinition } from "@natstack/ai";
 import {
   AI_RESPONDER_PARAMETERS,
   AI_ROLE_FALLBACKS,
@@ -35,6 +39,8 @@ interface FastAiWorkerSettings {
   modelRole?: string;
   temperature?: number;
   maxOutputTokens?: number;
+  approvalLevel?: number;
+  maxSteps?: number;
 }
 
 /** Current settings state - initialized from agent config and persisted settings */
@@ -163,6 +169,8 @@ async function main() {
   if (typeof agentConfig.modelRole === "string") initConfigSettings.modelRole = agentConfig.modelRole;
   if (typeof agentConfig.temperature === "number") initConfigSettings.temperature = agentConfig.temperature;
   if (typeof agentConfig.maxOutputTokens === "number") initConfigSettings.maxOutputTokens = agentConfig.maxOutputTokens;
+  if (typeof agentConfig.approvalLevel === "number") initConfigSettings.approvalLevel = agentConfig.approvalLevel;
+  if (typeof agentConfig.maxSteps === "number") initConfigSettings.maxSteps = agentConfig.maxSteps;
   Object.assign(currentSettings, initConfigSettings);
   if (Object.keys(initConfigSettings).length > 0) {
     log(`Applied init config: ${JSON.stringify(initConfigSettings)}`);
@@ -230,6 +238,9 @@ async function handleUserMessage(
 ) {
   log(`Received message: ${incoming.content}`);
 
+  // Find the panel participant for tool approval UI
+  const panel = Object.values(client.roster).find((p) => p.metadata.type === "panel");
+
   // Start a new message (empty, will stream content via updates)
   const { messageId: responseId } = await client.send("", { replyTo: incoming.id });
 
@@ -258,21 +269,6 @@ async function handleUserMessage(
       console.error("Failed to load conversation history:", err);
     }
 
-    // Add current user message to history
-    const messages = [
-      ...conversationHistory,
-      { role: "user" as const, content: prompt }
-    ];
-
-    // Stream AI response using configured model
-    const stream = ai.streamText({
-      model: currentSettings.modelRole ?? "fast",
-      system: createRichTextChatSystemPrompt(),
-      messages,
-      maxOutputTokens: currentSettings.maxOutputTokens ?? 500,
-      ...(currentSettings.temperature !== undefined && { temperature: currentSettings.temperature }),
-    });
-
     // Store user message in history
     try {
       await client.storeMessage("user", incoming.content);
@@ -280,28 +276,207 @@ async function handleUserMessage(
       console.error("Failed to store user message:", err);
     }
 
-    // Accumulate assistant response for storage
+    // Discover tools from channel participants
+    const { definitions: toolDefs, execute: executeTool } = createToolsForAgentSDK(client, {
+      namePrefix: "pubsub",
+      // Filter out tools from ourselves and menu-only methods
+      filter: (method) => method.providerId !== client.clientId && !method.menu,
+    });
+
+    const approvalLevel = currentSettings.approvalLevel ?? 0;
+
+    // Build tools object for AI SDK
+    const tools: Record<string, ToolDefinition> = {};
+    for (const def of toolDefs) {
+      const requiresApproval = needsApprovalForTool(def.name, approvalLevel);
+      tools[def.name] = {
+        description: def.description,
+        parameters: def.parameters,
+        // If tool requires approval, don't include execute - we'll handle it manually
+        execute: requiresApproval ? undefined : (args) => executeTool(def.name, args),
+      };
+    }
+
+    if (Object.keys(tools).length > 0) {
+      log(`Discovered ${Object.keys(tools).length} tools`);
+    }
+
+    // Build initial messages array
+    const messages: Message[] = [
+      ...conversationHistory.map((m) => ({
+        role: m.role as "user" | "assistant",
+        content: m.content,
+      })),
+      { role: "user" as const, content: prompt },
+    ];
+
+    // Agentic loop with approval handling
+    let step = 0;
+    const maxSteps = currentSettings.maxSteps ?? 5;
     let assistantResponse = "";
     let checkpointCommitted = false;
 
-    for await (const event of stream) {
-      // Check if pause was requested
+    while (step < maxSteps) {
+      // Check for interruption before each step
       if (interruptHandler.isPaused()) {
-        log("Execution paused, stopping stream");
+        log("Execution paused before step");
         break;
       }
 
-      if (event.type === "text-delta") {
-        // Accumulate response
-        assistantResponse += event.text;
-        // Send content delta (persisted for replay)
-        await client.update(responseId, event.text);
+      const stream = ai.streamText({
+        model: currentSettings.modelRole ?? "fast",
+        system: createRichTextChatSystemPrompt(),
+        messages,
+        tools: Object.keys(tools).length > 0 ? tools : undefined,
+        maxSteps: 1, // One step at a time for approval control
+        maxOutputTokens: currentSettings.maxOutputTokens ?? 1024,
+        ...(currentSettings.temperature !== undefined && { temperature: currentSettings.temperature }),
+      });
 
-        if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
-          await client.commitCheckpoint(incoming.pubsubId);
-          checkpointCommitted = true;
+      // Track ALL tool calls and results for message history
+      const allToolCalls: Array<{ toolCallId: string; toolName: string; args: unknown }> = [];
+      const autoToolResults: ToolResultPart[] = [];
+      const pendingApprovals: Array<{ toolCallId: string; toolName: string; args: unknown }> = [];
+      let finishReason: string = "stop";
+
+      for await (const event of stream) {
+        // Check if pause was requested
+        if (interruptHandler.isPaused()) {
+          log("Execution paused, stopping stream");
+          finishReason = "interrupted";
+          break;
+        }
+
+        switch (event.type) {
+          case "text-delta":
+            assistantResponse += event.text;
+            await client.update(responseId, event.text);
+
+            if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
+              await client.commitCheckpoint(incoming.pubsubId);
+              checkpointCommitted = true;
+            }
+            break;
+
+          case "tool-call": {
+            // Track all tool calls for message history
+            allToolCalls.push({
+              toolCallId: event.toolCallId,
+              toolName: event.toolName,
+              args: event.args,
+            });
+
+            // Check if this tool needs approval (no execute function means it needs approval)
+            const toolDef = tools[event.toolName];
+            if (toolDef && !toolDef.execute) {
+              // Tool needs approval - collect for batch approval
+              pendingApprovals.push({
+                toolCallId: event.toolCallId,
+                toolName: event.toolName,
+                args: event.args as Record<string, unknown>,
+              });
+            }
+            log(`Tool call: ${event.toolName}${toolDef?.execute ? " (auto)" : " (needs approval)"}`);
+            break;
+          }
+
+          case "tool-result":
+            // Capture auto-executed tool results for message history
+            autoToolResults.push({
+              type: "tool-result",
+              toolCallId: event.toolCallId,
+              toolName: event.toolName,
+              result: event.result,
+              isError: event.isError,
+            });
+            log(`Tool result: ${event.toolName}${event.isError ? " (error)" : ""}`);
+            break;
+
+          case "step-finish":
+            finishReason = event.finishReason;
+            break;
         }
       }
+
+      // Process pending approvals
+      const approvalResults: ToolResultPart[] = [];
+      if (pendingApprovals.length > 0) {
+        for (const approval of pendingApprovals) {
+          let approved = false;
+
+          if (panel) {
+            // Request approval from user via panel UI
+            approved = await requestToolApproval(
+              client,
+              panel.id,
+              approval.toolName,
+              approval.args as Record<string, unknown>,
+              { signal: interruptHandler.isPaused() ? AbortSignal.abort() : undefined }
+            );
+          } else {
+            // No panel available - deny all approvals
+            log(`Warning: No panel found for tool approval, denying ${approval.toolName}`);
+          }
+
+          if (approved) {
+            try {
+              const result = await executeTool(approval.toolName, approval.args);
+              approvalResults.push({
+                type: "tool-result",
+                toolCallId: approval.toolCallId,
+                toolName: approval.toolName,
+                result,
+              });
+              log(`Tool ${approval.toolName} approved and executed`);
+            } catch (err) {
+              approvalResults.push({
+                type: "tool-result",
+                toolCallId: approval.toolCallId,
+                toolName: approval.toolName,
+                result: `Error: ${err instanceof Error ? err.message : String(err)}`,
+                isError: true,
+              });
+              log(`Tool ${approval.toolName} execution failed: ${err}`);
+            }
+          } else {
+            approvalResults.push({
+              type: "tool-result",
+              toolCallId: approval.toolCallId,
+              toolName: approval.toolName,
+              result: panel ? "User denied permission to execute this tool" : "No approval UI available",
+              isError: true,
+            });
+            log(`Tool ${approval.toolName} denied${panel ? " by user" : " (no panel)"}`);
+          }
+        }
+      }
+
+      // Add all tool calls and results to messages for next iteration
+      // This includes both auto-executed tools and approval-processed tools
+      if (allToolCalls.length > 0) {
+        const combinedResults = [...autoToolResults, ...approvalResults];
+
+        messages.push({
+          role: "assistant",
+          content: allToolCalls.map((tc) => ({
+            type: "tool-call" as const,
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            args: tc.args,
+          })),
+        });
+        messages.push({
+          role: "tool",
+          content: combinedResults,
+        });
+      }
+
+      // Check if we should continue the loop
+      if (finishReason === "stop" || finishReason === "interrupted" || finishReason === "length") {
+        break;
+      }
+
+      step++;
     }
 
     // Store complete assistant response in history

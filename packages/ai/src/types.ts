@@ -84,11 +84,14 @@ export type Message = SystemMessage | UserMessage | AssistantMessage | ToolMessa
 
 /**
  * Tool definition with execute callback.
+ *
+ * When `execute` is omitted, the tool call event is emitted but execution
+ * is left to the caller (useful for human-in-the-loop approval flows).
  */
 export interface ToolDefinition {
   description?: string;
   parameters: Record<string, unknown>; // JSON Schema
-  execute: (args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
+  execute?: (args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
 }
 
 /**

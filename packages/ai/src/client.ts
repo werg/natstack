@@ -207,7 +207,10 @@ function createAiClient(): AiClient {
       const toolCallbacks = new Map<string, ToolCallback>();
       if (options.tools) {
         for (const [name, tool] of Object.entries(options.tools)) {
-          toolCallbacks.set(name, tool.execute);
+          // Only register callbacks for tools that have an execute function
+          if (tool.execute) {
+            toolCallbacks.set(name, tool.execute);
+          }
         }
       }
 

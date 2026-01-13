@@ -10,21 +10,35 @@
  */
 
 /**
- * Primitive value types supported by form fields
+ * Primitive value types (used in conditions and warnings)
  */
-export type FieldValue = string | number | boolean;
+export type PrimitiveFieldValue = string | number | boolean;
+
+/**
+ * Value types supported by form fields
+ * - Primitives: string, number, boolean
+ * - Arrays: string[] (for multiSelect fields)
+ */
+export type FieldValue = PrimitiveFieldValue | string[];
 
 /**
  * Field types supported by the form renderer
  */
 export type FieldType =
+  // Standard form types
   | "string" // Text input
   | "number" // Numeric input
   | "boolean" // Switch/toggle
   | "select" // Dropdown
   | "slider" // Range slider (continuous or notched)
   | "segmented" // Segmented control (mutually exclusive options)
-  | "toggle"; // Two-state toggle with explicit labels
+  | "toggle" // Two-state toggle with explicit labels
+  // Feedback UI types
+  | "readonly" // Display-only text (non-editable)
+  | "code" // Syntax-highlighted code/JSON block
+  | "buttonGroup" // Horizontal action buttons (Allow/Deny style)
+  | "multiSelect" // Multiple selection checkboxes
+  | "diff"; // Unified or side-by-side diff view
 
 /**
  * Comparison operators for field conditions
@@ -40,7 +54,7 @@ export type ConditionOperator = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in
 export interface FieldCondition {
   field: string;
   operator: ConditionOperator;
-  value: FieldValue | FieldValue[];
+  value: PrimitiveFieldValue | PrimitiveFieldValue[];
 }
 
 /**
@@ -66,7 +80,7 @@ export interface SliderNotch {
  * Warning to display when field has a specific value
  */
 export interface FieldWarning {
-  when: FieldValue | FieldValue[];
+  when: PrimitiveFieldValue | PrimitiveFieldValue[];
   message: string;
   severity?: "info" | "warning" | "danger";
 }
@@ -106,6 +120,24 @@ export interface FieldDefinition {
   // Validation and warnings
   warnings?: FieldWarning[];
   placeholder?: string;
+
+  // Feedback UI field properties
+
+  // For code/readonly/diff fields
+  language?: string; // "typescript", "json", "bash", "diff"
+  maxHeight?: number; // Max scrollable height in px
+
+  // For buttonGroup fields
+  buttonStyle?: "outline" | "solid" | "soft";
+  buttons?: Array<{
+    value: string;
+    label: string;
+    color?: "gray" | "green" | "red" | "amber";
+    description?: string;
+  }>;
+
+  // For select/multiSelect/buttonGroup - auto-submit when selected
+  submitOnSelect?: boolean;
 }
 
 /**
@@ -141,7 +173,9 @@ export function evaluateCondition(
     case "lte":
       return typeof fieldValue === "number" && typeof conditionValue === "number" && fieldValue <= conditionValue;
     case "in":
-      return Array.isArray(conditionValue) && conditionValue.includes(fieldValue as string | number | boolean);
+      // "in" operator only applies to primitive field values (not arrays like multiSelect)
+      if (Array.isArray(fieldValue) || fieldValue === undefined) return false;
+      return Array.isArray(conditionValue) && conditionValue.includes(fieldValue);
     default:
       return false;
   }
@@ -180,6 +214,8 @@ export function isFieldEnabled(field: FieldDefinition, values: Record<string, Fi
  */
 export function getFieldWarning(field: FieldDefinition, value: FieldValue): FieldWarning | null {
   if (!field.warnings) return null;
+  // Warnings only apply to primitive values (not arrays like multiSelect)
+  if (Array.isArray(value)) return null;
 
   for (const warning of field.warnings) {
     if (Array.isArray(warning.when)) {

@@ -58,6 +58,7 @@ export type { Runtime } from "./setup/createRuntime.js";
 
 // Form schema types
 export type {
+  PrimitiveFieldValue,
   FieldValue,
   FieldType,
   ConditionOperator,

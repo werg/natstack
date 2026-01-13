@@ -8,7 +8,7 @@
  * - Settings UI generator to create runtime settings forms
  */
 
-import type { FieldDefinition } from "@natstack/runtime";
+import type { FieldDefinition, FieldValue } from "@natstack/runtime";
 
 /**
  * Fallback model lists for when SDK is unavailable.
@@ -145,6 +145,35 @@ export const AI_RESPONDER_PARAMETERS: FieldDefinition[] = [
     group: "Model",
     order: 2,
   },
+  {
+    key: "approvalLevel",
+    label: "Tool Approval",
+    type: "slider",
+    default: 0,
+    min: 0,
+    max: 2,
+    step: 1,
+    notches: [
+      { value: 0, label: "Ask", description: "Ask before each tool use" },
+      { value: 1, label: "Auto Safe", description: "Auto-approve read-only tools" },
+      { value: 2, label: "Full Auto", description: "Execute all tools automatically" },
+    ],
+    warnings: [{ when: 2, message: "Allows unrestricted tool execution", severity: "warning" }],
+    group: "Permissions",
+    order: 3,
+  },
+  {
+    key: "maxSteps",
+    label: "Max Agent Steps",
+    type: "slider",
+    default: 5,
+    min: 1,
+    max: 20,
+    step: 1,
+    sliderLabels: { min: "1", max: "20" },
+    group: "Capabilities",
+    order: 4,
+  },
 ];
 
 /**
@@ -245,8 +274,8 @@ export const CODEX_PARAMETERS: FieldDefinition[] = [
  */
 export function getParameterDefaults(
   parameters: FieldDefinition[]
-): Record<string, string | number | boolean> {
-  const defaults: Record<string, string | number | boolean> = {};
+): Record<string, FieldValue> {
+  const defaults: Record<string, FieldValue> = {};
   for (const param of parameters) {
     if (param.default !== undefined) {
       defaults[param.key] = param.default;

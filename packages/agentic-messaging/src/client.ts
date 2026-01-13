@@ -1246,6 +1246,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       returns: m.returns,
       streaming: m.streaming ?? false,
       timeout: m.timeout,
+      menu: m.menu ?? false,
     }));
   }
 

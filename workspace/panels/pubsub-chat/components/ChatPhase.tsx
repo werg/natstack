@@ -45,6 +45,12 @@ export interface ActiveFeedbackSchema extends ActiveFeedbackBase {
   values: Record<string, FieldValue>;
   submitLabel?: string;
   cancelLabel?: string;
+  // New properties for feedback UI
+  timeout?: number;
+  timeoutAction?: "cancel" | "submit";
+  severity?: "info" | "warning" | "danger";
+  hideSubmit?: boolean;
+  hideCancel?: boolean;
 }
 
 /**
@@ -261,6 +267,11 @@ export function ChatPhase({
                     initialValues={feedback.values}
                     submitLabel={feedback.submitLabel}
                     cancelLabel={feedback.cancelLabel}
+                    timeout={feedback.timeout}
+                    timeoutAction={feedback.timeoutAction}
+                    severity={feedback.severity}
+                    hideSubmit={feedback.hideSubmit}
+                    hideCancel={feedback.hideCancel}
                     onSubmit={(value) => feedback.complete({ type: "submit", value })}
                     onCancel={() => feedback.complete({ type: "cancel" })}
                     onError={(message) => feedback.complete({ type: "error", message })}

@@ -88,71 +88,72 @@ let currentSettings: ClaudeCodeWorkerSettings = {};
 let activeQueryInstance: Query | null = null;
 
 /**
- * Generate TSX for permission approval UI
+ * Show a permission prompt using feedback_form with buttonGroup
+ * This is an alternative to the TSX-based feedback_custom approach
  */
-function generatePermissionPromptTsx(
+async function showPermissionPrompt(
+  client: AgenticClient<ChatParticipantMetadata>,
+  panelId: string,
   toolName: string,
   input: Record<string, unknown>,
-  decisionReason?: string
-): string {
-  const inputJson = JSON.stringify(input, null, 2);
-  const escapedInput = inputJson.replace(/`/g, "\\`").replace(/\$/g, "\\$");
-  const escapedReason = decisionReason?.replace(/`/g, "\\`").replace(/\$/g, "\\$") ?? "";
+  options?: { decisionReason?: string }
+): Promise<{ allow: boolean }> {
+  const fields: Array<{
+    key: string;
+    label: string;
+    type: "readonly" | "code" | "buttonGroup";
+    default?: string;
+    language?: string;
+    maxHeight?: number;
+    buttonStyle?: "outline" | "solid" | "soft";
+    buttons?: Array<{ value: string; label: string; color?: "gray" | "green" | "red" | "amber" }>;
+    submitOnSelect?: boolean;
+  }> = [];
 
-  return `
-import { useState } from "react";
-import { Box, Button, Callout, Code, Flex, Heading, ScrollArea, Text } from "@radix-ui/themes";
-import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
+  // Add reason field if provided
+  if (options?.decisionReason) {
+    fields.push({
+      key: "reason",
+      label: "Reason",
+      type: "readonly" as const,
+      default: options.decisionReason,
+    });
+  }
 
-export default function PermissionPrompt({ onSubmit, onCancel }) {
-  const toolName = "${toolName}";
-  const inputJson = \`${escapedInput}\`;
-  const reason = \`${escapedReason}\`;
+  // Add input preview
+  fields.push({
+    key: "input",
+    label: "Input",
+    type: "code" as const,
+    language: "json",
+    maxHeight: 150,
+    default: JSON.stringify(input, null, 2),
+  });
 
-  return (
-    <Box>
-      <Flex align="center" gap="2" mb="3">
-        <ExclamationTriangleIcon width={20} height={20} color="var(--amber-9)" />
-        <Heading size="4">Permission Required</Heading>
-      </Flex>
+  // Add decision buttons
+  fields.push({
+    key: "decision",
+    label: "Decision",
+    type: "buttonGroup" as const,
+    submitOnSelect: true,
+    buttons: [
+      { value: "deny", label: "Deny", color: "gray" as const },
+      { value: "allow", label: "Allow", color: "green" as const },
+    ],
+  });
 
-      {reason && (
-        <Callout.Root color="amber" mb="3">
-          <Callout.Text>{reason}</Callout.Text>
-        </Callout.Root>
-      )}
+  const handle = client.callMethod(panelId, "feedback_form", {
+    title: `Allow ${toolName}?`,
+    severity: "warning",
+    hideSubmit: true, // buttonGroup handles submission
+    fields,
+  });
 
-      <Flex direction="column" gap="3">
-        <Box>
-          <Text size="2" weight="medium" mb="1">Tool</Text>
-          <Code size="2">{toolName}</Code>
-        </Box>
+  const result = await handle.result;
+  const feedbackResult = result.content as { type: string; value?: Record<string, unknown>; message?: string };
 
-        <Box>
-          <Text size="2" weight="medium" mb="1">Input</Text>
-          <ScrollArea style={{ maxHeight: 200 }}>
-            <Code size="1" style={{ whiteSpace: "pre-wrap", display: "block" }}>
-              {inputJson}
-            </Code>
-          </ScrollArea>
-        </Box>
-
-        <Flex gap="3" mt="3" justify="end">
-          <Button variant="soft" color="gray" onClick={onCancel}>
-            Cancel
-          </Button>
-          <Button variant="soft" color="red" onClick={() => onSubmit({ allow: false })}>
-            Deny
-          </Button>
-          <Button color="green" onClick={() => onSubmit({ allow: true })}>
-            Allow
-          </Button>
-        </Flex>
-      </Flex>
-    </Box>
-  );
-}
-`;
+  if (feedbackResult.type === "cancel") return { allow: false };
+  return { allow: feedbackResult.value?.decision === "allow" };
 }
 
 async function main() {
@@ -420,7 +421,7 @@ async function handleUserMessage(
     // Determine allowed tools
     const allowedTools = mcpTools.map((t) => `mcp__pubsub__${t.name}`);
 
-    // Create permission handler that prompts user via feedback_ui
+    // Create permission handler that prompts user via feedback_form
     const canUseTool: CanUseTool = async (toolName, input, options) => {
       log(`Permission requested for tool: ${toolName}`);
 
@@ -440,35 +441,16 @@ async function handleUserMessage(
       }
 
       try {
-        // Generate and show permission UI
-        const promptTsx = generatePermissionPromptTsx(toolName, input, options.decisionReason);
-        const handle = client.callMethod(panel.id, "feedback_custom", { code: promptTsx });
-        const result = await handle.result;
-        const feedbackResult = result.content as { type: string; value?: unknown; message?: string };
+        // Use feedback_form with buttonGroup for permission prompts
+        const { allow } = await showPermissionPrompt(
+          client,
+          panel.id,
+          toolName,
+          input,
+          { decisionReason: options.decisionReason }
+        );
 
-        // Handle the three cases: submit, cancel, error
-        if (feedbackResult.type === "cancel") {
-          log(`Permission prompt cancelled for ${toolName}`);
-          return {
-            behavior: "deny" as const,
-            message: "User cancelled permission prompt",
-            toolUseID: options.toolUseID,
-          };
-        }
-
-        if (feedbackResult.type === "error") {
-          log(`Permission prompt error for ${toolName}: ${feedbackResult.message}`);
-          return {
-            behavior: "deny" as const,
-            message: `Permission prompt error: ${feedbackResult.message}`,
-            toolUseID: options.toolUseID,
-          };
-        }
-
-        // Submit case - extract the decision
-        const decision = feedbackResult.value as { allow: boolean };
-
-        if (decision.allow) {
+        if (allow) {
           log(`Permission granted for ${toolName}`);
           return {
             behavior: "allow" as const,
@@ -500,8 +482,7 @@ async function handleUserMessage(
       // Provide explicit path to Claude Code CLI (required for bundled workers)
       pathToClaudeCodeExecutable: claudeExecutable,
       ...(allowedTools.length > 0 && { allowedTools }),
-      // Disable built-in tools - we only want pubsub tools
-      disallowedTools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebSearch", "WebFetch", "Task"],
+      // All built-in tools enabled (Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch, Task)
       // Set working directory if provided via config
       ...(workingDirectory && { cwd: workingDirectory }),
       // Enable streaming of partial messages for token-by-token delivery

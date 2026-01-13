@@ -466,6 +466,8 @@ export interface DiscoveredMethod {
   streaming: boolean;
   /** Suggested timeout in ms */
   timeout?: number;
+  /** Whether this method should only appear in menus, not be used as an AI tool */
+  menu?: boolean;
 }
 
 /**

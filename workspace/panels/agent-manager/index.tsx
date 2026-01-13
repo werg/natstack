@@ -109,11 +109,13 @@ const AGENT_TYPES: AgentTypeAdvertisement[] = [
     id: "ai-responder",
     name: "AI Responder",
     proposedHandle: "ai",
-    description: "Fast AI assistant using NatStack AI SDK. Good for quick, helpful responses.",
+    description: "AI assistant using NatStack AI SDK with agentic tool support.",
     providesMethods: [],
-    requiresMethods: [],
+    requiresMethods: [
+      { name: "feedback_form", description: "Display forms for tool approval", required: true },
+    ],
     parameters: AI_RESPONDER_PARAMETERS,
-    tags: ["chat", "ai", "fast"],
+    tags: ["chat", "ai", "agentic", "tools"],
   },
   {
     id: "claude-code",
@@ -121,7 +123,10 @@ const AGENT_TYPES: AgentTypeAdvertisement[] = [
     proposedHandle: "claude",
     description: "Claude-based coding agent with tool access for complex development tasks.",
     providesMethods: [],
-    requiresMethods: [],
+    requiresMethods: [
+      { name: "feedback_form", description: "Display schema-based forms for user input", required: true },
+      { name: "feedback_custom", description: "Display custom TSX UI for complex interactions", required: true },
+    ],
     parameters: CLAUDE_CODE_PARAMETERS,
     tags: ["chat", "coding", "tools", "claude"],
   },

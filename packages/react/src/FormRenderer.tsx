@@ -6,8 +6,12 @@
  */
 
 import {
+  Button,
   Callout,
+  Checkbox,
+  Code,
   Flex,
+  ScrollArea,
   SegmentedControl,
   Select,
   Slider,
@@ -66,6 +70,10 @@ export interface FormRendererProps {
   /** Callback when a value changes */
   onChange: (key: string, value: FieldValue) => void;
   /**
+   * Optional callback for form submission (used by buttonGroup with submitOnSelect)
+   */
+  onSubmit?: () => void;
+  /**
    * Size of form controls
    * @default "2"
    */
@@ -99,6 +107,7 @@ export function FormRenderer({
   schema,
   values,
   onChange,
+  onSubmit,
   size = "2",
   showGroups = true,
   showDescriptions = true,
@@ -328,6 +337,84 @@ export function FormRenderer({
               ) : null;
             })()}
           </Flex>
+        )}
+
+        {/* Readonly field - display-only text */}
+        {field.type === "readonly" && (
+          <Text size={size} color="gray">
+            {String(currentValue ?? "")}
+          </Text>
+        )}
+
+        {/* Code field - syntax-highlighted code block */}
+        {field.type === "code" && (
+          <ScrollArea style={{ maxHeight: field.maxHeight ?? 200 }} {...clickProps}>
+            <Code variant="soft" size="1" style={{ whiteSpace: "pre-wrap", display: "block" }}>
+              {String(currentValue ?? "")}
+            </Code>
+          </ScrollArea>
+        )}
+
+        {/* ButtonGroup field - horizontal action buttons */}
+        {field.type === "buttonGroup" && field.buttons && (
+          <Flex gap="2" {...clickProps}>
+            {field.buttons.map((btn) => (
+              <Button
+                key={btn.value}
+                variant={field.buttonStyle ?? "outline"}
+                color={btn.color ?? "gray"}
+                disabled={!isEnabled}
+                onClick={() => {
+                  onChange(field.key, btn.value);
+                  if (field.submitOnSelect && onSubmit) {
+                    // Use setTimeout to ensure state update is processed first
+                    setTimeout(onSubmit, 0);
+                  }
+                }}
+              >
+                {btn.label}
+              </Button>
+            ))}
+          </Flex>
+        )}
+
+        {/* MultiSelect field - multiple selection checkboxes */}
+        {field.type === "multiSelect" && field.options && (
+          <Flex direction="column" gap="1" {...clickProps}>
+            {field.options.map((opt) => {
+              const selected = Array.isArray(currentValue) ? currentValue : [];
+              const isChecked = selected.includes(opt.value);
+              return (
+                <Flex key={opt.value} gap="2" align="center">
+                  <Checkbox
+                    checked={isChecked}
+                    disabled={!isEnabled}
+                    onCheckedChange={(checked) => {
+                      const next = checked
+                        ? [...selected, opt.value]
+                        : selected.filter((v) => v !== opt.value);
+                      onChange(field.key, next);
+                    }}
+                  />
+                  <Text size={size}>{opt.label}</Text>
+                  {opt.description && (
+                    <Text size="1" color="gray">
+                      {opt.description}
+                    </Text>
+                  )}
+                </Flex>
+              );
+            })}
+          </Flex>
+        )}
+
+        {/* Diff field - pre-formatted diff display */}
+        {field.type === "diff" && (
+          <ScrollArea style={{ maxHeight: field.maxHeight ?? 300 }} {...clickProps}>
+            <Code variant="soft" size="1" style={{ whiteSpace: "pre", display: "block" }}>
+              {String(currentValue ?? "")}
+            </Code>
+          </ScrollArea>
         )}
 
         {/* Warning callout */}

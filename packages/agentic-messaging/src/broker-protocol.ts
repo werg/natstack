@@ -28,14 +28,17 @@ export const MethodAdvertisementSchema = z.object({
   timeout: z.number().positive().optional(),
 });
 
-// Field value type
-const FieldValueSchema = z.union([z.string(), z.number(), z.boolean()]);
+// Primitive field value type (for conditions and warnings)
+const PrimitiveFieldValueSchema = z.union([z.string(), z.number(), z.boolean()]);
 
-// Condition for field visibility/enabled state
+// Field value type (primitives + string arrays for multiSelect)
+const FieldValueSchema = z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]);
+
+// Condition for field visibility/enabled state (uses primitives only)
 const FieldConditionSchema = z.object({
   field: z.string(),
   operator: z.enum(["eq", "neq", "gt", "gte", "lt", "lte", "in"]),
-  value: z.union([FieldValueSchema, z.array(FieldValueSchema)]),
+  value: z.union([PrimitiveFieldValueSchema, z.array(PrimitiveFieldValueSchema)]),
 });
 
 // Slider notch for discrete labeled stops
@@ -45,9 +48,9 @@ const SliderNotchSchema = z.object({
   description: z.string().optional(),
 });
 
-// Warning to display for specific values
+// Warning to display for specific values (uses primitives only)
 const FieldWarningSchema = z.object({
-  when: z.union([FieldValueSchema, z.array(FieldValueSchema)]),
+  when: z.union([PrimitiveFieldValueSchema, z.array(PrimitiveFieldValueSchema)]),
   message: z.string(),
   severity: z.enum(["info", "warning", "danger"]).optional(),
 });
@@ -60,7 +63,16 @@ export const FieldDefinitionSchema = z.object({
   key: z.string().min(1),
   label: z.string().min(1),
   description: z.string().optional(),
-  type: z.enum(["string", "number", "boolean", "select", "slider", "segmented", "toggle"]),
+  type: z.enum([
+    // Existing types
+    "string", "number", "boolean", "select", "slider", "segmented", "toggle",
+    // New types for feedback UI
+    "readonly",      // Display-only text (non-editable)
+    "code",          // Syntax-highlighted code/JSON block
+    "buttonGroup",   // Horizontal action buttons (Allow/Deny style)
+    "multiSelect",   // Multiple selection checkboxes
+    "diff",          // Unified or side-by-side diff view
+  ]),
   required: z.boolean().optional(),
   default: FieldValueSchema.optional(),
   options: z
@@ -85,6 +97,24 @@ export const FieldDefinitionSchema = z.object({
 
   // Warnings
   warnings: z.array(FieldWarningSchema).optional(),
+
+  // New properties for feedback UI field types
+
+  // For code/readonly/diff fields
+  language: z.string().optional(),      // "typescript", "json", "bash", "diff"
+  maxHeight: z.number().optional(),     // Max scrollable height in px
+
+  // For buttonGroup fields
+  buttonStyle: z.enum(["outline", "solid", "soft"]).optional(),
+  buttons: z.array(z.object({
+    value: z.string(),
+    label: z.string(),
+    color: z.enum(["gray", "green", "red", "amber"]).optional(),
+    description: z.string().optional(),
+  })).optional(),
+
+  // For select/multiSelect/buttonGroup - auto-submit when selected
+  submitOnSelect: z.boolean().optional(),
 });
 
 /**
@@ -166,9 +196,15 @@ export type BrokerMetadataMessage = z.infer<typeof BrokerMetadataSchema>;
 export interface FeedbackFormArgs {
   title: string;
   fields: z.infer<typeof FieldDefinitionSchema>[];
-  values?: Record<string, string | number | boolean>;
+  values?: Record<string, string | number | boolean | string[]>;
   submitLabel?: string;
   cancelLabel?: string;
+  // New properties for feedback UI
+  timeout?: number;                             // Auto-cancel/submit after N ms
+  timeoutAction?: "cancel" | "submit";          // What happens on timeout
+  severity?: "info" | "warning" | "danger";     // Affects styling/icon
+  hideSubmit?: boolean;                         // Hide submit button (for buttonGroup with submitOnSelect)
+  hideCancel?: boolean;                         // Hide cancel button
 }
 
 /**
@@ -185,9 +221,15 @@ export interface FeedbackCustomArgs {
 export const FeedbackFormArgsSchema = z.object({
   title: z.string(),
   fields: z.array(FieldDefinitionSchema),
-  values: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+  values: z.record(z.union([z.string(), z.number(), z.boolean(), z.array(z.string())])).optional(),
   submitLabel: z.string().optional(),
   cancelLabel: z.string().optional(),
+  // New properties for feedback UI
+  timeout: z.number().optional(),                           // Auto-cancel/submit after N ms
+  timeoutAction: z.enum(["cancel", "submit"]).optional(),   // What happens on timeout
+  severity: z.enum(["info", "warning", "danger"]).optional(), // Affects styling/icon
+  hideSubmit: z.boolean().optional(),                       // Hide submit button (for buttonGroup with submitOnSelect)
+  hideCancel: z.boolean().optional(),                       // Hide cancel button
 });
 
 /**

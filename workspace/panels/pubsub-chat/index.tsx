@@ -320,6 +320,12 @@ export default function AgenticChatDemo() {
           values: args.values ?? {},
           submitLabel: args.submitLabel,
           cancelLabel: args.cancelLabel,
+          // New properties for feedback UI
+          timeout: args.timeout,
+          timeoutAction: args.timeoutAction,
+          severity: args.severity,
+          hideSubmit: args.hideSubmit,
+          hideCancel: args.hideCancel,
           createdAt: Date.now(),
           complete: (feedbackResult: FeedbackResult) => {
             removeFeedback(callId);
