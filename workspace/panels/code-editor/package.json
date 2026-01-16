@@ -1,0 +1,26 @@
+{
+  "name": "@natstack-panels/code-editor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "type": "app",
+    "title": "Code Editor",
+    "entry": "index.tsx",
+    "repoArgs": ["workspace"],
+    "workers": {
+      "monaco/editor.worker.js": "monaco-editor/esm/vs/editor/editor.worker.js",
+      "monaco/ts.worker.js": "monaco-editor/esm/vs/language/typescript/ts.worker.js"
+    }
+  },
+  "dependencies": {
+    "@natstack/agentic-messaging": "workspace:*",
+    "@natstack/git": "workspace:*",
+    "@natstack/git-ui": "workspace:*",
+    "@natstack/runtime": "workspace:*",
+    "@natstack/react": "workspace:*",
+    "@radix-ui/themes": "^3.2.1",
+    "@radix-ui/react-icons": "^1.3.2",
+    "monaco-editor": "^0.52.0"
+  }
+}

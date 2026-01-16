@@ -8,6 +8,7 @@ import {
   createChildWithContract,
   onChildCreationError,
   setTitle,
+  gitConfig,
   type ChildHandle,
   type ChildHandleFromContract,
 } from "@natstack/runtime";
@@ -58,6 +59,21 @@ export default function ChildPanelLauncher() {
 
   const [childLinkGitRef, setChildLinkGitRef] = useState<string>("");
   const [childLinkErrors, setChildLinkErrors] = useState<string[]>([]);
+  const [codeEditorRepo, setCodeEditorRepo] = useState<string>(
+    () => gitConfig?.sourceRepo ?? ""
+  );
+  const [codeEditorRepoRef, setCodeEditorRepoRef] = useState<string>("");
+  const trimmedCodeEditorRepo = codeEditorRepo.trim();
+  const codeEditorRepoSpec = trimmedCodeEditorRepo
+    ? codeEditorRepoRef.trim()
+      ? { repo: trimmedCodeEditorRepo, ref: codeEditorRepoRef.trim() }
+      : trimmedCodeEditorRepo
+    : null;
+  const codeEditorChildLink = codeEditorRepoSpec
+    ? buildChildLink("panels/code-editor", {
+        repoArgs: { workspace: codeEditorRepoSpec },
+      })
+    : null;
 
   const addRpcLog = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -192,6 +208,25 @@ export default function ChildPanelLauncher() {
       setStatus(`Launched Session Demo: ${child.name}`);
     } catch (error) {
       setStatus(`Failed to launch Session Demo: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const launchCodeEditor = async () => {
+    try {
+      if (!codeEditorRepoSpec) {
+        setStatus("Code Editor repo path is required");
+        return;
+      }
+      setStatus("Launching Code Editor...");
+      const child = await createChild("panels/code-editor", {
+        name: "code-editor",
+        repoArgs: {
+          workspace: codeEditorRepoSpec,
+        },
+      });
+      setStatus(`Launched Code Editor: ${child.name}`);
+    } catch (error) {
+      setStatus(`Failed to launch Code Editor: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -758,6 +793,39 @@ export default function ChildPanelLauncher() {
               </Flex>
             </Card>
           )}
+          <Card variant="surface">
+            <Flex direction="column" gap="2">
+              <Text size="2" weight="bold">
+                Code Editor Repo Args
+              </Text>
+              <Text size="1" color="gray">
+                Provide a repo to clone into the code editor's OPFS context
+                (mounted at <Text weight="bold">/args/workspace</Text>).
+              </Text>
+              <Flex gap="2" wrap="wrap">
+                <Flex direction="column" gap="1" style={{ minWidth: "260px" }}>
+                  <Text size="1" weight="bold">
+                    Repo path
+                  </Text>
+                  <TextField.Root
+                    placeholder="e.g. panels/root or repos/my-app"
+                    value={codeEditorRepo}
+                    onChange={(e) => setCodeEditorRepo(e.target.value)}
+                  />
+                </Flex>
+                <Flex direction="column" gap="1" style={{ minWidth: "220px" }}>
+                  <Text size="1" weight="bold">
+                    Ref (optional)
+                  </Text>
+                  <TextField.Root
+                    placeholder="branch, tag, or commit"
+                    value={codeEditorRepoRef}
+                    onChange={(e) => setCodeEditorRepoRef(e.target.value)}
+                  />
+                </Flex>
+              </Flex>
+            </Flex>
+          </Card>
           <Flex gap="3" wrap="wrap">
             <Button onClick={launchChildPanel}>Launch Root Panel</Button>
             <Button onClick={launchAgenticChat} color="green">
@@ -774,6 +842,9 @@ export default function ChildPanelLauncher() {
             </Button>
             <Button onClick={launchSessionDemo} color="purple">
               Launch Session Demo
+            </Button>
+            <Button onClick={launchCodeEditor} color="blue">
+              Launch Code Editor
             </Button>
             <Button variant="soft" onClick={setRandomTitle}>
               Set random title
@@ -803,6 +874,15 @@ export default function ChildPanelLauncher() {
                 <a href={buildChildLink("workers/rpc-example")}>
                   Start RPC Example Worker (natstack-child)
                 </a>
+              </Text>
+              <Text size="2">
+                {codeEditorChildLink ? (
+                  <a href={codeEditorChildLink}>
+                    Open Code Editor (Monaco + TypeCheck)
+                  </a>
+                ) : (
+                  <span>Open Code Editor (set repo path above)</span>
+                )}
               </Text>
               <Text size="2">
                 <a href={buildChildLink("panels/unsafe-fs-demo")}>

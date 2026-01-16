@@ -10,7 +10,7 @@
  * - process.versions?.node exists (Node.js environment)
  */
 
-import type { RuntimeFs, FileStats, FileHandle } from "../types.js";
+import type { RuntimeFs, FileStats, FileHandle, Dirent, ReaddirOptions } from "../types.js";
 import { toFileStats } from "../shared/fs-utils.js";
 
 // Detect if we have Node.js fs access (unsafe panels/workers with nodeIntegration)
@@ -85,9 +85,18 @@ function createNodeFsWrapper(nodeFs: typeof import("node:fs/promises")): Runtime
       await nodeFs.writeFile(path, data);
     },
 
-    async readdir(path: string): Promise<string[]> {
+    readdir: (async (path: string, options?: ReaddirOptions): Promise<string[] | Dirent[]> => {
+      if (options?.withFileTypes) {
+        const entries = await nodeFs.readdir(path, { withFileTypes: true });
+        return entries.map((e) => ({
+          name: e.name,
+          isFile: () => e.isFile(),
+          isDirectory: () => e.isDirectory(),
+          isSymbolicLink: () => e.isSymbolicLink(),
+        }));
+      }
       return nodeFs.readdir(path) as Promise<string[]>;
-    },
+    }) as RuntimeFs["readdir"],
 
     async stat(path: string): Promise<FileStats> {
       return toFileStats(await nodeFs.stat(path));

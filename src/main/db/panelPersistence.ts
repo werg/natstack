@@ -889,6 +889,53 @@ export class PanelPersistence {
   }
 
   // =========================================================================
+  // Build State Operations
+  // =========================================================================
+
+  /**
+   * Reset all panels with error buildState to pending.
+   * Called when the build cache is cleared so panels can rebuild.
+   * Returns the number of panels reset.
+   */
+  resetErrorPanels(): number {
+    const db = this.ensureOpen();
+    const workspaceId = this.getWorkspaceId();
+    const now = Date.now();
+
+    // Find all panels with buildState = 'error' in their artifacts JSON
+    const errorPanels = db
+      .prepare(
+        `SELECT id, artifacts FROM panels
+         WHERE workspace_id = ?
+         AND json_extract(artifacts, '$.buildState') = 'error'`
+      )
+      .all(workspaceId) as Array<{ id: string; artifacts: string }>;
+
+    if (errorPanels.length === 0) {
+      return 0;
+    }
+
+    // Update each panel to pending state
+    const updateStmt = db.prepare(
+      "UPDATE panels SET artifacts = ?, updated_at = ? WHERE id = ?"
+    );
+
+    const pendingArtifacts = JSON.stringify({
+      buildState: "pending",
+      buildProgress: "Build cache cleared - will rebuild when focused",
+    });
+
+    for (const panel of errorPanels) {
+      updateStmt.run(pendingArtifacts, now, panel.id);
+    }
+
+    console.log(
+      `[PanelPersistence] Reset ${errorPanels.length} error panels to pending state`
+    );
+    return errorPanels.length;
+  }
+
+  // =========================================================================
   // Internal Helpers
   // =========================================================================
 

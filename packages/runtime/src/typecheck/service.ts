@@ -1,0 +1,767 @@
+/**
+ * TypeScript type checking service for NatStack panels and workers.
+ *
+ * This service provides type checking with module resolution that matches
+ * the panel build system, ensuring developers get accurate feedback without
+ * needing to configure tsconfig files.
+ *
+ * Key features:
+ * - Custom module resolution (fs shim, @natstack/*, dedupe)
+ * - Virtual type definitions for shimmed APIs
+ * - Language service integration (diagnostics, completions, hover)
+ * - File watching with incremental updates
+ */
+
+import * as ts from "typescript";
+import {
+  type ModuleResolutionConfig,
+  resolveModule,
+  DEFAULT_DEDUPE_PACKAGES,
+} from "./resolution.js";
+import { FS_TYPE_DEFINITIONS, PATH_TYPE_DEFINITIONS, GLOBAL_TYPE_DEFINITIONS, NATSTACK_RUNTIME_TYPES, NATSTACK_PACKAGE_TYPES } from "./lib/index.js";
+import { TS_LIB_FILES } from "./lib/typescript-libs.js";
+
+/**
+ * Base diagnostic fields shared between internal and external types.
+ * Use this type when only the core diagnostic fields are needed.
+ */
+export interface BaseDiagnostic {
+  file: string;
+  line: number;
+  column: number;
+  endLine?: number;
+  endColumn?: number;
+  message: string;
+  severity: "error" | "warning" | "info";
+}
+
+/**
+ * Full diagnostic from the type checker (internal use).
+ * Extends BaseDiagnostic with TypeScript-specific fields.
+ */
+export interface TypeCheckDiagnostic extends BaseDiagnostic {
+  code: number;
+  category: ts.DiagnosticCategory;
+}
+
+/**
+ * Result of type checking a panel/worker.
+ */
+export interface TypeCheckResult {
+  /** Path to the panel/worker being checked */
+  panelPath: string;
+  /** All diagnostics found */
+  diagnostics: TypeCheckDiagnostic[];
+  /** When the check was performed */
+  timestamp: number;
+  /** Files that were checked */
+  checkedFiles: string[];
+}
+
+/**
+ * Quick info (hover) result.
+ */
+export interface QuickInfo {
+  /** Display parts for the type */
+  displayParts: string;
+  /** Documentation if available */
+  documentation?: string;
+  /** Tags (deprecated, etc.) */
+  tags?: { name: string; text?: string }[];
+}
+
+/**
+ * Configuration for the TypeCheckService.
+ */
+export interface TypeCheckServiceConfig {
+  /** Root path of the panel/worker being checked */
+  panelPath: string;
+  /** Module resolution configuration */
+  resolution?: Partial<ModuleResolutionConfig>;
+  /** TypeScript compiler options override */
+  compilerOptions?: ts.CompilerOptions;
+  /** Path mappings for @natstack/* packages */
+  natstackPackagePaths?: Record<string, string>;
+  /** Path to lib.d.ts files */
+  libPath?: string;
+  /** Callback to fetch external package types on-demand */
+  requestExternalTypes?: (packageName: string) => Promise<Map<string, string> | null>;
+}
+
+/**
+ * TypeScript type checking service for NatStack panels/workers.
+ */
+export class TypeCheckService {
+  private languageService: ts.LanguageService;
+  private files = new Map<string, { content: string; version: number }>();
+  private config: TypeCheckServiceConfig;
+  private resolutionConfig: ModuleResolutionConfig;
+
+  /** Packages that we've attempted to load types for */
+  private loadedExternalPackages = new Set<string>();
+  /** Packages that need types fetched (collected during resolution) */
+  private pendingExternalPackages = new Set<string>();
+
+  constructor(config: TypeCheckServiceConfig) {
+    this.config = config;
+    this.resolutionConfig = {
+      fsShimEnabled: config.resolution?.fsShimEnabled ?? true,
+      dedupePackages: config.resolution?.dedupePackages ?? [...DEFAULT_DEDUPE_PACKAGES],
+      runtimeNodeModules: config.resolution?.runtimeNodeModules,
+    };
+
+    // Add virtual type definitions
+    this.addVirtualLibs();
+
+    this.languageService = this.createLanguageService();
+  }
+
+  /**
+   * Add virtual type definition files for shimmed APIs and TypeScript libs.
+   */
+  private addVirtualLibs(): void {
+    // Add fs type definitions
+    this.files.set("/@natstack/virtual/fs.d.ts", {
+      content: FS_TYPE_DEFINITIONS,
+      version: 1,
+    });
+
+    // Add path type definitions (for path shim -> pathe)
+    this.files.set("/@natstack/virtual/path.d.ts", {
+      content: PATH_TYPE_DEFINITIONS,
+      version: 1,
+    });
+
+    // Add global type definitions
+    this.files.set("/@natstack/virtual/globals.d.ts", {
+      content: GLOBAL_TYPE_DEFINITIONS,
+      version: 1,
+    });
+
+    // Add bundled TypeScript lib files (ES2022, DOM, etc.)
+    for (const [libName, content] of Object.entries(TS_LIB_FILES)) {
+      this.files.set(`/@typescript/lib/${libName}`, {
+        content,
+        version: 1,
+      });
+    }
+
+    // Add @natstack/runtime type definitions
+    this.files.set("/@natstack/virtual/runtime.d.ts", {
+      content: NATSTACK_RUNTIME_TYPES,
+      version: 1,
+    });
+
+    // Add all bundled @natstack/* package types
+    for (const [pkgName, pkgData] of Object.entries(NATSTACK_PACKAGE_TYPES)) {
+      for (const [fileName, content] of Object.entries(pkgData.files)) {
+        this.files.set(`/@natstack/packages/${pkgName}/${fileName}`, {
+          content,
+          version: 1,
+        });
+      }
+    }
+  }
+
+  /**
+   * Update or add a file's content.
+   * Call this when a file is created or modified.
+   */
+  updateFile(path: string, content: string): void {
+    const existing = this.files.get(path);
+    this.files.set(path, {
+      content,
+      version: (existing?.version ?? 0) + 1,
+    });
+  }
+
+  /**
+   * Remove a file from the service.
+   * Call this when a file is deleted.
+   */
+  removeFile(path: string): void {
+    this.files.delete(path);
+  }
+
+  /**
+   * Check if a file exists in the service.
+   */
+  hasFile(path: string): boolean {
+    return this.files.has(path);
+  }
+
+  /**
+   * Get all file paths tracked by the service.
+   * Excludes virtual type definition files (libs, external types).
+   */
+  getFileNames(): string[] {
+    return [...this.files.keys()].filter(
+      (p) =>
+        !p.startsWith("/@natstack/virtual/") &&
+        !p.startsWith("/@types/") &&
+        !p.startsWith("/@typescript/lib/")
+    );
+  }
+
+  /**
+   * Run type checking on a single file or all files.
+   */
+  check(filePath?: string): TypeCheckResult {
+    const diagnostics = filePath
+      ? this.getFileDiagnostics(filePath)
+      : this.getAllDiagnostics();
+
+    return {
+      panelPath: this.config.panelPath,
+      diagnostics,
+      timestamp: Date.now(),
+      checkedFiles: filePath ? [filePath] : this.getFileNames(),
+    };
+  }
+
+  /**
+   * Load types for packages that were encountered during resolution but not yet available.
+   * Returns true if new types were loaded (caller should re-check for updated diagnostics).
+   */
+  async loadPendingTypes(): Promise<boolean> {
+    if (!this.config.requestExternalTypes || this.pendingExternalPackages.size === 0) {
+      return false;
+    }
+
+    const packages = [...this.pendingExternalPackages];
+    this.pendingExternalPackages.clear();
+
+    let loadedAny = false;
+
+    for (const pkg of packages) {
+      if (this.loadedExternalPackages.has(pkg)) {
+        continue; // Already loaded or attempted
+      }
+
+      this.loadedExternalPackages.add(pkg);
+
+      try {
+        const types = await this.config.requestExternalTypes(pkg);
+        if (types && types.size > 0) {
+          for (const [filePath, content] of types) {
+            // Store types with a consistent path prefix
+            const typePath = `/@types/${pkg}/${filePath}`;
+            this.files.set(typePath, { content, version: 1 });
+          }
+          loadedAny = true;
+        }
+      } catch (error) {
+        console.error(`[typecheck] Failed to load types for ${pkg}:`, error);
+      }
+    }
+
+    return loadedAny;
+  }
+
+  /**
+   * Check if there are pending external packages that need types loaded.
+   */
+  hasPendingTypes(): boolean {
+    return this.pendingExternalPackages.size > 0;
+  }
+
+  /**
+   * Run type checking with automatic external type loading.
+   * This is the recommended way to check - it handles the async type loading cycle.
+   *
+   * The check-load-recheck pattern:
+   * 1. First check - may discover packages needing external types
+   * 2. Load any pending external types (requires requestExternalTypes callback)
+   * 3. Re-check if new types were loaded to get accurate diagnostics
+   */
+  async checkWithExternalTypes(filePath?: string): Promise<TypeCheckResult> {
+    // First check - may discover packages needing external types
+    let result = this.check(filePath);
+
+    // Load any pending external types (requires requestExternalTypes callback)
+    const loadedNew = await this.loadPendingTypes();
+
+    // Re-check if new types were loaded to get accurate diagnostics
+    if (loadedNew) {
+      result = this.check(filePath);
+    }
+
+    return result;
+  }
+
+  /**
+   * Get diagnostics for a single file.
+   */
+  private getFileDiagnostics(filePath: string): TypeCheckDiagnostic[] {
+    const syntactic = this.languageService.getSyntacticDiagnostics(filePath);
+    const semantic = this.languageService.getSemanticDiagnostics(filePath);
+    const suggestion = this.languageService.getSuggestionDiagnostics(filePath);
+
+    return [
+      ...syntactic.map((d) => this.convertDiagnostic(d, "error")),
+      ...semantic.map((d) => this.convertDiagnostic(d)),
+      ...suggestion.map((d) => this.convertDiagnostic(d, "info")),
+    ];
+  }
+
+  /**
+   * Get diagnostics for all files.
+   */
+  private getAllDiagnostics(): TypeCheckDiagnostic[] {
+    const diagnostics: TypeCheckDiagnostic[] = [];
+
+    for (const fileName of this.getFileNames()) {
+      diagnostics.push(...this.getFileDiagnostics(fileName));
+    }
+
+    return diagnostics;
+  }
+
+  /**
+   * Convert a TypeScript diagnostic to our format.
+   */
+  private convertDiagnostic(
+    diagnostic: ts.Diagnostic,
+    forceSeverity?: "error" | "warning" | "info"
+  ): TypeCheckDiagnostic {
+    const severity =
+      forceSeverity ?? this.categoryToSeverity(diagnostic.category);
+    const message = ts.flattenDiagnosticMessageText(
+      diagnostic.messageText,
+      "\n"
+    );
+
+    let file = "";
+    let line = 1;
+    let column = 1;
+    let endLine: number | undefined;
+    let endColumn: number | undefined;
+
+    if (diagnostic.file && diagnostic.start !== undefined) {
+      file = diagnostic.file.fileName;
+      const startPos = diagnostic.file.getLineAndCharacterOfPosition(
+        diagnostic.start
+      );
+      line = startPos.line + 1;
+      column = startPos.character + 1;
+
+      if (diagnostic.length !== undefined) {
+        const endPos = diagnostic.file.getLineAndCharacterOfPosition(
+          diagnostic.start + diagnostic.length
+        );
+        endLine = endPos.line + 1;
+        endColumn = endPos.character + 1;
+      }
+    }
+
+    return {
+      file,
+      line,
+      column,
+      endLine,
+      endColumn,
+      message,
+      code: diagnostic.code,
+      severity,
+      category: diagnostic.category,
+    };
+  }
+
+  /**
+   * Convert TypeScript diagnostic category to severity string.
+   */
+  private categoryToSeverity(
+    category: ts.DiagnosticCategory
+  ): "error" | "warning" | "info" {
+    switch (category) {
+      case ts.DiagnosticCategory.Error:
+        return "error";
+      case ts.DiagnosticCategory.Warning:
+        return "warning";
+      default:
+        return "info";
+    }
+  }
+
+  /**
+   * Get quick info (hover) for a position in a file.
+   */
+  getQuickInfo(
+    filePath: string,
+    line: number,
+    column: number
+  ): QuickInfo | null {
+    const position = this.getPosition(filePath, line, column);
+    if (position === undefined) return null;
+
+    const info = this.languageService.getQuickInfoAtPosition(
+      filePath,
+      position
+    );
+    if (!info) return null;
+
+    return {
+      displayParts: ts.displayPartsToString(info.displayParts),
+      documentation: info.documentation
+        ? ts.displayPartsToString(info.documentation)
+        : undefined,
+      tags: info.tags?.map((t) => ({
+        name: t.name,
+        text: t.text ? ts.displayPartsToString(t.text) : undefined,
+      })),
+    };
+  }
+
+  /**
+   * Get completions at a position.
+   */
+  getCompletions(
+    filePath: string,
+    line: number,
+    column: number
+  ): ts.CompletionInfo | undefined {
+    const position = this.getPosition(filePath, line, column);
+    if (position === undefined) return undefined;
+
+    return this.languageService.getCompletionsAtPosition(
+      filePath,
+      position,
+      undefined
+    );
+  }
+
+  /**
+   * Get definition locations for a symbol.
+   */
+  getDefinition(
+    filePath: string,
+    line: number,
+    column: number
+  ): readonly ts.DefinitionInfo[] | undefined {
+    const position = this.getPosition(filePath, line, column);
+    if (position === undefined) return undefined;
+
+    return this.languageService.getDefinitionAtPosition(filePath, position);
+  }
+
+  /**
+   * Get the program for advanced use cases.
+   */
+  getProgram(): ts.Program | undefined {
+    return this.languageService.getProgram();
+  }
+
+  /**
+   * Convert line/column to offset position.
+   * Reuses the source file from the language service's program when available,
+   * avoiding redundant AST parsing.
+   */
+  private getPosition(
+    filePath: string,
+    line: number,
+    column: number
+  ): number | undefined {
+    // Try to get source file from the language service's program (already parsed)
+    const program = this.languageService.getProgram();
+    const sourceFile = program?.getSourceFile(filePath);
+
+    if (sourceFile) {
+      try {
+        return sourceFile.getPositionOfLineAndCharacter(line - 1, column - 1);
+      } catch {
+        // Line/column out of bounds
+        return undefined;
+      }
+    }
+
+    // Fallback: file not in program yet, create temporary source file
+    const file = this.files.get(filePath);
+    if (!file) return undefined;
+
+    const tempSourceFile = ts.createSourceFile(
+      filePath,
+      file.content,
+      ts.ScriptTarget.Latest,
+      true
+    );
+
+    try {
+      return tempSourceFile.getPositionOfLineAndCharacter(line - 1, column - 1);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Create the TypeScript language service.
+   */
+  private createLanguageService(): ts.LanguageService {
+    const self = this;
+
+    const host: ts.LanguageServiceHost = {
+      getCompilationSettings: () => this.getCompilerOptions(),
+      getScriptFileNames: () => [...this.files.keys()],
+      getScriptVersion: (fileName) =>
+        String(this.files.get(fileName)?.version ?? 0),
+      getScriptSnapshot: (fileName) => {
+        const file = this.files.get(fileName);
+        if (!file) return undefined;
+        return ts.ScriptSnapshot.fromString(file.content);
+      },
+      getCurrentDirectory: () => this.config.panelPath,
+      getDefaultLibFileName: () => "/@typescript/lib/lib.es5.d.ts",
+      fileExists: (path) => this.files.has(path),
+      readFile: (path) => this.files.get(path)?.content,
+
+      // Custom module resolution
+      resolveModuleNameLiterals(
+        moduleLiterals: readonly ts.StringLiteralLike[],
+        containingFile: string,
+        _redirectedReference: ts.ResolvedProjectReference | undefined,
+        options: ts.CompilerOptions
+      ): readonly ts.ResolvedModuleWithFailedLookupLocations[] {
+        return moduleLiterals.map(({ text: moduleName }) =>
+          self.resolveModuleName(moduleName, containingFile, options)
+        );
+      },
+    };
+
+    return ts.createLanguageService(host);
+  }
+
+  /**
+   * Resolve a module name according to NatStack's resolution rules.
+   */
+  private resolveModuleName(
+    moduleName: string,
+    containingFile: string,
+    options: ts.CompilerOptions
+  ): ts.ResolvedModuleWithFailedLookupLocations {
+    const result = resolveModule(moduleName, this.resolutionConfig);
+
+    switch (result.kind) {
+      case "fs-shim":
+        // Map fs imports to our virtual fs type definitions
+        return {
+          resolvedModule: {
+            resolvedFileName: "/@natstack/virtual/fs.d.ts",
+            isExternalLibraryImport: false,
+            extension: ts.Extension.Dts,
+          },
+        };
+
+      case "path-shim":
+        // Map path imports to our virtual path type definitions
+        return {
+          resolvedModule: {
+            resolvedFileName: "/@natstack/virtual/path.d.ts",
+            isExternalLibraryImport: false,
+            extension: ts.Extension.Dts,
+          },
+        };
+
+      case "natstack": {
+        // Map @natstack/runtime to our virtual type definitions
+        if (result.packageName === "runtime") {
+          return {
+            resolvedModule: {
+              resolvedFileName: "/@natstack/virtual/runtime.d.ts",
+              isExternalLibraryImport: false,
+              extension: ts.Extension.Dts,
+            },
+          };
+        }
+
+        // Check bundled @natstack/* packages
+        const fullPkgName = `@natstack/${result.packageName}`;
+        const pkgData = NATSTACK_PACKAGE_TYPES[fullPkgName];
+        if (pkgData) {
+          // Extract subpath from module name (e.g., @natstack/agentic-messaging/broker -> broker)
+          const afterPkg = moduleName.slice(fullPkgName.length);
+          const subpath = afterPkg.startsWith("/") ? afterPkg : null;
+
+          // Determine the entry file - check for subpath or use index.d.ts
+          let entryFile = "index.d.ts";
+          if (subpath && pkgData.subpaths[subpath]) {
+            entryFile = pkgData.subpaths[subpath];
+          }
+
+          const entryPath = `/@natstack/packages/${fullPkgName}/${entryFile}`;
+          if (this.files.has(entryPath)) {
+            return {
+              resolvedModule: {
+                resolvedFileName: entryPath,
+                isExternalLibraryImport: false,
+                extension: ts.Extension.Dts,
+              },
+            };
+          }
+        }
+
+        // Map @natstack/* to the package path if configured (fallback)
+        const packagePath =
+          this.config.natstackPackagePaths?.[result.packageName];
+        if (packagePath) {
+          return {
+            resolvedModule: {
+              resolvedFileName: packagePath,
+              isExternalLibraryImport: false,
+              extension: ts.Extension.Ts,
+            },
+          };
+        }
+        // Fall through to standard resolution
+        break;
+      }
+
+      case "dedupe": {
+        // For deduped packages, first check if we have loaded types
+        const loadedTypesPath = this.findLoadedTypesEntry(moduleName);
+        if (loadedTypesPath) {
+          return {
+            resolvedModule: {
+              resolvedFileName: loadedTypesPath,
+              isExternalLibraryImport: true,
+              extension: ts.Extension.Dts,
+            },
+          };
+        }
+
+        // Try standard resolution from runtime node_modules
+        if (this.resolutionConfig.runtimeNodeModules) {
+          const resolved = ts.resolveModuleName(
+            moduleName,
+            this.resolutionConfig.runtimeNodeModules + "/index.ts",
+            options,
+            {
+              fileExists: (p) => this.files.has(p),
+              readFile: (p) => this.files.get(p)?.content,
+            }
+          );
+          if (resolved.resolvedModule) {
+            return resolved;
+          }
+        }
+
+        // Mark for external type loading if not already loaded/pending
+        const pkgName = this.extractPackageName(moduleName);
+        if (pkgName && !this.loadedExternalPackages.has(pkgName)) {
+          this.pendingExternalPackages.add(pkgName);
+        }
+        // Return unresolved - will be resolved after types are loaded
+        return { resolvedModule: undefined };
+      }
+
+      case "standard":
+        // Use standard resolution
+        break;
+    }
+
+    // Standard TypeScript resolution
+    const resolved = ts.resolveModuleName(moduleName, containingFile, options, {
+      fileExists: (p) => this.files.has(p),
+      readFile: (p) => this.files.get(p)?.content,
+    });
+
+    // If unresolved and looks like an external package, check for loaded types or mark as pending
+    if (!resolved.resolvedModule && this.isBareSpecifier(moduleName)) {
+      const loadedTypesPath = this.findLoadedTypesEntry(moduleName);
+      if (loadedTypesPath) {
+        return {
+          resolvedModule: {
+            resolvedFileName: loadedTypesPath,
+            isExternalLibraryImport: true,
+            extension: ts.Extension.Dts,
+          },
+        };
+      }
+
+      const pkgName = this.extractPackageName(moduleName);
+      if (pkgName && !this.loadedExternalPackages.has(pkgName)) {
+        this.pendingExternalPackages.add(pkgName);
+      }
+    }
+
+    return resolved;
+  }
+
+  /**
+   * Extract the package name from a module specifier.
+   * e.g., "react" -> "react", "react/jsx-runtime" -> "react", "@types/node" -> "@types/node"
+   */
+  private extractPackageName(moduleName: string): string | null {
+    if (moduleName.startsWith("@")) {
+      // Scoped package: @scope/pkg or @scope/pkg/subpath
+      const parts = moduleName.split("/");
+      if (parts.length >= 2) {
+        return `${parts[0]}/${parts[1]}`;
+      }
+      return null;
+    }
+    // Regular package: pkg or pkg/subpath
+    return moduleName.split("/")[0] || null;
+  }
+
+  /**
+   * Check if a specifier is a bare module specifier (not relative/absolute).
+   */
+  private isBareSpecifier(specifier: string): boolean {
+    return !specifier.startsWith(".") && !specifier.startsWith("/");
+  }
+
+  /**
+   * Find the entry point for loaded types of a package.
+   * Returns the path to index.d.ts if types are loaded, null otherwise.
+   */
+  private findLoadedTypesEntry(moduleName: string): string | null {
+    const pkgName = this.extractPackageName(moduleName);
+    if (!pkgName) return null;
+
+    // Check for types at /@types/{pkgName}/
+    const basePath = `/@types/${pkgName}`;
+
+    // Try common entry points
+    const entryPoints = [
+      `${basePath}/index.d.ts`,
+      `${basePath}/index.d.mts`,
+    ];
+
+    for (const entryPoint of entryPoints) {
+      if (this.files.has(entryPoint)) {
+        return entryPoint;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Get the TypeScript compiler options.
+   */
+  private getCompilerOptions(): ts.CompilerOptions {
+    return {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      jsx: ts.JsxEmit.ReactJSX,
+      lib: ["lib.es2022.d.ts", "lib.dom.d.ts", "lib.dom.iterable.d.ts"],
+      strict: true,
+      noEmit: true,
+      skipLibCheck: true,
+      esModuleInterop: true,
+      allowSyntheticDefaultImports: true,
+      resolveJsonModule: true,
+      isolatedModules: true,
+      ...this.config.compilerOptions,
+    };
+  }
+}
+
+/**
+ * Create a TypeCheckService for a panel/worker.
+ */
+export function createTypeCheckService(
+  config: TypeCheckServiceConfig
+): TypeCheckService {
+  return new TypeCheckService(config);
+}

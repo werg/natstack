@@ -29,6 +29,15 @@ configureMonacoWorkers();
 // Re-export Monaco worker configuration for consumers who need custom setup
 export { configureMonacoWorkers, type MonacoWorkerConfig } from "./monacoWorkers";
 
+// Monaco TypeScript type checking configuration
+export {
+  configureMonacoTypeCheck,
+  addMonacoTypeDefinition,
+  diagnosticsToMarkers,
+  setDiagnosticsOnModel,
+  type MonacoTypeCheckConfig,
+} from "./monacoTypeCheck";
+
 // =============================================================================
 // DiffBlock Components
 // =============================================================================

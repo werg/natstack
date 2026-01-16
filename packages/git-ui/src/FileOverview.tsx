@@ -448,7 +448,7 @@ export function FileOverview({
   );
 
   return (
-    <Flex direction="column">
+    <Flex direction="column" flexShrink="0">
       <Flex direction="column" gap="2" px="2" pt="2" pb="2">
         {/* Commit Row */}
       <Flex align="start" gap="2">
@@ -529,6 +529,8 @@ export function FileOverview({
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
+            minHeight: 120,
+            maxHeight: 300,
             outline: dragOverPanel === "unstaged" ? "2px dashed var(--accent-9)" : undefined,
             background: dragOverPanel === "unstaged" ? "var(--accent-a2)" : undefined,
             transition: "outline 0.15s, background 0.15s",
@@ -558,8 +560,8 @@ export function FileOverview({
             )}
           </Flex>
           <Separator size="4" />
-          <Box flexGrow="1" overflow="hidden">
-            <ScrollArea>
+          <Box flexGrow="1" minHeight="0" overflow="hidden">
+            <ScrollArea style={{ height: "100%" }}>
               <Box p="1">
                 <OverviewTree
                   files={unstagedFiles}
@@ -586,6 +588,8 @@ export function FileOverview({
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
+            minHeight: 120,
+            maxHeight: 300,
             outline: dragOverPanel === "staged" ? "2px dashed var(--accent-9)" : undefined,
             background: dragOverPanel === "staged" ? "var(--accent-a2)" : undefined,
             transition: "outline 0.15s, background 0.15s",
@@ -615,8 +619,8 @@ export function FileOverview({
             )}
           </Flex>
           <Separator size="4" />
-          <Box flexGrow="1" overflow="hidden">
-            <ScrollArea>
+          <Box flexGrow="1" minHeight="0" overflow="hidden">
+            <ScrollArea style={{ height: "100%" }}>
               <Box p="1">
                 <OverviewTree
                   files={stagedFiles}

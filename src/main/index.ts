@@ -74,6 +74,7 @@ import {
   setShellServicesAiHandler,
 } from "./ipc/shellServices.js";
 import { handleEventsService } from "./services/eventsService.js";
+import { typeCheckRpcMethods } from "./typecheck/service.js";
 
 // =============================================================================
 // Protocol Registration (must happen before app ready)
@@ -522,6 +523,30 @@ app.on("ready", async () => {
           }
           handler.startPanelStream(ctx.webContents, ctx.callerId, options, streamId);
         });
+      });
+
+      // Register typecheck service for type definition fetching
+      dispatcher.register("typecheck", async (_ctx, serviceMethod, serviceArgs) => {
+        const args = serviceArgs as unknown[];
+        switch (serviceMethod) {
+          case "getPackageTypes":
+            return typeCheckRpcMethods["typecheck.getPackageTypes"](
+              args[0] as string,
+              args[1] as string,
+              args[2] as string | undefined
+            );
+          case "getDepsDir":
+            return typeCheckRpcMethods["typecheck.getDepsDir"](args[0] as string);
+          case "clearCache":
+            return typeCheckRpcMethods["typecheck.clearCache"]();
+          case "clearPackageCache":
+            return typeCheckRpcMethods["typecheck.clearPackageCache"](
+              args[0] as string,
+              args[1] as string | undefined
+            );
+          default:
+            throw new Error(`Unknown typecheck method: ${serviceMethod}`);
+        }
       });
     } catch (error) {
       console.error("Failed to initialize services:", error);

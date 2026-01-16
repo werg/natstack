@@ -11,8 +11,19 @@ import { isDev } from "./utils.js";
 import { provisionPanelVersion, resolveTargetCommit, type VersionSpec } from "./gitProvisioner.js";
 import type { PanelBuildState, ProtocolBuildArtifacts } from "../shared/ipc/types.js";
 import { createBuildWorkspace, type BuildArtifactKey } from "./build/artifacts.js";
+import { analyzeBundleSize } from "./build/bundleAnalysis.js";
 import { collectWorkersFromDependencies, workersToArray } from "../shared/collectWorkers.js";
 import { PANEL_CSP_META } from "../shared/constants.js";
+import {
+  isFsModule,
+  isFsPromisesModule,
+  generateFsShimCode,
+  isPathModule,
+  generatePathShimCode,
+  isBareSpecifier,
+  packageToRegex,
+  DEFAULT_DEDUPE_PACKAGES,
+} from "@natstack/runtime/typecheck";
 
 // ===========================================================================
 // Shared Build Plugins
@@ -22,70 +33,50 @@ import { PANEL_CSP_META } from "../shared/constants.js";
  * Create a panel fs shim plugin that maps fs imports to @natstack/runtime.
  * Panels run in the browser and use ZenFS (OPFS-backed), so sync methods are not available.
  *
+ * Uses shared resolution logic from @natstack/runtime/typecheck to ensure
+ * build-time and type-check-time resolution are consistent.
+ *
  * @param resolveDir - Directory to use for resolving @natstack/runtime imports
  */
 function createPanelFsShimPlugin(resolveDir: string): esbuild.Plugin {
-  // Async FS methods exported by @natstack/runtime
-  const FS_ASYNC_METHODS = [
-    "readFile", "writeFile", "readdir", "stat", "lstat", "mkdir", "rmdir", "rm",
-    "unlink", "exists", "access", "appendFile", "copyFile", "rename", "realpath",
-    "open", "readlink", "symlink", "chmod", "chown", "utimes", "truncate",
-  ];
-
-  // Sync methods that throw helpful errors (can't work in browser)
-  const FS_SYNC_METHODS = [
-    "readFileSync", "writeFileSync", "readdirSync", "statSync", "lstatSync",
-    "mkdirSync", "rmdirSync", "rmSync", "unlinkSync", "existsSync", "accessSync",
-    "appendFileSync", "copyFileSync", "renameSync", "realpathSync", "openSync",
-    "readlinkSync", "symlinkSync", "chmodSync", "chownSync", "utimesSync",
-    "truncateSync", "closeSync", "readSync", "writeSync", "fstatSync",
-  ];
-
-  const asyncExports = FS_ASYNC_METHODS.map((m) => `export const ${m} = fs.${m}.bind(fs);`).join("\n");
-
-  const syncStubs = FS_SYNC_METHODS.map((m) =>
-    `export function ${m}() { throw new Error("Synchronous fs methods (${m}) are not available in NatStack panels. Use the async version instead."); }`
-  ).join("\n");
-
-  // fs constants needed by some packages
-  const fsConstants = `
-export const constants = {
-  F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
-  COPYFILE_EXCL: 1, COPYFILE_FICLONE: 2, COPYFILE_FICLONE_FORCE: 4,
-  O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, O_CREAT: 64, O_EXCL: 128,
-  O_TRUNC: 512, O_APPEND: 1024, O_SYNC: 1052672,
-  S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IFCHR: 8192,
-  S_IFBLK: 24576, S_IFIFO: 4096, S_IFLNK: 40960, S_IFSOCK: 49152,
-};`;
-
   return {
     name: "panel-fs-shim",
     setup(build) {
       build.onResolve({ filter: /^(fs|node:fs|fs\/promises|node:fs\/promises)$/ }, (args) => {
+        if (!isFsModule(args.path)) return null;
         return { path: args.path, namespace: "natstack-panel-fs-shim" };
       });
 
       build.onLoad({ filter: /.*/, namespace: "natstack-panel-fs-shim" }, (args) => {
-        const isPromises = args.path.includes("promises");
+        const isPromises = isFsPromisesModule(args.path);
+        const contents = generateFsShimCode(isPromises);
+        return { contents, loader: "js", resolveDir };
+      });
+    },
+  };
+}
 
-        if (isPromises) {
-          // fs/promises - just export async methods
-          const contents = `import { fs } from "@natstack/runtime";
-export default fs;
-${asyncExports}
-`;
-          return { contents, loader: "js", resolveDir };
-        } else {
-          // fs - export promises, async methods, sync stubs, and constants
-          const contents = `import { fs } from "@natstack/runtime";
-export default { ...fs, promises: fs };
-export const promises = fs;
-${asyncExports}
-${syncStubs}
-${fsConstants}
-`;
-          return { contents, loader: "js", resolveDir };
-        }
+/**
+ * Create a panel path shim plugin that maps path imports to pathe.
+ * pathe is a browser-compatible path library that works identically to Node's path.
+ *
+ * Uses shared resolution logic from @natstack/runtime/typecheck to ensure
+ * build-time and type-check-time resolution are consistent.
+ *
+ * @param resolveDir - Directory to use for resolving pathe imports
+ */
+function createPanelPathShimPlugin(resolveDir: string): esbuild.Plugin {
+  return {
+    name: "panel-path-shim",
+    setup(build) {
+      build.onResolve({ filter: /^(path|node:path|path\/posix|node:path\/posix)$/ }, (args) => {
+        if (!isPathModule(args.path)) return null;
+        return { path: args.path, namespace: "natstack-panel-path-shim" };
+      });
+
+      build.onLoad({ filter: /.*/, namespace: "natstack-panel-path-shim" }, () => {
+        const contents = generatePathShimCode();
+        return { contents, loader: "js", resolveDir };
       });
     },
   };
@@ -115,19 +106,6 @@ globalThis.__natstackModuleMap__ = globalThis.__natstackModuleMap__ || {};
 ${registerLines.join("\n")}
 `;
 }
-
-function isBareSpecifier(spec: string): boolean {
-  if (!spec) return false;
-  if (spec.startsWith(".") || spec.startsWith("/")) return false;
-  if (spec.startsWith("data:") || spec.startsWith("node:")) return false;
-  // Exclude virtual/shim modules with protocol-like prefixes (e.g., "natstack-panel-fs-shim:fs")
-  if (spec.includes(":")) return false;
-  // Exclude local file paths with extensions (these are panel-local imports, not npm packages)
-  // This covers .ts, .tsx, .js, .jsx, .mjs, .cjs, .json, .css, .scss, .less, etc.
-  if (/\.\w+$/.test(spec)) return false;
-  return true;
-}
-
 function collectExposedDepsFromMetafile(
   metafile: esbuild.Metafile,
   externalModules: Set<string>
@@ -639,19 +617,28 @@ export interface ChildBuildResult {
   buildLog?: string;
 }
 
-// Bundle size limits (very generous to avoid disrupting normal use)
-const MAX_BUNDLE_SIZE = 50 * 1024 * 1024; // 50 MB for JS bundle
-const MAX_HTML_SIZE = 10 * 1024 * 1024; // 10 MB for HTML
-const MAX_CSS_SIZE = 10 * 1024 * 1024; // 10 MB for CSS
+/** Bundle size limits for panel builds (generous to avoid disrupting normal use) */
+const BUNDLE_SIZE_LIMITS = {
+  /** Maximum JS bundle size (150 MB) */
+  MAX_JS_BYTES: 150 * 1024 * 1024,
+  /** Maximum HTML size */
+  MAX_HTML_BYTES: 10 * 1024 * 1024,
+  /** Maximum CSS size */
+  MAX_CSS_BYTES: 10 * 1024 * 1024,
+} as const;
 
 const defaultPanelDependencies: Record<string, string> = {
   // Node types for dependencies that expect them
   "@types/node": "^22.9.0",
+  // Browser-compatible path module for shim (enables import * as path from "path")
+  "pathe": "^2.0.0",
 };
 
 const defaultWorkerDependencies: Record<string, string> = {
   // Node types for dependencies that expect them
   "@types/node": "^22.9.0",
+  // Browser-compatible path module for shim (enables import * as path from "path")
+  "pathe": "^2.0.0",
 };
 
 const PANEL_ASSET_LOADERS: Record<string, esbuild.Loader> = {
@@ -784,6 +771,8 @@ interface BuildFromSourceResult {
   error?: string;
   /** Hash of dependencies for caching */
   dependencyHash?: string;
+  /** Warning message (e.g., partial build success) */
+  warning?: string;
 }
 
 export class PanelBuilder {
@@ -1285,12 +1274,13 @@ import ${JSON.stringify(relativeUserEntry)};
         log(`External modules (CDN): ${externalModules.join(", ")}`);
       }
 
-      // Use panel fs shim plugin (maps to @natstack/runtime) for safe panels.
-      // For unsafe panels, skip the shim to allow direct Node.js fs access.
-      // resolveDir points at the deps dir where @natstack/runtime is installed.
+      // Use panel fs and path shim plugins for safe panels.
+      // For unsafe panels, skip the shims to allow direct Node.js fs/path access.
+      // resolveDir points at the deps dir where @natstack/runtime and pathe are installed.
       const plugins: esbuild.Plugin[] = [];
       if (!unsafe) {
         plugins.push(createPanelFsShimPlugin(workspace.depsDir));
+        plugins.push(createPanelPathShimPlugin(workspace.depsDir));
       }
       if (hasNatstackReact) {
         // Dedupe React, Radix UI, and any manifest-specified packages
@@ -1338,6 +1328,7 @@ import ${JSON.stringify(relativeUserEntry)};
 
       const buildResult = await esbuild.build(createBuildConfig());
       let buildMetafile = buildResult.metafile;
+      let exposeModulesWarning: string | undefined;
 
       if (buildResult.metafile) {
         const externalSet = new Set(externalModules);
@@ -1371,8 +1362,10 @@ import ${JSON.stringify(relativeUserEntry)};
               }
             } catch (rebuildError) {
               // Log but don't fail - the first build output is still usable
-              log(`Warning: Second build pass failed: ${rebuildError instanceof Error ? rebuildError.message : String(rebuildError)}`);
+              const msg = rebuildError instanceof Error ? rebuildError.message : String(rebuildError);
+              log(`Warning: Second build pass failed: ${msg}`);
               log(`Continuing with first build output (exposed modules may not work correctly)`);
+              exposeModulesWarning = `Exposed modules may not work: ${msg}`;
             }
           }
 
@@ -1385,6 +1378,12 @@ import ${JSON.stringify(relativeUserEntry)};
       const bundle = fs.readFileSync(bundlePath, "utf-8");
       const cssPath = bundlePath.replace(".js", ".css");
       const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, "utf-8") : undefined;
+
+      // Analyze bundle size if it's large (> 10MB)
+      if (bundle.length > 10 * 1024 * 1024 && buildMetafile) {
+        analyzeBundleSize(buildMetafile, log);
+      }
+
       const panelAssets = this.collectPanelAssets(buildMetafile, workspace.buildDir, bundlePath, cssPath, log);
 
       // Build workers declared by dependencies (via natstack.workers in package.json)
@@ -1419,6 +1418,7 @@ import ${JSON.stringify(relativeUserEntry)};
         css,
         assets,
         dependencyHash,
+        warning: exposeModulesWarning,
       };
     } catch (error) {
       return {
@@ -1435,40 +1435,6 @@ import ${JSON.stringify(relativeUserEntry)};
   }
 
   /**
-   * Default packages that are always deduplicated.
-   * These are packages known to use React context or other singleton patterns.
-   */
-  private static readonly DEFAULT_DEDUPE_PACKAGES = [
-    "react",
-    "react-dom",
-    "@radix-ui/themes",
-    "@radix-ui/react-*", // Wildcard for all Radix primitives
-  ];
-
-  /**
-   * Convert a package specifier to a regex pattern for matching imports.
-   * Supports exact matches, subpaths, and simple wildcards.
-   *
-   * Examples:
-   * - "lodash" -> matches "lodash" and "lodash/debounce"
-   * - "@scope/pkg" -> matches "@scope/pkg" and "@scope/pkg/sub"
-   * - "@radix-ui/react-*" -> matches "@radix-ui/react-select", "@radix-ui/react-dialog/sub"
-   */
-  private packageToRegex(pkg: string): RegExp {
-    // Escape regex special characters except *
-    const escaped = pkg.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
-
-    if (escaped.includes("*")) {
-      // Wildcard pattern: @radix-ui/react-* -> @radix-ui/react-[^/]+
-      const pattern = escaped.replace(/\*/g, "[^/]+");
-      return new RegExp(`^${pattern}(\\/.*)?$`);
-    } else {
-      // Exact package with optional subpaths
-      return new RegExp(`^${escaped}(\\/.*)?$`);
-    }
-  }
-
-  /**
    * Create a plugin to deduplicate module imports.
    * This ensures all imports of specified packages (including from dependencies)
    * resolve to the same instance in the build dependency node_modules.
@@ -1476,7 +1442,8 @@ import ${JSON.stringify(relativeUserEntry)};
    * This is critical for packages that use React context or other singleton patterns
    * because context only works when provider and consumer use the same module instance.
    *
-   * This mirrors how Next.js solves this with webpack resolve.alias.
+   * Uses shared resolution logic from @natstack/runtime/typecheck to ensure
+   * build-time and type-check-time resolution are consistent.
    *
    * @param runtimeNodeModules - The node_modules directory to resolve from
    * @param additionalPackages - Extra packages to dedupe (from manifest.dedupeModules)
@@ -1487,16 +1454,16 @@ import ${JSON.stringify(relativeUserEntry)};
   ): esbuild.Plugin {
     const resolvedRuntimeNodeModules = path.resolve(runtimeNodeModules);
 
-    // Combine default packages with manifest-specified ones
-    const allPackages = [...PanelBuilder.DEFAULT_DEDUPE_PACKAGES, ...additionalPackages];
+    // Combine default packages with manifest-specified ones (using shared constant)
+    const allPackages = [...DEFAULT_DEDUPE_PACKAGES, ...additionalPackages];
 
-    // Convert to regex patterns, deduplicating
+    // Convert to regex patterns, deduplicating (using shared function)
     const seen = new Set<string>();
     const patterns: RegExp[] = [];
     for (const pkg of allPackages) {
       if (!seen.has(pkg)) {
         seen.add(pkg);
-        patterns.push(this.packageToRegex(pkg));
+        patterns.push(packageToRegex(pkg));
       }
     }
 
@@ -1781,9 +1748,9 @@ import ${JSON.stringify(relativeUserEntry)};
       const html = buildResult.html!;
 
       // Check bundle size limits
-      if (bundle.length > MAX_BUNDLE_SIZE) {
+      if (bundle.length > BUNDLE_SIZE_LIMITS.MAX_JS_BYTES) {
         const sizeMB = (bundle.length / 1024 / 1024).toFixed(2);
-        const maxMB = (MAX_BUNDLE_SIZE / 1024 / 1024).toFixed(0);
+        const maxMB = (BUNDLE_SIZE_LIMITS.MAX_JS_BYTES / 1024 / 1024).toFixed(0);
         log(`Warning: Bundle size (${sizeMB}MB) exceeds limit (${maxMB}MB)`);
         return {
           success: false,
@@ -1792,9 +1759,9 @@ import ${JSON.stringify(relativeUserEntry)};
         };
       }
 
-      if (html.length > MAX_HTML_SIZE) {
+      if (html.length > BUNDLE_SIZE_LIMITS.MAX_HTML_BYTES) {
         const sizeMB = (html.length / 1024 / 1024).toFixed(2);
-        const maxMB = (MAX_HTML_SIZE / 1024 / 1024).toFixed(0);
+        const maxMB = (BUNDLE_SIZE_LIMITS.MAX_HTML_BYTES / 1024 / 1024).toFixed(0);
         log(`Warning: HTML size (${sizeMB}MB) exceeds limit (${maxMB}MB)`);
         return {
           success: false,
@@ -1805,9 +1772,9 @@ import ${JSON.stringify(relativeUserEntry)};
 
       // Check CSS bundle size (if any)
       const css = buildResult.css;
-      if (css && css.length > MAX_CSS_SIZE) {
+      if (css && css.length > BUNDLE_SIZE_LIMITS.MAX_CSS_BYTES) {
         const sizeMB = (css.length / 1024 / 1024).toFixed(2);
-        const maxMB = (MAX_CSS_SIZE / 1024 / 1024).toFixed(0);
+        const maxMB = (BUNDLE_SIZE_LIMITS.MAX_CSS_BYTES / 1024 / 1024).toFixed(0);
         log(`Warning: CSS size (${sizeMB}MB) exceeds limit (${maxMB}MB)`);
         return {
           success: false,
@@ -1992,13 +1959,14 @@ import ${JSON.stringify(relativeUserEntry)};
       fs.writeFileSync(tempEntryPath, wrapperCode);
 
       // Workers are now WebContentsView-based (like panels).
-      // Safe workers use ZenFS (OPFS) via the panel fs shim plugin.
+      // Safe workers use ZenFS (OPFS) via the panel fs shim plugin and pathe for path.
       // Unsafe workers get Node.js integration (nodeIntegration: true in WebContentsView).
       const plugins: esbuild.Plugin[] = [];
 
-      // For safe workers, use panel fs shim to route fs calls to ZenFS
+      // For safe workers, use panel fs and path shims
       if (!options?.unsafe) {
         plugins.push(createPanelFsShimPlugin(buildWorkspace.depsDir));
+        plugins.push(createPanelPathShimPlugin(buildWorkspace.depsDir));
       }
 
       // Generate banners - include Node.js compatibility patch for unsafe workers
@@ -2045,9 +2013,9 @@ import ${JSON.stringify(relativeUserEntry)};
       const bundle = fs.readFileSync(bundlePath, "utf-8");
 
       // Check bundle size
-      if (bundle.length > MAX_BUNDLE_SIZE) {
+      if (bundle.length > BUNDLE_SIZE_LIMITS.MAX_JS_BYTES) {
         const sizeMB = (bundle.length / 1024 / 1024).toFixed(2);
-        const maxMB = (MAX_BUNDLE_SIZE / 1024 / 1024).toFixed(0);
+        const maxMB = (BUNDLE_SIZE_LIMITS.MAX_JS_BYTES / 1024 / 1024).toFixed(0);
         log(`Warning: Bundle size (${sizeMB}MB) exceeds limit (${maxMB}MB)`);
         if (buildWorkspace) {
           try {
@@ -2141,6 +2109,16 @@ import ${JSON.stringify(relativeUserEntry)};
       );
     } else {
       await this.cacheManager.clear();
+
+      // Also reset error panels in SQLite so they can rebuild
+      try {
+        const { getPanelPersistence } = await import("./db/panelPersistence.js");
+        const persistence = getPanelPersistence();
+        persistence.resetErrorPanels();
+      } catch (error) {
+        // Panel persistence may not be available in all contexts
+        console.warn("[PanelBuilder] Could not reset error panels:", error);
+      }
     }
   }
 }

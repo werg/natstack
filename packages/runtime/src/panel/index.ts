@@ -84,3 +84,6 @@ export const {
 export { runtimeParentId as parentId };
 
 export { fs, fsReady, gitConfig, pubsubConfig };
+
+// Path utilities for cross-platform path handling
+export { normalizePath, getFileName, resolvePath } from "../shared/pathUtils.js";

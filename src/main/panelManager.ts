@@ -254,11 +254,14 @@ export class PanelManager {
 
   /**
    * Mark a panel as unloaded so it rebuilds when focused.
-   * Keeps error/dirty states intact to avoid losing actionable UI.
+   * Keeps dirty/not-git-repo states intact (these are about repo state, not build errors).
+   * Error states are reset to pending so panels rebuild on next focus.
    */
   private markPanelUnloaded(panel: Panel): void {
     const buildState = panel.artifacts?.buildState;
-    if (buildState === "dirty" || buildState === "not-git-repo" || buildState === "error") {
+    // Keep dirty and not-git-repo states - these indicate repo state issues that need user action
+    // Error states should NOT be preserved - they should rebuild to pick up fixes
+    if (buildState === "dirty" || buildState === "not-git-repo") {
       return;
     }
 
@@ -569,8 +572,8 @@ export class PanelManager {
 
       if (url.startsWith("natstack-child:")) {
         try {
-          const { source, gitRef, sessionId, ephemeral } = parseChildUrl(url);
-          this.createChild(panelId, source, { gitRef, sessionId, ephemeral }).catch((err) =>
+          const { source, gitRef, sessionId, repoArgs, ephemeral } = parseChildUrl(url);
+          this.createChild(panelId, source, { gitRef, sessionId, repoArgs, ephemeral }).catch((err) =>
             this.handleChildCreationError(panelId, err, url)
           );
         } catch (err) {
@@ -597,8 +600,8 @@ export class PanelManager {
       if (url.startsWith("natstack-child:")) {
         event.preventDefault();
         try {
-          const { source, gitRef, sessionId, ephemeral } = parseChildUrl(url);
-          this.createChild(panelId, source, { gitRef, sessionId, ephemeral }).catch((err) =>
+          const { source, gitRef, sessionId, repoArgs, ephemeral } = parseChildUrl(url);
+          this.createChild(panelId, source, { gitRef, sessionId, repoArgs, ephemeral }).catch((err) =>
             this.handleChildCreationError(panelId, err, url)
           );
         } catch (err) {
@@ -1960,9 +1963,10 @@ export class PanelManager {
     // Release resources for this panel
     this.unloadPanelResources(panelId);
 
-    // Preserve error/dirty/not-git-repo states - these have actionable UI
+    // Keep dirty and not-git-repo states - these indicate repo state issues that need user action
+    // Error states should NOT be preserved - they should rebuild to pick up fixes
     const buildState = panel.artifacts?.buildState;
-    if (buildState === "dirty" || buildState === "not-git-repo" || buildState === "error") {
+    if (buildState === "dirty" || buildState === "not-git-repo") {
       return;
     }
 

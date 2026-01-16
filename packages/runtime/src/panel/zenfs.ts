@@ -8,7 +8,7 @@
 
 import { configureSingle, promises as zenPromises } from "@zenfs/core";
 import { WebAccess } from "@zenfs/dom";
-import type { RuntimeFs, FileStats } from "../types.js";
+import type { RuntimeFs, FileStats, Dirent, ReaddirOptions } from "../types.js";
 import { toFileStats } from "../shared/fs-utils.js";
 
 const INIT_TIMEOUT_MS = 30000; // 30 seconds - WebAccess can be slow on first init
@@ -74,10 +74,19 @@ export const fs: RuntimeFs = {
     await zenPromises.writeFile(path, data, typeof data === "string" ? "utf-8" : undefined);
   },
 
-  async readdir(path: string): Promise<string[]> {
+  readdir: (async (path: string, options?: ReaddirOptions): Promise<string[] | Dirent[]> => {
     await fsReady;
+    if (options?.withFileTypes) {
+      const entries = await zenPromises.readdir(path, { withFileTypes: true });
+      return entries.map((e) => ({
+        name: e.name,
+        isFile: () => e.isFile(),
+        isDirectory: () => e.isDirectory(),
+        isSymbolicLink: () => e.isSymbolicLink(),
+      }));
+    }
     return zenPromises.readdir(path) as Promise<string[]>;
-  },
+  }) as RuntimeFs["readdir"],
 
   async stat(path: string): Promise<FileStats> {
     await fsReady;

@@ -10,9 +10,15 @@
       "types": "./dist/index.d.ts",
       "natstack-panel": "./dist/panel/index.js",
       "default": "./dist/index.js"
+    },
+    "./typecheck": {
+      "types": "./dist/typecheck/index.d.ts",
+      "default": "./dist/typecheck/index.js"
     }
   },
   "scripts": {
+    "bundle-types": "npx tsx scripts/bundle-natstack-types.ts",
+    "prebuild": "pnpm run bundle-types",
     "build": "tsc --project tsconfig.build.json",
     "dev": "tsc --project tsconfig.build.json --watch"
   },
@@ -21,11 +27,11 @@
     "@zenfs/core": "^2.4.4",
     "@zenfs/dom": "^1.2.5",
     "buffer": "^6.0.3",
+    "typescript": "^5.9.3",
     "zod": "^3.24.0"
   },
   "devDependencies": {
-    "@natstack/git": "workspace:*",
-    "typescript": "^5.9.3"
+    "@natstack/git": "workspace:*"
   },
   "files": [
     "dist"

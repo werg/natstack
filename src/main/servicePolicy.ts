@@ -63,6 +63,10 @@ export const SERVICE_POLICIES: Record<string, ServicePolicy> = {
     allowed: ["panel", "worker"],
     description: "Panel lifecycle (createChild, close, setTitle)",
   },
+  typecheck: {
+    allowed: ["panel", "worker"],
+    description: "Type definition fetching for panels and workers",
+  },
 
   // ==========================================================================
   // Shared services (accessible to all)

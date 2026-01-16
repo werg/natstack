@@ -38,7 +38,7 @@ export const PANEL_CSP = [
   "style-src 'self' 'unsafe-inline' https:",
   "img-src 'self' natstack-panel: https: data: blob:",
   "font-src 'self' https: data:",
-  "connect-src 'self' ws://127.0.0.1:* wss://127.0.0.1:* http://127.0.0.1:* https://127.0.0.1:* ws: wss: https:",
+  "connect-src 'self' ws://127.0.0.1:* wss://127.0.0.1:* http://127.0.0.1:* https://127.0.0.1:* ws://localhost:* wss://localhost:* http://localhost:* https://localhost:* ws: wss: https:",
 ].join("; ");
 
 /**
