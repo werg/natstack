@@ -10,6 +10,10 @@ export interface ParticipantBadgeMenuProps {
   participant: Participant<ChatParticipantMetadata>;
   hasActiveMessage: boolean;
   onCallMethod: (providerId: string, methodName: string, args: unknown) => void;
+  /** Whether this agent has been granted tool access */
+  isGranted?: boolean;
+  /** Callback to revoke agent's tool access */
+  onRevokeAgent?: (agentId: string) => void;
 }
 
 /**
@@ -37,6 +41,8 @@ export function ParticipantBadgeMenu({
   participant,
   hasActiveMessage,
   onCallMethod,
+  isGranted,
+  onRevokeAgent,
 }: ParticipantBadgeMenuProps) {
   const [modalOpen, setModalOpen] = useState(false);
   const [selectedMethod, setSelectedMethod] = useState<MethodAdvertisement | null>(null);
@@ -74,6 +80,8 @@ export function ParticipantBadgeMenu({
 
   const color = getParticipantColor(participant.metadata.type);
   const hasMenuItems = menuMethods.length > 0;
+  const isAgent = participant.metadata.type !== "panel";
+  const showGrantStatus = isAgent && isGranted !== undefined;
 
   // Render active indicator (pulsing dot) for agents working without menu
   const activeIndicator = hasActiveMessage && !hasMenuItems && (
@@ -88,8 +96,8 @@ export function ParticipantBadgeMenu({
     />
   );
 
-  // Simple badge without dropdown when no menu items
-  if (!hasMenuItems) {
+  // Simple badge without dropdown when no menu items and no grant status to show
+  if (!hasMenuItems && !showGrantStatus) {
     return (
       <Badge color={color}>
         @{participant.metadata.handle}
@@ -98,7 +106,7 @@ export function ParticipantBadgeMenu({
     );
   }
 
-  // Badge with dropdown menu when menu items exist
+  // Badge with dropdown menu when menu items or grant status to show
   return (
     <>
       <DropdownMenu.Root>
@@ -122,6 +130,23 @@ export function ParticipantBadgeMenu({
         </DropdownMenu.Trigger>
 
         <DropdownMenu.Content>
+          {/* Show tool access status for agents (non-panel participants) */}
+          {showGrantStatus && (
+            <>
+              <DropdownMenu.Label>
+                Tool Access: {isGranted ? "Granted" : "Not granted"}
+              </DropdownMenu.Label>
+              {isGranted && onRevokeAgent && (
+                <DropdownMenu.Item
+                  color="red"
+                  onSelect={() => onRevokeAgent(participant.id)}
+                >
+                  Revoke Access
+                </DropdownMenu.Item>
+              )}
+              {menuMethods.length > 0 && <DropdownMenu.Separator />}
+            </>
+          )}
           {menuMethods.map((method) => (
             <DropdownMenu.Item
               key={method.name}

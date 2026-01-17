@@ -1,6 +1,14 @@
+/**
+ * Feedback Component Compilation
+ *
+ * Compiles TSX code into React components for custom feedback UIs.
+ * Uses @natstack/eval for transformation and execution.
+ */
+
 import { useCallback, useMemo, useRef } from "react";
 import type { ComponentType } from "react";
 import { transformCode, executeDefault, preloadRequires } from "@natstack/eval";
+import type { FeedbackComponentProps, FeedbackUiToolArgs, FeedbackUiToolResult } from "../types";
 
 /**
  * Execute and extract the default export as a React component.
@@ -8,45 +16,6 @@ import { transformCode, executeDefault, preloadRequires } from "@natstack/eval";
  */
 function executeComponent(code: string): ComponentType<FeedbackComponentProps> {
   return executeDefault<ComponentType<FeedbackComponentProps>>(code);
-}
-
-export interface FeedbackUiToolArgs {
-  /** TSX code defining a React component */
-  code: string;
-}
-
-export interface FeedbackUiToolResult {
-  success: boolean;
-  /** The compiled React component (if successful) */
-  Component?: ComponentType<FeedbackComponentProps>;
-  /** Cache key for cleanup (if successful) */
-  cacheKey?: string;
-  /** Error message (if failed) */
-  error?: string;
-}
-
-/**
- * Result returned from a feedback component.
- * Discriminated union with three cases:
- * - submit: user submitted data successfully
- * - cancel: user cancelled (empty case, no data)
- * - error: an error occurred (includes message)
- */
-export type FeedbackResult =
-  | { type: "submit"; value: unknown }
-  | { type: "cancel" }
-  | { type: "error"; message: string };
-
-/**
- * Props passed to the feedback component.
- */
-export interface FeedbackComponentProps {
-  /** Call when user submits data successfully */
-  onSubmit: (value: unknown) => void;
-  /** Call when user cancels (no data) */
-  onCancel: () => void;
-  /** Call when an error occurs */
-  onError: (message: string) => void;
 }
 
 /**

@@ -124,8 +124,27 @@ const AGENT_TYPES: AgentTypeAdvertisement[] = [
     description: "Claude-based coding agent with tool access for complex development tasks.",
     providesMethods: [],
     requiresMethods: [
+      // UI feedback methods
       { name: "feedback_form", description: "Display schema-based forms for user input", required: true },
       { name: "feedback_custom", description: "Display custom TSX UI for complex interactions", required: true },
+      // File operations (for restricted environments)
+      { name: "file_read", description: "Read file contents", required: false },
+      { name: "file_write", description: "Write file contents", required: false },
+      { name: "file_edit", description: "Edit file with string replacement", required: false },
+      { name: "rm", description: "Delete files or directories", required: false },
+      // Search tools
+      { name: "glob", description: "Find files by glob pattern", required: false },
+      { name: "grep", description: "Search file contents", required: false },
+      // Directory tools
+      { name: "tree", description: "Show directory tree", required: false },
+      { name: "list_directory", description: "List directory contents", required: false },
+      // Git tools (essential when no bash)
+      { name: "git_status", description: "Git repository status", required: false },
+      { name: "git_diff", description: "Show file changes", required: false },
+      { name: "git_log", description: "Commit history", required: false },
+      { name: "git_add", description: "Stage files", required: false },
+      { name: "git_commit", description: "Create commits", required: false },
+      { name: "git_checkout", description: "Switch branches or restore files", required: false },
     ],
     parameters: CLAUDE_CODE_PARAMETERS,
     tags: ["chat", "coding", "tools", "claude"],
@@ -340,7 +359,7 @@ export default function AgentPreferences() {
                 AGENT_CONFIG: JSON.stringify(agentConfig),
               };
 
-              const handle = await createChild(workerSource, { name: workerName, env });
+              const handle = await createChild(workerSource, { name: workerName, env, ephemeral: true });
 
               const activeAgent: ActiveAgent = {
                 id: handle.id,

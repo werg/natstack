@@ -10,6 +10,7 @@ import type {
   AgenticClient,
   AgenticParticipantMetadata,
   AggregatedEvent,
+  AggregatedMessage,
   ConnectOptions,
   ConversationMessage,
   DiscoveredMethod,
@@ -17,7 +18,6 @@ import type {
   EventStreamItem,
   EventStreamOptions,
   IncomingEvent,
-  IncomingNewMessage,
   IncomingPresenceEvent,
   IncomingMethodCall,
   IncomingMethodResult,
@@ -33,6 +33,8 @@ import type {
   JsonSchema,
   MissedContext,
   FormatOptions,
+  ToolGroup,
+  ToolRoleConflict,
 } from "./types.js";
 import { AgenticError, ValidationError } from "./types.js";
 import { aggregateReplayEvents, formatMissedContext } from "./missed-context.js";
@@ -46,7 +48,11 @@ import {
   MethodCancelSchema,
   MethodResultSchema,
   UpdateMessageSchema,
+  ToolRoleRequestSchema,
+  ToolRoleResponseSchema,
+  ToolRoleHandoffSchema,
 } from "./protocol.js";
+import { ALL_TOOL_GROUPS } from "./tool-schemas.js";
 
 const INTERNAL_METADATA_KEY = "_agentic";
 
@@ -58,6 +64,29 @@ const AgenticMetadataSchema = z.object({
   name: z.string().min(1, "name is required"),
   type: z.string().min(1, "type is required"),
   handle: z.string().min(1, "handle is required"),
+}).passthrough();
+
+/**
+ * Schema for validating tool role declarations in participant metadata.
+ * Used during conflict detection to safely extract toolRoles.
+ */
+const ToolRoleDeclarationSchema = z.object({
+  providing: z.boolean(),
+  priority: z.number().optional(),
+});
+
+const ToolRolesSchema = z.record(
+  z.enum(["file-ops", "git-ops"]),
+  ToolRoleDeclarationSchema
+).optional();
+
+/**
+ * Schema for extracting conflict-relevant fields from participant metadata.
+ * Uses safeParse to gracefully handle malformed metadata.
+ */
+const ConflictMetadataSchema = z.object({
+  name: z.string().optional(),
+  toolRoles: ToolRolesSchema,
 }).passthrough();
 
 type AnyRecord = Record<string, unknown>;
@@ -220,20 +249,131 @@ function toAgenticErrorFromMethodResult(content: unknown): AgenticError {
   return new AgenticError("method execution failed", "execution-error", content);
 }
 
+// ============================================================================
+// Tool Role Conflict Detection
+// ============================================================================
+
+/**
+ * Detect tool role conflicts in the roster.
+ * A conflict exists when multiple participants claim to provide the same tool group.
+ */
+function detectToolRoleConflicts<T extends AgenticParticipantMetadata>(
+  roster: Record<string, { metadata: T }>,
+  participantFirstSeen: Map<string, number>
+): ToolRoleConflict[] {
+  const conflicts: ToolRoleConflict[] = [];
+
+  for (const group of ALL_TOOL_GROUPS) {
+    // Find all participants claiming this group
+    const providers: Array<{
+      id: string;
+      name: string;
+      joinedAt: number;
+      priority?: number;
+    }> = [];
+
+    for (const [id, participant] of Object.entries(roster)) {
+      // Use Zod safeParse to gracefully handle malformed metadata
+      const parsed = ConflictMetadataSchema.safeParse(participant.metadata);
+      if (!parsed.success) continue; // Skip participants with invalid metadata
+
+      const meta = parsed.data;
+      const roleDecl = meta.toolRoles?.[group];
+      if (roleDecl?.providing) {
+        providers.push({
+          id,
+          name: meta.name || id,
+          joinedAt: participantFirstSeen.get(id) ?? Date.now(),
+          priority: roleDecl.priority,
+        });
+      }
+    }
+
+    // Only a conflict if more than one provider
+    if (providers.length > 1) {
+      const resolvedProvider = resolveToolRoleConflict(providers);
+      conflicts.push({
+        group,
+        providers,
+        resolvedProvider,
+      });
+    }
+  }
+
+  return conflicts;
+}
+
+/**
+ * Resolve a tool role conflict by selecting the winning provider.
+ * Priority: lower priority wins → earlier joinedAt wins → lexicographic id wins
+ */
+function resolveToolRoleConflict(
+  providers: Array<{ id: string; joinedAt: number; priority?: number }>
+): string {
+  if (providers.length === 0) {
+    throw new Error("resolveToolRoleConflict called with empty providers array");
+  }
+  const sorted = [...providers].sort((a, b) => {
+    // Priority: lower wins (undefined treated as Infinity)
+    const aPriority = a.priority ?? Infinity;
+    const bPriority = b.priority ?? Infinity;
+    if (aPriority !== bPriority) return aPriority - bPriority;
+    // Join time: earlier wins
+    if (a.joinedAt !== b.joinedAt) return a.joinedAt - b.joinedAt;
+    // ID: lexicographic tiebreaker
+    return a.id.localeCompare(b.id);
+  });
+  return sorted[0]!.id;
+}
+
 export interface AgenticClientImpl<T extends AgenticParticipantMetadata = AgenticParticipantMetadata>
   extends AgenticClient<T> {}
+
+// ============================================================================
+// Session Initialization Helper
+// ============================================================================
+
+interface SessionInitResult {
+  sessionDb: SessionDb | undefined;
+  sessionRow: SessionRow | undefined;
+}
+
+/**
+ * Initialize session database after connection.
+ * Uses the contextId from the server (authoritative) to create/load session.
+ */
+async function initializeSessionDb(
+  contextId: string | undefined,
+  channel: string,
+  handle: string
+): Promise<SessionInitResult> {
+  if (!contextId) {
+    return { sessionDb: undefined, sessionRow: undefined };
+  }
+
+  try {
+    const { SessionDb } = await import("./session-db.js");
+    const sessionDb = new SessionDb(contextId, channel, handle);
+    await sessionDb.initialize();
+    const sessionRow = await sessionDb.getOrCreateSession();
+    return { sessionDb, sessionRow };
+  } catch (err) {
+    console.warn("[AgenticClient] Session DB init failed:", err);
+    return { sessionDb: undefined, sessionRow: undefined };
+  }
+}
 
 /**
  * Connect to an agentic messaging channel.
  *
  * This is the main entry point for the agentic messaging system. It establishes
- * a WebSocket connection to the pubsub server, registers tools, and sets up
- * session persistence if a workspace ID is provided.
+ * a WebSocket connection to the pubsub server, registers methods, and sets up
+ * session persistence using the server's contextId.
  *
  * The returned promise resolves after:
  * 1. WebSocket connection is established
  * 2. Initial replay is complete (messages collected or streamed based on replayMode)
- * 3. Session state is loaded (if workspaceId provided)
+ * 3. Session state is loaded (using server's contextId)
  *
  * @param options - Connection configuration
  * @param options.serverUrl - WebSocket server URL (e.g., "ws://127.0.0.1:49452")
@@ -243,7 +383,7 @@ export interface AgenticClientImpl<T extends AgenticParticipantMetadata = Agenti
  * @param options.name - Display name for this participant
  * @param options.type - Participant type (e.g., "panel", "worker", "agent", "claude-code")
  * @param options.extraMetadata - Additional metadata to include in presence
- * @param options.workspaceId - Workspace ID for session persistence (optional)
+ * @param options.contextId - Context ID for channel creators (joiners get it from server)
  * @param options.reconnect - Auto-reconnect on disconnect (boolean or ReconnectConfig)
  * @param options.replayMode - How to handle replay: "collect" (aggregate), "stream" (emit), or "skip"
  * @param options.methods - Methods this participant provides (auto-executed on method-call)
@@ -276,7 +416,7 @@ export interface AgenticClientImpl<T extends AgenticParticipantMetadata = Agenti
  *   handle: "assistant",
  *   name: "AI Assistant",
  *   type: "worker",
- *   workspaceId: process.env.WORKSPACE_ID,
+ *   contextId: "my-workspace-id",
  *   reconnect: true,
  *   methods: {
  *     search: {
@@ -299,7 +439,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     name,
     type,
     extraMetadata,
-    workspaceId,
+    contextId: providedContextId,
     reconnect,
     replayMode = "collect",
     methods: initialMethods,
@@ -321,35 +461,18 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     throw new AgenticError(`Invalid metadata: ${errors}`, "validation-error", metadataValidation.error.errors);
   }
 
-  let sessionDb: SessionDb | undefined;
-  let sessionRow: SessionRow | undefined;
-
-  if (workspaceId) {
-    try {
-      // Lazy import SessionDb to reduce bundle size when session persistence is not used
-      const { SessionDb } = await import("./session-db.js");
-      sessionDb = new SessionDb(workspaceId, channel, handle);
-      await sessionDb.initialize();
-      sessionRow = await sessionDb.getOrCreateSession();
-    } catch (err) {
-      console.warn("[AgenticClient] Session DB unavailable:", err);
-      sessionDb = undefined;
-      sessionRow = undefined;
-    }
-  }
+  // Session DB is initialized AFTER connection using server's contextId
+  // This provides a single code path for both channel creators and joiners
+  // These are assigned after connection, so we can't use const
+  let sessionDb: SessionDb | undefined; // eslint-disable-line prefer-const
+  let sessionRow: SessionRow | undefined; // eslint-disable-line prefer-const
 
   // Determine replay starting point:
   // - undefined: No replay (skip mode) - server sends no historical messages
-  // - checkpoint: Resume from last committed position (session resumption)
-  // - 0: Replay everything from beginning (new session or no checkpoint)
-  let sinceId: number | undefined;
-  if (replayMode === "skip") {
-    sinceId = undefined;
-  } else if (sessionRow?.checkpointPubsubId !== undefined) {
-    sinceId = sessionRow.checkpointPubsubId;
-  } else {
-    sinceId = 0;
-  }
+  // - 0: Replay everything from beginning
+  // Note: Checkpoint-based resumption happens on RECONNECTION (handled by pubsub layer),
+  // not on initial connection. Initial connection always replays from beginning.
+  const sinceId = replayMode === "skip" ? undefined : 0;
 
   const instanceId = randomId();
 
@@ -359,6 +482,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
   const errorHandlers = new Set<(error: Error) => void>();
   const eventsFanout = createFanout<IncomingEvent>();
   const methodCallHandlers = new Set<(call: IncomingMethodCall) => void>();
+  const toolRoleConflictHandlers = new Set<(conflicts: ToolRoleConflict[]) => void>();
 
   const replayEvents: IncomingEvent[] = [];
   let missedMessages: AggregatedEvent[] = [];
@@ -380,6 +504,10 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
 
   function emitMethodCall(call: IncomingMethodCall): void {
     for (const handler of methodCallHandlers) handler(call);
+  }
+
+  function emitToolRoleConflicts(conflicts: ToolRoleConflict[]): void {
+    for (const handler of toolRoleConflictHandlers) handler(conflicts);
   }
 
   /**
@@ -429,11 +557,21 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     };
   }
 
+  // Build initial metadata without methods (methods are advertised via updateMetadata
+  // after connection is established, to allow session state to inform method registration)
+  function buildInitialMetadata(): AnyRecord {
+    return {
+      ...currentMetadata,
+      [INTERNAL_METADATA_KEY]: { instanceId, v: 1 },
+    };
+  }
+
   const pubsub = connectPubSub<T>(serverUrl, token, {
     channel,
+    contextId: providedContextId,
     sinceId,
     reconnect,
-    metadata: buildMetadataWithMethods() as T,
+    metadata: buildInitialMetadata() as T,
     clientId,
     skipOwnMessages,
   });
@@ -445,8 +583,17 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
   // Track if we've detected a handle conflict (to close connection)
   let handleConflictError: AgenticError | null = null;
 
-  // Track when we first saw each participant (for conflict resolution)
-  // Earlier timestamp = older participant = wins conflicts
+  // Track when we first saw each participant (for conflict resolution).
+  // Earlier timestamp = older participant = wins conflicts.
+  //
+  // LIMITATION: These are client-side observation times, not server join times.
+  // Different clients may observe participants at slightly different times due to
+  // network delays. This means conflict resolution may vary between clients in
+  // rare edge cases. For deterministic resolution, we use lexicographic ID as the
+  // final tiebreaker when timestamps match.
+  //
+  // A future improvement could capture the `ts` from presence "join" events
+  // during replay, which would provide server-authoritative timestamps.
   const participantFirstSeen = new Map<string, number>();
 
   /**
@@ -546,6 +693,15 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
           // Still emit to targeted handlers for replay, just don't execute
           emitMethodCall(call);
         }
+      }
+    }
+
+    // Check for tool role conflicts after initial replay is complete
+    // This avoids false conflicts during replay as participants are being reconstructed
+    if (initialReplayComplete) {
+      const conflicts = detectToolRoleConflicts(roster.participants, participantFirstSeen);
+      if (conflicts.length > 0) {
+        emitToolRoleConflicts(conflicts);
       }
     }
   });
@@ -945,6 +1101,55 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       return { ...presenceEvent, type: "presence" };
     }
 
+    // Tool Role Negotiation Messages
+    if (type === "tool-role-request") {
+      const parsed = validateReceive(ToolRoleRequestSchema, payload, "ToolRoleRequest");
+      if (!parsed) return null;
+      return {
+        type: "tool-role-request",
+        kind,
+        senderId,
+        ts,
+        pubsubId,
+        senderMetadata: normalizedSender,
+        group: parsed.group,
+        requesterId: parsed.requesterId,
+        requesterType: parsed.requesterType,
+      };
+    }
+
+    if (type === "tool-role-response") {
+      const parsed = validateReceive(ToolRoleResponseSchema, payload, "ToolRoleResponse");
+      if (!parsed) return null;
+      return {
+        type: "tool-role-response",
+        kind,
+        senderId,
+        ts,
+        pubsubId,
+        senderMetadata: normalizedSender,
+        group: parsed.group,
+        accepted: parsed.accepted,
+        handoffTo: parsed.handoffTo,
+      };
+    }
+
+    if (type === "tool-role-handoff") {
+      const parsed = validateReceive(ToolRoleHandoffSchema, payload, "ToolRoleHandoff");
+      if (!parsed) return null;
+      return {
+        type: "tool-role-handoff",
+        kind,
+        senderId,
+        ts,
+        pubsubId,
+        senderMetadata: normalizedSender,
+        group: parsed.group,
+        from: parsed.from,
+        to: parsed.to,
+      };
+    }
+
     return null;
   }
 
@@ -974,11 +1179,9 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
   });
 
   const unsubDisconnect = pubsub.onDisconnect(() => {
-    if (workspaceId) {
+    if (sessionDb) {
       status = "interrupted";
-      if (sessionDb) {
-        void sessionDb.markInterrupted();
-      }
+      void sessionDb.markInterrupted();
     }
     if (!initialReplayComplete) {
       readyReject(new AgenticError("connection closed", "connection-error"));
@@ -1348,8 +1551,8 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
   }
 
   function requireSessionEnabled(method: string): void {
-    if (!workspaceId) {
-      throw new AgenticError(`${method} requires workspaceId`, "validation-error");
+    if (!sessionDb) {
+      throw new AgenticError(`${method} requires session (contextId not available)`, "validation-error");
     }
   }
 
@@ -1394,22 +1597,18 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     sdkSessionId = undefined;
   }
 
-  async function storeMessage(role: "user" | "assistant", content: string): Promise<void> {
-    requireSessionEnabled("storeMessage");
-    const db = getSessionDbOrThrow("storeMessage");
-    await db.storeMessage(role, content);
-  }
-
-  async function getHistory(limit?: number): Promise<ConversationMessage[]> {
-    requireSessionEnabled("getHistory");
-    const db = getSessionDbOrThrow("getHistory");
-    return await db.getHistory(limit);
-  }
-
-  async function clearHistory(): Promise<void> {
-    requireSessionEnabled("clearHistory");
-    const db = getSessionDbOrThrow("clearHistory");
-    await db.clearHistory();
+  /**
+   * Get conversation history derived from pubsub replay.
+   * Messages from panel participants are treated as "user" role,
+   * messages from other participants (workers/agents) are "assistant" role.
+   */
+  function getConversationHistory(): ConversationMessage[] {
+    return missedMessages
+      .filter((e): e is AggregatedMessage => e.type === "message" && !e.incomplete)
+      .map((e) => ({
+        role: (e.senderType === "panel" ? "user" : "assistant") as "user" | "assistant",
+        content: e.content,
+      }));
   }
 
   async function updateSettings(settings: Record<string, unknown>): Promise<void> {
@@ -1441,10 +1640,33 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     await readyPromise;
   } catch (err) {
     pubsub.close();
-    if (sessionDb) {
-      await sessionDb.close();
-    }
     throw err;
+  }
+
+  // Initialize session DB after connection using server's authoritative contextId
+  // This is the single code path for both channel creators and joiners
+  const sessionInit = await initializeSessionDb(pubsub.contextId, channel, handle);
+  sessionDb = sessionInit.sessionDb;
+  sessionRow = sessionInit.sessionRow;
+
+  // Restore session state if available
+  if (sessionRow) {
+    checkpoint = sessionRow.checkpointPubsubId;
+    sdkSessionId = sessionRow.sdkSessionId;
+    if (status === undefined) {
+      status = sessionRow.status;
+    }
+  }
+
+  // After connection is established, advertise methods via metadata update
+  // The pubsub layer sends basic metadata on connect; we update with full method schemas here
+  if (Object.keys(methods).length > 0) {
+    try {
+      await pubsub.updateMetadata(buildMetadataWithMethods() as T);
+    } catch (err) {
+      // Log but don't fail - methods can be updated later if needed
+      console.warn("[AgenticClient] Failed to advertise methods:", err);
+    }
   }
 
   return {
@@ -1480,9 +1702,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     update,
     complete,
     error,
-    storeMessage,
-    getHistory,
-    clearHistory,
+    getConversationHistory,
     updateSettings,
     getSettings,
     discoverMethodDefs,
@@ -1494,6 +1714,32 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     resolveHandles: resolveHandlesImpl,
     getParticipantByHandle: getParticipantByHandleImpl,
     onRoster: pubsub.onRoster,
+    // Tool Role Negotiation
+    onToolRoleConflict: (handler) => {
+      toolRoleConflictHandlers.add(handler);
+      return () => toolRoleConflictHandlers.delete(handler);
+    },
+    requestToolRole: async (group: ToolGroup) => {
+      await pubsub.publish("tool-role-request", {
+        group,
+        requesterId: selfId ?? instanceId,
+        requesterType: currentMetadata["type"] ?? "unknown",
+      });
+    },
+    respondToolRole: async (group: ToolGroup, accepted: boolean, handoffTo?: string) => {
+      await pubsub.publish("tool-role-response", {
+        group,
+        accepted,
+        handoffTo,
+      });
+    },
+    announceToolRoleHandoff: async (group: ToolGroup, from: string, to: string) => {
+      await pubsub.publish("tool-role-handoff", {
+        group,
+        from,
+        to,
+      });
+    },
     get connected() {
       return pubsub.connected;
     },
@@ -1536,6 +1782,20 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
   };
 }
 
+/** Tool definition returned by createToolsForAgentSDK */
+export interface AgentSDKToolDefinition {
+  /** Prefixed tool name for SDK consumption (e.g., "pubsub_panelId_file_read") */
+  name: string;
+  /** Original method name without prefix (e.g., "file_read") */
+  originalMethodName: string;
+  /** Provider ID that registered this method */
+  providerId: string;
+  /** Tool description */
+  description?: string;
+  /** JSON Schema for tool parameters */
+  parameters: JsonSchema;
+}
+
 /**
  * Create tool definitions suitable for agent SDK integration.
  * Produces stable, conflict-free tool names and a single execute() dispatcher.
@@ -1549,7 +1809,7 @@ export function createToolsForAgentSDK(
     namePrefix?: string;
   }
 ): {
-  definitions: Array<{ name: string; description?: string; parameters: JsonSchema }>;
+  definitions: AgentSDKToolDefinition[];
   execute: (name: string, args: unknown, signal?: AbortSignal) => Promise<unknown>;
 } {
   const methods = client.discoverMethodDefs();
@@ -1563,6 +1823,8 @@ export function createToolsForAgentSDK(
     nameMap.set(name, method);
     return {
       name,
+      originalMethodName: method.name,
+      providerId: method.providerId,
       description: method.description ? `[${method.providerName}] ${method.description}` : undefined,
       parameters: method.parameters,
     };

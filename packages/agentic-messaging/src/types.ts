@@ -12,6 +12,55 @@ import type { z } from "zod";
 export type JsonSchema = Record<string, unknown>;
 
 /**
+ * Standard participant type constants.
+ * Use these instead of magic strings for participant type checks.
+ */
+export const PARTICIPANT_TYPES = {
+  PANEL: "panel",
+  WORKER: "worker",
+  CLAUDE_CODE: "claude-code",
+  CODEX: "codex",
+  AI_RESPONDER: "ai-responder",
+} as const;
+
+export type ParticipantType = typeof PARTICIPANT_TYPES[keyof typeof PARTICIPANT_TYPES];
+
+/**
+ * Tool groups for conflict detection.
+ * Each group is atomic - providers claim entire groups, not individual tools.
+ */
+export type ToolGroup = "file-ops" | "git-ops";
+
+/**
+ * Tool role declaration for a participant.
+ * Indicates whether this participant provides tools for a group.
+ */
+export interface ToolRoleDeclaration {
+  /** Whether this participant is providing tools for this group */
+  providing: boolean;
+  /** Priority for conflict resolution (lower = higher priority, default: Infinity) */
+  priority?: number;
+}
+
+/**
+ * Tool role conflict information.
+ * Emitted when multiple participants claim the same tool group.
+ */
+export interface ToolRoleConflict {
+  /** The tool group with a conflict */
+  group: ToolGroup;
+  /** All participants claiming this group */
+  providers: Array<{
+    id: string;
+    name: string;
+    joinedAt: number;
+    priority?: number;
+  }>;
+  /** The resolved provider (based on priority, joinedAt, then id) */
+  resolvedProvider: string;
+}
+
+/**
  * Participant metadata for agentic messaging.
  * Extends base pubsub metadata with name, type, handle, and optional method advertisements.
  */
@@ -27,6 +76,8 @@ export interface AgenticParticipantMetadata extends ParticipantMetadata {
   handle: string;
   /** Methods this participant provides (auto-populated from ConnectOptions.methods) */
   methods?: MethodAdvertisement[];
+  /** Tool roles this participant provides (for conflict detection) */
+  toolRoles?: Partial<Record<ToolGroup, ToolRoleDeclaration>>;
 }
 
 /**
@@ -140,7 +191,10 @@ export type IncomingEvent =
   | IncomingMethodCallEvent
   | IncomingMethodResultEvent
   | IncomingPresenceEventWithType
-  | IncomingExecutionPauseEvent;
+  | IncomingExecutionPauseEvent
+  | IncomingToolRoleRequestEvent
+  | IncomingToolRoleResponseEvent
+  | IncomingToolRoleHandoffEvent;
 
 /**
  * Method call event with discriminant type field.
@@ -161,6 +215,72 @@ export interface IncomingMethodResultEvent extends IncomingMethodResult {
  */
 export interface IncomingPresenceEventWithType extends IncomingPresenceEvent {
   type: "presence";
+}
+
+/**
+ * Tool role request event - participant wants to take over a tool group.
+ */
+export interface IncomingToolRoleRequestEvent {
+  type: "tool-role-request";
+  kind: "replay" | "persisted" | "ephemeral";
+  senderId: string;
+  ts: number;
+  pubsubId?: number;
+  senderMetadata?: {
+    name?: string;
+    type?: string;
+    handle?: string;
+  };
+  /** Tool group being requested */
+  group: ToolGroup;
+  /** ID of the requester */
+  requesterId: string;
+  /** Type of the requester (used for auto-accept logic) */
+  requesterType: string;
+}
+
+/**
+ * Tool role response event - current provider responds to request.
+ */
+export interface IncomingToolRoleResponseEvent {
+  type: "tool-role-response";
+  kind: "replay" | "persisted" | "ephemeral";
+  senderId: string;
+  ts: number;
+  pubsubId?: number;
+  senderMetadata?: {
+    name?: string;
+    type?: string;
+    handle?: string;
+  };
+  /** Tool group being responded to */
+  group: ToolGroup;
+  /** Whether the handoff was accepted */
+  accepted: boolean;
+  /** ID of the new provider (if accepted) */
+  handoffTo?: string;
+}
+
+/**
+ * Tool role handoff event - announces completion of handoff.
+ */
+export interface IncomingToolRoleHandoffEvent {
+  type: "tool-role-handoff";
+  kind: "replay" | "persisted" | "ephemeral";
+  senderId: string;
+  ts: number;
+  pubsubId?: number;
+  senderMetadata?: {
+    name?: string;
+    type?: string;
+    handle?: string;
+  };
+  /** Tool group being handed off */
+  group: ToolGroup;
+  /** Previous provider ID */
+  from: string;
+  /** New provider ID */
+  to: string;
 }
 
 /**
@@ -551,8 +671,8 @@ export interface ConnectOptions<T extends AgenticParticipantMetadata = AgenticPa
   /** Additional metadata (optional) */
   extraMetadata?: Record<string, unknown>;
 
-  /** Workspace ID for session persistence (optional) */
-  workspaceId?: string;
+  /** Context ID for session persistence (for channel creators; joiners get it from server) */
+  contextId?: string;
 
   /** Methods this participant provides. Automatically executed when called. */
   methods?: Record<string, MethodDefinition>;
@@ -645,10 +765,8 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
 
   error(id: string, error: string, code?: string): Promise<number | undefined>;
 
-  // === Manual History ===
-  storeMessage(role: "user" | "assistant", content: string): Promise<void>;
-  getHistory(limit?: number): Promise<ConversationMessage[]>;
-  clearHistory(): Promise<void>;
+  // === Conversation History (derived from pubsub replay) ===
+  getConversationHistory(): ConversationMessage[];
 
   // === Settings Persistence ===
   updateSettings(settings: Record<string, unknown>): Promise<void>;
@@ -669,6 +787,16 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   resolveHandles(handles: string[]): string[];
   getParticipantByHandle(handle: string): string | undefined;
   onRoster(handler: (roster: RosterUpdate<T>) => void): () => void;
+
+  // === Tool Role Negotiation ===
+  /** Subscribe to tool role conflict events */
+  onToolRoleConflict(handler: (conflicts: ToolRoleConflict[]) => void): () => void;
+  /** Request to take over a tool group from current provider */
+  requestToolRole(group: ToolGroup): Promise<void>;
+  /** Respond to a tool role request (accept/reject handoff) */
+  respondToolRole(group: ToolGroup, accepted: boolean, handoffTo?: string): Promise<void>;
+  /** Announce completion of a tool role handoff */
+  announceToolRoleHandoff(group: ToolGroup, from: string, to: string): Promise<void>;
 
   // === Lifecycle ===
   readonly connected: boolean;

@@ -17,9 +17,14 @@ import {
   createInterruptHandler,
   createPauseMethodDefinition,
   createRichTextChatSystemPrompt,
+  createRestrictedModeSystemPrompt,
   DEFAULT_MISSED_CONTEXT_MAX_CHARS,
   formatMissedContext,
+  showPermissionPrompt,
+  validateRestrictedMode,
+  getCanonicalToolName,
   type AgenticClient,
+  type AgentSDKToolDefinition,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
 } from "@natstack/agentic-messaging";
@@ -59,6 +64,8 @@ interface ClaudeCodeWorkerSettings {
   // New conditional permission fields
   executionMode?: "plan" | "edit";
   autonomyLevel?: number; // 0=Ask, 1=Auto-edits, 2=Full Auto
+  // Restricted mode - use pubsub tools only (no bash)
+  restrictedMode?: boolean;
 }
 
 /**
@@ -87,75 +94,6 @@ let currentSettings: ClaudeCodeWorkerSettings = {};
 /** Reference to the current query instance for model discovery */
 let activeQueryInstance: Query | null = null;
 
-/**
- * Show a permission prompt using feedback_form with buttonGroup
- * This is an alternative to the TSX-based feedback_custom approach
- */
-async function showPermissionPrompt(
-  client: AgenticClient<ChatParticipantMetadata>,
-  panelId: string,
-  toolName: string,
-  input: Record<string, unknown>,
-  options?: { decisionReason?: string }
-): Promise<{ allow: boolean }> {
-  const fields: Array<{
-    key: string;
-    label: string;
-    type: "readonly" | "code" | "buttonGroup";
-    default?: string;
-    language?: string;
-    maxHeight?: number;
-    buttonStyle?: "outline" | "solid" | "soft";
-    buttons?: Array<{ value: string; label: string; color?: "gray" | "green" | "red" | "amber" }>;
-    submitOnSelect?: boolean;
-  }> = [];
-
-  // Add reason field if provided
-  if (options?.decisionReason) {
-    fields.push({
-      key: "reason",
-      label: "Reason",
-      type: "readonly" as const,
-      default: options.decisionReason,
-    });
-  }
-
-  // Add input preview
-  fields.push({
-    key: "input",
-    label: "Input",
-    type: "code" as const,
-    language: "json",
-    maxHeight: 150,
-    default: JSON.stringify(input, null, 2),
-  });
-
-  // Add decision buttons
-  fields.push({
-    key: "decision",
-    label: "Decision",
-    type: "buttonGroup" as const,
-    submitOnSelect: true,
-    buttons: [
-      { value: "deny", label: "Deny", color: "gray" as const },
-      { value: "allow", label: "Allow", color: "green" as const },
-    ],
-  });
-
-  const handle = client.callMethod(panelId, "feedback_form", {
-    title: `Allow ${toolName}?`,
-    severity: "warning",
-    hideSubmit: true, // buttonGroup handles submission
-    fields,
-  });
-
-  const result = await handle.result;
-  const feedbackResult = result.content as { type: string; value?: Record<string, unknown>; message?: string };
-
-  if (feedbackResult.type === "cancel") return { allow: false };
-  return { allow: feedbackResult.value?.decision === "allow" };
-}
-
 async function main() {
   if (!pubsubConfig) {
     console.error("No pubsub config available");
@@ -174,9 +112,6 @@ async function main() {
   // Get handle from config (set by broker from invite), fallback to default
   const handle = typeof agentConfig.handle === "string" ? agentConfig.handle : "claude";
 
-  // Get workspace ID from environment
-  const workspaceId = process.env["NATSTACK_WORKSPACE_ID"];
-
   log("Starting Claude Code responder...");
 
   // Find the claude executable path for the SDK
@@ -193,6 +128,7 @@ async function main() {
   log(`Handle: @${handle}`);
 
   // Connect to agentic messaging channel
+  // contextId is obtained automatically from the server's ready message
   const client = await connect<ChatParticipantMetadata>({
     serverUrl: pubsubConfig.serverUrl,
     token: pubsubConfig.token,
@@ -200,7 +136,6 @@ async function main() {
     handle,
     name: "Claude Code",
     type: "claude-code",
-    workspaceId,
     reconnect: true,
     methods: {
       pause: createPauseMethodDefinition(async () => {
@@ -298,6 +233,7 @@ async function main() {
   if (typeof agentConfig.maxThinkingTokens === "number") initConfigSettings.maxThinkingTokens = agentConfig.maxThinkingTokens;
   if (typeof agentConfig.executionMode === "string") initConfigSettings.executionMode = agentConfig.executionMode as "plan" | "edit";
   if (typeof agentConfig.autonomyLevel === "number") initConfigSettings.autonomyLevel = agentConfig.autonomyLevel;
+  if (typeof agentConfig.restrictedMode === "boolean") initConfigSettings.restrictedMode = agentConfig.restrictedMode;
   Object.assign(currentSettings, initConfigSettings);
   if (Object.keys(initConfigSettings).length > 0) {
     log(`Applied init config: ${JSON.stringify(initConfigSettings)}`);
@@ -321,6 +257,11 @@ async function main() {
 
   if (Object.keys(currentSettings).length > 0) {
     log(`Final settings: ${JSON.stringify(currentSettings)}`);
+  }
+
+  // Validate required methods in restricted mode
+  if (currentSettings.restrictedMode) {
+    await validateRestrictedMode(client, log);
   }
 
   let lastMissedPubsubId = 0;
@@ -367,15 +308,12 @@ async function handleUserMessage(
 ) {
   log(`Received message: ${incoming.content}`);
 
-  // Create tools from other pubsub participants
-  const { definitions: toolDefs, execute: executeTool } = createToolsForAgentSDK(client, {
-    namePrefix: "pubsub",
-  });
-
-  log(`Discovered ${toolDefs.length} tools from pubsub participants`);
+  // Determine if we're in restricted mode
+  const isRestrictedMode = currentSettings.restrictedMode === true;
 
   // Start a new message (empty, will stream content via updates)
-  const { messageId: responseId } = await client.send("", { replyTo: incoming.id });
+  // Using let because responseId may change if we create new messages for multi-turn conversations
+  let { messageId: responseId } = await client.send("", { replyTo: incoming.id });
 
   try {
     // Keep reference to the query for interrupt handling via RPC pause mechanism
@@ -395,31 +333,54 @@ async function handleUserMessage(
     // Start monitoring for pause events in background
     void interruptHandler.monitor();
 
-    // Convert pubsub tools to Claude Agent SDK MCP tools
-    const mcpTools = toolDefs.map((toolDef) =>
-      tool(
-        toolDef.name,
-        toolDef.description ?? "",
-        jsonSchemaToZodRawShape(toolDef.parameters),
-        async (args: unknown) => {
-          log(`Tool call: ${toolDef.name} args=${formatArgsForLog(args)}`);
-          const result = await executeTool(toolDef.name, args);
-          return {
-            content: [{ type: "text" as const, text: JSON.stringify(result) }],
-          };
-        }
-      )
-    );
+    // In restricted mode: Create tools from pubsub participants and expose via MCP
+    // In unrestricted mode: Use SDK's native tools (no pubsub tools)
+    let pubsubServer: ReturnType<typeof createSdkMcpServer> | undefined;
+    let allowedTools: string[] = [];
 
-    // Create MCP server with only pubsub tools (NOT pause - that's RPC only)
-    const pubsubServer = createSdkMcpServer({
-      name: "pubsub",
-      version: "1.0.0",
-      tools: mcpTools,
-    });
+    if (isRestrictedMode) {
+      // Create tools from other pubsub participants
+      const { definitions: toolDefs, execute: executeTool } = createToolsForAgentSDK(client, {
+        namePrefix: "pubsub",
+      });
 
-    // Determine allowed tools
-    const allowedTools = mcpTools.map((t) => `mcp__pubsub__${t.name}`);
+      log(`Discovered ${toolDefs.length} tools from pubsub participants (restricted mode)`);
+
+      // Convert pubsub tools to Claude Agent SDK MCP tools
+      // Use canonical names (Read, Write, Edit, etc.) for LLM familiarity
+      const mcpServerName = "workspace";
+
+      const mcpTools = toolDefs.map((toolDef: AgentSDKToolDefinition) => {
+        // Use canonical name for display (e.g., file_read -> Read)
+        const displayName = getCanonicalToolName(toolDef.originalMethodName);
+
+        return tool(
+          displayName,
+          toolDef.description ?? "",
+          jsonSchemaToZodRawShape(toolDef.parameters),
+          async (args: unknown) => {
+            log(`Tool call: ${displayName} args=${formatArgsForLog(args)}`);
+            // Use the original prefixed name for execution (required by executeTool)
+            const result = await executeTool(toolDef.name, args);
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            };
+          }
+        );
+      });
+
+      // Create MCP server with pubsub tools
+      pubsubServer = createSdkMcpServer({
+        name: mcpServerName,
+        version: "1.0.0",
+        tools: mcpTools,
+      });
+
+      // Determine allowed tools for restricted mode
+      allowedTools = mcpTools.map((t) => `mcp__${mcpServerName}__${t.name}`);
+    } else {
+      log("Unrestricted mode - using SDK native tools");
+    }
 
     // Create permission handler that prompts user via feedback_form
     const canUseTool: CanUseTool = async (toolName, input, options) => {
@@ -477,12 +438,37 @@ async function handleUserMessage(
 
     // Get session state for resumption
     const queryOptions: Parameters<typeof query>[0]["options"] = {
-      mcpServers: { pubsub: pubsubServer },
-      systemPrompt: createRichTextChatSystemPrompt(),
+      // In restricted mode, provide pubsub tools via MCP server
+      // In unrestricted mode, SDK uses its native tools
+      ...(isRestrictedMode && pubsubServer && {
+        mcpServers: { workspace: pubsubServer },
+      }),
+      // Use restricted mode system prompt when bash is unavailable
+      systemPrompt: isRestrictedMode
+        ? createRestrictedModeSystemPrompt()
+        : createRichTextChatSystemPrompt(),
       // Provide explicit path to Claude Code CLI (required for bundled workers)
       pathToClaudeCodeExecutable: claudeExecutable,
       ...(allowedTools.length > 0 && { allowedTools }),
-      // All built-in tools enabled (Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch, Task)
+      // In restricted mode, disallow built-in tools that we replace via pubsub
+      // WebSearch and WebFetch remain enabled (full network access available)
+      //
+      // Task is disallowed because subagents cannot inherit MCP servers.
+      // The SDK's AgentDefinition type only supports:
+      //   type AgentDefinition = {
+      //     description: string;
+      //     tools?: string[];           // If omitted, inherits from parent
+      //     disallowedTools?: string[];
+      //     prompt: string;
+      //     model?: 'sonnet' | 'opus' | 'haiku' | 'inherit';
+      //   };
+      // Note: mcpServers is only available on top-level Options, not AgentDefinition.
+      //
+      // TODO: Future work - implement a pubsub-based Task tool that spawns subagents
+      // through the pubsub agent system, allowing them to access workspace tools.
+      ...(isRestrictedMode && {
+        disallowedTools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Task", "NotebookEdit"],
+      }),
       // Set working directory if provided via config
       ...(workingDirectory && { cwd: workingDirectory }),
       // Enable streaming of partial messages for token-by-token delivery
@@ -517,6 +503,10 @@ async function handleUserMessage(
     let checkpointCommitted = false;
     let sawStreamedText = false;
 
+    // Track when we need to start a new message for multi-turn conversations
+    // Each assistant turn after a tool use gets a new message
+    let pendingNewMessage = false;
+
     for await (const message of queryInstance) {
       // Check if pause was requested and break early
       if (interruptHandler.isPaused()) {
@@ -531,6 +521,17 @@ async function handleUserMessage(
         // Only handle text deltas from content blocks
         if (streamEvent.type === "content_block_delta" && streamEvent.delta?.type === "text_delta") {
           if (streamEvent.delta.text) {
+            // If we're starting a new turn after tool use, create a new message
+            if (pendingNewMessage) {
+              // Complete the previous message first
+              await client.complete(responseId);
+              // Start a new message (no replyTo - it's a continuation, not a reply)
+              const { messageId: newResponseId } = await client.send("");
+              responseId = newResponseId; // Update immediately so error handler uses correct ID
+              pendingNewMessage = false;
+              log(`Started new message for next turn: ${responseId}`);
+            }
+
             // Send each text delta immediately (real streaming)
             await client.update(responseId, streamEvent.delta.text);
             sawStreamedText = true;
@@ -541,15 +542,29 @@ async function handleUserMessage(
             }
           }
         }
+
       } else if (message.type === "assistant") {
-        // Fallback for complete assistant messages when no streaming deltas were seen.
+        // Complete assistant message = end of a turn
+        // Fallback for complete assistant messages when no streaming deltas were seen
         if (!sawStreamedText) {
+          // If we're starting a new turn, create a new message
+          if (pendingNewMessage) {
+            await client.complete(responseId);
+            const { messageId: newResponseId } = await client.send("");
+            responseId = newResponseId;
+            pendingNewMessage = false;
+            log(`Started new message for next turn: ${responseId}`);
+          }
+
           for (const block of message.message.content) {
             if (block.type === "text") {
               await client.update(responseId, block.text);
             }
           }
         }
+        // Each assistant message is a complete turn - next output should be a new message
+        pendingNewMessage = true;
+        sawStreamedText = false; // Reset for next turn
       } else if (message.type === "result") {
         if (message.subtype !== "success") {
           throw new Error(`Query failed: ${message.subtype}`);

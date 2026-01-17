@@ -1,5 +1,4 @@
 import { db } from "@natstack/runtime";
-import type { ConversationMessage } from "./types.js";
 
 type Database = Awaited<ReturnType<typeof db.open>>;
 
@@ -19,22 +18,17 @@ interface SessionRowDb {
   settings: string | null;
 }
 
-interface HistoryRow {
-  role: string;
-  content: string;
-}
-
 export class SessionDb {
   private db: Database | null = null;
   private sessionKey: string;
   private sessionRow: SessionRow | null = null;
 
   constructor(
-    private workspaceId: string,
+    private contextId: string,
     private channel: string,
     private handle: string
   ) {
-    this.sessionKey = `${workspaceId}:${channel}:${handle}`;
+    this.sessionKey = `${contextId}:${channel}:${handle}`;
   }
 
   getSessionKey(): string {
@@ -42,7 +36,7 @@ export class SessionDb {
   }
 
   async initialize(): Promise<void> {
-    const dbName = `workspace-${this.workspaceId}-sessions`;
+    const dbName = `context-${this.contextId}-sessions`;
     this.db = await db.open(dbName);
     await this.initializeSchema();
   }
@@ -79,9 +73,9 @@ export class SessionDb {
     const now = Date.now();
     await this.db.run(
       `INSERT INTO agentic_sessions
-       (session_key, workspace_id, channel, handle, status, created_at, updated_at)
+       (session_key, context_id, channel, handle, status, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [this.sessionKey, this.workspaceId, this.channel, this.handle, "active", now, now]
+      [this.sessionKey, this.contextId, this.channel, this.handle, "active", now, now]
     );
 
     this.sessionRow = {
@@ -190,49 +184,6 @@ export class SessionDb {
     }
   }
 
-  async storeMessage(role: "user" | "assistant", content: string): Promise<void> {
-    if (!this.db) throw new Error("SessionDb not initialized");
-    await this.db.run(
-      `INSERT INTO agentic_history (session_key, role, content, ts)
-       VALUES (?, ?, ?, ?)`,
-      [this.sessionKey, role, content, Date.now()]
-    );
-  }
-
-  async getHistory(limit?: number): Promise<ConversationMessage[]> {
-    if (!this.db) throw new Error("SessionDb not initialized");
-    const query = limit
-      ? `SELECT role, content FROM agentic_history
-         WHERE session_key = ?
-         ORDER BY ts DESC
-         LIMIT ?`
-      : `SELECT role, content FROM agentic_history
-         WHERE session_key = ?
-         ORDER BY ts ASC`;
-
-    const rows = await this.db.query<HistoryRow>(
-      query,
-      limit ? [this.sessionKey, limit] : [this.sessionKey]
-    );
-
-    if (limit) {
-      rows.reverse();
-    }
-
-    return rows.map((row) => ({
-      role: row.role as "user" | "assistant",
-      content: row.content,
-    }));
-  }
-
-  async clearHistory(): Promise<void> {
-    if (!this.db) throw new Error("SessionDb not initialized");
-    await this.db.run(
-      `DELETE FROM agentic_history WHERE session_key = ?`,
-      [this.sessionKey]
-    );
-  }
-
   async close(): Promise<void> {
     if (this.db) {
       await this.db.close();
@@ -242,33 +193,63 @@ export class SessionDb {
 
   private async initializeSchema(): Promise<void> {
     if (!this.db) throw new Error("SessionDb not initialized");
+
+    // Schema versioning table
     await this.db.exec(`
-      CREATE TABLE IF NOT EXISTS agentic_sessions (
-        session_key TEXT PRIMARY KEY,
-        workspace_id TEXT NOT NULL,
-        channel TEXT NOT NULL,
-        handle TEXT NOT NULL,
-        checkpoint_pubsub_id INTEGER,
-        sdk_session_id TEXT,
-        status TEXT NOT NULL,
-        settings TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
+      CREATE TABLE IF NOT EXISTS schema_version (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        version INTEGER NOT NULL
       );
-
-      CREATE INDEX IF NOT EXISTS idx_agentic_sessions_workspace
-        ON agentic_sessions(workspace_id, channel, handle);
-
-      CREATE TABLE IF NOT EXISTS agentic_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_key TEXT NOT NULL,
-        role TEXT NOT NULL,
-        content TEXT NOT NULL,
-        ts INTEGER NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_agentic_history_session
-        ON agentic_history(session_key, ts);
     `);
+
+    // Get current schema version (0 if not set)
+    const versionRow = await this.db.get<{ version: number }>(
+      "SELECT version FROM schema_version WHERE id = 1"
+    );
+    const currentVersion = versionRow?.version ?? 0;
+
+    // Version 1: Initial schema with sessions table
+    if (currentVersion < 1) {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS agentic_sessions (
+          session_key TEXT PRIMARY KEY,
+          context_id TEXT NOT NULL,
+          channel TEXT NOT NULL,
+          handle TEXT NOT NULL,
+          checkpoint_pubsub_id INTEGER,
+          sdk_session_id TEXT,
+          status TEXT NOT NULL,
+          settings TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agentic_sessions_context
+          ON agentic_sessions(context_id, channel, handle);
+      `);
+    }
+
+    // Version 2: Remove legacy agentic_history table (no longer used)
+    // The history is now derived from pubsub replay instead of being stored separately.
+    if (currentVersion < 2) {
+      // Check if the table exists before logging about removal
+      const tableExists = await this.db.get<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='agentic_history'"
+      );
+      if (tableExists) {
+        console.info("[SessionDb] Migrating schema v1 → v2: removing legacy agentic_history table");
+      }
+      await this.db.exec(`DROP TABLE IF EXISTS agentic_history;`);
+      await this.db.exec(`DROP INDEX IF EXISTS idx_agentic_history_session;`);
+    }
+
+    // Update schema version to latest
+    const latestVersion = 2;
+    if (currentVersion < latestVersion) {
+      await this.db.run(
+        "INSERT OR REPLACE INTO schema_version (id, version) VALUES (1, ?)",
+        [latestVersion]
+      );
+    }
   }
 }

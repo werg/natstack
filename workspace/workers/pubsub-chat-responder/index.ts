@@ -14,9 +14,11 @@ import {
   createPauseMethodDefinition,
   formatMissedContext,
   createRichTextChatSystemPrompt,
+  createRestrictedModeSystemPrompt,
   createToolsForAgentSDK,
   requestToolApproval,
   needsApprovalForTool,
+  getCanonicalToolName,
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
@@ -61,13 +63,11 @@ async function main() {
   // Get handle from config (set by broker from invite), fallback to default
   const handle = typeof agentConfig.handle === "string" ? agentConfig.handle : "ai";
 
-  // Get workspace ID from environment
-  const workspaceId = process.env["NATSTACK_WORKSPACE_ID"];
-
   log("Starting chat responder...");
   log(`Handle: @${handle}`);
 
   // Connect to agentic messaging channel with reconnection and participant metadata
+  // contextId is obtained automatically from the server's ready message
   const client = await connect<ChatParticipantMetadata>({
     serverUrl: pubsubConfig.serverUrl,
     token: pubsubConfig.token,
@@ -75,7 +75,6 @@ async function main() {
     handle,
     name: "AI Responder",
     type: "ai-responder",
-    workspaceId,
     reconnect: true,
     methods: {
       pause: createPauseMethodDefinition(async () => {
@@ -242,7 +241,8 @@ async function handleUserMessage(
   const panel = Object.values(client.roster).find((p) => p.metadata.type === "panel");
 
   // Start a new message (empty, will stream content via updates)
-  const { messageId: responseId } = await client.send("", { replyTo: incoming.id });
+  // Using let because responseId may change if we create new messages for multi-turn conversations
+  let { messageId: responseId } = await client.send("", { replyTo: incoming.id });
 
   // Set up interrupt handler to monitor for pause requests
   const interruptHandler = createInterruptHandler({
@@ -257,23 +257,10 @@ async function handleUserMessage(
   void interruptHandler.monitor();
 
   try {
-    // Build conversation history from previous messages (limit to last 20 messages for token efficiency)
-    let conversationHistory: Array<{ role: "user" | "assistant"; content: string }> = [];
-    try {
-      conversationHistory = await client.getHistory(20);
-      if (conversationHistory.length > 0) {
-        log(`Loaded ${conversationHistory.length} previous messages from history`);
-      }
-    } catch (err) {
-      // Continue without history if load fails
-      console.error("Failed to load conversation history:", err);
-    }
-
-    // Store user message in history
-    try {
-      await client.storeMessage("user", incoming.content);
-    } catch (err) {
-      console.error("Failed to store user message:", err);
+    // Build conversation history from pubsub replay (already available via missedMessages)
+    const conversationHistory = client.getConversationHistory();
+    if (conversationHistory.length > 0) {
+      log(`Loaded ${conversationHistory.length} previous messages from replay`);
     }
 
     // Discover tools from channel participants
@@ -286,10 +273,22 @@ async function handleUserMessage(
     const approvalLevel = currentSettings.approvalLevel ?? 0;
 
     // Build tools object for AI SDK
+    // Use canonical tool names (Read, Write, Edit, etc.) for LLM familiarity
+    // This responder is always "restricted" (no built-in tools), so canonical names are appropriate
     const tools: Record<string, ToolDefinition> = {};
+    const toolNameToOriginal: Record<string, string> = {}; // Map canonical -> original for execution
+
     for (const def of toolDefs) {
+      // Get canonical name for display (e.g., "Read" instead of "pubsub_abc123_file_read")
+      const originalMethodName = (def as { originalMethodName?: string }).originalMethodName ?? def.name;
+      const canonicalName = getCanonicalToolName(originalMethodName);
+
       const requiresApproval = needsApprovalForTool(def.name, approvalLevel);
-      tools[def.name] = {
+
+      // Store mapping for execution
+      toolNameToOriginal[canonicalName] = def.name;
+
+      tools[canonicalName] = {
         description: def.description,
         parameters: def.parameters,
         // If tool requires approval, don't include execute - we'll handle it manually
@@ -325,7 +324,8 @@ async function handleUserMessage(
 
       const stream = ai.streamText({
         model: currentSettings.modelRole ?? "fast",
-        system: createRichTextChatSystemPrompt(),
+        // Use restricted mode system prompt (this responder has no built-in tools)
+        system: createRestrictedModeSystemPrompt(),
         messages,
         tools: Object.keys(tools).length > 0 ? tools : undefined,
         maxSteps: 1, // One step at a time for approval control
@@ -420,7 +420,9 @@ async function handleUserMessage(
 
           if (approved) {
             try {
-              const result = await executeTool(approval.toolName, approval.args);
+              // Use original prefixed name for execution
+              const originalName = toolNameToOriginal[approval.toolName] ?? approval.toolName;
+              const result = await executeTool(originalName, approval.args);
               approvalResults.push({
                 type: "tool-result",
                 toolCallId: approval.toolCallId,
@@ -476,17 +478,17 @@ async function handleUserMessage(
         break;
       }
 
+      // Continuing to next step - complete current message and start a new one
+      // This creates natural turn boundaries in the chat
+      await client.complete(responseId);
+      const { messageId: newResponseId } = await client.send("");
+      responseId = newResponseId;
+      log(`Started new message for step ${step + 1}: ${responseId}`);
+
       step++;
     }
 
-    // Store complete assistant response in history
-    if (assistantResponse) {
-      try {
-        await client.storeMessage("assistant", assistantResponse);
-      } catch (err) {
-        console.error("Failed to store assistant message:", err);
-      }
-    }
+    // No need to store assistant response - it's already in pubsub via send/update
 
     if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
       await client.commitCheckpoint(incoming.pubsubId);

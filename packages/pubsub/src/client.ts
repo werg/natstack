@@ -32,6 +32,8 @@ interface ServerMessage {
   /** Binary attachment (parsed from binary frame) */
   attachment?: Uint8Array;
   senderMetadata?: Record<string, unknown>;
+  /** Context ID for the channel (sent in ready message) */
+  contextId?: string;
 }
 
 type PresenceAction = "join" | "leave" | "update";
@@ -65,6 +67,9 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
 
   /** Whether currently attempting to reconnect */
   readonly reconnecting: boolean;
+
+  /** Context ID for the channel (from server ready message) */
+  readonly contextId: string | undefined;
 
   /** Register error handler. Returns unsubscribe function. */
   onError(handler: (error: Error) => void): () => void;
@@ -102,7 +107,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   token: string,
   options: ConnectOptions<T>
 ): PubSubClient<T> {
-  const { channel, sinceId: initialSinceId, reconnect, metadata, clientId, skipOwnMessages } = options;
+  const { channel, contextId, sinceId: initialSinceId, reconnect, metadata, clientId, skipOwnMessages } = options;
 
   // Parse reconnection config
   const reconnectEnabled = reconnect !== undefined && reconnect !== false;
@@ -118,6 +123,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   let reconnectAttempt = 0;
   let reconnectTimeoutId: ReturnType<typeof setTimeout> | null = null;
   let refCounter = 0;
+  let serverContextId: string | undefined;
 
   // Message queue for the async iterator
   const messageQueue: Message[] = [];
@@ -160,12 +166,17 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     const url = new URL(serverUrl);
     url.searchParams.set("token", token);
     url.searchParams.set("channel", channel);
+    if (contextId !== undefined) {
+      url.searchParams.set("contextId", contextId);
+    }
     if (withSinceId !== undefined) {
       url.searchParams.set("sinceId", String(withSinceId));
     }
-    if (metadata !== undefined) {
-      url.searchParams.set("metadata", JSON.stringify(metadata));
-    }
+    // Note: metadata is always sent via updateMetadata after connection.
+    // This avoids URL length limits (~2KB-8KB depending on browser/server).
+    // WebSocket connections must use HTTP GET for the upgrade handshake (RFC 6455),
+    // so POST is not an option. The extra round-trip is acceptable since
+    // participants without metadata can still receive messages during this window.
     return url.toString();
   }
 
@@ -231,6 +242,10 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
 
     switch (msg.kind) {
       case "ready":
+        // Capture contextId from server ready message
+        if (typeof msg.contextId === "string") {
+          serverContextId = msg.contextId;
+        }
         readyResolve?.();
         readyResolve = null;
         readyReject = null;
@@ -361,7 +376,13 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     readyReject = null;
   }
 
-  function handleWsClose(): void {
+  function handleWsClose(event: CloseEvent): void {
+    // Build error message with close code and reason if available
+    const closeReason = event.reason || "unknown";
+    const errorMessage = event.code >= 4000
+      ? `connection closed by server: ${closeReason} (code ${event.code})`
+      : "connection closed";
+
     // Notify disconnect handlers
     for (const handler of disconnectHandlers) {
       handler();
@@ -373,9 +394,9 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         messageResolve(null);
         messageResolve = null;
       }
-      rejectPendingPublishes(new PubSubError("connection closed", "connection"));
-      rejectPendingMetadataUpdates(new PubSubError("connection closed", "connection"));
-      readyReject?.(new PubSubError("connection closed", "connection"));
+      rejectPendingPublishes(new PubSubError(errorMessage, "connection"));
+      rejectPendingMetadataUpdates(new PubSubError(errorMessage, "connection"));
+      readyReject?.(new PubSubError(errorMessage, "connection"));
       readyResolve = null;
       readyReject = null;
       return;
@@ -391,9 +412,9 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         messageResolve(null);
         messageResolve = null;
       }
-      rejectPendingPublishes(new PubSubError("connection closed", "connection"));
-      rejectPendingMetadataUpdates(new PubSubError("connection closed", "connection"));
-      readyReject?.(new PubSubError("connection closed", "connection"));
+      rejectPendingPublishes(new PubSubError(errorMessage, "connection"));
+      rejectPendingMetadataUpdates(new PubSubError(errorMessage, "connection"));
+      readyReject?.(new PubSubError(errorMessage, "connection"));
       readyResolve = null;
       readyReject = null;
     }
@@ -471,6 +492,13 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         for (const handler of reconnectHandlers) {
           handler();
         }
+      }
+      // Always send metadata after connection (avoids URL length limits)
+      if (metadata !== undefined) {
+        void updateMetadata(metadata).catch((err) => {
+          const error = err instanceof PubSubError ? err : new PubSubError(String(err), "connection");
+          handleError(error);
+        });
       }
     };
   }
@@ -646,6 +674,9 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     },
     get reconnecting() {
       return isReconnecting;
+    },
+    get contextId() {
+      return serverContextId;
     },
     onError: (handler: (error: Error) => void) => {
       errorHandlers.add(handler);

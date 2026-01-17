@@ -62,6 +62,16 @@ function getWarningColor(severity: FieldWarning["severity"]): "red" | "orange" |
   }
 }
 
+/**
+ * Props for custom field renderer components.
+ * Used with customFieldRenderers to handle custom field types like toolPreview.
+ */
+export interface CustomFieldRendererProps {
+  field: FieldDefinition;
+  value: FieldValue;
+  theme?: "light" | "dark";
+}
+
 export interface FormRendererProps {
   /** Field definitions or full form schema */
   schema: FormSchema | FieldDefinition[];
@@ -98,6 +108,17 @@ export interface FormRendererProps {
    * @default false
    */
   stopPropagation?: boolean;
+  /**
+   * Custom field renderers for handling additional field types.
+   * Keys are field type names (e.g., "toolPreview"), values are React components.
+   * This allows injecting custom rendering without circular dependencies.
+   */
+  customFieldRenderers?: Record<string, React.ComponentType<CustomFieldRendererProps>>;
+  /**
+   * Theme for custom field renderers
+   * @default "dark"
+   */
+  theme?: "light" | "dark";
 }
 
 /**
@@ -113,6 +134,8 @@ export function FormRenderer({
   showDescriptions = true,
   showRequiredIndicators = false,
   stopPropagation = false,
+  customFieldRenderers,
+  theme = "dark",
 }: FormRendererProps) {
   const fields = Array.isArray(schema) ? schema : schema.fields;
   const groups = showGroups ? groupFields(fields) : null;
@@ -161,21 +184,30 @@ export function FormRenderer({
         gap="1"
         style={{ opacity: isEnabled ? 1 : 0.5 }}
       >
-        <Text size={size} weight="medium">
-          {field.label}
-          {showRequiredIndicators && (
-            field.required ? (
-              <span style={{ color: "var(--red-9)" }}> *</span>
-            ) : (
-              <span style={{ color: "var(--gray-9)", fontWeight: "normal" }}> (optional)</span>
-            )
-          )}
-        </Text>
+        {/* Only show label if non-empty (custom field types may have built-in headers) */}
+        {field.label && (
+          <Text size={size} weight="medium">
+            {field.label}
+            {showRequiredIndicators && (
+              field.required ? (
+                <span style={{ color: "var(--red-9)" }}> *</span>
+              ) : (
+                <span style={{ color: "var(--gray-9)", fontWeight: "normal" }}> (optional)</span>
+              )
+            )}
+          </Text>
+        )}
         {showDescriptions && field.description && (
           <Text size="1" color="gray">
             {field.description}
           </Text>
         )}
+
+        {/* Custom field renderer (if provided) */}
+        {customFieldRenderers?.[field.type] && (() => {
+          const CustomRenderer = customFieldRenderers[field.type]!;
+          return <CustomRenderer field={field} value={currentValue as FieldValue} theme={theme} />;
+        })()}
 
         {/* String input */}
         {field.type === "string" && (

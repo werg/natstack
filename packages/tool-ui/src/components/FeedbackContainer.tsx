@@ -1,9 +1,15 @@
+/**
+ * FeedbackContainer - Wrapper for feedback UI components.
+ *
+ * Provides error boundary, dismiss button, and consistent styling.
+ */
+
 import { Box, Button, Card, Flex, Text } from "@radix-ui/themes";
 import { Cross2Icon } from "@radix-ui/react-icons";
 import type { ReactNode } from "react";
-import { EvalErrorBoundary } from "./EvalErrorBoundary";
+import { ErrorBoundary } from "./ErrorBoundary";
 
-interface FeedbackContainerProps {
+export interface FeedbackContainerProps {
   /** The feedback component to render */
   children: ReactNode;
   /** Called when user clicks the X button */
@@ -38,7 +44,7 @@ export function FeedbackContainer({
         </Button>
       </Flex>
       <Box p="3">
-        <EvalErrorBoundary onError={onError}>{children}</EvalErrorBoundary>
+        <ErrorBoundary onError={onError}>{children}</ErrorBoundary>
       </Box>
     </Card>
   );

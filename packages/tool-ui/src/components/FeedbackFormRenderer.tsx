@@ -4,14 +4,20 @@
  * Renders schema-based feedback forms using FormRenderer.
  * Handles submit/cancel/error callbacks and required field validation.
  * Supports timeout, severity, and hide submit/cancel options.
+ *
+ * Custom field types:
+ * - toolPreview: Rich previews (Monaco diffs, git previews, etc.) via ToolPreviewField
+ * - approvalHeader: Tool approval header (first-time grant or per-call) via ApprovalHeaderField
  */
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { Box, Button, Flex, Heading } from "@radix-ui/themes";
 import { InfoCircledIcon, ExclamationTriangleIcon } from "@radix-ui/react-icons";
-import { FormRenderer } from "@natstack/react";
+import { FormRenderer, type CustomFieldRendererProps } from "@natstack/react";
 import type { FieldDefinition, FieldValue } from "@natstack/runtime";
-import type { FeedbackComponentProps } from "../eval/feedbackUiTool";
+import type { FeedbackComponentProps } from "../types";
+import { ToolPreviewField } from "./ToolPreviewField";
+import { ApprovalHeaderField } from "./ApprovalHeaderField";
 
 export interface FeedbackFormRendererProps extends FeedbackComponentProps {
   title: string;
@@ -19,7 +25,6 @@ export interface FeedbackFormRendererProps extends FeedbackComponentProps {
   initialValues?: Record<string, FieldValue>;
   submitLabel?: string;
   cancelLabel?: string;
-  // New properties for feedback UI
   timeout?: number;
   timeoutAction?: "cancel" | "submit";
   severity?: "info" | "warning" | "danger";
@@ -120,13 +125,39 @@ export function FeedbackFormRenderer({
   // Check if we should show any buttons
   const showButtons = !hideSubmit || !hideCancel;
 
+  // Don't show title if we have an approvalHeader field (header contains its own title)
+  const hasApprovalHeader = fields.some(f => f.type === "approvalHeader");
+  const showTitle = !hasApprovalHeader && title;
+
+  // Custom field renderers for toolPreview and approvalHeader fields
+  const customFieldRenderers = useMemo(() => ({
+    toolPreview: ({ field, theme }: CustomFieldRendererProps) => (
+      <ToolPreviewField
+        toolName={field.toolName ?? "unknown"}
+        args={field.toolArgs}
+        theme={theme}
+      />
+    ),
+    approvalHeader: ({ field }: CustomFieldRendererProps) => (
+      <ApprovalHeaderField
+        agentName={field.agentName ?? "unknown"}
+        toolName={field.toolName ?? "unknown"}
+        displayName={field.displayName}
+        isFirstTimeGrant={field.isFirstTimeGrant ?? false}
+        floorLevel={field.floorLevel ?? 1}
+      />
+    ),
+  }), []);
+
   return (
     <Box>
-      {/* Title with optional severity icon */}
-      <Flex align="center" gap="2" mb="4">
-        {severity && getSeverityIcon(severity)}
-        <Heading size="4">{title}</Heading>
-      </Flex>
+      {/* Title with optional severity icon (hidden when approvalHeader is used) */}
+      {showTitle && (
+        <Flex align="center" gap="2" mb="4">
+          {severity && getSeverityIcon(severity)}
+          <Heading size="4">{title}</Heading>
+        </Flex>
+      )}
 
       <Flex direction="column" gap="4">
         <FormRenderer
@@ -138,6 +169,8 @@ export function FeedbackFormRenderer({
           showGroups={true}
           showDescriptions={true}
           showRequiredIndicators={true}
+          customFieldRenderers={customFieldRenderers}
+          theme="dark"
         />
 
         {showButtons && (

@@ -99,6 +99,15 @@ export const CLAUDE_CODE_PARAMETERS: FieldDefinition[] = [
     group: "Permissions",
     order: 4,
   },
+  {
+    key: "restrictedMode",
+    label: "Restricted Mode",
+    description: "Use pubsub tools only (no bash access). Enable when running in containerized environments.",
+    type: "boolean",
+    default: false,
+    group: "Environment",
+    order: 5,
+  },
 ];
 
 /**

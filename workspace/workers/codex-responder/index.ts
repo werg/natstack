@@ -26,6 +26,9 @@ import {
   createPauseMethodDefinition,
   formatMissedContext,
   createRichTextChatSystemPrompt,
+  createRestrictedModeSystemPrompt,
+  validateRestrictedMode,
+  getCanonicalToolName,
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
@@ -53,6 +56,8 @@ interface CodexWorkerSettings {
   sandboxMode?: number; // 0=read-only, 1=workspace-write, 2=danger-full-access
   networkAccessEnabled?: boolean;
   webSearchEnabled?: boolean;
+  // Restricted mode - use pubsub tools only (no built-in sandbox tools)
+  restrictedMode?: boolean;
 }
 
 /** Map reasoning effort slider value to SDK string */
@@ -86,6 +91,8 @@ interface ToolDefinition {
   name: string;
   description?: string;
   parameters: Record<string, unknown>;
+  /** Original tool name for execution (may differ from display name in restricted mode) */
+  originalName?: string;
 }
 
 /**
@@ -113,6 +120,8 @@ async function createMcpHttpServer(
   // Register tools using the shared JSON Schema to Zod converter
   for (const toolDef of tools) {
     const inputSchema = jsonSchemaToZodRawShape(toolDef.parameters);
+    // Use originalName for execution (may be different from display name in restricted mode)
+    const executionName = toolDef.originalName ?? toolDef.name;
 
     mcpServer.tool(
       toolDef.name,
@@ -121,7 +130,7 @@ async function createMcpHttpServer(
       async (args: Record<string, unknown>) => {
         log(`Tool call: ${toolDef.name} args=${formatArgsForLog(args)}`);
         try {
-          const result = await executeTool(toolDef.name, args);
+          const result = await executeTool(executionName, args);
           return {
             content: [
               {
@@ -316,9 +325,6 @@ async function main() {
   // Get handle from config (set by broker from invite), fallback to default
   const handle = typeof agentConfig.handle === "string" ? agentConfig.handle : "codex";
 
-  // Get workspace ID from environment
-  const workspaceId = process.env["NATSTACK_WORKSPACE_ID"];
-
   log("Starting Codex responder...");
   if (workingDirectory) {
     log(`Working directory: ${workingDirectory}`);
@@ -326,6 +332,7 @@ async function main() {
   log(`Handle: @${handle}`);
 
   // Connect to agentic messaging channel
+  // contextId is obtained automatically from the server's ready message
   const client = await connect<ChatParticipantMetadata>({
     serverUrl: pubsubConfig.serverUrl,
     token: pubsubConfig.token,
@@ -333,7 +340,6 @@ async function main() {
     handle,
     name: "Codex",
     type: "codex",
-    workspaceId,
     reconnect: true,
     methods: {
       pause: createPauseMethodDefinition(async () => {
@@ -408,6 +414,7 @@ async function main() {
   if (typeof agentConfig.sandboxMode === "number") initConfigSettings.sandboxMode = agentConfig.sandboxMode;
   if (typeof agentConfig.networkAccessEnabled === "boolean") initConfigSettings.networkAccessEnabled = agentConfig.networkAccessEnabled;
   if (typeof agentConfig.webSearchEnabled === "boolean") initConfigSettings.webSearchEnabled = agentConfig.webSearchEnabled;
+  if (typeof agentConfig.restrictedMode === "boolean") initConfigSettings.restrictedMode = agentConfig.restrictedMode;
   Object.assign(currentSettings, initConfigSettings);
   if (Object.keys(initConfigSettings).length > 0) {
     log(`Applied init config: ${JSON.stringify(initConfigSettings)}`);
@@ -431,6 +438,11 @@ async function main() {
 
   if (Object.keys(currentSettings).length > 0) {
     log(`Final settings: ${JSON.stringify(currentSettings)}`);
+  }
+
+  // Validate required methods in restricted mode
+  if (currentSettings.restrictedMode) {
+    await validateRestrictedMode(client, log);
   }
 
   let lastMissedPubsubId = 0;
@@ -476,22 +488,37 @@ async function handleUserMessage(
 ) {
   log(`Received message: ${incoming.content}`);
 
+  // Determine if we're in restricted mode
+  const isRestrictedMode = currentSettings.restrictedMode === true;
+
   // Create tools from other pubsub participants
   const { definitions: toolDefs, execute: executeTool } = createToolsForAgentSDK(client, {
     namePrefix: "pubsub",
   });
 
-  log(`Discovered ${toolDefs.length} tools from pubsub participants`);
+  log(`Discovered ${toolDefs.length} tools from pubsub participants${isRestrictedMode ? " (restricted mode)" : ""}`);
 
   // Start a new message (empty, will stream content via updates)
-  const { messageId: responseId } = await client.send("", { replyTo: incoming.id });
+  // Using let because responseId may change if we create new messages for multi-turn conversations
+  let { messageId: responseId } = await client.send("", { replyTo: incoming.id });
 
   // Convert tool definitions for MCP server
-  const mcpTools: ToolDefinition[] = toolDefs.map((t) => ({
-    name: t.name,
-    description: t.description,
-    parameters: t.parameters as Record<string, unknown>,
-  }));
+  // In restricted mode, use canonical names (Read, Write, Edit, etc.) for LLM familiarity
+  const mcpTools: ToolDefinition[] = toolDefs.map((t) => {
+    // In restricted mode, use canonical name if available
+    // t.originalMethodName is provided by createToolsForAgentSDK
+    const displayName = isRestrictedMode
+      ? getCanonicalToolName((t as { originalMethodName?: string }).originalMethodName ?? t.name)
+      : t.name;
+
+    return {
+      name: displayName,
+      description: t.description,
+      parameters: t.parameters as Record<string, unknown>,
+      // Store original name for execution lookup
+      originalName: t.name,
+    };
+  });
 
   let mcpServer: McpHttpServer | null = null;
   let codexHome: string | null = null;
@@ -543,7 +570,10 @@ async function handleUserMessage(
 
     // Build thread options with user settings
     const reasoningEffort = getReasoningEffort(currentSettings.reasoningEffort);
-    const sandboxMode = getSandboxMode(currentSettings.sandboxMode);
+    // In restricted mode, force sandbox to read-only (Codex uses MCP exclusively for tools)
+    const sandboxMode = isRestrictedMode
+      ? "read-only"
+      : getSandboxMode(currentSettings.sandboxMode);
     const threadOptions = {
       skipGitRepoCheck: true,
       ...(workingDirectory && { cwd: workingDirectory }),
@@ -564,11 +594,16 @@ async function handleUserMessage(
     }
 
     // Run with streaming
-    const promptWithSystem = `${createRichTextChatSystemPrompt()}\n\n${prompt}`;
+    // Use restricted mode system prompt when sandbox is unavailable
+    const promptWithSystem = isRestrictedMode
+      ? `${createRestrictedModeSystemPrompt()}\n\n${prompt}`
+      : `${createRichTextChatSystemPrompt()}\n\n${prompt}`;
     const { events } = await thread.runStreamed(promptWithSystem);
 
     // Track text length per item to compute deltas correctly
     const itemTextLengths = new Map<string, number>();
+    // Track current agent_message item ID for turn boundary detection
+    let currentAgentMessageId: string | null = null;
 
     let checkpointCommitted = false;
 
@@ -597,6 +632,16 @@ async function handleUserMessage(
           // AgentMessageItem has: { id, type: "agent_message", text: string }
           const item = event.item as { id?: string; type?: string; text?: string };
           if (item && item.type === "agent_message" && typeof item.text === "string" && item.id) {
+            // Check if this is a new agent_message item (turn boundary)
+            if (currentAgentMessageId !== null && currentAgentMessageId !== item.id) {
+              // New agent message item = new turn, create a new message
+              await client.complete(responseId);
+              const { messageId: newResponseId } = await client.send("");
+              responseId = newResponseId;
+              log(`Started new message for agent item ${item.id}: ${responseId}`);
+            }
+            currentAgentMessageId = item.id;
+
             const prevLength = itemTextLengths.get(item.id) ?? 0;
             if (item.text.length > prevLength) {
               const delta = item.text.slice(prevLength);
@@ -616,6 +661,16 @@ async function handleUserMessage(
           // Extract final text from completed item if we haven't streamed it yet
           const item = "item" in event ? (event.item as { id?: string; type?: string; text?: string }) : null;
           if (item && item.type === "agent_message" && typeof item.text === "string" && item.id) {
+            // Check if this is a new agent_message item (turn boundary)
+            if (currentAgentMessageId !== null && currentAgentMessageId !== item.id) {
+              // New agent message item = new turn, create a new message
+              await client.complete(responseId);
+              const { messageId: newResponseId } = await client.send("");
+              responseId = newResponseId;
+              log(`Started new message for agent item ${item.id}: ${responseId}`);
+            }
+            currentAgentMessageId = item.id;
+
             const prevLength = itemTextLengths.get(item.id) ?? 0;
             if (item.text.length > prevLength) {
               const delta = item.text.slice(prevLength);

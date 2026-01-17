@@ -6,6 +6,52 @@
  */
 
 import type { AgenticClient } from "./types.js";
+import {
+  CANONICAL_TOOL_MAPPINGS,
+  REVERSE_CANONICAL_MAPPINGS,
+  extractMethodName,
+} from "./tool-schemas.js";
+
+// Re-export extractMethodName for backwards compatibility
+// (it's now defined in tool-schemas.ts to avoid circular dependencies)
+export { extractMethodName };
+
+/**
+ * Approval level constants for tool execution.
+ *
+ * These define how much autonomy the agent has when executing tools:
+ * - ASK_ALL: Always prompt user for approval before any tool execution
+ * - AUTO_SAFE: Auto-approve read-only operations, prompt for write operations
+ * - FULL_AUTO: Execute all tools without prompting (use with caution)
+ */
+export const APPROVAL_LEVELS = {
+  /** Always ask for approval before executing any tool */
+  ASK_ALL: 0,
+  /** Auto-approve read-only operations, ask for write operations */
+  AUTO_SAFE: 1,
+  /** Never ask, execute all tools automatically */
+  FULL_AUTO: 2,
+} as const;
+
+export type ApprovalLevel = typeof APPROVAL_LEVELS[keyof typeof APPROVAL_LEVELS];
+
+/**
+ * Base read-only tools (snake_case) - single source of truth.
+ * These tools don't modify state and can be auto-approved at the "Auto-Safe" level.
+ */
+const READ_ONLY_BASE_TOOLS = [
+  "file_read", "glob", "grep", "tree", "list_directory",
+  "git_status", "git_diff", "git_log",
+] as const;
+
+/**
+ * Read-only tools set including both naming conventions.
+ * Derived from READ_ONLY_BASE_TOOLS using canonical mappings.
+ */
+export const READ_ONLY_TOOLS = new Set<string>([
+  ...READ_ONLY_BASE_TOOLS,
+  ...READ_ONLY_BASE_TOOLS.map(name => CANONICAL_TOOL_MAPPINGS[name]).filter((v): v is string => v !== undefined),
+]);
 
 export interface ApprovalOptions {
   title?: string;
@@ -82,39 +128,39 @@ export async function requestToolApproval(
 }
 
 /**
- * Extract the actual method name from a prefixed tool name.
- * Tool names are formatted as: prefix_providerId_methodName
- * e.g., "pubsub_abc123_settings" -> "settings"
+ * Check if a tool is read-only (safe for auto-approval at level 1).
+ * Uses both the explicit READ_ONLY_TOOLS set and pattern matching.
  */
-export function extractMethodName(toolName: string): string {
-  const parts = toolName.split("_");
-  // If there are at least 3 parts (prefix_providerId_methodName), return the last part
-  if (parts.length >= 3) {
-    return parts.slice(2).join("_"); // Handle method names with underscores
-  }
-  return toolName;
+export function isReadOnlyTool(methodName: string): boolean {
+  // Check explicit list first
+  if (READ_ONLY_TOOLS.has(methodName)) return true;
+
+  // Try reverse lookup for canonical names
+  const snakeName = REVERSE_CANONICAL_MAPPINGS[methodName];
+  if (snakeName && READ_ONLY_TOOLS.has(snakeName)) return true;
+
+  // Fall back to pattern matching for additional tools
+  const readPatterns = [/^read/i, /^get/i, /^list/i, /^search/i, /^find/i, /^query/i, /^fetch/i];
+  return readPatterns.some((p) => p.test(methodName));
 }
 
 /**
  * Determine if a tool needs approval based on approval level.
  *
- * Approval levels:
- * - 0: Ask - Always ask for approval
- * - 1: Auto Safe - Auto-approve read-only operations, ask for others
- * - 2: Full Auto - Never ask, execute all tools automatically
+ * @param toolName - The tool name (may be prefixed)
+ * @param approvalLevel - One of APPROVAL_LEVELS (ASK_ALL, AUTO_SAFE, FULL_AUTO)
+ * @returns true if user approval is required, false if auto-approved
+ *
+ * @see APPROVAL_LEVELS for level definitions
  */
 export function needsApprovalForTool(
   toolName: string,
-  approvalLevel: number
+  approvalLevel: ApprovalLevel | number
 ): boolean {
-  if (approvalLevel >= 2) return false; // Full auto - never ask
-  if (approvalLevel === 0) return true; // Ask all - always ask
+  if (approvalLevel >= APPROVAL_LEVELS.FULL_AUTO) return false; // Full auto - never ask
+  if (approvalLevel === APPROVAL_LEVELS.ASK_ALL) return true; // Ask all - always ask
 
-  // Level 1: Auto-approve read-only operations
-  // Extract actual method name from prefixed tool name for pattern matching
+  // AUTO_SAFE (level 1): Auto-approve read-only operations
   const methodName = extractMethodName(toolName);
-  const readPatterns = [/^read/i, /^get/i, /^list/i, /^search/i, /^find/i, /^query/i, /^fetch/i];
-  const isReadOnly = readPatterns.some((p) => p.test(methodName));
-
-  return !isReadOnly;
+  return !isReadOnlyTool(methodName);
 }

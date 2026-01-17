@@ -25,22 +25,11 @@ const METHOD_STATUS_COLOR: Record<MethodCallStatus, "gray" | "green" | "red"> = 
   error: "red",
 };
 
-function summarizeMethodArgs(args: unknown): string {
-  if (typeof args === "object" && args !== null && "code" in (args as Record<string, unknown>)) {
-    const code = (args as Record<string, unknown>)["code"];
-    if (typeof code === "string") {
-      const firstLine = code.split("\n")[0]?.trim() ?? "";
-      const snippet = firstLine.slice(0, 80);
-      return snippet.length < firstLine.length ? `${snippet}...` : snippet || "(empty code)";
-    }
-  }
-  try {
-    const formatted = JSON.stringify(args);
-    return formatted.length > 80 ? `${formatted.slice(0, 80)}...` : formatted;
-  } catch {
-    return String(args);
-  }
-}
+const STATUS_DOT_COLOR: Record<MethodCallStatus, string> = {
+  pending: "var(--gray-8)",
+  success: "var(--green-9)",
+  error: "var(--red-9)",
+};
 
 function formatMethodMeta(entry: MethodHistoryEntry): { label: string; value: string }[] {
   const items: { label: string; value: string }[] = [];
@@ -268,7 +257,6 @@ interface MethodHistoryItemProps {
 
 export function MethodHistoryItem({ entry }: MethodHistoryItemProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const summary = useMemo(() => summarizeMethodArgs(entry.args), [entry.args]);
   const metaItems = useMemo(() => formatMethodMeta(entry), [entry]);
 
   return (
@@ -296,20 +284,6 @@ export function MethodHistoryItem({ entry }: MethodHistoryItemProps) {
           <Text size="2" weight="medium">
             {entry.methodName}
           </Text>
-          {!isExpanded && (
-            <Text
-              size="1"
-              color="gray"
-              style={{
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-                flex: 1,
-              }}
-            >
-              {summary}
-            </Text>
-          )}
         </Flex>
 
         {/* Expanded content */}
@@ -390,6 +364,229 @@ export function MethodHistoryItem({ entry }: MethodHistoryItemProps) {
           </Flex>
         )}
       </Card>
+    </Box>
+  );
+}
+
+// Compact inline pill for collapsed method calls
+function CompactMethodPill({
+  entry,
+  onClick
+}: {
+  entry: MethodHistoryEntry;
+  onClick: () => void;
+}) {
+  return (
+    <Flex
+      align="center"
+      gap="1"
+      onClick={onClick}
+      style={{
+        cursor: "pointer",
+        userSelect: "none",
+        padding: "2px 6px",
+        borderRadius: "4px",
+        backgroundColor: "var(--gray-a3)",
+        display: "inline-flex",
+      }}
+    >
+      <Box
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: "50%",
+          backgroundColor: STATUS_DOT_COLOR[entry.status],
+          flexShrink: 0,
+        }}
+      />
+      <Text size="1" color="gray" style={{ fontFamily: "var(--code-font-family)" }}>
+        {entry.methodName}
+      </Text>
+    </Flex>
+  );
+}
+
+// Expanded detail view for a single method call (used within group)
+function ExpandedMethodDetail({
+  entry,
+  onCollapse
+}: {
+  entry: MethodHistoryEntry;
+  onCollapse: () => void;
+}) {
+  const metaItems = useMemo(() => formatMethodMeta(entry), [entry]);
+
+  return (
+    <Box
+      style={{
+        backgroundColor: "var(--gray-a2)",
+        borderRadius: "6px",
+        padding: "8px 10px",
+        border: "1px solid var(--gray-a4)",
+      }}
+    >
+      {/* Header */}
+      <Flex
+        align="center"
+        gap="2"
+        onClick={onCollapse}
+        style={{ cursor: "pointer", userSelect: "none" }}
+      >
+        <Text color="gray" style={{ display: "flex", alignItems: "center" }}>
+          <ChevronIcon expanded={true} />
+        </Text>
+        <Box
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: "50%",
+            backgroundColor: STATUS_DOT_COLOR[entry.status],
+            flexShrink: 0,
+          }}
+        />
+        <Text size="1" weight="medium" style={{ fontFamily: "var(--code-font-family)" }}>
+          {entry.methodName}
+        </Text>
+        <Badge color={METHOD_STATUS_COLOR[entry.status]} size="1" variant="soft">
+          {entry.status}
+        </Badge>
+      </Flex>
+
+      {/* Content */}
+      <Flex direction="column" gap="2" mt="2" ml="4">
+        {/* Meta badges */}
+        {metaItems.length > 0 && (
+          <Flex gap="1" wrap="wrap">
+            {metaItems.map((item) => (
+              <Badge key={item.label} color="gray" variant="soft" size="1">
+                {item.label}: {item.value}
+              </Badge>
+            ))}
+          </Flex>
+        )}
+
+        {/* Args */}
+        <CollapsibleSection label="Args" defaultOpen={false}>
+          <Box
+            style={{
+              backgroundColor: "var(--gray-a2)",
+              borderRadius: "4px",
+              padding: "6px",
+              maxHeight: "300px",
+              overflow: "auto",
+            }}
+          >
+            <JsonValue value={entry.args} />
+          </Box>
+        </CollapsibleSection>
+
+        {/* Console */}
+        {entry.consoleOutput && (
+          <CollapsibleSection label="Console" defaultOpen={true}>
+            <PlainTextDisplay content={entry.consoleOutput} />
+          </CollapsibleSection>
+        )}
+
+        {/* Result */}
+        {entry.status === "success" && entry.result !== undefined && (
+          <CollapsibleSection label="Result" defaultOpen={true} color="green">
+            <Box
+              style={{
+                backgroundColor: "var(--gray-a2)",
+                borderRadius: "4px",
+                padding: "6px",
+                maxHeight: "300px",
+                overflow: "auto",
+              }}
+            >
+              <JsonValue value={entry.result} />
+            </Box>
+          </CollapsibleSection>
+        )}
+
+        {/* Error */}
+        {entry.status === "error" && entry.error && (
+          <Box
+            style={{
+              padding: "6px",
+              backgroundColor: "var(--red-a3)",
+              borderRadius: "4px",
+            }}
+          >
+            <Text size="1" color="red" style={{ whiteSpace: "pre-wrap" }}>
+              {entry.error}
+            </Text>
+          </Box>
+        )}
+      </Flex>
+    </Box>
+  );
+}
+
+// Group of method calls displayed compactly
+interface MethodCallGroupProps {
+  entries: MethodHistoryEntry[];
+}
+
+export function MethodCallGroup({ entries }: MethodCallGroupProps) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  if (entries.length === 0) return null;
+
+  // Single entry - use simpler display
+  if (entries.length === 1) {
+    const entry = entries[0];
+    const isExpanded = expandedId === entry.callId;
+
+    if (isExpanded) {
+      return (
+        <Box style={{ maxWidth: "96%", alignSelf: "flex-start" }}>
+          <ExpandedMethodDetail
+            entry={entry}
+            onCollapse={() => setExpandedId(null)}
+          />
+        </Box>
+      );
+    }
+
+    return (
+      <Box style={{ alignSelf: "flex-start" }}>
+        <CompactMethodPill
+          entry={entry}
+          onClick={() => setExpandedId(entry.callId)}
+        />
+      </Box>
+    );
+  }
+
+  // Multiple entries - show inline pills for collapsed, expanded detail for selected
+  return (
+    <Box style={{ maxWidth: "96%", alignSelf: "flex-start" }}>
+      <Flex direction="column" gap="1">
+        {/* Compact pills row */}
+        <Flex gap="1" wrap="wrap" align="center">
+          {entries.map((entry) => {
+            if (expandedId === entry.callId) {
+              return null; // Will show expanded below
+            }
+            return (
+              <CompactMethodPill
+                key={entry.callId}
+                entry={entry}
+                onClick={() => setExpandedId(entry.callId)}
+              />
+            );
+          })}
+        </Flex>
+
+        {/* Expanded detail (if any) */}
+        {expandedId && (
+          <ExpandedMethodDetail
+            entry={entries.find(e => e.callId === expandedId)!}
+            onCollapse={() => setExpandedId(null)}
+          />
+        )}
+      </Flex>
     </Box>
   );
 }

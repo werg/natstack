@@ -1,62 +1,23 @@
-import { useState, useRef, useEffect, useCallback, type ComponentType } from "react";
-import { Badge, Box, Button, Callout, Card, Flex, ScrollArea, Text, TextField, Theme } from "@radix-ui/themes";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { Badge, Box, Button, Callout, Card, Flex, ScrollArea, Text, TextArea, Theme } from "@radix-ui/themes";
+import { PaperPlaneIcon } from "@radix-ui/react-icons";
 import type { Participant } from "@natstack/agentic-messaging";
-import type { FieldDefinition, FieldValue } from "@natstack/runtime";
-import { MethodHistoryItem } from "./MethodHistoryItem";
-import { FeedbackContainer } from "./FeedbackContainer";
-import { FeedbackFormRenderer } from "./FeedbackFormRenderer";
+import {
+  FeedbackContainer,
+  FeedbackFormRenderer,
+  type ActiveFeedback,
+  type ToolApprovalProps,
+} from "@natstack/tool-ui";
+import { MethodHistoryItem, MethodCallGroup, type MethodHistoryEntry } from "./MethodHistoryItem";
 import { TypingIndicator } from "./TypingIndicator";
 import { MessageContent } from "./MessageContent";
 import { ParticipantBadgeMenu } from "./ParticipantBadgeMenu";
-import type { FeedbackComponentProps, FeedbackResult } from "../eval/feedbackUiTool";
+import { ToolPermissionsDropdown } from "./ToolPermissionsDropdown";
 import type { ChatMessage, ChatParticipantMetadata } from "../types";
 import "../styles.css";
 
 // Re-export for backwards compatibility
 export type { ChatMessage };
-
-/**
- * Base interface for active feedback items
- */
-interface ActiveFeedbackBase {
-  callId: string;
-  /** Complete the feedback with a result (submit, cancel, or error) */
-  complete: (result: FeedbackResult) => void;
-  createdAt: number;
-}
-
-/**
- * TSX code-based feedback (compiled React component)
- */
-export interface ActiveFeedbackTsx extends ActiveFeedbackBase {
-  type: "tsx";
-  Component: ComponentType<FeedbackComponentProps>;
-  /** Cache key for cleanup after feedback completion */
-  cacheKey: string;
-}
-
-/**
- * Schema-based feedback (uses FormRenderer)
- */
-export interface ActiveFeedbackSchema extends ActiveFeedbackBase {
-  type: "schema";
-  title: string;
-  fields: FieldDefinition[];
-  values: Record<string, FieldValue>;
-  submitLabel?: string;
-  cancelLabel?: string;
-  // New properties for feedback UI
-  timeout?: number;
-  timeoutAction?: "cancel" | "submit";
-  severity?: "info" | "warning" | "danger";
-  hideSubmit?: boolean;
-  hideCancel?: boolean;
-}
-
-/**
- * Discriminated union of all feedback types
- */
-export type ActiveFeedback = ActiveFeedbackTsx | ActiveFeedbackSchema;
 
 interface ChatPhaseProps {
   channelId: string | null;
@@ -67,6 +28,8 @@ interface ChatPhaseProps {
   participants: Record<string, Participant<ChatParticipantMetadata>>;
   activeFeedbacks: Map<string, ActiveFeedback>;
   theme: "light" | "dark";
+  /** Whether session persistence is enabled (true = restricted/persistent session) */
+  sessionEnabled?: boolean;
   onInputChange: (value: string) => void;
   onSendMessage: () => Promise<void>;
   onAddAgent: () => void;
@@ -75,6 +38,8 @@ interface ChatPhaseProps {
   onFeedbackError: (callId: string, error: Error) => void;
   onInterrupt?: (agentId: string, messageId: string) => void;
   onCallMethod?: (providerId: string, methodName: string, args: unknown) => void;
+  /** Tool approval configuration - optional, when provided enables approval UI */
+  toolApproval?: ToolApprovalProps;
 }
 
 export function ChatPhase({
@@ -86,6 +51,7 @@ export function ChatPhase({
   participants,
   activeFeedbacks,
   theme,
+  sessionEnabled,
   onInputChange,
   onSendMessage,
   onAddAgent,
@@ -94,8 +60,10 @@ export function ChatPhase({
   onFeedbackError,
   onInterrupt,
   onCallMethod,
+  toolApproval,
 }: ChatPhaseProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
 
   // Scroll to bottom when messages change
@@ -111,10 +79,23 @@ export function ChatPhase({
     }
   }, [sendError]);
 
+  // Auto-resize textarea based on content
+  useEffect(() => {
+    const textArea = textAreaRef.current;
+    if (textArea) {
+      textArea.style.height = "auto";
+      textArea.style.height = `${textArea.scrollHeight}px`;
+    }
+  }, [input]);
+
   const handleSendMessage = useCallback(async () => {
     try {
       setSendError(null);
       await onSendMessage();
+      // Reset textarea height after sending
+      if (textAreaRef.current) {
+        textAreaRef.current.style.height = "auto";
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setSendError(message);
@@ -151,6 +132,9 @@ export function ChatPhase({
             Agentic Chat
           </Text>
           <Badge color="gray">{channelId}</Badge>
+          <Badge color={sessionEnabled ? "blue" : "orange"} title={sessionEnabled ? "Session persistence enabled - messages are saved and can be replayed" : "Ephemeral session - messages are not persisted"}>
+            {sessionEnabled ? "Session" : "Ephemeral"}
+          </Badge>
         </Flex>
         <Flex gap="2" align="center">
           <Badge color={connected ? "green" : "gray"}>{connected ? "Connected" : status}</Badge>
@@ -165,12 +149,24 @@ export function ChatPhase({
                 participant={p}
                 hasActiveMessage={hasActive}
                 onCallMethod={onCallMethod ?? (() => {})}
+                isGranted={toolApproval ? p.id in toolApproval.settings.agentGrants : false}
+                onRevokeAgent={toolApproval?.onRevokeAgent}
               />
             );
           })}
           <Button variant="soft" size="1" onClick={onAddAgent}>
             Add Agent
           </Button>
+          {toolApproval && (
+            <ToolPermissionsDropdown
+              settings={toolApproval.settings}
+              participants={participants}
+              onSetFloor={toolApproval.onSetFloor}
+              onGrantAgent={toolApproval.onGrantAgent}
+              onRevokeAgent={toolApproval.onRevokeAgent}
+              onRevokeAll={toolApproval.onRevokeAll}
+            />
+          )}
           <Button variant="soft" onClick={onReset}>
             Reset
           </Button>
@@ -186,64 +182,101 @@ export function ChatPhase({
                 Send a message to start chatting
               </Text>
             ) : (
-              messages.map((msg, index) => {
-                // Debug log to track key issues
-                if (!msg.id) {
-                  console.warn(`[ChatPhase] Message at index ${index} has no id:`, msg);
+              (() => {
+                // Group consecutive method messages together
+                const groupedItems: Array<
+                  | { type: "method-group"; entries: MethodHistoryEntry[]; key: string }
+                  | { type: "message"; msg: ChatMessage; index: number }
+                > = [];
+
+                let currentMethodGroup: MethodHistoryEntry[] = [];
+
+                messages.forEach((msg, index) => {
+                  if (msg.kind === "method" && msg.method) {
+                    currentMethodGroup.push(msg.method);
+                  } else {
+                    // Flush any pending method group
+                    if (currentMethodGroup.length > 0) {
+                      groupedItems.push({
+                        type: "method-group",
+                        entries: currentMethodGroup,
+                        key: `method-group-${currentMethodGroup[0].callId}`,
+                      });
+                      currentMethodGroup = [];
+                    }
+                    groupedItems.push({ type: "message", msg, index });
+                  }
+                });
+
+                // Flush final method group
+                if (currentMethodGroup.length > 0) {
+                  groupedItems.push({
+                    type: "method-group",
+                    entries: currentMethodGroup,
+                    key: `method-group-${currentMethodGroup[0].callId}`,
+                  });
                 }
 
-                if (msg.kind === "method" && msg.method) {
-                  return <MethodHistoryItem key={msg.id || `fallback-method-${index}`} entry={msg.method} />;
-                }
+                return groupedItems.map((item) => {
+                  if (item.type === "method-group") {
+                    return <MethodCallGroup key={item.key} entries={item.entries} />;
+                  }
 
-                const sender = getSenderInfo(msg.senderId);
-                const isPanel = sender.type === "panel";
-                // Only show streaming for messages that are actively being streamed (not pending local messages)
-                const isStreaming = msg.kind === "message" && !msg.complete && !msg.pending;
-                const hasError = Boolean(msg.error);
-                const hasContent = msg.content.length > 0;
+                  const { msg, index } = item;
+                  // Debug log to track key issues
+                  if (!msg.id) {
+                    console.warn(`[ChatPhase] Message at index ${index} has no id:`, msg);
+                  }
 
-                return (
-                  <Box
-                    key={msg.id || `fallback-msg-${index}`}
-                    style={{
-                      maxWidth: "96%",
-                      alignSelf: isPanel ? "flex-end" : "flex-start",
-                    }}
-                  >
-                    <Card
+                  const sender = getSenderInfo(msg.senderId);
+                  const isPanel = sender.type === "panel";
+                  // Only show streaming for messages that are actively being streamed (not pending local messages)
+                  const isStreaming = msg.kind === "message" && !msg.complete && !msg.pending;
+                  const hasError = Boolean(msg.error);
+                  const hasContent = msg.content.length > 0;
+
+                  return (
+                    <Box
+                      key={msg.id || `fallback-msg-${index}`}
                       style={{
-                        backgroundColor: isPanel
-                          ? "var(--accent-9)"
-                          : msg.error
-                            ? "var(--red-3)"
-                            : "var(--gray-3)",
-                        opacity: msg.pending ? 0.7 : 1,
+                        maxWidth: "96%",
+                        alignSelf: isPanel ? "flex-end" : "flex-start",
                       }}
                     >
-                      <Flex direction="column" gap="2">
-                        {hasContent && (
-                          <Box style={{ color: isPanel ? "white" : "inherit" }}>
-                            <MessageContent content={msg.content} isStreaming={isStreaming} />
-                          </Box>
-                        )}
-                        {hasError && (
-                          <Text size="2" style={{ color: "var(--red-11)", whiteSpace: "pre-wrap" }}>
-                            {`Error: ${msg.error}`}
-                          </Text>
-                        )}
-                        {isStreaming && (
-                          <TypingIndicator
-                            isPaused={false}
-                            showInterruptButton={true}
-                            onInterrupt={() => handleInterruptMessage(msg.id, msg.senderId)}
-                          />
-                        )}
-                      </Flex>
-                    </Card>
-                  </Box>
-                );
-              })
+                      <Card
+                        style={{
+                          backgroundColor: isPanel
+                            ? "var(--accent-9)"
+                            : msg.error
+                              ? "var(--red-3)"
+                              : "var(--gray-3)",
+                          opacity: msg.pending ? 0.7 : 1,
+                        }}
+                      >
+                        <Flex direction="column" gap="2">
+                          {hasContent && (
+                            <Box style={{ color: isPanel ? "white" : "inherit" }}>
+                              <MessageContent content={msg.content} isStreaming={isStreaming} />
+                            </Box>
+                          )}
+                          {hasError && (
+                            <Text size="2" style={{ color: "var(--red-11)", whiteSpace: "pre-wrap" }}>
+                              {`Error: ${msg.error}`}
+                            </Text>
+                          )}
+                          {isStreaming && (
+                            <TypingIndicator
+                              isPaused={false}
+                              showInterruptButton={true}
+                              onInterrupt={() => handleInterruptMessage(msg.id, msg.senderId)}
+                            />
+                          )}
+                        </Flex>
+                      </Card>
+                    </Box>
+                  );
+                });
+              })()
             )}
             <div ref={scrollRef} />
           </Flex>
@@ -304,6 +337,8 @@ export function ChatPhase({
         </Flex>
       )}
 
+      {/* Tool approvals are now handled via the feedback system (activeFeedbacks) */}
+
       {/* Error display */}
       {sendError && (
         <Callout.Root color="red" size="1">
@@ -314,19 +349,35 @@ export function ChatPhase({
       )}
 
       {/* Input */}
-      <Flex gap="2">
-        <TextField.Root
-          style={{ flex: 1 }}
-          placeholder="Type a message..."
+      <Box style={{ position: "relative" }}>
+        <TextArea
+          ref={textAreaRef}
+          style={{
+            minHeight: "40px",
+            maxHeight: "200px",
+            resize: "none",
+            paddingRight: "48px", // Make room for the send button
+            paddingBottom: "8px",
+          }}
+          placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
           value={input}
           onChange={(e) => onInputChange(e.target.value)}
           onKeyDown={handleKeyDown}
           disabled={!connected}
         />
-        <Button onClick={() => void handleSendMessage()} disabled={!connected || !input.trim()}>
-          Send
+        <Button
+          onClick={() => void handleSendMessage()}
+          disabled={!connected || !input.trim()}
+          size="1"
+          style={{
+            position: "absolute",
+            right: "8px",
+            bottom: "8px",
+          }}
+        >
+          <PaperPlaneIcon />
         </Button>
-      </Flex>
+      </Box>
       </Flex>
     </Theme>
   );

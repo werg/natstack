@@ -117,6 +117,8 @@ export interface ReconnectConfig {
 export interface ConnectOptions<T extends ParticipantMetadata = ParticipantMetadata> {
   /** Channel name to subscribe to */
   channel: string;
+  /** Context ID for the channel (required for first connection, optional for joiners) */
+  contextId?: string;
   /** Replay messages with id > sinceId */
   sinceId?: number;
   /** Enable auto-reconnection. Pass true for defaults, or a config object. Default: false */

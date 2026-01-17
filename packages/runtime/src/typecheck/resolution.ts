@@ -309,7 +309,8 @@ export function isBareSpecifier(spec: string): boolean {
   if (spec.startsWith("data:") || spec.startsWith("node:")) return false;
   // Exclude virtual/shim modules with protocol-like prefixes
   if (spec.includes(":")) return false;
-  // Exclude file paths with common JS/TS extensions (but not npm packages like lodash.merge)
-  if (/\.(js|mjs|cjs|ts|mts|cts|tsx|jsx|json)$/i.test(spec)) return false;
+  // Exclude file paths with common JS/TS/CSS/asset extensions (but not npm packages like lodash.merge)
+  // CSS and other assets can be imported by esbuild but should not be treated as npm packages
+  if (/\.(js|mjs|cjs|ts|mts|cts|tsx|jsx|json|css|scss|sass|less|png|jpg|jpeg|gif|svg|webp|woff|woff2|ttf|eot)$/i.test(spec)) return false;
   return true;
 }

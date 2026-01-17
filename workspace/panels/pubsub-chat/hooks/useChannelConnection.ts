@@ -1,18 +1,25 @@
 import { useState, useRef, useCallback, useEffect, type RefObject } from "react";
-import { pubsubConfig, id as panelClientId } from "@natstack/runtime";
+import { pubsubConfig, id as panelClientId, sessionId as panelSessionId } from "@natstack/runtime";
 import {
   connect,
   type AgenticClient,
   type RosterUpdate,
   type IncomingEvent,
   type MethodDefinition,
+  type ToolGroup,
+  type ToolRoleDeclaration,
 } from "@natstack/agentic-messaging";
 import type { ChatParticipantMetadata } from "../types";
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
 
+/** Tool roles configuration for the connection */
+export type ToolRolesConfig = Partial<Record<ToolGroup, ToolRoleDeclaration>>;
+
 export interface UseChannelConnectionOptions {
   metadata: ChatParticipantMetadata;
+  /** Tool roles this panel provides (for conflict detection) */
+  toolRoles?: ToolRolesConfig;
   /** Called for each event (messages, method calls, method results, presence) */
   onEvent?: (event: IncomingEvent) => void;
   /** Called when roster changes */
@@ -36,6 +43,7 @@ export interface UseChannelConnectionResult {
 
 export function useChannelConnection({
   metadata,
+  toolRoles,
   onEvent,
   onRoster,
   onError,
@@ -85,6 +93,9 @@ export function useChannelConnection({
           serverUrl: pubsubConfig.serverUrl,
           token: pubsubConfig.token,
           channel: channelId,
+          // Use the panel's session ID as the channel context (fallback to panel ID)
+          // This enables session persistence for all participants
+          contextId: panelSessionId,
           handle: metadata.handle,
           name: metadata.name,
           type: metadata.type,
@@ -92,6 +103,7 @@ export function useChannelConnection({
           clientId: panelClientId,
           methods,
           replayMode: "stream",
+          extraMetadata: toolRoles ? { toolRoles } : undefined,
         });
 
         clientRef.current = newClient;
@@ -130,7 +142,7 @@ export function useChannelConnection({
         throw error;
       }
     },
-    [metadata, disconnect]
+    [metadata, toolRoles, disconnect]
   );
 
   // Clean up on unmount

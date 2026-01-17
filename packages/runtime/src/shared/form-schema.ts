@@ -38,7 +38,9 @@ export type FieldType =
   | "code" // Syntax-highlighted code/JSON block
   | "buttonGroup" // Horizontal action buttons (Allow/Deny style)
   | "multiSelect" // Multiple selection checkboxes
-  | "diff"; // Unified or side-by-side diff view
+  | "diff" // Unified or side-by-side diff view
+  | "toolPreview" // Rich tool argument preview (Monaco diff, git previews, etc.)
+  | "approvalHeader"; // Tool approval header (first-time grant or per-call)
 
 /**
  * Comparison operators for field conditions
@@ -91,7 +93,7 @@ export interface FieldWarning {
 export interface FieldDefinition {
   // Identity
   key: string;
-  label: string;
+  label?: string; // Optional - some field types (toolPreview, buttonGroup) have built-in headers
   description?: string;
 
   // Type and behavior
@@ -138,6 +140,16 @@ export interface FieldDefinition {
 
   // For select/multiSelect/buttonGroup - auto-submit when selected
   submitOnSelect?: boolean;
+
+  // For toolPreview fields
+  toolName?: string; // Name of the tool (e.g., "file_edit", "git_commit")
+  toolArgs?: unknown; // Tool input arguments to preview
+
+  // For approvalHeader fields
+  agentName?: string; // Name of the agent requesting access
+  displayName?: string; // Display name for the tool (e.g., "Edit" for file_edit)
+  isFirstTimeGrant?: boolean; // Whether this is a first-time grant (vs per-call)
+  floorLevel?: number; // Current approval level (0=Ask All, 1=Auto-Safe, 2=Full Auto)
 }
 
 /**

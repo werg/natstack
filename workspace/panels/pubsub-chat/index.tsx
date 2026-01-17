@@ -12,10 +12,12 @@ import { usePanelTheme } from "@natstack/react";
 import { z } from "zod";
 import {
   type IncomingEvent,
+  type IncomingToolRoleRequestEvent,
+  type IncomingToolRoleResponseEvent,
+  type IncomingToolRoleHandoffEvent,
   type Participant,
   type MethodDefinition,
   type MethodExecutionContext,
-  createPauseMethodDefinition,
 } from "@natstack/agentic-messaging";
 import {
   type FeedbackFormArgs,
@@ -24,24 +26,32 @@ import {
   FeedbackCustomArgsSchema,
 } from "@natstack/agentic-messaging/broker";
 import {
+  useFeedbackManager,
+  useToolApproval,
+  wrapMethodsWithApproval,
+  compileFeedbackComponent,
+  cleanupFeedbackComponent,
+  type FeedbackResult,
+  type FeedbackUiToolArgs,
+  type ActiveFeedback,
+  type ActiveFeedbackTsx,
+  type ActiveFeedbackSchema,
+} from "@natstack/tool-ui";
+import {
   executeEvalTool,
   EVAL_DEFAULT_TIMEOUT_MS,
   EVAL_MAX_TIMEOUT_MS,
   EVAL_FRAMEWORK_TIMEOUT_MS,
 } from "./eval/evalTool";
-import {
-  compileFeedbackComponent,
-  cleanupFeedbackComponent,
-  type FeedbackUiToolArgs,
-  type FeedbackResult,
-} from "./eval/feedbackUiTool";
+import { createAllToolMethodDefinitions } from "./tools";
 import { useDiscovery } from "./hooks/useDiscovery";
 import { useChannelConnection } from "./hooks/useChannelConnection";
 import { useMethodHistory, type ChatMessage } from "./hooks/useMethodHistory";
-import { useFeedbackManager } from "./hooks/useFeedbackManager";
+import { useToolRole } from "./hooks/useToolRole";
 import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 import { AgentSetupPhase } from "./components/AgentSetupPhase";
-import { ChatPhase, type ActiveFeedback, type ActiveFeedbackTsx, type ActiveFeedbackSchema } from "./components/ChatPhase";
+import { ToolRoleConflictModal } from "./components/ToolRoleConflictModal";
+import { ChatPhase } from "./components/ChatPhase";
 import type { ChatParticipantMetadata } from "./types";
 
 /** Utility to check if a value looks like ChatParticipantMetadata */
@@ -183,6 +193,10 @@ export default function AgenticChatDemo() {
   const workspaceRoot = process.env["NATSTACK_WORKSPACE"]?.trim();
   const [phase, setPhase] = useState<AppPhase>("setup");
   const selfIdRef = useRef<string | null>(null);
+  // Refs for tool role handlers - set after toolRole hook is created
+  const toolRoleHandlerRef = useRef<((event: IncomingToolRoleRequestEvent) => void) | null>(null);
+  const toolRoleResponseHandlerRef = useRef<((event: IncomingToolRoleResponseEvent) => void) | null>(null);
+  const toolRoleHandoffHandlerRef = useRef<((event: IncomingToolRoleHandoffEvent) => void) | null>(null);
 
   // Chat phase state - generate default channel ID upfront so user can edit it
   const [channelId, setChannelId] = useState<string>(generateChannelId);
@@ -237,6 +251,11 @@ export default function AgenticChatDemo() {
       type: "panel",
       handle: "user",
     },
+    // Declare that this panel provides file and git tools
+    toolRoles: {
+      "file-ops": { providing: true },
+      "git-ops": { providing: true },
+    },
     onEvent: useCallback(
       (event: IncomingEvent) => {
         const selfId = selfIdRef.current ?? panelClientId;
@@ -250,6 +269,16 @@ export default function AgenticChatDemo() {
           },
           selfId
         );
+        // Handle tool role events
+        if (event.type === "tool-role-request") {
+          toolRoleHandlerRef.current?.(event);
+        }
+        if (event.type === "tool-role-response") {
+          toolRoleResponseHandlerRef.current?.(event);
+        }
+        if (event.type === "tool-role-handoff") {
+          toolRoleHandoffHandlerRef.current?.(event);
+        }
       },
       [
         setMessages,
@@ -273,6 +302,18 @@ export default function AgenticChatDemo() {
     selfIdRef.current = clientId;
   }, [clientId]);
 
+  // Tool approval hook - uses client for persistence and feedback system for UI
+  const approval = useToolApproval(clientRef.current, { addFeedback, removeFeedback });
+
+  // Tool role hook - handles conflict detection and negotiation
+  const toolRole = useToolRole(clientRef.current, clientId);
+
+  // Keep the tool role handler refs updated so onEvent can call them
+  useEffect(() => {
+    toolRoleHandlerRef.current = toolRole.handleToolRoleRequest;
+    toolRoleResponseHandlerRef.current = toolRole.handleToolRoleResponse;
+    toolRoleHandoffHandlerRef.current = toolRole.handleToolRoleHandoff;
+  }, [toolRole.handleToolRoleRequest, toolRole.handleToolRoleResponse, toolRole.handleToolRoleHandoff]);
 
   // Helper to handle feedback result and update method history
   const handleFeedbackResult = useCallback((callId: string, feedbackResult: FeedbackResult) => {
@@ -614,11 +655,37 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
         console.warn(`[Chat] Some agents failed to join: ${failedNames}`);
       }
 
-      // Connect using the hook
+      // Create file/search/git tools using workspace root
+      // Wrap diagnostics publishing to use clientRef at runtime
+      const diagnosticsPublisher = (eventType: string, payload: unknown) => {
+        clientRef.current?.pubsub.publish(eventType, payload);
+      };
+      const fileTools = createAllToolMethodDefinitions({
+        workspaceRoot,
+        diagnosticsPublisher,
+      });
+
+      // Wrap tools with approval middleware
+      // Use clientRef for runtime roster lookup to avoid stale closure issues
+      // when agents join after this callback is created
+      const approvedTools = wrapMethodsWithApproval(
+        fileTools,
+        {
+          isAgentGranted: approval.isAgentGranted,
+          checkToolApproval: approval.checkToolApproval,
+          requestApproval: approval.requestApproval,
+        },
+        (agentId) => clientRef.current?.roster[agentId]?.metadata.name ?? agentId,
+        // Use getter pattern to avoid stale closure - toolRole state may change during session
+        () => ({ shouldProvideGroup: toolRole.shouldProvideGroup })
+      );
+
+      // Connect using the hook with all methods
       await connectToChannel(targetChannelId, {
         eval: evalMethodDef,
         feedback_form: feedbackFormMethodDef,
         feedback_custom: feedbackCustomMethodDef,
+        ...approvedTools,
       });
 
       setStatus("Connected");
@@ -636,6 +703,11 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
     discoveryRef,
     channelId,
     connectToChannel,
+    approval.isAgentGranted,
+    approval.checkToolApproval,
+    approval.requestApproval,
+    toolRole.shouldProvideGroup,
+    workspaceRoot,
   ]);
 
   const addAgent = useCallback(async () => {
@@ -673,6 +745,7 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
     setChannelId(generateChannelId());
     clearMethodHistory();
     // Dismiss all active feedbacks (completes them with "cancel")
+    // This includes pending tool approvals which now use the feedback system
     for (const callId of activeFeedbacks.keys()) {
       dismissFeedback(callId);
     }
@@ -756,23 +829,44 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
 
   // Chat phase
   return (
-    <ChatPhase
-      channelId={channelId}
-      connected={connected}
-      status={status}
-      messages={messages}
-      input={input}
-      participants={allParticipants}
-      activeFeedbacks={activeFeedbacks}
-      theme={theme}
-      onInputChange={setInput}
-      onSendMessage={sendMessage}
-      onAddAgent={() => void addAgent()}
-      onReset={reset}
-      onFeedbackDismiss={handleFeedbackDismiss}
-      onFeedbackError={handleFeedbackError}
-      onInterrupt={handleInterruptAgent}
-      onCallMethod={handleCallMethod}
-    />
+    <>
+      {/* Tool role conflict modals */}
+      {toolRole.pendingConflicts.map((conflict) => (
+        <ToolRoleConflictModal
+          key={conflict.group}
+          conflict={conflict}
+          onTakeOver={() => void toolRole.requestTakeOver(conflict.group)}
+          onDefer={() => toolRole.acceptExisting(conflict.group)}
+          onDismiss={() => toolRole.dismissConflict(conflict.group)}
+          isNegotiating={toolRole.groupStates[conflict.group]?.negotiating ?? false}
+        />
+      ))}
+      <ChatPhase
+        channelId={channelId}
+        connected={connected}
+        status={status}
+        messages={messages}
+        input={input}
+        participants={allParticipants}
+        activeFeedbacks={activeFeedbacks}
+        theme={theme}
+        sessionEnabled={clientRef.current?.sessionEnabled}
+        onInputChange={setInput}
+        onSendMessage={sendMessage}
+        onAddAgent={() => void addAgent()}
+        onReset={reset}
+        onFeedbackDismiss={handleFeedbackDismiss}
+        onFeedbackError={handleFeedbackError}
+        onInterrupt={handleInterruptAgent}
+        onCallMethod={handleCallMethod}
+        toolApproval={{
+          settings: approval.settings,
+          onSetFloor: approval.setGlobalFloor,
+          onGrantAgent: approval.grantAgent,
+          onRevokeAgent: approval.revokeAgent,
+          onRevokeAll: approval.revokeAll,
+        }}
+      />
+    </>
   );
 }

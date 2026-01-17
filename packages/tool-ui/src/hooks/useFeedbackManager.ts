@@ -4,11 +4,11 @@
  */
 
 import { useReducer, useEffect, useCallback } from "react";
-import type { ActiveFeedback } from "../components/ChatPhase";
+import type { ActiveFeedback, FeedbackResult } from "../types";
 
 /**
  * Feedback reducer manages active feedback UI components and their lifecycle.
- * Handles add, remove, and cleanup-on-unmount actions idomatically.
+ * Handles add, remove, and cleanup-on-unmount actions idiomatically.
  */
 function feedbackReducer(
   state: Map<string, ActiveFeedback>,
@@ -65,11 +65,19 @@ function feedbackReducer(
   }
 }
 
+export interface UseFeedbackManagerResult {
+  activeFeedbacks: Map<string, ActiveFeedback>;
+  addFeedback: (feedback: ActiveFeedback) => void;
+  removeFeedback: (callId: string) => void;
+  dismissFeedback: (callId: string) => void;
+  handleFeedbackError: (callId: string, error: Error) => void;
+}
+
 /**
  * Hook for managing feedback UI components.
  * Provides methods to add, remove, dismiss, and handle errors for feedback components.
  */
-export function useFeedbackManager() {
+export function useFeedbackManager(): UseFeedbackManagerResult {
   const [activeFeedbacks, dispatch] = useReducer(feedbackReducer, new Map());
 
   // Cleanup feedback components on unmount

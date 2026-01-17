@@ -61,17 +61,19 @@ const FieldWarningSchema = z.object({
  */
 export const FieldDefinitionSchema = z.object({
   key: z.string().min(1),
-  label: z.string().min(1),
+  label: z.string().optional(), // Optional - some field types (toolPreview, buttonGroup) have built-in headers
   description: z.string().optional(),
   type: z.enum([
     // Existing types
     "string", "number", "boolean", "select", "slider", "segmented", "toggle",
     // New types for feedback UI
-    "readonly",      // Display-only text (non-editable)
-    "code",          // Syntax-highlighted code/JSON block
-    "buttonGroup",   // Horizontal action buttons (Allow/Deny style)
-    "multiSelect",   // Multiple selection checkboxes
-    "diff",          // Unified or side-by-side diff view
+    "readonly",       // Display-only text (non-editable)
+    "code",           // Syntax-highlighted code/JSON block
+    "buttonGroup",    // Horizontal action buttons (Allow/Deny style)
+    "multiSelect",    // Multiple selection checkboxes
+    "diff",           // Unified or side-by-side diff view
+    "toolPreview",    // Rich tool argument preview (Monaco diff, git previews)
+    "approvalHeader", // Tool approval header (first-time grant or per-call)
   ]),
   required: z.boolean().optional(),
   default: FieldValueSchema.optional(),
@@ -115,6 +117,16 @@ export const FieldDefinitionSchema = z.object({
 
   // For select/multiSelect/buttonGroup - auto-submit when selected
   submitOnSelect: z.boolean().optional(),
+
+  // For toolPreview fields
+  toolName: z.string().optional(),   // Name of the tool (e.g., "file_edit", "git_commit")
+  toolArgs: z.unknown().optional(),  // Tool input arguments to preview
+
+  // For approvalHeader fields
+  agentName: z.string().optional(),        // Name of the agent requesting permission
+  displayName: z.string().optional(),      // Human-readable tool name
+  isFirstTimeGrant: z.boolean().optional(), // Whether this is a first-time grant
+  floorLevel: z.number().optional(),       // Current approval level (0=Ask, 1=Auto-Safe, 2=Full Auto)
 });
 
 /**
