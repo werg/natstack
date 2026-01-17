@@ -480,7 +480,7 @@ export function GitStatusView({
         </>
       )}
 
-      <Box ref={scrollRef} flexGrow="1" overflow="hidden">
+      <Box ref={scrollRef} flexGrow="1" minHeight="0" overflow="hidden">
         <ScrollArea>
           <Box px="1" pb="1">
           <Accordion.Root

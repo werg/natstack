@@ -18,9 +18,12 @@
 
 // Configure Monaco loader to use bundled Monaco (for Electron compatibility)
 // This must be done before any Monaco Editor components are imported
-import { loader } from "@monaco-editor/react";
+import { loader, Editor } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 loader.config({ monaco });
+
+// Re-export Editor for consumers who need a simple code view
+export { Editor };
 
 // Configure Monaco workers (extracted to separate module for clarity)
 import { configureMonacoWorkers, type MonacoWorkerConfig } from "./monacoWorkers";
@@ -54,6 +57,7 @@ export {
   LineSelectionOverlay,
   BinaryFileDiff,
   ImageCompare,
+  DiffEditorDirect,
 } from "./DiffBlock";
 
 export type {
@@ -172,4 +176,5 @@ export {
   DIFF_VIEW_STORAGE_KEY,
   DEFAULT_DIFF_VIEW_OPTIONS,
   KEYBOARD_SHORTCUTS,
+  FILE_EXTENSION_LANGUAGE_MAP,
 } from "./constants";

@@ -451,7 +451,7 @@ export function FileOverview({
     <Flex direction="column" flexShrink="0">
       <Flex direction="column" gap="2" px="2" pt="2" pb="2">
         {/* Commit Row */}
-      <Flex align="start" gap="2">
+      <Flex align="stretch" gap="2">
         <TextArea
           ref={setTextareaRef}
           size="2"
@@ -462,13 +462,13 @@ export function FileOverview({
           disabled={commitLoading}
           style={{
             flex: 1,
-            minHeight: 36,
-            maxHeight: 120,
-            resize: "vertical",
+            minHeight: 60,
+            maxHeight: 200,
+            resize: "none",
             fieldSizing: "content",
           }}
         />
-        <Flex gap="2" align="start">
+        <Flex direction="column" gap="2" flexShrink="0">
           {onGenerateCommitMessage && (
             <Tooltip content="Stage all changes and generate commit message with AI">
               <Button
@@ -477,20 +477,18 @@ export function FileOverview({
                 onClick={() => void handleAiCommit()}
                 disabled={aiGenerating || actionLoading || (stagedFiles.length === 0 && unstagedFiles.length === 0)}
                 loading={aiGenerating}
-                style={{ alignSelf: "flex-start" }}
               >
                 <MagicWandIcon />
-                AI Commit
+                AI
               </Button>
             </Tooltip>
           )}
-          <Tooltip content={<Flex align="center" gap="2">Commit changes <Kbd size="1">⌘</Kbd><Kbd size="1">↵</Kbd></Flex>}>
+          <Tooltip content={<span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>Commit changes <Kbd size="1">⌘</Kbd><Kbd size="1">↵</Kbd></span>}>
             <Button
               size="2"
               onClick={() => void handleCommit()}
               disabled={!hasStaged || !commitMessage.trim() || commitLoading}
               loading={commitLoading}
-              style={{ alignSelf: "flex-start" }}
             >
               Commit
             </Button>
@@ -546,7 +544,7 @@ export function FileOverview({
               </Badge>
             </Flex>
             {unstagedFiles.length > 0 && (
-              <Tooltip content={<Flex align="center" gap="2">Stage all files <Kbd>s</Kbd></Flex>}>
+              <Tooltip content={<span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>Stage all files <Kbd>s</Kbd></span>}>
                 <Button
                   size="1"
                   variant="ghost"
@@ -605,7 +603,7 @@ export function FileOverview({
               </Badge>
             </Flex>
             {stagedFiles.length > 0 && (
-              <Tooltip content={<Flex align="center" gap="2">Unstage all files <Kbd>u</Kbd></Flex>}>
+              <Tooltip content={<span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>Unstage all files <Kbd>u</Kbd></span>}>
                 <Button
                   size="1"
                   variant="ghost"
