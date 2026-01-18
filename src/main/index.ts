@@ -3,25 +3,6 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 
-// DEBUG: Check if databases directory exists at the very start of main process
-const earlyDbCheck = (() => {
-  const home = os.homedir();
-  const configDir = path.join(home, ".config", "natstack");
-  const dbDir = path.join(configDir, "databases");
-  const workspaceDbDir = path.join(dbDir, "natstack-dev");
-  const dbFile = path.join(workspaceDbDir, "pubsub-messages.db");
-
-  console.log(`[EARLY CHECK] At main process start:`);
-  console.log(`[EARLY CHECK] - configDir exists: ${fs.existsSync(configDir)}`);
-  console.log(`[EARLY CHECK] - dbDir exists: ${fs.existsSync(dbDir)}`);
-  console.log(`[EARLY CHECK] - workspaceDbDir exists: ${fs.existsSync(workspaceDbDir)}`);
-  console.log(`[EARLY CHECK] - dbFile exists: ${fs.existsSync(dbFile)}`);
-  if (fs.existsSync(dbFile)) {
-    const stats = fs.statSync(dbFile);
-    console.log(`[EARLY CHECK] - dbFile size: ${stats.size}, inode: ${stats.ino}`);
-  }
-})();
-
 // Silence Electron security warnings in dev; panels run in isolated webviews.
 process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
 
@@ -32,7 +13,7 @@ import { GitServer } from "./gitServer.js";
 import { handle } from "./ipc/handlers.js";
 import type * as SharedPanel from "../shared/ipc/types.js";
 import { setupMenu } from "./menu.js";
-import { setActiveWorkspace } from "./paths.js";
+import { setActiveWorkspace, getAppRoot } from "./paths.js";
 import {
   parseCliWorkspacePath,
   discoverWorkspace,
@@ -412,35 +393,13 @@ handle("shell-rpc:call", async (event, message: RpcMessage): Promise<RpcResponse
 // =============================================================================
 
 app.on("ready", async () => {
-  // DEBUG: Check database file at ready event start
-  const dbCheckAtReady = (() => {
-    const dbFile = path.join(os.homedir(), ".config", "natstack", "databases", "natstack-dev", "pubsub-messages.db");
-    const exists = fs.existsSync(dbFile);
-    console.log(`[READY CHECK] At app.ready start: dbFile exists=${exists}`);
-    if (exists) {
-      const stats = fs.statSync(dbFile);
-      console.log(`[READY CHECK] size=${stats.size}, inode=${stats.ino}, birthTime=${stats.birthtime.toISOString()}`);
-    }
-  })();
-
-  // DEBUG helper to check db file
-  const checkDbFile = (label: string) => {
-    const dbFile = path.join(os.homedir(), ".config", "natstack", "databases", "natstack-dev", "pubsub-messages.db");
-    const exists = fs.existsSync(dbFile);
-    console.log(`[DB CHECK: ${label}] exists=${exists}`);
-  };
-
   // Set up panel protocol handler
-  checkDbFile("before setupPanelProtocol");
   setupPanelProtocol();
   setupAboutProtocol();
-  checkDbFile("after setupPanelProtocol");
 
   // Initialize cache manager (shared across all panels)
   const cacheManager = getMainCacheManager();
-  checkDbFile("before cacheManager.initialize");
   await cacheManager.initialize();
-  checkDbFile("after cacheManager.initialize");
 
   // Register shell services (available in both modes)
   const dispatcher = getServiceDispatcher();
@@ -460,52 +419,59 @@ app.on("ready", async () => {
       dispatcher.register("panel", handlePanelService);
       setShellServicesPanelManager(panelManager);
 
-      checkDbFile("before getServiceDispatcher");
-      checkDbFile("after getServiceDispatcher");
-
       // Start Verdaccio server FIRST (other services may need to install packages)
       try {
-        // Use project root (parent of workspace) for finding packages/
-        const projectRoot = path.dirname(workspace.path);
+        // Use app root for finding packages/ (not workspace parent)
         verdaccioServer = createVerdaccioServer({
-          workspaceRoot: projectRoot,
+          workspaceRoot: getAppRoot(),
           storagePath: path.join(app.getPath("userData"), "verdaccio-storage"),
         });
         const verdaccioPort = await verdaccioServer.start();
         console.log(`[Verdaccio] Registry started on port ${verdaccioPort}`);
 
-        // Publish workspace packages to local registry
-        const publishResult = await verdaccioServer.publishWorkspacePackages();
+        // Publish only changed workspace packages (automatic cache invalidation)
+        const publishResult = await verdaccioServer.publishChangedPackages();
         if (!publishResult.success) {
           console.warn(`[Verdaccio] Some packages failed to publish: ${publishResult.failed.map(f => f.name).join(", ")}`);
         }
+
+        // If packages changed, clear dependent caches.
+        // On fresh start, there's no valid Verdaccio state to match cached builds against,
+        // so we must also clear caches to prevent stale builds from being reused.
+        const { changesDetected } = publishResult;
+        if (changesDetected.changed.length > 0) {
+          console.log(`[Verdaccio] ${changesDetected.changed.length} packages changed${changesDetected.freshStart ? " (fresh start)" : ""}, clearing build caches...`);
+          // Invalidate @natstack types FIRST to prevent stale reads during cache clearing
+          const { getTypeDefinitionService } = await import("./typecheck/service.js");
+          getTypeDefinitionService().invalidateNatstackTypes();
+          // Then clear all other caches
+          const { clearAllCaches } = await import("./cacheUtils.js");
+          await clearAllCaches({
+            buildCache: true,
+            buildArtifacts: true,
+            typesCache: true,
+            // Don't clear Verdaccio storage - we just updated it
+            verdaccioStorage: false,
+            npmCache: false,
+            pnpmStore: false,
+          });
+        }
       } catch (verdaccioError) {
-        console.warn("[Verdaccio] Failed to start (falling back to file: path resolution):", verdaccioError);
+        // Verdaccio is required - log error but continue (panel builds will fail gracefully)
+        console.error("[Verdaccio] Failed to start. Panel builds will fail until Verdaccio is running:", verdaccioError);
         verdaccioServer = null;
       }
 
       // Start git server
-      checkDbFile("before gitServer.start");
       const port = await gitServer.start();
       console.log(`[Git] Server started on port ${port}`);
-      checkDbFile("after gitServer.start");
 
       // Start CDP server for browser automation
-      checkDbFile("before cdpServer.start");
       cdpServer = getCdpServer();
       const cdpPort = await cdpServer.start();
       console.log(`[CDP] Server started on port ${cdpPort}`);
-      checkDbFile("after cdpServer.start");
 
       // Start PubSub server for real-time messaging
-      // DEBUG: Check right before pubsub server starts
-      const dbFileBeforePubsub = path.join(os.homedir(), ".config", "natstack", "databases", "natstack-dev", "pubsub-messages.db");
-      console.log(`[BEFORE PUBSUB] dbFile exists=${fs.existsSync(dbFileBeforePubsub)}`);
-      if (fs.existsSync(dbFileBeforePubsub)) {
-        const stats = fs.statSync(dbFileBeforePubsub);
-        console.log(`[BEFORE PUBSUB] size=${stats.size}, inode=${stats.ino}`);
-      }
-
       pubsubServer = getPubSubServer();
       const pubsubPort = await pubsubServer.start();
       console.log(`[PubSub] Server started on port ${pubsubPort}`);

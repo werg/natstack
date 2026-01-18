@@ -13,7 +13,8 @@ import * as fsSync from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import Arborist from "@npmcli/arborist";
-import { createTypeDefinitionLoader } from "@natstack/runtime/typecheck";
+import { createTypeDefinitionLoader, loadNatstackPackageTypes, type NatstackPackageTypes } from "@natstack/runtime/typecheck";
+import { getPackagesDir } from "../paths.js";
 import { app } from "electron";
 import { isVerdaccioServerInitialized, getVerdaccioServer } from "../verdaccioServer.js";
 
@@ -159,6 +160,35 @@ export class TypeDefinitionService {
   /** Lock for concurrent installations */
   private installLocks = new Map<string, Promise<void>>();
 
+  /** Cached @natstack package types (loaded lazily from packages dist folders) */
+  private natstackTypes: Record<string, NatstackPackageTypes> | null = null;
+
+  /**
+   * Get @natstack package types from the local packages directory.
+   * Loads lazily and caches the result.
+   */
+  private getNatstackTypes(packageName: string): Record<string, string> {
+    // Lazy load @natstack types from packages dist folders
+    if (this.natstackTypes === null) {
+      // Use app packages dir (returns null in packaged builds)
+      const packagesDir = getPackagesDir();
+      if (packagesDir) {
+        this.natstackTypes = loadNatstackPackageTypes(packagesDir);
+        console.log(`[TypeDefinitionService] Loaded ${Object.keys(this.natstackTypes).length} @natstack/* packages from ${packagesDir}`);
+      } else {
+        this.natstackTypes = {};
+        console.log(`[TypeDefinitionService] No packages directory found, @natstack/* types unavailable`);
+      }
+    }
+
+    const pkgData = this.natstackTypes[packageName];
+    if (!pkgData) {
+      return {};
+    }
+
+    return pkgData.files;
+  }
+
   /**
    * Get type definitions for a package.
    * Auto-installs via Arborist if not available.
@@ -173,10 +203,16 @@ export class TypeDefinitionService {
     packageName: string,
     version?: string
   ): Promise<Record<string, string>> {
-    // Skip @natstack/* packages - they're bundled in the runtime TypeCheckService
+    // Handle @natstack/* packages - try local packages directory first
     if (packageName.startsWith("@natstack/")) {
-      console.log(`[TypeDefinitionService] ${packageName} types are bundled - skipping npm`);
-      return {};
+      const types = this.getNatstackTypes(packageName);
+      if (Object.keys(types).length > 0) {
+        console.log(`[TypeDefinitionService] Serving ${packageName} types (${Object.keys(types).length} files)`);
+        return types;
+      }
+      // If no local types found (non-monorepo context), fall through to try
+      // loading from installed node_modules via Verdaccio/Arborist
+      console.log(`[TypeDefinitionService] No local types for ${packageName}, will try installed packages`);
     }
 
     // Skip packages that aren't real npm packages
@@ -484,11 +520,22 @@ export class TypeDefinitionService {
   }
 
   /**
+   * Invalidate @natstack/* types cache and panel deps cache.
+   * Call when workspace packages change to ensure fresh types are loaded.
+   */
+  invalidateNatstackTypes(): void {
+    this.natstackTypes = null;
+    this.panelDepsCache.clear();
+    console.log("[TypeDefinitionService] @natstack/* types and panel deps cache invalidated");
+  }
+
+  /**
    * Clean up resources. Call when app is shutting down.
    */
   shutdown(): void {
     this.globalTypeCache.clear();
     this.panelDepsCache.clear();
+    this.natstackTypes = null;
     // Note: depsDirLocks and installLocks clean themselves up via .finally()
   }
 }
@@ -543,13 +590,4 @@ export function shutdownTypeDefinitionService(): void {
     serviceInstance.shutdown();
     serviceInstance = null;
   }
-}
-
-/**
- * Reset the singleton for testing. DO NOT use in production code.
- * @internal
- * @deprecated Use shutdownTypeDefinitionService instead
- */
-export function _resetTypeDefinitionServiceForTesting(): void {
-  shutdownTypeDefinitionService();
 }

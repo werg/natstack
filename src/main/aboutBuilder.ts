@@ -17,6 +17,12 @@ import {
   generateAsyncTrackingBanner,
   generateModuleMapBanner,
 } from "./panelBuilder.js";
+import {
+  getAboutPagesDir,
+  getAppNodeModules,
+  getPackagesDir,
+  getCentralConfigDirectory,
+} from "./paths.js";
 
 /**
  * Shell page titles for display in panel tree.
@@ -55,9 +61,8 @@ export class AboutBuilder {
 
   constructor() {
     // About pages are in the src/about-pages directory
-    // In development, this is relative to process.cwd()
-    // In production, this should be relative to the app resources
-    this.aboutPagesRoot = path.join(process.cwd(), "src", "about-pages");
+    // Uses getAboutPagesDir() which handles dev vs production paths
+    this.aboutPagesRoot = getAboutPagesDir();
   }
 
   /**
@@ -86,8 +91,8 @@ export class AboutBuilder {
     const entryPath = path.join(pageDir, entryFile);
 
     try {
-      // Create temp output directory
-      const outdir = path.join(pageDir, ".build");
+      // Use writable temp dir (not asar-embedded pageDir)
+      const outdir = path.join(getCentralConfigDirectory(), "about-build-cache", page);
       fs.mkdirSync(outdir, { recursive: true });
 
       const bundlePath = path.join(outdir, "bundle.js");
@@ -112,10 +117,7 @@ export class AboutBuilder {
         keepNames: true,
         format: "cjs", // CJS for nodeIntegration
         absWorkingDir: pageDir,
-        nodePaths: [
-          path.join(process.cwd(), "node_modules"),
-          path.join(process.cwd(), "packages"),
-        ],
+        nodePaths: [getAppNodeModules(), getPackagesDir()].filter((p): p is string => p !== null),
         loader: {
           ".png": "file",
           ".jpg": "file",

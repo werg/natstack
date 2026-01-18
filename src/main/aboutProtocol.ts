@@ -295,14 +295,6 @@ export function storeAboutPage(page: ShellPage, artifacts: ProtocolBuildArtifact
 }
 
 /**
- * Remove about page content from protocol serving.
- */
-export function removeAboutPage(page: ShellPage): void {
-  aboutPages.delete(page);
-  aboutPageTokens.delete(page);
-}
-
-/**
  * Check if an about page is stored.
  */
 export function hasAboutPage(page: ShellPage): boolean {

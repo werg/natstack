@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import { app } from "electron";
 import type { Workspace } from "./workspace/types.js";
+import { isDev } from "./utils.js";
 
 /**
  * Active workspace, if one is set.
@@ -161,4 +162,43 @@ export function getSessionScopePath(workspaceId: string, sessionId: string): str
   fs.mkdirSync(scopePath, { recursive: true });
 
   return scopePath;
+}
+
+/**
+ * Get the NatStack application root directory.
+ * This is where packages/, node_modules/, and src/ exist.
+ *
+ * In development: The monorepo root (derived from __dirname)
+ * In production: App resources location
+ */
+export function getAppRoot(): string {
+  if (isDev()) {
+    // Development: __dirname is dist/main, walk up to monorepo root
+    return path.resolve(__dirname, "..", "..");
+  }
+  // Production: use Electron's app path (asar root or extracted resources)
+  return app.getAppPath();
+}
+
+/**
+ * Get the NatStack packages directory for @natstack/* types.
+ * Returns null if packages directory doesn't exist (e.g., external workspace).
+ */
+export function getPackagesDir(): string | null {
+  const packagesPath = path.join(getAppRoot(), "packages");
+  return fs.existsSync(packagesPath) ? packagesPath : null;
+}
+
+/**
+ * Get the app's node_modules directory for esbuild resolution.
+ */
+export function getAppNodeModules(): string {
+  return path.join(getAppRoot(), "node_modules");
+}
+
+/**
+ * Get the about-pages source directory for shell page builds.
+ */
+export function getAboutPagesDir(): string {
+  return path.join(getAppRoot(), "src", "about-pages");
 }

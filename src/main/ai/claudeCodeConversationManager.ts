@@ -15,6 +15,7 @@ import {
 } from "./claudeCodeToolProxy.js";
 import { Logger } from "../../shared/logging.js";
 import { findExecutable } from "./providerFactory.js";
+import { getActiveWorkspace } from "../paths.js";
 
 /**
  * Language model interface (minimal for our needs)
@@ -127,7 +128,7 @@ export class ClaudeCodeConversationManager {
     const provider = createClaudeCode({
       defaultSettings: {
         pathToClaudeCodeExecutable: this.claudeExecutable,
-        cwd: process.cwd(),
+        cwd: getActiveWorkspace()?.path ?? process.cwd(),
         allowedTools: mcpToolNames,
         mcpServers: {
           [`proxy-${conversationId}`]: mcpServer,

@@ -56,6 +56,14 @@ export {
 // Virtual type definitions
 export { FS_TYPE_DEFINITIONS, PATH_TYPE_DEFINITIONS, GLOBAL_TYPE_DEFINITIONS, NATSTACK_RUNTIME_TYPES } from "./lib/index.js";
 
+// Dynamic natstack package type loading
+export {
+  loadNatstackPackageTypes,
+  loadSinglePackageTypes,
+  findPackagesDir,
+  type NatstackPackageTypes,
+} from "./lib/index.js";
+
 // Bundled TypeScript lib files
 export { TS_LIB_FILES } from "./lib/typescript-libs.js";
 

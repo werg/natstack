@@ -18,7 +18,7 @@ import {
   resolveModule,
   DEFAULT_DEDUPE_PACKAGES,
 } from "./resolution.js";
-import { FS_TYPE_DEFINITIONS, PATH_TYPE_DEFINITIONS, GLOBAL_TYPE_DEFINITIONS, NATSTACK_RUNTIME_TYPES, NATSTACK_PACKAGE_TYPES } from "./lib/index.js";
+import { FS_TYPE_DEFINITIONS, PATH_TYPE_DEFINITIONS, GLOBAL_TYPE_DEFINITIONS, NATSTACK_RUNTIME_TYPES, loadNatstackPackageTypes, findPackagesDir, type NatstackPackageTypes } from "./lib/index.js";
 import { TS_LIB_FILES } from "./lib/typescript-libs.js";
 
 /**
@@ -86,6 +86,12 @@ export interface TypeCheckServiceConfig {
   libPath?: string;
   /** Callback to fetch external package types on-demand */
   requestExternalTypes?: (packageName: string) => Promise<Map<string, string> | null>;
+  /**
+   * Path to the monorepo root (containing packages directory).
+   * If provided, natstack types are loaded from packages dist folders.
+   * This enables dynamic type loading without bundled natstack-packages.ts.
+   */
+  workspaceRoot?: string;
 }
 
 /**
@@ -101,6 +107,8 @@ export class TypeCheckService {
   private loadedExternalPackages = new Set<string>();
   /** Packages that need types fetched (collected during resolution) */
   private pendingExternalPackages = new Set<string>();
+  /** Loaded @natstack/* package types (dynamically loaded from filesystem) */
+  private natstackPackageTypes: Record<string, NatstackPackageTypes> = {};
 
   constructor(config: TypeCheckServiceConfig) {
     this.config = config;
@@ -152,13 +160,20 @@ export class TypeCheckService {
       version: 1,
     });
 
-    // Add all bundled @natstack/* package types
-    for (const [pkgName, pkgData] of Object.entries(NATSTACK_PACKAGE_TYPES)) {
-      for (const [fileName, content] of Object.entries(pkgData.files)) {
-        this.files.set(`/@natstack/packages/${pkgName}/${fileName}`, {
-          content,
-          version: 1,
-        });
+    // Load @natstack/* package types dynamically from filesystem
+    const packagesDir = this.config.workspaceRoot
+      ? findPackagesDir(this.config.workspaceRoot)
+      : null;
+
+    if (packagesDir) {
+      this.natstackPackageTypes = loadNatstackPackageTypes(packagesDir);
+      for (const [pkgName, pkgData] of Object.entries(this.natstackPackageTypes)) {
+        for (const [fileName, content] of Object.entries(pkgData.files)) {
+          this.files.set(`/@natstack/packages/${pkgName}/${fileName}`, {
+            content,
+            version: 1,
+          });
+        }
       }
     }
   }
@@ -572,9 +587,9 @@ export class TypeCheckService {
           };
         }
 
-        // Check bundled @natstack/* packages
+        // Check loaded @natstack/* packages (dynamically loaded from filesystem)
         const fullPkgName = `@natstack/${result.packageName}`;
-        const pkgData = NATSTACK_PACKAGE_TYPES[fullPkgName];
+        const pkgData = this.natstackPackageTypes[fullPkgName];
         if (pkgData) {
           // Extract subpath from module name (e.g., @natstack/agentic-messaging/broker -> broker)
           const afterPkg = moduleName.slice(fullPkgName.length);

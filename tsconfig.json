@@ -34,6 +34,7 @@
       "@natstack/react": ["packages/react/src/index.ts"],
       "@natstack/rpc": ["packages/rpc/src/index.ts"],
       "@natstack/runtime": ["packages/runtime/src/index.ts"],
+      "@natstack/runtime/typecheck": ["packages/runtime/src/typecheck/index.ts"],
       "@natstack/eval": ["packages/eval/src/index.ts"]
     }
   },

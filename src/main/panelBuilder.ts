@@ -25,6 +25,7 @@ import {
   DEFAULT_DEDUPE_PACKAGES,
 } from "@natstack/runtime/typecheck";
 import { isVerdaccioServerInitialized, getVerdaccioServer } from "./verdaccioServer.js";
+import { getPackagesDir, getAppNodeModules } from "./paths.js";
 
 // ===========================================================================
 // Shared Build Plugins
@@ -685,7 +686,9 @@ const TEXT_ASSET_EXTENSIONS = new Set([
  */
 function getReactDependenciesFromNatstackReact(): Record<string, string> | null {
   try {
-    const natstackReactPkgPath = path.join(process.cwd(), "packages/react/package.json");
+    const packagesDir = getPackagesDir();
+    if (!packagesDir) return null;
+    const natstackReactPkgPath = path.join(packagesDir, "react", "package.json");
     if (!fs.existsSync(natstackReactPkgPath)) {
       return null;
     }
@@ -763,6 +766,12 @@ interface BuildFromSourceResult {
 
 export class PanelBuilder {
   private cacheManager = getMainCacheManager();
+
+  /** Last known Verdaccio versions (for detecting changes) */
+  private lastVerdaccioVersions: Record<string, string> | null = null;
+
+  /** Per-panel cache of relevant @natstack package versions */
+  private panelRelevantVersionsCache = new Map<string, Record<string, string>>();
 
   /**
    * Get cached dependency hash for a panel source path.
@@ -940,7 +949,7 @@ export class PanelBuilder {
 
   private getNodeResolutionPaths(sourcePath: string, runtimeNodeModules: string): string[] {
     const localNodeModules = path.join(sourcePath, "node_modules");
-    const projectNodeModules = path.join(process.cwd(), "node_modules");
+    const projectNodeModules = getAppNodeModules();
 
     const paths: string[] = [];
     for (const candidate of [runtimeNodeModules, localNodeModules, projectNodeModules]) {
@@ -1037,74 +1046,11 @@ export class PanelBuilder {
     );
   }
 
-  /**
-   * Resolve workspace:* dependencies to file: paths.
-   *
-   * IMPORTANT: This recursively collects ALL workspace dependencies (including transitive ones)
-   * and flattens them into the resolved map. This is necessary because:
-   * 1. npm doesn't understand the `workspace:*` protocol (it's pnpm/yarn specific)
-   * 2. When npm installs `file:packages/foo`, it reads foo's package.json
-   * 3. If foo has `workspace:*` deps, npm can't resolve them
-   * 4. By flattening all workspace deps to the top level with `file:` paths, npm can install them
-   */
-  private resolveWorkspaceDependencies(
-    dependencies: Record<string, string>
-  ): Record<string, string> {
-    const resolved: Record<string, string> = {};
-    const workspaceRoot = process.cwd();
-    const visited = new Set<string>();
-
-    const resolvePackagePath = (pkgName: string): string => {
-      // Handle scoped packages like @natstack/foo -> packages/foo
-      const pkgDir = pkgName.startsWith("@") ? pkgName.split("/")[1] || pkgName : pkgName;
-      return path.join(workspaceRoot, "packages", pkgDir);
-    };
-
-    const collectWorkspaceDeps = (deps: Record<string, string>) => {
-      for (const [pkg, version] of Object.entries(deps)) {
-        if (version.startsWith("workspace:")) {
-          if (visited.has(pkg)) continue;
-          visited.add(pkg);
-
-          const packagePath = resolvePackagePath(pkg);
-          resolved[pkg] = `file:${packagePath}`;
-
-          // Recursively collect this package's workspace dependencies
-          const pkgJsonPath = path.join(packagePath, "package.json");
-          if (fs.existsSync(pkgJsonPath)) {
-            try {
-              const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
-                dependencies?: Record<string, string>;
-              };
-              if (pkgJson.dependencies) {
-                collectWorkspaceDeps(pkgJson.dependencies);
-              }
-            } catch {
-              // Skip packages with invalid package.json
-            }
-          }
-        } else if (!resolved[pkg]) {
-          // Non-workspace dependency - add if not already present
-          resolved[pkg] = version;
-        }
-      }
-    };
-
-    collectWorkspaceDeps(dependencies);
-
-    // Log workspace dependency resolution for debugging
-    const workspaceDeps = Object.entries(resolved).filter(([, v]) => v.startsWith("file:"));
-    if (workspaceDeps.length > 0) {
-      console.log(`[PanelBuilder] Resolved ${workspaceDeps.length} workspace dependencies: ${workspaceDeps.map(([k]) => k).join(", ")}`);
-    }
-
-    return resolved;
-  }
-
   private async installDependencies(
     depsDir: string,
     dependencies: Record<string, string> | undefined,
-    previousHash?: string
+    previousHash?: string,
+    canonicalPath?: string
   ): Promise<string | undefined> {
     if (!dependencies || Object.keys(dependencies).length === 0) {
       return undefined;
@@ -1114,31 +1060,32 @@ export class PanelBuilder {
     const packageJsonPath = path.join(depsDir, "package.json");
     const npmrcPath = path.join(depsDir, ".npmrc");
 
-    // Check if Verdaccio is running - if so, use it for native npm resolution
-    // Otherwise, fall back to workspace:* -> file: path translation
+    // Verdaccio is required for dependency resolution
     // ensureRunning() will auto-restart Verdaccio if it crashed
-    const useVerdaccio = isVerdaccioServerInitialized() && await getVerdaccioServer().ensureRunning();
-
-    let resolvedDependencies: Record<string, string>;
-    if (useVerdaccio) {
-      // With Verdaccio, translate workspace:* to * (Verdaccio serves local packages)
-      resolvedDependencies = {};
-      for (const [name, version] of Object.entries(dependencies)) {
-        resolvedDependencies[name] = version.startsWith("workspace:") ? "*" : version;
-      }
-
-      // Write .npmrc to point to local Verdaccio registry
-      const verdaccioUrl = getVerdaccioServer().getBaseUrl();
-      fs.writeFileSync(npmrcPath, `registry=${verdaccioUrl}\n`);
-    } else {
-      // Fallback: resolve workspace:* to file: paths
-      resolvedDependencies = this.resolveWorkspaceDependencies(dependencies);
-
-      // Remove .npmrc if it exists (use default registry)
-      if (fs.existsSync(npmrcPath)) {
-        fs.rmSync(npmrcPath);
-      }
+    if (!isVerdaccioServerInitialized()) {
+      throw new Error(
+        "Verdaccio server not initialized. Cannot resolve dependencies without local npm registry. " +
+        "Ensure Verdaccio starts successfully during app initialization."
+      );
     }
+
+    const verdaccioRunning = await getVerdaccioServer().ensureRunning();
+    if (!verdaccioRunning) {
+      throw new Error(
+        "Verdaccio server failed to start. Cannot resolve dependencies. " +
+        `Last error: ${getVerdaccioServer().getExitError()?.message ?? "unknown"}`
+      );
+    }
+
+    // With Verdaccio, translate workspace:* to * (Verdaccio serves local packages)
+    const resolvedDependencies: Record<string, string> = {};
+    for (const [name, version] of Object.entries(dependencies)) {
+      resolvedDependencies[name] = version.startsWith("workspace:") ? "*" : version;
+    }
+
+    // Write .npmrc to point to local Verdaccio registry
+    const verdaccioUrl = getVerdaccioServer().getBaseUrl();
+    fs.writeFileSync(npmrcPath, `registry=${verdaccioUrl}\n`);
 
     type PanelRuntimePackageJson = {
       name: string;
@@ -1155,14 +1102,83 @@ export class PanelBuilder {
     };
     const serialized = JSON.stringify(desiredPackageJson, null, 2);
 
-    // When using Verdaccio, include workspace package content hashes in the dependency hash.
-    // This ensures we reinstall when workspace packages change, even if version specifiers
-    // (like "*") remain the same.
-    let hashInput = serialized;
-    if (useVerdaccio) {
-      const workspaceHashes = getVerdaccioServer().getWorkspacePackageHashes();
-      hashInput += JSON.stringify(workspaceHashes, Object.keys(workspaceHashes).sort());
+    // Include actual Verdaccio package versions in the dependency hash.
+    // This ensures we reinstall when Verdaccio packages change, even if:
+    // - Version specifiers (like "*") remain the same
+    // - Content hashes match but Verdaccio state is different
+    //
+    // Smart optimization: Only walk transitive deps when Verdaccio packages have actually changed.
+    // This avoids unnecessary npm installs when unrelated @natstack packages change.
+    const verdaccioVersions = await getVerdaccioServer().getVerdaccioVersions();
+
+    // Fast path: check if any @natstack package changed since last known state
+    // Use union of all keys from both objects for consistent comparison
+    const lastKnownVersions = this.lastVerdaccioVersions;
+    const allKeys = [...new Set([
+      ...Object.keys(verdaccioVersions),
+      ...Object.keys(lastKnownVersions ?? {})
+    ])].sort();
+    const versionsChanged = !lastKnownVersions ||
+      JSON.stringify(verdaccioVersions, allKeys) !== JSON.stringify(lastKnownVersions, allKeys);
+
+    let relevantVersions: Record<string, string>;
+
+    if (!versionsChanged && canonicalPath) {
+      // Nothing changed - use cached relevant versions for this panel
+      relevantVersions = this.panelRelevantVersionsCache.get(canonicalPath) ?? {};
+    } else {
+      // Something changed - compute transitive @natstack deps for this panel
+      relevantVersions = {};
+
+      // Check if we're in a monorepo context (packages/ directory exists)
+      // If not, we can't walk transitive deps - fall back to including all verdaccioVersions
+      // Use app packages dir (returns null in packaged builds)
+      const packagesDir = getPackagesDir();
+
+      if (!packagesDir) {
+        // Non-monorepo context: include all Verdaccio versions in hash
+        // This is safe (may cause extra reinstalls) but correct
+        relevantVersions = { ...verdaccioVersions };
+      } else {
+        // Monorepo context: walk transitive deps for precise hash
+        const visited = new Set<string>();
+
+        const walkDeps = (pkgName: string) => {
+          if (!pkgName.startsWith("@natstack/") || visited.has(pkgName)) return;
+          visited.add(pkgName);
+          if (verdaccioVersions[pkgName]) {
+            relevantVersions[pkgName] = verdaccioVersions[pkgName];
+          }
+          // Read package's deps from workspace packages dir
+          const pkgDir = pkgName.replace("@natstack/", "");
+          const pkgJsonPath = path.join(packagesDir, pkgDir, "package.json");
+          if (fs.existsSync(pkgJsonPath)) {
+            try {
+              const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8"));
+              for (const dep of Object.keys(pkgJson.dependencies ?? {})) {
+                walkDeps(dep);
+              }
+            } catch {
+              // Malformed package.json - skip this package's transitive deps
+              // The direct dep is already added to relevantVersions above
+            }
+          }
+        };
+
+        // Start from panel's direct @natstack deps
+        for (const dep of Object.keys(resolvedDependencies)) {
+          walkDeps(dep);
+        }
+      }
+
+      // Cache for next time
+      if (canonicalPath) {
+        this.panelRelevantVersionsCache.set(canonicalPath, relevantVersions);
+      }
+      this.lastVerdaccioVersions = verdaccioVersions;
     }
+
+    const hashInput = serialized + JSON.stringify(relevantVersions, Object.keys(relevantVersions).sort());
     const desiredHash = crypto.createHash("sha256").update(hashInput).digest("hex");
 
     const nodeModulesPath = path.join(depsDir, "node_modules");
@@ -1188,17 +1204,12 @@ export class PanelBuilder {
     }
 
     // Pass registry directly to Arborist - .npmrc is not always read reliably
-    const arboristOptions: {
-      path: string;
-      registry?: string;
-      preferOnline?: boolean;
-    } = { path: depsDir };
-    if (useVerdaccio) {
-      arboristOptions.registry = getVerdaccioServer().getBaseUrl();
-      // Always fetch fresh metadata from Verdaccio to get latest content-hash versions
-      arboristOptions.preferOnline = true;
-    }
-    const arborist = new Arborist(arboristOptions);
+    // Always fetch fresh metadata from Verdaccio to get latest content-hash versions
+    const arborist = new Arborist({
+      path: depsDir,
+      registry: getVerdaccioServer().getBaseUrl(),
+      preferOnline: true,
+    });
     await arborist.buildIdealTree();
     await arborist.reify();
 
@@ -1253,7 +1264,8 @@ export class PanelBuilder {
       const dependencyHash = await this.installDependencies(
         workspace.depsDir,
         runtimeDependencies,
-        previousDependencyHash
+        previousDependencyHash,
+        artifactKey.canonicalPath
       );
       log(`Dependencies installed`);
 
@@ -2006,7 +2018,8 @@ import ${JSON.stringify(relativeUserEntry)};
       const dependencyHash = await this.installDependencies(
         buildWorkspace.depsDir,
         workerDependencies,
-        previousDependencyHash
+        previousDependencyHash,
+        canonicalWorkerPath
       );
 
       if (dependencyHash) {

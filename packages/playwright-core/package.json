@@ -1,6 +1,6 @@
 {
   "name": "@natstack/playwright-core",
-  "version": "0.1.0-a4674a753f15",
+  "version": "0.1.0",
   "type": "module",
   "description": "Browser-compatible CDP client library for orchestrating Chrome sessions",
   "license": "Apache-2.0",

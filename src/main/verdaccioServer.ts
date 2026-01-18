@@ -95,6 +95,18 @@ export function createVerdaccioServer(config?: VerdaccioServerConfig): Verdaccio
   return verdaccioServerInstance;
 }
 
+/**
+ * Result of checking workspace changes.
+ */
+export interface WorkspaceChangesResult {
+  /** Packages whose content hash differs from published Verdaccio version */
+  changed: string[];
+  /** Packages whose content hash matches published Verdaccio version */
+  unchanged: string[];
+  /** Whether this is a fresh start (no packages in Verdaccio yet) */
+  freshStart: boolean;
+}
+
 export class VerdaccioServer {
   private server: ReturnType<typeof spawn> | null = null;
   private configuredPort: number;
@@ -114,6 +126,10 @@ export class VerdaccioServer {
   private restartDelayMs: number;
   /** Current restart attempt count (reset on successful start) */
   private restartAttempts = 0;
+  /** Cached Verdaccio versions with TTL */
+  private verdaccioVersionsCache: { versions: Record<string, string>; timestamp: number } | null = null;
+  /** TTL for Verdaccio versions cache (30 seconds) */
+  private readonly VERDACCIO_VERSIONS_TTL_MS = 30_000;
 
   constructor(config?: VerdaccioServerConfig) {
     this.configuredPort = config?.port ?? PORT_RANGES.verdaccio.start;
@@ -419,8 +435,12 @@ export class VerdaccioServer {
     }
   }
 
+  /** Concurrency limit for parallel publishing */
+  private readonly PUBLISH_CONCURRENCY = 4;
+
   /**
    * Publish all workspace packages to the local registry.
+   * Uses parallel publishing with concurrency limit for faster startup.
    */
   async publishWorkspacePackages(): Promise<PublishResult> {
     const result: PublishResult = {
@@ -437,11 +457,12 @@ export class VerdaccioServer {
       return result;
     }
 
+    // Collect all packages to publish
+    const packagesToPublish: Array<{ path: string; name: string }> = [];
+
     const packages = fs.readdirSync(packagesDir, { withFileTypes: true })
       .filter(entry => entry.isDirectory() && !entry.name.startsWith("."))
       .map(entry => entry.name);
-
-    console.log(`[VerdaccioServer] Publishing ${packages.length} workspace packages...`);
 
     for (const pkg of packages) {
       const pkgPath = path.join(packagesDir, pkg);
@@ -453,18 +474,43 @@ export class VerdaccioServer {
 
       try {
         const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string };
-        const publishResult = await this.publishPackage(pkgPath, pkgJson.name);
+        packagesToPublish.push({ path: pkgPath, name: pkgJson.name });
+      } catch {
+        // Skip packages with invalid package.json
+      }
+    }
 
-        if (publishResult === "published") {
-          result.published.push(pkgJson.name);
-        } else if (publishResult === "skipped") {
-          result.skipped.push(pkgJson.name);
+    console.log(`[VerdaccioServer] Publishing ${packagesToPublish.length} workspace packages (concurrency: ${this.PUBLISH_CONCURRENCY})...`);
+
+    // Publish in parallel batches
+    for (let i = 0; i < packagesToPublish.length; i += this.PUBLISH_CONCURRENCY) {
+      const batch = packagesToPublish.slice(i, i + this.PUBLISH_CONCURRENCY);
+
+      const batchResults = await Promise.allSettled(
+        batch.map(async (pkg) => {
+          const publishResult = await this.publishPackage(pkg.path, pkg.name);
+          return { name: pkg.name, result: publishResult };
+        })
+      );
+
+      for (const batchResult of batchResults) {
+        if (batchResult.status === "fulfilled") {
+          const { name, result: publishResult } = batchResult.value;
+          if (publishResult === "published") {
+            result.published.push(name);
+          } else if (publishResult === "skipped") {
+            result.skipped.push(name);
+          }
+        } else {
+          // Extract package name from the error if possible
+          const errorMsg = batchResult.reason instanceof Error
+            ? batchResult.reason.message
+            : String(batchResult.reason);
+          const pkgName = batch[batchResults.indexOf(batchResult)]?.name ?? "unknown";
+          console.error(`[VerdaccioServer] Failed to publish ${pkgName}:`, errorMsg);
+          result.failed.push({ name: pkgName, error: errorMsg });
+          result.success = false;
         }
-      } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        console.error(`[VerdaccioServer] Failed to publish ${pkg}:`, errorMsg);
-        result.failed.push({ name: pkg, error: errorMsg });
-        result.success = false;
       }
     }
 
@@ -546,6 +592,120 @@ export class VerdaccioServer {
   }
 
   /**
+   * Get the latest version of a package from Verdaccio (the "latest" tagged version).
+   * Returns null if package doesn't exist or on error.
+   */
+  async getPackageVersion(pkgName: string): Promise<string | null> {
+    const registryUrl = this.getBaseUrl();
+    const encodedName = pkgName.replace("/", "%2f");
+
+    try {
+      const response = await fetch(`${registryUrl}/${encodedName}`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!response.ok) return null;
+
+      const data = await response.json() as { "dist-tags"?: { latest?: string } };
+      return data["dist-tags"]?.latest ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Update the "latest" dist-tag to point to a specific version.
+   * Used when a version exists but isn't tagged as latest.
+   */
+  private async updateLatestTag(pkgName: string, version: string): Promise<void> {
+    const registryUrl = this.getBaseUrl();
+
+    return new Promise((resolve, reject) => {
+      const proc = spawn(
+        "npm",
+        ["dist-tag", "add", `${pkgName}@${version}`, "latest", "--registry", registryUrl],
+        {
+          cwd: this.workspaceRoot,
+          stdio: ["ignore", "pipe", "pipe"],
+        }
+      );
+
+      let stderr = "";
+      proc.stderr?.on("data", (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on("close", (code) => {
+        if (code === 0) {
+          console.log(`[VerdaccioServer] Updated latest tag: ${pkgName}@${version}`);
+          resolve();
+        } else {
+          reject(new Error(`Failed to update dist-tag for ${pkgName}: ${stderr}`));
+        }
+      });
+
+      proc.on("error", reject);
+    });
+  }
+
+  /**
+   * Get the actual versions served by Verdaccio for all workspace packages.
+   * Used to include in deps hash to detect when Verdaccio state changes.
+   * Results are cached for 30 seconds to avoid repeated HTTP queries during rapid builds.
+   */
+  async getVerdaccioVersions(): Promise<Record<string, string>> {
+    // Return cached if fresh
+    if (this.verdaccioVersionsCache &&
+        Date.now() - this.verdaccioVersionsCache.timestamp < this.VERDACCIO_VERSIONS_TTL_MS) {
+      return this.verdaccioVersionsCache.versions;
+    }
+
+    const versions: Record<string, string> = {};
+    const packagesDir = path.join(this.workspaceRoot, "packages");
+
+    if (!fs.existsSync(packagesDir)) {
+      return versions;
+    }
+
+    const packages = fs.readdirSync(packagesDir, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && !entry.name.startsWith("."));
+
+    // Query versions in parallel
+    const queries = packages.map(async (entry) => {
+      const pkgPath = path.join(packagesDir, entry.name);
+      const pkgJsonPath = path.join(pkgPath, "package.json");
+
+      if (!fs.existsSync(pkgJsonPath)) return null;
+
+      try {
+        const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string };
+        const version = await this.getPackageVersion(pkgJson.name);
+        return version ? { name: pkgJson.name, version } : null;
+      } catch {
+        return null;
+      }
+    });
+
+    const results = await Promise.all(queries);
+    for (const result of results) {
+      if (result) {
+        versions[result.name] = result.version;
+      }
+    }
+
+    // Cache the results
+    this.verdaccioVersionsCache = { versions, timestamp: Date.now() };
+    return versions;
+  }
+
+  /**
+   * Invalidate the Verdaccio versions cache.
+   * Call after publishing packages to ensure fresh data.
+   */
+  invalidateVerdaccioVersionsCache(): void {
+    this.verdaccioVersionsCache = null;
+  }
+
+  /**
    * Publish a single package to the local registry.
    * Uses content-hash based versioning to skip unchanged packages.
    * @returns "published" if newly published, "skipped" if content unchanged
@@ -567,8 +727,16 @@ export class VerdaccioServer {
     // Check if this exact version already exists
     const exists = await this.checkVersionExists(pkgName, hashVersion);
     if (exists) {
-      console.log(`[VerdaccioServer] ${pkgName}@${hashVersion} unchanged (skipping)`);
-      return "skipped";
+      // Version exists - check if it's already the "latest" tag
+      const latestVersion = await this.getPackageVersion(pkgName);
+      if (latestVersion === hashVersion) {
+        console.log(`[VerdaccioServer] ${pkgName}@${hashVersion} unchanged (skipping)`);
+        return "skipped";
+      }
+      // Version exists but isn't "latest" - update the tag
+      console.log(`[VerdaccioServer] ${pkgName}@${hashVersion} exists, updating latest tag`);
+      await this.updateLatestTag(pkgName, hashVersion);
+      return "published"; // Treat tag update as a publish for cache invalidation purposes
     }
 
     // Rewrite workspace:* deps to * and set hash-based version
@@ -603,7 +771,7 @@ export class VerdaccioServer {
       return await new Promise((resolve, reject) => {
         const proc = spawn(
           "npm",
-          ["publish", "--registry", registryUrl, "--access", "public", "--tag", "local"],
+          ["publish", "--registry", registryUrl, "--access", "public", "--tag", "latest"],
           {
             cwd: pkgPath,
             stdio: ["ignore", "pipe", "pipe"],
@@ -807,37 +975,165 @@ export class VerdaccioServer {
   }
 
   /**
-   * Get content hashes for all workspace packages.
-   * Used by panel builder to detect when workspace packages have changed.
+   * Check which workspace packages have changed since last startup.
+   * Compares expected content hashes against published Verdaccio versions.
+   * Verdaccio is the source of truth - no separate hash file needed.
+   *
+   * @returns Object containing changed/unchanged package lists and freshStart flag
    */
-  getWorkspacePackageHashes(): Record<string, string> {
-    const hashes: Record<string, string> = {};
-    const packagesDir = path.join(this.workspaceRoot, "packages");
+  async checkWorkspaceChanges(): Promise<WorkspaceChangesResult> {
+    const changed: string[] = [];
+    const unchanged: string[] = [];
 
+    const packagesDir = path.join(this.workspaceRoot, "packages");
     if (!fs.existsSync(packagesDir)) {
-      return hashes;
+      return { changed, unchanged, freshStart: true };
     }
 
     const packages = fs.readdirSync(packagesDir, { withFileTypes: true })
       .filter(entry => entry.isDirectory() && !entry.name.startsWith("."));
 
-    for (const entry of packages) {
+    // Query all in parallel
+    const checks = packages.map(async (entry) => {
       const pkgPath = path.join(packagesDir, entry.name);
       const pkgJsonPath = path.join(pkgPath, "package.json");
-
-      if (!fs.existsSync(pkgJsonPath)) {
-        continue;
-      }
+      if (!fs.existsSync(pkgJsonPath)) return null;
 
       try {
         const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string };
-        const hash = this.calculatePackageHash(pkgPath);
-        hashes[pkgJson.name] = hash;
-      } catch {
-        // Skip packages with invalid package.json
+        const expectedVersion = this.getExpectedVersion(pkgPath);
+        const actualVersion = await this.getPackageVersion(pkgJson.name);
+
+        return {
+          name: pkgJson.name,
+          changed: actualVersion !== expectedVersion
+        };
+      } catch (error) {
+        // On error (parse failure, Verdaccio query failed, etc.), treat as changed
+        // so the package gets republished rather than silently skipped
+        console.warn(`[VerdaccioServer] Error checking ${entry.name}:`, error);
+        try {
+          const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string };
+          return { name: pkgJson.name, changed: true };
+        } catch {
+          // Can't even read package.json - use directory name as fallback
+          return { name: `@natstack/${entry.name}`, changed: true };
+        }
+      }
+    });
+
+    const results = await Promise.all(checks);
+    for (const result of results) {
+      if (!result) continue;
+      (result.changed ? changed : unchanged).push(result.name);
+    }
+
+    // Fresh start = no packages in Verdaccio yet (all changed, none unchanged)
+    const freshStart = unchanged.length === 0 && changed.length > 0;
+    return { changed, unchanged, freshStart };
+  }
+
+  /**
+   * Get the expected version string for a package based on its current hash.
+   */
+  private getExpectedVersion(pkgPath: string): string {
+    const pkgJsonPath = path.join(pkgPath, "package.json");
+    const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { version: string };
+    const baseVersion = pkgJson.version.split("-")[0];
+    const contentHash = this.calculatePackageHash(pkgPath);
+    return `${baseVersion}-${contentHash}`;
+  }
+
+  /**
+   * Publish only the packages that have changed since last startup.
+   * Also verifies "unchanged" packages exist in Verdaccio with correct version.
+   *
+   * @returns Publish result with only changed packages
+   */
+  async publishChangedPackages(): Promise<PublishResult & { changesDetected: WorkspaceChangesResult }> {
+    const changes = await this.checkWorkspaceChanges();
+
+    console.log(`[VerdaccioServer] Workspace changes: ${changes.changed.length} changed, ${changes.unchanged.length} unchanged`);
+
+    if (changes.freshStart) {
+      console.log("[VerdaccioServer] Fresh start - publishing all packages");
+      const result = await this.publishWorkspacePackages();
+      this.invalidateVerdaccioVersionsCache();
+      return { ...result, changesDetected: changes };
+    }
+
+    // checkWorkspaceChanges() already verified unchanged packages against Verdaccio,
+    // so we can trust the changed/unchanged lists directly
+    if (changes.changed.length === 0) {
+      console.log("[VerdaccioServer] No packages changed, skipping publish");
+      return {
+        success: true,
+        published: [],
+        failed: [],
+        skipped: changes.unchanged,
+        changesDetected: changes,
+      };
+    }
+
+    const packagesDir = path.join(this.workspaceRoot, "packages");
+
+    // Publish only changed packages (in parallel)
+    const result: PublishResult = {
+      success: true,
+      published: [],
+      failed: [],
+      skipped: [...changes.unchanged],
+    };
+
+    // Collect packages to publish
+    const packagesToPublish: Array<{ path: string; name: string }> = [];
+    for (const pkgName of changes.changed) {
+      const pkgDir = pkgName.replace("@natstack/", "");
+      const pkgPath = path.join(packagesDir, pkgDir);
+      const pkgJsonPath = path.join(pkgPath, "package.json");
+
+      if (!fs.existsSync(pkgJsonPath)) {
+        console.warn(`[VerdaccioServer] Package ${pkgName} not found at ${pkgPath}`);
+        continue;
+      }
+
+      packagesToPublish.push({ path: pkgPath, name: pkgName });
+    }
+
+    // Publish in parallel batches
+    for (let i = 0; i < packagesToPublish.length; i += this.PUBLISH_CONCURRENCY) {
+      const batch = packagesToPublish.slice(i, i + this.PUBLISH_CONCURRENCY);
+
+      const batchResults = await Promise.allSettled(
+        batch.map(async (pkg) => {
+          const publishResult = await this.publishPackage(pkg.path, pkg.name);
+          return { name: pkg.name, result: publishResult };
+        })
+      );
+
+      for (const batchResult of batchResults) {
+        if (batchResult.status === "fulfilled") {
+          const { name, result: publishResult } = batchResult.value;
+          if (publishResult === "published") {
+            result.published.push(name);
+          } else {
+            result.skipped.push(name);
+          }
+        } else {
+          const errorMsg = batchResult.reason instanceof Error
+            ? batchResult.reason.message
+            : String(batchResult.reason);
+          const pkgName = batch[batchResults.indexOf(batchResult)]?.name ?? "unknown";
+          console.error(`[VerdaccioServer] Failed to publish ${pkgName}:`, errorMsg);
+          result.failed.push({ name: pkgName, error: errorMsg });
+          result.success = false;
+        }
       }
     }
 
-    return hashes;
+    // Invalidate versions cache after publishing to ensure fresh data
+    this.invalidateVerdaccioVersionsCache();
+
+    return { ...result, changesDetected: changes };
   }
 }

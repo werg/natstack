@@ -14,6 +14,7 @@ import { codexCli } from "ai-sdk-provider-codex-cli";
 import { execSync } from "child_process";
 import type { AIProviderConfig } from "./aiHandler.js";
 import type { SupportedProvider } from "../workspace/types.js";
+import { getActiveWorkspace } from "../paths.js";
 
 /**
  * Find an executable in the system PATH.
@@ -316,7 +317,7 @@ export function createProviderFromConfig(providerId: SupportedProvider): AIProvi
         createClaudeCode()(modelId as "sonnet" | "opus" | "haiku", {
           allowedTools: [], // No tools for basic provider
           pathToClaudeCodeExecutable: claudeExecutable,
-          cwd: process.cwd(),
+          cwd: getActiveWorkspace()?.path ?? process.cwd(),
           permissionMode: "default",
         }),
       models,
@@ -337,8 +338,8 @@ export function createProviderFromConfig(providerId: SupportedProvider): AIProvi
           allowNpx: !codexExecutable,
           // Skip git repo check for flexibility
           skipGitRepoCheck: true,
-          // Use current working directory as the project root
-          cwd: process.cwd(),
+          // Use active workspace or current working directory as the project root
+          cwd: getActiveWorkspace()?.path ?? process.cwd(),
         }),
       models,
     };

@@ -2,18 +2,24 @@ import * as fs from "fs";
 import * as path from "path";
 import { loadPreferences } from "./preferences.js";
 import { normalizeRelativePanelPath as normalizePath } from "./pathUtils.js";
+import { getActiveWorkspace } from "./paths.js";
 
-const workspaceRoot = path.resolve(process.cwd());
+function getWorkspaceRoot(): string {
+  const workspace = getActiveWorkspace();
+  return workspace?.path ?? path.resolve(process.cwd());
+}
 
 function normalizeRelativePanelPath(candidate: string): string {
-  const { relativePath } = normalizePath(candidate, workspaceRoot);
+  const { relativePath } = normalizePath(candidate, getWorkspaceRoot());
   return relativePath;
 }
 
 function ensureDefaultRootPanelPath(): string {
+  const wsRoot = getWorkspaceRoot();
+
   // Try workspace panels/root first
   const workspaceDefault = "panels/root";
-  const workspaceDefaultAbsolute = path.resolve(workspaceDefault);
+  const workspaceDefaultAbsolute = path.resolve(wsRoot, workspaceDefault);
 
   if (fs.existsSync(workspaceDefaultAbsolute)) {
     return workspaceDefault;
@@ -21,7 +27,7 @@ function ensureDefaultRootPanelPath(): string {
 
   // Create default if nothing exists
   const fallbackRelative = "panels/root";
-  const fallbackAbsolute = path.resolve(fallbackRelative);
+  const fallbackAbsolute = path.resolve(wsRoot, fallbackRelative);
 
   if (!fs.existsSync(fallbackAbsolute)) {
     fs.mkdirSync(fallbackAbsolute, { recursive: true });

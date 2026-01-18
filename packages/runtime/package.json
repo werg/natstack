@@ -17,8 +17,6 @@
     }
   },
   "scripts": {
-    "bundle-types": "npx tsx scripts/bundle-natstack-types.ts",
-    "prebuild": "pnpm run bundle-types",
     "build": "tsc --project tsconfig.build.json",
     "dev": "tsc --project tsconfig.build.json --watch"
   },

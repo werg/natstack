@@ -34,8 +34,6 @@ import { getPanelPersistence } from "../db/panelPersistence.js";
 import { getPanelSearchIndex } from "../db/panelSearchIndex.js";
 import type { SupportedProvider } from "../workspace/types.js";
 import { getViewManager } from "../viewManager.js";
-import { getMainCacheManager } from "../cacheManager.js";
-import { getBuildArtifactsDirectory } from "../paths.js";
 import { buildHamburgerMenuTemplate } from "../menu.js";
 import { getCentralData } from "../centralData.js";
 import {
@@ -160,13 +158,19 @@ export async function handleAppService(
       return path.join(__dirname, "..", "panelPreload.cjs");
 
     case "clearBuildCache": {
-      const cacheManager = getMainCacheManager();
-      await cacheManager.clear();
-      const artifactsDir = getBuildArtifactsDirectory();
-      if (fs.existsSync(artifactsDir)) {
-        fs.rmSync(artifactsDir, { recursive: true, force: true });
-      }
-      console.log("[App] Build cache and artifacts cleared");
+      // Invalidate @natstack types FIRST to prevent stale reads during cache clearing
+      const { getTypeDefinitionService } = await import("../typecheck/service.js");
+      getTypeDefinitionService().invalidateNatstackTypes();
+      // Then clear all other caches (same as automatic invalidation on package changes)
+      const { clearAllCaches } = await import("../cacheUtils.js");
+      await clearAllCaches({
+        buildCache: true,
+        buildArtifacts: true,
+        typesCache: true,
+        verdaccioStorage: false, // Keep packages - user can manually delete if needed
+        npmCache: false,
+        pnpmStore: false,
+      });
       return;
     }
 
@@ -425,9 +429,19 @@ export async function handleMenuService(
       const shellContents = vm.getShellWebContents();
 
       const clearBuildCache = async () => {
-        const cacheManager = getMainCacheManager();
-        await cacheManager.clear();
-        console.log("[App] Build cache cleared via menu");
+        // Use the same logic as the clearBuildCache IPC handler (app.clearBuildCache)
+        const { getTypeDefinitionService } = await import("../typecheck/service.js");
+        getTypeDefinitionService().invalidateNatstackTypes();
+        const { clearAllCaches } = await import("../cacheUtils.js");
+        await clearAllCaches({
+          buildCache: true,
+          buildArtifacts: true,
+          typesCache: true,
+          verdaccioStorage: false,
+          npmCache: false,
+          pnpmStore: false,
+        });
+        console.log("[App] Build cache cleared via hamburger menu");
       };
 
       const template = buildHamburgerMenuTemplate(shellContents, clearBuildCache);
