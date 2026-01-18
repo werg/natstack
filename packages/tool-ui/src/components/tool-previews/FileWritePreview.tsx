@@ -6,7 +6,8 @@
 
 import { Box, Text, Flex } from "@radix-ui/themes";
 import { PlusIcon } from "@radix-ui/react-icons";
-import { Editor, FILE_EXTENSION_LANGUAGE_MAP } from "@natstack/git-ui";
+import { MonacoEditor } from "@natstack/git-ui/monaco";
+import { FILE_EXTENSION_LANGUAGE_MAP } from "@natstack/git-ui/constants";
 import { useMemo } from "react";
 
 const MIN_HEIGHT = 80;
@@ -72,12 +73,13 @@ export function FileWritePreview({
           border: "1px solid var(--gray-6)",
         }}
       >
-        <Editor
+        <MonacoEditor
           value={content}
           language={language}
           theme={theme === "dark" ? "vs-dark" : "light"}
+          height={editorHeight}
+          readOnly
           options={{
-            readOnly: true,
             minimap: { enabled: false },
             scrollbar: {
               verticalScrollbarSize: 6,

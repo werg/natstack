@@ -8,11 +8,13 @@ import {
   type ActiveFeedback,
   type ToolApprovalProps,
 } from "@natstack/tool-ui";
-import { MethodHistoryItem, MethodCallGroup, type MethodHistoryEntry } from "./MethodHistoryItem";
+import type { MethodHistoryEntry } from "./MethodHistoryItem";
 import { TypingIndicator } from "./TypingIndicator";
 import { MessageContent } from "./MessageContent";
 import { ParticipantBadgeMenu } from "./ParticipantBadgeMenu";
 import { ToolPermissionsDropdown } from "./ToolPermissionsDropdown";
+import { InlineGroup, type InlineItem } from "./InlineGroup";
+import { parseActionData } from "./ActionMessage";
 import type { ChatMessage, ChatParticipantMetadata } from "../types";
 import "../styles.css";
 
@@ -183,43 +185,85 @@ export function ChatPhase({
               </Text>
             ) : (
               (() => {
-                // Group consecutive method messages together
+                // Helper to determine if a message is an inline item (thinking, action, or method)
+                type InlineItemType = "thinking" | "action" | "method";
+                function getInlineItemType(msg: ChatMessage): InlineItemType | null {
+                  if (msg.kind === "method" && msg.method) return "method";
+                  if (msg.contentType === "thinking") return "thinking";
+                  if (msg.contentType === "action") return "action";
+                  return null;
+                }
+
+                // Group consecutive inline items (thinking, action, method)
                 const groupedItems: Array<
-                  | { type: "method-group"; entries: MethodHistoryEntry[]; key: string }
+                  | { type: "inline-group"; items: Array<{ msg: ChatMessage; index: number }>; key: string }
                   | { type: "message"; msg: ChatMessage; index: number }
                 > = [];
 
-                let currentMethodGroup: MethodHistoryEntry[] = [];
+                let currentInlineGroup: Array<{ msg: ChatMessage; index: number }> = [];
 
                 messages.forEach((msg, index) => {
-                  if (msg.kind === "method" && msg.method) {
-                    currentMethodGroup.push(msg.method);
+                  const inlineType = getInlineItemType(msg);
+
+                  if (inlineType !== null) {
+                    // This is an inline item (thinking, action, or method)
+                    currentInlineGroup.push({ msg, index });
                   } else {
-                    // Flush any pending method group
-                    if (currentMethodGroup.length > 0) {
+                    // Regular message - flush any pending inline group
+                    if (currentInlineGroup.length > 0) {
                       groupedItems.push({
-                        type: "method-group",
-                        entries: currentMethodGroup,
-                        key: `method-group-${currentMethodGroup[0].callId}`,
+                        type: "inline-group",
+                        items: currentInlineGroup,
+                        key: `inline-group-${currentInlineGroup[0].msg.id || currentInlineGroup[0].index}`,
                       });
-                      currentMethodGroup = [];
+                      currentInlineGroup = [];
                     }
                     groupedItems.push({ type: "message", msg, index });
                   }
                 });
 
-                // Flush final method group
-                if (currentMethodGroup.length > 0) {
+                // Flush final inline group
+                if (currentInlineGroup.length > 0) {
                   groupedItems.push({
-                    type: "method-group",
-                    entries: currentMethodGroup,
-                    key: `method-group-${currentMethodGroup[0].callId}`,
+                    type: "inline-group",
+                    items: currentInlineGroup,
+                    key: `inline-group-${currentInlineGroup[0].msg.id || currentInlineGroup[0].index}`,
                   });
                 }
 
                 return groupedItems.map((item) => {
-                  if (item.type === "method-group") {
-                    return <MethodCallGroup key={item.key} entries={item.entries} />;
+                  if (item.type === "inline-group") {
+                    // Convert to InlineItem format
+                    const inlineItems: InlineItem[] = item.items.map(({ msg }) => {
+                      if (msg.kind === "method" && msg.method) {
+                        return { type: "method" as const, entry: msg.method };
+                      }
+                      if (msg.contentType === "thinking") {
+                        return {
+                          type: "thinking" as const,
+                          id: msg.id,
+                          content: msg.content,
+                          complete: msg.complete ?? false,
+                        };
+                      }
+                      if (msg.contentType === "action") {
+                        const data = parseActionData(msg.content, msg.complete);
+                        return {
+                          type: "action" as const,
+                          id: msg.id,
+                          data,
+                          complete: msg.complete ?? false,
+                        };
+                      }
+                      // This shouldn't happen but handle gracefully
+                      return {
+                        type: "thinking" as const,
+                        id: msg.id,
+                        content: msg.content || "Unknown",
+                        complete: msg.complete ?? false,
+                      };
+                    });
+                    return <InlineGroup key={item.key} items={inlineItems} />;
                   }
 
                   const { msg, index } = item;
@@ -234,6 +278,11 @@ export function ChatPhase({
                   const isStreaming = msg.kind === "message" && !msg.complete && !msg.pending;
                   const hasError = Boolean(msg.error);
                   const hasContent = msg.content.length > 0;
+
+                  // Skip empty completed messages (initial placeholder messages that never received content)
+                  if (!hasContent && !isStreaming && !hasError) {
+                    return null;
+                  }
 
                   return (
                     <Box
@@ -349,15 +398,22 @@ export function ChatPhase({
       )}
 
       {/* Input */}
-      <Box style={{ position: "relative" }}>
+      <Box
+        style={{
+          position: "relative",
+          display: "flex",
+          alignItems: "flex-end",
+          background: "var(--color-surface)",
+          borderRadius: "var(--radius-3)",
+        }}
+      >
         <TextArea
           ref={textAreaRef}
           style={{
+            flex: 1,
             minHeight: "40px",
             maxHeight: "200px",
             resize: "none",
-            paddingRight: "48px", // Make room for the send button
-            paddingBottom: "8px",
           }}
           placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
           value={input}
@@ -370,9 +426,10 @@ export function ChatPhase({
           disabled={!connected || !input.trim()}
           size="1"
           style={{
-            position: "absolute",
-            right: "8px",
-            bottom: "8px",
+            marginLeft: "8px",
+            marginBottom: "8px",
+            marginRight: "8px",
+            flexShrink: 0,
           }}
         >
           <PaperPlaneIcon />

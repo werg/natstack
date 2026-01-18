@@ -15,6 +15,7 @@ export interface ChatMessage {
   id: string;
   senderId: string;
   content: string;
+  contentType?: string;  // e.g., "thinking", "text/plain", etc.
   kind?: "message" | "method";
   complete?: boolean;
   replyTo?: string;

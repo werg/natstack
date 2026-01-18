@@ -183,6 +183,20 @@ export const AI_RESPONDER_PARAMETERS: FieldDefinition[] = [
     group: "Capabilities",
     order: 4,
   },
+  {
+    key: "thinkingBudget",
+    label: "Thinking Budget",
+    description: "Extended thinking token budget for complex reasoning (0 = disabled)",
+    type: "slider",
+    required: false,
+    default: 0,
+    min: 0,
+    max: 32000,
+    step: 1024,
+    sliderLabels: { min: "Off", max: "Maximum" },
+    group: "Model",
+    order: 5,
+  },
 ];
 
 /**

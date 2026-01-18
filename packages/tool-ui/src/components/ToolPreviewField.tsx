@@ -6,24 +6,54 @@
  *
  * Provides Monaco diffs, styled git previews, etc. based on the tool type.
  * Falls back to JSON display for unknown tools.
+ *
+ * Note: Monaco-dependent previews (FileEditPreview, FileWritePreview) are lazy-loaded
+ * to avoid bundling Monaco (~27MB) in consumers that don't use file edit/write tools.
  */
 
-import type { ReactNode } from "react";
-import { Box, Text } from "@radix-ui/themes";
+import { lazy, Suspense, type ReactNode } from "react";
+import { Box, Text, Spinner } from "@radix-ui/themes";
 import {
-  FileEditPreview,
-  FileWritePreview,
   RmPreview,
   GitCommitPreview,
   GitCheckoutPreview,
   GitAddPreview,
+  ExitPlanModePreview,
   isFileEditArgs,
   isFileWriteArgs,
   isRmArgs,
   isGitCommitArgs,
   isGitCheckoutArgs,
   isGitAddArgs,
-} from "./tool-previews";
+  isExitPlanModeArgs,
+} from "./tool-previews/core.js";
+
+// Lazy-load Monaco-dependent components to avoid bundling Monaco in all consumers
+const FileEditPreview = lazy(() =>
+  import("./tool-previews/monaco.js").then((m) => ({ default: m.FileEditPreview }))
+);
+const FileWritePreview = lazy(() =>
+  import("./tool-previews/monaco.js").then((m) => ({ default: m.FileWritePreview }))
+);
+
+/** Loading fallback for Monaco previews */
+function MonacoLoadingFallback() {
+  return (
+    <Box
+      style={{
+        background: "var(--gray-3)",
+        borderRadius: 6,
+        padding: 24,
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+        minHeight: 80,
+      }}
+    >
+      <Spinner size="2" />
+    </Box>
+  );
+}
 
 export interface ToolPreviewFieldProps {
   toolName: string;
@@ -57,27 +87,31 @@ export function ToolPreviewField({
   args,
   theme = "dark",
 }: ToolPreviewFieldProps): ReactNode {
-  // file_edit - Monaco diff
+  // file_edit - Monaco diff (lazy-loaded)
   if (toolName === "file_edit" && isFileEditArgs(args)) {
     return (
-      <FileEditPreview
-        file_path={args.file_path}
-        old_string={args.old_string}
-        new_string={args.new_string}
-        replace_all={args.replace_all}
-        theme={theme}
-      />
+      <Suspense fallback={<MonacoLoadingFallback />}>
+        <FileEditPreview
+          file_path={args.file_path}
+          old_string={args.old_string}
+          new_string={args.new_string}
+          replace_all={args.replace_all}
+          theme={theme}
+        />
+      </Suspense>
     );
   }
 
-  // file_write - Monaco code view
+  // file_write - Monaco code view (lazy-loaded)
   if (toolName === "file_write" && isFileWriteArgs(args)) {
     return (
-      <FileWritePreview
-        file_path={args.file_path}
-        content={args.content}
-        theme={theme}
-      />
+      <Suspense fallback={<MonacoLoadingFallback />}>
+        <FileWritePreview
+          file_path={args.file_path}
+          content={args.content}
+          theme={theme}
+        />
+      </Suspense>
     );
   }
 
@@ -106,6 +140,16 @@ export function ToolPreviewField({
   // git_add - File staging display
   if (toolName === "git_add" && isGitAddArgs(args)) {
     return <GitAddPreview files={args.files} path={args.path} />;
+  }
+
+  // exit_plan_mode - Plan approval with requested permissions
+  if (toolName === "exit_plan_mode" && isExitPlanModeArgs(args)) {
+    // planFilePath may be passed by SDK (undocumented but useful)
+    const extendedArgs = args as Record<string, unknown>;
+    const planFilePath = typeof extendedArgs["planFilePath"] === "string"
+      ? extendedArgs["planFilePath"]
+      : undefined;
+    return <ExitPlanModePreview allowedPrompts={args.allowedPrompts} planFilePath={planFilePath} />;
   }
 
   // Default: JSON display

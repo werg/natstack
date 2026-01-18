@@ -24,6 +24,20 @@ export {
   createLogger,
   formatArgsForLog,
   isMessageTargetedAt,
+  // Thinking/reasoning message tracker
+  CONTENT_TYPE_THINKING,
+  createThinkingTracker,
+  type ThinkingTracker,
+  type ThinkingTrackerClient,
+  type ThinkingTrackerState,
+  type ThinkingTrackerOptions,
+  // Action message tracker
+  CONTENT_TYPE_ACTION,
+  createActionTracker,
+  type ActionTracker,
+  type ActionTrackerState,
+  type ActionTrackerOptions,
+  type ActionData,
 } from "./responder-utils.js";
 
 // Execution pause/resume utilities

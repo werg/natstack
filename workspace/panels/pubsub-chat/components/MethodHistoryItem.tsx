@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
-import { Badge, Box, Card, Code, Flex, Text } from "@radix-ui/themes";
+import { Badge, Box, Code, Flex, Text } from "@radix-ui/themes";
+import { ExpandableChevron } from "./shared/Chevron";
 
 export type MethodCallStatus = "pending" | "success" | "error";
 
@@ -40,31 +41,6 @@ function formatMethodMeta(entry: MethodHistoryEntry): { label: string; value: st
   return items;
 }
 
-// Chevron icon component
-function ChevronIcon({ expanded }: { expanded: boolean }) {
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 12 12"
-      fill="none"
-      style={{
-        transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
-        transition: "transform 0.15s ease",
-        flexShrink: 0,
-      }}
-    >
-      <path
-        d="M4.5 2.5L8 6L4.5 9.5"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 // Collapsible section component
 function CollapsibleSection({
   label,
@@ -88,7 +64,7 @@ function CollapsibleSection({
         style={{ cursor: "pointer", userSelect: "none" }}
       >
         <Text size="1" color={color}>
-          <ChevronIcon expanded={isOpen} />
+          <ExpandableChevron expanded={isOpen} />
         </Text>
         <Text size="1" color={color} weight="medium">
           {label}
@@ -135,7 +111,7 @@ function JsonValue({ value, depth = 0 }: { value: unknown; depth?: number }) {
             onClick={() => setIsExpanded(!isExpanded)}
             style={{ cursor: "pointer", userSelect: "none" }}
           >
-            <ChevronIcon expanded={isExpanded} />
+            <ExpandableChevron expanded={isExpanded} />
             <Text size="1" color="gray">{value.length} chars</Text>
           </Flex>
           {isExpanded && (
@@ -175,7 +151,7 @@ function JsonValue({ value, depth = 0 }: { value: unknown; depth?: number }) {
           onClick={() => setIsExpanded(!isExpanded)}
           style={{ cursor: "pointer", userSelect: "none" }}
         >
-          <ChevronIcon expanded={isExpanded} />
+          <ExpandableChevron expanded={isExpanded} />
           <Text size="1" color="gray">[{value.length}]</Text>
         </Flex>
         {isExpanded && (
@@ -209,7 +185,7 @@ function JsonValue({ value, depth = 0 }: { value: unknown; depth?: number }) {
           onClick={() => setIsExpanded(!isExpanded)}
           style={{ cursor: "pointer", userSelect: "none" }}
         >
-          <ChevronIcon expanded={isExpanded} />
+          <ExpandableChevron expanded={isExpanded} />
           <Text size="1" color="gray">{"{"}...{"}"}</Text>
         </Flex>
         {isExpanded && (
@@ -251,122 +227,8 @@ function PlainTextDisplay({ content }: { content: string }) {
   );
 }
 
-interface MethodHistoryItemProps {
-  entry: MethodHistoryEntry;
-}
-
-export function MethodHistoryItem({ entry }: MethodHistoryItemProps) {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const metaItems = useMemo(() => formatMethodMeta(entry), [entry]);
-
-  return (
-    <Box style={{ maxWidth: "96%", alignSelf: "flex-start" }}>
-      <Card
-        variant="surface"
-        style={{
-          backgroundColor: "var(--gray-2)",
-          border: "1px solid var(--gray-4)",
-        }}
-      >
-        {/* Header - always visible */}
-        <Flex
-          align="center"
-          gap="2"
-          onClick={() => setIsExpanded(!isExpanded)}
-          style={{ cursor: "pointer", userSelect: "none" }}
-        >
-          <Text color="gray" style={{ display: "flex", alignItems: "center" }}>
-            <ChevronIcon expanded={isExpanded} />
-          </Text>
-          <Badge color={METHOD_STATUS_COLOR[entry.status]} size="1">
-            {entry.status}
-          </Badge>
-          <Text size="2" weight="medium">
-            {entry.methodName}
-          </Text>
-        </Flex>
-
-        {/* Expanded content */}
-        {isExpanded && (
-          <Flex direction="column" gap="2" mt="3">
-            {/* Meta section - inline badges */}
-            {metaItems.length > 0 && (
-              <Flex gap="2" wrap="wrap">
-                {metaItems.map((item) => (
-                  <Badge key={item.label} color="gray" variant="soft" size="1">
-                    {item.label}: {item.value}
-                  </Badge>
-                ))}
-              </Flex>
-            )}
-
-            {/* Args section - collapsible with JSON tree */}
-            <CollapsibleSection label="Args" defaultOpen={false}>
-              <Box
-                style={{
-                  backgroundColor: "var(--gray-a2)",
-                  borderRadius: "4px",
-                  padding: "8px",
-                  maxHeight: "400px",
-                  overflow: "auto",
-                }}
-              >
-                <JsonValue value={entry.args} />
-              </Box>
-            </CollapsibleSection>
-
-            {/* Console output - collapsible */}
-            {entry.consoleOutput && (
-              <CollapsibleSection label="Console" defaultOpen={true}>
-                <PlainTextDisplay content={entry.consoleOutput} />
-              </CollapsibleSection>
-            )}
-
-            {/* Result - collapsible with JSON tree */}
-            {entry.status === "success" && entry.result !== undefined && (
-              <CollapsibleSection label="Result" defaultOpen={true} color="green">
-                <Box
-                  style={{
-                    backgroundColor: "var(--gray-a2)",
-                    borderRadius: "4px",
-                    padding: "8px",
-                    maxHeight: "400px",
-                    overflow: "auto",
-                  }}
-                >
-                  <JsonValue value={entry.result} />
-                </Box>
-              </CollapsibleSection>
-            )}
-
-            {/* Error - always visible when present */}
-            {entry.status === "error" && entry.error && (
-              <Box
-                style={{
-                  padding: "8px",
-                  backgroundColor: "var(--red-3)",
-                  borderRadius: "4px",
-                  border: "1px solid var(--red-6)",
-                }}
-              >
-                <Text size="1" color="red" weight="medium">
-                  Error
-                </Text>
-                <Text
-                  size="1"
-                  color="red"
-                  style={{ display: "block", marginTop: "4px", whiteSpace: "pre-wrap" }}
-                >
-                  {entry.error}
-                </Text>
-              </Box>
-            )}
-          </Flex>
-        )}
-      </Card>
-    </Box>
-  );
-}
+// Export sub-components for use in InlineGroup
+export { CompactMethodPill, ExpandedMethodDetail };
 
 // Compact inline pill for collapsed method calls
 function CompactMethodPill({
@@ -433,7 +295,7 @@ function ExpandedMethodDetail({
         style={{ cursor: "pointer", userSelect: "none" }}
       >
         <Text color="gray" style={{ display: "flex", alignItems: "center" }}>
-          <ChevronIcon expanded={true} />
+          <ExpandableChevron expanded={true} />
         </Text>
         <Box
           style={{
@@ -523,70 +385,3 @@ function ExpandedMethodDetail({
   );
 }
 
-// Group of method calls displayed compactly
-interface MethodCallGroupProps {
-  entries: MethodHistoryEntry[];
-}
-
-export function MethodCallGroup({ entries }: MethodCallGroupProps) {
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-
-  if (entries.length === 0) return null;
-
-  // Single entry - use simpler display
-  if (entries.length === 1) {
-    const entry = entries[0];
-    const isExpanded = expandedId === entry.callId;
-
-    if (isExpanded) {
-      return (
-        <Box style={{ maxWidth: "96%", alignSelf: "flex-start" }}>
-          <ExpandedMethodDetail
-            entry={entry}
-            onCollapse={() => setExpandedId(null)}
-          />
-        </Box>
-      );
-    }
-
-    return (
-      <Box style={{ alignSelf: "flex-start" }}>
-        <CompactMethodPill
-          entry={entry}
-          onClick={() => setExpandedId(entry.callId)}
-        />
-      </Box>
-    );
-  }
-
-  // Multiple entries - show inline pills for collapsed, expanded detail for selected
-  return (
-    <Box style={{ maxWidth: "96%", alignSelf: "flex-start" }}>
-      <Flex direction="column" gap="1">
-        {/* Compact pills row */}
-        <Flex gap="1" wrap="wrap" align="center">
-          {entries.map((entry) => {
-            if (expandedId === entry.callId) {
-              return null; // Will show expanded below
-            }
-            return (
-              <CompactMethodPill
-                key={entry.callId}
-                entry={entry}
-                onClick={() => setExpandedId(entry.callId)}
-              />
-            );
-          })}
-        </Flex>
-
-        {/* Expanded detail (if any) */}
-        {expandedId && (
-          <ExpandedMethodDetail
-            entry={entries.find(e => e.callId === expandedId)!}
-            onCollapse={() => setExpandedId(null)}
-          />
-        )}
-      </Flex>
-    </Box>
-  );
-}

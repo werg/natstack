@@ -139,6 +139,8 @@ export interface StreamTextOptions {
   temperature?: number;
   /** System prompt (alternative to system message) */
   system?: string;
+  /** Enable thinking/reasoning with optional budget */
+  thinking?: { type: "enabled" | "disabled"; budgetTokens?: number };
 
   // Callbacks (Vercel AI SDK compatible)
   /** Called for each stream chunk */
@@ -149,6 +151,8 @@ export interface StreamTextOptions {
   onStepFinish?: OnStepFinishCallback;
   /** Called when an error occurs */
   onError?: OnErrorCallback;
+  /** Called for each reasoning delta (optional callback for thinking content) */
+  onReasoningDelta?: (delta: string) => void | Promise<void>;
 }
 
 /**
@@ -156,6 +160,9 @@ export interface StreamTextOptions {
  */
 export type StreamEvent =
   | { type: "text-delta"; text: string }
+  | { type: "reasoning-start" }
+  | { type: "reasoning-delta"; text: string }
+  | { type: "reasoning-end" }
   | { type: "tool-call"; toolCallId: string; toolName: string; args: unknown }
   | { type: "tool-result"; toolCallId: string; toolName: string; result: unknown; isError?: boolean }
   | { type: "step-finish"; stepNumber: number; finishReason: "stop" | "tool-calls" | "length" | "error" }

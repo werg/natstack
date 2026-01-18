@@ -607,6 +607,7 @@ export class AIHandler {
       maxOutputTokens: options.maxOutputTokens,
       temperature: options.temperature,
       abortSignal: abortController.signal,
+      ...(options.thinking && { thinking: options.thinking }),
     };
 
     const { stream } = (await model.doStream(sdkOptions)) as { stream: ReadableStream<unknown> };
@@ -628,13 +629,28 @@ export class AIHandler {
         const type = part["type"] as string;
 
         // Convert to unified event format
-        if (type === "text-delta") {
-          target.sendChunk({ type: "text-delta", text: part["delta"] as string });
-        } else if (type === "finish") {
-          totalUsage = {
-            promptTokens: (part["usage"] as { promptTokens?: number })?.promptTokens ?? 0,
-            completionTokens: (part["usage"] as { completionTokens?: number })?.completionTokens ?? 0,
-          };
+        switch (type) {
+          case "text-delta":
+            target.sendChunk({ type: "text-delta", text: part["delta"] as string });
+            break;
+          case "reasoning-start":
+            target.sendChunk({ type: "reasoning-start" });
+            break;
+          case "reasoning-delta":
+            target.sendChunk({ type: "reasoning-delta", text: part["delta"] as string });
+            break;
+          case "reasoning-end":
+            target.sendChunk({ type: "reasoning-end" });
+            break;
+          case "finish":
+            totalUsage = {
+              promptTokens: (part["usage"] as { promptTokens?: number })?.promptTokens ?? 0,
+              completionTokens: (part["usage"] as { completionTokens?: number })?.completionTokens ?? 0,
+            };
+            break;
+          default:
+            // Ignore other event types (e.g., tool events handled elsewhere)
+            break;
         }
       }
     } finally {
@@ -683,6 +699,7 @@ export class AIHandler {
         maxOutputTokens: options.maxOutputTokens,
         temperature: options.temperature,
         abortSignal: abortController.signal,
+        ...(options.thinking && { thinking: options.thinking }),
       };
 
       const { stream } = (await model.doStream(sdkOptions)) as { stream: ReadableStream<unknown> };
@@ -711,6 +728,18 @@ export class AIHandler {
             case "text-delta":
               textContent += part["delta"] as string;
               target.sendChunk({ type: "text-delta", text: part["delta"] as string });
+              break;
+
+            case "reasoning-start":
+              target.sendChunk({ type: "reasoning-start" });
+              break;
+
+            case "reasoning-delta":
+              target.sendChunk({ type: "reasoning-delta", text: part["delta"] as string });
+              break;
+
+            case "reasoning-end":
+              target.sendChunk({ type: "reasoning-end" });
               break;
 
             case "tool-input-start": {

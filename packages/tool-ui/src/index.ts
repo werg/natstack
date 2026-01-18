@@ -35,10 +35,10 @@ export { FeedbackContainer, type FeedbackContainerProps } from "./components/Fee
 export { ToolPreviewField, type ToolPreviewFieldProps } from "./components/ToolPreviewField";
 export { ErrorBoundary } from "./components/ErrorBoundary";
 
-// Tool Previews
+// Tool Previews (Monaco-free core exports)
+// Note: FileEditPreview and FileWritePreview require Monaco and are available
+// from "@natstack/tool-ui/monaco" to avoid bundling Monaco in all consumers.
 export {
-  FileEditPreview,
-  FileWritePreview,
   RmPreview,
   GitCommitPreview,
   GitCheckoutPreview,
@@ -51,8 +51,6 @@ export {
   isGitAddArgs,
   hasRichPreview,
   RICH_PREVIEW_TOOLS,
-  type FileEditPreviewProps,
-  type FileWritePreviewProps,
   type RmPreviewProps,
   type GitCommitPreviewProps,
   type GitCheckoutPreviewProps,
@@ -64,7 +62,13 @@ export {
   type GitCheckoutArgs,
   type GitAddArgs,
   type RichPreviewToolName,
-} from "./components/tool-previews";
+} from "./components/tool-previews/core.js";
+
+// Re-export types for Monaco previews (types don't cause bundling)
+export type {
+  FileEditPreviewProps,
+  FileWritePreviewProps,
+} from "./components/tool-previews/monaco.js";
 
 // ============================================================================
 // Hooks

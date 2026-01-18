@@ -9,7 +9,7 @@
  */
 
 import { Box, Card, Code, Flex, Text } from "@radix-ui/themes";
-import { LockClosedIcon, ExclamationTriangleIcon } from "@radix-ui/react-icons";
+import { LockClosedIcon, ExclamationTriangleIcon, CheckCircledIcon } from "@radix-ui/react-icons";
 import { APPROVAL_LEVELS } from "../hooks/useToolApproval";
 
 export interface ApprovalHeaderFieldProps {
@@ -74,7 +74,20 @@ export function ApprovalHeaderField({
     );
   }
 
-  // Per-call approval header
+  // Per-call approval header - special handling for plan mode
+  const isPlanApproval = toolName === "exit_plan_mode";
+
+  if (isPlanApproval) {
+    return (
+      <Flex gap="2" align="center" mb="3">
+        <CheckCircledIcon style={{ color: "var(--green-9)" }} />
+        <Text size="3" weight="bold">
+          @{agentName} is ready to implement
+        </Text>
+      </Flex>
+    );
+  }
+
   return (
     <Flex gap="2" align="center" mb="3">
       <ExclamationTriangleIcon style={{ color: "var(--orange-9)" }} />

@@ -113,15 +113,21 @@ export async function showPermissionPrompt(
     });
   }
 
-  // Decision buttons
+  // Decision buttons - use tool-specific labels for clarity
+  const isPlanApproval = normalized === "exit_plan_mode";
   fields.push({
     key: "decision",
     type: "buttonGroup",
     submitOnSelect: true,
-    buttons: [
-      { value: "deny", label: "Deny", color: "gray" },
-      { value: "allow", label: "Allow", color: "green" },
-    ],
+    buttons: isPlanApproval
+      ? [
+          { value: "deny", label: "Reject", color: "gray" },
+          { value: "allow", label: "Approve Plan", color: "green" },
+        ]
+      : [
+          { value: "deny", label: "Deny", color: "gray" },
+          { value: "allow", label: "Allow", color: "green" },
+        ],
   });
 
   const handle = client.callMethod(panelId, "feedback_form", {

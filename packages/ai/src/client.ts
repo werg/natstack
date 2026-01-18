@@ -16,6 +16,7 @@ interface StreamTextBridgeOptions {
   maxSteps?: number;
   maxOutputTokens?: number;
   temperature?: number;
+  thinking?: { type: "enabled" | "disabled"; budgetTokens?: number };
 }
 
 type SerializableStreamEvent = {
@@ -85,6 +86,12 @@ function deserializeStreamEvent(chunk: SerializableStreamEvent): StreamEvent {
   switch (chunk.type) {
     case "text-delta":
       return { type: "text-delta", text: chunk.text ?? "" };
+    case "reasoning-start":
+      return { type: "reasoning-start" };
+    case "reasoning-delta":
+      return { type: "reasoning-delta", text: chunk.text ?? "" };
+    case "reasoning-end":
+      return { type: "reasoning-end" };
     case "tool-call":
       return {
         type: "tool-call",
@@ -226,6 +233,7 @@ function createAiClient(): AiClient {
         maxSteps: options.maxSteps,
         maxOutputTokens: options.maxOutputTokens,
         temperature: options.temperature,
+        thinking: options.thinking,
       };
 
       const iterable: AsyncIterable<StreamEvent> = {

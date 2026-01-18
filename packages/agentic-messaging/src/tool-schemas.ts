@@ -178,6 +178,40 @@ export const GitCheckoutArgsSchema = z.object({
 export type GitCheckoutArgs = z.infer<typeof GitCheckoutArgsSchema>;
 
 // ============================================================================
+// Plan Mode Tools
+// ============================================================================
+
+/**
+ * Allowed prompt for bash permissions requested during plan mode exit.
+ * These are semantic descriptions of actions, not literal commands.
+ */
+export const AllowedPromptSchema = z.object({
+  tool: z.literal("Bash"),
+  prompt: z.string().describe("Semantic description of the action, e.g. 'run tests', 'install dependencies'"),
+});
+export type AllowedPrompt = z.infer<typeof AllowedPromptSchema>;
+
+/**
+ * exit_plan_mode - Exit plan mode and request approval to proceed
+ * Matches Claude Code `ExitPlanMode` tool behavior.
+ *
+ * When Claude exits plan mode, it can optionally request bash permissions
+ * that will be auto-approved during implementation.
+ *
+ * Note: The SDK may pass additional undocumented fields like planFilePath.
+ * We accept those via passthrough() to display them in the UI.
+ */
+export const ExitPlanModeArgsSchema = z.object({
+  allowedPrompts: z.array(AllowedPromptSchema).optional()
+    .describe("Bash permissions needed to implement the plan"),
+}).passthrough(); // Accept additional SDK fields like planFilePath
+
+export type ExitPlanModeArgs = z.infer<typeof ExitPlanModeArgsSchema> & {
+  /** Path to the plan file (may be passed by SDK) */
+  planFilePath?: string;
+};
+
+// ============================================================================
 // Type Checking Tools
 // ============================================================================
 
@@ -287,6 +321,8 @@ export const CANONICAL_TOOL_MAPPINGS: Record<string, string> = {
   git_add: "GitAdd",
   git_commit: "GitCommit",
   git_checkout: "GitCheckout",
+  // Plan mode
+  exit_plan_mode: "ExitPlanMode",
   // Type checking tools
   check_types: "CheckTypes",
   get_type_info: "GetTypeInfo",
@@ -528,6 +564,7 @@ export const RICH_PREVIEW_TOOLS = [
   "git_commit",
   "git_checkout",
   "git_add",
+  "exit_plan_mode",
 ] as const;
 
 export type RichPreviewToolName = (typeof RICH_PREVIEW_TOOLS)[number];
@@ -578,4 +615,8 @@ export function isGitCheckoutArgs(args: unknown): args is GitCheckoutArgs {
 
 export function isGitAddArgs(args: unknown): args is GitAddArgs {
   return GitAddArgsSchema.safeParse(args).success;
+}
+
+export function isExitPlanModeArgs(args: unknown): args is ExitPlanModeArgs {
+  return ExitPlanModeArgsSchema.safeParse(args).success;
 }

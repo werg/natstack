@@ -7,7 +7,8 @@
 
 import { Box, Text, Badge, Flex } from "@radix-ui/themes";
 import { FileTextIcon } from "@radix-ui/react-icons";
-import { DiffEditorDirect, FILE_EXTENSION_LANGUAGE_MAP } from "@natstack/git-ui";
+import { DiffEditorDirect } from "@natstack/git-ui/monaco";
+import { FILE_EXTENSION_LANGUAGE_MAP } from "@natstack/git-ui/constants";
 import { useMemo } from "react";
 
 const MIN_HEIGHT = 80;

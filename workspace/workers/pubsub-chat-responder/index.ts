@@ -19,6 +19,7 @@ import {
   requestToolApproval,
   needsApprovalForTool,
   getCanonicalToolName,
+  createThinkingTracker,
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
@@ -43,6 +44,7 @@ interface FastAiWorkerSettings {
   maxOutputTokens?: number;
   approvalLevel?: number;
   maxSteps?: number;
+  thinkingBudget?: number;
 }
 
 /** Current settings state - initialized from agent config and persisted settings */
@@ -170,6 +172,7 @@ async function main() {
   if (typeof agentConfig.maxOutputTokens === "number") initConfigSettings.maxOutputTokens = agentConfig.maxOutputTokens;
   if (typeof agentConfig.approvalLevel === "number") initConfigSettings.approvalLevel = agentConfig.approvalLevel;
   if (typeof agentConfig.maxSteps === "number") initConfigSettings.maxSteps = agentConfig.maxSteps;
+  if (typeof agentConfig.thinkingBudget === "number") initConfigSettings.thinkingBudget = agentConfig.thinkingBudget;
   Object.assign(currentSettings, initConfigSettings);
   if (Object.keys(initConfigSettings).length > 0) {
     log(`Applied init config: ${JSON.stringify(initConfigSettings)}`);
@@ -243,6 +246,10 @@ async function handleUserMessage(
   // Start a new message (empty, will stream content via updates)
   // Using let because responseId may change if we create new messages for multi-turn conversations
   let { messageId: responseId } = await client.send("", { replyTo: incoming.id });
+
+  // Create thinking tracker for managing reasoning message state
+  // Defined before try block so cleanup can be called in catch
+  const thinking = createThinkingTracker({ client, log });
 
   // Set up interrupt handler to monitor for pause requests
   const interruptHandler = createInterruptHandler({
@@ -331,6 +338,9 @@ async function handleUserMessage(
         maxSteps: 1, // One step at a time for approval control
         maxOutputTokens: currentSettings.maxOutputTokens ?? 1024,
         ...(currentSettings.temperature !== undefined && { temperature: currentSettings.temperature }),
+        ...(currentSettings.thinkingBudget && currentSettings.thinkingBudget > 0 && {
+          thinking: { type: "enabled" as const, budgetTokens: currentSettings.thinkingBudget },
+        }),
       });
 
       // Track ALL tool calls and results for message history
@@ -348,6 +358,23 @@ async function handleUserMessage(
         }
 
         switch (event.type) {
+          case "reasoning-start":
+            // Start a new message for thinking content
+            await thinking.startThinking();
+            break;
+
+          case "reasoning-delta":
+            // Stream reasoning content to thinking message
+            if (event.text) {
+              await thinking.updateThinking(event.text);
+            }
+            break;
+
+          case "reasoning-end":
+            // Complete the thinking message
+            await thinking.endThinking();
+            break;
+
           case "text-delta":
             assistantResponse += event.text;
             await client.update(responseId, event.text);
@@ -500,6 +527,9 @@ async function handleUserMessage(
     log(`Completed response for ${incoming.id}`);
 
   } catch (err) {
+    // Cleanup any pending thinking message to avoid orphaned messages
+    await thinking.cleanup();
+
     // Pause tool returns successfully, so we shouldn't see pause-related errors
     // Any error here is a real error that should be reported
     console.error(`[Worker] AI error:`, err);

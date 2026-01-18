@@ -29,6 +29,7 @@ import {
   createRestrictedModeSystemPrompt,
   validateRestrictedMode,
   getCanonicalToolName,
+  createThinkingTracker,
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
@@ -502,6 +503,10 @@ async function handleUserMessage(
   // Using let because responseId may change if we create new messages for multi-turn conversations
   let { messageId: responseId } = await client.send("", { replyTo: incoming.id });
 
+  // Create thinking tracker for managing reasoning message state
+  // Defined before try block so cleanup can be called in catch
+  const thinking = createThinkingTracker({ client, log });
+
   // Convert tool definitions for MCP server
   // In restricted mode, use canonical names (Read, Write, Edit, etc.) for LLM familiarity
   const mcpTools: ToolDefinition[] = toolDefs.map((t) => {
@@ -627,11 +632,39 @@ async function handleUserMessage(
           break;
         }
 
+        case "item.started":
         case "item.updated": {
-          // Handle text content from agent messages (streaming)
-          // AgentMessageItem has: { id, type: "agent_message", text: string }
+          // Handle different item types
           const item = event.item as { id?: string; type?: string; text?: string };
+
+          // Handle reasoning items (thinking content)
+          if (item && item.type === "reasoning" && typeof item.text === "string" && item.id) {
+            // Check if this is a new reasoning item
+            if (!thinking.isThinkingItem(item.id)) {
+              // Complete previous text message if we're transitioning from text to reasoning
+              if (thinking.state.currentContentType === "text" && responseId) {
+                await client.complete(responseId);
+              }
+              // Start new reasoning message with item ID
+              await thinking.startThinking(item.id);
+            }
+
+            // Stream reasoning content
+            const prevLength = itemTextLengths.get(item.id) ?? 0;
+            if (item.text.length > prevLength) {
+              const delta = item.text.slice(prevLength);
+              await thinking.updateThinking(delta);
+              itemTextLengths.set(item.id, item.text.length);
+            }
+          }
+
+          // Handle agent_message items (text content)
           if (item && item.type === "agent_message" && typeof item.text === "string" && item.id) {
+            // Complete reasoning message if we're transitioning from reasoning to text
+            if (thinking.isThinking()) {
+              await thinking.endThinking();
+            }
+
             // Check if this is a new agent_message item (turn boundary)
             if (currentAgentMessageId !== null && currentAgentMessageId !== item.id) {
               // New agent message item = new turn, create a new message
@@ -641,6 +674,7 @@ async function handleUserMessage(
               log(`Started new message for agent item ${item.id}: ${responseId}`);
             }
             currentAgentMessageId = item.id;
+            thinking.setTextMode();
 
             const prevLength = itemTextLengths.get(item.id) ?? 0;
             if (item.text.length > prevLength) {
@@ -660,6 +694,20 @@ async function handleUserMessage(
         case "item.completed": {
           // Extract final text from completed item if we haven't streamed it yet
           const item = "item" in event ? (event.item as { id?: string; type?: string; text?: string }) : null;
+
+          // Handle completed reasoning items
+          if (item && item.type === "reasoning" && item.id && thinking.isThinkingItem(item.id)) {
+            const prevLength = itemTextLengths.get(item.id) ?? 0;
+            if (typeof item.text === "string" && item.text.length > prevLength) {
+              const delta = item.text.slice(prevLength);
+              await thinking.updateThinking(delta);
+              itemTextLengths.set(item.id, item.text.length);
+            }
+            // Complete the reasoning message
+            await thinking.endThinking();
+          }
+
+          // Handle completed agent_message items
           if (item && item.type === "agent_message" && typeof item.text === "string" && item.id) {
             // Check if this is a new agent_message item (turn boundary)
             if (currentAgentMessageId !== null && currentAgentMessageId !== item.id) {
@@ -670,6 +718,7 @@ async function handleUserMessage(
               log(`Started new message for agent item ${item.id}: ${responseId}`);
             }
             currentAgentMessageId = item.id;
+            thinking.setTextMode();
 
             const prevLength = itemTextLengths.get(item.id) ?? 0;
             if (item.text.length > prevLength) {
@@ -712,6 +761,9 @@ async function handleUserMessage(
       }
     }
   } catch (err) {
+    // Cleanup any pending thinking message to avoid orphaned messages
+    await thinking.cleanup();
+
     // Pause tool returns successfully, so we shouldn't see pause-related errors
     // Any error here is a real error that should be reported
     console.error(`[Codex Worker] Error:`, err);

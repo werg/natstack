@@ -23,6 +23,8 @@ import {
   showPermissionPrompt,
   validateRestrictedMode,
   getCanonicalToolName,
+  createThinkingTracker,
+  createActionTracker,
   type AgenticClient,
   type AgentSDKToolDefinition,
   type ChatParticipantMetadata,
@@ -56,6 +58,26 @@ function findExecutable(name: string): string | undefined {
 void setTitle("Claude Code Responder");
 
 const log = createLogger("Claude Code", id);
+
+/**
+ * Get a human-readable description for a tool action.
+ */
+function getActionDescription(toolName: string): string {
+  const descriptions: Record<string, string> = {
+    Read: "Reading file",
+    Write: "Writing file",
+    Edit: "Editing file",
+    Bash: "Running command",
+    Glob: "Searching for files",
+    Grep: "Searching file contents",
+    WebSearch: "Searching the web",
+    WebFetch: "Fetching web content",
+    Task: "Delegating to subagent",
+    TodoWrite: "Updating task list",
+    AskUserQuestion: "Asking user",
+  };
+  return descriptions[toolName] ?? `Using ${toolName}`;
+}
 
 /** Worker-local settings interface */
 interface ClaudeCodeWorkerSettings {
@@ -311,9 +333,24 @@ async function handleUserMessage(
   // Determine if we're in restricted mode
   const isRestrictedMode = currentSettings.restrictedMode === true;
 
-  // Start a new message (empty, will stream content via updates)
-  // Using let because responseId may change if we create new messages for multi-turn conversations
-  let { messageId: responseId } = await client.send("", { replyTo: incoming.id });
+  // Defer creating the response message until we have text content
+  // This avoids creating empty messages that pollute the chat
+  let responseId: string | null = null;
+  const ensureResponseMessage = async (): Promise<string> => {
+    if (!responseId) {
+      const { messageId } = await client.send("", { replyTo: incoming.id });
+      responseId = messageId;
+      log(`Created response message: ${responseId}`);
+    }
+    return responseId;
+  };
+
+  // Create thinking tracker for managing thinking/reasoning message state
+  // Defined before try block so cleanup can be called in catch
+  const thinking = createThinkingTracker({ client, log, replyTo: incoming.id });
+
+  // Create action tracker for managing action message state (tool use indicators)
+  const action = createActionTracker({ client, log, replyTo: incoming.id });
 
   try {
     // Keep reference to the query for interrupt handling via RPC pause mechanism
@@ -516,24 +553,84 @@ async function handleUserMessage(
 
       if (message.type === "stream_event") {
         // Handle streaming message events (token-by-token with includePartialMessages: true)
-        const streamEvent = message.event as { type: string; delta?: { type: string; text?: string } };
+        const streamEvent = message.event as {
+          type: string;
+          delta?: { type: string; text?: string; thinking?: string };
+          content_block?: { type?: string };
+          index?: number;
+        };
 
-        // Only handle text deltas from content blocks
-        if (streamEvent.type === "content_block_delta" && streamEvent.delta?.type === "text_delta") {
-          if (streamEvent.delta.text) {
-            // If we're starting a new turn after tool use, create a new message
-            if (pendingNewMessage) {
-              // Complete the previous message first
-              await client.complete(responseId);
-              // Start a new message (no replyTo - it's a continuation, not a reply)
-              const { messageId: newResponseId } = await client.send("");
-              responseId = newResponseId; // Update immediately so error handler uses correct ID
-              pendingNewMessage = false;
-              log(`Started new message for next turn: ${responseId}`);
+        // Handle content block start - detect thinking vs text vs tool_use
+        if (streamEvent.type === "content_block_start" && streamEvent.content_block) {
+          const blockType = streamEvent.content_block.type;
+          if (blockType === "thinking") {
+            // Complete action if active before starting thinking
+            if (action.isActive()) {
+              await action.completeAction();
+            }
+            // Create a new message for thinking content
+            await thinking.startThinking();
+          } else if (blockType === "tool_use") {
+            // Complete thinking if active before starting tool use
+            if (thinking.isThinking()) {
+              await thinking.endThinking();
             }
 
+            // Extract tool info from content_block
+            const toolBlock = streamEvent.content_block as {
+              type: "tool_use";
+              id: string;
+              name: string;
+            };
+
+            // Start action message for this tool use
+            await action.startAction({
+              type: toolBlock.name,
+              description: getActionDescription(toolBlock.name),
+              toolUseId: toolBlock.id,
+            });
+          } else if (blockType === "text") {
+            // Complete thinking and action if we were in those modes
+            if (thinking.isThinking()) {
+              await thinking.endThinking();
+            }
+            if (action.isActive()) {
+              await action.completeAction();
+            }
+
+            // If we're starting a new turn after tool use, create a new message
+            if (pendingNewMessage && responseId) {
+              await client.complete(responseId);
+              responseId = null; // Will be created on first text delta
+              pendingNewMessage = false;
+              log(`Completed previous message, next text will start new message`);
+            }
+            thinking.setTextMode();
+          }
+        }
+
+        // Handle thinking delta
+        if (streamEvent.type === "content_block_delta" && streamEvent.delta?.type === "thinking_delta") {
+          if (streamEvent.delta.thinking) {
+            await thinking.updateThinking(streamEvent.delta.thinking);
+          }
+        }
+
+        // Handle text delta
+        if (streamEvent.type === "content_block_delta" && streamEvent.delta?.type === "text_delta") {
+          if (streamEvent.delta.text) {
+            // If we're starting a new turn after tool use, complete previous message first
+            if (pendingNewMessage && responseId) {
+              await client.complete(responseId);
+              responseId = null;
+              pendingNewMessage = false;
+            }
+
+            // Ensure we have a response message (creates lazily on first text)
+            const msgId = await ensureResponseMessage();
+
             // Send each text delta immediately (real streaming)
-            await client.update(responseId, streamEvent.delta.text);
+            await client.update(msgId, streamEvent.delta.text);
             sawStreamedText = true;
 
             if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
@@ -543,22 +640,37 @@ async function handleUserMessage(
           }
         }
 
+        // Handle content block stop
+        if (streamEvent.type === "content_block_stop") {
+          // Complete thinking message if it was a thinking block
+          if (thinking.isThinking()) {
+            await thinking.endThinking();
+          }
+          // Complete action message if it was a tool_use block
+          if (action.isActive()) {
+            await action.completeAction();
+          }
+        }
+
       } else if (message.type === "assistant") {
         // Complete assistant message = end of a turn
         // Fallback for complete assistant messages when no streaming deltas were seen
         if (!sawStreamedText) {
-          // If we're starting a new turn, create a new message
-          if (pendingNewMessage) {
+          // If we're starting a new turn, complete previous message first
+          if (pendingNewMessage && responseId) {
             await client.complete(responseId);
-            const { messageId: newResponseId } = await client.send("");
-            responseId = newResponseId;
+            responseId = null;
             pendingNewMessage = false;
-            log(`Started new message for next turn: ${responseId}`);
           }
 
-          for (const block of message.message.content) {
-            if (block.type === "text") {
-              await client.update(responseId, block.text);
+          // Only create/update message if there's actual text content
+          const textBlocks = message.message.content.filter(
+            (block): block is { type: "text"; text: string } => block.type === "text"
+          );
+          if (textBlocks.length > 0) {
+            const msgId = await ensureResponseMessage();
+            for (const block of textBlocks) {
+              await client.update(msgId, block.text);
             }
           }
         }
@@ -593,9 +705,18 @@ async function handleUserMessage(
     }
 
     // Mark message as complete (whether interrupted or finished normally)
-    await client.complete(responseId);
-    log(`Completed response for ${incoming.id}`);
+    // Only if we created a message (responseId is not null)
+    if (responseId) {
+      await client.complete(responseId);
+      log(`Completed response for ${incoming.id}`);
+    } else {
+      log(`No response message was created for ${incoming.id}`);
+    }
   } catch (err) {
+    // Cleanup any pending thinking or action messages to avoid orphaned messages
+    await thinking.cleanup();
+    await action.cleanup();
+
     // Pause tool returns successfully, so we shouldn't see pause-related errors
     // Any error here is a real error that should be reported
     const errorDetails = err instanceof Error
@@ -603,7 +724,15 @@ async function handleUserMessage(
       : err;
     console.error(`[Claude Code] Error:`, JSON.stringify(errorDetails, null, 2));
     console.error(`[Claude Code] Full error object:`, err);
-    await client.error(responseId, err instanceof Error ? err.message : String(err));
+
+    // Only send error to existing message if one was created
+    if (responseId) {
+      await client.error(responseId, err instanceof Error ? err.message : String(err));
+    } else {
+      // Create an error message if no response was started
+      const { messageId: errorMsgId } = await client.send("", { replyTo: incoming.id });
+      await client.error(errorMsgId, err instanceof Error ? err.message : String(err));
+    }
   }
 }
 

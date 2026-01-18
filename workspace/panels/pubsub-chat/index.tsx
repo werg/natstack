@@ -73,6 +73,11 @@ const generateChannelId = () => `chat-${crypto.randomUUID().slice(0, 8)}`;
  * Handles incoming agentic events and updates appropriate state.
  * Pure function to keep event logic separate from component.
  */
+/** Extract contentType from event (typed loosely in the SDK) */
+function getEventContentType(event: IncomingEvent): string | undefined {
+  return (event as { contentType?: string }).contentType;
+}
+
 function dispatchAgenticEvent(
   event: IncomingEvent,
   handlers: {
@@ -105,6 +110,7 @@ function dispatchAgenticEvent(
             id: event.id,
             senderId: event.senderId,
             content: event.content,
+            contentType: getEventContentType(event),
             replyTo: event.replyTo,
             kind: "message",
             complete: event.kind === "replay" || isPanelSender,
@@ -121,6 +127,7 @@ function dispatchAgenticEvent(
             ? {
                 ...m,
                 content: event.content !== undefined ? m.content + event.content : m.content,
+                contentType: getEventContentType(event) ?? m.contentType,
                 complete: event.complete ?? m.complete,
               }
             : m
