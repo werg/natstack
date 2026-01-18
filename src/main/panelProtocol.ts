@@ -301,8 +301,13 @@ export function storeProtocolPanel(panelId: string, artifacts: ProtocolBuildArti
   }
 
   const assetCount = artifacts.assets ? Object.keys(artifacts.assets).length : 0;
-  const assetSuffix = assetCount > 0 ? ` (assets: ${assetCount})` : "";
+  const assetKeys = artifacts.assets ? Object.keys(artifacts.assets) : [];
+  const monacoKeys = assetKeys.filter(k => k.includes("monaco"));
+  const assetSuffix = assetCount > 0 ? ` (assets: ${assetCount}, monaco: ${monacoKeys.length})` : " (no assets)";
   console.log(`[PanelProtocol] Stored panel: ${panelId}${assetSuffix}`);
+  if (monacoKeys.length > 0) {
+    console.log(`[PanelProtocol] Monaco assets: ${monacoKeys.join(", ")}`);
+  }
 
   // Return the URL for this panel
   // Use the new format with encoded panelId to handle '/' in panel IDs

@@ -1,8 +1,8 @@
 import { useMemo } from "react";
 import { Box, Text } from "@radix-ui/themes";
-import { Editor } from "@monaco-editor/react";
 import type { BlameLine } from "@natstack/git";
 import { MonacoErrorBoundary } from "./MonacoErrorBoundary";
+import { MonacoEditor as Editor } from "./MonacoEditor";
 import { MIN_EDITOR_HEIGHT } from "./constants";
 
 interface BlameViewProps {
@@ -36,8 +36,9 @@ export function BlameView({ content, blame, theme }: BlameViewProps) {
         <Editor
           value={content}
           theme={theme === "dark" ? "vs-dark" : "light"}
+          height="100%"
+          readOnly
           options={{
-            readOnly: true,
             minimap: { enabled: false },
             lineNumbers,
             lineNumbersMinChars: 24,

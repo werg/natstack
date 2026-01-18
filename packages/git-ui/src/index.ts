@@ -16,30 +16,21 @@
  * state unexpectedly.
  */
 
-// Configure Monaco loader to use bundled Monaco (for Electron compatibility)
-// This must be done before any Monaco Editor components are imported
-import { loader, Editor } from "@monaco-editor/react";
-import * as monaco from "monaco-editor";
-loader.config({ monaco });
-
-// Re-export Editor for consumers who need a simple code view
-export { Editor };
-
-// Configure Monaco workers (extracted to separate module for clarity)
-import { configureMonacoWorkers, type MonacoWorkerConfig } from "./monacoWorkers";
-configureMonacoWorkers();
-
-// Re-export Monaco worker configuration for consumers who need custom setup
-export { configureMonacoWorkers, type MonacoWorkerConfig } from "./monacoWorkers";
-
-// Monaco TypeScript type checking configuration
+// Monaco utilities and components - re-exported from monaco subpath for convenience
+// Import from "@natstack/git-ui/monaco" for tree-shaking if you only need Monaco features
 export {
+  getMonaco,
+  isMonacoReady,
+  getMonacoSync,
+  type MonacoNamespace,
+  MonacoEditor,
   configureMonacoTypeCheck,
   addMonacoTypeDefinition,
   diagnosticsToMarkers,
   setDiagnosticsOnModel,
   type MonacoTypeCheckConfig,
-} from "./monacoTypeCheck";
+  type MarkerData,
+} from "./monaco";
 
 // =============================================================================
 // DiffBlock Components
@@ -107,6 +98,8 @@ export { ConflictResolutionView } from "./ConflictResolutionView";
 export { ThreeWayMergeEditor } from "./ThreeWayMergeEditor";
 export { ConflictMarkerButtons } from "./ConflictMarkerButtons";
 export { MonacoErrorBoundary } from "./MonacoErrorBoundary";
+export { MonacoLoadingState } from "./MonacoLoadingState";
+export type { MonacoLoadingStateProps } from "./MonacoLoadingState";
 export { ErrorBoundary } from "./ErrorBoundary";
 export { LoadingState } from "./LoadingState";
 export type { LoadingStateProps } from "./LoadingState";

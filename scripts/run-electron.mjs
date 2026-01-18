@@ -10,6 +10,11 @@ const args = [".", ...extraArgs];
 
 const child = spawn(electronBinary, args, {
   stdio: "inherit",
+  env: {
+    ...process.env,
+    // Increase Node.js memory limit for main process (4GB)
+    NODE_OPTIONS: "--max-old-space-size=4096",
+  },
 });
 
 // Forward signals to the Electron process for proper shutdown

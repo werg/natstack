@@ -1,6 +1,7 @@
-import { useRef, useEffect } from "react";
-import * as monaco from "monaco-editor";
-import type { editor, IDisposable } from "monaco-editor";
+import { useRef, useEffect, useState, useCallback } from "react";
+import { getMonaco, type MonacoNamespace } from "../modernMonaco.js";
+import type { editor, IDisposable } from "modern-monaco/editor-core";
+import { MonacoLoadingState } from "../MonacoLoadingState.js";
 
 /**
  * Check if an unhandled rejection is a known Monaco DiffEditor error.
@@ -26,7 +27,7 @@ export interface DiffEditorDirectProps {
 }
 
 /**
- * A DiffEditor component that uses Monaco's API directly.
+ * A DiffEditor component that uses Monaco's API directly via modern-monaco.
  *
  * This replaces @monaco-editor/react's DiffEditor to fix a disposal bug
  * where models are disposed before the DiffEditorWidget is reset.
@@ -47,6 +48,8 @@ export function DiffEditorDirect({
   onModifiedChange,
 }: DiffEditorDirectProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [monaco, setMonaco] = useState<MonacoNamespace | null>(null);
+  const [initError, setInitError] = useState<Error | null>(null);
   const editorRef = useRef<editor.IStandaloneDiffEditor | null>(null);
   const originalModelRef = useRef<editor.ITextModel | null>(null);
   const modifiedModelRef = useRef<editor.ITextModel | null>(null);
@@ -61,9 +64,24 @@ export function DiffEditorDirect({
   const onMountRef = useRef(onMount);
   onMountRef.current = onMount;
 
-  // Initialize editor on mount
+  // Initialize Monaco with error handling
+  const initMonaco = useCallback(() => {
+    setInitError(null);
+    getMonaco()
+      .then(setMonaco)
+      .catch((err) => {
+        console.error("[DiffEditorDirect] Failed to initialize Monaco:", err);
+        setInitError(err instanceof Error ? err : new Error(String(err)));
+      });
+  }, []);
+
   useEffect(() => {
-    if (!containerRef.current) return;
+    initMonaco();
+  }, [initMonaco]);
+
+  // Initialize editor when Monaco is ready
+  useEffect(() => {
+    if (!monaco || !containerRef.current) return;
 
     // Track this initialization cycle - each effect invocation gets a unique ID
     // This handles React Strict Mode double-invocation correctly
@@ -147,9 +165,9 @@ export function DiffEditorDirect({
       modifiedModel.dispose();
       modifiedModelRef.current = null;
     };
-    // Only run on mount/unmount - content updates handled separately
+    // Only run when Monaco is ready - content updates handled separately
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [monaco]);
 
   // Update original content when prop changes
   useEffect(() => {
@@ -169,7 +187,7 @@ export function DiffEditorDirect({
 
   // Update language when prop changes
   useEffect(() => {
-    if (language) {
+    if (monaco && language) {
       if (originalModelRef.current) {
         monaco.editor.setModelLanguage(originalModelRef.current, language);
       }
@@ -177,7 +195,7 @@ export function DiffEditorDirect({
         monaco.editor.setModelLanguage(modifiedModelRef.current, language);
       }
     }
-  }, [language]);
+  }, [monaco, language]);
 
   // Update options when prop changes
   useEffect(() => {
@@ -188,8 +206,22 @@ export function DiffEditorDirect({
 
   // Update theme when prop changes
   useEffect(() => {
-    monaco.editor.setTheme(theme);
-  }, [theme]);
+    if (monaco) {
+      monaco.editor.setTheme(theme);
+    }
+  }, [monaco, theme]);
+
+  // Show loading/error state while Monaco initializes
+  if (!monaco) {
+    return (
+      <MonacoLoadingState
+        message="Loading diff..."
+        error={initError}
+        theme={theme}
+        onRetry={initError ? initMonaco : undefined}
+      />
+    );
+  }
 
   return (
     <div

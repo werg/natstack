@@ -544,6 +544,14 @@ export class PubSubServer {
         // Re-fetch to get actual contextId (in case another client won the race)
         const created = this.messageStore.getChannel(channel);
         channelContextId = created?.contextId;
+
+        // Verify the channel was created with our contextId
+        // This handles the rare race condition where two clients try to create
+        // the same channel with different contextIds simultaneously
+        if (channelContextId && channelContextId !== contextIdParam) {
+          ws.close(4005, "contextId mismatch: channel was created by another client");
+          return;
+        }
       }
       // If no contextId, channel exists only in memory (no persistence entry)
     } else {

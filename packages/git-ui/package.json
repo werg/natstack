@@ -3,20 +3,19 @@
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",
-  "natstack": {
-    "workers": {
-      "monaco/editor.worker.js": "monaco-editor/esm/vs/editor/editor.worker.js",
-      "monaco/ts.worker.js": "monaco-editor/esm/vs/language/typescript/ts.worker.js",
-      "monaco/json.worker.js": "monaco-editor/esm/vs/language/json/json.worker.js",
-      "monaco/css.worker.js": "monaco-editor/esm/vs/language/css/css.worker.js",
-      "monaco/html.worker.js": "monaco-editor/esm/vs/language/html/html.worker.js"
-    }
-  },
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./constants": {
+      "types": "./dist/constants.d.ts",
+      "default": "./dist/constants.js"
+    },
+    "./monaco": {
+      "types": "./dist/monaco.d.ts",
+      "default": "./dist/monaco.js"
     }
   },
   "files": [
@@ -27,7 +26,6 @@
     "dev": "tsc --project tsconfig.build.json --watch"
   },
   "dependencies": {
-    "@monaco-editor/react": "^4.6.0",
     "@natstack/git": "workspace:*",
     "@natstack/runtime": "workspace:*",
     "@radix-ui/react-accordion": "^1.2.0",
@@ -40,7 +38,7 @@
     "@radix-ui/react-tooltip": "^1.1.0",
     "@radix-ui/themes": "^3.2.1",
     "jotai": "^2.12.3",
-    "monaco-editor": "^0.55.0"
+    "modern-monaco": "^0.3.7"
   },
   "peerDependencies": {
     "react": "^19.0.0",

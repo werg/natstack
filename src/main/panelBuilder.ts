@@ -24,6 +24,7 @@ import {
   packageToRegex,
   DEFAULT_DEDUPE_PACKAGES,
 } from "@natstack/runtime/typecheck";
+import { isVerdaccioServerInitialized, getVerdaccioServer } from "./verdaccioServer.js";
 
 // ===========================================================================
 // Shared Build Plugins
@@ -702,21 +703,6 @@ function getReactDependenciesFromNatstackReact(): Record<string, string> | null 
 }
 
 /**
- * Implicit externals added when certain dependencies are detected.
- * Maps dependency name -> externals to add.
- * This avoids requiring panels to manually specify common externals.
- */
-const implicitExternals: Record<string, Record<string, string>> = {
-  // @natstack/build-eval optionally uses typescript for type checking.
-  // TypeScript is marked external because:
-  // 1. It's ~8MB and rarely needed at runtime (type checking is optional)
-  // 2. It has complex CJS internals that are better loaded from CDN
-  "@natstack/build-eval": {
-    "typescript": "https://esm.sh/typescript",
-  },
-};
-
-/**
  * Result of building a worker.
  * Contains just the JS bundle (no HTML/CSS needed).
  */
@@ -1051,20 +1037,65 @@ export class PanelBuilder {
     );
   }
 
+  /**
+   * Resolve workspace:* dependencies to file: paths.
+   *
+   * IMPORTANT: This recursively collects ALL workspace dependencies (including transitive ones)
+   * and flattens them into the resolved map. This is necessary because:
+   * 1. npm doesn't understand the `workspace:*` protocol (it's pnpm/yarn specific)
+   * 2. When npm installs `file:packages/foo`, it reads foo's package.json
+   * 3. If foo has `workspace:*` deps, npm can't resolve them
+   * 4. By flattening all workspace deps to the top level with `file:` paths, npm can install them
+   */
   private resolveWorkspaceDependencies(
     dependencies: Record<string, string>
   ): Record<string, string> {
     const resolved: Record<string, string> = {};
     const workspaceRoot = process.cwd();
+    const visited = new Set<string>();
 
-    for (const [pkg, version] of Object.entries(dependencies)) {
-      if (version.startsWith("workspace:")) {
-        // Resolve workspace package to file path
-        const packagePath = path.join(workspaceRoot, "packages", pkg.split("/")[1] || pkg);
-        resolved[pkg] = `file:${packagePath}`;
-      } else {
-        resolved[pkg] = version;
+    const resolvePackagePath = (pkgName: string): string => {
+      // Handle scoped packages like @natstack/foo -> packages/foo
+      const pkgDir = pkgName.startsWith("@") ? pkgName.split("/")[1] || pkgName : pkgName;
+      return path.join(workspaceRoot, "packages", pkgDir);
+    };
+
+    const collectWorkspaceDeps = (deps: Record<string, string>) => {
+      for (const [pkg, version] of Object.entries(deps)) {
+        if (version.startsWith("workspace:")) {
+          if (visited.has(pkg)) continue;
+          visited.add(pkg);
+
+          const packagePath = resolvePackagePath(pkg);
+          resolved[pkg] = `file:${packagePath}`;
+
+          // Recursively collect this package's workspace dependencies
+          const pkgJsonPath = path.join(packagePath, "package.json");
+          if (fs.existsSync(pkgJsonPath)) {
+            try {
+              const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
+                dependencies?: Record<string, string>;
+              };
+              if (pkgJson.dependencies) {
+                collectWorkspaceDeps(pkgJson.dependencies);
+              }
+            } catch {
+              // Skip packages with invalid package.json
+            }
+          }
+        } else if (!resolved[pkg]) {
+          // Non-workspace dependency - add if not already present
+          resolved[pkg] = version;
+        }
       }
+    };
+
+    collectWorkspaceDeps(dependencies);
+
+    // Log workspace dependency resolution for debugging
+    const workspaceDeps = Object.entries(resolved).filter(([, v]) => v.startsWith("file:"));
+    if (workspaceDeps.length > 0) {
+      console.log(`[PanelBuilder] Resolved ${workspaceDeps.length} workspace dependencies: ${workspaceDeps.map(([k]) => k).join(", ")}`);
     }
 
     return resolved;
@@ -1081,9 +1112,33 @@ export class PanelBuilder {
 
     fs.mkdirSync(depsDir, { recursive: true });
     const packageJsonPath = path.join(depsDir, "package.json");
+    const npmrcPath = path.join(depsDir, ".npmrc");
 
-    // Resolve workspace:* to file: paths
-    const resolvedDependencies = this.resolveWorkspaceDependencies(dependencies);
+    // Check if Verdaccio is running - if so, use it for native npm resolution
+    // Otherwise, fall back to workspace:* -> file: path translation
+    // ensureRunning() will auto-restart Verdaccio if it crashed
+    const useVerdaccio = isVerdaccioServerInitialized() && await getVerdaccioServer().ensureRunning();
+
+    let resolvedDependencies: Record<string, string>;
+    if (useVerdaccio) {
+      // With Verdaccio, translate workspace:* to * (Verdaccio serves local packages)
+      resolvedDependencies = {};
+      for (const [name, version] of Object.entries(dependencies)) {
+        resolvedDependencies[name] = version.startsWith("workspace:") ? "*" : version;
+      }
+
+      // Write .npmrc to point to local Verdaccio registry
+      const verdaccioUrl = getVerdaccioServer().getBaseUrl();
+      fs.writeFileSync(npmrcPath, `registry=${verdaccioUrl}\n`);
+    } else {
+      // Fallback: resolve workspace:* to file: paths
+      resolvedDependencies = this.resolveWorkspaceDependencies(dependencies);
+
+      // Remove .npmrc if it exists (use default registry)
+      if (fs.existsSync(npmrcPath)) {
+        fs.rmSync(npmrcPath);
+      }
+    }
 
     type PanelRuntimePackageJson = {
       name: string;
@@ -1099,7 +1154,16 @@ export class PanelBuilder {
       dependencies: resolvedDependencies,
     };
     const serialized = JSON.stringify(desiredPackageJson, null, 2);
-    const desiredHash = crypto.createHash("sha256").update(serialized).digest("hex");
+
+    // When using Verdaccio, include workspace package content hashes in the dependency hash.
+    // This ensures we reinstall when workspace packages change, even if version specifiers
+    // (like "*") remain the same.
+    let hashInput = serialized;
+    if (useVerdaccio) {
+      const workspaceHashes = getVerdaccioServer().getWorkspacePackageHashes();
+      hashInput += JSON.stringify(workspaceHashes, Object.keys(workspaceHashes).sort());
+    }
+    const desiredHash = crypto.createHash("sha256").update(hashInput).digest("hex");
 
     const nodeModulesPath = path.join(depsDir, "node_modules");
     const packageLockPath = path.join(depsDir, "package-lock.json");
@@ -1123,7 +1187,18 @@ export class PanelBuilder {
       fs.rmSync(packageLockPath, { recursive: true, force: true });
     }
 
-    const arborist = new Arborist({ path: depsDir });
+    // Pass registry directly to Arborist - .npmrc is not always read reliably
+    const arboristOptions: {
+      path: string;
+      registry?: string;
+      preferOnline?: boolean;
+    } = { path: depsDir };
+    if (useVerdaccio) {
+      arboristOptions.registry = getVerdaccioServer().getBaseUrl();
+      // Always fetch fresh metadata from Verdaccio to get latest content-hash versions
+      arboristOptions.preferOnline = true;
+    }
+    const arborist = new Arborist(arboristOptions);
     await arborist.buildIdealTree();
     await arborist.reify();
 
@@ -1196,15 +1271,7 @@ export class PanelBuilder {
       const hasRepoArgs = manifest.repoArgs && manifest.repoArgs.length > 0;
 
       // Get externals from manifest (packages loaded via import map / CDN)
-      // Also add implicit externals based on detected dependencies
       const externals: Record<string, string> = { ...(manifest.externals ?? {}) };
-      const allDependencies = { ...defaultPanelDependencies, ...(manifest.dependencies ?? {}) };
-      for (const [dep, depExternals] of Object.entries(implicitExternals)) {
-        if (dep in allDependencies) {
-          Object.assign(externals, depExternals);
-        }
-      }
-
       const externalModules = Object.keys(externals);
       // For unsafe panels with platform: "node", don't manually mark Node.js built-ins as external
       // esbuild will handle them correctly as built-ins provided by the Node.js runtime
@@ -1395,6 +1462,12 @@ import ${JSON.stringify(relativeUserEntry)};
           workspace.buildDir,
           log
         );
+        if (dependencyWorkerAssets) {
+          const workerKeys = Object.keys(dependencyWorkerAssets);
+          log(`Built ${workerKeys.length} dependency worker assets: ${workerKeys.join(", ")}`);
+        } else {
+          log(`No dependency worker assets found`);
+        }
       } catch (assetError) {
         log?.(
           `Warning: Dependency worker build failed: ${
@@ -1403,6 +1476,11 @@ import ${JSON.stringify(relativeUserEntry)};
         );
       }
       const assets = this.mergeAssetMaps(panelAssets, dependencyWorkerAssets);
+      if (assets) {
+        const assetKeys = Object.keys(assets);
+        const monacoKeys = assetKeys.filter(k => k.includes("monaco"));
+        log(`Total panel assets: ${assetKeys.length} (${monacoKeys.length} monaco-related: ${monacoKeys.join(", ")})`);
+      }
       const html = this.resolveHtml(sourcePath, manifest.title, externals, {
         includeCss: Boolean(css),
         unsafe: Boolean(unsafe),
@@ -1564,11 +1642,13 @@ import ${JSON.stringify(relativeUserEntry)};
     log?: (message: string) => void
   ): Promise<PanelAssetMap | undefined> {
     // Collect workers from the panel's dependencies
+    log?.(`Scanning for worker declarations in: ${nodeModulesDir}`);
     const workers = collectWorkersFromDependencies(nodeModulesDir, {
       log: (msg) => log?.(msg),
     });
 
     const workerEntries = workersToArray(workers);
+    log?.(`Found ${workerEntries.length} worker declarations`);
     if (workerEntries.length === 0) {
       return undefined;
     }

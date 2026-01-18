@@ -1,8 +1,8 @@
 import { useMemo } from "react";
 import { Box, Callout } from "@radix-ui/themes";
-import { Editor } from "@monaco-editor/react";
 import { FileDiffHeader } from "./FileDiffHeader";
 import { MonacoErrorBoundary } from "../MonacoErrorBoundary";
+import { MonacoEditor as Editor } from "../MonacoEditor";
 import type { FileChange } from "./types";
 import {
   MIN_EDITOR_HEIGHT,
@@ -79,8 +79,9 @@ export function FileContentView({
             value={content}
             language={language}
             theme={theme === "dark" ? "vs-dark" : "light"}
+            height={editorHeight}
+            readOnly
             options={{
-              readOnly: true,
               minimap: { enabled: false },
               scrollBeyondLastLine: false,
               lineNumbers: "on",

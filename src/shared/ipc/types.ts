@@ -181,6 +181,8 @@ export interface StreamTextOptions {
   maxOutputTokens?: number;
   temperature?: number;
   system?: string;
+  /** Enable thinking/reasoning with optional budget */
+  thinking?: { type: "enabled" | "disabled"; budgetTokens?: number };
 }
 
 /** Stream event sent from main to panel */

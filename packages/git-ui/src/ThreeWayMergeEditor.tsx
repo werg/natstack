@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Button, Flex, Text } from "@radix-ui/themes";
-import { Editor } from "@monaco-editor/react";
-import type { editor as MonacoEditor } from "monaco-editor";
+import type { editor as MonacoEditor } from "modern-monaco/editor-core";
 import type { ConflictInfo } from "@natstack/git";
 import { ConflictMarkerButtons } from "./ConflictMarkerButtons";
 import { MonacoErrorBoundary } from "./MonacoErrorBoundary";
-
-type MonacoApi = typeof import("monaco-editor");
+import { MonacoEditor as Editor } from "./MonacoEditor";
+import { getMonaco, type MonacoNamespace } from "./modernMonaco";
 
 const CONFLICT_STYLE_ID = "git-ui-conflict-marker-styles";
 
@@ -153,7 +152,7 @@ export function ThreeWayMergeEditor({ conflict, onResolve, theme, disabled }: Th
 
   // Track editor for decorations
   const resolvedEditorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
-  const monacoRef = useRef<MonacoApi | null>(null);
+  const monacoRef = useRef<MonacoNamespace | null>(null);
   const decorationIdsRef = useRef<string[]>([]);
 
   // Apply conflict marker decorations to the resolved editor
@@ -192,7 +191,7 @@ export function ThreeWayMergeEditor({ conflict, onResolve, theme, disabled }: Th
 
   // Handle editor mount
   const handleResolvedEditorMount = useCallback(
-    (editor: MonacoEditor.IStandaloneCodeEditor, monaco: MonacoApi) => {
+    (editor: MonacoEditor.IStandaloneCodeEditor, monaco: MonacoNamespace) => {
       resolvedEditorRef.current = editor;
       monacoRef.current = monaco;
       applyConflictDecorations();
@@ -273,10 +272,11 @@ export function ThreeWayMergeEditor({ conflict, onResolve, theme, disabled }: Th
           <Text size="1" color="gray">Base</Text>
           <MonacoErrorBoundary fallbackHeight={200}>
             <Editor
-              value={conflict.base}
+              value={conflict.base ?? ""}
               theme={theme === "dark" ? "vs-dark" : "light"}
-              height="200px"
-              options={{ readOnly: true, minimap: { enabled: false }, lineNumbers: "on" }}
+              height={200}
+              readOnly
+              options={{ minimap: { enabled: false }, lineNumbers: "on" }}
             />
           </MonacoErrorBoundary>
         </Box>
@@ -284,10 +284,11 @@ export function ThreeWayMergeEditor({ conflict, onResolve, theme, disabled }: Th
           <Text size="1" color="gray">Ours</Text>
           <MonacoErrorBoundary fallbackHeight={200}>
             <Editor
-              value={conflict.ours}
+              value={conflict.ours ?? ""}
               theme={theme === "dark" ? "vs-dark" : "light"}
-              height="200px"
-              options={{ readOnly: true, minimap: { enabled: false }, lineNumbers: "on" }}
+              height={200}
+              readOnly
+              options={{ minimap: { enabled: false }, lineNumbers: "on" }}
             />
           </MonacoErrorBoundary>
         </Box>
@@ -295,10 +296,11 @@ export function ThreeWayMergeEditor({ conflict, onResolve, theme, disabled }: Th
           <Text size="1" color="gray">Theirs</Text>
           <MonacoErrorBoundary fallbackHeight={200}>
             <Editor
-              value={conflict.theirs}
+              value={conflict.theirs ?? ""}
               theme={theme === "dark" ? "vs-dark" : "light"}
-              height="200px"
-              options={{ readOnly: true, minimap: { enabled: false }, lineNumbers: "on" }}
+              height={200}
+              readOnly
+              options={{ minimap: { enabled: false }, lineNumbers: "on" }}
             />
           </MonacoErrorBoundary>
         </Box>
@@ -308,7 +310,7 @@ export function ThreeWayMergeEditor({ conflict, onResolve, theme, disabled }: Th
             <Editor
               value={resultContent}
               theme={theme === "dark" ? "vs-dark" : "light"}
-              height="200px"
+              height={200}
               options={{
                 minimap: { enabled: false },
                 lineNumbers: "on",

@@ -65,37 +65,43 @@ function collectFromPackage(pkgDir, workers, log) {
 }
 
 /**
- * Collect all worker declarations from a node_modules directory.
- *
- * Scans all installed packages (including scoped packages) for
- * natstack.workers declarations in their package.json files.
+ * Recursively scan a node_modules directory for packages with worker declarations.
  *
  * @param {string} nodeModulesDir - Path to node_modules directory
- * @param {Object} [options]
- * @param {(msg: string) => void} [options.log] - Optional logger for warnings
- * @returns {CollectedWorkers} Map of output path -> worker info
+ * @param {CollectedWorkers} workers - Map to collect workers into
+ * @param {Set<string>} visited - Set of already-visited directories (to handle symlinks)
+ * @param {(msg: string) => void} [log] - Optional logger
  */
-export function collectWorkersFromDependencies(nodeModulesDir, options = {}) {
-  const { log } = options;
-  /** @type {CollectedWorkers} */
-  const workers = {};
+function scanNodeModules(nodeModulesDir, workers, visited, log) {
+  // Resolve symlinks to get the real path for cycle detection
+  let realPath;
+  try {
+    realPath = fs.realpathSync(nodeModulesDir);
+  } catch {
+    return; // Can't resolve path, skip
+  }
+
+  if (visited.has(realPath)) {
+    return; // Already scanned this directory
+  }
+  visited.add(realPath);
 
   if (!fs.existsSync(nodeModulesDir)) {
-    return workers;
+    return;
   }
 
   let entries;
   try {
     entries = fs.readdirSync(nodeModulesDir, { withFileTypes: true });
   } catch {
-    return workers;
+    return;
   }
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
 
-    // Skip hidden directories and common non-package directories
-    if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+    // Skip hidden directories
+    if (entry.name.startsWith(".")) continue;
 
     const entryPath = path.join(nodeModulesDir, entry.name);
 
@@ -110,13 +116,44 @@ export function collectWorkersFromDependencies(nodeModulesDir, options = {}) {
 
       for (const scopedEntry of scopedEntries) {
         if (!scopedEntry.isDirectory()) continue;
-        collectFromPackage(path.join(entryPath, scopedEntry.name), workers, log);
+        const scopedPkgPath = path.join(entryPath, scopedEntry.name);
+        collectFromPackage(scopedPkgPath, workers, log);
+
+        // Recursively scan nested node_modules
+        const nestedNodeModules = path.join(scopedPkgPath, "node_modules");
+        scanNodeModules(nestedNodeModules, workers, visited, log);
       }
     } else {
       // Regular package
       collectFromPackage(entryPath, workers, log);
+
+      // Recursively scan nested node_modules
+      const nestedNodeModules = path.join(entryPath, "node_modules");
+      scanNodeModules(nestedNodeModules, workers, visited, log);
     }
   }
+}
+
+/**
+ * Collect all worker declarations from a node_modules directory.
+ *
+ * Scans all installed packages (including scoped packages and nested
+ * node_modules for transitive dependencies) for natstack.workers
+ * declarations in their package.json files.
+ *
+ * @param {string} nodeModulesDir - Path to node_modules directory
+ * @param {Object} [options]
+ * @param {(msg: string) => void} [options.log] - Optional logger for warnings
+ * @returns {CollectedWorkers} Map of output path -> worker info
+ */
+export function collectWorkersFromDependencies(nodeModulesDir, options = {}) {
+  const { log } = options;
+  /** @type {CollectedWorkers} */
+  const workers = {};
+  /** @type {Set<string>} */
+  const visited = new Set();
+
+  scanNodeModules(nodeModulesDir, workers, visited, log);
 
   return workers;
 }

@@ -6,7 +6,7 @@
  * for @natstack/runtime APIs, fs shim, and other panel-specific types.
  */
 
-import * as monaco from "monaco-editor";
+import { getMonaco, type MonacoNamespace } from "./modernMonaco.js";
 import {
   FS_TYPE_DEFINITIONS,
   PATH_TYPE_DEFINITIONS,
@@ -15,8 +15,7 @@ import {
   TS_LIB_FILES,
 } from "@natstack/runtime/typecheck";
 
-// Monaco's typescript namespace types are marked deprecated but still work.
-// We use type assertions to access the API.
+// Monaco's typescript namespace types
 interface MonacoTypescriptDefaults {
   setCompilerOptions: (options: Record<string, unknown>) => void;
   setDiagnosticsOptions: (options: Record<string, boolean>) => void;
@@ -34,9 +33,9 @@ interface MonacoTypescriptNamespace {
 
 /**
  * Get Monaco's typescript namespace with runtime validation.
- * Returns null if the API is unavailable (e.g., Monaco version changed).
+ * Returns null if the API is unavailable.
  */
-function getMonacoTypescript(): MonacoTypescriptNamespace | null {
+function getMonacoTypescript(monaco: MonacoNamespace): MonacoTypescriptNamespace | null {
   // Access via bracket notation to bypass deprecated type warnings
   const languages = monaco.languages as Record<string, unknown>;
   const ts = languages["typescript"] as MonacoTypescriptNamespace | undefined;
@@ -110,10 +109,11 @@ export interface MonacoTypeCheckConfig {
  *
  * Call this once when initializing Monaco in your application.
  *
- * @returns true if configuration succeeded, false if Monaco typescript API unavailable
+ * @returns Promise<true> if configuration succeeded, Promise<false> if Monaco typescript API unavailable
  */
-export function configureMonacoTypeCheck(config: MonacoTypeCheckConfig = {}): boolean {
-  const ts = getMonacoTypescript();
+export async function configureMonacoTypeCheck(config: MonacoTypeCheckConfig = {}): Promise<boolean> {
+  const monaco = await getMonaco();
+  const ts = getMonacoTypescript(monaco);
   if (!ts) {
     return false;
   }
@@ -203,14 +203,15 @@ export function configureMonacoTypeCheck(config: MonacoTypeCheckConfig = {}): bo
  * Use this to add types for packages loaded dynamically or
  * not included in the default configuration.
  *
- * @returns true if the definition was added, false if Monaco typescript API unavailable
+ * @returns Promise<true> if the definition was added, Promise<false> if Monaco typescript API unavailable
  */
-export function addMonacoTypeDefinition(
+export async function addMonacoTypeDefinition(
   virtualPath: string,
   content: string,
   language: "typescript" | "javascript" = "typescript"
-): boolean {
-  const ts = getMonacoTypescript();
+): Promise<boolean> {
+  const monaco = await getMonaco();
+  const ts = getMonacoTypescript(monaco);
   if (!ts) {
     return false;
   }
@@ -222,6 +223,30 @@ export function addMonacoTypeDefinition(
 
   defaults.addExtraLib(content, virtualPath);
   return true;
+}
+
+// Monaco MarkerSeverity enum values - hardcoded to avoid runtime dependency on monaco namespace.
+// These values match monaco.MarkerSeverity from Monaco Editor:
+// - Error = 8 (monaco.MarkerSeverity.Error)
+// - Warning = 4 (monaco.MarkerSeverity.Warning)
+// - Info = 2 (monaco.MarkerSeverity.Info)
+// See: https://microsoft.github.io/monaco-editor/typedoc/enums/MarkerSeverity.html
+const MarkerSeverity = {
+  Error: 8,
+  Warning: 4,
+  Info: 2,
+} as const;
+
+/**
+ * Marker data type compatible with Monaco's IMarkerData interface.
+ */
+export interface MarkerData {
+  startLineNumber: number;
+  startColumn: number;
+  endLineNumber: number;
+  endColumn: number;
+  message: string;
+  severity: 8 | 4 | 2;
 }
 
 /**
@@ -240,7 +265,7 @@ export function diagnosticsToMarkers(
     severity: "error" | "warning" | "info";
   }>,
   filterFile?: string
-): monaco.editor.IMarkerData[] {
+): MarkerData[] {
   const filtered = filterFile
     ? diagnostics.filter((d) => d.file === filterFile)
     : diagnostics;
@@ -253,18 +278,22 @@ export function diagnosticsToMarkers(
     message: d.message,
     severity:
       d.severity === "error"
-        ? monaco.MarkerSeverity.Error
+        ? MarkerSeverity.Error
         : d.severity === "warning"
-        ? monaco.MarkerSeverity.Warning
-        : monaco.MarkerSeverity.Info,
+        ? MarkerSeverity.Warning
+        : MarkerSeverity.Info,
   }));
 }
 
 /**
  * Set Monaco markers on a model from TypeCheckService diagnostics.
+ *
+ * @param modelUri - The URI of the model (e.g., "file:///path/to/file.ts")
+ * @param diagnostics - Array of diagnostics from TypeCheckService
+ * @param owner - Owner identifier for the markers (default: "natstack-typecheck")
  */
-export function setDiagnosticsOnModel(
-  model: monaco.editor.ITextModel,
+export async function setDiagnosticsOnModel(
+  modelUri: string,
   diagnostics: Array<{
     file: string;
     line: number;
@@ -275,7 +304,11 @@ export function setDiagnosticsOnModel(
     severity: "error" | "warning" | "info";
   }>,
   owner: string = "natstack-typecheck"
-): void {
+): Promise<void> {
+  const monaco = await getMonaco();
+  const model = monaco.editor.getModel(monaco.Uri.parse(modelUri));
+  if (!model) return;
+
   const markers = diagnosticsToMarkers(diagnostics, model.uri.path);
   monaco.editor.setModelMarkers(model, owner, markers);
 }

@@ -2,16 +2,17 @@
  * Monaco editor panel component.
  *
  * Wraps the Monaco editor with lifecycle management and keyboard shortcuts.
+ * Uses modern-monaco via @natstack/git-ui for async Monaco initialization.
  */
 
-import { useRef, useEffect } from "react";
-import * as monaco from "monaco-editor";
-import type { editor, IDisposable } from "monaco-editor";
+import { useRef, useEffect, useState } from "react";
+import type { editor, IDisposable } from "modern-monaco/editor-core";
 import { Box, Flex, Text } from "@radix-ui/themes";
 import {
-  configureMonacoWorkers,
+  getMonaco,
   configureMonacoTypeCheck,
   diagnosticsToMarkers,
+  type MonacoNamespace,
 } from "@natstack/git-ui";
 import { getLanguage, type Diagnostic } from "../types";
 import type { UseEditorNavigationResult } from "../hooks/useEditorNavigation";
@@ -31,27 +32,8 @@ export interface EditorPanelProps {
   style?: React.CSSProperties;
 }
 
-/**
- * Initialize Monaco once (workers + TypeScript config).
- * Uses Monaco's state to detect if already initialized, avoiding module-level mutable state
- * that doesn't reset on HMR.
- */
-function ensureMonacoInitialized(): void {
-  // Check if TypeScript defaults already have our libs (indicates prior initialization)
-  const ts = (monaco.languages as Record<string, unknown>)["typescript"] as
-    | { typescriptDefaults?: { getExtraLibs?: () => Record<string, unknown> } }
-    | undefined;
-
-  // Skip if already initialized (check for our virtual libs)
-  if (ts?.typescriptDefaults?.getExtraLibs?.()?.["file:///node_modules/@natstack/globals.d.ts"]) {
-    return;
-  }
-
-  configureMonacoWorkers();
-  // Note: React types should be loaded via TypeDefinitionLoader and added via additionalTypes
-  // if needed. See MonacoTypeCheckConfig.additionalTypes documentation.
-  configureMonacoTypeCheck();
-}
+// Track if type check has been configured (module-level for singleton behavior)
+let typeCheckConfigured = false;
 
 export function EditorPanel({
   filePath,
@@ -67,6 +49,7 @@ export function EditorPanel({
   style,
 }: EditorPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [monaco, setMonaco] = useState<MonacoNamespace | null>(null);
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const modelRef = useRef<editor.ITextModel | null>(null);
   const disposablesRef = useRef<IDisposable[]>([]);
@@ -85,7 +68,14 @@ export function EditorPanel({
 
   // Initialize Monaco on mount
   useEffect(() => {
-    ensureMonacoInitialized();
+    getMonaco().then(async (m) => {
+      // Configure type checking once
+      if (!typeCheckConfigured) {
+        typeCheckConfigured = true;
+        await configureMonacoTypeCheck();
+      }
+      setMonaco(m);
+    });
   }, []);
 
   // Track initial content for editor creation (avoids re-render dependency)
@@ -108,7 +98,7 @@ export function EditorPanel({
 
   // Create/dispose editor only when filePath changes (NOT content)
   useEffect(() => {
-    if (!containerRef.current || content === null) return;
+    if (!monaco || !containerRef.current || content === null) return;
 
     const thisInitId = ++initIdRef.current;
     const container = containerRef.current;
@@ -236,10 +226,10 @@ export function EditorPanel({
         modelRef.current = null;
       }
     };
-    // filePath is the only dependency intentionally - editor handles content updates
+    // filePath and monaco are the dependencies - editor handles content updates
     // via separate useEffect to avoid full recreation on typing
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filePath]);
+  }, [filePath, monaco]);
 
   // Handle external content changes (e.g., file reloaded from disk)
   useEffect(() => {
@@ -257,6 +247,7 @@ export function EditorPanel({
 
   // Update diagnostics markers
   useEffect(() => {
+    if (!monaco) return;
     const model = modelRef.current;
     if (!model || model.isDisposed() || !filePath) return;
 
@@ -264,7 +255,7 @@ export function EditorPanel({
     // Don't pass filterFile to avoid double-filtering with potentially mismatched paths
     const markers = diagnosticsToMarkers(diagnostics);
     monaco.editor.setModelMarkers(model, "natstack-typecheck", markers);
-  }, [diagnostics, filePath]);
+  }, [monaco, diagnostics, filePath]);
 
   // Subscribe to navigation events
   useEffect(() => {
@@ -283,6 +274,24 @@ export function EditorPanel({
       goToPosition(req.line, req.column);
     });
   }, [navigation]);
+
+  // Show loading state while Monaco initializes
+  if (!monaco) {
+    return (
+      <Flex
+        align="center"
+        justify="center"
+        style={{
+          ...style,
+          backgroundColor: "var(--gray-1)",
+        }}
+      >
+        <Text size="2" color="gray">
+          Loading editor...
+        </Text>
+      </Flex>
+    );
+  }
 
   // Show placeholder when no file is open
   if (content === null) {

@@ -46,6 +46,7 @@ import { setupAboutProtocol } from "./aboutProtocol.js";
 import { getMainCacheManager } from "./cacheManager.js";
 import { getCdpServer, type CdpServer } from "./cdpServer.js";
 import { getPubSubServer, type PubSubServer } from "./pubsubServer.js";
+import { createVerdaccioServer, type VerdaccioServer } from "./verdaccioServer.js";
 import { eventService } from "./services/eventsService.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
 import { handleDbCall } from "./ipc/dbHandlers.js";
@@ -112,6 +113,7 @@ let workspace: Workspace | null = null;
 let gitServer: GitServer | null = null;
 let cdpServer: CdpServer | null = null;
 let pubsubServer: PubSubServer | null = null;
+let verdaccioServer: VerdaccioServer | null = null;
 let panelManager: PanelManager | null = null;
 let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
@@ -461,6 +463,27 @@ app.on("ready", async () => {
       checkDbFile("before getServiceDispatcher");
       checkDbFile("after getServiceDispatcher");
 
+      // Start Verdaccio server FIRST (other services may need to install packages)
+      try {
+        // Use project root (parent of workspace) for finding packages/
+        const projectRoot = path.dirname(workspace.path);
+        verdaccioServer = createVerdaccioServer({
+          workspaceRoot: projectRoot,
+          storagePath: path.join(app.getPath("userData"), "verdaccio-storage"),
+        });
+        const verdaccioPort = await verdaccioServer.start();
+        console.log(`[Verdaccio] Registry started on port ${verdaccioPort}`);
+
+        // Publish workspace packages to local registry
+        const publishResult = await verdaccioServer.publishWorkspacePackages();
+        if (!publishResult.success) {
+          console.warn(`[Verdaccio] Some packages failed to publish: ${publishResult.failed.map(f => f.name).join(", ")}`);
+        }
+      } catch (verdaccioError) {
+        console.warn("[Verdaccio] Failed to start (falling back to file: path resolution):", verdaccioError);
+        verdaccioServer = null;
+      }
+
       // Start git server
       checkDbFile("before gitServer.start");
       const port = await gitServer.start();
@@ -576,7 +599,7 @@ app.on("will-quit", (event) => {
     return;
   }
 
-  const hasResourcesToClean = gitServer || cdpServer || pubsubServer;
+  const hasResourcesToClean = gitServer || cdpServer || pubsubServer || verdaccioServer;
   if (hasResourcesToClean) {
     isCleaningUp = true;
     event.preventDefault();
@@ -615,6 +638,17 @@ app.on("will-quit", (event) => {
           .then(() => console.log("[App] PubSub server stopped"))
           .catch((error) => {
             console.error("Error stopping PubSub server:", error);
+          })
+      );
+    }
+
+    if (verdaccioServer) {
+      stopPromises.push(
+        verdaccioServer
+          .stop()
+          .then(() => console.log("[App] Verdaccio server stopped"))
+          .catch((error) => {
+            console.error("Error stopping Verdaccio server:", error);
           })
       );
     }

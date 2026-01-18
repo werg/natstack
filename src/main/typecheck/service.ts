@@ -9,11 +9,24 @@
  */
 
 import * as fs from "fs/promises";
+import * as fsSync from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import Arborist from "@npmcli/arborist";
 import { createTypeDefinitionLoader } from "@natstack/runtime/typecheck";
 import { app } from "electron";
+import { isVerdaccioServerInitialized, getVerdaccioServer } from "../verdaccioServer.js";
+
+/**
+ * Check if Verdaccio is running and can serve @natstack/* packages.
+ * Uses ensureRunning() to auto-restart Verdaccio if it crashed.
+ */
+async function canUseVerdaccio(): Promise<boolean> {
+  if (!isVerdaccioServerInitialized()) {
+    return false;
+  }
+  return getVerdaccioServer().ensureRunning();
+}
 
 /**
  * Node.js built-in modules that shouldn't be fetched from npm.
@@ -298,6 +311,19 @@ export class TypeDefinitionService {
    */
   private async doInstall(depsDir: string, spec: string): Promise<void> {
     const packageJsonPath = path.join(depsDir, "package.json");
+    const npmrcPath = path.join(depsDir, ".npmrc");
+
+    // Check once if Verdaccio is available (will auto-restart if crashed)
+    const canServeNatstack = await canUseVerdaccio();
+
+    // If Verdaccio is running, use it as the registry
+    if (canServeNatstack) {
+      const verdaccioUrl = getVerdaccioServer().getBaseUrl();
+      fsSync.writeFileSync(npmrcPath, `registry=${verdaccioUrl}\n`);
+    } else if (fsSync.existsSync(npmrcPath)) {
+      // Remove .npmrc if Verdaccio is not running (use default registry)
+      fsSync.rmSync(npmrcPath);
+    }
 
     // Read or create package.json
     let packageJson: { name: string; private: boolean; dependencies: Record<string, string> };
@@ -313,13 +339,13 @@ export class TypeDefinitionService {
     }
 
     // Clean up stale entries from cached package.json that shouldn't be installed:
-    // - @natstack/* packages (bundled in runtime)
+    // - @natstack/* packages (only skip if Verdaccio is NOT running - it can serve them)
     // - @types/natstack__* (DefinitelyTyped naming for scoped @natstack packages)
     // - Node built-ins, internal playwright aliases, blacklisted names
     // - @types/* variants of packages that shouldn't be fetched
     for (const dep of Object.keys(packageJson.dependencies)) {
       if (
-        dep.startsWith("@natstack/") ||
+        (!canServeNatstack && dep.startsWith("@natstack/")) ||
         dep.startsWith("@types/natstack__") ||
         shouldSkipPackage(dep) ||
         // Also clean @types/* for skippable packages (e.g., @types/node is fine, but @types/protocol__* is not)
@@ -355,7 +381,12 @@ export class TypeDefinitionService {
 
     while (retryCount < maxRetries) {
       try {
-        const arborist = new Arborist({ path: depsDir });
+        // Pass registry directly to Arborist - .npmrc is not always read reliably
+        const arboristOptions: { path: string; registry?: string } = { path: depsDir };
+        if (canServeNatstack) {
+          arboristOptions.registry = getVerdaccioServer().getBaseUrl();
+        }
+        const arborist = new Arborist(arboristOptions);
         await arborist.buildIdealTree();
         await arborist.reify();
         break; // Success
@@ -418,7 +449,12 @@ export class TypeDefinitionService {
       await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
 
       try {
-        const arborist = new Arborist({ path: depsDir });
+        // Pass registry directly to Arborist - .npmrc is not always read reliably
+        const arboristOptions: { path: string; registry?: string } = { path: depsDir };
+        if (canServeNatstack) {
+          arboristOptions.registry = getVerdaccioServer().getBaseUrl();
+        }
+        const arborist = new Arborist(arboristOptions);
         await arborist.buildIdealTree();
         await arborist.reify();
       } catch (typesError) {
