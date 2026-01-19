@@ -6,6 +6,7 @@
  * but each fs method also awaits it internally.
  */
 
+import { Buffer } from "buffer";
 import { configureSingle, promises as zenPromises } from "@zenfs/core";
 import { WebAccess } from "@zenfs/dom";
 import type { RuntimeFs, FileStats, Dirent, ReaddirOptions } from "../types.js";
@@ -66,7 +67,9 @@ export const fs: RuntimeFs = {
     await fsReady;
     const data = await zenPromises.readFile(path, encoding as BufferEncoding | undefined);
     if (typeof data === "string") return data;
-    return new Uint8Array(data);
+    // Return Buffer for Node.js API compatibility (Buffer extends Uint8Array)
+    // This ensures buffer.toString("utf-8") works as expected
+    return Buffer.from(data);
   },
 
   async writeFile(path: string, data: string | Uint8Array): Promise<void> {

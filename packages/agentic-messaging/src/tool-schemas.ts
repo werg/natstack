@@ -86,6 +86,8 @@ export const GrepArgsSchema = z.object({
   "-A": z.number().optional().describe("Lines after match (context)"),
   "-B": z.number().optional().describe("Lines before match (context)"),
   "-C": z.number().optional().describe("Lines before AND after match"),
+  "-w": z.boolean().optional().describe("Match whole words only (word boundary matching)"),
+  "-F": z.boolean().optional().describe("Fixed string matching (treat pattern as literal, not regex)"),
   head_limit: z.number().optional().describe("Limit results"),
   offset: z.number().optional().describe("Skip first N results"),
   multiline: z.boolean().optional().describe("Enable multiline matching"),

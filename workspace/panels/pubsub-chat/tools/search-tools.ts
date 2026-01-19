@@ -12,6 +12,7 @@ import * as path from "path";
 import picomatch from "picomatch";
 import type { MethodDefinition } from "@natstack/agentic-messaging";
 import { resolvePath } from "./utils";
+import { createIgnoreFilter } from "./gitignore-cache";
 import {
   GlobArgsSchema,
   GrepArgsSchema,
@@ -22,23 +23,24 @@ import {
 
 const MAX_RESULTS = 1000;
 
-// Default ignore patterns for file traversal
-const DEFAULT_IGNORE_PATTERNS = ["**/node_modules/**", "**/.git/**"];
-
 interface GlobResult {
   path: string;
   mtimeMs?: number;
 }
 
+/** Type for async ignore filter function */
+type IgnoreFilter = (relativePath: string, parentDir: string) => Promise<boolean>;
+
 /**
  * Walk a directory tree and find files matching a pattern.
  * Uses shimmed fs.readdir({ withFileTypes: true }) for browser compatibility.
+ * Supports async ignore filters for gitignore support.
  */
 async function walkDirectory(
   dir: string,
   relative: string,
   matcher: (path: string) => boolean,
-  ignoreMatcher: ((path: string) => boolean) | null,
+  ignoreFilter: IgnoreFilter | null,
   options: { stats?: boolean },
   results: GlobResult[]
 ): Promise<void> {
@@ -54,12 +56,12 @@ async function walkDirectory(
     const relPath = relative ? `${relative}/${entry.name}` : entry.name;
     const fullPath = path.join(dir, entry.name);
 
-    // Skip ignored paths
-    if (ignoreMatcher?.(relPath)) continue;
+    // Skip ignored paths (async gitignore check)
+    if (ignoreFilter && (await ignoreFilter(relPath, dir))) continue;
 
     if (entry.isDirectory()) {
       // Recursively walk subdirectories
-      await walkDirectory(fullPath, relPath, matcher, ignoreMatcher, options, results);
+      await walkDirectory(fullPath, relPath, matcher, ignoreFilter, options, results);
     } else if (matcher(relPath)) {
       const result: GlobResult = { path: relPath };
       if (options.stats) {
@@ -78,18 +80,20 @@ async function walkDirectory(
 /**
  * glob - Find files by pattern
  * Browser-compatible implementation using picomatch + shimmed fs.
+ * Respects .gitignore files in the workspace.
  */
 export async function glob(args: GlobArgs, workspaceRoot?: string): Promise<string> {
   const { pattern } = args;
   const searchPath = args.path ?? workspaceRoot ?? process.cwd();
   const absolutePath = resolvePath(searchPath, workspaceRoot);
+  const effectiveRoot = workspaceRoot ?? process.cwd();
 
   try {
     const matcher = picomatch(pattern);
-    const ignoreMatcher = picomatch(DEFAULT_IGNORE_PATTERNS);
+    const ignoreFilter = await createIgnoreFilter(effectiveRoot);
 
     const results: GlobResult[] = [];
-    await walkDirectory(absolutePath, "", matcher, ignoreMatcher, { stats: true }, results);
+    await walkDirectory(absolutePath, "", matcher, ignoreFilter, { stats: true }, results);
 
     if (results.length === 0) {
       return "";
@@ -121,12 +125,12 @@ function getGlobsForType(type: string): string[] {
 
 /**
  * Find files matching patterns in a directory.
- * Uses walkDirectory with picomatch for browser compatibility.
+ * Uses walkDirectory with gitignore support for browser compatibility.
  */
 async function findFiles(
   absolutePath: string,
   filePatterns: string[],
-  ignore: string[]
+  workspaceRoot: string
 ): Promise<string[]> {
   // Check if path is a file
   let stats;
@@ -142,17 +146,26 @@ async function findFiles(
 
   // Create matcher for file patterns (match any pattern)
   const fileMatcher = picomatch(filePatterns);
-  const ignoreMatcher = picomatch(ignore);
+  const ignoreFilter = await createIgnoreFilter(workspaceRoot);
 
   const results: GlobResult[] = [];
-  await walkDirectory(absolutePath, "", fileMatcher, ignoreMatcher, { stats: false }, results);
+  await walkDirectory(absolutePath, "", fileMatcher, ignoreFilter, { stats: false }, results);
 
   // Return absolute paths
   return results.map((r) => path.join(absolutePath, r.path));
 }
 
 /**
+ * Escape special regex characters for literal matching.
+ * Used when -F (fixed string) flag is specified.
+ */
+function escapeRegExp(string: string): string {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
  * grep - Search file contents with regex
+ * Supports -w (word boundary) and -F (fixed string) flags.
  */
 export async function grep(args: GrepArgs, workspaceRoot?: string): Promise<string> {
   const {
@@ -165,12 +178,15 @@ export async function grep(args: GrepArgs, workspaceRoot?: string): Promise<stri
     "-A": linesAfter,
     "-B": linesBefore,
     "-C": linesContext,
+    "-w": wordBoundary,
+    "-F": fixedString,
     head_limit: headLimit,
     offset = 0,
     multiline,
   } = args;
   const searchPath = args.path ?? workspaceRoot ?? process.cwd();
   const absolutePath = resolvePath(searchPath, workspaceRoot);
+  const effectiveRoot = workspaceRoot ?? process.cwd();
 
   // Build file patterns
   let filePatterns: string[] = ["**/*"];
@@ -181,14 +197,27 @@ export async function grep(args: GrepArgs, workspaceRoot?: string): Promise<stri
     filePatterns = getGlobsForType(type);
   }
 
-  // Create regex
+  // Build the search pattern with -F and -w support
+  let searchPattern = pattern;
+
+  // Handle -F (fixed string): escape all regex special characters
+  if (fixedString) {
+    searchPattern = escapeRegExp(pattern);
+  }
+
+  // Handle -w (word boundary): wrap with \b anchors
+  if (wordBoundary) {
+    searchPattern = `\\b${searchPattern}\\b`;
+  }
+
+  // Create regex with appropriate flags
   let flags = "g";
   if (caseInsensitive) flags += "i";
   if (multiline) flags += "ms";
 
   let regex: RegExp;
   try {
-    regex = new RegExp(pattern, flags);
+    regex = new RegExp(searchPattern, flags);
   } catch (err) {
     throw new Error(`Invalid regex pattern: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -197,9 +226,8 @@ export async function grep(args: GrepArgs, workspaceRoot?: string): Promise<stri
   const contextBefore = linesContext ?? linesBefore ?? 0;
   const contextAfter = linesContext ?? linesAfter ?? 0;
 
-  // Find files matching patterns
-  const ignorePatterns = ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/build/**"];
-  const files = await findFiles(absolutePath, filePatterns, ignorePatterns);
+  // Find files matching patterns (uses gitignore filtering)
+  const files = await findFiles(absolutePath, filePatterns, effectiveRoot);
 
   // Check if searchPath was a single file
   let stats;
@@ -360,7 +388,7 @@ export function createSearchToolMethodDefinitions(
       description: `Find files by glob pattern.
 
 Returns newline-separated file paths, sorted by modification time (newest first).
-Ignores node_modules and .git directories.
+Respects .gitignore files. Always ignores node_modules and .git directories.
 Limited to ${MAX_RESULTS} results.`,
       parameters: GlobArgsSchema,
       execute: async (args: unknown) => {
@@ -375,7 +403,9 @@ Output modes:
 - content: Matching lines with file:line:content format
 - count: File paths with match counts
 
-Supports context lines (-A, -B, -C), case insensitive (-i), and multiline matching.`,
+Supports context lines (-A, -B, -C), case insensitive (-i), multiline matching,
+word boundary (-w), and fixed string literal matching (-F).
+Respects .gitignore files.`,
       parameters: GrepArgsSchema,
       execute: async (args: unknown) => {
         return await grep(args as GrepArgs, workspaceRoot);
