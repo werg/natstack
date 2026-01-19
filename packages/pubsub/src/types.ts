@@ -3,6 +3,28 @@
  */
 
 /**
+ * Input for sending a binary attachment (ID assigned by server).
+ * Use this when publishing messages with attachments.
+ */
+export interface AttachmentInput {
+  /** Binary data */
+  data: Uint8Array;
+  /** MIME type (e.g., "image/png", "application/octet-stream") */
+  mimeType: string;
+  /** Optional filename */
+  name?: string;
+}
+
+/**
+ * A binary attachment with server-assigned metadata.
+ * This is what you receive in messages - the server assigns the ID.
+ */
+export interface Attachment extends AttachmentInput {
+  /** Server-assigned unique ID (e.g., "img_1", "img_2") */
+  id: string;
+}
+
+/**
  * Error codes for PubSub operations.
  */
 export type PubSubErrorCode = "auth" | "validation" | "connection" | "server" | "timeout";
@@ -37,8 +59,8 @@ export interface PubSubMessage<T = unknown> {
   senderId: string;
   /** Timestamp in milliseconds */
   ts: number;
-  /** Binary attachment (separate from JSON payload) */
-  attachment?: Uint8Array;
+  /** Binary attachments (separate from JSON payload) */
+  attachments?: Attachment[];
   /** Sender metadata snapshot (if available) */
   senderMetadata?: Record<string, unknown>;
 }
@@ -87,8 +109,8 @@ export interface PublishOptions {
   persist?: boolean;
   /** Timeout in milliseconds for the publish operation. Default: 30000 */
   timeoutMs?: number;
-  /** Binary attachment to send alongside JSON payload */
-  attachment?: Uint8Array;
+  /** Binary attachments to send alongside JSON payload (server assigns IDs) */
+  attachments?: AttachmentInput[];
 }
 
 /**

@@ -38,11 +38,13 @@ export interface ChannelInfo {
  */
 export interface MessageStore {
   init(): void;
-  insert(channel: string, type: string, payload: string, senderId: string, ts: number, senderMetadata?: Record<string, unknown>, attachment?: Buffer): number;
+  insert(channel: string, type: string, payload: string, senderId: string, ts: number, senderMetadata?: Record<string, unknown>, attachments?: ServerAttachment[]): number;
   query(channel: string, sinceId: number): MessageRow[];
   queryByType(channel: string, types: string[], sinceId?: number): MessageRow[];
   createChannel(channel: string, contextId: string, createdBy: string): void;
   getChannel(channel: string): ChannelInfo | null;
+  /** Get the maximum attachment ID number for a channel (for counter initialization after restart) */
+  getMaxAttachmentIdNumber(channel: string): number;
   close(): void;
 }
 
@@ -75,6 +77,28 @@ interface ParticipantState {
 interface ChannelState {
   clients: Set<ClientConnection>;
   participants: Map<string, ParticipantState>;
+  /** Counter for generating unique attachment IDs within this channel */
+  nextAttachmentId: number;
+}
+
+/**
+ * A binary attachment with metadata.
+ */
+interface ServerAttachment {
+  /** Unique attachment ID for easy tokenization (e.g., "img_1", "img_2") */
+  id: string;
+  data: Buffer;
+  mimeType: string;
+  name?: string;
+}
+
+/**
+ * Attachment metadata from wire format (sizes for parsing binary blob).
+ */
+interface AttachmentMeta {
+  mimeType: string;
+  name?: string;
+  size: number;
 }
 
 interface ServerMessage {
@@ -86,8 +110,8 @@ interface ServerMessage {
   ts?: number;
   ref?: number;
   error?: string;
-  /** Binary attachment (separate from JSON payload) */
-  attachment?: Buffer;
+  /** Binary attachments (separate from JSON payload) */
+  attachments?: ServerAttachment[];
   /** Sender metadata snapshot (if available) */
   senderMetadata?: Record<string, unknown>;
   /** Context ID for the channel (sent in ready message) */
@@ -109,6 +133,8 @@ interface PublishClientMessage {
   type: string;
   payload: unknown;
   ref?: number;
+  /** Attachment metadata for parsing binary data (from wire format) */
+  attachmentMeta?: AttachmentMeta[];
 }
 
 interface UpdateMetadataClientMessage {
@@ -126,9 +152,20 @@ interface MessageRow {
   payload: string;
   sender_id: string;
   ts: number;
+  /** JSON-serialized attachments with base64-encoded data */
   attachment: Buffer | null;
   /** JSON-serialized sender metadata for replay participant reconstruction */
   sender_metadata: string | null;
+}
+
+/**
+ * Serialized attachment format for storage (data is base64).
+ */
+interface StoredAttachment {
+  id: string;
+  data: string; // base64
+  mimeType: string;
+  name?: string;
 }
 
 function metadataEquals(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
@@ -151,6 +188,43 @@ function serializeMetadata(metadata?: Record<string, unknown>): string | null {
 }
 
 /**
+ * Serialize attachments to JSON Buffer for storage.
+ * Each attachment's data is base64-encoded for JSON compatibility.
+ */
+function serializeAttachments(attachments?: ServerAttachment[]): Buffer | null {
+  if (!attachments || attachments.length === 0) return null;
+  const stored: StoredAttachment[] = attachments.map((a) => ({
+    id: a.id,
+    data: a.data.toString("base64"),
+    mimeType: a.mimeType,
+    name: a.name,
+  }));
+  return Buffer.from(JSON.stringify(stored), "utf-8");
+}
+
+/**
+ * Deserialize attachments from JSON Buffer.
+ * Attachments without IDs are skipped (corrupted data).
+ */
+function deserializeAttachments(buf: Buffer | null): ServerAttachment[] | undefined {
+  if (!buf) return undefined;
+  try {
+    const stored: StoredAttachment[] = JSON.parse(buf.toString("utf-8"));
+    // Filter out any attachments without IDs (corrupted data)
+    return stored
+      .filter((a) => a.id)
+      .map((a) => ({
+        id: a.id,
+        data: Buffer.from(a.data, "base64"),
+        mimeType: a.mimeType,
+        name: a.name,
+      }));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Create a MessageRow object from components.
  */
 function createMessageRow(
@@ -161,7 +235,7 @@ function createMessageRow(
   senderId: string,
   ts: number,
   senderMetadata?: Record<string, unknown>,
-  attachment?: Buffer
+  attachments?: ServerAttachment[]
 ): MessageRow {
   return {
     id,
@@ -171,7 +245,7 @@ function createMessageRow(
     sender_id: senderId,
     ts,
     sender_metadata: serializeMetadata(senderMetadata),
-    attachment: attachment ?? null,
+    attachment: serializeAttachments(attachments),
   };
 }
 
@@ -211,7 +285,7 @@ abstract class BaseMessageStore implements MessageStore {
     senderId: string,
     ts: number,
     senderMetadata?: Record<string, unknown>,
-    attachment?: Buffer
+    attachments?: ServerAttachment[]
   ): number;
 
   abstract query(channel: string, sinceId: number): MessageRow[];
@@ -228,6 +302,11 @@ abstract class BaseMessageStore implements MessageStore {
    * Implementation-specific query by type. Called after empty types check.
    */
   protected abstract doQueryByType(channel: string, types: string[], sinceId: number): MessageRow[];
+
+  /**
+   * Get the maximum attachment ID number for a channel (for counter initialization).
+   */
+  abstract getMaxAttachmentIdNumber(channel: string): number;
 }
 
 // =============================================================================
@@ -308,14 +387,14 @@ class SqliteMessageStore extends BaseMessageStore {
     senderId: string,
     ts: number,
     senderMetadata?: Record<string, unknown>,
-    attachment?: Buffer
+    attachments?: ServerAttachment[]
   ): number {
     if (!this.dbHandle) throw new Error("Store not initialized");
     const db = getDatabaseManager();
     const result = db.run(
       this.dbHandle,
       "INSERT INTO messages (channel, type, payload, sender_id, ts, sender_metadata, attachment) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [channel, type, payload, senderId, ts, serializeMetadata(senderMetadata), attachment ?? null]
+      [channel, type, payload, senderId, ts, serializeMetadata(senderMetadata), serializeAttachments(attachments)]
     );
     return Number(result.lastInsertRowid);
   }
@@ -339,6 +418,37 @@ class SqliteMessageStore extends BaseMessageStore {
       `SELECT * FROM messages WHERE channel = ? AND id > ? AND type IN (${placeholders}) ORDER BY id ASC`,
       [channel, sinceId, ...types]
     );
+  }
+
+  getMaxAttachmentIdNumber(channel: string): number {
+    if (!this.dbHandle) return 0;
+    const db = getDatabaseManager();
+
+    // Query all messages with attachments for this channel
+    const rows = db.query<{ attachment: Buffer }>(
+      this.dbHandle,
+      "SELECT attachment FROM messages WHERE channel = ? AND attachment IS NOT NULL",
+      [channel]
+    );
+
+    let maxId = 0;
+    for (const row of rows) {
+      try {
+        const stored: StoredAttachment[] = JSON.parse(row.attachment.toString("utf-8"));
+        for (const a of stored) {
+          if (a.id) {
+            // Parse ID format: "img_N"
+            const match = a.id.match(/^img_(\d+)$/);
+            if (match && match[1]) {
+              maxId = Math.max(maxId, parseInt(match[1], 10));
+            }
+          }
+        }
+      } catch {
+        // Skip malformed attachments
+      }
+    }
+    return maxId;
   }
 
   close(): void {
@@ -390,10 +500,10 @@ export class InMemoryMessageStore extends BaseMessageStore {
     senderId: string,
     ts: number,
     senderMetadata?: Record<string, unknown>,
-    attachment?: Buffer
+    attachments?: ServerAttachment[]
   ): number {
     const id = this.nextId++;
-    this.messages.push(createMessageRow(id, channel, type, payload, senderId, ts, senderMetadata, attachment));
+    this.messages.push(createMessageRow(id, channel, type, payload, senderId, ts, senderMetadata, attachments));
     return id;
   }
 
@@ -406,6 +516,27 @@ export class InMemoryMessageStore extends BaseMessageStore {
     return this.messages.filter(
       (m) => m.channel === channel && m.id > sinceId && typeSet.has(m.type)
     );
+  }
+
+  getMaxAttachmentIdNumber(channel: string): number {
+    let maxId = 0;
+    for (const msg of this.messages) {
+      if (msg.channel !== channel || !msg.attachment) continue;
+      try {
+        const stored: StoredAttachment[] = JSON.parse(msg.attachment.toString("utf-8"));
+        for (const a of stored) {
+          if (a.id) {
+            const match = a.id.match(/^img_(\d+)$/);
+            if (match && match[1]) {
+              maxId = Math.max(maxId, parseInt(match[1], 10));
+            }
+          }
+        }
+      } catch {
+        // Skip malformed attachments
+      }
+    }
+    return maxId;
   }
 
   close(): void {
@@ -502,10 +633,23 @@ export class PubSubServer {
   private getOrCreateChannelState(channel: string): ChannelState {
     let state = this.channels.get(channel);
     if (!state) {
-      state = { clients: new Set(), participants: new Map() };
+      // Initialize counter from database to ensure continuity after restarts
+      const maxId = this.messageStore.getMaxAttachmentIdNumber(channel);
+      state = { clients: new Set(), participants: new Map(), nextAttachmentId: maxId + 1 };
       this.channels.set(channel, state);
     }
     return state;
+  }
+
+  /**
+   * Generate the next unique attachment ID for a channel.
+   * Format: img_N where N is a sequential number.
+   */
+  private generateAttachmentId(channel: string): string {
+    const state = this.getOrCreateChannelState(channel);
+    const id = `img_${state.nextAttachmentId}`;
+    state.nextAttachmentId++;
+    return id;
   }
 
   private handleConnection(ws: WebSocket, req: IncomingMessage): void {
@@ -669,9 +813,10 @@ export class PubSubServer {
     for (const row of rows) {
       const payload = JSON.parse(row.payload);
       const senderMetadata = row.sender_metadata ? JSON.parse(row.sender_metadata) : undefined;
+      const attachments = deserializeAttachments(row.attachment);
 
-      if (row.attachment) {
-        // Message with attachment - send as binary frame
+      if (attachments && attachments.length > 0) {
+        // Message with attachments - send as binary frame
         this.sendBinary(ws, {
           kind: "replay",
           id: row.id,
@@ -680,7 +825,7 @@ export class PubSubServer {
           senderId: row.sender_id,
           ts: row.ts,
           senderMetadata,
-          attachment: row.attachment,
+          attachments,
         });
       } else {
         // Text message - send as JSON
@@ -778,14 +923,41 @@ export class PubSubServer {
     }
   }
 
-  private handleClientBinaryMessage(client: ClientConnection, msg: ClientMessage, attachment: Buffer): void {
+  private handleClientBinaryMessage(client: ClientConnection, msg: ClientMessage, attachmentBlob: Buffer): void {
     if (msg.action !== "publish") {
       this.send(client.ws, { kind: "error", error: "unknown action", ref: msg.ref });
       return;
     }
 
-    const { type, payload, persist = true, ref } = msg;
+    const { type, payload, persist = true, ref, attachmentMeta } = msg;
     const ts = Date.now();
+
+    // Parse attachments from binary blob using metadata
+    // Binary frames require valid attachment metadata - reject malformed frames
+    if (!attachmentMeta || attachmentMeta.length === 0) {
+      this.send(client.ws, { kind: "error", error: "binary frame requires attachmentMeta", ref });
+      return;
+    }
+
+    const attachments: ServerAttachment[] = [];
+    let offset = 0;
+    for (const meta of attachmentMeta) {
+      // Validate size doesn't exceed blob bounds
+      if (offset + meta.size > attachmentBlob.length) {
+        this.send(client.ws, { kind: "error", error: "attachmentMeta size exceeds blob length", ref });
+        return;
+      }
+      const data = attachmentBlob.subarray(offset, offset + meta.size);
+      // Generate a unique ID for this attachment
+      const attachmentId = this.generateAttachmentId(client.channel);
+      attachments.push({
+        id: attachmentId,
+        data: Buffer.from(data), // Copy to avoid issues with buffer reuse
+        mimeType: meta.mimeType,
+        name: meta.name,
+      });
+      offset += meta.size;
+    }
 
     // Validate payload is serializable
     let payloadJson: string;
@@ -797,7 +969,7 @@ export class PubSubServer {
     }
 
     if (persist) {
-      // Persist payload + attachment to message store (presence events handle participant reconstruction)
+      // Persist payload + attachments to message store
       const id = this.messageStore.insert(
         client.channel,
         type,
@@ -805,7 +977,7 @@ export class PubSubServer {
         client.clientId,
         ts,
         client.metadata,
-        attachment
+        attachments
       );
 
       // Broadcast to all (including sender)
@@ -819,7 +991,7 @@ export class PubSubServer {
           senderId: client.clientId,
           ts,
           senderMetadata: client.metadata,
-          attachment,
+          attachments,
         },
         client.ws,
         ref
@@ -835,7 +1007,7 @@ export class PubSubServer {
           senderId: client.clientId,
           ts,
           senderMetadata: client.metadata,
-          attachment,
+          attachments,
         },
         client.ws,
         ref
@@ -875,7 +1047,15 @@ export class PubSubServer {
   private sendBinary(ws: WebSocket, msg: ServerMessage): void {
     if (ws.readyState !== WebSocket.OPEN) return;
 
-    const attachment = msg.attachment!;
+    const attachments = msg.attachments!;
+    const attachmentMeta = attachments.map((a) => ({
+      id: a.id,
+      mimeType: a.mimeType,
+      name: a.name,
+      size: a.data.length,
+    }));
+    const totalSize = attachments.reduce((sum, a) => sum + a.data.length, 0);
+
     const metadata = {
       kind: msg.kind,
       id: msg.id,
@@ -885,18 +1065,25 @@ export class PubSubServer {
       ts: msg.ts,
       ref: msg.ref,
       senderMetadata: msg.senderMetadata,
+      attachmentMeta,
     };
 
     const metadataStr = JSON.stringify(metadata);
     const metadataBytes = Buffer.from(metadataStr, "utf-8");
     const metadataLen = metadataBytes.length;
 
-    // Create buffer: 1 byte marker (0) + 4 bytes metadata length + metadata + attachment
-    const buffer = Buffer.allocUnsafe(1 + 4 + metadataLen + attachment.length);
+    // Create buffer: 1 byte marker (0) + 4 bytes metadata length + metadata + all attachments
+    const buffer = Buffer.allocUnsafe(1 + 4 + metadataLen + totalSize);
     buffer.writeUInt8(0, 0); // Binary frame marker
     buffer.writeUInt32LE(metadataLen, 1); // Metadata length
     metadataBytes.copy(buffer, 5);
-    attachment.copy(buffer, 5 + metadataLen);
+
+    // Copy all attachments sequentially
+    let offset = 5 + metadataLen;
+    for (const attachment of attachments) {
+      attachment.data.copy(buffer, offset);
+      offset += attachment.data.length;
+    }
 
     ws.send(buffer);
   }
@@ -910,7 +1097,14 @@ export class PubSubServer {
     const state = this.channels.get(channel);
     if (!state) return;
 
-    const attachment = msg.attachment!;
+    const attachments = msg.attachments!;
+    const attachmentMeta = attachments.map((a) => ({
+      id: a.id,
+      mimeType: a.mimeType,
+      name: a.name,
+      size: a.data.length,
+    }));
+    const totalSize = attachments.reduce((sum, a) => sum + a.data.length, 0);
 
     // Build binary buffers for both sender and others
     const createBinaryBuffer = (includeRef: boolean): Buffer => {
@@ -922,6 +1116,7 @@ export class PubSubServer {
         senderId: msg.senderId,
         ts: msg.ts,
         senderMetadata: msg.senderMetadata,
+        attachmentMeta,
         ...(includeRef && senderRef !== undefined ? { ref: senderRef } : {}),
       };
 
@@ -929,11 +1124,17 @@ export class PubSubServer {
       const metadataBytes = Buffer.from(metadataStr, "utf-8");
       const metadataLen = metadataBytes.length;
 
-      const buffer = Buffer.allocUnsafe(1 + 4 + metadataLen + attachment.length);
+      const buffer = Buffer.allocUnsafe(1 + 4 + metadataLen + totalSize);
       buffer.writeUInt8(0, 0);
       buffer.writeUInt32LE(metadataLen, 1);
       metadataBytes.copy(buffer, 5);
-      attachment.copy(buffer, 5 + metadataLen);
+
+      // Copy all attachments sequentially
+      let offset = 5 + metadataLen;
+      for (const attachment of attachments) {
+        attachment.data.copy(buffer, offset);
+        offset += attachment.data.length;
+      }
 
       return buffer;
     };
@@ -966,11 +1167,8 @@ export class PubSubServer {
         senderMetadata,
       };
 
-      if (row.attachment) {
-        this.sendBinary(ws, { ...msg, attachment: row.attachment });
-      } else {
-        this.send(ws, msg);
-      }
+      // Presence/roster events don't have attachments, always send as JSON
+      this.send(ws, msg);
     }
   }
 

@@ -12,7 +12,7 @@ export {
 } from "./prompts.js";
 
 // Re-export commonly needed types from pubsub so consumers don't need a direct dependency
-export type { Participant, RosterUpdate, ParticipantMetadata } from "@natstack/pubsub";
+export type { Participant, RosterUpdate, ParticipantMetadata, Attachment, AttachmentInput } from "@natstack/pubsub";
 
 // JSON Schema utilities
 export { jsonSchemaToZod, jsonSchemaToZodRawShape, isRecord } from "./json-schema-to-zod.js";
@@ -28,7 +28,6 @@ export {
   CONTENT_TYPE_THINKING,
   createThinkingTracker,
   type ThinkingTracker,
-  type ThinkingTrackerClient,
   type ThinkingTrackerState,
   type ThinkingTrackerOptions,
   // Action message tracker
@@ -38,6 +37,15 @@ export {
   type ActionTrackerState,
   type ActionTrackerOptions,
   type ActionData,
+  // Typing indicator tracker (ephemeral)
+  CONTENT_TYPE_TYPING,
+  createTypingTracker,
+  type TypingTracker,
+  type TypingTrackerState,
+  type TypingTrackerOptions,
+  type TypingData,
+  // Shared tracker client interface
+  type TrackerClient,
 } from "./responder-utils.js";
 
 // Execution pause/resume utilities
@@ -65,6 +73,30 @@ export type { ApprovalOptions, ApprovalLevel } from "./tool-approval.js";
 
 // Tool schemas for pubsub RPC tools
 export * from "./tool-schemas.js";
+
+// Image processing utilities
+export {
+  SUPPORTED_IMAGE_TYPES,
+  MAX_IMAGE_BYTES,
+  MAX_TOTAL_BYTES,
+  isImageMimeType,
+  validateAttachment,
+  validateAttachments,
+  uint8ArrayToBase64,
+  base64ToUint8Array,
+  buildClaudeContentBlocks,
+  buildOpenAIContents,
+  filterImageAttachments,
+  formatBytes,
+  type SupportedImageType,
+  type AttachmentValidationResult,
+  type ClaudeImageBlock,
+  type ClaudeTextBlock,
+  type ClaudeContentBlock,
+  type OpenAIImageContent,
+  type OpenAITextContent,
+  type OpenAIContent,
+} from "./image-utils.js";
 
 // Worker base utilities (shared across claude-code, codex, pubsub-chat workers)
 export {

@@ -18,6 +18,10 @@ import {
   type Participant,
   type MethodDefinition,
   type MethodExecutionContext,
+  type Attachment,
+  type AttachmentInput,
+  CONTENT_TYPE_TYPING,
+  type TypingData,
 } from "@natstack/agentic-messaging";
 import {
   type FeedbackFormArgs,
@@ -52,6 +56,8 @@ import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 import { AgentSetupPhase } from "./components/AgentSetupPhase";
 import { ToolRoleConflictModal } from "./components/ToolRoleConflictModal";
 import { ChatPhase } from "./components/ChatPhase";
+import type { PendingImage } from "./components/ImageInput";
+import { cleanupPendingImages } from "./utils/imageUtils";
 import type { ChatParticipantMetadata } from "./types";
 
 /** Utility to check if a value looks like ChatParticipantMetadata */
@@ -78,6 +84,11 @@ function getEventContentType(event: IncomingEvent): string | undefined {
   return (event as { contentType?: string }).contentType;
 }
 
+/** Extract attachments from event */
+function getEventAttachments(event: IncomingEvent): Attachment[] | undefined {
+  return (event as { attachments?: Attachment[] }).attachments;
+}
+
 function dispatchAgenticEvent(
   event: IncomingEvent,
   handlers: {
@@ -96,7 +107,12 @@ function dispatchAgenticEvent(
         const existingIndex = prev.findIndex((m) => m.id === event.id);
         if (existingIndex !== -1) {
           if (prev[existingIndex].pending) {
-            const updated = { ...prev[existingIndex], pending: false };
+            const updated = {
+              ...prev[existingIndex],
+              pending: false,
+              // Merge attachments from server (in case local didn't have them)
+              attachments: getEventAttachments(event) ?? prev[existingIndex].attachments,
+            };
             if (isPanelSender) {
               updated.complete = true;
             }
@@ -114,6 +130,7 @@ function dispatchAgenticEvent(
             replyTo: event.replyTo,
             kind: "message",
             complete: event.kind === "replay" || isPanelSender,
+            attachments: getEventAttachments(event),
           },
         ];
       });
@@ -209,6 +226,7 @@ export default function AgenticChatDemo() {
   const [channelId, setChannelId] = useState<string>(generateChannelId);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [status, setStatus] = useState(INITIAL_STATUS);
   const [participants, setParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
   // Historical participants reconstructed from presence events during replay
@@ -308,6 +326,66 @@ export default function AgenticChatDemo() {
   useEffect(() => {
     selfIdRef.current = clientId;
   }, [clientId]);
+
+  // Typing indicator state - tracks ephemeral typing message
+  const typingMessageIdRef = useRef<string | null>(null);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const TYPING_DEBOUNCE_MS = 2000; // Stop typing after 2s of inactivity
+
+  // Stop typing indicator
+  const stopTyping = useCallback(async () => {
+    // Clear timeout
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    }
+
+    // Complete the typing message (ephemeral - not persisted)
+    if (typingMessageIdRef.current && clientRef.current?.connected) {
+      await clientRef.current.update(typingMessageIdRef.current, "", { complete: true, persist: false });
+      typingMessageIdRef.current = null;
+    }
+  }, [clientRef]);
+
+  // Start or continue typing indicator
+  const startTyping = useCallback(async () => {
+    const client = clientRef.current;
+    if (!client?.connected) return;
+
+    // Clear existing timeout
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+
+    // Send typing message if not already typing
+    if (!typingMessageIdRef.current) {
+      const typingData: TypingData = {
+        senderId: client.clientId ?? panelClientId,
+        senderName: "User",
+        senderType: "panel",
+      };
+      const { messageId } = await client.send(JSON.stringify(typingData), {
+        contentType: CONTENT_TYPE_TYPING,
+        persist: false, // Ephemeral - won't be saved
+      });
+      typingMessageIdRef.current = messageId;
+    }
+
+    // Set timeout to stop typing after inactivity
+    typingTimeoutRef.current = setTimeout(() => {
+      void stopTyping();
+    }, TYPING_DEBOUNCE_MS);
+  }, [clientRef, panelClientId, stopTyping]);
+
+  // Handle input change with typing indicator
+  const handleInputChange = useCallback((value: string) => {
+    setInput(value);
+    if (value.trim()) {
+      void startTyping();
+    } else {
+      void stopTyping();
+    }
+  }, [startTyping, stopTyping]);
 
   // Tool approval hook - uses client for persistence and feedback system for UI
   const approval = useToolApproval(clientRef.current, { addFeedback, removeFeedback });
@@ -745,6 +823,9 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
     setPhase("setup");
     setMessages([]);
     setInput("");
+    // Cleanup pending images
+    cleanupPendingImages(pendingImages);
+    setPendingImages([]);
     setStatus(INITIAL_STATUS);
     setParticipants({});
     setHistoricalParticipants({});
@@ -757,15 +838,22 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
       dismissFeedback(callId);
     }
     disconnect();
-  }, [clearMethodHistory, disconnect, activeFeedbacks, dismissFeedback]);
+  }, [clearMethodHistory, disconnect, activeFeedbacks, dismissFeedback, pendingImages]);
 
-  const sendMessage = useCallback(async (): Promise<void> => {
-    if (!input.trim() || !clientRef.current?.connected) return;
+  const sendMessage = useCallback(async (attachments?: AttachmentInput[]): Promise<void> => {
+    const hasText = input.trim().length > 0;
+    const hasAttachments = attachments && attachments.length > 0;
+    if ((!hasText && !hasAttachments) || !clientRef.current?.connected) return;
+
+    // Stop typing indicator before sending
+    await stopTyping();
 
     const text = input.trim();
     setInput("");
 
-    const { messageId } = await clientRef.current.send(text);
+    const { messageId } = await clientRef.current.send(text || "", {
+      attachments: hasAttachments ? attachments : undefined,
+    });
     const selfId = clientRef.current.clientId ?? panelClientId;
 
     setMessages((prev) => {
@@ -779,19 +867,22 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
           complete: true,
           pending: true,
           kind: "message",
+          // Note: Don't store attachments in optimistic message - they don't have server IDs yet.
+          // The server will broadcast back the message with proper attachment IDs.
         },
       ];
     });
-  }, [input, panelClientId, clientRef]);
+  }, [input, panelClientId, clientRef, stopTyping]);
 
   const handleInterruptAgent = useCallback(
-    async (agentId: string, messageId: string) => {
+    async (agentId: string, _messageId?: string) => {
+      // Note: messageId is optional and unused - we interrupt the agent, not a specific message
       if (!clientRef.current) return;
       try {
         // Call pause method via RPC - this interrupts the agent
         await clientRef.current.callMethod(agentId, "pause", {
           reason: "User interrupted execution",
-        });
+        }).result;
       } catch (error) {
         console.error("Failed to interrupt agent:", error);
       }
@@ -803,7 +894,7 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
     (providerId: string, methodName: string, args: unknown) => {
       if (!clientRef.current) return;
       // Fire and forget - results will appear in method history if tracked
-      void clientRef.current.callMethod(providerId, methodName, args).catch((error: unknown) => {
+      void clientRef.current.callMethod(providerId, methodName, args).result.catch((error: unknown) => {
         console.error(`Failed to call method ${methodName} on ${providerId}:`, error);
       });
     },
@@ -854,12 +945,14 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
         status={status}
         messages={messages}
         input={input}
+        pendingImages={pendingImages}
         participants={allParticipants}
         activeFeedbacks={activeFeedbacks}
         theme={theme}
         sessionEnabled={clientRef.current?.sessionEnabled}
-        onInputChange={setInput}
+        onInputChange={handleInputChange}
         onSendMessage={sendMessage}
+        onImagesChange={setPendingImages}
         onAddAgent={() => void addAgent()}
         onReset={reset}
         onFeedbackDismiss={handleFeedbackDismiss}

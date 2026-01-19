@@ -30,6 +30,13 @@ import {
   validateRestrictedMode,
   getCanonicalToolName,
   createThinkingTracker,
+  createTypingTracker,
+  CONTENT_TYPE_TYPING,
+  // Image processing utilities
+  buildOpenAIContents,
+  filterImageAttachments,
+  validateAttachments,
+  type Attachment,
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
@@ -466,6 +473,10 @@ async function main() {
     // Skip replay messages - don't respond to historical messages
     if (event.kind === "replay") continue;
 
+    // Skip typing indicators - these are just presence notifications
+    const contentType = (event as { contentType?: string }).contentType;
+    if (contentType === CONTENT_TYPE_TYPING) continue;
+
     const sender = client.roster[event.senderId];
 
     // Only respond to messages from panels (not our own or other workers)
@@ -476,7 +487,9 @@ async function main() {
         lastMissedPubsubId = pendingMissedContext.lastPubsubId;
         pendingMissedContext = null;
       }
-      await handleUserMessage(client, event, prompt, workingDirectory);
+      // Extract attachments from the event
+      const attachments = (event as { attachments?: Attachment[] }).attachments;
+      await handleUserMessage(client, event, prompt, workingDirectory, attachments);
     }
   }
 }
@@ -485,9 +498,28 @@ async function handleUserMessage(
   client: AgenticClient<ChatParticipantMetadata>,
   incoming: IncomingNewMessage,
   prompt: string,
-  workingDirectory: string | undefined
+  workingDirectory: string | undefined,
+  attachments?: Attachment[]
 ) {
   log(`Received message: ${incoming.content}`);
+
+  // Process image attachments if present
+  const imageAttachments = filterImageAttachments(attachments);
+  if (imageAttachments.length > 0) {
+    // Validate attachments
+    const validation = validateAttachments(imageAttachments);
+    if (!validation.valid) {
+      log(`Attachment validation failed: ${validation.error}`);
+      // Still proceed but warn - don't block the message
+    }
+    log(`Processing ${imageAttachments.length} image attachment(s)`);
+  }
+
+  // Build multimodal prompt content if images are present
+  // The Codex SDK accepts OpenAI-style content arrays for multimodal input
+  const promptContent = imageAttachments.length > 0
+    ? buildOpenAIContents(prompt, imageAttachments)
+    : prompt;
 
   // Determine if we're in restricted mode
   const isRestrictedMode = currentSettings.restrictedMode === true;
@@ -499,9 +531,36 @@ async function handleUserMessage(
 
   log(`Discovered ${toolDefs.length} tools from pubsub participants${isRestrictedMode ? " (restricted mode)" : ""}`);
 
-  // Start a new message (empty, will stream content via updates)
-  // Using let because responseId may change if we create new messages for multi-turn conversations
-  let { messageId: responseId } = await client.send("", { replyTo: incoming.id });
+  // Create typing tracker for ephemeral "preparing response" indicator
+  const typing = createTypingTracker({
+    client,
+    log,
+    replyTo: incoming.id,
+    senderInfo: {
+      senderId: client.clientId ?? "",
+      senderName: "Codex",
+      senderType: "codex",
+    },
+  });
+
+  // Start typing indicator while setting up
+  await typing.startTyping("preparing response");
+
+  // Defer creating the response message until we have text content
+  // This avoids creating empty messages that pollute the chat
+  let responseId: string | null = null;
+  const ensureResponseMessage = async (): Promise<string> => {
+    // Stop typing indicator when we start real content
+    if (typing.isTyping()) {
+      await typing.stopTyping();
+    }
+    if (!responseId) {
+      const { messageId } = await client.send("", { replyTo: incoming.id });
+      responseId = messageId;
+      log(`Created response message: ${responseId}`);
+    }
+    return responseId;
+  };
 
   // Create thinking tracker for managing reasoning message state
   // Defined before try block so cleanup can be called in catch
@@ -600,10 +659,23 @@ async function handleUserMessage(
 
     // Run with streaming
     // Use restricted mode system prompt when sandbox is unavailable
-    const promptWithSystem = isRestrictedMode
-      ? `${createRestrictedModeSystemPrompt()}\n\n${prompt}`
-      : `${createRichTextChatSystemPrompt()}\n\n${prompt}`;
-    const { events } = await thread.runStreamed(promptWithSystem);
+    // For multimodal content, we need to handle it differently
+    let promptWithSystem: string | typeof promptContent;
+    if (typeof promptContent === "string") {
+      promptWithSystem = isRestrictedMode
+        ? `${createRestrictedModeSystemPrompt()}\n\n${promptContent}`
+        : `${createRichTextChatSystemPrompt()}\n\n${promptContent}`;
+    } else {
+      // Multimodal content - prepend system prompt as text block
+      const systemPrompt = isRestrictedMode
+        ? createRestrictedModeSystemPrompt()
+        : createRichTextChatSystemPrompt();
+      promptWithSystem = [
+        { type: "text" as const, text: systemPrompt + "\n\n" },
+        ...promptContent,
+      ];
+    }
+    const { events } = await thread.runStreamed(promptWithSystem as string);
 
     // Track text length per item to compute deltas correctly
     const itemTextLengths = new Map<string, number>();
@@ -639,6 +711,10 @@ async function handleUserMessage(
 
           // Handle reasoning items (thinking content)
           if (item && item.type === "reasoning" && typeof item.text === "string" && item.id) {
+            // Stop typing indicator when we start actual content
+            if (typing.isTyping()) {
+              await typing.stopTyping();
+            }
             // Check if this is a new reasoning item
             if (!thinking.isThinkingItem(item.id)) {
               // Complete previous text message if we're transitioning from text to reasoning
@@ -666,12 +742,10 @@ async function handleUserMessage(
             }
 
             // Check if this is a new agent_message item (turn boundary)
-            if (currentAgentMessageId !== null && currentAgentMessageId !== item.id) {
-              // New agent message item = new turn, create a new message
+            if (currentAgentMessageId !== null && currentAgentMessageId !== item.id && responseId) {
+              // New agent message item = new turn, complete previous and create new
               await client.complete(responseId);
-              const { messageId: newResponseId } = await client.send("");
-              responseId = newResponseId;
-              log(`Started new message for agent item ${item.id}: ${responseId}`);
+              responseId = null; // Will be created on next ensureResponseMessage
             }
             currentAgentMessageId = item.id;
             thinking.setTextMode();
@@ -679,7 +753,8 @@ async function handleUserMessage(
             const prevLength = itemTextLengths.get(item.id) ?? 0;
             if (item.text.length > prevLength) {
               const delta = item.text.slice(prevLength);
-              await client.update(responseId, delta);
+              const msgId = await ensureResponseMessage();
+              await client.update(msgId, delta);
               itemTextLengths.set(item.id, item.text.length);
 
               if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
@@ -710,12 +785,10 @@ async function handleUserMessage(
           // Handle completed agent_message items
           if (item && item.type === "agent_message" && typeof item.text === "string" && item.id) {
             // Check if this is a new agent_message item (turn boundary)
-            if (currentAgentMessageId !== null && currentAgentMessageId !== item.id) {
-              // New agent message item = new turn, create a new message
+            if (currentAgentMessageId !== null && currentAgentMessageId !== item.id && responseId) {
+              // New agent message item = new turn, complete previous and create new
               await client.complete(responseId);
-              const { messageId: newResponseId } = await client.send("");
-              responseId = newResponseId;
-              log(`Started new message for agent item ${item.id}: ${responseId}`);
+              responseId = null;
             }
             currentAgentMessageId = item.id;
             thinking.setTextMode();
@@ -723,7 +796,8 @@ async function handleUserMessage(
             const prevLength = itemTextLengths.get(item.id) ?? 0;
             if (item.text.length > prevLength) {
               const delta = item.text.slice(prevLength);
-              await client.update(responseId, delta);
+              const msgId = await ensureResponseMessage();
+              await client.update(msgId, delta);
               itemTextLengths.set(item.id, item.text.length);
 
               if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
@@ -740,16 +814,28 @@ async function handleUserMessage(
             await client.commitCheckpoint(incoming.pubsubId);
             checkpointCommitted = true;
           }
-          // Mark message as complete
-          await client.complete(responseId);
-          log(`Completed response for ${incoming.id}`);
+          // Mark message as complete (only if we created one)
+          if (responseId) {
+            await client.complete(responseId);
+            log(`Completed response for ${incoming.id}`);
+          } else {
+            // No response was created - cleanup typing indicator if still active
+            await typing.cleanup();
+            log(`No response message was created for ${incoming.id}`);
+          }
           break;
 
         case "turn.failed": {
           const errorMsg = "error" in event && event.error && typeof event.error === "object" && "message" in event.error
             ? String(event.error.message)
             : "Unknown error";
-          await client.error(responseId, errorMsg);
+          // Create a message for the error if none exists
+          if (responseId) {
+            await client.error(responseId, errorMsg);
+          } else {
+            const { messageId: errorMsgId } = await client.send("", { replyTo: incoming.id });
+            await client.error(errorMsgId, errorMsg);
+          }
           log(`Turn failed: ${errorMsg}`);
           break;
         }
@@ -761,13 +847,21 @@ async function handleUserMessage(
       }
     }
   } catch (err) {
-    // Cleanup any pending thinking message to avoid orphaned messages
+    // Cleanup any pending thinking or typing indicators to avoid orphaned messages
     await thinking.cleanup();
+    await typing.cleanup();
 
     // Pause tool returns successfully, so we shouldn't see pause-related errors
     // Any error here is a real error that should be reported
     console.error(`[Codex Worker] Error:`, err);
-    await client.error(responseId, err instanceof Error ? err.message : String(err));
+
+    // Create a message for the error if none exists
+    if (responseId) {
+      await client.error(responseId, err instanceof Error ? err.message : String(err));
+    } else {
+      const { messageId: errorMsgId } = await client.send("", { replyTo: incoming.id });
+      await client.error(errorMsgId, err instanceof Error ? err.message : String(err));
+    }
   } finally {
     // Cleanup resources
     if (mcpServer) {

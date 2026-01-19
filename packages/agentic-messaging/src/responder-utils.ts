@@ -105,12 +105,16 @@ export interface ActionData {
 }
 
 /**
- * Interface for the client methods needed by ThinkingTracker.
- * This allows the tracker to work with any AgenticClient implementation.
+ * Interface for the client methods needed by trackers.
+ * This allows trackers to work with any AgenticClient implementation.
  */
-export interface ThinkingTrackerClient {
-  send(content: string, options?: { replyTo?: string; contentType?: string }): Promise<{ messageId: string }>;
-  update(messageId: string, content: string): Promise<void>;
+export interface TrackerClient {
+  send(content: string, options?: { replyTo?: string; contentType?: string; persist?: boolean }): Promise<{ messageId: string }>;
+  update(
+    messageId: string,
+    content: string,
+    options?: { complete?: boolean; persist?: boolean; contentType?: string }
+  ): Promise<void>;
   complete(messageId: string): Promise<void>;
 }
 
@@ -131,7 +135,7 @@ export interface ThinkingTrackerState {
  */
 export interface ThinkingTrackerOptions {
   /** Client to use for sending/updating messages */
-  client: ThinkingTrackerClient;
+  client: TrackerClient;
   /** Logger function for debug output */
   log?: (message: string) => void;
   /** Message ID to use as replyTo for thinking messages */
@@ -319,7 +323,7 @@ export interface ActionTrackerState {
  */
 export interface ActionTrackerOptions {
   /** Client to use for sending/updating messages */
-  client: ThinkingTrackerClient;
+  client: TrackerClient;
   /** Logger function for debug output */
   log?: (message: string) => void;
   /** Message ID to use as replyTo for action messages */
@@ -446,6 +450,192 @@ export function createActionTracker(options: ActionTrackerOptions): ActionTracke
           return true;
         } catch (err) {
           log(`Cleanup: failed to complete action ${messageId}: ${err}`);
+          return false;
+        }
+      }
+      return true;
+    },
+  };
+}
+
+/**
+ * Content type constant for typing indicator messages.
+ * Typing indicators are ephemeral (not persisted) and show that a participant is preparing a response.
+ */
+export const CONTENT_TYPE_TYPING = "typing" as const;
+
+/**
+ * Typing indicator data structure sent as message content (JSON stringified).
+ */
+export interface TypingData {
+  /** Participant ID of who is typing */
+  senderId: string;
+  /** Display name of who is typing */
+  senderName?: string;
+  /** Participant type (e.g., "panel", "claude-code", "codex") */
+  senderType?: string;
+  /** Optional context (e.g., "preparing response", "searching files") */
+  context?: string;
+}
+
+/**
+ * State managed by the typing tracker.
+ */
+export interface TypingTrackerState {
+  /** Message ID for the current typing indicator, if any */
+  typingMessageId: string | null;
+  /** Whether we're currently showing a typing indicator */
+  isTyping: boolean;
+}
+
+/**
+ * Options for creating a typing tracker.
+ */
+export interface TypingTrackerOptions {
+  /** Client to use for sending messages */
+  client: TrackerClient;
+  /** Logger function for debug output */
+  log?: (message: string) => void;
+  /** Message ID to use as replyTo for typing indicators */
+  replyTo?: string;
+  /** Sender metadata to include in typing indicator */
+  senderInfo?: {
+    senderId: string;
+    senderName?: string;
+    senderType?: string;
+  };
+}
+
+/**
+ * TypingTracker manages ephemeral typing indicator messages.
+ *
+ * This utility provides a way to show that a participant is preparing a response
+ * before actual content starts streaming. Unlike ThinkingTracker and ActionTracker,
+ * typing indicators are ephemeral (not persisted) and disappear on reload.
+ *
+ * It handles:
+ * - Starting ephemeral typing indicator messages
+ * - Stopping typing indicators when content starts
+ * - Cleaning up typing indicators on error
+ *
+ * @example
+ * ```typescript
+ * const tracker = createTypingTracker({
+ *   client,
+ *   log,
+ *   replyTo: incoming.id,
+ *   senderInfo: { senderId: client.clientId, senderName: "Codex", senderType: "codex" },
+ * });
+ *
+ * // Show typing indicator while setting up
+ * await tracker.startTyping("preparing response");
+ *
+ * // Stop typing when actual content starts
+ * await tracker.stopTyping();
+ *
+ * // In catch block
+ * } catch (err) {
+ *   await tracker.cleanup();
+ *   // ... handle error
+ * }
+ * ```
+ */
+export interface TypingTracker {
+  /** Current state of the tracker */
+  readonly state: TypingTrackerState;
+
+  /**
+   * Start showing a typing indicator (ephemeral, not persisted).
+   * @param context - Optional context to show (e.g., "preparing response")
+   * @returns The message ID of the created typing indicator
+   */
+  startTyping(context?: string): Promise<string>;
+
+  /**
+   * Stop and remove the typing indicator.
+   * Safe to call even if not currently showing a typing indicator.
+   */
+  stopTyping(): Promise<void>;
+
+  /**
+   * Check if currently showing a typing indicator.
+   */
+  isTyping(): boolean;
+
+  /**
+   * Cleanup any pending typing indicator.
+   * Call this in error handlers to ensure typing indicators are completed.
+   * @returns true if cleanup succeeded or no cleanup was needed, false if cleanup failed
+   */
+  cleanup(): Promise<boolean>;
+}
+
+/**
+ * Create a TypingTracker for managing ephemeral typing indicator messages.
+ */
+export function createTypingTracker(options: TypingTrackerOptions): TypingTracker {
+  const { client, log = () => {}, replyTo, senderInfo } = options;
+
+  const state: TypingTrackerState = {
+    typingMessageId: null,
+    isTyping: false,
+  };
+
+  return {
+    get state() {
+      return state;
+    },
+
+    async startTyping(context?: string): Promise<string> {
+      // Stop any existing typing indicator first
+      if (state.typingMessageId) {
+        await this.stopTyping();
+      }
+
+      const typingData: TypingData = {
+        senderId: senderInfo?.senderId ?? "",
+        senderName: senderInfo?.senderName,
+        senderType: senderInfo?.senderType,
+        context,
+      };
+
+      const { messageId } = await client.send(JSON.stringify(typingData), {
+        replyTo,
+        contentType: CONTENT_TYPE_TYPING,
+        persist: false, // EPHEMERAL - key difference from other trackers
+      });
+
+      state.typingMessageId = messageId;
+      state.isTyping = true;
+
+      log(`Started typing indicator: ${messageId}${context ? ` (${context})` : ""}`);
+      return messageId;
+    },
+
+    async stopTyping(): Promise<void> {
+      if (state.typingMessageId) {
+        await client.update(state.typingMessageId, "", { complete: true, persist: false });
+        log(`Stopped typing indicator: ${state.typingMessageId}`);
+        state.typingMessageId = null;
+        state.isTyping = false;
+      }
+    },
+
+    isTyping(): boolean {
+      return state.isTyping;
+    },
+
+    async cleanup(): Promise<boolean> {
+      if (state.typingMessageId) {
+        const messageId = state.typingMessageId;
+        state.typingMessageId = null;
+        state.isTyping = false;
+        try {
+          await client.update(messageId, "", { complete: true, persist: false });
+          log(`Cleanup: stopped typing indicator: ${messageId}`);
+          return true;
+        } catch (err) {
+          log(`Cleanup: failed to stop typing indicator ${messageId}: ${err}`);
           return false;
         }
       }

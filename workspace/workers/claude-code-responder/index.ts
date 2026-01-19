@@ -25,6 +25,13 @@ import {
   getCanonicalToolName,
   createThinkingTracker,
   createActionTracker,
+  createTypingTracker,
+  CONTENT_TYPE_TYPING,
+  // Image processing utilities
+  filterImageAttachments,
+  validateAttachments,
+  uint8ArrayToBase64,
+  type Attachment,
   type AgenticClient,
   type AgentSDKToolDefinition,
   type ChatParticipantMetadata,
@@ -35,6 +42,108 @@ import {
   CLAUDE_MODEL_FALLBACKS,
 } from "@natstack/agentic-messaging/config";
 import { z } from "zod";
+
+// =============================================================================
+// Bounded Image Cache - LRU eviction with count and memory limits
+// =============================================================================
+
+/** Maximum number of historical images to keep in memory */
+const MAX_HISTORICAL_IMAGES = 20;
+/** Maximum total bytes of image data to keep in memory (100MB) */
+const MAX_IMAGE_MEMORY_BYTES = 100 * 1024 * 1024;
+
+/**
+ * A bounded cache for image attachments with LRU eviction.
+ * Enforces both count and memory limits to prevent unbounded memory usage.
+ */
+class BoundedImageCache {
+  private cache = new Map<string, Attachment>();
+  private accessOrder: string[] = []; // Most recently accessed at end
+  private totalBytes = 0;
+
+  constructor(
+    private maxCount: number = MAX_HISTORICAL_IMAGES,
+    private maxBytes: number = MAX_IMAGE_MEMORY_BYTES
+  ) {}
+
+  /**
+   * Add or update an image in the cache.
+   * May evict older images to stay within limits.
+   */
+  set(id: string, attachment: Attachment): void {
+    // If already exists, remove old entry first (will be re-added as most recent)
+    if (this.cache.has(id)) {
+      const existing = this.cache.get(id)!;
+      this.totalBytes -= existing.data.length;
+      this.accessOrder = this.accessOrder.filter((i) => i !== id);
+    }
+
+    // Check if this single image exceeds memory limit - skip if so
+    if (attachment.data.length > this.maxBytes) {
+      return; // Don't cache images larger than the entire limit
+    }
+
+    // Evict oldest entries until we have room
+    while (
+      this.accessOrder.length > 0 &&
+      (this.cache.size >= this.maxCount ||
+        this.totalBytes + attachment.data.length > this.maxBytes)
+    ) {
+      const oldestId = this.accessOrder.shift()!;
+      const oldest = this.cache.get(oldestId);
+      if (oldest) {
+        this.totalBytes -= oldest.data.length;
+        this.cache.delete(oldestId);
+      }
+    }
+
+    // Add the new entry
+    this.cache.set(id, attachment);
+    this.accessOrder.push(id);
+    this.totalBytes += attachment.data.length;
+  }
+
+  /**
+   * Get an image from the cache (also updates access order for LRU).
+   */
+  get(id: string): Attachment | undefined {
+    const attachment = this.cache.get(id);
+    if (attachment) {
+      // Move to end of access order (most recently used)
+      this.accessOrder = this.accessOrder.filter((i) => i !== id);
+      this.accessOrder.push(id);
+    }
+    return attachment;
+  }
+
+  /**
+   * Check if an image exists in the cache.
+   */
+  has(id: string): boolean {
+    return this.cache.has(id);
+  }
+
+  /**
+   * Get all entries as an iterator (does not update access order).
+   */
+  entries(): IterableIterator<[string, Attachment]> {
+    return this.cache.entries();
+  }
+
+  /**
+   * Get the number of images in the cache.
+   */
+  get size(): number {
+    return this.cache.size;
+  }
+
+  /**
+   * Get the total bytes of image data in the cache.
+   */
+  get bytes(): number {
+    return this.totalBytes;
+  }
+}
 import { query, tool, createSdkMcpServer, type Query, type SDKResultMessage, type CanUseTool, type PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 
 /**
@@ -306,6 +415,10 @@ async function main() {
     // Skip replay messages - don't respond to historical messages
     if (event.kind === "replay") continue;
 
+    // Skip typing indicators - these are just presence notifications
+    const contentType = (event as { contentType?: string }).contentType;
+    if (contentType === CONTENT_TYPE_TYPING) continue;
+
     const sender = client.roster[event.senderId];
 
     // Only respond to messages from panels (not our own or other workers)
@@ -316,7 +429,9 @@ async function main() {
         lastMissedPubsubId = pendingMissedContext.lastPubsubId;
         pendingMissedContext = null;
       }
-      await handleUserMessage(client, event, prompt, workingDirectory, claudeExecutable);
+      // Extract attachments from the event
+      const attachments = (event as { attachments?: Attachment[] }).attachments;
+      await handleUserMessage(client, event, prompt, workingDirectory, claudeExecutable, attachments);
     }
   }
 }
@@ -326,23 +441,88 @@ async function handleUserMessage(
   incoming: IncomingNewMessage,
   prompt: string,
   workingDirectory: string | undefined,
-  claudeExecutable: string
+  claudeExecutable: string,
+  attachments?: Attachment[]
 ) {
   log(`Received message: ${incoming.content}`);
 
+  // Collect ALL image attachments: historical (from replay) + current message
+  // This allows Claude to access images from earlier in the conversation
+  // Uses BoundedImageCache for LRU eviction to prevent unbounded memory growth
+  const allImageAttachments = new BoundedImageCache();
+
+  // 1. Collect historical attachments from replay/missed messages
+  for (const msg of client.missedMessages) {
+    const msgAttachments = (msg as { attachments?: Attachment[] }).attachments;
+    if (msgAttachments) {
+      for (const a of filterImageAttachments(msgAttachments)) {
+        allImageAttachments.set(a.id, a);
+      }
+    }
+  }
+
+  // 2. Add current message attachments (these take precedence if IDs conflict)
+  const currentImageAttachments = filterImageAttachments(attachments);
+  for (const a of currentImageAttachments) {
+    allImageAttachments.set(a.id, a);
+  }
+
+  if (currentImageAttachments.length > 0) {
+    // Validate current message attachments
+    const validation = validateAttachments(currentImageAttachments);
+    if (!validation.valid) {
+      log(`Attachment validation failed: ${validation.error}`);
+      // Still proceed but warn - don't block the message
+    }
+    log(`Processing ${currentImageAttachments.length} new image attachment(s), ${allImageAttachments.size} total in cache (${(allImageAttachments.bytes / 1024 / 1024).toFixed(1)}MB)`);
+  } else if (allImageAttachments.size > 0) {
+    log(`${allImageAttachments.size} historical image attachment(s) in cache (${(allImageAttachments.bytes / 1024 / 1024).toFixed(1)}MB)`);
+  }
+
+  // NOTE: The Claude Agent SDK's query() only accepts string prompts, not content blocks.
+  // Passing content blocks causes the CLI to crash. Instead, we use an MCP tool to deliver images.
+  // When images are attached, we add a note to the prompt telling Claude to call the tool.
+
   // Determine if we're in restricted mode
   const isRestrictedMode = currentSettings.restrictedMode === true;
+
+  // Create typing tracker for ephemeral "typing..." indicator
+  // Shows immediately until first thinking/action/text appears
+  const typing = createTypingTracker({
+    client,
+    log,
+    replyTo: incoming.id,
+    senderInfo: {
+      senderId: client.clientId ?? "",
+      senderName: "Claude Code",
+      senderType: "claude-code",
+    },
+  });
+
+  // Start typing indicator immediately
+  await typing.startTyping("preparing response");
 
   // Defer creating the response message until we have text content
   // This avoids creating empty messages that pollute the chat
   let responseId: string | null = null;
   const ensureResponseMessage = async (): Promise<string> => {
+    // Stop typing indicator when we start producing actual content
+    if (typing.isTyping()) {
+      await typing.stopTyping();
+    }
     if (!responseId) {
       const { messageId } = await client.send("", { replyTo: incoming.id });
       responseId = messageId;
       log(`Created response message: ${responseId}`);
     }
     return responseId;
+  };
+
+  // Helper to stop typing when thinking/action starts
+  const stopTypingIfNeeded = async () => {
+    if (typing.isTyping()) {
+      await typing.stopTyping();
+    }
   };
 
   // Create thinking tracker for managing thinking/reasoning message state
@@ -352,21 +532,31 @@ async function handleUserMessage(
   // Create action tracker for managing action message state (tool use indicators)
   const action = createActionTracker({ client, log, replyTo: incoming.id });
 
-  try {
-    // Keep reference to the query for interrupt handling via RPC pause mechanism
-    let queryInstance: Query | null = null;
+  // Keep reference to the query for interrupt handling via RPC pause mechanism
+  let queryInstance: Query | null = null;
 
-    // Set up RPC pause handler - monitors for pause tool calls
-    const interruptHandler = createInterruptHandler({
-      client,
-      messageId: incoming.id,
-      onPause: async (reason) => {
-        log(`Pause RPC received: ${reason}`);
-        // Break out of the query loop via isPaused() check
-        // The pause tool returns successfully (not an error)
+  // Set up RPC pause handler - monitors for pause tool calls
+  // Declared outside try so we can clean it up in both success and error cases
+  const interruptHandler = createInterruptHandler({
+    client,
+    messageId: incoming.id,
+    onPause: async (reason) => {
+      log(`Pause RPC received: ${reason}`);
+      // Interrupt the SDK query to stop it gracefully
+      // queryInstance is assigned later but captured via closure
+      if (queryInstance) {
+        try {
+          await queryInstance.interrupt();
+          log("SDK query interrupted successfully");
+        } catch (err) {
+          // Interrupt may fail if query already completed - that's ok
+          log(`SDK query interrupt failed (may have already completed): ${err}`);
+        }
       }
-    });
+    }
+  });
 
+  try {
     // Start monitoring for pause events in background
     void interruptHandler.monitor();
 
@@ -418,6 +608,102 @@ async function handleUserMessage(
     } else {
       log("Unrestricted mode - using SDK native tools");
     }
+
+    // Create MCP server for image attachments (works in both restricted and unrestricted modes)
+    // The Claude Agent SDK's query() only accepts string prompts, not content blocks.
+    // We deliver images via MCP tools that Claude can call to view attachments.
+    let attachmentsMcpServer: ReturnType<typeof createSdkMcpServer> | undefined;
+
+    if (allImageAttachments.size > 0) {
+      // Tool to list all available images with their IDs
+      const listImagesTool = tool(
+        "list_images",
+        "List all available images in the conversation. Returns image IDs that can be used with get_image to view specific images.",
+        {},
+        async () => {
+          const imageList = Array.from(allImageAttachments.entries()).map(([id, a]) => ({
+            id,
+            mimeType: a.mimeType,
+            name: a.name,
+            size: a.data.length,
+          }));
+          log(`list_images called - ${imageList.length} image(s) available`);
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({ images: imageList }, null, 2),
+            }],
+          };
+        }
+      );
+
+      // Tool to get a specific image by ID
+      const getImageTool = tool(
+        "get_image",
+        "View a specific image by its ID. Use list_images first to see available image IDs.",
+        { image_id: z.string().describe("The image ID (e.g., 'img_1', 'img_2')") },
+        async ({ image_id }: { image_id: string }) => {
+          const attachment = allImageAttachments.get(image_id);
+          if (!attachment) {
+            log(`get_image called with invalid ID: ${image_id}`);
+            return {
+              content: [{
+                type: "text" as const,
+                text: `Error: Image with ID "${image_id}" not found. Use list_images to see available images.`,
+              }],
+            };
+          }
+          log(`get_image called - returning image ${image_id}`);
+          return {
+            content: [{
+              type: "image" as const,
+              data: uint8ArrayToBase64(attachment.data),
+              mimeType: attachment.mimeType,
+            }],
+          };
+        }
+      );
+
+      // Tool to get all images from the current message
+      const getCurrentImagesTools = tool(
+        "get_current_images",
+        "View all images attached to the current user message (the message you're responding to now).",
+        {},
+        async () => {
+          if (currentImageAttachments.length === 0) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: "No images were attached to the current message.",
+              }],
+            };
+          }
+          log(`get_current_images called - returning ${currentImageAttachments.length} image(s)`);
+          return {
+            content: currentImageAttachments.map((a: Attachment) => ({
+              type: "image" as const,
+              data: uint8ArrayToBase64(a.data),
+              mimeType: a.mimeType,
+            })),
+          };
+        }
+      );
+
+      attachmentsMcpServer = createSdkMcpServer({
+        name: "attachments",
+        version: "1.0.0",
+        tools: [listImagesTool, getImageTool, getCurrentImagesTools],
+      });
+
+      log(`Created attachments MCP server with ${allImageAttachments.size} image(s) available`);
+    }
+
+    // Build the final prompt - add note about images if present
+    const promptWithImageNote = currentImageAttachments.length > 0
+      ? `${prompt}\n\n[${currentImageAttachments.length} image(s) attached to this message. Call get_current_images to view them, or list_images to see all available images in the conversation.]`
+      : allImageAttachments.size > 0
+        ? `${prompt}\n\n[${allImageAttachments.size} historical image(s) available from earlier in the conversation. Call list_images to see them.]`
+        : prompt;
 
     // Create permission handler that prompts user via feedback_form
     const canUseTool: CanUseTool = async (toolName, input, options) => {
@@ -475,11 +761,17 @@ async function handleUserMessage(
 
     // Get session state for resumption
     const queryOptions: Parameters<typeof query>[0]["options"] = {
-      // In restricted mode, provide pubsub tools via MCP server
-      // In unrestricted mode, SDK uses its native tools
-      ...(isRestrictedMode && pubsubServer && {
-        mcpServers: { workspace: pubsubServer },
-      }),
+      // Build mcpServers object combining workspace tools (restricted mode) and attachments (when images present)
+      ...(() => {
+        const servers: Record<string, ReturnType<typeof createSdkMcpServer>> = {};
+        if (isRestrictedMode && pubsubServer) {
+          servers.workspace = pubsubServer;
+        }
+        if (attachmentsMcpServer) {
+          servers.attachments = attachmentsMcpServer;
+        }
+        return Object.keys(servers).length > 0 ? { mcpServers: servers } : {};
+      })(),
       // Use restricted mode system prompt when bash is unavailable
       systemPrompt: isRestrictedMode
         ? createRestrictedModeSystemPrompt()
@@ -528,8 +820,9 @@ async function handleUserMessage(
     };
 
     // Query Claude using the Agent SDK
+    // Always pass a string prompt - images are delivered via the get_attached_images MCP tool
     queryInstance = query({
-      prompt,
+      prompt: promptWithImageNote,
       options: queryOptions,
     });
 
@@ -539,10 +832,6 @@ async function handleUserMessage(
     let capturedSessionId: string | undefined;
     let checkpointCommitted = false;
     let sawStreamedText = false;
-
-    // Track when we need to start a new message for multi-turn conversations
-    // Each assistant turn after a tool use gets a new message
-    let pendingNewMessage = false;
 
     for await (const message of queryInstance) {
       // Check if pause was requested and break early
@@ -560,10 +849,25 @@ async function handleUserMessage(
           index?: number;
         };
 
+        // Handle message_start - this signals a new SDK message (turn boundary)
+        // When Claude responds after a tool result, a new message_start is emitted
+        if (streamEvent.type === "message_start") {
+          // Complete current response message if one exists - new turn is starting
+          if (responseId) {
+            await client.complete(responseId);
+            log(`Completed response message ${responseId} at message_start (turn boundary)`);
+            responseId = null;
+          }
+          // Also reset sawStreamedText for the new turn
+          sawStreamedText = false;
+        }
+
         // Handle content block start - detect thinking vs text vs tool_use
         if (streamEvent.type === "content_block_start" && streamEvent.content_block) {
           const blockType = streamEvent.content_block.type;
           if (blockType === "thinking") {
+            // Stop typing indicator - first content is appearing
+            await stopTypingIfNeeded();
             // Complete action if active before starting thinking
             if (action.isActive()) {
               await action.completeAction();
@@ -571,10 +875,16 @@ async function handleUserMessage(
             // Create a new message for thinking content
             await thinking.startThinking();
           } else if (blockType === "tool_use") {
+            // Stop typing indicator - first content is appearing
+            await stopTypingIfNeeded();
             // Complete thinking if active before starting tool use
             if (thinking.isThinking()) {
               await thinking.endThinking();
             }
+
+            // Note: Turn splitting is handled by message_start events above.
+            // Each new SDK message (after tool results) emits message_start,
+            // which completes the previous response and prepares for a new one.
 
             // Extract tool info from content_block
             const toolBlock = streamEvent.content_block as {
@@ -590,20 +900,14 @@ async function handleUserMessage(
               toolUseId: toolBlock.id,
             });
           } else if (blockType === "text") {
+            // Stop typing indicator - text content is appearing
+            await stopTypingIfNeeded();
             // Complete thinking and action if we were in those modes
             if (thinking.isThinking()) {
               await thinking.endThinking();
             }
             if (action.isActive()) {
               await action.completeAction();
-            }
-
-            // If we're starting a new turn after tool use, create a new message
-            if (pendingNewMessage && responseId) {
-              await client.complete(responseId);
-              responseId = null; // Will be created on first text delta
-              pendingNewMessage = false;
-              log(`Completed previous message, next text will start new message`);
             }
             thinking.setTextMode();
           }
@@ -619,14 +923,8 @@ async function handleUserMessage(
         // Handle text delta
         if (streamEvent.type === "content_block_delta" && streamEvent.delta?.type === "text_delta") {
           if (streamEvent.delta.text) {
-            // If we're starting a new turn after tool use, complete previous message first
-            if (pendingNewMessage && responseId) {
-              await client.complete(responseId);
-              responseId = null;
-              pendingNewMessage = false;
-            }
-
             // Ensure we have a response message (creates lazily on first text)
+            // All text within a single query() goes to the same message
             const msgId = await ensureResponseMessage();
 
             // Send each text delta immediately (real streaming)
@@ -649,20 +947,15 @@ async function handleUserMessage(
           // Complete action message if it was a tool_use block
           if (action.isActive()) {
             await action.completeAction();
+            // Restart typing to show "processing" while waiting for Claude's follow-up
+            await typing.startTyping("processing tool result");
           }
         }
 
       } else if (message.type === "assistant") {
-        // Complete assistant message = end of a turn
         // Fallback for complete assistant messages when no streaming deltas were seen
+        // All text within a query() goes to the same message (no splitting)
         if (!sawStreamedText) {
-          // If we're starting a new turn, complete previous message first
-          if (pendingNewMessage && responseId) {
-            await client.complete(responseId);
-            responseId = null;
-            pendingNewMessage = false;
-          }
-
           // Only create/update message if there's actual text content
           const textBlocks = message.message.content.filter(
             (block): block is { type: "text"; text: string } => block.type === "text"
@@ -674,8 +967,6 @@ async function handleUserMessage(
             }
           }
         }
-        // Each assistant message is a complete turn - next output should be a new message
-        pendingNewMessage = true;
         sawStreamedText = false; // Reset for next turn
       } else if (message.type === "result") {
         if (message.subtype !== "success") {
@@ -689,6 +980,17 @@ async function handleUserMessage(
         }
         log(`Query completed. Cost: $${message.total_cost_usd?.toFixed(4) ?? "unknown"}`);
       }
+    }
+
+    // Stop the interrupt handler's monitoring loop
+    interruptHandler.cleanup();
+
+    // Clean up any active typing/thinking/action messages if interrupted mid-stream
+    // These are safe to call even if already completed
+    if (interruptHandler.isPaused()) {
+      await typing.cleanup();
+      await thinking.cleanup();
+      await action.cleanup();
     }
 
     if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
@@ -710,12 +1012,17 @@ async function handleUserMessage(
       await client.complete(responseId);
       log(`Completed response for ${incoming.id}`);
     } else {
+      // No response was created - cleanup typing indicator if still active
+      await typing.cleanup();
       log(`No response message was created for ${incoming.id}`);
     }
   } catch (err) {
-    // Cleanup any pending thinking or action messages to avoid orphaned messages
+    // Cleanup any pending typing/thinking/action messages to avoid orphaned messages
+    await typing.cleanup();
     await thinking.cleanup();
     await action.cleanup();
+    // Stop the interrupt handler's monitoring loop
+    interruptHandler.cleanup();
 
     // Pause tool returns successfully, so we shouldn't see pause-related errors
     // Any error here is a real error that should be reported

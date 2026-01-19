@@ -1023,7 +1023,7 @@ describe("PubSubClient", () => {
       });
     });
 
-    it("includes metadata in URL when provided", () => {
+    it("does not include metadata in URL when provided", () => {
       const metadata = { name: "Alice", status: "online" };
       connect(`ws://127.0.0.1:${port}`, "token", {
         channel: "test",
@@ -1032,7 +1032,7 @@ describe("PubSubClient", () => {
 
       expect(MockWebSocket).toHaveBeenCalledTimes(1);
       const url = new URL(MockWebSocket.mock.calls[0]![0] as string);
-      expect(url.searchParams.get("metadata")).toBe(JSON.stringify(metadata));
+      expect(url.searchParams.get("metadata")).toBeNull();
     });
   });
 
@@ -1055,9 +1055,10 @@ describe("PubSubClient", () => {
       });
 
       // Publish with attachment (don't wait for response)
+      // Note: No 'id' field - server assigns attachment IDs
       const attachment = new Uint8Array([1, 2, 3, 4, 5]);
       try {
-        client.publish("image", { name: "test.png" }, { attachment }).catch(() => {
+        client.publish("image", { name: "test.png" }, { attachments: [{ data: attachment, mimeType: "image/png" }] }).catch(() => {
           // Ignore timeout or other errors in this test
         });
       } catch {
@@ -1087,6 +1088,13 @@ describe("PubSubClient", () => {
         const metadataStr = new TextDecoder().decode(metadataBytes);
         const metadata = JSON.parse(metadataStr);
         expect(metadata.payload).toEqual({ name: "test.png" });
+        // Note: No 'id' in outgoing attachmentMeta - server assigns IDs
+        expect(metadata.attachmentMeta).toEqual([
+          {
+            mimeType: "image/png",
+            size: attachment.length,
+          },
+        ]);
       }
     });
 
@@ -1128,6 +1136,13 @@ describe("PubSubClient", () => {
         payload: { name: "photo.jpg", width: 800 },
         senderId: "other",
         ts: 12345,
+        attachmentMeta: [
+          {
+            id: "img_1",
+            mimeType: "image/png",
+            size: attachment.length,
+          },
+        ],
       });
       const metadataBytes = Buffer.from(metadata, "utf-8");
       const serverBuffer = Buffer.allocUnsafe(1 + 4 + metadataBytes.length + attachment.length);
@@ -1180,6 +1195,13 @@ describe("PubSubClient", () => {
         payload: { filename: "data.bin" },
         senderId: "other",
         ts: Date.now(),
+        attachmentMeta: [
+          {
+            id: "data_1",
+            mimeType: "application/octet-stream",
+            size: attachment.length,
+          },
+        ],
       });
       const metadataBytes = Buffer.from(metadata, "utf-8");
       const serverBuffer = Buffer.allocUnsafe(1 + 4 + metadataBytes.length + attachment.length);
@@ -1197,10 +1219,13 @@ describe("PubSubClient", () => {
       const iterator = client.messages();
       const { value: receivedMessage } = await iterator.next();
 
-      // Verify both payload and attachment are present
+      // Verify both payload and attachments are present
       expect(receivedMessage.payload).toEqual({ filename: "data.bin" });
-      expect(receivedMessage.attachment).toBeInstanceOf(Uint8Array);
-      expect(Array.from(receivedMessage.attachment as Uint8Array)).toEqual([1, 2, 3]);
+      expect(receivedMessage.attachments).toBeDefined();
+      expect(receivedMessage.attachments).toHaveLength(1);
+      expect(receivedMessage.attachments?.[0]?.id).toBe("data_1");
+      expect(receivedMessage.attachments?.[0]?.mimeType).toBe("application/octet-stream");
+      expect(Array.from(receivedMessage.attachments?.[0]?.data ?? [])).toEqual([1, 2, 3]);
     });
   });
 });

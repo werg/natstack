@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Badge, Box, Button, Callout, Card, Flex, ScrollArea, Text, TextArea, Theme } from "@radix-ui/themes";
-import { PaperPlaneIcon } from "@radix-ui/react-icons";
-import type { Participant } from "@natstack/agentic-messaging";
+import { Badge, Box, Button, Callout, Card, Flex, IconButton, ScrollArea, Text, TextArea, Theme } from "@radix-ui/themes";
+import { PaperPlaneIcon, ImageIcon } from "@radix-ui/react-icons";
+import type { Participant, AttachmentInput } from "@natstack/agentic-messaging";
 import {
   FeedbackContainer,
   FeedbackFormRenderer,
@@ -15,11 +15,17 @@ import { ParticipantBadgeMenu } from "./ParticipantBadgeMenu";
 import { ToolPermissionsDropdown } from "./ToolPermissionsDropdown";
 import { InlineGroup, type InlineItem } from "./InlineGroup";
 import { parseActionData } from "./ActionMessage";
+import { parseTypingData } from "./TypingMessage";
+import { ImageInput, getAttachmentInputsFromPendingImages } from "./ImageInput";
+import { ImageGallery } from "./ImageGallery";
+import { type PendingImage, getImagesFromClipboard, createPendingImage, validateImageFiles } from "../utils/imageUtils";
 import type { ChatMessage, ChatParticipantMetadata } from "../types";
 import "../styles.css";
 
 // Re-export for backwards compatibility
 export type { ChatMessage };
+
+const MAX_IMAGE_COUNT = 10;
 
 interface ChatPhaseProps {
   channelId: string | null;
@@ -32,13 +38,17 @@ interface ChatPhaseProps {
   theme: "light" | "dark";
   /** Whether session persistence is enabled (true = restricted/persistent session) */
   sessionEnabled?: boolean;
+  /** Pending images for the message */
+  pendingImages: PendingImage[];
   onInputChange: (value: string) => void;
-  onSendMessage: () => Promise<void>;
+  /** Send message with optional attachments (server assigns IDs) */
+  onSendMessage: (attachments?: AttachmentInput[]) => Promise<void>;
+  onImagesChange: (images: PendingImage[]) => void;
   onAddAgent: () => void;
   onReset: () => void;
   onFeedbackDismiss: (callId: string) => void;
   onFeedbackError: (callId: string, error: Error) => void;
-  onInterrupt?: (agentId: string, messageId: string) => void;
+  onInterrupt?: (agentId: string, messageId?: string) => void;
   onCallMethod?: (providerId: string, methodName: string, args: unknown) => void;
   /** Tool approval configuration - optional, when provided enables approval UI */
   toolApproval?: ToolApprovalProps;
@@ -54,8 +64,10 @@ export function ChatPhase({
   activeFeedbacks,
   theme,
   sessionEnabled,
+  pendingImages,
   onInputChange,
   onSendMessage,
+  onImagesChange,
   onAddAgent,
   onReset,
   onFeedbackDismiss,
@@ -65,12 +77,40 @@ export function ChatPhase({
   toolApproval,
 }: ChatPhaseProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [showImageInput, setShowImageInput] = useState(false);
+  const isNearBottomRef = useRef(true);
 
-  // Scroll to bottom when messages change
+  // Check if user is near the bottom of the scroll area
+  const checkIfNearBottom = useCallback(() => {
+    const viewport = scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]');
+    if (!viewport) return true;
+    const { scrollTop, scrollHeight, clientHeight } = viewport;
+    // Consider "near bottom" if within 100px of the bottom
+    return scrollHeight - scrollTop - clientHeight < 100;
+  }, []);
+
+  // Update isNearBottom on scroll
+  const handleScroll = useCallback(() => {
+    isNearBottomRef.current = checkIfNearBottom();
+  }, [checkIfNearBottom]);
+
+  // Attach scroll listener directly to viewport (Radix ScrollArea doesn't bubble scroll events)
   useEffect(() => {
-    scrollRef.current?.scrollIntoView({ behavior: "smooth" });
+    const viewport = scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]');
+    if (!viewport) return;
+    viewport.addEventListener('scroll', handleScroll);
+    return () => viewport.removeEventListener('scroll', handleScroll);
+  }, [handleScroll]);
+
+  // Scroll to bottom when messages change, but only if user was near bottom
+  useEffect(() => {
+    if (isNearBottomRef.current) {
+      scrollRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
   }, [messages]);
 
   // Auto-dismiss error after 5 seconds
@@ -90,10 +130,58 @@ export function ChatPhase({
     }
   }, [input]);
 
+  // Handle paste for images (works even when ImageInput is not visible)
+  useEffect(() => {
+    if (!connected) return;
+
+    const handlePaste = async (event: ClipboardEvent) => {
+      const files = getImagesFromClipboard(event);
+      if (files.length === 0) return;
+
+      event.preventDefault();
+
+      if (pendingImages.length + files.length > MAX_IMAGE_COUNT) {
+        setSendError(`Maximum ${MAX_IMAGE_COUNT} images allowed`);
+        return;
+      }
+
+      const validation = validateImageFiles(files);
+      if (!validation.valid) {
+        setSendError(validation.error ?? "Invalid image");
+        return;
+      }
+
+      // Create pending images from pasted files
+      const newImages: PendingImage[] = [];
+      for (const file of files) {
+        try {
+          const pending = await createPendingImage(file);
+          newImages.push(pending);
+        } catch (err) {
+          console.error("Failed to process pasted image:", err);
+        }
+      }
+
+      if (newImages.length > 0) {
+        onImagesChange([...pendingImages, ...newImages]);
+      }
+    };
+
+    document.addEventListener("paste", handlePaste);
+    return () => document.removeEventListener("paste", handlePaste);
+  }, [connected, pendingImages, onImagesChange]);
+
   const handleSendMessage = useCallback(async () => {
     try {
       setSendError(null);
-      await onSendMessage();
+      // Get attachment inputs from pending images (server assigns IDs)
+      const attachments = pendingImages.length > 0
+        ? getAttachmentInputsFromPendingImages(pendingImages)
+        : undefined;
+      await onSendMessage(attachments);
+      // Clear images after sending
+      onImagesChange([]);
+      setShowImageInput(false);
       // Reset textarea height after sending
       if (textAreaRef.current) {
         textAreaRef.current.style.height = "auto";
@@ -103,7 +191,7 @@ export function ChatPhase({
       setSendError(message);
       console.error("Failed to send message:", error);
     }
-  }, [onSendMessage]);
+  }, [onSendMessage, pendingImages, onImagesChange]);
 
   const handleInterruptMessage = useCallback(
     (msgId: string, senderId: string) => {
@@ -126,9 +214,9 @@ export function ChatPhase({
 
   return (
     <Theme appearance={theme}>
-      <Flex direction="column" style={{ height: "100vh", padding: 16 }} gap="3">
+      <Flex direction="column" height="100vh" p="2" gap="2">
       {/* Header */}
-      <Flex justify="between" align="center">
+      <Flex justify="between" align="center" flexShrink="0">
         <Flex gap="2" align="center">
           <Text size="5" weight="bold">
             Agentic Chat
@@ -176,21 +264,24 @@ export function ChatPhase({
       </Flex>
 
       {/* Messages */}
-      <Card style={{ flex: 1, overflow: "hidden" }}>
-        <ScrollArea style={{ height: "100%" }}>
-          <Flex direction="column" gap="2" p="3">
+      <Box flexGrow="1" overflow="hidden" style={{ minHeight: 0 }} asChild>
+        <Card>
+        <ScrollArea ref={scrollAreaRef} style={{ height: "100%" }}>
+          <Flex direction="column" gap="1" p="1">
             {messages.length === 0 ? (
               <Text color="gray" size="2">
                 Send a message to start chatting
               </Text>
             ) : (
               (() => {
-                // Helper to determine if a message is an inline item (thinking, action, or method)
-                type InlineItemType = "thinking" | "action" | "method";
+                // Helper to determine if a message is an inline item (thinking, action, method, or typing)
+                type InlineItemType = "thinking" | "action" | "method" | "typing";
                 function getInlineItemType(msg: ChatMessage): InlineItemType | null {
                   if (msg.kind === "method" && msg.method) return "method";
                   if (msg.contentType === "thinking") return "thinking";
                   if (msg.contentType === "action") return "action";
+                  // Typing indicators are ephemeral - hide completed ones
+                  if (msg.contentType === "typing" && !msg.complete) return "typing";
                   return null;
                 }
 
@@ -255,6 +346,15 @@ export function ChatPhase({
                           complete: msg.complete ?? false,
                         };
                       }
+                      if (msg.contentType === "typing") {
+                        const data = parseTypingData(msg.content);
+                        return {
+                          type: "typing" as const,
+                          id: msg.id,
+                          data,
+                          senderId: msg.senderId,
+                        };
+                      }
                       // This shouldn't happen but handle gracefully
                       return {
                         type: "thinking" as const,
@@ -263,7 +363,14 @@ export function ChatPhase({
                         complete: msg.complete ?? false,
                       };
                     });
-                    return <InlineGroup key={item.key} items={inlineItems} />;
+
+                    // Handler for interrupting typing indicators
+                    const handleTypingInterrupt = (senderId: string) => {
+                      // Interrupt the agent - no messageId needed for typing indicators
+                      onInterrupt?.(senderId);
+                    };
+
+                    return <InlineGroup key={item.key} items={inlineItems} onInterrupt={handleTypingInterrupt} />;
                   }
 
                   const { msg, index } = item;
@@ -272,17 +379,18 @@ export function ChatPhase({
                     console.warn(`[ChatPhase] Message at index ${index} has no id:`, msg);
                   }
 
+                  // Skip completed typing indicators - they're ephemeral and shouldn't persist
+                  if (msg.contentType === "typing" && msg.complete) {
+                    return null;
+                  }
+
                   const sender = getSenderInfo(msg.senderId);
                   const isPanel = sender.type === "panel";
                   // Only show streaming for messages that are actively being streamed (not pending local messages)
                   const isStreaming = msg.kind === "message" && !msg.complete && !msg.pending;
                   const hasError = Boolean(msg.error);
                   const hasContent = msg.content.length > 0;
-
-                  // Skip empty completed messages (initial placeholder messages that never received content)
-                  if (!hasContent && !isStreaming && !hasError) {
-                    return null;
-                  }
+                  const hasAttachments = msg.attachments && msg.attachments.length > 0;
 
                   return (
                     <Box
@@ -308,9 +416,12 @@ export function ChatPhase({
                               <MessageContent content={msg.content} isStreaming={isStreaming} />
                             </Box>
                           )}
+                          {hasAttachments && (
+                            <ImageGallery attachments={msg.attachments!} />
+                          )}
                           {hasError && (
-                            <Text size="2" style={{ color: "var(--red-11)", whiteSpace: "pre-wrap" }}>
-                              {`Error: ${msg.error}`}
+                            <Text size="2" color="red" style={{ whiteSpace: "pre-wrap" }}>
+                              Error: {msg.error}
                             </Text>
                           )}
                           {isStreaming && (
@@ -330,10 +441,11 @@ export function ChatPhase({
             <div ref={scrollRef} />
           </Flex>
         </ScrollArea>
-      </Card>
+        </Card>
+      </Box>
 
       {activeFeedbacks.size > 0 && (
-        <Flex direction="column" gap="2">
+        <Flex direction="column" gap="2" flexShrink="0" style={{ maxHeight: "40vh", overflow: "auto" }}>
           {Array.from(activeFeedbacks.values()).map((feedback) => {
             // Render schema-based feedbacks using FeedbackFormRenderer
             if (feedback.type === "schema") {
@@ -390,50 +502,66 @@ export function ChatPhase({
 
       {/* Error display */}
       {sendError && (
-        <Callout.Root color="red" size="1">
-          <Callout.Text>
-            Failed to send: {sendError}
-          </Callout.Text>
-        </Callout.Root>
+        <Box flexShrink="0">
+          <Callout.Root color="red" size="1">
+            <Callout.Text>
+              Failed to send: {sendError}
+            </Callout.Text>
+          </Callout.Root>
+        </Box>
+      )}
+
+      {/* Image input - shown when toggled or when images are pending */}
+      {(showImageInput || pendingImages.length > 0) && (
+        <Box flexShrink="0">
+          <Card size="1">
+            <ImageInput
+              images={pendingImages}
+              onImagesChange={onImagesChange}
+              onError={(error) => setSendError(error)}
+              disabled={!connected}
+            />
+          </Card>
+        </Box>
       )}
 
       {/* Input */}
-      <Box
-        style={{
-          position: "relative",
-          display: "flex",
-          alignItems: "flex-end",
-          background: "var(--color-surface)",
-          borderRadius: "var(--radius-3)",
-        }}
-      >
-        <TextArea
-          ref={textAreaRef}
-          style={{
-            flex: 1,
-            minHeight: "40px",
-            maxHeight: "200px",
-            resize: "none",
-          }}
-          placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
-          value={input}
-          onChange={(e) => onInputChange(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={!connected}
-        />
-        <Button
-          onClick={() => void handleSendMessage()}
-          disabled={!connected || !input.trim()}
-          size="1"
-          style={{
-            marginLeft: "8px",
-            marginBottom: "8px",
-            marginRight: "8px",
-            flexShrink: 0,
-          }}
-        >
-          <PaperPlaneIcon />
-        </Button>
+      <Box flexShrink="0">
+      <Card size="1">
+        <Flex align="end" gap="1" p="0">
+          <TextArea
+            ref={textAreaRef}
+            size="2"
+            variant="surface"
+            style={{ flex: 1, minHeight: 48, maxHeight: 200, resize: "none" }}
+            placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
+            value={input}
+            onChange={(e) => onInputChange(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={!connected}
+          />
+          <Flex direction="column" gap="2">
+            <IconButton
+              variant="ghost"
+              size="2"
+              onClick={() => setShowImageInput(!showImageInput)}
+              disabled={!connected}
+              color={pendingImages.length > 0 ? "blue" : "gray"}
+              title="Attach images"
+            >
+              <ImageIcon />
+            </IconButton>
+            <IconButton
+              onClick={() => void handleSendMessage()}
+              disabled={!connected || (!input.trim() && pendingImages.length === 0)}
+              size="2"
+              variant="soft"
+            >
+              <PaperPlaneIcon />
+            </IconButton>
+          </Flex>
+        </Flex>
+      </Card>
       </Box>
       </Flex>
     </Theme>

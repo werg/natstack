@@ -11,6 +11,8 @@ import type {
   AgenticParticipantMetadata,
   AggregatedEvent,
   AggregatedMessage,
+  Attachment,
+  AttachmentInput,
   ConnectOptions,
   ConversationMessage,
   DiscoveredMethod,
@@ -29,7 +31,7 @@ import type {
   MethodExecutionContext,
   MethodResultChunk,
   MethodResultValue,
-  MethodResultWithAttachment,
+  MethodResultWithAttachments,
   JsonSchema,
   MissedContext,
   FormatOptions,
@@ -95,8 +97,8 @@ function isRecord(value: unknown): value is AnyRecord {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function isMethodResultWithAttachment(value: unknown): value is MethodResultWithAttachment<unknown> {
-  return isRecord(value) && value["attachment"] instanceof Uint8Array && "content" in value;
+function isMethodResultWithAttachments(value: unknown): value is MethodResultWithAttachments<unknown> {
+  return isRecord(value) && Array.isArray(value["attachments"]) && "content" in value;
 }
 
 function randomId(): string {
@@ -732,7 +734,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
   async function publishValidated(
     type: string,
     payload: unknown,
-    options?: { persist?: boolean; attachment?: Uint8Array }
+    options?: { persist?: boolean; attachments?: AttachmentInput[] }
   ): Promise<number | undefined> {
     try {
       return await pubsub.publish(type, payload, options);
@@ -747,9 +749,9 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
 
   async function publishMethodResult(
     callId: string,
-    chunk: Omit<MethodResultChunk, "attachment" | "contentType"> & {
+    chunk: Omit<MethodResultChunk, "attachments" | "contentType"> & {
       content?: unknown;
-      attachment?: Uint8Array;
+      attachments?: AttachmentInput[];
       contentType?: string;
     }
   ): Promise<void> {
@@ -768,7 +770,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
 
     await pubsub.publish("method-result", payload, {
       persist: true,
-      attachment: chunk.attachment,
+      attachments: chunk.attachments,
     });
   }
 
@@ -798,17 +800,17 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       signal: controller.signal,
       stream: async (content) =>
         publishMethodResult(call.callId, { content, complete: false, isError: false }),
-      streamWithAttachment: async (content, attachment, options) =>
+      streamWithAttachments: async (content, attachments, options) =>
         publishMethodResult(call.callId, {
           content,
-          attachment,
+          attachments,
           contentType: options?.contentType,
           complete: false,
           isError: false,
         }),
-      resultWithAttachment: (content, attachment, options) => ({
+      resultWithAttachments: (content, attachments, options) => ({
         content,
-        attachment,
+        attachments,
         contentType: options?.contentType,
       }),
       progress: async (percent) =>
@@ -855,10 +857,10 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         result = (method.returns as z.ZodTypeAny).parse(rawResult);
       }
 
-      if (isMethodResultWithAttachment(result)) {
+      if (isMethodResultWithAttachments(result)) {
         await publishMethodResult(call.callId, {
           content: result.content,
-          attachment: result.attachment,
+          attachments: result.attachments,
           contentType: result.contentType,
           complete: true,
           isError: false,
@@ -910,7 +912,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     const {
       type,
       payload,
-      attachment,
+      attachments,
       senderId,
       ts,
       kind,
@@ -929,7 +931,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         kind,
         senderId,
         ts,
-        attachment,
+        attachments,
         pubsubId,
         senderMetadata: normalizedSender,
         id: parsed.id,
@@ -948,7 +950,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         kind,
         senderId,
         ts,
-        attachment,
+        attachments,
         pubsubId,
         senderMetadata: normalizedSender,
         id: parsed.id,
@@ -966,7 +968,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         kind,
         senderId,
         ts,
-        attachment,
+        attachments,
         pubsubId,
         senderMetadata: normalizedSender,
         id: parsed.id,
@@ -1030,7 +1032,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         complete,
         isError,
         progress: parsed.progress,
-        attachment,
+        attachments,
       };
 
       const state = callStates.get(parsed.callId);
@@ -1038,7 +1040,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
 
       const chunk: MethodResultChunk = {
         content: parsed.content,
-        attachment,
+        attachments,
         contentType: parsed.contentType,
         complete,
         isError,
@@ -1058,7 +1060,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         } else {
           state.resolve({
             content: chunk.content,
-            attachment: chunk.attachment,
+            attachments: chunk.attachments,
             contentType: chunk.contentType,
           });
         }
@@ -1378,7 +1380,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     options?: {
       replyTo?: string;
       persist?: boolean;
-      attachment?: Uint8Array;
+      attachments?: AttachmentInput[];
       contentType?: string;
       at?: string[];
       resolveHandles?: boolean;
@@ -1401,7 +1403,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     const persist = options?.persist ?? true;
     const pubsubId = await publishValidated("message", payload, {
       persist,
-      attachment: options?.attachment,
+      attachments: options?.attachments,
     });
     return { messageId: id, pubsubId };
   }
@@ -1409,7 +1411,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
   async function update(
     id: string,
     content: string,
-    options?: { complete?: boolean; persist?: boolean; attachment?: Uint8Array; contentType?: string }
+    options?: { complete?: boolean; persist?: boolean; attachments?: AttachmentInput[]; contentType?: string }
   ): Promise<number | undefined> {
     const payload = validateSend(
       UpdateMessageSchema,
@@ -1420,7 +1422,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     const persist = options?.persist ?? true;
     return await publishValidated("update-message", payload, {
       persist,
-      attachment: options?.attachment,
+      attachments: options?.attachments,
     });
   }
 
@@ -1766,7 +1768,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         complete?: boolean;
         isError?: boolean;
         progress?: number;
-        attachment?: Uint8Array;
+        attachments?: AttachmentInput[];
         contentType?: string;
       }
     ) => {
@@ -1775,7 +1777,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         complete: options?.complete ?? true,
         isError: options?.isError ?? false,
         progress: options?.progress,
-        attachment: options?.attachment,
+        attachments: options?.attachments,
         contentType: options?.contentType,
       });
     },

@@ -1,35 +1,41 @@
 import { useState } from "react";
 import { Box, Flex } from "@radix-ui/themes";
-import type { ActionData } from "@natstack/agentic-messaging";
+import type { ActionData, TypingData } from "@natstack/agentic-messaging";
 import type { MethodHistoryEntry } from "./MethodHistoryItem";
 import { CompactMethodPill, ExpandedMethodDetail } from "./MethodHistoryItem";
 import { ThinkingPill, ExpandedThinking } from "./ThinkingMessage";
 import { ActionPill, ExpandedAction } from "./ActionMessage";
+import { TypingPill } from "./TypingMessage";
 
 const PREVIEW_MAX_LENGTH = 50;
 
 export type InlineItem =
   | { type: "thinking"; id: string; content: string; complete: boolean }
   | { type: "action"; id: string; data: ActionData; complete: boolean }
-  | { type: "method"; entry: MethodHistoryEntry };
+  | { type: "method"; entry: MethodHistoryEntry }
+  | { type: "typing"; id: string; data: TypingData; senderId: string };
 
 interface InlineGroupProps {
   items: InlineItem[];
+  /** Callback to interrupt an agent (used for typing indicators) */
+  onInterrupt?: (senderId: string) => void;
 }
 
 /**
- * InlineGroup renders a collection of thinking, action, and method items
+ * InlineGroup renders a collection of thinking, action, method, and typing items
  * as compact pills in a wrapping flex row. Only one item can be expanded at a time.
+ * Typing indicators are ephemeral and don't expand - they just show interrupt button.
  */
-export function InlineGroup({ items }: InlineGroupProps) {
+export function InlineGroup({ items, onInterrupt }: InlineGroupProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   if (items.length === 0) return null;
 
-  // Find expanded item
+  // Find expanded item (typing items don't expand)
   const expandedItem = expandedId
     ? items.find((item) => {
         if (item.type === "method") return item.entry.callId === expandedId;
+        if (item.type === "typing") return false; // Typing items don't expand
         return item.id === expandedId;
       })
     : null;
@@ -72,6 +78,15 @@ export function InlineGroup({ items }: InlineGroupProps) {
                     key={itemId}
                     entry={item.entry}
                     onClick={() => setExpandedId(itemId)}
+                  />
+                );
+              case "typing":
+                // Typing indicators don't expand - they just show the pill with interrupt
+                return (
+                  <TypingPill
+                    key={itemId}
+                    data={item.data}
+                    onInterrupt={onInterrupt ? () => onInterrupt(item.senderId) : undefined}
                   />
                 );
             }

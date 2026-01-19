@@ -20,6 +20,13 @@ import {
   needsApprovalForTool,
   getCanonicalToolName,
   createThinkingTracker,
+  createTypingTracker,
+  CONTENT_TYPE_TYPING,
+  // Image processing utilities
+  filterImageAttachments,
+  validateAttachments,
+  uint8ArrayToBase64,
+  type Attachment,
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
@@ -218,6 +225,10 @@ async function main() {
     // Skip replay messages - don't respond to historical messages
     if (event.kind === "replay") continue;
 
+    // Skip typing indicators - these are just presence notifications
+    const contentType = (event as { contentType?: string }).contentType;
+    if (contentType === CONTENT_TYPE_TYPING) continue;
+
     const sender = client.roster[event.senderId];
 
     // Only respond to messages from panels (not our own or other workers)
@@ -228,7 +239,9 @@ async function main() {
         lastMissedPubsubId = pendingMissedContext.lastPubsubId;
         pendingMissedContext = null;
       }
-      await handleUserMessage(client, event, prompt);
+      // Extract attachments from the event
+      const attachments = (event as { attachments?: Attachment[] }).attachments;
+      await handleUserMessage(client, event, prompt, attachments);
     }
   }
 }
@@ -236,16 +249,54 @@ async function main() {
 async function handleUserMessage(
   client: AgenticClient<ChatParticipantMetadata>,
   incoming: IncomingNewMessage,
-  prompt: string
+  prompt: string,
+  attachments?: Attachment[]
 ) {
   log(`Received message: ${incoming.content}`);
+
+  // Process image attachments if present
+  const imageAttachments = filterImageAttachments(attachments);
+  if (imageAttachments.length > 0) {
+    // Validate attachments
+    const validation = validateAttachments(imageAttachments);
+    if (!validation.valid) {
+      log(`Attachment validation failed: ${validation.error}`);
+      // Still proceed but warn - don't block the message
+    }
+    log(`Processing ${imageAttachments.length} image attachment(s)`);
+  }
 
   // Find the panel participant for tool approval UI
   const panel = Object.values(client.roster).find((p) => p.metadata.type === "panel");
 
-  // Start a new message (empty, will stream content via updates)
-  // Using let because responseId may change if we create new messages for multi-turn conversations
-  let { messageId: responseId } = await client.send("", { replyTo: incoming.id });
+  // Create typing tracker for ephemeral typing indicator
+  // Typing indicators use persist: false so they don't pollute history on reload
+  const typing = createTypingTracker({
+    client,
+    log,
+    replyTo: incoming.id,
+    senderInfo: {
+      senderId: client.clientId ?? "",
+      senderName: "AI Responder",
+      senderType: "ai-responder",
+    },
+  });
+
+  // Start typing indicator immediately
+  await typing.startTyping("preparing response");
+
+  // Lazy message creation - only create actual message when we have content
+  let responseId: string | null = null;
+  const ensureResponseMessage = async (): Promise<string> => {
+    if (typing.isTyping()) {
+      await typing.stopTyping();
+    }
+    if (!responseId) {
+      const { messageId } = await client.send("", { replyTo: incoming.id });
+      responseId = messageId;
+    }
+    return responseId;
+  };
 
   // Create thinking tracker for managing reasoning message state
   // Defined before try block so cleanup can be called in catch
@@ -308,12 +359,26 @@ async function handleUserMessage(
     }
 
     // Build initial messages array
+    // For multimodal input, construct content array with images
+    const userContent = imageAttachments.length > 0
+      ? [
+          // Add images first
+          ...imageAttachments.map((a) => ({
+            type: "image" as const,
+            image: uint8ArrayToBase64(a.data),
+            mimeType: a.mimeType,
+          })),
+          // Then the text prompt
+          { type: "text" as const, text: prompt },
+        ]
+      : prompt;
+
     const messages: Message[] = [
       ...conversationHistory.map((m) => ({
         role: m.role as "user" | "assistant",
         content: m.content,
       })),
-      { role: "user" as const, content: prompt },
+      { role: "user" as const, content: userContent },
     ];
 
     // Agentic loop with approval handling
@@ -375,15 +440,17 @@ async function handleUserMessage(
             await thinking.endThinking();
             break;
 
-          case "text-delta":
+          case "text-delta": {
+            const msgId = await ensureResponseMessage();
             assistantResponse += event.text;
-            await client.update(responseId, event.text);
+            await client.update(msgId, event.text);
 
             if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
               await client.commitCheckpoint(incoming.pubsubId);
               checkpointCommitted = true;
             }
             break;
+          }
 
           case "tool-call": {
             // Track all tool calls for message history
@@ -507,7 +574,9 @@ async function handleUserMessage(
 
       // Continuing to next step - complete current message and start a new one
       // This creates natural turn boundaries in the chat
-      await client.complete(responseId);
+      if (responseId) {
+        await client.complete(responseId);
+      }
       const { messageId: newResponseId } = await client.send("");
       responseId = newResponseId;
       log(`Started new message for step ${step + 1}: ${responseId}`);
@@ -521,19 +590,28 @@ async function handleUserMessage(
       await client.commitCheckpoint(incoming.pubsubId);
     }
 
-    // Mark message as complete
-    await client.complete(responseId);
-
-    log(`Completed response for ${incoming.id}`);
+    // Mark message as complete (if we created one)
+    if (responseId) {
+      await client.complete(responseId);
+      log(`Completed response for ${incoming.id}`);
+    } else {
+      // No response was created - stop typing indicator if still active
+      await typing.cleanup();
+      log(`No response content for ${incoming.id}`);
+    }
 
   } catch (err) {
-    // Cleanup any pending thinking message to avoid orphaned messages
+    // Cleanup any pending thinking/typing messages to avoid orphaned messages
     await thinking.cleanup();
+    await typing.cleanup();
 
     // Pause tool returns successfully, so we shouldn't see pause-related errors
     // Any error here is a real error that should be reported
     console.error(`[Worker] AI error:`, err);
-    await client.error(responseId, err instanceof Error ? err.message : String(err));
+
+    // Create error message - either on existing response or create new one
+    const errorMsgId = responseId ?? (await client.send("", { replyTo: incoming.id })).messageId;
+    await client.error(errorMsgId, err instanceof Error ? err.message : String(err));
   }
 }
 

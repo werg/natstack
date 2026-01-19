@@ -5,8 +5,11 @@
  * results between distributed participants over pubsub.
  */
 
-import type { Participant, ParticipantMetadata, PubSubClient, RosterUpdate } from "@natstack/pubsub";
+import type { Participant, ParticipantMetadata, PubSubClient, RosterUpdate, Attachment, AttachmentInput } from "@natstack/pubsub";
 import type { z } from "zod";
+
+// Re-export attachment types from pubsub for convenience
+export type { Attachment, AttachmentInput };
 
 /** JSON Schema representation for method parameters/returns. */
 export type JsonSchema = Record<string, unknown>;
@@ -316,8 +319,8 @@ export interface IncomingBase {
   senderId: string;
   /** Timestamp in milliseconds */
   ts: number;
-  /** Binary attachment (optional) */
-  attachment?: Uint8Array;
+  /** Binary attachments (optional) */
+  attachments?: Attachment[];
   /** Server-assigned ID for checkpointing */
   pubsubId?: number;
   /** Sender metadata snapshot (if available) */
@@ -453,7 +456,7 @@ export interface IncomingMethodResult {
   callId: string;
   /** Result content */
   content?: unknown;
-  /** MIME type for attachment */
+  /** MIME type for content (e.g., "application/json") */
   contentType?: string;
   /** Whether this is the final chunk */
   complete: boolean;
@@ -461,8 +464,8 @@ export interface IncomingMethodResult {
   isError: boolean;
   /** Progress percentage (0-100) */
   progress?: number;
-  /** Binary attachment (optional) */
-  attachment?: Uint8Array;
+  /** Binary attachments (optional) */
+  attachments?: Attachment[];
 }
 
 /**
@@ -528,9 +531,9 @@ export interface MissedContext {
 export interface MethodResultValue {
   /** Result content (JSON-serializable) */
   content: unknown;
-  /** Binary attachment */
-  attachment?: Uint8Array;
-  /** MIME type for attachment */
+  /** Binary attachments */
+  attachments?: Attachment[];
+  /** MIME type for content */
   contentType?: string;
 }
 
@@ -603,29 +606,29 @@ export interface MethodExecutionContext {
   signal: AbortSignal;
   /** Stream a partial result */
   stream(content: unknown): Promise<void>;
-  /** Stream a partial result with binary attachment */
-  streamWithAttachment(
+  /** Stream a partial result with binary attachments */
+  streamWithAttachments(
     content: unknown,
-    attachment: Uint8Array,
+    attachments: AttachmentInput[],
     options?: { contentType?: string }
   ): Promise<void>;
-  /** Create a final result with binary attachment */
-  resultWithAttachment<T>(
+  /** Create a final result with binary attachments */
+  resultWithAttachments<T>(
     content: T,
-    attachment: Uint8Array,
+    attachments: AttachmentInput[],
     options?: { contentType?: string }
-  ): MethodResultWithAttachment<T>;
+  ): MethodResultWithAttachments<T>;
   /** Report progress (0-100) */
   progress(percent: number): Promise<void>;
 }
 
 /**
- * A method result with an attached binary payload.
- * Returned from context.resultWithAttachment().
+ * A method result with attached binary payloads.
+ * Returned from context.resultWithAttachments().
  */
-export interface MethodResultWithAttachment<T> {
+export interface MethodResultWithAttachments<T> {
   content: T;
-  attachment: Uint8Array;
+  attachments: AttachmentInput[];
   contentType?: string;
 }
 
@@ -746,7 +749,7 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
     options?: {
       replyTo?: string;
       persist?: boolean;
-      attachment?: Uint8Array;
+      attachments?: AttachmentInput[];
       contentType?: string;
       /** IDs of intended recipients (omit for broadcast to all) */
       at?: string[];
@@ -758,7 +761,7 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   update(
     id: string,
     content: string,
-    options?: { complete?: boolean; persist?: boolean; attachment?: Uint8Array; contentType?: string }
+    options?: { complete?: boolean; persist?: boolean; attachments?: AttachmentInput[]; contentType?: string }
   ): Promise<number | undefined>;
 
   complete(id: string): Promise<number | undefined>;
@@ -815,7 +818,7 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
       complete?: boolean;
       isError?: boolean;
       progress?: number;
-      attachment?: Uint8Array;
+      attachments?: AttachmentInput[];
       contentType?: string;
     }
   ): Promise<void>;

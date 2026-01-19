@@ -88,8 +88,7 @@ const { messageId, pubsubId } = await client.send("Hello, world!");
 const { messageId: replyId } = await client.send("Check this out", {
   replyTo: previousMessageId,
   persist: true,  // default
-  attachment: imageBytes,
-  contentType: "image/png",
+  attachments: [{ id: "img_1", data: imageBytes, mimeType: "image/png" }],
 });
 ```
 
@@ -120,8 +119,8 @@ for await (const event of client.events()) {
   switch (event.type) {
     case "message":
       console.log(`New message: ${event.content}`);
-      if (event.attachment) {
-        // Handle binary attachment
+      if (event.attachments) {
+        // Handle binary attachments
       }
       break;
 
@@ -209,11 +208,10 @@ const client = await connect({
       async execute(args, context) {
         const imageData = await generate(args.prompt);
 
-        // Return result with binary attachment
-        return context.resultWithAttachment(
+        // Return result with binary attachments
+        return context.resultWithAttachments(
           { width: 512, height: 512 },
-          imageData,
-          { contentType: "image/png" }
+          [{ id: "img_1", data: imageData, mimeType: "image/png" }]
         );
       },
     },
@@ -230,8 +228,8 @@ interface MethodExecutionContext {
   signal: AbortSignal;         // Aborted when caller cancels
 
   stream(content: unknown): Promise<void>;
-  streamWithAttachment(content: unknown, attachment: Uint8Array, options?: { contentType?: string }): Promise<void>;
-  resultWithAttachment<T>(content: T, attachment: Uint8Array, options?: { contentType?: string }): MethodResultWithAttachment<T>;
+  streamWithAttachments(content: unknown, attachments: Attachment[], options?: { contentType?: string }): Promise<void>;
+  resultWithAttachments<T>(content: T, attachments: Attachment[], options?: { contentType?: string }): MethodResultWithAttachments<T>;
   progress(percent: number): Promise<void>;
 }
 ```
@@ -301,11 +299,10 @@ methods: {
     async execute(args, ctx) {
       const imageBuffer = await captureScreen(args.selector);
 
-      // Return metadata with binary attachment
-      return ctx.resultWithAttachment(
+      // Return metadata with binary attachments
+      return ctx.resultWithAttachments(
         { width: 1920, height: 1080, format: "png" },
-        imageBuffer,
-        { contentType: "image/png" }
+        [{ id: "img_1", data: imageBuffer, mimeType: "image/png" }]
       );
     },
   },
@@ -323,10 +320,9 @@ methods: {
         const image = await generateImage(prompt);
 
         // Stream each image with its binary data
-        await ctx.streamWithAttachment(
+        await ctx.streamWithAttachments(
           { prompt, index: results.length },
-          image,
-          { contentType: "image/png" }
+          [{ id: `img_${results.length + 1}`, data: image, mimeType: "image/png" }]
         );
 
         results.push(prompt);
@@ -406,8 +402,8 @@ const result = client.callMethod(providerId, "search", { pattern: "*.ts" }, {
 // Wait for final result
 const value = await result.result;
 console.log(value.content);
-if (value.attachment) {
-  // Handle binary attachment
+if (value.attachments) {
+  // Handle binary attachments
 }
 
 // Or stream partial results

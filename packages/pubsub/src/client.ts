@@ -15,6 +15,7 @@ import type {
   RosterUpdate,
   ParticipantMetadata,
   Participant,
+  Attachment,
 } from "./types.js";
 
 /**
@@ -29,8 +30,8 @@ interface ServerMessage {
   ts?: number;
   ref?: number;
   error?: string;
-  /** Binary attachment (parsed from binary frame) */
-  attachment?: Uint8Array;
+  /** Binary attachments (parsed from binary frame) */
+  attachments?: Attachment[];
   senderMetadata?: Record<string, unknown>;
   /** Context ID for the channel (sent in ready message) */
   contextId?: string;
@@ -215,7 +216,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         return;
       }
 
-      // Parse metadata (contains kind, type, payload, senderId, ts, etc.)
+      // Parse metadata (contains kind, type, payload, senderId, ts, attachmentMeta, etc.)
       const metadataBytes = new Uint8Array(buffer, 5, metadataLen);
       const metadataStr = new TextDecoder().decode(metadataBytes);
       let metadata: Record<string, unknown> = {};
@@ -226,13 +227,31 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         return;
       }
 
-      // Extract binary attachment (copy to avoid issues with buffer reuse)
+      // Extract attachments from binary data based on attachmentMeta sizes
+      const attachmentMeta = metadata["attachmentMeta"] as Array<{ id: string; mimeType: string; name?: string; size: number }> | undefined;
       const attachmentStart = 5 + metadataLen;
-      const attachment = new Uint8Array(buffer.slice(attachmentStart));
+      let attachments: Attachment[] | undefined;
+
+      if (attachmentMeta && attachmentMeta.length > 0) {
+        attachments = [];
+        let offset = attachmentStart;
+        for (const meta of attachmentMeta) {
+          const data = new Uint8Array(buffer.slice(offset, offset + meta.size));
+          attachments.push({
+            id: meta.id,
+            data,
+            mimeType: meta.mimeType,
+            name: meta.name,
+          });
+          offset += meta.size;
+        }
+        // Remove attachmentMeta from the message object (it's internal wire format)
+        delete metadata["attachmentMeta"];
+      }
 
       msg = {
         ...metadata,
-        attachment,
+        attachments,
       } as ServerMessage;
     } else {
       // Handle text messages (JSON)
@@ -358,7 +377,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
           payload: msg.payload,
           senderId: msg.senderId!,
           ts: msg.ts!,
-          attachment: msg.attachment,
+          attachments: msg.attachments,
           senderMetadata: msg.senderMetadata,
         };
 
@@ -376,11 +395,12 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     readyReject = null;
   }
 
-  function handleWsClose(event: CloseEvent): void {
+  function handleWsClose(event?: CloseEvent): void {
     // Build error message with close code and reason if available
-    const closeReason = event.reason || "unknown";
-    const errorMessage = event.code >= 4000
-      ? `connection closed by server: ${closeReason} (code ${event.code})`
+    const closeReason = event?.reason || "unknown";
+    const closeCode = event?.code ?? 1000;
+    const errorMessage = closeCode >= 4000
+      ? `connection closed by server: ${closeReason} (code ${closeCode})`
       : "connection closed";
 
     // Notify disconnect handlers
@@ -481,6 +501,8 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   }
 
   function wireUpWebSocket(): void {
+    // Receive binary data as ArrayBuffer (default is Blob which breaks our parsing)
+    ws.binaryType = "arraybuffer";
     ws.onmessage = handleMessage;
     ws.onerror = handleWsError;
     ws.onclose = handleWsClose;
@@ -542,7 +564,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     publishOptions: PublishOptions = {}
   ): Promise<number | undefined> {
     const ref = ++refCounter;
-    const { persist = true, timeoutMs = 30000, attachment } = publishOptions;
+    const { persist = true, timeoutMs = 30000, attachments } = publishOptions;
 
     return new Promise((resolve, reject) => {
       if (ws.readyState !== WebSocket.OPEN) {
@@ -570,20 +592,30 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         timeoutId,
       });
 
-      if (attachment) {
-        // Send as binary frame: metadata JSON + attachment bytes
+      if (attachments && attachments.length > 0) {
+        // Send as binary frame: metadata JSON + concatenated attachments
+        // Wire format: [0x00][4-byte JSON len][JSON with attachmentMeta][attachment bytes...]
+        // Note: No 'id' field - server assigns IDs
+        const attachmentMeta = attachments.map((a) => ({
+          mimeType: a.mimeType,
+          name: a.name,
+          size: a.data.length,
+        }));
+        const totalAttachmentSize = attachments.reduce((sum, a) => sum + a.data.length, 0);
+
         const metadata = JSON.stringify({
           action: "publish",
           type,
           payload,
           persist,
           ref,
+          attachmentMeta,
         });
         const metadataBytes = new TextEncoder().encode(metadata);
         const metadataLen = metadataBytes.length;
 
-        // Create buffer: 1 byte marker (0) + 4 bytes length + metadata + attachment
-        const buffer = new ArrayBuffer(1 + 4 + metadataLen + attachment.length);
+        // Create buffer: 1 byte marker (0) + 4 bytes length + metadata + all attachments
+        const buffer = new ArrayBuffer(1 + 4 + metadataLen + totalAttachmentSize);
         const view = new DataView(buffer);
         view.setUint8(0, 0); // Binary frame marker
         view.setUint32(1, metadataLen, true); // Metadata length (little-endian)
@@ -591,8 +623,12 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         // Copy metadata
         new Uint8Array(buffer, 5, metadataLen).set(metadataBytes);
 
-        // Copy attachment
-        new Uint8Array(buffer, 5 + metadataLen).set(attachment);
+        // Copy attachments sequentially
+        let offset = 5 + metadataLen;
+        for (const attachment of attachments) {
+          new Uint8Array(buffer, offset, attachment.data.length).set(attachment.data);
+          offset += attachment.data.length;
+        }
 
         ws.send(buffer);
       } else {

@@ -1,4 +1,4 @@
-import type { MethodAdvertisement } from "@natstack/agentic-messaging";
+import type { MethodAdvertisement, Attachment } from "@natstack/agentic-messaging";
 import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 
 /** Metadata for participants in this channel */
@@ -22,4 +22,6 @@ export interface ChatMessage {
   error?: string;
   pending?: boolean;
   method?: MethodHistoryEntry;
+  /** Image attachments on this message */
+  attachments?: Attachment[];
 }
