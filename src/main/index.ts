@@ -188,7 +188,24 @@ function createWindow(): void {
   }
 
   // Setup application menu (uses shell webContents for menu events)
-  setupMenu(mainWindow, viewManager.getShellWebContents());
+  setupMenu(mainWindow, viewManager.getShellWebContents(), {
+    onHistoryBack: () => {
+      const pm = requirePanelManager();
+      const panelId = pm.getFocusedPanelId();
+      if (!panelId || !pm.getPanel(panelId)) return;
+      void pm.goBack(panelId).catch((error) => {
+        console.error(`[Menu] Failed to navigate back for ${panelId}:`, error);
+      });
+    },
+    onHistoryForward: () => {
+      const pm = requirePanelManager();
+      const panelId = pm.getFocusedPanelId();
+      if (!panelId || !pm.getPanel(panelId)) return;
+      void pm.goForward(panelId).catch((error) => {
+        console.error(`[Menu] Failed to navigate forward for ${panelId}:`, error);
+      });
+    },
+  });
 }
 
 // =============================================================================
@@ -314,6 +331,43 @@ handle(
     pm.updateBrowserState(browserId, state);
   }
 );
+
+// Unified history integration for app panels (pushState/replaceState/back/forward/go)
+handle("panel:history-push", async (event, panelId: string, payload: { state: unknown; path: string }) => {
+  assertAuthorized(event, panelId);
+  const pm = requirePanelManager();
+  pm.handleHistoryPushState(panelId, payload.state, payload.path);
+});
+
+handle("panel:history-replace", async (event, panelId: string, payload: { state: unknown; path: string }) => {
+  assertAuthorized(event, panelId);
+  const pm = requirePanelManager();
+  pm.handleHistoryReplaceState(panelId, payload.state, payload.path);
+});
+
+handle("panel:history-back", async (event, panelId: string) => {
+  assertAuthorized(event, panelId);
+  const pm = requirePanelManager();
+  await pm.goBack(panelId);
+});
+
+handle("panel:history-forward", async (event, panelId: string) => {
+  assertAuthorized(event, panelId);
+  const pm = requirePanelManager();
+  await pm.goForward(panelId);
+});
+
+handle("panel:history-go", async (event, panelId: string, offset: number) => {
+  assertAuthorized(event, panelId);
+  const pm = requirePanelManager();
+  await pm.goToHistoryOffset(panelId, offset);
+});
+
+handle("panel:history-reload", async (event, panelId: string) => {
+  assertAuthorized(event, panelId);
+  const pm = requirePanelManager();
+  await pm.reloadPanel(panelId);
+});
 
 // Open devtools for a panel (called from panel preload keyboard shortcut)
 handle("panel:open-devtools", async (event, panelId: string) => {
@@ -492,6 +546,7 @@ app.on("ready", async () => {
         return handleBrowserCall(
           getCdpServer(),
           getViewManager(),
+          requirePanelManager(),
           ctx.callerId,
           ctx.callerKind,
           serviceMethod,
@@ -646,4 +701,3 @@ nativeTheme.on("updated", () => {
     nativeTheme.shouldUseDarkColors ? "dark" : "light"
   );
 });
-

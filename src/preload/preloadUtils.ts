@@ -20,7 +20,7 @@ declare global {
         onMessage: (handler: (fromId: string, message: unknown) => void) => () => void;
       }
     | undefined;
-  var __natstackSessionId: string | undefined;
+  var __natstackContextId: string | undefined;
 }
 
 // =============================================================================
@@ -42,8 +42,8 @@ export const ARG_SCOPE_PATH = "--natstack-scope-path=";
 /** Argument prefix for kind (panel or worker) */
 export const ARG_KIND = "--natstack-kind=";
 
-/** Argument prefix for session ID */
-export const ARG_SESSION_ID = "--natstack-session-id=";
+/** Argument prefix for context ID */
+export const ARG_CONTEXT_ID = "--natstack-context-id=";
 
 // =============================================================================
 // Environment variable keys
@@ -79,7 +79,7 @@ export interface PubSubConfig {
 
 export interface ParsedPreloadConfig {
   panelId: string;
-  sessionId: string;
+  contextId: string;
   kind: NatstackKind;
   authToken: string | undefined;
   initialTheme: "light" | "dark";
@@ -125,8 +125,8 @@ export function parseKind(): NatstackKind {
   return "panel";
 }
 
-export function parseSessionId(): string {
-  const arg = process.argv.find((value) => value.startsWith(ARG_SESSION_ID));
+export function parseContextId(): string {
+  const arg = process.argv.find((value) => value.startsWith(ARG_CONTEXT_ID));
   return arg ? (arg.split("=")[1] ?? "") : "";
 }
 
@@ -187,7 +187,7 @@ export function parsePreloadConfig(): ParsedPreloadConfig {
 
   return {
     panelId,
-    sessionId: parseSessionId(),
+    contextId: parseContextId(),
     kind,
     authToken: parseAuthToken(),
     initialTheme: parseTheme(),
@@ -238,6 +238,82 @@ export function setupDevToolsShortcut(config: ParsedPreloadConfig): void {
 }
 
 /**
+ * Integrate browser-like history with the main process for app panels.
+ *
+ * This patches the global `history` object to forward pushState/replaceState/back/forward/go
+ * calls to the main process, enabling unified navigation history across panel types.
+ *
+ * IMPORTANT: The `config.panelId` is captured at setup time. Each panel gets its own
+ * preload execution context in Electron, so this binding is safe. Even if two panels
+ * share the same context (storage partition), they have separate WebContentsView
+ * instances with separate preload scripts, so history calls route to the correct panel.
+ */
+export function setupHistoryIntegration(config: ParsedPreloadConfig): void {
+  if (config.kind !== "panel") return;
+
+  const resolvePath = (url: string | URL | null | undefined): string => {
+    if (!url) return window.location.href;
+    try {
+      return new URL(url.toString(), window.location.href).toString();
+    } catch {
+      return window.location.href;
+    }
+  };
+
+  const originalPushState = history.pushState.bind(history);
+  const originalReplaceState = history.replaceState.bind(history);
+  const originalBack = history.back.bind(history);
+  const originalForward = history.forward.bind(history);
+  const originalGo = history.go.bind(history);
+
+  history.pushState = (state: unknown, title: string, url?: string | URL | null): void => {
+    originalPushState(state, title, url);
+    const path = resolvePath(url);
+    void ipcRenderer.invoke("panel:history-push", config.panelId, { state, path }).catch((error) => {
+      console.error("Failed to push history state", error);
+    });
+  };
+
+  history.replaceState = (state: unknown, title: string, url?: string | URL | null): void => {
+    originalReplaceState(state, title, url);
+    const path = resolvePath(url);
+    void ipcRenderer.invoke("panel:history-replace", config.panelId, { state, path }).catch((error) => {
+      console.error("Failed to replace history state", error);
+    });
+  };
+
+  history.back = (): void => {
+    void ipcRenderer.invoke("panel:history-back", config.panelId).catch((error) => {
+      console.error("Failed to navigate back", error);
+    });
+  };
+
+  history.forward = (): void => {
+    void ipcRenderer.invoke("panel:history-forward", config.panelId).catch((error) => {
+      console.error("Failed to navigate forward", error);
+    });
+  };
+
+  history.go = (delta?: number): void => {
+    if (!delta) {
+      void ipcRenderer.invoke("panel:history-reload", config.panelId).catch((error) => {
+        console.error("Failed to reload history", error);
+        originalGo(0);
+      });
+      return;
+    }
+    void ipcRenderer.invoke("panel:history-go", config.panelId, delta).catch((error) => {
+      console.error("Failed to navigate history", error);
+    });
+  };
+
+  ipcRenderer.on("panel:history-popstate", (_event, payload: { state: unknown; path: string }) => {
+    originalReplaceState(payload.state, document.title, payload.path);
+    window.dispatchEvent(new PopStateEvent("popstate", { state: payload.state }));
+  });
+}
+
+/**
  * Set globals in preload context (for debugging).
  * Works with contextIsolation: true or false.
  */
@@ -247,7 +323,7 @@ export function setPreloadGlobals(
 ): void {
   const g = globalThis as Record<string, unknown>;
   g["__natstackId"] = config.panelId;
-  g["__natstackSessionId"] = config.sessionId;
+  g["__natstackContextId"] = config.contextId;
   g["__natstackKind"] = config.kind;
   g["__natstackParentId"] = config.parentId;
   g["__natstackInitialTheme"] = config.initialTheme;
@@ -271,7 +347,7 @@ export function exposeGlobalsViaContextBridge(
 
   // NatStack globals for @natstack/runtime
   contextBridge.exposeInMainWorld("__natstackId", config.panelId);
-  contextBridge.exposeInMainWorld("__natstackSessionId", config.sessionId);
+  contextBridge.exposeInMainWorld("__natstackContextId", config.contextId);
   contextBridge.exposeInMainWorld("__natstackKind", config.kind);
   contextBridge.exposeInMainWorld("__natstackParentId", config.parentId);
   contextBridge.exposeInMainWorld("__natstackInitialTheme", config.initialTheme);
@@ -290,7 +366,7 @@ export function setUnsafeGlobals(
   transport: ReturnType<typeof createTransport>
 ): void {
   globalThis.__natstackId = config.panelId;
-  globalThis.__natstackSessionId = config.sessionId;
+  globalThis.__natstackContextId = config.contextId;
   globalThis.__natstackKind = config.kind;
   globalThis.__natstackParentId = config.parentId;
   globalThis.__natstackInitialTheme = config.initialTheme;
@@ -328,6 +404,7 @@ export function initSafePreload(contextBridge: Electron.ContextBridge): void {
   exposeGlobalsViaContextBridge(contextBridge, config, transport);
   setPreloadGlobals(config, transport);
   setupDevToolsShortcut(config);
+  setupHistoryIntegration(config);
 }
 
 /**
@@ -340,4 +417,5 @@ export function initUnsafePreload(): void {
   const transport = createTransport(config.panelId);
   setUnsafeGlobals(config, transport);
   setupDevToolsShortcut(config);
+  setupHistoryIntegration(config);
 }

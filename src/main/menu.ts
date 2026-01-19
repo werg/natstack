@@ -7,13 +7,20 @@ import { eventService } from "./services/eventsService.js";
  */
 export function buildCommonMenuItems(
   shellContents: WebContents,
-  options?: { includeClearCache?: () => Promise<void> }
+  options?: {
+    includeClearCache?: () => Promise<void>;
+    onHistoryBack?: () => void;
+    onHistoryForward?: () => void;
+  }
 ): {
   file: MenuItemConstructorOptions[];
   edit: MenuItemConstructorOptions[];
   view: MenuItemConstructorOptions[];
   dev: MenuItemConstructorOptions[];
 } {
+  const isMac = process.platform === "darwin";
+  const backAccelerator = isMac ? "Cmd+[" : "Alt+Left";
+  const forwardAccelerator = isMac ? "Cmd+]" : "Alt+Right";
   const file: MenuItemConstructorOptions[] = [
     {
       label: "Switch Workspace...",
@@ -40,10 +47,28 @@ export function buildCommonMenuItems(
     { label: "Paste", accelerator: "CmdOrCtrl+V", role: "paste" },
   ];
 
-  const view: MenuItemConstructorOptions[] = [
+  const view: MenuItemConstructorOptions[] = [];
+  if (options?.onHistoryBack) {
+    view.push({
+      label: "Back",
+      accelerator: backAccelerator,
+      click: () => options.onHistoryBack?.(),
+    });
+  }
+  if (options?.onHistoryForward) {
+    view.push({
+      label: "Forward",
+      accelerator: forwardAccelerator,
+      click: () => options.onHistoryForward?.(),
+    });
+  }
+  if (view.length > 0) {
+    view.push({ type: "separator" });
+  }
+  view.push(
     { label: "Reload", accelerator: "CmdOrCtrl+R", role: "reload" },
-    { label: "Force Reload", accelerator: "CmdOrCtrl+Shift+R", role: "forceReload" },
-  ];
+    { label: "Force Reload", accelerator: "CmdOrCtrl+Shift+R", role: "forceReload" }
+  );
 
   const dev: MenuItemConstructorOptions[] = [
     {
@@ -83,9 +108,17 @@ export function buildCommonMenuItems(
  */
 export function buildHamburgerMenuTemplate(
   shellContents: WebContents,
-  clearBuildCache: () => Promise<void>
+  clearBuildCache: () => Promise<void>,
+  options?: {
+    onHistoryBack?: () => void;
+    onHistoryForward?: () => void;
+  }
 ): MenuItemConstructorOptions[] {
-  const common = buildCommonMenuItems(shellContents, { includeClearCache: clearBuildCache });
+  const common = buildCommonMenuItems(shellContents, {
+    includeClearCache: clearBuildCache,
+    onHistoryBack: options?.onHistoryBack,
+    onHistoryForward: options?.onHistoryForward,
+  });
 
   return [
     ...common.file,
@@ -104,8 +137,33 @@ export function buildHamburgerMenuTemplate(
  * @param mainWindow - The main BaseWindow (for window operations)
  * @param shellContents - WebContents for the shell view (for IPC and devtools)
  */
-export function setupMenu(mainWindow: Electron.BaseWindow, shellContents: WebContents): void {
+export function setupMenu(
+  mainWindow: Electron.BaseWindow,
+  shellContents: WebContents,
+  options?: { onHistoryBack?: () => void; onHistoryForward?: () => void }
+): void {
   const isMac = process.platform === "darwin";
+  const backAccelerator = isMac ? "Cmd+[" : "Alt+Left";
+  const forwardAccelerator = isMac ? "Cmd+]" : "Alt+Right";
+  const viewSubmenu: MenuItemConstructorOptions[] = [];
+
+  if (options?.onHistoryBack) {
+    viewSubmenu.push({
+      label: "Back",
+      accelerator: backAccelerator,
+      click: () => options.onHistoryBack?.(),
+    });
+  }
+  if (options?.onHistoryForward) {
+    viewSubmenu.push({
+      label: "Forward",
+      accelerator: forwardAccelerator,
+      click: () => options.onHistoryForward?.(),
+    });
+  }
+  if (viewSubmenu.length > 0) {
+    viewSubmenu.push({ type: "separator" });
+  }
 
   const template: MenuItemConstructorOptions[] = [
     // { role: 'appMenu' }
@@ -178,6 +236,7 @@ export function setupMenu(mainWindow: Electron.BaseWindow, shellContents: WebCon
     {
       label: "View",
       submenu: [
+        ...viewSubmenu,
         { role: "reload" },
         { role: "forceReload" },
         { type: "separator" },

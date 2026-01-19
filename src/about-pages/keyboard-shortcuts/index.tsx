@@ -27,6 +27,10 @@ const shortcutGroups: ShortcutGroup[] = [
   {
     title: "Navigation",
     shortcuts: [
+      { keys: ["Cmd", "["], description: "Back (macOS)" },
+      { keys: ["Cmd", "]"], description: "Forward (macOS)" },
+      { keys: ["Alt", "Left"], description: "Back (Windows/Linux)" },
+      { keys: ["Alt", "Right"], description: "Forward (Windows/Linux)" },
       { keys: ["Cmd/Ctrl", "R"], description: "Reload Current Panel" },
       { keys: ["Cmd/Ctrl", "Shift", "R"], description: "Force Reload" },
     ],

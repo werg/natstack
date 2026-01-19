@@ -25,6 +25,7 @@ import type {
   PanelArtifacts,
   BrowserState,
   ShellPage,
+  NavigationState,
   PanelSummary,
 } from "../../shared/ipc/types.js";
 import type { RepoArgSpec } from "@natstack/git";
@@ -32,7 +33,11 @@ import type { RepoArgSpec } from "@natstack/git";
 /**
  * Type-specific data stored in the type_data JSON column.
  */
-interface AppTypeData {
+interface BaseTypeData {
+  navigationState?: NavigationState;
+}
+
+interface AppTypeData extends BaseTypeData {
   path: string;
   sourceRepo?: string;
   branch?: string;
@@ -43,7 +48,7 @@ interface AppTypeData {
   unsafe?: boolean | string;
 }
 
-interface WorkerTypeData {
+interface WorkerTypeData extends BaseTypeData {
   path: string;
   sourceRepo?: string;
   branch?: string;
@@ -53,13 +58,13 @@ interface WorkerTypeData {
   workerOptions?: { unsafe?: boolean | string };
 }
 
-interface BrowserTypeData {
+interface BrowserTypeData extends BaseTypeData {
   url: string;
   browserState: BrowserState;
   injectHostThemeVariables: false;
 }
 
-interface ShellTypeData {
+interface ShellTypeData extends BaseTypeData {
   page: ShellPage;
   injectHostThemeVariables: true;
 }
@@ -86,7 +91,7 @@ export interface CreatePanelInput {
   id: string;
   type: DbPanelType;
   title: string;
-  sessionId: string;
+  contextId: string;
   parentId: string | null;
   typeData: TypeData;
   artifacts?: PanelArtifacts;
@@ -98,6 +103,7 @@ export interface CreatePanelInput {
 export interface UpdatePanelInput {
   title?: string;
   selectedChildId?: string | null;
+  type?: DbPanelType;
   typeData?: Partial<TypeData>;
   artifacts?: PanelArtifacts;
 }
@@ -227,7 +233,7 @@ export class PanelPersistence {
     // Insert at position 0 (prepend)
     db.prepare(`
       INSERT INTO panels (
-        id, type, title, session_id, workspace_id,
+        id, type, title, context_id, workspace_id,
         parent_id, position, selected_child_id,
         created_at, updated_at, type_data, artifacts
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -235,7 +241,7 @@ export class PanelPersistence {
       input.id,
       input.type,
       input.title,
-      input.sessionId,
+      input.contextId,
       workspaceId,
       input.parentId,
       0, // Always prepend at position 0
@@ -424,21 +430,32 @@ export class PanelPersistence {
       params.push(input.selectedChildId);
     }
 
+    if (input.type !== undefined) {
+      updates.push("type = ?");
+      params.push(input.type);
+    }
+
     if (input.artifacts !== undefined) {
       updates.push("artifacts = ?");
       params.push(JSON.stringify(input.artifacts));
     }
 
     if (input.typeData !== undefined) {
-      // Merge with existing type_data
-      const existing = db.prepare("SELECT type_data FROM panels WHERE id = ?").get(panelId) as
-        | { type_data: string }
-        | undefined;
-      if (existing) {
-        const existingData = JSON.parse(existing.type_data) as TypeData;
-        const merged = { ...existingData, ...input.typeData };
+      if (input.type !== undefined) {
+        // Type changed: replace type_data with new schema.
         updates.push("type_data = ?");
-        params.push(JSON.stringify(merged));
+        params.push(JSON.stringify(input.typeData));
+      } else {
+        // Merge with existing type_data
+        const existing = db.prepare("SELECT type_data FROM panels WHERE id = ?").get(panelId) as
+          | { type_data: string }
+          | undefined;
+        if (existing) {
+          const existingData = JSON.parse(existing.type_data) as TypeData;
+          const merged = { ...existingData, ...input.typeData };
+          updates.push("type_data = ?");
+          params.push(JSON.stringify(merged));
+        }
       }
     }
 
@@ -949,10 +966,11 @@ export class PanelPersistence {
     const base = {
       id: row.id,
       title: row.title,
-      sessionId: row.session_id,
+      contextId: row.context_id,
       children: [], // Will be populated by tree builder
       selectedChildId: row.selected_child_id,
       artifacts,
+      navigationState: typeData.navigationState,
     };
 
     switch (row.type) {

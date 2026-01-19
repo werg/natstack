@@ -66,24 +66,24 @@ export function usePanelId(): string {
 }
 
 /**
- * Get the panel's session ID.
- * Session ID format: {mode}_{type}_{identifier}
+ * Get the panel's context ID.
+ * Context ID format: {mode}_{type}_{identifier}
  * - mode: "safe" | "unsafe" - security context
  * - type: "auto" | "named" - auto = tree-derived, named = explicit
  * - identifier: tree path or random string
  *
- * Panels/workers with the same session share OPFS state.
+ * Panels/workers with the same context share OPFS state.
  *
  * @example
  * ```tsx
  * function MyPanel() {
- *   const sessionId = useSessionId();
- *   return <div>Session: {sessionId}</div>;
+ *   const contextId = useContextId();
+ *   return <div>Context: {contextId}</div>;
  * }
  * ```
  */
-export function useSessionId(): string {
-  return runtime.sessionId;
+export function useContextId(): string {
+  return runtime.contextId;
 }
 
 /**

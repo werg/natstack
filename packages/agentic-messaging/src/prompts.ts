@@ -8,13 +8,18 @@ export const COMPONENT_ENHANCED_RICH_TEXT_GUIDE = `Your messages support Markdow
 
 Links (NatStack):
 - Markdown links are clickable in NatStack panels.
-- \`natstack-child:///panels/...\` or \`natstack-child:///workers/...\` links create child panels/workers when clicked.
-- Optional \`#gitRef\` fragment provisions a specific ref (branch/tag/commit), e.g. \`natstack-child:///panels/root#HEAD\`.
+- \`ns:///panels/...\` or \`ns:///workers/...\` links navigate to panels/workers when clicked.
+- Add \`?action=child\` to create a new child instead of navigating in-place.
+- Add \`?gitRef=...\` to provision a specific ref (branch/tag/commit).
+- \`ns-about://...\` links navigate to shell pages (about, help, keyboard-shortcuts, model-provider-config).
+- \`ns-focus:///...\` links focus an existing panel by ID.
 - \`https://...\` links opened from app panels create a browser child panel.
 
 Examples:
-- \`[Open Agent Manager](natstack-child:///panels/agent-manager)\`
-- \`[Open Root @ HEAD](natstack-child:///panels/root#HEAD)\`
+- \`[Open Agent Manager](ns:///panels/agent-manager)\`
+- \`[Open Agent Manager as child](ns:///panels/agent-manager?action=child)\`
+- \`[Open Root @ HEAD](ns:///panels/root?action=child&gitRef=HEAD)\`
+- \`[Open Settings](ns-about://model-provider-config)\`
 
 Example callout:
 <Callout.Root color="blue">

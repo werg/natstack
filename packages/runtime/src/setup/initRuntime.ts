@@ -58,7 +58,7 @@ export function initRuntime(options: InitRuntimeOptions): InitRuntimeResult {
     selfId: `${config.kind}:${config.id}`,
     createTransport: options.createTransport,
     id: config.id,
-    sessionId: config.sessionId,
+    contextId: config.contextId,
     parentId: config.parentId,
     initialTheme: config.initialTheme,
     fs: options.fs,

@@ -454,6 +454,6 @@ NatStack picks the initial root panel path in this order:
 ## Notes
 
 - Panels are isolated in separate webviews
-- Each panel has its own persistent session-based storage (see OPFS_PARTITIONS.md)
+- Each panel has its own persistent context-based storage (see OPFS_PARTITIONS.md)
 - Workers run in WebContentsView with a built-in console UI for logging
 - Browser panels support full Playwright automation via CDP

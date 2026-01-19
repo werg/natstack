@@ -1,6 +1,6 @@
 # Plan / Requirements for permissions
 
-- Control browser sessions via playwright
+- Control browser panels via playwright
   - default: not allowed
   - whitelist for certain domains
 - Access to git subpaths

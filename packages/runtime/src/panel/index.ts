@@ -40,15 +40,15 @@ const { runtime, config } = initRuntime({
 export * as Rpc from "../core/rpc.js";
 export { z } from "../core/zod.js";
 export { defineContract, noopParent } from "../core/defineContract.js";
-export { buildChildLink } from "../core/childLinks.js";
+export { buildNsLink, buildAboutLink, buildFocusLink } from "../core/nsLinks.js";
 export {
-  parseSessionId,
-  isValidSessionId,
-  isSafeSession,
-  isUnsafeSession,
-  isAutoSession,
-  isNamedSession,
-} from "../core/session.js";
+  parseContextId,
+  isValidContextId,
+  isSafeContext,
+  isUnsafeContext,
+  isAutoContext,
+  isNamedContext,
+} from "../core/context.js";
 export type * from "../core/types.js";
 export type { Runtime } from "../setup/createRuntime.js";
 
@@ -78,7 +78,7 @@ export const {
   onFocus,
   expose,
   bootstrapPromise,
-  sessionId,
+  contextId,
 } = runtime;
 
 export { runtimeParentId as parentId };

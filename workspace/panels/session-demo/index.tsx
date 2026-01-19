@@ -1,11 +1,11 @@
 /**
- * Session Demo Panel
+ * Context Demo Panel
  *
- * Demonstrates NatStack session features:
- * - Auto sessions (named vs unnamed children)
- * - Shared sessions using sessionId
- * - Isolated sessions using newSession: true
- * - Session utility functions
+ * Demonstrates NatStack context features:
+ * - Auto contexts (named vs unnamed children)
+ * - Shared contexts using contextId
+ * - Isolated contexts using newContext: true
+ * - Context utility functions
  */
 
 import { useState, useEffect } from "react";
@@ -13,26 +13,26 @@ import { promises as fsPromises } from "fs";
 import { Button, Card, Flex, Text, Heading, Callout, Separator, Badge, Code, TextField } from "@radix-ui/themes";
 import {
   createChild,
-  sessionId,
-  parseSessionId,
-  isSafeSession,
-  isUnsafeSession,
-  isAutoSession,
-  isNamedSession,
+  contextId,
+  parseContextId,
+  isSafeContext,
+  isUnsafeContext,
+  isAutoContext,
+  isNamedContext,
   type ChildHandle,
 } from "@natstack/runtime";
-import { useSessionId, usePanelId, usePanelPartition } from "@natstack/react";
+import { useContextId, usePanelId, usePanelPartition } from "@natstack/react";
 
-export default function SessionDemo() {
+export default function ContextDemo() {
   const panelId = usePanelId();
-  const currentSessionId = useSessionId();
+  const currentContextId = useContextId();
   const partition = usePanelPartition();
 
   const [children, setChildren] = useState<ChildHandle[]>([]);
   const [log, setLog] = useState<string[]>([]);
   const [fileContent, setFileContent] = useState<string>("");
-  const [customSessionId, setCustomSessionId] = useState("safe_named_shared-workspace");
-  const [filePath, setFilePath] = useState("/session-demo/test.txt");
+  const [customContextId, setCustomContextId] = useState("safe_named_shared-workspace");
+  const [filePath, setFilePath] = useState("/context-demo/test.txt");
   const [fileInput, setFileInput] = useState("Hello from OPFS!");
   const [directoryListing, setDirectoryListing] = useState<string[]>([]);
 
@@ -41,8 +41,8 @@ export default function SessionDemo() {
     setLog((prev) => [`[${timestamp}] ${message}`, ...prev.slice(0, 19)]);
   };
 
-  // Parse the current session ID to show its components
-  const parsed = parseSessionId(currentSessionId);
+  // Parse the current context ID to show its components
+  const parsed = parseContextId(currentContextId);
 
   // Get directory from file path
   const getDirectory = (path: string) => {
@@ -50,7 +50,7 @@ export default function SessionDemo() {
     return lastSlash > 0 ? path.slice(0, lastSlash) : "/";
   };
 
-  // Write a file to demonstrate session-scoped storage
+  // Write a file to demonstrate context-scoped storage
   const writeToStorage = async () => {
     try {
       const dir = getDirectory(filePath);
@@ -63,7 +63,7 @@ export default function SessionDemo() {
     }
   };
 
-  // Read the file to demonstrate session-scoped storage
+  // Read the file to demonstrate context-scoped storage
   const readFromStorage = async () => {
     try {
       const content = await fsPromises.readFile(filePath, "utf-8");
@@ -108,50 +108,50 @@ export default function SessionDemo() {
     }
   };
 
-  // Launch a named child (deterministic, resumable session)
+  // Launch a named child (deterministic, resumable context)
   const launchNamedChild = async () => {
     try {
       const child = await createChild("panels/session-demo", { name: "named-child" });
-      addLog(`Launched named child: ${child.id} (session: auto-derived, resumable)`);
+      addLog(`Launched named child: ${child.id} (context: auto-derived, resumable)`);
       setChildren((prev) => [...prev, child]);
     } catch (error) {
       addLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
-  // Launch an unnamed child (random nonce, non-resumable session)
+  // Launch an unnamed child (random nonce, non-resumable context)
   const launchUnnamedChild = async () => {
     try {
       const child = await createChild("panels/session-demo");
-      addLog(`Launched unnamed child: ${child.id} (session: random nonce, NOT resumable)`);
+      addLog(`Launched unnamed child: ${child.id} (context: random nonce, NOT resumable)`);
       setChildren((prev) => [...prev, child]);
     } catch (error) {
       addLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
-  // Launch a child with explicit shared session
-  const launchSharedSessionChild = async () => {
+  // Launch a child with explicit shared context
+  const launchSharedContextChild = async () => {
     try {
       const child = await createChild("panels/session-demo", {
-        name: "shared-session-child",
-        sessionId: customSessionId,
+        name: "shared-context-child",
+        contextId: customContextId,
       });
-      addLog(`Launched shared session child: ${child.id} (session: ${customSessionId})`);
+      addLog(`Launched shared context child: ${child.id} (context: ${customContextId})`);
       setChildren((prev) => [...prev, child]);
     } catch (error) {
       addLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
-  // Launch a child with isolated session (newSession: true)
+  // Launch a child with isolated context (newContext: true)
   const launchIsolatedChild = async () => {
     try {
       const child = await createChild("panels/session-demo", {
         name: "isolated-child",
-        newSession: true,
+        newContext: true,
       });
-      addLog(`Launched isolated child: ${child.id} (session: new random, isolated)`);
+      addLog(`Launched isolated child: ${child.id} (context: new random, isolated)`);
       setChildren((prev) => [...prev, child]);
     } catch (error) {
       addLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
@@ -171,17 +171,17 @@ export default function SessionDemo() {
 
   return (
     <Flex direction="column" gap="4" p="4" style={{ maxWidth: 900 }}>
-      <Heading size="6">Session Demo</Heading>
+      <Heading size="6">Context Demo</Heading>
       <Text size="2" color="gray">
-        Demonstrates NatStack session-based storage partitioning. Panels with the same session share OPFS storage.
+        Demonstrates NatStack context-based storage partitioning. Panels with the same context share OPFS storage.
       </Text>
 
       <Separator size="4" />
 
-      {/* Current Session Info */}
+      {/* Current Context Info */}
       <Card>
         <Flex direction="column" gap="3">
-          <Heading size="4">Current Session Info</Heading>
+          <Heading size="4">Current Context Info</Heading>
 
           <Flex direction="column" gap="1">
             <Text size="2">
@@ -189,8 +189,8 @@ export default function SessionDemo() {
               <Code>{panelId}</Code>
             </Text>
             <Text size="2">
-              <Text weight="bold">Session ID:</Text>{" "}
-              <Code>{currentSessionId}</Code>
+              <Text weight="bold">Context ID:</Text>{" "}
+              <Code>{currentContextId}</Code>
             </Text>
             <Text size="2">
               <Text weight="bold">Partition:</Text>{" "}
@@ -201,7 +201,7 @@ export default function SessionDemo() {
           {parsed && (
             <Card variant="surface">
               <Flex direction="column" gap="1">
-                <Text size="2" weight="bold">Parsed Session Components:</Text>
+                <Text size="2" weight="bold">Parsed Context Components:</Text>
                 <Flex gap="2" wrap="wrap">
                   <Badge color={parsed.mode === "safe" ? "green" : "red"}>
                     Mode: {parsed.mode}
@@ -214,10 +214,10 @@ export default function SessionDemo() {
                   </Badge>
                 </Flex>
                 <Text size="1" color="gray" style={{ marginTop: 8 }}>
-                  Utility checks: isSafe={String(isSafeSession(currentSessionId))},
-                  isUnsafe={String(isUnsafeSession(currentSessionId))},
-                  isAuto={String(isAutoSession(currentSessionId))},
-                  isNamed={String(isNamedSession(currentSessionId))}
+                  Utility checks: isSafe={String(isSafeContext(currentContextId))},
+                  isUnsafe={String(isUnsafeContext(currentContextId))},
+                  isAuto={String(isAutoContext(currentContextId))},
+                  isNamed={String(isNamedContext(currentContextId))}
                 </Text>
               </Flex>
             </Card>
@@ -227,12 +227,12 @@ export default function SessionDemo() {
 
       <Separator size="4" />
 
-      {/* Session-Scoped Storage Demo */}
+      {/* Context-Scoped Storage Demo */}
       <Card>
         <Flex direction="column" gap="3">
-          <Heading size="4">Session-Scoped Storage (OPFS)</Heading>
+          <Heading size="4">Context-Scoped Storage (OPFS)</Heading>
           <Text size="2" color="gray">
-            Files written here are scoped to this session. Panels sharing the same session can read/write the same files.
+            Files written here are scoped to this context. Panels sharing the same context can read/write the same files.
           </Text>
 
           <Flex direction="column" gap="2">
@@ -312,13 +312,13 @@ export default function SessionDemo() {
       {/* Child Panel Demos */}
       <Card>
         <Flex direction="column" gap="3">
-          <Heading size="4">Session Modes</Heading>
+          <Heading size="4">Context Modes</Heading>
 
           <Card variant="surface">
             <Flex direction="column" gap="2">
               <Text size="2" weight="bold">1. Named Child (Resumable)</Text>
               <Text size="1" color="gray">
-                Uses `name` option. Session derived from tree path - deterministic and resumable across restarts.
+                Uses `name` option. Context derived from tree path - deterministic and resumable across restarts.
               </Text>
               <Button onClick={launchNamedChild} size="1">
                 Launch Named Child
@@ -330,7 +330,7 @@ export default function SessionDemo() {
             <Flex direction="column" gap="2">
               <Text size="2" weight="bold">2. Unnamed Child (Non-Resumable)</Text>
               <Text size="1" color="gray">
-                No `name` option. Panel ID includes random nonce - new session each time.
+                No `name` option. Panel ID includes random nonce - new context each time.
               </Text>
               <Button onClick={launchUnnamedChild} size="1">
                 Launch Unnamed Child
@@ -340,19 +340,19 @@ export default function SessionDemo() {
 
           <Card variant="surface">
             <Flex direction="column" gap="2">
-              <Text size="2" weight="bold">3. Shared Session</Text>
+              <Text size="2" weight="bold">3. Shared Context</Text>
               <Text size="1" color="gray">
-                Explicit `sessionId` option. Multiple panels can share the same storage.
+                Explicit `contextId` option. Multiple panels can share the same storage.
               </Text>
               <Flex gap="2" align="end">
                 <TextField.Root
-                  placeholder="Session ID"
-                  value={customSessionId}
-                  onChange={(e) => setCustomSessionId(e.target.value)}
+                  placeholder="Context ID"
+                  value={customContextId}
+                  onChange={(e) => setCustomContextId(e.target.value)}
                   style={{ flex: 1 }}
                   size="1"
                 />
-                <Button onClick={launchSharedSessionChild} size="1">
+                <Button onClick={launchSharedContextChild} size="1">
                   Launch Shared
                 </Button>
               </Flex>
@@ -361,9 +361,9 @@ export default function SessionDemo() {
 
           <Card variant="surface">
             <Flex direction="column" gap="2">
-              <Text size="2" weight="bold">4. Isolated Session</Text>
+              <Text size="2" weight="bold">4. Isolated Context</Text>
               <Text size="1" color="gray">
-                Uses `newSession: true`. Gets a fresh, unique session (safe_named_*) for isolated storage.
+                Uses `newContext: true`. Gets a fresh, unique context (safe_named_*) for isolated storage.
               </Text>
               <Button onClick={launchIsolatedChild} size="1">
                 Launch Isolated Child

@@ -2,7 +2,8 @@ import { useState, useCallback, useEffect } from "react";
 import { promises as fsPromises } from "fs";
 import { Button, Card, Flex, Text, Heading, Callout, Separator, Badge, TextField } from "@radix-ui/themes";
 import {
-  buildChildLink,
+  buildNsLink,
+  buildAboutLink,
   createChild,
   createBrowserChild,
   createChildWithContract,
@@ -17,7 +18,7 @@ import {
   usePanelId,
   usePanelPartition,
   usePanelChildren,
-  useSessionId,
+  useContextId,
 } from "@natstack/react";
 import "./style.css";
 
@@ -29,7 +30,7 @@ export default function ChildPanelLauncher() {
   const theme = usePanelTheme();
   const panelId = usePanelId();
   const partition = usePanelPartition();
-  const sessionId = useSessionId();
+  const contextId = useContextId();
   const env = process.env;
   const children = usePanelChildren();
 
@@ -70,7 +71,8 @@ export default function ChildPanelLauncher() {
       : trimmedCodeEditorRepo
     : null;
   const codeEditorChildLink = codeEditorRepoSpec
-    ? buildChildLink("panels/code-editor", {
+    ? buildNsLink("panels/code-editor", {
+        action: "child",
         repoArgs: { workspace: codeEditorRepoSpec },
       })
     : null;
@@ -751,21 +753,21 @@ export default function ChildPanelLauncher() {
             </Text>
           </Text>
           <Text size="2">
-            Session ID: <Text weight="bold" style={{ fontFamily: "monospace" }}>
-              {sessionId}
+            Context ID: <Text weight="bold" style={{ fontFamily: "monospace" }}>
+              {contextId}
             </Text>
           </Text>
           <Card variant="surface">
             <Flex direction="column" gap="2">
-              <Text size="2" weight="bold">Session Rules:</Text>
+              <Text size="2" weight="bold">Context Rules:</Text>
               <Text size="1" color="gray">
-                • <Text weight="bold">Auto sessions:</Text> By default, panels derive session from their tree path (<Text weight="bold">safe_auto_panels~editor</Text>). Resumable across restarts.
+                • <Text weight="bold">Auto contexts:</Text> By default, panels derive context from their tree path (<Text weight="bold">safe_auto_panels~editor</Text>). Resumable across restarts.
               </Text>
               <Text size="1" color="gray">
-                • <Text weight="bold">Named sessions:</Text> Use <Text weight="bold">sessionId</Text> option to share storage across panels, or <Text weight="bold">newSession: true</Text> for isolated storage.
+                • <Text weight="bold">Named contexts:</Text> Use <Text weight="bold">contextId</Text> option to share storage across panels, or <Text weight="bold">newContext: true</Text> for isolated storage.
               </Text>
               <Text size="1" color="gray">
-                • <Text weight="bold">Session format:</Text> <Text weight="bold">{"{mode}_{type}_{id}"}</Text> where mode is safe/unsafe, type is auto/named.
+                • <Text weight="bold">Context format:</Text> <Text weight="bold">{"{mode}_{type}_{id}"}</Text> where mode is safe/unsafe, type is auto/named.
               </Text>
             </Flex>
           </Card>
@@ -860,19 +862,19 @@ export default function ChildPanelLauncher() {
           <Heading size="5">Link Interception Demo</Heading>
           <Text size="2" color="gray">
             Click these links to verify link-based child creation. In app panels, any <code>http(s)</code> link
-            creates a browser child, and any <code>natstack-child:///…</code> link creates an app/worker child
+            creates a browser child, and any <code>ns:///…</code> link with <code>action=child</code> creates an app/worker child
             (type comes from the target manifest).
           </Text>
           <Card variant="surface">
             <Flex direction="column" gap="2">
               <Text size="2">
-                <a href={buildChildLink("panels/typed-rpc-child")}>
-                  Open Typed RPC Child (natstack-child)
+                <a href={buildNsLink("panels/typed-rpc-child", { action: "child" })}>
+                  Open Typed RPC Child (ns:// action=child)
                 </a>
               </Text>
               <Text size="2">
-                <a href={buildChildLink("workers/rpc-example")}>
-                  Start RPC Example Worker (natstack-child)
+                <a href={buildNsLink("workers/rpc-example", { action: "child" })}>
+                  Start RPC Example Worker (ns:// action=child)
                 </a>
               </Text>
               <Text size="2">
@@ -885,12 +887,12 @@ export default function ChildPanelLauncher() {
                 )}
               </Text>
               <Text size="2">
-                <a href={buildChildLink("panels/unsafe-fs-demo")}>
+                <a href={buildNsLink("panels/unsafe-fs-demo", { action: "child" })}>
                   🔓 Open Unsafe FS Demo (real Node.js fs access)
                 </a>
               </Text>
               <Text size="2">
-                <a href={buildChildLink("panels/root", { gitRef: "HEAD" })}>
+                <a href={buildNsLink("panels/root", { action: "child", gitRef: "HEAD" })}>
                   Open Root Panel @ gitRef "HEAD" (always valid)
                 </a>
               </Text>
@@ -906,7 +908,7 @@ export default function ChildPanelLauncher() {
                 </Flex>
                 <Button asChild variant="soft" size="1">
                   <a
-                    href={buildChildLink("panels/root", { gitRef: childLinkGitRef.trim() || undefined })}
+                    href={buildNsLink("panels/root", { action: "child", gitRef: childLinkGitRef.trim() || undefined })}
                     target="_blank"
                     rel="noreferrer"
                   >
@@ -920,29 +922,29 @@ export default function ChildPanelLauncher() {
                 </a>
               </Text>
               <Text size="2">
-                <a href={buildChildLink("panels/does-not-exist")} target="_blank" rel="noreferrer">
+                <a href={buildNsLink("panels/does-not-exist", { action: "child" })} target="_blank" rel="noreferrer">
                   Open invalid child source (should trigger onChildCreationError)
                 </a>
               </Text>
               <Separator size="4" my="2" />
-              <Text size="2" weight="bold">Shell Pages (via natstack-about:// links):</Text>
+              <Text size="2" weight="bold">Shell Pages (via ns-about:// links):</Text>
               <Text size="2">
-                <a href="natstack-about://model-provider-config">
+                <a href={buildAboutLink("model-provider-config")}>
                   Open Model Provider Config
                 </a>
               </Text>
               <Text size="2">
-                <a href="natstack-about://keyboard-shortcuts">
+                <a href={buildAboutLink("keyboard-shortcuts")}>
                   Open Keyboard Shortcuts
                 </a>
               </Text>
               <Text size="2">
-                <a href="natstack-about://help">
+                <a href={buildAboutLink("help")}>
                   Open Help
                 </a>
               </Text>
               <Text size="2">
-                <a href="natstack-about://about">
+                <a href={buildAboutLink("about")}>
                   Open About
                 </a>
               </Text>
@@ -965,12 +967,12 @@ export default function ChildPanelLauncher() {
           {/* OPFS Demo Section */}
           <Heading size="5">OPFS Demo</Heading>
           <Text size="2" color="gray">
-            This panel writes to "example.txt". Each session has its own OPFS partition. Panels sharing a session share storage; use <Text weight="bold">newSession: true</Text> for isolated storage.
+            This panel writes to "example.txt". Each context has its own OPFS partition. Panels sharing a context share storage; use <Text weight="bold">newContext: true</Text> for isolated storage.
           </Text>
           {message && message.includes("share OPFS") && (
             <Callout.Root color="orange">
               <Callout.Text>
-                This instance is using partition {partition ?? "(loading)"} — files are shared with any panel using the same session.
+                This instance is using partition {partition ?? "(loading)"} — files are shared with any panel using the same context.
               </Callout.Text>
             </Callout.Root>
           )}

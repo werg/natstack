@@ -88,13 +88,6 @@ export function registerPanelProtocol(): void {
       },
     },
     {
-      scheme: "natstack-child",
-      privileges: {
-        standard: true,
-        secure: true,
-      },
-    },
-    {
       scheme: "natstack-about",
       privileges: {
         standard: true,
@@ -102,6 +95,31 @@ export function registerPanelProtocol(): void {
         supportFetchAPI: true,
         corsEnabled: true,
         stream: true,
+      },
+    },
+    // New navigation protocols
+    {
+      scheme: "ns",
+      privileges: {
+        standard: true,
+        secure: true,
+      },
+    },
+    {
+      scheme: "ns-about",
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        corsEnabled: true,
+        stream: true,
+      },
+    },
+    {
+      scheme: "ns-focus",
+      privileges: {
+        standard: true,
+        secure: true,
       },
     },
   ]);
@@ -275,7 +293,7 @@ function isAuthorizedByReferer(request: Request, expectedToken: string): boolean
   if (!referer) return false;
   try {
     const refererUrl = new URL(referer);
-    if (refererUrl.protocol !== "natstack-panel:" && refererUrl.protocol !== "natstack-child:") {
+    if (refererUrl.protocol !== "natstack-panel:") {
       return false;
     }
     return refererUrl.searchParams.get("token") === expectedToken;

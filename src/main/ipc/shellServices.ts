@@ -356,6 +356,7 @@ export async function handleViewService(
   method: string,
   args: unknown[]
 ): Promise<unknown> {
+  const pm = requirePanelManager();
   const vm = getViewManager();
 
   switch (method) {
@@ -385,13 +386,13 @@ export async function handleViewService(
 
     case "browserGoBack": {
       const browserId = args[0] as string;
-      vm.goBack(browserId);
+      await pm.goBack(browserId);
       return;
     }
 
     case "browserGoForward": {
       const browserId = args[0] as string;
-      vm.goForward(browserId);
+      await pm.goForward(browserId);
       return;
     }
 
@@ -444,7 +445,23 @@ export async function handleMenuService(
         console.log("[App] Build cache cleared via hamburger menu");
       };
 
-      const template = buildHamburgerMenuTemplate(shellContents, clearBuildCache);
+      const pm = requirePanelManager();
+      const template = buildHamburgerMenuTemplate(shellContents, clearBuildCache, {
+        onHistoryBack: () => {
+          const panelId = pm.getFocusedPanelId();
+          if (!panelId || !pm.getPanel(panelId)) return;
+          void pm.goBack(panelId).catch((error) => {
+            console.error(`[Menu] Failed to navigate back for ${panelId}:`, error);
+          });
+        },
+        onHistoryForward: () => {
+          const panelId = pm.getFocusedPanelId();
+          if (!panelId || !pm.getPanel(panelId)) return;
+          void pm.goForward(panelId).catch((error) => {
+            console.error(`[Menu] Failed to navigate forward for ${panelId}:`, error);
+          });
+        },
+      });
       const menu = Menu.buildFromTemplate(template);
       menu.popup({ window: vm.getWindow(), x: position.x, y: position.y });
       return;

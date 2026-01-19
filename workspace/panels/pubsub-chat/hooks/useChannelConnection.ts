@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, type RefObject } from "react";
-import { pubsubConfig, id as panelClientId, sessionId as panelSessionId } from "@natstack/runtime";
+import { pubsubConfig, id as panelClientId, contextId as panelContextId } from "@natstack/runtime";
 import {
   connect,
   type AgenticClient,
@@ -93,9 +93,9 @@ export function useChannelConnection({
           serverUrl: pubsubConfig.serverUrl,
           token: pubsubConfig.token,
           channel: channelId,
-          // Use the panel's session ID as the channel context (fallback to panel ID)
+          // Use the panel's context ID as the channel context (fallback to panel ID)
           // This enables session persistence for all participants
-          contextId: panelSessionId,
+          contextId: panelContextId,
           handle: metadata.handle,
           name: metadata.name,
           type: metadata.type,

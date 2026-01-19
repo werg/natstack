@@ -46,6 +46,34 @@ export async function handleBridgeCall(
       }
       return pm.closePanel(childId);
     }
+    // Navigation methods - allow panels to navigate their children
+    case "goBack": {
+      const [targetId] = args as [string];
+      // Verify caller is the parent of the target
+      const parentId = pm.findParentId(targetId);
+      if (parentId !== callerId) {
+        throw new Error(`Panel "${callerId}" is not the parent of "${targetId}"`);
+      }
+      return pm.goBack(targetId);
+    }
+    case "goForward": {
+      const [targetId] = args as [string];
+      // Verify caller is the parent of the target
+      const parentId = pm.findParentId(targetId);
+      if (parentId !== callerId) {
+        throw new Error(`Panel "${callerId}" is not the parent of "${targetId}"`);
+      }
+      return pm.goForward(targetId);
+    }
+    case "navigatePanel": {
+      const [targetId, source, targetType] = args as [string, string, string];
+      // Verify caller is the parent of the target
+      const parentId = pm.findParentId(targetId);
+      if (parentId !== callerId) {
+        throw new Error(`Panel "${callerId}" is not the parent of "${targetId}"`);
+      }
+      return pm.navigatePanel(targetId, source, targetType as import("../../shared/ipc/types.js").PanelType);
+    }
     default:
       throw new Error(`Unknown bridge method: ${method}`);
   }

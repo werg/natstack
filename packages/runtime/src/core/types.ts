@@ -63,7 +63,7 @@ export interface CreateChildOptions {
   name?: string;
   /** Environment variables to pass to the child */
   env?: Record<string, string>;
-  /** Git ref to provision (branch, tag, or commit SHA). Encoded in natstack-child URLs via #fragment. */
+  /** Git ref to provision (branch, tag, or commit SHA). Encoded in ns:// URLs via ?gitRef= parameter. */
   gitRef?: string;
   /** Repo arguments required by the target manifest */
   repoArgs?: Record<string, RepoArgSpec>;
@@ -73,10 +73,10 @@ export interface CreateChildOptions {
   sourcemap?: boolean;
   /** Optional zod schemas for validating event payloads from this child (runtime-only; not sent to main). */
   eventSchemas?: EventSchemaMap;
-  /** Explicit session ID to share OPFS with another panel (must match panel's safe/unsafe mode). */
-  sessionId?: string;
-  /** Force creation of a new named session instead of deriving from panel ID. */
-  newSession?: boolean;
+  /** Explicit context ID to share OPFS with another panel (must match panel's safe/unsafe mode). */
+  contextId?: string;
+  /** Force creation of a new named context instead of deriving from panel ID. */
+  newContext?: boolean;
   /** If true, panel can be closed and is not persisted to SQLite */
   ephemeral?: boolean;
 
@@ -151,8 +151,8 @@ interface GitVersionFields {
 
 /**
  * Spec for creating an app panel child.
- * Name is optional - if omitted, session is auto-derived from tree path.
- * Use `sessionId` to share storage across panels, or `newSession: true` for isolation.
+ * Name is optional - if omitted, context is auto-derived from tree path.
+ * Use `contextId` to share storage across panels, or `newContext: true` for isolation.
  */
 export interface AppChildSpec extends ChildSpecBase, GitVersionFields {
   type: "app";
@@ -242,10 +242,10 @@ export interface PubSubConfig {
 export interface EndpointInfo {
   /** The endpoint's unique ID */
   panelId: string;
-  /** Storage partition name (derived from sessionId) */
+  /** Storage partition name (derived from contextId) */
   partition: string;
-  /** Session ID (format: {mode}_{type}_{identifier}) */
-  sessionId: string;
+  /** Context ID (format: {mode}_{type}_{identifier}) */
+  contextId: string;
 }
 
 // =============================================================================
@@ -342,15 +342,15 @@ export interface ChildHandle<
    */
   getCdpEndpoint(): Promise<string>;
 
-  // === Browser-specific (only meaningful for type: "browser") ===
+  // === Navigation ===
 
   /** Navigate to URL (browser only) */
   navigate(url: string): Promise<void>;
 
-  /** Go back in history (browser only) */
+  /** Go back in unified history (all child types) */
   goBack(): Promise<void>;
 
-  /** Go forward in history (browser only) */
+  /** Go forward in unified history (all child types) */
   goForward(): Promise<void>;
 
   /** Reload page (browser only) */

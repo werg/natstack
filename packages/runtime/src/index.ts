@@ -13,8 +13,12 @@ import { createRpcBridge, type RpcBridge, type RpcTransport, type RpcMessage } f
 import { encodeBase64 as encodeBase64Impl, decodeBase64 as decodeBase64Impl } from "./shared/base64.js";
 import { createDbClient, type Database } from "./shared/db.js";
 import * as formSchema from "./shared/form-schema.js";
-import * as sessionUtils from "./core/session.js";
-import { buildChildLink as buildChildLinkImpl } from "./core/childLinks.js";
+import * as contextUtils from "./core/context.js";
+import {
+  buildNsLink as buildNsLinkImpl,
+  buildAboutLink as buildAboutLinkImpl,
+  buildFocusLink as buildFocusLinkImpl,
+} from "./core/nsLinks.js";
 import { z as zImpl } from "./core/zod.js";
 import { defineContract as defineContractImpl, noopParent as noopParentImpl } from "./core/defineContract.js";
 import * as RpcNamespace from "./core/rpc.js";
@@ -48,10 +52,12 @@ export type {
   PanelContract,
   ParentHandleFromContract,
   TypedCallProxy,
-  BuildChildLinkOptions,
-  SessionMode,
-  SessionType,
-  ParsedSessionId,
+  BuildNsLinkOptions,
+  NsAction,
+  AboutPage,
+  ContextMode,
+  ContextType,
+  ParsedContextId,
 } from "./core/index.js";
 
 export type { Runtime } from "./setup/createRuntime.js";
@@ -85,7 +91,7 @@ const g = globalThis as unknown as {
   __natstackTransport?: ShellTransportBridge;
   __natstackKind?: "panel" | "worker" | "shell";
   __natstackId?: string;
-  __natstackSessionId?: string;
+  __natstackContextId?: string;
 };
 
 // Create RPC bridge for shell environment
@@ -141,9 +147,9 @@ const rpcStub = new Proxy({} as RpcBridge, {
 });
 export const rpc: RpcBridge = shellRpc ?? rpcStub;
 
-// ID and session info
+// ID and context info
 export const id: string = g.__natstackId ?? "";
-export const sessionId: string = g.__natstackSessionId ?? "";
+export const contextId: string = g.__natstackContextId ?? "";
 export const parentId: string | null = null; // Shell has no parent
 
 // Utility exports - these work in any environment
@@ -152,7 +158,10 @@ export const decodeBase64 = decodeBase64Impl;
 export const z = zImpl;
 export const defineContract = defineContractImpl;
 export const noopParent = noopParentImpl;
-export const buildChildLink = buildChildLinkImpl;
+// Navigation link builders
+export const buildNsLink = buildNsLinkImpl;
+export const buildAboutLink = buildAboutLinkImpl;
+export const buildFocusLink = buildFocusLinkImpl;
 
 // Form schema utilities
 export const evaluateCondition = formSchema.evaluateCondition;
@@ -162,13 +171,13 @@ export const getFieldWarning = formSchema.getFieldWarning;
 export const groupFields = formSchema.groupFields;
 export const getFieldDefaults = formSchema.getFieldDefaults;
 
-// Session utilities
-export const parseSessionId = sessionUtils.parseSessionId;
-export const isValidSessionId = sessionUtils.isValidSessionId;
-export const isSafeSession = sessionUtils.isSafeSession;
-export const isUnsafeSession = sessionUtils.isUnsafeSession;
-export const isAutoSession = sessionUtils.isAutoSession;
-export const isNamedSession = sessionUtils.isNamedSession;
+// Context utilities
+export const parseContextId = contextUtils.parseContextId;
+export const isValidContextId = contextUtils.isValidContextId;
+export const isSafeContext = contextUtils.isSafeContext;
+export const isUnsafeContext = contextUtils.isUnsafeContext;
+export const isAutoContext = contextUtils.isAutoContext;
+export const isNamedContext = contextUtils.isNamedContext;
 
 // Rpc namespace export
 export const Rpc = RpcNamespace;

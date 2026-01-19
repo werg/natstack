@@ -32,7 +32,7 @@ export interface AppInfo {
 export interface PanelInfo {
   panelId: string;
   partition: string;
-  sessionId: string;
+  contextId: string;
 }
 
 // Panel-related types (shared between main and renderer)
@@ -112,6 +112,30 @@ export interface PanelIpcApi {
    * Called by panel preload keyboard shortcut (Cmd/Ctrl+Shift+I).
    */
   "panel:open-devtools": (panelId: string) => void;
+  /**
+   * Push a history entry from an app panel (history.pushState).
+   */
+  "panel:history-push": (panelId: string, payload: { state: unknown; path: string }) => void;
+  /**
+   * Replace the current history entry from an app panel (history.replaceState).
+   */
+  "panel:history-replace": (panelId: string, payload: { state: unknown; path: string }) => void;
+  /**
+   * Navigate back in unified panel history (history.back).
+   */
+  "panel:history-back": (panelId: string) => void;
+  /**
+   * Navigate forward in unified panel history (history.forward).
+   */
+  "panel:history-forward": (panelId: string) => void;
+  /**
+   * Navigate by offset in unified panel history (history.go).
+   */
+  "panel:history-go": (panelId: string, offset: number) => void;
+  /**
+   * Reload the current history entry (history.go(0)).
+   */
+  "panel:history-reload": (panelId: string) => void;
 }
 
 // Panel bridge IPC channels (panel webview <-> main)
@@ -257,12 +281,51 @@ export type PanelType = "app" | "worker" | "browser" | "shell";
 export type ShellPage = "model-provider-config" | "about" | "keyboard-shortcuts" | "help";
 
 /**
- * Browser panel navigation state.
+ * Browser panel navigation state (legacy - for browser webview internal state).
  */
 export interface BrowserState {
   pageTitle: string;
   isLoading: boolean;
   canGoBack: boolean;
+  canGoForward: boolean;
+}
+
+// =============================================================================
+// Panel Navigation State (Unified History)
+// =============================================================================
+
+/**
+ * Entry in the unified panel navigation history.
+ * All navigations (source changes, browser navigations, pushState) are tracked here.
+ */
+export interface NavigationEntry {
+  /** Panel source path or external URL */
+  source: string;
+  /** Type of content at this entry */
+  type: PanelType;
+  /** For browser entries, the actual URL (may differ from source after redirects) */
+  resolvedUrl?: string;
+  /** For app panel pushState entries */
+  pushState?: {
+    /** The state object passed to pushState */
+    state: unknown;
+    /** The URL/path passed to pushState */
+    path: string;
+  };
+}
+
+/**
+ * Unified navigation state for a panel.
+ * Tracks history across source changes, browser navigations, and pushState calls.
+ */
+export interface NavigationState {
+  /** Unified history stack */
+  history: NavigationEntry[];
+  /** Current position in history (0-indexed) */
+  historyIndex: number;
+  /** Whether the panel can navigate back */
+  canGoBack: boolean;
+  /** Whether the panel can navigate forward */
   canGoForward: boolean;
 }
 
@@ -272,14 +335,16 @@ export interface BrowserState {
 interface PanelBase {
   id: string;
   title: string;
-  /** Session ID for storage partition (format: {mode}_{type}_{identifier}) */
-  sessionId: string;
+  /** Context ID for storage partition (format: {mode}_{type}_{identifier}) */
+  contextId: string;
   children: Panel[];
   selectedChildId: string | null;
   artifacts: PanelArtifacts;
   env?: Record<string, string>;
   /** If true, panel can be closed and is not persisted to SQLite */
   ephemeral?: boolean;
+  /** Unified navigation state for browser-like back/forward */
+  navigationState?: NavigationState;
 }
 
 /**

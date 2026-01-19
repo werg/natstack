@@ -12,6 +12,8 @@ export type {
   AppChildSpec,
   WorkerChildSpec,
   BrowserChildSpec,
+  NavigationEntry,
+  NavigationState,
 } from "../shared/ipc/types.js";
 import type { RuntimeType } from "../shared/ipc/types.js";
 

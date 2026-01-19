@@ -13,7 +13,7 @@ import type Database from "better-sqlite3";
  * Current schema version.
  * Increment when adding migrations.
  */
-export const PANEL_SCHEMA_VERSION = 1;
+export const PANEL_SCHEMA_VERSION = 2;
 
 /**
  * Panel types stored in the database.
@@ -44,7 +44,7 @@ export interface DbPanelRow {
   id: string;
   type: DbPanelType;
   title: string;
-  session_id: string;
+  context_id: string;
   workspace_id: string;
   parent_id: string | null;
   position: number;
@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS panels (
     id TEXT PRIMARY KEY,
     type TEXT NOT NULL CHECK (type IN ('app', 'worker', 'browser', 'shell')),
     title TEXT NOT NULL,
-    session_id TEXT NOT NULL,
+    context_id TEXT NOT NULL,
     workspace_id TEXT NOT NULL,
 
     -- Tree structure
@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS panels (
 
 CREATE INDEX IF NOT EXISTS idx_panels_parent ON panels(parent_id);
 CREATE INDEX IF NOT EXISTS idx_panels_workspace ON panels(workspace_id);
-CREATE INDEX IF NOT EXISTS idx_panels_session ON panels(session_id);
+CREATE INDEX IF NOT EXISTS idx_panels_context ON panels(context_id);
 
 -- Audit log for panel events (optional)
 CREATE TABLE IF NOT EXISTS panel_events (

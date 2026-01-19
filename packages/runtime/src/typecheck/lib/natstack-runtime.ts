@@ -20,7 +20,7 @@ declare module "@natstack/runtime" {
   export const id: string;
 
   /** Storage partition identifier (determines OPFS/SQLite isolation) */
-  export const sessionId: string;
+  export const contextId: string;
 
   /** Parent panel ID, null if this is the root shell */
   export const parentId: string | null;
@@ -115,7 +115,7 @@ ${FS_INTERFACES}
     onEvent(event: string, listener: (payload: unknown) => void): () => void;
     onEvents(listeners: Partial<{ [K in keyof E]: (payload: E[K]) => void }>): () => void;
     getCdpEndpoint(): Promise<string>;
-    // Browser-only methods
+    // Navigation methods (navigate/reload/stop are browser-only)
     navigate(url: string): Promise<void>;
     goBack(): Promise<void>;
     goForward(): Promise<void>;
@@ -169,8 +169,8 @@ ${FS_INTERFACES}
     unsafe?: boolean | string;
     sourcemap?: boolean;
     eventSchemas?: EventSchemaMap;
-    sessionId?: string;
-    newSession?: boolean;
+    contextId?: string;
+    newContext?: boolean;
     ephemeral?: boolean;
   }
 
@@ -210,7 +210,7 @@ ${FS_INTERFACES}
   interface EndpointInfo {
     panelId: string;
     partition: string;
-    sessionId: string;
+    contextId: string;
   }
 
   /** Set the panel title */
@@ -285,24 +285,24 @@ ${FS_INTERFACES}
   export { z } from "zod";
 
   // ============================================================================
-  // Session Utilities
+  // Context Utilities
   // ============================================================================
 
-  type SessionMode = "safe" | "unsafe";
-  type SessionType = "auto" | "named";
+  type ContextMode = "safe" | "unsafe";
+  type ContextType = "auto" | "named";
 
-  interface ParsedSessionId {
-    mode: SessionMode;
-    type: SessionType;
+  interface ParsedContextId {
+    mode: ContextMode;
+    type: ContextType;
     identifier: string;
   }
 
-  export function parseSessionId(sessionId: string): ParsedSessionId | null;
-  export function isValidSessionId(sessionId: string): boolean;
-  export function isSafeSession(sessionId: string): boolean;
-  export function isUnsafeSession(sessionId: string): boolean;
-  export function isAutoSession(sessionId: string): boolean;
-  export function isNamedSession(sessionId: string): boolean;
+  export function parseContextId(contextId: string): ParsedContextId | null;
+  export function isValidContextId(contextId: string): boolean;
+  export function isSafeContext(contextId: string): boolean;
+  export function isUnsafeContext(contextId: string): boolean;
+  export function isAutoContext(contextId: string): boolean;
+  export function isNamedContext(contextId: string): boolean;
 
   // ============================================================================
   // Form Schema Utilities
@@ -395,17 +395,28 @@ ${FS_INTERFACES}
   ): Promise<ChildHandle>;
 
   // ============================================================================
-  // Child Link Builder
+  // Navigation Link Builders
   // ============================================================================
 
-  interface BuildChildLinkOptions {
+  type NsAction = "navigate" | "child";
+  type AboutPage = "about" | "help" | "keyboard-shortcuts" | "model-provider-config";
+
+  interface BuildNsLinkOptions {
+    action?: NsAction;
     gitRef?: string;
-    sessionId?: string;
-    repoArgs?: Record<string, RepoArgSpec>;
+    context?: string;
+    repoArgs?: Record<string, RepoArgSpec | string | { repo: string; ref: string }>;
+    ephemeral?: boolean;
   }
 
-  /** Build natstack-child:// URLs */
-  export function buildChildLink(source: string, options?: BuildChildLinkOptions): string;
+  /** Build ns:// URLs for panel navigation */
+  export function buildNsLink(source: string, options?: BuildNsLinkOptions): string;
+
+  /** Build ns-about:// URLs for shell pages */
+  export function buildAboutLink(page: AboutPage): string;
+
+  /** Build ns-focus:// URLs for focusing panels */
+  export function buildFocusLink(panelId: string): string;
 
   // ============================================================================
   // RPC Namespace Types

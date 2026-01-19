@@ -84,7 +84,7 @@ Every panel requires a `package.json` with a `natstack` field:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `type` | `"app"` \| `"worker"` | **Required** | What kind of child this manifest creates (used by `createChild` and `natstack-child://` links) |
+| `type` | `"app"` \| `"worker"` | **Required** | What kind of child this manifest creates (used by `createChild` and `ns://` links) |
 | `title` | string | **Required** | Display name shown in panel UI |
 | `entry` | string | `index.tsx` | Entry point file |
 | `runtime` | `"panel"` \| `"worker"` | `"panel"` | **Deprecated** legacy field (use `type` instead) |
@@ -195,19 +195,20 @@ NatStack supports both programmatic child creation and link-based child creation
 - Use `createChild("panels/…", options?)` to create an app/worker child (type comes from the target manifest).
 - Use `createBrowserChild("https://…")` to create a browser child.
 
-### Link-based (`natstack-child:///…`)
+### Link-based (`ns:///…`)
 
-You can create children by navigating/clicking `natstack-child:///…` URLs:
+You can create children by navigating/clicking `ns:///…` URLs with `action=child`:
 
 ```
-natstack-child:///panels/editor
-natstack-child:///panels/editor#HEAD
-natstack-child:///panels/editor#master
+ns:///panels/editor?action=child
+ns:///panels/editor?action=child&gitRef=HEAD
+ns:///panels/editor?action=child&gitRef=master
 ```
 
 - The path is the workspace-relative source (e.g. `panels/editor` or `workers/compute`).
-- The optional `#fragment` is treated as a git ref (`gitRef`) for provisioning.
-- Use `buildChildLink(source, gitRef?)` from `@natstack/runtime` to generate these URLs safely.
+- Use `action=child` to create a new child panel (default behavior for links is in-place navigation).
+- Use `gitRef=…` parameter for provisioning a specific git ref (branch/tag/commit).
+- Use `buildNsLink(source, options?)` from `@natstack/runtime` to generate these URLs safely.
 
 ### Internal protocol (`natstack-panel://`)
 
@@ -507,11 +508,11 @@ export default function FileManager() {
 
 ### Storage Isolation
 
-Each panel has its own OPFS partition based on its session:
+Each panel has its own OPFS partition based on its context:
 
-- **Auto sessions**: By default, panels derive session from their tree path (deterministic, resumable)
-- **Shared sessions**: Use `sessionId` option in `createChild` to share storage across panels
-- **Isolated sessions**: Use `newSession: true` in `createChild` for fresh, isolated storage
+- **Auto contexts**: By default, panels derive context from their tree path (deterministic, resumable)
+- **Shared contexts**: Use `contextId` option in `createChild` to share storage across panels
+- **Isolated contexts**: Use `newContext: true` in `createChild` for fresh, isolated storage
 
 ---
 
@@ -742,7 +743,7 @@ See the example panels:
 await createChild("panels/editor", {
   name?: string;
   env?: Record<string, string>;
-  gitRef?: string; // encoded in natstack-child URLs via #fragment
+  gitRef?: string; // encoded in ns:// URLs via ?gitRef= parameter
   repoArgs?: Record<string, RepoArgSpec>;
   sourcemap?: boolean; // app only
   unsafe?: boolean | string; // worker only
@@ -752,7 +753,7 @@ await createChild("panels/editor", {
 await createBrowserChild("https://example.com");
 
 // Link helper for <a href="...">
-buildChildLink("panels/editor", "HEAD"); // -> natstack-child:///panels/editor#HEAD
+buildNsLink("panels/editor", { action: "child", gitRef: "HEAD" }); // -> ns:///panels/editor?action=child&gitRef=HEAD
 ```
 
 ### Runtime API (`@natstack/runtime`)
@@ -777,7 +778,9 @@ runtime.getParentWithContract(contract): ParentHandleFromContract | null
 // Child management
 runtime.createChild(source: string, options?): Promise<ChildHandle>
 runtime.createBrowserChild(url: string): Promise<ChildHandle>
-runtime.buildChildLink(source: string, gitRef?): string
+runtime.buildNsLink(source: string, options?): string
+runtime.buildAboutLink(page: AboutPage): string
+runtime.buildFocusLink(panelId: string): string
 runtime.onChildCreationError(cb: ({ url: string; error: string }) => void): () => void
 runtime.createChildWithContract(contract, options?): Promise<ChildHandleFromContract>
 runtime.children: ReadonlyMap<string, ChildHandle>

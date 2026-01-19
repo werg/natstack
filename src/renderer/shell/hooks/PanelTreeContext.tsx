@@ -43,7 +43,7 @@ export interface FullPanel {
   id: string;
   type: "app" | "worker" | "browser" | "shell";
   title: string;
-  sessionId: string;
+  contextId: string;
   parentId: string | null;
   position: number;
   selectedChildId: string | null;
@@ -355,7 +355,7 @@ function panelToFull(panel: Panel, parentId: string | null, position: number): F
     id: panel.id,
     type: panel.type,
     title: panel.title,
-    sessionId: panel.sessionId,
+    contextId: panel.contextId,
     parentId,
     position,
     selectedChildId: panel.selectedChildId,

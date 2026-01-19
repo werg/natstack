@@ -19,7 +19,7 @@ export interface RuntimeDeps {
   selfId: string;
   createTransport: () => RpcTransport;
   id: string;
-  sessionId: string;
+  contextId: string;
   parentId: string | null;
   initialTheme: ThemeAppearance;
   fs: RuntimeFs;
@@ -54,6 +54,17 @@ export function createRuntime(deps: RuntimeDeps) {
 
     async closeChild(childId: string): Promise<void> {
       await callMain<void>("bridge.closeChild", childId);
+    },
+
+    // Unified history navigation methods
+    async goBack(childId: string): Promise<void> {
+      await callMain<void>("bridge.goBack", childId);
+    },
+    async goForward(childId: string): Promise<void> {
+      await callMain<void>("bridge.goForward", childId);
+    },
+    async navigatePanel(childId: string, source: string, targetType: string): Promise<void> {
+      await callMain<void>("bridge.navigatePanel", childId, source, targetType);
     },
 
     browser: {
@@ -187,8 +198,8 @@ export function createRuntime(deps: RuntimeDeps) {
 
     gitConfig: deps.gitConfig ?? null,
     pubsubConfig: deps.pubsubConfig ?? null,
-    /** Session ID for storage partition (format: {mode}_{type}_{identifier}) */
-    sessionId: deps.sessionId,
+    /** Context ID for storage partition (format: {mode}_{type}_{identifier}) */
+    contextId: deps.contextId,
     /** Promise that resolves when bootstrap completes. Resolves to null if no bootstrap needed. */
     bootstrapPromise: deps.bootstrapPromise ?? Promise.resolve(null),
   };

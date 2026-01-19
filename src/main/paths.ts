@@ -158,21 +158,21 @@ function escapeIdForPath(id: string): string {
 }
 
 /**
- * Get the scoped filesystem root directory for an unsafe panel or worker session.
- * Creates a directory at: <central-config>/session-scopes/<workspace-id>/<escaped-session-id>/
+ * Get the scoped filesystem root directory for an unsafe panel or worker context.
+ * Creates a directory at: <central-config>/context-scopes/<workspace-id>/<escaped-context-id>/
  *
- * This provides each session with its own isolated filesystem sandbox when unsafe=true.
- * Panels/workers sharing a session also share the same filesystem scope.
+ * This provides each context with its own isolated filesystem sandbox when unsafe=true.
+ * Panels/workers sharing a context also share the same filesystem scope.
  * Panels or workers with unsafe="/" will use "/" as their scope path (full system access).
  *
  * @param workspaceId - The workspace ID from workspace config
- * @param sessionId - The session ID (format: {mode}_{type}_{identifier})
+ * @param contextId - The context ID (format: {mode}_{type}_{identifier})
  * @returns Absolute path to the scope directory
  */
-export function getSessionScopePath(workspaceId: string, sessionId: string): string {
+export function getContextScopePath(workspaceId: string, contextId: string): string {
   const configDir = getCentralConfigDirectory();
-  const escapedSessionId = escapeIdForPath(sessionId);
-  const scopePath = path.join(configDir, "session-scopes", workspaceId, escapedSessionId);
+  const escapedContextId = escapeIdForPath(contextId);
+  const scopePath = path.join(configDir, "context-scopes", workspaceId, escapedContextId);
 
   // Create the directory if it doesn't exist
   fs.mkdirSync(scopePath, { recursive: true });

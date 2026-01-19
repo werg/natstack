@@ -5,6 +5,7 @@
 
 import type { CdpServer } from "../cdpServer.js";
 import type { ViewManager } from "../viewManager.js";
+import type { PanelManager } from "../panelManager.js";
 import type { CallerKind } from "../serviceDispatcher.js";
 
 export function getCdpEndpointForCaller(cdpServer: CdpServer, browserId: string, callerId: string): string {
@@ -29,6 +30,7 @@ export function getCdpEndpointForCaller(cdpServer: CdpServer, browserId: string,
 export async function handleBrowserCall(
   cdpServer: CdpServer,
   viewManager: ViewManager,
+  panelManager: PanelManager,
   callerId: string,
   callerKind: CallerKind,
   method: string,
@@ -75,14 +77,12 @@ export async function handleBrowserCall(
     }
     case "goBack": {
       assertOwner();
-      const wc = getContents();
-      if (wc.canGoBack()) wc.goBack();
+      await panelManager.goBack(browserId);
       return;
     }
     case "goForward": {
       assertOwner();
-      const wc = getContents();
-      if (wc.canGoForward()) wc.goForward();
+      await panelManager.goForward(browserId);
       return;
     }
     case "reload": {

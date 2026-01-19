@@ -6,102 +6,102 @@ This document explains how Origin Private File System (OPFS) storage isolation w
 
 OPFS (Origin Private File System) is a browser storage API that provides a private file system for web applications. In Electron, OPFS is scoped to the **session partition**, so different partitions get different storage.
 
-## Session-Based Partition Model
+## Context-Based Partition Model
 
-NatStack uses **sessions** to determine storage partitions. Each session has a unique ID that maps to an Electron partition.
+NatStack uses **contexts** to determine storage partitions. Each context has a unique ID that maps to an Electron partition.
 
-### Session ID Format
+### Context ID Format
 
-Session IDs follow the format: `{mode}_{type}_{identifier}`
+Context IDs follow the format: `{mode}_{type}_{identifier}`
 
 - **mode**: `safe` | `unsafe` - security context of the panel
-- **type**: `auto` | `named` - how the session was determined
-- **identifier**: the session key (escaped tree path or random string)
+- **type**: `auto` | `named` - how the context was determined
+- **identifier**: the context key (escaped tree path or random string)
 
 Examples:
-- `safe_auto_panels~editor` - auto-derived session for a safe panel
-- `unsafe_auto_panels~terminal` - auto-derived session for an unsafe panel
-- `safe_named_abc123` - explicitly named session
+- `safe_auto_panels~editor` - auto-derived context for a safe panel
+- `unsafe_auto_panels~terminal` - auto-derived context for an unsafe panel
+- `safe_named_abc123` - explicitly named context
 
-### Getting Session Info
+### Getting Context Info
 
 From React:
 
 ```tsx
-import { useSessionId, usePanelPartition } from "@natstack/react";
+import { useContextId, usePanelPartition } from "@natstack/react";
 
-const sessionId = useSessionId();  // e.g. "safe_auto_panels~root"
+const contextId = useContextId();  // e.g. "safe_auto_panels~root"
 const partition = usePanelPartition(); // string | null (loading)
 ```
 
 From plain runtime:
 
 ```ts
-import { getInfo, sessionId } from "@natstack/runtime";
+import { getInfo, contextId } from "@natstack/runtime";
 
-console.log(sessionId);  // e.g. "safe_auto_panels~root"
+console.log(contextId);  // e.g. "safe_auto_panels~root"
 const { partition } = await getInfo();
 ```
 
-## Default Behavior (Auto Sessions)
+## Default Behavior (Auto Contexts)
 
-By default, panels derive their session from their full panel ID (tree path). **Named children** are deterministic and resumable - reopening the same panel tree gives you the same storage.
+By default, panels derive their context from their full panel ID (tree path). **Named children** are deterministic and resumable - reopening the same panel tree gives you the same storage.
 
-**Important**: Unnamed children include a random nonce in their panel ID, making their sessions non-resumable. Use `name` for resumable storage.
+**Important**: Unnamed children include a random nonce in their panel ID, making their contexts non-resumable. Use `name` for resumable storage.
 
 ```ts
 import { createChild } from "@natstack/runtime";
 
-// Named child - deterministic, resumable session: safe_auto_panels~root~myeditor
+// Named child - deterministic, resumable context: safe_auto_panels~root~myeditor
 await createChild("panels/editor", { name: "myeditor" });
 
-// Unnamed child - random nonce in ID, NOT resumable (new session each time)
+// Unnamed child - random nonce in ID, NOT resumable (new context each time)
 await createChild("panels/editor");
 ```
 
-## Shared Sessions
+## Shared Contexts
 
-To share storage between multiple panels, use explicit `sessionId`:
+To share storage between multiple panels, use explicit `contextId`:
 
 ```ts
-// Both panels share the same session and OPFS storage
-await createChild("panels/editor", { sessionId: "safe_named_shared-workspace" });
-await createChild("panels/preview", { sessionId: "safe_named_shared-workspace" });
+// Both panels share the same context and OPFS storage
+await createChild("panels/editor", { contextId: "safe_named_shared-workspace" });
+await createChild("panels/preview", { contextId: "safe_named_shared-workspace" });
 ```
 
-**Important**: Session mode must match the panel's security context. Safe panels cannot use `unsafe_*` sessions.
+**Important**: Context mode must match the panel's security context. Safe panels cannot use `unsafe_*` contexts.
 
-## Isolated Sessions
+## Isolated Contexts
 
 For panels that need fresh, isolated storage each time:
 
 ```ts
-// Generates a unique session ID (e.g. safe_named_1a2b3c-abc123)
-await createChild("panels/scratch", { newSession: true });
+// Generates a unique context ID (e.g. safe_named_1a2b3c-abc123)
+await createChild("panels/scratch", { newContext: true });
 ```
 
-## Session Inheritance via URLs
+## Context Inheritance via URLs
 
-Sessions can be passed through `natstack-child://` URLs:
+Contexts can be passed through `ns://` URLs:
 
 ```ts
-import { buildChildLink } from "@natstack/runtime";
+import { buildNsLink } from "@natstack/runtime";
 
-// Create a link that shares the current session
-const link = buildChildLink("panels/editor", { sessionId: "safe_named_shared" });
-// Result: natstack-child:///panels/editor?session=safe_named_shared
+// Create a link that shares the current context
+const link = buildNsLink("panels/editor", { context: "safe_named_shared", action: "child" });
+// Result: ns:///panels/editor?action=child&context=safe_named_shared
 ```
 
 ## Implementation Notes
 
-- App panels are created with `partition: persist:${sessionId}` in `src/main/panelManager.ts`
-- Unsafe panels share filesystem scope with their session via `session-scopes/` directory
+- App panels are created with `partition: persist:${contextId}` in `src/main/panelManager.ts`
+- Unsafe panels share filesystem scope with their context via `context-scopes/` directory
 - Browser panels do not use isolated partitions (they use the default session so cookies/auth can work like a normal browser)
 
 ## Security Considerations
 
-- Each session partition is isolated at the Chromium level
-- Session mode (`safe`/`unsafe`) is encoded in the ID and validated
-- Safe panels cannot use unsafe sessions (prevents privilege escalation)
+- Each context partition is isolated at the Chromium level
+- Context mode (`safe`/`unsafe`) is encoded in the ID and validated
+- Safe panels cannot use unsafe contexts (prevents privilege escalation)
 - OPFS is origin-private and partition-private
 - Context isolation and sandboxing are enabled for app panels

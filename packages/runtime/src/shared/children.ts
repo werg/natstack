@@ -26,6 +26,12 @@ export function createChildManager(options: {
     ): Promise<ChildCreationResult>;
     createBrowserChild(url: string): Promise<ChildCreationResult>;
     closeChild(childId: string): Promise<void>;
+    /** Unified history: go back in panel's navigation history */
+    goBack(childId: string): Promise<void>;
+    /** Unified history: go forward in panel's navigation history */
+    goForward(childId: string): Promise<void>;
+    /** Unified history: navigate panel to a new source */
+    navigatePanel(childId: string, source: string, targetType: string): Promise<void>;
     browser: {
       getCdpEndpoint(browserId: string): Promise<string>;
       navigate(browserId: string, url: string): Promise<void>;

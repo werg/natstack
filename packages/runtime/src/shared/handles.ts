@@ -26,13 +26,22 @@ function createCallProxy<T extends Rpc.ExposedMethods>(
 export interface ChildHandleBridge {
   browser: {
     getCdpEndpoint(browserId: string): Promise<string>;
+    /** Browser-specific: navigate the browser webContents to a URL */
     navigate(browserId: string, url: string): Promise<void>;
+    /** Browser-specific: use browser webContents back navigation */
     goBack(browserId: string): Promise<void>;
+    /** Browser-specific: use browser webContents forward navigation */
     goForward(browserId: string): Promise<void>;
     reload(browserId: string): Promise<void>;
     stop(browserId: string): Promise<void>;
   };
   closeChild(childId: string): Promise<void>;
+  /** Unified history: go back in panel's navigation history */
+  goBack(childId: string): Promise<void>;
+  /** Unified history: go forward in panel's navigation history */
+  goForward(childId: string): Promise<void>;
+  /** Unified history: navigate panel to a new source */
+  navigatePanel(childId: string, source: string, targetType: string): Promise<void>;
 }
 
 export function createChildHandle<
@@ -116,12 +125,12 @@ export function createChildHandle<
       await bridge.browser.navigate(id, url);
     },
     async goBack() {
-      if (type !== "browser") throw new Error("goBack() is only available for browser children");
-      await bridge.browser.goBack(id);
+      // Use unified history navigation for all panel types
+      await bridge.goBack(id);
     },
     async goForward() {
-      if (type !== "browser") throw new Error("goForward() is only available for browser children");
-      await bridge.browser.goForward(id);
+      // Use unified history navigation for all panel types
+      await bridge.goForward(id);
     },
     async reload() {
       if (type !== "browser") throw new Error("reload() is only available for browser children");

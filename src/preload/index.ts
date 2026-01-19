@@ -129,5 +129,5 @@ declare global {
 // Set globals directly (shell uses contextIsolation: false)
 globalThis.__natstackTransport = shellTransport;
 globalThis.__natstackId = "shell";
-globalThis.__natstackSessionId = "shell-session";
+globalThis.__natstackContextId = "shell-context";
 globalThis.__natstackKind = "shell";
