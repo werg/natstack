@@ -1,9 +1,25 @@
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
+import { fileURLToPath } from "url";
 import { app } from "electron";
 import type { Workspace } from "./workspace/types.js";
 import { isDev } from "./utils.js";
+
+// Derive __dirname in a way that works in both CJS (bundler-injected) and ESM contexts
+// In CJS builds, esbuild injects __dirname; in ESM, we derive it from import.meta.url
+declare const __dirname: string | undefined;
+const __dirnameResolved: string = (() => {
+  // Check for bundler-injected __dirname first (CJS context)
+  if (typeof __dirname === "string" && __dirname) {
+    return __dirname;
+  }
+  // ESM context - derive from import.meta.url
+  if (import.meta.url) {
+    return path.dirname(fileURLToPath(import.meta.url));
+  }
+  throw new Error("Cannot determine __dirname: neither __dirname nor import.meta.url available");
+})();
 
 /**
  * Active workspace, if one is set.
@@ -173,20 +189,30 @@ export function getSessionScopePath(workspaceId: string, sessionId: string): str
  */
 export function getAppRoot(): string {
   if (isDev()) {
-    // Development: __dirname is dist/main, walk up to monorepo root
-    return path.resolve(__dirname, "..", "..");
+    // Development: __dirnameResolved is dist/main, walk up to monorepo root
+    return path.resolve(__dirnameResolved, "..", "..");
   }
   // Production: use Electron's app path (asar root or extracted resources)
   return app.getAppPath();
 }
 
 /**
+ * Cached packages directory result.
+ * undefined = not computed yet, null = doesn't exist, string = path
+ */
+let _packagesDirCache: string | null | undefined;
+
+/**
  * Get the NatStack packages directory for @natstack/* types.
  * Returns null if packages directory doesn't exist (e.g., external workspace).
+ * Result is cached since packages directory existence won't change at runtime.
  */
 export function getPackagesDir(): string | null {
-  const packagesPath = path.join(getAppRoot(), "packages");
-  return fs.existsSync(packagesPath) ? packagesPath : null;
+  if (_packagesDirCache === undefined) {
+    const packagesPath = path.join(getAppRoot(), "packages");
+    _packagesDirCache = fs.existsSync(packagesPath) ? packagesPath : null;
+  }
+  return _packagesDirCache;
 }
 
 /**

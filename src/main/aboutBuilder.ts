@@ -90,6 +90,15 @@ export class AboutBuilder {
 
     const entryPath = path.join(pageDir, entryFile);
 
+    // Fail fast if packages directory is missing - about pages require @natstack/* packages
+    const packagesDir = getPackagesDir();
+    if (!packagesDir) {
+      throw new Error(
+        "Cannot build about pages: packages/ directory not found. " +
+          "About pages require @natstack/* packages to be available."
+      );
+    }
+
     try {
       // Use writable temp dir (not asar-embedded pageDir)
       const outdir = path.join(getCentralConfigDirectory(), "about-build-cache", page);
@@ -117,7 +126,7 @@ export class AboutBuilder {
         keepNames: true,
         format: "cjs", // CJS for nodeIntegration
         absWorkingDir: pageDir,
-        nodePaths: [getAppNodeModules(), getPackagesDir()].filter((p): p is string => p !== null),
+        nodePaths: [getAppNodeModules(), packagesDir],
         loader: {
           ".png": "file",
           ".jpg": "file",
