@@ -218,6 +218,7 @@ interface AsyncTrackingBannerOptions {
 export function generateNodeCompatibilityPatch(): string {
   return `
 // === Node.js Compatibility Patch ===
+
 // Patch events.setMaxListeners to accept browser AbortSignal
 // (Node.js events module doesn't recognize browser's AbortSignal as EventTarget)
 (function() {
@@ -1367,8 +1368,10 @@ import ${JSON.stringify(relativeUserEntry)};
       }
 
       // For unsafe panels, include Node.js compatibility patch to handle hybrid browser/Node.js environment
+      // Also set up import.meta.url shim variable that define will reference
+      const importMetaUrlShim = 'var __import_meta_url = require("url").pathToFileURL(__filename).href;';
       const bannerJs = unsafe
-        ? [generateNodeCompatibilityPatch(), generateAsyncTrackingBanner(), generateModuleMapBanner()].join("\n")
+        ? [importMetaUrlShim, generateNodeCompatibilityPatch(), generateAsyncTrackingBanner(), generateModuleMapBanner()].join("\n")
         : [generateAsyncTrackingBanner(), generateModuleMapBanner()].join("\n");
 
       // Helper to create consistent esbuild configuration
@@ -1397,6 +1400,12 @@ import ${JSON.stringify(relativeUserEntry)};
         // For CJS (unsafe panels), dynamic import() must be transformed to require()
         // because WebContentsView doesn't have an ESM loader to resolve bare specifiers.
         supported: unsafe ? { "dynamic-import": false } : undefined,
+        // For CJS bundles, provide import.meta.url shim since CJS doesn't have import.meta
+        // This allows ES modules that use import.meta.url to work when bundled
+        // The actual value is computed in the banner and stored in __import_meta_url
+        define: unsafe
+          ? { "import.meta.url": "__import_meta_url" }
+          : undefined,
         // Use a build-owned tsconfig. Only allowlisted user compilerOptions are merged.
         tsconfig: this.writeBuildTsconfig(workspace.buildDir, sourcePath, "panel", {
           jsx: "react-jsx",
@@ -2063,8 +2072,10 @@ import ${JSON.stringify(relativeUserEntry)};
       }
 
       // Generate banners - include Node.js compatibility patch for unsafe workers
+      // For CJS bundles, also set up import.meta.url shim variable that define will reference
+      const importMetaUrlShim = 'var __import_meta_url = require("url").pathToFileURL(__filename).href;';
       const bannerJs = options?.unsafe
-        ? [generateNodeCompatibilityPatch(), generateAsyncTrackingBanner(), generateModuleMapBanner()].join("\n")
+        ? [importMetaUrlShim, generateNodeCompatibilityPatch(), generateAsyncTrackingBanner(), generateModuleMapBanner()].join("\n")
         : [generateAsyncTrackingBanner(), generateModuleMapBanner()].join("\n");
 
       // Build configuration
@@ -2097,6 +2108,15 @@ import ${JSON.stringify(relativeUserEntry)};
         // because WebContentsView doesn't have an ESM loader to resolve bare specifiers.
         // Setting 'dynamic-import': false tells esbuild to transform import() to require().
         supported: options?.unsafe ? { "dynamic-import": false } : undefined,
+        // For CJS bundles, provide import.meta.url shim since CJS doesn't have import.meta
+        // This allows ES modules that use import.meta.url to work when bundled.
+        // The actual value is computed in the banner and stored in __import_meta_url.
+        // Note: For @openai/codex-sdk, this provides a valid URL (though not the original path).
+        // The codex-responder uses codexPathOverride to specify the codex binary location,
+        // so the SDK's findCodexPath() (which uses import.meta.url) isn't actually called.
+        define: options?.unsafe
+          ? { "import.meta.url": "__import_meta_url" }
+          : undefined,
         banner: {
           js: bannerJs,
         },

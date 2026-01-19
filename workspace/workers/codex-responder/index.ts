@@ -31,6 +31,8 @@ import {
   getCanonicalToolName,
   createThinkingTracker,
   createTypingTracker,
+  createActionTracker,
+  getDetailedActionDescription,
   CONTENT_TYPE_TYPING,
   // Image processing utilities
   buildOpenAIContents,
@@ -566,6 +568,9 @@ async function handleUserMessage(
   // Defined before try block so cleanup can be called in catch
   const thinking = createThinkingTracker({ client, log });
 
+  // Create action tracker for showing tool usage to users
+  const action = createActionTracker({ client, log, replyTo: incoming.id });
+
   // Convert tool definitions for MCP server
   // In restricted mode, use canonical names (Read, Write, Edit, etc.) for LLM familiarity
   const mcpTools: ToolDefinition[] = toolDefs.map((t) => {
@@ -587,10 +592,41 @@ async function handleUserMessage(
   let mcpServer: McpHttpServer | null = null;
   let codexHome: string | null = null;
 
+  // Create a map from originalName -> displayName for action tracking
+  const originalToDisplayName = new Map<string, string>();
+  for (const tool of mcpTools) {
+    if (tool.originalName) {
+      originalToDisplayName.set(tool.originalName, tool.name);
+    }
+  }
+
+  // Wrap executeTool with action tracking
+  const executeToolWithActions = async (name: string, args: unknown): Promise<unknown> => {
+    const toolUseId = randomUUID();
+    // Get display name for better action descriptions (use canonical name if available)
+    const displayName = originalToDisplayName.get(name) ?? name;
+    const argsRecord = args && typeof args === "object" ? args as Record<string, unknown> : {};
+
+    await action.startAction({
+      type: displayName,
+      description: getDetailedActionDescription(displayName, argsRecord),
+      toolUseId,
+    });
+
+    try {
+      const result = await executeTool(name, args);
+      await action.completeAction();
+      return result;
+    } catch (err) {
+      await action.completeAction();
+      throw err;
+    }
+  };
+
   try {
     // Start MCP HTTP server if we have tools
     if (mcpTools.length > 0) {
-      mcpServer = await createMcpHttpServer(mcpTools, executeTool);
+      mcpServer = await createMcpHttpServer(mcpTools, executeToolWithActions);
       const mcpServerUrl = `http://127.0.0.1:${mcpServer.port}/mcp`;
       codexHome = createCodexConfig(mcpServerUrl);
     }
@@ -847,9 +883,10 @@ async function handleUserMessage(
       }
     }
   } catch (err) {
-    // Cleanup any pending thinking or typing indicators to avoid orphaned messages
+    // Cleanup any pending thinking, typing, or action indicators to avoid orphaned messages
     await thinking.cleanup();
     await typing.cleanup();
+    await action.cleanup();
 
     // Pause tool returns successfully, so we shouldn't see pause-related errors
     // Any error here is a real error that should be reported

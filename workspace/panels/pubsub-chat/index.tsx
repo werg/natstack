@@ -89,6 +89,21 @@ function getEventAttachments(event: IncomingEvent): Attachment[] | undefined {
   return (event as { attachments?: Attachment[] }).attachments;
 }
 
+/**
+ * Look up a method description from a provider's method advertisements.
+ */
+function getMethodDescription(
+  providerId: string | undefined,
+  methodName: string,
+  participants: Record<string, Participant<ChatParticipantMetadata>>
+): string | undefined {
+  if (!providerId) return undefined;
+  const provider = participants[providerId];
+  if (!provider?.metadata?.methods) return undefined;
+  const method = provider.metadata.methods.find((m) => m.name === methodName);
+  return method?.description;
+}
+
 function dispatchAgenticEvent(
   event: IncomingEvent,
   handlers: {
@@ -97,7 +112,8 @@ function dispatchAgenticEvent(
     addMethodHistoryEntry: (entry: MethodHistoryEntry) => void;
     handleMethodResult: (result: { callId: string; content?: unknown; complete: boolean; isError: boolean; progress?: number }) => void;
   },
-  selfId: string | null
+  selfId: string | null,
+  participants: Record<string, Participant<ChatParticipantMetadata>>
 ): void {
   const isSelf = !!selfId && event.senderId === selfId;
   const isPanelSender = event.senderMetadata?.type === "panel" || isSelf;
@@ -165,6 +181,7 @@ function dispatchAgenticEvent(
       handlers.addMethodHistoryEntry({
         callId: event.callId,
         methodName: event.methodName,
+        description: getMethodDescription(event.providerId, event.methodName, participants),
         args: event.args,
         status: "pending",
         startedAt: event.ts ?? Date.now(),
@@ -217,6 +234,8 @@ export default function AgenticChatDemo() {
   const workspaceRoot = process.env["NATSTACK_WORKSPACE"]?.trim();
   const [phase, setPhase] = useState<AppPhase>("setup");
   const selfIdRef = useRef<string | null>(null);
+  // Ref to access current participants in memoized callbacks
+  const participantsRef = useRef<Record<string, Participant<ChatParticipantMetadata>>>({});
   // Refs for tool role handlers - set after toolRole hook is created
   const toolRoleHandlerRef = useRef<((event: IncomingToolRoleRequestEvent) => void) | null>(null);
   const toolRoleResponseHandlerRef = useRef<((event: IncomingToolRoleResponseEvent) => void) | null>(null);
@@ -236,6 +255,9 @@ export default function AgenticChatDemo() {
   const allParticipants = useMemo(() => {
     return { ...historicalParticipants, ...participants };
   }, [historicalParticipants, participants]);
+
+  // Keep participantsRef up to date for memoized callbacks
+  participantsRef.current = allParticipants;
 
   // Use feedback manager hook for UI feedback lifecycle
   const {
@@ -292,7 +314,8 @@ export default function AgenticChatDemo() {
             addMethodHistoryEntry,
             handleMethodResult,
           },
-          selfId
+          selfId,
+          participantsRef.current
         );
         // Handle tool role events
         if (event.type === "tool-role-request") {
@@ -429,6 +452,7 @@ export default function AgenticChatDemo() {
       const entry: MethodHistoryEntry = {
         callId,
         methodName: "feedback_form",
+        description: "Display a form to collect user input",
         args,
         status: "pending",
         startedAt: Date.now(),
@@ -471,6 +495,7 @@ export default function AgenticChatDemo() {
       const entry: MethodHistoryEntry = {
         callId,
         methodName: "feedback_custom",
+        description: "Display a custom React component for user interaction",
         args,
         status: "pending",
         startedAt: Date.now(),
@@ -546,6 +571,7 @@ Use standard ESM imports - they're transformed to require() automatically:
         const entry: MethodHistoryEntry = {
           callId: ctx.callId,
           methodName: "eval",
+          description: "Execute TypeScript/JavaScript code with console streaming",
           args,
           status: "pending",
           startedAt: Date.now(),

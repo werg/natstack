@@ -26,6 +26,7 @@ import {
   createThinkingTracker,
   createActionTracker,
   createTypingTracker,
+  getDetailedActionDescription,
   CONTENT_TYPE_TYPING,
   // Image processing utilities
   filterImageAttachments,
@@ -833,6 +834,12 @@ async function handleUserMessage(
     let checkpointCommitted = false;
     let sawStreamedText = false;
 
+    // Track tool input JSON for accumulating input_json_delta events
+    const toolInputAccumulators = new Map<string, {
+      toolName: string;
+      inputChunks: string[];
+    }>();
+
     for await (const message of queryInstance) {
       // Check if pause was requested and break early
       if (interruptHandler.isPaused()) {
@@ -844,8 +851,8 @@ async function handleUserMessage(
         // Handle streaming message events (token-by-token with includePartialMessages: true)
         const streamEvent = message.event as {
           type: string;
-          delta?: { type: string; text?: string; thinking?: string };
-          content_block?: { type?: string };
+          delta?: { type: string; text?: string; thinking?: string; partial_json?: string };
+          content_block?: { type?: string; id?: string; name?: string };
           index?: number;
         };
 
@@ -893,7 +900,13 @@ async function handleUserMessage(
               name: string;
             };
 
-            // Start action message for this tool use
+            // Initialize input accumulator for this tool use
+            toolInputAccumulators.set(toolBlock.id, {
+              toolName: toolBlock.name,
+              inputChunks: [],
+            });
+
+            // Start action message for this tool use (with generic description initially)
             await action.startAction({
               type: toolBlock.name,
               description: getActionDescription(toolBlock.name),
@@ -938,14 +951,47 @@ async function handleUserMessage(
           }
         }
 
+        // Handle tool input delta - accumulate partial JSON for tool inputs
+        if (streamEvent.type === "content_block_delta" && streamEvent.delta?.type === "input_json_delta") {
+          if (streamEvent.delta.partial_json && action.isActive()) {
+            const currentAction = action.state.currentAction;
+            if (currentAction?.toolUseId) {
+              const acc = toolInputAccumulators.get(currentAction.toolUseId);
+              if (acc) {
+                acc.inputChunks.push(streamEvent.delta.partial_json);
+              }
+            }
+          }
+        }
+
         // Handle content block stop
         if (streamEvent.type === "content_block_stop") {
           // Complete thinking message if it was a thinking block
           if (thinking.isThinking()) {
             await thinking.endThinking();
           }
-          // Complete action message if it was a tool_use block
+          // Update and complete action message if it was a tool_use block
           if (action.isActive()) {
+            const currentAction = action.state.currentAction;
+            if (currentAction?.toolUseId) {
+              const acc = toolInputAccumulators.get(currentAction.toolUseId);
+              if (acc && acc.inputChunks.length > 0) {
+                try {
+                  const fullInput = acc.inputChunks.join("");
+                  const parsedInput = JSON.parse(fullInput) as Record<string, unknown>;
+                  const detailedDescription = getDetailedActionDescription(acc.toolName, parsedInput);
+
+                  // Update the action with the detailed description
+                  await action.updateAction(detailedDescription);
+                } catch {
+                  // JSON parse failed, keep generic description
+                  log(`Failed to parse tool input for ${currentAction.toolUseId}`);
+                }
+              }
+              // Clean up the accumulator
+              toolInputAccumulators.delete(currentAction.toolUseId);
+            }
+
             await action.completeAction();
             // Restart typing to show "processing" while waiting for Claude's follow-up
             await typing.startTyping("processing tool result");

@@ -7,6 +7,8 @@ export type MethodCallStatus = "pending" | "success" | "error";
 export interface MethodHistoryEntry {
   callId: string;
   methodName: string;
+  /** Human-readable description of the method (from MethodAdvertisement) */
+  description?: string;
   args: unknown;
   status: MethodCallStatus;
   consoleOutput?: string;
@@ -39,6 +41,83 @@ function formatMethodMeta(entry: MethodHistoryEntry): { label: string; value: st
     items.push({ label: "handledLocally", value: entry.handledLocally ? "yes" : "no" });
   }
   return items;
+}
+
+/**
+ * Create a pretty, human-readable summary of method arguments.
+ * Shows key parameters in a concise format.
+ */
+function formatArgsSummary(args: unknown, maxLen = 60): string {
+  if (args === null || args === undefined) return "";
+  if (typeof args !== "object") return truncateStr(String(args), maxLen);
+
+  const obj = args as Record<string, unknown>;
+  const entries = Object.entries(obj);
+  if (entries.length === 0) return "";
+
+  // Priority keys to show first (common parameter names)
+  const priorityKeys = ["file_path", "path", "command", "query", "pattern", "url", "code", "content", "message", "name", "title"];
+
+  // Sort entries: priority keys first, then others
+  entries.sort((a, b) => {
+    const aIdx = priorityKeys.indexOf(a[0]);
+    const bIdx = priorityKeys.indexOf(b[0]);
+    if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
+    if (aIdx !== -1) return -1;
+    if (bIdx !== -1) return 1;
+    return 0;
+  });
+
+  const parts: string[] = [];
+  let totalLen = 0;
+
+  for (const [key, value] of entries) {
+    const formattedValue = formatArgValue(value);
+    if (!formattedValue) continue;
+
+    const part = `${key}: ${formattedValue}`;
+    if (totalLen + part.length > maxLen && parts.length > 0) {
+      parts.push("...");
+      break;
+    }
+    parts.push(part);
+    totalLen += part.length + 2; // +2 for ", "
+  }
+
+  return parts.join(", ");
+}
+
+/**
+ * Format a single argument value for display.
+ */
+function formatArgValue(value: unknown, maxLen = 30): string {
+  if (value === null) return "null";
+  if (value === undefined) return "";
+  if (typeof value === "boolean") return String(value);
+  if (typeof value === "number") return String(value);
+  if (typeof value === "string") {
+    // For file paths, show just the filename or truncated path
+    if (value.includes("/")) {
+      const parts = value.split("/");
+      const filename = parts.pop() || "";
+      if (filename.length <= maxLen) return filename;
+      return "..." + filename.slice(-(maxLen - 3));
+    }
+    return truncateStr(value, maxLen);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.length} items]`;
+  }
+  if (typeof value === "object") {
+    const keys = Object.keys(value as object);
+    return `{${keys.length} fields}`;
+  }
+  return truncateStr(String(value), maxLen);
+}
+
+function truncateStr(str: string, maxLen: number): string {
+  if (str.length <= maxLen) return str;
+  return str.slice(0, maxLen - 3) + "...";
 }
 
 // Collapsible section component
@@ -238,6 +317,8 @@ function CompactMethodPill({
   entry: MethodHistoryEntry;
   onClick: () => void;
 }) {
+  const argsSummary = useMemo(() => formatArgsSummary(entry.args, 50), [entry.args]);
+
   return (
     <Flex
       align="center"
@@ -250,6 +331,7 @@ function CompactMethodPill({
         borderRadius: "4px",
         backgroundColor: "var(--gray-a3)",
         display: "inline-flex",
+        maxWidth: "100%",
       }}
     >
       <Box
@@ -261,9 +343,23 @@ function CompactMethodPill({
           flexShrink: 0,
         }}
       />
-      <Text size="1" color="gray" style={{ fontFamily: "var(--code-font-family)" }}>
+      <Text size="1" color="gray" style={{ fontFamily: "var(--code-font-family)", flexShrink: 0 }}>
         {entry.methodName}
       </Text>
+      {argsSummary && (
+        <Text
+          size="1"
+          color="gray"
+          style={{
+            opacity: 0.7,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          ({argsSummary})
+        </Text>
+      )}
     </Flex>
   );
 }
@@ -277,6 +373,7 @@ function ExpandedMethodDetail({
   onCollapse: () => void;
 }) {
   const metaItems = useMemo(() => formatMethodMeta(entry), [entry]);
+  const argsSummary = useMemo(() => formatArgsSummary(entry.args, 80), [entry.args]);
 
   return (
     <Box
@@ -316,6 +413,29 @@ function ExpandedMethodDetail({
 
       {/* Content */}
       <Flex direction="column" gap="2" mt="2" ml="4">
+        {/* Description */}
+        {entry.description && (
+          <Text size="1" color="gray" style={{ fontStyle: "italic" }}>
+            {entry.description}
+          </Text>
+        )}
+
+        {/* Args summary - pretty display */}
+        {argsSummary && (
+          <Box
+            style={{
+              padding: "4px 8px",
+              backgroundColor: "var(--gray-a3)",
+              borderRadius: "4px",
+              borderLeft: "2px solid var(--gray-a6)",
+            }}
+          >
+            <Text size="1" style={{ fontFamily: "var(--code-font-family)" }}>
+              {argsSummary}
+            </Text>
+          </Box>
+        )}
+
         {/* Meta badges */}
         {metaItems.length > 0 && (
           <Flex gap="1" wrap="wrap">

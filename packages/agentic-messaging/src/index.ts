@@ -33,6 +33,7 @@ export {
   // Action message tracker
   CONTENT_TYPE_ACTION,
   createActionTracker,
+  getDetailedActionDescription,
   type ActionTracker,
   type ActionTrackerState,
   type ActionTrackerOptions,

@@ -381,6 +381,13 @@ export interface ActionTracker {
   isActive(): boolean;
 
   /**
+   * Update the description of the current action.
+   * This completes the old action message and starts a new one with the updated description.
+   * @param description - New description for the action
+   */
+  updateAction(description: string): Promise<void>;
+
+  /**
    * Cleanup any pending action message.
    * Call this in error handlers to ensure action messages are completed.
    * @returns true if cleanup succeeded or no cleanup was needed, false if cleanup failed
@@ -439,6 +446,33 @@ export function createActionTracker(options: ActionTrackerOptions): ActionTracke
       return state.actionMessageId !== null;
     },
 
+    async updateAction(description: string): Promise<void> {
+      if (state.actionMessageId && state.currentAction) {
+        const oldMessageId = state.actionMessageId;
+
+        // Update the action data with the new description
+        const updatedAction: ActionData = {
+          ...state.currentAction,
+          description,
+          status: "pending",
+        };
+
+        // Complete the old message
+        await client.complete(oldMessageId);
+        log(`Completed old action message for update: ${oldMessageId}`);
+
+        // Start a new message with the updated description
+        const { messageId } = await client.send(JSON.stringify(updatedAction), {
+          replyTo,
+          contentType: CONTENT_TYPE_ACTION,
+        });
+
+        state.actionMessageId = messageId;
+        state.currentAction = updatedAction;
+        log(`Updated action: ${updatedAction.type} - ${description}`);
+      }
+    },
+
     async cleanup(): Promise<boolean> {
       if (state.actionMessageId) {
         const messageId = state.actionMessageId;
@@ -456,6 +490,127 @@ export function createActionTracker(options: ActionTrackerOptions): ActionTracke
       return true;
     },
   };
+}
+
+/**
+ * Truncate a file path for display, keeping the filename visible.
+ */
+function truncatePathForAction(path: string, maxLen = 40): string {
+  if (path.length <= maxLen) return path;
+  const parts = path.split("/");
+  const filename = parts.pop() || "";
+  if (filename.length >= maxLen - 3) return "..." + filename.slice(-(maxLen - 3));
+  return "..." + path.slice(-(maxLen - 3));
+}
+
+/**
+ * Truncate a string for display.
+ */
+function truncateStrForAction(str: string, maxLen: number): string {
+  if (str.length <= maxLen) return str;
+  return str.slice(0, maxLen - 3) + "...";
+}
+
+/**
+ * Generate informative action descriptions based on tool name and input.
+ * Used by all responder workers for consistent action display.
+ *
+ * @example
+ * ```typescript
+ * getDetailedActionDescription("Read", { file_path: "/src/index.ts" })
+ * // => "Reading index.ts"
+ *
+ * getDetailedActionDescription("pubsub_panel_eval", { code: "console.log('hi')" })
+ * // => "Calling panel.eval"
+ * ```
+ */
+export function getDetailedActionDescription(
+  toolName: string,
+  input: Record<string, unknown>
+): string {
+  // Extract canonical name (remove prefixes like "pubsub_")
+  const baseName = toolName.replace(/^pubsub_/, "");
+
+  switch (baseName) {
+    case "Read":
+      return input["file_path"]
+        ? `Reading ${truncatePathForAction(input["file_path"] as string)}`
+        : "Reading file";
+
+    case "Write":
+      return input["file_path"]
+        ? `Writing to ${truncatePathForAction(input["file_path"] as string)}`
+        : "Writing file";
+
+    case "Edit":
+      return input["file_path"]
+        ? `Editing ${truncatePathForAction(input["file_path"] as string)}`
+        : "Editing file";
+
+    case "Bash":
+      return input["command"]
+        ? `Running: ${truncateStrForAction(input["command"] as string, 50)}`
+        : "Running command";
+
+    case "Glob":
+      return input["pattern"]
+        ? `Finding files: ${truncateStrForAction(input["pattern"] as string, 40)}`
+        : "Searching for files";
+
+    case "Grep": {
+      const grepPath = input["path"] ? ` in ${truncatePathForAction(input["path"] as string, 20)}` : "";
+      return input["pattern"]
+        ? `Searching for '${truncateStrForAction(input["pattern"] as string, 25)}'${grepPath}`
+        : "Searching file contents";
+    }
+
+    case "WebSearch":
+      return input["query"]
+        ? `Searching: ${truncateStrForAction(input["query"] as string, 40)}`
+        : "Searching the web";
+
+    case "WebFetch":
+      return input["url"]
+        ? `Fetching: ${truncateStrForAction(input["url"] as string, 40)}`
+        : "Fetching web content";
+
+    case "Task":
+      return input["description"]
+        ? `Task: ${truncateStrForAction(input["description"] as string, 40)}`
+        : "Delegating to subagent";
+
+    case "TodoWrite":
+      return "Updating task list";
+
+    case "AskUserQuestion": {
+      const questions = input["questions"];
+      if (questions && Array.isArray(questions) && questions.length > 0) {
+        const firstQuestion = questions[0] as { question?: string };
+        return firstQuestion.question
+          ? `Asking: ${truncateStrForAction(firstQuestion.question, 35)}`
+          : "Asking user";
+      }
+      return "Asking user";
+    }
+
+    case "NotebookEdit":
+      return input["notebook_path"]
+        ? `Editing notebook: ${truncatePathForAction(input["notebook_path"] as string)}`
+        : "Editing notebook";
+
+    case "KillShell":
+      return input["shell_id"]
+        ? `Killing shell: ${input["shell_id"]}`
+        : "Killing shell";
+
+    default:
+      // For pubsub tools, show the method name cleanly
+      if (toolName.startsWith("pubsub_")) {
+        const methodName = toolName.replace("pubsub_", "").replace(/_/g, ".");
+        return `Calling ${methodName}`;
+      }
+      return `Using ${toolName}`;
+  }
 }
 
 /**
