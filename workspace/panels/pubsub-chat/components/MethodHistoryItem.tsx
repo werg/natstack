@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { Badge, Box, Code, Flex, Text } from "@radix-ui/themes";
 import { ExpandableChevron } from "./shared/Chevron";
+import { prettifyToolName } from "@natstack/agentic-messaging";
 
 export type MethodCallStatus = "pending" | "success" | "error";
 
@@ -344,7 +345,7 @@ function CompactMethodPill({
         }}
       />
       <Text size="1" color="gray" style={{ fontFamily: "var(--code-font-family)", flexShrink: 0 }}>
-        {entry.methodName}
+        {prettifyToolName(entry.methodName)}
       </Text>
       {argsSummary && (
         <Text
@@ -404,7 +405,7 @@ function ExpandedMethodDetail({
           }}
         />
         <Text size="1" weight="medium" style={{ fontFamily: "var(--code-font-family)" }}>
-          {entry.methodName}
+          {prettifyToolName(entry.methodName)}
         </Text>
         <Badge color={METHOD_STATUS_COLOR[entry.status]} size="1" variant="soft">
           {entry.status}

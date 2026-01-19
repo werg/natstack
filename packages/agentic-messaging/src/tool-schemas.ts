@@ -356,6 +356,48 @@ export function extractMethodName(toolName: string): string {
 }
 
 /**
+ * Extract the display name from a tool name, stripping MCP/pubsub prefixes
+ * and applying canonical name mappings.
+ *
+ * Examples:
+ * - "mcp__workspace__ListDirectory" → "ListDirectory"
+ * - "mcp__proxy-uuid__Read" → "Read"
+ * - "pubsub_abc123_file_read" → "Read"
+ * - "file_read" → "Read"
+ * - "list_directory" → "ListDirectory"
+ */
+export function prettifyToolName(toolName: string): string {
+  let name = toolName;
+
+  // Strip MCP prefix: mcp__<server>__<name> → <name>
+  const mcpMatch = name.match(/^mcp__[^_]+__(.+)$/);
+  if (mcpMatch) {
+    name = mcpMatch[1]!;
+  }
+  // Strip pubsub prefix: pubsub_<providerId>_<methodName> → <methodName>
+  else if (name.startsWith("pubsub_")) {
+    name = extractMethodName(name);
+  }
+
+  // Apply canonical mapping if available
+  const canonical = CANONICAL_TOOL_MAPPINGS[name];
+  if (canonical) {
+    return canonical;
+  }
+
+  // If name is already PascalCase (canonical), return as-is
+  if (/^[A-Z][a-zA-Z]+$/.test(name)) {
+    return name;
+  }
+
+  // Convert snake_case to TitleCase as fallback
+  return name
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join("");
+}
+
+/**
  * Required methods for restricted mode (no bash access).
  * These are the minimum set of methods needed for file operations without shell.
  */
