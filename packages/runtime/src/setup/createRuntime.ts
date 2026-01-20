@@ -9,6 +9,9 @@ import {
   type EndpointInfo,
   type GitConfig,
   type PubSubConfig,
+  type WorkspaceTree,
+  type BranchInfo,
+  type CommitInfo,
   type Rpc,
 } from "../core/index.js";
 import { createParentHandle, createParentHandleFromContract } from "../shared/handles.js";
@@ -184,6 +187,10 @@ export function createRuntime(deps: RuntimeDeps) {
 
     setTitle: (title: string) => callMain<void>("bridge.setTitle", title),
     getInfo: () => callMain<EndpointInfo>("bridge.getInfo"),
+    getWorkspaceTree: () => callMain<WorkspaceTree>("bridge.getWorkspaceTree"),
+    listBranches: (repoPath: string) => callMain<BranchInfo[]>("bridge.listBranches", repoPath),
+    listCommits: (repoPath: string, ref?: string, limit?: number) =>
+      callMain<CommitInfo[]>("bridge.listCommits", repoPath, ref, limit),
 
     getTheme: () => currentTheme,
     onThemeChange: (callback: (theme: ThemeAppearance) => void) => {

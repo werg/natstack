@@ -153,11 +153,8 @@ ${FS_INTERFACES}
     E extends RpcEventMap = RpcEventMap
   >(name: string): ChildHandle<T, E> | undefined;
 
-  interface RepoArgSpec {
-    type: "string";
-    default?: string;
-    description?: string;
-  }
+  /** Repo argument specification: shorthand string or explicit { repo, ref } */
+  type RepoArgSpec = string | { repo: string; ref?: string };
 
   type EventSchemaMap = Record<string, ZodType>;
 
@@ -218,6 +215,58 @@ ${FS_INTERFACES}
 
   /** Get panel information */
   export function getInfo(): Promise<EndpointInfo>;
+
+  // ============================================================================
+  // Workspace Discovery
+  // ============================================================================
+
+  /** Schema for environment variable requirements in panel manifests */
+  interface EnvArgSchema {
+    name: string;
+    description?: string;
+    required?: boolean;
+    default?: string;
+  }
+
+  /** A node in the workspace tree */
+  interface WorkspaceNode {
+    name: string;
+    path: string;
+    isGitRepo: boolean;
+    launchable?: {
+      type: "app" | "worker";
+      title: string;
+      repoArgs?: string[];
+      envArgs?: EnvArgSchema[];
+    };
+    children: WorkspaceNode[];
+  }
+
+  /** Complete workspace tree */
+  interface WorkspaceTree {
+    children: WorkspaceNode[];
+  }
+
+  interface BranchInfo {
+    name: string;
+    current: boolean;
+    remote?: string;
+  }
+
+  interface CommitInfo {
+    oid: string;
+    message: string;
+    author: { name: string; timestamp: number };
+  }
+
+  /** Get the workspace tree of all git repos */
+  export function getWorkspaceTree(): Promise<WorkspaceTree>;
+
+  /** List branches for a repo */
+  export function listBranches(repoPath: string): Promise<BranchInfo[]>;
+
+  /** List recent commits for a repo/ref */
+  export function listCommits(repoPath: string, ref?: string, limit?: number): Promise<CommitInfo[]>;
 
   /** Get current theme */
   export function getTheme(): ThemeAppearance;
@@ -399,13 +448,16 @@ ${FS_INTERFACES}
   // ============================================================================
 
   type NsAction = "navigate" | "child";
-  type AboutPage = "about" | "help" | "keyboard-shortcuts" | "model-provider-config";
+  type AboutPage = "about" | "help" | "keyboard-shortcuts" | "model-provider-config" | "new";
 
   interface BuildNsLinkOptions {
     action?: NsAction;
     gitRef?: string;
     context?: string;
-    repoArgs?: Record<string, RepoArgSpec | string | { repo: string; ref: string }>;
+    repoArgs?: Record<string, RepoArgSpec>;
+    env?: Record<string, string>;
+    name?: string;
+    newContext?: boolean;
     ephemeral?: boolean;
   }
 

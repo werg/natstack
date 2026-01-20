@@ -5,11 +5,13 @@ import {
   ViewVerticalIcon,
   ChevronRightIcon,
   DividerVerticalIcon,
+  PlusIcon,
 } from "@radix-ui/react-icons";
 import { Box, Flex, IconButton, Text, Tooltip } from "@radix-ui/themes";
 import type { CSSProperties, MouseEvent } from "react";
 
 import { useNavigation } from "./NavigationContext";
+import { panel } from "../shell/client";
 import type {
   NavigationMode,
   LazyTitleNavigationData,
@@ -81,6 +83,22 @@ export function TitleBar({ title, onNavigateToId, onPanelAction }: TitleBarProps
               }
             >
               {navigationMode === "tree" ? <BoxIcon /> : <ViewVerticalIcon />}
+            </IconButton>
+          </Tooltip>
+
+          <Tooltip content="New panel (Cmd/Ctrl+T)">
+            <IconButton
+              variant="ghost"
+              size="1"
+              onClick={async () => {
+                const result = await panel.createShellPanel("new");
+                window.dispatchEvent(new CustomEvent("shell-panel-created", {
+                  detail: { panelId: result.id }
+                }));
+              }}
+              aria-label="New panel"
+            >
+              <PlusIcon />
             </IconButton>
           </Tooltip>
         </Flex>

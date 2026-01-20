@@ -58,6 +58,11 @@ export type {
   ContextMode,
   ContextType,
   ParsedContextId,
+  EnvArgSchema,
+  WorkspaceNode,
+  WorkspaceTree,
+  BranchInfo,
+  CommitInfo,
 } from "./core/index.js";
 
 export type { Runtime } from "./setup/createRuntime.js";
@@ -278,6 +283,16 @@ export const onChildRemoved = notInShell("onChildRemoved") as (
 
 export const setTitle = notInShell("setTitle") as (title: string) => Promise<void>;
 export const getInfo = notInShell("getInfo") as () => Promise<import("./core/index.js").EndpointInfo>;
+export const getWorkspaceTree = shellRpc
+  ? () => shellRpc.call<import("./core/index.js").WorkspaceTree>("main", "bridge.getWorkspaceTree")
+  : (notInShell("getWorkspaceTree") as () => Promise<import("./core/index.js").WorkspaceTree>);
+export const listBranches = shellRpc
+  ? (repoPath: string) => shellRpc.call<import("./core/index.js").BranchInfo[]>("main", "bridge.listBranches", repoPath)
+  : (notInShell("listBranches") as (repoPath: string) => Promise<import("./core/index.js").BranchInfo[]>);
+export const listCommits = shellRpc
+  ? (repoPath: string, ref?: string, limit?: number) =>
+      shellRpc.call<import("./core/index.js").CommitInfo[]>("main", "bridge.listCommits", repoPath, ref, limit)
+  : (notInShell("listCommits") as (repoPath: string, ref?: string, limit?: number) => Promise<import("./core/index.js").CommitInfo[]>);
 
 export const getTheme = (() => "light") as () => import("./types.js").ThemeAppearance;
 export const onThemeChange = notInShell("onThemeChange") as (

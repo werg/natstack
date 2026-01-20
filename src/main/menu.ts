@@ -23,6 +23,14 @@ export function buildCommonMenuItems(
   const forwardAccelerator = isMac ? "Cmd+]" : "Alt+Right";
   const file: MenuItemConstructorOptions[] = [
     {
+      label: "New Panel",
+      accelerator: "CmdOrCtrl+T",
+      click: () => {
+        eventService.emit("navigate-about", { page: "new" });
+      },
+    },
+    { type: "separator" },
+    {
       label: "Switch Workspace...",
       accelerator: "CmdOrCtrl+Shift+O",
       click: () => {
@@ -189,6 +197,14 @@ export function setupMenu(
     {
       label: "File",
       submenu: [
+        {
+          label: "New Panel",
+          accelerator: "CmdOrCtrl+T",
+          click: () => {
+            eventService.emit("navigate-about", { page: "new" });
+          },
+        },
+        { type: "separator" },
         {
           label: "Switch Workspace...",
           accelerator: "CmdOrCtrl+Shift+O",

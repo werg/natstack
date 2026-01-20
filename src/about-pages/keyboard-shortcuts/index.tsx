@@ -18,6 +18,7 @@ const shortcutGroups: ShortcutGroup[] = [
   {
     title: "General",
     shortcuts: [
+      { keys: ["Cmd/Ctrl", "T"], description: "New Panel" },
       { keys: ["Cmd/Ctrl", "Shift", "M"], description: "Model Provider Config" },
       { keys: ["Cmd/Ctrl", "Shift", "O"], description: "Switch Workspace" },
       { keys: ["Cmd/Ctrl", "/"], description: "Show Keyboard Shortcuts" },

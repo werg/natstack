@@ -21,6 +21,7 @@ export const VALID_ABOUT_PAGES: ShellPage[] = [
   "about",
   "keyboard-shortcuts",
   "help",
+  "new",
 ];
 
 export interface ParsedNsAboutUrl {

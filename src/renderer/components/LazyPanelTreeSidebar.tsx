@@ -13,6 +13,7 @@ import {
   CaretRightIcon,
   DrawingPinFilledIcon,
   LightningBoltIcon,
+  PlusIcon,
 } from "@radix-ui/react-icons";
 import {
   Badge,
@@ -32,7 +33,7 @@ import {
   type FlattenedPanel,
 } from "../shell/hooks/index.js";
 import type { PanelContextMenuAction } from "../../shared/ipc/types.js";
-import { menu } from "../shell/client.js";
+import { menu, panel } from "../shell/client.js";
 
 // ============================================================================
 // Style Constants
@@ -457,41 +458,76 @@ export function LazyPanelTreeSidebar({
     }
   }, [ancestorIds, collapsedIds, expandIds]);
 
+  const handleNewPanel = useCallback(async () => {
+    const result = await panel.createShellPanel("new");
+    window.dispatchEvent(new CustomEvent("shell-panel-created", {
+      detail: { panelId: result.id }
+    }));
+  }, []);
+
   if (flattenedItems.length === 0) {
     return (
-      <Flex height="100%" align="center" justify="center">
-        <Text color="gray">No panels yet</Text>
+      <Flex direction="column" height="100%">
+        <Flex style={{ flex: 1 }} align="center" justify="center">
+          <Text color="gray">No panels yet</Text>
+        </Flex>
+        <Box p="2" style={{ borderTop: "1px solid var(--gray-6)" }}>
+          <IconButton
+            variant="ghost"
+            size="1"
+            onClick={handleNewPanel}
+            aria-label="New panel"
+            style={{ width: "100%" }}
+          >
+            <PlusIcon />
+            <Text size="1" ml="1">New Panel</Text>
+          </IconButton>
+        </Box>
       </Flex>
     );
   }
 
   return (
-    <ScrollArea type="auto" scrollbars="vertical" style={{ height: "100%" }}>
-      <Flex direction="column" gap="0" p="1">
-        {flattenedItems.map((item) => (
-          <SortableTreeItem
-            key={item.id}
-            item={item}
-            isSelected={item.id === selectedId}
-            showIndicator={item.id === indicatorItemId}
-            projectedDepth={item.id === indicatorItemId ? projectedDepth : null}
-            pinnedRootId={pinnedRootId}
-            isDraggingAny={activeId !== null}
-            showIndicatorBelow={showIndicatorBelow}
-            onSelect={onSelect}
-            onToggleCollapse={toggleCollapse}
-            onPanelAction={onPanelAction}
-            onIndent={indentPanel}
-            onUnindent={unindentPanel}
+    <Flex direction="column" height="100%">
+      <ScrollArea type="auto" scrollbars="vertical" style={{ flex: 1 }}>
+        <Flex direction="column" gap="0" p="1">
+          {flattenedItems.map((item) => (
+            <SortableTreeItem
+              key={item.id}
+              item={item}
+              isSelected={item.id === selectedId}
+              showIndicator={item.id === indicatorItemId}
+              projectedDepth={item.id === indicatorItemId ? projectedDepth : null}
+              pinnedRootId={pinnedRootId}
+              isDraggingAny={activeId !== null}
+              showIndicatorBelow={showIndicatorBelow}
+              onSelect={onSelect}
+              onToggleCollapse={toggleCollapse}
+              onPanelAction={onPanelAction}
+              onIndent={indentPanel}
+              onUnindent={unindentPanel}
+            />
+          ))}
+          {/* End drop zone for dragging items to end of tree at various depths */}
+          <EndDropZone
+            isOver={overId === END_DROP_ZONE_ID && activeId !== null}
+            projectedDepth={overId === END_DROP_ZONE_ID ? projectedDepth : null}
+            isDragging={activeId !== null}
           />
-        ))}
-        {/* End drop zone for dragging items to end of tree at various depths */}
-        <EndDropZone
-          isOver={overId === END_DROP_ZONE_ID && activeId !== null}
-          projectedDepth={overId === END_DROP_ZONE_ID ? projectedDepth : null}
-          isDragging={activeId !== null}
-        />
-      </Flex>
-    </ScrollArea>
+        </Flex>
+      </ScrollArea>
+      <Box p="2" style={{ borderTop: "1px solid var(--gray-6)" }}>
+        <IconButton
+          variant="ghost"
+          size="1"
+          onClick={handleNewPanel}
+          aria-label="New panel"
+          style={{ width: "100%" }}
+        >
+          <PlusIcon />
+          <Text size="1" ml="1">New Panel</Text>
+        </IconButton>
+      </Box>
+    </Flex>
   );
 }

@@ -1,4 +1,5 @@
 import * as path from "path";
+import * as fs from "fs";
 import { randomBytes } from "crypto";
 import { nativeTheme } from "electron";
 import { PanelBuilder } from "./panelBuilder.js";
@@ -664,8 +665,8 @@ export class PanelManager {
       // ns:// - New navigation protocol (middle/ctrl-click always creates child)
       if (url.startsWith("ns:")) {
         try {
-          const { source, gitRef, context, repoArgs, ephemeral } = parseNsUrl(url);
-          this.createChild(panelId, source, { gitRef, contextId: context, repoArgs, ephemeral }).catch((err) =>
+          const { source, gitRef, context, repoArgs, env, name, newContext, ephemeral } = parseNsUrl(url);
+          this.createChild(panelId, source, { gitRef, contextId: context, repoArgs, env, name, newContext, ephemeral }).catch((err) =>
             this.handleChildCreationError(panelId, err, url)
           );
         } catch (err) {
@@ -717,10 +718,10 @@ export class PanelManager {
       if (url.startsWith("ns:")) {
         event.preventDefault();
         try {
-          const { source, action, gitRef, context, repoArgs, ephemeral } = parseNsUrl(url);
+          const { source, action, gitRef, context, repoArgs, env, name, newContext, ephemeral } = parseNsUrl(url);
           if (action === "child") {
             // Explicit child creation via action=child
-            this.createChild(panelId, source, { gitRef, contextId: context, repoArgs, ephemeral }).catch((err) =>
+            this.createChild(panelId, source, { gitRef, contextId: context, repoArgs, env, name, newContext, ephemeral }).catch((err) =>
               this.handleChildCreationError(panelId, err, url)
             );
           } else {
@@ -966,6 +967,20 @@ export class PanelManager {
           (declaredArgs.length === 0 ? " (manifest declares no repoArgs)" : "")
         );
       }
+    }
+
+    // Validate envArgs: required env vars must be provided
+    const declaredEnvArgs = manifest.envArgs ?? [];
+    const providedEnv = options?.env ?? {};
+    const missingEnvArgs = declaredEnvArgs
+      .filter((arg) => arg.required !== false && !arg.default)
+      .filter((arg) => !providedEnv[arg.name])
+      .map((arg) => arg.name);
+
+    if (missingEnvArgs.length > 0) {
+      throw new Error(
+        `Panel "${relativePath}" requires env vars: ${missingEnvArgs.join(", ")}`
+      );
     }
 
     const panelId = this.computePanelId({
@@ -2289,18 +2304,26 @@ export class PanelManager {
   /**
    * Create a shell panel for system pages (model-provider-config, about, etc.).
    * Shell panels have full access to shell services and appear in the panel tree.
-   * Only one instance per page type (navigating to existing shows it, not creates new).
+   * Most pages are singletons (navigating to existing shows it, not creates new).
+   * The "new" page supports multiple instances for launching different panels.
    */
   async createShellPanel(
     page: SharedPanel.ShellPage
   ): Promise<{ id: string; type: SharedPanel.PanelType; title: string }> {
-    const panelId = `shell:${page}`;
+    // "new" pages can have multiple instances, others are singletons
+    const isMultiInstance = page === "new";
+    const panelId = isMultiInstance
+      ? `shell:${page}~${Date.now().toString(36)}`
+      : `shell:${page}`;
 
-    // Check if shell panel already exists for this page
-    const existing = this.panels.get(panelId);
-    if (existing) {
-      // Navigate to existing panel instead of creating new
-      return { id: existing.id, type: existing.type, title: existing.title };
+    // Check if shell panel already exists for this page (only for singleton pages)
+    if (!isMultiInstance) {
+      const existing = this.panels.get(panelId);
+      if (existing) {
+        // Focus existing panel and return
+        this.focusPanel(existing.id);
+        return { id: existing.id, type: existing.type, title: existing.title };
+      }
     }
 
     // Build the about page if not already built
@@ -2320,7 +2343,10 @@ export class PanelManager {
     const title = getShellPageTitle(page);
 
     // Shell panels use unsafe mode for full service access
-    const contextId = `unsafe_auto_shell~${page}`;
+    // Multi-instance pages get unique context IDs
+    const contextId = isMultiInstance
+      ? `unsafe_auto_${panelId.replace(":", "_")}`
+      : `unsafe_auto_shell~${page}`;
 
     const panel: SharedPanel.ShellPanel = {
       type: "shell",
@@ -2336,7 +2362,7 @@ export class PanelManager {
       env: undefined,
       injectHostThemeVariables: true,
       ephemeral: true, // Shell panels are always ephemeral
-      navigationState: createInitialNavigationState(`shell:${page}`, "shell"),
+      navigationState: createInitialNavigationState(panelId, "shell"),
     };
 
     // Add to root panels (shell panels are top-level)
@@ -2353,7 +2379,8 @@ export class PanelManager {
     // Create WebContentsView for the shell panel
     this.createViewForShellPanel(panel, url);
 
-    this.notifyPanelTreeUpdate();
+    // Focus the newly created panel (this also notifies tree update)
+    this.focusPanel(panel.id);
 
     return { id: panel.id, type: panel.type, title: panel.title };
   }
@@ -2389,7 +2416,7 @@ export class PanelManager {
       additionalArgs.push(`--natstack-scope-path=/`);
     }
 
-    this.viewManager.createView({
+    const view = this.viewManager.createView({
       id: panel.id,
       type: "panel",
       partition: `persist:${panel.contextId}`,
@@ -2398,6 +2425,9 @@ export class PanelManager {
       additionalArguments: additionalArgs,
       unsafe: "/", // Full filesystem access
     });
+
+    // Add link interception for shell panels to handle ns:// and ns-about:// links
+    this.setupLinkInterception(panel.id, view.webContents, "panel");
   }
 
   /**
@@ -3399,6 +3429,30 @@ export class PanelManager {
 
   getFocusedPanelId(): string | null {
     return this.focusedPanelId;
+  }
+
+  /**
+   * Get the workspace tree of all git repos.
+   * Delegates to gitServer.
+   */
+  async getWorkspaceTree(): Promise<SharedPanel.WorkspaceTree> {
+    return this.gitServer.getWorkspaceTree();
+  }
+
+  /**
+   * List branches for a repo.
+   * Delegates to gitServer.
+   */
+  async listBranches(repoPath: string): Promise<SharedPanel.BranchInfo[]> {
+    return this.gitServer.listBranches(repoPath);
+  }
+
+  /**
+   * List commits for a repo/ref.
+   * Delegates to gitServer.
+   */
+  async listCommits(repoPath: string, ref?: string, limit?: number): Promise<SharedPanel.CommitInfo[]> {
+    return this.gitServer.listCommits(repoPath, ref, limit);
   }
 
   // Map guestInstanceId (from webContents) to panelId

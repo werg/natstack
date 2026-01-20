@@ -14,8 +14,9 @@ export type {
   BrowserChildSpec,
   NavigationEntry,
   NavigationState,
+  EnvArgSchema,
 } from "../shared/ipc/types.js";
-import type { RuntimeType } from "../shared/ipc/types.js";
+import type { RuntimeType, EnvArgSchema } from "../shared/ipc/types.js";
 
 export interface PanelManifest {
   /**
@@ -47,6 +48,19 @@ export interface PanelManifest {
    * ```
    */
   repoArgs?: string[];
+  /**
+   * Environment variable arguments that callers can provide when creating this panel.
+   * Enables the launcher UI to show appropriate input fields for each env var.
+   *
+   * Example:
+   * ```json
+   * "envArgs": [
+   *   { "name": "API_KEY", "description": "API key for external service", "required": true },
+   *   { "name": "DEBUG", "description": "Enable debug logging", "required": false, "default": "false" }
+   * ]
+   * ```
+   */
+  envArgs?: EnvArgSchema[];
   /**
    * External dependencies loaded via import map (CDN).
    * Use this for packages that need browser-specific ESM builds or polyfills.

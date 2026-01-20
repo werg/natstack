@@ -19,6 +19,12 @@ export interface BuildNsLinkOptions {
   gitRef?: string;
   /** Repo arguments required by the target manifest */
   repoArgs?: Record<string, RepoArgSpec>;
+  /** Environment variables to pass to the panel */
+  env?: Record<string, string>;
+  /** Panel name/ID */
+  name?: string;
+  /** If true, create a new context instead of deriving from tree path */
+  newContext?: boolean;
   /** If true, panel can be closed and is not persisted */
   ephemeral?: boolean;
 }
@@ -58,6 +64,15 @@ export function buildNsLink(source: string, options?: BuildNsLinkOptions): strin
   if (options?.repoArgs) {
     searchParams.set("repoArgs", JSON.stringify(options.repoArgs));
   }
+  if (options?.env) {
+    searchParams.set("env", JSON.stringify(options.env));
+  }
+  if (options?.name) {
+    searchParams.set("name", options.name);
+  }
+  if (options?.newContext) {
+    searchParams.set("newContext", "true");
+  }
   if (options?.ephemeral) {
     searchParams.set("ephemeral", "true");
   }
@@ -70,9 +85,9 @@ export function buildNsLink(source: string, options?: BuildNsLinkOptions): strin
 /**
  * Valid shell/about page names.
  */
-export type AboutPage = "model-provider-config" | "about" | "keyboard-shortcuts" | "help";
+export type AboutPage = "model-provider-config" | "about" | "keyboard-shortcuts" | "help" | "new";
 
-const VALID_ABOUT_PAGES: AboutPage[] = ["model-provider-config", "about", "keyboard-shortcuts", "help"];
+const VALID_ABOUT_PAGES: AboutPage[] = ["model-provider-config", "about", "keyboard-shortcuts", "help", "new"];
 
 /**
  * Build an ns-about:// URL for navigating to a shell/about page.

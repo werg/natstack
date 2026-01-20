@@ -74,6 +74,17 @@ export async function handleBridgeCall(
       }
       return pm.navigatePanel(targetId, source, targetType as import("../../shared/ipc/types.js").PanelType);
     }
+    case "getWorkspaceTree": {
+      return pm.getWorkspaceTree();
+    }
+    case "listBranches": {
+      const [repoPath] = args as [string];
+      return pm.listBranches(repoPath);
+    }
+    case "listCommits": {
+      const [repoPath, ref, limit] = args as [string, string?, number?];
+      return pm.listCommits(repoPath, ref, limit);
+    }
     default:
       throw new Error(`Unknown bridge method: ${method}`);
   }

@@ -60,7 +60,7 @@ export const SERVICE_POLICIES: Record<string, ServicePolicy> = {
   // ==========================================================================
 
   bridge: {
-    allowed: ["panel", "worker"],
+    allowed: ["panel", "worker", "shell"],
     description: "Panel lifecycle (createChild, close, setTitle)",
   },
   typecheck: {

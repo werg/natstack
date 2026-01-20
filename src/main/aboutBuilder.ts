@@ -32,6 +32,7 @@ const SHELL_PAGE_TITLES: Record<ShellPage, string> = {
   about: "About NatStack",
   "keyboard-shortcuts": "Keyboard Shortcuts",
   help: "Help",
+  new: "New Panel",
 };
 
 /**

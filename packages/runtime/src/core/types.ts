@@ -552,3 +552,82 @@ export type ParentHandleFromContract<C extends PanelContract> =
   C extends PanelContract<infer _ChildMethods, infer ChildEmits, infer ParentMethods, infer ParentEmits>
     ? ParentHandle<ParentMethods, InferEventMap<ParentEmits>, InferEventMap<ChildEmits>>
     : never;
+
+// =============================================================================
+// Environment Arguments Schema
+// =============================================================================
+
+/**
+ * Schema for declaring environment variable requirements in panel manifests.
+ * Enables launcher UI to show appropriate input fields.
+ */
+export interface EnvArgSchema {
+  /** The environment variable name (e.g., "API_KEY") */
+  name: string;
+  /** Human-readable description for the UI */
+  description?: string;
+  /** Whether this env var is required (default: true) */
+  required?: boolean;
+  /** Default value if optional and not provided */
+  default?: string;
+}
+
+// =============================================================================
+// Workspace Discovery Types (for git repos and launchable panels)
+// =============================================================================
+
+/**
+ * A node in the workspace tree.
+ * Folders contain children, git repos are leaves (children = []).
+ */
+export interface WorkspaceNode {
+  /** Directory/repo name */
+  name: string;
+  /**
+   * Relative path from workspace root using forward slashes.
+   * Example: "panels/editor"
+   */
+  path: string;
+  /** True if this directory is a git repository root */
+  isGitRepo: boolean;
+  /**
+   * If this is a launchable panel/worker (has natstack config).
+   * Note: We intentionally include entries even if some fields are missing
+   * (e.g., no title) - better to show them in the UI and let panelBuilder
+   * report the real error than to silently hide repos with incomplete configs.
+   */
+  launchable?: {
+    type: "app" | "worker";
+    title: string;
+    repoArgs?: string[];
+    envArgs?: EnvArgSchema[];
+  };
+  /** Child nodes (empty for git repos since they're leaves) */
+  children: WorkspaceNode[];
+}
+
+/**
+ * Complete workspace tree with root-level children.
+ */
+export interface WorkspaceTree {
+  /** Root children (top-level directories) */
+  children: WorkspaceNode[];
+}
+
+/**
+ * Branch info for a git repository.
+ */
+export interface BranchInfo {
+  name: string;
+  current: boolean;
+  remote?: string;
+}
+
+/**
+ * Commit info for git log.
+ */
+export interface CommitInfo {
+  oid: string;
+  message: string;
+  author: { name: string; timestamp: number };
+}

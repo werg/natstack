@@ -32,6 +32,9 @@ export interface ParsedNsUrl {
   gitRef?: string;
   context?: string;
   repoArgs?: Record<string, RepoArgSpec>;
+  env?: Record<string, string>;
+  name?: string;
+  newContext?: boolean;
   ephemeral?: boolean;
 }
 
@@ -63,6 +66,8 @@ export function parseNsUrl(url: string): ParsedNsUrl {
 
   const context = parsed.searchParams.get("context") ?? undefined;
   const gitRef = parsed.searchParams.get("gitRef") ?? undefined;
+  const name = parsed.searchParams.get("name") ?? undefined;
+  const newContext = parsed.searchParams.get("newContext") === "true" || undefined;
   const ephemeral = parsed.searchParams.get("ephemeral") === "true" || undefined;
 
   let repoArgs: Record<string, RepoArgSpec> | undefined;
@@ -84,7 +89,29 @@ export function parseNsUrl(url: string): ParsedNsUrl {
     }
   }
 
-  return { source, action, gitRef, context, repoArgs, ephemeral };
+  let env: Record<string, string> | undefined;
+  const envParam = parsed.searchParams.get("env");
+  if (envParam) {
+    try {
+      const parsedEnv = JSON.parse(envParam);
+      if (typeof parsedEnv === "object" && parsedEnv !== null) {
+        // Validate all values are strings
+        const isValid = Object.values(parsedEnv).every((v) => typeof v === "string");
+        if (isValid) {
+          env = parsedEnv as Record<string, string>;
+        } else {
+          throw new Error("Invalid env in ns URL: all values must be strings");
+        }
+      }
+    } catch (e) {
+      if (e instanceof SyntaxError) {
+        throw new Error("Invalid JSON in env parameter");
+      }
+      throw e;
+    }
+  }
+
+  return { source, action, gitRef, context, repoArgs, env, name, newContext, ephemeral };
 }
 
 export interface BuildNsUrlOptions {
@@ -92,6 +119,9 @@ export interface BuildNsUrlOptions {
   gitRef?: string;
   context?: string;
   repoArgs?: Record<string, RepoArgSpec>;
+  env?: Record<string, string>;
+  name?: string;
+  newContext?: boolean;
   ephemeral?: boolean;
 }
 
@@ -113,6 +143,15 @@ export function buildNsUrl(source: string, options?: BuildNsUrlOptions): string 
   }
   if (options?.repoArgs) {
     searchParams.set("repoArgs", JSON.stringify(options.repoArgs));
+  }
+  if (options?.env) {
+    searchParams.set("env", JSON.stringify(options.env));
+  }
+  if (options?.name) {
+    searchParams.set("name", options.name);
+  }
+  if (options?.newContext) {
+    searchParams.set("newContext", "true");
   }
   if (options?.ephemeral) {
     searchParams.set("ephemeral", "true");

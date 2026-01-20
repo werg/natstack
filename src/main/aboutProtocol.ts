@@ -59,7 +59,7 @@ const registrationLocks = new Map<string, Promise<void>>();
 /**
  * Valid shell page names.
  */
-const VALID_SHELL_PAGES: ShellPage[] = ["model-provider-config", "about", "keyboard-shortcuts", "help"];
+const VALID_SHELL_PAGES: ShellPage[] = ["model-provider-config", "about", "keyboard-shortcuts", "help", "new"];
 
 /**
  * Check if a string is a valid shell page.
