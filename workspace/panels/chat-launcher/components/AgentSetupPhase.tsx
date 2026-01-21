@@ -15,6 +15,10 @@ interface AgentSetupPhaseProps {
   discoveryStatus: string;
   availableAgents: AgentSelection[];
   channelId: string;
+  status: string | null;
+  isStarting: boolean;
+  /** If true, we are adding agents to an existing channel (not starting a new chat) */
+  isChannelMode?: boolean;
   onChannelIdChange: (channelId: string) => void;
   onToggleAgent: (brokerId: string, agentTypeId: string) => void;
   onUpdateConfig: (brokerId: string, agentTypeId: string, key: string, value: string | number | boolean) => void;
@@ -25,6 +29,9 @@ export function AgentSetupPhase({
   discoveryStatus,
   availableAgents,
   channelId,
+  status,
+  isStarting,
+  isChannelMode = false,
   onChannelIdChange,
   onToggleAgent,
   onUpdateConfig,
@@ -36,7 +43,7 @@ export function AgentSetupPhase({
     <Flex direction="column" style={{ height: "100vh", padding: 16 }} gap="3">
       <Flex justify="between" align="center">
         <Text size="5" weight="bold">
-          Agentic Chat
+          {isChannelMode ? "Add Agents" : "New Chat"}
         </Text>
         <Badge color="gray">{discoveryStatus}</Badge>
       </Flex>
@@ -47,7 +54,9 @@ export function AgentSetupPhase({
             Available Agents
           </Text>
           <Text size="2" color="gray">
-            Select agents to invite to your chat session. Make sure Agent Manager is running.
+            {isChannelMode
+              ? "Select additional agents to invite to the channel."
+              : "Select agents to invite to your chat session. Make sure Agent Manager is running."}
           </Text>
 
           <ScrollArea style={{ flex: 1 }}>
@@ -76,6 +85,12 @@ export function AgentSetupPhase({
             )}
           </ScrollArea>
 
+          {status && (
+            <Text size="2" color="red" style={{ whiteSpace: "pre-wrap" }}>
+              {status}
+            </Text>
+          )}
+
           <Flex justify="between" align="center">
             <Text size="2" color="gray">
               {selectedCount} agent{selectedCount !== 1 ? "s" : ""} selected
@@ -90,13 +105,17 @@ export function AgentSetupPhase({
                 value={channelId}
                 onChange={(e) => onChannelIdChange(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && selectedCount > 0) {
+                  if (e.key === "Enter" && selectedCount > 0 && !isStarting) {
                     onStartChat();
                   }
                 }}
+                disabled={isStarting || isChannelMode}
+                readOnly={isChannelMode}
               />
-              <Button onClick={onStartChat} disabled={selectedCount === 0}>
-                Start Chat
+              <Button onClick={onStartChat} disabled={selectedCount === 0 || isStarting}>
+                {isStarting
+                  ? isChannelMode ? "Adding..." : "Starting..."
+                  : isChannelMode ? "Add Agents" : "Start Chat"}
               </Button>
             </Flex>
           </Flex>

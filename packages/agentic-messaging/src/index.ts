@@ -99,7 +99,7 @@ export {
   type OpenAIContent,
 } from "./image-utils.js";
 
-// Worker base utilities (shared across claude-code, codex, pubsub-chat workers)
+// Worker base utilities (shared across claude-code-responder, codex-responder, and other workers)
 export {
   showPermissionPrompt,
   findPanelParticipant,

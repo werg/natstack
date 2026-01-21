@@ -173,11 +173,11 @@ export default function ChildPanelLauncher() {
     }
   };
 
-  const launchPubSubChatDemo = async () => {
+  const launchChatLauncher = async () => {
     try {
-      setStatus("Launching PubSub chat demo...");
-      const child = await createChild("panels/pubsub-chat", { name: "pubsub-chat-demo" });
-      setStatus(`Launched PubSub chat: ${child.name}`);
+      setStatus("Launching Chat Launcher...");
+      const child = await createChild("panels/chat-launcher", { name: "chat-launcher" });
+      setStatus(`Launched Chat Launcher: ${child.name}`);
     } catch (error) {
       setStatus(`Failed to launch: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -833,8 +833,8 @@ export default function ChildPanelLauncher() {
             <Button onClick={launchAgenticChat} color="green">
               Launch Agentic Chat
             </Button>
-            <Button onClick={launchPubSubChatDemo} color="cyan">
-              Launch PubSub Chat Demo
+            <Button onClick={launchChatLauncher} color="cyan">
+              Launch Chat Launcher
             </Button>
             <Button onClick={launchAgentManager} color="orange">
               Launch Agent Manager

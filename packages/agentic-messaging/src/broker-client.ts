@@ -61,6 +61,9 @@ export interface BrokerDiscoveryClient {
   /** Subscribe to broker roster changes */
   onBrokersChanged(handler: (brokers: DiscoveredBroker[]) => void): () => void;
 
+  /** Whether the underlying connection is open */
+  readonly connected: boolean;
+
   /** Close the connection */
   close(): Promise<void>;
 }
@@ -354,6 +357,9 @@ export async function connectForDiscovery(
     invite,
     onBrokersChanged,
     close: async () => client.close(),
+    get connected() {
+      return client.connected;
+    },
   };
 }
 

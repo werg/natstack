@@ -76,10 +76,15 @@ describe("@natstack/agentic-messaging", () => {
       type: "agent",
     });
 
-    const selfMetadata = JSON.parse(new URL(ws.capturedUrl!).searchParams.get("metadata")!) as Record<
-      string,
-      unknown
-    >;
+    // Metadata is sent via update-metadata action, not URL params
+    // Wait a tick for the updateMetadata call to be made
+    await new Promise((r) => setTimeout(r, 0));
+    const updateMetadataCall = ws.mockSend.mock.calls.find((c) => {
+      const parsed = JSON.parse(c[0] as string) as { action?: string };
+      return parsed.action === "update-metadata";
+    });
+    expect(updateMetadataCall).toBeDefined();
+    const selfMetadata = (JSON.parse(updateMetadataCall![0] as string) as { payload: Record<string, unknown> }).payload;
 
     ws.onmessage!({ data: JSON.stringify({ kind: "ready" }) });
     ws.onmessage!({
@@ -187,9 +192,15 @@ describe("@natstack/agentic-messaging", () => {
       },
     });
 
-    const metaParam = new URL(ws.capturedUrl!).searchParams.get("metadata");
-    expect(metaParam).not.toBeNull();
-    const selfMetadata = JSON.parse(metaParam!) as Record<string, unknown>;
+    // Metadata is sent via update-metadata action, not URL params
+    // Wait a tick for the updateMetadata call to be made
+    await new Promise((r) => setTimeout(r, 0));
+    const updateMetadataCall = ws.mockSend.mock.calls.find((c) => {
+      const parsed = JSON.parse(c[0] as string) as { action?: string };
+      return parsed.action === "update-metadata";
+    });
+    expect(updateMetadataCall).toBeDefined();
+    const selfMetadata = (JSON.parse(updateMetadataCall![0] as string) as { payload: Record<string, unknown> }).payload;
 
     ws.onmessage!({ data: JSON.stringify({ kind: "ready" }) });
     ws.onmessage!({
@@ -262,20 +273,64 @@ describe("@natstack/agentic-messaging", () => {
       },
     });
 
-    // Metadata is passed via URL params (not a send() call)
-    const url = new URL(ws.capturedUrl!);
-    const metadata = JSON.parse(url.searchParams.get("metadata")!) as {
-      name: string;
-      type: string;
-      methods: Array<{ name: string; description: string }>;
-    };
+    // Metadata is sent via update-metadata action after connection, not URL params
+    // Wait a tick for the updateMetadata call to be made
+    await new Promise((r) => setTimeout(r, 0));
+
+    // First update-metadata call is for initial metadata (without methods)
+    // After connection ready + self-presence, methods are advertised via second update
+    ws.onmessage!({ data: JSON.stringify({ kind: "ready" }) });
+
+    // Simulate self join presence so client resolves
+    const initialUpdateCall = ws.mockSend.mock.calls.find((c) => {
+      const parsed = JSON.parse(c[0] as string) as { action?: string };
+      return parsed.action === "update-metadata";
+    });
+    const initialMeta = initialUpdateCall
+      ? (JSON.parse(initialUpdateCall[0] as string) as { payload: Record<string, unknown> }).payload
+      : { name: "Provider", type: "worker", handle: "provider" };
+
+    ws.onmessage!({
+      data: JSON.stringify({
+        kind: "persisted",
+        id: 1,
+        type: "presence",
+        payload: { action: "join", metadata: initialMeta },
+        senderId: "provider",
+        ts: Date.now(),
+      }),
+    });
+
+    const client = await clientPromise;
+
+    // After connection, methods are advertised via a second updateMetadata call
+    await new Promise((r) => setTimeout(r, 0));
+
+    const updateCalls = ws.mockSend.mock.calls.filter((c) => {
+      const parsed = JSON.parse(c[0] as string) as { action?: string };
+      return parsed.action === "update-metadata";
+    });
+
+    // Find the update call that contains methods
+    const methodsUpdateCall = updateCalls.find((c) => {
+      const parsed = JSON.parse(c[0] as string) as { payload: { methods?: unknown[] } };
+      return Array.isArray(parsed.payload?.methods);
+    });
+
+    expect(methodsUpdateCall).toBeDefined();
+    const metadata = (JSON.parse(methodsUpdateCall![0] as string) as {
+      payload: {
+        name: string;
+        type: string;
+        methods: Array<{ name: string; description: string }>;
+      };
+    }).payload;
+
     expect(metadata.name).toBe("Provider");
     expect(Array.isArray(metadata.methods)).toBe(true);
     expect(metadata.methods[0]!.name).toBe("ping");
     expect(metadata.methods[0]!.description).toBe("Ping");
 
-    ws.onmessage!({ data: JSON.stringify({ kind: "ready" }) });
-    const client = await clientPromise;
     await client.close();
   });
 });

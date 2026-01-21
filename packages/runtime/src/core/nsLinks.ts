@@ -27,6 +27,8 @@ export interface BuildNsLinkOptions {
   newContext?: boolean;
   /** If true, panel can be closed and is not persisted */
   ephemeral?: boolean;
+  /** If true, immediately focus the new panel after creation (only applies to action=child on app panels) */
+  focus?: boolean;
 }
 
 /**
@@ -75,6 +77,9 @@ export function buildNsLink(source: string, options?: BuildNsLinkOptions): strin
   }
   if (options?.ephemeral) {
     searchParams.set("ephemeral", "true");
+  }
+  if (options?.focus) {
+    searchParams.set("focus", "true");
   }
 
   const paramsStr = searchParams.toString();

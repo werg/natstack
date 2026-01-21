@@ -79,6 +79,8 @@ export interface CreateChildOptions {
   newContext?: boolean;
   /** If true, panel can be closed and is not persisted to SQLite */
   ephemeral?: boolean;
+  /** If true, immediately focus the new panel after creation (only applies to app panels) */
+  focus?: boolean;
 
   /** Legacy git fields (still supported programmatically). Prefer `gitRef`. */
   branch?: string;

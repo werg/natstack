@@ -1,13 +1,13 @@
 /**
- * Agentic Messaging Chat Demo Panel
+ * Agentic Chat Panel
  *
- * Demonstrates @natstack/agentic-messaging with the broker discovery system.
- * Uses connectForDiscovery to find available agents and invite them to a dynamic channel.
+ * Full chat interface that connects to a channel via CHANNEL_NAME env arg.
+ * Provides file, git, search, and eval tools to agents.
  */
 
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
-import { Flex, Text } from "@radix-ui/themes";
-import { pubsubConfig, id as panelClientId } from "@natstack/runtime";
+import { Flex, Text, Button, Card } from "@radix-ui/themes";
+import { pubsubConfig, id as panelClientId, buildNsLink, createChild } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
 import { z } from "zod";
 import {
@@ -48,12 +48,10 @@ import {
   EVAL_FRAMEWORK_TIMEOUT_MS,
 } from "./eval/evalTool";
 import { createAllToolMethodDefinitions } from "./tools";
-import { useDiscovery } from "./hooks/useDiscovery";
 import { useChannelConnection } from "./hooks/useChannelConnection";
 import { useMethodHistory, type ChatMessage } from "./hooks/useMethodHistory";
 import { useToolRole } from "./hooks/useToolRole";
 import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
-import { AgentSetupPhase } from "./components/AgentSetupPhase";
 import { ToolRoleConflictModal } from "./components/ToolRoleConflictModal";
 import { ChatPhase } from "./components/ChatPhase";
 import type { PendingImage } from "./components/ImageInput";
@@ -66,14 +64,6 @@ function isChatParticipantMetadata(value: unknown): value is ChatParticipantMeta
   const obj = value as Record<string, unknown>;
   return typeof obj.name === "string" && typeof obj.type === "string" && typeof obj.handle === "string";
 }
-
-type AppPhase = "setup" | "connecting" | "chat";
-
-/**
- * Constants for the application
- */
-const INITIAL_STATUS = "Initializing...";
-const generateChannelId = () => `chat-${crypto.randomUUID().slice(0, 8)}`;
 
 /**
  * Handles incoming agentic events and updates appropriate state.
@@ -229,11 +219,14 @@ function dispatchAgenticEvent(
   }
 }
 
-export default function AgenticChatDemo() {
+export default function AgenticChat() {
   const theme = usePanelTheme();
   const workspaceRoot = process.env["NATSTACK_WORKSPACE"]?.trim();
-  const [phase, setPhase] = useState<AppPhase>("setup");
+  const channelName = process.env["CHANNEL_NAME"]?.trim();
+
   const selfIdRef = useRef<string | null>(null);
+  // Track if we've already connected to prevent reconnection loops
+  const hasConnectedRef = useRef(false);
   // Ref to access current participants in memoized callbacks
   const participantsRef = useRef<Record<string, Participant<ChatParticipantMetadata>>>({});
   // Refs for tool role handlers - set after toolRole hook is created
@@ -241,12 +234,11 @@ export default function AgenticChatDemo() {
   const toolRoleResponseHandlerRef = useRef<((event: IncomingToolRoleResponseEvent) => void) | null>(null);
   const toolRoleHandoffHandlerRef = useRef<((event: IncomingToolRoleHandoffEvent) => void) | null>(null);
 
-  // Chat phase state - generate default channel ID upfront so user can edit it
-  const [channelId, setChannelId] = useState<string>(generateChannelId);
+  // Chat state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
-  const [status, setStatus] = useState(INITIAL_STATUS);
+  const [status, setStatus] = useState("Connecting...");
   const [participants, setParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
   // Historical participants reconstructed from presence events during replay
   const [historicalParticipants, setHistoricalParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
@@ -267,16 +259,6 @@ export default function AgenticChatDemo() {
     dismissFeedback,
     handleFeedbackError,
   } = useFeedbackManager();
-
-  // Use extracted hooks
-  const {
-    discoveryRef,
-    availableAgents,
-    discoveryStatus,
-    toggleAgentSelection,
-    updateAgentConfig,
-    buildInviteConfig,
-  } = useDiscovery({ workspaceRoot });
 
   const {
     addMethodHistoryEntry,
@@ -422,6 +404,14 @@ export default function AgenticChatDemo() {
     toolRoleResponseHandlerRef.current = toolRole.handleToolRoleResponse;
     toolRoleHandoffHandlerRef.current = toolRole.handleToolRoleHandoff;
   }, [toolRole.handleToolRoleRequest, toolRole.handleToolRoleResponse, toolRole.handleToolRoleHandoff]);
+
+  // Refs to store latest callback versions for use in connection effect
+  // This prevents the effect from re-running when callbacks change
+  const handleFeedbackFormCallRef = useRef<typeof handleFeedbackFormCall | null>(null);
+  const handleFeedbackCustomCallRef = useRef<typeof handleFeedbackCustomCall | null>(null);
+  const evalMethodDefRef = useRef<MethodDefinition | null>(null);
+  const approvalRef = useRef<typeof approval | null>(null);
+  const toolRoleShouldProvideGroupRef = useRef<typeof toolRole.shouldProvideGroup | null>(null);
 
   // Helper to handle feedback result and update method history
   const handleFeedbackResult = useCallback((callId: string, feedbackResult: FeedbackResult) => {
@@ -637,44 +627,26 @@ Use standard ESM imports - they're transformed to require() automatically:
     [addMethodHistoryEntry, updateMethodHistoryEntry]
   );
 
-  const startChat = useCallback(async () => {
-    const discovery = discoveryRef.current;
-    if (!discovery || !pubsubConfig) return;
+  // Keep callback refs updated so connection effect uses latest versions
+  useEffect(() => {
+    handleFeedbackFormCallRef.current = handleFeedbackFormCall;
+    handleFeedbackCustomCallRef.current = handleFeedbackCustomCall;
+    evalMethodDefRef.current = evalMethodDef;
+    approvalRef.current = approval;
+    toolRoleShouldProvideGroupRef.current = toolRole.shouldProvideGroup;
+  }, [handleFeedbackFormCall, handleFeedbackCustomCall, evalMethodDef, approval, toolRole.shouldProvideGroup]);
 
-    const selectedAgents = availableAgents.filter((a) => a.selected);
-    if (selectedAgents.length === 0) {
-      setStatus("Please select at least one agent");
-      return;
-    }
+  // Connect to channel on mount (only once)
+  useEffect(() => {
+    if (!channelName || !pubsubConfig) return;
+    // Prevent reconnection if already connected
+    if (hasConnectedRef.current) return;
+    hasConnectedRef.current = true;
 
-    // Validate required parameters before sending invites
-    const validationErrors: string[] = [];
-    for (const agent of selectedAgents) {
-      const requiredParams = agent.agentType.parameters?.filter((p) => p.required) ?? [];
-      for (const param of requiredParams) {
-        const value = agent.config[param.key];
-        const hasValue = value !== undefined && value !== "";
-        const hasDefault = param.default !== undefined;
-        if (!hasValue && !hasDefault) {
-          validationErrors.push(`${agent.agentType.name}: "${param.label}" is required`);
-        }
-      }
-    }
-
-    if (validationErrors.length > 0) {
-      setStatus(`Missing required parameters:\n${validationErrors.join("\n")}`);
-      return;
-    }
-
-    setPhase("connecting");
-    setStatus("Creating channel and inviting agents...");
-
-    // Use the channel ID from state (user may have edited it)
-    const targetChannelId = channelId.trim() || `chat-${crypto.randomUUID().slice(0, 8)}`;
-
-    try {
-      const feedbackFormMethodDef: MethodDefinition = {
-        description: `Show a form to collect user input.
+    async function connect() {
+      try {
+        const feedbackFormMethodDef: MethodDefinition = {
+          description: `Show a form to collect user input.
 
 **Result:** \`{ type: "submit", value: { fieldKey: userValue, ... } }\` or \`{ type: "cancel" }\`
 
@@ -686,185 +658,107 @@ Use standard ESM imports - they're transformed to require() automatically:
 **Field types:** string, number, boolean, select (needs \`options\`), slider (\`min\`/\`max\`), segmented (\`options\`)
 **Field props:** \`key\` (required), \`label\` (required), \`type\` (required), \`default\`, \`required\`, \`description\`
 **Pre-populate:** Add \`values: { "key": "existing value" }\``,
-        parameters: FeedbackFormArgsSchema,
-        execute: async (args, ctx) => handleFeedbackFormCall(ctx.callId, args as FeedbackFormArgs, ctx),
-      };
+          parameters: FeedbackFormArgsSchema,
+          // Use ref to get latest callback version
+          execute: async (args, ctx) => handleFeedbackFormCallRef.current!(ctx.callId, args as FeedbackFormArgs, ctx),
+        };
 
-      const feedbackCustomMethodDef: MethodDefinition = {
-        description: `Show a custom React UI. For advanced cases only - prefer feedback_form for standard forms.
+        const feedbackCustomMethodDef: MethodDefinition = {
+          description: `Show a custom React UI. For advanced cases only - prefer feedback_form for standard forms.
 
 **Result:** \`{ type: "submit", value: ... }\` or \`{ type: "cancel" }\`
 
 Component receives \`onSubmit(value)\`, \`onCancel()\`, \`onError(msg)\` props.
 Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
-        parameters: FeedbackCustomArgsSchema,
-        execute: async (args, ctx) => handleFeedbackCustomCall(ctx.callId, args as FeedbackCustomArgs, ctx),
-      };
+          parameters: FeedbackCustomArgsSchema,
+          // Use ref to get latest callback version
+          execute: async (args, ctx) => handleFeedbackCustomCallRef.current!(ctx.callId, args as FeedbackCustomArgs, ctx),
+        };
 
-      // Invite all selected agents with their configured parameters
-      const invitePromises = selectedAgents.map(async (agent) => {
-        const filteredConfig = buildInviteConfig(agent);
+        // Create file/search/git tools using workspace root
+        // Wrap diagnostics publishing to use clientRef at runtime
+        const diagnosticsPublisher = (eventType: string, payload: unknown) => {
+          clientRef.current?.pubsub.publish(eventType, payload);
+        };
+        const fileTools = createAllToolMethodDefinitions({
+          workspaceRoot,
+          diagnosticsPublisher,
+        });
 
-        try {
-          const result = discovery.invite(agent.broker.brokerId, agent.agentType.id, targetChannelId, {
-            context: "User wants to chat",
-            config: filteredConfig,
-          });
-          const response = await result.response;
-          return { agent, response, error: null };
-        } catch (err) {
-          // Capture invite errors per-agent
-          const errorMsg = err instanceof Error ? err.message : String(err);
-          return {
-            agent,
-            response: null,
-            error: errorMsg,
-          };
-        }
-      });
+        // Wrap tools with approval middleware
+        // Use refs for runtime lookup to avoid stale closure issues
+        const approvedTools = wrapMethodsWithApproval(
+          fileTools,
+          {
+            isAgentGranted: (...args) => approvalRef.current!.isAgentGranted(...args),
+            checkToolApproval: (...args) => approvalRef.current!.checkToolApproval(...args),
+            requestApproval: (...args) => approvalRef.current!.requestApproval(...args),
+          },
+          (agentId) => clientRef.current?.roster[agentId]?.metadata.name ?? agentId,
+          // Use getter pattern with ref to avoid stale closure
+          () => ({ shouldProvideGroup: toolRoleShouldProvideGroupRef.current! })
+        );
 
-      const results = await Promise.all(invitePromises);
+        // Connect using the hook with all methods
+        // Use ref for evalMethodDef to get latest version
+        await connectToChannel(channelName, {
+          eval: evalMethodDefRef.current!,
+          feedback_form: feedbackFormMethodDef,
+          feedback_custom: feedbackCustomMethodDef,
+          ...approvedTools,
+        });
 
-      // Separate successful and failed invites
-      const succeeded = results.filter((r) => r.response?.accepted);
-      const declined = results.filter((r) => r.response && !r.response.accepted);
-      const errored = results.filter((r) => r.error !== null);
-
-      // Check if all invites failed
-      if (succeeded.length === 0) {
-        // Build detailed error message
-        const errorParts: string[] = [];
-
-        if (errored.length > 0) {
-          const errorDetails = errored
-            .map((r) => `${r.agent.agentType.name}: ${r.error}`)
-            .join("\n");
-          errorParts.push(`Invite errors:\n${errorDetails}`);
-        }
-
-        if (declined.length > 0) {
-          const declineDetails = declined
-            .map((r) => {
-              const reason = r.response?.declineReason || "Unknown reason";
-              const code = r.response?.declineCode ? ` (${r.response.declineCode})` : "";
-              return `${r.agent.agentType.name}: ${reason}${code}`;
-            })
-            .join("\n");
-          errorParts.push(`Declined:\n${declineDetails}`);
-        }
-
-        setStatus(errorParts.length > 0 ? errorParts.join("\n\n") : "All invites failed");
-        setPhase("setup");
-        return;
+        setStatus("Connected");
+      } catch (err) {
+        setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        hasConnectedRef.current = false; // Allow retry on error
       }
-
-      // Log partial failures but continue if at least one succeeded
-      if (declined.length > 0 || errored.length > 0) {
-        const failedNames = [...declined, ...errored]
-          .map((r) => r.agent.agentType.name)
-          .join(", ");
-        console.warn(`[Chat] Some agents failed to join: ${failedNames}`);
-      }
-
-      // Create file/search/git tools using workspace root
-      // Wrap diagnostics publishing to use clientRef at runtime
-      const diagnosticsPublisher = (eventType: string, payload: unknown) => {
-        clientRef.current?.pubsub.publish(eventType, payload);
-      };
-      const fileTools = createAllToolMethodDefinitions({
-        workspaceRoot,
-        diagnosticsPublisher,
-      });
-
-      // Wrap tools with approval middleware
-      // Use clientRef for runtime roster lookup to avoid stale closure issues
-      // when agents join after this callback is created
-      const approvedTools = wrapMethodsWithApproval(
-        fileTools,
-        {
-          isAgentGranted: approval.isAgentGranted,
-          checkToolApproval: approval.checkToolApproval,
-          requestApproval: approval.requestApproval,
-        },
-        (agentId) => clientRef.current?.roster[agentId]?.metadata.name ?? agentId,
-        // Use getter pattern to avoid stale closure - toolRole state may change during session
-        () => ({ shouldProvideGroup: toolRole.shouldProvideGroup })
-      );
-
-      // Connect using the hook with all methods
-      await connectToChannel(targetChannelId, {
-        eval: evalMethodDef,
-        feedback_form: feedbackFormMethodDef,
-        feedback_custom: feedbackCustomMethodDef,
-        ...approvedTools,
-      });
-
-      setStatus("Connected");
-      setPhase("chat");
-    } catch (err) {
-      setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
-      setPhase("setup");
     }
+
+    void connect();
+  // Minimal dependencies - use refs for callbacks to prevent reconnection loops
   }, [
-    availableAgents,
-    buildInviteConfig,
-    handleFeedbackFormCall,
-    handleFeedbackCustomCall,
-    evalMethodDef,
-    discoveryRef,
-    channelId,
+    channelName,
     connectToChannel,
-    approval.isAgentGranted,
-    approval.checkToolApproval,
-    approval.requestApproval,
-    toolRole.shouldProvideGroup,
     workspaceRoot,
   ]);
 
-  const addAgent = useCallback(async () => {
-    const discovery = discoveryRef.current;
-    if (!discovery || !channelId) return;
+  // Navigate to chat-launcher for new conversation
+  const handleNewConversation = useCallback(() => {
+    const launcherUrl = buildNsLink("panels/chat-launcher", {
+      action: "navigate",
+    });
+    window.location.href = launcherUrl;
+  }, []);
 
-    // Find agents not currently in the chat
-    const notInChat = availableAgents.filter(
-      (a) => !Object.values(participants).some((p) => p.metadata.type === a.agentType.id)
-    );
-
-    const toInvite = notInChat[0];
-    if (!toInvite) return;
-
-    try {
-      const filteredConfig = buildInviteConfig(toInvite);
-      const result = discovery.invite(toInvite.broker.brokerId, toInvite.agentType.id, channelId, {
-        context: "User invited additional agent to chat",
-        config: filteredConfig,
-      });
-      await result.response;
-    } catch (err) {
-      console.error("Failed to invite agent:", err);
-    }
-  }, [availableAgents, channelId, participants, buildInviteConfig, discoveryRef]);
+  // Launch chat-launcher as ephemeral child to add agents to current channel
+  const handleAddAgent = useCallback(async () => {
+    if (!channelName) return;
+    await createChild("panels/chat-launcher", {
+      name: "add-agent",
+      ephemeral: true,
+      focus: true,
+      env: { CHANNEL_NAME: channelName },
+    });
+  }, [channelName]);
 
   const reset = useCallback(() => {
-    setPhase("setup");
     setMessages([]);
     setInput("");
     // Cleanup pending images
     cleanupPendingImages(pendingImages);
     setPendingImages([]);
-    setStatus(INITIAL_STATUS);
     setParticipants({});
     setHistoricalParticipants({});
-    // Generate a new channel ID for the next session
-    setChannelId(generateChannelId());
     clearMethodHistory();
     // Dismiss all active feedbacks (completes them with "cancel")
     // This includes pending tool approvals which now use the feedback system
     for (const callId of activeFeedbacks.keys()) {
       dismissFeedback(callId);
     }
-    disconnect();
-  }, [clearMethodHistory, disconnect, activeFeedbacks, dismissFeedback, pendingImages]);
+    // Navigate to chat-launcher
+    handleNewConversation();
+  }, [clearMethodHistory, activeFeedbacks, dismissFeedback, pendingImages, handleNewConversation]);
 
   const sendMessage = useCallback(async (attachments?: AttachmentInput[]): Promise<void> => {
     const hasText = input.trim().length > 0;
@@ -927,26 +821,23 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
     [clientRef]
   );
 
-  // Setup phase - show agent discovery and selection
-  if (phase === "setup") {
-    return (
-      <AgentSetupPhase
-        discoveryStatus={discoveryStatus}
-        availableAgents={availableAgents}
-        channelId={channelId}
-        onChannelIdChange={setChannelId}
-        onToggleAgent={toggleAgentSelection}
-        onUpdateConfig={updateAgentConfig}
-        onStartChat={() => void startChat()}
-      />
-    );
-  }
-
-  // Connecting phase
-  if (phase === "connecting") {
+  // Error state: no channel name provided
+  if (!channelName) {
     return (
       <Flex direction="column" align="center" justify="center" style={{ height: "100vh", padding: 16 }} gap="3">
-        <Text size="4">{status}</Text>
+        <Card>
+          <Flex direction="column" gap="3" p="4" align="center">
+            <Text size="4" weight="bold" color="red">
+              Missing Channel Name
+            </Text>
+            <Text size="2" color="gray" style={{ textAlign: "center" }}>
+              This panel requires a CHANNEL_NAME environment variable to connect to a chat channel.
+            </Text>
+            <Button onClick={handleNewConversation}>
+              Start New Conversation
+            </Button>
+          </Flex>
+        </Card>
       </Flex>
     );
   }
@@ -966,7 +857,7 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
         />
       ))}
       <ChatPhase
-        channelId={channelId}
+        channelId={channelName}
         connected={connected}
         status={status}
         messages={messages}
@@ -979,7 +870,7 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
         onInputChange={handleInputChange}
         onSendMessage={sendMessage}
         onImagesChange={setPendingImages}
-        onAddAgent={() => void addAgent()}
+        onAddAgent={handleAddAgent}
         onReset={reset}
         onFeedbackDismiss={handleFeedbackDismiss}
         onFeedbackError={handleFeedbackError}

@@ -85,6 +85,14 @@ export async function handleBridgeCall(
       const [repoPath, ref, limit] = args as [string, string?, number?];
       return pm.listCommits(repoPath, ref, limit);
     }
+    case "closeSelf": {
+      // Allow ephemeral panels to close themselves
+      const panel = pm.getPanel(callerId);
+      if (!panel?.ephemeral) {
+        throw new Error(`Only ephemeral panels can close themselves`);
+      }
+      return pm.closePanel(callerId);
+    }
     default:
       throw new Error(`Unknown bridge method: ${method}`);
   }

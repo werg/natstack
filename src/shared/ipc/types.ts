@@ -312,6 +312,8 @@ export interface NavigationEntry {
     /** The URL/path passed to pushState */
     path: string;
   };
+  /** Environment variables to pass to the panel on navigation */
+  env?: Record<string, string>;
 }
 
 /**

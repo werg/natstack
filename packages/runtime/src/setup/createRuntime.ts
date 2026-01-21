@@ -187,6 +187,7 @@ export function createRuntime(deps: RuntimeDeps) {
 
     setTitle: (title: string) => callMain<void>("bridge.setTitle", title),
     getInfo: () => callMain<EndpointInfo>("bridge.getInfo"),
+    closeSelf: () => callMain<void>("bridge.closeSelf"),
     getWorkspaceTree: () => callMain<WorkspaceTree>("bridge.getWorkspaceTree"),
     listBranches: (repoPath: string) => callMain<BranchInfo[]>("bridge.listBranches", repoPath),
     listCommits: (repoPath: string, ref?: string, limit?: number) =>

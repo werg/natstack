@@ -43,6 +43,8 @@ type ChildCreateOptions = {
   newContext?: boolean;
   /** If true, panel can be closed and is not persisted to SQLite */
   ephemeral?: boolean;
+  /** If true, immediately focus the new panel after creation (only applies to app panels) */
+  focus?: boolean;
   /** Legacy fields (still supported programmatically) */
   branch?: string;
   commit?: string;
@@ -459,6 +461,11 @@ export class PanelManager {
         `--natstack-context-id=${contextId ?? ""}`,
       ];
 
+      // Add ephemeral flag if set
+      if (panel?.ephemeral) {
+        additionalArgs.push(`--natstack-ephemeral=true`);
+      }
+
       // Add worker env if available
       if (panel?.env && Object.keys(panel.env).length > 0) {
         try {
@@ -512,6 +519,11 @@ export class PanelManager {
         `--natstack-kind=panel`,
         `--natstack-context-id=${contextId ?? ""}`,
       ];
+
+      // Add ephemeral flag if set
+      if (panel?.ephemeral) {
+        additionalArgs.push(`--natstack-ephemeral=true`);
+      }
 
       // Add panel env if available
       if (panel?.env && Object.keys(panel.env).length > 0) {
@@ -665,8 +677,8 @@ export class PanelManager {
       // ns:// - New navigation protocol (middle/ctrl-click always creates child)
       if (url.startsWith("ns:")) {
         try {
-          const { source, gitRef, context, repoArgs, env, name, newContext, ephemeral } = parseNsUrl(url);
-          this.createChild(panelId, source, { gitRef, contextId: context, repoArgs, env, name, newContext, ephemeral }).catch((err) =>
+          const { source, gitRef, context, repoArgs, env, name, newContext, ephemeral, focus } = parseNsUrl(url);
+          this.createChild(panelId, source, { gitRef, contextId: context, repoArgs, env, name, newContext, ephemeral, focus }).catch((err) =>
             this.handleChildCreationError(panelId, err, url)
           );
         } catch (err) {
@@ -718,15 +730,15 @@ export class PanelManager {
       if (url.startsWith("ns:")) {
         event.preventDefault();
         try {
-          const { source, action, gitRef, context, repoArgs, env, name, newContext, ephemeral } = parseNsUrl(url);
+          const { source, action, gitRef, context, repoArgs, env, name, newContext, ephemeral, focus } = parseNsUrl(url);
           if (action === "child") {
             // Explicit child creation via action=child
-            this.createChild(panelId, source, { gitRef, contextId: context, repoArgs, env, name, newContext, ephemeral }).catch((err) =>
+            this.createChild(panelId, source, { gitRef, contextId: context, repoArgs, env, name, newContext, ephemeral, focus }).catch((err) =>
               this.handleChildCreationError(panelId, err, url)
             );
           } else {
             const targetType: SharedPanel.PanelType = source.startsWith("workers/") ? "worker" : "app";
-            void this.navigatePanel(panelId, source, targetType).catch((err) =>
+            void this.navigatePanel(panelId, source, targetType, { env }).catch((err) =>
               this.handleChildCreationError(panelId, err, url)
             );
           }
@@ -860,9 +872,13 @@ export class PanelManager {
    * Build env for a panel or worker, injecting git credentials, pubsub config, etc.
    * The full git config is serialized to JSON so bootstrap can use it without RPC.
    */
+  /**
+   * Build env for a panel or worker, merging base env with system env.
+   * @param baseEnv - Existing panel env to preserve, or null if creating fresh
+   */
   private buildPanelEnv(
     panelId: string,
-    baseEnv?: Record<string, string>,
+    baseEnv: Record<string, string> | null | undefined,
     gitInfo?: {
       sourceRepo: string;
       branch?: string;
@@ -1083,6 +1099,11 @@ export class PanelManager {
         void this.buildWorkerAsync(panel, { branch, commit, tag });
       } else if (panel.type === "app") {
         void this.buildPanelAsync(panel, { branch, commit, tag, sourcemap: options?.sourcemap });
+      }
+
+      // Focus the newly created panel if requested (only applies to app panels)
+      if (options?.focus && panel.type === "app") {
+        this.focusPanel(panel.id);
       }
 
       return { id: panel.id, type: panel.type, title: panel.title };
@@ -1446,7 +1467,8 @@ export class PanelManager {
   async navigatePanel(
     panelId: string,
     source: string,
-    targetType: SharedPanel.PanelType
+    targetType: SharedPanel.PanelType,
+    options?: { env?: Record<string, string> }
   ): Promise<void> {
     const panel = this.panels.get(panelId);
     if (!panel) {
@@ -1487,6 +1509,7 @@ export class PanelManager {
       source,
       type: targetType,
       resolvedUrl: targetType === "browser" ? source : undefined,
+      env: options?.env,
     };
 
     // Push new entry
@@ -1667,6 +1690,11 @@ export class PanelManager {
         appPanel.resolvedRepoArgs = undefined;
       }
 
+      // Merge env from navigation entry into panel's env
+      if (entry.env && Object.keys(entry.env).length > 0) {
+        appPanel.env = { ...appPanel.env, ...entry.env };
+      }
+
       if (!typeChanged) {
         this.unloadPanelResources(panelId);
       }
@@ -1697,6 +1725,11 @@ export class PanelManager {
         workerPanel.commit = undefined;
         workerPanel.tag = undefined;
         workerPanel.resolvedRepoArgs = undefined;
+      }
+
+      // Merge env from navigation entry into panel's env
+      if (entry.env && Object.keys(entry.env).length > 0) {
+        workerPanel.env = { ...workerPanel.env, ...entry.env };
       }
 
       workerPanel.artifacts = {
@@ -2366,7 +2399,9 @@ export class PanelManager {
     };
 
     // Add to root panels (shell panels are top-level)
-    this.rootPanels.push(panel);
+    // Insert at position 1 (right after pinned root) for newest-first ordering
+    const insertIndex = Math.min(1, this.rootPanels.length);
+    this.rootPanels.splice(insertIndex, 0, panel);
     this.panels.set(panel.id, panel);
 
     // Persist to database
@@ -2889,7 +2924,8 @@ export class PanelManager {
    * Rebuild an app panel by reconstructing its env and triggering the build.
    */
   private async rebuildAppPanel(appPanel: SharedPanel.AppPanel): Promise<void> {
-    appPanel.env = this.buildPanelEnv(appPanel.id, undefined, {
+    // Preserve existing env (e.g., from navigation) as base, then merge system env
+    appPanel.env = this.buildPanelEnv(appPanel.id, appPanel.env, {
       sourceRepo: appPanel.sourceRepo ?? appPanel.path,
       branch: appPanel.branch,
       commit: appPanel.commit,
@@ -2907,7 +2943,8 @@ export class PanelManager {
    * Rebuild a worker panel by reconstructing its env and triggering the build.
    */
   private async rebuildWorkerPanel(workerPanel: SharedPanel.WorkerPanel): Promise<void> {
-    workerPanel.env = this.buildPanelEnv(workerPanel.id, undefined, {
+    // Preserve existing env (e.g., from navigation) as base, then merge system env
+    workerPanel.env = this.buildPanelEnv(workerPanel.id, workerPanel.env, {
       sourceRepo: workerPanel.sourceRepo ?? workerPanel.path,
       branch: workerPanel.branch,
       commit: workerPanel.commit,

@@ -53,6 +53,7 @@ export type * from "../core/types.js";
 export type { Runtime } from "../setup/createRuntime.js";
 
 export const id = config.id;
+export const isEphemeral = config.ephemeral;
 const gitConfig = config.gitConfig;
 const pubsubConfig = config.pubsubConfig;
 
@@ -73,6 +74,7 @@ export const {
   onChildCreationError,
   setTitle,
   getInfo,
+  closeSelf,
   getWorkspaceTree,
   listBranches,
   listCommits,

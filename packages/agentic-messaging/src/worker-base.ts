@@ -1,7 +1,7 @@
 /**
  * Worker Base Utilities
  *
- * Shared utilities for LLM worker implementations (claude-code, codex, pubsub-chat).
+ * Shared utilities for LLM worker implementations (claude-code-responder, codex-responder, etc.).
  * Provides common patterns for permission prompts via feedback_form.
  */
 

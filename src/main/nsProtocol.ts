@@ -36,6 +36,8 @@ export interface ParsedNsUrl {
   name?: string;
   newContext?: boolean;
   ephemeral?: boolean;
+  /** If true, immediately focus the new panel after creation (only applies to action=child on app panels) */
+  focus?: boolean;
 }
 
 /**
@@ -69,6 +71,7 @@ export function parseNsUrl(url: string): ParsedNsUrl {
   const name = parsed.searchParams.get("name") ?? undefined;
   const newContext = parsed.searchParams.get("newContext") === "true" || undefined;
   const ephemeral = parsed.searchParams.get("ephemeral") === "true" || undefined;
+  const focus = parsed.searchParams.get("focus") === "true" || undefined;
 
   let repoArgs: Record<string, RepoArgSpec> | undefined;
   const repoArgsParam = parsed.searchParams.get("repoArgs");
@@ -111,7 +114,7 @@ export function parseNsUrl(url: string): ParsedNsUrl {
     }
   }
 
-  return { source, action, gitRef, context, repoArgs, env, name, newContext, ephemeral };
+  return { source, action, gitRef, context, repoArgs, env, name, newContext, ephemeral, focus };
 }
 
 export interface BuildNsUrlOptions {
@@ -123,6 +126,8 @@ export interface BuildNsUrlOptions {
   name?: string;
   newContext?: boolean;
   ephemeral?: boolean;
+  /** If true, immediately focus the new panel after creation (only applies to action=child on app panels) */
+  focus?: boolean;
 }
 
 /**
@@ -155,6 +160,9 @@ export function buildNsUrl(source: string, options?: BuildNsUrlOptions): string 
   }
   if (options?.ephemeral) {
     searchParams.set("ephemeral", "true");
+  }
+  if (options?.focus) {
+    searchParams.set("focus", "true");
   }
 
   const paramsStr = searchParams.toString();

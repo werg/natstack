@@ -1023,6 +1023,74 @@ describe("PubSubClient", () => {
       });
     });
 
+    it("immediately calls new onRoster handler with current roster if not empty", () => {
+      let onmessage: ((event: { data: string }) => void) | null = null;
+
+      MockWebSocket.mockImplementation(() => {
+        const ws = {
+          readyState: 1,
+          send: vi.fn(),
+          close: vi.fn(),
+          addEventListener: vi.fn((event: string, handler: (event: { data: string }) => void) => {
+            if (event === "message") onmessage = handler;
+          }),
+          removeEventListener: vi.fn(),
+        };
+        return ws;
+      });
+
+      const client = connect(`ws://127.0.0.1:${port}`, "token", {
+        channel: "test",
+      });
+
+      // First, populate the roster via a presence event
+      onmessage!({
+        data: JSON.stringify({
+          kind: "persisted",
+          id: 1,
+          type: "presence",
+          payload: { action: "join", metadata: { name: "Alice" } },
+          senderId: "user-a",
+          ts: 12345,
+        }),
+      });
+
+      // Now register a NEW handler - it should immediately receive current roster
+      const lateHandler = vi.fn();
+      client.onRoster(lateHandler);
+
+      // The handler should have been called once immediately with current roster
+      expect(lateHandler).toHaveBeenCalledTimes(1);
+      expect(lateHandler).toHaveBeenCalledWith({
+        participants: { "user-a": { id: "user-a", metadata: { name: "Alice" } } },
+        ts: expect.any(Number),
+      });
+    });
+
+    it("does not call new onRoster handler if roster is empty", () => {
+      MockWebSocket.mockImplementation(() => {
+        const ws = {
+          readyState: 1,
+          send: vi.fn(),
+          close: vi.fn(),
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        };
+        return ws;
+      });
+
+      const client = connect(`ws://127.0.0.1:${port}`, "token", {
+        channel: "test",
+      });
+
+      // Register handler without any presence events
+      const handler = vi.fn();
+      client.onRoster(handler);
+
+      // Handler should NOT have been called since roster is empty
+      expect(handler).not.toHaveBeenCalled();
+    });
+
     it("does not include metadata in URL when provided", () => {
       const metadata = { name: "Alice", status: "online" };
       connect(`ws://127.0.0.1:${port}`, "token", {

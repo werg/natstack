@@ -86,9 +86,10 @@ export function useDiscovery({ workspaceRoot }: UseDiscoveryOptions = {}) {
       try {
         const discovery = await connectForDiscovery(pubsubConfig!.serverUrl, pubsubConfig!.token, {
           availabilityChannel: AVAILABILITY_CHANNEL,
-          name: "Chat Panel",
-          handle: "chat-panel",
+          name: "Chat Launcher",
+          handle: "chat-launcher",
           type: "panel",
+          reconnect: true,
         });
 
         if (!mounted) {
@@ -105,6 +106,18 @@ export function useDiscovery({ workspaceRoot }: UseDiscoveryOptions = {}) {
         unsubBrokersChanged = discovery.onBrokersChanged(() => {
           if (mounted) {
             void updateAvailableAgents(discovery);
+          }
+        });
+
+        // Track connection state via underlying client
+        discovery.client.onDisconnect(() => {
+          if (mounted) {
+            setDiscoveryStatus("Disconnected - reconnecting...");
+          }
+        });
+        discovery.client.onReconnect(() => {
+          if (mounted) {
+            setDiscoveryStatus("Connected to discovery");
           }
         });
 

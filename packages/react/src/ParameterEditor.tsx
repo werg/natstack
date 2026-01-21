@@ -2,7 +2,7 @@
  * ParameterEditor Component
  *
  * Thin wrapper around FormRenderer for backwards compatibility.
- * Used by agent-manager (preferences) and pubsub-chat (pre-connection setup).
+ * Used by agent-manager (preferences) and chat-launcher (agent setup).
  *
  * @deprecated Use FormRenderer directly for new code
  */

@@ -21,6 +21,7 @@ declare global {
       }
     | undefined;
   var __natstackContextId: string | undefined;
+  var __natstackEphemeral: boolean | undefined;
 }
 
 // =============================================================================
@@ -44,6 +45,9 @@ export const ARG_KIND = "--natstack-kind=";
 
 /** Argument prefix for context ID */
 export const ARG_CONTEXT_ID = "--natstack-context-id=";
+
+/** Argument prefix for ephemeral flag */
+export const ARG_EPHEMERAL = "--natstack-ephemeral=";
 
 // =============================================================================
 // Environment variable keys
@@ -88,6 +92,7 @@ export interface ParsedPreloadConfig {
   parentId: string | null;
   gitConfig: GitConfig | null;
   pubsubConfig: PubSubConfig | null;
+  ephemeral: boolean;
 }
 
 export type NatstackKind = "panel" | "worker" | "shell";
@@ -128,6 +133,11 @@ export function parseKind(): NatstackKind {
 export function parseContextId(): string {
   const arg = process.argv.find((value) => value.startsWith(ARG_CONTEXT_ID));
   return arg ? (arg.split("=")[1] ?? "") : "";
+}
+
+export function parseEphemeral(): boolean {
+  const arg = process.argv.find((value) => value.startsWith(ARG_EPHEMERAL));
+  return arg?.split("=")[1] === "true";
 }
 
 export function parseEnvArg(): Record<string, string> {
@@ -196,6 +206,7 @@ export function parsePreloadConfig(): ParsedPreloadConfig {
     parentId,
     gitConfig: parseGitConfig(syntheticEnv),
     pubsubConfig: parsePubSubConfig(syntheticEnv),
+    ephemeral: parseEphemeral(),
   };
 }
 
@@ -330,6 +341,7 @@ export function setPreloadGlobals(
   g["__natstackGitConfig"] = config.gitConfig;
   g["__natstackPubSubConfig"] = config.pubsubConfig;
   g["__natstackEnv"] = config.syntheticEnv;
+  g["__natstackEphemeral"] = config.ephemeral;
   g["__natstackTransport"] = transport;
 }
 
@@ -354,6 +366,7 @@ export function exposeGlobalsViaContextBridge(
   contextBridge.exposeInMainWorld("__natstackGitConfig", config.gitConfig);
   contextBridge.exposeInMainWorld("__natstackPubSubConfig", config.pubsubConfig);
   contextBridge.exposeInMainWorld("__natstackEnv", config.syntheticEnv);
+  contextBridge.exposeInMainWorld("__natstackEphemeral", config.ephemeral);
   contextBridge.exposeInMainWorld("__natstackTransport", transport);
 }
 
@@ -373,6 +386,7 @@ export function setUnsafeGlobals(
   globalThis.__natstackGitConfig = config.gitConfig as unknown as typeof globalThis.__natstackGitConfig;
   globalThis.__natstackPubSubConfig = config.pubsubConfig as unknown as typeof globalThis.__natstackPubSubConfig;
   globalThis.__natstackEnv = config.syntheticEnv;
+  globalThis.__natstackEphemeral = config.ephemeral;
   globalThis.__natstackTransport = transport;
 
   // Set filesystem scope root for unsafe panels/workers

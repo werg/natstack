@@ -146,7 +146,7 @@ export interface ThinkingTrackerOptions {
  * ThinkingTracker manages the state of thinking/reasoning messages.
  *
  * This utility provides a consistent way to handle thinking content across
- * different responder implementations (Claude Code, Codex, pubsub-chat).
+ * different responder implementations (claude-code-responder, codex-responder, etc.).
  *
  * It handles:
  * - Starting new thinking messages with proper contentType
@@ -334,7 +334,7 @@ export interface ActionTrackerOptions {
  * ActionTracker manages the state of action messages.
  *
  * This utility provides a consistent way to handle action content across
- * different responder implementations (Claude Code, Codex, pubsub-chat).
+ * different responder implementations (claude-code-responder, codex-responder, etc.).
  *
  * It handles:
  * - Starting new action messages with proper contentType

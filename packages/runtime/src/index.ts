@@ -283,6 +283,8 @@ export const onChildRemoved = notInShell("onChildRemoved") as (
 
 export const setTitle = notInShell("setTitle") as (title: string) => Promise<void>;
 export const getInfo = notInShell("getInfo") as () => Promise<import("./core/index.js").EndpointInfo>;
+export const closeSelf = notInShell("closeSelf") as () => Promise<void>;
+export const isEphemeral: boolean = false;
 export const getWorkspaceTree = shellRpc
   ? () => shellRpc.call<import("./core/index.js").WorkspaceTree>("main", "bridge.getWorkspaceTree")
   : (notInShell("getWorkspaceTree") as () => Promise<import("./core/index.js").WorkspaceTree>);

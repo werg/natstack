@@ -26,6 +26,8 @@ declare global {
   var __natstackPubSubConfig: PubSubConfig | null | undefined;
   /** Environment variables */
   var __natstackEnv: Record<string, string> | undefined;
+  /** Whether this panel is ephemeral (can be closed, not persisted) */
+  var __natstackEphemeral: boolean | undefined;
 }
 
 export interface InjectedConfig {
@@ -37,6 +39,7 @@ export interface InjectedConfig {
   gitConfig: GitConfig | null;
   pubsubConfig: PubSubConfig | null;
   env: Record<string, string>;
+  ephemeral: boolean;
 }
 
 // Access globals via globalThis to support VM sandbox environments
@@ -50,6 +53,7 @@ const g = globalThis as unknown as {
   __natstackGitConfig?: GitConfig | null;
   __natstackPubSubConfig?: PubSubConfig | null;
   __natstackEnv?: Record<string, string>;
+  __natstackEphemeral?: boolean;
 };
 
 /**
@@ -74,5 +78,6 @@ export function getInjectedConfig(): InjectedConfig {
     gitConfig: g.__natstackGitConfig ?? null,
     pubsubConfig: g.__natstackPubSubConfig ?? null,
     env: g.__natstackEnv ?? {},
+    ephemeral: g.__natstackEphemeral ?? false,
   };
 }

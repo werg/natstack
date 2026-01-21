@@ -44,7 +44,8 @@ interface ChatPhaseProps {
   /** Send message with optional attachments (server assigns IDs) */
   onSendMessage: (attachments?: AttachmentInput[]) => Promise<void>;
   onImagesChange: (images: PendingImage[]) => void;
-  onAddAgent: () => void;
+  /** Add agent to the chat - optional, hides button if not provided */
+  onAddAgent?: () => void;
   onReset: () => void;
   onFeedbackDismiss: (callId: string) => void;
   onFeedbackError: (callId: string, error: Error) => void;
@@ -244,9 +245,11 @@ export function ChatPhase({
               />
             );
           })}
-          <Button variant="soft" size="1" onClick={onAddAgent}>
-            Add Agent
-          </Button>
+          {onAddAgent && (
+            <Button variant="soft" size="1" onClick={onAddAgent}>
+              Add Agent
+            </Button>
+          )}
           {toolApproval && (
             <ToolPermissionsDropdown
               settings={toolApproval.settings}

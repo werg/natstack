@@ -39,6 +39,21 @@ describe("nsLinks", () => {
       expect(url).toBe("ns:///panels/editor?ephemeral=true");
     });
 
+    it("builds URL with focus=true", () => {
+      const url = buildNsLink("panels/editor", { focus: true });
+      expect(url).toBe("ns:///panels/editor?focus=true");
+    });
+
+    it("omits focus when false", () => {
+      const url = buildNsLink("panels/editor", { focus: false });
+      expect(url).toBe("ns:///panels/editor");
+    });
+
+    it("omits focus when undefined", () => {
+      const url = buildNsLink("panels/editor", { focus: undefined });
+      expect(url).toBe("ns:///panels/editor");
+    });
+
     it("builds URL with all options", () => {
       const url = buildNsLink("panels/editor", {
         action: "child",
@@ -46,12 +61,14 @@ describe("nsLinks", () => {
         gitRef: "main",
         repoArgs: { workspace: "repos/app" },
         ephemeral: true,
+        focus: true,
       });
       expect(url).toContain("action=child");
       expect(url).toContain("context=abc");
       expect(url).toContain("gitRef=main");
       expect(url).toContain("repoArgs=");
       expect(url).toContain("ephemeral=true");
+      expect(url).toContain("focus=true");
     });
 
     it("encodes source with special characters", () => {

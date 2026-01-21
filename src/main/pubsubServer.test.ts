@@ -482,7 +482,6 @@ describe("PubSub Server", () => {
       const params = new URLSearchParams({
         token: "client-a-token",
         channel: presenceChannel,
-        metadata: JSON.stringify(metadata),
       });
       const ws = new WebSocket(`ws://127.0.0.1:${port}/?${params.toString()}`);
       openClients.push(ws);
@@ -496,9 +495,17 @@ describe("PubSub Server", () => {
         ws.on("error", reject);
       });
 
+      // Send metadata via update-metadata action (not URL params)
+      ws.send(JSON.stringify({
+        action: "update-metadata",
+        payload: metadata,
+        ref: 1,
+      }));
+
       await new Promise((r) => setTimeout(r, 100));
       const presence = messages.find(
-        (m) => (m as { type?: string }).type === "presence"
+        (m) => (m as { type?: string }).type === "presence" &&
+          (m as { payload?: { action?: string } }).payload?.action === "update"
       ) as {
         payload?: { metadata?: Record<string, unknown> };
       };

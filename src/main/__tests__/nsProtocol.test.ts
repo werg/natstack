@@ -83,6 +83,22 @@ describe("ns:// protocol", () => {
     it("rejects malformed repoArgs JSON", () => {
       expect(() => parseNsUrl("ns:///panels/editor?repoArgs=not-json")).toThrow("Invalid JSON");
     });
+
+    it("parses with focus=true", () => {
+      const result = parseNsUrl("ns:///panels/editor?focus=true");
+      expect(result.source).toBe("panels/editor");
+      expect(result.focus).toBe(true);
+    });
+
+    it("returns focus undefined when not present", () => {
+      const result = parseNsUrl("ns:///panels/editor");
+      expect(result.focus).toBeUndefined();
+    });
+
+    it("returns focus undefined for focus=false", () => {
+      const result = parseNsUrl("ns:///panels/editor?focus=false");
+      expect(result.focus).toBeUndefined();
+    });
   });
 
   describe("buildNsUrl", () => {
@@ -143,6 +159,21 @@ describe("ns:// protocol", () => {
       const url = buildNsUrl("panels/deep/nested/path");
       expect(url).toBe("ns:///panels/deep/nested/path");
     });
+
+    it("builds URL with focus=true", () => {
+      const url = buildNsUrl("panels/editor", { focus: true });
+      expect(url).toBe("ns:///panels/editor?focus=true");
+    });
+
+    it("omits focus when false", () => {
+      const url = buildNsUrl("panels/editor", { focus: false });
+      expect(url).toBe("ns:///panels/editor");
+    });
+
+    it("omits focus when undefined", () => {
+      const url = buildNsUrl("panels/editor", { focus: undefined });
+      expect(url).toBe("ns:///panels/editor");
+    });
   });
 
   describe("round-trip", () => {
@@ -153,6 +184,7 @@ describe("ns:// protocol", () => {
         gitRef: "feature/test",
         repoArgs: { workspace: { repo: "repos/app", ref: "v1.0.0" } },
         ephemeral: true,
+        focus: true,
       };
       const url = buildNsUrl("panels/editor", options);
       const parsed = parseNsUrl(url);
@@ -162,6 +194,7 @@ describe("ns:// protocol", () => {
       expect(parsed.gitRef).toBe("feature/test");
       expect(parsed.repoArgs).toEqual({ workspace: { repo: "repos/app", ref: "v1.0.0" } });
       expect(parsed.ephemeral).toBe(true);
+      expect(parsed.focus).toBe(true);
     });
   });
 });

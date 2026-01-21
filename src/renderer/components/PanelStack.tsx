@@ -111,11 +111,25 @@ export function PanelStack({
   }, [rootPanels, visiblePanelId]);
 
   // Handle panel deletion - fall back to first root if current panel is gone
+  // Use a small delay to avoid race condition with tree updates when creating new panels.
+  // The tree update is debounced (16ms), so we need to wait before assuming the panel was deleted.
   useEffect(() => {
-    // If we have a visible panel ID but no panel data and loading is done, panel was deleted
-    if (visiblePanelId && !visiblePanel && !panelLoading && rootPanels.length > 0) {
-      setVisiblePanelId(rootPanels[0]!.id);
+    // If we have a visible panel ID but no panel data and loading is done, panel may be deleted
+    if (!visiblePanelId || visiblePanel || panelLoading || rootPanels.length === 0) {
+      return;
     }
+    // Delay fallback to allow pending tree updates to arrive
+    const timer = setTimeout(() => {
+      setVisiblePanelId((currentId) => {
+        // Only fall back if we still have the same ID and still can't find the panel
+        // This prevents incorrectly falling back during panel creation
+        if (currentId === visiblePanelId) {
+          return rootPanels[0]!.id;
+        }
+        return currentId;
+      });
+    }, 50); // 50ms > 16ms debounce, gives tree time to update
+    return () => clearTimeout(timer);
   }, [visiblePanelId, visiblePanel, panelLoading, rootPanels]);
 
   // Build lazy title navigation data

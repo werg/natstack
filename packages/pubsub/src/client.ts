@@ -728,6 +728,11 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     },
     onRoster: (handler: (roster: RosterUpdate<T>) => void) => {
       rosterHandlers.add(handler);
+      // Immediately call handler with current roster if it's not empty
+      // This ensures handlers registered after replay still get the roster state
+      if (Object.keys(currentRoster).length > 0) {
+        handler({ participants: { ...currentRoster }, ts: Date.now() });
+      }
       return () => rosterHandlers.delete(handler);
     },
     get roster() {
