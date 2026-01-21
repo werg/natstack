@@ -258,3 +258,18 @@ export interface BrokerQuery {
   /** Free-text search in descriptions */
   descriptionContains?: string;
 }
+
+/**
+ * Record of an agent worker that can be used for recovery.
+ * Extracted from presence events to track workers that may need to be reloaded.
+ */
+export interface AgentWorkerRecord {
+  /** The panel ID of the worker (used to reload it via ensurePanelLoaded) */
+  workerPanelId: string;
+  /** The agent type ID (e.g., "pubsub-chat-responder") */
+  agentTypeId: string;
+  /** The client ID of the worker in the channel */
+  clientId: string;
+  /** Leave reason if the worker left ("graceful" = intentional, "disconnect" = may want to rejoin) */
+  leaveReason?: "graceful" | "disconnect";
+}

@@ -44,6 +44,7 @@ export type {
   BrowserChildSpec,
   GitConfig,
   EndpointInfo,
+  EnsureLoadedResult,
   EventSchemaMap,
   InferEventMap,
   ChildHandle,
@@ -284,6 +285,8 @@ export const onChildRemoved = notInShell("onChildRemoved") as (
 export const setTitle = notInShell("setTitle") as (title: string) => Promise<void>;
 export const getInfo = notInShell("getInfo") as () => Promise<import("./core/index.js").EndpointInfo>;
 export const closeSelf = notInShell("closeSelf") as () => Promise<void>;
+export const unloadSelf = notInShell("unloadSelf") as () => Promise<void>;
+export const ensurePanelLoaded = notInShell("ensurePanelLoaded") as (panelId: string) => Promise<import("./core/index.js").EnsureLoadedResult>;
 export const isEphemeral: boolean = false;
 export const getWorkspaceTree = shellRpc
   ? () => shellRpc.call<import("./core/index.js").WorkspaceTree>("main", "bridge.getWorkspaceTree")

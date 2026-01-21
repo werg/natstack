@@ -382,6 +382,13 @@ export interface IncomingErrorMessage extends IncomingBase {
 export type PresenceAction = "join" | "leave" | "update";
 
 /**
+ * Reason for a participant leaving the channel.
+ * - "graceful": Intentional close() - participant chose to leave
+ * - "disconnect": Connection lost/crash - participant may want to rejoin
+ */
+export type LeaveReason = "graceful" | "disconnect";
+
+/**
  * An incoming presence event (join/leave/update).
  * These events are persisted and replayed to reconstruct participant history.
  */
@@ -402,6 +409,8 @@ export interface IncomingPresenceEvent {
   };
   /** The action */
   action: PresenceAction;
+  /** Reason for leave (only present when action === "leave") */
+  leaveReason?: LeaveReason;
   /** Participant metadata at the time of the event */
   metadata: ParticipantMetadata;
 }

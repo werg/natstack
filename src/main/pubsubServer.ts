@@ -72,6 +72,8 @@ interface ParticipantState {
   id: string;
   metadata: Record<string, unknown>;
   connections: number;
+  /** Whether this participant sent a graceful close message */
+  pendingGracefulClose: boolean;
 }
 
 interface ChannelState {
@@ -121,10 +123,15 @@ interface ServerMessage {
 /** Presence event types for join/leave tracking */
 type PresenceAction = "join" | "leave" | "update";
 
+/** Reason for leave - graceful (intentional) vs disconnect (connection lost) */
+type LeaveReason = "graceful" | "disconnect";
+
 /** Payload for presence events (type: "presence") */
 interface PresencePayload {
   action: PresenceAction;
   metadata: Record<string, unknown>;
+  /** Reason for leave (only present when action === "leave") */
+  leaveReason?: LeaveReason;
 }
 
 interface PublishClientMessage {
@@ -143,7 +150,12 @@ interface UpdateMetadataClientMessage {
   ref?: number;
 }
 
-type ClientMessage = PublishClientMessage | UpdateMetadataClientMessage;
+interface CloseClientMessage {
+  action: "close";
+  ref?: number;
+}
+
+type ClientMessage = PublishClientMessage | UpdateMetadataClientMessage | CloseClientMessage;
 
 interface MessageRow {
   id: number;
@@ -726,6 +738,8 @@ export class PubSubServer {
 
     if (existingParticipant) {
       existingParticipant.connections += 1;
+      // Reset graceful close flag on reconnect
+      existingParticipant.pendingGracefulClose = false;
       if (metadataChanged) {
         existingParticipant.metadata = metadata;
       }
@@ -734,6 +748,7 @@ export class PubSubServer {
         id: clientId,
         metadata,
         connections: 1,
+        pendingGracefulClose: false,
       });
     }
 
@@ -795,9 +810,11 @@ export class PubSubServer {
       if (participant) {
         participant.connections -= 1;
         if (participant.connections <= 0) {
+          // Determine leave reason from pendingGracefulClose flag
+          const leaveReason: LeaveReason = participant.pendingGracefulClose ? "graceful" : "disconnect";
           state.participants.delete(clientId);
           // Persist leave event after last connection closes
-          this.publishPresenceEvent(client, "leave", participant.metadata);
+          this.publishPresenceEvent(client, "leave", participant.metadata, undefined, leaveReason);
         }
       }
 
@@ -859,6 +876,20 @@ export class PubSubServer {
         }
       }
       this.publishPresenceEvent(client, "update", client.metadata, ref);
+      return;
+    }
+
+    if (msg.action === "close") {
+      // Mark this participant as gracefully closing
+      const state = this.channels.get(client.channel);
+      if (state) {
+        const participant = state.participants.get(client.clientId);
+        if (participant) {
+          participant.pendingGracefulClose = true;
+        }
+      }
+      // Acknowledge the close message
+      this.send(client.ws, { kind: "persisted", ref });
       return;
     }
 
@@ -1180,12 +1211,14 @@ export class PubSubServer {
     client: ClientConnection,
     action: PresenceAction,
     metadata: Record<string, unknown>,
-    senderRef?: number
+    senderRef?: number,
+    leaveReason?: LeaveReason
   ): void {
     const ts = Date.now();
     const payload: PresencePayload = {
       action,
       metadata,
+      ...(leaveReason && { leaveReason }),
     };
 
     let messageId: number;

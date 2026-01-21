@@ -7,6 +7,7 @@ import {
   type CreateChildOptions,
   type ChildCreationResult,
   type EndpointInfo,
+  type EnsureLoadedResult,
   type GitConfig,
   type PubSubConfig,
   type WorkspaceTree,
@@ -188,6 +189,8 @@ export function createRuntime(deps: RuntimeDeps) {
     setTitle: (title: string) => callMain<void>("bridge.setTitle", title),
     getInfo: () => callMain<EndpointInfo>("bridge.getInfo"),
     closeSelf: () => callMain<void>("bridge.closeSelf"),
+    unloadSelf: () => callMain<void>("bridge.unloadSelf"),
+    ensurePanelLoaded: (panelId: string) => callMain<EnsureLoadedResult>("bridge.ensurePanelLoaded", panelId),
     getWorkspaceTree: () => callMain<WorkspaceTree>("bridge.getWorkspaceTree"),
     listBranches: (repoPath: string) => callMain<BranchInfo[]>("bridge.listBranches", repoPath),
     listCommits: (repoPath: string, ref?: string, limit?: number) =>

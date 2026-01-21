@@ -12,6 +12,7 @@ import { usePanelTheme } from "@natstack/react";
 import { z } from "zod";
 import {
   type IncomingEvent,
+  type IncomingPresenceEvent,
   type IncomingToolRoleRequestEvent,
   type IncomingToolRoleResponseEvent,
   type IncomingToolRoleHandoffEvent,
@@ -51,6 +52,7 @@ import { createAllToolMethodDefinitions } from "./tools";
 import { useChannelConnection } from "./hooks/useChannelConnection";
 import { useMethodHistory, type ChatMessage } from "./hooks/useMethodHistory";
 import { useToolRole } from "./hooks/useToolRole";
+import { useAgentRecovery } from "./hooks/useAgentRecovery";
 import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 import { ToolRoleConflictModal } from "./components/ToolRoleConflictModal";
 import { ChatPhase } from "./components/ChatPhase";
@@ -99,6 +101,7 @@ function dispatchAgenticEvent(
   handlers: {
     setMessages: (updater: (prev: ChatMessage[]) => ChatMessage[]) => void;
     setHistoricalParticipants: (updater: (prev: Record<string, Participant<ChatParticipantMetadata>>) => Record<string, Participant<ChatParticipantMetadata>>) => void;
+    setPresenceEvents: (updater: (prev: IncomingPresenceEvent[]) => IncomingPresenceEvent[]) => void;
     addMethodHistoryEntry: (entry: MethodHistoryEntry) => void;
     handleMethodResult: (result: { callId: string; content?: unknown; complete: boolean; isError: boolean; progress?: number }) => void;
   },
@@ -194,6 +197,8 @@ function dispatchAgenticEvent(
     }
 
     case "presence": {
+      // Collect presence events for agent recovery
+      handlers.setPresenceEvents((prev) => [...prev, event as IncomingPresenceEvent]);
       if (event.action === "join" && isChatParticipantMetadata(event.metadata)) {
         handlers.setHistoricalParticipants((prev) => ({
           ...prev,
@@ -242,6 +247,10 @@ export default function AgenticChat() {
   const [participants, setParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
   // Historical participants reconstructed from presence events during replay
   const [historicalParticipants, setHistoricalParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
+  // Presence events collected for agent recovery
+  const [presenceEvents, setPresenceEvents] = useState<IncomingPresenceEvent[]>([]);
+  // Agent load errors from recovery attempts
+  const [agentErrors, setAgentErrors] = useState<Array<{ handle: string; workerPanelId: string; buildState: string; error: string }>>([]);
   // Combine historical participants (from replay) with current participants
   // Current participants take precedence over historical ones
   const allParticipants = useMemo(() => {
@@ -293,6 +302,7 @@ export default function AgenticChat() {
           {
             setMessages,
             setHistoricalParticipants,
+            setPresenceEvents,
             addMethodHistoryEntry,
             handleMethodResult,
           },
@@ -313,6 +323,7 @@ export default function AgenticChat() {
       [
         setMessages,
         setHistoricalParticipants,
+        setPresenceEvents,
         addMethodHistoryEntry,
         handleMethodResult,
         panelClientId,
@@ -397,6 +408,18 @@ export default function AgenticChat() {
 
   // Tool role hook - handles conflict detection and negotiation
   const toolRole = useToolRole(clientRef.current, clientId);
+
+  // Agent recovery hook - automatically reloads disconnected agent workers
+  // Callback for agent recovery errors - memoized to prevent unnecessary rerenders
+  const handleAgentLoadError = useCallback((error: { handle: string; workerPanelId: string; buildState: string; error: string }) => {
+    setAgentErrors((prev) => [...prev, error]);
+  }, []);
+
+  useAgentRecovery(presenceEvents, {
+    enabled: connected,
+    participants: allParticipants,
+    onAgentLoadError: handleAgentLoadError,
+  });
 
   // Keep the tool role handler refs updated so onEvent can call them
   useEffect(() => {
@@ -856,6 +879,48 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
           isNegotiating={toolRole.groupStates[conflict.group]?.negotiating ?? false}
         />
       ))}
+      {/* Agent recovery errors */}
+      {agentErrors.length > 0 && (
+        <Card style={{ margin: "8px", backgroundColor: "var(--red-3)" }}>
+          <Flex direction="column" gap="2">
+            <Text weight="bold" color="red">Some agents failed to load:</Text>
+            {agentErrors.map((err, idx) => (
+              <Flex key={`${err.workerPanelId}-${idx}`} direction="column" gap="1">
+                <Flex align="center" gap="2">
+                  <Text weight="medium">@{err.handle}</Text>
+                  <Text size="1" color={err.buildState === "dirty" ? "orange" : "red"}>
+                    [{err.buildState}]
+                  </Text>
+                </Flex>
+                <Text size="2" color="gray">
+                  {err.buildState === "dirty"
+                    ? "Worker has uncommitted changes. Focus the worker panel to commit or discard."
+                    : err.buildState === "not-git-repo"
+                    ? "Worker source is not in a git repository."
+                    : err.error}
+                </Text>
+                <Button
+                  size="1"
+                  variant="soft"
+                  onClick={() => {
+                    // Focus the worker panel using ns: protocol
+                    window.location.href = buildNsLink({ action: "focus", panelId: err.workerPanelId });
+                  }}
+                >
+                  {err.buildState === "dirty" ? "Resolve Changes" : "View Worker"}
+                </Button>
+              </Flex>
+            ))}
+            <Button
+              size="1"
+              variant="ghost"
+              onClick={() => setAgentErrors([])}
+            >
+              Dismiss
+            </Button>
+          </Flex>
+        </Card>
+      )}
       <ChatPhase
         channelId={channelName}
         connected={connected}

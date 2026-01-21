@@ -23,6 +23,7 @@ import type {
   IncomingPresenceEvent,
   IncomingMethodCall,
   IncomingMethodResult,
+  LeaveReason,
   PresenceAction,
   SendResult,
   MethodAdvertisement,
@@ -1087,7 +1088,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     }
 
     if (type === "presence") {
-      const presencePayload = payload as { action?: PresenceAction; metadata?: Record<string, unknown> };
+      const presencePayload = payload as { action?: PresenceAction; metadata?: Record<string, unknown>; leaveReason?: LeaveReason };
       if (!presencePayload.action || !presencePayload.metadata) {
         return null;
       }
@@ -1098,6 +1099,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         pubsubId,
         senderMetadata: normalizedSender,
         action: presencePayload.action,
+        leaveReason: presencePayload.leaveReason,
         metadata: presencePayload.metadata,
       };
       return { ...presenceEvent, type: "presence" };
@@ -1749,6 +1751,13 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       return pubsub.reconnecting;
     },
     close: async () => {
+      // Send graceful close message to server before disconnecting
+      // This allows the server to record a "graceful" leave reason instead of "disconnect"
+      try {
+        await pubsub.sendRaw({ action: "close" });
+      } catch {
+        // Ignore errors - connection may already be closed
+      }
       pubsub.close();
       if (sessionDb) {
         await sessionDb.close();

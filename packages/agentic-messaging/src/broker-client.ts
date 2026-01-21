@@ -346,6 +346,13 @@ export async function connectForDiscovery(
 
   function onBrokersChanged(handler: (brokers: DiscoveredBroker[]) => void): () => void {
     brokerChangeHandlers.add(handler);
+    // Immediately call handler with current brokers if any exist
+    // This matches the behavior of pubsub.onRoster and ensures handlers
+    // don't miss brokers that connected before subscription
+    const currentBrokers = discoverBrokers();
+    if (currentBrokers.length > 0) {
+      handler(currentBrokers);
+    }
     return () => brokerChangeHandlers.delete(handler);
   }
 

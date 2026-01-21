@@ -353,13 +353,15 @@ export default function AgentPreferences() {
               const agentConfig = {
                 ...invite.config,
                 handle: agentHandle,
+                agentTypeId: agentType.id, // Pass agent type for recovery identification
               };
               const env: Record<string, string> = {
                 CHANNEL: invite.targetChannel,
                 AGENT_CONFIG: JSON.stringify(agentConfig),
               };
 
-              const handle = await createChild(workerSource, { name: workerName, env, ephemeral: true });
+              // Don't use ephemeral: true - workers should persist for recovery support
+              const handle = await createChild(workerSource, { name: workerName, env });
 
               const activeAgent: ActiveAgent = {
                 id: handle.id,

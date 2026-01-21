@@ -75,6 +75,8 @@ export const {
   setTitle,
   getInfo,
   closeSelf,
+  unloadSelf,
+  ensurePanelLoaded,
   getWorkspaceTree,
   listBranches,
   listCommits,

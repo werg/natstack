@@ -3067,6 +3067,91 @@ export class PanelManager {
     }
   }
 
+  /**
+   * Ensure a panel is loaded and running.
+   * If the panel exists but is unloaded (pending state), rebuild it.
+   * Returns detailed result with build state and any errors.
+   * Used for agent worker recovery - reloading workers that disconnected unexpectedly.
+   */
+  async ensurePanelLoaded(panelId: string): Promise<SharedPanel.EnsureLoadedResult> {
+    const panel = this.panels.get(panelId);
+    if (!panel) {
+      console.log(`[PanelManager] ensurePanelLoaded: Panel not found: ${panelId}`);
+      return { success: false, buildState: "not-found", error: "Panel not found" };
+    }
+
+    const currentState = panel.artifacts?.buildState;
+
+    // Already loaded - return success
+    if (currentState === "ready") {
+      console.log(`[PanelManager] ensurePanelLoaded: Panel already loaded: ${panelId}`);
+      return { success: true, buildState: "ready" };
+    }
+
+    // Currently building - wait for completion
+    if (currentState === "building" || currentState === "cloning") {
+      console.log(`[PanelManager] ensurePanelLoaded: Waiting for build: ${panelId}`);
+      return await this.waitForBuildComplete(panelId);
+    }
+
+    // Error states - return the error info
+    if (currentState === "error") {
+      return {
+        success: false,
+        buildState: "error",
+        error: panel.artifacts?.error ?? panel.artifacts?.buildProgress ?? "Build failed",
+        buildLog: panel.artifacts?.buildLog,
+      };
+    }
+
+    if (currentState === "dirty" || currentState === "not-git-repo") {
+      return {
+        success: false,
+        buildState: currentState,
+        error: panel.artifacts?.buildProgress ?? `Panel is ${currentState}`,
+      };
+    }
+
+    // State is "pending" - trigger rebuild
+    console.log(`[PanelManager] ensurePanelLoaded: Rebuilding unloaded panel: ${panelId}`);
+    await this.rebuildUnloadedPanel(panelId);
+
+    // Wait for rebuild to complete
+    return await this.waitForBuildComplete(panelId);
+  }
+
+  /**
+   * Wait for a panel build to complete, polling until ready or error.
+   */
+  private async waitForBuildComplete(panelId: string, timeoutMs = 60000): Promise<SharedPanel.EnsureLoadedResult> {
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < timeoutMs) {
+      const panel = this.panels.get(panelId);
+      if (!panel) {
+        return { success: false, buildState: "not-found", error: "Panel disappeared" };
+      }
+
+      const state = panel.artifacts?.buildState;
+      if (state === "ready") {
+        return { success: true, buildState: "ready" };
+      }
+      if (state === "error" || state === "dirty" || state === "not-git-repo") {
+        return {
+          success: false,
+          buildState: state,
+          error: panel.artifacts?.error ?? panel.artifacts?.buildProgress ?? `Build failed: ${state}`,
+          buildLog: panel.artifacts?.buildLog,
+        };
+      }
+
+      // Still building - wait and poll
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    return { success: false, buildState: "timeout", error: "Build timed out" };
+  }
+
   async setTitle(callerId: string, title: string): Promise<void> {
     const panel = this.panels.get(callerId);
     if (!panel) {

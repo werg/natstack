@@ -89,6 +89,16 @@ export async function handleBridgeCall(
       // Allow any panel to close itself
       return pm.closePanel(callerId);
     }
+    case "unloadSelf": {
+      // Allow any panel to unload itself (release resources but stay in tree)
+      return pm.unloadPanel(callerId);
+    }
+    case "ensurePanelLoaded": {
+      // Allow any panel to ensure another panel is loaded
+      // Used for agent worker recovery - chat panels can reload disconnected workers
+      const [targetPanelId] = args as [string];
+      return pm.ensurePanelLoaded(targetPanelId);
+    }
     default:
       throw new Error(`Unknown bridge method: ${method}`);
   }

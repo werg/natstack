@@ -5,7 +5,7 @@
  * Listens for user messages on a channel and responds using AI streaming.
  */
 
-import { pubsubConfig, setTitle, id } from "@natstack/runtime";
+import { pubsubConfig, setTitle, id, unloadSelf } from "@natstack/runtime";
 import {
   connect,
   createLogger,
@@ -75,8 +75,12 @@ async function main() {
   log("Starting chat responder...");
   log(`Handle: @${handle}`);
 
+  // Get agentTypeId from config (passed by agent-manager)
+  const agentTypeId = typeof agentConfig.agentTypeId === "string" ? agentConfig.agentTypeId : "pubsub-chat-responder";
+
   // Connect to agentic messaging channel with reconnection and participant metadata
   // contextId is obtained automatically from the server's ready message
+  // Include workerPanelId and agentTypeId for recovery support
   const client = await connect<ChatParticipantMetadata>({
     serverUrl: pubsubConfig.serverUrl,
     token: pubsubConfig.token,
@@ -84,6 +88,10 @@ async function main() {
     handle,
     name: "AI Responder",
     type: "ai-responder",
+    extraMetadata: {
+      workerPanelId: id, // Panel ID of this worker for reload via ensurePanelLoaded
+      agentTypeId,       // Agent type for identification
+    },
     reconnect: true,
     methods: {
       pause: createPauseMethodDefinition(async () => {
@@ -163,10 +171,40 @@ async function main() {
     },
   });
 
-  // Log roster changes
+  // Track pending unload timeout - allows cancellation if panel rejoins
+  let unloadTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  const UNLOAD_DELAY_MS = 10_000; // 10 seconds grace period for panel recovery
+
+  // Log roster changes and auto-unload when channel is empty
   client.onRoster((roster) => {
     const names = Object.values(roster.participants).map(p => `${p.metadata.name} (${p.metadata.type})`);
     log(`Roster updated: ${names.join(", ")}`);
+
+    // Check if there are any panels (users) left in the channel
+    // If only agent workers remain (no panels), unload this worker to free resources
+    const hasPanels = Object.values(roster.participants).some(p => p.metadata.type === "panel");
+    const participantCount = Object.keys(roster.participants).length;
+
+    // If no panels and more than just ourselves, it means only workers remain
+    // If only we remain or no panels, schedule unload after delay
+    if (!hasPanels && participantCount <= 1) {
+      // Only schedule if not already pending
+      if (!unloadTimeoutId) {
+        log(`No panels in channel, scheduling unload in ${UNLOAD_DELAY_MS / 1000}s...`);
+        unloadTimeoutId = setTimeout(() => {
+          log(`Unload timeout reached, unloading worker to conserve resources...`);
+          // Gracefully close and unload
+          void client.close().then(() => {
+            void unloadSelf();
+          });
+        }, UNLOAD_DELAY_MS);
+      }
+    } else if (hasPanels && unloadTimeoutId) {
+      // Panel rejoined - cancel pending unload
+      log(`Panel rejoined, canceling scheduled unload`);
+      clearTimeout(unloadTimeoutId);
+      unloadTimeoutId = null;
+    }
   });
 
   log(`Connected to channel: ${channelName}`);

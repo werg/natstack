@@ -63,6 +63,9 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
   /** Close the connection */
   close(): void;
 
+  /** Send a raw message to the server (for protocol-level messages like "close") */
+  sendRaw(message: Record<string, unknown>): Promise<void>;
+
   /** Whether currently connected */
   readonly connected: boolean;
 
@@ -699,12 +702,47 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     ws.close();
   }
 
+  async function sendRaw(message: Record<string, unknown>): Promise<void> {
+    const ref = ++refCounter;
+    const timeoutMs = 5000; // Short timeout for protocol messages
+
+    return new Promise((resolve, reject) => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        reject(new PubSubError("not connected", "connection"));
+        return;
+      }
+
+      const timeoutId = setTimeout(() => {
+        const pending = pendingPublishes.get(ref);
+        if (pending) {
+          pendingPublishes.delete(ref);
+          pending.reject(new PubSubError("sendRaw timeout", "timeout"));
+        }
+      }, timeoutMs);
+
+      pendingPublishes.set(ref, {
+        resolve: () => {
+          clearTimeout(timeoutId);
+          resolve();
+        },
+        reject: (err) => {
+          clearTimeout(timeoutId);
+          reject(err);
+        },
+        timeoutId,
+      });
+
+      ws.send(JSON.stringify({ ...message, ref }));
+    });
+  }
+
   return {
     messages,
     publish,
     updateMetadata,
     ready,
     close,
+    sendRaw,
     get connected() {
       return ws.readyState === WebSocket.OPEN;
     },
