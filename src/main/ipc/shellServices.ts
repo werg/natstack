@@ -171,6 +171,13 @@ export async function handleAppService(
         npmCache: false,
         pnpmStore: false,
       });
+      // Invalidate ready panels: reset state AND unload WebContents
+      try {
+        const pm = requirePanelManager();
+        pm.invalidateReadyPanels();
+      } catch (error) {
+        console.warn("[App] Failed to invalidate panel states:", error);
+      }
       return;
     }
 

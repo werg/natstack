@@ -2884,6 +2884,49 @@ export class PanelManager {
   }
 
   /**
+   * Invalidate all ready/error app/worker panels: reset to pending and unload resources.
+   * Called when build cache is cleared to ensure panels rebuild with fresh code.
+   */
+  invalidateReadyPanels(): void {
+    const persistence = getPanelPersistence();
+    const focusedPanelId = this.focusedPanelId;
+    let focusedWasReset = false;
+
+    // Reset and unload ready panels
+    for (const panelId of persistence.resetAllReadyPanels()) {
+      this.invalidatePanelInMemory(panelId);
+      if (panelId === focusedPanelId) focusedWasReset = true;
+    }
+
+    // Reset error panels (already have resetErrorPanels, sync in-memory)
+    persistence.resetErrorPanels();
+    for (const [panelId, panel] of this.panels) {
+      if (panel.artifacts?.buildState === "error") {
+        this.invalidatePanelInMemory(panelId);
+        if (panelId === focusedPanelId) focusedWasReset = true;
+      }
+    }
+
+    this.notifyPanelTreeUpdate();
+
+    // Rebuild focused panel immediately so user doesn't see blank
+    if (focusedWasReset && focusedPanelId) {
+      void this.rebuildUnloadedPanel(focusedPanelId);
+    }
+  }
+
+  /** Helper: unload resources and set pending state for one panel */
+  private invalidatePanelInMemory(panelId: string): void {
+    const panel = this.panels.get(panelId);
+    if (!panel) return;
+    this.unloadPanelResources(panelId);
+    panel.artifacts = {
+      buildState: "pending",
+      buildProgress: "Build cache cleared - will rebuild when focused",
+    };
+  }
+
+  /**
    * Unload a panel and all its descendants (release resources but keep in tree).
    * The panel stays in the database and can be re-loaded later.
    */

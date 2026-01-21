@@ -790,6 +790,29 @@ export class PanelBuilder {
     await this.cacheManager.set(cacheKey, hash);
   }
 
+  /**
+   * Get a hash of all current Verdaccio package versions.
+   * Used in cache keys to invalidate when any @natstack dependency changes.
+   * Returns empty string if Verdaccio is not initialized.
+   */
+  private async getVerdaccioVersionsHash(): Promise<string> {
+    if (!isVerdaccioServerInitialized()) {
+      return "";
+    }
+
+    try {
+      const verdaccioVersions = await getVerdaccioServer().getVerdaccioVersions();
+      if (Object.keys(verdaccioVersions).length === 0) {
+        return "";
+      }
+
+      const sorted = Object.keys(verdaccioVersions).sort();
+      return crypto.createHash("sha256").update(JSON.stringify(verdaccioVersions, sorted)).digest("hex").slice(0, 12);
+    } catch {
+      return "";
+    }
+  }
+
   private readUserCompilerOptions(sourcePath: string): Record<string, unknown> {
     const tsconfigPath = path.join(sourcePath, "tsconfig.json");
     if (!fs.existsSync(tsconfigPath)) {
@@ -1771,11 +1794,14 @@ import ${JSON.stringify(relativeUserEntry)};
     };
 
     try {
+      // Get verdaccio versions hash once at the start for consistent cache keys
+      const versionsHash = await this.getVerdaccioVersionsHash();
+
       // Step 1: Early cache check (fast - no git checkout needed)
       const earlyCommit = await resolveTargetCommit(panelsRoot, panelPath, version);
 
       if (earlyCommit) {
-        const cacheKey = `panel:${canonicalPanelPath}:${earlyCommit}`;
+        const cacheKey = `panel:${canonicalPanelPath}:${earlyCommit}:${versionsHash}`;
         const cached = this.cacheManager.get(cacheKey, isDev());
 
         if (cached) {
@@ -1805,8 +1831,8 @@ import ${JSON.stringify(relativeUserEntry)};
 
       log(`Source provisioned at ${sourcePath} (commit: ${sourceCommit.slice(0, 8)})`);
 
-      // Cache key for storing the result
-      const cacheKey = `panel:${canonicalPanelPath}:${sourceCommit}`;
+      // Cache key for storing the result (uses same versionsHash computed at start)
+      const cacheKey = `panel:${canonicalPanelPath}:${sourceCommit}:${versionsHash}`;
 
       // Step 3: Build from source
       onProgress?.({ state: "building", message: "Building panel...", log: buildLog });
@@ -1960,11 +1986,14 @@ import ${JSON.stringify(relativeUserEntry)};
     };
 
     try {
+      // Get verdaccio versions hash once at the start for consistent cache keys
+      const versionsHash = await this.getVerdaccioVersionsHash();
+
       // Step 1: Early cache check (fast - no git checkout needed)
       const earlyCommit = await resolveTargetCommit(panelsRoot, workerPath, version);
 
       if (earlyCommit) {
-        const cacheKey = `worker:${canonicalWorkerPath}:${earlyCommit}`;
+        const cacheKey = `worker:${canonicalWorkerPath}:${earlyCommit}:${versionsHash}`;
         const cached = this.cacheManager.get(cacheKey, isDev());
 
         if (cached) {
@@ -1994,8 +2023,8 @@ import ${JSON.stringify(relativeUserEntry)};
 
       log(`Source provisioned at ${sourcePath} (commit: ${sourceCommit.slice(0, 8)})`);
 
-      // Cache key for storing the result
-      const cacheKey = `worker:${canonicalWorkerPath}:${sourceCommit}`;
+      // Cache key for storing the result (uses same versionsHash computed at start)
+      const cacheKey = `worker:${canonicalWorkerPath}:${sourceCommit}:${versionsHash}`;
 
       // Step 3: Load manifest and validate it's a worker
       let manifest: PanelManifest;
