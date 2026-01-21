@@ -52,3 +52,6 @@ workspace/.databases/
 
 # Playwright
 packages/playwright-core/src/generated/
+
+# Test results
+test-results/

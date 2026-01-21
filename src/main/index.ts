@@ -58,6 +58,7 @@ import {
 } from "./ipc/shellServices.js";
 import { handleEventsService } from "./services/eventsService.js";
 import { typeCheckRpcMethods } from "./typecheck/service.js";
+import { setupTestApi } from "./testApi.js";
 
 // =============================================================================
 // Protocol Registration (must happen before app ready)
@@ -138,6 +139,9 @@ if (appMode === "main" && hasWorkspaceConfig) {
 
     // Create panel manager
     panelManager = new PanelManager(initialRootPanelPath, gitServer);
+
+    // Set up test API for E2E testing (only when NATSTACK_TEST_MODE=1)
+    setupTestApi(panelManager);
   } catch (error) {
     console.error(
       "[Workspace] Failed to initialize workspace, falling back to chooser mode:",
