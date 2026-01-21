@@ -2,7 +2,7 @@
  * Panel Persistence Layer
  *
  * CRUD operations for the panel tree SQLite database.
- * All panels live in the database - no in-memory tree.
+ * Uses unified PanelSnapshot architecture (v3 schema).
  */
 
 import Database from "better-sqlite3";
@@ -13,63 +13,15 @@ import {
   initializePanelSchema,
   PANEL_QUERIES,
   type DbPanelRow,
-  type DbPanelType,
   type DbPanelEventType,
 } from "./panelSchema.js";
 import type {
   Panel,
-  AppPanel,
-  WorkerPanel,
-  BrowserPanel,
-  ShellPanel,
+  PanelSnapshot,
   PanelArtifacts,
-  BrowserState,
-  ShellPage,
-  NavigationState,
   PanelSummary,
+  PanelType,
 } from "../../shared/ipc/types.js";
-import type { RepoArgSpec } from "@natstack/git";
-
-/**
- * Type-specific data stored in the type_data JSON column.
- */
-interface BaseTypeData {
-  navigationState?: NavigationState;
-}
-
-interface AppTypeData extends BaseTypeData {
-  path: string;
-  sourceRepo?: string;
-  branch?: string;
-  commit?: string;
-  tag?: string;
-  resolvedRepoArgs?: Record<string, RepoArgSpec>;
-  injectHostThemeVariables: boolean;
-  unsafe?: boolean | string;
-}
-
-interface WorkerTypeData extends BaseTypeData {
-  path: string;
-  sourceRepo?: string;
-  branch?: string;
-  commit?: string;
-  tag?: string;
-  resolvedRepoArgs?: Record<string, RepoArgSpec>;
-  workerOptions?: { unsafe?: boolean | string };
-}
-
-interface BrowserTypeData extends BaseTypeData {
-  url: string;
-  browserState: BrowserState;
-  injectHostThemeVariables: false;
-}
-
-interface ShellTypeData extends BaseTypeData {
-  page: ShellPage;
-  injectHostThemeVariables: true;
-}
-
-type TypeData = AppTypeData | WorkerTypeData | BrowserTypeData | ShellTypeData;
 
 // Re-export PanelSummary from shared types
 export type { PanelSummary };
@@ -85,29 +37,30 @@ export interface PanelContext {
 }
 
 /**
- * Input for creating a new panel.
+ * Input for creating a new panel (v3 schema).
+ * Uses PanelSnapshot for initial state.
  */
 export interface CreatePanelInput {
   id: string;
-  type: DbPanelType;
   title: string;
-  contextId: string;
   parentId: string | null;
-  typeData: TypeData;
+  /** Initial snapshot (source, type, options) */
+  snapshot: PanelSnapshot;
   artifacts?: PanelArtifacts;
 }
 
 /**
- * Input for updating a panel.
+ * Input for updating a panel (v3 schema).
  */
 export interface UpdatePanelInput {
   title?: string;
   selectedChildId?: string | null;
-  type?: DbPanelType;
-  typeData?: Partial<TypeData>;
+  /** Update the history array (for navigation) */
+  history?: PanelSnapshot[];
+  /** Update the history index */
+  historyIndex?: number;
   artifacts?: PanelArtifacts;
   parentId?: string | null;
-  contextId?: string;
 }
 
 /**
@@ -215,7 +168,7 @@ export class PanelPersistence {
   // =========================================================================
 
   /**
-   * Create a new panel in the database.
+   * Create a new panel in the database (v3 schema).
    * New panels are prepended (position 0) so newest children appear first.
    */
   createPanel(input: CreatePanelInput): void {
@@ -232,25 +185,27 @@ export class PanelPersistence {
       0
     );
 
+    // Create initial history with the snapshot
+    const history: PanelSnapshot[] = [input.snapshot];
+
     // Insert at position 0 (prepend)
     db.prepare(`
       INSERT INTO panels (
-        id, type, title, context_id, workspace_id,
+        id, title, workspace_id,
         parent_id, position, selected_child_id,
-        created_at, updated_at, type_data, artifacts
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, updated_at, history, history_index, artifacts
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.id,
-      input.type,
       input.title,
-      input.contextId,
       workspaceId,
       input.parentId,
       0, // Always prepend at position 0
       null, // selected_child_id
       now,
       now,
-      JSON.stringify(input.typeData),
+      JSON.stringify(history),
+      0, // history_index starts at 0
       JSON.stringify(input.artifacts ?? {})
     );
   }
@@ -283,7 +238,7 @@ export class PanelPersistence {
     const rows = db.prepare(PANEL_QUERIES.ROOT_PANELS).all(workspaceId) as Array<{
       id: string;
       title: string;
-      type: DbPanelType;
+      type: PanelType; // Extracted from history JSON
       position: number;
       artifacts: string;
       child_count: number;
@@ -308,7 +263,7 @@ export class PanelPersistence {
     const rows = db.prepare(PANEL_QUERIES.CHILDREN).all(parentId) as Array<{
       id: string;
       title: string;
-      type: DbPanelType;
+      type: PanelType; // Extracted from history JSON
       position: number;
       artifacts: string;
       child_count: number;
@@ -333,7 +288,7 @@ export class PanelPersistence {
     const rows = db.prepare(PANEL_QUERIES.SIBLINGS).all(panelId) as Array<{
       id: string;
       title: string;
-      type: DbPanelType;
+      type: PanelType; // Extracted from history JSON
       position: number;
       artifacts: string;
       child_count: number;
@@ -358,7 +313,7 @@ export class PanelPersistence {
     const rows = db.prepare(PANEL_QUERIES.ANCESTORS).all(panelId) as Array<{
       id: string;
       title: string;
-      type: DbPanelType;
+      type: PanelType; // Extracted from history JSON
       depth: number;
     }>;
 
@@ -412,7 +367,7 @@ export class PanelPersistence {
   // =========================================================================
 
   /**
-   * Update a panel.
+   * Update a panel (v3 schema).
    */
   updatePanel(panelId: string, input: UpdatePanelInput): void {
     const db = this.ensureOpen();
@@ -432,11 +387,6 @@ export class PanelPersistence {
       params.push(input.selectedChildId);
     }
 
-    if (input.type !== undefined) {
-      updates.push("type = ?");
-      params.push(input.type);
-    }
-
     if (input.artifacts !== undefined) {
       updates.push("artifacts = ?");
       params.push(JSON.stringify(input.artifacts));
@@ -447,28 +397,14 @@ export class PanelPersistence {
       params.push(input.parentId);
     }
 
-    if (input.contextId !== undefined) {
-      updates.push("context_id = ?");
-      params.push(input.contextId);
+    if (input.history !== undefined) {
+      updates.push("history = ?");
+      params.push(JSON.stringify(input.history));
     }
 
-    if (input.typeData !== undefined) {
-      if (input.type !== undefined) {
-        // Type changed: replace type_data with new schema.
-        updates.push("type_data = ?");
-        params.push(JSON.stringify(input.typeData));
-      } else {
-        // Merge with existing type_data
-        const existing = db.prepare("SELECT type_data FROM panels WHERE id = ?").get(panelId) as
-          | { type_data: string }
-          | undefined;
-        if (existing) {
-          const existingData = JSON.parse(existing.type_data) as TypeData;
-          const merged = { ...existingData, ...input.typeData };
-          updates.push("type_data = ?");
-          params.push(JSON.stringify(merged));
-        }
-      }
+    if (input.historyIndex !== undefined) {
+      updates.push("history_index = ?");
+      params.push(input.historyIndex);
     }
 
     params.push(panelId);
@@ -479,6 +415,19 @@ export class PanelPersistence {
     // 3. DO NOT add any user input to the 'updates' array - use params instead
     // If you need to add a new updatable field, add it as a hardcoded string check above
     db.prepare(`UPDATE panels SET ${updates.join(", ")} WHERE id = ?`).run(...params);
+  }
+
+  /**
+   * Update panel history (for navigation).
+   */
+  updateHistory(panelId: string, history: PanelSnapshot[], historyIndex: number): void {
+    const db = this.ensureOpen();
+    db.prepare("UPDATE panels SET history = ?, history_index = ?, updated_at = ? WHERE id = ?").run(
+      JSON.stringify(history),
+      historyIndex,
+      Date.now(),
+      panelId
+    );
   }
 
   /**
@@ -672,7 +621,7 @@ export class PanelPersistence {
     const rows = db.prepare(PANEL_QUERIES.CHILDREN_PAGINATED).all(parentId, limit, offset) as Array<{
       id: string;
       title: string;
-      type: DbPanelType;
+      type: PanelType; // Extracted from history JSON
       position: number;
       artifacts: string;
       child_count: number;
@@ -714,7 +663,7 @@ export class PanelPersistence {
       .all(workspaceId, limit, offset) as Array<{
       id: string;
       title: string;
-      type: DbPanelType;
+      type: PanelType; // Extracted from history JSON
       position: number;
       artifacts: string;
       child_count: number;
@@ -1048,78 +997,35 @@ export class PanelPersistence {
   // =========================================================================
 
   /**
-   * Convert a database row to a Panel object.
+   * Convert a database row to a Panel object (v3 schema).
+   * Validates that history is non-empty.
    */
   private rowToPanel(row: DbPanelRow): Panel {
-    const typeData = JSON.parse(row.type_data) as TypeData;
+    const history = JSON.parse(row.history) as PanelSnapshot[];
     const artifacts = JSON.parse(row.artifacts) as PanelArtifacts;
 
-    const base = {
+    // Validate history is non-empty
+    if (!Array.isArray(history) || history.length === 0) {
+      throw new Error(`Panel ${row.id} has invalid history: must be non-empty array`);
+    }
+
+    // Validate historyIndex is within bounds
+    if (row.history_index < 0 || row.history_index >= history.length) {
+      console.warn(
+        `[PanelPersistence] Panel ${row.id} has out-of-bounds history_index ${row.history_index}, resetting to 0`
+      );
+      row.history_index = 0;
+    }
+
+    return {
       id: row.id,
       title: row.title,
-      contextId: row.context_id,
       children: [], // Will be populated by tree builder
       selectedChildId: row.selected_child_id,
+      history,
+      historyIndex: row.history_index,
       artifacts,
-      navigationState: typeData.navigationState,
     };
-
-    switch (row.type) {
-      case "app": {
-        const appData = typeData as AppTypeData;
-        return {
-          ...base,
-          type: "app",
-          path: appData.path,
-          sourceRepo: appData.sourceRepo,
-          branch: appData.branch,
-          commit: appData.commit,
-          tag: appData.tag,
-          resolvedRepoArgs: appData.resolvedRepoArgs,
-          injectHostThemeVariables: appData.injectHostThemeVariables,
-          unsafe: appData.unsafe,
-        } as AppPanel;
-      }
-
-      case "worker": {
-        const workerData = typeData as WorkerTypeData;
-        return {
-          ...base,
-          type: "worker",
-          path: workerData.path,
-          sourceRepo: workerData.sourceRepo,
-          branch: workerData.branch,
-          commit: workerData.commit,
-          tag: workerData.tag,
-          resolvedRepoArgs: workerData.resolvedRepoArgs,
-          workerOptions: workerData.workerOptions,
-        } as WorkerPanel;
-      }
-
-      case "browser": {
-        const browserData = typeData as BrowserTypeData;
-        return {
-          ...base,
-          type: "browser",
-          url: browserData.url,
-          browserState: browserData.browserState,
-          injectHostThemeVariables: false,
-        } as BrowserPanel;
-      }
-
-      case "shell": {
-        const shellData = typeData as ShellTypeData;
-        return {
-          ...base,
-          type: "shell",
-          page: shellData.page,
-          injectHostThemeVariables: true,
-        } as ShellPanel;
-      }
-
-      default:
-        throw new Error(`Unknown panel type: ${row.type}`);
-    }
   }
 
   /**

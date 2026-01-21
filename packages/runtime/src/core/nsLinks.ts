@@ -13,8 +13,12 @@ export type NsAction = "navigate" | "child";
 export interface BuildNsLinkOptions {
   /** Action: 'navigate' (default) replaces current panel, 'child' creates a new child */
   action?: NsAction;
-  /** Context ID for storage partition sharing */
-  context?: string;
+  /**
+   * Context ID configuration:
+   * - true: generate a new unique context
+   * - string: use that specific context ID for storage partition sharing
+   */
+  contextId?: boolean | string;
   /** Git reference (branch, tag, or commit SHA) */
   gitRef?: string;
   /** Repo arguments required by the target manifest */
@@ -23,8 +27,6 @@ export interface BuildNsLinkOptions {
   env?: Record<string, string>;
   /** Panel name/ID */
   name?: string;
-  /** If true, create a new context instead of deriving from tree path */
-  newContext?: boolean;
   /** If true, panel can be closed and is not persisted */
   ephemeral?: boolean;
   /** If true, immediately focus the new panel after creation (only applies to action=child on app panels) */
@@ -57,8 +59,9 @@ export function buildNsLink(source: string, options?: BuildNsLinkOptions): strin
   if (options?.action && options.action !== "navigate") {
     searchParams.set("action", options.action);
   }
-  if (options?.context) {
-    searchParams.set("context", options.context);
+  if (options?.contextId !== undefined) {
+    // true -> "true", string -> the string value
+    searchParams.set("contextId", String(options.contextId));
   }
   if (options?.gitRef) {
     searchParams.set("gitRef", options.gitRef);
@@ -71,9 +74,6 @@ export function buildNsLink(source: string, options?: BuildNsLinkOptions): strin
   }
   if (options?.name) {
     searchParams.set("name", options.name);
-  }
-  if (options?.newContext) {
-    searchParams.set("newContext", "true");
   }
   if (options?.ephemeral) {
     searchParams.set("ephemeral", "true");

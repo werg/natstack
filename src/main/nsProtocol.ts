@@ -30,14 +30,21 @@ export interface ParsedNsUrl {
   source: string;
   action: NsAction;
   gitRef?: string;
-  context?: string;
+  /**
+   * Context ID configuration:
+   * - undefined: auto-derive from panel ID (default)
+   * - true: generate a new unique context
+   * - string: use that specific context ID
+   */
+  contextId?: boolean | string;
   repoArgs?: Record<string, RepoArgSpec>;
   env?: Record<string, string>;
   name?: string;
-  newContext?: boolean;
   ephemeral?: boolean;
   /** If true, immediately focus the new panel after creation (only applies to action=child on app panels) */
   focus?: boolean;
+  /** Unsafe mode configuration (true, false, or path string) */
+  unsafe?: boolean | string;
 }
 
 /**
@@ -66,12 +73,36 @@ export function parseNsUrl(url: string): ParsedNsUrl {
     throw new Error(`Invalid ns URL action: ${actionParam} (expected "navigate" or "child")`);
   }
 
-  const context = parsed.searchParams.get("context") ?? undefined;
   const gitRef = parsed.searchParams.get("gitRef") ?? undefined;
   const name = parsed.searchParams.get("name") ?? undefined;
-  const newContext = parsed.searchParams.get("newContext") === "true" || undefined;
   const ephemeral = parsed.searchParams.get("ephemeral") === "true" || undefined;
   const focus = parsed.searchParams.get("focus") === "true" || undefined;
+
+  // Parse contextId: "true" -> true (new unique context), string -> that context ID
+  // Also support legacy "context" and "newContext" params for backwards compatibility
+  let contextId: boolean | string | undefined;
+  const contextIdParam = parsed.searchParams.get("contextId");
+  const legacyContext = parsed.searchParams.get("context");
+  const legacyNewContext = parsed.searchParams.get("newContext") === "true";
+
+  if (contextIdParam === "true" || legacyNewContext) {
+    contextId = true;
+  } else if (contextIdParam) {
+    contextId = contextIdParam;
+  } else if (legacyContext) {
+    contextId = legacyContext;
+  }
+
+  // Parse unsafe parameter: "true" -> true, "false" -> false, other string -> path
+  const unsafeParam = parsed.searchParams.get("unsafe");
+  let unsafe: boolean | string | undefined;
+  if (unsafeParam === "true") {
+    unsafe = true;
+  } else if (unsafeParam === "false") {
+    unsafe = false;
+  } else if (unsafeParam) {
+    unsafe = unsafeParam; // Path string
+  }
 
   let repoArgs: Record<string, RepoArgSpec> | undefined;
   const repoArgsParam = parsed.searchParams.get("repoArgs");
@@ -114,20 +145,26 @@ export function parseNsUrl(url: string): ParsedNsUrl {
     }
   }
 
-  return { source, action, gitRef, context, repoArgs, env, name, newContext, ephemeral, focus };
+  return { source, action, gitRef, contextId, repoArgs, env, name, ephemeral, focus, unsafe };
 }
 
 export interface BuildNsUrlOptions {
   action?: NsAction;
   gitRef?: string;
-  context?: string;
+  /**
+   * Context ID configuration:
+   * - true: generate a new unique context
+   * - string: use that specific context ID
+   */
+  contextId?: boolean | string;
   repoArgs?: Record<string, RepoArgSpec>;
   env?: Record<string, string>;
   name?: string;
-  newContext?: boolean;
   ephemeral?: boolean;
   /** If true, immediately focus the new panel after creation (only applies to action=child on app panels) */
   focus?: boolean;
+  /** Unsafe mode configuration (true, false, or path string) */
+  unsafe?: boolean | string;
 }
 
 /**
@@ -140,8 +177,9 @@ export function buildNsUrl(source: string, options?: BuildNsUrlOptions): string 
   if (options?.action && options.action !== "navigate") {
     searchParams.set("action", options.action);
   }
-  if (options?.context) {
-    searchParams.set("context", options.context);
+  if (options?.contextId !== undefined) {
+    // true -> "true", string -> the string value
+    searchParams.set("contextId", String(options.contextId));
   }
   if (options?.gitRef) {
     searchParams.set("gitRef", options.gitRef);
@@ -155,14 +193,14 @@ export function buildNsUrl(source: string, options?: BuildNsUrlOptions): string 
   if (options?.name) {
     searchParams.set("name", options.name);
   }
-  if (options?.newContext) {
-    searchParams.set("newContext", "true");
-  }
   if (options?.ephemeral) {
     searchParams.set("ephemeral", "true");
   }
   if (options?.focus) {
     searchParams.set("focus", "true");
+  }
+  if (options?.unsafe !== undefined) {
+    searchParams.set("unsafe", String(options.unsafe));
   }
 
   const paramsStr = searchParams.toString();

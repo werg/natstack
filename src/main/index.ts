@@ -12,6 +12,7 @@ import { resolveInitialRootPanelPath, parseCliRootPanelPath } from "./rootPanelR
 import { GitServer } from "./gitServer.js";
 import { handle } from "./ipc/handlers.js";
 import type * as SharedPanel from "../shared/ipc/types.js";
+import { getPanelType } from "../shared/panel/accessors.js";
 import { setupMenu } from "./menu.js";
 import { setActiveWorkspace, getAppRoot } from "./paths.js";
 import {
@@ -260,7 +261,8 @@ handle("rpc:call", async (event, panelId: string, message: RpcMessage): Promise<
   // Shell panels (type: "shell") get shell-level access to services
   const pm = requirePanelManager();
   const panel = pm.getPanel(panelId);
-  const callerKind = (panel?.type === "shell" ? "shell" : "panel") as import("./serviceDispatcher.js").CallerKind;
+  const panelType = panel ? getPanelType(panel) : undefined;
+  const callerKind = (panelType === "shell" ? "shell" : "panel") as import("./serviceDispatcher.js").CallerKind;
 
   // Check service access policy
   try {
@@ -304,7 +306,7 @@ handle("panel:register-browser-webview", async (_event, browserId: string, webCo
 
   // Find the parent panel for this browser
   const panel = pm.getPanel(browserId);
-  if (!panel || panel.type !== "browser") {
+  if (!panel || getPanelType(panel) !== "browser") {
     throw new Error(`Browser panel not found: ${browserId}`);
   }
 

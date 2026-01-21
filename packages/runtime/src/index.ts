@@ -48,6 +48,7 @@ export type {
   EventSchemaMap,
   InferEventMap,
   ChildHandle,
+  RepoArgSpec,
   ChildHandleFromContract,
   ParentHandle,
   PanelContract,

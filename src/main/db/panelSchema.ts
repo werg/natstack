@@ -11,9 +11,9 @@ import type Database from "better-sqlite3";
 
 /**
  * Current schema version.
- * Increment when adding migrations.
+ * Unified PanelSnapshot architecture - history JSON is the source of truth.
  */
-export const PANEL_SCHEMA_VERSION = 2;
+export const PANEL_SCHEMA_VERSION = 1;
 
 /**
  * Panel types stored in the database.
@@ -38,20 +38,22 @@ export type DbPanelBuildState =
 export type DbPanelEventType = "created" | "focused";
 
 /**
- * Panel row from the database.
+ * Panel row from the database (v3 schema).
+ * Uses history JSON instead of type_data for unified PanelSnapshot architecture.
  */
 export interface DbPanelRow {
   id: string;
-  type: DbPanelType;
   title: string;
-  context_id: string;
   workspace_id: string;
   parent_id: string | null;
   position: number;
   selected_child_id: string | null;
   created_at: number;
   updated_at: number;
-  type_data: string; // JSON
+  /** JSON array of PanelSnapshot - single source of truth for panel configuration */
+  history: string;
+  /** Current position in history (0-indexed) */
+  history_index: number;
   artifacts: string; // JSON
   archived_at: number | null; // Timestamp when archived, null = active
 }
@@ -87,14 +89,13 @@ export interface DbPanelSearchMetadataRow {
 
 /**
  * Schema creation SQL statements.
+ * Unified PanelSnapshot architecture.
  */
 const SCHEMA_SQL = `
 -- Core panel data
 CREATE TABLE IF NOT EXISTS panels (
     id TEXT PRIMARY KEY,
-    type TEXT NOT NULL CHECK (type IN ('app', 'worker', 'browser', 'shell')),
     title TEXT NOT NULL,
-    context_id TEXT NOT NULL,
     workspace_id TEXT NOT NULL,
 
     -- Tree structure
@@ -107,8 +108,10 @@ CREATE TABLE IF NOT EXISTS panels (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
 
-    -- Type-specific data as JSON (path, url, browserState, etc.)
-    type_data TEXT NOT NULL DEFAULT '{}',
+    -- Single source of truth: JSON array of PanelSnapshot
+    -- ephemeral is per-snapshot in options, not a separate column
+    history TEXT NOT NULL,  -- Never empty - must have at least one snapshot
+    history_index INTEGER NOT NULL DEFAULT 0,
 
     -- Build artifacts as JSON
     artifacts TEXT NOT NULL DEFAULT '{}',
@@ -116,10 +119,11 @@ CREATE TABLE IF NOT EXISTS panels (
     -- Soft delete: timestamp when archived, NULL = active
     archived_at INTEGER DEFAULT NULL
 );
+-- Note: Only non-ephemeral panels are persisted. Check current snapshot's
+-- options.ephemeral before inserting/updating.
 
 CREATE INDEX IF NOT EXISTS idx_panels_parent ON panels(parent_id);
 CREATE INDEX IF NOT EXISTS idx_panels_workspace ON panels(workspace_id);
-CREATE INDEX IF NOT EXISTS idx_panels_context ON panels(context_id);
 
 -- Audit log for panel events (optional)
 CREATE TABLE IF NOT EXISTS panel_events (
@@ -221,32 +225,16 @@ END;
 `;
 
 /**
- * Migrations array for schema evolution.
- * Each migration has a version number and up SQL.
- */
-interface Migration {
-  version: number;
-  up: string;
-}
-
-const MIGRATIONS: Migration[] = [
-  // Add future migrations here
-  // { version: 2, up: 'ALTER TABLE panels ADD COLUMN category TEXT' },
-];
-
-/**
  * Initialize the panel schema in a database.
- * Creates tables, indexes, triggers, and runs any pending migrations.
+ * Creates tables, indexes, and triggers.
  *
  * @param db - The better-sqlite3 database connection
  */
 export function initializePanelSchema(db: Database.Database): void {
-  // Create base schema
+  // Create schema
   db.exec(SCHEMA_SQL);
 
   // Create FTS triggers (handle existing triggers gracefully)
-  // Split triggers and execute individually since SQLite doesn't support
-  // CREATE TRIGGER IF NOT EXISTS in all versions
   const triggerStatements = FTS_TRIGGERS_SQL.split(/;[\s]*(?=CREATE TRIGGER)/);
   for (const stmt of triggerStatements) {
     const trimmed = stmt.trim();
@@ -265,62 +253,21 @@ export function initializePanelSchema(db: Database.Database): void {
     }
   }
 
-  // Check and set schema version
+  // Set schema version if not present
   const versionRow = db
     .prepare("SELECT version FROM schema_version WHERE id = 1")
     .get() as { version: number } | undefined;
 
   if (!versionRow) {
-    // First initialization
     db.prepare(
       "INSERT INTO schema_version (id, version, updated_at) VALUES (1, ?, ?)"
     ).run(PANEL_SCHEMA_VERSION, Date.now());
-  } else if (versionRow.version < PANEL_SCHEMA_VERSION) {
-    // Run pending migrations
-    runMigrations(db, versionRow.version);
   }
-}
-
-/**
- * Run pending migrations.
- *
- * @param db - The database connection
- * @param currentVersion - Current schema version in the database
- */
-function runMigrations(db: Database.Database, currentVersion: number): void {
-  const pendingMigrations = MIGRATIONS.filter((m) => m.version > currentVersion);
-
-  if (pendingMigrations.length === 0) {
-    // Just update version
-    db.prepare("UPDATE schema_version SET version = ?, updated_at = ? WHERE id = 1").run(
-      PANEL_SCHEMA_VERSION,
-      Date.now()
-    );
-    return;
-  }
-
-  // Sort by version and run
-  pendingMigrations.sort((a, b) => a.version - b.version);
-
-  for (const migration of pendingMigrations) {
-    console.log(`[panelSchema] Running migration to version ${migration.version}`);
-    try {
-      db.exec(migration.up);
-    } catch (error) {
-      console.error(`[panelSchema] Migration ${migration.version} failed:`, error);
-      throw error;
-    }
-  }
-
-  // Update version
-  db.prepare("UPDATE schema_version SET version = ?, updated_at = ? WHERE id = 1").run(
-    PANEL_SCHEMA_VERSION,
-    Date.now()
-  );
 }
 
 /**
  * SQL queries for common operations.
+ * Note: type is extracted from history JSON using json_extract.
  */
 export const PANEL_QUERIES = {
   /**
@@ -329,21 +276,26 @@ export const PANEL_QUERIES = {
    */
   ANCESTORS: `
     WITH RECURSIVE ancestors AS (
-      SELECT id, parent_id, title, type, 0 as depth
+      SELECT id, parent_id, title, history, history_index, 0 as depth
       FROM panels WHERE id = ? AND archived_at IS NULL
       UNION ALL
-      SELECT p.id, p.parent_id, p.title, p.type, a.depth + 1
+      SELECT p.id, p.parent_id, p.title, p.history, p.history_index, a.depth + 1
       FROM panels p JOIN ancestors a ON p.id = a.parent_id
       WHERE a.depth < 20 AND p.archived_at IS NULL
     )
-    SELECT id, parent_id, title, type, depth FROM ancestors WHERE depth > 0 ORDER BY depth DESC
+    SELECT id, parent_id, title,
+           json_extract(history, '$[' || history_index || '].type') as type,
+           depth
+    FROM ancestors WHERE depth > 0 ORDER BY depth DESC
   `,
 
   /**
    * Get siblings (for tab bar, ordered by position).
    */
   SIBLINGS: `
-    SELECT p.id, p.title, p.type, p.position, p.artifacts,
+    SELECT p.id, p.title,
+           json_extract(p.history, '$[' || p.history_index || '].type') as type,
+           p.position, p.artifacts,
       (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
     FROM panels p
     WHERE p.parent_id = (SELECT parent_id FROM panels WHERE id = ?) AND p.archived_at IS NULL
@@ -354,7 +306,9 @@ export const PANEL_QUERIES = {
    * Get children (for tree expansion, ordered by position).
    */
   CHILDREN: `
-    SELECT p.id, p.title, p.type, p.position, p.artifacts,
+    SELECT p.id, p.title,
+           json_extract(p.history, '$[' || p.history_index || '].type') as type,
+           p.position, p.artifacts,
       (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
     FROM panels p WHERE p.parent_id = ? AND p.archived_at IS NULL
     ORDER BY p.position
@@ -364,7 +318,9 @@ export const PANEL_QUERIES = {
    * Get root panels (no parent).
    */
   ROOT_PANELS: `
-    SELECT p.id, p.title, p.type, p.position, p.artifacts,
+    SELECT p.id, p.title,
+           json_extract(p.history, '$[' || p.history_index || '].type') as type,
+           p.position, p.artifacts,
       (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
     FROM panels p WHERE p.parent_id IS NULL AND p.workspace_id = ? AND p.archived_at IS NULL
     ORDER BY p.position
@@ -431,7 +387,9 @@ export const PANEL_QUERIES = {
    * Get children with pagination (ordered by position, newest first when prepending).
    */
   CHILDREN_PAGINATED: `
-    SELECT p.id, p.title, p.type, p.position, p.artifacts,
+    SELECT p.id, p.title,
+           json_extract(p.history, '$[' || p.history_index || '].type') as type,
+           p.position, p.artifacts,
       (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
     FROM panels p WHERE p.parent_id = ? AND p.archived_at IS NULL
     ORDER BY p.position ASC
@@ -449,7 +407,9 @@ export const PANEL_QUERIES = {
    * Get root panels with pagination.
    */
   ROOT_PANELS_PAGINATED: `
-    SELECT p.id, p.title, p.type, p.position, p.artifacts,
+    SELECT p.id, p.title,
+           json_extract(p.history, '$[' || p.history_index || '].type') as type,
+           p.position, p.artifacts,
       (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
     FROM panels p WHERE p.parent_id IS NULL AND p.workspace_id = ? AND p.archived_at IS NULL
     ORDER BY p.position ASC

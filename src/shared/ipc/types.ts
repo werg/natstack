@@ -22,6 +22,44 @@ export type {
   RepoArgSpec,
 };
 
+// =============================================================================
+// Panel Manifest Types
+// =============================================================================
+
+/**
+ * Schema for declaring environment variable requirements in panel manifests.
+ * Enables launcher UI to show appropriate input fields.
+ */
+export interface EnvArgSchema {
+  /** The environment variable name (e.g., "API_KEY") */
+  name: string;
+  /** Human-readable description for the UI */
+  description?: string;
+  /** Whether this env var is required (default: true) */
+  required?: boolean;
+  /** Default value if optional and not provided */
+  default?: string;
+}
+
+/**
+ * Panel manifest from package.json natstack section.
+ */
+export interface PanelManifest {
+  type: "app" | "worker";
+  title: string;
+  entry?: string;
+  dependencies?: Record<string, string>;
+  repoArgs?: string[];
+  envArgs?: EnvArgSchema[];
+  externals?: Record<string, string>;
+  exposeModules?: string[];
+  dedupeModules?: string[];
+  injectHostThemeVariables?: boolean;
+  template?: "html" | "react";
+  runtime?: "panel" | "worker";
+  unsafe?: boolean | string;
+}
+
 export type ThemeMode = "light" | "dark" | "system";
 export type ThemeAppearance = "light" | "dark";
 
@@ -296,7 +334,7 @@ export type PanelType = "app" | "worker" | "browser" | "shell";
 export type ShellPage = "model-provider-config" | "about" | "keyboard-shortcuts" | "help" | "new";
 
 /**
- * Browser panel navigation state (legacy - for browser webview internal state).
+ * Browser panel navigation state (for browser webview internal state).
  */
 export interface BrowserState {
   pageTitle: string;
@@ -306,136 +344,60 @@ export interface BrowserState {
 }
 
 // =============================================================================
-// Panel Navigation State (Unified History)
+// PanelSnapshot - Unified Panel State (New Architecture)
 // =============================================================================
 
 /**
- * Entry in the unified panel navigation history.
- * All navigations (source changes, browser navigations, pushState) are tracked here.
+ * Complete panel configuration at one point in history.
+ * Explicitly embeds CreateChildOptions to ensure correspondence.
  */
-export interface NavigationEntry {
-  /** Panel source path or external URL */
+export interface PanelSnapshot {
+  // === Required ===
+  /** Path or URL - workspace-relative path for app/worker, URL for browser */
   source: string;
-  /** Type of content at this entry */
+  /** Panel type */
   type: PanelType;
-  /** For browser entries, the actual URL (may differ from source after redirects) */
+
+  // === Creation options (excluding runtime-only fields) ===
+  /** Panel options from CreateChildOptions (excluding eventSchemas and focus) */
+  options: Omit<CreateChildOptions, "eventSchemas" | "focus">;
+
+  // === Type-specific (set during navigation/runtime) ===
+  /** browser: actual URL after redirects */
   resolvedUrl?: string;
-  /** For app panel pushState entries */
-  pushState?: {
-    /** The state object passed to pushState */
-    state: unknown;
-    /** The URL/path passed to pushState */
-    path: string;
-  };
-  /** Environment variables to pass to the panel on navigation */
-  env?: Record<string, string>;
+  /** app: history.pushState (sanitized) */
+  pushState?: { state: unknown; path: string };
+  /** shell: page name */
+  page?: ShellPage;
+  /** browser: internal webview navigation state */
+  browserState?: BrowserState;
+
+  // === Metadata ===
+  createdAt?: number;
 }
 
 /**
- * Unified navigation state for a panel.
- * Tracks history across source changes, browser navigations, and pushState calls.
+ * Panel runtime state. Configuration comes from current snapshot.
  */
-export interface NavigationState {
-  /** Unified history stack */
-  history: NavigationEntry[];
-  /** Current position in history (0-indexed) */
-  historyIndex: number;
-  /** Whether the panel can navigate back */
-  canGoBack: boolean;
-  /** Whether the panel can navigate forward */
-  canGoForward: boolean;
-}
-
-/**
- * Base panel fields common to all panel types.
- */
-interface PanelBase {
+export interface Panel {
   id: string;
   title: string;
-  /** Context ID for storage partition (format: {mode}_{type}_{identifier}) */
-  contextId: string;
+
+  // Tree structure
   children: Panel[];
   selectedChildId: string | null;
+
+  // History = array of snapshots
+  history: PanelSnapshot[];
+  historyIndex: number;
+
+  // Runtime only (not in snapshot)
   artifacts: PanelArtifacts;
-  env?: Record<string, string>;
-  /** If true, panel can be closed and is not persisted to SQLite */
-  ephemeral?: boolean;
-  /** Unified navigation state for browser-like back/forward */
-  navigationState?: NavigationState;
 }
-
-/**
- * App panel - built webview from source code.
- */
-export interface AppPanel extends PanelBase {
-  type: "app";
-  path: string; // Workspace-relative source path
-  sourceRepo?: string;
-  branch?: string;
-  commit?: string;
-  tag?: string;
-  /** Resolved repo args (name -> spec) provided by parent at createChild time */
-  resolvedRepoArgs?: Record<string, RepoArgSpec>;
-  injectHostThemeVariables: boolean;
-  /**
-   * Run panel with full Node.js API access instead of browser sandbox.
-   * - `true`: Unsafe mode with default scoped filesystem
-   * - `string`: Unsafe mode with custom filesystem root (e.g., "/" for full access)
-   */
-  unsafe?: boolean | string;
-}
-
-/**
- * Worker panel - background process in WebContentsView with built-in console UI.
- */
-export interface WorkerPanel extends PanelBase {
-  type: "worker";
-  path: string; // Workspace-relative source path
-  sourceRepo?: string;
-  branch?: string;
-  commit?: string;
-  tag?: string;
-  /** Resolved repo args (name -> spec) provided by parent at createChild time */
-  resolvedRepoArgs?: Record<string, RepoArgSpec>;
-  workerOptions?: { unsafe?: boolean | string };
-}
-
-/**
- * Browser panel - external URL with Playwright control.
- */
-export interface BrowserPanel extends PanelBase {
-  type: "browser";
-  url: string; // Current URL
-  browserState: BrowserState;
-  /** Browser panels don't inject host theme - external sites have their own styles */
-  injectHostThemeVariables: false;
-}
-
-/**
- * Shell panel - system pages with full shell access (settings, about, etc.).
- */
-export interface ShellPanel extends PanelBase {
-  type: "shell";
-  /** The shell page being displayed */
-  page: ShellPage;
-  /** Shell panels always inject host theme */
-  injectHostThemeVariables: true;
-}
-
-/**
- * Union type of all panel types.
- */
-export type Panel = AppPanel | WorkerPanel | BrowserPanel | ShellPanel;
 
 // =============================================================================
 // Isolated Worker Types
 // =============================================================================
-
-/**
- * Runtime type for manifests - determines whether to build as panel or worker.
- * @deprecated Use PanelType instead. This is kept for manifest compatibility.
- */
-export type RuntimeType = "panel" | "worker";
 
 /**
  * Build state for workers (same as panels).
@@ -619,25 +581,6 @@ export interface DescendantSiblingGroup {
   parentId: string;
   selectedId: string;
   siblings: PanelSummary[];
-}
-
-// =============================================================================
-// Environment Arguments Schema
-// =============================================================================
-
-/**
- * Schema for declaring environment variable requirements in panel manifests.
- * Enables launcher UI to show appropriate input fields.
- */
-export interface EnvArgSchema {
-  /** The environment variable name (e.g., "API_KEY") */
-  name: string;
-  /** Human-readable description for the UI */
-  description?: string;
-  /** Whether this env var is required (default: true) */
-  required?: boolean;
-  /** Default value if optional and not provided */
-  default?: string;
 }
 
 // =============================================================================

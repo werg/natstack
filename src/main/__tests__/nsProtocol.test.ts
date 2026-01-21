@@ -10,7 +10,7 @@ describe("ns:// protocol", () => {
       expect(result.source).toBe("panels/editor");
       expect(result.action).toBe("navigate");
       expect(result.gitRef).toBeUndefined();
-      expect(result.context).toBeUndefined();
+      expect(result.contextId).toBeUndefined();
       expect(result.repoArgs).toBeUndefined();
     });
 
@@ -32,10 +32,16 @@ describe("ns:// protocol", () => {
       expect(result.gitRef).toBe("main");
     });
 
-    it("parses with context", () => {
-      const result = parseNsUrl("ns:///panels/editor?context=safe_named_abc");
+    it("parses with contextId string", () => {
+      const result = parseNsUrl("ns:///panels/editor?contextId=safe_named_abc");
       expect(result.source).toBe("panels/editor");
-      expect(result.context).toBe("safe_named_abc");
+      expect(result.contextId).toBe("safe_named_abc");
+    });
+
+    it("parses with contextId=true", () => {
+      const result = parseNsUrl("ns:///panels/editor?contextId=true");
+      expect(result.source).toBe("panels/editor");
+      expect(result.contextId).toBe(true);
     });
 
     it("parses with repoArgs JSON", () => {
@@ -48,11 +54,11 @@ describe("ns:// protocol", () => {
 
     it("parses with all options", () => {
       const repoArgs = { workspace: "repos/app" };
-      const url = `ns:///panels/editor?action=child&context=abc&gitRef=main&repoArgs=${encodeURIComponent(JSON.stringify(repoArgs))}`;
+      const url = `ns:///panels/editor?action=child&contextId=abc&gitRef=main&repoArgs=${encodeURIComponent(JSON.stringify(repoArgs))}`;
       const result = parseNsUrl(url);
       expect(result.source).toBe("panels/editor");
       expect(result.action).toBe("child");
-      expect(result.context).toBe("abc");
+      expect(result.contextId).toBe("abc");
       expect(result.gitRef).toBe("main");
       expect(result.repoArgs).toEqual(repoArgs);
     });
@@ -122,9 +128,14 @@ describe("ns:// protocol", () => {
       expect(url).toBe("ns:///panels/editor?gitRef=main");
     });
 
-    it("builds URL with context", () => {
-      const url = buildNsUrl("panels/editor", { context: "abc" });
-      expect(url).toBe("ns:///panels/editor?context=abc");
+    it("builds URL with contextId string", () => {
+      const url = buildNsUrl("panels/editor", { contextId: "abc" });
+      expect(url).toBe("ns:///panels/editor?contextId=abc");
+    });
+
+    it("builds URL with contextId=true", () => {
+      const url = buildNsUrl("panels/editor", { contextId: true });
+      expect(url).toBe("ns:///panels/editor?contextId=true");
     });
 
     it("builds URL with repoArgs", () => {
@@ -138,14 +149,14 @@ describe("ns:// protocol", () => {
     it("builds URL with all options", () => {
       const url = buildNsUrl("panels/editor", {
         action: "child",
-        context: "abc",
+        contextId: "abc",
         gitRef: "main",
         repoArgs: { workspace: "repos/app" },
       });
       const parsed = parseNsUrl(url);
       expect(parsed.source).toBe("panels/editor");
       expect(parsed.action).toBe("child");
-      expect(parsed.context).toBe("abc");
+      expect(parsed.contextId).toBe("abc");
       expect(parsed.gitRef).toBe("main");
       expect(parsed.repoArgs).toEqual({ workspace: "repos/app" });
     });
@@ -180,7 +191,7 @@ describe("ns:// protocol", () => {
     it("parseNsUrl(buildNsUrl(...)) returns original values", () => {
       const options = {
         action: "child" as NsAction,
-        context: "context-123",
+        contextId: "context-123",
         gitRef: "feature/test",
         repoArgs: { workspace: { repo: "repos/app", ref: "v1.0.0" } },
         ephemeral: true,
@@ -190,7 +201,7 @@ describe("ns:// protocol", () => {
       const parsed = parseNsUrl(url);
       expect(parsed.source).toBe("panels/editor");
       expect(parsed.action).toBe("child");
-      expect(parsed.context).toBe("context-123");
+      expect(parsed.contextId).toBe("context-123");
       expect(parsed.gitRef).toBe("feature/test");
       expect(parsed.repoArgs).toEqual({ workspace: { repo: "repos/app", ref: "v1.0.0" } });
       expect(parsed.ephemeral).toBe(true);

@@ -73,10 +73,13 @@ export interface CreateChildOptions {
   sourcemap?: boolean;
   /** Optional zod schemas for validating event payloads from this child (runtime-only; not sent to main). */
   eventSchemas?: EventSchemaMap;
-  /** Explicit context ID to share OPFS with another panel (must match panel's safe/unsafe mode). */
-  contextId?: string;
-  /** Force creation of a new named context instead of deriving from panel ID. */
-  newContext?: boolean;
+  /**
+   * Context ID configuration:
+   * - undefined: auto-derive from panel ID (default)
+   * - true: generate a new unique context (replaces newContext: true)
+   * - string: use that specific context ID
+   */
+  contextId?: boolean | string;
   /** If true, panel can be closed and is not persisted to SQLite */
   ephemeral?: boolean;
   /** If true, immediately focus the new panel after creation (only applies to app panels) */
@@ -154,7 +157,7 @@ interface GitVersionFields {
 /**
  * Spec for creating an app panel child.
  * Name is optional - if omitted, context is auto-derived from tree path.
- * Use `contextId` to share storage across panels, or `newContext: true` for isolation.
+ * Use `contextId: "some-id"` to share storage across panels, or `contextId: true` for isolation.
  */
 export interface AppChildSpec extends ChildSpecBase, GitVersionFields {
   type: "app";

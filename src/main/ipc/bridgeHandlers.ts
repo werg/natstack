@@ -23,8 +23,9 @@ export async function handleBridgeCall(
 ): Promise<unknown> {
   switch (method) {
     case "createChild": {
+      // Keep case name as "createChild" for backwards compatibility with panels calling bridge.createChild
       const [source, options] = args as [string, CreateChildOptions | undefined];
-      return pm.createChild(callerId, source, options);
+      return pm.createPanel(callerId, source, options);
     }
     case "createBrowserChild": {
       const [url] = args as [string];

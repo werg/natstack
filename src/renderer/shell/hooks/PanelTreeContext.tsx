@@ -28,6 +28,16 @@ import type {
   PanelAncestor,
   DescendantSiblingGroup,
 } from "../../../shared/ipc/types.js";
+import {
+  getPanelType,
+  getPanelContextId,
+  getPanelSource,
+  getPanelOptions,
+  isPanelEphemeral,
+  getCurrentSnapshot,
+  getShellPage,
+  getBrowserResolvedUrl,
+} from "../../../shared/panel/accessors.js";
 
 // Re-export types for consumers
 export type { PanelSummary, PanelAncestor, DescendantSiblingGroup };
@@ -117,12 +127,12 @@ export function flattenTree(
       index,
       panel: {
         id: panel.id,
-        type: panel.type,
+        type: getPanelType(panel),
         title: panel.title,
         childCount: panel.children.length,
         buildState: panel.artifacts?.buildState,
         position: index,
-        ephemeral: panel.ephemeral,
+        ephemeral: isPanelEphemeral(panel),
       },
       collapsed: isCollapsed,
     });
@@ -339,7 +349,7 @@ export function findParentAtDepth(
 function panelToSummary(panel: Panel, position: number): PanelSummary {
   return {
     id: panel.id,
-    type: panel.type,
+    type: getPanelType(panel),
     title: panel.title,
     childCount: panel.children.length,
     buildState: panel.artifacts?.buildState,
@@ -351,11 +361,15 @@ function panelToSummary(panel: Panel, position: number): PanelSummary {
  * Convert Panel to FullPanel with resolved parent ID.
  */
 function panelToFull(panel: Panel, parentId: string | null, position: number): FullPanel {
+  const panelType = getPanelType(panel);
+  const options = getPanelOptions(panel);
+  const snapshot = getCurrentSnapshot(panel);
+
   const base: FullPanel = {
     id: panel.id,
-    type: panel.type,
+    type: panelType,
     title: panel.title,
-    contextId: panel.contextId,
+    contextId: getPanelContextId(panel),
     parentId,
     position,
     selectedChildId: panel.selectedChildId,
@@ -363,46 +377,46 @@ function panelToFull(panel: Panel, parentId: string | null, position: number): F
   };
 
   // Add type-specific fields
-  if (panel.type === "app") {
+  if (panelType === "app") {
     return {
       ...base,
-      path: panel.path,
-      sourceRepo: panel.sourceRepo,
-      branch: panel.branch,
-      commit: panel.commit,
-      tag: panel.tag,
-      injectHostThemeVariables: panel.injectHostThemeVariables,
-      unsafe: panel.unsafe,
-      resolvedRepoArgs: panel.resolvedRepoArgs,
+      path: getPanelSource(panel),
+      sourceRepo: getPanelSource(panel),
+      branch: options.branch,
+      commit: options.commit,
+      tag: options.tag,
+      injectHostThemeVariables: true, // Default for app panels
+      unsafe: options.unsafe,
+      resolvedRepoArgs: options.repoArgs,
     };
   }
 
-  if (panel.type === "worker") {
+  if (panelType === "worker") {
     return {
       ...base,
-      path: panel.path,
-      sourceRepo: panel.sourceRepo,
-      branch: panel.branch,
-      commit: panel.commit,
-      tag: panel.tag,
-      workerOptions: panel.workerOptions,
-      resolvedRepoArgs: panel.resolvedRepoArgs,
+      path: getPanelSource(panel),
+      sourceRepo: getPanelSource(panel),
+      branch: options.branch,
+      commit: options.commit,
+      tag: options.tag,
+      workerOptions: { unsafe: options.unsafe },
+      resolvedRepoArgs: options.repoArgs,
     };
   }
 
-  if (panel.type === "browser") {
+  if (panelType === "browser") {
     return {
       ...base,
-      url: panel.url,
-      browserState: panel.browserState,
+      url: getBrowserResolvedUrl(panel) ?? getPanelSource(panel),
+      browserState: snapshot.browserState,
       injectHostThemeVariables: false,
     };
   }
 
-  if (panel.type === "shell") {
+  if (panelType === "shell") {
     return {
       ...base,
-      page: panel.page,
+      page: getShellPage(panel),
       injectHostThemeVariables: true,
     };
   }
@@ -624,7 +638,7 @@ export function useAncestors(panelId: string | null): {
       result.unshift({
         id: parent.id,
         title: parent.title,
-        type: parent.type,
+        type: getPanelType(parent),
         depth,
       });
 

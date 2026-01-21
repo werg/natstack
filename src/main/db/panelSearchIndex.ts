@@ -137,7 +137,12 @@ export class PanelSearchIndex {
 
       const rows = db
         .prepare(`
-          SELECT p.id, p.type, p.title, m.access_count, bm25(panel_fts) as relevance
+          SELECT
+            p.id,
+            p.title,
+            json_extract(p.history, '$[' || p.history_index || '].type') as type,
+            m.access_count,
+            bm25(panel_fts) as relevance
           FROM panel_fts
           JOIN panel_search_metadata m ON panel_fts.rowid = m.rowid
           JOIN panels p ON m.panel_id = p.id
@@ -253,14 +258,24 @@ export class PanelSearchIndex {
 
       // Re-index each panel
       for (const panel of panels) {
-        const typeData = JSON.parse(panel.type_data) as Record<string, unknown>;
+        // Parse history to get current snapshot
+        const history = JSON.parse(panel.history) as Array<{
+          source: string;
+          type: "app" | "worker" | "browser" | "shell";
+          resolvedUrl?: string;
+        }>;
+        const currentSnapshot = history[panel.history_index] ?? history[0];
+        if (!currentSnapshot) continue;
 
         this.indexPanel({
           id: panel.id,
-          type: panel.type,
+          type: currentSnapshot.type,
           title: panel.title,
-          path: typeData["path"] as string | undefined,
-          url: typeData["url"] as string | undefined,
+          // For app/worker, source is the path. For browser, use resolvedUrl.
+          path: currentSnapshot.type === "app" || currentSnapshot.type === "worker"
+            ? currentSnapshot.source
+            : undefined,
+          url: currentSnapshot.type === "browser" ? currentSnapshot.resolvedUrl : undefined,
         });
       }
 

@@ -18,9 +18,14 @@ describe("nsLinks", () => {
       expect(url).toBe("ns:///panels/editor");
     });
 
-    it("builds URL with context", () => {
-      const url = buildNsLink("panels/editor", { context: "abc" });
-      expect(url).toBe("ns:///panels/editor?context=abc");
+    it("builds URL with contextId", () => {
+      const url = buildNsLink("panels/editor", { contextId: "abc" });
+      expect(url).toBe("ns:///panels/editor?contextId=abc");
+    });
+
+    it("builds URL with contextId=true", () => {
+      const url = buildNsLink("panels/editor", { contextId: true });
+      expect(url).toBe("ns:///panels/editor?contextId=true");
     });
 
     it("builds URL with gitRef", () => {
@@ -57,14 +62,14 @@ describe("nsLinks", () => {
     it("builds URL with all options", () => {
       const url = buildNsLink("panels/editor", {
         action: "child",
-        context: "abc",
+        contextId: "abc",
         gitRef: "main",
         repoArgs: { workspace: "repos/app" },
         ephemeral: true,
         focus: true,
       });
       expect(url).toContain("action=child");
-      expect(url).toContain("context=abc");
+      expect(url).toContain("contextId=abc");
       expect(url).toContain("gitRef=main");
       expect(url).toContain("repoArgs=");
       expect(url).toContain("ephemeral=true");

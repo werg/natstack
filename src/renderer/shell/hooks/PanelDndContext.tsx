@@ -47,6 +47,7 @@ import {
   findParentAtDepth,
   type FlattenedPanel,
 } from "./PanelTreeContext.js";
+import { isPanelEphemeral } from "../../../shared/panel/accessors.js";
 
 // ============================================================================
 // Constants
@@ -324,7 +325,8 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
 
     // Block indenting non-ephemeral panels into ephemeral panels
     const newParent = panelMap.get(prevItem.id);
-    if (newParent?.ephemeral && !item.panel.ephemeral) {
+    // item.panel is a PanelSummary which has ephemeral directly
+    if (newParent && isPanelEphemeral(newParent) && !item.panel.ephemeral) {
       return;
     }
 
@@ -438,8 +440,9 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
       // Block dropping non-ephemeral panels into ephemeral panels
       if (newParentId) {
         const newParentPanel = panelMap.get(newParentId);
-        const isNewParentEphemeral = newParentPanel?.ephemeral === true;
-        const isDraggedEphemeral = draggedItem?.panel.ephemeral === true;
+        const isNewParentEphemeral = newParentPanel ? isPanelEphemeral(newParentPanel) : false;
+        // draggedItem.panel is a PanelSummary which has ephemeral directly
+        const isDraggedEphemeral = draggedItem?.panel.ephemeral ?? false;
 
         if (isNewParentEphemeral && !isDraggedEphemeral) {
           console.warn(
