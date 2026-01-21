@@ -1127,6 +1127,24 @@ export class PanelManager {
 
       // Check if panel already exists (e.g., on app restart)
       const existingPanel = persistence.getPanel(panel.id);
+
+      // If the panel exists but is archived, unarchive it and update all fields
+      if (existingPanel && persistence.isArchived(panel.id)) {
+        persistence.unarchivePanel(panel.id);
+        // Update all panel data with current values (title, parent, context, artifacts, type data)
+        persistence.updatePanel(panel.id, {
+          title: panel.title,
+          parentId,
+          contextId: panel.contextId,
+          artifacts: panel.artifacts,
+        });
+        this.persistPanelTypeData(panel);
+        if (parentId) {
+          persistence.setSelectedChild(parentId, panel.id);
+        }
+        return;
+      }
+
       const shouldCreate = !existingPanel;
 
       if (shouldCreate) {
@@ -1408,22 +1426,18 @@ export class PanelManager {
   }
 
   /**
-   * Close an ephemeral panel and remove it from the tree.
-   * - Only ephemeral panels can be closed (throws for non-ephemeral)
-   * - All children are closed recursively (children of ephemeral panels are always ephemeral)
+   * Close a panel and remove it from the tree.
+   * - All children are closed recursively
+   * - Ephemeral panels are deleted from memory only
+   * - Stored panels are archived (soft delete) in the database
    */
   async closePanel(panelId: string): Promise<void> {
     const panel = this.panels.get(panelId);
     if (!panel) {
       throw new Error(`Panel not found: ${panelId}`);
     }
-    if (!panel.ephemeral) {
-      throw new Error(`Only ephemeral panels can be closed. Panel "${panelId}" is not ephemeral.`);
-    }
 
-    // Close all children first (copy to avoid mutation during iteration).
-    // All children of ephemeral panels are guaranteed to be ephemeral,
-    // so this recursion will succeed without reparenting logic.
+    // Close all children first (copy to avoid mutation during iteration)
     const childrenToClose = [...panel.children];
     for (const child of childrenToClose) {
       await this.closePanel(child.id);
@@ -1438,6 +1452,11 @@ export class PanelManager {
       // Clear selectedChildId if it pointed to this panel
       if (parent.selectedChildId === panelId) {
         parent.selectedChildId = null;
+        // Persist the cleared selection for stored parents
+        if (!parent.ephemeral) {
+          const persistence = getPanelPersistence();
+          persistence.setSelectedChild(parent.id, null);
+        }
       }
     } else {
       // It's a root panel
@@ -1449,6 +1468,12 @@ export class PanelManager {
 
     // Remove from panels map
     this.panels.delete(panelId);
+
+    // Archive in DB if stored (non-ephemeral) panel
+    if (!panel.ephemeral) {
+      const persistence = getPanelPersistence();
+      persistence.archivePanel(panelId);
+    }
 
     // Notify tree update
     this.notifyPanelTreeUpdate();

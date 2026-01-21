@@ -106,6 +106,8 @@ export interface UpdatePanelInput {
   type?: DbPanelType;
   typeData?: Partial<TypeData>;
   artifacts?: PanelArtifacts;
+  parentId?: string | null;
+  contextId?: string;
 }
 
 /**
@@ -438,6 +440,16 @@ export class PanelPersistence {
     if (input.artifacts !== undefined) {
       updates.push("artifacts = ?");
       params.push(JSON.stringify(input.artifacts));
+    }
+
+    if (input.parentId !== undefined) {
+      updates.push("parent_id = ?");
+      params.push(input.parentId);
+    }
+
+    if (input.contextId !== undefined) {
+      updates.push("context_id = ?");
+      params.push(input.contextId);
     }
 
     if (input.typeData !== undefined) {
@@ -817,11 +829,11 @@ export class PanelPersistence {
     const db = this.ensureOpen();
     const workspaceId = this.getWorkspaceId();
 
-    // Get all panels for this workspace
+    // Get all active (non-archived) panels for this workspace
     const rows = db
       .prepare(
         `
-      SELECT * FROM panels WHERE workspace_id = ? ORDER BY position
+      SELECT * FROM panels WHERE workspace_id = ? AND archived_at IS NULL ORDER BY position
     `
       )
       .all(workspaceId) as DbPanelRow[];
@@ -871,7 +883,7 @@ export class PanelPersistence {
     const workspaceId = this.getWorkspaceId();
     const stmt = db.prepare(`
       SELECT id FROM panels
-      WHERE workspace_id = ? AND collapsed = 1
+      WHERE workspace_id = ? AND collapsed = 1 AND archived_at IS NULL
     `);
     const rows = stmt.all(workspaceId) as Array<{ id: string }>;
     return rows.map((row) => row.id);
@@ -950,6 +962,85 @@ export class PanelPersistence {
       `[PanelPersistence] Reset ${errorPanels.length} error panels to pending state`
     );
     return errorPanels.length;
+  }
+
+  /**
+   * Reset all app/worker panels with "ready" buildState to "pending".
+   * Called when the build cache is cleared so panels can rebuild.
+   * Returns the IDs of panels that were reset (for unloading).
+   */
+  resetAllReadyPanels(): string[] {
+    const db = this.ensureOpen();
+    const workspaceId = this.getWorkspaceId();
+    const now = Date.now();
+
+    const readyPanels = db
+      .prepare(
+        `SELECT id FROM panels
+         WHERE workspace_id = ?
+         AND type IN ('app', 'worker')
+         AND json_extract(artifacts, '$.buildState') = 'ready'`
+      )
+      .all(workspaceId) as Array<{ id: string }>;
+
+    if (readyPanels.length === 0) {
+      return [];
+    }
+
+    const updateStmt = db.prepare(
+      "UPDATE panels SET artifacts = ?, updated_at = ? WHERE id = ?"
+    );
+    const pendingArtifacts = JSON.stringify({
+      buildState: "pending",
+      buildProgress: "Build cache cleared - will rebuild when focused",
+    });
+
+    const resetIds: string[] = [];
+    for (const panel of readyPanels) {
+      updateStmt.run(pendingArtifacts, now, panel.id);
+      resetIds.push(panel.id);
+    }
+
+    console.log(
+      `[PanelPersistence] Reset ${resetIds.length} ready panels to pending state`
+    );
+    return resetIds;
+  }
+
+  // =========================================================================
+  // Archive Operations
+  // =========================================================================
+
+  /**
+   * Archive a panel (soft delete).
+   * The panel remains in the database but is excluded from queries.
+   */
+  archivePanel(panelId: string): void {
+    const db = this.ensureOpen();
+    const now = Date.now();
+    db.prepare(PANEL_QUERIES.ARCHIVE_PANEL).run(now, now, panelId);
+  }
+
+  /**
+   * Unarchive a panel (restore from soft delete).
+   */
+  unarchivePanel(panelId: string): void {
+    const db = this.ensureOpen();
+    db.prepare("UPDATE panels SET archived_at = NULL, updated_at = ? WHERE id = ?").run(
+      Date.now(),
+      panelId
+    );
+  }
+
+  /**
+   * Check if a panel is archived.
+   */
+  isArchived(panelId: string): boolean {
+    const db = this.ensureOpen();
+    const row = db.prepare("SELECT archived_at FROM panels WHERE id = ?").get(panelId) as
+      | { archived_at: number | null }
+      | undefined;
+    return row?.archived_at != null;
   }
 
   // =========================================================================

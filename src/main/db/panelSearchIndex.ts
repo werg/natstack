@@ -141,7 +141,7 @@ export class PanelSearchIndex {
           FROM panel_fts
           JOIN panel_search_metadata m ON panel_fts.rowid = m.rowid
           JOIN panels p ON m.panel_id = p.id
-          WHERE panel_fts MATCH ?1 AND p.workspace_id = ?2
+          WHERE panel_fts MATCH ?1 AND p.workspace_id = ?2 AND p.archived_at IS NULL
           ORDER BY relevance, m.access_count DESC
           LIMIT ?3
         `)
@@ -239,9 +239,9 @@ export class PanelSearchIndex {
       const db = this.getDb();
       const workspaceId = this.persistence.getWorkspaceId();
 
-      // Get all panels
+      // Get all active (non-archived) panels
       const panels = db
-        .prepare("SELECT * FROM panels WHERE workspace_id = ?")
+        .prepare("SELECT * FROM panels WHERE workspace_id = ? AND archived_at IS NULL")
         .all(workspaceId) as DbPanelRow[];
 
       console.log(`[PanelSearchIndex] Rebuilding index for ${panels.length} panels`);

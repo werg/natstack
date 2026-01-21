@@ -86,11 +86,7 @@ export async function handleBridgeCall(
       return pm.listCommits(repoPath, ref, limit);
     }
     case "closeSelf": {
-      // Allow ephemeral panels to close themselves
-      const panel = pm.getPanel(callerId);
-      if (!panel?.ephemeral) {
-        throw new Error(`Only ephemeral panels can close themselves`);
-      }
+      // Allow any panel to close itself
       return pm.closePanel(callerId);
     }
     default:

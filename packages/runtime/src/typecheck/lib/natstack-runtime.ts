@@ -121,15 +121,19 @@ ${FS_INTERFACES}
     goForward(): Promise<void>;
     reload(): Promise<void>;
     stop(): Promise<void>;
+    /** Close this child panel and remove it from the tree */
+    close(): Promise<void>;
   }
 
-  interface EphemeralChildHandle<
+  /**
+   * Handle for an ephemeral child panel.
+   * @deprecated All panels can now be closed, so this is equivalent to ChildHandle.
+   */
+  type EphemeralChildHandle<
     T extends ExposedMethods = ExposedMethods,
     E extends RpcEventMap = RpcEventMap,
     EmitE extends RpcEventMap = RpcEventMap
-  > extends ChildHandle<T, E, EmitE> {
-    close(): Promise<void>;
-  }
+  > = ChildHandle<T, E, EmitE>;
 
   /** Handle to the parent panel */
   export const parent: ParentHandle;

@@ -1,6 +1,5 @@
 import type {
   ChildHandle,
-  EphemeralChildHandle,
   EventSchemaMap,
   ParentHandle,
   PanelContract,
@@ -57,6 +56,7 @@ export function createChildHandle<
   title: string;
   source: string;
   eventSchemas?: EventSchemaMap;
+  onClose?: () => void;
 }): ChildHandle<T, E, EmitE> {
   const { rpc, bridge, id, type, name, title, source, eventSchemas } = options;
   const eventUnsubscribers: Array<() => void> = [];
@@ -140,38 +140,12 @@ export function createChildHandle<
       if (type !== "browser") throw new Error("stop() is only available for browser children");
       await bridge.browser.stop(id);
     },
-  } as ChildHandle<T, E, EmitE>;
-}
-
-/**
- * Create an ephemeral child handle with close() method.
- * Used when createChild is called with ephemeral: true.
- */
-export function createEphemeralChildHandle<
-  T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
-  E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
-  EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
->(options: {
-  rpc: RpcBridge;
-  bridge: ChildHandleBridge;
-  id: string;
-  type: "app" | "worker" | "browser";
-  name: string;
-  title: string;
-  source: string;
-  eventSchemas?: EventSchemaMap;
-  onClose?: () => void;
-}): EphemeralChildHandle<T, E, EmitE> {
-  const baseHandle = createChildHandle<T, E, EmitE>(options);
-
-  return {
-    ...baseHandle,
     async close() {
-      await options.bridge.closeChild(options.id);
+      await bridge.closeChild(id);
       // Clean up handle after successful close
       options.onClose?.();
     },
-  };
+  } as ChildHandle<T, E, EmitE>;
 }
 
 export function createParentHandle<

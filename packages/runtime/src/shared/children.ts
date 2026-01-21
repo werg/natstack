@@ -1,6 +1,5 @@
 import type {
   ChildHandle,
-  EphemeralChildHandle,
   ChildHandleFromContract,
   CreateChildOptions,
   ChildCreationResult,
@@ -10,10 +9,7 @@ import type {
   Rpc,
 } from "../core/index.js";
 import type { RpcBridge } from "@natstack/rpc";
-import { createChildHandle, createEphemeralChildHandle, createChildHandleFromContract } from "./handles.js";
-
-/** Options with ephemeral: true for type-safe overloads */
-export type EphemeralCreateChildOptions = CreateChildOptions & { ephemeral: true };
+import { createChildHandle, createChildHandleFromContract } from "./handles.js";
 
 export type ChildManager = ReturnType<typeof createChildManager>;
 
@@ -61,16 +57,6 @@ export function createChildManager(options: {
     }
   }
 
-  // Overload: ephemeral: true returns EphemeralChildHandle
-  async function createChild<
-    T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
-    E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
-    EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
-  >(
-    source: string,
-    options: EphemeralCreateChildOptions
-  ): Promise<EphemeralChildHandle<T, E, EmitE>>;
-  // Overload: without ephemeral: true returns ChildHandle
   async function createChild<
     T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
     E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
@@ -78,23 +64,14 @@ export function createChildManager(options: {
   >(
     source: string,
     options?: CreateChildOptions
-  ): Promise<ChildHandle<T, E, EmitE>>;
-  // Implementation
-  async function createChild<
-    T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
-    E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
-    EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
-  >(
-    source: string,
-    options?: CreateChildOptions
-  ): Promise<ChildHandle<T, E, EmitE> | EphemeralChildHandle<T, E, EmitE>> {
+  ): Promise<ChildHandle<T, E, EmitE>> {
     const { eventSchemas, ...bridgeOptions } = options ?? {};
     const result = await bridge.createChild(source, bridgeOptions);
 
     const name = options?.name ?? result.id.split("/").pop() ?? result.id;
     const title = result.title ?? name;
 
-    const handleOptions = {
+    const handle = createChildHandle<T, E, EmitE>({
       rpc,
       bridge,
       id: result.id,
@@ -103,14 +80,8 @@ export function createChildManager(options: {
       title,
       source,
       eventSchemas: eventSchemas as EventSchemaMap | undefined,
-    };
-
-    const handle = options?.ephemeral
-      ? createEphemeralChildHandle<T, E, EmitE>({
-          ...handleOptions,
-          onClose: () => removeChild(name),
-        })
-      : createChildHandle<T, E, EmitE>(handleOptions);
+      onClose: () => removeChild(name),
+    });
 
     childHandles.set(name, handle as ChildHandle);
     for (const listener of childAddedListeners) {
@@ -144,6 +115,7 @@ export function createChildManager(options: {
       title,
       source: url,
       eventSchemas: undefined,
+      onClose: () => removeChild(name),
     });
 
     childHandles.set(name, handle as ChildHandle);

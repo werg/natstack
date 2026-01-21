@@ -360,23 +360,26 @@ export interface ChildHandle<
 
   /** Stop loading (browser only) */
   stop(): Promise<void>;
-}
 
-/**
- * Handle for an ephemeral child panel, which includes the close() method.
- * Returned by createChild when ephemeral: true is passed.
- */
-export interface EphemeralChildHandle<
-  T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
-  E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
-  EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
-> extends ChildHandle<T, E, EmitE> {
   /**
    * Close this child panel and remove it from the tree.
-   * All children are closed recursively (ephemeral panels can only have ephemeral children).
+   * All children are closed recursively.
+   * - Ephemeral panels are deleted from memory
+   * - Stored panels are archived (soft delete) in the database
    */
   close(): Promise<void>;
 }
+
+/**
+ * Handle for an ephemeral child panel.
+ * @deprecated All panels can now be closed, so this is equivalent to ChildHandle.
+ * Kept for backwards compatibility.
+ */
+export type EphemeralChildHandle<
+  T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+  E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
+  EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
+> = ChildHandle<T, E, EmitE>;
 
 /**
  * Callback for child lifecycle events.

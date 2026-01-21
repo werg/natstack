@@ -53,6 +53,7 @@ export interface DbPanelRow {
   updated_at: number;
   type_data: string; // JSON
   artifacts: string; // JSON
+  archived_at: number | null; // Timestamp when archived, null = active
 }
 
 /**
@@ -110,7 +111,10 @@ CREATE TABLE IF NOT EXISTS panels (
     type_data TEXT NOT NULL DEFAULT '{}',
 
     -- Build artifacts as JSON
-    artifacts TEXT NOT NULL DEFAULT '{}'
+    artifacts TEXT NOT NULL DEFAULT '{}',
+
+    -- Soft delete: timestamp when archived, NULL = active
+    archived_at INTEGER DEFAULT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_panels_parent ON panels(parent_id);
@@ -326,11 +330,11 @@ export const PANEL_QUERIES = {
   ANCESTORS: `
     WITH RECURSIVE ancestors AS (
       SELECT id, parent_id, title, type, 0 as depth
-      FROM panels WHERE id = ?
+      FROM panels WHERE id = ? AND archived_at IS NULL
       UNION ALL
       SELECT p.id, p.parent_id, p.title, p.type, a.depth + 1
       FROM panels p JOIN ancestors a ON p.id = a.parent_id
-      WHERE a.depth < 20
+      WHERE a.depth < 20 AND p.archived_at IS NULL
     )
     SELECT id, parent_id, title, type, depth FROM ancestors WHERE depth > 0 ORDER BY depth DESC
   `,
@@ -340,9 +344,9 @@ export const PANEL_QUERIES = {
    */
   SIBLINGS: `
     SELECT p.id, p.title, p.type, p.position, p.artifacts,
-      (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id) as child_count
+      (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
     FROM panels p
-    WHERE p.parent_id = (SELECT parent_id FROM panels WHERE id = ?)
+    WHERE p.parent_id = (SELECT parent_id FROM panels WHERE id = ?) AND p.archived_at IS NULL
     ORDER BY p.position
   `,
 
@@ -351,8 +355,8 @@ export const PANEL_QUERIES = {
    */
   CHILDREN: `
     SELECT p.id, p.title, p.type, p.position, p.artifacts,
-      (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id) as child_count
-    FROM panels p WHERE p.parent_id = ?
+      (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
+    FROM panels p WHERE p.parent_id = ? AND p.archived_at IS NULL
     ORDER BY p.position
   `,
 
@@ -361,8 +365,8 @@ export const PANEL_QUERIES = {
    */
   ROOT_PANELS: `
     SELECT p.id, p.title, p.type, p.position, p.artifacts,
-      (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id) as child_count
-    FROM panels p WHERE p.parent_id IS NULL AND p.workspace_id = ?
+      (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
+    FROM panels p WHERE p.parent_id IS NULL AND p.workspace_id = ? AND p.archived_at IS NULL
     ORDER BY p.position
   `,
 
@@ -374,7 +378,7 @@ export const PANEL_QUERIES = {
     FROM panel_fts
     JOIN panel_search_metadata m ON panel_fts.rowid = m.rowid
     JOIN panels p ON m.panel_id = p.id
-    WHERE panel_fts MATCH ? AND p.workspace_id = ?
+    WHERE panel_fts MATCH ? AND p.workspace_id = ? AND p.archived_at IS NULL
     ORDER BY relevance, m.access_count DESC
     LIMIT ?
   `,
@@ -391,14 +395,14 @@ export const PANEL_QUERIES = {
    */
   MAX_SIBLING_POSITION: `
     SELECT COALESCE(MAX(position), -1) as max_position
-    FROM panels WHERE (parent_id = ? OR (parent_id IS NULL AND ? IS NULL)) AND workspace_id = ?
+    FROM panels WHERE (parent_id = ? OR (parent_id IS NULL AND ? IS NULL)) AND workspace_id = ? AND archived_at IS NULL
   `,
 
   /**
    * Get panel count for a workspace.
    */
   PANEL_COUNT: `
-    SELECT COUNT(*) as count FROM panels WHERE workspace_id = ?
+    SELECT COUNT(*) as count FROM panels WHERE workspace_id = ? AND archived_at IS NULL
   `,
 
   /**
@@ -411,6 +415,7 @@ export const PANEL_QUERIES = {
     WHERE (parent_id = ? OR (parent_id IS NULL AND ? IS NULL))
       AND workspace_id = ?
       AND position >= ?
+      AND archived_at IS NULL
   `,
 
   /**
@@ -427,8 +432,8 @@ export const PANEL_QUERIES = {
    */
   CHILDREN_PAGINATED: `
     SELECT p.id, p.title, p.type, p.position, p.artifacts,
-      (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id) as child_count
-    FROM panels p WHERE p.parent_id = ?
+      (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
+    FROM panels p WHERE p.parent_id = ? AND p.archived_at IS NULL
     ORDER BY p.position ASC
     LIMIT ? OFFSET ?
   `,
@@ -437,7 +442,7 @@ export const PANEL_QUERIES = {
    * Get children count for a parent.
    */
   CHILDREN_COUNT: `
-    SELECT COUNT(*) as count FROM panels WHERE parent_id = ?
+    SELECT COUNT(*) as count FROM panels WHERE parent_id = ? AND archived_at IS NULL
   `,
 
   /**
@@ -445,8 +450,8 @@ export const PANEL_QUERIES = {
    */
   ROOT_PANELS_PAGINATED: `
     SELECT p.id, p.title, p.type, p.position, p.artifacts,
-      (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id) as child_count
-    FROM panels p WHERE p.parent_id IS NULL AND p.workspace_id = ?
+      (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
+    FROM panels p WHERE p.parent_id IS NULL AND p.workspace_id = ? AND p.archived_at IS NULL
     ORDER BY p.position ASC
     LIMIT ? OFFSET ?
   `,
@@ -455,6 +460,13 @@ export const PANEL_QUERIES = {
    * Get root panels count for a workspace.
    */
   ROOT_PANELS_COUNT: `
-    SELECT COUNT(*) as count FROM panels WHERE parent_id IS NULL AND workspace_id = ?
+    SELECT COUNT(*) as count FROM panels WHERE parent_id IS NULL AND workspace_id = ? AND archived_at IS NULL
+  `,
+
+  /**
+   * Archive a panel (soft delete).
+   */
+  ARCHIVE_PANEL: `
+    UPDATE panels SET archived_at = ?, updated_at = ? WHERE id = ?
   `,
 } as const;
