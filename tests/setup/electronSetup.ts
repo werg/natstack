@@ -173,13 +173,30 @@ export async function launchTestApp(options: LaunchOptions = {}): Promise<TestAp
     });
   }
 
-  // Cleanup function
+  // Cleanup function with timeout to prevent hanging
   const cleanup = async () => {
+    // Use a timeout to prevent hanging on app.close()
+    const closeWithTimeout = async (timeoutMs: number): Promise<void> => {
+      return Promise.race([
+        app.close(),
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error("App close timed out")), timeoutMs)
+        ),
+      ]);
+    };
+
     try {
-      await app.close();
+      // Try graceful close first with 5 second timeout
+      await closeWithTimeout(5000);
     } catch (error) {
-      // App may already be closed
-      console.warn("[TestSetup] Error closing app:", error);
+      console.warn("[TestSetup] Graceful close failed, force killing:", error);
+      // Force kill the process if graceful close fails
+      try {
+        const pid = await app.evaluate(() => process.pid);
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Process may already be dead
+      }
     }
 
     if (shouldCleanupWorkspace) {

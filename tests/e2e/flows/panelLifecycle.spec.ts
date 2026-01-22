@@ -91,7 +91,9 @@ test.describe("Panel Lifecycle", () => {
 });
 
 test.describe("Panel Persistence", () => {
+  // This test launches the app twice, so it needs a longer timeout
   test("panels persist across app restarts", async () => {
+    test.setTimeout(120000); // 2 minutes for double app launch
     // First session: create panels
     let testApp = await launchTestApp();
 
@@ -104,8 +106,8 @@ test.describe("Panel Persistence", () => {
     // Save workspace path for restart
     const workspacePath = testApp.workspacePath;
 
-    // Close app (but keep workspace)
-    await testApp.app.close();
+    // Close app using cleanup (which has a timeout to prevent hanging)
+    await testApp.cleanup();
 
     // Restart with same workspace
     testApp = await launchTestApp({ workspace: workspacePath });
