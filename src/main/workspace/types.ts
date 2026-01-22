@@ -121,8 +121,6 @@ export interface WorkspaceConfig {
   id: string;
   /** Git server configuration */
   git?: GitConfig;
-  /** Root panel path relative to workspace */
-  "root-panel"?: string;
 }
 
 /**

@@ -23,6 +23,7 @@ import {
   Spinner,
 } from "@radix-ui/themes";
 import { rpc } from "@natstack/runtime";
+import { usePanelTheme } from "@natstack/react";
 import type { SettingsData, ProviderInfo, AvailableProvider } from "../../shared/ipc/types.js";
 
 const MODEL_ROLES = ["smart", "coding", "fast", "cheap"] as const;
@@ -402,16 +403,17 @@ function ModelRoleRow({ role, currentValue, providers, onRoleChange }: ModelRole
   );
 }
 
-// Get theme from preload globals (passed via --natstack-theme arg)
-declare const __natstackInitialTheme: "light" | "dark" | undefined;
-const initialTheme = typeof __natstackInitialTheme !== "undefined" ? __natstackInitialTheme : "dark";
+function ThemedApp() {
+  const theme = usePanelTheme();
+  return (
+    <Theme appearance={theme} radius="medium">
+      <ModelProviderConfigPage />
+    </Theme>
+  );
+}
 
 // Mount the app
 const root = document.getElementById("root");
 if (root) {
-  createRoot(root).render(
-    <Theme appearance={initialTheme} radius="medium">
-      <ModelProviderConfigPage />
-    </Theme>
-  );
+  createRoot(root).render(<ThemedApp />);
 }

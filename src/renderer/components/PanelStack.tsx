@@ -206,10 +206,6 @@ export function PanelStack({
           // Unload panel resources but keep in tree (can be re-loaded later)
           await panelService.unload(panelId);
           break;
-        case "pin":
-          // Pin panel by moving it to be a child of the pinned root
-          await panelService.pinPanel(panelId);
-          break;
       }
     },
     []

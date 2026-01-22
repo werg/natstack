@@ -432,16 +432,8 @@ See these example panels in the repository:
 1. Create a new panel directory in `panels/`
 2. Add a `package.json` with a `natstack` field
 3. Write your panel code in TypeScript
-4. Launch the panel from another panel using `createChild()`
+4. Launch the panel from the launcher or from another panel using `createChild()`
 5. The panel will be built automatically on first load
-
-### Root Panel Path
-
-NatStack picks the initial root panel path in this order:
-
-1. Command-line flag `--root-panel=/path/to/panel`
-2. Saved preference (`preferences.json` under the NatStack config directory)
-3. A default panel cloned into `<config dir>/Default Root Panel` on first run
 
 ## Notes
 

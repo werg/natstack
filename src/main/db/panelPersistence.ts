@@ -679,24 +679,6 @@ export class PanelPersistence {
     };
   }
 
-  /**
-   * Get the first root panel ID (the "pinned" root).
-   */
-  getPinnedRootId(): string | null {
-    const db = this.ensureOpen();
-    const workspaceId = this.getWorkspaceId();
-
-    const row = db
-      .prepare(
-        `SELECT id FROM panels
-         WHERE parent_id IS NULL AND workspace_id = ?
-         ORDER BY position ASC LIMIT 1`
-      )
-      .get(workspaceId) as { id: string } | undefined;
-
-    return row?.id ?? null;
-  }
-
   // =========================================================================
   // Event Logging
   // =========================================================================

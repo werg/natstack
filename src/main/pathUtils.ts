@@ -34,25 +34,3 @@ export function normalizeRelativePanelPath(
 
   return { relativePath: normalized, absolutePath };
 }
-
-/**
- * Validates and normalizes a relative panel path without computing absolute path.
- * Useful when workspace root is not yet known or not needed.
- */
-export function validateRelativePath(panelPath: string): string {
-  if (path.isAbsolute(panelPath)) {
-    throw new Error("Panel path must be relative");
-  }
-
-  const normalized = path
-    .normalize(panelPath)
-    .replace(/\\/g, "/")
-    .replace(/^\.\//, "")
-    .replace(/\/+$/, "");
-
-  if (!normalized || normalized === "." || normalized.startsWith("..")) {
-    throw new Error(`Invalid panel path: ${panelPath}`);
-  }
-
-  return normalized;
-}

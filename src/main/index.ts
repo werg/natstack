@@ -8,7 +8,6 @@ process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
 
 import { isDev } from "./utils.js";
 import { PanelManager } from "./panelManager.js";
-import { resolveInitialRootPanelPath, parseCliRootPanelPath } from "./rootPanelResolver.js";
 import { GitServer } from "./gitServer.js";
 import { handle } from "./ipc/handlers.js";
 import type * as SharedPanel from "../shared/ipc/types.js";
@@ -76,7 +75,6 @@ loadCentralEnv();
 
 // Parse CLI arguments
 const cliWorkspacePath = parseCliWorkspacePath();
-const cliRootPanelPath = parseCliRootPanelPath();
 
 // Determine startup workspace (CLI > env > walk-up > default), but only if config exists
 const discoveredWorkspacePath = discoverWorkspace(cliWorkspacePath);
@@ -119,18 +117,6 @@ if (appMode === "main" && hasWorkspaceConfig) {
     const centralData = getCentralData();
     centralData.addRecentWorkspace(workspace.path, workspace.config.id);
 
-    // Resolve root panel path: CLI arg > workspace config > default
-    // Normalize all paths to be relative to workspace
-    let initialRootPanelPath =
-      cliRootPanelPath ?? workspace.config["root-panel"] ?? resolveInitialRootPanelPath();
-
-    // If path is absolute, make it relative to workspace
-    if (path.isAbsolute(initialRootPanelPath)) {
-      initialRootPanelPath = path.relative(workspace.path, initialRootPanelPath);
-    }
-
-    console.log(`[Panel] Root panel: ${initialRootPanelPath}`);
-
     // Create git server with workspace configuration
     gitServer = new GitServer({
       port: workspace.config.git?.port,
@@ -138,7 +124,7 @@ if (appMode === "main" && hasWorkspaceConfig) {
     });
 
     // Create panel manager
-    panelManager = new PanelManager(initialRootPanelPath, gitServer);
+    panelManager = new PanelManager(gitServer);
 
     // Set up test API for E2E testing (only when NATSTACK_TEST_MODE=1)
     setupTestApi(panelManager);

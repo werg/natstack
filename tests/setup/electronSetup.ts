@@ -31,7 +31,7 @@ export interface TestApp {
 export interface LaunchOptions {
   /** Use an existing workspace path instead of creating a new one */
   workspace?: string;
-  /** Initial panel source to load (defaults to workspace root-panel or panels/launcher) */
+  /** Initial panel source to load (defaults to shell:new launcher if no panels exist) */
   initialPanel?: string;
   /** Open DevTools on launch (dev mode only) */
   devTools?: boolean;
@@ -43,6 +43,7 @@ export interface LaunchOptions {
 
 /**
  * Create a minimal test workspace with required config files.
+ * Note: On startup with no existing panels, the app shows shell:new (panel launcher).
  */
 function createTestWorkspace(basePath?: string): string {
   const workspacePath =
@@ -52,48 +53,15 @@ function createTestWorkspace(basePath?: string): string {
   const natstackDir = path.join(workspacePath, ".natstack");
   fs.mkdirSync(natstackDir, { recursive: true });
 
+  // Create panels directory
+  fs.mkdirSync(path.join(workspacePath, "panels"), { recursive: true });
+
   // Create minimal natstack.yml config
   const workspaceId = `test-${crypto.randomBytes(8).toString("hex")}`;
   const config = `id: ${workspaceId}
 name: E2E Test Workspace
-root-panel: panels/launcher
 `;
   fs.writeFileSync(path.join(workspacePath, "natstack.yml"), config);
-
-  // Create a minimal launcher panel for testing
-  const launcherDir = path.join(workspacePath, "panels", "launcher");
-  fs.mkdirSync(launcherDir, { recursive: true });
-
-  // Minimal package.json for the launcher
-  const packageJson = {
-    name: "test-launcher",
-    version: "1.0.0",
-    natstack: {
-      title: "Test Launcher",
-      type: "app",
-    },
-  };
-  fs.writeFileSync(path.join(launcherDir, "package.json"), JSON.stringify(packageJson, null, 2));
-
-  // Minimal index.tsx for the launcher
-  const indexTsx = `import React from "react";
-import { createRoot } from "react-dom/client";
-
-function TestLauncher() {
-  return (
-    <div data-testid="test-launcher" style={{ padding: 20 }}>
-      <h1>Test Launcher</h1>
-      <p>This is a minimal launcher for E2E testing.</p>
-    </div>
-  );
-}
-
-const root = document.getElementById("root");
-if (root) {
-  createRoot(root).render(<TestLauncher />);
-}
-`;
-  fs.writeFileSync(path.join(launcherDir, "index.tsx"), indexTsx);
 
   return workspacePath;
 }

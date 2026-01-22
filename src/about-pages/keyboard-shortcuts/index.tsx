@@ -5,6 +5,7 @@
 import { createRoot } from "react-dom/client";
 import "@radix-ui/themes/styles.css";
 import { Theme, Card, Flex, Heading, Text, Box, Table, Kbd, ScrollArea } from "@radix-ui/themes";
+import { usePanelTheme } from "@natstack/react";
 
 interface ShortcutGroup {
   title: string;
@@ -104,16 +105,17 @@ function KeyboardShortcutsPage() {
   );
 }
 
-// Get theme from preload globals (passed via --natstack-theme arg)
-declare const __natstackInitialTheme: "light" | "dark" | undefined;
-const initialTheme = typeof __natstackInitialTheme !== "undefined" ? __natstackInitialTheme : "dark";
+function ThemedApp() {
+  const theme = usePanelTheme();
+  return (
+    <Theme appearance={theme} radius="medium">
+      <KeyboardShortcutsPage />
+    </Theme>
+  );
+}
 
 // Mount the app
 const root = document.getElementById("root");
 if (root) {
-  createRoot(root).render(
-    <Theme appearance={initialTheme} radius="medium">
-      <KeyboardShortcutsPage />
-    </Theme>
-  );
+  createRoot(root).render(<ThemedApp />);
 }

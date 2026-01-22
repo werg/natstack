@@ -21,6 +21,7 @@ import {
   Tabs,
 } from "@radix-ui/themes";
 import { getWorkspaceTree, buildNsLink, buildAboutLink } from "@natstack/runtime";
+import { usePanelTheme } from "@natstack/react";
 import type { WorkspaceTree, WorkspaceNode, EnvArgSchema } from "@natstack/runtime";
 import { WorkspaceTreeView } from "./WorkspaceTreeView";
 import { RepoSelector } from "./RepoSelector";
@@ -380,17 +381,17 @@ function NewPanelPage() {
   );
 }
 
-// Get theme from preload globals (passed via --natstack-theme arg)
-declare const __natstackInitialTheme: "light" | "dark" | undefined;
-const initialTheme =
-  typeof __natstackInitialTheme !== "undefined" ? __natstackInitialTheme : "dark";
+function ThemedApp() {
+  const theme = usePanelTheme();
+  return (
+    <Theme appearance={theme} radius="medium">
+      <NewPanelPage />
+    </Theme>
+  );
+}
 
 // Mount the app
 const root = document.getElementById("root");
 if (root) {
-  createRoot(root).render(
-    <Theme appearance={initialTheme} radius="medium">
-      <NewPanelPage />
-    </Theme>
-  );
+  createRoot(root).render(<ThemedApp />);
 }

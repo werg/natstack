@@ -261,7 +261,6 @@ function createDefaultWorkspaceConfig(workspacePath: string): WorkspaceConfig {
 
   const config: WorkspaceConfig = {
     id,
-    "root-panel": "panels/root",
   };
 
   // Ensure directory exists

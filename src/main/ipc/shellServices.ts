@@ -318,21 +318,6 @@ export async function handlePanelService(
       return persistence.getRootPanelsPaginated(offset, limit);
     }
 
-    case "pinPanel": {
-      const panelId = args[0] as string;
-      const pinnedRootId = pm.getPinnedRootId();
-      if (!pinnedRootId) {
-        throw new Error("No pinned root panel exists");
-      }
-      // Move panel to be first child of pinned root (position 0)
-      pm.movePanel(panelId, pinnedRootId, 0);
-      return;
-    }
-
-    case "getPinnedRootId": {
-      return pm.getPinnedRootId();
-    }
-
     case "getCollapsedIds": {
       return pm.getCollapsedIds();
     }
@@ -496,17 +481,11 @@ export async function handleMenuService(
     }
 
     case "showPanelContext": {
-      const [panelId, panelType, position] = args as [
+      const [_panelId, panelType, position] = args as [
         string,
         string,
         { x: number; y: number }
       ];
-      const pm = requirePanelManager();
-      const pinnedRootId = pm.getPinnedRootId();
-
-      // Check if panel is already pinned (is the pinned root or a child of it)
-      const isPinnedRoot = panelId === pinnedRootId;
-      const isAlreadyPinned = isPinnedRoot || (pinnedRootId && pm.isDescendantOf(panelId, pinnedRootId));
 
       return new Promise<PanelContextMenuAction | null>((resolve) => {
         const template: MenuItemConstructorOptions[] = [];
@@ -515,15 +494,6 @@ export async function handleMenuService(
           template.push({
             label: "Reload",
             click: () => resolve("reload"),
-          });
-          template.push({ type: "separator" });
-        }
-
-        // Add "Pin" option for panels not already in pinned subtree
-        if (!isAlreadyPinned && pinnedRootId) {
-          template.push({
-            label: "Pin to Sidebar",
-            click: () => resolve("pin"),
           });
           template.push({ type: "separator" });
         }
@@ -646,51 +616,8 @@ id: ${name}
 
 git:
   port: ${randomPort}
-
-root-panel: panels/root
 `;
         fs.writeFileSync(path.join(resolvedPath, "natstack.yml"), configContent, "utf-8");
-
-        // Create a minimal root panel
-        const rootPanelPath = path.join(resolvedPath, "panels", "root");
-        fs.mkdirSync(rootPanelPath, { recursive: true });
-
-        const packageJson = {
-          name: "@natstack-panels/root",
-          type: "module",
-          natstack: {
-            title: "Root Panel",
-            entry: "index.tsx",
-          },
-        };
-        fs.writeFileSync(
-          path.join(rootPanelPath, "package.json"),
-          JSON.stringify(packageJson, null, 2),
-          "utf-8"
-        );
-
-        const indexTsx = `import { Button, Card, Flex, Heading, Text } from "@radix-ui/themes";
-import { usePanelTheme, usePanelId } from "@natstack/react";
-
-export default function RootPanel() {
-  const theme = usePanelTheme();
-  const panelId = usePanelId();
-
-  return (
-    <div style={{ padding: "20px" }}>
-      <Card size="3">
-        <Flex direction="column" gap="4">
-          <Heading size="6">Hello NatStack!</Heading>
-          <Text>Theme: {theme.appearance}</Text>
-          <Text>Panel ID: {panelId}</Text>
-          <Button>Click me</Button>
-        </Flex>
-      </Card>
-    </div>
-  );
-}
-`;
-        fs.writeFileSync(path.join(rootPanelPath, "index.tsx"), indexTsx, "utf-8");
 
         return {
           path: resolvedPath,

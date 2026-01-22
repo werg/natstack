@@ -5,6 +5,7 @@
 import { createRoot } from "react-dom/client";
 import "@radix-ui/themes/styles.css";
 import { Theme, Card, Flex, Heading, Text, Box, Link, ScrollArea } from "@radix-ui/themes";
+import { usePanelTheme } from "@natstack/react";
 
 interface HelpSection {
   title: string;
@@ -23,7 +24,7 @@ const helpSections: HelpSection[] = [
     title: "Workspaces",
     content:
       "A workspace is a directory containing your panels and configuration. " +
-      "Each workspace has a natstack.yml file that defines settings like the root panel and git server port. " +
+      "Each workspace has a natstack.yml file that defines settings like the git server port. " +
       "Use Cmd/Ctrl+Shift+O to switch between workspaces.",
   },
   {
@@ -89,16 +90,17 @@ function HelpPage() {
   );
 }
 
-// Get theme from preload globals (passed via --natstack-theme arg)
-declare const __natstackInitialTheme: "light" | "dark" | undefined;
-const initialTheme = typeof __natstackInitialTheme !== "undefined" ? __natstackInitialTheme : "dark";
+function ThemedApp() {
+  const theme = usePanelTheme();
+  return (
+    <Theme appearance={theme} radius="medium">
+      <HelpPage />
+    </Theme>
+  );
+}
 
 // Mount the app
 const root = document.getElementById("root");
 if (root) {
-  createRoot(root).render(
-    <Theme appearance={initialTheme} radius="medium">
-      <HelpPage />
-    </Theme>
-  );
+  createRoot(root).render(<ThemedApp />);
 }

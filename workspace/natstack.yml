@@ -6,6 +6,3 @@ id: natstack-dev
 # Git server configuration
 git:
   port: 63524
-
-# Root panel to load on startup (relative to workspace)
-root-panel: panels/root

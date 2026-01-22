@@ -7,6 +7,7 @@ import { createRoot } from "react-dom/client";
 import "@radix-ui/themes/styles.css";
 import { Theme, Card, Flex, Heading, Text, Box, Link } from "@radix-ui/themes";
 import { rpc } from "@natstack/runtime";
+import { usePanelTheme } from "@natstack/react";
 import type { AppInfo } from "../../shared/ipc/types.js";
 
 function AboutPage() {
@@ -64,16 +65,17 @@ function AboutPage() {
   );
 }
 
-// Get theme from preload globals (passed via --natstack-theme arg)
-declare const __natstackInitialTheme: "light" | "dark" | undefined;
-const initialTheme = typeof __natstackInitialTheme !== "undefined" ? __natstackInitialTheme : "dark";
+function ThemedApp() {
+  const theme = usePanelTheme();
+  return (
+    <Theme appearance={theme} radius="medium">
+      <AboutPage />
+    </Theme>
+  );
+}
 
 // Mount the app
 const root = document.getElementById("root");
 if (root) {
-  createRoot(root).render(
-    <Theme appearance={initialTheme} radius="medium">
-      <AboutPage />
-    </Theme>
-  );
+  createRoot(root).render(<ThemedApp />);
 }

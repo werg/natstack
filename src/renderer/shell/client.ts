@@ -62,10 +62,6 @@ export const panel = {
     rpc.call<PaginatedChildren>("main", "panel.getChildrenPaginated", request),
   getRootPanelsPaginated: (offset: number, limit: number) =>
     rpc.call<PaginatedRootPanels>("main", "panel.getRootPanelsPaginated", { offset, limit }),
-  pinPanel: (panelId: string) =>
-    rpc.call<void>("main", "panel.pinPanel", panelId),
-  getPinnedRootId: () =>
-    rpc.call<string | null>("main", "panel.getPinnedRootId"),
   // Collapse state persistence
   getCollapsedIds: () =>
     rpc.call<string[]>("main", "panel.getCollapsedIds"),

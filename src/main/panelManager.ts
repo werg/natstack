@@ -163,15 +163,11 @@ export class PanelManager {
   private treeUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly TREE_UPDATE_DEBOUNCE_MS = 16; // ~1 frame at 60fps
 
-  private initialRootPanelPath: string | null = null;
-
-  constructor(initialRootPanelPath: string, gitServer: GitServer) {
+  constructor(gitServer: GitServer) {
     this.gitServer = gitServer;
     const workspace = getActiveWorkspace();
     this.panelsRoot = workspace?.path ?? path.resolve(process.cwd());
     this.builder = new PanelBuilder();
-    // Defer root panel initialization until ViewManager is set
-    this.initialRootPanelPath = initialRootPanelPath;
   }
 
   /**
@@ -187,7 +183,7 @@ export class PanelManager {
       const shellContents = vm.getShellWebContents();
       if (!shellContents.isDestroyed()) {
         shellContents.send("panel:initialization-error", {
-          path: this.initialRootPanelPath ?? "",
+          path: "",
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -195,7 +191,7 @@ export class PanelManager {
   }
 
   /**
-   * Initialize the panel tree - load from DB if exists, otherwise create from initial path.
+   * Initialize the panel tree - load from DB if exists, otherwise show shell:new launcher.
    */
   private async initializePanelTree(): Promise<void> {
     const persistence = getPanelPersistence();
@@ -211,30 +207,35 @@ export class PanelManager {
         // Filter out panels that were archived during cleanup
         const remainingPanels = existingPanels.filter((p) => !persistence.isArchived(p.id));
 
-        // Restore panels from database
-        console.log(`[PanelManager] Restoring ${remainingPanels.length} root panel(s) from database`);
-        this.rootPanels = remainingPanels;
+        if (remainingPanels.length > 0) {
+          // Restore panels from database
+          console.log(`[PanelManager] Restoring ${remainingPanels.length} root panel(s) from database`);
+          this.rootPanels = remainingPanels;
 
-        // Rebuild the panels map
-        const buildPanelsMap = (panels: Panel[]) => {
-          for (const panel of panels) {
-            this.panels.set(panel.id, panel);
-            if (panel.children.length > 0) {
-              buildPanelsMap(panel.children);
+          // Rebuild the panels map
+          const buildPanelsMap = (panels: Panel[]) => {
+            for (const panel of panels) {
+              this.panels.set(panel.id, panel);
+              if (panel.children.length > 0) {
+                buildPanelsMap(panel.children);
+              }
             }
-          }
-        };
-        buildPanelsMap(remainingPanels);
+          };
+          buildPanelsMap(remainingPanels);
 
-        // Create views for panels that have build artifacts ready
-        this.restorePanelViews(remainingPanels);
+          // Create views for panels that have build artifacts ready
+          this.restorePanelViews(remainingPanels);
 
-        this.notifyPanelTreeUpdate();
-      } else if (this.initialRootPanelPath) {
-        // No existing panels, create from initial path
-        const rootPath = this.initialRootPanelPath;
-        this.initialRootPanelPath = null;
-        await this.initializeRootPanel(rootPath);
+          this.notifyPanelTreeUpdate();
+        } else {
+          // All panels were cleaned up, show launcher
+          console.log("[PanelManager] No panels remaining after cleanup, showing launcher");
+          await this.createShellPanel("new");
+        }
+      } else {
+        // No existing panels, show the launcher
+        console.log("[PanelManager] No existing panels, showing launcher");
+        await this.createShellPanel("new");
       }
     } catch (error) {
       console.error("[PanelManager] Failed to load panel tree from database:", error);
@@ -242,11 +243,11 @@ export class PanelManager {
       this.rootPanels = [];
       this.panels.clear();
 
-      // Fall back to initial root panel if available
-      if (this.initialRootPanelPath) {
-        const rootPath = this.initialRootPanelPath;
-        this.initialRootPanelPath = null;
-        await this.initializeRootPanel(rootPath);
+      // Fall back to launcher on error
+      try {
+        await this.createShellPanel("new");
+      } catch (launcherError) {
+        console.error("[PanelManager] Failed to create launcher panel:", launcherError);
       }
       // Re-throw to let setViewManager's catch block handle notification
       throw error;
@@ -2469,9 +2470,8 @@ export class PanelManager {
     };
 
     // Add to root panels (shell panels are top-level)
-    // Insert at position 1 (right after pinned root) for newest-first ordering
-    const insertIndex = Math.min(1, this.rootPanels.length);
-    this.rootPanels.splice(insertIndex, 0, panel);
+    // Insert at position 0 for newest-first ordering
+    this.rootPanels.splice(0, 0, panel);
     this.panels.set(panel.id, panel);
 
     // Persist to database
@@ -2971,12 +2971,6 @@ export class PanelManager {
       throw new Error(`Panel not found: ${panelId}`);
     }
 
-    // Prevent unloading panels in the pinned subtree
-    if (this.isPinnedSubtree(panelId)) {
-      console.log(`[PanelManager] Cannot unload pinned panel ${panelId}`);
-      return;
-    }
-
     // Unload this panel and all its descendants (resources AND artifacts)
     this.unloadPanelTree(panelId);
 
@@ -3438,17 +3432,6 @@ export class PanelManager {
   }
 
   /**
-   * Check if a panel is in the pinned subtree (first root panel or its descendants).
-   * Panels in the pinned subtree are always kept loaded.
-   */
-  isPinnedSubtree(panelId: string): boolean {
-    const pinnedRootId = this.rootPanels[0]?.id;
-    if (!pinnedRootId) return false;
-    if (panelId === pinnedRootId) return true;
-    return this.isDescendantOf(panelId, pinnedRootId);
-  }
-
-  /**
    * Check if a panel is a descendant of another panel.
    */
   isDescendantOf(panelId: string, potentialAncestorId: string): boolean {
@@ -3536,13 +3519,6 @@ export class PanelManager {
 
     // Notify renderer
     this.notifyPanelTreeUpdate();
-  }
-
-  /**
-   * Get the first root panel ID (the "pinned" root).
-   */
-  getPinnedRootId(): string | null {
-    return this.rootPanels[0]?.id ?? null;
   }
 
   // =========================================================================
@@ -3772,20 +3748,5 @@ export class PanelManager {
     }
 
     this.sendPanelEvent(panelId, { type: "theme", theme: this.currentTheme });
-  }
-
-  private async initializeRootPanel(panelPath: string): Promise<void> {
-    try {
-      const { relativePath, absolutePath } = this.normalizePanelPath(panelPath);
-      const manifest = this.builder.loadManifest(absolutePath);
-      this.createPanelFromManifest({
-        manifest,
-        relativePath,
-        parent: null,
-        isRoot: true,
-      });
-    } catch (error) {
-      console.error("Failed to initialize root panel:", error);
-    }
   }
 }

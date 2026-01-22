@@ -11,7 +11,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef, type CSSProperties } from "react";
 import {
   CaretRightIcon,
-  DrawingPinFilledIcon,
   PlusIcon,
 } from "@radix-ui/react-icons";
 import {
@@ -40,7 +39,6 @@ import { menu, panel } from "../shell/client.js";
 
 const EXPAND_BUTTON_SIZE = 12;
 const BUILD_INDICATOR_SIZE = 6;
-const PIN_ICON_SIZE = 10;
 
 /** Delay before auto-expanding collapsed item during drag hover (ms) */
 const AUTO_EXPAND_DELAY_MS = 600;
@@ -88,7 +86,6 @@ interface SortableTreeItemProps {
   isSelected: boolean;
   showIndicator: boolean;
   projectedDepth: number | null;
-  pinnedRootId: string | null;
   isDraggingAny: boolean;
   showIndicatorBelow: boolean;
   onSelect: (panelId: string) => void;
@@ -103,7 +100,6 @@ function SortableTreeItem({
   isSelected,
   showIndicator,
   projectedDepth,
-  pinnedRootId,
   isDraggingAny,
   showIndicatorBelow,
   onSelect,
@@ -152,7 +148,6 @@ function SortableTreeItem({
   };
 
   const hasChildren = panel.childCount > 0;
-  const isPinnedRoot = panel.id === pinnedRootId;
 
   // Build state indicator color
   const buildStateColor = useMemo(() => {
@@ -343,18 +338,6 @@ function SortableTreeItem({
             }}
           />
         )}
-
-        {/* Pin icon for pinned root */}
-        {isPinnedRoot && (
-          <DrawingPinFilledIcon
-            style={{
-              color: "var(--amber-9)",
-              width: PIN_ICON_SIZE,
-              height: PIN_ICON_SIZE,
-              flexShrink: 0,
-            }}
-          />
-        )}
       </Flex>
     </Box>
   );
@@ -428,12 +411,6 @@ export function LazyPanelTreeSidebar({
     unindentPanel,
   } = usePanelDnd();
 
-  // Derive pinned root from tree - it's always the first root panel
-  const pinnedRootId = useMemo(() => {
-    const firstRoot = flattenedItems.find((item) => item.parentId === null);
-    return firstRoot?.id ?? null;
-  }, [flattenedItems]);
-
   // Auto-expand ancestors of selected panel (batched for performance)
   useEffect(() => {
     if (ancestorIds.length > 0) {
@@ -484,7 +461,6 @@ export function LazyPanelTreeSidebar({
               isSelected={item.id === selectedId}
               showIndicator={item.id === indicatorItemId}
               projectedDepth={item.id === indicatorItemId ? projectedDepth : null}
-              pinnedRootId={pinnedRootId}
               isDraggingAny={activeId !== null}
               showIndicatorBelow={showIndicatorBelow}
               onSelect={onSelect}
