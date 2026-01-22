@@ -604,6 +604,9 @@ export class PanelManager {
 
       // Intercept ns:// and http(s) link clicks to create children
       this.setupLinkInterception(panelId, view.webContents, "panel");
+
+      // Track browser state (URL, loading, title) - same as browser panels
+      this.setupBrowserStateTracking(panelId, view.webContents);
     }
   }
 
@@ -1295,7 +1298,6 @@ export class PanelManager {
         persistence.unarchivePanel(panel.id);
         // Update all panel data with current values
         persistence.updatePanel(panel.id, {
-          title: panel.title,
           parentId,
           history: panel.history,
           historyIndex: panel.historyIndex,
@@ -2324,8 +2326,9 @@ export class PanelManager {
     }
   ): void {
     const panel = this.panels.get(browserId);
-    if (!panel || getPanelType(panel) !== "browser") {
-      console.warn(`[PanelManager] Browser panel not found: ${browserId}`);
+    const panelType = panel ? getPanelType(panel) : null;
+    if (!panel || (panelType !== "browser" && panelType !== "app")) {
+      console.warn(`[PanelManager] Panel not found or not browser/app: ${browserId}`);
       return;
     }
 
@@ -3165,32 +3168,6 @@ export class PanelManager {
     }
 
     return { success: false, buildState: "timeout", error: "Build timed out" };
-  }
-
-  async setTitle(callerId: string, title: string): Promise<void> {
-    const panel = this.panels.get(callerId);
-    if (!panel) {
-      throw new Error(`Panel not found: ${callerId}`);
-    }
-
-    panel.title = title;
-
-    // Persist to database
-    try {
-      getPanelPersistence().setTitle(callerId, title);
-    } catch (error) {
-      console.error(`[PanelManager] Failed to persist title for ${callerId}:`, error);
-    }
-
-    // Update search index with new title
-    try {
-      getPanelSearchIndex().updateTitle(callerId, title);
-    } catch (error) {
-      console.error(`[PanelManager] Failed to update search index title for ${callerId}:`, error);
-    }
-
-    // Notify renderer
-    this.notifyPanelTreeUpdate();
   }
 
   /**

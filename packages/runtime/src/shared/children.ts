@@ -71,7 +71,6 @@ export function createChildManager(options: {
     const result = await bridge.createChild(source, bridgeOptions, stateArgs);
 
     const name = options?.name ?? result.id.split("/").pop() ?? result.id;
-    const title = result.title ?? name;
 
     const handle = createChildHandle<T, E, EmitE>({
       rpc,
@@ -79,7 +78,6 @@ export function createChildManager(options: {
       id: result.id,
       type: result.type,
       name,
-      title,
       source,
       eventSchemas: eventSchemas as EventSchemaMap | undefined,
       onClose: () => removeChild(name),
@@ -106,7 +104,6 @@ export function createChildManager(options: {
     const result = await bridge.createBrowserChild(url);
 
     const name = result.id.split("/").pop() ?? result.id;
-    const title = result.title ?? name;
 
     const handle = createChildHandle<T, E, EmitE>({
       rpc,
@@ -114,7 +111,6 @@ export function createChildManager(options: {
       id: result.id,
       type: result.type,
       name,
-      title,
       source: url,
       eventSchemas: undefined,
       onClose: () => removeChild(name),

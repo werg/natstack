@@ -106,7 +106,6 @@ ${FS_INTERFACES}
     id: string;
     type: "app" | "worker" | "browser";
     name: string;
-    title: string;
     source: string;
     call: TypedCallProxy<T>;
     emit<EventName extends keyof EmitE>(event: EventName, payload: EmitE[EventName]): Promise<void>;
@@ -202,9 +201,6 @@ ${FS_INTERFACES}
     partition: string;
     contextId: string;
   }
-
-  /** Set the panel title */
-  export function setTitle(title: string): Promise<void>;
 
   /** Get panel information */
   export function getInfo(): Promise<EndpointInfo>;

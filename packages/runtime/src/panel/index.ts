@@ -71,7 +71,6 @@ export const {
   onChildAdded,
   onChildRemoved,
   onChildCreationError,
-  setTitle,
   getInfo,
   closeSelf,
   unloadSelf,

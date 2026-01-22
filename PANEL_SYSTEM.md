@@ -94,7 +94,6 @@ import {
 
   // Lifecycle
   removeChild,
-  setTitle,
   close,
   getEnv,
   getInfo,
@@ -182,9 +181,6 @@ interface BrowserChildSpec {
 ### Other Panel Methods
 
 ```typescript
-// Set panel title
-await setTitle("My Custom Title");
-
 // Remove a child panel
 await editor.close();          // Preferred when you have a handle
 await removeChild(editor.id);  // Also available if you only have the id

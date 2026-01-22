@@ -8,7 +8,6 @@ import {
   createBrowserChild,
   createChildWithContract,
   onChildCreationError,
-  setTitle,
   gitConfig,
   type ChildHandle,
   type ChildHandleFromContract,
@@ -230,12 +229,6 @@ export default function ChildPanelLauncher() {
     } catch (error) {
       setStatus(`Failed to launch Code Editor: ${error instanceof Error ? error.message : String(error)}`);
     }
-  };
-
-  const setRandomTitle = async () => {
-    const title = `Radix Panel ${Math.floor(Math.random() * 1000)}`;
-    await setTitle(title);
-    setStatus(`Title set to ${title}`);
   };
 
   const exampleFilePath = "/example.txt";
@@ -847,9 +840,6 @@ export default function ChildPanelLauncher() {
             </Button>
             <Button onClick={launchCodeEditor} color="blue">
               Launch Code Editor
-            </Button>
-            <Button variant="soft" onClick={setRandomTitle}>
-              Set random title
             </Button>
           </Flex>
           {status && (

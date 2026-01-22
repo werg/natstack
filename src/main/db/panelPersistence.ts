@@ -53,7 +53,6 @@ export interface CreatePanelInput {
  * Input for updating a panel (v3 schema).
  */
 export interface UpdatePanelInput {
-  title?: string;
   selectedChildId?: string | null;
   /** Update the history array (for navigation) */
   history?: PanelSnapshot[];
@@ -377,11 +376,6 @@ export class PanelPersistence {
     const updates: string[] = ["updated_at = ?"];
     const params: unknown[] = [now];
 
-    if (input.title !== undefined) {
-      updates.push("title = ?");
-      params.push(input.title);
-    }
-
     if (input.selectedChildId !== undefined) {
       updates.push("selected_child_id = ?");
       params.push(input.selectedChildId);
@@ -501,7 +495,7 @@ export class PanelPersistence {
   }
 
   /**
-   * Update panel title.
+   * Update panel title (used internally for browser panel navigation).
    */
   setTitle(panelId: string, title: string): void {
     const db = this.ensureOpen();

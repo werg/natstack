@@ -87,7 +87,6 @@ export interface CreateChildOptions {
 export interface ChildCreationResult {
   id: string;
   type: "app" | "worker" | "browser";
-  title: string;
 }
 
 /**
@@ -278,9 +277,6 @@ export interface ChildHandle<
 
   /** Name provided at creation (unique within parent) */
   readonly name: string;
-
-  /** Display title */
-  readonly title: string;
 
   /** Source: panel path for app/worker, URL for browser */
   readonly source: string;

@@ -5,7 +5,7 @@
  * Listens for user messages on a channel and responds using AI streaming.
  */
 
-import { pubsubConfig, setTitle, id, unloadSelf } from "@natstack/runtime";
+import { pubsubConfig, id, unloadSelf } from "@natstack/runtime";
 import {
   connect,
   createLogger,
@@ -38,9 +38,6 @@ import {
 } from "@natstack/agentic-messaging/config";
 import { z } from "zod";
 import { ai } from "@natstack/ai";
-
-// Set worker title
-void setTitle("Chat AI Responder");
 
 const log = createLogger("Worker", id);
 

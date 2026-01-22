@@ -233,11 +233,9 @@ import { usePanel } from "@natstack/react";
 function MyPanel() {
   const runtime = usePanel();
 
-  const handleRename = async () => {
-    await runtime.setTitle("New Title");
-  };
-
-  return <button onClick={handleRename}>Rename Panel</button>;
+  // Access panel info
+  const info = await runtime.getInfo();
+  console.log(`Panel ID: ${info.panelId}`);
 }
 ```
 
@@ -790,7 +788,6 @@ runtime.onChildRemoved(cb): () => void
 
 // Lifecycle
 runtime.removeChild(childId: string): Promise<void>
-runtime.setTitle(title: string): Promise<void>
 runtime.close(): Promise<void>
 runtime.getInfo(): Promise<{ panelId: string; partition: string }>
 

@@ -53,12 +53,11 @@ export function createChildHandle<
   id: string;
   type: "app" | "worker" | "browser";
   name: string;
-  title: string;
   source: string;
   eventSchemas?: EventSchemaMap;
   onClose?: () => void;
 }): ChildHandle<T, E, EmitE> {
-  const { rpc, bridge, id, type, name, title, source, eventSchemas } = options;
+  const { rpc, bridge, id, type, name, source, eventSchemas } = options;
   const eventUnsubscribers: Array<() => void> = [];
 
   const call = createCallProxy<T>(rpc, id);
@@ -67,7 +66,6 @@ export function createChildHandle<
     id,
     type,
     name,
-    title,
     source,
 
     call,

@@ -36,10 +36,6 @@ export async function handleBridgeCall(
       const [url] = args as [string];
       return pm.createBrowserChild(callerId, url);
     }
-    case "setTitle": {
-      const [title] = args as [string];
-      return pm.setTitle(callerId, title);
-    }
     case "getInfo": {
       return pm.getInfo(callerId);
     }

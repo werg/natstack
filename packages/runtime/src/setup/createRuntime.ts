@@ -191,7 +191,6 @@ export function createRuntime(deps: RuntimeDeps) {
     onChildRemoved: childManager.onChildRemoved,
     onChildCreationError,
 
-    setTitle: (title: string) => callMain<void>("bridge.setTitle", title),
     getInfo: () => callMain<EndpointInfo>("bridge.getInfo"),
     closeSelf: () => callMain<void>("bridge.closeSelf"),
     unloadSelf: () => callMain<void>("bridge.unloadSelf"),

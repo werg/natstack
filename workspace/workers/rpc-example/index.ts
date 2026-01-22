@@ -5,7 +5,7 @@
  * This worker exposes a typed API that can be called by the parent panel.
  */
 
-import { rpc, parent, setTitle } from "@natstack/runtime";
+import { rpc, parent } from "@natstack/runtime";
 
 // Internal state
 let counter = 0;
@@ -27,9 +27,6 @@ function emitToParent(event: string, payload: unknown): void {
   void parent.emit(event, payload);
   log(`Emitted '${event}' to parent: ${JSON.stringify(payload)}`);
 }
-
-// Set a descriptive title
-void setTitle("RPC Example Worker");
 
 log("Worker starting...");
 log(`Worker ID: ${rpc.selfId}`);

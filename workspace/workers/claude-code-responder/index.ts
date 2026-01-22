@@ -6,7 +6,7 @@
  */
 
 import { execSync } from "child_process";
-import { pubsubConfig, setTitle, id } from "@natstack/runtime";
+import { pubsubConfig, id } from "@natstack/runtime";
 import {
   connect,
   createToolsForAgentSDK,
@@ -164,8 +164,6 @@ function findExecutable(name: string): string | undefined {
     return undefined;
   }
 }
-
-void setTitle("Claude Code Responder");
 
 const log = createLogger("Claude Code", id);
 

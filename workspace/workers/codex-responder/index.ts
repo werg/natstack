@@ -14,7 +14,7 @@
  * 6. Tool calls flow: Codex -> HTTP MCP server -> pubsub
  */
 
-import { pubsubConfig, setTitle, id } from "@natstack/runtime";
+import { pubsubConfig, id } from "@natstack/runtime";
 import {
   connect,
   createToolsForAgentSDK,
@@ -54,8 +54,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { randomUUID } from "node:crypto";
-
-void setTitle("Codex Responder");
 
 const log = createLogger("Codex Worker", id);
 
