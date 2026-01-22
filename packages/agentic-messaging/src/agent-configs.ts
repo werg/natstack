@@ -36,9 +36,10 @@ export const CLAUDE_CODE_PARAMETERS: FieldDefinition[] = [
   {
     key: "workingDirectory",
     label: "Working Directory",
-    description: "The directory where Claude Code will operate. Leave empty for workspace root.",
+    description: "Required: Set in Session Settings",
     type: "string",
-    required: false,
+    channelLevel: true, // Value comes from channel config
+    required: true,     // This agent requires a working directory
     placeholder: "/path/to/project",
     group: "Environment",
     order: 0,
@@ -85,14 +86,14 @@ export const CLAUDE_CODE_PARAMETERS: FieldDefinition[] = [
     key: "autonomyLevel",
     label: "Autonomy",
     type: "slider",
-    default: 0,
+    // No default - uses session defaultAutonomy
     min: 0,
     max: 2,
     step: 1,
     notches: [
-      { value: 0, label: "Ask", description: "Ask before each tool use" },
-      { value: 1, label: "Auto-edits", description: "Auto-approve file edits, ask for others" },
-      { value: 2, label: "Full Auto", description: "Skip all permission prompts" },
+      { value: 0, label: "Restricted", description: "Read-only access, requires approval" },
+      { value: 1, label: "Standard", description: "Can modify workspace" },
+      { value: 2, label: "Autonomous", description: "Full access, minimal restrictions" },
     ],
     visibleWhen: { field: "executionMode", operator: "eq", value: "edit" },
     warnings: [{ when: 2, message: "Allows unrestricted tool execution", severity: "danger" }],
@@ -102,8 +103,10 @@ export const CLAUDE_CODE_PARAMETERS: FieldDefinition[] = [
   {
     key: "restrictedMode",
     label: "Restricted Mode",
-    description: "Use pubsub tools only (no bash access). Enable when running in containerized environments.",
+    description: "Determined by Session Settings (browser storage = restricted)",
     type: "boolean",
+    channelLevel: true, // Value comes from channel config
+    required: false,    // Optional - has sensible default
     default: false,
     group: "Environment",
     order: 5,
@@ -155,17 +158,17 @@ export const AI_RESPONDER_PARAMETERS: FieldDefinition[] = [
     order: 2,
   },
   {
-    key: "approvalLevel",
-    label: "Tool Approval",
+    key: "autonomyLevel",
+    label: "Autonomy",
     type: "slider",
-    default: 0,
+    // No default - uses session defaultAutonomy
     min: 0,
     max: 2,
     step: 1,
     notches: [
-      { value: 0, label: "Ask", description: "Ask before each tool use" },
-      { value: 1, label: "Auto Safe", description: "Auto-approve read-only tools" },
-      { value: 2, label: "Full Auto", description: "Execute all tools automatically" },
+      { value: 0, label: "Restricted", description: "Read-only access, requires approval" },
+      { value: 1, label: "Standard", description: "Can modify workspace" },
+      { value: 2, label: "Autonomous", description: "Full access, minimal restrictions" },
     ],
     warnings: [{ when: 2, message: "Allows unrestricted tool execution", severity: "warning" }],
     group: "Permissions",
@@ -206,9 +209,10 @@ export const CODEX_PARAMETERS: FieldDefinition[] = [
   {
     key: "workingDirectory",
     label: "Working Directory",
-    description: "The directory where Codex will operate. Leave empty for workspace root.",
+    description: "Required: Set in Session Settings",
     type: "string",
-    required: false,
+    channelLevel: true, // Value comes from channel config
+    required: true,     // This agent requires a working directory
     placeholder: "/path/to/project",
     group: "Environment",
     order: 0,
@@ -251,34 +255,21 @@ export const CODEX_PARAMETERS: FieldDefinition[] = [
     order: 2,
   },
   {
-    key: "sandboxMode",
-    label: "File Access",
+    key: "autonomyLevel",
+    label: "Autonomy",
     type: "slider",
-    required: false,
-    default: 1, // workspace-write
+    // No default - uses session defaultAutonomy
     min: 0,
     max: 2,
     step: 1,
     notches: [
-      { value: 0, label: "Read Only", description: "Read-only access, network blocked" },
-      { value: 1, label: "Workspace", description: "Can modify files in the workspace" },
-      { value: 2, label: "Full Access", description: "Unrestricted file and network access" },
+      { value: 0, label: "Restricted", description: "Read-only file access" },
+      { value: 1, label: "Standard", description: "Can modify workspace files" },
+      { value: 2, label: "Autonomous", description: "Full file system access" },
     ],
     warnings: [{ when: 2, message: "Allows unrestricted file system access", severity: "danger" }],
     group: "Permissions",
     order: 3,
-  },
-  {
-    key: "networkAccessEnabled",
-    label: "Network Access",
-    description: "Allow outbound network requests",
-    type: "boolean",
-    required: false,
-    default: false,
-    // Only configurable in workspace mode - read-only blocks network, full-access enables it
-    visibleWhen: { field: "sandboxMode", operator: "eq", value: 1 },
-    group: "Permissions",
-    order: 4,
   },
   {
     key: "webSearchEnabled",
@@ -288,6 +279,17 @@ export const CODEX_PARAMETERS: FieldDefinition[] = [
     required: false,
     default: false,
     group: "Permissions",
+    order: 4,
+  },
+  {
+    key: "restrictedMode",
+    label: "Restricted Mode",
+    description: "Determined by Session Settings (browser storage = restricted)",
+    type: "boolean",
+    channelLevel: true, // Value comes from channel config
+    required: false,    // Optional - has sensible default
+    default: false,
+    group: "Environment",
     order: 5,
   },
 ];

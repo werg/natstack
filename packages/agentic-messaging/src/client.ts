@@ -443,6 +443,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     type,
     extraMetadata,
     contextId: providedContextId,
+    channelConfig: providedChannelConfig,
     reconnect,
     replayMode = "collect",
     methods: initialMethods,
@@ -572,6 +573,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
   const pubsub = connectPubSub<T>(serverUrl, token, {
     channel,
     contextId: providedContextId,
+    channelConfig: providedChannelConfig,
     sinceId,
     reconnect,
     metadata: buildInitialMetadata() as T,
@@ -1743,6 +1745,9 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         from,
         to,
       });
+    },
+    get channelConfig() {
+      return pubsub.channelConfig;
     },
     get connected() {
       return pubsub.connected;

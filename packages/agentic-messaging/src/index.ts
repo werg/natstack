@@ -20,7 +20,6 @@ export { jsonSchemaToZod, jsonSchemaToZodRawShape, isRecord } from "./json-schem
 // Responder utilities
 export {
   type ChatParticipantMetadata,
-  parseAgentConfig,
   createLogger,
   formatArgsForLog,
   isMessageTargetedAt,
@@ -107,7 +106,16 @@ export {
   type PermissionPromptOptions,
 } from "./worker-base.js";
 
-// For broker functionality, use: import { ... } from "@natstack/agentic-messaging/broker"
+// Feedback UI types (formerly in broker-protocol.ts)
+export {
+  FeedbackFormArgs,
+  FeedbackFormArgsSchema,
+  FeedbackCustomArgs,
+  FeedbackCustomArgsSchema,
+  FieldDefinitionSchema,
+} from "./protocol-schemas.js";
+
 // For agent configs, use: import { ... } from "@natstack/agentic-messaging/config"
 // For session persistence, use: import { ... } from "@natstack/agentic-messaging/session"
+// For agent registry, use: import { ... } from "@natstack/agentic-messaging/registry"
 

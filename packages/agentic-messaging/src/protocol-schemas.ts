@@ -1,7 +1,8 @@
 /**
- * @natstack/agentic-messaging broker protocol
+ * @natstack/agentic-messaging protocol schemas
  *
- * Zod schemas for broker invite/response messages.
+ * Zod schemas for field definitions and feedback UI types.
+ * These are used by the feedback system for form validation and UI rendering.
  */
 
 import { z } from "zod";
@@ -77,6 +78,7 @@ export const FieldDefinitionSchema = z.object({
   ]),
   required: z.boolean().optional(),
   default: FieldValueSchema.optional(),
+  channelLevel: z.boolean().optional(), // If true, value comes from channel config
   options: z
     .array(z.object({ value: z.string(), label: z.string(), description: z.string().optional() }))
     .optional(),
@@ -143,59 +145,6 @@ export const AgentTypeAdvertisementSchema = z.object({
   tags: z.array(z.string()).optional(),
   version: z.string().optional(),
 });
-
-/**
- * Schema for broker metadata.
- */
-export const BrokerMetadataSchema = z.object({
-  name: z.string().min(1),
-  type: z.string().min(1),
-  isBroker: z.literal(true),
-  agentTypes: z.array(AgentTypeAdvertisementSchema),
-  brokerVersion: z.string().optional(),
-  methods: z.array(MethodAdvertisementSchema).optional(),
-});
-
-/**
- * Schema for invite message payload.
- */
-export const InviteSchema = z.object({
-  inviteId: z.string().uuid(),
-  targetChannel: z.string().min(1),
-  agentTypeId: z.string().min(1),
-  config: z.record(z.unknown()).optional(),
-  context: z.string().optional(),
-  handleOverride: z.string().min(1).optional(),
-  ts: z.number(),
-});
-
-/**
- * Schema for invite response payload.
- */
-export const InviteResponseSchema = z.object({
-  inviteId: z.string().uuid(),
-  accepted: z.boolean(),
-  declineReason: z.string().optional(),
-  declineCode: z
-    .enum([
-      "unknown-agent-type",
-      "capacity-exceeded",
-      "invalid-config",
-      "target-unreachable",
-      "internal-error",
-      "declined-by-policy",
-      "timeout",
-    ])
-    .optional(),
-  agentId: z.string().optional(),
-  ts: z.number(),
-});
-
-// Export inferred types for convenience
-export type InviteMessage = z.infer<typeof InviteSchema>;
-export type InviteResponseMessage = z.infer<typeof InviteResponseSchema>;
-export type AgentTypeAdvertisementMessage = z.infer<typeof AgentTypeAdvertisementSchema>;
-export type BrokerMetadataMessage = z.infer<typeof BrokerMetadataSchema>;
 
 // ============================================================================
 // Feedback UI Types

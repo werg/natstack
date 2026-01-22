@@ -25,12 +25,22 @@ export interface TokenValidator {
 }
 
 /**
+ * Channel configuration persisted with the channel.
+ * Set when the channel is created, readable by all participants.
+ */
+export interface ChannelConfig {
+  workingDirectory?: string;
+  restrictedMode?: boolean;
+}
+
+/**
  * Channel metadata stored in the database.
  */
 export interface ChannelInfo {
   contextId: string;
   createdAt: number;
   createdBy: string;
+  config?: ChannelConfig;
 }
 
 /**
@@ -41,7 +51,7 @@ export interface MessageStore {
   insert(channel: string, type: string, payload: string, senderId: string, ts: number, senderMetadata?: Record<string, unknown>, attachments?: ServerAttachment[]): number;
   query(channel: string, sinceId: number): MessageRow[];
   queryByType(channel: string, types: string[], sinceId?: number): MessageRow[];
-  createChannel(channel: string, contextId: string, createdBy: string): void;
+  createChannel(channel: string, contextId: string, createdBy: string, config?: ChannelConfig): void;
   getChannel(channel: string): ChannelInfo | null;
   /** Get the maximum attachment ID number for a channel (for counter initialization after restart) */
   getMaxAttachmentIdNumber(channel: string): number;
@@ -118,6 +128,8 @@ interface ServerMessage {
   senderMetadata?: Record<string, unknown>;
   /** Context ID for the channel (sent in ready message) */
   contextId?: string;
+  /** Channel config (sent in ready message) */
+  channelConfig?: ChannelConfig;
 }
 
 /** Presence event types for join/leave tracking */
@@ -264,8 +276,8 @@ function createMessageRow(
 /**
  * Create a ChannelInfo object.
  */
-function createChannelInfo(contextId: string, createdAt: number, createdBy: string): ChannelInfo {
-  return { contextId, createdAt, createdBy };
+function createChannelInfo(contextId: string, createdAt: number, createdBy: string, config?: ChannelConfig): ChannelInfo {
+  return { contextId, createdAt, createdBy, config };
 }
 
 // =============================================================================
@@ -283,7 +295,7 @@ abstract class BaseMessageStore implements MessageStore {
    * Create a channel entry. Implementations should handle race conditions
    * (e.g., two clients creating the same channel simultaneously).
    */
-  abstract createChannel(channel: string, contextId: string, createdBy: string): void;
+  abstract createChannel(channel: string, contextId: string, createdBy: string, config?: ChannelConfig): void;
 
   abstract getChannel(channel: string): ChannelInfo | null;
 
@@ -354,7 +366,8 @@ class SqliteMessageStore extends BaseMessageStore {
         channel TEXT PRIMARY KEY,
         context_id TEXT NOT NULL,
         created_at INTEGER NOT NULL,
-        created_by TEXT NOT NULL
+        created_by TEXT NOT NULL,
+        config TEXT
       );
     `
     );
@@ -365,31 +378,40 @@ class SqliteMessageStore extends BaseMessageStore {
     } catch {
       // Column already exists, ignore
     }
+
+    // Migration: add config column to channels if it doesn't exist
+    try {
+      dbManager.exec(this.dbHandle, `ALTER TABLE channels ADD COLUMN config TEXT`);
+    } catch {
+      // Column already exists, ignore
+    }
   }
 
-  createChannel(channel: string, contextId: string, createdBy: string): void {
+  createChannel(channel: string, contextId: string, createdBy: string, config?: ChannelConfig): void {
     if (!this.dbHandle) throw new Error("Store not initialized");
     const db = getDatabaseManager();
     const now = Date.now();
+    const configJson = config ? JSON.stringify(config) : null;
     // Use INSERT OR IGNORE to handle race condition when two clients
     // try to create the same channel simultaneously
     db.run(
       this.dbHandle,
-      "INSERT OR IGNORE INTO channels (channel, context_id, created_at, created_by) VALUES (?, ?, ?, ?)",
-      [channel, contextId, now, createdBy]
+      "INSERT OR IGNORE INTO channels (channel, context_id, created_at, created_by, config) VALUES (?, ?, ?, ?, ?)",
+      [channel, contextId, now, createdBy, configJson]
     );
   }
 
   getChannel(channel: string): ChannelInfo | null {
     if (!this.dbHandle) return null;
     const db = getDatabaseManager();
-    const row = db.query<{ context_id: string; created_at: number; created_by: string }>(
+    const row = db.query<{ context_id: string; created_at: number; created_by: string; config: string | null }>(
       this.dbHandle,
-      "SELECT context_id, created_at, created_by FROM channels WHERE channel = ?",
+      "SELECT context_id, created_at, created_by, config FROM channels WHERE channel = ?",
       [channel]
     )[0];
     if (!row) return null;
-    return createChannelInfo(row.context_id, row.created_at, row.created_by);
+    const config = row.config ? JSON.parse(row.config) as ChannelConfig : undefined;
+    return createChannelInfo(row.context_id, row.created_at, row.created_by, config);
   }
 
   insert(
@@ -494,10 +516,10 @@ export class InMemoryMessageStore extends BaseMessageStore {
     // No-op for in-memory store
   }
 
-  createChannel(channel: string, contextId: string, createdBy: string): void {
+  createChannel(channel: string, contextId: string, createdBy: string, config?: ChannelConfig): void {
     // Only create if doesn't exist (matches SQLite INSERT OR IGNORE behavior)
     if (!this.channels.has(channel)) {
-      this.channels.set(channel, createChannelInfo(contextId, Date.now(), createdBy));
+      this.channels.set(channel, createChannelInfo(contextId, Date.now(), createdBy, config));
     }
   }
 
@@ -672,6 +694,8 @@ export class PubSubServer {
     const sinceIdParam = url.searchParams.get("sinceId");
     const sinceId = sinceIdParam ? parseInt(sinceIdParam, 10) : null;
     const contextIdParam = url.searchParams.get("contextId");
+    const channelConfigParam = url.searchParams.get("channelConfig");
+    const channelConfigFromClient = channelConfigParam ? JSON.parse(channelConfigParam) as ChannelConfig : undefined;
 
     // Metadata starts empty - clients send metadata via update-metadata after connection
     const metadata: Record<string, unknown> = {};
@@ -693,15 +717,17 @@ export class PubSubServer {
     // Check if channel exists in the message store
     const existingChannel = this.messageStore.getChannel(channel);
     let channelContextId: string | undefined;
+    let channelConfig: ChannelConfig | undefined;
 
     if (!existingChannel) {
       // First connection creates the channel
       // contextId is optional - if not provided, channel is "global" (no context)
       if (contextIdParam) {
-        this.messageStore.createChannel(channel, contextIdParam, clientId);
+        this.messageStore.createChannel(channel, contextIdParam, clientId, channelConfigFromClient);
         // Re-fetch to get actual contextId (in case another client won the race)
         const created = this.messageStore.getChannel(channel);
         channelContextId = created?.contextId;
+        channelConfig = created?.config;
 
         // Verify the channel was created with our contextId
         // This handles the rare race condition where two clients try to create
@@ -721,6 +747,7 @@ export class PubSubServer {
           return;
         }
         channelContextId = existingChannel.contextId;
+        channelConfig = existingChannel.config;
       } else {
         // Channel is global (no context) - client cannot provide contextId
         if (contextIdParam) {
@@ -762,8 +789,8 @@ export class PubSubServer {
       this.replayMessages(ws, channel, sinceId);
     }
 
-    // Signal ready (end of replay) with contextId
-    this.send(ws, { kind: "ready", contextId: channelContextId });
+    // Signal ready (end of replay) with contextId and channelConfig
+    this.send(ws, { kind: "ready", contextId: channelContextId, channelConfig });
 
     // Persist and broadcast join or update presence event
     if (!existingParticipant) {

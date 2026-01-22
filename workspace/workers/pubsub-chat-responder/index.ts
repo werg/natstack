@@ -5,11 +5,10 @@
  * Listens for user messages on a channel and responds using AI streaming.
  */
 
-import { pubsubConfig, id, unloadSelf } from "@natstack/runtime";
+import { pubsubConfig, id, unloadSelf, getStateArgs } from "@natstack/runtime";
 import {
   connect,
   createLogger,
-  parseAgentConfig,
   createInterruptHandler,
   createPauseMethodDefinition,
   formatMissedContext,
@@ -41,12 +40,28 @@ import { ai } from "@natstack/ai";
 
 const log = createLogger("Worker", id);
 
-/** Worker-local settings interface */
+/**
+ * StateArgs passed at spawn time via createChild().
+ * Defined in package.json stateArgs schema.
+ */
+interface AiResponderStateArgs {
+  channel: string;
+  handle?: string;
+  agentTypeId?: string;
+  modelRole?: string;
+  temperature?: number;
+  maxOutputTokens?: number;
+  autonomyLevel?: number;
+  maxSteps?: number;
+  thinkingBudget?: number;
+}
+
+/** Worker-local settings interface (runtime-adjustable) */
 interface FastAiWorkerSettings {
   modelRole?: string;
   temperature?: number;
   maxOutputTokens?: number;
-  approvalLevel?: number;
+  autonomyLevel?: number;
   maxSteps?: number;
   thinkingBudget?: number;
 }
@@ -60,20 +75,19 @@ async function main() {
     return;
   }
 
-  // Get channel from environment (passed by broker via process.env)
-  const channelName = process.env.CHANNEL;
+  // Get stateArgs passed at spawn time
+  const stateArgs = getStateArgs<AiResponderStateArgs>();
+  const channelName = stateArgs.channel;
+  const handle = stateArgs.handle ?? "ai";
+  const agentTypeId = stateArgs.agentTypeId ?? "pubsub-chat-responder";
 
-  // Parse agent config from environment (passed by broker as JSON)
-  const agentConfig = parseAgentConfig();
-
-  // Get handle from config (set by broker from invite), fallback to default
-  const handle = typeof agentConfig.handle === "string" ? agentConfig.handle : "ai";
+  if (!channelName) {
+    console.error("No channel specified in stateArgs");
+    return;
+  }
 
   log("Starting chat responder...");
   log(`Handle: @${handle}`);
-
-  // Get agentTypeId from config (passed by agent-manager)
-  const agentTypeId = typeof agentConfig.agentTypeId === "string" ? agentConfig.agentTypeId : "pubsub-chat-responder";
 
   // Connect to agentic messaging channel with reconnection and participant metadata
   // contextId is obtained automatically from the server's ready message
@@ -207,14 +221,14 @@ async function main() {
   log(`Connected to channel: ${channelName}`);
 
   // Initialize settings with proper precedence:
-  // 1. Apply initialization config (from pre-connection UI)
+  // 1. Apply initialization config (from stateArgs passed at spawn time)
   const initConfigSettings: FastAiWorkerSettings = {};
-  if (typeof agentConfig.modelRole === "string") initConfigSettings.modelRole = agentConfig.modelRole;
-  if (typeof agentConfig.temperature === "number") initConfigSettings.temperature = agentConfig.temperature;
-  if (typeof agentConfig.maxOutputTokens === "number") initConfigSettings.maxOutputTokens = agentConfig.maxOutputTokens;
-  if (typeof agentConfig.approvalLevel === "number") initConfigSettings.approvalLevel = agentConfig.approvalLevel;
-  if (typeof agentConfig.maxSteps === "number") initConfigSettings.maxSteps = agentConfig.maxSteps;
-  if (typeof agentConfig.thinkingBudget === "number") initConfigSettings.thinkingBudget = agentConfig.thinkingBudget;
+  if (stateArgs.modelRole) initConfigSettings.modelRole = stateArgs.modelRole;
+  if (stateArgs.temperature !== undefined) initConfigSettings.temperature = stateArgs.temperature;
+  if (stateArgs.maxOutputTokens !== undefined) initConfigSettings.maxOutputTokens = stateArgs.maxOutputTokens;
+  if (stateArgs.autonomyLevel !== undefined) initConfigSettings.autonomyLevel = stateArgs.autonomyLevel;
+  if (stateArgs.maxSteps !== undefined) initConfigSettings.maxSteps = stateArgs.maxSteps;
+  if (stateArgs.thinkingBudget !== undefined) initConfigSettings.thinkingBudget = stateArgs.thinkingBudget;
   Object.assign(currentSettings, initConfigSettings);
   if (Object.keys(initConfigSettings).length > 0) {
     log(`Applied init config: ${JSON.stringify(initConfigSettings)}`);
@@ -363,7 +377,7 @@ async function handleUserMessage(
       filter: (method) => method.providerId !== client.clientId && !method.menu,
     });
 
-    const approvalLevel = currentSettings.approvalLevel ?? 0;
+    const autonomyLevel = currentSettings.autonomyLevel ?? 0;
 
     // Build tools object for AI SDK
     // Use canonical tool names (Read, Write, Edit, etc.) for LLM familiarity
@@ -376,7 +390,7 @@ async function handleUserMessage(
       const originalMethodName = (def as { originalMethodName?: string }).originalMethodName ?? def.name;
       const canonicalName = getCanonicalToolName(originalMethodName);
 
-      const requiresApproval = needsApprovalForTool(def.name, approvalLevel);
+      const requiresApproval = needsApprovalForTool(def.name, autonomyLevel);
 
       // Store mapping for execution
       toolNameToOriginal[canonicalName] = def.name;

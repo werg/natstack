@@ -10,10 +10,6 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./broker": {
-      "types": "./dist/broker-entry.d.ts",
-      "default": "./dist/broker-entry.js"
-    },
     "./config": {
       "types": "./dist/config-entry.d.ts",
       "default": "./dist/config-entry.js"
@@ -21,6 +17,10 @@
     "./session": {
       "types": "./dist/session-entry.d.ts",
       "default": "./dist/session-entry.js"
+    },
+    "./registry": {
+      "types": "./dist/agent-registry.d.ts",
+      "default": "./dist/agent-registry.js"
     }
   },
   "scripts": {

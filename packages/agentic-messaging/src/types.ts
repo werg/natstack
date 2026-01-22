@@ -5,11 +5,11 @@
  * results between distributed participants over pubsub.
  */
 
-import type { Participant, ParticipantMetadata, PubSubClient, RosterUpdate, Attachment, AttachmentInput } from "@natstack/pubsub";
+import type { Participant, ParticipantMetadata, PubSubClient, RosterUpdate, Attachment, AttachmentInput, ChannelConfig } from "@natstack/pubsub";
 import type { z } from "zod";
 
 // Re-export attachment types from pubsub for convenience
-export type { Attachment, AttachmentInput };
+export type { Attachment, AttachmentInput, ChannelConfig };
 
 /** JSON Schema representation for method parameters/returns. */
 export type JsonSchema = Record<string, unknown>;
@@ -686,6 +686,9 @@ export interface ConnectOptions<T extends AgenticParticipantMetadata = AgenticPa
   /** Context ID for session persistence (for channel creators; joiners get it from server) */
   contextId?: string;
 
+  /** Channel config to set when creating a new channel (workingDirectory, restrictedMode) */
+  channelConfig?: ChannelConfig;
+
   /** Methods this participant provides. Automatically executed when called. */
   methods?: Record<string, MethodDefinition>;
 
@@ -809,6 +812,10 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   respondToolRole(group: ToolGroup, accepted: boolean, handoffTo?: string): Promise<void>;
   /** Announce completion of a tool role handoff */
   announceToolRoleHandoff(group: ToolGroup, from: string, to: string): Promise<void>;
+
+  // === Channel Config ===
+  /** Channel config (from server ready message) */
+  readonly channelConfig: ChannelConfig | undefined;
 
   // === Lifecycle ===
   readonly connected: boolean;

@@ -8,6 +8,7 @@ import {
   type MethodDefinition,
   type ToolGroup,
   type ToolRoleDeclaration,
+  type ChannelConfig,
 } from "@natstack/agentic-messaging";
 import type { ChatParticipantMetadata } from "../types";
 
@@ -28,6 +29,13 @@ export interface UseChannelConnectionOptions {
   onError?: (error: Error) => void;
 }
 
+export interface ConnectOptions {
+  channelId: string;
+  methods: Record<string, MethodDefinition>;
+  /** Channel configuration (set when creating channel, read by joiners) */
+  channelConfig?: ChannelConfig;
+}
+
 export interface UseChannelConnectionResult {
   client: AgenticClient<ChatParticipantMetadata> | null;
   clientRef: RefObject<AgenticClient<ChatParticipantMetadata> | null>;
@@ -37,7 +45,7 @@ export interface UseChannelConnectionResult {
   clientId: string | null;
   /** The panel's static ID from runtime */
   panelClientId: string;
-  connect: (channelId: string, methods: Record<string, MethodDefinition>) => Promise<AgenticClient<ChatParticipantMetadata>>;
+  connect: (options: ConnectOptions) => Promise<AgenticClient<ChatParticipantMetadata>>;
   disconnect: () => void;
 }
 
@@ -75,7 +83,9 @@ export function useChannelConnection({
   }, []);
 
   const connectToChannel = useCallback(
-    async (channelId: string, methods: Record<string, MethodDefinition>): Promise<AgenticClient<ChatParticipantMetadata>> => {
+    async (options: ConnectOptions): Promise<AgenticClient<ChatParticipantMetadata>> => {
+      const { channelId, methods, channelConfig } = options;
+
       if (!pubsubConfig) {
         const error = new Error("PubSub configuration not available");
         callbacksRef.current.onError?.(error);
@@ -96,6 +106,8 @@ export function useChannelConnection({
           // Use the panel's context ID as the channel context (fallback to panel ID)
           // This enables session persistence for all participants
           contextId: panelContextId,
+          // Pass channel config (set when creating, read by joiners from server)
+          channelConfig,
           handle: metadata.handle,
           name: metadata.name,
           type: metadata.type,

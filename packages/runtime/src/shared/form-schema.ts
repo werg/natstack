@@ -100,6 +100,7 @@ export interface FieldDefinition {
   type: FieldType;
   required?: boolean;
   default?: FieldValue;
+  channelLevel?: boolean; // If true, value comes from channel config, not user input
 
   // Options (for select, segmented, toggle)
   options?: FieldOption[];

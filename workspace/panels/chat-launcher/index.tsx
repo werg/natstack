@@ -1,16 +1,22 @@
 /**
  * Chat Launcher Panel
  *
- * Lightweight panel for agent discovery, selection, and invitation.
- * In new chat mode: After successfully inviting agents, navigates to the chat panel.
- * In channel mode (channelName set): After inviting agents, closes self or navigates back.
+ * Lightweight panel for agent selection and spawning.
+ * Reads agent definitions from SQLite registry and spawns workers directly.
+ * In new chat mode: After spawning agents, navigates to the chat panel.
+ * In channel mode (channelName set): After spawning agents, closes self or navigates back.
  */
 
 import { useState, useCallback } from "react";
-import { pubsubConfig, buildNsLink, closeSelf, getStateArgs } from "@natstack/runtime";
+import { pubsubConfig, buildNsLink, closeSelf, getStateArgs, createChild } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
 import { Theme } from "@radix-ui/themes";
-import { useDiscovery } from "./hooks/useDiscovery";
+import {
+  useAgentSelection,
+  DEFAULT_SESSION_CONFIG,
+  toChannelConfig,
+  type SessionConfig,
+} from "./hooks/useAgentSelection";
 import { AgentSetupPhase } from "./components/AgentSetupPhase";
 
 const generateChannelId = () => `chat-${crypto.randomUUID().slice(0, 8)}`;
@@ -34,42 +40,49 @@ export default function ChatLauncher() {
   const [status, setStatus] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
 
+  // Session config - includes channel config (workingDirectory, restrictedMode) and session defaults
+  const [sessionConfig, setSessionConfig] = useState<SessionConfig>(() => ({
+    ...DEFAULT_SESSION_CONFIG,
+    workingDirectory: workspaceRoot ?? "",
+  }));
+
   const {
-    discoveryRef,
-    availableAgents,
-    discoveryStatus,
+    agentsWithRequirements,
+    selectionStatus,
     toggleAgentSelection,
     updateAgentConfig,
-    buildInviteConfig,
-  } = useDiscovery({ workspaceRoot });
+    buildSpawnConfig,
+  } = useAgentSelection({ workspaceRoot, sessionConfig });
 
   const startChat = useCallback(async () => {
-    const discovery = discoveryRef.current;
-    if (!discovery || !pubsubConfig) return;
+    if (!pubsubConfig) return;
 
-    // Check connection state before attempting invites
-    if (!discovery.connected) {
-      setStatus("Not connected to discovery service. Please wait for reconnection.");
-      console.warn("[Chat Launcher] Attempted invite while disconnected");
-      return;
-    }
-
-    const selectedAgents = availableAgents.filter((a) => a.selected);
+    const selectedAgents = agentsWithRequirements.filter((a) => a.selected);
     if (selectedAgents.length === 0) {
       setStatus("Please select at least one agent");
       return;
     }
 
-    // Validate required parameters before sending invites
+    // Check for unmet channel requirements (shouldn't happen since agents with unmet requirements can't be selected)
+    const agentsWithUnmetReqs = selectedAgents.filter((a) => a.unmetRequirements.length > 0);
+    if (agentsWithUnmetReqs.length > 0) {
+      const details = agentsWithUnmetReqs
+        .map((a) => `${a.agent.name}: requires ${a.unmetRequirements.join(", ")}`)
+        .join("\n");
+      setStatus(`Missing channel configuration:\n${details}`);
+      return;
+    }
+
+    // Validate required per-agent parameters (skip channelLevel - validated above)
     const validationErrors: string[] = [];
     for (const agent of selectedAgents) {
-      const requiredParams = agent.agentType.parameters?.filter((p) => p.required) ?? [];
+      const requiredParams = agent.agent.parameters?.filter((p) => p.required && !p.channelLevel) ?? [];
       for (const param of requiredParams) {
         const value = agent.config[param.key];
         const hasValue = value !== undefined && value !== "";
         const hasDefault = param.default !== undefined;
         if (!hasValue && !hasDefault) {
-          validationErrors.push(`${agent.agentType.name}: "${param.label}" is required`);
+          validationErrors.push(`${agent.agent.name}: "${param.label}" is required`);
         }
       }
     }
@@ -79,6 +92,9 @@ export default function ChatLauncher() {
       return;
     }
 
+    // Derive channel config from session config
+    const channelConfig = toChannelConfig(sessionConfig);
+
     setIsStarting(true);
     setStatus(null);
 
@@ -86,73 +102,57 @@ export default function ChatLauncher() {
     const targetChannelId = channelId.trim() || generateChannelId();
 
     try {
-      // Invite all selected agents with their configured parameters
-      const invitePromises = selectedAgents.map(async (agent) => {
-        const filteredConfig = buildInviteConfig(agent);
+      // Spawn all selected agents directly via createChild
+      const spawnPromises = selectedAgents.map(async (agent) => {
+        const config = buildSpawnConfig(agent);
 
         try {
-          const result = discovery.invite(agent.broker.brokerId, agent.agentType.id, targetChannelId, {
-            context: "User wants to chat",
-            config: filteredConfig,
-          });
-          const response = await result.response;
-          return { agent, response, error: null };
+          // Spawn worker directly
+          // Pass channelConfig values via stateArgs to avoid race condition where workers
+          // connect before chat panel and create the channel without config
+          await createChild(
+            agent.agent.workerSource,
+            { name: `${agent.agent.id}-${targetChannelId.slice(0, 8)}` },
+            {
+              channel: targetChannelId,
+              handle: agent.agent.proposedHandle,
+              // Channel config values passed directly to avoid timing issues
+              workingDirectory: channelConfig.workingDirectory,
+              restrictedMode: channelConfig.restrictedMode,
+              ...config,
+            }
+          );
+          return { agent, error: null };
         } catch (err) {
-          // Capture invite errors per-agent
+          // Capture spawn errors per-agent
           const errorMsg = err instanceof Error ? err.message : String(err);
-          return {
-            agent,
-            response: null,
-            error: errorMsg,
-          };
+          return { agent, error: errorMsg };
         }
       });
 
-      const results = await Promise.all(invitePromises);
+      const results = await Promise.all(spawnPromises);
 
-      // Separate successful and failed invites
-      const succeeded = results.filter((r) => r.response?.accepted);
-      const declined = results.filter((r) => r.response && !r.response.accepted);
-      const errored = results.filter((r) => r.error !== null);
+      // Separate successful and failed spawns
+      const succeeded = results.filter((r) => r.error === null);
+      const failed = results.filter((r) => r.error !== null);
 
-      // Check if all invites failed - still navigate to chat panel
+      // Check if all spawns failed - still navigate to chat panel
       // The agent recovery system in chat will show build errors and allow retry
       if (succeeded.length === 0) {
-        // Build detailed error message for logging
-        const errorParts: string[] = [];
-
-        if (errored.length > 0) {
-          const errorDetails = errored
-            .map((r) => `${r.agent.agentType.name}: ${r.error}`)
-            .join("\n");
-          errorParts.push(`Invite errors:\n${errorDetails}`);
-        }
-
-        if (declined.length > 0) {
-          const declineDetails = declined
-            .map((r) => {
-              const reason = r.response?.declineReason || "Unknown reason";
-              const code = r.response?.declineCode ? ` (${r.response.declineCode})` : "";
-              return `${r.agent.agentType.name}: ${reason}${code}`;
-            })
-            .join("\n");
-          errorParts.push(`Declined:\n${declineDetails}`);
-        }
-
-        console.warn(`[Chat Launcher] All invites failed, proceeding to chat anyway:\n${errorParts.join("\n\n")}`);
+        const errorDetails = failed
+          .map((r) => `${r.agent.agent.name}: ${r.error}`)
+          .join("\n");
+        console.warn(`[Chat Launcher] All agent spawns failed, proceeding to chat anyway:\n${errorDetails}`);
         // Don't return - fall through to navigate to chat panel
-        // The chat panel's agent recovery UI will show any build errors
       }
 
       // Log partial failures but continue if at least one succeeded
-      if (declined.length > 0 || errored.length > 0) {
-        const failedNames = [...declined, ...errored]
-          .map((r) => r.agent.agentType.name)
-          .join(", ");
-        console.warn(`[Chat Launcher] Some agents failed to join: ${failedNames}`);
+      if (failed.length > 0) {
+        const failedNames = failed.map((r) => r.agent.agent.name).join(", ");
+        console.warn(`[Chat Launcher] Some agents failed to spawn: ${failedNames}`);
       }
 
-      // Post-invite behavior depends on mode
+      // Post-spawn behavior depends on mode
       if (isChannelMode) {
         // Channel modification mode: try to close self, otherwise navigate back
         try {
@@ -169,10 +169,10 @@ export default function ChatLauncher() {
         });
         window.location.href = chatUrl;
       } else {
-        // New chat mode: navigate to the chat panel with the channel ID
+        // New chat mode: navigate to the chat panel with channel ID and config
         const chatUrl = buildNsLink("panels/chat", {
           action: "navigate",
-          stateArgs: { channelName: targetChannelId },
+          stateArgs: { channelName: targetChannelId, channelConfig },
         });
         window.location.href = chatUrl;
       }
@@ -180,17 +180,19 @@ export default function ChatLauncher() {
       setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
       setIsStarting(false);
     }
-  }, [availableAgents, buildInviteConfig, discoveryRef, channelId, isChannelMode]);
+  }, [agentsWithRequirements, buildSpawnConfig, channelId, isChannelMode, sessionConfig]);
 
   return (
     <Theme appearance={theme}>
       <AgentSetupPhase
-        discoveryStatus={discoveryStatus}
-        availableAgents={availableAgents}
+        selectionStatus={selectionStatus}
+        availableAgents={agentsWithRequirements}
+        sessionConfig={sessionConfig}
         channelId={channelId}
         status={status}
         isStarting={isStarting}
         isChannelMode={isChannelMode}
+        onSessionConfigChange={setSessionConfig}
         onChannelIdChange={setChannelId}
         onToggleAgent={toggleAgentSelection}
         onUpdateConfig={updateAgentConfig}

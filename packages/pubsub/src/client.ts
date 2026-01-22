@@ -16,6 +16,7 @@ import type {
   ParticipantMetadata,
   Participant,
   Attachment,
+  ChannelConfig,
 } from "./types.js";
 
 /**
@@ -35,6 +36,8 @@ interface ServerMessage {
   senderMetadata?: Record<string, unknown>;
   /** Context ID for the channel (sent in ready message) */
   contextId?: string;
+  /** Channel config (sent in ready message) */
+  channelConfig?: ChannelConfig;
 }
 
 type PresenceAction = "join" | "leave" | "update";
@@ -75,6 +78,9 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
   /** Context ID for the channel (from server ready message) */
   readonly contextId: string | undefined;
 
+  /** Channel config (from server ready message) */
+  readonly channelConfig: ChannelConfig | undefined;
+
   /** Register error handler. Returns unsubscribe function. */
   onError(handler: (error: Error) => void): () => void;
 
@@ -111,7 +117,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   token: string,
   options: ConnectOptions<T>
 ): PubSubClient<T> {
-  const { channel, contextId, sinceId: initialSinceId, reconnect, metadata, clientId, skipOwnMessages } = options;
+  const { channel, contextId, channelConfig, sinceId: initialSinceId, reconnect, metadata, clientId, skipOwnMessages } = options;
 
   // Parse reconnection config
   const reconnectEnabled = reconnect !== undefined && reconnect !== false;
@@ -128,6 +134,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   let reconnectTimeoutId: ReturnType<typeof setTimeout> | null = null;
   let refCounter = 0;
   let serverContextId: string | undefined;
+  let serverChannelConfig: ChannelConfig | undefined;
 
   // Message queue for the async iterator
   const messageQueue: Message[] = [];
@@ -172,6 +179,9 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     url.searchParams.set("channel", channel);
     if (contextId !== undefined) {
       url.searchParams.set("contextId", contextId);
+    }
+    if (channelConfig !== undefined) {
+      url.searchParams.set("channelConfig", JSON.stringify(channelConfig));
     }
     if (withSinceId !== undefined) {
       url.searchParams.set("sinceId", String(withSinceId));
@@ -264,9 +274,12 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
 
     switch (msg.kind) {
       case "ready":
-        // Capture contextId from server ready message
+        // Capture contextId and channelConfig from server ready message
         if (typeof msg.contextId === "string") {
           serverContextId = msg.contextId;
+        }
+        if (msg.channelConfig) {
+          serverChannelConfig = msg.channelConfig;
         }
         readyResolve?.();
         readyResolve = null;
@@ -751,6 +764,9 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     },
     get contextId() {
       return serverContextId;
+    },
+    get channelConfig() {
+      return serverChannelConfig;
     },
     onError: (handler: (error: Error) => void) => {
       errorHandlers.add(handler);

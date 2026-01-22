@@ -24,8 +24,8 @@ export type {
   FeedbackUiToolResult,
 } from "./types";
 
-// Re-export from agentic-messaging/broker for convenience
-export type { FeedbackFormArgs } from "@natstack/agentic-messaging/broker";
+// Re-export from agentic-messaging for convenience
+export type { FeedbackFormArgs } from "@natstack/agentic-messaging";
 
 // ============================================================================
 // Components

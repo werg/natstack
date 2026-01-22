@@ -6,7 +6,21 @@
   "natstack": {
     "type": "worker",
     "title": "Agentic Chat AI Responder",
-    "runtime": "worker"
+    "runtime": "worker",
+    "stateArgs": {
+      "type": "object",
+      "properties": {
+        "channel": { "type": "string" },
+        "handle": { "type": "string", "default": "ai" },
+        "modelRole": { "type": "string", "default": "fast" },
+        "temperature": { "type": "number", "default": 0.7, "minimum": 0, "maximum": 2 },
+        "maxOutputTokens": { "type": "integer", "default": 1024, "minimum": 256, "maximum": 4096 },
+        "autonomyLevel": { "type": "integer", "default": 0, "minimum": 0, "maximum": 2 },
+        "maxSteps": { "type": "integer", "default": 5, "minimum": 1, "maximum": 20 },
+        "thinkingBudget": { "type": "integer", "default": 0, "minimum": 0, "maximum": 32000 }
+      },
+      "required": ["channel"]
+    }
   },
   "dependencies": {
     "@natstack/runtime": "workspace:*",

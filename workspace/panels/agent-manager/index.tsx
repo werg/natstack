@@ -1,11 +1,11 @@
 /**
- * Agent Preferences Panel
+ * Agent Manager Panel
  *
- * Configure default settings for AI agents. Also serves as a broker
- * that spawns workers when clients invite agents.
+ * CRUD UI for managing agent definitions in the SQLite registry.
+ * Seeds built-in agents on first run.
  */
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Box,
   Card,
@@ -15,26 +15,21 @@ import {
   Badge,
   Button,
   ScrollArea,
-  Code,
+  Switch,
   Separator,
-  Tabs,
 } from "@radix-ui/themes";
-import { ChevronDownIcon, ChevronRightIcon } from "@radix-ui/react-icons";
-import { createChild, pubsubConfig, db, type ChildHandle } from "@natstack/runtime";
 import { usePanelTheme, ParameterEditor } from "@natstack/react";
+import { db } from "@natstack/runtime";
 import {
-  connectAsBroker,
-  type BrokerClient,
-  type AgentTypeAdvertisement,
-  type Invite,
-} from "@natstack/agentic-messaging/broker";
+  getAgentRegistry,
+  type AgentDefinition,
+} from "@natstack/agentic-messaging/registry";
 import {
   CLAUDE_CODE_PARAMETERS,
   AI_RESPONDER_PARAMETERS,
   CODEX_PARAMETERS,
 } from "@natstack/agentic-messaging/config";
 
-const AVAILABILITY_CHANNEL = "agent-availability";
 const PREFERENCES_DB_NAME = "agent-preferences";
 
 /** Persisted defaults structure - keyed by agent type ID */
@@ -77,7 +72,7 @@ async function loadAgentDefaults(): Promise<AgentDefaults> {
     }
     return result;
   } catch (err) {
-    console.warn("[AgentPreferences] Failed to load defaults:", err);
+    console.warn("[AgentManager] Failed to load defaults:", err);
     return {};
   }
 }
@@ -98,47 +93,43 @@ async function saveAgentDefaults(
       [agentTypeId, settingsJson, now, settingsJson, now]
     );
   } catch (err) {
-    console.warn("[AgentPreferences] Failed to save defaults:", err);
+    console.warn("[AgentManager] Failed to save defaults:", err);
   }
 }
 
-
-/** Agent type definitions - using centralized parameter configs */
-const AGENT_TYPES: AgentTypeAdvertisement[] = [
+/** Built-in agent definitions to seed on first run */
+const BUILT_IN_AGENTS: Omit<AgentDefinition, "createdAt" | "updatedAt">[] = [
   {
     id: "ai-responder",
     name: "AI Responder",
+    workerSource: "workers/pubsub-chat-responder",
     proposedHandle: "ai",
     description: "AI assistant using NatStack AI SDK with agentic tool support.",
-    providesMethods: [],
-    requiresMethods: [
-      { name: "feedback_form", description: "Display forms for tool approval", required: true },
-    ],
     parameters: AI_RESPONDER_PARAMETERS,
+    providesMethods: [],
+    requiresMethods: [{ name: "feedback_form", required: true }],
     tags: ["chat", "ai", "agentic", "tools"],
+    enabled: true,
   },
   {
     id: "claude-code",
     name: "Claude Code",
+    workerSource: "workers/claude-code-responder",
     proposedHandle: "claude",
     description: "Claude-based coding agent with tool access for complex development tasks.",
+    parameters: CLAUDE_CODE_PARAMETERS,
     providesMethods: [],
     requiresMethods: [
-      // UI feedback methods
       { name: "feedback_form", description: "Display schema-based forms for user input", required: true },
       { name: "feedback_custom", description: "Display custom TSX UI for complex interactions", required: true },
-      // File operations (for restricted environments)
       { name: "file_read", description: "Read file contents", required: false },
       { name: "file_write", description: "Write file contents", required: false },
       { name: "file_edit", description: "Edit file with string replacement", required: false },
       { name: "rm", description: "Delete files or directories", required: false },
-      // Search tools
       { name: "glob", description: "Find files by glob pattern", required: false },
       { name: "grep", description: "Search file contents", required: false },
-      // Directory tools
       { name: "tree", description: "Show directory tree", required: false },
       { name: "list_directory", description: "List directory contents", required: false },
-      // Git tools (essential when no bash)
       { name: "git_status", description: "Git repository status", required: false },
       { name: "git_diff", description: "Show file changes", required: false },
       { name: "git_log", description: "Commit history", required: false },
@@ -146,142 +137,87 @@ const AGENT_TYPES: AgentTypeAdvertisement[] = [
       { name: "git_commit", description: "Create commits", required: false },
       { name: "git_checkout", description: "Switch branches or restore files", required: false },
     ],
-    parameters: CLAUDE_CODE_PARAMETERS,
     tags: ["chat", "coding", "tools", "claude"],
+    enabled: true,
   },
   {
     id: "codex",
     name: "Codex",
+    workerSource: "workers/codex-responder",
     proposedHandle: "codex",
     description: "OpenAI Codex agent specialized for code tasks with MCP tool support.",
+    parameters: CODEX_PARAMETERS,
     providesMethods: [],
     requiresMethods: [],
-    parameters: CODEX_PARAMETERS,
     tags: ["chat", "coding", "tools", "openai"],
+    enabled: true,
   },
 ];
 
-/** Map agent type ID to worker source */
-function getWorkerSource(agentTypeId: string): string {
-  switch (agentTypeId) {
-    case "ai-responder":
-      return "workers/pubsub-chat-responder";
-    case "claude-code":
-      return "workers/claude-code-responder";
-    case "codex":
-      return "workers/codex-responder";
-    default:
-      throw new Error(`Unknown agent type: ${agentTypeId}`);
-  }
-}
-
-/** Log entry for invite history */
-interface InviteLogEntry {
-  id: string;
-  timestamp: Date;
-  agentTypeId: string;
-  targetChannel: string;
-  senderId: string;
-  accepted: boolean;
-  error?: string;
-  config?: Record<string, unknown>;
-}
-
-/** Active agent tracking */
-interface ActiveAgent {
-  id: string;
-  agentTypeId: string;
-  channel: string;
-  handle: ChildHandle;
-  startedAt: Date;
-  config?: Record<string, unknown>;
-}
-
-/** Collapsible section component */
-function CollapsibleSection({
-  title,
-  count,
-  defaultOpen = false,
-  children,
-}: {
-  title: string;
-  count?: number;
-  defaultOpen?: boolean;
-  children: React.ReactNode;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <Flex direction="column" gap="2">
-      <Flex
-        align="center"
-        gap="2"
-        style={{ cursor: "pointer", userSelect: "none" }}
-        onClick={() => setOpen(!open)}
-      >
-        {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
-        <Text size="2" color="gray" weight="medium">
-          {title}
-          {count !== undefined && ` (${count})`}
-        </Text>
-      </Flex>
-      {open && children}
-    </Flex>
-  );
-}
-
-/** Collapsible JSON viewer component */
-function JsonInspector({ data, label }: { data: unknown; label?: string }) {
-  const [expanded, setExpanded] = useState(false);
-
-  if (data === undefined || data === null || (typeof data === "object" && Object.keys(data as object).length === 0)) {
-    return null;
-  }
-
-  return (
-    <Flex direction="column" gap="1" style={{ fontSize: "11px" }}>
-      <Text
-        size="1"
-        color="gray"
-        style={{ cursor: "pointer", userSelect: "none" }}
-        onClick={() => setExpanded(!expanded)}
-      >
-        {expanded ? "▼" : "▶"} {label || "Details"}
-      </Text>
-      {expanded && (
-        <Code
-          size="1"
-          style={{
-            display: "block",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-all",
-            padding: "8px",
-            backgroundColor: "var(--gray-3)",
-            borderRadius: "4px",
-            maxHeight: "150px",
-            overflow: "auto",
-          }}
-        >
-          {JSON.stringify(data, null, 2)}
-        </Code>
-      )}
-    </Flex>
-  );
-}
-
-export default function AgentPreferences() {
+export default function AgentManager() {
   const theme = usePanelTheme();
-  const [connected, setConnected] = useState(false);
-  const [status, setStatus] = useState("Initializing...");
-  const [activeAgents, setActiveAgents] = useState<ActiveAgent[]>([]);
-  const [inviteLog, setInviteLog] = useState<InviteLogEntry[]>([]);
+  const [agents, setAgents] = useState<AgentDefinition[]>([]);
   const [agentDefaults, setAgentDefaults] = useState<AgentDefaults>({});
+  const [status, setStatus] = useState("Loading...");
+  const [isLoading, setIsLoading] = useState(true);
 
-  const brokerRef = useRef<BrokerClient | null>(null);
-  const activeAgentsRef = useRef<ActiveAgent[]>([]);
-
-  // Load defaults from SQLite on mount
+  // Load agents from registry and seed if empty
   useEffect(() => {
-    void loadAgentDefaults().then(setAgentDefaults);
+    let mounted = true;
+
+    async function init() {
+      try {
+        const registry = getAgentRegistry();
+        await registry.initialize();
+
+        // Check if registry is empty and seed built-in agents
+        const existing = await registry.listAll();
+        if (existing.length === 0) {
+          console.log("[AgentManager] Seeding built-in agents...");
+          for (const agent of BUILT_IN_AGENTS) {
+            await registry.upsert(agent);
+          }
+        }
+
+        // Load all agents
+        const allAgents = await registry.listAll();
+        const defaults = await loadAgentDefaults();
+
+        if (mounted) {
+          setAgents(allAgents);
+          setAgentDefaults(defaults);
+          setStatus(`${allAgents.length} agents registered`);
+          setIsLoading(false);
+        }
+      } catch (err) {
+        if (mounted) {
+          setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
+          setIsLoading(false);
+        }
+      }
+    }
+
+    void init();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Toggle agent enabled state
+  const toggleEnabled = useCallback(async (agentId: string, enabled: boolean) => {
+    try {
+      const registry = getAgentRegistry();
+      await registry.setEnabled(agentId, enabled);
+
+      setAgents((prev) =>
+        prev.map((agent) =>
+          agent.id === agentId ? { ...agent, enabled } : agent
+        )
+      );
+    } catch (err) {
+      console.error("[AgentManager] Failed to toggle enabled:", err);
+    }
   }, []);
 
   // Update a default value for an agent type
@@ -294,151 +230,9 @@ export default function AgentPreferences() {
           [key]: value,
         },
       };
-      void saveAgentDefaults(agentTypeId, updated[agentTypeId]);
+      void saveAgentDefaults(agentTypeId, updated[agentTypeId]!);
       return updated;
     });
-  }, []);
-
-  const addLogEntry = useCallback((entry: Omit<InviteLogEntry, "id" | "timestamp">) => {
-    setInviteLog((prev) => [
-      {
-        ...entry,
-        id: crypto.randomUUID(),
-        timestamp: new Date(),
-      },
-      ...prev.slice(0, 49),
-    ]);
-  }, []);
-
-  const stopAgent = useCallback(async (agentId: string) => {
-    setActiveAgents((prev) => {
-      const agent = prev.find((a) => a.id === agentId);
-      if (agent) {
-        void agent.handle.close();
-      }
-      return prev.filter((a) => a.id !== agentId);
-    });
-  }, []);
-
-  // Initialize broker connection
-  useEffect(() => {
-    if (!pubsubConfig) {
-      setStatus("Error: PubSub not available");
-      return;
-    }
-
-    let mounted = true;
-
-    async function init() {
-      setStatus("Connecting...");
-
-      try {
-        const broker = await connectAsBroker(pubsubConfig!.serverUrl, pubsubConfig!.token, {
-          availabilityChannel: AVAILABILITY_CHANNEL,
-          name: "Agent Preferences",
-          handle: "agent-preferences",
-          agentTypes: AGENT_TYPES,
-          onInvite: async (invite: Invite, senderId: string) => {
-            console.log(`[AgentPreferences] Received invite from ${senderId} for ${invite.agentTypeId}`);
-            return { accept: true };
-          },
-          onSpawn: async (invite: Invite, agentType: AgentTypeAdvertisement) => {
-            console.log(`[AgentPreferences] Spawning ${agentType.id} for channel ${invite.targetChannel}`);
-
-            try {
-              const workerSource = getWorkerSource(agentType.id);
-              const workerName = `${agentType.id}-${invite.targetChannel.slice(0, 8)}`;
-              const agentHandle = invite.handleOverride ?? agentType.proposedHandle;
-
-              const agentConfig = {
-                ...invite.config,
-                handle: agentHandle,
-                agentTypeId: agentType.id, // Pass agent type for recovery identification
-              };
-              const env: Record<string, string> = {
-                CHANNEL: invite.targetChannel,
-                AGENT_CONFIG: JSON.stringify(agentConfig),
-              };
-
-              const handle = await createChild(workerSource, { name: workerName, env });
-
-              const activeAgent: ActiveAgent = {
-                id: handle.id,
-                agentTypeId: agentType.id,
-                channel: invite.targetChannel,
-                handle,
-                startedAt: new Date(),
-                config: invite.config,
-              };
-
-              if (mounted) {
-                setActiveAgents((prev) => [...prev, activeAgent]);
-                addLogEntry({
-                  agentTypeId: agentType.id,
-                  targetChannel: invite.targetChannel,
-                  senderId: invite.inviteId,
-                  accepted: true,
-                  config: invite.config,
-                });
-              }
-
-              return { agentId: handle.id };
-            } catch (err) {
-              const errorMsg = err instanceof Error ? err.message : String(err);
-              console.error(`[AgentPreferences] Failed to spawn agent:`, err);
-
-              if (mounted) {
-                addLogEntry({
-                  agentTypeId: agentType.id,
-                  targetChannel: invite.targetChannel,
-                  senderId: invite.inviteId,
-                  accepted: false,
-                  error: errorMsg,
-                  config: invite.config,
-                });
-              }
-
-              throw err;
-            }
-          },
-        });
-
-        brokerRef.current = broker;
-
-        if (mounted) {
-          setConnected(true);
-          setStatus("Connected");
-        }
-      } catch (err) {
-        if (mounted) {
-          setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-    }
-
-    void init();
-
-    return () => {
-      mounted = false;
-      if (brokerRef.current) {
-        void brokerRef.current.close();
-      }
-      brokerRef.current = null;
-    };
-  }, [addLogEntry]);
-
-  // Keep active agent list available for unmount cleanup
-  useEffect(() => {
-    activeAgentsRef.current = activeAgents;
-  }, [activeAgents]);
-
-  // Cleanup agents on unmount
-  useEffect(() => {
-    return () => {
-      for (const agent of activeAgentsRef.current) {
-        void agent.handle.close();
-      }
-    };
   }, []);
 
   return (
@@ -452,140 +246,132 @@ export default function AgentPreferences() {
       <Flex direction="column" gap="3" style={{ height: "100%" }}>
         {/* Header */}
         <Flex justify="between" align="center">
-          <Heading size="4">Agent Preferences</Heading>
-          <Badge size="1" color={connected ? "green" : "gray"} variant="soft">
-            {connected ? "Ready" : status}
+          <Heading size="4">Agent Manager</Heading>
+          <Badge size="1" color={isLoading ? "gray" : "green"} variant="soft">
+            {status}
           </Badge>
         </Flex>
 
-        {/* Tabbed Content */}
-        <Tabs.Root defaultValue="preferences" style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-          <Tabs.List size="2">
-            <Tabs.Trigger value="preferences">Preferences</Tabs.Trigger>
-            <Tabs.Trigger value="agents">
-              Active Agents
-              {activeAgents.length > 0 && (
-                <Badge size="1" ml="2" color="green">{activeAgents.length}</Badge>
-              )}
-            </Tabs.Trigger>
-          </Tabs.List>
+        <Text size="2" color="gray">
+          Manage registered agents. Changes take effect immediately for new chat sessions.
+        </Text>
 
-          <Box pt="3" style={{ flex: 1, overflow: "hidden" }}>
-            {/* Preferences Tab */}
-            <Tabs.Content value="preferences" style={{ height: "100%" }}>
-              <ScrollArea style={{ height: "100%" }}>
-                <Flex direction="column" gap="4" pr="3">
-                  {AGENT_TYPES.map((agentType) => (
-                    <Card key={agentType.id}>
-                      <Flex direction="column" gap="3">
-                        {/* Agent header */}
-                        <Flex justify="between" align="center">
-                          <Text size="4" weight="bold">{agentType.name}</Text>
-                        </Flex>
-                        <Text size="2" color="gray">{agentType.description}</Text>
-
-                        {/* Parameters - always visible */}
-                        {agentType.parameters && agentType.parameters.length > 0 && (
-                          <>
-                            <Separator size="4" />
-                            <ParameterEditor
-                              parameters={agentType.parameters}
-                              values={agentDefaults[agentType.id] ?? {}}
-                              onChange={(key: string, value: string | number | boolean) => updateDefault(agentType.id, key, value)}
-                            />
-                          </>
-                        )}
-                      </Flex>
-                    </Card>
-                  ))}
-                </Flex>
-              </ScrollArea>
-            </Tabs.Content>
-
-            {/* Active Agents Tab */}
-            <Tabs.Content value="agents" style={{ height: "100%" }}>
-              <ScrollArea style={{ height: "100%" }}>
-                <Flex direction="column" gap="4" pr="3">
-                  {/* Running Agents */}
+        {/* Agent List */}
+        <ScrollArea style={{ flex: 1 }}>
+          <Flex direction="column" gap="4" pr="3">
+            {agents.length === 0 && !isLoading ? (
+              <Card variant="surface">
+                <Text size="2" color="gray">
+                  No agents registered.
+                </Text>
+              </Card>
+            ) : (
+              agents.map((agent) => (
+                <Card key={agent.id}>
                   <Flex direction="column" gap="3">
-                    <Text size="2" weight="medium" color="gray">
-                      Running Agents
-                    </Text>
-                    {activeAgents.length === 0 ? (
-                      <Card variant="surface">
-                        <Text size="2" color="gray">
-                          No active agents. Start a chat in the Agentic Chat panel to spawn agents.
+                    {/* Agent header */}
+                    <Flex justify="between" align="center">
+                      <Flex direction="column" gap="1">
+                        <Flex align="center" gap="2">
+                          <Text size="4" weight="bold">{agent.name}</Text>
+                          <Badge size="1" variant="outline" color="gray">
+                            @{agent.proposedHandle}
+                          </Badge>
+                        </Flex>
+                        <Text size="1" color="gray">
+                          {agent.workerSource}
                         </Text>
-                      </Card>
-                    ) : (
-                      activeAgents.map((agent) => (
-                        <Card key={agent.id} variant="surface">
-                          <Flex justify="between" align="center">
-                            <Flex direction="column" gap="1">
-                              <Text size="2" weight="medium">
-                                {AGENT_TYPES.find((t) => t.id === agent.agentTypeId)?.name || agent.agentTypeId}
-                              </Text>
-                              <Text size="1" color="gray">
-                                Started {agent.startedAt.toLocaleTimeString()}
-                              </Text>
-                            </Flex>
-                            <Flex gap="2" align="center">
-                              <Badge color="green" variant="soft" size="1">Running</Badge>
-                              <Button size="1" variant="soft" color="red" onClick={() => stopAgent(agent.id)}>
-                                Stop
-                              </Button>
-                            </Flex>
-                          </Flex>
-                        </Card>
-                      ))
+                      </Flex>
+                      <Flex align="center" gap="2">
+                        <Text size="1" color="gray">Enabled</Text>
+                        <Switch
+                          checked={agent.enabled}
+                          onCheckedChange={(checked) => toggleEnabled(agent.id, checked)}
+                        />
+                      </Flex>
+                    </Flex>
+
+                    <Text size="2" color="gray">{agent.description}</Text>
+
+                    {/* Tags */}
+                    {agent.tags && agent.tags.length > 0 && (
+                      <Flex gap="1" wrap="wrap">
+                        {agent.tags.map((tag) => (
+                          <Badge key={tag} size="1" variant="outline">
+                            {tag}
+                          </Badge>
+                        ))}
+                      </Flex>
+                    )}
+
+                    {/* Parameters - always visible for enabled agents */}
+                    {agent.parameters && agent.parameters.length > 0 && (
+                      <>
+                        <Separator size="4" />
+                        <Text size="2" weight="medium" color="gray">
+                          Default Parameters
+                        </Text>
+                        <ParameterEditor
+                          parameters={agent.parameters}
+                          values={agentDefaults[agent.id] ?? {}}
+                          onChange={(key: string, value: string | number | boolean) =>
+                            updateDefault(agent.id, key, value)
+                          }
+                        />
+                      </>
+                    )}
+
+                    {/* Required Methods (informational) */}
+                    {agent.requiresMethods && agent.requiresMethods.length > 0 && (
+                      <>
+                        <Separator size="4" />
+                        <Text size="2" weight="medium" color="gray">
+                          Required Methods
+                        </Text>
+                        <Flex gap="1" wrap="wrap">
+                          {agent.requiresMethods.map((method) => (
+                            <Badge
+                              key={method.name ?? method.pattern}
+                              size="1"
+                              color={method.required ? "red" : "gray"}
+                              variant="soft"
+                            >
+                              {method.name ?? method.pattern}
+                              {method.required ? " (required)" : " (optional)"}
+                            </Badge>
+                          ))}
+                        </Flex>
+                      </>
                     )}
                   </Flex>
+                </Card>
+              ))
+            )}
+          </Flex>
+        </ScrollArea>
 
-                  {/* Invite History - Collapsible */}
-                  <CollapsibleSection title="Invite History" count={inviteLog.length}>
-                    <Flex direction="column" gap="2">
-                      {inviteLog.length === 0 ? (
-                        <Text size="1" color="gray">No invites yet.</Text>
-                      ) : (
-                        inviteLog.map((entry) => (
-                          <Card
-                            key={entry.id}
-                            variant="surface"
-                            style={{
-                              borderLeft: entry.accepted
-                                ? "3px solid var(--green-9)"
-                                : "3px solid var(--red-9)",
-                            }}
-                          >
-                            <Flex direction="column" gap="1">
-                              <Flex justify="between" align="center">
-                                <Flex gap="2" align="center">
-                                  <Badge color={entry.accepted ? "green" : "red"} size="1">
-                                    {entry.accepted ? "OK" : "Failed"}
-                                  </Badge>
-                                  <Text size="1" weight="medium">
-                                    {AGENT_TYPES.find((t) => t.id === entry.agentTypeId)?.name || entry.agentTypeId}
-                                  </Text>
-                                </Flex>
-                                <Text size="1" color="gray">
-                                  {entry.timestamp.toLocaleTimeString()}
-                                </Text>
-                              </Flex>
-                              {entry.error && (
-                                <Text size="1" color="red">Error: {entry.error}</Text>
-                              )}
-                              <JsonInspector data={entry.config} label="Config" />
-                            </Flex>
-                          </Card>
-                        ))
-                      )}
-                    </Flex>
-                  </CollapsibleSection>
-                </Flex>
-              </ScrollArea>
-            </Tabs.Content>
-          </Box>
-        </Tabs.Root>
+        {/* Footer info */}
+        <Flex justify="between" align="center">
+          <Text size="1" color="gray">
+            {agents.filter((a) => a.enabled).length} of {agents.length} agents enabled
+          </Text>
+          <Button
+            size="1"
+            variant="soft"
+            onClick={async () => {
+              // Re-seed built-in agents
+              const registry = getAgentRegistry();
+              for (const agent of BUILT_IN_AGENTS) {
+                await registry.upsert(agent);
+              }
+              const allAgents = await registry.listAll();
+              setAgents(allAgents);
+              setStatus("Built-in agents restored");
+            }}
+          >
+            Reset Built-in Agents
+          </Button>
+        </Flex>
       </Flex>
     </Box>
   );

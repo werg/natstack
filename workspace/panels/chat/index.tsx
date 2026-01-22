@@ -23,13 +23,11 @@ import {
   type AttachmentInput,
   CONTENT_TYPE_TYPING,
   type TypingData,
-} from "@natstack/agentic-messaging";
-import {
   type FeedbackFormArgs,
   type FeedbackCustomArgs,
   FeedbackFormArgsSchema,
   FeedbackCustomArgsSchema,
-} from "@natstack/agentic-messaging/broker";
+} from "@natstack/agentic-messaging";
 import {
   useFeedbackManager,
   useToolApproval,
@@ -227,12 +225,16 @@ function dispatchAgenticEvent(
 /** Type for chat panel state args */
 interface ChatStateArgs {
   channelName: string;
+  channelConfig?: {
+    workingDirectory?: string;
+    restrictedMode?: boolean;
+  };
 }
 
 export default function AgenticChat() {
   const theme = usePanelTheme();
   const workspaceRoot = process.env["NATSTACK_WORKSPACE"]?.trim();
-  const { channelName } = useStateArgs<ChatStateArgs>();
+  const { channelName, channelConfig } = useStateArgs<ChatStateArgs>();
 
   const selfIdRef = useRef<string | null>(null);
   // Track if we've already connected to prevent reconnection loops
@@ -729,11 +731,16 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
 
         // Connect using the hook with all methods
         // Use ref for evalMethodDef to get latest version
-        await connectToChannel(channelName, {
-          eval: evalMethodDefRef.current!,
-          feedback_form: feedbackFormMethodDef,
-          feedback_custom: feedbackCustomMethodDef,
-          ...approvedTools,
+        await connectToChannel({
+          channelId: channelName,
+          methods: {
+            eval: evalMethodDefRef.current!,
+            feedback_form: feedbackFormMethodDef,
+            feedback_custom: feedbackCustomMethodDef,
+            ...approvedTools,
+          },
+          // Pass channel config (set when creating channel, read by joiners from server)
+          channelConfig,
         });
 
         setStatus("Connected");
@@ -747,6 +754,7 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
   // Minimal dependencies - use refs for callbacks to prevent reconnection loops
   }, [
     channelName,
+    channelConfig,
     connectToChannel,
     workspaceRoot,
   ]);

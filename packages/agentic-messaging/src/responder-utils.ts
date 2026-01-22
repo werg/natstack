@@ -17,25 +17,6 @@ export interface ChatParticipantMetadata extends AgenticParticipantMetadata {
 }
 
 /**
- * Safely parse AGENT_CONFIG from environment.
- * Returns empty object if parsing fails or config is invalid.
- */
-export function parseAgentConfig(): Record<string, unknown> {
-  const raw = process.env["AGENT_CONFIG"];
-  if (!raw) return {};
-
-  try {
-    const parsed = JSON.parse(raw);
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-    return {};
-  } catch {
-    return {};
-  }
-}
-
-/**
  * Create a prefixed logger function for responder workers.
  * @param prefix - The prefix to include in log messages (e.g., "Claude Code", "Codex")
  * @param workerId - Optional worker ID to include in logs

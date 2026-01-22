@@ -6,12 +6,11 @@
  */
 
 import { execSync } from "child_process";
-import { pubsubConfig, id } from "@natstack/runtime";
+import { pubsubConfig, id, getStateArgs } from "@natstack/runtime";
 import {
   connect,
   createToolsForAgentSDK,
   jsonSchemaToZodRawShape,
-  parseAgentConfig,
   createLogger,
   formatArgsForLog,
   createInterruptHandler,
@@ -187,15 +186,29 @@ function getActionDescription(toolName: string): string {
   return descriptions[toolName] ?? `Using ${toolName}`;
 }
 
-/** Worker-local settings interface */
+/**
+ * StateArgs passed at spawn time via createChild().
+ * Defined in package.json stateArgs schema.
+ */
+interface ClaudeCodeStateArgs {
+  channel: string;
+  handle?: string;
+  model?: string;
+  maxThinkingTokens?: number;
+  executionMode?: "plan" | "edit";
+  autonomyLevel?: number; // 0=Ask, 1=Auto-edits, 2=Full Auto
+  // Channel config values passed via stateArgs to avoid timing issues
+  // (workers may connect before chat panel sets channelConfig)
+  workingDirectory?: string;
+  restrictedMode?: boolean;
+}
+
+/** Worker-local settings interface (runtime-adjustable) */
 interface ClaudeCodeWorkerSettings {
   model?: string;
   maxThinkingTokens?: number;
-  // New conditional permission fields
   executionMode?: "plan" | "edit";
   autonomyLevel?: number; // 0=Ask, 1=Auto-edits, 2=Full Auto
-  // Restricted mode - use pubsub tools only (no bash)
-  restrictedMode?: boolean;
 }
 
 /**
@@ -230,17 +243,15 @@ async function main() {
     return;
   }
 
-  // Get channel from environment (passed by broker via process.env)
-  const channelName = process.env.CHANNEL;
+  // Get stateArgs passed at spawn time
+  const stateArgs = getStateArgs<ClaudeCodeStateArgs>();
+  const channelName = stateArgs.channel;
+  const handle = stateArgs.handle ?? "claude";
 
-  // Parse agent config from environment (passed by broker as JSON)
-  const agentConfig = parseAgentConfig();
-  const configuredWorkingDirectory =
-    typeof agentConfig.workingDirectory === "string" ? agentConfig.workingDirectory.trim() : "";
-  const workingDirectory = configuredWorkingDirectory || process.env["NATSTACK_WORKSPACE"];
-
-  // Get handle from config (set by broker from invite), fallback to default
-  const handle = typeof agentConfig.handle === "string" ? agentConfig.handle : "claude";
+  if (!channelName) {
+    console.error("No channel specified in stateArgs");
+    return;
+  }
 
   log("Starting Claude Code responder...");
 
@@ -251,10 +262,6 @@ async function main() {
     return;
   }
   log(`Claude executable: ${claudeExecutable}`);
-
-  if (workingDirectory) {
-    log(`Working directory: ${workingDirectory}`);
-  }
   log(`Handle: @${handle}`);
 
   // Connect to agentic messaging channel
@@ -357,14 +364,27 @@ async function main() {
 
   log(`Connected to channel: ${channelName}`);
 
+  // Get channel config - prefer stateArgs (reliable) over channelConfig (may be empty due to timing)
+  // Workers may connect before chat panel and create channel without config
+  const channelConfigWorkingDirectory = client.channelConfig?.workingDirectory;
+  const channelConfigRestrictedMode = client.channelConfig?.restrictedMode;
+  const workingDirectory = stateArgs.workingDirectory?.trim() || channelConfigWorkingDirectory?.trim() || process.env["NATSTACK_WORKSPACE"];
+  const restrictedMode = stateArgs.restrictedMode ?? channelConfigRestrictedMode;
+
+  if (workingDirectory) {
+    log(`Working directory: ${workingDirectory}`);
+  }
+  if (restrictedMode) {
+    log(`Restricted mode: enabled`);
+  }
+
   // Initialize settings with proper precedence:
-  // 1. Apply initialization config (from pre-connection UI)
+  // 1. Apply initialization config (from stateArgs passed at spawn time)
   const initConfigSettings: ClaudeCodeWorkerSettings = {};
-  if (typeof agentConfig.model === "string") initConfigSettings.model = agentConfig.model;
-  if (typeof agentConfig.maxThinkingTokens === "number") initConfigSettings.maxThinkingTokens = agentConfig.maxThinkingTokens;
-  if (typeof agentConfig.executionMode === "string") initConfigSettings.executionMode = agentConfig.executionMode as "plan" | "edit";
-  if (typeof agentConfig.autonomyLevel === "number") initConfigSettings.autonomyLevel = agentConfig.autonomyLevel;
-  if (typeof agentConfig.restrictedMode === "boolean") initConfigSettings.restrictedMode = agentConfig.restrictedMode;
+  if (stateArgs.model) initConfigSettings.model = stateArgs.model;
+  if (stateArgs.maxThinkingTokens !== undefined) initConfigSettings.maxThinkingTokens = stateArgs.maxThinkingTokens;
+  if (stateArgs.executionMode) initConfigSettings.executionMode = stateArgs.executionMode;
+  if (stateArgs.autonomyLevel !== undefined) initConfigSettings.autonomyLevel = stateArgs.autonomyLevel;
   Object.assign(currentSettings, initConfigSettings);
   if (Object.keys(initConfigSettings).length > 0) {
     log(`Applied init config: ${JSON.stringify(initConfigSettings)}`);
@@ -390,8 +410,8 @@ async function main() {
     log(`Final settings: ${JSON.stringify(currentSettings)}`);
   }
 
-  // Validate required methods in restricted mode
-  if (currentSettings.restrictedMode) {
+  // Validate required methods in restricted mode (from channel config)
+  if (restrictedMode) {
     await validateRestrictedMode(client, log);
   }
 
@@ -431,7 +451,7 @@ async function main() {
       }
       // Extract attachments from the event
       const attachments = (event as { attachments?: Attachment[] }).attachments;
-      await handleUserMessage(client, event, prompt, workingDirectory, claudeExecutable, attachments);
+      await handleUserMessage(client, event, prompt, workingDirectory, claudeExecutable, restrictedMode ?? false, attachments);
     }
   }
 }
@@ -442,6 +462,7 @@ async function handleUserMessage(
   prompt: string,
   workingDirectory: string | undefined,
   claudeExecutable: string,
+  isRestrictedMode: boolean,
   attachments?: Attachment[]
 ) {
   log(`Received message: ${incoming.content}`);
@@ -482,9 +503,6 @@ async function handleUserMessage(
   // NOTE: The Claude Agent SDK's query() only accepts string prompts, not content blocks.
   // Passing content blocks causes the CLI to crash. Instead, we use an MCP tool to deliver images.
   // When images are attached, we add a note to the prompt telling Claude to call the tool.
-
-  // Determine if we're in restricted mode
-  const isRestrictedMode = currentSettings.restrictedMode === true;
 
   // Create typing tracker for ephemeral "typing..." indicator
   // Shows immediately until first thinking/action/text appears

@@ -7,7 +7,21 @@
     "type": "worker",
     "title": "Codex Responder",
     "runtime": "worker",
-    "unsafe": "/"
+    "unsafe": "/",
+    "stateArgs": {
+      "type": "object",
+      "properties": {
+        "channel": { "type": "string" },
+        "handle": { "type": "string", "default": "codex" },
+        "model": { "type": "string", "default": "gpt-5.2-codex" },
+        "reasoningEffort": { "type": "integer", "default": 2, "minimum": 0, "maximum": 3 },
+        "autonomyLevel": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "webSearchEnabled": { "type": "boolean", "default": false },
+        "workingDirectory": { "type": "string" },
+        "restrictedMode": { "type": "boolean" }
+      },
+      "required": ["channel"]
+    }
   },
   "dependencies": {
     "@natstack/runtime": "workspace:*",

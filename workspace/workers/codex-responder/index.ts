@@ -14,12 +14,11 @@
  * 6. Tool calls flow: Codex -> HTTP MCP server -> pubsub
  */
 
-import { pubsubConfig, id } from "@natstack/runtime";
+import { pubsubConfig, id, getStateArgs } from "@natstack/runtime";
 import {
   connect,
   createToolsForAgentSDK,
   jsonSchemaToZodRawShape,
-  parseAgentConfig,
   createLogger,
   formatArgsForLog,
   createInterruptHandler,
@@ -57,15 +56,29 @@ import { randomUUID } from "node:crypto";
 
 const log = createLogger("Codex Worker", id);
 
-/** Worker-local settings interface */
+/**
+ * StateArgs passed at spawn time via createChild().
+ * Defined in package.json stateArgs schema.
+ */
+interface CodexStateArgs {
+  channel: string;
+  handle?: string;
+  model?: string;
+  reasoningEffort?: number; // 0=minimal, 1=low, 2=medium, 3=high
+  autonomyLevel?: number; // 0=restricted/read-only, 1=standard/workspace, 2=autonomous/full-access
+  webSearchEnabled?: boolean;
+  // Channel config values passed via stateArgs to avoid timing issues
+  // (workers may connect before chat panel sets channelConfig)
+  workingDirectory?: string;
+  restrictedMode?: boolean;
+}
+
+/** Worker-local settings interface (runtime-adjustable) */
 interface CodexWorkerSettings {
   model?: string;
   reasoningEffort?: number; // 0=minimal, 1=low, 2=medium, 3=high
-  sandboxMode?: number; // 0=read-only, 1=workspace-write, 2=danger-full-access
-  networkAccessEnabled?: boolean;
+  autonomyLevel?: number; // 0=restricted/read-only, 1=standard/workspace, 2=autonomous/full-access
   webSearchEnabled?: boolean;
-  // Restricted mode - use pubsub tools only (no built-in sandbox tools)
-  restrictedMode?: boolean;
 }
 
 /** Map reasoning effort slider value to SDK string */
@@ -79,13 +92,18 @@ function getReasoningEffort(level: number | undefined): "minimal" | "low" | "med
   }
 }
 
-/** Map sandbox mode slider value to SDK string */
-function getSandboxMode(level: number | undefined): "read-only" | "workspace-write" | "danger-full-access" | undefined {
-  switch (level) {
+/**
+ * Derive sandbox mode from autonomy level.
+ * autonomyLevel 0 (Restricted) → read-only
+ * autonomyLevel 1 (Standard) → workspace-write
+ * autonomyLevel 2 (Autonomous) → danger-full-access
+ */
+function getSandboxModeFromAutonomy(autonomyLevel: number | undefined): "read-only" | "workspace-write" | "danger-full-access" {
+  switch (autonomyLevel) {
     case 0: return "read-only";
-    case 1: return "workspace-write";
     case 2: return "danger-full-access";
-    default: return undefined;
+    case 1:
+    default: return "workspace-write"; // Default to standard/workspace
   }
 }
 
@@ -321,22 +339,17 @@ async function main() {
     return;
   }
 
-  // Get channel from environment (passed by broker via process.env)
-  const channelName = process.env.CHANNEL;
+  // Get stateArgs passed at spawn time
+  const stateArgs = getStateArgs<CodexStateArgs>();
+  const channelName = stateArgs.channel;
+  const handle = stateArgs.handle ?? "codex";
 
-  // Parse agent config from environment (passed by broker as JSON)
-  const agentConfig = parseAgentConfig();
-  const configuredWorkingDirectory =
-    typeof agentConfig.workingDirectory === "string" ? agentConfig.workingDirectory.trim() : "";
-  const workingDirectory = configuredWorkingDirectory || process.env["NATSTACK_WORKSPACE"];
-
-  // Get handle from config (set by broker from invite), fallback to default
-  const handle = typeof agentConfig.handle === "string" ? agentConfig.handle : "codex";
+  if (!channelName) {
+    console.error("No channel specified in stateArgs");
+    return;
+  }
 
   log("Starting Codex responder...");
-  if (workingDirectory) {
-    log(`Working directory: ${workingDirectory}`);
-  }
   log(`Handle: @${handle}`);
 
   // Connect to agentic messaging channel
@@ -414,15 +427,27 @@ async function main() {
 
   log(`Connected to channel: ${channelName}`);
 
+  // Get channel config - prefer stateArgs (reliable) over channelConfig (may be empty due to timing)
+  // Workers may connect before chat panel and create channel without config
+  const channelConfigWorkingDirectory = client.channelConfig?.workingDirectory;
+  const channelConfigRestrictedMode = client.channelConfig?.restrictedMode;
+  const workingDirectory = stateArgs.workingDirectory?.trim() || channelConfigWorkingDirectory?.trim() || process.env["NATSTACK_WORKSPACE"];
+  const restrictedMode = stateArgs.restrictedMode ?? channelConfigRestrictedMode;
+
+  if (workingDirectory) {
+    log(`Working directory: ${workingDirectory}`);
+  }
+  if (restrictedMode) {
+    log(`Restricted mode: enabled`);
+  }
+
   // Initialize settings with proper precedence:
-  // 1. Apply initialization config (from pre-connection UI)
+  // 1. Apply initialization config (from stateArgs passed at spawn time)
   const initConfigSettings: CodexWorkerSettings = {};
-  if (typeof agentConfig.model === "string") initConfigSettings.model = agentConfig.model;
-  if (typeof agentConfig.reasoningEffort === "number") initConfigSettings.reasoningEffort = agentConfig.reasoningEffort;
-  if (typeof agentConfig.sandboxMode === "number") initConfigSettings.sandboxMode = agentConfig.sandboxMode;
-  if (typeof agentConfig.networkAccessEnabled === "boolean") initConfigSettings.networkAccessEnabled = agentConfig.networkAccessEnabled;
-  if (typeof agentConfig.webSearchEnabled === "boolean") initConfigSettings.webSearchEnabled = agentConfig.webSearchEnabled;
-  if (typeof agentConfig.restrictedMode === "boolean") initConfigSettings.restrictedMode = agentConfig.restrictedMode;
+  if (stateArgs.model) initConfigSettings.model = stateArgs.model;
+  if (stateArgs.reasoningEffort !== undefined) initConfigSettings.reasoningEffort = stateArgs.reasoningEffort;
+  if (stateArgs.autonomyLevel !== undefined) initConfigSettings.autonomyLevel = stateArgs.autonomyLevel;
+  if (stateArgs.webSearchEnabled !== undefined) initConfigSettings.webSearchEnabled = stateArgs.webSearchEnabled;
   Object.assign(currentSettings, initConfigSettings);
   if (Object.keys(initConfigSettings).length > 0) {
     log(`Applied init config: ${JSON.stringify(initConfigSettings)}`);
@@ -448,8 +473,8 @@ async function main() {
     log(`Final settings: ${JSON.stringify(currentSettings)}`);
   }
 
-  // Validate required methods in restricted mode
-  if (currentSettings.restrictedMode) {
+  // Validate required methods in restricted mode (from channel config)
+  if (restrictedMode) {
     await validateRestrictedMode(client, log);
   }
 
@@ -489,7 +514,7 @@ async function main() {
       }
       // Extract attachments from the event
       const attachments = (event as { attachments?: Attachment[] }).attachments;
-      await handleUserMessage(client, event, prompt, workingDirectory, attachments);
+      await handleUserMessage(client, event, prompt, workingDirectory, restrictedMode ?? false, attachments);
     }
   }
 }
@@ -499,6 +524,7 @@ async function handleUserMessage(
   incoming: IncomingNewMessage,
   prompt: string,
   workingDirectory: string | undefined,
+  isRestrictedMode: boolean,
   attachments?: Attachment[]
 ) {
   log(`Received message: ${incoming.content}`);
@@ -520,9 +546,6 @@ async function handleUserMessage(
   const promptContent = imageAttachments.length > 0
     ? buildOpenAIContents(prompt, imageAttachments)
     : prompt;
-
-  // Determine if we're in restricted mode
-  const isRestrictedMode = currentSettings.restrictedMode === true;
 
   // Create tools from other pubsub participants
   const { definitions: toolDefs, execute: executeTool } = createToolsForAgentSDK(client, {
@@ -668,17 +691,18 @@ async function handleUserMessage(
 
     // Build thread options with user settings
     const reasoningEffort = getReasoningEffort(currentSettings.reasoningEffort);
+    // Derive sandbox mode from autonomy level
     // In restricted mode, force sandbox to read-only (Codex uses MCP exclusively for tools)
     const sandboxMode = isRestrictedMode
       ? "read-only"
-      : getSandboxMode(currentSettings.sandboxMode);
+      : getSandboxModeFromAutonomy(currentSettings.autonomyLevel);
     const threadOptions = {
       skipGitRepoCheck: true,
       ...(workingDirectory && { cwd: workingDirectory }),
       ...(currentSettings.model && { model: currentSettings.model }),
       ...(reasoningEffort && { modelReasoningEffort: reasoningEffort }),
-      ...(sandboxMode && { sandboxMode }),
-      ...(currentSettings.networkAccessEnabled !== undefined && { networkAccessEnabled: currentSettings.networkAccessEnabled }),
+      sandboxMode,
+      networkAccessEnabled: true, // Always enable network access
       ...(currentSettings.webSearchEnabled !== undefined && { webSearchEnabled: currentSettings.webSearchEnabled }),
     };
 

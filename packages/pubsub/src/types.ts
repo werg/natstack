@@ -3,6 +3,15 @@
  */
 
 /**
+ * Channel configuration persisted with the channel.
+ * Set when the channel is created, readable by all participants.
+ */
+export interface ChannelConfig {
+  workingDirectory?: string;
+  restrictedMode?: boolean;
+}
+
+/**
  * Input for sending a binary attachment (ID assigned by server).
  * Use this when publishing messages with attachments.
  */
@@ -141,6 +150,8 @@ export interface ConnectOptions<T extends ParticipantMetadata = ParticipantMetad
   channel: string;
   /** Context ID for the channel (required for first connection, optional for joiners) */
   contextId?: string;
+  /** Channel config to set when creating a new channel (ignored for existing channels) */
+  channelConfig?: ChannelConfig;
   /** Replay messages with id > sinceId */
   sinceId?: number;
   /** Enable auto-reconnection. Pass true for defaults, or a config object. Default: false */
