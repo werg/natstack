@@ -150,9 +150,7 @@ interface AppChildSpec {
   source: string;                // Workspace-relative path to source
   env?: Record<string, string>;  // Environment variables
   sourcemap?: boolean;           // Emit inline sourcemaps (default: true)
-  branch?: string;           // Git branch to track
-  commit?: string;           // Specific commit hash
-  tag?: string;              // Git tag to pin to
+  gitRef?: string;               // Git ref (branch, tag, or commit SHA)
   repoArgs?: Record<string, RepoArgSpec>; // Must match child's manifest repoArgs
 }
 ```
@@ -165,9 +163,7 @@ interface WorkerChildSpec {
   source: string;                // Workspace-relative path to source
   env?: Record<string, string>;  // Environment variables
   unsafe?: boolean | string;     // Run with Node.js APIs; string = custom fs root path
-  branch?: string;               // Git branch to track
-  commit?: string;               // Specific commit hash
-  tag?: string;                  // Git tag to pin to
+  gitRef?: string;               // Git ref (branch, tag, or commit SHA)
   repoArgs?: Record<string, RepoArgSpec>; // Must match child's manifest repoArgs
 }
 ```
@@ -253,7 +249,7 @@ Access git configuration:
 
 ```typescript
 if (!gitConfig) throw new Error("Git config not available");
-// { serverUrl, token, sourceRepo, resolvedRepoArgs, branch?, commit?, tag? }
+// { serverUrl, token, sourceRepo, resolvedRepoArgs, gitRef? }
 ```
 
 ### Auto-Bootstrap for repoArgs

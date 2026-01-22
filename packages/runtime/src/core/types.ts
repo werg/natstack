@@ -80,17 +80,8 @@ export interface CreateChildOptions {
    * - string: use that specific context ID
    */
   contextId?: boolean | string;
-  /** If true, panel can be closed and is not persisted to SQLite */
-  ephemeral?: boolean;
   /** If true, immediately focus the new panel after creation (only applies to app panels) */
   focus?: boolean;
-
-  /** Legacy git fields (still supported programmatically). Prefer `gitRef`. */
-  branch?: string;
-  /** @deprecated Prefer `gitRef`. */
-  commit?: string;
-  /** @deprecated Prefer `gitRef`. */
-  tag?: string;
 }
 
 export interface ChildCreationResult {
@@ -142,24 +133,13 @@ export interface ChildSpecCommon extends ChildSpecBase {
   type: "app" | "worker" | "browser";
 }
 
-/**
- * Git-related fields for app and worker specs.
- */
-interface GitVersionFields {
-  /** Branch name to track */
-  branch?: string;
-  /** Specific commit hash to pin to */
-  commit?: string;
-  /** Tag to pin to */
-  tag?: string;
-}
 
 /**
  * Spec for creating an app panel child.
  * Name is optional - if omitted, context is auto-derived from tree path.
  * Use `contextId: "some-id"` to share storage across panels, or `contextId: true` for isolation.
  */
-export interface AppChildSpec extends ChildSpecBase, GitVersionFields {
+export interface AppChildSpec extends ChildSpecBase {
   type: "app";
   /** Emit inline sourcemaps (default: true). Set to false to omit sourcemaps. */
   sourcemap?: boolean;
@@ -182,7 +162,7 @@ export interface AppChildSpec extends ChildSpecBase, GitVersionFields {
  * Spec for creating a worker child.
  * Name is optional - if omitted, a random ID is generated.
  */
-export interface WorkerChildSpec extends ChildSpecBase, GitVersionFields {
+export interface WorkerChildSpec extends ChildSpecBase {
   type: "worker";
   /**
    * Run worker with full Node.js API access instead of browser sandbox.
@@ -221,12 +201,8 @@ export interface GitConfig {
   token: string;
   /** This endpoint's source repo path (e.g., "panels/my-panel") */
   sourceRepo: string;
-  /** Optional branch override */
-  branch?: string;
-  /** Optional commit pin */
-  commit?: string;
-  /** Optional tag pin */
-  tag?: string;
+  /** Git ref (branch, tag, or commit SHA) */
+  gitRef?: string;
   /** Resolved repo args (name -> spec) provided by parent at createChild time */
   resolvedRepoArgs: Record<string, RepoArgSpec>;
 }
@@ -382,22 +358,11 @@ export interface ChildHandle<
   /**
    * Close this child panel and remove it from the tree.
    * All children are closed recursively.
-   * - Ephemeral panels are deleted from memory
-   * - Stored panels are archived (soft delete) in the database
+   * Panels are archived (soft delete) in the database.
    */
   close(): Promise<void>;
 }
 
-/**
- * Handle for an ephemeral child panel.
- * @deprecated All panels can now be closed, so this is equivalent to ChildHandle.
- * Kept for backwards compatibility.
- */
-export type EphemeralChildHandle<
-  T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
-  E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
-  EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
-> = ChildHandle<T, E, EmitE>;
 
 /**
  * Callback for child lifecycle events.

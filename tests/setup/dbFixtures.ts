@@ -33,7 +33,6 @@ export interface TestPanelOptions {
   position?: number;
   env?: Record<string, string>;
   contextId?: string;
-  ephemeral?: boolean;
 }
 
 /**
@@ -51,9 +50,6 @@ function createTestSnapshot(options: TestPanelOptions): PanelSnapshot {
   }
   if (options.contextId) {
     snapshot.options.contextId = options.contextId;
-  }
-  if (options.ephemeral) {
-    snapshot.options.ephemeral = true;
   }
 
   return snapshot;
@@ -189,7 +185,6 @@ export function createSinglePanelFixture(
     position: options?.position ?? 0,
     env: options?.env,
     contextId: options?.contextId,
-    ephemeral: options?.ephemeral,
   });
   return id;
 }

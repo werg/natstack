@@ -564,6 +564,18 @@ export class ViewManager {
   }
 
   /**
+   * Get WebContents for a view by ID.
+   * Returns null if view doesn't exist or is destroyed.
+   */
+  getViewContents(id: string): WebContents | null {
+    const managed = this.views.get(id);
+    if (!managed || managed.view.webContents.isDestroyed()) {
+      return null;
+    }
+    return managed.view.webContents;
+  }
+
+  /**
    * Get view info for debugging.
    */
   getViewInfo(id: string): { type: string; visible: boolean; bounds: ViewBounds } | null {

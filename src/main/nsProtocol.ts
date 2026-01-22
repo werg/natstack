@@ -39,8 +39,9 @@ export interface ParsedNsUrl {
   contextId?: boolean | string;
   repoArgs?: Record<string, RepoArgSpec>;
   env?: Record<string, string>;
+  /** State arguments for the panel (validated against manifest schema in panelManager) */
+  stateArgs?: Record<string, unknown>;
   name?: string;
-  ephemeral?: boolean;
   /** If true, immediately focus the new panel after creation (only applies to action=child on app panels) */
   focus?: boolean;
   /** Unsafe mode configuration (true, false, or path string) */
@@ -75,7 +76,6 @@ export function parseNsUrl(url: string): ParsedNsUrl {
 
   const gitRef = parsed.searchParams.get("gitRef") ?? undefined;
   const name = parsed.searchParams.get("name") ?? undefined;
-  const ephemeral = parsed.searchParams.get("ephemeral") === "true" || undefined;
   const focus = parsed.searchParams.get("focus") === "true" || undefined;
 
   // Parse contextId: "true" -> true (new unique context), string -> that context ID
@@ -145,7 +145,18 @@ export function parseNsUrl(url: string): ParsedNsUrl {
     }
   }
 
-  return { source, action, gitRef, contextId, repoArgs, env, name, ephemeral, focus, unsafe };
+  // Parse stateArgs (validation against schema happens in panelManager)
+  let stateArgs: Record<string, unknown> | undefined;
+  const stateArgsParam = parsed.searchParams.get("stateArgs");
+  if (stateArgsParam) {
+    try {
+      stateArgs = JSON.parse(stateArgsParam);
+    } catch {
+      throw new Error("Invalid stateArgs JSON in URL");
+    }
+  }
+
+  return { source, action, gitRef, contextId, repoArgs, env, stateArgs, name, focus, unsafe };
 }
 
 export interface BuildNsUrlOptions {
@@ -159,8 +170,9 @@ export interface BuildNsUrlOptions {
   contextId?: boolean | string;
   repoArgs?: Record<string, RepoArgSpec>;
   env?: Record<string, string>;
+  /** State arguments for the panel (validated against manifest schema in panelManager) */
+  stateArgs?: Record<string, unknown>;
   name?: string;
-  ephemeral?: boolean;
   /** If true, immediately focus the new panel after creation (only applies to action=child on app panels) */
   focus?: boolean;
   /** Unsafe mode configuration (true, false, or path string) */
@@ -190,11 +202,11 @@ export function buildNsUrl(source: string, options?: BuildNsUrlOptions): string 
   if (options?.env) {
     searchParams.set("env", JSON.stringify(options.env));
   }
+  if (options?.stateArgs) {
+    searchParams.set("stateArgs", JSON.stringify(options.stateArgs));
+  }
   if (options?.name) {
     searchParams.set("name", options.name);
-  }
-  if (options?.ephemeral) {
-    searchParams.set("ephemeral", "true");
   }
   if (options?.focus) {
     searchParams.set("focus", "true");

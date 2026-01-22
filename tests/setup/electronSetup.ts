@@ -261,7 +261,6 @@ export async function createPanel(
   options?: {
     name?: string;
     env?: Record<string, string>;
-    ephemeral?: boolean;
     focus?: boolean;
   }
 ): Promise<{ id: string; type: string; title: string }> {

@@ -261,6 +261,7 @@ async function main() {
 
   // Connect to agentic messaging channel
   // contextId is obtained automatically from the server's ready message
+  log(`Connecting to channel ${channelName} at ${pubsubConfig.serverUrl}...`);
   const client = await connect<ChatParticipantMetadata>({
     serverUrl: pubsubConfig.serverUrl,
     token: pubsubConfig.token,

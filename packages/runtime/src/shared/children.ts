@@ -18,7 +18,8 @@ export function createChildManager(options: {
   bridge: {
     createChild(
       source: string,
-      options?: Omit<CreateChildOptions, "eventSchemas">
+      options?: Omit<CreateChildOptions, "eventSchemas">,
+      stateArgs?: Record<string, unknown>
     ): Promise<ChildCreationResult>;
     createBrowserChild(url: string): Promise<ChildCreationResult>;
     closeChild(childId: string): Promise<void>;
@@ -63,10 +64,11 @@ export function createChildManager(options: {
     EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
   >(
     source: string,
-    options?: CreateChildOptions
+    options?: CreateChildOptions,
+    stateArgs?: Record<string, unknown>
   ): Promise<ChildHandle<T, E, EmitE>> {
     const { eventSchemas, ...bridgeOptions } = options ?? {};
-    const result = await bridge.createChild(source, bridgeOptions);
+    const result = await bridge.createChild(source, bridgeOptions, stateArgs);
 
     const name = options?.name ?? result.id.split("/").pop() ?? result.id;
     const title = result.title ?? name;

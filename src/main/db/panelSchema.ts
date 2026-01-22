@@ -109,7 +109,6 @@ CREATE TABLE IF NOT EXISTS panels (
     updated_at INTEGER NOT NULL,
 
     -- Single source of truth: JSON array of PanelSnapshot
-    -- ephemeral is per-snapshot in options, not a separate column
     history TEXT NOT NULL,  -- Never empty - must have at least one snapshot
     history_index INTEGER NOT NULL DEFAULT 0,
 
@@ -119,8 +118,6 @@ CREATE TABLE IF NOT EXISTS panels (
     -- Soft delete: timestamp when archived, NULL = active
     archived_at INTEGER DEFAULT NULL
 );
--- Note: Only non-ephemeral panels are persisted. Check current snapshot's
--- options.ephemeral before inserting/updating.
 
 CREATE INDEX IF NOT EXISTS idx_panels_parent ON panels(parent_id);
 CREATE INDEX IF NOT EXISTS idx_panels_workspace ON panels(workspace_id);

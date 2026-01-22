@@ -21,7 +21,7 @@ declare global {
       }
     | undefined;
   var __natstackContextId: string | undefined;
-  var __natstackEphemeral: boolean | undefined;
+  var __natstackStateArgs: Record<string, unknown> | undefined;
 }
 
 // =============================================================================
@@ -46,8 +46,8 @@ export const ARG_KIND = "--natstack-kind=";
 /** Argument prefix for context ID */
 export const ARG_CONTEXT_ID = "--natstack-context-id=";
 
-/** Argument prefix for ephemeral flag */
-export const ARG_EPHEMERAL = "--natstack-ephemeral=";
+/** Argument prefix for state args (base64 encoded JSON) */
+export const ARG_STATE_ARGS = "--natstack-state-args=";
 
 // =============================================================================
 // Environment variable keys
@@ -70,9 +70,7 @@ export interface GitConfig {
   serverUrl: string;
   token: string;
   sourceRepo: string;
-  branch?: string;
-  commit?: string;
-  tag?: string;
+  gitRef?: string;
   resolvedRepoArgs: Record<string, unknown>;
 }
 
@@ -92,7 +90,7 @@ export interface ParsedPreloadConfig {
   parentId: string | null;
   gitConfig: GitConfig | null;
   pubsubConfig: PubSubConfig | null;
-  ephemeral: boolean;
+  stateArgs: Record<string, unknown>;
 }
 
 export type NatstackKind = "panel" | "worker" | "shell";
@@ -135,9 +133,18 @@ export function parseContextId(): string {
   return arg ? (arg.split("=")[1] ?? "") : "";
 }
 
-export function parseEphemeral(): boolean {
-  const arg = process.argv.find((value) => value.startsWith(ARG_EPHEMERAL));
-  return arg?.split("=")[1] === "true";
+export function parseStateArgs(): Record<string, unknown> {
+  const arg = process.argv.find((value) => value.startsWith(ARG_STATE_ARGS));
+  if (!arg) return {};
+
+  const encoded = arg.slice(ARG_STATE_ARGS.length);
+  try {
+    const decoded = Buffer.from(encoded, "base64").toString("utf-8");
+    return JSON.parse(decoded) as Record<string, unknown>;
+  } catch (error) {
+    console.error("Failed to parse stateArgs payload", error);
+    return {};
+  }
 }
 
 export function parseEnvArg(): Record<string, string> {
@@ -206,7 +213,7 @@ export function parsePreloadConfig(): ParsedPreloadConfig {
     parentId,
     gitConfig: parseGitConfig(syntheticEnv),
     pubsubConfig: parsePubSubConfig(syntheticEnv),
-    ephemeral: parseEphemeral(),
+    stateArgs: parseStateArgs(),
   };
 }
 
@@ -341,7 +348,7 @@ export function setPreloadGlobals(
   g["__natstackGitConfig"] = config.gitConfig;
   g["__natstackPubSubConfig"] = config.pubsubConfig;
   g["__natstackEnv"] = config.syntheticEnv;
-  g["__natstackEphemeral"] = config.ephemeral;
+  g["__natstackStateArgs"] = config.stateArgs;
   g["__natstackTransport"] = transport;
 }
 
@@ -366,7 +373,7 @@ export function exposeGlobalsViaContextBridge(
   contextBridge.exposeInMainWorld("__natstackGitConfig", config.gitConfig);
   contextBridge.exposeInMainWorld("__natstackPubSubConfig", config.pubsubConfig);
   contextBridge.exposeInMainWorld("__natstackEnv", config.syntheticEnv);
-  contextBridge.exposeInMainWorld("__natstackEphemeral", config.ephemeral);
+  contextBridge.exposeInMainWorld("__natstackStateArgs", config.stateArgs);
   contextBridge.exposeInMainWorld("__natstackTransport", transport);
 }
 
@@ -386,7 +393,7 @@ export function setUnsafeGlobals(
   globalThis.__natstackGitConfig = config.gitConfig as unknown as typeof globalThis.__natstackGitConfig;
   globalThis.__natstackPubSubConfig = config.pubsubConfig as unknown as typeof globalThis.__natstackPubSubConfig;
   globalThis.__natstackEnv = config.syntheticEnv;
-  globalThis.__natstackEphemeral = config.ephemeral;
+  globalThis.__natstackStateArgs = config.stateArgs;
   globalThis.__natstackTransport = transport;
 
   // Set filesystem scope root for unsafe panels/workers
@@ -401,6 +408,19 @@ export function setUnsafeGlobals(
 
   // Merge synthetic env with real process.env
   Object.assign(process.env, config.syntheticEnv);
+}
+
+/**
+ * Set up IPC listener for stateArgs updates from main process.
+ * Called by setStateArgs() in runtime, broadcasts to all listeners.
+ */
+export function setupStateArgsListener(): void {
+  ipcRenderer.on("stateArgs:updated", (_event, newArgs: Record<string, unknown>) => {
+    // Update the global
+    globalThis.__natstackStateArgs = newArgs;
+    // Dispatch custom event for reactive listeners (useStateArgs hook)
+    window.dispatchEvent(new CustomEvent("natstack:stateArgsChanged", { detail: newArgs }));
+  });
 }
 
 // =============================================================================
@@ -419,6 +439,7 @@ export function initSafePreload(contextBridge: Electron.ContextBridge): void {
   setPreloadGlobals(config, transport);
   setupDevToolsShortcut(config);
   setupHistoryIntegration(config);
+  setupStateArgsListener();
 }
 
 /**
@@ -432,4 +453,5 @@ export function initUnsafePreload(): void {
   setUnsafeGlobals(config, transport);
   setupDevToolsShortcut(config);
   setupHistoryIntegration(config);
+  setupStateArgsListener();
 }

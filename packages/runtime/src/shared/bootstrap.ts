@@ -107,9 +107,7 @@ export function runBootstrap(options: RunBootstrapOptions): Promise<BootstrapRes
         serverUrl: gitConfig.serverUrl,
         token: gitConfig.token,
         sourceRepo: gitConfig.sourceRepo,
-        branch: gitConfig.branch,
-        commit: gitConfig.commit,
-        tag: gitConfig.tag,
+        gitRef: gitConfig.gitRef,
         repoArgs: gitConfig.resolvedRepoArgs as Record<string, string>,
       });
 

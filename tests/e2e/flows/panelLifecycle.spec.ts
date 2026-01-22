@@ -116,8 +116,7 @@ test.describe("Panel Persistence", () => {
     // Get panel tree after restart
     const restoredTree = await getPanelTree(testApp.app);
 
-    // Panel count should match (non-ephemeral panels persist)
-    // Note: This may need adjustment based on which panels are ephemeral
+    // All panels persist across restarts
     expect(restoredTree.length).toBeGreaterThanOrEqual(0);
 
     await testApp.cleanup();

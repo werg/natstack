@@ -9,14 +9,10 @@ export interface BootstrapConfig {
   serverUrl: string;
   /** Auth token for git operations */
   token: string;
- /** Panel's source repo path (e.g., "panels/my-panel") */
- sourceRepo: string;
-  /** Optional branch override for the source repo */
-  branch?: string;
-  /** Optional commit pin for the source repo */
-  commit?: string;
-  /** Optional tag pin for the source repo */
-  tag?: string;
+  /** Panel's source repo path (e.g., "panels/my-panel") */
+  sourceRepo: string;
+  /** Git ref (branch, tag, or commit SHA) for the source repo */
+  gitRef?: string;
   /** Resolved repo args (name -> spec) provided by parent at createChild time */
   repoArgs?: Record<string, RepoArgSpec>;
   /** Path in OPFS for panel source (default: "/src") */
@@ -180,8 +176,8 @@ export async function bootstrap(
   const git = new GitClient(fs, gitOptions);
 
   try {
-    const requestedSourceRef = config.commit ?? config.tag ?? config.branch;
-    const isPinnedCommit = !!config.commit || isCommitHash(requestedSourceRef);
+    const requestedSourceRef = config.gitRef;
+    const isPinnedCommit = isCommitHash(requestedSourceRef);
 
     // Step 1: Clone or pull panel source
     const sourceExists = await git.isRepo(sourcePath);

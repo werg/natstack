@@ -1,13 +1,13 @@
 /**
  * Agentic Chat Panel
  *
- * Full chat interface that connects to a channel via CHANNEL_NAME env arg.
+ * Full chat interface that connects to a channel via stateArgs.channelName.
  * Provides file, git, search, and eval tools to agents.
  */
 
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { Flex, Text, Button, Card } from "@radix-ui/themes";
-import { pubsubConfig, id as panelClientId, buildNsLink, createChild } from "@natstack/runtime";
+import { pubsubConfig, id as panelClientId, buildNsLink, createChild, useStateArgs } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
 import { z } from "zod";
 import {
@@ -224,10 +224,15 @@ function dispatchAgenticEvent(
   }
 }
 
+/** Type for chat panel state args */
+interface ChatStateArgs {
+  channelName: string;
+}
+
 export default function AgenticChat() {
   const theme = usePanelTheme();
   const workspaceRoot = process.env["NATSTACK_WORKSPACE"]?.trim();
-  const channelName = process.env["CHANNEL_NAME"]?.trim();
+  const { channelName } = useStateArgs<ChatStateArgs>();
 
   const selfIdRef = useRef<string | null>(null);
   // Track if we've already connected to prevent reconnection loops
@@ -754,15 +759,17 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
     window.location.href = launcherUrl;
   }, []);
 
-  // Launch chat-launcher as ephemeral child to add agents to current channel
+  // Launch chat-launcher as child to add agents to current channel
   const handleAddAgent = useCallback(async () => {
     if (!channelName) return;
-    await createChild("panels/chat-launcher", {
-      name: "add-agent",
-      ephemeral: true,
-      focus: true,
-      env: { CHANNEL_NAME: channelName },
-    });
+    await createChild(
+      "panels/chat-launcher",
+      {
+        name: "add-agent",
+        focus: true,
+      },
+      { channelName }  // Pass via stateArgs
+    );
   }, [channelName]);
 
   const reset = useCallback(() => {
@@ -854,7 +861,7 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
               Missing Channel Name
             </Text>
             <Text size="2" color="gray" style={{ textAlign: "center" }}>
-              This panel requires a CHANNEL_NAME environment variable to connect to a chat channel.
+              This panel requires a channelName state arg to connect to a chat channel.
             </Text>
             <Button onClick={handleNewConversation}>
               Start New Conversation

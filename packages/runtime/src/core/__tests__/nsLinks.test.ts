@@ -39,11 +39,6 @@ describe("nsLinks", () => {
       expect(url).toContain("panels/editor");
     });
 
-    it("builds URL with ephemeral flag", () => {
-      const url = buildNsLink("panels/editor", { ephemeral: true });
-      expect(url).toBe("ns:///panels/editor?ephemeral=true");
-    });
-
     it("builds URL with focus=true", () => {
       const url = buildNsLink("panels/editor", { focus: true });
       expect(url).toBe("ns:///panels/editor?focus=true");
@@ -65,14 +60,12 @@ describe("nsLinks", () => {
         contextId: "abc",
         gitRef: "main",
         repoArgs: { workspace: "repos/app" },
-        ephemeral: true,
         focus: true,
       });
       expect(url).toContain("action=child");
       expect(url).toContain("contextId=abc");
       expect(url).toContain("gitRef=main");
       expect(url).toContain("repoArgs=");
-      expect(url).toContain("ephemeral=true");
       expect(url).toContain("focus=true");
     });
 

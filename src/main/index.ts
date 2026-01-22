@@ -626,6 +626,15 @@ app.on("will-quit", (event) => {
     return;
   }
 
+  // Run panel cleanup (archive childless shell panels)
+  if (panelManager) {
+    try {
+      panelManager.runShutdownCleanup();
+    } catch (e) {
+      console.error("[App] Failed to run shutdown cleanup:", e);
+    }
+  }
+
   const hasResourcesToClean = gitServer || cdpServer || pubsubServer || verdaccioServer;
   if (hasResourcesToClean) {
     isCleaningUp = true;

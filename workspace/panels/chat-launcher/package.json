@@ -7,6 +7,15 @@
     "type": "app",
     "title": "New Chat",
     "entry": "index.tsx",
+    "stateArgs": {
+      "type": "object",
+      "properties": {
+        "channelName": {
+          "type": "string",
+          "description": "Existing channel to add agents to (channel modification mode)"
+        }
+      }
+    },
     "exposeModules": [
       "react",
       "react/jsx-runtime",

@@ -679,9 +679,11 @@ export class PubSubServer {
     // Validate token
     const clientId = this.tokenValidator.validateToken(token);
     if (!clientId) {
+      console.warn(`[PubSubServer] Rejected connection - invalid token`);
       ws.close(4001, "unauthorized");
       return;
     }
+    console.log(`[PubSubServer] Accepted connection from ${clientId}`);
 
     if (!channel) {
       ws.close(4002, "channel required");

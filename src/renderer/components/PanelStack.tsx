@@ -22,6 +22,7 @@ import { useNavigation } from "./NavigationContext";
 import { LazyPanelTreeSidebar } from "./LazyPanelTreeSidebar";
 import { DirtyRepoView } from "./DirtyRepoView";
 import { GitInitView } from "./GitInitView";
+import { useShellEvent } from "../shell/useShellEvent";
 
 interface PanelStackProps {
   onTitleChange?: (title: string) => void;
@@ -188,6 +189,11 @@ export function PanelStack({
     if (!onRegisterNavigateToId) return;
     onRegisterNavigateToId(navigateToPanelId);
   }, [onRegisterNavigateToId, navigateToPanelId]);
+
+  // Listen for navigate-to-panel events from main process (e.g., when new panels are created with focus: true)
+  useShellEvent("navigate-to-panel", useCallback(({ panelId }) => {
+    navigateToPanelId(panelId);
+  }, [navigateToPanelId]));
 
   // Handle panel context menu actions (reload, unload)
   const handlePanelAction = useCallback(

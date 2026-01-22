@@ -16,7 +16,8 @@ export type EventName =
   | "open-workspace-chooser"
   | "toggle-panel-devtools"
   | "panel-initialization-error"
-  | "navigate-about";
+  | "navigate-about"
+  | "navigate-to-panel";
 
 /**
  * Event payloads for type safety.
@@ -28,6 +29,7 @@ export interface EventPayloads {
   "toggle-panel-devtools": void;
   "panel-initialization-error": { path: string; error: string };
   "navigate-about": { page: ShellPage };
+  "navigate-to-panel": { panelId: string };
 }
 
 /**
@@ -40,6 +42,7 @@ export const VALID_EVENT_NAMES: EventName[] = [
   "toggle-panel-devtools",
   "panel-initialization-error",
   "navigate-about",
+  "navigate-to-panel",
 ];
 
 /**

@@ -125,16 +125,6 @@ ${FS_INTERFACES}
     close(): Promise<void>;
   }
 
-  /**
-   * Handle for an ephemeral child panel.
-   * @deprecated All panels can now be closed, so this is equivalent to ChildHandle.
-   */
-  type EphemeralChildHandle<
-    T extends ExposedMethods = ExposedMethods,
-    E extends RpcEventMap = RpcEventMap,
-    EmitE extends RpcEventMap = RpcEventMap
-  > = ChildHandle<T, E, EmitE>;
-
   /** Handle to the parent panel */
   export const parent: ParentHandle;
 
@@ -172,7 +162,6 @@ ${FS_INTERFACES}
     eventSchemas?: EventSchemaMap;
     contextId?: string;
     newContext?: boolean;
-    ephemeral?: boolean;
   }
 
   /** Create a new child panel/worker */
@@ -180,7 +169,7 @@ ${FS_INTERFACES}
     T extends ExposedMethods = ExposedMethods,
     E extends RpcEventMap = RpcEventMap,
     EmitE extends RpcEventMap = RpcEventMap
-  >(source: string, options?: CreateChildOptions): Promise<ChildHandle<T, E, EmitE>>;
+  >(source: string, options?: CreateChildOptions, stateArgs?: Record<string, unknown>): Promise<ChildHandle<T, E, EmitE>>;
 
   /** Create a browser child panel */
   export function createBrowserChild<
@@ -292,9 +281,8 @@ ${FS_INTERFACES}
     serverUrl: string;
     token: string;
     sourceRepo: string;
-    branch?: string;
-    commit?: string;
-    tag?: string;
+    /** Git ref (branch, tag, or commit SHA) */
+    gitRef?: string;
     resolvedRepoArgs: Record<string, RepoArgSpec>;
   }
 
@@ -462,7 +450,6 @@ ${FS_INTERFACES}
     env?: Record<string, string>;
     name?: string;
     newContext?: boolean;
-    ephemeral?: boolean;
   }
 
   /** Build ns:// URLs for panel navigation */

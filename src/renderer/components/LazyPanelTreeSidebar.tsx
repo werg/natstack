@@ -12,7 +12,6 @@ import { useState, useCallback, useEffect, useMemo, useRef, type CSSProperties }
 import {
   CaretRightIcon,
   DrawingPinFilledIcon,
-  LightningBoltIcon,
   PlusIcon,
 } from "@radix-ui/react-icons";
 import {
@@ -42,7 +41,6 @@ import { menu, panel } from "../shell/client.js";
 const EXPAND_BUTTON_SIZE = 12;
 const BUILD_INDICATOR_SIZE = 6;
 const PIN_ICON_SIZE = 10;
-const EPHEMERAL_ICON_SIZE = 10;
 
 /** Delay before auto-expanding collapsed item during drag hover (ms) */
 const AUTO_EXPAND_DELAY_MS = 600;
@@ -341,18 +339,6 @@ function SortableTreeItem({
               height: BUILD_INDICATOR_SIZE,
               borderRadius: "50%",
               backgroundColor: buildStateColor,
-              flexShrink: 0,
-            }}
-          />
-        )}
-
-        {/* Ephemeral icon */}
-        {panel.ephemeral && (
-          <LightningBoltIcon
-            style={{
-              color: "var(--cyan-9)",
-              width: EPHEMERAL_ICON_SIZE,
-              height: EPHEMERAL_ICON_SIZE,
               flexShrink: 0,
             }}
           />

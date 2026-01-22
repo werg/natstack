@@ -12,9 +12,8 @@ import { getGitTempBuildsDirectory } from "./build/artifacts.js";
 const execFileAsync = promisify(execFile);
 
 export interface VersionSpec {
-  branch?: string;
-  commit?: string;
-  tag?: string;
+  /** Git ref (branch name, tag, or commit SHA) */
+  gitRef?: string;
 }
 
 export interface ProvisionResult {
@@ -68,7 +67,7 @@ export async function provisionPanelVersion(
   const currentCommit = await getGitCommit(absolutePanelPath);
 
   // No version specifier - use working directory as-is
-  if (!version || (!version.branch && !version.commit && !version.tag)) {
+  if (!version?.gitRef) {
     onProgress?.({ stage: "ready", message: "Using current working directory" });
     return {
       sourcePath: absolutePanelPath,
@@ -80,16 +79,7 @@ export async function provisionPanelVersion(
   // Resolve the target ref
   onProgress?.({ stage: "resolving", message: "Resolving version..." });
 
-  let targetRef: string;
-  if (version.commit) {
-    targetRef = version.commit;
-  } else if (version.tag) {
-    targetRef = `tags/${version.tag}`;
-  } else if (version.branch) {
-    targetRef = version.branch;
-  } else {
-    throw new Error("No version specifier provided");
-  }
+  const targetRef = version.gitRef;
 
   // Resolve to actual commit SHA
   const resolvedCommit = await resolveRef(absolutePanelPath, targetRef);
@@ -149,7 +139,7 @@ export async function resolveTargetCommit(
   }
 
   // No version specifier - use current HEAD, but only if worktree is clean
-  if (!version || (!version.branch && !version.commit && !version.tag)) {
+  if (!version?.gitRef) {
     // Check for dirty state - return null to skip cache and force full provision
     // which will then error with a proper message via assertCleanWorktree
     const isDirty = await isWorktreeDirty(absolutePanelPath);
@@ -160,18 +150,7 @@ export async function resolveTargetCommit(
   }
 
   // Resolve the target ref to a commit SHA
-  let targetRef: string;
-  if (version.commit) {
-    targetRef = version.commit;
-  } else if (version.tag) {
-    targetRef = `tags/${version.tag}`;
-  } else if (version.branch) {
-    targetRef = version.branch;
-  } else {
-    return null;
-  }
-
-  return resolveRef(absolutePanelPath, targetRef);
+  return resolveRef(absolutePanelPath, version.gitRef);
 }
 
 /**

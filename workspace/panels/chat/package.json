@@ -7,9 +7,16 @@
     "type": "app",
     "title": "Agentic Chat",
     "entry": "index.tsx",
-    "envArgs": [
-      { "name": "CHANNEL_NAME", "description": "Channel to connect to", "required": true }
-    ],
+    "stateArgs": {
+      "type": "object",
+      "properties": {
+        "channelName": {
+          "type": "string",
+          "description": "Channel to connect to"
+        }
+      },
+      "required": ["channelName"]
+    },
     "exposeModules": [
       "react",
       "react/jsx-runtime",

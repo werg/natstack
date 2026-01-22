@@ -6,7 +6,7 @@
  */
 
 import type { CreateChildOptions, RepoArgSpec } from "@natstack/runtime";
-import type { Panel, PanelSnapshot, PanelType, ShellPage, PanelManifest } from "../ipc/types.js";
+import type { Panel, PanelSnapshot, PanelType, ShellPage, PanelManifest, StateArgsValue } from "../ipc/types.js";
 
 /**
  * Get the current snapshot for a panel.
@@ -74,34 +74,6 @@ export function getPanelUnsafe(panel: Panel): boolean | string | undefined {
  */
 export function getPanelSourcemap(panel: Panel): boolean | undefined {
   return getPanelOptions(panel).sourcemap;
-}
-
-/**
- * Get the branch from the current snapshot (legacy).
- */
-export function getPanelBranch(panel: Panel): string | undefined {
-  return getPanelOptions(panel).branch;
-}
-
-/**
- * Get the commit from the current snapshot (legacy).
- */
-export function getPanelCommit(panel: Panel): string | undefined {
-  return getPanelOptions(panel).commit;
-}
-
-/**
- * Get the tag from the current snapshot (legacy).
- */
-export function getPanelTag(panel: Panel): string | undefined {
-  return getPanelOptions(panel).tag;
-}
-
-/**
- * Check if a panel is ephemeral (not persisted).
- */
-export function isPanelEphemeral(panel: Panel): boolean {
-  return getPanelOptions(panel).ephemeral ?? false;
 }
 
 /**
@@ -182,14 +154,20 @@ export function getPushState(panel: Panel): { state: unknown; path: string } | u
 }
 
 /**
+ * Get the state args for a panel from the current snapshot.
+ * Returns undefined if not set.
+ */
+export function getPanelStateArgs(panel: Panel): StateArgsValue | undefined {
+  const snapshot = getCurrentSnapshot(panel);
+  return snapshot.stateArgs;
+}
+
+/**
  * Options that are source-scoped (reset on navigation to different source).
  * These should NOT inherit across navigations.
  */
 export const SOURCE_SCOPED_OPTIONS = [
   "gitRef",
-  "branch",
-  "commit",
-  "tag",
   "repoArgs",
   "sourcemap",
 ] as const;
@@ -203,17 +181,19 @@ export const PANEL_SCOPED_OPTIONS = [
   "contextId",
   "unsafe",
   "name",
-  "ephemeral",
 ] as const;
 
 /**
- * Create a snapshot from source, type, and options.
+ * Create a snapshot from source, type, options, and stateArgs.
  * Resolves contextId=true to a UUID.
+ *
+ * @param stateArgs - Validated state args (separate from options for single source of truth)
  */
 export function createSnapshot(
   source: string,
   type: PanelType,
-  options?: CreateChildOptions
+  options?: CreateChildOptions,
+  stateArgs?: StateArgsValue
 ): PanelSnapshot {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { eventSchemas, focus, ...persistableOptions } = options ?? {};
@@ -228,19 +208,23 @@ export function createSnapshot(
     source,
     type,
     options: resolvedOptions,
-    createdAt: Date.now(),
+    stateArgs,
   };
 }
 
 /**
  * Create a new snapshot for navigation with proper option inheritance.
  * Panel-scoped options inherit, source-scoped options reset.
+ * stateArgs is NOT inherited - each navigation has its own stateArgs.
+ *
+ * @param stateArgs - Validated state args for this navigation (not inherited)
  */
 export function createNavigationSnapshot(
   panel: Panel,
   source: string,
   type: PanelType,
-  newOptions?: CreateChildOptions
+  newOptions?: CreateChildOptions,
+  stateArgs?: StateArgsValue
 ): PanelSnapshot {
   const prevOptions = getPanelOptions(panel);
 
@@ -250,15 +234,18 @@ export function createNavigationSnapshot(
     contextId: prevOptions.contextId,
     unsafe: prevOptions.unsafe,
     name: prevOptions.name,
-    ephemeral: prevOptions.ephemeral,
   };
 
   // Merge inherited options with new options (new options override)
+  // Filter out undefined values to preserve inheritance (undefined should not overwrite)
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { eventSchemas, focus, ...persistableNewOptions } = newOptions ?? {};
+  const definedNewOptions = Object.fromEntries(
+    Object.entries(persistableNewOptions).filter(([, v]) => v !== undefined)
+  );
   const mergedOptions = {
     ...inheritedOptions,
-    ...persistableNewOptions,
+    ...definedNewOptions,
   };
 
   // Resolve contextId=true
@@ -270,6 +257,6 @@ export function createNavigationSnapshot(
     source,
     type,
     options: mergedOptions,
-    createdAt: Date.now(),
+    stateArgs, // Not inherited - each navigation has its own stateArgs
   };
 }

@@ -3,11 +3,11 @@
  *
  * Lightweight panel for agent discovery, selection, and invitation.
  * In new chat mode: After successfully inviting agents, navigates to the chat panel.
- * In channel mode (CHANNEL_NAME set): After inviting agents, closes self (if ephemeral) or navigates back.
+ * In channel mode (channelName set): After inviting agents, closes self or navigates back.
  */
 
 import { useState, useCallback } from "react";
-import { pubsubConfig, buildNsLink, closeSelf, isEphemeral } from "@natstack/runtime";
+import { pubsubConfig, buildNsLink, closeSelf, getStateArgs } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
 import { Theme } from "@radix-ui/themes";
 import { useDiscovery } from "./hooks/useDiscovery";
@@ -15,14 +15,19 @@ import { AgentSetupPhase } from "./components/AgentSetupPhase";
 
 const generateChannelId = () => `chat-${crypto.randomUUID().slice(0, 8)}`;
 
-/** Get existing channel name from env if present (channel modification mode) */
-const existingChannelName = process.env["CHANNEL_NAME"]?.trim() || null;
+/** Type for chat-launcher state args */
+interface ChatLauncherStateArgs {
+  channelName?: string;
+}
+
+/** Get existing channel name from stateArgs if present (channel modification mode) */
+const existingChannelName = getStateArgs<ChatLauncherStateArgs>().channelName?.trim() || null;
 
 export default function ChatLauncher() {
   const theme = usePanelTheme();
   const workspaceRoot = process.env["NATSTACK_WORKSPACE"]?.trim();
 
-  // Channel modification mode: existing channel was passed via CHANNEL_NAME env var
+  // Channel modification mode: existing channel was passed via stateArgs
   const isChannelMode = existingChannelName !== null;
 
   const [channelId, setChannelId] = useState<string>(existingChannelName ?? generateChannelId);
@@ -110,9 +115,10 @@ export default function ChatLauncher() {
       const declined = results.filter((r) => r.response && !r.response.accepted);
       const errored = results.filter((r) => r.error !== null);
 
-      // Check if all invites failed
+      // Check if all invites failed - still navigate to chat panel
+      // The agent recovery system in chat will show build errors and allow retry
       if (succeeded.length === 0) {
-        // Build detailed error message
+        // Build detailed error message for logging
         const errorParts: string[] = [];
 
         if (errored.length > 0) {
@@ -133,9 +139,9 @@ export default function ChatLauncher() {
           errorParts.push(`Declined:\n${declineDetails}`);
         }
 
-        setStatus(errorParts.length > 0 ? errorParts.join("\n\n") : "All invites failed");
-        setIsStarting(false);
-        return;
+        console.warn(`[Chat Launcher] All invites failed, proceeding to chat anyway:\n${errorParts.join("\n\n")}`);
+        // Don't return - fall through to navigate to chat panel
+        // The chat panel's agent recovery UI will show any build errors
       }
 
       // Log partial failures but continue if at least one succeeded
@@ -148,27 +154,25 @@ export default function ChatLauncher() {
 
       // Post-invite behavior depends on mode
       if (isChannelMode) {
-        // Channel modification mode: try to close self if ephemeral, otherwise navigate back
-        if (isEphemeral) {
-          try {
-            await closeSelf();
-            return; // Panel closed, done
-          } catch (err) {
-            console.warn("[Chat Launcher] Failed to close self:", err);
-            // Fall through to navigation
-          }
+        // Channel modification mode: try to close self, otherwise navigate back
+        try {
+          await closeSelf();
+          return; // Panel closed, done
+        } catch (err) {
+          console.warn("[Chat Launcher] Failed to close self:", err);
+          // Fall through to navigation
         }
         // Fallback: navigate back to the chat panel
         const chatUrl = buildNsLink("panels/chat", {
           action: "navigate",
-          env: { CHANNEL_NAME: targetChannelId },
+          stateArgs: { channelName: targetChannelId },
         });
         window.location.href = chatUrl;
       } else {
         // New chat mode: navigate to the chat panel with the channel ID
         const chatUrl = buildNsLink("panels/chat", {
           action: "navigate",
-          env: { CHANNEL_NAME: targetChannelId },
+          stateArgs: { channelName: targetChannelId },
         });
         window.location.href = chatUrl;
       }

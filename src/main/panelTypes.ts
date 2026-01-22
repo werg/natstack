@@ -40,10 +40,6 @@ export {
   getPanelRepoArgs,
   getPanelUnsafe,
   getPanelSourcemap,
-  getPanelBranch,
-  getPanelCommit,
-  getPanelTag,
-  isPanelEphemeral,
   getPanelContextId,
   canGoBack,
   canGoForward,
@@ -51,6 +47,7 @@ export {
   getShellPage,
   getBrowserResolvedUrl,
   getPushState,
+  getPanelStateArgs,
   createSnapshot,
   createNavigationSnapshot,
 } from "../shared/panel/accessors.js";

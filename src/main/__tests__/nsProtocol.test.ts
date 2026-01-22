@@ -194,7 +194,6 @@ describe("ns:// protocol", () => {
         contextId: "context-123",
         gitRef: "feature/test",
         repoArgs: { workspace: { repo: "repos/app", ref: "v1.0.0" } },
-        ephemeral: true,
         focus: true,
       };
       const url = buildNsUrl("panels/editor", options);
@@ -204,7 +203,6 @@ describe("ns:// protocol", () => {
       expect(parsed.contextId).toBe("context-123");
       expect(parsed.gitRef).toBe("feature/test");
       expect(parsed.repoArgs).toEqual({ workspace: { repo: "repos/app", ref: "v1.0.0" } });
-      expect(parsed.ephemeral).toBe(true);
       expect(parsed.focus).toBe(true);
     });
   });

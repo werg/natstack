@@ -33,7 +33,6 @@ import {
   getPanelContextId,
   getPanelSource,
   getPanelOptions,
-  isPanelEphemeral,
   getCurrentSnapshot,
   getShellPage,
   getBrowserResolvedUrl,
@@ -78,9 +77,7 @@ export interface FullPanel {
   };
   page?: string;
   sourceRepo?: string;
-  branch?: string;
-  commit?: string;
-  tag?: string;
+  gitRef?: string;
   injectHostThemeVariables?: boolean;
   unsafe?: boolean | string;
   resolvedRepoArgs?: Record<string, unknown>;
@@ -132,7 +129,6 @@ export function flattenTree(
         childCount: panel.children.length,
         buildState: panel.artifacts?.buildState,
         position: index,
-        ephemeral: isPanelEphemeral(panel),
       },
       collapsed: isCollapsed,
     });
@@ -382,9 +378,7 @@ function panelToFull(panel: Panel, parentId: string | null, position: number): F
       ...base,
       path: getPanelSource(panel),
       sourceRepo: getPanelSource(panel),
-      branch: options.branch,
-      commit: options.commit,
-      tag: options.tag,
+      gitRef: options.gitRef,
       injectHostThemeVariables: true, // Default for app panels
       unsafe: options.unsafe,
       resolvedRepoArgs: options.repoArgs,
@@ -396,9 +390,7 @@ function panelToFull(panel: Panel, parentId: string | null, position: number): F
       ...base,
       path: getPanelSource(panel),
       sourceRepo: getPanelSource(panel),
-      branch: options.branch,
-      commit: options.commit,
-      tag: options.tag,
+      gitRef: options.gitRef,
       workerOptions: { unsafe: options.unsafe },
       resolvedRepoArgs: options.repoArgs,
     };

@@ -23,12 +23,12 @@ export interface BuildNsLinkOptions {
   gitRef?: string;
   /** Repo arguments required by the target manifest */
   repoArgs?: Record<string, RepoArgSpec>;
-  /** Environment variables to pass to the panel */
+  /** Environment variables to pass to the panel (system config) */
   env?: Record<string, string>;
+  /** State arguments for the panel (user state, validated against manifest schema) */
+  stateArgs?: Record<string, unknown>;
   /** Panel name/ID */
   name?: string;
-  /** If true, panel can be closed and is not persisted */
-  ephemeral?: boolean;
   /** If true, immediately focus the new panel after creation (only applies to action=child on app panels) */
   focus?: boolean;
 }
@@ -72,11 +72,11 @@ export function buildNsLink(source: string, options?: BuildNsLinkOptions): strin
   if (options?.env) {
     searchParams.set("env", JSON.stringify(options.env));
   }
+  if (options?.stateArgs) {
+    searchParams.set("stateArgs", JSON.stringify(options.stateArgs));
+  }
   if (options?.name) {
     searchParams.set("name", options.name);
-  }
-  if (options?.ephemeral) {
-    searchParams.set("ephemeral", "true");
   }
   if (options?.focus) {
     searchParams.set("focus", "true");

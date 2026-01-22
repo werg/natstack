@@ -24,8 +24,13 @@ export async function handleBridgeCall(
   switch (method) {
     case "createChild": {
       // Keep case name as "createChild" for backwards compatibility with panels calling bridge.createChild
-      const [source, options] = args as [string, CreateChildOptions | undefined];
-      return pm.createPanel(callerId, source, options);
+      // stateArgs is passed as a separate third parameter to enforce single source of truth
+      const [source, options, stateArgs] = args as [
+        string,
+        CreateChildOptions | undefined,
+        Record<string, unknown> | undefined
+      ];
+      return pm.createPanel(callerId, source, options, stateArgs);
     }
     case "createBrowserChild": {
       const [url] = args as [string];
@@ -99,6 +104,11 @@ export async function handleBridgeCall(
       // Used for agent worker recovery - chat panels can reload disconnected workers
       const [targetPanelId] = args as [string];
       return pm.ensurePanelLoaded(targetPanelId);
+    }
+    case "setStateArgs": {
+      // Allow any panel to update its own state args
+      const [updates] = args as [Record<string, unknown>];
+      return pm.handleSetStateArgs(callerId, updates);
     }
     default:
       throw new Error(`Unknown bridge method: ${method}`);

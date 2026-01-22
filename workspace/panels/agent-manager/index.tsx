@@ -360,7 +360,6 @@ export default function AgentPreferences() {
                 AGENT_CONFIG: JSON.stringify(agentConfig),
               };
 
-              // Don't use ephemeral: true - workers should persist for recovery support
               const handle = await createChild(workerSource, { name: workerName, env });
 
               const activeAgent: ActiveAgent = {

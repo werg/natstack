@@ -47,7 +47,6 @@ import {
   findParentAtDepth,
   type FlattenedPanel,
 } from "./PanelTreeContext.js";
-import { isPanelEphemeral } from "../../../shared/panel/accessors.js";
 
 // ============================================================================
 // Constants
@@ -323,13 +322,7 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
     // Can only indent if previous item exists and is at same or shallower depth
     if (!item || !prevItem || prevItem.depth < item.depth) return;
 
-    // Block indenting non-ephemeral panels into ephemeral panels
     const newParent = panelMap.get(prevItem.id);
-    // item.panel is a PanelSummary which has ephemeral directly
-    if (newParent && isPanelEphemeral(newParent) && !item.panel.ephemeral) {
-      return;
-    }
-
     const targetPosition = newParent ? newParent.children.length : 0;
 
     await panelService.movePanel({
@@ -436,21 +429,6 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
       // Get current parent of dragged item
       const draggedItem = flattenedItems.find((item) => item.id === draggedId);
       const currentParentId = draggedItem?.parentId ?? null;
-
-      // Block dropping non-ephemeral panels into ephemeral panels
-      if (newParentId) {
-        const newParentPanel = panelMap.get(newParentId);
-        const isNewParentEphemeral = newParentPanel ? isPanelEphemeral(newParentPanel) : false;
-        // draggedItem.panel is a PanelSummary which has ephemeral directly
-        const isDraggedEphemeral = draggedItem?.panel.ephemeral ?? false;
-
-        if (isNewParentEphemeral && !isDraggedEphemeral) {
-          console.warn(
-            `[PanelDndContext] Cannot drop non-ephemeral panel "${draggedId}" into ephemeral panel "${newParentId}"`
-          );
-          return;
-        }
-      }
 
       // Check if this is a "depth change in place" (same position, different parent)
       const isDepthChangeInPlace = active.id === over.id;

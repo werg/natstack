@@ -29,7 +29,6 @@ export interface TestApi {
     options?: {
       name?: string;
       env?: Record<string, string>;
-      ephemeral?: boolean;
       focus?: boolean;
     }
   ): Promise<{ id: string; type: SharedPanel.PanelType; title: string }>;

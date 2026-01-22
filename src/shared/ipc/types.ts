@@ -10,6 +10,7 @@ import type {
 } from "@natstack/runtime";
 import type { RepoArgSpec } from "@natstack/git";
 import type { RpcMessage, RpcResponse } from "@natstack/rpc";
+import type { StateArgsSchema, StateArgsValue } from "../stateArgs.js";
 
 // Re-export types for consumers of this module
 export type {
@@ -20,6 +21,8 @@ export type {
   WorkerChildSpec,
   BrowserChildSpec,
   RepoArgSpec,
+  StateArgsSchema,
+  StateArgsValue,
 };
 
 // =============================================================================
@@ -51,6 +54,8 @@ export interface PanelManifest {
   dependencies?: Record<string, string>;
   repoArgs?: string[];
   envArgs?: EnvArgSchema[];
+  /** JSON Schema for validating panel state arguments */
+  stateArgs?: StateArgsSchema;
   externals?: Record<string, string>;
   exposeModules?: string[];
   dedupeModules?: string[];
@@ -362,6 +367,10 @@ export interface PanelSnapshot {
   /** Panel options from CreateChildOptions (excluding eventSchemas and focus) */
   options: Omit<CreateChildOptions, "eventSchemas" | "focus">;
 
+  // === State arguments (separate from options) ===
+  /** Validated state args for this snapshot (app/worker panels only) */
+  stateArgs?: StateArgsValue;
+
   // === Type-specific (set during navigation/runtime) ===
   /** browser: actual URL after redirects */
   resolvedUrl?: string;
@@ -371,9 +380,6 @@ export interface PanelSnapshot {
   page?: ShellPage;
   /** browser: internal webview navigation state */
   browserState?: BrowserState;
-
-  // === Metadata ===
-  createdAt?: number;
 }
 
 /**
@@ -403,26 +409,6 @@ export interface Panel {
  * Build state for workers (same as panels).
  */
 export type WorkerBuildState = "pending" | "cloning" | "building" | "ready" | "error" | "dirty";
-
-/**
- * Options for creating a worker from a panel.
- */
-export interface WorkerCreateOptions {
-  /** Environment variables to pass to the worker */
-  env?: Record<string, string>;
-  /**
-   * Run worker with full Node.js API access instead of browser sandbox.
-   * - `true`: Unsafe mode with default scoped filesystem
-   * - `string`: Unsafe mode with custom filesystem root (e.g., "/" for full access)
-   */
-  unsafe?: boolean | string;
-  /** Branch name to track (e.g., "develop") */
-  branch?: string;
-  /** Specific commit hash to pin to */
-  commit?: string;
-  /** Tag to pin to (e.g., "v1.0.0") */
-  tag?: string;
-}
 
 /**
  * Information about a created worker.
@@ -560,7 +546,6 @@ export interface PanelSummary {
   childCount: number;
   buildState?: string;
   position: number;
-  ephemeral?: boolean;
 }
 
 /**

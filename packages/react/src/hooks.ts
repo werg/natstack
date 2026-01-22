@@ -341,7 +341,7 @@ export function usePanelChild<
       }
     });
 
-    // Subscribe to child removed events (for ephemeral children)
+    // Subscribe to child removed events (children can be closed/removed)
     const unsubRemoved = runtime.onChildRemoved((removedName) => {
       if (removedName === name) {
         setHandle(undefined);
@@ -361,7 +361,7 @@ export function usePanelChild<
  * Get all children as a Map with automatic updates.
  * Useful for rendering a list of children or iterating over them.
  *
- * Note: Ephemeral children can be closed/removed. The map updates automatically.
+ * Note: Children can be closed/removed. The map updates automatically.
  *
  * @returns ReadonlyMap of child names to ChildHandles
  *
@@ -396,7 +396,7 @@ export function usePanelChildren(): ReadonlyMap<string, ChildHandle> {
       setChildren(new Map(runtime.children));
     });
 
-    // Subscribe to child removed events (for ephemeral children)
+    // Subscribe to child removed events (children can be closed/removed)
     const unsubRemoved = runtime.onChildRemoved(() => {
       setChildren(new Map(runtime.children));
     });

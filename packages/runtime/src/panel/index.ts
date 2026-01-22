@@ -53,7 +53,6 @@ export type * from "../core/types.js";
 export type { Runtime } from "../setup/createRuntime.js";
 
 export const id = config.id;
-export const isEphemeral = config.ephemeral;
 const gitConfig = config.gitConfig;
 const pubsubConfig = config.pubsubConfig;
 
@@ -94,3 +93,6 @@ export { fs, fsReady, gitConfig, pubsubConfig };
 
 // Path utilities for cross-platform path handling
 export { normalizePath, getFileName, resolvePath } from "../shared/pathUtils.js";
+
+// State args API for panel state management
+export { getStateArgs, useStateArgs, setStateArgs } from "./stateArgs.js";

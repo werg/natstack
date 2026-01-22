@@ -18,6 +18,7 @@ import {
 import { createParentHandle, createParentHandleFromContract } from "../shared/handles.js";
 import type { ParentHandle, ParentHandleFromContract } from "../core/index.js";
 import type { BootstrapResult, RuntimeFs, ThemeAppearance } from "../types.js";
+import { _initStateArgsBridge } from "../panel/stateArgs.js";
 
 export interface RuntimeDeps {
   selfId: string;
@@ -44,12 +45,16 @@ export function createRuntime(deps: RuntimeDeps) {
 
   const callMain = <T>(method: string, ...args: unknown[]) => rpc.call<T>("main", method, ...args);
 
+  // Initialize the stateArgs bridge for setStateArgs() function
+  _initStateArgsBridge((updates) => callMain<Record<string, unknown>>("bridge.setStateArgs", updates));
+
   const bridge = {
     async createChild(
       source: string,
-      options?: Omit<CreateChildOptions, "eventSchemas">
+      options?: Omit<CreateChildOptions, "eventSchemas">,
+      stateArgs?: Record<string, unknown>
     ): Promise<ChildCreationResult> {
-      return callMain<ChildCreationResult>("bridge.createChild", source, options);
+      return callMain<ChildCreationResult>("bridge.createChild", source, options, stateArgs);
     },
 
     async createBrowserChild(url: string): Promise<ChildCreationResult> {
