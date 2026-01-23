@@ -124,7 +124,8 @@ export function parseKind(): NatstackKind {
   const arg = process.argv.find((value) => value.startsWith(ARG_KIND));
   const kind = arg?.split("=")[1];
   if (kind === "worker") return "worker";
-  if (kind === "shell") return "shell";
+  // Note: "shell" kind is only used by the main shell UI which hardcodes it in index.ts.
+  // Shell panels use kind=panel for full runtime API access.
   return "panel";
 }
 

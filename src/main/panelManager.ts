@@ -2512,7 +2512,7 @@ export class PanelManager {
       `--natstack-panel-id=${panel.id}`,
       `--natstack-auth-token=${authToken}`,
       `--natstack-theme=${this.currentTheme}`,
-      `--natstack-kind=shell`,
+      `--natstack-kind=panel`, // Shell panels use panel runtime for focus/theme events
       `--natstack-context-id=${contextId}`,
     ];
 

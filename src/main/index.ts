@@ -28,6 +28,7 @@ import { getMainCacheManager } from "./cacheManager.js";
 import { getCdpServer, type CdpServer } from "./cdpServer.js";
 import { getPubSubServer, type PubSubServer } from "./pubsubServer.js";
 import { createVerdaccioServer, type VerdaccioServer } from "./verdaccioServer.js";
+import { createGitWatcher, type GitWatcher } from "./workspace/gitWatcher.js";
 import { eventService } from "./services/eventsService.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
 import { handleDbCall } from "./ipc/dbHandlers.js";
@@ -92,6 +93,7 @@ if (cliWorkspacePath && !hasWorkspaceConfig) {
 let appMode: AppMode = hasWorkspaceConfig ? "main" : "chooser";
 let workspace: Workspace | null = null;
 let gitServer: GitServer | null = null;
+let gitWatcher: GitWatcher | null = null;
 let cdpServer: CdpServer | null = null;
 let pubsubServer: PubSubServer | null = null;
 let verdaccioServer: VerdaccioServer | null = null;
@@ -512,6 +514,23 @@ app.on("ready", async () => {
       const port = await gitServer.start();
       console.log(`[Git] Server started on port ${port}`);
 
+      // Create GitWatcher to monitor workspace for repo changes
+      gitWatcher = createGitWatcher(workspace);
+      console.log("[GitWatcher] Started watching workspace for git changes");
+
+      // Subscribe servers to GitWatcher events
+      gitServer.subscribeToGitWatcher(gitWatcher);
+      if (verdaccioServer) {
+        // Pass workspace path so Verdaccio can resolve workspace-relative paths
+        // (distinct from workspaceRoot which is for built-in @natstack/* packages)
+        verdaccioServer.subscribeToGitWatcher(gitWatcher, workspace.path);
+
+        // Publish any existing user workspace packages (fire-and-forget, don't block startup)
+        verdaccioServer.publishUserWorkspacePackages(workspace.path).catch((err) => {
+          console.error("[Verdaccio] Failed to publish existing workspace packages:", err);
+        });
+      }
+
       // Start CDP server for browser automation
       cdpServer = getCdpServer();
       const cdpPort = await cdpServer.start();
@@ -621,7 +640,7 @@ app.on("will-quit", (event) => {
     }
   }
 
-  const hasResourcesToClean = gitServer || cdpServer || pubsubServer || verdaccioServer;
+  const hasResourcesToClean = gitServer || gitWatcher || cdpServer || pubsubServer || verdaccioServer;
   if (hasResourcesToClean) {
     isCleaningUp = true;
     event.preventDefault();
@@ -649,6 +668,17 @@ app.on("will-quit", (event) => {
           .then(() => console.log("[App] Git server stopped"))
           .catch((error) => {
             console.error("Error stopping git server:", error);
+          })
+      );
+    }
+
+    if (gitWatcher) {
+      stopPromises.push(
+        gitWatcher
+          .close()
+          .then(() => console.log("[App] GitWatcher stopped"))
+          .catch((error) => {
+            console.error("Error stopping GitWatcher:", error);
           })
       );
     }

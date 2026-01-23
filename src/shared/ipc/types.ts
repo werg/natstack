@@ -598,6 +598,14 @@ export interface WorkspaceNode {
     repoArgs?: string[];
     envArgs?: EnvArgSchema[];
   };
+  /**
+   * Package metadata if this repo has a package.json with a name.
+   * Used by VerdaccioServer to determine which repos are publishable packages.
+   */
+  packageInfo?: {
+    name: string;
+    version?: string;
+  };
   /** Child nodes (empty for git repos since they're leaves) */
   children: WorkspaceNode[];
 }

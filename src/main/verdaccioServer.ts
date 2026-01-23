@@ -18,6 +18,7 @@ import * as crypto from "crypto";
 import { app } from "electron";
 import { spawn } from "child_process";
 import { findAndBindPort, PORT_RANGES } from "./portUtils.js";
+import type { GitWatcher } from "./workspace/gitWatcher.js";
 
 /**
  * Configuration options for the Verdaccio server.
@@ -439,6 +440,59 @@ export class VerdaccioServer {
   private readonly PUBLISH_CONCURRENCY = 4;
 
   /**
+   * Discover all packages in a directory, supporting scoped packages.
+   * Scoped packages live in directories starting with @ (e.g., @scope/mylib).
+   */
+  private discoverPackagesInDir(packagesDir: string): Array<{ path: string; name: string }> {
+    const packages: Array<{ path: string; name: string }> = [];
+
+    if (!fs.existsSync(packagesDir)) {
+      return packages;
+    }
+
+    const entries = fs.readdirSync(packagesDir, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && !entry.name.startsWith("."));
+
+    for (const entry of entries) {
+      const entryPath = path.join(packagesDir, entry.name);
+
+      if (entry.name.startsWith("@")) {
+        // Scoped package directory - recurse one level to find actual packages
+        const scopedEntries = fs.readdirSync(entryPath, { withFileTypes: true })
+          .filter(e => e.isDirectory() && !e.name.startsWith("."));
+
+        for (const scopedEntry of scopedEntries) {
+          const scopedPkgPath = path.join(entryPath, scopedEntry.name);
+          const pkgJsonPath = path.join(scopedPkgPath, "package.json");
+
+          if (fs.existsSync(pkgJsonPath)) {
+            try {
+              const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string };
+              packages.push({ path: scopedPkgPath, name: pkgJson.name });
+            } catch {
+              // Skip packages with invalid package.json
+            }
+          }
+        }
+      } else {
+        // Regular unscoped package
+        const pkgJsonPath = path.join(entryPath, "package.json");
+
+        if (fs.existsSync(pkgJsonPath)) {
+          try {
+            const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string };
+            packages.push({ path: entryPath, name: pkgJson.name });
+          } catch {
+            // Skip packages with invalid package.json
+          }
+        }
+      }
+    }
+
+    return packages;
+  }
+
+  /**
    * Publish all workspace packages to the local registry.
    * Uses parallel publishing with concurrency limit for faster startup.
    */
@@ -457,28 +511,8 @@ export class VerdaccioServer {
       return result;
     }
 
-    // Collect all packages to publish
-    const packagesToPublish: Array<{ path: string; name: string }> = [];
-
-    const packages = fs.readdirSync(packagesDir, { withFileTypes: true })
-      .filter(entry => entry.isDirectory() && !entry.name.startsWith("."))
-      .map(entry => entry.name);
-
-    for (const pkg of packages) {
-      const pkgPath = path.join(packagesDir, pkg);
-      const pkgJsonPath = path.join(pkgPath, "package.json");
-
-      if (!fs.existsSync(pkgJsonPath)) {
-        continue;
-      }
-
-      try {
-        const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string };
-        packagesToPublish.push({ path: pkgPath, name: pkgJson.name });
-      } catch {
-        // Skip packages with invalid package.json
-      }
-    }
+    // Collect all packages to publish (supports scoped packages)
+    const packagesToPublish = this.discoverPackagesInDir(packagesDir);
 
     console.log(`[VerdaccioServer] Publishing ${packagesToPublish.length} workspace packages (concurrency: ${this.PUBLISH_CONCURRENCY})...`);
 
@@ -666,20 +700,14 @@ export class VerdaccioServer {
       return versions;
     }
 
-    const packages = fs.readdirSync(packagesDir, { withFileTypes: true })
-      .filter(entry => entry.isDirectory() && !entry.name.startsWith("."));
+    // Discover all packages (supports scoped packages)
+    const packages = this.discoverPackagesInDir(packagesDir);
 
     // Query versions in parallel
-    const queries = packages.map(async (entry) => {
-      const pkgPath = path.join(packagesDir, entry.name);
-      const pkgJsonPath = path.join(pkgPath, "package.json");
-
-      if (!fs.existsSync(pkgJsonPath)) return null;
-
+    const queries = packages.map(async (pkg) => {
       try {
-        const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string };
-        const version = await this.getPackageVersion(pkgJson.name);
-        return version ? { name: pkgJson.name, version } : null;
+        const version = await this.getPackageVersion(pkg.name);
+        return version ? { name: pkg.name, version } : null;
       } catch {
         return null;
       }
@@ -974,6 +1002,138 @@ export class VerdaccioServer {
     return this.workspaceRoot;
   }
 
+  // ===========================================================================
+  // GitWatcher Integration
+  // ===========================================================================
+
+  /** Debounce delay for commit-triggered republishing (ms) */
+  private readonly COMMIT_DEBOUNCE_MS = 500;
+  /** Pending debounced publishes keyed by repo path */
+  private pendingPublishes: Map<string, NodeJS.Timeout> = new Map();
+  /** Packages currently being published (to prevent concurrent publishes) */
+  private publishingInProgress: Set<string> = new Set();
+
+  /**
+   * Check if a relative path is under the packages/ directory.
+   */
+  private isInPackagesDir(repoPath: string): boolean {
+    return repoPath.startsWith("packages/") || repoPath.startsWith("packages\\");
+  }
+
+  /**
+   * Subscribe to GitWatcher events for automatic republishing.
+   * When a package repo gets a new commit, republish it to Verdaccio.
+   *
+   * @param watcher - The GitWatcher instance to subscribe to
+   * @param userWorkspacePath - Absolute path to the user's workspace root.
+   *   GitWatcher emits paths relative to this directory, which may be different
+   *   from this.workspaceRoot (which is used for built-in @natstack/* packages).
+   */
+  subscribeToGitWatcher(watcher: GitWatcher, userWorkspacePath: string): void {
+    // Convert workspace-relative repo path to absolute path
+    const toAbsolutePath = (repoPath: string) => path.join(userWorkspacePath, repoPath);
+
+    watcher.on("repoAdded", async (repoPath) => {
+      if (!this.isInPackagesDir(repoPath)) return;
+      if (!this.isRunning()) return;
+
+      try {
+        const absolutePath = toAbsolutePath(repoPath);
+        const pkgJsonPath = path.join(absolutePath, "package.json");
+        if (!fs.existsSync(pkgJsonPath)) return;
+
+        const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string };
+        await this.publishPackage(absolutePath, pkgJson.name);
+        console.log(`[Verdaccio] Published new workspace package: ${pkgJson.name}`);
+        this.invalidateVerdaccioVersionsCache();
+      } catch (err) {
+        console.error("[Verdaccio] Failed to publish new package:", err);
+      }
+    });
+
+    watcher.on("commitAdded", (repoPath) => {
+      if (!this.isInPackagesDir(repoPath)) return;
+      if (!this.isRunning()) return;
+
+      // Debounce: cancel any pending publish for this repo and reschedule
+      const existingTimeout = this.pendingPublishes.get(repoPath);
+      if (existingTimeout) {
+        clearTimeout(existingTimeout);
+      }
+
+      const timeout = setTimeout(async () => {
+        this.pendingPublishes.delete(repoPath);
+
+        // Skip if a publish is already in progress for this repo
+        if (this.publishingInProgress.has(repoPath)) {
+          console.log(`[Verdaccio] Skipping publish for ${repoPath} - already in progress`);
+          return;
+        }
+
+        try {
+          this.publishingInProgress.add(repoPath);
+
+          const absolutePath = toAbsolutePath(repoPath);
+          const pkgJsonPath = path.join(absolutePath, "package.json");
+          if (!fs.existsSync(pkgJsonPath)) return;
+
+          const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string };
+          const result = await this.publishPackage(absolutePath, pkgJson.name);
+          if (result === "published") {
+            console.log(`[Verdaccio] Republished workspace package on commit: ${pkgJson.name}`);
+            this.invalidateVerdaccioVersionsCache();
+          }
+        } catch (err) {
+          console.error("[Verdaccio] Failed to republish package:", err);
+        } finally {
+          this.publishingInProgress.delete(repoPath);
+        }
+      }, this.COMMIT_DEBOUNCE_MS);
+
+      this.pendingPublishes.set(repoPath, timeout);
+    });
+  }
+
+  /**
+   * Publish all existing packages from a user workspace on startup.
+   * This handles packages that existed before the app started (GitWatcher uses ignoreInitial).
+   *
+   * @param userWorkspacePath - Absolute path to the user's workspace root
+   */
+  async publishUserWorkspacePackages(userWorkspacePath: string): Promise<void> {
+    const packagesDir = path.join(userWorkspacePath, "packages");
+    if (!fs.existsSync(packagesDir)) {
+      return;
+    }
+
+    const packages = this.discoverPackagesInDir(packagesDir);
+    if (packages.length === 0) {
+      return;
+    }
+
+    console.log(`[Verdaccio] Publishing ${packages.length} existing user workspace packages...`);
+
+    // Publish in parallel batches
+    for (let i = 0; i < packages.length; i += this.PUBLISH_CONCURRENCY) {
+      const batch = packages.slice(i, i + this.PUBLISH_CONCURRENCY);
+
+      await Promise.allSettled(
+        batch.map(async (pkg) => {
+          try {
+            const result = await this.publishPackage(pkg.path, pkg.name);
+            if (result === "published") {
+              console.log(`[Verdaccio] Published user workspace package: ${pkg.name}`);
+            }
+          } catch (err) {
+            console.error(`[Verdaccio] Failed to publish ${pkg.name}:`, err);
+          }
+        })
+      );
+    }
+
+    this.invalidateVerdaccioVersionsCache();
+  }
+
   /**
    * Check which workspace packages have changed since last startup.
    * Compares expected content hashes against published Verdaccio versions.
@@ -990,41 +1150,29 @@ export class VerdaccioServer {
       return { changed, unchanged, freshStart: true };
     }
 
-    const packages = fs.readdirSync(packagesDir, { withFileTypes: true })
-      .filter(entry => entry.isDirectory() && !entry.name.startsWith("."));
+    // Discover all packages (supports scoped packages)
+    const packages = this.discoverPackagesInDir(packagesDir);
 
     // Query all in parallel
-    const checks = packages.map(async (entry) => {
-      const pkgPath = path.join(packagesDir, entry.name);
-      const pkgJsonPath = path.join(pkgPath, "package.json");
-      if (!fs.existsSync(pkgJsonPath)) return null;
-
+    const checks = packages.map(async (pkg) => {
       try {
-        const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string };
-        const expectedVersion = this.getExpectedVersion(pkgPath);
-        const actualVersion = await this.getPackageVersion(pkgJson.name);
+        const expectedVersion = this.getExpectedVersion(pkg.path);
+        const actualVersion = await this.getPackageVersion(pkg.name);
 
         return {
-          name: pkgJson.name,
+          name: pkg.name,
           changed: actualVersion !== expectedVersion
         };
       } catch (error) {
         // On error (parse failure, Verdaccio query failed, etc.), treat as changed
         // so the package gets republished rather than silently skipped
-        console.warn(`[VerdaccioServer] Error checking ${entry.name}:`, error);
-        try {
-          const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string };
-          return { name: pkgJson.name, changed: true };
-        } catch {
-          // Can't even read package.json - use directory name as fallback
-          return { name: `@natstack/${entry.name}`, changed: true };
-        }
+        console.warn(`[VerdaccioServer] Error checking ${pkg.name}:`, error);
+        return { name: pkg.name, changed: true };
       }
     });
 
     const results = await Promise.all(checks);
     for (const result of results) {
-      if (!result) continue;
       (result.changed ? changed : unchanged).push(result.name);
     }
 
@@ -1085,20 +1233,10 @@ export class VerdaccioServer {
       skipped: [...changes.unchanged],
     };
 
-    // Collect packages to publish
-    const packagesToPublish: Array<{ path: string; name: string }> = [];
-    for (const pkgName of changes.changed) {
-      const pkgDir = pkgName.replace("@natstack/", "");
-      const pkgPath = path.join(packagesDir, pkgDir);
-      const pkgJsonPath = path.join(pkgPath, "package.json");
-
-      if (!fs.existsSync(pkgJsonPath)) {
-        console.warn(`[VerdaccioServer] Package ${pkgName} not found at ${pkgPath}`);
-        continue;
-      }
-
-      packagesToPublish.push({ path: pkgPath, name: pkgName });
-    }
+    // Discover all packages and filter by changed names
+    const allPackages = this.discoverPackagesInDir(packagesDir);
+    const changedSet = new Set(changes.changed);
+    const packagesToPublish = allPackages.filter(pkg => changedSet.has(pkg.name));
 
     // Publish in parallel batches
     for (let i = 0; i < packagesToPublish.length; i += this.PUBLISH_CONCURRENCY) {

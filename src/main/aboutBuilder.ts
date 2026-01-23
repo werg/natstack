@@ -128,6 +128,9 @@ export class AboutBuilder {
         format: "cjs", // CJS for nodeIntegration
         absWorkingDir: pageDir,
         nodePaths: [getAppNodeModules(), packagesDir],
+        // Disable tsconfig paths - the root tsconfig maps @natstack/runtime to src/index.ts
+        // which is the shell entry. We need package.json exports to resolve to the panel entry.
+        tsconfigRaw: "{}",
         loader: {
           ".png": "file",
           ".jpg": "file",

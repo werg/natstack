@@ -8,6 +8,7 @@ import { spawn, spawnSync } from "child_process";
 import type { WorkspaceNode, WorkspaceTree, BranchInfo, CommitInfo } from "../shared/ipc/types.js";
 import { GitAuthManager, getTokenManager } from "./tokenManager.js";
 import { tryBindPort } from "./portUtils.js";
+import type { GitWatcher } from "./workspace/gitWatcher.js";
 
 const DEFAULT_GIT_SERVER_PORT = 63524;
 
@@ -42,7 +43,9 @@ export class GitServer {
   constructor(config?: GitServerConfig) {
     this.configuredPort = config?.port ?? DEFAULT_GIT_SERVER_PORT;
     this.configuredReposPath = config?.reposPath ?? null;
-    this.initPatterns = config?.initPatterns ?? ["panels/*"];
+    // Note: initPatterns is for auto-init of NEW directories as git repos.
+    // scanDirectory() is already recursive and discovers repos at any depth.
+    this.initPatterns = config?.initPatterns ?? ["panels/*", "workers/*", "packages/*"];
     this.authManager = new GitAuthManager(getTokenManager());
   }
 
@@ -288,6 +291,31 @@ export class GitServer {
   }
 
   // ===========================================================================
+  // GitWatcher Integration
+  // ===========================================================================
+
+  /**
+   * Subscribe to GitWatcher events to invalidate the tree cache.
+   * This ensures the workspace tree is always up-to-date when repos are added/removed
+   * or when commits are made (which might change package.json).
+   */
+  subscribeToGitWatcher(watcher: GitWatcher): void {
+    watcher.on("repoAdded", () => {
+      console.log("[GitServer] Invalidating tree cache (repo added)");
+      this.invalidateTreeCache();
+    });
+    watcher.on("repoRemoved", () => {
+      console.log("[GitServer] Invalidating tree cache (repo removed)");
+      this.invalidateTreeCache();
+    });
+    watcher.on("commitAdded", () => {
+      // Commits might change package.json, so invalidate cache
+      console.log("[GitServer] Invalidating tree cache (commit added)");
+      this.invalidateTreeCache();
+    });
+  }
+
+  // ===========================================================================
   // Workspace Tree Discovery
   // ===========================================================================
 
@@ -397,8 +425,10 @@ export class GitServer {
         if (isGitRepo) {
           // Track discovered repo (already uses forward slashes)
           this.discoveredRepoPaths.add(childRelPath);
-          // Check if launchable (has natstack config)
-          node.launchable = await this.checkLaunchable(childAbsPath);
+          // Extract metadata (launchable info and package info)
+          const metadata = await this.extractMetadata(childAbsPath);
+          node.launchable = metadata.launchable;
+          node.packageInfo = metadata.packageInfo;
           // Git repos are leaves - don't recurse into them
         } else {
           // Recurse into non-git directories
@@ -423,26 +453,43 @@ export class GitServer {
   }
 
   /**
-   * Check if a directory is a launchable natstack panel/worker.
+   * Extract metadata from a directory's package.json.
+   * Returns both launchable info (natstack config) and package info (npm package).
    * Intentionally permissive - returns info even with missing fields so the
    * UI can show the entry and panelBuilder can report proper errors later.
    */
-  private async checkLaunchable(absolutePath: string): Promise<WorkspaceNode["launchable"] | undefined> {
+  private async extractMetadata(absolutePath: string): Promise<{
+    launchable?: WorkspaceNode["launchable"];
+    packageInfo?: WorkspaceNode["packageInfo"];
+  }> {
     const packageJsonPath = path.join(absolutePath, "package.json");
     try {
       const content = await fsPromises.readFile(packageJsonPath, "utf-8");
       const packageJson = JSON.parse(content);
-      if (!packageJson.natstack) return undefined;
 
-      const ns = packageJson.natstack;
-      return {
-        type: ns.type || (ns.runtime === "worker" ? "worker" : "app"),
-        title: ns.title || packageJson.name || path.basename(absolutePath),
-        repoArgs: ns.repoArgs,
-        envArgs: ns.envArgs,
-      };
+      // Extract package info (if it has a name, it's a publishable package)
+      const packageInfo = packageJson.name
+        ? {
+            name: packageJson.name as string,
+            version: packageJson.version as string | undefined,
+          }
+        : undefined;
+
+      // Extract natstack launchable info
+      let launchable: WorkspaceNode["launchable"] | undefined;
+      if (packageJson.natstack) {
+        const ns = packageJson.natstack;
+        launchable = {
+          type: ns.type || (ns.runtime === "worker" ? "worker" : "app"),
+          title: ns.title || packageJson.name || path.basename(absolutePath),
+          repoArgs: ns.repoArgs,
+          envArgs: ns.envArgs,
+        };
+      }
+
+      return { launchable, packageInfo };
     } catch {
-      return undefined;
+      return {};
     }
   }
 

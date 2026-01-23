@@ -20,7 +20,7 @@ import {
   Separator,
   Tabs,
 } from "@radix-ui/themes";
-import { getWorkspaceTree, buildNsLink, buildAboutLink } from "@natstack/runtime";
+import { getWorkspaceTree, buildNsLink, buildAboutLink, onFocus } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
 import type { WorkspaceTree, WorkspaceNode, EnvArgSchema } from "@natstack/runtime";
 import { WorkspaceTreeView } from "./WorkspaceTreeView";
@@ -157,13 +157,20 @@ function NewPanelPage() {
   const [urlInput, setUrlInput] = useState("");
   const [selectedPath, setSelectedPath] = useState<string | undefined>(undefined);
 
-  useEffect(() => {
+  // Fetch workspace tree - runs on mount and when panel receives focus
+  const fetchTree = useCallback(() => {
     setLoading(true);
     getWorkspaceTree()
       .then(setTree)
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    fetchTree();
+    // Also refetch when the panel receives focus (user navigates back to it)
+    return onFocus(fetchTree);
+  }, [fetchTree]);
 
   const handleLaunch = useCallback(
     (

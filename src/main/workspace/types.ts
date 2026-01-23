@@ -133,6 +133,10 @@ export interface Workspace {
   config: WorkspaceConfig;
   /** Absolute path to panels directory (workspace/panels) */
   panelsPath: string;
+  /** Absolute path to workers directory (workspace/workers) */
+  workersPath: string;
+  /** Absolute path to packages directory (workspace/packages) */
+  packagesPath: string;
   /** Absolute path to git repos directory (workspace) */
   gitReposPath: string;
   /** Absolute path to cache directory (workspace/.cache) */
