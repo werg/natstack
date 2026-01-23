@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
-import { Flex, Theme } from "@radix-ui/themes";
+import { Flex } from "@radix-ui/themes";
 
 import { effectiveThemeAtom, loadThemePreferenceAtom } from "../state/themeAtoms";
 import { NavigationProvider, useNavigation } from "./NavigationContext";
@@ -79,22 +79,20 @@ function PanelAppContent() {
   }, [navigateToId]);
 
   return (
-    <Theme appearance={effectiveTheme} radius="none">
-      <Flex direction="column" height="100vh" style={{ overflow: "hidden" }}>
-        <TitleBar title={currentTitle} onNavigateToId={navigateToId} onPanelAction={handlePanelAction} />
-        <PanelStack
-          onTitleChange={setCurrentTitle}
-          hostTheme={effectiveTheme}
-          onRegisterDevToolsHandler={(handler) => {
-            openPanelDevToolsRef.current = handler;
-          }}
-          onRegisterNavigateToId={registerNavigateToId}
-          onRegisterPanelAction={(handler) => {
-            handlePanelActionRef.current = handler;
-          }}
-        />
-      </Flex>
-    </Theme>
+    <Flex direction="column" height="100vh" style={{ overflow: "hidden" }}>
+      <TitleBar title={currentTitle} onNavigateToId={navigateToId} onPanelAction={handlePanelAction} />
+      <PanelStack
+        onTitleChange={setCurrentTitle}
+        hostTheme={effectiveTheme}
+        onRegisterDevToolsHandler={(handler) => {
+          openPanelDevToolsRef.current = handler;
+        }}
+        onRegisterNavigateToId={registerNavigateToId}
+        onRegisterPanelAction={(handler) => {
+          handlePanelActionRef.current = handler;
+        }}
+      />
+    </Flex>
   );
 }
 
