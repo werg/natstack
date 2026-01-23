@@ -14,7 +14,7 @@
  * 6. Tool calls flow: Codex -> HTTP MCP server -> pubsub
  */
 
-import { pubsubConfig, id, getStateArgs } from "@natstack/runtime";
+import { pubsubConfig, id, contextId, getStateArgs } from "@natstack/runtime";
 import {
   connect,
   createToolsForAgentSDK,
@@ -109,6 +109,13 @@ function getSandboxModeFromAutonomy(autonomyLevel: number | undefined): "read-on
 
 /** Current settings state - initialized from agent config and persisted settings */
 let currentSettings: CodexWorkerSettings = {};
+
+/**
+ * Worker-local fallback for SDK session ID.
+ * Used when client.sessionKey is unavailable (workspaceId not set),
+ * allowing session resumption within the same worker lifetime.
+ */
+let localSdkSessionId: string | undefined;
 
 /**
  * Tool definition for MCP server
@@ -362,6 +369,8 @@ async function main() {
     name: "Codex",
     type: "codex",
     reconnect: true,
+    // Enable session persistence for SDK session resumption across worker reloads
+    workspaceId: contextId || undefined,
     methods: {
       pause: createPauseMethodDefinition(async () => {
         // Pause event is published by interrupt handler
@@ -455,8 +464,12 @@ async function main() {
 
   // 2. Apply persisted settings (runtime changes from previous sessions)
   if (client.sessionKey) {
-    log(`Session: ${client.sessionKey} (${client.status})`);
-    log(`Checkpoint: ${client.checkpoint ?? "none"}, SDK: ${client.sdkSessionId ?? "none"}`);
+    log(`Session persistence enabled: ${client.sessionKey} (${client.status})`);
+    log(`Checkpoint: ${client.checkpoint ?? "none"}, SDK session: ${client.sdkSessionId ?? "none"}`);
+    // Initialize local fallback from persisted session
+    if (client.sdkSessionId) {
+      localSdkSessionId = client.sdkSessionId;
+    }
 
     try {
       const savedSettings = await client.getSettings<CodexWorkerSettings>();
@@ -467,6 +480,8 @@ async function main() {
     } catch (err) {
       log(`Failed to load settings: ${err}`);
     }
+  } else {
+    log(`Session persistence disabled (no contextId available)`);
   }
 
   if (Object.keys(currentSettings).length > 0) {
@@ -706,12 +721,14 @@ async function handleUserMessage(
       ...(currentSettings.webSearchEnabled !== undefined && { webSearchEnabled: currentSettings.webSearchEnabled }),
     };
 
-    if (client.sdkSessionId) {
-      // Resume from previous thread if available
-      log(`Resuming Codex thread: ${client.sdkSessionId}`);
-      thread = codex.resumeThread(client.sdkSessionId, threadOptions);
+    // Resume from previous session if available
+    // Priority: persisted session ID > worker-local fallback
+    const resumeSessionId = client.sdkSessionId || localSdkSessionId;
+    if (resumeSessionId) {
+      log(`Resuming Codex thread: ${resumeSessionId}${client.sdkSessionId ? " (persisted)" : " (local fallback)"}`);
+      thread = codex.resumeThread(resumeSessionId, threadOptions);
     } else {
-      // Start new thread
+      log("Starting new Codex thread");
       thread = codex.startThread(threadOptions);
     }
 
@@ -754,9 +771,15 @@ async function handleUserMessage(
           const threadEvent = event as unknown as Record<string, unknown>;
           if (threadEvent.thread_id) {
             const threadId = String(threadEvent.thread_id);
+            // Always update worker-local fallback (for resumption within same worker lifetime)
+            localSdkSessionId = threadId;
+
+            // Also persist to server if possible (for cross-worker resumption)
             if (client.sessionKey) {
               await client.updateSdkSession(threadId);
               log(`Thread ID stored: ${threadId}`);
+            } else {
+              log(`Thread ID stored locally (no workspaceId): ${threadId}`);
             }
           }
           break;

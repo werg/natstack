@@ -5,7 +5,7 @@
  * Listens for user messages on a channel and responds using AI streaming.
  */
 
-import { pubsubConfig, id, unloadSelf, getStateArgs } from "@natstack/runtime";
+import { pubsubConfig, id, contextId, unloadSelf, getStateArgs } from "@natstack/runtime";
 import {
   connect,
   createLogger,
@@ -104,6 +104,8 @@ async function main() {
       agentTypeId,       // Agent type for identification
     },
     reconnect: true,
+    // Enable session persistence for settings across worker reloads
+    workspaceId: contextId || undefined,
     methods: {
       pause: createPauseMethodDefinition(async () => {
         // Pause event is published by interrupt handler
@@ -236,7 +238,7 @@ async function main() {
 
   // 2. Apply persisted settings (runtime changes from previous sessions)
   if (client.sessionKey) {
-    log(`Session: ${client.sessionKey} (${client.status})`);
+    log(`Session persistence enabled: ${client.sessionKey} (${client.status})`);
     log(`Checkpoint: ${client.checkpoint ?? "none"}`);
 
     try {
@@ -248,6 +250,8 @@ async function main() {
     } catch (err) {
       log(`Failed to load settings: ${err}`);
     }
+  } else {
+    log(`Session persistence disabled (no contextId available)`);
   }
 
   if (Object.keys(currentSettings).length > 0) {

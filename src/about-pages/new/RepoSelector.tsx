@@ -19,6 +19,7 @@ import {
   getWorkspaceTree,
   listBranches,
   listCommits,
+  onFocus,
 } from "@natstack/runtime";
 import type {
   WorkspaceTree,
@@ -101,14 +102,20 @@ export function RepoSelector({
   const [commitLoading, setCommitLoading] = useState(false);
   const [showCommitPicker, setShowCommitPicker] = useState(!!selectedCommit);
 
-  // Load workspace tree on mount
-  useEffect(() => {
+  // Fetch workspace tree - runs on mount and when panel receives focus
+  const fetchTree = useCallback(() => {
     setLoading(true);
     getWorkspaceTree()
       .then(setTree)
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    fetchTree();
+    // Also refetch when the panel receives focus (user navigates back to it)
+    return onFocus(fetchTree);
+  }, [fetchTree]);
 
   // Load branches when repo is selected
   useEffect(() => {

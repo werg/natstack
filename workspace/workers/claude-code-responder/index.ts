@@ -6,7 +6,7 @@
  */
 
 import { execSync } from "child_process";
-import { pubsubConfig, id, getStateArgs } from "@natstack/runtime";
+import { pubsubConfig, id, contextId, getStateArgs } from "@natstack/runtime";
 import {
   connect,
   createToolsForAgentSDK,
@@ -211,6 +211,101 @@ interface ClaudeCodeWorkerSettings {
   autonomyLevel?: number; // 0=Ask, 1=Auto-edits, 2=Full Auto
 }
 
+// =============================================================================
+// Message Queue - Producer-Consumer Pattern for Message Interleaving
+// =============================================================================
+
+/** A queued message waiting to be processed */
+interface QueuedMessage {
+  event: IncomingNewMessage;
+  prompt: string;
+  attachments?: Attachment[];
+  enqueuedAt: number;
+  typingTracker: ReturnType<typeof createTypingTracker> | null;
+}
+
+/** Current processing state shared between observer and processor */
+interface ProcessingState {
+  currentMessage: QueuedMessage | null;
+  queryInstance: Query | null;
+}
+
+/**
+ * AsyncQueue - A bidirectional buffer supporting both push (producer) and async iteration (consumer).
+ * Based on the pattern from agentic-messaging/src/client.ts
+ */
+class AsyncQueue<T> implements AsyncIterable<T> {
+  private values: T[] = [];
+  private resolvers: Array<(value: IteratorResult<T>) => void> = [];
+  private closed = false;
+
+  push(value: T): void {
+    const resolve = this.resolvers.shift();
+    if (resolve) {
+      resolve({ value, done: false });
+    } else {
+      this.values.push(value);
+    }
+  }
+
+  close(): void {
+    this.closed = true;
+    for (const resolve of this.resolvers) {
+      resolve({ value: undefined as T, done: true });
+    }
+    this.resolvers = [];
+  }
+
+  async *[Symbol.asyncIterator](): AsyncIterableIterator<T> {
+    while (true) {
+      if (this.values.length > 0) {
+        yield this.values.shift()!;
+        continue;
+      }
+      if (this.closed) {
+        return;
+      }
+      const next = await new Promise<IteratorResult<T>>((resolve) => {
+        this.resolvers.push(resolve);
+      });
+      if (next.done) {
+        return;
+      }
+      yield next.value;
+    }
+  }
+}
+
+/**
+ * MessageQueue - FIFO queue with inspection capability for managing queued messages.
+ * Allows both async iteration (for processor) and inspection (for queue position tracking).
+ */
+class MessageQueue implements AsyncIterable<QueuedMessage> {
+  private queue = new AsyncQueue<QueuedMessage>();
+  private _pending: QueuedMessage[] = [];
+
+  enqueue(msg: QueuedMessage): void {
+    this._pending.push(msg);
+    this.queue.push(msg);
+  }
+
+  dequeue(): void {
+    this._pending.shift();
+  }
+
+  get pending(): readonly QueuedMessage[] {
+    return this._pending;
+  }
+
+  close(): void {
+    this.queue.close();
+  }
+
+  [Symbol.asyncIterator](): AsyncIterableIterator<QueuedMessage> {
+    return this.queue[Symbol.asyncIterator]();
+  }
+}
+
 /**
  * Convert executionMode + autonomyLevel to SDK permissionMode
  */
@@ -236,6 +331,128 @@ let currentSettings: ClaudeCodeWorkerSettings = {};
 
 /** Reference to the current query instance for model discovery */
 let activeQueryInstance: Query | null = null;
+
+/**
+ * Worker-local fallback for SDK session ID.
+ * Used when client.sessionKey is unavailable (workspaceId not set),
+ * allowing session resumption within the same worker lifetime.
+ */
+let localSdkSessionId: string | undefined;
+
+// =============================================================================
+// Observer (Producer) - Non-blocking message observation and queuing
+// =============================================================================
+
+/**
+ * Observe incoming messages and enqueue them with immediate acknowledgment.
+ * This runs as a background task, never blocking on message processing.
+ */
+async function observeMessages(
+  client: AgenticClient<ChatParticipantMetadata>,
+  queue: MessageQueue,
+  state: ProcessingState
+): Promise<void> {
+  for await (const event of client.events({ targetedOnly: true, respondWhenSolo: true })) {
+    // Quick filtering (same as original)
+    if (event.type !== "message") continue;
+    if (event.kind === "replay") continue;
+    const contentType = (event as { contentType?: string }).contentType;
+    if (contentType === CONTENT_TYPE_TYPING) continue;
+
+    const sender = client.roster[event.senderId];
+    if (sender?.metadata.type !== "panel" || event.senderId === id) continue;
+
+    // Calculate queue position for typing context
+    const queuePosition = queue.pending.length;
+    const typingContext = state.currentMessage
+      ? (queuePosition === 0 ? "queued, waiting..." : `queued (position ${queuePosition + 1})`)
+      : "preparing response";
+
+    // Create typing indicator immediately
+    const typing = createTypingTracker({
+      client,
+      log,
+      replyTo: event.id,
+      senderInfo: {
+        senderId: client.clientId ?? "",
+        senderName: "Claude Code",
+        senderType: "claude-code",
+      },
+    });
+    await typing.startTyping(typingContext);
+
+    // Enqueue the message
+    queue.enqueue({
+      event: event as IncomingNewMessage,
+      prompt: event.content,
+      attachments: (event as { attachments?: Attachment[] }).attachments,
+      enqueuedAt: Date.now(),
+      typingTracker: typing,
+    });
+
+    log(`Message queued: ${event.content.slice(0, 50)}... (position ${queuePosition + 1})`);
+  }
+}
+
+// =============================================================================
+// Processor (Consumer) - Sequential message processing from queue
+// =============================================================================
+
+/**
+ * Process messages from the queue sequentially.
+ * Updates queue position indicators for waiting messages.
+ */
+async function processMessages(
+  client: AgenticClient<ChatParticipantMetadata>,
+  queue: MessageQueue,
+  state: ProcessingState,
+  workingDirectory: string | undefined,
+  claudeExecutable: string,
+  isRestrictedMode: boolean,
+  getMissedContext: () => { formatted: string; lastPubsubId: number } | null,
+  updateLastMissedPubsubId: (id: number) => void
+): Promise<void> {
+  for await (const queuedMessage of queue) {
+    state.currentMessage = queuedMessage;
+    queue.dequeue();
+
+    log(`Processing message: ${queuedMessage.event.content.slice(0, 50)}...`);
+
+    // Update queue position indicators for remaining messages
+    for (let i = 0; i < queue.pending.length; i++) {
+      const msg = queue.pending[i];
+      if (msg.typingTracker) {
+        // startTyping automatically stops previous indicator
+        await msg.typingTracker.startTyping(
+          i === 0 ? "queued, waiting..." : `queued (position ${i + 1})`
+        );
+      }
+    }
+
+    try {
+      // Apply missed context if available
+      let prompt = queuedMessage.prompt;
+      const missed = getMissedContext();
+      if (missed) {
+        prompt = `<missed_context>\n${missed.formatted}\n</missed_context>\n\n${prompt}`;
+        updateLastMissedPubsubId(missed.lastPubsubId);
+      }
+
+      await handleUserMessage(
+        client,
+        queuedMessage.event,
+        prompt,
+        workingDirectory,
+        claudeExecutable,
+        isRestrictedMode,
+        queuedMessage.attachments,
+        queuedMessage.typingTracker ?? undefined
+      );
+    } finally {
+      state.currentMessage = null;
+    }
+  }
+}
 
 async function main() {
   if (!pubsubConfig) {
@@ -275,6 +492,8 @@ async function main() {
     name: "Claude Code",
     type: "claude-code",
     reconnect: true,
+    // Enable session persistence for SDK session resumption across worker reloads
+    workspaceId: contextId || undefined,
     methods: {
       pause: createPauseMethodDefinition(async () => {
         // Pause event is published by interrupt handler
@@ -392,8 +611,12 @@ async function main() {
 
   // 2. Apply persisted settings (runtime changes from previous sessions)
   if (client.sessionKey) {
-    log(`Session: ${client.sessionKey} (${client.status})`);
-    log(`Checkpoint: ${client.checkpoint ?? "none"}, SDK: ${client.sdkSessionId ?? "none"}`);
+    log(`Session persistence enabled: ${client.sessionKey} (${client.status})`);
+    log(`Checkpoint: ${client.checkpoint ?? "none"}, SDK session: ${client.sdkSessionId ?? "none"}`);
+    // Initialize local fallback from persisted session
+    if (client.sdkSessionId) {
+      localSdkSessionId = client.sdkSessionId;
+    }
 
     try {
       const savedSettings = await client.getSettings<ClaudeCodeWorkerSettings>();
@@ -404,6 +627,8 @@ async function main() {
     } catch (err) {
       log(`Failed to load settings: ${err}`);
     }
+  } else {
+    log(`Session persistence disabled (no contextId available)`);
   }
 
   if (Object.keys(currentSettings).length > 0) {
@@ -428,32 +653,40 @@ async function main() {
     pendingMissedContext = buildMissedContext();
   });
 
-  // Process incoming events using unified API
-  for await (const event of client.events({ targetedOnly: true, respondWhenSolo: true })) {
-    if (event.type !== "message") continue;
+  // =============================================================================
+  // Producer-Consumer Pattern for Message Interleaving
+  // =============================================================================
+  // - Observer (producer): Non-blocking loop that immediately acknowledges messages
+  // - Processor (consumer): Sequential processing loop
+  // This allows new messages to be observed and acknowledged while processing others.
 
-    // Skip replay messages - don't respond to historical messages
-    if (event.kind === "replay") continue;
+  const messageQueue = new MessageQueue();
+  const processingState: ProcessingState = { currentMessage: null, queryInstance: null };
 
-    // Skip typing indicators - these are just presence notifications
-    const contentType = (event as { contentType?: string }).contentType;
-    if (contentType === CONTENT_TYPE_TYPING) continue;
+  // Start observer in background (fire-and-forget)
+  // This continuously observes messages and enqueues them with immediate typing indicators
+  void observeMessages(client, messageQueue, processingState);
 
-    const sender = client.roster[event.senderId];
-
-    // Only respond to messages from panels (not our own or other workers)
-    if (sender?.metadata.type === "panel" && event.senderId !== id) {
-      let prompt = event.content;
-      if (pendingMissedContext && pendingMissedContext.count > 0) {
-        prompt = `<missed_context>\n${pendingMissedContext.formatted}\n</missed_context>\n\n${prompt}`;
-        lastMissedPubsubId = pendingMissedContext.lastPubsubId;
-        pendingMissedContext = null;
-      }
-      // Extract attachments from the event
-      const attachments = (event as { attachments?: Attachment[] }).attachments;
-      await handleUserMessage(client, event, prompt, workingDirectory, claudeExecutable, restrictedMode ?? false, attachments);
+  // Start processor (blocks until queue closes)
+  // This processes messages sequentially from the queue
+  await processMessages(
+    client,
+    messageQueue,
+    processingState,
+    workingDirectory,
+    claudeExecutable,
+    restrictedMode ?? false,
+    () => {
+      // Get missed context if available
+      if (!pendingMissedContext || pendingMissedContext.count === 0) return null;
+      const result = { formatted: pendingMissedContext.formatted, lastPubsubId: pendingMissedContext.lastPubsubId };
+      pendingMissedContext = null;
+      return result;
+    },
+    (id) => {
+      lastMissedPubsubId = id;
     }
-  }
+  );
 }
 
 async function handleUserMessage(
@@ -463,7 +696,8 @@ async function handleUserMessage(
   workingDirectory: string | undefined,
   claudeExecutable: string,
   isRestrictedMode: boolean,
-  attachments?: Attachment[]
+  attachments?: Attachment[],
+  existingTypingTracker?: ReturnType<typeof createTypingTracker>
 ) {
   log(`Received message: ${incoming.content}`);
 
@@ -506,7 +740,8 @@ async function handleUserMessage(
 
   // Create typing tracker for ephemeral "typing..." indicator
   // Shows immediately until first thinking/action/text appears
-  const typing = createTypingTracker({
+  // If an existing tracker was passed (from message queue), reuse it
+  const typing = existingTypingTracker ?? createTypingTracker({
     client,
     log,
     replyTo: incoming.id,
@@ -517,7 +752,8 @@ async function handleUserMessage(
     },
   });
 
-  // Start typing indicator immediately
+  // Start/update typing indicator - if existing tracker was passed, update context
+  // Otherwise start fresh
   await typing.startTyping("preparing response");
 
   // Defer creating the response message until we have text content
@@ -778,6 +1014,13 @@ async function handleUserMessage(
     };
 
     // Get session state for resumption
+    const resumeSessionId = client.sdkSessionId || localSdkSessionId;
+    if (resumeSessionId) {
+      log(`Resuming session: ${resumeSessionId}${client.sdkSessionId ? " (persisted)" : " (local fallback)"}`);
+    } else {
+      log("Starting new session (no previous session ID)");
+    }
+
     const queryOptions: Parameters<typeof query>[0]["options"] = {
       // Build mcpServers object combining workspace tools (restricted mode) and attachments (when images present)
       ...(() => {
@@ -821,7 +1064,8 @@ async function handleUserMessage(
       // Enable streaming of partial messages for token-by-token delivery
       includePartialMessages: true,
       // Resume from previous session if available
-      ...(client.sdkSessionId && { resume: client.sdkSessionId }),
+      // Priority: persisted session ID > worker-local fallback
+      ...(resumeSessionId && { resume: resumeSessionId }),
       // Apply user settings
       ...(currentSettings.model && { model: currentSettings.model }),
       ...(currentSettings.maxThinkingTokens && { maxThinkingTokens: currentSettings.maxThinkingTokens }),
@@ -1062,11 +1306,17 @@ async function handleUserMessage(
     }
 
     // Store session ID for resumption
-    if (capturedSessionId && client.sessionKey) {
-      await client.updateSdkSession(capturedSessionId);
-      log(`Session ID stored: ${capturedSessionId}`);
-    } else if (capturedSessionId) {
-      log("Skipping session update (workspaceId not set)");
+    if (capturedSessionId) {
+      // Always update worker-local fallback (for resumption within same worker lifetime)
+      localSdkSessionId = capturedSessionId;
+
+      // Also persist to server if possible (for cross-worker resumption)
+      if (client.sessionKey) {
+        await client.updateSdkSession(capturedSessionId);
+        log(`Session ID stored: ${capturedSessionId}`);
+      } else {
+        log(`Session ID stored locally (no workspaceId): ${capturedSessionId}`);
+      }
     }
 
     // Mark message as complete (whether interrupted or finished normally)
