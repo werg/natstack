@@ -12,6 +12,7 @@ This guide covers developing mini-apps (panels) for NatStack with the simplified
 - [React Hooks API](#react-hooks-api)
 - [Typed RPC Communication](#typed-rpc-communication)
 - [Event System](#event-system)
+- [Context Templates](#context-templates)
 - [File System Access (OPFS)](#file-system-access-opfs)
 - [FS + Git in Panels](#fs--git-in-panels)
 - [AI Integration](#ai-integration)
@@ -465,6 +466,149 @@ const unsubscribe = rpc.onEvent("notification", (fromId, payload) => {
 
 ---
 
+## Context Templates
+
+NatStack provides a **Docker-like context template system** for efficiently creating pre-populated agentic sandboxes. Templates define git repositories to clone into specific paths within a panel's OPFS filesystem, enabling you to spin up new agent sessions instantly from a pre-built base environment.
+
+### Why Context Templates?
+
+For **agentic workloads**, you typically need multiple AI agent sessions with identical base environments:
+- Tool repositories (search, code execution, file manipulation)
+- Prompt libraries and system instructions
+- Shared data and configurations
+
+Without templates, every new agent session would:
+- Clone the same repositories repeatedly
+- Download the same dependencies
+- Set up identical file structures
+
+With templates, this setup happens **once**, and each new session gets an instant copy of the pre-built environment. This dramatically improves startup time for agent-heavy applications.
+
+### Creating a Context Template
+
+Add a `context-template.yml` file to your panel directory:
+
+```yaml
+# panels/my-agent/context-template.yml
+
+# Optional: inherit from another template (like Docker's FROM)
+extends: contexts/base-agent
+
+# Git repositories to clone into the context
+deps:
+  /tools/search:
+    repo: tools/web-search
+    ref: main
+  /tools/code:
+    repo: tools/code-executor
+    ref: v2.0.0
+  /data/prompts:
+    repo: shared/prompt-library
+    ref: main
+```
+
+### Template Inheritance
+
+Templates can extend other templates, creating a layered system:
+
+```yaml
+# contexts/base-agent/context-template.yml
+deps:
+  /tools/core:
+    repo: tools/core-utils
+    ref: main
+  /config:
+    repo: shared/agent-config
+    ref: main
+
+# panels/advanced-agent/context-template.yml
+extends: contexts/base-agent
+deps:
+  /tools/advanced:
+    repo: tools/advanced-reasoning
+    ref: v3.0.0
+  # Automatically inherits /tools/core and /config from base-agent
+```
+
+### Accessing Template Content
+
+Once your panel loads, the template's repositories are available in OPFS:
+
+```tsx
+import { promises as fs } from "fs";
+import { GitClient } from "@natstack/git";
+
+export default function AgentPanel() {
+  const initAgent = async () => {
+    // These paths were pre-populated by the template!
+    const tools = await fs.readdir("/tools");
+    console.log("Available tools:", tools); // ["search", "code"]
+
+    const prompts = await fs.readFile("/data/prompts/system.txt", "utf-8");
+    console.log("System prompt loaded");
+
+    // You can also use git operations on template repos
+    const git = new GitClient(fs, gitConfig);
+    await git.pull({ dir: "/tools/search" }); // Update to latest
+  };
+
+  return <button onClick={initAgent}>Initialize Agent</button>;
+}
+```
+
+### How Template Building Works
+
+When a panel with a template loads:
+
+1. **Resolve**: Follow `extends` chains, merge all `deps`
+2. **Hash**: Compute SHA256 of the final specification
+3. **Check Cache**: Look for existing build with that hash
+4. **Build** (if needed): A hidden worker clones all repos to OPFS
+5. **Copy**: Copy the template partition to the panel's context partition
+
+This ensures:
+- Templates are built once per unique specification
+- Multiple panels with the same template share the build
+- Changes to templates (different refs) trigger rebuilds
+
+### Context ID Formats
+
+NatStack generates context IDs based on panel type:
+
+```ts
+// Safe panels (use templates, OPFS storage)
+"safe_tpl_a1b2c3d4e5f6_panels~my-agent"
+//       ^^^^^^^^^^^^^ template hash
+
+// Unsafe panels (no templates, Node.js fs access)
+"unsafe_noctx_panels~terminal"
+```
+
+**Note**: Only safe panels can use templates. Unsafe panels have direct Node.js filesystem access and don't use OPFS.
+
+### Parsing Context IDs
+
+```ts
+import { parseContextId } from "@natstack/runtime";
+
+const parsed = parseContextId("safe_tpl_a1b2c3d4e5f6_panels~editor");
+// { mode: "safe", templateSpecHash: "a1b2c3d4e5f6", instanceId: "panels~editor" }
+
+const unsafe = parseContextId("unsafe_noctx_panels~terminal");
+// { mode: "unsafe", templateSpecHash: null, instanceId: "panels~terminal" }
+```
+
+### Best Practices for Agentic Contexts
+
+1. **Use templates for shared tooling**: Put commonly-used agent tools in a base template
+2. **Pin refs for stability**: Use commit SHAs or tags instead of branch names for production
+3. **Layer templates**: Create a hierarchy (base-agent -> specialized-agent) for reuse
+4. **Keep templates focused**: Each template should serve a specific use case
+
+See [OPFS_PARTITIONS.md](OPFS_PARTITIONS.md) for complete documentation on context templates and storage partitions.
+
+---
+
 ## File System Access (OPFS)
 
 Panels have access to Origin Private File System (OPFS) through a Node.js-compatible API.
@@ -506,11 +650,13 @@ export default function FileManager() {
 
 ### Storage Isolation
 
-Each panel has its own OPFS partition based on its context:
+Each safe panel has its own OPFS partition based on its context and template:
 
-- **Auto contexts**: By default, panels derive context from their tree path (deterministic, resumable)
-- **Shared contexts**: Use `contextId` option in `createChild` to share storage across panels
-- **Isolated contexts**: Use `newContext: true` in `createChild` for fresh, isolated storage
+- **Template-based contexts**: Safe panels use `safe_tpl_{hash}_{instanceId}` format, where the hash ensures consistent template content
+- **Pre-populated content**: If a panel has a `context-template.yml`, its OPFS starts with the template's cloned repositories
+- **Instance isolation**: Each panel instance gets its own copy of the template, allowing independent modifications
+
+Unsafe panels use `unsafe_noctx_{instanceId}` format and have direct Node.js filesystem access instead of OPFS.
 
 ---
 

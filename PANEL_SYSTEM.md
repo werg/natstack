@@ -435,9 +435,60 @@ See these example panels in the repository:
 4. Launch the panel from the launcher or from another panel using `createChild()`
 5. The panel will be built automatically on first load
 
+## Context Templates
+
+NatStack provides a **context template system** for efficiently creating pre-populated panel sandboxes. This is similar to Docker - you define a template once, build it, and then quickly spin up new instances from that template.
+
+### Why Context Templates?
+
+For **agentic workloads**, you often need multiple AI agent sessions with the same base environment:
+- Same tool repositories
+- Same prompt libraries
+- Same data files
+
+Without templates, each new agent would need to clone and set up everything from scratch. With templates, the setup happens **once** and each new session gets an instant copy.
+
+### Template Definition
+
+Create a `context-template.yml` in your panel or context directory:
+
+```yaml
+# Optional: inherit from another template
+extends: contexts/base-agent
+
+# Git repositories to clone into the context
+deps:
+  /tools/search:
+    repo: tools/web-search
+    ref: main
+  /tools/code:
+    repo: tools/code-executor
+    ref: v2.0.0
+  /data/prompts:
+    repo: shared/prompts
+    ref: main
+```
+
+### How It Works
+
+1. **Resolve**: NatStack follows `extends` chains and merges all dependencies
+2. **Hash**: Computes a SHA256 hash of the final specification
+3. **Build** (if needed): A background worker clones all repos to OPFS
+4. **Copy**: The pre-built template is copied to the panel's context partition
+
+This ensures templates are built once and reused across many panel instances.
+
+### Context ID Formats
+
+- **Safe panels**: `safe_tpl_{hash}_{instanceId}` - uses templates
+- **Unsafe panels**: `unsafe_noctx_{instanceId}` - no templates (Node.js fs access)
+
+See [OPFS_PARTITIONS.md](OPFS_PARTITIONS.md) for full documentation on context templates.
+
 ## Notes
 
 - Panels are isolated in separate webviews
 - Each panel has its own persistent context-based storage (see OPFS_PARTITIONS.md)
+- Safe panels can use context templates for pre-populated OPFS sandboxes
 - Workers run in WebContentsView with a built-in console UI for logging
 - Browser panels support full Playwright automation via CDP

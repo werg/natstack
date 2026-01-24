@@ -5,6 +5,7 @@
 
 import type { PanelManager } from "../panelManager.js";
 import type { CreateChildOptions } from "../../shared/ipc/types.js";
+import { handleTemplateComplete, type TemplateCompleteResult } from "../contextTemplate/partitionBuilder.js";
 
 /**
  * Handle bridge service calls from panels.
@@ -30,7 +31,11 @@ export async function handleBridgeCall(
         CreateChildOptions | undefined,
         Record<string, unknown> | undefined
       ];
-      return pm.createPanel(callerId, source, options, stateArgs);
+      // Map CreateChildOptions to PanelCreateOptions with default templateSpec
+      const panelOptions = options
+        ? { ...options, templateSpec: options.templateSpec ?? "contexts/default" }
+        : { templateSpec: "contexts/default" };
+      return pm.createPanel(callerId, source, panelOptions, stateArgs);
     }
     case "createBrowserChild": {
       const [url] = args as [string];
@@ -105,6 +110,12 @@ export async function handleBridgeCall(
       // Allow any panel to update its own state args
       const [updates] = args as [Record<string, unknown>];
       return pm.handleSetStateArgs(callerId, updates);
+    }
+    case "signalTemplateComplete": {
+      // Called by template-builder workers to signal completion
+      const [result] = args as [TemplateCompleteResult];
+      handleTemplateComplete(callerId, result);
+      return { success: true };
     }
     default:
       throw new Error(`Unknown bridge method: ${method}`);

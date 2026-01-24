@@ -358,6 +358,7 @@ export function createWorkspace(
   const panelsPath = path.join(resolvedPath, "panels");
   const workersPath = path.join(resolvedPath, "workers");
   const packagesPath = path.join(resolvedPath, "packages");
+  const contextsPath = path.join(resolvedPath, "contexts");
   const gitReposPath = resolvedPath;
   const cachePath = path.join(resolvedPath, ".cache");
 
@@ -371,6 +372,7 @@ export function createWorkspace(
   // Ensure directory structure when creating/loading explicitly
   if (options?.createIfMissing || configExists) {
     fs.mkdirSync(panelsPath, { recursive: true });
+    fs.mkdirSync(contextsPath, { recursive: true });
     fs.mkdirSync(gitReposPath, { recursive: true });
     fs.mkdirSync(cachePath, { recursive: true });
     // Note: workersPath and packagesPath are not created automatically
@@ -386,6 +388,7 @@ export function createWorkspace(
     panelsPath,
     workersPath,
     packagesPath,
+    contextsPath,
     gitReposPath,
     cachePath,
   };

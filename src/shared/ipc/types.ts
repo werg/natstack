@@ -362,9 +362,11 @@ export interface PanelSnapshot {
   source: string;
   /** Panel type */
   type: PanelType;
+  /** Resolved context ID (e.g., "safe_tpl_abc123_instance") - determines storage isolation */
+  contextId: string;
 
   // === Creation options (excluding runtime-only fields) ===
-  /** Panel options from CreateChildOptions (excluding eventSchemas and focus) */
+  /** Panel options from CreateChildOptions (excluding eventSchemas, focus) */
   options: Omit<CreateChildOptions, "eventSchemas" | "focus">;
 
   // === State arguments (separate from options) ===

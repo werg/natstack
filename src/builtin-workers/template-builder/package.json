@@ -1,0 +1,12 @@
+{
+  "name": "template-builder",
+  "private": true,
+  "natstack": {
+    "title": "Template Builder",
+    "type": "worker"
+  },
+  "dependencies": {
+    "@natstack/runtime": "workspace:*",
+    "@natstack/git": "workspace:*"
+  }
+}

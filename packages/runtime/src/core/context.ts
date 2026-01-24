@@ -1,46 +1,71 @@
 /**
  * Context ID utilities for NatStack panels and workers.
  *
- * Context IDs follow the format: {mode}_{type}_{identifier}
- * - mode: "safe" | "unsafe" - security context
- * - type: "auto" | "named" - auto = tree-derived, named = explicit
- * - identifier: escaped tree path or random string
+ * Two formats are supported:
+ *
+ * 1. Template-based (safe panels ONLY):
+ *    safe_tpl_{templateSpecHash}_{instanceId}
+ *
+ * 2. Unsafe no-context (unsafe panels without templates):
+ *    unsafe_noctx_{instanceId}
+ *
+ * Note: unsafe_tpl_* is INVALID - unsafe panels cannot have templates.
  */
 
 /** Security mode of a context */
 export type ContextMode = "safe" | "unsafe";
 
-/** How the context was determined */
-export type ContextType = "auto" | "named";
-
 /** Parsed components of a context ID */
 export interface ParsedContextId {
   mode: ContextMode;
-  type: ContextType;
-  identifier: string;
+  /** Template spec hash, or null for unsafe no-context IDs */
+  templateSpecHash: string | null;
+  instanceId: string;
 }
 
 /**
  * Parse a context ID into its components.
  * Returns null if the context ID is invalid.
  *
+ * Handles two formats:
+ * - Template-based: {mode}_tpl_{hash}_{instanceId}
+ * - Unsafe no-context: unsafe_noctx_{instanceId}
+ *
  * @example
  * ```ts
- * const parsed = parseContextId("safe_auto_panels~editor");
- * // { mode: "safe", type: "auto", identifier: "panels~editor" }
+ * const parsed = parseContextId("safe_tpl_a1b2c3d4e5f6_panels~editor");
+ * // { mode: "safe", templateSpecHash: "a1b2c3d4e5f6", instanceId: "panels~editor" }
+ *
+ * const unsafe = parseContextId("unsafe_noctx_panels~terminal");
+ * // { mode: "unsafe", templateSpecHash: null, instanceId: "panels~terminal" }
  *
  * const invalid = parseContextId("invalid");
  * // null
  * ```
  */
 export function parseContextId(contextId: string): ParsedContextId | null {
-  const match = contextId.match(/^(safe|unsafe)_(auto|named)_(.+)$/);
-  if (!match || !match[1] || !match[2] || !match[3]) return null;
-  return {
-    mode: match[1] as ContextMode,
-    type: match[2] as ContextType,
-    identifier: match[3],
-  };
+  // Safe template-based format: safe_tpl_{hash}_{instanceId}
+  // Note: only safe_tpl_* is valid - unsafe panels cannot have templates
+  const tplMatch = contextId.match(/^safe_tpl_([a-f0-9]{12})_(.+)$/);
+  if (tplMatch && tplMatch[1] && tplMatch[2]) {
+    return {
+      mode: "safe",
+      templateSpecHash: tplMatch[1],
+      instanceId: tplMatch[2],
+    };
+  }
+
+  // Unsafe no-context format: unsafe_noctx_{instanceId}
+  const noctxMatch = contextId.match(/^unsafe_noctx_(.+)$/);
+  if (noctxMatch && noctxMatch[1]) {
+    return {
+      mode: "unsafe",
+      templateSpecHash: null, // No template for unsafe no-context IDs
+      instanceId: noctxMatch[1],
+    };
+  }
+
+  return null;
 }
 
 /**
@@ -48,7 +73,7 @@ export function parseContextId(contextId: string): ParsedContextId | null {
  *
  * @example
  * ```ts
- * isValidContextId("safe_auto_panels~editor"); // true
+ * isValidContextId("safe_tpl_a1b2c3d4e5f6_panels~editor"); // true
  * isValidContextId("invalid"); // false
  * ```
  */
@@ -61,8 +86,8 @@ export function isValidContextId(contextId: string): boolean {
  *
  * @example
  * ```ts
- * isSafeContext("safe_auto_panels~editor"); // true
- * isSafeContext("unsafe_auto_panels~terminal"); // false
+ * isSafeContext("safe_tpl_a1b2c3d4e5f6_panels~editor"); // true
+ * isSafeContext("unsafe_noctx_panels~terminal"); // false
  * ```
  */
 export function isSafeContext(contextId: string): boolean {
@@ -75,8 +100,8 @@ export function isSafeContext(contextId: string): boolean {
  *
  * @example
  * ```ts
- * isUnsafeContext("unsafe_auto_panels~terminal"); // true
- * isUnsafeContext("safe_auto_panels~editor"); // false
+ * isUnsafeContext("unsafe_noctx_panels~terminal"); // true
+ * isUnsafeContext("safe_tpl_a1b2c3d4e5f6_panels~editor"); // false
  * ```
  */
 export function isUnsafeContext(contextId: string): boolean {
@@ -85,29 +110,31 @@ export function isUnsafeContext(contextId: string): boolean {
 }
 
 /**
- * Check if a context is auto-derived (from tree path, deterministic/resumable).
+ * Get the template spec hash from a context ID.
+ * Returns null for unsafe no-context IDs (they don't have templates).
  *
  * @example
  * ```ts
- * isAutoContext("safe_auto_panels~editor"); // true
- * isAutoContext("safe_named_abc123"); // false
+ * getTemplateSpecHash("safe_tpl_a1b2c3d4e5f6_panels~editor"); // "a1b2c3d4e5f6"
+ * getTemplateSpecHash("unsafe_noctx_panels~terminal"); // null
+ * getTemplateSpecHash("invalid"); // null
  * ```
  */
-export function isAutoContext(contextId: string): boolean {
+export function getTemplateSpecHash(contextId: string): string | null {
   const parsed = parseContextId(contextId);
-  return parsed?.type === "auto";
+  return parsed?.templateSpecHash ?? null;
 }
 
 /**
- * Check if a context is named (explicitly created, may be shared).
+ * Get the instance ID from a context ID.
  *
  * @example
  * ```ts
- * isNamedContext("safe_named_abc123"); // true
- * isNamedContext("safe_auto_panels~editor"); // false
+ * getInstanceId("safe_tpl_a1b2c3d4e5f6_panels~editor"); // "panels~editor"
+ * getInstanceId("invalid"); // null
  * ```
  */
-export function isNamedContext(contextId: string): boolean {
+export function getInstanceId(contextId: string): string | null {
   const parsed = parseContextId(contextId);
-  return parsed?.type === "named";
+  return parsed?.instanceId ?? null;
 }

@@ -48,6 +48,23 @@ import { getAboutPageUrl, hasAboutPage, registerAboutProtocolForPartition, isVal
 import { getPanelPersistence } from "./db/panelPersistence.js";
 import { getPanelSearchIndex } from "./db/panelSearchIndex.js";
 import { extractAndIndexPageContent } from "./db/pageContentExtractor.js";
+import {
+  cleanupOrphanedTempBuilds,
+  cleanupStaleLocks,
+  // Context ID functions (template-based system)
+  createContextId,
+  deriveInstanceIdFromPanelId,
+  createUnsafeContextId,
+  // Template context functions
+  resolveTemplate,
+  computeImmutableSpec,
+  ensureContextPartitionInitialized,
+  type ContextMode,
+} from "./contextTemplate/index.js";
+import { buildBuiltinWorker } from "./builtinWorkerBuilder.js";
+
+/** Default template spec used when none is explicitly provided */
+const DEFAULT_TEMPLATE_SPEC = "contexts/default";
 
 type PanelCreateOptions = {
   name?: string;
@@ -57,79 +74,15 @@ type PanelCreateOptions = {
   unsafe?: boolean | string;
   sourcemap?: boolean;
   /**
-   * Context ID configuration:
-   * - undefined: auto-derive from panel ID (default)
-   * - true: generate a new unique context
-   * - string: use that specific context ID
+   * Git spec for context template (e.g., "contexts/default").
+   * REQUIRED: Every panel must have a template for context initialization.
    */
-  contextId?: boolean | string;
+  templateSpec: string;
   /** If true, immediately focus the new panel after creation (only applies to app panels) */
   focus?: boolean;
   /** If true, replace the caller panel instead of creating a sibling */
   replace?: boolean;
 };
-
-// =============================================================================
-// Context ID Utilities
-// =============================================================================
-
-type ContextMode = "safe" | "unsafe";
-type ContextType = "auto" | "named";
-
-interface ParsedContextId {
-  mode: ContextMode;
-  type: ContextType;
-  identifier: string;
-}
-
-/**
- * Parse a context ID into its components.
- * Format: {mode}_{type}_{identifier}
- * Examples: safe_auto_tree~panels~editor, unsafe_named_lx8f2k-abc123
- */
-function parseContextId(contextId: string): ParsedContextId | null {
-  const match = contextId.match(/^(safe|unsafe)_(auto|named)_(.+)$/);
-  if (!match || !match[1] || !match[2] || !match[3]) return null;
-  return {
-    mode: match[1] as ContextMode,
-    type: match[2] as ContextType,
-    identifier: match[3],
-  };
-}
-
-/**
- * Derive an auto context ID from a panel's tree path.
- * These are deterministic and resumable - same path = same context.
- */
-function deriveAutoContextId(mode: ContextMode, panelId: string): string {
-  const escaped = panelId.replace(/\//g, "~");
-  return `${mode}_auto_${escaped}`;
-}
-
-/**
- * Generate a random named context ID.
- * These are non-resumable - each call creates a new unique context.
- */
-function generateNamedContextId(mode: ContextMode): string {
-  const id = `${Date.now().toString(36)}-${randomBytes(6).toString("hex")}`;
-  return `${mode}_named_${id}`;
-}
-
-/**
- * Validate an explicit context ID from user input.
- * Throws if the context ID is invalid or mode doesn't match.
- */
-function validateContextId(contextId: string, expectedMode: ContextMode): void {
-  const parsed = parseContextId(contextId);
-  if (!parsed) {
-    throw new Error(`Invalid context ID format: ${contextId}`);
-  }
-  if (parsed.mode !== expectedMode) {
-    throw new Error(
-      `Context mode mismatch: ${contextId} is ${parsed.mode}, expected ${expectedMode}`
-    );
-  }
-}
 
 // =============================================================================
 // Navigation State Utilities
@@ -195,6 +148,19 @@ export class PanelManager {
    */
   private async initializePanelTree(): Promise<void> {
     const persistence = getPanelPersistence();
+
+    // Clean up orphaned temp builds and stale locks from previous crashes
+    try {
+      const tempsCleaned = cleanupOrphanedTempBuilds();
+      const locksCleaned = cleanupStaleLocks();
+      if (tempsCleaned > 0 || locksCleaned > 0) {
+        console.log(
+          `[PanelManager] Cleaned up ${tempsCleaned} orphaned temp builds and ${locksCleaned} stale locks`
+        );
+      }
+    } catch (error) {
+      console.warn("[PanelManager] Failed to clean up template build artifacts:", error);
+    }
 
     try {
       // Try to load existing panels from database
@@ -715,13 +681,13 @@ export class PanelManager {
       // ns:// - New navigation protocol (middle/ctrl-click always creates child)
       if (url.startsWith("ns:")) {
         try {
-          const { source, gitRef, contextId, repoArgs, env, stateArgs, name, focus, unsafe } = parseNsUrl(url);
+          const { source, gitRef, templateSpec, repoArgs, env, stateArgs, name, focus, unsafe } = parseNsUrl(url);
           this.createPanel(
             panelId,
             source,
             {
               gitRef,
-              contextId,
+              templateSpec: templateSpec ?? DEFAULT_TEMPLATE_SPEC,
               repoArgs,
               env,
               name,
@@ -741,7 +707,7 @@ export class PanelManager {
       if (url.startsWith("ns-about:")) {
         try {
           const { page } = parseNsAboutUrl(url);
-          this.createPanel(panelId, `shell:${page}`, { replace: false }).catch((err: unknown) =>
+          this.createPanel(panelId, `shell:${page}`, { templateSpec: DEFAULT_TEMPLATE_SPEC, replace: false }).catch((err: unknown) =>
             this.handleChildCreationError(panelId, err, url)
           );
         } catch (err) {
@@ -780,7 +746,7 @@ export class PanelManager {
       if (url.startsWith("ns:")) {
         event.preventDefault();
         try {
-          const { source, action, gitRef, contextId, repoArgs, env, stateArgs, name, focus, unsafe } = parseNsUrl(url);
+          const { source, action, gitRef, templateSpec, repoArgs, env, stateArgs, name, focus, unsafe } = parseNsUrl(url);
 
           // Determine the operation:
           // 1. action=child → create child panel under caller
@@ -796,7 +762,7 @@ export class PanelManager {
               source,
               {
                 gitRef,
-                contextId,
+                templateSpec: templateSpec ?? DEFAULT_TEMPLATE_SPEC,
                 repoArgs,
                 env,
                 name,
@@ -813,7 +779,7 @@ export class PanelManager {
               source,
               {
                 gitRef,
-                contextId,
+                templateSpec: templateSpec ?? DEFAULT_TEMPLATE_SPEC,
                 repoArgs,
                 env,
                 name,
@@ -931,33 +897,82 @@ export class PanelManager {
   }
 
   /**
-   * Resolve context ID for a panel based on options and mode.
-   * - If explicit contextId provided: validate and use it
-   * - If contextId is true: generate random named context
-   * - If contextId is string: validate and use it
-   * - Default: derive auto context from panel ID (deterministic, resumable)
+   * Resolve context ID for a panel based on template spec and safety mode.
+   *
+   * Safe panels: Use the template system with OPFS storage.
+   * Unsafe panels: Do NOT participate in templates - get a simple context ID.
+   *
+   * @throws Error if an unsafe panel tries to use a non-default templateSpec
    */
-  private resolveContext(
+  private async resolveContext(
     panelId: string,
-    options: PanelCreateOptions | undefined,
+    templateSpec: string,
     isUnsafe: boolean
-  ): string {
-    const mode: ContextMode = isUnsafe ? "unsafe" : "safe";
+  ): Promise<string> {
+    // Unsafe panels cannot use the template system
+    if (isUnsafe) {
+      // Check if a non-default templateSpec was explicitly provided
+      // We allow the default because the caller might not know if it's safe/unsafe
+      if (templateSpec !== DEFAULT_TEMPLATE_SPEC) {
+        throw new Error(
+          `Unsafe panels cannot use context templates. ` +
+          `Panel "${panelId}" specified templateSpec "${templateSpec}" but unsafe mode does not support templates. ` +
+          `Remove the templateSpec or use safe mode.`
+        );
+      }
 
-    // contextId=true means generate a new unique context
-    if (options?.contextId === true) {
-      return generateNamedContextId(mode);
+      // Create a simple context ID without the template system
+      const instanceId = deriveInstanceIdFromPanelId(panelId);
+      const contextId = createUnsafeContextId(instanceId);
+      console.log(`[PanelManager] Created unsafe context ID: ${contextId}`);
+      return contextId;
     }
 
-    // Explicit context ID string provided - validate and use it
-    if (typeof options?.contextId === "string") {
-      validateContextId(options.contextId, mode);
-      return options.contextId;
-    }
+    // Safe panels use the template system
+    return this.resolveTemplateContext(panelId, templateSpec);
+  }
 
-    // Default: derive from panel ID (deterministic auto context)
-    // Same panel path = same context = resumed OPFS state
-    return deriveAutoContextId(mode, panelId);
+  /**
+   * Resolve a template-based context ID for SAFE panels only.
+   * Resolves the template, computes the immutable spec, and initializes the OPFS context.
+   */
+  private async resolveTemplateContext(
+    panelId: string,
+    templateSpec: string
+  ): Promise<string> {
+    const workspace = getActiveWorkspace();
+    if (!workspace) throw new Error("No active workspace");
+
+    console.log(`[PanelManager] Resolving template: ${templateSpec}`);
+
+    // Resolve template and compute spec
+    const resolved = await resolveTemplate(templateSpec);
+    const immutableSpec = computeImmutableSpec(resolved);
+
+    console.log(`[PanelManager] Template resolved:`, {
+      specHash: immutableSpec.specHash.slice(0, 12),
+      structureKeys: Object.keys(immutableSpec.structure),
+      inheritanceChain: immutableSpec.inheritanceChain,
+    });
+
+    // Generate context ID with template format (always safe mode now)
+    const instanceId = deriveInstanceIdFromPanelId(panelId);
+    const contextId = createContextId("safe", immutableSpec.specHash, instanceId);
+
+    // Initialize context via OPFS partition copying
+    console.log(`[PanelManager] Initializing safe context: ${contextId}`);
+    const gitConfig = {
+      serverUrl: this.gitServer.getBaseUrl(),
+      token: this.gitServer.getTokenForPanel(panelId),
+    };
+    await ensureContextPartitionInitialized(
+      contextId,
+      immutableSpec,
+      gitConfig
+    );
+    console.log(`[PanelManager] Context initialized successfully`);
+
+    return contextId;
   }
 
   // Public methods for RPC services
@@ -1085,16 +1100,17 @@ export class PanelManager {
   /**
    * Shared creation path for both root and child panels.
    * When replacePanel is provided, it replaces that panel in the tree at the same position.
+   * templateSpec is REQUIRED - every panel must have a context template.
    */
-  private createPanelFromManifest(params: {
+  private async createPanelFromManifest(params: {
     manifest: PanelManifest;
     relativePath: string;
     parent: Panel | null;
-    options?: PanelCreateOptions;
+    options: PanelCreateOptions;
     isRoot?: boolean;
     replacePanel?: Panel;
     stateArgs?: Record<string, unknown>;
-  }): { id: string; type: SharedPanel.PanelType; title: string } {
+  }): Promise<{ id: string; type: SharedPanel.PanelType; title: string }> {
     const { manifest, relativePath, parent, options, isRoot, replacePanel, stateArgs } = params;
 
     const isWorker = manifest.type === "worker";
@@ -1153,9 +1169,9 @@ export class PanelManager {
       isRoot,
     });
 
-    // Resolve context ID based on panel ID and options
+    // Resolve context ID based on panel ID and template spec
     const isUnsafe = Boolean(unsafeFlag);
-    const contextId = this.resolveContext(panelId, options, isUnsafe);
+    const contextId = await this.resolveContext(panelId, options.templateSpec, isUnsafe);
 
     if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
       throw new Error(`A panel with id "${panelId}" is already running`);
@@ -1175,13 +1191,14 @@ export class PanelManager {
       const initialSnapshot = createSnapshot(
         relativePath,
         panelType,
+        contextId,
         {
           env: panelEnv,
-          contextId, // Already resolved to a string
-          unsafe: options?.unsafe ?? manifest.unsafe,
-          gitRef: options?.gitRef,
-          repoArgs: options?.repoArgs,
-          sourcemap: options?.sourcemap,
+          unsafe: options.unsafe ?? manifest.unsafe,
+          gitRef: options.gitRef,
+          repoArgs: options.repoArgs,
+          sourcemap: options.sourcemap,
+          templateSpec: options.templateSpec,
         },
         validatedStateArgs
       );
@@ -1435,11 +1452,17 @@ export class PanelManager {
       );
     }
 
+    // templateSpec is required - use default if not provided
+    const resolvedOptions: PanelCreateOptions = options ?? { templateSpec: DEFAULT_TEMPLATE_SPEC };
+    if (!resolvedOptions.templateSpec) {
+      resolvedOptions.templateSpec = DEFAULT_TEMPLATE_SPEC;
+    }
+
     return this.createPanelFromManifest({
       manifest,
       relativePath,
       parent,
-      options,
+      options: resolvedOptions,
       replacePanel,
       stateArgs,
     });
@@ -1482,16 +1505,18 @@ export class PanelManager {
       isRoot: false,
     });
 
-    // Browser panels are always safe (no Node.js access)
-    const contextId = this.resolveContext(panelId, undefined, false);
+    // Browser panels don't use partitions or templates - they use the default Chromium session.
+    // Generate a simple context ID without template resolution overhead.
+    const instanceId = deriveInstanceIdFromPanelId(panelId);
+    const contextId = `browser_${instanceId}`;
 
     if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
       throw new Error(`A panel with id "${panelId}" is already running`);
     }
 
     // Create the initial snapshot for the browser panel
-    const initialSnapshot = createSnapshot(url, "browser", {
-      contextId,
+    const initialSnapshot = createSnapshot(url, "browser", contextId, {
+      templateSpec: DEFAULT_TEMPLATE_SPEC,
     });
     // Add browser-specific state to snapshot
     initialSnapshot.resolvedUrl = url;
@@ -1938,7 +1963,8 @@ export class PanelManager {
 
     // Truncate forward history and push new snapshot
     panel.history = panel.history.slice(0, panel.historyIndex + 1);
-    const newSnapshot = createSnapshot(url, "browser", getPanelOptions(panel));
+    const contextId = getPanelContextId(panel);
+    const newSnapshot = createSnapshot(url, "browser", contextId, getPanelOptions(panel));
     newSnapshot.resolvedUrl = url;
     panel.history.push(newSnapshot);
     panel.historyIndex = panel.history.length - 1;
@@ -1970,7 +1996,8 @@ export class PanelManager {
 
     // Create new snapshot with pushState (sanitized for persistence)
     const source = getPanelSource(panel);
-    const newSnapshot = createSnapshot(source, "app", getPanelOptions(panel));
+    const contextId = getPanelContextId(panel);
+    const newSnapshot = createSnapshot(source, "app", contextId, getPanelOptions(panel));
     newSnapshot.pushState = { state: this.sanitizePushState(state), path };
     panel.history.push(newSnapshot);
     panel.historyIndex = panel.history.length - 1;
@@ -2223,13 +2250,14 @@ export class PanelManager {
     }
 
     // Shell panels use unsafe mode for full service access
-    const contextId = this.resolveContext(panelId, options, true);
+    const templateSpec = options?.templateSpec ?? DEFAULT_TEMPLATE_SPEC;
+    const contextId = await this.resolveContext(panelId, templateSpec, true);
 
     // Create the initial snapshot for the shell panel
-    const initialSnapshot = createSnapshot(`shell:${page}`, "shell", {
+    const initialSnapshot = createSnapshot(`shell:${page}`, "shell", contextId, {
       env: options?.env,
-      contextId,
       unsafe: true, // Shell panels have full access
+      templateSpec,
     });
     initialSnapshot.page = page;
 
@@ -2446,14 +2474,15 @@ export class PanelManager {
 
     // Shell panels use unsafe mode for full service access
     // Multi-instance pages get unique context IDs
+    // NOTE: Root shell panels use legacy contextId format until template system is fully integrated
     const contextId = isMultiInstance
       ? `unsafe_auto_${panelId.replace(":", "_")}`
       : `unsafe_auto_shell~${page}`;
 
     // Create the initial snapshot for the shell panel
-    const initialSnapshot = createSnapshot(`shell:${page}`, "shell", {
-      contextId,
+    const initialSnapshot = createSnapshot(`shell:${page}`, "shell", contextId, {
       unsafe: true, // Shell panels have full access
+      templateSpec: DEFAULT_TEMPLATE_SPEC,
     });
     initialSnapshot.page = page;
 
@@ -3749,4 +3778,138 @@ export class PanelManager {
 
     this.sendPanelEvent(panelId, { type: "theme", theme: this.currentTheme });
   }
+
+  // =====================================================================
+  // Template Builder Worker Methods
+  // =====================================================================
+
+  /**
+   * Map of template builder worker IDs that are currently active.
+   * Used to track workers for cleanup on completion/timeout.
+   */
+  private templateBuilderWorkers = new Set<string>();
+
+  /**
+   * Create a hidden template builder worker to sync OPFS.
+   * The worker clones template deps to its partition's OPFS storage.
+   *
+   * @param workerId - Unique ID for this builder worker
+   * @param partitionName - Partition name for OPFS storage (e.g., "tpl_abc123456789")
+   * @param templateConfig - Configuration for the template build
+   */
+  async createTemplateBuilderWorker(
+    workerId: string,
+    partitionName: string,
+    templateConfig: {
+      structure: Record<string, { repo: string; resolvedCommit: string }>;
+      specHash: string;
+      gitConfig: { serverUrl: string; token: string };
+    }
+  ): Promise<void> {
+    if (!this.viewManager) {
+      throw new Error("ViewManager not available");
+    }
+
+    console.log(`[PanelManager] Creating template builder worker: ${workerId}`);
+
+    // Generate auth token for the worker
+    const { randomBytes } = await import("crypto");
+    const authToken = randomBytes(32).toString("hex");
+    this.pendingAuthTokens.set(workerId, { token: authToken, createdAt: Date.now() });
+
+    // Build additional arguments for preload
+    const additionalArgs: string[] = [
+      `--natstack-panel-id=${workerId}`,
+      `--natstack-auth-token=${authToken}`,
+      `--natstack-theme=${this.currentTheme}`,
+      `--natstack-kind=worker`,
+      `--natstack-context-id=${workerId}`,
+    ];
+
+    // Encode template config as env (preload exposes this via process.env)
+    const panelEnv = {
+      NATSTACK_TEMPLATE_CONFIG: JSON.stringify(templateConfig),
+    };
+    const encodedEnv = Buffer.from(JSON.stringify(panelEnv), "utf-8").toString("base64");
+    additionalArgs.push(`--natstack-panel-env=${encodedEnv}`);
+
+    // Build the template-builder worker using the builtin worker builder
+    // This is a built-in worker that ships with the app and only runs in safe mode
+    const bundle = await buildBuiltinWorker("template-builder");
+
+    // Generate worker host HTML
+    const workerHostHtml = this.generateWorkerHostHtml("Template Builder", false);
+
+    // Store for protocol serving
+    const htmlUrl = storeProtocolPanel(workerId, {
+      bundle,
+      html: workerHostHtml,
+      title: "Template Builder",
+      sourceRepo: "builtin:template-builder",
+    });
+
+    // Create hidden view with template partition
+    const srcUrl = new URL(htmlUrl);
+    srcUrl.searchParams.set("panelId", workerId);
+
+    this.viewManager.createView({
+      id: workerId,
+      type: "worker",
+      partition: `persist:${partitionName}`,
+      url: srcUrl.toString(),
+      injectHostThemeVariables: false,
+      additionalArguments: additionalArgs,
+      unsafe: false,
+    });
+
+    // Track this worker
+    this.templateBuilderWorkers.add(workerId);
+    console.log(`[PanelManager] Template builder worker created: ${workerId}`);
+  }
+
+  /**
+   * Close a template builder worker and clean up resources.
+   *
+   * @param workerId - The worker ID to close
+   */
+  async closeTemplateBuilderWorker(workerId: string): Promise<void> {
+    console.log(`[PanelManager] Closing template builder worker: ${workerId}`);
+
+    // Remove from tracking
+    this.templateBuilderWorkers.delete(workerId);
+
+    // Clean up auth token
+    this.pendingAuthTokens.delete(workerId);
+
+    // Remove protocol panel content
+    if (isProtocolPanel(workerId)) {
+      removeProtocolPanel(workerId);
+    }
+
+    // Destroy the view
+    if (this.viewManager?.hasView(workerId)) {
+      this.viewManager.destroyView(workerId);
+    }
+
+    console.log(`[PanelManager] Template builder worker closed: ${workerId}`);
+  }
+}
+
+// Global PanelManager instance for internal use
+let _globalPanelManager: PanelManager | null = null;
+
+/**
+ * Set the global PanelManager instance.
+ * Called during app initialization.
+ */
+export function setGlobalPanelManager(pm: PanelManager): void {
+  _globalPanelManager = pm;
+}
+
+/**
+ * Get the global PanelManager instance.
+ * Returns null if not yet initialized.
+ */
+export function getPanelManager(): PanelManager | null {
+  return _globalPanelManager;
 }

@@ -137,6 +137,8 @@ export interface Workspace {
   workersPath: string;
   /** Absolute path to packages directory (workspace/packages) */
   packagesPath: string;
+  /** Absolute path to contexts directory (workspace/contexts) */
+  contextsPath: string;
   /** Absolute path to git repos directory (workspace) */
   gitReposPath: string;
   /** Absolute path to cache directory (workspace/.cache) */

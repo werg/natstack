@@ -78,27 +78,10 @@ export function getPanelSourcemap(panel: Panel): boolean | undefined {
 
 /**
  * Get the resolved context ID for a panel.
- *
- * - If contextId is a string, return it directly
- * - If contextId is true, this is an error (should have been resolved at creation)
- * - If contextId is undefined, auto-derive from panel ID
+ * Returns the contextId stored in the snapshot.
  */
 export function getPanelContextId(panel: Panel): string {
-  const options = getPanelOptions(panel);
-  const mode = options.unsafe ? "unsafe" : "safe";
-
-  if (options.contextId === true) {
-    // true means "new unique context" - but this should have been resolved at creation time
-    // If we see true here, it means the snapshot wasn't properly resolved
-    throw new Error(
-      `Panel ${panel.id} has unresolved contextId=true - should have been converted to UUID at creation`
-    );
-  }
-  if (typeof options.contextId === "string") {
-    return options.contextId;
-  }
-  // undefined: auto-derive from panel ID
-  return `${mode}_auto_${panel.id.replace(/\//g, "~")}`;
+  return getCurrentSnapshot(panel).contextId;
 }
 
 /**
@@ -175,39 +158,44 @@ export const SOURCE_SCOPED_OPTIONS = [
 /**
  * Options that persist across navigations (panel-scoped).
  * These inherit unless explicitly overridden.
+ * Note: contextId is NOT in options - it's a separate field on the snapshot.
  */
 export const PANEL_SCOPED_OPTIONS = [
   "env",
-  "contextId",
   "unsafe",
   "name",
+  "templateSpec",
 ] as const;
 
 /**
- * Create a snapshot from source, type, options, and stateArgs.
- * Resolves contextId=true to a UUID.
+ * Snapshot options type - CreateChildOptions without runtime-only fields
+ */
+type SnapshotOptions = Omit<CreateChildOptions, "eventSchemas" | "focus">;
+
+/**
+ * Create a snapshot from source, type, contextId, options, and stateArgs.
  *
+ * @param source - Panel source path or URL
+ * @param type - Panel type
+ * @param contextId - Resolved context ID string
+ * @param options - Creation options (without contextId)
  * @param stateArgs - Validated state args (separate from options for single source of truth)
  */
 export function createSnapshot(
   source: string,
   type: PanelType,
-  options?: CreateChildOptions,
+  contextId: string,
+  options?: SnapshotOptions,
   stateArgs?: StateArgsValue
 ): PanelSnapshot {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { eventSchemas, focus, ...persistableOptions } = options ?? {};
-
-  // Resolve contextId=true to a unique string
-  const resolvedOptions = { ...persistableOptions };
-  if (resolvedOptions.contextId === true) {
-    resolvedOptions.contextId = crypto.randomUUID();
-  }
+  const { eventSchemas, focus, ...persistableOptions } = (options ?? {}) as CreateChildOptions;
 
   return {
     source,
     type,
-    options: resolvedOptions,
+    contextId,
+    options: persistableOptions,
     stateArgs,
   };
 }
@@ -216,6 +204,7 @@ export function createSnapshot(
  * Create a new snapshot for navigation with proper option inheritance.
  * Panel-scoped options inherit, source-scoped options reset.
  * stateArgs is NOT inherited - each navigation has its own stateArgs.
+ * contextId is inherited from the previous snapshot (panels keep their context).
  *
  * @param stateArgs - Validated state args for this navigation (not inherited)
  */
@@ -226,14 +215,18 @@ export function createNavigationSnapshot(
   newOptions?: CreateChildOptions,
   stateArgs?: StateArgsValue
 ): PanelSnapshot {
-  const prevOptions = getPanelOptions(panel);
+  const prevSnapshot = getCurrentSnapshot(panel);
+  const prevOptions = prevSnapshot.options;
+
+  // contextId is inherited from previous snapshot (panels keep their context)
+  const contextId = prevSnapshot.contextId;
 
   // Only inherit panel-scoped options
-  const inheritedOptions: Partial<CreateChildOptions> = {
+  const inheritedOptions: Partial<SnapshotOptions> = {
     env: prevOptions.env,
-    contextId: prevOptions.contextId,
     unsafe: prevOptions.unsafe,
     name: prevOptions.name,
+    templateSpec: prevOptions.templateSpec,
   };
 
   // Merge inherited options with new options (new options override)
@@ -248,14 +241,10 @@ export function createNavigationSnapshot(
     ...definedNewOptions,
   };
 
-  // Resolve contextId=true
-  if (mergedOptions.contextId === true) {
-    mergedOptions.contextId = crypto.randomUUID();
-  }
-
   return {
     source,
     type,
+    contextId,
     options: mergedOptions,
     stateArgs, // Not inherited - each navigation has its own stateArgs
   };

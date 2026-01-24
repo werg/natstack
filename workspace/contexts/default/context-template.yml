@@ -1,0 +1,10 @@
+# Default Context Template
+#
+# This is the base context template that all panels use by default.
+# It provides a minimal, empty context with no pre-populated filesystem structure.
+#
+# Panels can extend this template or specify their own custom template
+# via the templateSpec option.
+
+name: default
+description: Base context template with empty filesystem

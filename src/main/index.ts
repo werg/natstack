@@ -7,7 +7,7 @@ import * as os from "os";
 process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
 
 import { isDev } from "./utils.js";
-import { PanelManager } from "./panelManager.js";
+import { PanelManager, setGlobalPanelManager } from "./panelManager.js";
 import { GitServer } from "./gitServer.js";
 import { handle } from "./ipc/handlers.js";
 import type * as SharedPanel from "../shared/ipc/types.js";
@@ -127,6 +127,7 @@ if (appMode === "main" && hasWorkspaceConfig) {
 
     // Create panel manager
     panelManager = new PanelManager(gitServer);
+    setGlobalPanelManager(panelManager);
 
     // Set up test API for E2E testing (only when NATSTACK_TEST_MODE=1)
     setupTestApi(panelManager);

@@ -58,7 +58,6 @@ export type {
   NsAction,
   AboutPage,
   ContextMode,
-  ContextType,
   ParsedContextId,
   EnvArgSchema,
   WorkspaceNode,
@@ -183,8 +182,8 @@ export const parseContextId = contextUtils.parseContextId;
 export const isValidContextId = contextUtils.isValidContextId;
 export const isSafeContext = contextUtils.isSafeContext;
 export const isUnsafeContext = contextUtils.isUnsafeContext;
-export const isAutoContext = contextUtils.isAutoContext;
-export const isNamedContext = contextUtils.isNamedContext;
+export const getTemplateSpecHash = contextUtils.getTemplateSpecHash;
+export const getInstanceId = contextUtils.getInstanceId;
 
 // Rpc namespace export
 export const Rpc = RpcNamespace;

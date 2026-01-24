@@ -159,8 +159,9 @@ ${FS_INTERFACES}
     unsafe?: boolean | string;
     sourcemap?: boolean;
     eventSchemas?: EventSchemaMap;
-    contextId?: string;
-    newContext?: boolean;
+    focus?: boolean;
+    /** Git spec for context template (e.g., "contexts/default"). Defaults to "contexts/default" if not provided. */
+    templateSpec?: string;
   }
 
   /** Create a new child panel/worker */
@@ -326,20 +327,20 @@ ${FS_INTERFACES}
   // ============================================================================
 
   type ContextMode = "safe" | "unsafe";
-  type ContextType = "auto" | "named";
 
   interface ParsedContextId {
     mode: ContextMode;
-    type: ContextType;
-    identifier: string;
+    /** Template spec hash, or null for unsafe no-context IDs */
+    templateSpecHash: string | null;
+    instanceId: string;
   }
 
   export function parseContextId(contextId: string): ParsedContextId | null;
   export function isValidContextId(contextId: string): boolean;
   export function isSafeContext(contextId: string): boolean;
   export function isUnsafeContext(contextId: string): boolean;
-  export function isAutoContext(contextId: string): boolean;
-  export function isNamedContext(contextId: string): boolean;
+  export function getTemplateSpecHash(contextId: string): string | null;
+  export function getInstanceId(contextId: string): string | null;
 
   // ============================================================================
   // Form Schema Utilities

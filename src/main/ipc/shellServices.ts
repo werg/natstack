@@ -370,6 +370,12 @@ export async function handleViewService(
       return;
     }
 
+    case "updateLayout": {
+      const layoutUpdate = args[0] as { titleBarHeight?: number; sidebarVisible?: boolean; sidebarWidth?: number };
+      vm.updateLayout(layoutUpdate);
+      return;
+    }
+
     case "browserNavigate": {
       const [browserId, url] = args as [string, string];
       await vm.navigateView(browserId, url);

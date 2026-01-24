@@ -31,12 +31,10 @@ export interface ParsedNsUrl {
   action: NsAction;
   gitRef?: string;
   /**
-   * Context ID configuration:
-   * - undefined: auto-derive from panel ID (default)
-   * - true: generate a new unique context
-   * - string: use that specific context ID
+   * Git spec for context template (e.g., "contexts/default").
+   * If not provided, uses workspace default template.
    */
-  contextId?: boolean | string;
+  templateSpec?: string;
   repoArgs?: Record<string, RepoArgSpec>;
   env?: Record<string, string>;
   /** State arguments for the panel (validated against manifest schema in panelManager) */
@@ -78,20 +76,8 @@ export function parseNsUrl(url: string): ParsedNsUrl {
   const name = parsed.searchParams.get("name") ?? undefined;
   const focus = parsed.searchParams.get("focus") === "true" || undefined;
 
-  // Parse contextId: "true" -> true (new unique context), string -> that context ID
-  // Also support legacy "context" and "newContext" params for backwards compatibility
-  let contextId: boolean | string | undefined;
-  const contextIdParam = parsed.searchParams.get("contextId");
-  const legacyContext = parsed.searchParams.get("context");
-  const legacyNewContext = parsed.searchParams.get("newContext") === "true";
-
-  if (contextIdParam === "true" || legacyNewContext) {
-    contextId = true;
-  } else if (contextIdParam) {
-    contextId = contextIdParam;
-  } else if (legacyContext) {
-    contextId = legacyContext;
-  }
+  // Parse templateSpec: git spec for context template
+  const templateSpec = parsed.searchParams.get("templateSpec") ?? undefined;
 
   // Parse unsafe parameter: "true" -> true, "false" -> false, other string -> path
   const unsafeParam = parsed.searchParams.get("unsafe");
@@ -156,18 +142,16 @@ export function parseNsUrl(url: string): ParsedNsUrl {
     }
   }
 
-  return { source, action, gitRef, contextId, repoArgs, env, stateArgs, name, focus, unsafe };
+  return { source, action, gitRef, templateSpec, repoArgs, env, stateArgs, name, focus, unsafe };
 }
 
 export interface BuildNsUrlOptions {
   action?: NsAction;
   gitRef?: string;
   /**
-   * Context ID configuration:
-   * - true: generate a new unique context
-   * - string: use that specific context ID
+   * Git spec for context template (e.g., "contexts/default").
    */
-  contextId?: boolean | string;
+  templateSpec?: string;
   repoArgs?: Record<string, RepoArgSpec>;
   env?: Record<string, string>;
   /** State arguments for the panel (validated against manifest schema in panelManager) */
@@ -189,9 +173,8 @@ export function buildNsUrl(source: string, options?: BuildNsUrlOptions): string 
   if (options?.action && options.action !== "navigate") {
     searchParams.set("action", options.action);
   }
-  if (options?.contextId !== undefined) {
-    // true -> "true", string -> the string value
-    searchParams.set("contextId", String(options.contextId));
+  if (options?.templateSpec) {
+    searchParams.set("templateSpec", options.templateSpec);
   }
   if (options?.gitRef) {
     searchParams.set("gitRef", options.gitRef);

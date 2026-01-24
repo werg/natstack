@@ -46,8 +46,8 @@ export {
   isValidContextId,
   isSafeContext,
   isUnsafeContext,
-  isAutoContext,
-  isNamedContext,
+  getTemplateSpecHash,
+  getInstanceId,
 } from "../core/context.js";
 export type * from "../core/types.js";
 export type { Runtime } from "../setup/createRuntime.js";

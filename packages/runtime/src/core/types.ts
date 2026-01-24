@@ -73,15 +73,14 @@ export interface CreateChildOptions {
   sourcemap?: boolean;
   /** Optional zod schemas for validating event payloads from this child (runtime-only; not sent to main). */
   eventSchemas?: EventSchemaMap;
-  /**
-   * Context ID configuration:
-   * - undefined: auto-derive from panel ID (default)
-   * - true: generate a new unique context (replaces newContext: true)
-   * - string: use that specific context ID
-   */
-  contextId?: boolean | string;
   /** If true, immediately focus the new panel after creation (only applies to app panels) */
   focus?: boolean;
+  /**
+   * Git spec for context template (e.g., "contexts/default").
+   * REQUIRED: Every panel must have a template for context initialization.
+   * If not provided, defaults to "contexts/default".
+   */
+  templateSpec?: string;
 }
 
 export interface ChildCreationResult {

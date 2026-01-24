@@ -1,0 +1,21 @@
+# Session Demo Context Template
+#
+# This template lives inside the panel repo itself, demonstrating
+# that context templates can be co-located with the panels that use them.
+#
+# The templateSpec would be: panels/session-demo
+#
+# Inheritance chain: panels/session-demo -> contexts/demo -> contexts/default
+
+name: session-demo
+description: Context template for the session demo panel
+extends: contexts/demo
+
+# Additional structure on top of what contexts/demo provides.
+# The panel will have access to:
+#   /deps/rpc-example (from contexts/demo)
+#   /deps/code-editor (added here)
+# Uses nested format - equivalent to "/deps/code-editor": panels/code-editor
+structure:
+  deps:
+    code-editor: panels/code-editor
