@@ -75,6 +75,13 @@ interface ManagedView {
  * The shell view (React UI) is created first and fills the window.
  * Panel and browser views are layered on top at specific bounds.
  */
+/** Layout configuration for panel content area */
+export interface LayoutState {
+  titleBarHeight: number;
+  sidebarVisible: boolean;
+  sidebarWidth: number;
+}
+
 export class ViewManager {
   private window: BaseWindow;
   private views = new Map<string, ManagedView>();
@@ -86,6 +93,14 @@ export class ViewManager {
   private visibilityLocks = new Map<string, Promise<unknown>>();
   /** Track sessions that have had the protocol registered (by partition name or "default") */
   private registeredProtocolSessions = new Set<string>();
+  /** Current layout state for calculating panel bounds */
+  private layoutState: LayoutState = {
+    titleBarHeight: 32,
+    sidebarVisible: false,
+    sidebarWidth: 260,
+  };
+  /** ID of the currently visible panel (to apply bounds updates) */
+  private visiblePanelId: string | null = null;
 
   constructor(options: {
     window: BaseWindow;
@@ -152,8 +167,11 @@ export class ViewManager {
       }
     });
 
-    // Update shell bounds when window resizes
-    this.window.on("resize", () => this.updateShellBounds());
+    // Update shell and panel bounds when window resizes
+    this.window.on("resize", () => {
+      this.updateShellBounds();
+      this.applyBoundsToVisiblePanel();
+    });
   }
 
   private updateShellBounds(): void {
@@ -381,11 +399,61 @@ export class ViewManager {
     managed.visible = visible;
     managed.view.setVisible(visible);
 
-    // When showing, ensure proper bounds and bring to front
-    if (visible) {
-      managed.view.setBounds(managed.bounds);
+    // Track visible panel and apply calculated bounds
+    if (visible && managed.type !== "shell") {
+      this.visiblePanelId = id;
+      const bounds = this.calculatePanelBounds();
+      managed.bounds = bounds;
+      managed.view.setBounds(bounds);
       this.bringToFront(id);
+    } else if (!visible && this.visiblePanelId === id) {
+      this.visiblePanelId = null;
     }
+  }
+
+  /**
+   * Calculate the bounds for the panel content area based on current layout state.
+   */
+  private calculatePanelBounds(): ViewBounds {
+    const size = this.window.getContentSize();
+    const windowWidth = size[0] ?? 0;
+    const windowHeight = size[1] ?? 0;
+    const { titleBarHeight, sidebarVisible, sidebarWidth } = this.layoutState;
+    const effectiveSidebarWidth = sidebarVisible ? sidebarWidth : 0;
+
+    return {
+      x: effectiveSidebarWidth,
+      y: titleBarHeight,
+      width: Math.max(0, windowWidth - effectiveSidebarWidth),
+      height: Math.max(0, windowHeight - titleBarHeight),
+    };
+  }
+
+  /**
+   * Update layout state and recalculate bounds for the visible panel.
+   * Called from renderer when sidebar visibility or width changes.
+   */
+  updateLayout(update: Partial<LayoutState>): void {
+    Object.assign(this.layoutState, update);
+    this.applyBoundsToVisiblePanel();
+  }
+
+  /**
+   * Apply calculated bounds to the currently visible panel.
+   */
+  private applyBoundsToVisiblePanel(): void {
+    if (!this.visiblePanelId) {
+      return;
+    }
+
+    const managed = this.views.get(this.visiblePanelId);
+    if (!managed || !managed.visible) {
+      return;
+    }
+
+    const bounds = this.calculatePanelBounds();
+    managed.bounds = bounds;
+    managed.view.setBounds(bounds);
   }
 
   /**

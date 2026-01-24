@@ -963,6 +963,10 @@ export class PanelBuilder {
   <title>${title}</title>
   ${importMapScript}<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/themes@3.2.1/styles.css">
   ${cssLink}
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; }
+    #root, #root > .radix-themes { min-height: 100vh; }
+  </style>
 </head>
 <body>
   <div id="root"></div>

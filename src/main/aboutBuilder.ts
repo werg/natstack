@@ -254,6 +254,10 @@ export class AboutBuilder {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   ${PANEL_CSP_META}
   <title>${title}</title>${cssLink}
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; }
+    #root, #root > .radix-themes { min-height: 100vh; }
+  </style>
 </head>
 <body>
   <div id="root"></div>

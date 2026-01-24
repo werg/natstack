@@ -271,17 +271,15 @@ export function PanelStack({
     });
   }, [visiblePanel?.id]);
 
-  // Track the panel content container for bounds reporting
-  const panelContentRef = useRef<HTMLDivElement | null>(null);
   const previousVisiblePanelId = useRef<string | null>(null);
 
-  // Report bounds to main process when visible panel changes or container resizes
+  // Show/hide panel views when visible panel changes
+  // Main process calculates bounds based on layout state
   useEffect(() => {
-    const container = panelContentRef.current;
     const panelId = visiblePanel?.id;
     const htmlPath = visiblePanel?.artifacts?.htmlPath;
 
-    if (!container || !panelId) {
+    if (!panelId) {
       return;
     }
 
@@ -301,38 +299,18 @@ export function PanelStack({
       return;
     }
 
-    // Report bounds to main process for WebContentsView positioning
-    const reportBounds = () => {
-      const rect = container.getBoundingClientRect();
-      const bounds = {
-        x: Math.round(rect.x),
-        y: Math.round(rect.y),
-        width: Math.round(rect.width),
-        height: Math.round(rect.height),
-      };
-      void view.setBounds(panelId, bounds);
-    };
-
-    // Wait for next paint cycle before first bounds report to ensure DOM is settled
-    const rafId = requestAnimationFrame(() => {
-      reportBounds();
-    });
-
-    // Show current panel's view
+    // Show current panel's view - main process handles bounds calculation
     void view.setVisible(panelId, true);
-
-    // Set up ResizeObserver to track container size changes
-    const observer = new ResizeObserver(() => {
-      reportBounds();
-    });
-    observer.observe(container);
-
-    return () => {
-      cancelAnimationFrame(rafId);
-      observer.disconnect();
-    };
-    // Re-run when panel ID changes, htmlPath is set (view becomes ready), or buildState changes
   }, [visiblePanel?.id, visiblePanel?.type, visiblePanel?.artifacts?.htmlPath, visiblePanel?.artifacts?.buildState]);
+
+  // Notify main process of layout changes (sidebar visibility and width)
+  const sidebarVisible = navigationMode === "tree";
+  useEffect(() => {
+    void view.updateLayout({
+      sidebarVisible,
+      sidebarWidth,
+    });
+  }, [sidebarVisible, sidebarWidth]);
 
   // Send theme CSS to main process for injection into views
   useEffect(() => {
@@ -522,12 +500,10 @@ export function PanelStack({
 
         {/* Current Panel Content */}
         <Flex direction="column" flexGrow="1" gap="0" minHeight="0">
-          <Card size="3" style={{ flexGrow: 1, overflow: "hidden", padding: 0 }}>
-            <Flex direction="column" gap="0" height="100%">
-              <Box ref={panelContentRef} style={{ flexGrow: 1, position: "relative", minHeight: 0, height: "100%" }}>
-                {renderPanelContent()}
-              </Box>
-            </Flex>
+          <Card size="3" style={{ flex: 1, minHeight: 0, overflow: "hidden", padding: 0, display: "flex", flexDirection: "column" }}>
+            <Box style={{ flex: 1, minHeight: 0, position: "relative" }}>
+              {renderPanelContent()}
+            </Box>
           </Card>
         </Flex>
       </Flex>

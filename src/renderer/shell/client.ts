@@ -83,11 +83,11 @@ interface Bounds {
 }
 
 export const view = {
-  setBounds: (viewId: string, bounds: Bounds) =>
-    rpc.call<void>("main", "view.setBounds", viewId, bounds),
   setVisible: (viewId: string, visible: boolean) =>
     rpc.call<void>("main", "view.setVisible", viewId, visible),
   setThemeCss: (css: string) => rpc.call<void>("main", "view.setThemeCss", css),
+  updateLayout: (layout: { titleBarHeight?: number; sidebarVisible?: boolean; sidebarWidth?: number }) =>
+    rpc.call<void>("main", "view.updateLayout", layout),
   browserNavigate: (browserId: string, url: string) =>
     rpc.call<void>("main", "view.browserNavigate", browserId, url),
   browserGoBack: (browserId: string) => rpc.call<void>("main", "view.browserGoBack", browserId),
