@@ -106,10 +106,24 @@ export interface CentralConfig {
 }
 
 /**
+ * GitHub proxy configuration for transparent cloning
+ */
+export interface GitHubProxyConfig {
+  /** Enable transparent GitHub cloning (default: true) */
+  enabled?: boolean;
+  /** GitHub personal access token for private repos (prefer secrets.yml) */
+  token?: string;
+  /** Clone depth (default: 1 for shallow, 0 for full history) */
+  depth?: number;
+}
+
+/**
  * Git server configuration
  */
 export interface GitConfig {
   port?: number;
+  /** GitHub proxy settings for transparent cloning */
+  github?: GitHubProxyConfig;
 }
 
 /**

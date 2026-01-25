@@ -15,6 +15,7 @@ This guide covers developing mini-apps (panels) for NatStack with the simplified
 - [Context Templates](#context-templates)
 - [File System Access (OPFS)](#file-system-access-opfs)
 - [FS + Git in Panels](#fs--git-in-panels)
+- [GitHub Repository Cloning](#github-repository-cloning)
 - [AI Integration](#ai-integration)
 - [Browser Automation](#browser-automation)
 
@@ -688,6 +689,98 @@ agent.registerFileTools(fs);         // if your agent exposes file tools
 - When using `@natstack/git`, no extra polyfills are needed—the shimmed `fs` is sufficient.
 
 With this wiring, panels get persistent OPFS storage, git capabilities, and `fs` available both in panel code and injected runtime environments (kernels/agents).
+
+---
+
+## GitHub Repository Cloning
+
+NatStack's internal git server supports **transparent GitHub repository cloning**. When you clone a repository at a path like `github.com/<owner>/<repo>`, the server automatically fetches it from GitHub if it doesn't already exist locally.
+
+### How It Works
+
+The git server intercepts requests for paths starting with `github.com/` and:
+
+1. Checks if the repository already exists in the workspace
+2. If not, clones it from GitHub automatically
+3. Serves the local clone transparently
+
+This means consuming code doesn't need to know whether a repository is local or needs to be fetched—it just works.
+
+### Usage
+
+Clone GitHub repositories using the standard git URL format:
+
+```bash
+# From a terminal or git client
+git clone http://localhost:63524/github.com/octocat/Hello-World
+
+# The repository is now available at:
+# <workspace>/github.com/octocat/Hello-World/
+```
+
+From panel code using `@natstack/git`:
+
+```typescript
+import { GitClient } from "@natstack/git";
+
+const git = new GitClient();
+
+// Clone a GitHub repo into OPFS
+await git.clone({
+  url: `http://localhost:${gitConfig.port}/github.com/owner/repo`,
+  dir: "/projects/my-clone",
+});
+```
+
+### Configuration
+
+Configure GitHub cloning in `natstack.yml`:
+
+```yaml
+git:
+  port: 63524
+  github:
+    enabled: true      # Enable transparent cloning (default: true)
+    depth: 1           # Shallow clone depth (default: 1, use 0 for full history)
+    # token: use secrets.yml for private repos
+```
+
+For private repositories, add a GitHub Personal Access Token to `secrets.yml`:
+
+```yaml
+# ~/.config/natstack/.secrets.yml
+github: ghp_xxxxxxxxxxxxxxxxxxxx
+```
+
+### Path Format
+
+GitHub repositories are stored at:
+
+```
+<workspace>/github.com/<owner>/<repo>/
+```
+
+For example:
+- `github.com/facebook/react` → `<workspace>/github.com/facebook/react/`
+- `github.com/anthropics/claude-code` → `<workspace>/github.com/anthropics/claude-code/`
+
+### Use Cases
+
+**Agentic Tools**: Agents can reference GitHub repositories as tool sources:
+
+```yaml
+# context-template.yml
+deps:
+  /tools/search:
+    repo: github.com/owner/search-tool
+    ref: main
+```
+
+**Dynamic Dependencies**: Pull in libraries or data repositories on-demand without pre-configuring them in templates.
+
+**Code Analysis**: Clone repositories for analysis, diffing, or code review workflows.
+
+---
 
 ## AI Integration
 

@@ -9,6 +9,16 @@ import type { WorkspaceNode, WorkspaceTree, BranchInfo, CommitInfo } from "../sh
 import { GitAuthManager, getTokenManager } from "./tokenManager.js";
 import { tryBindPort } from "./portUtils.js";
 import type { GitWatcher } from "./workspace/gitWatcher.js";
+import type { GitHubProxyConfig } from "./workspace/types.js";
+import {
+  parseGitHubPath,
+  isGitHubPath,
+  toGitHubRelativePath,
+  toGitHubUrl,
+  ensureGitHubRepo,
+  errorTypeToHttpStatus,
+  isGitRepo,
+} from "./githubCloner.js";
 
 const DEFAULT_GIT_SERVER_PORT = 63524;
 
@@ -22,6 +32,8 @@ export interface GitServerConfig {
   reposPath?: string;
   /** Glob patterns for directories to initialize as git repos (e.g., ["panels/*"]) */
   initPatterns?: string[];
+  /** GitHub proxy configuration for transparent cloning */
+  github?: GitHubProxyConfig;
 }
 
 export class GitServer {
@@ -40,6 +52,13 @@ export class GitServer {
   // Track discovered repo paths for validation (normalized with forward slashes)
   private discoveredRepoPaths: Set<string> = new Set();
 
+  // GitHub proxy configuration
+  private githubConfig: Required<GitHubProxyConfig> = {
+    enabled: true,
+    token: undefined as unknown as string, // Will be undefined if not provided
+    depth: 1,
+  };
+
   constructor(config?: GitServerConfig) {
     this.configuredPort = config?.port ?? DEFAULT_GIT_SERVER_PORT;
     this.configuredReposPath = config?.reposPath ?? null;
@@ -47,6 +66,15 @@ export class GitServer {
     // scanDirectory() is already recursive and discovers repos at any depth.
     this.initPatterns = config?.initPatterns ?? ["panels/*", "workers/*", "packages/*"];
     this.authManager = new GitAuthManager(getTokenManager());
+
+    // Apply GitHub proxy config
+    if (config?.github) {
+      this.githubConfig = {
+        enabled: config.github.enabled ?? true,
+        token: config.github.token as string,
+        depth: config.github.depth ?? 1,
+      };
+    }
   }
 
   private ensureReposPath(): string {
@@ -146,13 +174,28 @@ export class GitServer {
     };
 
     return new Promise((resolve, reject) => {
-      const server = http.createServer((req, res) => {
+      const server = http.createServer(async (req, res) => {
         applyCors(res);
         if (req.method === "OPTIONS") {
           res.writeHead(200);
           res.end();
           return;
         }
+
+        // Check if this is a GitHub path that might need cloning
+        if (this.githubConfig.enabled && req.url) {
+          const urlPath = req.url.split("?")[0] ?? "";
+          const repoPath = this.normalizePath(urlPath);
+
+          if (isGitHubPath(repoPath)) {
+            const handled = await this.handleGitHubRequest(repoPath, res);
+            if (!handled) {
+              // Error response already sent
+              return;
+            }
+          }
+        }
+
         git.handle(req, res);
       });
 
@@ -378,6 +421,74 @@ export class GitServer {
   private toAbsolutePath(repoPath: string): string {
     const normalized = this.normalizePath(repoPath);
     return path.join(this.ensureReposPath(), normalized);
+  }
+
+  // ===========================================================================
+  // GitHub Proxy (Transparent Cloning)
+  // ===========================================================================
+
+  /**
+   * Handle a GitHub repository request, cloning if necessary.
+   *
+   * This enables transparent access to GitHub repos via paths like:
+   *   github.com/owner/repo
+   *
+   * If the repo isn't already cloned locally, it will be fetched from GitHub.
+   *
+   * @returns true if the request should continue to git.handle(), false if handled/errored
+   */
+  private async handleGitHubRequest(
+    repoPath: string,
+    res: http.ServerResponse
+  ): Promise<boolean> {
+    const spec = parseGitHubPath(repoPath);
+    if (!spec) {
+      // Not a valid GitHub path - let it fail normally
+      return true;
+    }
+
+    const relPath = toGitHubRelativePath(spec);
+    const targetPath = path.join(this.ensureReposPath(), relPath);
+
+    // Fast path: already cloned and discovered
+    if (this.discoveredRepoPaths.has(relPath)) {
+      return true;
+    }
+
+    // Check if it exists on disk but wasn't discovered yet
+    if (isGitRepo(targetPath)) {
+      this.discoveredRepoPaths.add(relPath);
+      return true;
+    }
+
+    // Need to clone from GitHub
+    console.log(`[GitServer] Cloning GitHub repo: ${spec.owner}/${spec.repo}`);
+
+    const remoteUrl = toGitHubUrl(spec);
+    const result = await ensureGitHubRepo({
+      targetPath,
+      remoteUrl,
+      token: this.githubConfig.token,
+      depth: this.githubConfig.depth,
+    });
+
+    if (!result.success) {
+      const status = errorTypeToHttpStatus(result.errorType ?? "unknown");
+      res.writeHead(status, { "Content-Type": "text/plain" });
+      res.end(`Failed to clone GitHub repository: ${result.error}`);
+      return false;
+    }
+
+    // Add to discovered paths so validation passes
+    this.discoveredRepoPaths.add(relPath);
+
+    // Invalidate tree cache so the new repo appears in workspace tree
+    this.invalidateTreeCache();
+    // Re-add since invalidate clears the set
+    this.discoveredRepoPaths.add(relPath);
+
+    console.log(`[GitServer] GitHub repo ready: ${relPath}`);
+    return true;
   }
 
   /**
