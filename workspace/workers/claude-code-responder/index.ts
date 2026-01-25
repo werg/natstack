@@ -6,6 +6,9 @@
  */
 
 import { execSync } from "child_process";
+import { readdir, stat, readFile } from "fs/promises";
+import { homedir } from "os";
+import { join } from "path";
 import { pubsubConfig, id, contextId, getStateArgs } from "@natstack/runtime";
 import {
   connect,
@@ -26,6 +29,7 @@ import {
   createActionTracker,
   createTypingTracker,
   getDetailedActionDescription,
+  needsApprovalForTool,
   CONTENT_TYPE_TYPING,
   // Image processing utilities
   filterImageAttachments,
@@ -164,6 +168,41 @@ function findExecutable(name: string): string | undefined {
   }
 }
 
+/**
+ * Find the most recently modified plan file in ~/.claude/plans/
+ * Used as a heuristic to find the current plan when ExitPlanMode is called.
+ */
+async function findMostRecentPlanFile(): Promise<string | null> {
+  const plansDir = join(homedir(), ".claude", "plans");
+  try {
+    const files = await readdir(plansDir);
+    const mdFiles = files.filter((f) => f.endsWith(".md"));
+
+    if (mdFiles.length === 0) return null;
+
+    const fileStats = await Promise.all(
+      mdFiles.map(async (f) => {
+        const filePath = join(plansDir, f);
+        const stats = await stat(filePath);
+        return { path: filePath, mtime: stats.mtime };
+      })
+    );
+
+    fileStats.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+    return fileStats[0]?.path ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Type for SDK's AskUserQuestion question structure */
+interface AskUserQuestionQuestion {
+  question: string;
+  header: string;
+  options: Array<{ label: string; description: string }>;
+  multiSelect: boolean;
+}
+
 const log = createLogger("Claude Code", id);
 
 /**
@@ -209,6 +248,8 @@ interface ClaudeCodeWorkerSettings {
   maxThinkingTokens?: number;
   executionMode?: "plan" | "edit";
   autonomyLevel?: number; // 0=Ask, 1=Auto-edits, 2=Full Auto
+  /** Whether we've shown at least one approval prompt (for first-time grant UI) */
+  hasShownApprovalPrompt?: boolean;
 }
 
 // =============================================================================
@@ -304,26 +345,6 @@ class MessageQueue implements AsyncIterable<QueuedMessage> {
   [Symbol.asyncIterator](): AsyncIterableIterator<QueuedMessage> {
     return this.queue[Symbol.asyncIterator]();
   }
-}
-
-/**
- * Convert executionMode + autonomyLevel to SDK permissionMode
- */
-function getPermissionMode(settings: ClaudeCodeWorkerSettings): string | undefined {
-  // Plan mode
-  if (settings.executionMode === "plan") {
-    return "plan";
-  }
-  // Edit mode - map autonomy level to permission mode
-  if (settings.executionMode === "edit" || settings.autonomyLevel !== undefined) {
-    switch (settings.autonomyLevel) {
-      case 0: return "default";      // Ask for everything
-      case 1: return "acceptEdits";  // Auto-approve edits
-      case 2: return "bypassPermissions"; // Full auto
-      default: return "default";
-    }
-  }
-  return undefined;
 }
 
 /** Current settings state - initialized from agent config and persisted settings */
@@ -960,8 +981,201 @@ async function handleUserMessage(
         : prompt;
 
     // Create permission handler that prompts user via feedback_form
+    // Respects autonomy settings: only shows prompt if approval is actually needed
     const canUseTool: CanUseTool = async (toolName, input, options) => {
       log(`Permission requested for tool: ${toolName}`);
+
+      // =========================================
+      // SPECIAL HANDLING: AskUserQuestion
+      // =========================================
+      // The SDK's built-in AskUserQuestion tool expects us to populate the
+      // `answers` field. We show our feedback_form UI and return the answers
+      // via updatedInput. This avoids the double-UI problem.
+      if (toolName === "AskUserQuestion") {
+        const panel = Object.values(client.roster).find(
+          (p) => p.metadata.type === "panel"
+        );
+
+        if (!panel) {
+          return {
+            behavior: "deny" as const,
+            message: "No panel available to show questions",
+            toolUseID: options.toolUseID,
+          };
+        }
+
+        // Transform SDK question format to feedback_form fields
+        const questions = (input as { questions: AskUserQuestionQuestion[] }).questions;
+        const fields: Array<{
+          key: string;
+          label?: string;
+          description?: string;
+          type: string;
+          variant?: "buttons" | "cards" | "list";
+          options?: Array<{ value: string; label: string; description?: string }>;
+          visibleWhen?: { field: string; operator: string; value: string };
+          placeholder?: string;
+        }> = [];
+
+        for (let i = 0; i < questions.length; i++) {
+          const q = questions[i]!;
+          const fieldId = String(i);
+          const fieldOptions = q.options.map((opt) => ({
+            value: opt.label,
+            label: opt.label,
+            description: opt.description,
+          }));
+          // Add "Other" option for free-text input
+          fieldOptions.push({
+            value: "__other__",
+            label: "Other",
+            description: "Provide a custom answer",
+          });
+
+          if (q.multiSelect) {
+            fields.push({
+              key: fieldId,
+              label: q.header,
+              description: q.question,
+              type: "multiSelect",
+              variant: "cards",
+              options: fieldOptions,
+            });
+          } else {
+            fields.push({
+              key: fieldId,
+              label: q.header,
+              description: q.question,
+              type: "segmented",
+              variant: "cards",
+              options: fieldOptions,
+            });
+          }
+
+          // Conditional text field for "Other" option
+          fields.push({
+            key: `${fieldId}_other`,
+            label: "Please specify",
+            type: "string",
+            placeholder: "Enter your answer...",
+            visibleWhen: q.multiSelect
+              ? { field: fieldId, operator: "contains", value: "__other__" }
+              : { field: fieldId, operator: "eq", value: "__other__" },
+          });
+        }
+
+        // Show feedback_form and wait for user response
+        try {
+          const handle = client.callMethod(panel.id, "feedback_form", {
+            title: "Claude needs your input",
+            fields,
+            values: {},
+          });
+          const result = await handle.result;
+          const feedbackResult = result.content as { type: string; value?: Record<string, unknown>; message?: string };
+
+          if (feedbackResult.type === "cancel") {
+            return {
+              behavior: "deny" as const,
+              message: "User cancelled the question",
+              interrupt: true,
+              toolUseID: options.toolUseID,
+            };
+          }
+
+          // Extract answers from form result
+          // Form returns { "0": "selected option", "1": ["multi", "select"], ... }
+          const formValues = feedbackResult.value as Record<string, string | string[]>;
+          const answers: Record<string, string> = {};
+
+          for (const [key, value] of Object.entries(formValues ?? {})) {
+            // Skip the _other fields - we handle them with the main field
+            if (key.endsWith("_other")) continue;
+
+            const otherKey = `${key}_other`;
+            const otherValue = formValues?.[otherKey];
+
+            if (Array.isArray(value)) {
+              // multiSelect - handle __other__
+              // Replace __other__ with the custom text, or "Other" if no text provided
+              const processed = value.map((v) =>
+                v === "__other__"
+                  ? (typeof otherValue === "string" && otherValue ? otherValue : "Other")
+                  : v
+              );
+              answers[key] = processed.join(", ");
+            } else if (value === "__other__") {
+              // User selected "Other" - use the text field
+              answers[key] = typeof otherValue === "string" && otherValue
+                ? otherValue
+                : "Other";
+            } else {
+              answers[key] = value;
+            }
+          }
+
+          log(`AskUserQuestion answered: ${JSON.stringify(answers)}`);
+
+          // Return allow with answers populated
+          return {
+            behavior: "allow" as const,
+            updatedInput: { ...input, answers },
+            toolUseID: options.toolUseID,
+          };
+        } catch (err) {
+          log(`AskUserQuestion failed: ${err}`);
+          return {
+            behavior: "deny" as const,
+            message: `Failed to show question form: ${err instanceof Error ? err.message : String(err)}`,
+            toolUseID: options.toolUseID,
+          };
+        }
+      }
+
+      // =========================================
+      // SPECIAL HANDLING: ExitPlanMode
+      // =========================================
+      // Read the plan file and include its content in the tool input
+      // so the UI can display it.
+      if (toolName === "ExitPlanMode") {
+        let planFilePath = (input as Record<string, unknown>).planFilePath as string | undefined;
+
+        // If SDK didn't provide path, find most recently modified plan file
+        if (!planFilePath) {
+          planFilePath = await findMostRecentPlanFile() ?? undefined;
+        }
+
+        // Read plan content if we have a path
+        let plan: string | undefined;
+        if (planFilePath) {
+          try {
+            plan = await readFile(planFilePath, "utf-8");
+            log(`Read plan file: ${planFilePath} (${plan.length} chars)`);
+          } catch (err) {
+            log(`Failed to read plan file ${planFilePath}: ${err}`);
+          }
+        }
+
+        // Update input with plan content, then continue to normal permission flow
+        // (ExitPlanMode still needs user approval to proceed with the plan)
+        input = { ...input, plan, planFilePath };
+      }
+
+      // Check if approval is needed based on autonomy level
+      // EXCEPTION: Interactive tools (AskUserQuestion, ExitPlanMode, EnterPlanMode)
+      // ALWAYS require user interaction regardless of autonomy level
+      const isInteractiveTool = ["AskUserQuestion", "ExitPlanMode", "EnterPlanMode"].includes(toolName);
+      const autonomyLevel = currentSettings.autonomyLevel ?? 0;
+
+      if (!isInteractiveTool && !needsApprovalForTool(toolName, autonomyLevel)) {
+        // Auto-approve based on autonomy settings (e.g., read-only tools at level 1)
+        log(`Auto-approving ${toolName} based on autonomy level ${autonomyLevel}`);
+        return {
+          behavior: "allow" as const,
+          updatedInput: input,
+          toolUseID: options.toolUseID,
+        };
+      }
 
       // Find the chat panel participant
       const panel = Object.values(client.roster).find(
@@ -978,17 +1192,47 @@ async function handleUserMessage(
         };
       }
 
+      // Determine if this is the first approval prompt in this session (shows different UI)
+      // Persisted in settings so it survives across conversation turns
+      const isFirstTimeGrant = !currentSettings.hasShownApprovalPrompt;
+
       try {
         // Use feedback_form with buttonGroup for permission prompts
-        const { allow } = await showPermissionPrompt(
+        const { allow, alwaysAllow } = await showPermissionPrompt(
           client,
           panel.id,
           toolName,
           input,
-          { decisionReason: options.decisionReason }
+          {
+            decisionReason: options.decisionReason,
+            isFirstTimeGrant,
+            floorLevel: autonomyLevel,
+          }
         );
 
+        // Mark that we've shown at least one approval prompt (persisted for session)
+        if (!currentSettings.hasShownApprovalPrompt) {
+          currentSettings.hasShownApprovalPrompt = true;
+          if (client.sessionKey) {
+            client.updateSettings(currentSettings).catch((err) => {
+              log(`Failed to persist hasShownApprovalPrompt: ${err}`);
+            });
+          }
+        }
+
         if (allow) {
+          // If user selected "Always Allow", bump autonomy level to Full Auto
+          if (alwaysAllow) {
+            log(`User selected "Always Allow" - setting autonomy to Full Auto`);
+            currentSettings.autonomyLevel = 2;
+            // Persist the setting so it survives reconnection
+            if (client.sessionKey) {
+              client.updateSettings(currentSettings).catch((err) => {
+                log(`Failed to persist autonomy setting: ${err}`);
+              });
+            }
+          }
+
           log(`Permission granted for ${toolName}`);
           return {
             behavior: "allow" as const,
@@ -1022,7 +1266,7 @@ async function handleUserMessage(
     }
 
     const queryOptions: Parameters<typeof query>[0]["options"] = {
-      // Build mcpServers object combining workspace tools (restricted mode) and attachments (when images present)
+      // Build mcpServers object combining workspace tools, UI tools, and attachments
       ...(() => {
         const servers: Record<string, ReturnType<typeof createSdkMcpServer>> = {};
         if (isRestrictedMode && pubsubServer) {
@@ -1031,7 +1275,7 @@ async function handleUserMessage(
         if (attachmentsMcpServer) {
           servers.attachments = attachmentsMcpServer;
         }
-        return Object.keys(servers).length > 0 ? { mcpServers: servers } : {};
+        return { mcpServers: servers };
       })(),
       // Use restricted mode system prompt when bash is unavailable
       systemPrompt: isRestrictedMode
@@ -1040,7 +1284,7 @@ async function handleUserMessage(
       // Provide explicit path to Claude Code CLI (required for bundled workers)
       pathToClaudeCodeExecutable: claudeExecutable,
       ...(allowedTools.length > 0 && { allowedTools }),
-      // In restricted mode, disallow built-in tools that we replace via pubsub
+      // In restricted mode, disallow tools that we replace via pubsub
       // WebSearch and WebFetch remain enabled (full network access available)
       //
       // Task is disallowed because subagents cannot inherit MCP servers.
@@ -1056,9 +1300,9 @@ async function handleUserMessage(
       //
       // TODO: Future work - implement a pubsub-based Task tool that spawns subagents
       // through the pubsub agent system, allowing them to access workspace tools.
-      ...(isRestrictedMode && {
-        disallowedTools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Task", "NotebookEdit"],
-      }),
+      disallowedTools: isRestrictedMode
+        ? ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Task", "NotebookEdit"]
+        : [],
       // Set working directory if provided via config
       ...(workingDirectory && { cwd: workingDirectory }),
       // Enable streaming of partial messages for token-by-token delivery
@@ -1069,16 +1313,12 @@ async function handleUserMessage(
       // Apply user settings
       ...(currentSettings.model && { model: currentSettings.model }),
       ...(currentSettings.maxThinkingTokens && { maxThinkingTokens: currentSettings.maxThinkingTokens }),
-      // Convert executionMode + autonomyLevel to SDK permissionMode
-      ...(() => {
-        const permissionMode = getPermissionMode(currentSettings);
-        return {
-          ...(permissionMode && { permissionMode }),
-          ...(permissionMode === "bypassPermissions" && { allowDangerouslySkipPermissions: true }),
-          // Wire permission prompts to feedback_ui (only for default mode)
-          ...(!permissionMode || permissionMode === "default" ? { canUseTool } : {}),
-        };
-      })(),
+      // Permission handling: Always wire canUseTool so interactive tools (AskUserQuestion,
+      // ExitPlanMode, EnterPlanMode) can prompt the user even in Full Auto mode.
+      // We handle auto-approval logic inside canUseTool based on autonomy level and tool type.
+      // NOTE: We intentionally don't use allowDangerouslySkipPermissions because it would
+      // bypass canUseTool entirely, preventing interactive tools from prompting the user.
+      canUseTool,
     };
 
     // Query Claude using the Agent SDK

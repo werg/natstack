@@ -9,8 +9,10 @@ import {
   Button,
   Callout,
   Checkbox,
+  CheckboxGroup,
   Code,
   Flex,
+  RadioGroup,
   ScrollArea,
   SegmentedControl,
   Select,
@@ -313,8 +315,8 @@ export function FormRenderer({
           </Flex>
         )}
 
-        {/* Segmented control */}
-        {field.type === "segmented" && field.options && (
+        {/* Segmented control - buttons variant (default) */}
+        {field.type === "segmented" && field.options && field.variant !== "cards" && (
           <Flex direction="column" gap="1" style={{ maxWidth: 400 }} {...clickProps}>
             <SegmentedControl.Root
               size={size}
@@ -340,6 +342,32 @@ export function FormRenderer({
               ) : null;
             })()}
           </Flex>
+        )}
+
+        {/* Segmented control - cards variant (RadioGroup with visible radio buttons) */}
+        {field.type === "segmented" && field.options && field.variant === "cards" && (
+          <RadioGroup.Root
+            size={size}
+            value={String(currentValue ?? "")}
+            onValueChange={isEnabled ? (value) => onChange(field.key, value) : undefined}
+            {...clickProps}
+          >
+            <Flex direction="column" gap="2">
+              {field.options.map((option) => (
+                <Text as="label" size={size} key={option.value}>
+                  <Flex gap="2" align={option.description ? "start" : "center"}>
+                    <RadioGroup.Item value={option.value} disabled={!isEnabled} style={{ marginTop: option.description ? 2 : 0 }} />
+                    <Flex direction="column" gap="1">
+                      <Text weight="medium">{option.label}</Text>
+                      {option.description && (
+                        <Text size="1" color="gray">{option.description}</Text>
+                      )}
+                    </Flex>
+                  </Flex>
+                </Text>
+              ))}
+            </Flex>
+          </RadioGroup.Root>
         )}
 
         {/* Toggle (two-state with labels) */}
@@ -410,8 +438,8 @@ export function FormRenderer({
           </Flex>
         )}
 
-        {/* MultiSelect field - multiple selection checkboxes */}
-        {field.type === "multiSelect" && field.options && (
+        {/* MultiSelect field - list variant (default) */}
+        {field.type === "multiSelect" && field.options && field.variant !== "cards" && (
           <Flex direction="column" gap="1" {...clickProps}>
             {field.options.map((opt) => {
               const selected = Array.isArray(currentValue) ? currentValue : [];
@@ -438,6 +466,32 @@ export function FormRenderer({
               );
             })}
           </Flex>
+        )}
+
+        {/* MultiSelect field - cards variant (CheckboxGroup with visible checkboxes) */}
+        {field.type === "multiSelect" && field.options && field.variant === "cards" && (
+          <CheckboxGroup.Root
+            size={size}
+            value={Array.isArray(currentValue) ? currentValue : []}
+            onValueChange={isEnabled ? (value) => onChange(field.key, value) : undefined}
+            {...clickProps}
+          >
+            <Flex direction="column" gap="2">
+              {field.options.map((opt) => (
+                <Text as="label" size={size} key={opt.value}>
+                  <Flex gap="2" align={opt.description ? "start" : "center"}>
+                    <CheckboxGroup.Item value={opt.value} disabled={!isEnabled} style={{ marginTop: opt.description ? 2 : 0 }} />
+                    <Flex direction="column" gap="1">
+                      <Text weight="medium">{opt.label}</Text>
+                      {opt.description && (
+                        <Text size="1" color="gray">{opt.description}</Text>
+                      )}
+                    </Flex>
+                  </Flex>
+                </Text>
+              ))}
+            </Flex>
+          </CheckboxGroup.Root>
         )}
 
         {/* Diff field - pre-formatted diff display */}

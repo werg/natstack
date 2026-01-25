@@ -28,12 +28,13 @@ export function TypingIndicator({ isPaused, showInterruptButton, onInterrupt }: 
       <span className="typing-dot" />
       {showInterruptButton && onInterrupt && (
         <IconButton
-          size="2"
+          size="1"
           color="gray"
+          variant="ghost"
           onClick={onInterrupt}
           aria-label="Interrupt agent"
           title="Stop execution"
-          style={{ margin: 4 }}
+          style={{ marginLeft: 4, opacity: 0.6 }}
         >
           <StopIcon />
         </IconButton>

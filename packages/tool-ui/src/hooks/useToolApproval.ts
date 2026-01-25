@@ -14,6 +14,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import {
   needsApprovalForTool,
   extractMethodName,
+  createApprovalSchema,
   type AgenticClient,
 } from "@natstack/agentic-messaging";
 import type { FieldValue } from "@natstack/runtime";
@@ -24,7 +25,6 @@ import type {
   ActiveFeedbackSchema,
   FeedbackResult,
 } from "../types";
-import { createApprovalSchema } from "../utils/createApprovalSchema";
 
 /**
  * Approval level definitions with labels and descriptions.
@@ -140,9 +140,10 @@ export function useToolApproval(
     [persistSettings]
   );
 
-  // grantAgent needs to be defined before it's used in resolveApproval
+  // grantAgent and setGlobalFloor need to be defined before they're used in resolveApproval
   // Using ref pattern to avoid circular dependency
   const grantAgentRef = useRef<(agentId: string) => void>(() => {});
+  const setGlobalFloorRef = useRef<(level: ApprovalLevel) => void>(() => {});
 
   const grantAgent = useCallback(
     (agentId: string) => {
@@ -158,10 +159,14 @@ export function useToolApproval(
     [persistSettings]
   );
 
-  // Update ref after grantAgent is defined
+  // Update refs after functions are defined
   useEffect(() => {
     grantAgentRef.current = grantAgent;
   }, [grantAgent]);
+
+  useEffect(() => {
+    setGlobalFloorRef.current = setGlobalFloor;
+  }, [setGlobalFloor]);
 
   const revokeAgent = useCallback(
     (agentId: string) => {
@@ -260,14 +265,23 @@ export function useToolApproval(
 
           if (result.type === "submit") {
             const value = result.value as Record<string, FieldValue> | undefined;
-            const approved = value?.["decision"] === "allow";
+            const decision = value?.["decision"];
 
-            // If approving a first-time grant, add agent to grants
-            if (approved && isFirstTimeGrant) {
+            if (decision === "allow") {
+              // If approving a first-time grant, add agent to grants
+              if (isFirstTimeGrant) {
+                grantAgentRef.current(params.agentId);
+              }
+              resolve(true);
+            } else if (decision === "always") {
+              // "Always Allow" - grant agent AND set to Full Auto mode
               grantAgentRef.current(params.agentId);
+              setGlobalFloorRef.current(2); // Full Auto
+              resolve(true);
+            } else {
+              // Deny
+              resolve(false);
             }
-
-            resolve(approved);
           } else {
             // Cancel or error = deny
             resolve(false);

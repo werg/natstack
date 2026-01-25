@@ -75,9 +75,21 @@ export function ApprovalHeaderField({
   }
 
   // Per-call approval header - special handling for plan mode
-  const isPlanApproval = toolName === "exit_plan_mode";
+  const isExitPlanApproval = toolName === "exit_plan_mode";
+  const isEnterPlanApproval = toolName === "enter_plan_mode";
 
-  if (isPlanApproval) {
+  if (isEnterPlanApproval) {
+    return (
+      <Flex gap="2" align="center" mb="3">
+        <ExclamationTriangleIcon style={{ color: "var(--blue-9)" }} />
+        <Text size="3" weight="bold">
+          @{agentName} wants to enter planning mode
+        </Text>
+      </Flex>
+    );
+  }
+
+  if (isExitPlanApproval) {
     return (
       <Flex gap="2" align="center" mb="3">
         <CheckCircledIcon style={{ color: "var(--green-9)" }} />

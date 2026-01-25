@@ -1,19 +1,21 @@
 /**
  * ExitPlanModePreview - Plan approval UI for ExitPlanMode tool
  *
- * Shows the requested bash permissions (allowedPrompts) in a clean,
- * scannable format. These permissions will be auto-approved during
- * implementation if the user approves the plan.
+ * Shows the plan content (rendered as Markdown) and the requested bash
+ * permissions (allowedPrompts) in a clean, scannable format.
  *
- * If planFilePath is provided by the SDK, it's displayed so the user
- * knows where to find the full plan.
+ * These permissions will be auto-approved during implementation if the user
+ * approves the plan.
  */
 
-import { Box, Text, Flex, Badge, Card, Code } from "@radix-ui/themes";
+import { Box, Text, Flex, Badge, Card, Code, Heading, ScrollArea } from "@radix-ui/themes";
 import { CheckCircledIcon, LightningBoltIcon, FileTextIcon } from "@radix-ui/react-icons";
+import Markdown from "react-markdown";
 import type { AllowedPrompt } from "@natstack/agentic-messaging";
 
 export interface ExitPlanModePreviewProps {
+  /** The plan content (Markdown) */
+  plan?: string;
   allowedPrompts?: AllowedPrompt[];
   /** Path to the plan file (if provided by SDK) */
   planFilePath?: string;
@@ -26,7 +28,44 @@ function getShortPath(filePath: string): string {
   return ".../" + parts.slice(-3).join("/");
 }
 
-export function ExitPlanModePreview({ allowedPrompts, planFilePath }: ExitPlanModePreviewProps) {
+/** Markdown components for styling within the preview */
+const markdownComponents = {
+  h1: ({ children }: { children?: React.ReactNode }) => (
+    <Heading size="4" mb="2">{children}</Heading>
+  ),
+  h2: ({ children }: { children?: React.ReactNode }) => (
+    <Heading size="3" mb="2">{children}</Heading>
+  ),
+  h3: ({ children }: { children?: React.ReactNode }) => (
+    <Heading size="2" mb="1">{children}</Heading>
+  ),
+  p: ({ children }: { children?: React.ReactNode }) => (
+    <Text as="p" size="2" mb="2">{children}</Text>
+  ),
+  ul: ({ children }: { children?: React.ReactNode }) => (
+    <ul style={{ paddingLeft: 16, marginBottom: 8 }}>{children}</ul>
+  ),
+  ol: ({ children }: { children?: React.ReactNode }) => (
+    <ol style={{ paddingLeft: 16, marginBottom: 8 }}>{children}</ol>
+  ),
+  li: ({ children }: { children?: React.ReactNode }) => (
+    <li style={{ fontSize: "0.875rem", lineHeight: 1.5 }}>{children}</li>
+  ),
+  code: ({ children, className }: { children?: React.ReactNode; className?: string }) => {
+    const isBlock = className?.includes("language-");
+    if (isBlock) {
+      return (
+        <Box my="2" style={{ background: "var(--gray-3)", borderRadius: 4, padding: 8, overflow: "auto" }}>
+          <code style={{ fontFamily: "monospace", fontSize: "0.85em" }}>{children}</code>
+        </Box>
+      );
+    }
+    return <Code size="2">{children}</Code>;
+  },
+  pre: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+};
+
+export function ExitPlanModePreview({ plan, allowedPrompts, planFilePath }: ExitPlanModePreviewProps) {
   const hasPermissions = allowedPrompts && allowedPrompts.length > 0;
 
   return (
@@ -50,6 +89,19 @@ export function ExitPlanModePreview({ allowedPrompts, planFilePath }: ExitPlanMo
             </Code>
           </Text>
         </Flex>
+      )}
+
+      {/* Plan content (Markdown) */}
+      {plan && (
+        <Card size="1" mb="3">
+          <ScrollArea style={{ maxHeight: 300 }}>
+            <Box p="2">
+              <Markdown components={markdownComponents}>
+                {plan}
+              </Markdown>
+            </Box>
+          </ScrollArea>
+        </Card>
       )}
 
       {/* Permissions section */}
@@ -79,7 +131,8 @@ export function ExitPlanModePreview({ allowedPrompts, planFilePath }: ExitPlanMo
             </Flex>
           </Flex>
         </Card>
-      ) : (
+      ) : !plan ? (
+        // Only show "no permissions" if there's also no plan content
         <Card size="1">
           <Flex gap="2" align="center">
             <CheckCircledIcon style={{ color: "var(--green-9)" }} />
@@ -88,7 +141,7 @@ export function ExitPlanModePreview({ allowedPrompts, planFilePath }: ExitPlanMo
             </Text>
           </Flex>
         </Card>
-      )}
+      ) : null}
 
       {/* Help text */}
       <Text size="1" color="gray" mt="2" style={{ display: "block" }}>

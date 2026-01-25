@@ -18,6 +18,7 @@ import {
   GitCommitPreview,
   GitCheckoutPreview,
   GitAddPreview,
+  EnterPlanModePreview,
   ExitPlanModePreview,
   isFileEditArgs,
   isFileWriteArgs,
@@ -25,6 +26,7 @@ import {
   isGitCommitArgs,
   isGitCheckoutArgs,
   isGitAddArgs,
+  isEnterPlanModeArgs,
   isExitPlanModeArgs,
 } from "./tool-previews/core.js";
 
@@ -142,14 +144,26 @@ export function ToolPreviewField({
     return <GitAddPreview files={args.files} path={args.path} />;
   }
 
+  // enter_plan_mode - Plan mode entry request
+  if (toolName === "enter_plan_mode" && isEnterPlanModeArgs(args)) {
+    const extendedArgs = args as Record<string, unknown>;
+    const reason = typeof extendedArgs["reason"] === "string"
+      ? extendedArgs["reason"]
+      : undefined;
+    return <EnterPlanModePreview reason={reason} />;
+  }
+
   // exit_plan_mode - Plan approval with requested permissions
   if (toolName === "exit_plan_mode" && isExitPlanModeArgs(args)) {
-    // planFilePath may be passed by SDK (undocumented but useful)
+    // planFilePath and plan content may be passed by SDK
     const extendedArgs = args as Record<string, unknown>;
     const planFilePath = typeof extendedArgs["planFilePath"] === "string"
       ? extendedArgs["planFilePath"]
       : undefined;
-    return <ExitPlanModePreview allowedPrompts={args.allowedPrompts} planFilePath={planFilePath} />;
+    const plan = typeof extendedArgs["plan"] === "string"
+      ? extendedArgs["plan"]
+      : undefined;
+    return <ExitPlanModePreview plan={plan} allowedPrompts={args.allowedPrompts} planFilePath={planFilePath} />;
   }
 
   // Default: JSON display

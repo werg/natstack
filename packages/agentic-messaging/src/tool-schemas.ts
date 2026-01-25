@@ -211,7 +211,20 @@ export const ExitPlanModeArgsSchema = z.object({
 export type ExitPlanModeArgs = z.infer<typeof ExitPlanModeArgsSchema> & {
   /** Path to the plan file (may be passed by SDK) */
   planFilePath?: string;
+  /** The plan content itself (Markdown) */
+  plan?: string;
 };
+
+/**
+ * enter_plan_mode - Enter plan mode for exploration and planning
+ * Matches Claude Code `EnterPlanMode` tool behavior.
+ *
+ * When Claude enters plan mode, it switches to read-only exploration
+ * and creates a plan file for user review.
+ */
+export const EnterPlanModeArgsSchema = z.object({}).passthrough();
+
+export type EnterPlanModeArgs = z.infer<typeof EnterPlanModeArgsSchema>;
 
 // ============================================================================
 // Type Checking Tools
@@ -324,6 +337,7 @@ export const CANONICAL_TOOL_MAPPINGS: Record<string, string> = {
   git_commit: "GitCommit",
   git_checkout: "GitCheckout",
   // Plan mode
+  enter_plan_mode: "EnterPlanMode",
   exit_plan_mode: "ExitPlanMode",
   // Type checking tools
   check_types: "CheckTypes",
@@ -340,18 +354,34 @@ export const REVERSE_CANONICAL_MAPPINGS: Record<string, string> = Object.fromEnt
 
 /**
  * Extract the actual method name from a prefixed tool name.
- * Tool names are formatted as: prefix_providerId_methodName
- * e.g., "pubsub_abc123_settings" -> "settings"
+ *
+ * Handles known prefix formats:
+ * - pubsub_providerId_methodName → methodName (e.g., "pubsub_abc123_file_read" → "file_read")
+ * - mcp__server__methodName → methodName (e.g., "mcp__workspace__ListDirectory" → "ListDirectory")
+ *
+ * Does NOT strip parts from regular snake_case names like "exit_plan_mode".
  *
  * This function is defined here (not in tool-approval.ts) to avoid
  * circular dependencies, since tool-approval imports from tool-schemas.
  */
 export function extractMethodName(toolName: string): string {
-  const parts = toolName.split("_");
-  // If there are at least 3 parts (prefix_providerId_methodName), return the last part
-  if (parts.length >= 3) {
-    return parts.slice(2).join("_"); // Handle method names with underscores
+  // Handle MCP prefix format: mcp__server__methodName
+  if (toolName.startsWith("mcp__")) {
+    const parts = toolName.split("__");
+    if (parts.length >= 3) {
+      return parts.slice(2).join("__");
+    }
   }
+
+  // Handle pubsub prefix format: pubsub_providerId_methodName
+  if (toolName.startsWith("pubsub_")) {
+    const parts = toolName.split("_");
+    if (parts.length >= 3) {
+      return parts.slice(2).join("_");
+    }
+  }
+
+  // No known prefix - return as-is
   return toolName;
 }
 
@@ -608,6 +638,7 @@ export const RICH_PREVIEW_TOOLS = [
   "git_commit",
   "git_checkout",
   "git_add",
+  "enter_plan_mode",
   "exit_plan_mode",
 ] as const;
 
@@ -663,4 +694,8 @@ export function isGitAddArgs(args: unknown): args is GitAddArgs {
 
 export function isExitPlanModeArgs(args: unknown): args is ExitPlanModeArgs {
   return ExitPlanModeArgsSchema.safeParse(args).success;
+}
+
+export function isEnterPlanModeArgs(args: unknown): args is EnterPlanModeArgs {
+  return EnterPlanModeArgsSchema.safeParse(args).success;
 }

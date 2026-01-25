@@ -10,6 +10,7 @@ import {
   CANONICAL_TOOL_MAPPINGS,
   REVERSE_CANONICAL_MAPPINGS,
   extractMethodName,
+  normalizeToolName,
 } from "./tool-schemas.js";
 
 // Re-export extractMethodName for backwards compatibility
@@ -147,7 +148,7 @@ export function isReadOnlyTool(methodName: string): boolean {
 /**
  * Determine if a tool needs approval based on approval level.
  *
- * @param toolName - The tool name (may be prefixed)
+ * @param toolName - The tool name (may be prefixed or in any naming convention)
  * @param approvalLevel - One of APPROVAL_LEVELS (ASK_ALL, AUTO_SAFE, FULL_AUTO)
  * @returns true if user approval is required, false if auto-approved
  *
@@ -161,6 +162,16 @@ export function needsApprovalForTool(
   if (approvalLevel === APPROVAL_LEVELS.ASK_ALL) return true; // Ask all - always ask
 
   // AUTO_SAFE (level 1): Auto-approve read-only operations
+  // Try multiple naming conventions to handle SDK tool names
   const methodName = extractMethodName(toolName);
-  return !isReadOnlyTool(methodName);
+
+  // First check the raw method name (handles PascalCase like "Read", "Glob")
+  if (isReadOnlyTool(methodName)) return false;
+
+  // Also try normalized snake_case (handles "Read" → "file_read")
+  const normalized = normalizeToolName(toolName);
+  if (isReadOnlyTool(normalized)) return false;
+
+  // Tool is not read-only, requires approval
+  return true;
 }

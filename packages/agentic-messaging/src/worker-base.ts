@@ -18,6 +18,134 @@ import {
 import type { FieldDefinition } from "@natstack/runtime";
 
 // ============================================================================
+// Unified Approval Schema
+// ============================================================================
+
+/**
+ * Parameters for creating an approval schema.
+ */
+export interface CreateApprovalSchemaParams {
+  /** Name of the agent requesting access */
+  agentName: string;
+  /** Tool name (any format - will be normalized) */
+  toolName: string;
+  /** Optional display name override for the tool */
+  displayName?: string;
+  /** Tool input arguments */
+  args: unknown;
+  /** Whether this is a first-time grant (vs per-call) */
+  isFirstTimeGrant: boolean;
+  /** Current approval level (0=Ask All, 1=Auto-Safe, 2=Full Auto) */
+  floorLevel: number;
+  /** Optional reason for the permission request (shown to user) */
+  reason?: string;
+}
+
+/**
+ * Create a unified approval schema for tool approval prompts.
+ *
+ * This schema is used by both:
+ * - Unrestricted mode: Worker builds schema and calls feedback_form RPC
+ * - Restricted mode: Panel middleware builds schema and creates ActiveFeedbackSchema
+ *
+ * The schema provides consistent UI regardless of where the approval check happens:
+ * - approvalHeader: Shows agent name, tool name, first-time grant status, floor level
+ * - reason (optional): Shows why approval is needed
+ * - toolPreview: Rich preview for supported tools (Monaco diffs, git previews)
+ * - buttonGroup: Allow/Deny decision buttons with tool-specific labels
+ *
+ * @param params - Parameters for the approval schema
+ * @returns Array of field definitions for the approval form
+ */
+export function createApprovalSchema(params: CreateApprovalSchemaParams): FieldDefinition[] {
+  const normalized = normalizeToolName(params.toolName);
+  const displayName = params.displayName ?? getCanonicalToolName(normalized);
+
+  const fields: FieldDefinition[] = [
+    // Header with agent info and approval context
+    {
+      key: "header",
+      type: "approvalHeader",
+      agentName: params.agentName,
+      toolName: normalized,
+      displayName,
+      isFirstTimeGrant: params.isFirstTimeGrant,
+      floorLevel: params.floorLevel,
+    },
+  ];
+
+  // Add reason field if provided
+  if (params.reason) {
+    fields.push({
+      key: "reason",
+      label: "Reason",
+      type: "readonly",
+      default: params.reason,
+    });
+  }
+
+  // Add tool preview for supported tools, otherwise show JSON args
+  if (hasRichPreview(normalized)) {
+    fields.push({
+      key: "preview",
+      type: "toolPreview",
+      toolName: normalized,
+      toolArgs: params.args,
+    });
+  } else {
+    // For tools without rich preview, show JSON args
+    fields.push({
+      key: "args",
+      label: "Arguments",
+      type: "code",
+      language: "json",
+      maxHeight: 150,
+      default: JSON.stringify(params.args, null, 2),
+    });
+  }
+
+  // Decision buttons - use tool-specific labels for clarity
+  const isExitPlanApproval = normalized === "exit_plan_mode";
+  const isEnterPlanApproval = normalized === "enter_plan_mode";
+
+  let buttons: Array<{ value: string; label: string; color: "gray" | "green" | "amber" }>;
+  if (isExitPlanApproval) {
+    buttons = [
+      { value: "deny", label: "Reject", color: "gray" },
+      { value: "allow", label: "Approve Plan", color: "green" },
+      { value: "always", label: "Trust Agent", color: "amber" },
+    ];
+  } else if (isEnterPlanApproval) {
+    buttons = [
+      { value: "deny", label: "Deny", color: "gray" },
+      { value: "allow", label: "Enter Plan Mode", color: "green" },
+      { value: "always", label: "Always Allow", color: "amber" },
+    ];
+  } else if (params.isFirstTimeGrant) {
+    buttons = [
+      { value: "deny", label: "Deny", color: "gray" },
+      { value: "allow", label: "Grant Access", color: "green" },
+      { value: "always", label: "Always Allow", color: "amber" },
+    ];
+  } else {
+    buttons = [
+      { value: "deny", label: "Deny", color: "gray" },
+      { value: "allow", label: "Allow", color: "green" },
+      { value: "always", label: "Always Allow", color: "amber" },
+    ];
+  }
+
+  fields.push({
+    key: "decision",
+    type: "buttonGroup",
+    submitOnSelect: true,
+    buttons,
+  });
+
+  return fields;
+}
+
+// ============================================================================
 // Permission Prompts
 // ============================================================================
 
@@ -29,6 +157,10 @@ export interface PermissionPromptOptions {
   decisionReason?: string;
   /** Abort signal to cancel the prompt */
   signal?: AbortSignal;
+  /** Whether this is the first-time grant for this agent (shows different UI) */
+  isFirstTimeGrant?: boolean;
+  /** Current approval level from panel settings (0=Ask All, 1=Auto-Safe, 2=Full Auto) */
+  floorLevel?: number;
 }
 
 /**
@@ -65,69 +197,15 @@ export async function showPermissionPrompt(
   toolName: string,
   input: Record<string, unknown>,
   options: PermissionPromptOptions = {}
-): Promise<{ allow: boolean }> {
-  // Get agent name from client handle (worker's @mention name)
-  const agentName = client.handle;
-  const normalized = normalizeToolName(toolName);
-  const displayName = getCanonicalToolName(normalized);
-
-  const fields: FieldDefinition[] = [
-    // Header - worker doesn't track first-time grants, so always per-call
-    {
-      key: "header",
-      type: "approvalHeader",
-      agentName,
-      toolName: normalized,
-      displayName,
-      isFirstTimeGrant: false, // Worker doesn't track this
-      floorLevel: 1, // Worker doesn't know panel's level
-    },
-  ];
-
-  // Add reason field if provided
-  if (options.decisionReason) {
-    fields.push({
-      key: "reason",
-      label: "Reason",
-      type: "readonly",
-      default: options.decisionReason,
-    });
-  }
-
-  // Add tool preview - use rich preview for supported tools, fallback to JSON
-  if (hasRichPreview(normalized)) {
-    fields.push({
-      key: "preview",
-      type: "toolPreview",
-      toolName: normalized,
-      toolArgs: input,
-    });
-  } else {
-    fields.push({
-      key: "args",
-      label: "Arguments",
-      type: "code",
-      language: "json",
-      maxHeight: 150,
-      default: JSON.stringify(input, null, 2),
-    });
-  }
-
-  // Decision buttons - use tool-specific labels for clarity
-  const isPlanApproval = normalized === "exit_plan_mode";
-  fields.push({
-    key: "decision",
-    type: "buttonGroup",
-    submitOnSelect: true,
-    buttons: isPlanApproval
-      ? [
-          { value: "deny", label: "Reject", color: "gray" },
-          { value: "allow", label: "Approve Plan", color: "green" },
-        ]
-      : [
-          { value: "deny", label: "Deny", color: "gray" },
-          { value: "allow", label: "Allow", color: "green" },
-        ],
+): Promise<{ allow: boolean; alwaysAllow?: boolean }> {
+  // Build unified approval schema
+  const fields = createApprovalSchema({
+    agentName: client.handle,
+    toolName,
+    args: input,
+    isFirstTimeGrant: options.isFirstTimeGrant ?? false,
+    floorLevel: options.floorLevel ?? 1, // Default to Auto-Safe if unknown
+    reason: options.decisionReason,
   });
 
   const handle = client.callMethod(panelId, "feedback_form", {
@@ -142,8 +220,12 @@ export async function showPermissionPrompt(
     const result = await handle.result;
     const feedbackResult = result.content as { type: string; value?: Record<string, unknown>; message?: string };
 
-    if (feedbackResult.type === "cancel") return { allow: false };
-    return { allow: feedbackResult.value?.["decision"] === "allow" };
+    if (feedbackResult.type === "cancel") return { allow: false, alwaysAllow: false };
+    const decision = feedbackResult.value?.["decision"];
+    return {
+      allow: decision === "allow" || decision === "always",
+      alwaysAllow: decision === "always",
+    };
   } catch (err) {
     // Permission prompt failures can occur in normal scenarios:
     // - User closes the panel before responding
@@ -159,10 +241,10 @@ export async function showPermissionPrompt(
 
     if (!isExpectedError) {
       // Unexpected errors warrant a warning for investigation
-      console.warn(`[showPermissionPrompt] Unexpected error for ${displayName}: ${errorMessage}`);
+      console.warn(`[showPermissionPrompt] Unexpected error for ${toolName}: ${errorMessage}`);
     }
     // Always return deny on error - fail secure
-    return { allow: false };
+    return { allow: false, alwaysAllow: false };
   }
 }
 

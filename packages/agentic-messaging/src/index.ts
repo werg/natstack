@@ -103,7 +103,9 @@ export {
   showPermissionPrompt,
   findPanelParticipant,
   validateRestrictedMode,
+  createApprovalSchema,
   type PermissionPromptOptions,
+  type CreateApprovalSchemaParams,
 } from "./worker-base.js";
 
 // Feedback UI types (formerly in broker-protocol.ts)

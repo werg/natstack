@@ -44,8 +44,13 @@ export type FieldType =
 
 /**
  * Comparison operators for field conditions
+ *
+ * - eq/neq: Equality comparison for primitive values
+ * - gt/gte/lt/lte: Numeric comparisons
+ * - in: Check if primitive field value is in an array of condition values
+ * - contains: Check if array field value contains a specific condition value (for multiSelect)
  */
-export type ConditionOperator = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in";
+export type ConditionOperator = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in" | "contains";
 
 /**
  * Condition for field visibility/enabled state
@@ -102,8 +107,15 @@ export interface FieldDefinition {
   default?: FieldValue;
   channelLevel?: boolean; // If true, value comes from channel config, not user input
 
-  // Options (for select, segmented, toggle)
+  // Options (for select, segmented, toggle, multiSelect)
   options?: FieldOption[];
+
+  // Variant for segmented and multiSelect fields
+  // - "buttons" (default for segmented): SegmentedControl buttons
+  // - "cards" (for segmented): RadioCards with full option descriptions
+  // - "list" (default for multiSelect): Checkbox list
+  // - "cards" (for multiSelect): CheckboxCards with full option descriptions
+  variant?: "buttons" | "cards" | "list";
 
   // Slider configuration
   min?: number;
@@ -189,6 +201,11 @@ export function evaluateCondition(
       // "in" operator only applies to primitive field values (not arrays like multiSelect)
       if (Array.isArray(fieldValue) || fieldValue === undefined) return false;
       return Array.isArray(conditionValue) && conditionValue.includes(fieldValue);
+    case "contains":
+      // "contains" operator checks if an array field contains a specific value
+      // Useful for multiSelect fields: { field: "options", operator: "contains", value: "__other__" }
+      if (!Array.isArray(fieldValue)) return false;
+      return fieldValue.includes(conditionValue as string);
     default:
       return false;
   }

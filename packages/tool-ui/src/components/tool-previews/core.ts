@@ -10,6 +10,7 @@ export { GitCommitPreview, type GitCommitPreviewProps } from "./GitCommitPreview
 export { GitCheckoutPreview, type GitCheckoutPreviewProps } from "./GitCheckoutPreview.js";
 export { GitAddPreview, type GitAddPreviewProps } from "./GitAddPreview.js";
 export { ExitPlanModePreview, type ExitPlanModePreviewProps } from "./ExitPlanModePreview.js";
+export { EnterPlanModePreview, type EnterPlanModePreviewProps } from "./EnterPlanModePreview.js";
 
 // ============================================================================
 // Re-export types and type guards from agentic-messaging
@@ -24,6 +25,7 @@ export {
   isGitCommitArgs,
   isGitCheckoutArgs,
   isGitAddArgs,
+  isEnterPlanModeArgs,
   isExitPlanModeArgs,
   // Rich preview helpers
   hasRichPreview,
@@ -35,6 +37,7 @@ export {
   type GitCommitArgs,
   type GitCheckoutArgs,
   type GitAddArgs,
+  type EnterPlanModeArgs,
   type ExitPlanModeArgs,
   type AllowedPrompt,
   type RichPreviewToolName,
