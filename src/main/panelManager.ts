@@ -116,6 +116,11 @@ export class PanelManager {
   private treeUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly TREE_UPDATE_DEBOUNCE_MS = 16; // ~1 frame at 60fps
 
+  // Crash recovery policy
+  private crashHistory = new Map<string, number[]>();
+  private readonly MAX_CRASHES = 3;
+  private readonly CRASH_WINDOW_MS = 60000; // 1 minute
+
   constructor(gitServer: GitServer) {
     this.gitServer = gitServer;
     const workspace = getActiveWorkspace();
@@ -129,6 +134,11 @@ export class PanelManager {
    */
   setViewManager(vm: ViewManager): void {
     this.viewManager = vm;
+
+    // Register crash handler for view recovery
+    vm.onViewCrashed((viewId, reason) => {
+      this.handleViewCrashed(viewId, reason);
+    });
 
     // Try to load existing panel tree from database first
     this.initializePanelTree().catch((error) => {
@@ -612,11 +622,28 @@ export class PanelManager {
     });
 
     contents.on("did-navigate", (_event, url) => {
+      console.log(`[PanelManager] Panel ${browserId} navigated to: ${url}`);
       queueStateUpdate({ url });
     });
 
     contents.on("did-navigate-in-page", (_event, url) => {
       queueStateUpdate({ url });
+    });
+
+    contents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+      console.warn(`[PanelManager] Panel ${browserId} failed to load: ${errorDescription} (${errorCode}) - ${validatedURL}`);
+    });
+
+    contents.on("render-process-gone", (_event, details) => {
+      console.warn(`[PanelManager] Panel ${browserId} render process gone: ${details.reason}`);
+    });
+
+    contents.on("unresponsive", () => {
+      console.warn(`[PanelManager] Panel ${browserId} became unresponsive`);
+    });
+
+    contents.on("responsive", () => {
+      console.log(`[PanelManager] Panel ${browserId} became responsive again`);
     });
 
     contents.on("did-start-loading", () => {
@@ -3351,7 +3378,17 @@ export class PanelManager {
 
     const contents = this.viewManager.getWebContents(panelId);
     if (contents && !contents.isDestroyed()) {
-      contents.send("panel:event", { panelId, ...payload });
+      try {
+        contents.send("panel:event", { panelId, ...payload });
+      } catch (error) {
+        // Handle race condition where render frame is disposed but webContents
+        // is not yet marked as destroyed. This can happen when panels are idle
+        // for extended periods and Electron garbage collects the render frame.
+        console.warn(
+          `[PanelManager] Failed to send event to panel ${panelId} (render frame may be disposed):`,
+          error instanceof Error ? error.message : error
+        );
+      }
     }
   }
 
@@ -3371,6 +3408,9 @@ export class PanelManager {
   private unloadPanelResources(panelId: string): void {
     const panel = this.panels.get(panelId);
     if (!panel) return;
+
+    // Clean up crash history for this panel
+    this.crashHistory.delete(panelId);
 
     // Cleanup based on panel type
     const panelType = getPanelType(panel);
@@ -3606,6 +3646,158 @@ export class PanelManager {
 
     if (depth >= MAX_DEPTH) {
       console.error(`[PanelManager] Max depth exceeded in updateSelectedPath`);
+    }
+
+    // Update which views are protected from throttling/disposal
+    this.updateProtectedViews(focusedPanelId);
+  }
+
+  /**
+   * Get all panel IDs in the active lineage: ancestors + focused panel + all descendants.
+   * These panels should have background throttling disabled to prevent Electron from
+   * garbage collecting their render frames during idle periods.
+   */
+  private getActivePanelLineage(focusedPanelId: string): Set<string> {
+    const lineage = new Set<string>();
+
+    // Add the focused panel
+    lineage.add(focusedPanelId);
+
+    // Walk up to get all ancestors
+    let currentId: string | null = focusedPanelId;
+    let depth = 0;
+    const MAX_DEPTH = 100;
+
+    while (currentId && depth < MAX_DEPTH) {
+      const parent = this.findParentPanel(currentId);
+      if (!parent) break;
+      lineage.add(parent.id);
+      currentId = parent.id;
+      depth++;
+    }
+
+    // Walk down to get all descendants of the focused panel
+    const addDescendants = (panel: Panel) => {
+      for (const child of panel.children) {
+        lineage.add(child.id);
+        addDescendants(child);
+      }
+    };
+
+    const focusedPanel = this.panels.get(focusedPanelId);
+    if (focusedPanel) {
+      addDescendants(focusedPanel);
+    }
+
+    return lineage;
+  }
+
+  /**
+   * Update which panels are protected from throttling/disposal.
+   * Delegates to ViewManager which handles all the mechanics.
+   */
+  private updateProtectedViews(focusedPanelId: string): void {
+    if (!this.viewManager) return;
+    const lineage = this.getActivePanelLineage(focusedPanelId);
+    this.viewManager.setProtectedViews(lineage);
+  }
+
+  /**
+   * Handle a view crash reported by ViewManager.
+   * Implements crash recovery policy with loop protection.
+   */
+  private handleViewCrashed(viewId: string, reason: string): void {
+    console.warn(`[PanelManager] View ${viewId} crashed: ${reason}`);
+
+    if (!this.shouldAttemptReload(viewId)) {
+      console.error(`[PanelManager] Giving up on ${viewId} after repeated crashes`);
+      return;
+    }
+
+    console.log(`[PanelManager] Attempting reload of ${viewId}`);
+    const reloadSuccess = this.viewManager?.reloadView(viewId) ?? false;
+
+    if (!reloadSuccess) {
+      console.warn(`[PanelManager] Reload failed for ${viewId}, attempting view recreation`);
+      void this.recreatePanelView(viewId);
+    }
+  }
+
+  /**
+   * Check if we should attempt to reload a crashed view.
+   * Returns false if the view has crashed too many times recently (crash loop protection).
+   */
+  private shouldAttemptReload(viewId: string): boolean {
+    const now = Date.now();
+    const history = this.crashHistory.get(viewId) ?? [];
+
+    // Keep only recent crashes within the window
+    const recent = history.filter((t) => now - t < this.CRASH_WINDOW_MS);
+
+    if (recent.length >= this.MAX_CRASHES) {
+      return false;
+    }
+
+    // Record this crash
+    recent.push(now);
+    this.crashHistory.set(viewId, recent);
+    return true;
+  }
+
+  /**
+   * Recreate a panel view after a crash when reload fails.
+   * Destroys the zombie view and creates a fresh one.
+   */
+  private async recreatePanelView(panelId: string): Promise<void> {
+    const panel = this.panels.get(panelId);
+    if (!panel) {
+      console.error(`[PanelManager] Cannot recreate view: panel ${panelId} not found`);
+      return;
+    }
+
+    // Destroy the zombie view if it exists
+    if (this.viewManager?.hasView(panelId)) {
+      console.log(`[PanelManager] Destroying zombie view for ${panelId}`);
+      this.viewManager.destroyView(panelId);
+    }
+
+    // Recreate based on panel type
+    const panelType = getPanelType(panel);
+    const contextId = getPanelContextId(panel);
+
+    try {
+      if (panelType === "browser") {
+        const snapshot = getCurrentSnapshot(panel);
+        const url = snapshot.resolvedUrl ?? getPanelSource(panel);
+        this.createViewForPanel(panelId, url, "browser", contextId);
+        console.log(`[PanelManager] Recreated browser view for ${panelId}`);
+      } else if (panelType === "shell") {
+        await this.restoreShellPanel(panel);
+        console.log(`[PanelManager] Recreated shell view for ${panelId}`);
+      } else if (panelType === "app" || panelType === "worker") {
+        // For app/worker panels, check if we have a built URL to restore
+        const snapshot = getCurrentSnapshot(panel);
+        const builtUrl = snapshot.resolvedUrl;
+        if (builtUrl) {
+          // Panel was built, recreate with the built URL
+          const viewType = panelType === "worker" ? "worker" : "panel";
+          this.createViewForPanel(panelId, builtUrl, viewType, contextId);
+          console.log(`[PanelManager] Recreated ${panelType} view for ${panelId}`);
+        } else {
+          // Panel wasn't built yet or lost build state - trigger rebuild
+          console.log(`[PanelManager] No built URL for ${panelId}, triggering rebuild`);
+          panel.artifacts = { buildState: "pending" };
+          this.notifyPanelTreeUpdate();
+        }
+      }
+    } catch (error) {
+      console.error(
+        `[PanelManager] Failed to recreate view for ${panelId}:`,
+        error instanceof Error ? error.message : error
+      );
+      // Mark panel as needing rebuild
+      panel.artifacts = { buildState: "pending" };
+      this.notifyPanelTreeUpdate();
     }
   }
 

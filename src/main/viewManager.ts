@@ -104,6 +104,11 @@ export class ViewManager {
   /** ID of the currently visible panel (to apply bounds updates) */
   private visiblePanelId: string | null = null;
 
+  // View protection state
+  private protectedViewIds = new Set<string>();
+  private crashCallback: ((viewId: string, reason: string) => void) | null = null;
+  private windowVisible = true;
+
   constructor(options: {
     window: BaseWindow;
     shellPreload: string;
@@ -179,6 +184,20 @@ export class ViewManager {
       this.updateShellBounds();
       this.applyBoundsToVisiblePanel();
     });
+
+    // Track window visibility for protected view management
+    this.window.on("hide", () => this.handleWindowVisibility(false));
+    this.window.on("show", () => this.handleWindowVisibility(true));
+    this.window.on("minimize", () => this.handleWindowVisibility(false));
+    this.window.on("restore", () => this.handleWindowVisibility(true));
+  }
+
+  private handleWindowVisibility(visible: boolean): void {
+    this.windowVisible = visible;
+    // When window is hidden, force visibility on protected views to prevent throttling
+    if (!visible) {
+      this.applyProtectionToViews();
+    }
   }
 
   private updateShellBounds(): void {
@@ -305,6 +324,19 @@ export class ViewManager {
       }
     });
 
+    // Listen for render process crashes
+    view.webContents.on("render-process-gone", (_event, details) => {
+      if (this.crashCallback && ["crashed", "oom", "launch-failed"].includes(details.reason)) {
+        this.crashCallback(config.id, details.reason);
+      }
+    });
+
+    // Apply protection if this view is in the protected set
+    // (handles case where view is recreated after crash while still protected)
+    if (this.protectedViewIds.has(config.id)) {
+      this.setViewProtection(config.id, true);
+    }
+
     return view;
   }
 
@@ -383,6 +415,9 @@ export class ViewManager {
         // AdBlockManager might not be initialized yet
       }
     }
+    // Log destruction with stack trace for debugging unexpected view removal
+    console.log(`[ViewManager] Destroying view: ${id}`);
+    console.log(new Error("View destruction stack trace").stack);
 
     // Remove from window
     this.window.contentView.removeChildView(managed.view);
@@ -832,6 +867,81 @@ export class ViewManager {
 
     // Shell is destroyed with window
     this.views.clear();
+  }
+
+  // =========================================================================
+  // View Protection API
+  // =========================================================================
+
+  /**
+   * Set which views should be protected from throttling/disposal.
+   * ViewManager handles all the mechanics internally (background throttling,
+   * visibility state when window is hidden).
+   */
+  setProtectedViews(viewIds: Set<string>): void {
+    const previousIds = this.protectedViewIds;
+    this.protectedViewIds = viewIds;
+
+    // Re-enable throttling for views no longer protected
+    for (const id of previousIds) {
+      if (!viewIds.has(id)) {
+        this.setViewProtection(id, false);
+      }
+    }
+
+    // Protect newly added views
+    for (const id of viewIds) {
+      if (!previousIds.has(id)) {
+        this.setViewProtection(id, true);
+      }
+    }
+  }
+
+  private setViewProtection(viewId: string, protect: boolean): void {
+    const contents = this.getWebContents(viewId);
+    if (!contents || contents.isDestroyed()) return;
+
+    try {
+      contents.setBackgroundThrottling(!protect);
+    } catch {
+      // Frame may be disposed
+    }
+  }
+
+  private applyProtectionToViews(): void {
+    for (const viewId of this.protectedViewIds) {
+      this.setViewProtection(viewId, true);
+    }
+  }
+
+  /**
+   * Register callback for when a view's renderer crashes.
+   * Only called for 'crashed', 'oom', and 'launch-failed' reasons.
+   */
+  onViewCrashed(callback: (viewId: string, reason: string) => void): void {
+    this.crashCallback = callback;
+  }
+
+  /**
+   * Reload a view's content. Returns true if reload was initiated.
+   */
+  reloadView(viewId: string): boolean {
+    const contents = this.getWebContents(viewId);
+    if (!contents || contents.isDestroyed()) {
+      console.error(`[ViewManager] Cannot reload ${viewId}: webContents destroyed or missing`);
+      return false;
+    }
+
+    try {
+      contents.reload();
+      return true;
+    } catch (error) {
+      console.error(
+        `[ViewManager] Failed to reload ${viewId}:`,
+        error instanceof Error ? error.message : error
+      );
+      return false;
+    }
   }
 }
 

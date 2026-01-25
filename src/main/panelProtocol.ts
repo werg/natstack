@@ -141,7 +141,9 @@ export function handleProtocolRequest(request: Request): Response {
 
   const panelContent = protocolPanels.get(panelId);
   if (!panelContent) {
-    console.error(`[PanelProtocol] Panel not found: ${panelId}`);
+    console.error(`[PanelProtocol] Panel not found: ${panelId}, requested path: ${pathname}`);
+    console.error(`[PanelProtocol] Available panels: ${Array.from(protocolPanels.keys()).join(", ")}`);
+    console.error(new Error("Panel not found stack trace").stack);
     return new Response(`Panel not found: ${panelId}`, {
       status: 404,
       headers: { "Content-Type": "text/plain" },
