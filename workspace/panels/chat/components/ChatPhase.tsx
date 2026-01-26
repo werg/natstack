@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Badge, Box, Button, Callout, Card, Flex, IconButton, ScrollArea, Text, TextArea, Theme } from "@radix-ui/themes";
-import { PaperPlaneIcon, ImageIcon } from "@radix-ui/react-icons";
+import { PaperPlaneIcon, ImageIcon, CopyIcon, CheckIcon } from "@radix-ui/react-icons";
 import type { Participant, AttachmentInput } from "@natstack/agentic-messaging";
 import {
   FeedbackContainer,
@@ -85,6 +85,7 @@ export function ChatPhase({
   const [sendError, setSendError] = useState<string | null>(null);
   const [showImageInput, setShowImageInput] = useState(false);
   const [showNewContent, setShowNewContent] = useState(false);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
   // Refs for scroll position tracking
   const wasNearBottomRef = useRef(true);
@@ -146,6 +147,17 @@ export function ChatPhase({
   const handleScrollToNewContent = useCallback(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
     setShowNewContent(false);
+  }, []);
+
+  // Handler to copy message content to clipboard
+  const handleCopyMessage = useCallback(async (messageId: string, content: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedMessageId(messageId);
+      setTimeout(() => setCopiedMessageId(null), 1500);
+    } catch (err) {
+      console.error("Failed to copy message:", err);
+    }
   }, []);
 
   // Auto-dismiss error after 5 seconds
@@ -448,7 +460,7 @@ export function ChatPhase({
                       <Card
                         style={{
                           backgroundColor: isPanel
-                            ? "var(--accent-9)"
+                            ? "var(--accent-10)"
                             : msg.error
                               ? "var(--red-3)"
                               : "var(--gray-3)",
@@ -475,6 +487,20 @@ export function ChatPhase({
                               showInterruptButton={true}
                               onInterrupt={() => handleInterruptMessage(msg.id, msg.senderId)}
                             />
+                          )}
+                          {hasContent && !isStreaming && (
+                            <Flex justify="end">
+                              <IconButton
+                                size="1"
+                                variant="ghost"
+                                color={isPanel ? "gray" : "gray"}
+                                style={{ opacity: 0.5 }}
+                                onClick={() => void handleCopyMessage(msg.id, msg.content)}
+                                title="Copy message"
+                              >
+                                {copiedMessageId === msg.id ? <CheckIcon /> : <CopyIcon />}
+                              </IconButton>
+                            </Flex>
                           )}
                         </Flex>
                       </Card>
