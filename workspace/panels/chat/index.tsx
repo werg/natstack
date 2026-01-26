@@ -57,6 +57,22 @@ import { ChatPhase } from "./components/ChatPhase";
 import type { PendingImage } from "./components/ImageInput";
 import { cleanupPendingImages } from "./utils/imageUtils";
 import type { ChatParticipantMetadata } from "./types";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+
+// Global error handlers to catch any unhandled errors and prevent silent failures
+if (typeof window !== "undefined") {
+  window.addEventListener("error", (event) => {
+    console.error("[Chat] Uncaught error:", event.error);
+    console.error("[Chat] Error message:", event.message);
+    console.error("[Chat] Error location:", event.filename, event.lineno, event.colno);
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    console.error("[Chat] Unhandled promise rejection:", event.reason);
+    // Prevent the default browser behavior (which may log again)
+    event.preventDefault();
+  });
+}
 
 /** Utility to check if a value looks like ChatParticipantMetadata */
 function isChatParticipantMetadata(value: unknown): value is ChatParticipantMetadata {
@@ -303,28 +319,44 @@ export default function AgenticChat() {
     },
     onEvent: useCallback(
       (event: IncomingEvent) => {
-        const selfId = selfIdRef.current ?? panelClientId;
-        dispatchAgenticEvent(
-          event,
-          {
-            setMessages,
-            setHistoricalParticipants,
-            setPresenceEvents,
-            addMethodHistoryEntry,
-            handleMethodResult,
-          },
-          selfId,
-          participantsRef.current
-        );
-        // Handle tool role events
-        if (event.type === "tool-role-request") {
-          toolRoleHandlerRef.current?.(event);
-        }
-        if (event.type === "tool-role-response") {
-          toolRoleResponseHandlerRef.current?.(event);
-        }
-        if (event.type === "tool-role-handoff") {
-          toolRoleHandoffHandlerRef.current?.(event);
+        try {
+          const selfId = selfIdRef.current ?? panelClientId;
+          dispatchAgenticEvent(
+            event,
+            {
+              setMessages,
+              setHistoricalParticipants,
+              setPresenceEvents,
+              addMethodHistoryEntry,
+              handleMethodResult,
+            },
+            selfId,
+            participantsRef.current
+          );
+          // Handle tool role events
+          if (event.type === "tool-role-request") {
+            try {
+              toolRoleHandlerRef.current?.(event);
+            } catch (err) {
+              console.error("[Chat] Tool role request handler error:", err);
+            }
+          }
+          if (event.type === "tool-role-response") {
+            try {
+              toolRoleResponseHandlerRef.current?.(event);
+            } catch (err) {
+              console.error("[Chat] Tool role response handler error:", err);
+            }
+          }
+          if (event.type === "tool-role-handoff") {
+            try {
+              toolRoleHandoffHandlerRef.current?.(event);
+            } catch (err) {
+              console.error("[Chat] Tool role handoff handler error:", err);
+            }
+          }
+        } catch (err) {
+          console.error("[Chat] Event dispatch error:", err);
         }
       },
       [
@@ -396,7 +428,9 @@ export default function AgenticChat() {
 
     // Set timeout to stop typing after inactivity
     typingTimeoutRef.current = setTimeout(() => {
-      void stopTyping();
+      void stopTyping().catch((err) => {
+        console.error("[Chat] Stop typing timeout error:", err);
+      });
     }, TYPING_DEBOUNCE_MS);
   }, [clientRef, panelClientId, stopTyping]);
 
@@ -404,9 +438,13 @@ export default function AgenticChat() {
   const handleInputChange = useCallback((value: string) => {
     setInput(value);
     if (value.trim()) {
-      void startTyping();
+      void startTyping().catch((err) => {
+        console.error("[Chat] Start typing error:", err);
+      });
     } else {
-      void stopTyping();
+      void stopTyping().catch((err) => {
+        console.error("[Chat] Stop typing error:", err);
+      });
     }
   }, [startTyping, stopTyping]);
 
@@ -479,32 +517,46 @@ export default function AgenticChat() {
         callerId: ctx.callerId,
         handledLocally: true,
       };
-      addMethodHistoryEntry(entry);
+      try {
+        addMethodHistoryEntry(entry);
+      } catch (err) {
+        console.error("[Chat] Failed to add method history entry:", err);
+      }
 
-      return new Promise<FeedbackResult>((resolve) => {
-        const feedback: ActiveFeedbackSchema = {
-          type: "schema",
-          callId,
-          title: args.title,
-          fields: args.fields,
-          values: args.values ?? {},
-          submitLabel: args.submitLabel,
-          cancelLabel: args.cancelLabel,
-          // New properties for feedback UI
-          timeout: args.timeout,
-          timeoutAction: args.timeoutAction,
-          severity: args.severity,
-          hideSubmit: args.hideSubmit,
-          hideCancel: args.hideCancel,
-          createdAt: Date.now(),
-          complete: (feedbackResult: FeedbackResult) => {
-            removeFeedback(callId);
-            handleFeedbackResult(callId, feedbackResult);
-            resolve(feedbackResult);
-          },
-        };
+      return new Promise<FeedbackResult>((resolve, reject) => {
+        try {
+          const feedback: ActiveFeedbackSchema = {
+            type: "schema",
+            callId,
+            title: args.title,
+            fields: args.fields,
+            values: args.values ?? {},
+            submitLabel: args.submitLabel,
+            cancelLabel: args.cancelLabel,
+            // New properties for feedback UI
+            timeout: args.timeout,
+            timeoutAction: args.timeoutAction,
+            severity: args.severity,
+            hideSubmit: args.hideSubmit,
+            hideCancel: args.hideCancel,
+            createdAt: Date.now(),
+            complete: (feedbackResult: FeedbackResult) => {
+              try {
+                removeFeedback(callId);
+                handleFeedbackResult(callId, feedbackResult);
+                resolve(feedbackResult);
+              } catch (err) {
+                console.error("[Chat] Feedback completion error:", err);
+                reject(err);
+              }
+            },
+          };
 
-        addFeedback(feedback);
+          addFeedback(feedback);
+        } catch (err) {
+          console.error("[Chat] Failed to add feedback:", err);
+          reject(err);
+        }
       });
     },
     [addFeedback, removeFeedback, addMethodHistoryEntry, handleFeedbackResult]
@@ -522,37 +574,55 @@ export default function AgenticChat() {
         callerId: ctx.callerId,
         handledLocally: true,
       };
-      addMethodHistoryEntry(entry);
+      try {
+        addMethodHistoryEntry(entry);
+      } catch (err) {
+        console.error("[Chat] Failed to add method history entry:", err);
+      }
 
       const result = await compileFeedbackComponent({ code: args.code } as FeedbackUiToolArgs);
 
       if (!result.success) {
-        updateMethodHistoryEntry(callId, {
-          status: "error",
-          error: result.error,
-          completedAt: Date.now(),
-        });
+        try {
+          updateMethodHistoryEntry(callId, {
+            status: "error",
+            error: result.error,
+            completedAt: Date.now(),
+          });
+        } catch (err) {
+          console.error("[Chat] Failed to update method history entry:", err);
+        }
         throw new Error(result.error);
       }
 
       const cacheKey = result.cacheKey!;
 
-      return new Promise<FeedbackResult>((resolve) => {
-        const feedback: ActiveFeedbackTsx = {
-          type: "tsx",
-          callId,
-          Component: result.Component!,
-          createdAt: Date.now(),
-          cacheKey,
-          complete: (feedbackResult: FeedbackResult) => {
-            removeFeedback(callId);
-            cleanupFeedbackComponent(cacheKey);
-            handleFeedbackResult(callId, feedbackResult);
-            resolve(feedbackResult);
-          },
-        };
+      return new Promise<FeedbackResult>((resolve, reject) => {
+        try {
+          const feedback: ActiveFeedbackTsx = {
+            type: "tsx",
+            callId,
+            Component: result.Component!,
+            createdAt: Date.now(),
+            cacheKey,
+            complete: (feedbackResult: FeedbackResult) => {
+              try {
+                removeFeedback(callId);
+                cleanupFeedbackComponent(cacheKey);
+                handleFeedbackResult(callId, feedbackResult);
+                resolve(feedbackResult);
+              } catch (err) {
+                console.error("[Chat] Custom feedback completion error:", err);
+                reject(err);
+              }
+            },
+          };
 
-        addFeedback(feedback);
+          addFeedback(feedback);
+        } catch (err) {
+          console.error("[Chat] Failed to add custom feedback:", err);
+          reject(err);
+        }
       });
     },
     [addFeedback, removeFeedback, addMethodHistoryEntry, updateMethodHistoryEntry, handleFeedbackResult]
@@ -745,12 +815,17 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
 
         setStatus("Connected");
       } catch (err) {
+        console.error("[Chat] Connection error:", err);
         setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
         hasConnectedRef.current = false; // Allow retry on error
       }
     }
 
-    void connect();
+    void connect().catch((err) => {
+      // This should not happen as connect() has its own try-catch,
+      // but catch any unexpected errors to prevent React unmount
+      console.error("[Chat] Unexpected connect error:", err);
+    });
   // Minimal dependencies - use refs for callbacks to prevent reconnection loops
   }, [
     channelName,
@@ -862,27 +937,34 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
   // Error state: no channel name provided
   if (!channelName) {
     return (
-      <Flex direction="column" align="center" justify="center" style={{ height: "100vh", padding: 16 }} gap="3">
-        <Card>
-          <Flex direction="column" gap="3" p="4" align="center">
-            <Text size="4" weight="bold" color="red">
-              Missing Channel Name
-            </Text>
-            <Text size="2" color="gray" style={{ textAlign: "center" }}>
-              This panel requires a channelName state arg to connect to a chat channel.
-            </Text>
-            <Button onClick={handleNewConversation}>
-              Start New Conversation
-            </Button>
-          </Flex>
-        </Card>
-      </Flex>
+      <ErrorBoundary>
+        <Flex direction="column" align="center" justify="center" style={{ height: "100vh", padding: 16 }} gap="3">
+          <Card>
+            <Flex direction="column" gap="3" p="4" align="center">
+              <Text size="4" weight="bold" color="red">
+                Missing Channel Name
+              </Text>
+              <Text size="2" color="gray" style={{ textAlign: "center" }}>
+                This panel requires a channelName state arg to connect to a chat channel.
+              </Text>
+              <Button onClick={handleNewConversation}>
+                Start New Conversation
+              </Button>
+            </Flex>
+          </Card>
+        </Flex>
+      </ErrorBoundary>
     );
   }
 
   // Chat phase
   return (
-    <>
+    <ErrorBoundary
+      onError={(error, errorInfo) => {
+        console.error("[Chat] React error boundary caught error:", error);
+        console.error("[Chat] Component stack:", errorInfo.componentStack);
+      }}
+    >
       {/* Tool role conflict modals */}
       {toolRole.pendingConflicts.map((conflict) => (
         <ToolRoleConflictModal
@@ -964,6 +1046,6 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
           onRevokeAll: approval.revokeAll,
         }}
       />
-    </>
+    </ErrorBoundary>
   );
 }

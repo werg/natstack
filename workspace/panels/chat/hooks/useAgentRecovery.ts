@@ -118,32 +118,40 @@ export function useAgentRecovery(
         `[AgentRecovery] Attempting to reload disconnected agent @${agent.handle} (panel: ${agent.workerPanelId})`
       );
 
-      void ensurePanelLoaded(agent.workerPanelId).then((result) => {
-        if (!result.success) {
-          // Special case: panel was deleted - just log, don't show prominent error
-          if (result.buildState === "not-found") {
-            console.warn(
-              `[AgentRecovery] Agent @${agent.handle} worker panel ${agent.workerPanelId} no longer exists`
-            );
-            return;
-          }
+      void ensurePanelLoaded(agent.workerPanelId)
+        .then((result) => {
+          if (!result.success) {
+            // Special case: panel was deleted - just log, don't show prominent error
+            if (result.buildState === "not-found") {
+              console.warn(
+                `[AgentRecovery] Agent @${agent.handle} worker panel ${agent.workerPanelId} no longer exists`
+              );
+              return;
+            }
 
-          // Report error for other failure cases
-          console.warn(
-            `[AgentRecovery] Failed to reload agent @${agent.handle}: ${result.error}`
-          );
-          onAgentLoadError?.({
-            handle: agent.handle,
-            workerPanelId: agent.workerPanelId,
-            buildState: result.buildState,
-            error: result.error ?? `Build failed: ${result.buildState}`,
-          });
-        } else {
-          console.log(
-            `[AgentRecovery] Successfully reloaded agent @${agent.handle}`
-          );
-        }
-      });
+            // Report error for other failure cases
+            console.warn(
+              `[AgentRecovery] Failed to reload agent @${agent.handle}: ${result.error}`
+            );
+            try {
+              onAgentLoadError?.({
+                handle: agent.handle,
+                workerPanelId: agent.workerPanelId,
+                buildState: result.buildState,
+                error: result.error ?? `Build failed: ${result.buildState}`,
+              });
+            } catch (callbackError) {
+              console.error("[AgentRecovery] onAgentLoadError callback error:", callbackError);
+            }
+          } else {
+            console.log(
+              `[AgentRecovery] Successfully reloaded agent @${agent.handle}`
+            );
+          }
+        })
+        .catch((err) => {
+          console.error(`[AgentRecovery] Error loading agent @${agent.handle}:`, err);
+        });
     }
   }, [enabled, presenceEvents, participants, onAgentLoadError]);
 }

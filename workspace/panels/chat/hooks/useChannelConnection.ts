@@ -126,9 +126,20 @@ export function useChannelConnection({
         const eventIterator = newClient.events({ includeReplay: true });
         let eventLoopRunning = true;
         void (async () => {
-          for await (const event of eventIterator) {
-            if (!eventLoopRunning) break;
-            callbacksRef.current.onEvent?.(event as IncomingEvent);
+          try {
+            for await (const event of eventIterator) {
+              if (!eventLoopRunning) break;
+              try {
+                callbacksRef.current.onEvent?.(event as IncomingEvent);
+              } catch (callbackError) {
+                console.error("[useChannelConnection] Event callback error:", callbackError);
+              }
+            }
+          } catch (streamError) {
+            console.error("[useChannelConnection] Event stream error:", streamError);
+            callbacksRef.current.onError?.(
+              streamError instanceof Error ? streamError : new Error(String(streamError))
+            );
           }
         })();
         unsubs.push(() => {
@@ -138,7 +149,11 @@ export function useChannelConnection({
         // Set up roster handler (roster is separate from the events stream)
         unsubs.push(
           newClient.onRoster((roster: RosterUpdate<ChatParticipantMetadata>) => {
-            callbacksRef.current.onRoster?.(roster);
+            try {
+              callbacksRef.current.onRoster?.(roster);
+            } catch (rosterError) {
+              console.error("[useChannelConnection] Roster callback error:", rosterError);
+            }
           })
         );
 

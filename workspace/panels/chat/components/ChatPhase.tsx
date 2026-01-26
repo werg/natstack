@@ -136,35 +136,43 @@ export function ChatPhase({
     if (!connected) return;
 
     const handlePaste = async (event: ClipboardEvent) => {
-      const files = getImagesFromClipboard(event);
-      if (files.length === 0) return;
+      try {
+        const files = getImagesFromClipboard(event);
+        if (files.length === 0) return;
 
-      event.preventDefault();
+        event.preventDefault();
 
-      if (pendingImages.length + files.length > MAX_IMAGE_COUNT) {
-        setSendError(`Maximum ${MAX_IMAGE_COUNT} images allowed`);
-        return;
-      }
-
-      const validation = validateImageFiles(files);
-      if (!validation.valid) {
-        setSendError(validation.error ?? "Invalid image");
-        return;
-      }
-
-      // Create pending images from pasted files
-      const newImages: PendingImage[] = [];
-      for (const file of files) {
-        try {
-          const pending = await createPendingImage(file);
-          newImages.push(pending);
-        } catch (err) {
-          console.error("Failed to process pasted image:", err);
+        if (pendingImages.length + files.length > MAX_IMAGE_COUNT) {
+          setSendError(`Maximum ${MAX_IMAGE_COUNT} images allowed`);
+          return;
         }
-      }
 
-      if (newImages.length > 0) {
-        onImagesChange([...pendingImages, ...newImages]);
+        const validation = validateImageFiles(files);
+        if (!validation.valid) {
+          setSendError(validation.error ?? "Invalid image");
+          return;
+        }
+
+        // Create pending images from pasted files
+        const newImages: PendingImage[] = [];
+        for (const file of files) {
+          try {
+            const pending = await createPendingImage(file);
+            newImages.push(pending);
+          } catch (err) {
+            console.error("[ChatPhase] Failed to process pasted image:", err);
+          }
+        }
+
+        if (newImages.length > 0) {
+          try {
+            onImagesChange([...pendingImages, ...newImages]);
+          } catch (err) {
+            console.error("[ChatPhase] onImagesChange callback error:", err);
+          }
+        }
+      } catch (err) {
+        console.error("[ChatPhase] Image paste handler error:", err);
       }
     };
 
@@ -448,7 +456,7 @@ export function ChatPhase({
       </Box>
 
       {activeFeedbacks.size > 0 && (
-        <Flex direction="column" gap="2" flexShrink="0" style={{ maxHeight: "40vh", overflow: "auto" }}>
+        <Flex direction="column" gap="2" flexShrink="0">
           {Array.from(activeFeedbacks.values()).map((feedback) => {
             // Render schema-based feedbacks using FeedbackFormRenderer
             if (feedback.type === "schema") {

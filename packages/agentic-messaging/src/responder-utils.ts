@@ -509,21 +509,35 @@ export function getDetailedActionDescription(
   toolName: string,
   input: Record<string, unknown>
 ): string {
-  // Extract canonical name (remove prefixes like "pubsub_")
-  const baseName = toolName.replace(/^pubsub_/, "");
+  // Extract base name (remove prefixes like "pubsub_providerId_")
+  let baseName = toolName;
+  if (toolName.startsWith("pubsub_")) {
+    // pubsub_providerId_methodName -> methodName
+    const parts = toolName.split("_");
+    if (parts.length >= 3) {
+      baseName = parts.slice(2).join("_");
+    }
+  }
 
+  // Normalize to handle both PascalCase (SDK) and snake_case (pubsub) names
+  // "Read" stays "Read", "file_read" becomes "file_read"
   switch (baseName) {
+    // SDK tool names (PascalCase)
     case "Read":
+    // Pubsub tool names (snake_case)
+    case "file_read":
       return input["file_path"]
         ? `Reading ${truncatePathForAction(input["file_path"] as string)}`
         : "Reading file";
 
     case "Write":
+    case "file_write":
       return input["file_path"]
         ? `Writing to ${truncatePathForAction(input["file_path"] as string)}`
         : "Writing file";
 
     case "Edit":
+    case "file_edit":
       return input["file_path"]
         ? `Editing ${truncatePathForAction(input["file_path"] as string)}`
         : "Editing file";
@@ -534,11 +548,13 @@ export function getDetailedActionDescription(
         : "Running command";
 
     case "Glob":
+    case "glob":
       return input["pattern"]
         ? `Finding files: ${truncateStrForAction(input["pattern"] as string, 40)}`
         : "Searching for files";
 
-    case "Grep": {
+    case "Grep":
+    case "grep": {
       const grepPath = input["path"] ? ` in ${truncatePathForAction(input["path"] as string, 20)}` : "";
       return input["pattern"]
         ? `Searching for '${truncateStrForAction(input["pattern"] as string, 25)}'${grepPath}`
@@ -563,7 +579,8 @@ export function getDetailedActionDescription(
     case "TodoWrite":
       return "Updating task list";
 
-    case "AskUserQuestion": {
+    case "AskUserQuestion":
+    case "ask_user_question": {
       const questions = input["questions"];
       if (questions && Array.isArray(questions) && questions.length > 0) {
         const firstQuestion = questions[0] as { question?: string };
@@ -583,6 +600,33 @@ export function getDetailedActionDescription(
       return input["shell_id"]
         ? `Killing shell: ${input["shell_id"]}`
         : "Killing shell";
+
+    // Git tools (pubsub names)
+    case "git_status":
+      return "Checking git status";
+    case "git_diff":
+      return "Getting git diff";
+    case "git_log":
+      return "Viewing git log";
+    case "git_add":
+      return input["files"]
+        ? `Staging: ${truncateStrForAction(String(input["files"]), 40)}`
+        : "Staging files";
+    case "git_commit":
+      return input["message"]
+        ? `Committing: ${truncateStrForAction(input["message"] as string, 40)}`
+        : "Creating commit";
+    case "git_checkout":
+      return input["branch"]
+        ? `Checking out: ${input["branch"]}`
+        : "Checking out";
+
+    // Directory tools (pubsub names)
+    case "tree":
+    case "list_directory":
+      return input["path"]
+        ? `Listing ${truncatePathForAction(input["path"] as string)}`
+        : "Listing directory";
 
     default:
       // For pubsub tools, show the method name cleanly
