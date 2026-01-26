@@ -52,6 +52,7 @@ import {
   usesCliAuth,
 } from "../ai/providerFactory.js";
 import { fetchModelsForProvider, type FetchedModel } from "../ai/modelFetcher.js";
+import { getShellPagesForLauncher } from "../aboutBuilder.js";
 
 // These will be set during initialization to avoid circular dependencies
 let _panelManager: import("../panelManager.js").PanelManager | null = null;
@@ -183,6 +184,10 @@ export async function handleAppService(
 
     case "getMode":
       return _currentAppMode;
+
+    case "getShellPages":
+      // Return shell pages available for the launcher (excludes "new" itself)
+      return getShellPagesForLauncher();
 
     default:
       throw new Error(`Unknown app method: ${method}`);

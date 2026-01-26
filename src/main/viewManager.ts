@@ -25,6 +25,7 @@ import {
   session,
 } from "electron";
 import { handleProtocolRequest } from "./panelProtocol.js";
+import { getAdBlockManager } from "./adblock/index.js";
 
 export interface ViewBounds {
   x: number;
@@ -88,6 +89,7 @@ export class ViewManager {
   private shellView: WebContentsView;
   private safePreloadPath: string;
   private unsafePreloadPath: string;
+  private adblockPreloadPath: string;
   private currentThemeCss: string | null = null;
   /** Per-view locks to prevent concurrent withViewVisible operations */
   private visibilityLocks = new Map<string, Promise<unknown>>();
@@ -115,6 +117,11 @@ export class ViewManager {
     this.unsafePreloadPath = options.safePreload.replace(
       /safePreload\.(c?js)$/,
       "unsafePreload.$1"
+    );
+    // Calculate adblock preload path for browser panels
+    this.adblockPreloadPath = options.safePreload.replace(
+      /safePreload\.(c?js)$/,
+      "adblockPreload.$1"
     );
 
     // Create shell view (React UI) - fills entire window
@@ -186,6 +193,13 @@ export class ViewManager {
    */
   getShellWebContents(): WebContents {
     return this.shellView.webContents;
+  }
+
+  /**
+   * Get the adblock preload path for browser panels.
+   */
+  getAdblockPreloadPath(): string {
+    return this.adblockPreloadPath;
   }
 
   /**
@@ -359,6 +373,15 @@ export class ViewManager {
     const managed = this.views.get(id);
     if (!managed) {
       return;
+    }
+
+    // Clean up adblock main frame URL tracking for browser views
+    if (managed.type === "browser" && !managed.view.webContents.isDestroyed()) {
+      try {
+        getAdBlockManager().clearMainFrameUrl(managed.view.webContents.id);
+      } catch {
+        // AdBlockManager might not be initialized yet
+      }
     }
 
     // Remove from window

@@ -95,3 +95,8 @@ export { normalizePath, getFileName, resolvePath } from "../shared/pathUtils.js"
 
 // State args API for panel state management
 export { getStateArgs, useStateArgs, setStateArgs } from "./stateArgs.js";
+
+// Ad blocking programmatic interface
+import { createAdBlockApi } from "./adblock.js";
+export type { AdBlockStats, AdBlockApi } from "./adblock.js";
+export const adblock = createAdBlockApi(rpc);

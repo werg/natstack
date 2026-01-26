@@ -1,4 +1,4 @@
-import { app, BaseWindow, nativeTheme } from "electron";
+import { app, BaseWindow, nativeTheme, session } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
@@ -59,6 +59,8 @@ import {
 import { handleEventsService } from "./services/eventsService.js";
 import { typeCheckRpcMethods } from "./typecheck/service.js";
 import { setupTestApi } from "./testApi.js";
+import { getAdBlockManager } from "./adblock/index.js";
+import { handleAdBlockServiceCall } from "./ipc/adblockHandlers.js";
 
 // =============================================================================
 // Protocol Registration (must happen before app ready)
@@ -450,6 +452,17 @@ app.on("ready", async () => {
   const cacheManager = getMainCacheManager();
   await cacheManager.initialize();
 
+  // Initialize ad blocking (shared across all browser panels)
+  try {
+    const adBlockManager = getAdBlockManager();
+    await adBlockManager.initialize();
+    // Enable for default session (browser panels use this session)
+    adBlockManager.enableForSession(session.defaultSession);
+    console.log("[AdBlock] Initialized and enabled for default session");
+  } catch (adBlockError) {
+    console.warn("[AdBlock] Failed to initialize (non-fatal):", adBlockError);
+  }
+
   // Register shell services (available in both modes)
   const dispatcher = getServiceDispatcher();
   dispatcher.register("app", handleAppService);
@@ -459,6 +472,9 @@ app.on("ready", async () => {
   dispatcher.register("central", handleCentralService);
   dispatcher.register("settings", handleSettingsService);
   dispatcher.register("events", handleEventsService);
+  dispatcher.register("adblock", async (_ctx, serviceMethod, serviceArgs) => {
+    return handleAdBlockServiceCall(serviceMethod, serviceArgs as unknown[]);
+  });
   setShellServicesAppMode(appMode);
 
   // Initialize services only in main mode

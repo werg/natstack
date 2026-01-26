@@ -25,21 +25,73 @@ import {
 } from "./paths.js";
 
 /**
- * Shell page titles for display in panel tree.
+ * Shell page metadata for display.
  */
-const SHELL_PAGE_TITLES: Record<ShellPage, string> = {
-  "model-provider-config": "Model Provider Config",
-  about: "About NatStack",
-  "keyboard-shortcuts": "Keyboard Shortcuts",
-  help: "Help",
-  new: "New Panel",
+interface ShellPageMeta {
+  page: ShellPage;
+  title: string;
+  description: string;
+  /** If true, don't show in the "new panel" launcher (e.g., "new" itself) */
+  hiddenInLauncher?: boolean;
+}
+
+/**
+ * Shell page metadata - single source of truth for all shell pages.
+ */
+const SHELL_PAGE_META: Record<ShellPage, Omit<ShellPageMeta, "page">> = {
+  "model-provider-config": {
+    title: "Model Provider Config",
+    description: "Configure AI model providers",
+  },
+  about: {
+    title: "About NatStack",
+    description: "Application information",
+  },
+  "keyboard-shortcuts": {
+    title: "Keyboard Shortcuts",
+    description: "View keyboard shortcuts",
+  },
+  help: {
+    title: "Help",
+    description: "Documentation and help",
+  },
+  new: {
+    title: "New Panel",
+    description: "Open a new panel",
+    hiddenInLauncher: true, // Don't show "new" in the new panel launcher
+  },
+  adblock: {
+    title: "Ad Blocking",
+    description: "Configure ad blocking for browser panels",
+  },
 };
 
 /**
  * Get the title for a shell page.
  */
 export function getShellPageTitle(page: ShellPage): string {
-  return SHELL_PAGE_TITLES[page];
+  return SHELL_PAGE_META[page].title;
+}
+
+/**
+ * Get all shell page keys.
+ * Used by aboutProtocol.ts to validate shell page names without duplicating the list.
+ */
+export function getShellPageKeys(): ShellPage[] {
+  return Object.keys(SHELL_PAGE_META) as ShellPage[];
+}
+
+/**
+ * Get all shell pages available for the launcher.
+ * Excludes pages marked as hiddenInLauncher.
+ */
+export function getShellPagesForLauncher(): ShellPageMeta[] {
+  return (Object.keys(SHELL_PAGE_META) as ShellPage[])
+    .filter((page) => !SHELL_PAGE_META[page].hiddenInLauncher)
+    .map((page) => ({
+      page,
+      ...SHELL_PAGE_META[page],
+    }));
 }
 
 /**
@@ -153,7 +205,7 @@ export class AboutBuilder {
       const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, "utf-8") : undefined;
 
       // Generate HTML
-      const title = SHELL_PAGE_TITLES[page];
+      const title = SHELL_PAGE_META[page].title;
       const html = this.generateHtml(title, Boolean(css));
 
       // Cleanup temp directory
@@ -199,7 +251,7 @@ export class AboutBuilder {
     const artifacts: ProtocolBuildArtifacts = {
       bundle: result.bundle,
       html: result.html,
-      title: SHELL_PAGE_TITLES[page],
+      title: SHELL_PAGE_META[page].title,
       css: result.css,
       injectHostThemeVariables: true,
     };
@@ -211,7 +263,7 @@ export class AboutBuilder {
    * Build all about pages at startup.
    */
   async buildAllPages(): Promise<void> {
-    const pages: ShellPage[] = ["model-provider-config", "about", "keyboard-shortcuts", "help"];
+    const pages = getShellPageKeys();
 
     for (const page of pages) {
       const pageDir = path.join(this.aboutPagesRoot, page);

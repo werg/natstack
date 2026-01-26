@@ -54,6 +54,10 @@ export const SERVICE_POLICIES: Record<string, ServicePolicy> = {
     allowed: ["shell"],
     description: "Native menus",
   },
+  adblock: {
+    allowed: ["shell"],
+    description: "Ad blocking configuration and stats",
+  },
 
   // ==========================================================================
   // Panel/worker services (userland operations)

@@ -403,12 +403,12 @@ export class PanelManager {
     const parentId = this.findParentId(panelId);
 
     if (type === "browser") {
-      // Browser panels: no preload, shared session for cookies/auth
+      // Browser panels: adblock preload for cosmetic filtering, shared session for cookies/auth
       const view = this.viewManager.createView({
         id: panelId,
         type: "browser",
         // No partition = default session (shared across browsers)
-        preload: null, // No preload for browsers
+        preload: this.viewManager.getAdblockPreloadPath(), // Adblock preload for cosmetic filtering
         url: url,
         parentId: parentId ?? undefined,
         injectHostThemeVariables: false,

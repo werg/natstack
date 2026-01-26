@@ -437,7 +437,7 @@ ${FS_INTERFACES}
   // ============================================================================
 
   type NsAction = "navigate" | "child";
-  type AboutPage = "about" | "help" | "keyboard-shortcuts" | "model-provider-config" | "new";
+  type AboutPage = "about" | "help" | "keyboard-shortcuts" | "model-provider-config" | "new" | "adblock";
 
   interface BuildNsLinkOptions {
     action?: NsAction;

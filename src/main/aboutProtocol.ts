@@ -9,6 +9,7 @@ import { protocol, session } from "electron";
 import * as path from "path";
 import { randomBytes } from "crypto";
 import type { ProtocolBuildArtifacts, ShellPage } from "../shared/ipc/types.js";
+import { getShellPageKeys } from "./aboutBuilder.js";
 
 /** MIME types for serving assets */
 const ASSET_MIME_TYPES: Record<string, string> = {
@@ -57,15 +58,11 @@ const registeredPartitions = new Set<string>();
 const registrationLocks = new Map<string, Promise<void>>();
 
 /**
- * Valid shell page names.
- */
-const VALID_SHELL_PAGES: ShellPage[] = ["model-provider-config", "about", "keyboard-shortcuts", "help", "new"];
-
-/**
  * Check if a string is a valid shell page.
+ * Derives valid pages from SHELL_PAGE_META in aboutBuilder.ts (single source of truth).
  */
 export function isValidShellPage(page: string): page is ShellPage {
-  return VALID_SHELL_PAGES.includes(page as ShellPage);
+  return getShellPageKeys().includes(page as ShellPage);
 }
 
 /**

@@ -20,19 +20,20 @@ import {
   Separator,
   Tabs,
 } from "@radix-ui/themes";
-import { getWorkspaceTree, buildNsLink, buildAboutLink, onFocus } from "@natstack/runtime";
+import { getWorkspaceTree, buildNsLink, buildAboutLink, onFocus, rpc } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
-import type { WorkspaceTree, WorkspaceNode, EnvArgSchema } from "@natstack/runtime";
+import type { WorkspaceTree, WorkspaceNode, EnvArgSchema, AboutPage } from "@natstack/runtime";
 import { WorkspaceTreeView } from "./WorkspaceTreeView";
 import { RepoSelector } from "./RepoSelector";
 
-// Shell pages to display in the page
-const SHELL_PAGES = [
-  { page: "model-provider-config" as const, label: "Model Provider Config", description: "Configure AI model providers" },
-  { page: "keyboard-shortcuts" as const, label: "Keyboard Shortcuts", description: "View keyboard shortcuts" },
-  { page: "about" as const, label: "About NatStack", description: "Application information" },
-  { page: "help" as const, label: "Help", description: "Documentation and help" },
-];
+/**
+ * Shell page metadata returned from main process.
+ */
+interface ShellPageMeta {
+  page: AboutPage;
+  title: string;
+  description: string;
+}
 
 interface LaunchFormProps {
   node: WorkspaceNode;
@@ -152,25 +153,34 @@ function LaunchForm({ node, onLaunch }: LaunchFormProps) {
 
 function NewPanelPage() {
   const [tree, setTree] = useState<WorkspaceTree | null>(null);
+  const [shellPages, setShellPages] = useState<ShellPageMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [urlInput, setUrlInput] = useState("");
   const [selectedPath, setSelectedPath] = useState<string | undefined>(undefined);
 
-  // Fetch workspace tree - runs on mount and when panel receives focus
-  const fetchTree = useCallback(() => {
+  // Fetch workspace tree and shell pages - runs on mount and when panel receives focus
+  const fetchData = useCallback(async () => {
     setLoading(true);
-    getWorkspaceTree()
-      .then(setTree)
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false));
+    try {
+      const [treeData, pagesData] = await Promise.all([
+        getWorkspaceTree(),
+        rpc.call<ShellPageMeta[]>("main", "app.getShellPages"),
+      ]);
+      setTree(treeData);
+      setShellPages(pagesData);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
-    fetchTree();
+    void fetchData();
     // Also refetch when the panel receives focus (user navigates back to it)
-    return onFocus(fetchTree);
-  }, [fetchTree]);
+    return onFocus(() => void fetchData());
+  }, [fetchData]);
 
   const handleLaunch = useCallback(
     (
@@ -215,8 +225,8 @@ function NewPanelPage() {
     }
   }, [urlInput]);
 
-  const handleShellPageClick = useCallback((page: string) => {
-    window.location.href = buildAboutLink(page as "model-provider-config" | "about" | "keyboard-shortcuts" | "help");
+  const handleShellPageClick = useCallback((page: AboutPage) => {
+    window.location.href = buildAboutLink(page);
   }, []);
 
   const renderNodeExtra = useCallback(
@@ -365,14 +375,14 @@ function NewPanelPage() {
               </Tabs.Content>
 
               <Tabs.Content value="shell">
-                {SHELL_PAGES.map((page) => (
+                {shellPages.map((page) => (
                   <Card
                     key={page.page}
                     style={{ marginBottom: "8px", cursor: "pointer" }}
                     onClick={() => handleShellPageClick(page.page)}
                   >
                     <Flex direction="column" gap="1">
-                      <Text weight="medium">{page.label}</Text>
+                      <Text weight="medium">{page.title}</Text>
                       <Text size="1" color="gray">
                         {page.description}
                       </Text>

@@ -74,6 +74,19 @@ const unsafePreloadConfig = {
   logOverride,
 };
 
+const adblockPreloadConfig = {
+  entryPoints: ["src/preload/adblockPreload.ts"],
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "cjs",
+  outfile: "dist/adblockPreload.cjs",
+  external: ["electron"],
+  sourcemap: isDev,
+  minify: !isDev,
+  logOverride,
+};
+
 const rendererConfig = {
   entryPoints: ["src/renderer/index.tsx"],
   bundle: true,
@@ -248,6 +261,7 @@ async function build() {
     await esbuild.build(preloadConfig);
     await esbuild.build(safePreloadConfig);
     await esbuild.build(unsafePreloadConfig);
+    await esbuild.build(adblockPreloadConfig);
     await esbuild.build(rendererConfig);
     await buildDependencyWorkers();
 
