@@ -17,11 +17,11 @@ export interface FeedbackContainerProps {
   onDismiss: () => void;
   /** Called when the component throws during render */
   onError: (error: Error) => void;
-  /** Initial/default height (default: 50% of viewport height) */
+  /** Initial/default height (default: 50% of available container height) */
   defaultHeight?: number;
   /** Minimum height when resizing (default: 150px) */
   minHeight?: number;
-  /** Maximum height when resizing (default: 70% of viewport height) */
+  /** Maximum height when resizing (default: 70% of available container height) */
   maxHeight?: number;
 }
 
@@ -37,33 +37,39 @@ export function FeedbackContainer({
   maxHeight: maxHeightProp,
 }: FeedbackContainerProps) {
   const [viewportHeight, setViewportHeight] = useState(getViewportHeight);
-  const maxHeight = maxHeightProp ?? Math.floor(viewportHeight * 0.7);
 
-  const [height, setHeight] = useState(
-    () => defaultHeightProp ?? Math.floor(getViewportHeight() * 0.5)
-  );
+  // Track viewport height changes
+  useEffect(() => {
+    const handleResize = () => setViewportHeight(window.innerHeight);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  // Calculate limits based on viewport - use high percentages since
+  // the flex layout will naturally constrain growth
+  const maxHeight = maxHeightProp ?? Math.floor(viewportHeight * 0.7);
+  const defaultHeight = defaultHeightProp ?? Math.min(Math.floor(viewportHeight * 0.5), maxHeight);
+
+  const [height, setHeight] = useState<number | null>(null);
+  const effectiveHeight = height ?? defaultHeight;
+
   const [isDragging, setIsDragging] = useState(false);
   const dragStartY = useRef(0);
   const dragStartHeight = useRef(0);
 
-  // Track viewport height and clamp current height if needed
+  // Clamp height when viewport shrinks
   useEffect(() => {
-    const handleResize = () => {
-      const vh = window.innerHeight;
-      setViewportHeight(vh);
-      const newMax = maxHeightProp ?? Math.floor(vh * 0.7);
-      setHeight((h) => Math.min(h, newMax));
-    };
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, [maxHeightProp]);
+    if (height !== null && height > maxHeight) {
+      setHeight(maxHeight);
+    }
+  }, [height, maxHeight]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     setIsDragging(true);
     dragStartY.current = e.clientY;
-    dragStartHeight.current = height;
-  }, [height]);
+    dragStartHeight.current = effectiveHeight;
+  }, [effectiveHeight]);
 
   useEffect(() => {
     if (!isDragging) return;
@@ -95,9 +101,9 @@ export function FeedbackContainer({
         position: "relative",
         display: "flex",
         flexDirection: "column",
-        height,
+        height: effectiveHeight,
         minHeight,
-        maxHeight,
+        flexShrink: 0,
         overflow: "hidden",
       }}
     >
