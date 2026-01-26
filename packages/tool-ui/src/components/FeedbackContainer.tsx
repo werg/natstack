@@ -17,26 +17,46 @@ export interface FeedbackContainerProps {
   onDismiss: () => void;
   /** Called when the component throws during render */
   onError: (error: Error) => void;
-  /** Initial/default height (default: 300px) */
+  /** Initial/default height (default: 50% of viewport height) */
   defaultHeight?: number;
   /** Minimum height when resizing (default: 150px) */
   minHeight?: number;
-  /** Maximum height when resizing (default: 600px) */
+  /** Maximum height when resizing (default: 70% of viewport height) */
   maxHeight?: number;
 }
+
+const getViewportHeight = () =>
+  typeof window !== "undefined" ? window.innerHeight : 800;
 
 export function FeedbackContainer({
   children,
   onDismiss,
   onError,
-  defaultHeight = 300,
+  defaultHeight: defaultHeightProp,
   minHeight = 150,
-  maxHeight = 600,
+  maxHeight: maxHeightProp,
 }: FeedbackContainerProps) {
-  const [height, setHeight] = useState(defaultHeight);
+  const [viewportHeight, setViewportHeight] = useState(getViewportHeight);
+  const maxHeight = maxHeightProp ?? Math.floor(viewportHeight * 0.7);
+
+  const [height, setHeight] = useState(
+    () => defaultHeightProp ?? Math.floor(getViewportHeight() * 0.5)
+  );
   const [isDragging, setIsDragging] = useState(false);
   const dragStartY = useRef(0);
   const dragStartHeight = useRef(0);
+
+  // Track viewport height and clamp current height if needed
+  useEffect(() => {
+    const handleResize = () => {
+      const vh = window.innerHeight;
+      setViewportHeight(vh);
+      const newMax = maxHeightProp ?? Math.floor(vh * 0.7);
+      setHeight((h) => Math.min(h, newMax));
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [maxHeightProp]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
