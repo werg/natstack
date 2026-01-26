@@ -108,6 +108,25 @@ export {
   type CreateApprovalSchemaParams,
 } from "./worker-base.js";
 
+// Subagent connection utilities
+export {
+  createSubagentConnection,
+  forwardStreamEventToSubagent,
+  type SubagentConnection,
+  type SubagentConnectionConfig,
+  type SubagentConnectionOptions,
+  type SDKStreamEvent,
+} from "./subagent-connection.js";
+
+// Restricted mode Task tool
+export {
+  createRestrictedTaskTool,
+  RestrictedTaskToolSchema,
+  type RestrictedTaskToolArgs,
+  type ToolDefinitionWithExecute,
+  type TaskToolContext,
+} from "./task-tool.js";
+
 // Feedback UI types (formerly in broker-protocol.ts)
 export {
   FeedbackFormArgs,

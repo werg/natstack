@@ -13,7 +13,7 @@ import type { AgenticParticipantMetadata, IncomingNewMessage } from "./types.js"
  */
 export interface ChatParticipantMetadata extends AgenticParticipantMetadata {
   name: string;
-  type: "panel" | "ai-responder" | "claude-code" | "codex";
+  type: "panel" | "ai-responder" | "claude-code" | "codex" | "subagent";
 }
 
 /**

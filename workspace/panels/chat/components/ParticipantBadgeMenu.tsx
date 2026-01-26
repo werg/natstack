@@ -29,6 +29,8 @@ function getParticipantColor(type: string) {
       return "orange";
     case "codex":
       return "teal";
+    case "subagent":
+      return "cyan";
     default:
       return "gray";
   }

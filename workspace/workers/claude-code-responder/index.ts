@@ -35,6 +35,14 @@ import {
   filterImageAttachments,
   validateAttachments,
   uint8ArrayToBase64,
+  // Subagent utilities
+  createSubagentConnection,
+  forwardStreamEventToSubagent,
+  createRestrictedTaskTool,
+  type SubagentConnection,
+  type SubagentConnectionOptions,
+  type SDKStreamEvent,
+  type ToolDefinitionWithExecute,
   type Attachment,
   type AgenticClient,
   type AgentSDKToolDefinition,
@@ -604,6 +612,102 @@ async function main() {
 
   log(`Connected to channel: ${channelName}`);
 
+  // =============================================================================
+  // Subagent Connection Management (for unrestricted mode Task tool routing)
+  // =============================================================================
+
+  // Capture connection options for creating subagent pubsub connections
+  const subagentConnectionOptions: SubagentConnectionOptions = {
+    serverUrl: pubsubConfig.serverUrl,
+    token: pubsubConfig.token,
+    channel: channelName,
+  };
+
+  // Active subagent connections by parent tool use ID
+  const activeSubagents = new Map<string, SubagentConnection>();
+
+  // Buffered subagent events (before connection is created)
+  const pendingSubagentEvents = new Map<string, SDKStreamEvent[]>();
+
+  // Timeout handles for subagent leak prevention
+  const subagentTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+
+  // Default subagent timeout (10 minutes)
+  const SUBAGENT_TIMEOUT_MS = 10 * 60 * 1000;
+
+  /**
+   * Extract tool results from an SDK user message.
+   * User messages contain tool_result content blocks that indicate tool completion.
+   */
+  function extractToolResultIds(message: unknown): string[] {
+    const ids: string[] = [];
+    if (!message || typeof message !== "object") return ids;
+
+    const msgObj = message as { message?: { content?: unknown[] } };
+    const content = msgObj.message?.content;
+    if (!Array.isArray(content)) return ids;
+
+    for (const block of content) {
+      if (
+        block &&
+        typeof block === "object" &&
+        "type" in block &&
+        block.type === "tool_result" &&
+        "tool_use_id" in block &&
+        typeof block.tool_use_id === "string"
+      ) {
+        ids.push(block.tool_use_id);
+      }
+    }
+    return ids;
+  }
+
+  /**
+   * Clean up a subagent connection (on completion, error, or timeout).
+   */
+  async function cleanupSubagent(toolUseId: string, reason: "complete" | "error" | "timeout"): Promise<void> {
+    const subagent = activeSubagents.get(toolUseId);
+    if (!subagent) return;
+
+    // Clear timeout if set
+    const timeout = subagentTimeouts.get(toolUseId);
+    if (timeout) {
+      clearTimeout(timeout);
+      subagentTimeouts.delete(toolUseId);
+    }
+
+    // Finalize subagent
+    if (reason === "complete") {
+      await subagent.complete();
+    } else if (reason === "error") {
+      await subagent.error("Subagent error");
+    } else if (reason === "timeout") {
+      await subagent.error("Subagent timed out after 10 minutes");
+      log(`Subagent ${toolUseId} timed out`);
+    }
+
+    await subagent.close();
+    activeSubagents.delete(toolUseId);
+    pendingSubagentEvents.delete(toolUseId);
+  }
+
+  /**
+   * Clean up all active subagents (on pause, cancel, or error).
+   */
+  async function cleanupAllSubagents(): Promise<void> {
+    for (const [toolUseId, subagent] of activeSubagents) {
+      const timeout = subagentTimeouts.get(toolUseId);
+      if (timeout) {
+        clearTimeout(timeout);
+        subagentTimeouts.delete(toolUseId);
+      }
+      await subagent.error("Parent cancelled");
+      await subagent.close();
+    }
+    activeSubagents.clear();
+    pendingSubagentEvents.clear();
+  }
+
   // Get channel config - prefer stateArgs (reliable) over channelConfig (may be empty due to timing)
   // Workers may connect before chat panel and create channel without config
   const channelConfigWorkingDirectory = client.channelConfig?.workingDirectory;
@@ -852,6 +956,24 @@ async function handleUserMessage(
       // Use canonical names (Read, Write, Edit, etc.) for LLM familiarity
       const mcpServerName = "workspace";
 
+      // Build tool definitions with execute functions for subagent context
+      const toolDefsWithExecute: ToolDefinitionWithExecute[] = toolDefs.map((toolDef: AgentSDKToolDefinition) => ({
+        name: toolDef.name,
+        description: toolDef.description,
+        inputSchema: toolDef.parameters,
+        execute: async (args: unknown) => {
+          return executeTool(toolDef.name, args);
+        },
+      }));
+
+      // Create restricted mode Task tool
+      const restrictedTaskTool = createRestrictedTaskTool({
+        parentClient: client,
+        availableTools: toolDefsWithExecute,
+        claudeExecutable,
+        connectionOptions: subagentConnectionOptions,
+      });
+
       const mcpTools = toolDefs.map((toolDef: AgentSDKToolDefinition) => {
         // Use canonical name for display (e.g., file_read -> Read)
         const displayName = getCanonicalToolName(toolDef.originalMethodName);
@@ -871,14 +993,30 @@ async function handleUserMessage(
         );
       });
 
-      // Create MCP server with pubsub tools
+      // Add the custom Task tool to the MCP tools list
+      // Note: restrictedTaskTool.inputSchema is already a Zod schema, so we use .shape directly
+      const taskMcpTool = tool(
+        "Task",
+        restrictedTaskTool.description,
+        restrictedTaskTool.inputSchema.shape,
+        async (args: unknown) => {
+          log(`Task tool called with args=${formatArgsForLog(args)}`);
+          const result = await restrictedTaskTool.execute(args as Parameters<typeof restrictedTaskTool.execute>[0]);
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(result) }],
+          };
+        }
+      );
+      mcpTools.push(taskMcpTool);
+
+      // Create MCP server with pubsub tools and Task tool
       pubsubServer = createSdkMcpServer({
         name: mcpServerName,
         version: "1.0.0",
         tools: mcpTools,
       });
 
-      // Determine allowed tools for restricted mode
+      // Determine allowed tools for restricted mode (now includes Task)
       allowedTools = mcpTools.map((t) => `mcp__${mcpServerName}__${t.name}`);
     } else {
       log("Unrestricted mode - using SDK native tools");
@@ -1287,19 +1425,9 @@ async function handleUserMessage(
       // In restricted mode, disallow tools that we replace via pubsub
       // WebSearch and WebFetch remain enabled (full network access available)
       //
-      // Task is disallowed because subagents cannot inherit MCP servers.
-      // The SDK's AgentDefinition type only supports:
-      //   type AgentDefinition = {
-      //     description: string;
-      //     tools?: string[];           // If omitted, inherits from parent
-      //     disallowedTools?: string[];
-      //     prompt: string;
-      //     model?: 'sonnet' | 'opus' | 'haiku' | 'inherit';
-      //   };
-      // Note: mcpServers is only available on top-level Options, not AgentDefinition.
-      //
-      // TODO: Future work - implement a pubsub-based Task tool that spawns subagents
-      // through the pubsub agent system, allowing them to access workspace tools.
+      // Task is disallowed because the SDK's built-in Task cannot inherit MCP servers.
+      // Instead, we provide a custom Task tool via MCP (mcp__workspace__Task) that
+      // spawns subagents with access to pubsub tools (Explore, Plan, Eval, general-purpose).
       disallowedTools: isRestrictedMode
         ? ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Task", "NotebookEdit"]
         : [],
@@ -1346,6 +1474,39 @@ async function handleUserMessage(
       if (interruptHandler.isPaused()) {
         log("Execution paused, breaking out of query loop");
         break;
+      }
+
+      // =======================================================================
+      // Subagent Event Routing (Unrestricted Mode)
+      // Route stream events with parent_tool_use_id to subagent connections
+      // =======================================================================
+      const sdkMessage = message as { parent_tool_use_id?: string | null; type: string; event?: SDKStreamEvent };
+      if (sdkMessage.parent_tool_use_id && sdkMessage.type === "stream_event" && sdkMessage.event) {
+        const toolUseId = sdkMessage.parent_tool_use_id;
+        const subagent = activeSubagents.get(toolUseId);
+
+        if (subagent) {
+          // Route to active subagent connection
+          await forwardStreamEventToSubagent(subagent, sdkMessage.event);
+        } else {
+          // Buffer events until subagent connection is created
+          const buffered = pendingSubagentEvents.get(toolUseId) ?? [];
+          buffered.push(sdkMessage.event);
+          pendingSubagentEvents.set(toolUseId, buffered);
+        }
+        // Skip main agent handling for subagent events
+        continue;
+      }
+
+      // Handle user messages with tool_result (subagent completion)
+      if (sdkMessage.type === "user") {
+        const toolResultIds = extractToolResultIds(message);
+        for (const toolUseId of toolResultIds) {
+          if (activeSubagents.has(toolUseId)) {
+            await cleanupSubagent(toolUseId, "complete");
+            log(`Subagent ${toolUseId} completed`);
+          }
+        }
       }
 
       if (message.type === "stream_event") {
@@ -1484,6 +1645,47 @@ async function handleUserMessage(
 
                   // Update the action with the detailed description
                   await action.updateAction(detailedDescription);
+
+                  // =========================================================
+                  // Subagent Connection Creation (Unrestricted Mode)
+                  // When a Task tool completes parsing, create the subagent
+                  // =========================================================
+                  if (acc.toolName === "Task" && !isRestrictedMode) {
+                    try {
+                      const taskArgs = parsedInput as {
+                        description?: string;
+                        subagent_type?: string;
+                      };
+
+                      const subagent = await createSubagentConnection(
+                        {
+                          parentClient: client,
+                          taskDescription: taskArgs.description ?? "Subagent task",
+                          subagentType: taskArgs.subagent_type,
+                          parentToolUseId: currentAction.toolUseId,
+                        },
+                        subagentConnectionOptions
+                      );
+
+                      activeSubagents.set(currentAction.toolUseId, subagent);
+                      log(`Created subagent connection for Task ${currentAction.toolUseId}: ${taskArgs.description}`);
+
+                      // Set timeout to prevent leaks if tool_result never arrives
+                      const timeoutId = setTimeout(async () => {
+                        await cleanupSubagent(currentAction.toolUseId!, "timeout");
+                      }, SUBAGENT_TIMEOUT_MS);
+                      subagentTimeouts.set(currentAction.toolUseId, timeoutId);
+
+                      // Flush any buffered events for this subagent
+                      const buffered = pendingSubagentEvents.get(currentAction.toolUseId) ?? [];
+                      for (const bufferedEvent of buffered) {
+                        await forwardStreamEventToSubagent(subagent, bufferedEvent);
+                      }
+                      pendingSubagentEvents.delete(currentAction.toolUseId);
+                    } catch (err) {
+                      log(`Failed to create subagent connection: ${err}`);
+                    }
+                  }
                 } catch {
                   // JSON parse failed, keep generic description
                   log(`Failed to parse tool input for ${currentAction.toolUseId}`);
@@ -1538,6 +1740,8 @@ async function handleUserMessage(
       await typing.cleanup();
       await thinking.cleanup();
       await action.cleanup();
+      // Clean up subagent connections
+      await cleanupAllSubagents();
     }
 
     if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
@@ -1574,6 +1778,8 @@ async function handleUserMessage(
     await typing.cleanup();
     await thinking.cleanup();
     await action.cleanup();
+    // Clean up subagent connections
+    await cleanupAllSubagents();
     // Stop the interrupt handler's monitoring loop
     interruptHandler.cleanup();
 

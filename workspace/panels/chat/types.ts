@@ -4,7 +4,7 @@ import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 /** Metadata for participants in this channel */
 export interface ChatParticipantMetadata {
   name: string;
-  type: "panel" | "ai-responder" | "claude-code" | "codex";
+  type: "panel" | "ai-responder" | "claude-code" | "codex" | "subagent";
   handle: string;
   /** Methods this participant provides (for menu display) */
   methods?: MethodAdvertisement[];
