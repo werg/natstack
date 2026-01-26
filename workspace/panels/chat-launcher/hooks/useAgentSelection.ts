@@ -58,6 +58,8 @@ export interface SessionConfig {
   projectLocation: "external" | "browser";
   workingDirectory: string;
   defaultAutonomy: 0 | 1 | 2;
+  /** Selected template spec for browser mode (e.g., "contexts/default") */
+  contextTemplateSpec?: string;
 }
 
 /** Derive ChannelConfig from SessionConfig */

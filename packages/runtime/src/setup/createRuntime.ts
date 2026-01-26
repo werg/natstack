@@ -76,6 +76,16 @@ export function createRuntime(deps: RuntimeDeps) {
       await callMain<void>("bridge.navigatePanel", childId, source, targetType);
     },
 
+    /** List available context templates in the workspace */
+    async listContextTemplates(): Promise<Array<{ spec: string; name: string; description?: string }>> {
+      return callMain<Array<{ spec: string; name: string; description?: string }>>("bridge.listContextTemplates");
+    },
+
+    /** Create a new context from a template spec, returns the contextId */
+    async createContextFromTemplate(templateSpec: string): Promise<string> {
+      return callMain<string>("bridge.createContextFromTemplate", templateSpec);
+    },
+
     browser: {
       async getCdpEndpoint(browserId: string): Promise<string> {
         return callMain<string>("browser.getCdpEndpoint", browserId);

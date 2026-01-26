@@ -133,6 +133,9 @@ export {
   type TemplateCompleteResult,
 } from "./partitionBuilder.js";
 
+// Discovery functions
+export { listAvailableTemplates } from "./discovery.js";
+
 // Re-export path helpers
 export {
   getTemplateBuildDirectory,

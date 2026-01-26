@@ -343,20 +343,16 @@ interface SessionInitResult {
 
 /**
  * Initialize session database after connection.
- * Uses the contextId from the server (authoritative) to create/load session.
+ * Uses the channel name as the session context (channel is unique per session).
  */
 async function initializeSessionDb(
-  contextId: string | undefined,
   channel: string,
-  handle: string
+  handle: string,
+  contextId?: string
 ): Promise<SessionInitResult> {
-  if (!contextId) {
-    return { sessionDb: undefined, sessionRow: undefined };
-  }
-
   try {
     const { SessionDb } = await import("./session-db.js");
-    const sessionDb = new SessionDb(contextId, channel, handle);
+    const sessionDb = new SessionDb(channel, handle, contextId ?? "");
     await sessionDb.initialize();
     const sessionRow = await sessionDb.getOrCreateSession();
     return { sessionDb, sessionRow };
@@ -442,7 +438,6 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     name,
     type,
     extraMetadata,
-    contextId: providedContextId,
     channelConfig: providedChannelConfig,
     reconnect,
     replayMode = "collect",
@@ -572,7 +567,6 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
 
   const pubsub = connectPubSub<T>(serverUrl, token, {
     channel,
-    contextId: providedContextId,
     channelConfig: providedChannelConfig,
     sinceId,
     reconnect,
@@ -1649,9 +1643,9 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     throw err;
   }
 
-  // Initialize session DB after connection using server's authoritative contextId
-  // This is the single code path for both channel creators and joiners
-  const sessionInit = await initializeSessionDb(pubsub.contextId, channel, handle);
+  // Initialize session DB using channel name as the context identifier
+  // The channel name is unique per session, making it the natural session key
+  const sessionInit = await initializeSessionDb(channel, handle, pubsub.channelConfig?.contextId);
   sessionDb = sessionInit.sessionDb;
   sessionRow = sessionInit.sessionRow;
 

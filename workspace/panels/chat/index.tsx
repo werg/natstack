@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { Flex, Text, Button, Card } from "@radix-ui/themes";
-import { pubsubConfig, id as panelClientId, buildNsLink, createChild, useStateArgs, forceRepaint } from "@natstack/runtime";
+import { pubsubConfig, id as panelClientId, buildNsLink, createChild, useStateArgs } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
 import { z } from "zod";
 import {
@@ -112,57 +112,6 @@ if (typeof window !== "undefined") {
     console.log("[Chat] Window gained focus");
   });
 
-  // Periodic heartbeat to detect if JS execution stops
-  let heartbeatCount = 0;
-  let lastPaintTime = performance.now();
-
-  // Monitor paint timing to detect rendering stalls
-  const paintObserver = new PerformanceObserver((list) => {
-    for (const entry of list.getEntries()) {
-      lastPaintTime = entry.startTime;
-    }
-  });
-  try {
-    paintObserver.observe({ entryTypes: ["paint"] });
-  } catch {
-    // paint observer might not be available
-  }
-
-  const heartbeatInterval = setInterval(() => {
-    heartbeatCount++;
-    const timeSinceLastPaint = performance.now() - lastPaintTime;
-    const rootHasContent = (rootElement?.childNodes.length ?? 0) > 0;
-
-    // Only log every 60 beats (once per minute at 1s intervals)
-    if (heartbeatCount % 60 === 0) {
-      console.log(`[Chat] Heartbeat #${heartbeatCount}, root children: ${rootElement?.childNodes.length ?? "N/A"}, paint age: ${Math.round(timeSinceLastPaint)}ms`);
-    }
-
-    // Alert if content exists but hasn't been painted recently (stale compositor)
-    if (rootHasContent && timeSinceLastPaint > 30000) {
-      console.warn(`[Chat] WARNING: Content exists but no paint in ${Math.round(timeSinceLastPaint / 1000)}s - possible compositor stall`);
-      // Request main process to force a repaint (more reliable than renderer-side hacks)
-      void forceRepaint().then((success) => {
-        console.log(`[Chat] Main process forceRepaint: ${success ? "success" : "failed"}`);
-      }).catch((err) => {
-        console.error("[Chat] forceRepaint error:", err);
-      });
-      // Also try renderer-side repaint as backup
-      if (rootElement) {
-        rootElement.style.opacity = "0.999";
-        requestAnimationFrame(() => {
-          if (rootElement) rootElement.style.opacity = "";
-          console.log("[Chat] Renderer-side repaint triggered");
-        });
-      }
-    }
-  }, 1000);
-
-  // Clean up on unload (though unload may not fire in Electron)
-  window.addEventListener("beforeunload", () => {
-    console.log("[Chat] beforeunload event fired");
-    clearInterval(heartbeatInterval);
-  });
 
   window.addEventListener("pagehide", (event) => {
     console.log(`[Chat] pagehide event, persisted: ${event.persisted}`);

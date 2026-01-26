@@ -683,9 +683,6 @@ export interface ConnectOptions<T extends AgenticParticipantMetadata = AgenticPa
   /** Additional metadata (optional) */
   extraMetadata?: Record<string, unknown>;
 
-  /** Context ID for session persistence (for channel creators; joiners get it from server) */
-  contextId?: string;
-
   /** Channel config to set when creating a new channel (workingDirectory, restrictedMode) */
   channelConfig?: ChannelConfig;
 

@@ -8,7 +8,7 @@
  */
 
 import { useState, useCallback } from "react";
-import { pubsubConfig, buildNsLink, closeSelf, getStateArgs, createChild } from "@natstack/runtime";
+import { pubsubConfig, buildNsLink, closeSelf, getStateArgs, createChild, rpc } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
 import { Theme } from "@radix-ui/themes";
 import {
@@ -92,9 +92,6 @@ export default function ChatLauncher() {
       return;
     }
 
-    // Derive channel config from session config
-    const channelConfig = toChannelConfig(sessionConfig);
-
     setIsStarting(true);
     setStatus(null);
 
@@ -102,6 +99,22 @@ export default function ChatLauncher() {
     const targetChannelId = channelId.trim() || generateChannelId();
 
     try {
+      // Create context from template if in browser mode
+      let contextId: string | undefined;
+      if (sessionConfig.projectLocation === "browser" && sessionConfig.contextTemplateSpec) {
+        setStatus("Creating sandbox context...");
+        contextId = await rpc.call<string>(
+          "main",
+          "bridge.createContextFromTemplate",
+          sessionConfig.contextTemplateSpec
+        );
+      }
+
+      // Derive channel config from session config, include contextId
+      const channelConfig = {
+        ...toChannelConfig(sessionConfig),
+        contextId,
+      };
       // Spawn all selected agents directly via createChild
       const spawnPromises = selectedAgents.map(async (agent) => {
         const config = buildSpawnConfig(agent);
@@ -119,6 +132,7 @@ export default function ChatLauncher() {
               // Channel config values passed directly to avoid timing issues
               workingDirectory: channelConfig.workingDirectory,
               restrictedMode: channelConfig.restrictedMode,
+              contextId: channelConfig.contextId,
               ...config,
             }
           );

@@ -478,7 +478,7 @@ export function ChatPhase({
                         style={{
                           position: "relative",
                           backgroundColor: isPanel
-                            ? "var(--accent-11)"
+                            ? "var(--gray-5)"
                             : msg.error
                               ? "var(--red-3)"
                               : "var(--gray-3)",

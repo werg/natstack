@@ -101,7 +101,6 @@ export {
 // Worker base utilities (shared across claude-code-responder, codex-responder, and other workers)
 export {
   showPermissionPrompt,
-  findPanelParticipant,
   validateRestrictedMode,
   createApprovalSchema,
   type PermissionPromptOptions,

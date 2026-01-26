@@ -122,6 +122,42 @@ export async function handleBridgeCall(
       // where content exists in DOM but isn't being painted
       return pm.forceRepaint(callerId);
     }
+    case "listContextTemplates": {
+      // List available context templates in the workspace
+      const { listAvailableTemplates } = await import("../contextTemplate/discovery.js");
+      return listAvailableTemplates();
+    }
+    case "createContextFromTemplate": {
+      // Create a new context from a template spec
+      const [templateSpec] = args as [string];
+      const { resolveTemplate } = await import("../contextTemplate/resolver.js");
+      const { computeImmutableSpec } = await import("../contextTemplate/specHash.js");
+      const { createContextId, generateInstanceId } = await import("../contextTemplate/contextId.js");
+      const { ensureContextPartitionInitialized } = await import("../contextTemplate/index.js");
+      const { getGitServer } = await import("../index.js");
+
+      // Resolve template and compute immutable spec
+      const resolved = await resolveTemplate(templateSpec);
+      const immutableSpec = computeImmutableSpec(resolved);
+      const instanceId = generateInstanceId("chat");
+      const contextId = createContextId("safe", immutableSpec.specHash, instanceId);
+
+      // Get git config for partition initialization
+      const gitServer = getGitServer();
+      if (!gitServer) {
+        throw new Error("Git server not available - cannot initialize context");
+      }
+
+      const gitConfig = {
+        serverUrl: gitServer.getBaseUrl(),
+        token: gitServer.getTokenForPanel(callerId),
+      };
+
+      // Initialize OPFS partition
+      await ensureContextPartitionInitialized(contextId, immutableSpec, gitConfig);
+
+      return contextId;
+    }
     default:
       throw new Error(`Unknown bridge method: ${method}`);
   }

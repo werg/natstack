@@ -20,7 +20,7 @@
         "workingDirectory": { "type": "string" },
         "restrictedMode": { "type": "boolean" }
       },
-      "required": ["channel"]
+      "required": ["channel", "restrictedMode"]
     }
   },
   "dependencies": {

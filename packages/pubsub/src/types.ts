@@ -10,6 +10,8 @@ export interface ChannelConfig {
   workingDirectory?: string;
   restrictedMode?: boolean;
   title?: string;
+  /** Links channel to a sandbox context (OPFS partition) */
+  contextId?: string;
 }
 
 /**
@@ -149,8 +151,6 @@ export interface ReconnectConfig {
 export interface ConnectOptions<T extends ParticipantMetadata = ParticipantMetadata> {
   /** Channel name to subscribe to */
   channel: string;
-  /** Context ID for the channel (required for first connection, optional for joiners) */
-  contextId?: string;
   /** Channel config to set when creating a new channel (ignored for existing channels) */
   channelConfig?: ChannelConfig;
   /** Replay messages with id > sinceId */

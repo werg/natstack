@@ -252,18 +252,6 @@ export async function showPermissionPrompt(
 // Panel Utilities
 // ============================================================================
 
-/**
- * Find the chat panel participant in the roster.
- *
- * @param client - Connected agentic client
- * @returns Panel participant or undefined if not found
- */
-export function findPanelParticipant(
-  client: AgenticClient<ChatParticipantMetadata>
-): { id: string; metadata: ChatParticipantMetadata } | undefined {
-  return Object.values(client.roster).find((p) => p.metadata.type === "panel");
-}
-
 // ============================================================================
 // Restricted Mode Utilities
 // ============================================================================

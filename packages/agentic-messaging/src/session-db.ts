@@ -24,11 +24,12 @@ export class SessionDb {
   private sessionRow: SessionRow | null = null;
 
   constructor(
-    private contextId: string,
     private channel: string,
-    private handle: string
+    private handle: string,
+    private contextId: string = ""
   ) {
-    this.sessionKey = `${contextId}:${channel}:${handle}`;
+    // Session key uniquely identifies a participant in a channel
+    this.sessionKey = `${channel}:${handle}`;
   }
 
   getSessionKey(): string {
@@ -36,7 +37,8 @@ export class SessionDb {
   }
 
   async initialize(): Promise<void> {
-    const dbName = `context-${this.contextId}-sessions`;
+    // Database named by channel for session isolation
+    const dbName = `channel-${this.channel}-sessions`;
     this.db = await db.open(dbName);
     await this.initializeSchema();
   }
