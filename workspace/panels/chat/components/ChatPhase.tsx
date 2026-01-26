@@ -458,7 +458,9 @@ export function ChatPhase({
                       }}
                     >
                       <Card
+                        className="message-card"
                         style={{
+                          position: "relative",
                           backgroundColor: isPanel
                             ? "var(--accent-10)"
                             : msg.error
@@ -488,21 +490,24 @@ export function ChatPhase({
                               onInterrupt={() => handleInterruptMessage(msg.id, msg.senderId)}
                             />
                           )}
-                          {hasContent && !isStreaming && (
-                            <Flex justify="end">
-                              <IconButton
-                                size="1"
-                                variant="ghost"
-                                color={isPanel ? "gray" : "gray"}
-                                style={{ opacity: 0.5 }}
-                                onClick={() => void handleCopyMessage(msg.id, msg.content)}
-                                title="Copy message"
-                              >
-                                {copiedMessageId === msg.id ? <CheckIcon /> : <CopyIcon />}
-                              </IconButton>
-                            </Flex>
-                          )}
                         </Flex>
+                        {hasContent && !isStreaming && (
+                          <IconButton
+                            className="copy-button"
+                            size="1"
+                            variant="ghost"
+                            color="gray"
+                            style={{
+                              position: "absolute",
+                              bottom: 4,
+                              right: 4,
+                            }}
+                            onClick={() => void handleCopyMessage(msg.id, msg.content)}
+                            title="Copy message"
+                          >
+                            {copiedMessageId === msg.id ? <CheckIcon /> : <CopyIcon />}
+                          </IconButton>
+                        )}
                       </Card>
                     </Box>
                   );

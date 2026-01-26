@@ -91,6 +91,16 @@
   animation: slide-up-fade-in 0.2s ease-out;
 }
 
+/* Copy button - always visible but transparent, full opacity on hover */
+.message-card .copy-button {
+  opacity: 0.25;
+  transition: opacity 0.15s ease-in-out;
+}
+
+.message-card .copy-button:hover {
+  opacity: 1;
+}
+
 /* Markdown code blocks (rehype-highlight / highlight.js) */
 .ns-codeblock {
   padding: 12px;
