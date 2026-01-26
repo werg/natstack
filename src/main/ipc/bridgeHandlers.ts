@@ -117,6 +117,11 @@ export async function handleBridgeCall(
       handleTemplateComplete(callerId, result);
       return { success: true };
     }
+    case "forceRepaint": {
+      // Allow a panel to request a force repaint to recover from compositor stalls
+      // where content exists in DOM but isn't being painted
+      return pm.forceRepaint(callerId);
+    }
     default:
       throw new Error(`Unknown bridge method: ${method}`);
   }

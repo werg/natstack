@@ -2099,6 +2099,19 @@ export class PanelManager {
     this.viewManager.reload(panelId);
   }
 
+  /**
+   * Force a repaint of a panel view.
+   * Used to recover from compositor stalls where content exists but isn't painted.
+   */
+  forceRepaint(panelId: string): boolean {
+    if (!this.viewManager) {
+      console.warn(`[PanelManager] ViewManager not set - cannot force repaint for ${panelId}`);
+      return false;
+    }
+
+    return this.viewManager.forceRepaint(panelId);
+  }
+
   private dispatchPopState(
     panelId: string,
     pushState: SharedPanel.PanelSnapshot["pushState"]

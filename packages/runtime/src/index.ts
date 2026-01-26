@@ -286,6 +286,7 @@ export const setTitle = notInShell("setTitle") as (title: string) => Promise<voi
 export const getInfo = notInShell("getInfo") as () => Promise<import("./core/index.js").EndpointInfo>;
 export const closeSelf = notInShell("closeSelf") as () => Promise<void>;
 export const unloadSelf = notInShell("unloadSelf") as () => Promise<void>;
+export const forceRepaint = notInShell("forceRepaint") as () => Promise<boolean>;
 export const ensurePanelLoaded = notInShell("ensurePanelLoaded") as (panelId: string) => Promise<import("./core/index.js").EnsureLoadedResult>;
 export const isEphemeral: boolean = false;
 export const getWorkspaceTree = shellRpc

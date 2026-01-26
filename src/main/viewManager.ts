@@ -943,6 +943,56 @@ export class ViewManager {
       return false;
     }
   }
+
+  /**
+   * Force a repaint of a view. Used to recover from compositor stalls where
+   * the content exists but isn't being painted to screen.
+   */
+  forceRepaint(viewId: string): boolean {
+    const managed = this.views.get(viewId);
+    if (!managed) {
+      console.warn(`[ViewManager] forceRepaint: view not found: ${viewId}`);
+      return false;
+    }
+
+    const contents = managed.view.webContents;
+    if (contents.isDestroyed()) {
+      console.warn(`[ViewManager] forceRepaint: webContents destroyed: ${viewId}`);
+      return false;
+    }
+
+    console.log(`[ViewManager] Forcing repaint for view: ${viewId}`);
+
+    try {
+      // Method 1: Invalidate the frame to trigger a repaint
+      contents.invalidate();
+
+      // Method 2: Toggle visibility to force compositor refresh
+      // Only do this for visible views to avoid flicker
+      if (managed.visible) {
+        const currentBounds = { ...managed.bounds };
+        // Nudge the bounds slightly then restore
+        managed.view.setBounds({
+          ...currentBounds,
+          width: currentBounds.width - 1,
+        });
+        // Restore on next frame
+        setImmediate(() => {
+          if (!contents.isDestroyed()) {
+            managed.view.setBounds(currentBounds);
+          }
+        });
+      }
+
+      return true;
+    } catch (error) {
+      console.error(
+        `[ViewManager] Failed to force repaint for ${viewId}:`,
+        error instanceof Error ? error.message : error
+      );
+      return false;
+    }
+  }
 }
 
 // Singleton instance

@@ -74,6 +74,7 @@ export const {
   getInfo,
   closeSelf,
   unloadSelf,
+  forceRepaint,
   ensurePanelLoaded,
   getWorkspaceTree,
   listBranches,

@@ -194,6 +194,7 @@ export function createRuntime(deps: RuntimeDeps) {
     getInfo: () => callMain<EndpointInfo>("bridge.getInfo"),
     closeSelf: () => callMain<void>("bridge.closeSelf"),
     unloadSelf: () => callMain<void>("bridge.unloadSelf"),
+    forceRepaint: () => callMain<boolean>("bridge.forceRepaint"),
     ensurePanelLoaded: (panelId: string) => callMain<EnsureLoadedResult>("bridge.ensurePanelLoaded", panelId),
     getWorkspaceTree: () => callMain<WorkspaceTree>("bridge.getWorkspaceTree"),
     listBranches: (repoPath: string) => callMain<BranchInfo[]>("bridge.listBranches", repoPath),

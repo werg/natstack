@@ -72,6 +72,101 @@ if (typeof window !== "undefined") {
     // Prevent the default browser behavior (which may log again)
     event.preventDefault();
   });
+
+  // Monitor for unexpected DOM changes (React unmounting without error)
+  const rootElement = document.getElementById("root");
+  if (rootElement) {
+    const observer = new MutationObserver((mutations) => {
+      // Check if #root becomes empty (React unmounted)
+      if (rootElement.childNodes.length === 0) {
+        console.error("[Chat] CRITICAL: Root element became empty - React may have unmounted unexpectedly");
+        console.error("[Chat] Mutations:", mutations.map(m => ({
+          type: m.type,
+          removedNodes: m.removedNodes.length,
+          addedNodes: m.addedNodes.length,
+        })));
+        console.error(new Error("[Chat] Root empty stack trace").stack);
+      }
+    });
+    observer.observe(rootElement, { childList: true, subtree: false });
+  }
+
+  // Page lifecycle monitoring
+  document.addEventListener("visibilitychange", () => {
+    console.log(`[Chat] Visibility changed: ${document.visibilityState}, hidden: ${document.hidden}`);
+  });
+
+  // Page freeze/resume (Page Lifecycle API - may not be available in all Electron versions)
+  document.addEventListener("freeze", () => {
+    console.warn("[Chat] Page FROZEN by browser");
+  });
+  document.addEventListener("resume", () => {
+    console.log("[Chat] Page RESUMED from frozen state");
+  });
+
+  // Window focus tracking
+  window.addEventListener("blur", () => {
+    console.log("[Chat] Window lost focus");
+  });
+  window.addEventListener("focus", () => {
+    console.log("[Chat] Window gained focus");
+  });
+
+  // Periodic heartbeat to detect if JS execution stops
+  let heartbeatCount = 0;
+  let lastPaintTime = performance.now();
+
+  // Monitor paint timing to detect rendering stalls
+  const paintObserver = new PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+      lastPaintTime = entry.startTime;
+    }
+  });
+  try {
+    paintObserver.observe({ entryTypes: ["paint"] });
+  } catch {
+    // paint observer might not be available
+  }
+
+  const heartbeatInterval = setInterval(() => {
+    heartbeatCount++;
+    const timeSinceLastPaint = performance.now() - lastPaintTime;
+    const rootHasContent = (rootElement?.childNodes.length ?? 0) > 0;
+
+    // Only log every 60 beats (once per minute at 1s intervals)
+    if (heartbeatCount % 60 === 0) {
+      console.log(`[Chat] Heartbeat #${heartbeatCount}, root children: ${rootElement?.childNodes.length ?? "N/A"}, paint age: ${Math.round(timeSinceLastPaint)}ms`);
+    }
+
+    // Alert if content exists but hasn't been painted recently (stale compositor)
+    if (rootHasContent && timeSinceLastPaint > 30000) {
+      console.warn(`[Chat] WARNING: Content exists but no paint in ${Math.round(timeSinceLastPaint / 1000)}s - possible compositor stall`);
+      // Request main process to force a repaint (more reliable than renderer-side hacks)
+      void forceRepaint().then((success) => {
+        console.log(`[Chat] Main process forceRepaint: ${success ? "success" : "failed"}`);
+      }).catch((err) => {
+        console.error("[Chat] forceRepaint error:", err);
+      });
+      // Also try renderer-side repaint as backup
+      if (rootElement) {
+        rootElement.style.opacity = "0.999";
+        requestAnimationFrame(() => {
+          if (rootElement) rootElement.style.opacity = "";
+          console.log("[Chat] Renderer-side repaint triggered");
+        });
+      }
+    }
+  }, 1000);
+
+  // Clean up on unload (though unload may not fire in Electron)
+  window.addEventListener("beforeunload", () => {
+    console.log("[Chat] beforeunload event fired");
+    clearInterval(heartbeatInterval);
+  });
+
+  window.addEventListener("pagehide", (event) => {
+    console.log(`[Chat] pagehide event, persisted: ${event.persisted}`);
+  });
 }
 
 /** Utility to check if a value looks like ChatParticipantMetadata */
