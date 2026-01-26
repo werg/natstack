@@ -118,14 +118,6 @@ export {
   type SDKStreamEvent,
 } from "./subagent-connection.js";
 
-// Restricted mode Task tool
-export {
-  createRestrictedTaskTool,
-  RestrictedTaskToolSchema,
-  type RestrictedTaskToolArgs,
-  type ToolDefinitionWithExecute,
-  type TaskToolContext,
-} from "./task-tool.js";
 
 // Feedback UI types (formerly in broker-protocol.ts)
 export {

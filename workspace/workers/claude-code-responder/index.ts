@@ -38,11 +38,9 @@ import {
   // Subagent utilities
   createSubagentConnection,
   forwardStreamEventToSubagent,
-  createRestrictedTaskTool,
   type SubagentConnection,
   type SubagentConnectionOptions,
   type SDKStreamEvent,
-  type ToolDefinitionWithExecute,
   type Attachment,
   type AgenticClient,
   type AgentSDKToolDefinition,
@@ -157,6 +155,10 @@ class BoundedImageCache {
   }
 }
 import { query, tool, createSdkMcpServer, type Query, type SDKResultMessage, type CanUseTool, type PermissionResult } from "@anthropic-ai/claude-agent-sdk";
+import {
+  createRestrictedTaskTool,
+  type ToolDefinitionWithExecute,
+} from "./task-tool.js";
 
 /**
  * Find an executable in the system PATH.

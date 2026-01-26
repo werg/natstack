@@ -7,13 +7,13 @@
 
 import { z } from "zod";
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
-import type { AgenticClient } from "./types.js";
 import {
   createSubagentConnection,
   forwardStreamEventToSubagent,
+  type AgenticClient,
   type SubagentConnectionOptions,
   type SDKStreamEvent,
-} from "./subagent-connection.js";
+} from "@natstack/agentic-messaging";
 
 /**
  * Schema for the restricted mode Task tool.

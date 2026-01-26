@@ -282,7 +282,8 @@ export const onChildRemoved = notInShell("onChildRemoved") as (
   callback: (name: string) => void
 ) => () => void;
 
-export const setTitle = notInShell("setTitle") as (title: string) => Promise<void>;
+// Panel titles are derived from document.title (HTML <title> tag)
+// Electron's page-title-updated event propagates this to the persistence layer
 export const getInfo = notInShell("getInfo") as () => Promise<import("./core/index.js").EndpointInfo>;
 export const closeSelf = notInShell("closeSelf") as () => Promise<void>;
 export const unloadSelf = notInShell("unloadSelf") as () => Promise<void>;

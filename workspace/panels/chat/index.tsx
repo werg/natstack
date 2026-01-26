@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { Flex, Text, Button, Card } from "@radix-ui/themes";
-import { pubsubConfig, id as panelClientId, buildNsLink, createChild, useStateArgs, setTitle, forceRepaint } from "@natstack/runtime";
+import { pubsubConfig, id as panelClientId, buildNsLink, createChild, useStateArgs, forceRepaint } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
 import { z } from "zod";
 import {
@@ -477,7 +477,8 @@ export default function AgenticChat() {
     selfIdRef.current = clientId;
   }, [clientId]);
 
-  // Subscribe to channel title changes and update panel title
+  // Subscribe to channel title changes and update panel title via document.title
+  // Electron's page-title-updated event will propagate this to the panel persistence
   useEffect(() => {
     const client = clientRef.current;
     if (!client || !connected) return;
@@ -485,12 +486,12 @@ export default function AgenticChat() {
     // Set initial title if available
     const initialTitle = client.channelConfig?.title;
     if (initialTitle) {
-      void setTitle(initialTitle);
+      document.title = initialTitle;
     }
 
     // Subscribe to title changes
     const unsubscribe = client.onTitleChange((title) => {
-      void setTitle(title);
+      document.title = title;
     });
 
     return () => {

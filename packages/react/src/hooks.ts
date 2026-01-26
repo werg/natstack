@@ -10,14 +10,14 @@ import type { CreateChildOptions, ChildHandle, ParentHandle, ThemeAppearance, Bo
 
 /**
  * Get the panel API object.
- * This is the same as importing panelAPI directly, but as a hook for consistency.
+ * This is the same as importing from @natstack/runtime directly, but as a hook for consistency.
  *
  * @example
  * ```tsx
  * function MyPanel() {
  *   const panel = usePanel();
- *   const handleClick = () => panel.setTitle("New Title");
- *   return <button onClick={handleClick}>Rename</button>;
+ *   const handleClose = () => panel.closeSelf();
+ *   return <button onClick={handleClose}>Close</button>;
  * }
  * ```
  */

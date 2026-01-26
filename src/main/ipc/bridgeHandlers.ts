@@ -1,6 +1,6 @@
 /**
  * Bridge service handlers for panel RPC calls.
- * Handles panel lifecycle operations like createChild, setTitle, etc.
+ * Handles panel lifecycle operations like createChild, close, navigation, etc.
  */
 
 import type { PanelManager } from "../panelManager.js";
@@ -12,7 +12,7 @@ import { handleTemplateComplete, type TemplateCompleteResult } from "../contextT
  *
  * @param pm - PanelManager instance
  * @param callerId - The calling panel/worker ID
- * @param method - The method name (e.g., "createChild", "setTitle")
+ * @param method - The method name (e.g., "createChild", "closeSelf")
  * @param args - The method arguments
  * @returns The result of the method call
  */
