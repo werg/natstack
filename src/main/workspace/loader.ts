@@ -138,6 +138,7 @@ function mapSecretsToEnv(secrets: Record<string, string>): void {
     together: "TOGETHER_API_KEY",
     replicate: "REPLICATE_API_KEY",
     perplexity: "PERPLEXITY_API_KEY",
+    github: "GITHUB_TOKEN", // For transparent GitHub repo cloning
   };
 
   for (const [provider, secret] of Object.entries(secrets)) {

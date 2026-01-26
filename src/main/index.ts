@@ -107,6 +107,14 @@ let isCleaningUp = false; // Prevent re-entry in will-quit handler
 // Export AI handler for use by other modules (will be set during initialization)
 export let aiHandler: import("./ai/aiHandler.js").AIHandler | null = null;
 
+/**
+ * Get the GitServer instance.
+ * Used by the context template resolver for GitHub ref resolution.
+ */
+export function getGitServer(): GitServer | null {
+  return gitServer;
+}
+
 // =============================================================================
 // Main Mode Initialization
 // =============================================================================
@@ -122,9 +130,15 @@ if (appMode === "main" && hasWorkspaceConfig) {
     centralData.addRecentWorkspace(workspace.path, workspace.config.id);
 
     // Create git server with workspace configuration
+    // GitHub token can come from config or GITHUB_TOKEN env var (set from secrets.yml)
+    const githubConfig = workspace.config.git?.github;
     gitServer = new GitServer({
       port: workspace.config.git?.port,
       reposPath: workspace.gitReposPath,
+      github: {
+        ...githubConfig,
+        token: githubConfig?.token ?? process.env["GITHUB_TOKEN"],
+      },
     });
 
     // Create panel manager

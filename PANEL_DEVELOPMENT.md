@@ -766,15 +766,18 @@ For example:
 
 ### Use Cases
 
-**Agentic Tools**: Agents can reference GitHub repositories as tool sources:
+**Context Templates**: Reference GitHub repositories directly in context templates:
 
 ```yaml
 # context-template.yml
-deps:
-  /tools/search:
-    repo: github.com/owner/search-tool
-    ref: main
+name: my-agent
+structure:
+  deps:
+    search-tool: github.com/owner/search-tool#main
+    utils: github.com/owner/utils@v1.0.0
 ```
+
+The template resolver will auto-clone the repositories when resolving refs.
 
 **Dynamic Dependencies**: Pull in libraries or data repositories on-demand without pre-configuring them in templates.
 

@@ -677,6 +677,108 @@ export class GitServer {
     return commits;
   }
 
+  // ===========================================================================
+  // Ref Resolution (for context templates)
+  // ===========================================================================
+
+  /**
+   * Resolve a git ref to a commit SHA.
+   * For GitHub paths, triggers auto-clone if the repo doesn't exist locally.
+   *
+   * This is used by the context template resolver to get exact commit SHAs
+   * for template dependencies, including GitHub repositories.
+   *
+   * @param repoPath - Relative path to repo (e.g., "panels/editor" or "github.com/owner/repo")
+   * @param ref - Git ref (branch, tag, or commit) - if undefined, uses HEAD
+   * @returns Full commit SHA
+   */
+  async resolveRef(repoPath: string, ref?: string): Promise<string> {
+    const normalized = this.normalizePath(repoPath);
+
+    // Handle GitHub paths - may need to clone first
+    if (this.githubConfig.enabled && isGitHubPath(normalized)) {
+      await this.ensureGitHubRepoCloned(normalized);
+    }
+
+    const absolutePath = this.toAbsolutePath(normalized);
+
+    if (!fs.existsSync(absolutePath)) {
+      throw new Error(`Repository not found: ${repoPath}`);
+    }
+
+    const targetRef = ref ?? "HEAD";
+
+    try {
+      const result = await this.runGit(["rev-parse", targetRef], absolutePath);
+      return result.trim();
+    } catch (error) {
+      // Try fallback refs for common branch name variations
+      const candidates: string[] = [];
+
+      if (targetRef === "main") candidates.push("master");
+      if (targetRef === "master") candidates.push("main");
+
+      // Try origin/<branch> for plain branch names
+      if (!targetRef.includes("/") && !targetRef.startsWith("refs/")) {
+        candidates.push(`origin/${targetRef}`);
+      }
+
+      for (const candidate of candidates) {
+        try {
+          const result = await this.runGit(["rev-parse", candidate], absolutePath);
+          return result.trim();
+        } catch {
+          // continue to next candidate
+        }
+      }
+
+      const msg = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to resolve ref "${targetRef}" in ${repoPath}: ${msg}`);
+    }
+  }
+
+  /**
+   * Ensure a GitHub repo is cloned locally.
+   * Called before ref resolution for GitHub paths.
+   */
+  private async ensureGitHubRepoCloned(repoPath: string): Promise<void> {
+    const spec = parseGitHubPath(repoPath);
+    if (!spec) return;
+
+    const relPath = toGitHubRelativePath(spec);
+    const targetPath = path.join(this.ensureReposPath(), relPath);
+
+    // Already cloned?
+    if (isGitRepo(targetPath)) {
+      // Ensure it's in discovered paths
+      if (!this.discoveredRepoPaths.has(relPath)) {
+        this.discoveredRepoPaths.add(relPath);
+      }
+      return;
+    }
+
+    // Clone from GitHub (full clone for ref resolution - need all refs/tags)
+    console.log(`[GitServer] Auto-cloning for ref resolution: ${spec.owner}/${spec.repo}`);
+    const result = await ensureGitHubRepo({
+      targetPath,
+      remoteUrl: toGitHubUrl(spec),
+      token: this.githubConfig.token,
+      depth: 0, // Full clone - shallow clones may not have all refs
+    });
+
+    if (!result.success) {
+      throw new Error(`Failed to clone GitHub repository ${spec.owner}/${spec.repo}: ${result.error}`);
+    }
+
+    // Add to discovered paths and invalidate cache
+    this.discoveredRepoPaths.add(relPath);
+    this.invalidateTreeCache();
+    // Re-add since invalidate clears the set
+    this.discoveredRepoPaths.add(relPath);
+
+    console.log(`[GitServer] GitHub repo ready for ref resolution: ${relPath}`);
+  }
+
   /**
    * Run a git command and return stdout or throw on error.
    */

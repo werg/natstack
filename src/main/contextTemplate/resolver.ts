@@ -20,6 +20,8 @@ import type {
 import { CircularExtendsError } from "./types.js";
 import { parseGitSpec, loadTemplateFromDir, parseTemplateYaml, TEMPLATE_FILE_NAME } from "./parser.js";
 import { getActiveWorkspace } from "../paths.js";
+import { isGitHubPath } from "../githubCloner.js";
+import { getGitServer } from "../index.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -76,8 +78,8 @@ async function resolveTemplateInternal(
   // Handle special case: "." means current workspace root
   const repoPath = repo === "." ? ctx.workspacePath : path.resolve(ctx.workspacePath, repo);
 
-  // Check if repo directory exists
-  if (!fs.existsSync(repoPath)) {
+  // Check if repo directory exists (skip for GitHub paths - GitServer handles this)
+  if (!isGitHubPath(repo) && !fs.existsSync(repoPath)) {
     throw new Error(`Template repository not found: ${repoPath}`);
   }
 
@@ -87,7 +89,7 @@ async function resolveTemplateInternal(
     message: `Resolving ${templateSpec}...`,
   });
 
-  const resolvedCommit = await resolveRefToCommit(repoPath, ref);
+  const resolvedCommit = await resolveRefToCommit(repo, ref, ctx.workspacePath);
 
   // Build a unique key for cycle detection
   const specKey = `${repo}@${resolvedCommit}`;
@@ -110,11 +112,8 @@ async function resolveTemplateInternal(
 
   if (templateYaml.extends) {
     const parentResolved = await resolveTemplateInternal(templateYaml.extends, ctx);
-    const { ref: parentRef } = parseGitSpec(templateYaml.extends);
-    const parentCommit = await resolveRefToCommit(
-      path.resolve(ctx.workspacePath, parseGitSpec(templateYaml.extends).repo),
-      parentRef
-    );
+    const { repo: parentRepo, ref: parentRef } = parseGitSpec(templateYaml.extends);
+    const parentCommit = await resolveRefToCommit(parentRepo, parentRef, ctx.workspacePath);
 
     resolvedExtends = {
       spec: templateYaml.extends,
@@ -129,15 +128,18 @@ async function resolveTemplateInternal(
   if (templateYaml.structure) {
     for (const [targetPath, gitSpec] of Object.entries(templateYaml.structure)) {
       const parsed = parseGitSpec(gitSpec);
-      const structureRepoPath = path.resolve(ctx.workspacePath, parsed.repo);
 
-      if (!fs.existsSync(structureRepoPath)) {
-        throw new Error(
-          `Structure dependency not found: ${structureRepoPath} (from ${templateSpec})`
-        );
+      // Skip fs.existsSync check for GitHub paths - GitServer handles this
+      if (!isGitHubPath(parsed.repo)) {
+        const structureRepoPath = path.resolve(ctx.workspacePath, parsed.repo);
+        if (!fs.existsSync(structureRepoPath)) {
+          throw new Error(
+            `Structure dependency not found: ${structureRepoPath} (from ${templateSpec})`
+          );
+        }
       }
 
-      const structureCommit = await resolveRefToCommit(structureRepoPath, parsed.ref);
+      const structureCommit = await resolveRefToCommit(parsed.repo, parsed.ref, ctx.workspacePath);
 
       resolvedStructure[targetPath] = {
         originalSpec: gitSpec,
@@ -164,18 +166,37 @@ async function resolveTemplateInternal(
 /**
  * Resolve a git ref to a commit SHA.
  *
- * @param repoPath - Path to the git repository
+ * For GitHub paths (e.g., "github.com/owner/repo"), uses the GitServer
+ * which handles auto-cloning. For local paths, uses direct git commands.
+ *
+ * @param repoPath - Path to the git repository (relative to workspace or GitHub path)
  * @param ref - Git ref (branch, tag, or commit) - if undefined, uses HEAD
+ * @param workspacePath - Workspace root path (for resolving relative paths)
  * @returns Full commit SHA
  */
 async function resolveRefToCommit(
   repoPath: string,
-  ref?: string
+  ref?: string,
+  workspacePath?: string
 ): Promise<string> {
   const targetRef = ref ?? "HEAD";
 
+  // For GitHub paths, use GitServer which handles auto-clone
+  if (isGitHubPath(repoPath)) {
+    const gitServer = getGitServer();
+    if (!gitServer) {
+      throw new Error("GitServer not initialized - cannot resolve GitHub ref");
+    }
+    return gitServer.resolveRef(repoPath, targetRef);
+  }
+
+  // For local paths, use direct git command
+  const absolutePath = workspacePath
+    ? path.resolve(workspacePath, repoPath)
+    : repoPath;
+
   try {
-    return await runGit(["rev-parse", targetRef], repoPath);
+    return await runGit(["rev-parse", targetRef], absolutePath);
   } catch (error) {
     // Try fallback refs
     const candidates: string[] = [];
@@ -190,7 +211,7 @@ async function resolveRefToCommit(
 
     for (const candidate of candidates) {
       try {
-        return await runGit(["rev-parse", candidate], repoPath);
+        return await runGit(["rev-parse", candidate], absolutePath);
       } catch {
         // continue
       }
@@ -276,13 +297,16 @@ export async function resolveTemplateCommit(templateSpec: GitSpec): Promise<stri
   }
 
   const { repo, ref } = parseGitSpec(templateSpec);
-  const repoPath = repo === "." ? workspace.path : path.resolve(workspace.path, repo);
 
-  if (!fs.existsSync(repoPath)) {
-    throw new Error(`Template repository not found: ${repoPath}`);
+  // Skip fs.existsSync check for GitHub paths - GitServer handles this
+  if (!isGitHubPath(repo) && repo !== ".") {
+    const repoPath = path.resolve(workspace.path, repo);
+    if (!fs.existsSync(repoPath)) {
+      throw new Error(`Template repository not found: ${repoPath}`);
+    }
   }
 
-  return resolveRefToCommit(repoPath, ref);
+  return resolveRefToCommit(repo, ref, workspace.path);
 }
 
 /**
