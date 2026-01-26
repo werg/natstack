@@ -9,6 +9,7 @@
 export interface ChannelConfig {
   workingDirectory?: string;
   restrictedMode?: boolean;
+  title?: string;
 }
 
 /**

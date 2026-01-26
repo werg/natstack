@@ -817,6 +817,12 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   /** Channel config (from server ready message) */
   readonly channelConfig: ChannelConfig | undefined;
 
+  // === Channel Title ===
+  /** Set the channel title (updates channel config) */
+  setChannelTitle(title: string): Promise<void>;
+  /** Subscribe to title changes (via channel config updates) */
+  onTitleChange(handler: (title: string) => void): () => void;
+
   // === Lifecycle ===
   readonly connected: boolean;
   readonly reconnecting: boolean;

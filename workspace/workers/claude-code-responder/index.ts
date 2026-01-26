@@ -602,6 +602,24 @@ async function main() {
           return { success: true, settings: currentSettings };
         },
       },
+      set_title: {
+        description: `Set the channel/conversation title displayed to users.
+
+Call this tool:
+- Early in the conversation when the topic becomes clear
+- When the topic shifts significantly to a new subject
+- To provide a concise summary (1-5 words) of what this conversation is about
+
+Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
+        parameters: z.object({
+          title: z.string().max(200).describe("Brief title for this conversation (1-5 words)"),
+        }),
+        execute: async ({ title }) => {
+          await client.setChannelTitle(title);
+          log(`Set channel title to: ${title}`);
+          return { success: true, title };
+        },
+      },
     },
   });
 
@@ -1022,6 +1040,34 @@ async function handleUserMessage(
       log("Unrestricted mode - using SDK native tools");
     }
 
+    // Create MCP server for channel tools (works in both restricted and unrestricted modes)
+    // This provides the set_title tool which isn't part of the SDK's native tools
+    const setTitleTool = tool(
+      "set_title",
+      `Set the channel/conversation title displayed to users.
+
+Call this tool:
+- Early in the conversation when the topic becomes clear
+- When the topic shifts significantly to a new subject
+- To provide a concise summary (1-5 words) of what this conversation is about
+
+Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
+      { title: z.string().max(200).describe("Brief title for this conversation (1-5 words)") },
+      async ({ title }: { title: string }) => {
+        await client.setChannelTitle(title);
+        log(`Set channel title to: ${title}`);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ success: true, title }) }],
+        };
+      }
+    );
+
+    const channelToolsServer = createSdkMcpServer({
+      name: "channel",
+      version: "1.0.0",
+      tools: [setTitleTool],
+    });
+
     // Create MCP server for image attachments (works in both restricted and unrestricted modes)
     // The Claude Agent SDK's query() only accepts string prompts, not content blocks.
     // We deliver images via MCP tools that Claude can call to view attachments.
@@ -1404,12 +1450,14 @@ async function handleUserMessage(
     }
 
     const queryOptions: Parameters<typeof query>[0]["options"] = {
-      // Build mcpServers object combining workspace tools, UI tools, and attachments
+      // Build mcpServers object combining workspace tools, channel tools, and attachments
       ...(() => {
         const servers: Record<string, ReturnType<typeof createSdkMcpServer>> = {};
         if (isRestrictedMode && pubsubServer) {
           servers.workspace = pubsubServer;
         }
+        // Always include channel tools (set_title, etc.)
+        servers.channel = channelToolsServer;
         if (attachmentsMcpServer) {
           servers.attachments = attachmentsMcpServer;
         }

@@ -31,6 +31,7 @@ export interface TokenValidator {
 export interface ChannelConfig {
   workingDirectory?: string;
   restrictedMode?: boolean;
+  title?: string;
 }
 
 /**
@@ -53,6 +54,8 @@ export interface MessageStore {
   queryByType(channel: string, types: string[], sinceId?: number): MessageRow[];
   createChannel(channel: string, contextId: string, createdBy: string, config?: ChannelConfig): void;
   getChannel(channel: string): ChannelInfo | null;
+  /** Update channel config (merges with existing config) */
+  updateChannelConfig(channel: string, config: Partial<ChannelConfig>): ChannelConfig | null;
   /** Get the maximum attachment ID number for a channel (for counter initialization after restart) */
   getMaxAttachmentIdNumber(channel: string): number;
   close(): void;
@@ -167,7 +170,13 @@ interface CloseClientMessage {
   ref?: number;
 }
 
-type ClientMessage = PublishClientMessage | UpdateMetadataClientMessage | CloseClientMessage;
+interface UpdateConfigClientMessage {
+  action: "update-config";
+  config: Partial<ChannelConfig>;
+  ref?: number;
+}
+
+type ClientMessage = PublishClientMessage | UpdateMetadataClientMessage | CloseClientMessage | UpdateConfigClientMessage;
 
 interface MessageRow {
   id: number;
@@ -300,6 +309,12 @@ abstract class BaseMessageStore implements MessageStore {
   abstract getChannel(channel: string): ChannelInfo | null;
 
   /**
+   * Update channel config (merges with existing config).
+   * Returns the new merged config, or null if channel doesn't exist.
+   */
+  abstract updateChannelConfig(channel: string, config: Partial<ChannelConfig>): ChannelConfig | null;
+
+  /**
    * Insert a message. Returns the assigned message ID.
    */
   abstract insert(
@@ -414,6 +429,33 @@ class SqliteMessageStore extends BaseMessageStore {
     return createChannelInfo(row.context_id, row.created_at, row.created_by, config);
   }
 
+  updateChannelConfig(channel: string, config: Partial<ChannelConfig>): ChannelConfig | null {
+    if (!this.dbHandle) return null;
+    const db = getDatabaseManager();
+
+    // Get existing config
+    const row = db.query<{ config: string | null }>(
+      this.dbHandle,
+      "SELECT config FROM channels WHERE channel = ?",
+      [channel]
+    )[0];
+    if (!row) return null;
+
+    // Merge with existing config
+    const existingConfig = row.config ? JSON.parse(row.config) as ChannelConfig : {};
+    const newConfig: ChannelConfig = { ...existingConfig, ...config };
+    const configJson = JSON.stringify(newConfig);
+
+    // Update in database
+    db.run(
+      this.dbHandle,
+      "UPDATE channels SET config = ? WHERE channel = ?",
+      [configJson, channel]
+    );
+
+    return newConfig;
+  }
+
   insert(
     channel: string,
     type: string,
@@ -525,6 +567,16 @@ export class InMemoryMessageStore extends BaseMessageStore {
 
   getChannel(channel: string): ChannelInfo | null {
     return this.channels.get(channel) ?? null;
+  }
+
+  updateChannelConfig(channel: string, config: Partial<ChannelConfig>): ChannelConfig | null {
+    const channelInfo = this.channels.get(channel);
+    if (!channelInfo) return null;
+
+    // Merge with existing config
+    const newConfig: ChannelConfig = { ...channelInfo.config, ...config };
+    channelInfo.config = newConfig;
+    return newConfig;
   }
 
   insert(
@@ -922,6 +974,25 @@ export class PubSubServer {
       return;
     }
 
+    if (msg.action === "update-config") {
+      const { config } = msg;
+      if (!config || typeof config !== "object" || Array.isArray(config)) {
+        this.send(client.ws, { kind: "error", error: "config must be an object", ref });
+        return;
+      }
+
+      // Update config in database
+      const newConfig = this.messageStore.updateChannelConfig(client.channel, config);
+      if (!newConfig) {
+        this.send(client.ws, { kind: "error", error: "channel not found", ref });
+        return;
+      }
+
+      // Broadcast config update to all participants (including sender)
+      this.broadcastConfigUpdate(client.channel, newConfig, client.ws, ref);
+      return;
+    }
+
     if (msg.action !== "publish") {
       this.send(client.ws, { kind: "error", error: "unknown action", ref });
       return;
@@ -1101,6 +1172,38 @@ export class PubSubServer {
   private send(ws: WebSocket, msg: ServerMessage): void {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(msg));
+    }
+  }
+
+  /**
+   * Broadcast a config update to all participants in a channel.
+   * Config updates are ephemeral (not persisted) since the config is stored separately.
+   */
+  private broadcastConfigUpdate(
+    channel: string,
+    config: ChannelConfig,
+    senderWs: WebSocket,
+    senderRef?: number
+  ): void {
+    const state = this.channels.get(channel);
+    if (!state) return;
+
+    // Config update message format
+    const msg = {
+      kind: "config-update" as const,
+      channelConfig: config,
+    };
+
+    const dataForOthers = JSON.stringify(msg);
+    const dataForSender = senderRef !== undefined
+      ? JSON.stringify({ ...msg, ref: senderRef })
+      : dataForOthers;
+
+    for (const client of state.clients) {
+      if (client.ws.readyState === WebSocket.OPEN) {
+        const data = client.ws === senderWs ? dataForSender : dataForOthers;
+        client.ws.send(data);
+      }
     }
   }
 

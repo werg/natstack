@@ -1749,6 +1749,17 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     get channelConfig() {
       return pubsub.channelConfig;
     },
+    // Channel Title (via channel config)
+    setChannelTitle: async (title: string) => {
+      await pubsub.updateChannelConfig({ title });
+    },
+    onTitleChange: (handler: (title: string) => void) => {
+      return pubsub.onConfigChange((config) => {
+        if (config.title !== undefined) {
+          handler(config.title);
+        }
+      });
+    },
     get connected() {
       return pubsub.connected;
     },

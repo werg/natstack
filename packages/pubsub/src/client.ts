@@ -23,7 +23,7 @@ import type {
  * Server message envelope.
  */
 interface ServerMessage {
-  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error";
+  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error" | "config-update";
   id?: number;
   type?: string;
   payload?: unknown;
@@ -36,7 +36,7 @@ interface ServerMessage {
   senderMetadata?: Record<string, unknown>;
   /** Context ID for the channel (sent in ready message) */
   contextId?: string;
-  /** Channel config (sent in ready message) */
+  /** Channel config (sent in ready message or config-update) */
   channelConfig?: ChannelConfig;
 }
 
@@ -92,6 +92,12 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
 
   /** Register roster update handler. Returns unsubscribe function. */
   onRoster(handler: (roster: RosterUpdate<T>) => void): () => void;
+
+  /** Update the channel config (merges with existing config). */
+  updateChannelConfig(config: Partial<ChannelConfig>): Promise<ChannelConfig>;
+
+  /** Register channel config change handler. Returns unsubscribe function. */
+  onConfigChange(handler: (config: ChannelConfig) => void): () => void;
 
   /** Get the current roster participants (may be empty if no roster update received yet) */
   readonly roster: Record<string, Participant<T>>;
@@ -156,6 +162,13 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   const disconnectHandlers = new Set<() => void>();
   const reconnectHandlers = new Set<() => void>();
   const rosterHandlers = new Set<(roster: RosterUpdate<T>) => void>();
+  const configChangeHandlers = new Set<(config: ChannelConfig) => void>();
+
+  // Pending config update tracking
+  const pendingConfigUpdates = new Map<
+    number,
+    { resolve: (config: ChannelConfig) => void; reject: (err: Error) => void; timeoutId: ReturnType<typeof setTimeout> }
+  >();
 
   // Current roster state
   let currentRoster: Record<string, Participant<T>> = {};
@@ -287,6 +300,29 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         enqueueMessage({ kind: "ready" });
         break;
 
+      case "config-update": {
+        // Update local channel config
+        if (msg.channelConfig) {
+          serverChannelConfig = msg.channelConfig;
+
+          // Resolve pending config update if this is our request
+          if (msg.ref !== undefined) {
+            const pending = pendingConfigUpdates.get(msg.ref);
+            if (pending) {
+              clearTimeout(pending.timeoutId);
+              pending.resolve(msg.channelConfig);
+              pendingConfigUpdates.delete(msg.ref);
+            }
+          }
+
+          // Notify all config change handlers
+          for (const handler of configChangeHandlers) {
+            handler(msg.channelConfig);
+          }
+        }
+        break;
+      }
+
       case "error": {
         const errorMsg = msg.error || "unknown server error";
         let code: "validation" | "server" = "server";
@@ -307,6 +343,12 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
             clearTimeout(pendingMetadata.timeoutId);
             pendingMetadata.reject(error);
             pendingMetadataUpdates.delete(msg.ref);
+          }
+          const pendingConfig = pendingConfigUpdates.get(msg.ref);
+          if (pendingConfig) {
+            clearTimeout(pendingConfig.timeoutId);
+            pendingConfig.reject(error);
+            pendingConfigUpdates.delete(msg.ref);
           }
         }
 
@@ -432,6 +474,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
       }
       rejectPendingPublishes(new PubSubError(errorMessage, "connection"));
       rejectPendingMetadataUpdates(new PubSubError(errorMessage, "connection"));
+      rejectPendingConfigUpdates(new PubSubError(errorMessage, "connection"));
       readyReject?.(new PubSubError(errorMessage, "connection"));
       readyResolve = null;
       readyReject = null;
@@ -450,6 +493,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
       }
       rejectPendingPublishes(new PubSubError(errorMessage, "connection"));
       rejectPendingMetadataUpdates(new PubSubError(errorMessage, "connection"));
+      rejectPendingConfigUpdates(new PubSubError(errorMessage, "connection"));
       readyReject?.(new PubSubError(errorMessage, "connection"));
       readyResolve = null;
       readyReject = null;
@@ -472,6 +516,14 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     pendingMetadataUpdates.clear();
   }
 
+  function rejectPendingConfigUpdates(error: PubSubError): void {
+    for (const [, pending] of pendingConfigUpdates) {
+      clearTimeout(pending.timeoutId);
+      pending.reject(error);
+    }
+    pendingConfigUpdates.clear();
+  }
+
   function scheduleReconnect(): void {
     if (closed) return;
 
@@ -490,6 +542,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
       }
       rejectPendingPublishes(error);
       rejectPendingMetadataUpdates(error);
+      rejectPendingConfigUpdates(error);
       return;
     }
 
@@ -705,6 +758,48 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     });
   }
 
+  async function updateChannelConfig(
+    config: Partial<ChannelConfig>,
+    timeoutMs = 30000
+  ): Promise<ChannelConfig> {
+    const ref = ++refCounter;
+
+    return new Promise((resolve, reject) => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        reject(new PubSubError("not connected", "connection"));
+        return;
+      }
+
+      const timeoutId = setTimeout(() => {
+        const pending = pendingConfigUpdates.get(ref);
+        if (pending) {
+          pendingConfigUpdates.delete(ref);
+          pending.reject(new PubSubError("config update timeout", "timeout"));
+        }
+      }, timeoutMs);
+
+      pendingConfigUpdates.set(ref, {
+        resolve: (newConfig) => {
+          clearTimeout(timeoutId);
+          resolve(newConfig);
+        },
+        reject: (err) => {
+          clearTimeout(timeoutId);
+          reject(err);
+        },
+        timeoutId,
+      });
+
+      ws.send(
+        JSON.stringify({
+          action: "update-config",
+          config,
+          ref,
+        })
+      );
+    });
+  }
+
   function close(): void {
     closed = true;
     isReconnecting = false;
@@ -788,6 +883,15 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         handler({ participants: { ...currentRoster }, ts: Date.now() });
       }
       return () => rosterHandlers.delete(handler);
+    },
+    updateChannelConfig,
+    onConfigChange: (handler: (config: ChannelConfig) => void) => {
+      configChangeHandlers.add(handler);
+      // Immediately call handler with current config if available
+      if (serverChannelConfig) {
+        handler(serverChannelConfig);
+      }
+      return () => configChangeHandlers.delete(handler);
     },
     get roster() {
       return { ...currentRoster };

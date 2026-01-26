@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { Flex, Text, Button, Card } from "@radix-ui/themes";
-import { pubsubConfig, id as panelClientId, buildNsLink, createChild, useStateArgs } from "@natstack/runtime";
+import { pubsubConfig, id as panelClientId, buildNsLink, createChild, useStateArgs, setTitle, forceRepaint } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
 import { z } from "zod";
 import {
@@ -381,6 +381,27 @@ export default function AgenticChat() {
   useEffect(() => {
     selfIdRef.current = clientId;
   }, [clientId]);
+
+  // Subscribe to channel title changes and update panel title
+  useEffect(() => {
+    const client = clientRef.current;
+    if (!client || !connected) return;
+
+    // Set initial title if available
+    const initialTitle = client.channelConfig?.title;
+    if (initialTitle) {
+      void setTitle(initialTitle);
+    }
+
+    // Subscribe to title changes
+    const unsubscribe = client.onTitleChange((title) => {
+      void setTitle(title);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [connected, clientRef]);
 
   // Typing indicator state - tracks ephemeral typing message
   const typingMessageIdRef = useRef<string | null>(null);

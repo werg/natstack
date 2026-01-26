@@ -181,6 +181,24 @@ async function main() {
           return { success: true, settings: currentSettings };
         },
       },
+      set_title: {
+        description: `Set the channel/conversation title displayed to users.
+
+Call this tool:
+- Early in the conversation when the topic becomes clear
+- When the topic shifts significantly to a new subject
+- To provide a concise summary (1-5 words) of what this conversation is about
+
+Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
+        parameters: z.object({
+          title: z.string().max(200).describe("Brief title for this conversation (1-5 words)"),
+        }),
+        execute: async ({ title }) => {
+          await client.setChannelTitle(title);
+          log(`Set channel title to: ${title}`);
+          return { success: true, title };
+        },
+      },
     },
   });
 
@@ -407,8 +425,37 @@ async function handleUserMessage(
       };
     }
 
+    // Add set_title tool directly (not from pubsub discovery since we filter out self-methods)
+    tools["set_title"] = {
+      description: `Set the channel/conversation title displayed to users.
+
+Call this tool:
+- Early in the conversation when the topic becomes clear
+- When the topic shifts significantly to a new subject
+- To provide a concise summary (1-5 words) of what this conversation is about
+
+Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
+      parameters: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            maxLength: 200,
+            description: "Brief title for this conversation (1-5 words)",
+          },
+        },
+        required: ["title"],
+      },
+      execute: async (args) => {
+        const { title } = args as { title: string };
+        await client.setChannelTitle(title);
+        log(`Set channel title to: ${title}`);
+        return { success: true, title };
+      },
+    };
+
     if (Object.keys(tools).length > 0) {
-      log(`Discovered ${Object.keys(tools).length} tools`);
+      log(`Discovered ${Object.keys(tools).length} tools (including set_title)`);
     }
 
     // Build initial messages array
