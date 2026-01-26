@@ -88,8 +88,9 @@ export function ChatPhase({
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
   // Refs for scroll position tracking
-  const wasNearBottomRef = useRef(true);
   const lastMessageCountRef = useRef(0);
+  const isAutoScrollingRef = useRef(false);
+  const userScrolledAwayRef = useRef(false);
 
   // Check if user is near the bottom of the scroll area
   const checkIfNearBottom = useCallback(() => {
@@ -100,12 +101,19 @@ export function ChatPhase({
     return scrollHeight - scrollTop - clientHeight < 100;
   }, []);
 
-  // Update wasNearBottom on scroll and dismiss notification if at bottom
+  // Handle scroll events - distinguish user scrolls from programmatic scrolls
   const handleScroll = useCallback(() => {
+    // Ignore scroll events triggered by our auto-scroll
+    if (isAutoScrollingRef.current) return;
+
     const isNearBottom = checkIfNearBottom();
-    wasNearBottomRef.current = isNearBottom;
     if (isNearBottom) {
+      // User scrolled back to bottom
+      userScrolledAwayRef.current = false;
       setShowNewContent(false);
+    } else {
+      // User scrolled away from bottom
+      userScrolledAwayRef.current = true;
     }
   }, [checkIfNearBottom]);
 
@@ -117,31 +125,39 @@ export function ChatPhase({
     return () => viewport.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
 
+  // Auto-scroll helper that marks the scroll as programmatic
+  const autoScrollToBottom = useCallback(() => {
+    isAutoScrollingRef.current = true;
+    scrollRef.current?.scrollIntoView({ behavior: "smooth" });
+    // Reset flag after smooth scroll animation completes
+    setTimeout(() => {
+      isAutoScrollingRef.current = false;
+    }, 500);
+  }, []);
+
   // Handle new content: scroll to bottom or show notification
-  // Note: wasNearBottomRef is updated by the scroll handler, which correctly tracks
-  // the user's position BEFORE new content is added (scroll events don't fire on DOM changes)
   useEffect(() => {
     const prevCount = lastMessageCountRef.current;
     const newCount = messages.length;
 
     if (newCount > prevCount && prevCount > 0) {
       // New message(s) added
-      if (wasNearBottomRef.current) {
-        // User was at bottom - auto-scroll
-        scrollRef.current?.scrollIntoView({ behavior: "smooth" });
+      if (!userScrolledAwayRef.current) {
+        // User is at bottom - auto-scroll
+        autoScrollToBottom();
         setShowNewContent(false);
       } else {
         // User scrolled up - show notification
         setShowNewContent(true);
       }
-    } else if (newCount === prevCount && wasNearBottomRef.current) {
+    } else if (newCount === prevCount && !userScrolledAwayRef.current) {
       // Content update (streaming) while user is at bottom - keep them there
-      scrollRef.current?.scrollIntoView({ behavior: "smooth" });
+      autoScrollToBottom();
     }
     // Note: if streaming while scrolled up, we do nothing (user is reading history)
 
     lastMessageCountRef.current = newCount;
-  }, [messages]);
+  }, [messages, autoScrollToBottom]);
 
   // Handler to scroll to new content when notification is clicked
   const handleScrollToNewContent = useCallback(() => {
@@ -462,7 +478,7 @@ export function ChatPhase({
                         style={{
                           position: "relative",
                           backgroundColor: isPanel
-                            ? "var(--accent-10)"
+                            ? "var(--accent-11)"
                             : msg.error
                               ? "var(--red-3)"
                               : "var(--gray-3)",
@@ -490,24 +506,24 @@ export function ChatPhase({
                               onInterrupt={() => handleInterruptMessage(msg.id, msg.senderId)}
                             />
                           )}
+                          {hasContent && !isStreaming && (
+                            <IconButton
+                              className="copy-button"
+                              size="1"
+                              variant="ghost"
+                              color="gray"
+                              style={{
+                                position: "absolute",
+                                bottom: 4,
+                                right: 4,
+                              }}
+                              onClick={() => void handleCopyMessage(msg.id, msg.content)}
+                              title="Copy message"
+                            >
+                              {copiedMessageId === msg.id ? <CheckIcon /> : <CopyIcon />}
+                            </IconButton>
+                          )}
                         </Flex>
-                        {hasContent && !isStreaming && (
-                          <IconButton
-                            className="copy-button"
-                            size="1"
-                            variant="ghost"
-                            color="gray"
-                            style={{
-                              position: "absolute",
-                              bottom: 4,
-                              right: 4,
-                            }}
-                            onClick={() => void handleCopyMessage(msg.id, msg.content)}
-                            title="Copy message"
-                          >
-                            {copiedMessageId === msg.id ? <CheckIcon /> : <CopyIcon />}
-                          </IconButton>
-                        )}
                       </Card>
                     </Box>
                   );
