@@ -68,6 +68,12 @@ interface ManagedView {
   bounds: ViewBounds;
   injectHostThemeVariables: boolean;
   themeCssKey?: string;
+  /** Stored event handlers for proper cleanup */
+  handlers?: {
+    domReady: () => void;
+    contextMenu: (event: Electron.Event, params: Electron.ContextMenuParams) => void;
+    renderProcessGone: (event: Electron.Event, details: Electron.RenderProcessGoneDetails) => void;
+  };
 }
 
 /**
@@ -308,28 +314,37 @@ export class ViewManager {
       void view.webContents.loadURL(config.url);
     }
 
+    // Create named handlers for proper cleanup in destroyView
+    const handlers = {
+      domReady: () => {
+        if (managed.injectHostThemeVariables && this.currentThemeCss) {
+          this.applyThemeCss(config.id);
+        }
+      },
+      contextMenu: (_event: Electron.Event, params: Electron.ContextMenuParams) => {
+        const menuItems = this.buildContextMenuItems(params, view.webContents);
+        if (menuItems.length > 0) {
+          const menu = Menu.buildFromTemplate(menuItems);
+          menu.popup();
+        }
+      },
+      renderProcessGone: (_event: Electron.Event, details: Electron.RenderProcessGoneDetails) => {
+        if (this.crashCallback && ["crashed", "oom", "launch-failed"].includes(details.reason)) {
+          this.crashCallback(config.id, details.reason);
+        }
+      },
+    };
+
+    managed.handlers = handlers;
+
     // Apply theme CSS when ready
-    view.webContents.on("dom-ready", () => {
-      if (managed.injectHostThemeVariables && this.currentThemeCss) {
-        this.applyThemeCss(config.id);
-      }
-    });
+    view.webContents.on("dom-ready", handlers.domReady);
 
     // Set up standard browser context menu
-    view.webContents.on("context-menu", (_event, params) => {
-      const menuItems = this.buildContextMenuItems(params, view.webContents);
-      if (menuItems.length > 0) {
-        const menu = Menu.buildFromTemplate(menuItems);
-        menu.popup();
-      }
-    });
+    view.webContents.on("context-menu", handlers.contextMenu);
 
     // Listen for render process crashes
-    view.webContents.on("render-process-gone", (_event, details) => {
-      if (this.crashCallback && ["crashed", "oom", "launch-failed"].includes(details.reason)) {
-        this.crashCallback(config.id, details.reason);
-      }
-    });
+    view.webContents.on("render-process-gone", handlers.renderProcessGone);
 
     // Apply protection if this view is in the protected set
     // (handles case where view is recreated after crash while still protected)
@@ -418,6 +433,13 @@ export class ViewManager {
     // Log destruction with stack trace for debugging unexpected view removal
     console.log(`[ViewManager] Destroying view: ${id}`);
     console.log(new Error("View destruction stack trace").stack);
+
+    // Remove only our specific handlers (not others' listeners)
+    if (managed.handlers && !managed.view.webContents.isDestroyed()) {
+      managed.view.webContents.off("dom-ready", managed.handlers.domReady);
+      managed.view.webContents.off("context-menu", managed.handlers.contextMenu);
+      managed.view.webContents.off("render-process-gone", managed.handlers.renderProcessGone);
+    }
 
     // Remove from window
     this.window.contentView.removeChildView(managed.view);

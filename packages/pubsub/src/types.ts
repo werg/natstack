@@ -82,6 +82,26 @@ export interface PubSubMessage<T = unknown> {
  */
 export interface ReadyMessage {
   kind: "ready";
+  /** Total message count for pagination */
+  totalCount?: number;
+}
+
+/**
+ * Response to get-messages-before request (for pagination).
+ * Note: This is not part of the Message union type since it's returned
+ * via getMessagesBefore() promise, not the messages() iterator.
+ */
+export interface MessagesBeforeResponse {
+  kind: "messages-before";
+  messages: Array<{
+    id: number;
+    type: string;
+    payload: unknown;
+    senderId: string;
+    ts: number;
+    senderMetadata?: Record<string, unknown>;
+  }>;
+  hasMore: boolean;
 }
 
 export type Message<T = unknown> = PubSubMessage<T> | ReadyMessage;

@@ -1800,6 +1800,13 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         contentType: options?.contentType,
       });
     },
+    // Pagination
+    get totalMessageCount() {
+      return pubsub.totalMessageCount;
+    },
+    getMessagesBefore: async (beforeId: number, limit?: number) => {
+      return pubsub.getMessagesBefore(beforeId, limit);
+    },
   };
 }
 

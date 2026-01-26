@@ -125,6 +125,9 @@ export function useChannelConnection({
         // Set up unified event handling - single loop for all event types
         const eventIterator = newClient.events({ includeReplay: true });
         let eventLoopRunning = true;
+        // Store iterator ref for explicit cleanup
+        let eventIteratorRef: AsyncIterableIterator<IncomingEvent> | null = eventIterator;
+
         void (async () => {
           try {
             for await (const event of eventIterator) {
@@ -140,10 +143,15 @@ export function useChannelConnection({
             callbacksRef.current.onError?.(
               streamError instanceof Error ? streamError : new Error(String(streamError))
             );
+          } finally {
+            eventIteratorRef = null;
           }
         })();
         unsubs.push(() => {
           eventLoopRunning = false;
+          // Explicitly close iterator to prevent accumulation
+          eventIteratorRef?.return?.();
+          eventIteratorRef = null;
         });
 
         // Set up roster handler (roster is separate from the events stream)

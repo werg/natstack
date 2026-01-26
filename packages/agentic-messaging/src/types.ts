@@ -820,6 +820,22 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   /** Subscribe to title changes (via channel config updates) */
   onTitleChange(handler: (title: string) => void): () => void;
 
+  // === Pagination ===
+  /** Total message count (from server ready message, for pagination) */
+  readonly totalMessageCount: number | undefined;
+  /** Get older messages before a given ID (for pagination UI) */
+  getMessagesBefore(beforeId: number, limit?: number): Promise<{
+    messages: Array<{
+      id: number;
+      type: string;
+      payload: unknown;
+      senderId: string;
+      ts: number;
+      senderMetadata?: Record<string, unknown>;
+    }>;
+    hasMore: boolean;
+  }>;
+
   // === Lifecycle ===
   readonly connected: boolean;
   readonly reconnecting: boolean;

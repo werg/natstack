@@ -41,6 +41,12 @@ interface ChatPhaseProps {
   sessionEnabled?: boolean;
   /** Pending images for the message */
   pendingImages: PendingImage[];
+  /** Whether there are more messages to load from history */
+  hasMoreHistory?: boolean;
+  /** Whether currently loading more messages */
+  loadingMore?: boolean;
+  /** Callback to load earlier messages */
+  onLoadEarlierMessages?: () => void;
   onInputChange: (value: string) => void;
   /** Send message with optional attachments (server assigns IDs) */
   onSendMessage: (attachments?: AttachmentInput[]) => Promise<void>;
@@ -67,6 +73,9 @@ export function ChatPhase({
   theme,
   sessionEnabled,
   pendingImages,
+  hasMoreHistory,
+  loadingMore,
+  onLoadEarlierMessages,
   onInputChange,
   onSendMessage,
   onImagesChange,
@@ -341,6 +350,19 @@ export function ChatPhase({
         <Card>
         <ScrollArea ref={scrollAreaRef} style={{ height: "100%" }}>
           <Flex direction="column" gap="1" p="1">
+            {/* Load earlier messages button */}
+            {hasMoreHistory && onLoadEarlierMessages && (
+              <Flex justify="center" py="2">
+                <Button
+                  size="1"
+                  variant="soft"
+                  onClick={onLoadEarlierMessages}
+                  disabled={loadingMore}
+                >
+                  {loadingMore ? "Loading..." : "Load earlier messages"}
+                </Button>
+              </Flex>
+            )}
             {messages.length === 0 ? (
               <Text color="gray" size="2">
                 Send a message to start chatting

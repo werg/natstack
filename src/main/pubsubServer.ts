@@ -52,6 +52,10 @@ export interface MessageStore {
   insert(channel: string, type: string, payload: string, senderId: string, ts: number, senderMetadata?: Record<string, unknown>, attachments?: ServerAttachment[]): number;
   query(channel: string, sinceId: number): MessageRow[];
   queryByType(channel: string, types: string[], sinceId?: number): MessageRow[];
+  /** Query messages before a given ID (for pagination). Returns messages in chronological order. */
+  queryBefore(channel: string, beforeId: number, limit?: number): MessageRow[];
+  /** Get total count of messages in a channel. */
+  getMessageCount(channel: string): number;
   createChannel(channel: string, contextId: string, createdBy: string, config?: ChannelConfig): void;
   getChannel(channel: string): ChannelInfo | null;
   /** Update channel config (merges with existing config) */
@@ -117,7 +121,7 @@ interface AttachmentMeta {
 }
 
 interface ServerMessage {
-  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error";
+  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error" | "messages-before";
   id?: number;
   type?: string;
   payload?: unknown;
@@ -133,6 +137,19 @@ interface ServerMessage {
   contextId?: string;
   /** Channel config (sent in ready message) */
   channelConfig?: ChannelConfig;
+  /** Total message count for pagination (sent in ready message) */
+  totalCount?: number;
+  /** Messages returned for get-messages-before (sent in messages-before response) */
+  messages?: Array<{
+    id: number;
+    type: string;
+    payload: unknown;
+    senderId: string;
+    ts: number;
+    senderMetadata?: Record<string, unknown>;
+  }>;
+  /** Whether there are more messages before these (sent in messages-before response) */
+  hasMore?: boolean;
 }
 
 /** Presence event types for join/leave tracking */
@@ -176,7 +193,14 @@ interface UpdateConfigClientMessage {
   ref?: number;
 }
 
-type ClientMessage = PublishClientMessage | UpdateMetadataClientMessage | CloseClientMessage | UpdateConfigClientMessage;
+interface GetMessagesBeforeClientMessage {
+  action: "get-messages-before";
+  beforeId: number;
+  limit?: number;
+  ref?: number;
+}
+
+type ClientMessage = PublishClientMessage | UpdateMetadataClientMessage | CloseClientMessage | UpdateConfigClientMessage | GetMessagesBeforeClientMessage;
 
 interface MessageRow {
   id: number;
@@ -346,6 +370,17 @@ abstract class BaseMessageStore implements MessageStore {
    * Get the maximum attachment ID number for a channel (for counter initialization).
    */
   abstract getMaxAttachmentIdNumber(channel: string): number;
+
+  /**
+   * Query messages before a given ID (for pagination).
+   * Returns messages in chronological order (oldest first).
+   */
+  abstract queryBefore(channel: string, beforeId: number, limit?: number): MessageRow[];
+
+  /**
+   * Get total count of messages in a channel.
+   */
+  abstract getMessageCount(channel: string): number;
 }
 
 // =============================================================================
@@ -527,6 +562,30 @@ class SqliteMessageStore extends BaseMessageStore {
     return maxId;
   }
 
+  queryBefore(channel: string, beforeId: number, limit = 100): MessageRow[] {
+    if (!this.dbHandle) return [];
+    const db = getDatabaseManager();
+    // Query messages before the given ID, ordered by id DESC (newest first of the older ones),
+    // then reverse to return in chronological order
+    const rows = db.query<MessageRow>(
+      this.dbHandle,
+      "SELECT * FROM messages WHERE channel = ? AND id < ? ORDER BY id DESC LIMIT ?",
+      [channel, beforeId, limit]
+    );
+    return rows.reverse(); // Return in chronological order (oldest first)
+  }
+
+  getMessageCount(channel: string): number {
+    if (!this.dbHandle) return 0;
+    const db = getDatabaseManager();
+    const result = db.query<{ count: number }>(
+      this.dbHandle,
+      "SELECT COUNT(*) as count FROM messages WHERE channel = ?",
+      [channel]
+    );
+    return result[0]?.count ?? 0;
+  }
+
   close(): void {
     if (this.dbHandle) {
       const dbManager = getDatabaseManager();
@@ -623,6 +682,21 @@ export class InMemoryMessageStore extends BaseMessageStore {
       }
     }
     return maxId;
+  }
+
+  queryBefore(channel: string, beforeId: number, limit = 100): MessageRow[] {
+    const channelMessages = this.messages.filter(
+      (m) => m.channel === channel && m.id < beforeId
+    );
+    // Sort by id descending, take limit, then reverse to chronological order
+    return channelMessages
+      .sort((a, b) => b.id - a.id)
+      .slice(0, limit)
+      .reverse();
+  }
+
+  getMessageCount(channel: string): number {
+    return this.messages.filter((m) => m.channel === channel).length;
   }
 
   close(): void {
@@ -841,8 +915,11 @@ export class PubSubServer {
       this.replayMessages(ws, channel, sinceId);
     }
 
-    // Signal ready (end of replay) with contextId and channelConfig
-    this.send(ws, { kind: "ready", contextId: channelContextId, channelConfig });
+    // Get total message count for pagination support
+    const totalCount = this.messageStore.getMessageCount(channel);
+
+    // Signal ready (end of replay) with contextId, channelConfig, and totalCount
+    this.send(ws, { kind: "ready", contextId: channelContextId, channelConfig, totalCount });
 
     // Persist and broadcast join or update presence event
     if (!existingParticipant) {
@@ -990,6 +1067,49 @@ export class PubSubServer {
 
       // Broadcast config update to all participants (including sender)
       this.broadcastConfigUpdate(client.channel, newConfig, client.ws, ref);
+      return;
+    }
+
+    if (msg.action === "get-messages-before") {
+      const { beforeId, limit = 100 } = msg;
+      if (typeof beforeId !== "number" || beforeId < 0) {
+        this.send(client.ws, { kind: "error", error: "beforeId must be a non-negative number", ref });
+        return;
+      }
+
+      // Query older messages from the store
+      const rows = this.messageStore.queryBefore(client.channel, beforeId, Math.min(limit, 500));
+
+      // Convert to response format (without attachments for simplicity - those are handled separately)
+      const messages = rows.map((row) => {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(row.payload);
+        } catch {
+          payload = row.payload;
+        }
+        let senderMetadata: Record<string, unknown> | undefined;
+        if (row.sender_metadata) {
+          try {
+            senderMetadata = JSON.parse(row.sender_metadata);
+          } catch {
+            // Ignore parse errors
+          }
+        }
+        return {
+          id: row.id,
+          type: row.type,
+          payload,
+          senderId: row.sender_id,
+          ts: row.ts,
+          senderMetadata,
+        };
+      });
+
+      // Determine if there are more messages before these
+      const hasMore = rows.length > 0 && rows.length === Math.min(limit, 500);
+
+      this.send(client.ws, { kind: "messages-before", messages, hasMore, ref });
       return;
     }
 

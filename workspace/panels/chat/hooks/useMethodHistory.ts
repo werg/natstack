@@ -6,8 +6,12 @@ import type { ChatMessage } from "../types";
 // Re-export for backwards compatibility
 export type { ChatMessage };
 
-/** Maximum number of method history entries to retain */
-const MAX_METHOD_HISTORY_SIZE = 10000;
+/** Maximum number of method history entries to retain (reduced from 10K for memory efficiency) */
+const MAX_METHOD_HISTORY_SIZE = 2000;
+/** Prune threshold - start pruning at 80% capacity */
+const PRUNE_THRESHOLD = Math.floor(MAX_METHOD_HISTORY_SIZE * 0.8);
+/** Target size after pruning - 70% of max */
+const PRUNE_TARGET = Math.floor(MAX_METHOD_HISTORY_SIZE * 0.7);
 
 interface UseMethodHistoryOptions {
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
@@ -18,20 +22,22 @@ export function useMethodHistory({ setMessages, clientId }: UseMethodHistoryOpti
   const methodHistoryRef = useRef(new Map<string, MethodHistoryEntry>());
 
   /**
-   * Prune oldest completed entries if we exceed the limit.
+   * Prune oldest completed entries if we exceed the threshold.
    * Only removes entries that are complete (success/error), keeping pending ones.
+   * Prunes more aggressively (to 70% of max) to avoid frequent pruning.
    */
   const pruneIfNeeded = useCallback(() => {
     const map = methodHistoryRef.current;
-    if (map.size <= MAX_METHOD_HISTORY_SIZE) return;
+    if (map.size <= PRUNE_THRESHOLD) return;
 
     // Find completed entries sorted by startedAt (oldest first)
     const completedEntries = Array.from(map.entries())
       .filter(([, entry]) => entry.status === "success" || entry.status === "error")
       .sort((a, b) => (a[1].startedAt ?? 0) - (b[1].startedAt ?? 0));
 
-    const toRemove = map.size - MAX_METHOD_HISTORY_SIZE;
-    const idsToRemove = completedEntries.slice(0, toRemove).map(([id]) => id);
+    // Prune down to target size (70% of max)
+    const toRemove = map.size - PRUNE_TARGET;
+    const idsToRemove = completedEntries.slice(0, Math.max(0, toRemove)).map(([id]) => id);
 
     for (const id of idsToRemove) {
       map.delete(id);

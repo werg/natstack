@@ -5,7 +5,7 @@
  * Events are emitted via RPC from the main process.
  */
 
-import { useEffect, useCallback } from "react";
+import { useEffect, useRef } from "react";
 import { events, onRpcEvent, type EventName, type EventPayloads } from "./client.js";
 
 // Re-export for consumers
@@ -28,8 +28,13 @@ export function useShellEvent<E extends EventName>(
   event: E,
   callback: (data: EventPayloads[E]) => void
 ): void {
-  // Memoize callback to avoid re-subscribing on every render
-  const stableCallback = useCallback(callback, [callback]);
+  // Use ref to store the latest callback without triggering effect re-runs
+  const callbackRef = useRef(callback);
+
+  // Update ref on every render (no effect trigger)
+  useEffect(() => {
+    callbackRef.current = callback;
+  });
 
   useEffect(() => {
     // Subscribe to the event
@@ -38,7 +43,7 @@ export function useShellEvent<E extends EventName>(
     // Listen for the event via RPC
     const channel = `event:${event}`;
     const cleanup = onRpcEvent(channel, (_fromId, payload) => {
-      stableCallback(payload as EventPayloads[E]);
+      callbackRef.current(payload as EventPayloads[E]);
     });
 
     return () => {
@@ -46,5 +51,5 @@ export function useShellEvent<E extends EventName>(
       cleanup();
       void events.unsubscribe(event);
     };
-  }, [event, stableCallback]);
+  }, [event]); // Only depend on event, not callback
 }

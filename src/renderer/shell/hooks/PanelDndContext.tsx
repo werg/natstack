@@ -423,11 +423,36 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
       const draggedId = active.id as string;
       const targetId = over.id as string;
 
+      // Build lookup maps once for O(1) access instead of repeated O(N) filter+findIndex
+      const indexMap = new Map<string, number>();
+      const siblingsByParent = new Map<string | null, FlattenedPanel[]>();
+
+      for (let i = 0; i < flattenedItems.length; i++) {
+        const item = flattenedItems[i]!;
+        indexMap.set(item.id, i);
+
+        const parentKey = item.parentId;
+        let siblings = siblingsByParent.get(parentKey);
+        if (!siblings) {
+          siblings = [];
+          siblingsByParent.set(parentKey, siblings);
+        }
+        siblings.push(item);
+      }
+
+      // Helper functions using the prebuilt maps
+      const getIndex = (id: string) => indexMap.get(id) ?? -1;
+      const getSiblings = (parentId: string | null, excludeId?: string) => {
+        const siblings = siblingsByParent.get(parentId) ?? [];
+        return excludeId ? siblings.filter((s) => s.id !== excludeId) : siblings;
+      };
+
       // Find the target's position in its new sibling group
       const { parentId: newParentId, depth: newDepth } = currentProjection;
 
       // Get current parent of dragged item
-      const draggedItem = flattenedItems.find((item) => item.id === draggedId);
+      const draggedIndex = getIndex(draggedId);
+      const draggedItem = draggedIndex >= 0 ? flattenedItems[draggedIndex] : undefined;
       const currentParentId = draggedItem?.parentId ?? null;
 
       // Check if this is a "depth change in place" (same position, different parent)
@@ -441,9 +466,7 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
       try {
         // Handle end drop zone - position at end of sibling group
         if (targetId === END_DROP_ZONE_ID) {
-          const siblings = flattenedItems.filter(
-            (item) => item.parentId === newParentId && item.id !== draggedId
-          );
+          const siblings = getSiblings(newParentId, draggedId);
           await panelService.movePanel({
             panelId: draggedId,
             newParentId,
@@ -453,8 +476,8 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
         }
 
         // Find where in the new parent's children we should insert
-        const overIndex = flattenedItems.findIndex((item) => item.id === targetId);
-        const activeIndex = flattenedItems.findIndex((item) => item.id === draggedId);
+        const overIndex = getIndex(targetId);
+        const activeIndex = draggedIndex;
 
         // Calculate target position among siblings
         let targetPosition = 0;
@@ -469,15 +492,13 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
                 return;
               }
               // Check if we're becoming a child of our previous sibling (indent)
-              const prevItem = flattenedItems[activeIndex - 1];
+              const prevItem = activeIndex > 0 ? flattenedItems[activeIndex - 1] : undefined;
               if (prevItem && prevItem.id === newParentId) {
                 // Becoming child of previous sibling - go to end of its children
                 targetPosition = newParent.children.filter((c) => c.id !== draggedId).length;
               } else {
                 // Unindenting - find position after our former parent in new sibling group
-                const siblings = flattenedItems.filter(
-                  (item) => item.parentId === newParentId && item.id !== draggedId
-                );
+                const siblings = getSiblings(newParentId, draggedId);
                 // Find our former parent's position among new siblings
                 const formerParentIndex = siblings.findIndex((s) => s.id === currentParentId);
                 targetPosition = formerParentIndex >= 0 ? formerParentIndex + 1 : siblings.length;
@@ -485,9 +506,7 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
             }
           } else {
             // Moving to root level
-            const rootItems = flattenedItems.filter(
-              (item) => item.parentId === null && item.id !== draggedId
-            );
+            const rootItems = getSiblings(null, draggedId);
             // Find our former parent's position among roots
             const formerParentIndex = rootItems.findIndex((s) => s.id === currentParentId);
             targetPosition = formerParentIndex >= 0 ? formerParentIndex + 1 : rootItems.length;
@@ -496,9 +515,7 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
           const parent = panelMap.get(newParentId);
           if (parent) {
             // Find position among siblings with the same parent
-            const siblings = flattenedItems.filter(
-              (item) => item.parentId === newParentId && item.id !== draggedId
-            );
+            const siblings = getSiblings(newParentId, draggedId);
             const siblingIndex = siblings.findIndex((item) => item.id === targetId);
 
             if (siblingIndex >= 0) {
@@ -510,9 +527,7 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
           }
         } else {
           // Moving to root level
-          const rootItems = flattenedItems.filter(
-            (item) => item.parentId === null && item.id !== draggedId
-          );
+          const rootItems = getSiblings(null, draggedId);
           const rootIndex = rootItems.findIndex((item) => item.id === targetId);
 
           if (rootIndex >= 0) {

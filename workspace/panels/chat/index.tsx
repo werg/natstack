@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { Flex, Text, Button, Card } from "@radix-ui/themes";
-import { pubsubConfig, id as panelClientId, buildNsLink, createChild, useStateArgs } from "@natstack/runtime";
+import { pubsubConfig, id as panelClientId, buildNsLink, createChild, useStateArgs, forceRepaint } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
 import { z } from "zod";
 import {
@@ -58,65 +58,6 @@ import type { PendingImage } from "./components/ImageInput";
 import { cleanupPendingImages } from "./utils/imageUtils";
 import type { ChatParticipantMetadata } from "./types";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-
-// Global error handlers to catch any unhandled errors and prevent silent failures
-if (typeof window !== "undefined") {
-  window.addEventListener("error", (event) => {
-    console.error("[Chat] Uncaught error:", event.error);
-    console.error("[Chat] Error message:", event.message);
-    console.error("[Chat] Error location:", event.filename, event.lineno, event.colno);
-  });
-
-  window.addEventListener("unhandledrejection", (event) => {
-    console.error("[Chat] Unhandled promise rejection:", event.reason);
-    // Prevent the default browser behavior (which may log again)
-    event.preventDefault();
-  });
-
-  // Monitor for unexpected DOM changes (React unmounting without error)
-  const rootElement = document.getElementById("root");
-  if (rootElement) {
-    const observer = new MutationObserver((mutations) => {
-      // Check if #root becomes empty (React unmounted)
-      if (rootElement.childNodes.length === 0) {
-        console.error("[Chat] CRITICAL: Root element became empty - React may have unmounted unexpectedly");
-        console.error("[Chat] Mutations:", mutations.map(m => ({
-          type: m.type,
-          removedNodes: m.removedNodes.length,
-          addedNodes: m.addedNodes.length,
-        })));
-        console.error(new Error("[Chat] Root empty stack trace").stack);
-      }
-    });
-    observer.observe(rootElement, { childList: true, subtree: false });
-  }
-
-  // Page lifecycle monitoring
-  document.addEventListener("visibilitychange", () => {
-    console.log(`[Chat] Visibility changed: ${document.visibilityState}, hidden: ${document.hidden}`);
-  });
-
-  // Page freeze/resume (Page Lifecycle API - may not be available in all Electron versions)
-  document.addEventListener("freeze", () => {
-    console.warn("[Chat] Page FROZEN by browser");
-  });
-  document.addEventListener("resume", () => {
-    console.log("[Chat] Page RESUMED from frozen state");
-  });
-
-  // Window focus tracking
-  window.addEventListener("blur", () => {
-    console.log("[Chat] Window lost focus");
-  });
-  window.addEventListener("focus", () => {
-    console.log("[Chat] Window gained focus");
-  });
-
-
-  window.addEventListener("pagehide", (event) => {
-    console.log(`[Chat] pagehide event, persisted: ${event.persisted}`);
-  });
-}
 
 /** Utility to check if a value looks like ChatParticipantMetadata */
 function isChatParticipantMetadata(value: unknown): value is ChatParticipantMetadata {
@@ -318,6 +259,93 @@ export default function AgenticChat() {
   const [presenceEvents, setPresenceEvents] = useState<IncomingPresenceEvent[]>([]);
   // Agent load errors from recovery attempts
   const [agentErrors, setAgentErrors] = useState<Array<{ handle: string; workerPanelId: string; buildState: string; error: string }>>([]);
+
+  // Memory management constants for message history
+  const MAX_VISIBLE_MESSAGES = 500;
+  const TRIM_THRESHOLD = MAX_VISIBLE_MESSAGES * 2; // Trim at 1000 messages
+
+  // Pagination state for loading older messages
+  const [hasMoreHistory, setHasMoreHistory] = useState(false);
+  const [oldestLoadedId, setOldestLoadedId] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  // Trim messages when they exceed threshold to prevent memory leaks
+  useEffect(() => {
+    if (messages.length > TRIM_THRESHOLD) {
+      setMessages((prev) => {
+        // Keep only the most recent messages
+        const trimmed = prev.slice(-MAX_VISIBLE_MESSAGES);
+        console.log(`[Chat] Trimmed messages from ${prev.length} to ${trimmed.length}`);
+        // Track oldest loaded message for pagination
+        const firstMsg = trimmed[0];
+        if (firstMsg?.pubsubId) {
+          setOldestLoadedId(firstMsg.pubsubId);
+          setHasMoreHistory(true); // We trimmed, so there's definitely more
+        }
+        return trimmed;
+      });
+    }
+  }, [messages.length]);
+
+  // Ref to track pendingImages for unmount cleanup (avoids closure over stale state)
+  const pendingImagesRef = useRef(pendingImages);
+  pendingImagesRef.current = pendingImages;
+
+  // Cleanup pending images only on unmount to prevent revoking URLs still in use
+  useEffect(() => {
+    return () => {
+      cleanupPendingImages(pendingImagesRef.current);
+    };
+  }, []); // Empty deps = unmount only
+
+  // Ref to access current message count in heartbeat without stale closure
+  const messageCountRef = useRef(messages.length);
+  messageCountRef.current = messages.length;
+
+  // Debug/monitoring listeners with proper cleanup
+  useEffect(() => {
+    // Error handlers
+    const errorHandler = (event: ErrorEvent) => {
+      console.error("[Chat] Global error:", event.error);
+    };
+    const rejectionHandler = (event: PromiseRejectionEvent) => {
+      console.error("[Chat] Unhandled rejection:", event.reason);
+    };
+
+    // Visibility/lifecycle handlers
+    const visibilityHandler = () => {
+      if (document.hidden) {
+        console.log("[Chat] Panel hidden");
+      } else {
+        console.log("[Chat] Panel visible");
+        forceRepaint?.();
+      }
+    };
+
+    // Setup listeners
+    window.addEventListener("error", errorHandler);
+    window.addEventListener("unhandledrejection", rejectionHandler);
+    document.addEventListener("visibilitychange", visibilityHandler);
+
+    // Heartbeat interval for debugging
+    let heartbeatCount = 0;
+    const heartbeatInterval = setInterval(() => {
+      heartbeatCount++;
+      // Log every 60 seconds (60 intervals at 1s each)
+      if (heartbeatCount % 60 === 0) {
+        console.log(`[Chat] Heartbeat: ${heartbeatCount}s uptime, ${messageCountRef.current} messages`);
+      }
+    }, 1000);
+
+    // Cleanup on unmount
+    return () => {
+      window.removeEventListener("error", errorHandler);
+      window.removeEventListener("unhandledrejection", rejectionHandler);
+      document.removeEventListener("visibilitychange", visibilityHandler);
+      clearInterval(heartbeatInterval);
+    };
+  }, []); // Only run once on mount
+
   // Combine historical participants (from replay) with current participants
   // Current participants take precedence over historical ones
   const allParticipants = useMemo(() => {
@@ -422,6 +450,50 @@ export default function AgenticChat() {
     }, []),
   });
 
+  // Load earlier messages from server (SQLite-backed) - must be after useChannelConnection
+  const loadEarlierMessages = useCallback(async () => {
+    const client = clientRef.current;
+    if (!client || loadingMore || !hasMoreHistory || !oldestLoadedId) return;
+
+    setLoadingMore(true);
+    try {
+      const result = await client.getMessagesBefore(oldestLoadedId, 100);
+      if (result.messages.length > 0) {
+        // Convert server messages to ChatMessage format
+        const olderMessages: ChatMessage[] = result.messages.map((msg) => {
+          let content = "";
+          let kind: ChatMessage["kind"] = "chat";
+
+          // Parse the payload based on message type
+          if (msg.type === "message" && typeof msg.payload === "object" && msg.payload !== null) {
+            const payload = msg.payload as { content?: string; id?: string };
+            content = payload.content ?? "";
+          }
+
+          return {
+            id: String(msg.id),
+            pubsubId: msg.id,
+            senderId: msg.senderId,
+            content,
+            kind,
+            complete: true,
+            senderMetadata: msg.senderMetadata as { name?: string; type?: string; handle?: string } | undefined,
+          };
+        });
+
+        setMessages((prev) => [...olderMessages, ...prev]);
+        setOldestLoadedId(result.messages[0]?.id ?? null);
+        setHasMoreHistory(result.hasMore);
+      } else {
+        setHasMoreHistory(false);
+      }
+    } catch (err) {
+      console.error("[Chat] Failed to load earlier messages:", err);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [clientRef, oldestLoadedId, hasMoreHistory, loadingMore]);
+
   useEffect(() => {
     selfIdRef.current = clientId;
   }, [clientId]);
@@ -452,6 +524,16 @@ export default function AgenticChat() {
   const typingMessageIdRef = useRef<string | null>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const TYPING_DEBOUNCE_MS = 2000; // Stop typing after 2s of inactivity
+
+  // Cleanup typing timeout on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   // Stop typing indicator
   const stopTyping = useCallback(async () => {
@@ -522,8 +604,15 @@ export default function AgenticChat() {
 
   // Agent recovery hook - automatically reloads disconnected agent workers
   // Callback for agent recovery errors - memoized to prevent unnecessary rerenders
+  const MAX_AGENT_ERRORS = 20;
   const handleAgentLoadError = useCallback((error: { handle: string; workerPanelId: string; buildState: string; error: string }) => {
-    setAgentErrors((prev) => [...prev, error]);
+    setAgentErrors((prev) => {
+      const updated = [...prev, error];
+      // Limit array size to prevent memory growth
+      return updated.length > MAX_AGENT_ERRORS
+        ? updated.slice(-MAX_AGENT_ERRORS)
+        : updated;
+    });
   }, []);
 
   useAgentRecovery(presenceEvents, {
@@ -1095,6 +1184,9 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
         activeFeedbacks={activeFeedbacks}
         theme={theme}
         sessionEnabled={clientRef.current?.sessionEnabled}
+        hasMoreHistory={hasMoreHistory}
+        loadingMore={loadingMore}
+        onLoadEarlierMessages={loadEarlierMessages}
         onInputChange={handleInputChange}
         onSendMessage={sendMessage}
         onImagesChange={setPendingImages}

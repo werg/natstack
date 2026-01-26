@@ -274,6 +274,19 @@ export class PanelManager {
     console.log("[PanelManager] Running shutdown cleanup...");
     const persistence = getPanelPersistence();
     this.cleanupChildlessShellPanels(this.rootPanels, persistence);
+
+    // Clear accumulated maps to prevent memory leaks
+    this.crashHistory.clear();
+    this.pendingBrowserNavigations.clear();
+    this.pendingAuthTokens.clear();
+    this.browserStateCleanup.clear();
+    this.linkInterceptionHandlers.clear();
+
+    // Close any lingering template builder workers
+    for (const workerId of this.templateBuilderWorkers) {
+      void this.closeTemplateBuilderWorker(workerId).catch(() => {});
+    }
+    this.templateBuilderWorkers.clear();
   }
 
   /**
@@ -590,79 +603,124 @@ export class PanelManager {
   /**
    * Setup webContents event tracking for browser state (URL, loading, navigation).
    */
-  private setupBrowserStateTracking(browserId: string, contents: Electron.WebContents): void {
+  private setupBrowserStateTracking(panelId: string, contents: Electron.WebContents): void {
     let pendingState: Partial<SharedPanel.BrowserState & { url?: string }> = {};
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    let destroyed = false;
+    let cleaned = false;
 
     const flushPendingState = () => {
-      if (destroyed) return; // Don't update after destruction
+      if (cleaned) return; // Don't update after cleanup
       if (Object.keys(pendingState).length > 0) {
-        this.updateBrowserState(browserId, pendingState);
+        this.updateBrowserState(panelId, pendingState);
         pendingState = {};
       }
       debounceTimer = null;
     };
 
     const queueStateUpdate = (update: typeof pendingState) => {
-      if (destroyed) return; // Don't queue after destruction
+      if (cleaned) return; // Don't queue after cleanup
       Object.assign(pendingState, update);
       if (!debounceTimer) {
         debounceTimer = setTimeout(flushPendingState, 50);
       }
     };
 
-    // Clean up debounce timer when webContents is destroyed
-    contents.once("destroyed", () => {
-      destroyed = true;
-      if (debounceTimer) {
-        clearTimeout(debounceTimer);
-        debounceTimer = null;
+    // Store named handlers for removal
+    const handlers = {
+      didNavigate: (_event: Electron.Event, url: string) => {
+        console.log(`[PanelManager] Panel ${panelId} navigated to: ${url}`);
+        queueStateUpdate({ url });
+      },
+      didNavigateInPage: (_event: Electron.Event, url: string) => {
+        queueStateUpdate({ url });
+      },
+      didFailLoad: (
+        _event: Electron.Event,
+        errorCode: number,
+        errorDescription: string,
+        validatedURL: string
+      ) => {
+        console.warn(
+          `[PanelManager] Panel ${panelId} failed to load: ${errorDescription} (${errorCode}) - ${validatedURL}`
+        );
+      },
+      renderProcessGone: (_event: Electron.Event, details: Electron.RenderProcessGoneDetails) => {
+        console.warn(`[PanelManager] Panel ${panelId} render process gone: ${details.reason}`);
+      },
+      unresponsive: () => {
+        console.warn(`[PanelManager] Panel ${panelId} became unresponsive`);
+      },
+      responsive: () => {
+        console.log(`[PanelManager] Panel ${panelId} became responsive again`);
+      },
+      didStartLoading: () => {
+        queueStateUpdate({ isLoading: true });
+      },
+      didStopLoading: () => {
+        // Guard against destroyed webContents (can happen if event fires during destruction)
+        if (contents.isDestroyed()) return;
+        queueStateUpdate({
+          isLoading: false,
+          canGoBack: contents.canGoBack(),
+          canGoForward: contents.canGoForward(),
+        });
+      },
+      pageTitleUpdated: (_event: Electron.Event, title: string) => {
+        queueStateUpdate({ pageTitle: title });
+      },
+    };
+
+    // Register all handlers
+    contents.on("did-navigate", handlers.didNavigate);
+    contents.on("did-navigate-in-page", handlers.didNavigateInPage);
+    contents.on("did-fail-load", handlers.didFailLoad);
+    contents.on("render-process-gone", handlers.renderProcessGone);
+    contents.on("unresponsive", handlers.unresponsive);
+    contents.on("responsive", handlers.responsive);
+    contents.on("did-start-loading", handlers.didStartLoading);
+    contents.on("did-stop-loading", handlers.didStopLoading);
+    contents.on("page-title-updated", handlers.pageTitleUpdated);
+
+    // Idempotent cleanup function
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      if (!contents.isDestroyed()) {
+        contents.off("did-navigate", handlers.didNavigate);
+        contents.off("did-navigate-in-page", handlers.didNavigateInPage);
+        contents.off("did-fail-load", handlers.didFailLoad);
+        contents.off("render-process-gone", handlers.renderProcessGone);
+        contents.off("unresponsive", handlers.unresponsive);
+        contents.off("responsive", handlers.responsive);
+        contents.off("did-start-loading", handlers.didStartLoading);
+        contents.off("did-stop-loading", handlers.didStopLoading);
+        contents.off("page-title-updated", handlers.pageTitleUpdated);
       }
-    });
+      this.browserStateCleanup.delete(panelId);
+    };
 
-    contents.on("did-navigate", (_event, url) => {
-      console.log(`[PanelManager] Panel ${browserId} navigated to: ${url}`);
-      queueStateUpdate({ url });
-    });
+    // Auto-cleanup on destroy, but can also be called manually
+    const destroyedHandler = () => cleanup();
+    contents.once("destroyed", destroyedHandler);
 
-    contents.on("did-navigate-in-page", (_event, url) => {
-      queueStateUpdate({ url });
-    });
+    // Store both for manual cleanup (which should remove the destroyed handler)
+    this.browserStateCleanup.set(panelId, { cleanup, destroyedHandler });
+  }
 
-    contents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
-      console.warn(`[PanelManager] Panel ${browserId} failed to load: ${errorDescription} (${errorCode}) - ${validatedURL}`);
-    });
-
-    contents.on("render-process-gone", (_event, details) => {
-      console.warn(`[PanelManager] Panel ${browserId} render process gone: ${details.reason}`);
-    });
-
-    contents.on("unresponsive", () => {
-      console.warn(`[PanelManager] Panel ${browserId} became unresponsive`);
-    });
-
-    contents.on("responsive", () => {
-      console.log(`[PanelManager] Panel ${browserId} became responsive again`);
-    });
-
-    contents.on("did-start-loading", () => {
-      queueStateUpdate({ isLoading: true });
-    });
-
-    contents.on("did-stop-loading", () => {
-      // Guard against destroyed webContents (can happen if event fires during destruction)
-      if (contents.isDestroyed()) return;
-      queueStateUpdate({
-        isLoading: false,
-        canGoBack: contents.canGoBack(),
-        canGoForward: contents.canGoForward(),
-      });
-    });
-
-    contents.on("page-title-updated", (_event, title) => {
-      queueStateUpdate({ pageTitle: title });
-    });
+  /**
+   * Clean up browser state tracking for a panel.
+   * Called in closePanel/unloadPanelResources.
+   */
+  private cleanupBrowserStateTracking(panelId: string, contents?: Electron.WebContents): void {
+    const entry = this.browserStateCleanup.get(panelId);
+    if (entry) {
+      // Remove the destroyed handler to prevent double-cleanup
+      if (contents && !contents.isDestroyed()) {
+        contents.off("destroyed", entry.destroyedHandler);
+      }
+      entry.cleanup();
+    }
   }
 
   private handleChildCreationError(parentId: string, error: unknown, url: string): void {
@@ -756,7 +814,7 @@ export class PanelManager {
 
     // Intercept in-place navigations (normal left-click without modifiers).
     // Browser-like behavior: navigate in-place unless action=child.
-    contents.on("will-navigate", (event, url) => {
+    const willNavigateHandler = (event: Electron.Event, url: string) => {
       // ns-focus:// - Focus panel
       if (url.startsWith("ns-focus:")) {
         event.preventDefault();
@@ -855,7 +913,25 @@ export class PanelManager {
         }
         // Browser views: allow normal http(s) navigation in place
       }
-    });
+    };
+
+    // Store and register the handler for cleanup
+    this.linkInterceptionHandlers.set(panelId, willNavigateHandler);
+    contents.on("will-navigate", willNavigateHandler);
+  }
+
+  /**
+   * Clean up link interception handler for a panel.
+   * Called in closePanel/unloadPanelResources.
+   */
+  private cleanupLinkInterception(panelId: string, contents?: Electron.WebContents): void {
+    const handler = this.linkInterceptionHandlers.get(panelId);
+    if (handler) {
+      if (contents && !contents.isDestroyed()) {
+        contents.off("will-navigate", handler);
+      }
+      this.linkInterceptionHandlers.delete(panelId);
+    }
   }
 
   /**
@@ -3425,6 +3501,13 @@ export class PanelManager {
     // Clean up crash history for this panel
     this.crashHistory.delete(panelId);
 
+    // Get webContents for cleanup before destroying view
+    const contents = this.viewManager?.getWebContents(panelId) ?? undefined;
+
+    // Clean up event listener tracking (must happen before view destruction)
+    this.cleanupBrowserStateTracking(panelId, contents);
+    this.cleanupLinkInterception(panelId, contents);
+
     // Cleanup based on panel type
     const panelType = getPanelType(panel);
     switch (panelType) {
@@ -3485,6 +3568,7 @@ export class PanelManager {
 
     // Unload all resources (view, CDP, git tokens, Claude Code, protocol panels)
     // Note: unloadPanelResources handles:
+    //   - browserStateCleanup and linkInterceptionHandlers cleanup
     //   - viewManager.destroyView (which triggers guestInstanceMap cleanup via 'destroyed' event)
     //   - getCdpServer().revokeTokenForPanel / unregisterBrowser
     //   - gitServer.revokeTokenForPanel
@@ -3911,6 +3995,10 @@ export class PanelManager {
   private pendingAuthTokens: Map<string, { token: string; createdAt: number }> = new Map();
   // TTL for pending auth tokens (30 seconds should be plenty for webview init)
   private readonly AUTH_TOKEN_TTL_MS = 30_000;
+  // Map panelId -> browser state tracking cleanup info
+  private browserStateCleanup = new Map<string, { cleanup: () => void; destroyedHandler: () => void }>();
+  // Map panelId -> link interception handler for will-navigate
+  private linkInterceptionHandlers = new Map<string, (event: Electron.Event, url: string) => void>();
 
   getPanelIdForWebContents(contents: Electron.WebContents): string | undefined {
     return this.guestInstanceMap.get(contents.id);

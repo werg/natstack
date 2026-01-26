@@ -23,7 +23,7 @@ import type {
  * Server message envelope.
  */
 interface ServerMessage {
-  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error" | "config-update";
+  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error" | "config-update" | "messages-before";
   id?: number;
   type?: string;
   payload?: unknown;
@@ -38,6 +38,19 @@ interface ServerMessage {
   contextId?: string;
   /** Channel config (sent in ready message or config-update) */
   channelConfig?: ChannelConfig;
+  /** Total message count for pagination (sent in ready message) */
+  totalCount?: number;
+  /** Messages returned for get-messages-before (sent in messages-before response) */
+  messages?: Array<{
+    id: number;
+    type: string;
+    payload: unknown;
+    senderId: string;
+    ts: number;
+    senderMetadata?: Record<string, unknown>;
+  }>;
+  /** Whether there are more messages before these (sent in messages-before response) */
+  hasMore?: boolean;
 }
 
 type PresenceAction = "join" | "leave" | "update";
@@ -101,6 +114,22 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
 
   /** Get the current roster participants (may be empty if no roster update received yet) */
   readonly roster: Record<string, Participant<T>>;
+
+  /** Total message count (from server ready message, for pagination) */
+  readonly totalMessageCount: number | undefined;
+
+  /** Get older messages before a given ID (for pagination UI) */
+  getMessagesBefore(beforeId: number, limit?: number): Promise<{
+    messages: Array<{
+      id: number;
+      type: string;
+      payload: unknown;
+      senderId: string;
+      ts: number;
+      senderMetadata?: Record<string, unknown>;
+    }>;
+    hasMore: boolean;
+  }>;
 }
 
 /** Default reconnection configuration */
@@ -141,6 +170,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   let refCounter = 0;
   let serverContextId: string | undefined;
   let serverChannelConfig: ChannelConfig | undefined;
+  let serverTotalCount: number | undefined;
 
   // Message queue for the async iterator
   const messageQueue: Message[] = [];
@@ -168,6 +198,23 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   const pendingConfigUpdates = new Map<
     number,
     { resolve: (config: ChannelConfig) => void; reject: (err: Error) => void; timeoutId: ReturnType<typeof setTimeout> }
+  >();
+
+  // Pending get-messages-before tracking
+  type MessagesBeforeResult = {
+    messages: Array<{
+      id: number;
+      type: string;
+      payload: unknown;
+      senderId: string;
+      ts: number;
+      senderMetadata?: Record<string, unknown>;
+    }>;
+    hasMore: boolean;
+  };
+  const pendingMessagesBeforeRequests = new Map<
+    number,
+    { resolve: (result: MessagesBeforeResult) => void; reject: (err: Error) => void; timeoutId: ReturnType<typeof setTimeout> }
   >();
 
   // Current roster state
@@ -284,18 +331,37 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
 
     switch (msg.kind) {
       case "ready":
-        // Capture contextId and channelConfig from server ready message
+        // Capture contextId, channelConfig, and totalCount from server ready message
         if (typeof msg.contextId === "string") {
           serverContextId = msg.contextId;
         }
         if (msg.channelConfig) {
           serverChannelConfig = msg.channelConfig;
         }
+        if (typeof msg.totalCount === "number") {
+          serverTotalCount = msg.totalCount;
+        }
         readyResolve?.();
         readyResolve = null;
         readyReject = null;
-        enqueueMessage({ kind: "ready" });
+        enqueueMessage({ kind: "ready", totalCount: serverTotalCount });
         break;
+
+      case "messages-before": {
+        // Handle messages-before response
+        if (msg.ref !== undefined) {
+          const pending = pendingMessagesBeforeRequests.get(msg.ref);
+          if (pending) {
+            clearTimeout(pending.timeoutId);
+            pending.resolve({
+              messages: msg.messages ?? [],
+              hasMore: msg.hasMore ?? false,
+            });
+            pendingMessagesBeforeRequests.delete(msg.ref);
+          }
+        }
+        break;
+      }
 
       case "config-update": {
         // Update local channel config
@@ -892,6 +958,35 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     },
     get roster() {
       return { ...currentRoster };
+    },
+    get totalMessageCount() {
+      return serverTotalCount;
+    },
+    async getMessagesBefore(beforeId: number, limit = 100) {
+      const ref = ++refCounter;
+      const timeoutMs = 30000;
+
+      return new Promise<MessagesBeforeResult>((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          pendingMessagesBeforeRequests.delete(ref);
+          reject(new PubSubError("get-messages-before timeout", "timeout"));
+        }, timeoutMs);
+
+        pendingMessagesBeforeRequests.set(ref, { resolve, reject, timeoutId });
+
+        try {
+          ws.send(JSON.stringify({
+            action: "get-messages-before",
+            beforeId,
+            limit,
+            ref,
+          }));
+        } catch (err) {
+          clearTimeout(timeoutId);
+          pendingMessagesBeforeRequests.delete(ref);
+          reject(new PubSubError(`send failed: ${err}`, "connection"));
+        }
+      });
     },
   };
 }
