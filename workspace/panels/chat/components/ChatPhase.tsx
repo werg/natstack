@@ -18,6 +18,7 @@ import { parseActionData } from "./ActionMessage";
 import { parseTypingData } from "./TypingMessage";
 import { ImageInput, getAttachmentInputsFromPendingImages } from "./ImageInput";
 import { ImageGallery } from "./ImageGallery";
+import { NewContentIndicator } from "./NewContentIndicator";
 import { type PendingImage, getImagesFromClipboard, createPendingImage, validateImageFiles } from "../utils/imageUtils";
 import type { ChatMessage, ChatParticipantMetadata } from "../types";
 import "../styles.css";
@@ -83,7 +84,11 @@ export function ChatPhase({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [showImageInput, setShowImageInput] = useState(false);
-  const isNearBottomRef = useRef(true);
+  const [showNewContent, setShowNewContent] = useState(false);
+
+  // Refs for scroll position tracking
+  const wasNearBottomRef = useRef(true);
+  const lastMessageCountRef = useRef(0);
 
   // Check if user is near the bottom of the scroll area
   const checkIfNearBottom = useCallback(() => {
@@ -94,9 +99,13 @@ export function ChatPhase({
     return scrollHeight - scrollTop - clientHeight < 100;
   }, []);
 
-  // Update isNearBottom on scroll
+  // Update wasNearBottom on scroll and dismiss notification if at bottom
   const handleScroll = useCallback(() => {
-    isNearBottomRef.current = checkIfNearBottom();
+    const isNearBottom = checkIfNearBottom();
+    wasNearBottomRef.current = isNearBottom;
+    if (isNearBottom) {
+      setShowNewContent(false);
+    }
   }, [checkIfNearBottom]);
 
   // Attach scroll listener directly to viewport (Radix ScrollArea doesn't bubble scroll events)
@@ -107,12 +116,37 @@ export function ChatPhase({
     return () => viewport.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
 
-  // Scroll to bottom when messages change, but only if user was near bottom
+  // Handle new content: scroll to bottom or show notification
+  // Note: wasNearBottomRef is updated by the scroll handler, which correctly tracks
+  // the user's position BEFORE new content is added (scroll events don't fire on DOM changes)
   useEffect(() => {
-    if (isNearBottomRef.current) {
+    const prevCount = lastMessageCountRef.current;
+    const newCount = messages.length;
+
+    if (newCount > prevCount && prevCount > 0) {
+      // New message(s) added
+      if (wasNearBottomRef.current) {
+        // User was at bottom - auto-scroll
+        scrollRef.current?.scrollIntoView({ behavior: "smooth" });
+        setShowNewContent(false);
+      } else {
+        // User scrolled up - show notification
+        setShowNewContent(true);
+      }
+    } else if (newCount === prevCount && wasNearBottomRef.current) {
+      // Content update (streaming) while user is at bottom - keep them there
       scrollRef.current?.scrollIntoView({ behavior: "smooth" });
     }
+    // Note: if streaming while scrolled up, we do nothing (user is reading history)
+
+    lastMessageCountRef.current = newCount;
   }, [messages]);
+
+  // Handler to scroll to new content when notification is clicked
+  const handleScrollToNewContent = useCallback(() => {
+    scrollRef.current?.scrollIntoView({ behavior: "smooth" });
+    setShowNewContent(false);
+  }, []);
 
   // Auto-dismiss error after 5 seconds
   useEffect(() => {
@@ -275,7 +309,7 @@ export function ChatPhase({
       </Flex>
 
       {/* Messages */}
-      <Box flexGrow="1" overflow="hidden" style={{ minHeight: 0 }} asChild>
+      <Box flexGrow="1" overflow="hidden" style={{ minHeight: 0, position: "relative" }} asChild>
         <Card>
         <ScrollArea ref={scrollAreaRef} style={{ height: "100%" }}>
           <Flex direction="column" gap="1" p="1">
@@ -452,6 +486,9 @@ export function ChatPhase({
             <div ref={scrollRef} />
           </Flex>
         </ScrollArea>
+        {showNewContent && (
+          <NewContentIndicator onClick={handleScrollToNewContent} />
+        )}
         </Card>
       </Box>
 
