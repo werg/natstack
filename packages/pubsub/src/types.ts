@@ -100,6 +100,7 @@ export interface MessagesBeforeResponse {
     senderId: string;
     ts: number;
     senderMetadata?: Record<string, unknown>;
+    attachments?: Attachment[];
   }>;
   hasMore: boolean;
 }

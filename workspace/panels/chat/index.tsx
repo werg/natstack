@@ -132,6 +132,7 @@ function dispatchAgenticEvent(
           ...prev,
           {
             id: event.id,
+            pubsubId: event.pubsubId,
             senderId: event.senderId,
             content: event.content,
             contentType: getEventContentType(event),
@@ -462,7 +463,7 @@ export default function AgenticChat() {
         // Convert server messages to ChatMessage format
         const olderMessages: ChatMessage[] = result.messages.map((msg) => {
           let content = "";
-          let kind: ChatMessage["kind"] = "chat";
+          let kind: ChatMessage["kind"] = "message";
 
           // Parse the payload based on message type
           if (msg.type === "message" && typeof msg.payload === "object" && msg.payload !== null) {
@@ -478,6 +479,7 @@ export default function AgenticChat() {
             kind,
             complete: true,
             senderMetadata: msg.senderMetadata as { name?: string; type?: string; handle?: string } | undefined,
+            attachments: msg.attachments,
           };
         });
 
@@ -519,6 +521,29 @@ export default function AgenticChat() {
       unsubscribe();
     };
   }, [connected, clientRef]);
+
+  // Initialize pagination state when connected and messages are loaded
+  // This seeds hasMoreHistory from totalMessageCount so users can load history
+  // even before trimming occurs
+  useEffect(() => {
+    const client = clientRef.current;
+    if (!client || !connected || messages.length === 0) return;
+
+    // Only initialize once (when oldestLoadedId is not set)
+    if (oldestLoadedId !== null) return;
+
+    // Find the oldest message with a pubsubId
+    const firstMsgWithId = messages.find((m) => m.pubsubId !== undefined);
+    if (firstMsgWithId?.pubsubId !== undefined) {
+      setOldestLoadedId(firstMsgWithId.pubsubId);
+
+      // Check if there are more messages on the server than we have loaded
+      const totalCount = client.totalMessageCount;
+      if (totalCount !== undefined && totalCount > messages.length) {
+        setHasMoreHistory(true);
+      }
+    }
+  }, [connected, messages.length, oldestLoadedId, clientRef]);
 
   // Typing indicator state - tracks ephemeral typing message
   const typingMessageIdRef = useRef<string | null>(null);

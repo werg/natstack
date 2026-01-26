@@ -1080,7 +1080,7 @@ export class PubSubServer {
       // Query older messages from the store
       const rows = this.messageStore.queryBefore(client.channel, beforeId, Math.min(limit, 500));
 
-      // Convert to response format (without attachments for simplicity - those are handled separately)
+      // Convert to response format (including attachments)
       const messages = rows.map((row) => {
         let payload: unknown;
         try {
@@ -1096,6 +1096,8 @@ export class PubSubServer {
             // Ignore parse errors
           }
         }
+        // Deserialize attachments from storage
+        const attachments = deserializeAttachments(row.attachment);
         return {
           id: row.id,
           type: row.type,
@@ -1103,6 +1105,7 @@ export class PubSubServer {
           senderId: row.sender_id,
           ts: row.ts,
           senderMetadata,
+          attachments,
         };
       });
 

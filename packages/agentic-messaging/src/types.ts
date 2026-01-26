@@ -832,6 +832,7 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
       senderId: string;
       ts: number;
       senderMetadata?: Record<string, unknown>;
+      attachments?: Attachment[];
     }>;
     hasMore: boolean;
   }>;

@@ -13,6 +13,8 @@ export interface ChatParticipantMetadata {
 /** A chat message in the conversation */
 export interface ChatMessage {
   id: string;
+  /** PubSub message ID (numeric, for pagination) */
+  pubsubId?: number;
   senderId: string;
   content: string;
   contentType?: string;  // e.g., "thinking", "text/plain", etc.
@@ -24,4 +26,6 @@ export interface ChatMessage {
   method?: MethodHistoryEntry;
   /** Image attachments on this message */
   attachments?: Attachment[];
+  /** Sender metadata snapshot for historical messages */
+  senderMetadata?: { name?: string; type?: string; handle?: string };
 }

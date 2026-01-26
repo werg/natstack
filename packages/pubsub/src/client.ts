@@ -127,6 +127,7 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
       senderId: string;
       ts: number;
       senderMetadata?: Record<string, unknown>;
+      attachments?: Attachment[];
     }>;
     hasMore: boolean;
   }>;
@@ -209,6 +210,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
       senderId: string;
       ts: number;
       senderMetadata?: Record<string, unknown>;
+      attachments?: Attachment[];
     }>;
     hasMore: boolean;
   };
@@ -538,6 +540,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
       rejectPendingPublishes(new PubSubError(errorMessage, "connection"));
       rejectPendingMetadataUpdates(new PubSubError(errorMessage, "connection"));
       rejectPendingConfigUpdates(new PubSubError(errorMessage, "connection"));
+      rejectPendingMessagesBeforeRequests(new PubSubError(errorMessage, "connection"));
       readyReject?.(new PubSubError(errorMessage, "connection"));
       readyResolve = null;
       readyReject = null;
@@ -557,6 +560,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
       rejectPendingPublishes(new PubSubError(errorMessage, "connection"));
       rejectPendingMetadataUpdates(new PubSubError(errorMessage, "connection"));
       rejectPendingConfigUpdates(new PubSubError(errorMessage, "connection"));
+      rejectPendingMessagesBeforeRequests(new PubSubError(errorMessage, "connection"));
       readyReject?.(new PubSubError(errorMessage, "connection"));
       readyResolve = null;
       readyReject = null;
@@ -587,6 +591,14 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     pendingConfigUpdates.clear();
   }
 
+  function rejectPendingMessagesBeforeRequests(error: PubSubError): void {
+    for (const [, pending] of pendingMessagesBeforeRequests) {
+      clearTimeout(pending.timeoutId);
+      pending.reject(error);
+    }
+    pendingMessagesBeforeRequests.clear();
+  }
+
   function scheduleReconnect(): void {
     if (closed) return;
 
@@ -606,6 +618,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
       rejectPendingPublishes(error);
       rejectPendingMetadataUpdates(error);
       rejectPendingConfigUpdates(error);
+      rejectPendingMessagesBeforeRequests(error);
       return;
     }
 
