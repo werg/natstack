@@ -5,7 +5,7 @@
  * Listens for user messages on a channel and responds using AI streaming.
  */
 
-import { pubsubConfig, id, contextId, unloadSelf, getStateArgs } from "@natstack/runtime";
+import { pubsubConfig, id, unloadSelf, getStateArgs } from "@natstack/runtime";
 import {
   connect,
   createLogger,
@@ -21,6 +21,11 @@ import {
   createThinkingTracker,
   createTypingTracker,
   CONTENT_TYPE_TYPING,
+  CONTENT_TYPE_INLINE_UI,
+  // TODO list utilities
+  getCachedTodoListCode,
+  type TodoItem,
+  type InlineUiData,
   // Image processing utilities
   filterImageAttachments,
   validateAttachments,
@@ -54,6 +59,7 @@ interface AiResponderStateArgs {
   autonomyLevel?: number;
   maxSteps?: number;
   thinkingBudget?: number;
+  contextId: string; // Context ID for channel creation (required, passed from chat-launcher)
 }
 
 /** Worker-local settings interface (runtime-adjustable) */
@@ -90,12 +96,13 @@ async function main() {
   log(`Handle: @${handle}`);
 
   // Connect to agentic messaging channel with reconnection and participant metadata
-  // contextId is obtained automatically from the server's ready message
+  // Pass contextId from stateArgs for channel creation (more reliable than runtime contextId)
   // Include workerPanelId and agentTypeId for recovery support
   const client = await connect<ChatParticipantMetadata>({
     serverUrl: pubsubConfig.serverUrl,
     token: pubsubConfig.token,
     channel: channelName,
+    contextId: stateArgs.contextId, // Pass contextId for channel creation
     handle,
     name: "AI Responder",
     type: "ai-responder",
@@ -105,7 +112,7 @@ async function main() {
     },
     reconnect: true,
     // Enable session persistence for settings across worker reloads
-    workspaceId: contextId || undefined,
+    workspaceId: stateArgs.contextId,
     methods: {
       pause: createPauseMethodDefinition(async () => {
         // Pause event is published by interrupt handler
@@ -451,6 +458,65 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         await client.setChannelTitle(title);
         log(`Set channel title to: ${title}`);
         return { success: true, title };
+      },
+    };
+
+    // Add TodoWrite tool for task tracking
+    // Each call sends a new message, creating a history of task progress
+    tools["TodoWrite"] = {
+      description: `Create and manage a structured task list for tracking progress.
+
+Use this tool when working on complex, multi-step tasks to:
+- Track progress on implementation tasks
+- Show the user what you're working on
+- Demonstrate thoroughness
+
+Each todo item has:
+- content: Imperative form (e.g., "Run tests")
+- activeForm: Present continuous form shown during execution (e.g., "Running tests")
+- status: "pending", "in_progress", or "completed"
+
+Only have ONE task as in_progress at a time. Mark tasks complete immediately after finishing.`,
+      parameters: {
+        type: "object",
+        properties: {
+          todos: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                content: { type: "string", description: "Task description in imperative form" },
+                activeForm: { type: "string", description: "Task description in present continuous form" },
+                status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+              },
+              required: ["content", "activeForm", "status"],
+            },
+          },
+        },
+        required: ["todos"],
+      },
+      execute: async (args) => {
+        const { todos } = args as { todos: TodoItem[] };
+        if (todos && todos.length > 0) {
+          try {
+            const inlineData: InlineUiData = {
+              id: "agent-todos",
+              code: getCachedTodoListCode(),
+              props: { todos },
+            };
+
+            await client.send(JSON.stringify(inlineData), {
+              contentType: CONTENT_TYPE_INLINE_UI,
+              persist: true,
+            });
+
+            const completedCount = todos.filter(t => t.status === "completed").length;
+            log(`Sent TODO list: ${todos.length} items, ${completedCount} completed`);
+          } catch (err) {
+            log(`Failed to send TODO list: ${err}`);
+          }
+        }
+        return { success: true };
       },
     };
 

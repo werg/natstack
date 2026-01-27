@@ -24,10 +24,14 @@ const generateChannelId = () => `chat-${crypto.randomUUID().slice(0, 8)}`;
 /** Type for chat-launcher state args */
 interface ChatLauncherStateArgs {
   channelName?: string;
+  /** Existing channel's contextId - required when adding agents to an existing channel */
+  contextId?: string;
 }
 
-/** Get existing channel name from stateArgs if present (channel modification mode) */
-const existingChannelName = getStateArgs<ChatLauncherStateArgs>().channelName?.trim() || null;
+/** Get state args for channel mode */
+const stateArgs = getStateArgs<ChatLauncherStateArgs>();
+const existingChannelName = stateArgs.channelName?.trim() || null;
+const existingContextId = stateArgs.contextId?.trim() || null;
 
 export default function ChatLauncher() {
   const theme = usePanelTheme();
@@ -99,15 +103,24 @@ export default function ChatLauncher() {
     const targetChannelId = channelId.trim() || generateChannelId();
 
     try {
-      // Create context from template if in browser mode
-      let contextId: string | undefined;
-      if (sessionConfig.projectLocation === "browser" && sessionConfig.contextTemplateSpec) {
+      // Determine context ID:
+      // 1. Channel mode with existing contextId: use it (adding agents to existing channel)
+      // 2. Browser mode with template: create sandbox context
+      // 3. Otherwise: generate a new UUID
+      let contextId: string;
+      if (isChannelMode && existingContextId) {
+        // Adding agents to existing channel - must use the channel's contextId
+        contextId = existingContextId;
+      } else if (sessionConfig.projectLocation === "browser" && sessionConfig.contextTemplateSpec) {
         setStatus("Creating sandbox context...");
         contextId = await rpc.call<string>(
           "main",
           "bridge.createContextFromTemplate",
           sessionConfig.contextTemplateSpec
         );
+      } else {
+        // New chat in local mode: generate a unique context ID for session persistence
+        contextId = crypto.randomUUID();
       }
 
       // Derive channel config from session config, include contextId

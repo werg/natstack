@@ -31,6 +31,10 @@ import {
   getDetailedActionDescription,
   needsApprovalForTool,
   CONTENT_TYPE_TYPING,
+  CONTENT_TYPE_INLINE_UI,
+  type InlineUiData,
+  // TODO list utilities
+  getCachedTodoListCode,
   // Image processing utilities
   filterImageAttachments,
   validateAttachments,
@@ -298,6 +302,7 @@ interface ClaudeCodeStateArgs {
   // Channel config values passed via stateArgs (required at spawn time)
   workingDirectory?: string;
   restrictedMode: boolean; // Required - derived from projectLocation at spawn
+  contextId: string; // Context ID for channel creation (required, passed from chat-launcher)
 }
 
 /** Worker-local settings interface (runtime-adjustable) */
@@ -747,6 +752,7 @@ async function main() {
     serverUrl: pubsubConfig.serverUrl,
     token: pubsubConfig.token,
     channel: channelName,
+    contextId: stateArgs.contextId, // Pass contextId for channel creation
     handle,
     name: "Claude Code",
     type: "claude-code",
@@ -1145,8 +1151,13 @@ async function handleUserMessage(
         tools: mcpTools,
       });
 
-      // Determine allowed tools for restricted mode (now includes Task)
-      allowedTools = mcpTools.map((t) => `mcp__${mcpServerName}__${t.name}`);
+      // Determine allowed tools for restricted mode
+      // Include MCP tools from pubsub + SDK native tools we want to support
+      allowedTools = [
+        ...mcpTools.map((t) => `mcp__${mcpServerName}__${t.name}`),
+        // Allow TodoWrite so agents can track task progress in restricted mode
+        "TodoWrite",
+      ];
     } else {
       log("Unrestricted mode - using SDK native tools");
     }
@@ -1274,6 +1285,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       : allImageAttachments.size > 0
         ? `${prompt}\n\n[${allImageAttachments.size} historical image(s) available from earlier in the conversation. Call list_images to see them.]`
         : prompt;
+
 
     // Create permission handler that prompts user via feedback_form
     // Respects autonomy settings: only shows prompt if approval is actually needed
@@ -1804,6 +1816,34 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
 
                   // Update the action with the detailed description
                   await action.updateAction(detailedDescription);
+
+                  // =========================================================
+                  // TodoWrite Handling - Send inline_ui message
+                  // =========================================================
+                  log(`Tool completed: ${acc.toolName}, input keys: ${Object.keys(parsedInput).join(", ")}`);
+                  if (acc.toolName === "TodoWrite") {
+                    const todoArgs = parsedInput as { todos?: Array<{ content: string; activeForm: string; status: string }> };
+                    log(`TodoWrite args: ${todoArgs.todos?.length ?? 0} todos`);
+                    if (todoArgs.todos && todoArgs.todos.length > 0) {
+                      try {
+                        const inlineData: InlineUiData = {
+                          id: "agent-todos",
+                          code: getCachedTodoListCode(),
+                          props: { todos: todoArgs.todos },
+                        };
+
+                        await client.send(JSON.stringify(inlineData), {
+                          contentType: CONTENT_TYPE_INLINE_UI,
+                          persist: true,
+                        });
+
+                        const completedCount = todoArgs.todos.filter(t => t.status === "completed").length;
+                        log(`Sent TODO list: ${todoArgs.todos.length} items, ${completedCount} completed`);
+                      } catch (err) {
+                        log(`Failed to send TODO list: ${err}`);
+                      }
+                    }
+                  }
 
                   // =========================================================
                   // Subagent Connection Creation (Unrestricted Mode)

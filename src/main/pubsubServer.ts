@@ -847,40 +847,32 @@ export class PubSubServer {
 
     if (!existingChannel) {
       // First connection creates the channel
-      // contextId is optional - if not provided, channel is "global" (no context)
-      if (contextIdParam) {
-        this.messageStore.createChannel(channel, contextIdParam, clientId, channelConfigFromClient);
-        // Re-fetch to get actual contextId (in case another client won the race)
-        const created = this.messageStore.getChannel(channel);
-        channelContextId = created?.contextId;
-        channelConfig = created?.config;
+      // Always create in database (even without contextId) to enable channel config updates
+      // Use empty string for contextId if not provided (channel is "global")
+      const effectiveContextId = contextIdParam || "";
+      this.messageStore.createChannel(channel, effectiveContextId, clientId, channelConfigFromClient);
+      // Re-fetch to get actual contextId (in case another client won the race)
+      const created = this.messageStore.getChannel(channel);
+      channelContextId = created?.contextId;
+      channelConfig = created?.config;
 
-        // Verify the channel was created with our contextId
-        // This handles the rare race condition where two clients try to create
-        // the same channel with different contextIds simultaneously
-        if (channelContextId && channelContextId !== contextIdParam) {
-          ws.close(4005, "contextId mismatch: channel was created by another client");
-          return;
-        }
+      // Verify the channel was created with our contextId (only if we provided one)
+      // This handles the rare race condition where two clients try to create
+      // the same channel with different contextIds simultaneously
+      if (contextIdParam && channelContextId && channelContextId !== contextIdParam) {
+        ws.close(4005, "contextId mismatch: channel was created by another client");
+        return;
       }
-      // If no contextId, channel exists only in memory (no persistence entry)
     } else {
       // Subsequent connections - validate contextId consistency
-      if (existingChannel.contextId) {
-        // Channel has a context - client must either not provide contextId or match
-        if (contextIdParam && contextIdParam !== existingChannel.contextId) {
-          ws.close(4005, "contextId mismatch");
-          return;
-        }
-        channelContextId = existingChannel.contextId;
-        channelConfig = existingChannel.config;
-      } else {
-        // Channel is global (no context) - client cannot provide contextId
-        if (contextIdParam) {
-          ws.close(4006, "channel has no contextId");
-          return;
-        }
+      // If client provides a contextId (not undefined), it must match the channel's contextId
+      // Clients can omit contextId (undefined) to join without validation
+      if (contextIdParam !== undefined && contextIdParam !== existingChannel.contextId) {
+        ws.close(4005, "contextId mismatch");
+        return;
       }
+      channelContextId = existingChannel.contextId;
+      channelConfig = existingChannel.config;
     }
 
     const client: ClientConnection = { ws, clientId, channel, metadata };

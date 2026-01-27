@@ -44,6 +44,9 @@ export {
   type TypingTrackerState,
   type TypingTrackerOptions,
   type TypingData,
+  // Inline UI (fire-and-forget MDX rendering)
+  CONTENT_TYPE_INLINE_UI,
+  type InlineUiData,
   // Shared tracker client interface
   type TrackerClient,
 } from "./responder-utils.js";
@@ -126,6 +129,18 @@ export {
   FeedbackCustomArgsSchema,
   FieldDefinitionSchema,
 } from "./protocol-schemas.js";
+
+// TODO list inline UI utilities
+export {
+  type TodoItem,
+  type TodoTracker,
+  type TodoTrackerOptions,
+  getTodoListCode,
+  getCachedTodoListCode,
+  createTodoInlineUiData,
+  sendTodoListMessage,
+  createTodoTracker,
+} from "./todo-ui.js";
 
 // For agent configs, use: import { ... } from "@natstack/agentic-messaging/config"
 // For session persistence, use: import { ... } from "@natstack/agentic-messaging/session"

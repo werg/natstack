@@ -434,6 +434,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     serverUrl,
     token,
     channel,
+    contextId,
     handle,
     name,
     type,
@@ -567,6 +568,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
 
   const pubsub = connectPubSub<T>(serverUrl, token, {
     channel,
+    contextId,
     channelConfig: providedChannelConfig,
     sinceId,
     reconnect,

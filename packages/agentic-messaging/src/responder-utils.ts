@@ -72,6 +72,26 @@ export const CONTENT_TYPE_THINKING = "thinking" as const;
 export const CONTENT_TYPE_ACTION = "action" as const;
 
 /**
+ * Content type constant for inline UI components.
+ * Used for rendering dynamic MDX/React components inline in the conversation.
+ * Unlike feedback_custom which renders at the bottom and waits for input,
+ * inline_ui renders immediately in the message stream.
+ */
+export const CONTENT_TYPE_INLINE_UI = "inline_ui" as const;
+
+/**
+ * Inline UI data structure sent as message content (JSON stringified).
+ */
+export interface InlineUiData {
+  /** Unique ID for this inline UI instance (allows updates with same ID) */
+  id: string;
+  /** The MDX/TSX code to compile and render */
+  code: string;
+  /** Optional props to pass to the component */
+  props?: Record<string, unknown>;
+}
+
+/**
  * Action data structure sent as message content (JSON stringified).
  */
 export interface ActionData {

@@ -10,6 +10,7 @@ import { Flex, Text, Button, Card } from "@radix-ui/themes";
 import { pubsubConfig, id as panelClientId, buildNsLink, createChild, useStateArgs, forceRepaint } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
 import { z } from "zod";
+import type { ComponentType } from "react";
 import {
   type IncomingEvent,
   type IncomingPresenceEvent,
@@ -22,7 +23,9 @@ import {
   type Attachment,
   type AttachmentInput,
   CONTENT_TYPE_TYPING,
+  CONTENT_TYPE_INLINE_UI,
   type TypingData,
+  type InlineUiData,
   type FeedbackFormArgs,
   type FeedbackCustomArgs,
   FeedbackFormArgsSchema,
@@ -34,6 +37,7 @@ import {
   wrapMethodsWithApproval,
   compileFeedbackComponent,
   cleanupFeedbackComponent,
+  compileInlineUiComponent,
   type FeedbackResult,
   type FeedbackUiToolArgs,
   type ActiveFeedback,
@@ -58,6 +62,7 @@ import type { PendingImage } from "./components/ImageInput";
 import { cleanupPendingImages } from "./utils/imageUtils";
 import type { ChatParticipantMetadata } from "./types";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { parseInlineUiData } from "./components/InlineUiMessage";
 
 /** Utility to check if a value looks like ChatParticipantMetadata */
 function isChatParticipantMetadata(value: unknown): value is ChatParticipantMetadata {
@@ -260,6 +265,65 @@ export default function AgenticChat() {
   const [presenceEvents, setPresenceEvents] = useState<IncomingPresenceEvent[]>([]);
   // Agent load errors from recovery attempts
   const [agentErrors, setAgentErrors] = useState<Array<{ handle: string; workerPanelId: string; buildState: string; error: string }>>([]);
+
+  // Track compiled inline UI components by ID
+  // Key: inline UI id, Value: { Component, cacheKey, error? }
+  const [inlineUiComponents, setInlineUiComponents] = useState<Map<string, {
+    Component?: ComponentType<{ props: Record<string, unknown> }>;
+    cacheKey: string;
+    error?: string;
+  }>>(new Map());
+
+  // Compile inline_ui messages when they arrive
+  // This effect watches for new messages with contentType "inline_ui" and compiles their MDX
+  useEffect(() => {
+    const compileInlineUiMessages = async () => {
+      for (const msg of messages) {
+        if (msg.contentType !== CONTENT_TYPE_INLINE_UI) continue;
+
+        const data = parseInlineUiData(msg.content);
+        if (!data) continue;
+
+        // Skip if already compiled
+        if (inlineUiComponents.has(data.id)) continue;
+
+        try {
+          // Use compileInlineUiComponent for inline_ui (passes props through)
+          const result = await compileInlineUiComponent({ code: data.code });
+          if (result.success) {
+            setInlineUiComponents(prev => {
+              const updated = new Map(prev);
+              updated.set(data.id, {
+                Component: result.Component!,
+                cacheKey: result.cacheKey!,
+              });
+              return updated;
+            });
+          } else {
+            setInlineUiComponents(prev => {
+              const updated = new Map(prev);
+              updated.set(data.id, {
+                cacheKey: data.code,
+                error: result.error,
+              });
+              return updated;
+            });
+          }
+        } catch (err) {
+          setInlineUiComponents(prev => {
+            const updated = new Map(prev);
+            updated.set(data.id, {
+              cacheKey: data.code,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            return updated;
+          });
+        }
+      }
+    };
+
+    void compileInlineUiMessages();
+  }, [messages, inlineUiComponents]);
 
   // Memory management constants for message history
   const MAX_VISIBLE_MESSAGES = 500;
@@ -1025,15 +1089,17 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
   // Launch chat-launcher as child to add agents to current channel
   const handleAddAgent = useCallback(async () => {
     if (!channelName) return;
+    // Pass contextId so new agents join with the correct channel context
+    const contextId = clientRef.current?.channelConfig?.contextId;
     await createChild(
       "panels/chat-launcher",
       {
         name: "add-agent",
         focus: true,
       },
-      { channelName }  // Pass via stateArgs
+      { channelName, contextId }  // Pass via stateArgs
     );
-  }, [channelName]);
+  }, [channelName, clientRef]);
 
   const reset = useCallback(() => {
     setMessages([]);
@@ -1211,6 +1277,7 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
         sessionEnabled={clientRef.current?.sessionEnabled}
         hasMoreHistory={hasMoreHistory}
         loadingMore={loadingMore}
+        inlineUiComponents={inlineUiComponents}
         onLoadEarlierMessages={loadEarlierMessages}
         onInputChange={handleInputChange}
         onSendMessage={sendMessage}

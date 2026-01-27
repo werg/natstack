@@ -14,7 +14,7 @@
  * 6. Tool calls flow: Codex -> HTTP MCP server -> pubsub
  */
 
-import { pubsubConfig, id, contextId, getStateArgs } from "@natstack/runtime";
+import { pubsubConfig, id, getStateArgs } from "@natstack/runtime";
 import {
   connect,
   createToolsForAgentSDK,
@@ -33,6 +33,11 @@ import {
   createActionTracker,
   getDetailedActionDescription,
   CONTENT_TYPE_TYPING,
+  CONTENT_TYPE_INLINE_UI,
+  // TODO list utilities
+  getCachedTodoListCode,
+  type TodoItem,
+  type InlineUiData,
   // Image processing utilities
   buildOpenAIContents,
   filterImageAttachments,
@@ -71,6 +76,7 @@ interface CodexStateArgs {
   // (workers may connect before chat panel sets channelConfig)
   workingDirectory?: string;
   restrictedMode?: boolean;
+  contextId: string; // Context ID for channel creation (required, passed from chat-launcher)
 }
 
 /** Worker-local settings interface (runtime-adjustable) */
@@ -360,17 +366,18 @@ async function main() {
   log(`Handle: @${handle}`);
 
   // Connect to agentic messaging channel
-  // contextId is obtained automatically from the server's ready message
+  // Pass contextId from stateArgs for channel creation (more reliable than runtime contextId)
   const client = await connect<ChatParticipantMetadata>({
     serverUrl: pubsubConfig.serverUrl,
     token: pubsubConfig.token,
     channel: channelName,
+    contextId: stateArgs.contextId, // Pass contextId for channel creation
     handle,
     name: "Codex",
     type: "codex",
     reconnect: true,
     // Enable session persistence for SDK session resumption across worker reloads
-    workspaceId: contextId || undefined,
+    workspaceId: stateArgs.contextId,
     methods: {
       pause: createPauseMethodDefinition(async () => {
         // Pause event is published by interrupt handler
@@ -668,7 +675,45 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     originalName: "__set_title__", // Special marker for direct execution
   });
 
+  // Add TodoWrite tool for task tracking
+  mcpTools.push({
+    name: "TodoWrite",
+    description: `Create and manage a structured task list for tracking progress.
+
+Use this tool when working on complex, multi-step tasks to:
+- Track progress on implementation tasks
+- Show the user what you're working on
+- Demonstrate thoroughness
+
+Each todo item has:
+- content: Imperative form (e.g., "Run tests")
+- activeForm: Present continuous form shown during execution (e.g., "Running tests")
+- status: "pending", "in_progress", or "completed"
+
+Only have ONE task as in_progress at a time. Mark tasks complete immediately after finishing.`,
+    parameters: {
+      type: "object",
+      properties: {
+        todos: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              content: { type: "string", description: "Task description in imperative form" },
+              activeForm: { type: "string", description: "Task description in present continuous form" },
+              status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+            },
+            required: ["content", "activeForm", "status"],
+          },
+        },
+      },
+      required: ["todos"],
+    },
+    originalName: "__todo_write__", // Special marker for direct execution
+  });
+
   let mcpServer: McpHttpServer | null = null;
+  // Track TODO message ID for updates
   let codexHome: string | null = null;
 
   // Create a map from originalName -> displayName for action tracking
@@ -700,6 +745,33 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         log(`Set channel title to: ${title}`);
         await action.completeAction();
         return { success: true, title };
+      }
+
+      // Handle TodoWrite - send inline_ui message
+      // Each call sends a new message, creating a history of task progress
+      if (name === "__todo_write__") {
+        const { todos } = argsRecord as { todos: TodoItem[] };
+        if (todos && todos.length > 0) {
+          try {
+            const inlineData: InlineUiData = {
+              id: "agent-todos",
+              code: getCachedTodoListCode(),
+              props: { todos },
+            };
+
+            await client.send(JSON.stringify(inlineData), {
+              contentType: CONTENT_TYPE_INLINE_UI,
+              persist: true,
+            });
+
+            const completedCount = todos.filter(t => t.status === "completed").length;
+            log(`Sent TODO list: ${todos.length} items, ${completedCount} completed`);
+          } catch (err) {
+            log(`Failed to send TODO list: ${err}`);
+          }
+        }
+        await action.completeAction();
+        return { success: true };
       }
 
       const result = await executeTool(name, args);

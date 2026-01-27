@@ -91,6 +91,16 @@ export {
 } from "./eval/feedbackComponent";
 
 // ============================================================================
+// Inline UI Components (TSX)
+// ============================================================================
+export {
+  compileInlineUiComponent,
+  cleanupInlineUiComponent,
+  type InlineUiComponentProps,
+  type InlineUiCompileResult,
+} from "./eval/feedbackComponent";
+
+// ============================================================================
 // Utilities
 // ============================================================================
 export { createApprovalSchema, type CreateApprovalSchemaParams } from "./utils/createApprovalSchema";

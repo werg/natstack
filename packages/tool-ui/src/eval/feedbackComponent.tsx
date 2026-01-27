@@ -117,3 +117,102 @@ function createComponentFactory(
     return <CompiledComponent onSubmit={safeOnSubmit} onCancel={safeOnCancel} onError={safeOnError} />;
   };
 }
+
+// ============================================================================
+// Inline UI Component Compilation
+// ============================================================================
+
+/**
+ * Props for inline UI components - just arbitrary props to pass through.
+ */
+export interface InlineUiComponentProps {
+  props: Record<string, unknown>;
+}
+
+/**
+ * Result of compiling an inline UI component.
+ */
+export interface InlineUiCompileResult {
+  success: boolean;
+  /** The compiled React component (if successful) */
+  Component?: ComponentType<InlineUiComponentProps>;
+  /** Cache key for cleanup (if successful) */
+  cacheKey?: string;
+  /** Error message (if failed) */
+  error?: string;
+}
+
+/** Separate cache for inline UI components */
+const inlineUiCache = new Map<string, ComponentType<InlineUiComponentProps>>();
+
+/**
+ * Execute and extract the default export as an inline UI component.
+ */
+function executeInlineUiComponent(code: string): ComponentType<InlineUiComponentProps> {
+  return executeDefault<ComponentType<InlineUiComponentProps>>(code);
+}
+
+/**
+ * Compile an inline UI component from TSX code.
+ * Unlike feedback components, this passes arbitrary props through to the component.
+ */
+export async function compileInlineUiComponent(args: { code: string }): Promise<InlineUiCompileResult> {
+  const { code } = args;
+
+  try {
+    const transformed = transformCode(code, { syntax: "tsx" });
+
+    // Preload all required modules (async - may load from CDN if not pre-bundled)
+    const preloadResult = await preloadRequires(transformed.requires);
+    if (!preloadResult.success) {
+      return {
+        success: false,
+        error: preloadResult.error,
+      };
+    }
+
+    // Use transformed code as cache key
+    const cacheKey = transformed.code;
+
+    return {
+      success: true,
+      Component: createInlineUiComponentFactory(cacheKey),
+      cacheKey,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/**
+ * Create a component factory for inline UI that passes props through.
+ */
+function createInlineUiComponentFactory(
+  cacheKey: string
+): ComponentType<InlineUiComponentProps> {
+  return function InlineUiWrapper(wrapperProps: InlineUiComponentProps) {
+    // Get or compile the component
+    const CompiledComponent = useMemo(() => {
+      const cached = inlineUiCache.get(cacheKey);
+      if (cached) {
+        return cached;
+      }
+      const compiled = executeInlineUiComponent(cacheKey);
+      inlineUiCache.set(cacheKey, compiled);
+      return compiled;
+    }, []);
+
+    // Pass props through to the compiled component
+    return <CompiledComponent props={wrapperProps.props} />;
+  };
+}
+
+/**
+ * Clean up a cached inline UI component.
+ */
+export function cleanupInlineUiComponent(cacheKey: string): void {
+  inlineUiCache.delete(cacheKey);
+}

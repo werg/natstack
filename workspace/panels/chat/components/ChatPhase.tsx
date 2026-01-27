@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type ComponentType } from "react";
 import { Badge, Box, Button, Callout, Card, Flex, IconButton, ScrollArea, Text, TextArea, Theme } from "@radix-ui/themes";
 import { PaperPlaneIcon, ImageIcon, CopyIcon, CheckIcon } from "@radix-ui/react-icons";
 import type { Participant, AttachmentInput } from "@natstack/agentic-messaging";
+import { CONTENT_TYPE_INLINE_UI } from "@natstack/agentic-messaging";
 import {
   FeedbackContainer,
   FeedbackFormRenderer,
@@ -19,6 +20,7 @@ import { parseTypingData } from "./TypingMessage";
 import { ImageInput, getAttachmentInputsFromPendingImages } from "./ImageInput";
 import { ImageGallery } from "./ImageGallery";
 import { NewContentIndicator } from "./NewContentIndicator";
+import { InlineUiMessage, parseInlineUiData } from "./InlineUiMessage";
 import { type PendingImage, getImagesFromClipboard, createPendingImage, validateImageFiles } from "../utils/imageUtils";
 import type { ChatMessage, ChatParticipantMetadata } from "../types";
 import "../styles.css";
@@ -45,6 +47,12 @@ interface ChatPhaseProps {
   hasMoreHistory?: boolean;
   /** Whether currently loading more messages */
   loadingMore?: boolean;
+  /** Compiled inline UI components by ID */
+  inlineUiComponents?: Map<string, {
+    Component?: ComponentType<{ props: Record<string, unknown> }>;
+    cacheKey: string;
+    error?: string;
+  }>;
   /** Callback to load earlier messages */
   onLoadEarlierMessages?: () => void;
   onInputChange: (value: string) => void;
@@ -75,6 +83,7 @@ export function ChatPhase({
   pendingImages,
   hasMoreHistory,
   loadingMore,
+  inlineUiComponents,
   onLoadEarlierMessages,
   onInputChange,
   onSendMessage,
@@ -477,6 +486,26 @@ export function ChatPhase({
                   // Skip completed typing indicators - they're ephemeral and shouldn't persist
                   if (msg.contentType === "typing" && msg.complete) {
                     return null;
+                  }
+
+                  // Handle inline_ui messages - render compiled MDX inline
+                  if (msg.contentType === CONTENT_TYPE_INLINE_UI) {
+                    const data = parseInlineUiData(msg.content);
+                    if (data) {
+                      const compiled = inlineUiComponents?.get(data.id);
+                      return (
+                        <Box
+                          key={msg.id || `fallback-msg-${index}`}
+                          style={{ maxWidth: "96%", alignSelf: "flex-start" }}
+                        >
+                          <InlineUiMessage
+                            data={data}
+                            compiledComponent={compiled?.Component}
+                            compilationError={compiled?.error}
+                          />
+                        </Box>
+                      );
+                    }
                   }
 
                   const sender = getSenderInfo(msg.senderId);

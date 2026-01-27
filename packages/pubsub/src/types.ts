@@ -172,6 +172,8 @@ export interface ReconnectConfig {
 export interface ConnectOptions<T extends ParticipantMetadata = ParticipantMetadata> {
   /** Channel name to subscribe to */
   channel: string;
+  /** Context ID for channel creators (triggers channel creation in database). Joiners get contextId from server. */
+  contextId?: string;
   /** Channel config to set when creating a new channel (ignored for existing channels) */
   channelConfig?: ChannelConfig;
   /** Replay messages with id > sinceId */

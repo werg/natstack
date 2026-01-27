@@ -153,7 +153,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   token: string,
   options: ConnectOptions<T>
 ): PubSubClient<T> {
-  const { channel, channelConfig, sinceId: initialSinceId, reconnect, metadata, clientId, skipOwnMessages } = options;
+  const { channel, contextId, channelConfig, sinceId: initialSinceId, reconnect, metadata, clientId, skipOwnMessages } = options;
 
   // Parse reconnection config
   const reconnectEnabled = reconnect !== undefined && reconnect !== false;
@@ -239,6 +239,9 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     const url = new URL(serverUrl);
     url.searchParams.set("token", token);
     url.searchParams.set("channel", channel);
+    if (contextId) {
+      url.searchParams.set("contextId", contextId);
+    }
     if (channelConfig !== undefined) {
       url.searchParams.set("channelConfig", JSON.stringify(channelConfig));
     }

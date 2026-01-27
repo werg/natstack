@@ -672,6 +672,8 @@ export interface ConnectOptions<T extends AgenticParticipantMetadata = AgenticPa
   token: string;
   /** Channel name to connect to */
   channel: string;
+  /** Context ID for channel creators (triggers channel creation in database). Joiners get contextId from server. */
+  contextId?: string;
 
   /** Unique handle for @-mentions */
   handle: string;
