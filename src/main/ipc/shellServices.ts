@@ -168,7 +168,7 @@ export async function handleAppService(
         buildCache: true,
         buildArtifacts: true,
         typesCache: true,
-        verdaccioStorage: false, // Keep packages - user can manually delete if needed
+        verdaccioStorage: true, // Clear Verdaccio to avoid stale @natstack packages
         npmCache: false,
         pnpmStore: false,
       });
@@ -441,7 +441,7 @@ export async function handleMenuService(
           buildCache: true,
           buildArtifacts: true,
           typesCache: true,
-          verdaccioStorage: false,
+          verdaccioStorage: true, // Clear Verdaccio to avoid stale @natstack packages
           npmCache: false,
           pnpmStore: false,
         });

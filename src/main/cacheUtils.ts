@@ -104,16 +104,25 @@ async function getDirectorySize(dirPath: string): Promise<number> {
 
 /**
  * Recursively remove a directory and all its contents.
+ * Uses retries and falls back to shell rm -rf if needed.
  */
 async function removeDirectory(dirPath: string): Promise<boolean> {
   if (!existsSync(dirPath)) return true;
 
   try {
-    await fsPromises.rm(dirPath, { recursive: true, force: true });
+    await fsPromises.rm(dirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     return true;
   } catch (error) {
-    console.error(`[CacheUtils] Failed to remove ${dirPath}:`, error);
-    return false;
+    // fs.rm can fail with ENOTEMPTY on some systems due to race conditions
+    // or special files (e.g., electron dist). Fall back to shell rm -rf.
+    console.warn(`[CacheUtils] fs.rm failed for ${dirPath}, trying shell fallback:`, error);
+    try {
+      await execAsync(`rm -rf "${dirPath}"`, { timeout: 30000 });
+      return true;
+    } catch (shellError) {
+      console.error(`[CacheUtils] Failed to remove ${dirPath}:`, shellError);
+      return false;
+    }
   }
 }
 
