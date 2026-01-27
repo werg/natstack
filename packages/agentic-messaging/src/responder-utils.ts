@@ -6,6 +6,7 @@
  */
 
 import type { AgenticParticipantMetadata, IncomingNewMessage } from "./types.js";
+import type { ContextWindowUsage } from "./context-tracker.js";
 
 /**
  * Standard participant metadata for chat-style channels.
@@ -14,6 +15,12 @@ import type { AgenticParticipantMetadata, IncomingNewMessage } from "./types.js"
 export interface ChatParticipantMetadata extends AgenticParticipantMetadata {
   name: string;
   type: "panel" | "ai-responder" | "claude-code" | "codex" | "subagent";
+  /** Runtime panel/worker ID - allows chat panel to link participant to child panel for focus/reload */
+  panelId?: string;
+  /** Agent type ID for identification/recovery (e.g., "claude-code-responder") */
+  agentTypeId?: string;
+  /** Context window usage tracking (updated by AI responders) */
+  contextUsage?: ContextWindowUsage;
 }
 
 /**

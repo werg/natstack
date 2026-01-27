@@ -41,6 +41,8 @@ export interface SubagentConnectionOptions {
   token: string;
   /** Channel name */
   channel: string;
+  /** Context ID for channel authorization (required if channel was created with contextId) */
+  contextId?: string;
 }
 
 /**
@@ -177,6 +179,7 @@ export async function createSubagentConnection(
     serverUrl: connectionOptions.serverUrl,
     token: connectionOptions.token,
     channel: connectionOptions.channel,
+    contextId: connectionOptions.contextId, // Required for channel authorization
     handle,
     name: displayName,
     type: "subagent",
