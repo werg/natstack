@@ -1069,11 +1069,18 @@ export class PubSubServer {
         return;
       }
 
-      // Query older messages from the store
-      const rows = this.messageStore.queryBefore(client.channel, beforeId, Math.min(limit, 500));
+      // Query one extra message to reliably detect if there are more
+      const effectiveLimit = Math.min(limit, 500);
+      const rows = this.messageStore.queryBefore(client.channel, beforeId, effectiveLimit + 1);
+
+      // Check if there are more messages beyond what we'll return
+      const hasMore = rows.length > effectiveLimit;
+
+      // Only return up to the requested limit
+      const rowsToReturn = hasMore ? rows.slice(0, effectiveLimit) : rows;
 
       // Convert to response format (including attachments)
-      const messages = rows.map((row) => {
+      const messages = rowsToReturn.map((row) => {
         let payload: unknown;
         try {
           payload = JSON.parse(row.payload);
@@ -1100,9 +1107,6 @@ export class PubSubServer {
           attachments,
         };
       });
-
-      // Determine if there are more messages before these
-      const hasMore = rows.length > 0 && rows.length === Math.min(limit, 500);
 
       this.send(client.ws, { kind: "messages-before", messages, hasMore, ref });
       return;

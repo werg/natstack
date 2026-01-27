@@ -602,8 +602,10 @@ export default function AgenticChat() {
       setOldestLoadedId(firstMsgWithId.pubsubId);
 
       // Check if there are more messages on the server than we have loaded
+      // Compare totalCount to messages WITH pubsubIds (those from the DB), not all UI messages
       const totalCount = client.totalMessageCount;
-      if (totalCount !== undefined && totalCount > messages.length) {
+      const dbMessageCount = messages.filter((m) => m.pubsubId !== undefined).length;
+      if (totalCount !== undefined && totalCount > dbMessageCount) {
         setHasMoreHistory(true);
       }
     }
