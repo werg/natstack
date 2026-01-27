@@ -30,6 +30,7 @@ export {
   type BaseDiagnostic,
   type TypeCheckDiagnostic,
   type QuickInfo,
+  type ExternalTypesResult,
 } from "./service.js";
 
 // Resolution

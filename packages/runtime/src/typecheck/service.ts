@@ -71,6 +71,18 @@ export interface QuickInfo {
 }
 
 /**
+ * Result of loading external types.
+ */
+export interface ExternalTypesResult {
+  /** Map of file paths to their contents */
+  files: Map<string, string>;
+  /** Package names that this package references (via /// <reference types="..." />) */
+  referencedPackages?: string[];
+  /** The main entry point file path (e.g., "index.d.ts" or "dist/index.d.ts") */
+  entryPoint?: string;
+}
+
+/**
  * Configuration for the TypeCheckService.
  */
 export interface TypeCheckServiceConfig {
@@ -84,8 +96,11 @@ export interface TypeCheckServiceConfig {
   natstackPackagePaths?: Record<string, string>;
   /** Path to lib.d.ts files */
   libPath?: string;
-  /** Callback to fetch external package types on-demand */
-  requestExternalTypes?: (packageName: string) => Promise<Map<string, string> | null>;
+  /**
+   * Callback to fetch external package types on-demand.
+   * Returns files map and optionally referenced packages that should also be loaded.
+   */
+  requestExternalTypes?: (packageName: string) => Promise<ExternalTypesResult | Map<string, string> | null>;
   /**
    * Path to the monorepo root (containing packages directory).
    * If provided, natstack types are loaded from packages dist folders.
@@ -109,6 +124,8 @@ export class TypeCheckService {
   private pendingExternalPackages = new Set<string>();
   /** Loaded @natstack/* package types (dynamically loaded from filesystem) */
   private natstackPackageTypes: Record<string, NatstackPackageTypes> = {};
+  /** Entry points for loaded external packages (package name -> entry file path) */
+  private externalPackageEntryPoints = new Map<string, string>();
 
   constructor(config: TypeCheckServiceConfig) {
     this.config = config;
@@ -256,14 +273,35 @@ export class TypeCheckService {
       this.loadedExternalPackages.add(pkg);
 
       try {
-        const types = await this.config.requestExternalTypes(pkg);
-        if (types && types.size > 0) {
-          for (const [filePath, content] of types) {
+        const result = await this.config.requestExternalTypes(pkg);
+        if (!result) continue;
+
+        // Handle both Map<string, string> (legacy) and ExternalTypesResult
+        const files = result instanceof Map ? result : result.files;
+        const referencedPackages = result instanceof Map ? undefined : result.referencedPackages;
+        const entryPoint = result instanceof Map ? undefined : result.entryPoint;
+
+        if (files && files.size > 0) {
+          for (const [filePath, content] of files) {
             // Store types with a consistent path prefix
             const typePath = `/@types/${pkg}/${filePath}`;
             this.files.set(typePath, { content, version: 1 });
           }
           loadedAny = true;
+
+          // Store entry point for this package (used by findLoadedTypesEntry)
+          if (entryPoint) {
+            this.externalPackageEntryPoints.set(pkg, entryPoint);
+          }
+        }
+
+        // Queue referenced packages for loading (e.g., /// <reference types="scheduler" />)
+        if (referencedPackages) {
+          for (const refPkg of referencedPackages) {
+            if (!this.loadedExternalPackages.has(refPkg)) {
+              this.pendingExternalPackages.add(refPkg);
+            }
+          }
         }
       } catch (error) {
         console.error(`[typecheck] Failed to load types for ${pkg}:`, error);
@@ -284,21 +322,28 @@ export class TypeCheckService {
    * Run type checking with automatic external type loading.
    * This is the recommended way to check - it handles the async type loading cycle.
    *
-   * The check-load-recheck pattern:
-   * 1. First check - may discover packages needing external types
+   * The check-load-recheck pattern loops until no more pending types:
+   * 1. Check - may discover packages needing external types
    * 2. Load any pending external types (requires requestExternalTypes callback)
-   * 3. Re-check if new types were loaded to get accurate diagnostics
+   * 3. If new types were loaded, go back to step 1 (handles transitive deps)
+   * 4. Return final diagnostics when no more pending types
    */
-  async checkWithExternalTypes(filePath?: string): Promise<TypeCheckResult> {
-    // First check - may discover packages needing external types
+  async checkWithExternalTypes(filePath?: string, maxIterations: number = 10): Promise<TypeCheckResult> {
     let result = this.check(filePath);
+    let iterations = 0;
 
-    // Load any pending external types (requires requestExternalTypes callback)
-    const loadedNew = await this.loadPendingTypes();
+    // Loop until no more pending types (handles transitive dependencies)
+    while (this.hasPendingTypes() && iterations < maxIterations) {
+      iterations++;
+      const loadedNew = await this.loadPendingTypes();
 
-    // Re-check if new types were loaded to get accurate diagnostics
-    if (loadedNew) {
-      result = this.check(filePath);
+      if (loadedNew) {
+        // Re-check to discover any new pending types from loaded packages
+        result = this.check(filePath);
+      } else {
+        // No new types loaded, stop iterating
+        break;
+      }
     }
 
     return result;
@@ -591,9 +636,10 @@ export class TypeCheckService {
         const fullPkgName = `@natstack/${result.packageName}`;
         const pkgData = this.natstackPackageTypes[fullPkgName];
         if (pkgData) {
-          // Extract subpath from module name (e.g., @natstack/agentic-messaging/broker -> broker)
+          // Extract subpath from module name (e.g., @natstack/agentic-messaging/registry -> /registry)
           const afterPkg = moduleName.slice(fullPkgName.length);
-          const subpath = afterPkg.startsWith("/") ? afterPkg : null;
+          // Convert /registry to ./registry to match package.json exports format
+          const subpath = afterPkg.startsWith("/") ? "." + afterPkg : null;
 
           // Determine the entry file - check for subpath or use index.d.ts
           let entryFile = "index.d.ts";
@@ -725,8 +771,8 @@ export class TypeCheckService {
   }
 
   /**
-   * Find the entry point for loaded types of a package.
-   * Returns the path to index.d.ts if types are loaded, null otherwise.
+   * Find the entry point for loaded types of a package or subpath.
+   * Handles both package-level imports (react) and subpath imports (react/jsx-runtime).
    */
   private findLoadedTypesEntry(moduleName: string): string | null {
     const pkgName = this.extractPackageName(moduleName);
@@ -735,15 +781,60 @@ export class TypeCheckService {
     // Check for types at /@types/{pkgName}/
     const basePath = `/@types/${pkgName}`;
 
-    // Try common entry points
+    // Extract subpath if present (e.g., "react/jsx-runtime" -> "jsx-runtime")
+    const subpath = moduleName.length > pkgName.length
+      ? moduleName.slice(pkgName.length + 1) // +1 for the "/"
+      : null;
+
+    if (subpath) {
+      // Try subpath-specific entry points first
+      const subpathEntries = [
+        `${basePath}/${subpath}.d.ts`,
+        `${basePath}/${subpath}.d.mts`,
+        `${basePath}/${subpath}/index.d.ts`,
+        `${basePath}/${subpath}/index.d.mts`,
+        `${basePath}/dist/${subpath}.d.ts`,
+        `${basePath}/dist/${subpath}/index.d.ts`,
+      ];
+
+      for (const entryPoint of subpathEntries) {
+        if (this.files.has(entryPoint)) {
+          return entryPoint;
+        }
+      }
+    }
+
+    // First, check if we have a known entry point from loading this package
+    const knownEntryPoint = this.externalPackageEntryPoints.get(pkgName);
+    if (knownEntryPoint) {
+      const fullPath = `${basePath}/${knownEntryPoint}`;
+      if (this.files.has(fullPath)) {
+        return fullPath;
+      }
+    }
+
+    // Try common package-level entry points in order of priority
     const entryPoints = [
       `${basePath}/index.d.ts`,
       `${basePath}/index.d.mts`,
+      `${basePath}/dist/index.d.ts`,
+      `${basePath}/dist/index.d.mts`,
+      `${basePath}/types/index.d.ts`,
+      `${basePath}/lib/index.d.ts`,
+      `${basePath}/build/index.d.ts`,
     ];
 
     for (const entryPoint of entryPoints) {
       if (this.files.has(entryPoint)) {
         return entryPoint;
+      }
+    }
+
+    // If no common entry found, search for any .d.ts file in the package
+    const prefix = basePath + "/";
+    for (const filePath of this.files.keys()) {
+      if (filePath.startsWith(prefix) && filePath.endsWith(".d.ts")) {
+        return filePath;
       }
     }
 

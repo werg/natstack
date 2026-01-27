@@ -346,40 +346,72 @@ ${FS_INTERFACES}
   // Form Schema Utilities
   // ============================================================================
 
-  type PrimitiveFieldValue = string | number | boolean;
-  type FieldValue = PrimitiveFieldValue | string[];
-  type FieldType = "string" | "number" | "boolean" | "select" | "slider" | "segmented" | "toggle" | "readonly" | "code" | "buttonGroup" | "multiSelect" | "diff";
-  type ConditionOperator = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in";
+  export type PrimitiveFieldValue = string | number | boolean;
+  export type FieldValue = PrimitiveFieldValue | string[];
+  export type FieldType = "string" | "number" | "boolean" | "select" | "slider" | "segmented" | "toggle" | "readonly" | "code" | "buttonGroup" | "multiSelect" | "diff" | "toolPreview" | "approvalHeader";
+  export type ConditionOperator = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in" | "contains";
 
-  interface FieldCondition {
+  export interface FieldCondition {
     field: string;
     operator: ConditionOperator;
     value: PrimitiveFieldValue | PrimitiveFieldValue[];
   }
 
-  interface FieldOption {
+  export interface FieldOption {
     value: string;
     label: string;
     description?: string;
   }
 
-  interface FieldWarning {
+  export interface SliderNotch {
+    value: number;
+    label: string;
+    description?: string;
+  }
+
+  export interface FieldWarning {
     when: PrimitiveFieldValue | PrimitiveFieldValue[];
     message: string;
     severity?: "info" | "warning" | "danger";
   }
 
-  interface FieldDefinition {
+  export interface FieldDefinition {
     key: string;
-    label: string;
+    label?: string;
     description?: string;
     type: FieldType;
     required?: boolean;
     default?: FieldValue;
+    channelLevel?: boolean;
     options?: FieldOption[];
-    conditions?: { visible?: FieldCondition; enabled?: FieldCondition };
-    warnings?: FieldWarning[];
+    variant?: "buttons" | "cards" | "list";
+    min?: number;
+    max?: number;
+    step?: number;
+    notches?: SliderNotch[];
+    sliderLabels?: { min?: string; max?: string };
     group?: string;
+    order?: number;
+    visibleWhen?: FieldCondition | FieldCondition[];
+    enabledWhen?: FieldCondition | FieldCondition[];
+    warnings?: FieldWarning[];
+    placeholder?: string;
+    language?: string;
+    maxHeight?: number;
+    buttonStyle?: "outline" | "solid" | "soft";
+    buttons?: Array<{
+      value: string;
+      label: string;
+      color?: "gray" | "green" | "red" | "amber";
+      description?: string;
+    }>;
+    submitOnSelect?: boolean;
+    toolName?: string;
+    toolArgs?: unknown;
+    agentName?: string;
+    displayName?: string;
+    isFirstTimeGrant?: boolean;
+    floorLevel?: number;
   }
 
   export function evaluateCondition(value: unknown, condition: FieldCondition): boolean;
@@ -441,12 +473,13 @@ ${FS_INTERFACES}
 
   interface BuildNsLinkOptions {
     action?: NsAction;
+    contextId?: boolean | string;
     gitRef?: string;
-    context?: string;
     repoArgs?: Record<string, RepoArgSpec>;
     env?: Record<string, string>;
+    stateArgs?: Record<string, unknown>;
     name?: string;
-    newContext?: boolean;
+    focus?: boolean;
   }
 
   /** Build ns:// URLs for panel navigation */
@@ -457,6 +490,56 @@ ${FS_INTERFACES}
 
   /** Build ns-focus:// URLs for focusing panels */
   export function buildFocusLink(panelId: string): string;
+
+  // ============================================================================
+  // State Args API
+  // ============================================================================
+
+  /** Get current state args (synchronous snapshot) */
+  export function getStateArgs<T = Record<string, unknown>>(): T;
+
+  /** React hook for reactive state args access */
+  export function useStateArgs<T = Record<string, unknown>>(): T;
+
+  /** Update state args (validates, persists, triggers re-render) */
+  export function setStateArgs(updates: Record<string, unknown>): Promise<void>;
+
+  // ============================================================================
+  // Panel Lifecycle
+  // ============================================================================
+
+  /** Close the current panel */
+  export function closeSelf(): Promise<void>;
+
+  /** Unload the current panel (keeps in tree but unloads content) */
+  export function unloadSelf(): Promise<void>;
+
+  /** Force a repaint of the panel */
+  export function forceRepaint(): Promise<boolean>;
+
+  /** Ensure a panel is loaded by ID */
+  export function ensurePanelLoaded(panelId: string): Promise<EnsureLoadedResult>;
+
+  /** Whether this panel is ephemeral (temporary) */
+  export const isEphemeral: boolean;
+
+  interface EnsureLoadedResult {
+    wasLoaded: boolean;
+    panelId: string;
+  }
+
+  // ============================================================================
+  // Path Utilities
+  // ============================================================================
+
+  /** Normalize a path, resolving '..' and '.' segments */
+  export function normalizePath(p: string): string;
+
+  /** Get the file name from a path */
+  export function getFileName(p: string): string;
+
+  /** Resolve a sequence of paths to an absolute path */
+  export function resolvePath(...paths: string[]): string;
 
   // ============================================================================
   // RPC Namespace Types

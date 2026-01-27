@@ -275,4 +275,11 @@ declare const __natstackAsyncTracking__: {
   pending(ctx?: AsyncTrackingContext): number;
   activeContexts(): { id: string; pending: number }[];
 };
+
+/**
+ * Node.js process global (partial type for environment variables).
+ */
+declare const process: {
+  env: Record<string, string | undefined>;
+};
 `;

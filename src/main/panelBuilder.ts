@@ -23,9 +23,14 @@ import {
   isBareSpecifier,
   packageToRegex,
   DEFAULT_DEDUPE_PACKAGES,
+  createTypeCheckService,
+  createDiskFileSource,
+  loadSourceFiles,
+  type TypeCheckDiagnostic,
 } from "@natstack/runtime/typecheck";
 import { isVerdaccioServerInitialized, getVerdaccioServer } from "./verdaccioServer.js";
 import { getPackagesDir, getAppNodeModules } from "./paths.js";
+import { getTypeDefinitionService } from "./typecheck/service.js";
 
 // ===========================================================================
 // Shared Build Plugins
@@ -763,6 +768,8 @@ interface BuildFromSourceResult {
   dependencyHash?: string;
   /** Warning message (e.g., partial build success) */
   warning?: string;
+  /** TypeScript type errors found during build */
+  typeErrors?: TypeCheckDiagnostic[];
 }
 
 export class PanelBuilder {
@@ -984,6 +991,124 @@ export class PanelBuilder {
       paths.push(candidate);
     }
     return paths;
+  }
+
+  /**
+   * Run TypeScript type checking on a panel or worker source directory.
+   * Returns an array of type errors (diagnostics with severity "error").
+   */
+  private async runTypeCheck(
+    sourcePath: string,
+    runtimeNodeModules: string,
+    log: (message: string) => void,
+    dependencies?: Record<string, string>
+  ): Promise<TypeCheckDiagnostic[]> {
+    log(`Type checking...`);
+
+    try {
+      // Create file source for reading from disk
+      const fileSource = createDiskFileSource(sourcePath);
+
+      // Load all TypeScript source files
+      const files = await loadSourceFiles(fileSource, ".");
+      if (files.size === 0) {
+        log(`No TypeScript files found to type check`);
+        return [];
+      }
+
+      log(`Type checking ${files.size} files...`);
+
+      // Find workspace root for loading @natstack package types
+      const packagesDir = getPackagesDir();
+      const workspaceRoot = packagesDir ? path.dirname(packagesDir) : undefined;
+
+      // Get the TypeDefinitionService for fetching external package types
+      const typeDefService = getTypeDefinitionService();
+
+      // Pre-load types for all dependencies to avoid on-demand loading delays
+      // This is important for build-time type checking where we want fast results
+      const dependencyNames = Object.keys(dependencies ?? {});
+      if (dependencyNames.length > 0) {
+        log(`Pre-loading types for ${dependencyNames.length} dependencies...`);
+        await Promise.all(
+          dependencyNames.map((dep) =>
+            typeDefService.getPackageTypes(sourcePath, dep).catch(() => {
+              // Ignore failures - package might not have types
+            })
+          )
+        );
+      }
+
+      // Create type check service with proper resolution config and external type fetching
+      const service = createTypeCheckService({
+        panelPath: sourcePath,
+        resolution: {
+          fsShimEnabled: true,
+          runtimeNodeModules,
+        },
+        workspaceRoot,
+        // Callback to fetch external package types from the TypeDefinitionService
+        requestExternalTypes: async (packageName: string) => {
+          try {
+            const result = await typeDefService.getPackageTypes(sourcePath, packageName);
+            if (Object.keys(result.files).length > 0) {
+              return {
+                files: new Map(Object.entries(result.files)),
+                referencedPackages: result.referencedPackages,
+                entryPoint: result.entryPoint,
+              };
+            }
+            return null;
+          } catch {
+            return null;
+          }
+        },
+      });
+
+      // Add all source files to the service with absolute paths
+      // TypeScript's module resolution uses absolute paths, so we need to match
+      for (const [relativePath, content] of files) {
+        const absolutePath = path.join(sourcePath, relativePath);
+        service.updateFile(absolutePath, content);
+      }
+
+      // Run type checking with automatic external type loading
+      // Loop until no more external types are pending (handles transitive dependencies)
+      let result = await service.checkWithExternalTypes();
+
+      // Additional cycles to handle transitive type dependencies
+      let maxCycles = 5;
+      while (service.hasPendingTypes() && maxCycles > 0) {
+        const loadedNew = await service.loadPendingTypes();
+        if (!loadedNew) break;
+        result = service.check();
+        maxCycles--;
+      }
+
+      // Filter to only errors (not warnings or suggestions)
+      const errors = result.diagnostics.filter((d) => d.severity === "error");
+
+      if (errors.length > 0) {
+        log(`Type check found ${errors.length} error(s)`);
+      } else {
+        log(`Type check passed`);
+      }
+
+      return errors;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log(`Type check failed: ${message}`);
+      // Return a synthetic error diagnostic
+      return [{
+        file: sourcePath,
+        line: 1,
+        column: 1,
+        message: `Type checking failed: ${message}`,
+        severity: "error",
+        code: 0,
+        category: ts.DiagnosticCategory.Error,
+      }];
+    }
   }
 
   loadManifest(panelPath: string): PanelManifest {
@@ -1441,7 +1566,13 @@ import ${JSON.stringify(relativeUserEntry)};
         }),
       });
 
-      const buildResult = await esbuild.build(createBuildConfig());
+      // Run esbuild and type checking in parallel
+      // Type checking uses the original source files, so it can run while esbuild bundles
+      const [buildResult, typeErrors] = await Promise.all([
+        esbuild.build(createBuildConfig()),
+        this.runTypeCheck(sourcePath, workspace.nodeModulesDir, log, runtimeDependencies),
+      ]);
+
       let buildMetafile = buildResult.metafile;
       let exposeModulesWarning: string | undefined;
 
@@ -1535,6 +1666,20 @@ import ${JSON.stringify(relativeUserEntry)};
       });
 
       log(`Build complete (${bundle.length} bytes JS)`);
+
+      // If there are type errors, fail the build
+      if (typeErrors.length > 0) {
+        const errorSummary = typeErrors
+          .slice(0, 5) // Show first 5 errors
+          .map((e) => `${e.file}:${e.line}:${e.column}: ${e.message}`)
+          .join("\n");
+        const moreMsg = typeErrors.length > 5 ? `\n... and ${typeErrors.length - 5} more errors` : "";
+        return {
+          success: false,
+          error: `TypeScript errors:\n${errorSummary}${moreMsg}`,
+          typeErrors,
+        };
+      }
 
       return {
         success: true,
@@ -2120,40 +2265,44 @@ import ${JSON.stringify(relativeUserEntry)};
       // - Safe workers: browser platform + ESM (standard browser environment)
       // - Unsafe workers: node platform + CJS (nodeIntegration enabled, require() available)
 
-      await esbuild.build({
-        entryPoints: [tempEntryPath],
-        bundle: true,
-        platform: options?.unsafe ? "node" : "browser",
-        target: "es2022",
-        conditions: ["natstack-panel"],
-        outfile: bundlePath,
-        sourcemap: "inline",
-        keepNames: true,
-        format: options?.unsafe ? "cjs" : "esm",
-        absWorkingDir: sourcePath,
-        nodePaths,
-        plugins,
-        tsconfig: this.writeBuildTsconfig(buildWorkspace.buildDir, sourcePath, "worker", {
-          target: "ES2022",
-          useDefineForClassFields: true,
+      // Run esbuild and type checking in parallel
+      const [, typeErrors] = await Promise.all([
+        esbuild.build({
+          entryPoints: [tempEntryPath],
+          bundle: true,
+          platform: options?.unsafe ? "node" : "browser",
+          target: "es2022",
+          conditions: ["natstack-panel"],
+          outfile: bundlePath,
+          sourcemap: "inline",
+          keepNames: true,
+          format: options?.unsafe ? "cjs" : "esm",
+          absWorkingDir: sourcePath,
+          nodePaths,
+          plugins,
+          tsconfig: this.writeBuildTsconfig(buildWorkspace.buildDir, sourcePath, "worker", {
+            target: "ES2022",
+            useDefineForClassFields: true,
+          }),
+          // For CJS (unsafe workers), dynamic import() must be transformed to require()
+          // because WebContentsView doesn't have an ESM loader to resolve bare specifiers.
+          // Setting 'dynamic-import': false tells esbuild to transform import() to require().
+          supported: options?.unsafe ? { "dynamic-import": false } : undefined,
+          // For CJS bundles, provide import.meta.url shim since CJS doesn't have import.meta
+          // This allows ES modules that use import.meta.url to work when bundled.
+          // The actual value is computed in the banner and stored in __import_meta_url.
+          // Note: For @openai/codex-sdk, this provides a valid URL (though not the original path).
+          // The codex-responder uses codexPathOverride to specify the codex binary location,
+          // so the SDK's findCodexPath() (which uses import.meta.url) isn't actually called.
+          define: options?.unsafe
+            ? { "import.meta.url": "__import_meta_url" }
+            : undefined,
+          banner: {
+            js: bannerJs,
+          },
         }),
-        // For CJS (unsafe workers), dynamic import() must be transformed to require()
-        // because WebContentsView doesn't have an ESM loader to resolve bare specifiers.
-        // Setting 'dynamic-import': false tells esbuild to transform import() to require().
-        supported: options?.unsafe ? { "dynamic-import": false } : undefined,
-        // For CJS bundles, provide import.meta.url shim since CJS doesn't have import.meta
-        // This allows ES modules that use import.meta.url to work when bundled.
-        // The actual value is computed in the banner and stored in __import_meta_url.
-        // Note: For @openai/codex-sdk, this provides a valid URL (though not the original path).
-        // The codex-responder uses codexPathOverride to specify the codex binary location,
-        // so the SDK's findCodexPath() (which uses import.meta.url) isn't actually called.
-        define: options?.unsafe
-          ? { "import.meta.url": "__import_meta_url" }
-          : undefined,
-        banner: {
-          js: bannerJs,
-        },
-      });
+        this.runTypeCheck(sourcePath, buildWorkspace.nodeModulesDir, log, workerDependencies),
+      ]);
 
       // Read the built bundle
       const bundle = fs.readFileSync(bundlePath, "utf-8");
@@ -2179,6 +2328,28 @@ import ${JSON.stringify(relativeUserEntry)};
       }
 
       log(`Build complete: ${bundle.length} bytes JS`);
+
+      // If there are type errors, fail the build
+      if (typeErrors.length > 0) {
+        const errorSummary = typeErrors
+          .slice(0, 5) // Show first 5 errors
+          .map((e) => `${e.file}:${e.line}:${e.column}: ${e.message}`)
+          .join("\n");
+        const moreMsg = typeErrors.length > 5 ? `\n... and ${typeErrors.length - 5} more errors` : "";
+        if (buildWorkspace) {
+          try {
+            await buildWorkspace.cleanupBuildDir();
+          } catch {
+            // Best-effort
+          }
+        }
+        if (cleanup) await cleanup();
+        return {
+          success: false,
+          error: `TypeScript errors:\n${errorSummary}${moreMsg}`,
+          buildLog,
+        };
+      }
 
       // Step 6: Cache result
       const result: WorkerBuildResult = {

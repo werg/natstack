@@ -57,7 +57,12 @@ const INTERNAL_PREFIXES = [
  * Check if a package should be skipped (not fetched from npm).
  */
 function shouldSkipPackage(packageName: string): boolean {
-  // Skip node built-ins
+  // Skip node: protocol imports (node:fs, node:http, etc.)
+  if (packageName.startsWith("node:")) {
+    return true;
+  }
+
+  // Skip node built-ins (fs, path, etc. without node: prefix)
   if (NODE_BUILTINS.has(packageName)) {
     return true;
   }
@@ -67,6 +72,11 @@ function shouldSkipPackage(packageName: string): boolean {
     if (packageName.startsWith(prefix)) {
       return true;
     }
+  }
+
+  // Skip # internal imports (TypeScript private imports, subpath imports)
+  if (packageName.startsWith("#")) {
+    return true;
   }
 
   // Skip blacklisted names
@@ -196,19 +206,19 @@ export class TypeDefinitionService {
    * @param panelPath - Path to the panel requesting types
    * @param packageName - The package to get types for
    * @param version - Optional specific version
-   * @returns Map of file paths to contents (as plain object for RPC)
+   * @returns Object with files map and referenced packages
    */
   async getPackageTypes(
     panelPath: string,
     packageName: string,
     version?: string
-  ): Promise<Record<string, string>> {
+  ): Promise<{ files: Record<string, string>; referencedPackages?: string[]; entryPoint?: string }> {
     // Handle @natstack/* packages - try local packages directory first
     if (packageName.startsWith("@natstack/")) {
       const types = this.getNatstackTypes(packageName);
       if (Object.keys(types).length > 0) {
         console.log(`[TypeDefinitionService] Serving ${packageName} types (${Object.keys(types).length} files)`);
-        return types;
+        return { files: types };
       }
       // If no local types found (non-monorepo context), fall through to try
       // loading from installed node_modules via Verdaccio/Arborist
@@ -217,15 +227,15 @@ export class TypeDefinitionService {
 
     // Skip packages that aren't real npm packages
     if (shouldSkipPackage(packageName)) {
-      return {};
+      return { files: {} };
     }
 
     const cacheKey = `${packageName}@${version || "latest"}`;
 
-    // 1. Check global cache first
+    // 1. Check global cache first (cache doesn't include referencedPackages)
     const cached = this.globalTypeCache.get(cacheKey);
-    if (cached) {
-      return Object.fromEntries(cached);
+    if (cached && cached.size > 0) {
+      return { files: Object.fromEntries(cached) };
     }
 
     // 2. Get or create deps directory for this panel
@@ -242,10 +252,14 @@ export class TypeDefinitionService {
 
     if (types && types.files.size > 0) {
       this.globalTypeCache.set(cacheKey, types.files);
-      return Object.fromEntries(types.files);
+      return {
+        files: Object.fromEntries(types.files),
+        referencedPackages: types.referencedPackages,
+        entryPoint: types.entryPoint ?? undefined,
+      };
     }
 
-    return {}; // No types available
+    return { files: {} }; // No types available
   }
 
   /**
@@ -295,7 +309,7 @@ export class TypeDefinitionService {
   private async tryLoadTypes(
     depsDir: string,
     packageName: string
-  ): Promise<{ files: Map<string, string> } | null> {
+  ): Promise<{ files: Map<string, string>; referencedPackages: string[]; entryPoint: string | null } | null> {
     const nodeModulesPath = path.join(depsDir, "node_modules");
 
     try {
@@ -309,31 +323,42 @@ export class TypeDefinitionService {
     });
 
     const result = await loader.loadPackageTypes(packageName);
-    return result;
+    if (!result) return null;
+
+    return {
+      files: result.files,
+      referencedPackages: result.referencedPackages,
+      entryPoint: result.entryPoint,
+    };
   }
 
   /**
    * Install a package using Arborist.
-   * Uses a lock to prevent concurrent installations of the same package.
+   * Uses a per-directory lock to prevent concurrent installations from corrupting package.json.
+   * Multiple packages for the same depsDir are serialized properly.
    */
-  private installPackage(
+  private async installPackage(
     depsDir: string,
     packageName: string,
     version?: string
   ): Promise<void> {
     const spec = version ? `${packageName}@${version}` : packageName;
-    const lockKey = `${depsDir}:${spec}`;
+    // Lock per-directory, not per-package, since all packages share the same package.json
+    const lockKey = depsDir;
 
-    // Atomic getOrCreate: if lock exists, return it; otherwise create and store atomically
-    const existingLock = this.installLocks.get(lockKey);
-    if (existingLock) {
-      return existingLock;
+    // Spin-wait for lock to become available (proper serialization)
+    while (true) {
+      const existingLock = this.installLocks.get(lockKey);
+      if (!existingLock) {
+        break; // Lock is free, we can proceed
+      }
+      // Wait for existing install to complete
+      await existingLock;
+      // Loop back to check again (another waiter may have grabbed the lock)
     }
 
-    // Create the installation promise and store it atomically (synchronous operations)
-    // This ensures no TOCTOU race: the check-and-set happens in the same synchronous block
+    // Create the installation promise and store it atomically
     const installPromise = this.doInstall(depsDir, spec).finally(() => {
-      // Clean up lock after completion (success or failure)
       this.installLocks.delete(lockKey);
     });
 
@@ -361,12 +386,35 @@ export class TypeDefinitionService {
       fsSync.rmSync(npmrcPath);
     }
 
-    // Read or create package.json
+    // Read or create package.json, with recovery for corrupted files
     let packageJson: { name: string; private: boolean; dependencies: Record<string, string> };
     try {
       const content = await fs.readFile(packageJsonPath, "utf-8");
+      if (!content || content.trim() === "") {
+        throw new Error("Empty package.json");
+      }
       packageJson = JSON.parse(content);
-    } catch {
+      // Validate basic structure
+      if (typeof packageJson !== "object" || packageJson === null) {
+        throw new Error("Invalid package.json structure");
+      }
+      // Ensure required fields exist
+      if (!packageJson.dependencies) {
+        packageJson.dependencies = {};
+      }
+    } catch (error) {
+      // Start fresh with a new package.json (handles missing, empty, or corrupted files)
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      if (!errorMsg.includes("ENOENT")) {
+        console.log(`[TypeDefinitionService] Resetting corrupted package.json: ${errorMsg}`);
+        // Also clean node_modules to ensure consistent state
+        const nodeModulesPath = path.join(depsDir, "node_modules");
+        try {
+          await fs.rm(nodeModulesPath, { recursive: true, force: true });
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
       packageJson = {
         name: "natstack-types-cache",
         private: true,
@@ -444,6 +492,39 @@ export class TypeDefinitionService {
             retryCount++;
             continue; // Retry without the stale entry
           }
+        }
+
+        // Check if it's an ENOTEMPTY error (corrupted node_modules/Arborist state)
+        if (errorMsg.includes("ENOTEMPTY") && retryCount === 0) {
+          // Only try this once - delete the entire deps directory for a fresh start
+          console.log(`[TypeDefinitionService] Corrupted Arborist state detected, resetting deps directory...`);
+          try {
+            // Use shell rm -rf as a fallback since fs.rm can fail with ENOTEMPTY on some systems
+            const { execSync } = await import("child_process");
+            try {
+              execSync(`rm -rf "${depsDir}"`, { timeout: 30000 });
+            } catch {
+              // Fallback to fs.rm if shell fails
+              await fs.rm(depsDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+            }
+            await fs.mkdir(depsDir, { recursive: true });
+            // Recreate package.json with just our package
+            packageJson = {
+              name: "natstack-types-cache",
+              private: true,
+              dependencies: { [pkgName]: pkgVersion },
+            };
+            await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
+            // Also recreate .npmrc if needed
+            if (canServeNatstack) {
+              const verdaccioUrl = getVerdaccioServer().getBaseUrl();
+              fsSync.writeFileSync(npmrcPath, `registry=${verdaccioUrl}\n`);
+            }
+          } catch (cleanupError) {
+            console.error(`[TypeDefinitionService] Failed to reset deps directory:`, cleanupError);
+          }
+          retryCount++;
+          continue; // Retry with completely fresh directory
         }
 
         // Not a recoverable error
@@ -561,7 +642,7 @@ export const typeCheckRpcMethods = {
     panelPath: string,
     packageName: string,
     version?: string
-  ): Promise<Record<string, string>> => {
+  ): Promise<{ files: Record<string, string>; referencedPackages?: string[]; entryPoint?: string }> => {
     return getTypeDefinitionService().getPackageTypes(panelPath, packageName, version);
   },
 

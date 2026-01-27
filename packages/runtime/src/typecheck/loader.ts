@@ -27,6 +27,8 @@ export interface LoadedTypeDefinitions {
   entryPoint: string | null;
   /** Any errors encountered during loading */
   errors: string[];
+  /** Package names referenced via /// <reference types="..." /> that should be loaded separately */
+  referencedPackages: string[];
 }
 
 /**
@@ -57,21 +59,41 @@ export class TypeDefinitionLoader {
       files: new Map(),
       entryPoint: null,
       errors: [],
+      referencedPackages: [],
     };
 
     // Try to find the package
     const packageDir = await this.findPackageDir(packageName);
     if (!packageDir) {
-      // Try @types fallback
-      const typesPackage = `@types/${packageName.replace("@", "").replace("/", "__")}`;
-      const typesDir = await this.findPackageDir(typesPackage);
-      if (!typesDir) {
-        return null;
-      }
-      return this.loadFromPackageDir(typesDir, result, visited);
+      // Package not found, try @types fallback
+      return this.tryTypesPackage(packageName, result, visited);
     }
 
-    return this.loadFromPackageDir(packageDir, result, visited);
+    // Package found, try to load types from it
+    const loaded = await this.loadFromPackageDir(packageDir, result, visited);
+
+    // If package exists but has no types, try @types fallback (e.g., react -> @types/react)
+    if (loaded.files.size === 0 && !packageName.startsWith("@types/")) {
+      return this.tryTypesPackage(packageName, result, visited);
+    }
+
+    return loaded;
+  }
+
+  /**
+   * Try to load types from @types/* package.
+   */
+  private async tryTypesPackage(
+    packageName: string,
+    result: LoadedTypeDefinitions,
+    visitedFiles: Set<string>
+  ): Promise<LoadedTypeDefinitions | null> {
+    const typesPackage = `@types/${packageName.replace("@", "").replace("/", "__")}`;
+    const typesDir = await this.findPackageDir(typesPackage);
+    if (!typesDir) {
+      return null;
+    }
+    return this.loadFromPackageDir(typesDir, result, visitedFiles);
   }
 
   /**
@@ -138,7 +160,8 @@ export class TypeDefinitionLoader {
 
       // Load the entry point and follow imports
       const entryPath = path.join(packageDir, typesEntry);
-      result.entryPoint = entryPath;
+      // Store entry point as relative path for consistent resolution
+      result.entryPoint = typesEntry.startsWith("./") ? typesEntry.slice(2) : typesEntry;
       await this.loadTypeFile(entryPath, packageDir, result, visitedFiles);
 
       return result;
@@ -203,7 +226,9 @@ export class TypeDefinitionLoader {
 
     try {
       const content = await fs.readFile(filePath, "utf-8");
-      result.files.set(filePath, content);
+      // Store with path relative to package root for consistent resolution
+      const relativePath = path.relative(packageDir, filePath);
+      result.files.set(relativePath, content);
 
       // Find and follow imports
       const { imports, referenceTypes } = this.extractImports(content);
@@ -221,24 +246,20 @@ export class TypeDefinitionLoader {
   }
 
   /**
-   * Load types for a reference type directive (e.g., /// <reference types="node" />).
+   * Record a reference type directive (e.g., /// <reference types="node" />).
+   * Instead of loading inline, we record the package name so the caller can
+   * load it separately with proper namespacing.
    */
   private async loadReferenceType(
     refType: string,
     result: LoadedTypeDefinitions,
-    visitedFiles: Set<string>
+    _visitedFiles: Set<string>
   ): Promise<void> {
-    // Try to load @types/{refType} from node_modules
+    // Record the referenced package so the caller can load it separately
+    // This avoids path collisions (e.g., both react and scheduler having index.d.ts)
     const typesPackage = `@types/${refType}`;
-    const loaded = await this.loadPackageTypes(typesPackage, visitedFiles);
-    if (loaded) {
-      // Merge the loaded files into the result
-      for (const [filePath, content] of loaded.files) {
-        if (!result.files.has(filePath)) {
-          result.files.set(filePath, content);
-        }
-      }
-      result.errors.push(...loaded.errors);
+    if (!result.referencedPackages.includes(typesPackage)) {
+      result.referencedPackages.push(typesPackage);
     }
   }
 
