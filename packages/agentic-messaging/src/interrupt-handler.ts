@@ -5,7 +5,7 @@
  * Used by responder workers to support user interruption.
  */
 
-import type { AgenticClient, AgenticParticipantMetadata } from "./types.js";
+import type { AgenticClient, AgenticParticipantMetadata, EventStreamItem } from "./types.js";
 
 export interface InterruptHandlerOptions<T extends AgenticParticipantMetadata = AgenticParticipantMetadata> {
   client: AgenticClient<T>;
@@ -55,10 +55,15 @@ export function createInterruptHandler<T extends AgenticParticipantMetadata = Ag
 } {
   let paused = false;
   let monitoringActive = true;
+  // Keep a reference to the iterator so we can properly close it on cleanup
+  let eventIterator: AsyncIterableIterator<EventStreamItem> | null = null;
 
   const monitor = async () => {
     try {
-      for await (const event of options.client.events()) {
+      const iterator = options.client.events();
+      eventIterator = iterator;
+
+      for await (const event of iterator) {
         if (!monitoringActive) break;
 
         if (event.type === "method-call" && event.methodName === "pause" && !paused) {
@@ -70,7 +75,7 @@ export function createInterruptHandler<T extends AgenticParticipantMetadata = Ag
           await options.onPause?.(reason);
 
           // Publish pause event to UI
-          await options.client.pubsub.publish(
+          await options.client.publish(
             "execution-pause",
             {
               messageId: options.messageId,
@@ -89,6 +94,8 @@ export function createInterruptHandler<T extends AgenticParticipantMetadata = Ag
       if (!(err instanceof Error && err.message.includes("closed"))) {
         console.error("[Interrupt Handler] Error:", err);
       }
+    } finally {
+      eventIterator = null;
     }
   };
 
@@ -97,6 +104,9 @@ export function createInterruptHandler<T extends AgenticParticipantMetadata = Ag
     isPaused: () => paused,
     cleanup: () => {
       monitoringActive = false;
+      // Properly close the iterator to unblock any pending await
+      // This prevents the monitor from hanging until the next event arrives
+      eventIterator?.return?.();
     },
   };
 }

@@ -31,6 +31,7 @@ import {
   createThinkingTracker,
   createTypingTracker,
   createActionTracker,
+  createContextTracker,
   getDetailedActionDescription,
   CONTENT_TYPE_TYPING,
   CONTENT_TYPE_INLINE_UI,
@@ -38,6 +39,7 @@ import {
   getCachedTodoListCode,
   type TodoItem,
   type InlineUiData,
+  type ContextWindowUsage,
   // Image processing utilities
   buildOpenAIContents,
   filterImageAttachments,
@@ -376,6 +378,9 @@ async function main() {
     handle,
     name: "Codex",
     type: "codex",
+    extraMetadata: {
+      panelId: id, // Runtime panel ID - allows chat to link participant to child panel
+    },
     reconnect: true,
     methods: {
       pause: createPauseMethodDefinition(async () => {
@@ -504,6 +509,31 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
   });
 
   log(`Connected to channel: ${channelName}`);
+
+  // Create context tracker for monitoring token usage across the session
+  const contextTracker = createContextTracker({
+    model: currentSettings.model,
+    log,
+    onUpdate: async (usage: ContextWindowUsage) => {
+      // Merge contextUsage into current metadata and update
+      const currentMetadata = client.clientId
+        ? client.roster[client.clientId]?.metadata
+        : undefined;
+      const metadata: ChatParticipantMetadata = {
+        name: "Codex",
+        type: "codex",
+        handle,
+        panelId: id,
+        ...currentMetadata,
+        contextUsage: usage,
+      };
+      try {
+        await client.updateMetadata(metadata);
+      } catch (err) {
+        log(`Failed to update context usage metadata: ${err}`);
+      }
+    },
+  });
 
   // Get channel config - prefer stateArgs (reliable) over channelConfig (may be empty due to timing)
   // Workers may connect before chat panel and create channel without config
@@ -763,6 +793,16 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
   // Track TODO message ID for updates
   let codexHome: string | null = null;
 
+  // Set up RPC pause handler - monitors for pause tool calls
+  // Defined before try block so cleanup can be called in finally
+  const interruptHandler = createInterruptHandler({
+    client,
+    messageId: incoming.id,
+    onPause: (reason) => {
+      log(`Pause RPC received: ${reason}`);
+    }
+  });
+
   // Create a map from originalName -> displayName for action tracking
   const originalToDisplayName = new Map<string, string>();
   for (const tool of mcpTools) {
@@ -830,6 +870,9 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
     }
   };
 
+  // Start monitoring for pause events in background
+  void interruptHandler.monitor();
+
   try {
     // Start MCP HTTP server if we have tools
     if (mcpTools.length > 0) {
@@ -837,18 +880,6 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
       const mcpServerUrl = `http://127.0.0.1:${mcpServer.port}/mcp`;
       codexHome = createCodexConfig(mcpServerUrl);
     }
-
-    // Set up RPC pause handler - monitors for pause tool calls
-    const interruptHandler = createInterruptHandler({
-      client,
-      messageId: incoming.id,
-      onPause: (reason) => {
-        log(`Pause RPC received: ${reason}`);
-      }
-    });
-
-    // Start monitoring for pause events in background
-    void interruptHandler.monitor();
 
     // Initialize Codex SDK with custom config location
     // Only pass through necessary env vars to avoid leaking sensitive data
@@ -1061,11 +1092,21 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
           break;
         }
 
-        case "turn.completed":
+        case "turn.completed": {
           if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
             await client.commitCheckpoint(incoming.pubsubId);
             checkpointCommitted = true;
           }
+
+          // Record token usage for context window tracking
+          const turnCompletedEvent = event as { type: "turn.completed"; usage?: { input_tokens?: number; output_tokens?: number } };
+          if (turnCompletedEvent.usage) {
+            await contextTracker.recordUsage({
+              inputTokens: turnCompletedEvent.usage.input_tokens ?? 0,
+              outputTokens: turnCompletedEvent.usage.output_tokens ?? 0,
+            });
+          }
+
           // Mark message as complete (only if we created one)
           if (responseId) {
             await client.complete(responseId);
@@ -1075,7 +1116,11 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
             await typing.cleanup();
             log(`No response message was created for ${incoming.id}`);
           }
+
+          // Mark end of turn for context tracking
+          await contextTracker.endTurn();
           break;
+        }
 
         case "turn.failed": {
           const errorMsg = "error" in event && event.error && typeof event.error === "object" && "message" in event.error
@@ -1103,6 +1148,8 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
     await thinking.cleanup();
     await typing.cleanup();
     await action.cleanup();
+    // Flush any pending context usage updates
+    await contextTracker.cleanup();
 
     // Pause tool returns successfully, so we shouldn't see pause-related errors
     // Any error here is a real error that should be reported
@@ -1117,6 +1164,7 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
     }
   } finally {
     // Cleanup resources
+    interruptHandler.cleanup();
     if (mcpServer) {
       await mcpServer.close();
     }
@@ -1126,4 +1174,7 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
   }
 }
 
-void main();
+void main().catch((err) => {
+  console.error("[Codex Worker] Fatal error:", err);
+  process.exit(1);
+});

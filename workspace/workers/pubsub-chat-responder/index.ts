@@ -21,6 +21,7 @@ import {
   createThinkingTracker,
   createTypingTracker,
   createActionTracker,
+  createContextTracker,
   getDetailedActionDescription,
   CONTENT_TYPE_TYPING,
   CONTENT_TYPE_INLINE_UI,
@@ -28,6 +29,7 @@ import {
   getCachedTodoListCode,
   type TodoItem,
   type InlineUiData,
+  type ContextWindowUsage,
   // Image processing utilities
   filterImageAttachments,
   validateAttachments,
@@ -99,7 +101,7 @@ async function main() {
 
   // Connect to agentic messaging channel with reconnection and participant metadata
   // Pass contextId from stateArgs for channel creation (more reliable than runtime contextId)
-  // Include workerPanelId and agentTypeId for recovery support
+  // Include panelId and agentTypeId for recovery support
   const client = await connect<ChatParticipantMetadata>({
     serverUrl: pubsubConfig.serverUrl,
     token: pubsubConfig.token,
@@ -109,8 +111,8 @@ async function main() {
     name: "AI Responder",
     type: "ai-responder",
     extraMetadata: {
-      workerPanelId: id, // Panel ID of this worker for reload via ensurePanelLoaded
-      agentTypeId,       // Agent type for identification
+      panelId: id,   // Runtime panel ID - allows chat to link participant to child panel
+      agentTypeId,   // Agent type for identification
     },
     reconnect: true,
     methods: {
@@ -260,6 +262,32 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
   });
 
   log(`Connected to channel: ${channelName}`);
+
+  // Create context tracker for monitoring token usage across the session
+  const contextTracker = createContextTracker({
+    model: currentSettings.modelRole,
+    log,
+    onUpdate: async (usage: ContextWindowUsage) => {
+      // Merge contextUsage into current metadata and update
+      const currentMetadata = client.clientId
+        ? client.roster[client.clientId]?.metadata
+        : undefined;
+      const metadata: ChatParticipantMetadata = {
+        name: stateArgs.agentTypeId ?? "AI Assistant",
+        type: "ai-responder",
+        handle,
+        panelId: id,
+        agentTypeId: stateArgs.agentTypeId,
+        ...currentMetadata,
+        contextUsage: usage,
+      };
+      try {
+        await client.updateMetadata(metadata);
+      } catch (err) {
+        log(`Failed to update context usage metadata: ${err}`);
+      }
+    },
+  });
 
   // Initialize settings with proper precedence:
   // 1. Apply initialization config (from stateArgs passed at spawn time)
@@ -690,6 +718,15 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
         }
       }
 
+      // Record token usage for context window tracking
+      const streamUsage = await stream.usage;
+      if (streamUsage) {
+        await contextTracker.recordUsage({
+          inputTokens: streamUsage.promptTokens ?? 0,
+          outputTokens: streamUsage.completionTokens ?? 0,
+        });
+      }
+
       // Process pending approvals
       const approvalResults: ToolResultPart[] = [];
       if (pendingApprovals.length > 0) {
@@ -798,11 +835,15 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
       log(`No response content for ${incoming.id}`);
     }
 
+    // Mark end of turn for context tracking (resets current turn, preserves session totals)
+    await contextTracker.endTurn();
   } catch (err) {
     // Cleanup any pending thinking/typing/action messages to avoid orphaned messages
     await thinking.cleanup();
     await typing.cleanup();
     await action.cleanup();
+    // Flush any pending context usage updates
+    await contextTracker.cleanup();
 
     // Pause tool returns successfully, so we shouldn't see pause-related errors
     // Any error here is a real error that should be reported
@@ -811,8 +852,14 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
     // Create error message - either on existing response or create new one
     const errorMsgId = responseId ?? (await client.send("", { replyTo: incoming.id })).messageId;
     await client.error(errorMsgId, err instanceof Error ? err.message : String(err));
+  } finally {
+    // Always cleanup the interrupt handler to properly close the event stream
+    interruptHandler.cleanup();
   }
 }
 
 // Start the worker
-void main();
+void main().catch((err) => {
+  console.error("[Chat Worker] Fatal error:", err);
+  process.exit(1);
+});

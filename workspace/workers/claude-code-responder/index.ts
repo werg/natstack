@@ -25,14 +25,17 @@ import {
   showPermissionPrompt,
   validateRestrictedMode,
   getCanonicalToolName,
+  prettifyToolName,
   createThinkingTracker,
   createActionTracker,
   createTypingTracker,
+  createContextTracker,
   getDetailedActionDescription,
   needsApprovalForTool,
   CONTENT_TYPE_TYPING,
   CONTENT_TYPE_INLINE_UI,
   type InlineUiData,
+  type ContextWindowUsage,
   // TODO list utilities
   getCachedTodoListCode,
   // Image processing utilities
@@ -40,10 +43,7 @@ import {
   validateAttachments,
   uint8ArrayToBase64,
   // Subagent utilities
-  createSubagentConnection,
-  forwardStreamEventToSubagent,
-  type SubagentConnection,
-  type SubagentConnectionOptions,
+  SubagentManager,
   type SDKStreamEvent,
   type Attachment,
   type AgenticClient,
@@ -51,7 +51,16 @@ import {
   type AgentSDKToolDefinition,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
+  // Async queue utility
+  AsyncQueue,
 } from "@natstack/agentic-messaging";
+// Session recovery utilities (Node.js only)
+import {
+  recoverSession,
+  generateRecoveryReviewUI,
+  formatContextForSdk,
+  type PubsubMessageWithMetadata,
+} from "@natstack/agentic-messaging/recovery";
 import {
   CLAUDE_CODE_PARAMETERS,
   CLAUDE_MODEL_FALLBACKS,
@@ -69,16 +78,6 @@ interface WorkerSessionConfig {
   isRestrictedMode: boolean; // Defaulted from nullable at session creation
 }
 
-/** Manages subagent lifecycle for Task tool in unrestricted mode */
-interface SubagentManager {
-  readonly connectionOptions: SubagentConnectionOptions;
-  readonly active: Map<string, SubagentConnection>;
-  readonly pendingEvents: Map<string, SDKStreamEvent[]>;
-  readonly timeouts: Map<string, ReturnType<typeof setTimeout>>;
-  cleanup(toolUseId: string, reason: "complete" | "error" | "timeout"): Promise<void>;
-  cleanupAll(): Promise<void>;
-}
-
 /** Manages missed context accumulation and retrieval */
 interface MissedContextManager {
   get(): { formatted: string; lastPubsubId: number } | null;
@@ -92,6 +91,7 @@ interface WorkerSession {
   readonly config: WorkerSessionConfig;
   readonly subagents: SubagentManager;
   readonly missedContext: MissedContextManager;
+  readonly contextTracker: ReturnType<typeof createContextTracker>;
 
   // References to module-level state (not owned, due to bootstrapping)
   readonly settings: ClaudeCodeWorkerSettings; // Reference to currentSettings
@@ -287,6 +287,12 @@ function getActionDescription(toolName: string): string {
     Task: "Delegating to subagent",
     TodoWrite: "Updating task list",
     AskUserQuestion: "Asking user",
+    // Channel tools
+    SetTitle: "Setting conversation title",
+    // Attachment tools
+    ListImages: "Listing available images",
+    GetImage: "Viewing image",
+    GetCurrentImages: "Getting current images",
   };
   return descriptions[toolName] ?? `Using ${toolName}`;
 }
@@ -338,54 +344,9 @@ interface ProcessingState {
 }
 
 /**
- * AsyncQueue - A bidirectional buffer supporting both push (producer) and async iteration (consumer).
- * Based on the pattern from agentic-messaging/src/client.ts
- */
-class AsyncQueue<T> implements AsyncIterable<T> {
-  private values: T[] = [];
-  private resolvers: Array<(value: IteratorResult<T>) => void> = [];
-  private closed = false;
-
-  push(value: T): void {
-    const resolve = this.resolvers.shift();
-    if (resolve) {
-      resolve({ value, done: false });
-    } else {
-      this.values.push(value);
-    }
-  }
-
-  close(): void {
-    this.closed = true;
-    for (const resolve of this.resolvers) {
-      resolve({ value: undefined as T, done: true });
-    }
-    this.resolvers = [];
-  }
-
-  async *[Symbol.asyncIterator](): AsyncIterableIterator<T> {
-    while (true) {
-      if (this.values.length > 0) {
-        yield this.values.shift()!;
-        continue;
-      }
-      if (this.closed) {
-        return;
-      }
-      const next = await new Promise<IteratorResult<T>>((resolve) => {
-        this.resolvers.push(resolve);
-      });
-      if (next.done) {
-        return;
-      }
-      yield next.value;
-    }
-  }
-}
-
-/**
  * MessageQueue - FIFO queue with inspection capability for managing queued messages.
  * Allows both async iteration (for processor) and inspection (for queue position tracking).
+ * Uses the shared AsyncQueue from agentic-messaging.
  */
 class MessageQueue implements AsyncIterable<QueuedMessage> {
   private queue = new AsyncQueue<QueuedMessage>();
@@ -424,7 +385,14 @@ interface CreateWorkerSessionParams {
     claudeExecutable: string;
     restrictedMode: boolean; // Required at spawn time
   };
-  connectionOptions: SubagentConnectionOptions;
+  /** Pubsub config for SubagentManager - passed from runtime */
+  pubsubConfig: {
+    serverUrl: string;
+    token: string;
+  };
+  /** Channel name for SubagentManager */
+  channel: string;
+  contextTracker: ReturnType<typeof createContextTracker>;
   /** Function to update activity timestamp (for auto-unload prevention) */
   updateActivity: () => void;
 }
@@ -434,7 +402,7 @@ interface CreateWorkerSessionParams {
  * Sets up subagent management, missed context handling, and wires up reconnect callbacks.
  */
 function createWorkerSession(params: CreateWorkerSessionParams): WorkerSession {
-  const { client, config, connectionOptions, updateActivity } = params;
+  const { client, config, pubsubConfig, channel, contextTracker, updateActivity } = params;
 
   const sessionConfig: WorkerSessionConfig = {
     workingDirectory: config.workingDirectory,
@@ -443,61 +411,14 @@ function createWorkerSession(params: CreateWorkerSessionParams): WorkerSession {
   };
 
   // --- Subagent Management ---
-  const activeSubagents = new Map<string, SubagentConnection>();
-  const pendingSubagentEvents = new Map<string, SDKStreamEvent[]>();
-  const subagentTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
-
-  async function cleanupSubagent(
-    toolUseId: string,
-    reason: "complete" | "error" | "timeout"
-  ): Promise<void> {
-    const subagent = activeSubagents.get(toolUseId);
-    if (!subagent) return;
-
-    // Clear timeout if set
-    const timeout = subagentTimeouts.get(toolUseId);
-    if (timeout) {
-      clearTimeout(timeout);
-      subagentTimeouts.delete(toolUseId);
-    }
-
-    // Finalize subagent
-    if (reason === "complete") {
-      await subagent.complete();
-    } else if (reason === "error") {
-      await subagent.error("Subagent error");
-    } else if (reason === "timeout") {
-      await subagent.error("Subagent timed out after 10 minutes");
-      log(`Subagent ${toolUseId} timed out`);
-    }
-
-    await subagent.close();
-    activeSubagents.delete(toolUseId);
-    pendingSubagentEvents.delete(toolUseId);
-  }
-
-  async function cleanupAllSubagents(): Promise<void> {
-    for (const [toolUseId, subagent] of activeSubagents) {
-      const timeout = subagentTimeouts.get(toolUseId);
-      if (timeout) {
-        clearTimeout(timeout);
-        subagentTimeouts.delete(toolUseId);
-      }
-      await subagent.error("Parent cancelled");
-      await subagent.close();
-    }
-    activeSubagents.clear();
-    pendingSubagentEvents.clear();
-  }
-
-  const subagents: SubagentManager = {
-    connectionOptions,
-    active: activeSubagents,
-    pendingEvents: pendingSubagentEvents,
-    timeouts: subagentTimeouts,
-    cleanup: cleanupSubagent,
-    cleanupAll: cleanupAllSubagents,
-  };
+  // Use SubagentManager class which derives contextId lazily from parent client
+  const subagents = new SubagentManager({
+    serverUrl: pubsubConfig.serverUrl,
+    token: pubsubConfig.token,
+    channel,
+    parentClient: client,
+    log,
+  });
 
   // --- Missed Context Management ---
   let lastMissedPubsubId = 0;
@@ -545,6 +466,7 @@ function createWorkerSession(params: CreateWorkerSessionParams): WorkerSession {
     config: sessionConfig,
     subagents,
     missedContext,
+    contextTracker,
     get settings() {
       return currentSettings;
     },
@@ -588,9 +510,6 @@ function extractToolResultIds(message: unknown): string[] {
 /** Current settings state - initialized from agent config and persisted settings */
 let currentSettings: ClaudeCodeWorkerSettings = {};
 
-/** Default subagent timeout (10 minutes) */
-const SUBAGENT_TIMEOUT_MS = 10 * 60 * 1000;
-
 /** Reference to the current query instance for model discovery */
 let activeQueryInstance: Query | null = null;
 
@@ -600,6 +519,19 @@ let activeQueryInstance: Query | null = null;
  * allowing session resumption within the same worker lifetime.
  */
 let localSdkSessionId: string | undefined;
+
+/**
+ * Pending recovery context from session recovery.
+ * Contains messages that pubsub has but SDK doesn't know about.
+ * Consumed (cleared) after being included in the first message's prompt.
+ */
+let pendingRecoveryContext: string | null = null;
+
+/**
+ * Reference to the context tracker for the current session.
+ * Set after connection, used by settings handler to update model.
+ */
+let contextTrackerRef: ReturnType<typeof createContextTracker> | null = null;
 
 // =============================================================================
 // Observer (Producer) - Non-blocking message observation and queuing
@@ -713,6 +645,14 @@ async function processMessages(
         missedContext.updateLastId(missed.lastPubsubId);
       }
 
+      // Apply recovery context if available (one-time, from session recovery)
+      // This contains messages that pubsub had but SDK didn't know about
+      if (pendingRecoveryContext) {
+        prompt = `${pendingRecoveryContext}\n\n${prompt}`;
+        log(`Applied recovery context to prompt (${pendingRecoveryContext.length} chars)`);
+        pendingRecoveryContext = null; // Consume - only apply once
+      }
+
       // Create message context for handleUserMessage
       const messageCtx: MessageContext = {
         incoming: queuedMessage.event,
@@ -722,6 +662,12 @@ async function processMessages(
       };
 
       await handleUserMessage(session, messageCtx);
+    } catch (err) {
+      // Clean up typing indicator if handleUserMessage threw before its internal cleanup.
+      // This is defensive - handleUserMessage has its own cleanup, but errors could occur
+      // before that cleanup runs (e.g., during tracker initialization).
+      await queuedMessage.typingTracker?.cleanup();
+      throw err; // Re-throw to propagate the error
     } finally {
       state.currentMessage = null;
     }
@@ -766,6 +712,10 @@ async function main() {
     handle,
     name: "Claude Code",
     type: "claude-code",
+    extraMetadata: {
+      panelId: id, // Runtime panel ID - allows chat to link participant to child panel
+      executionMode: stateArgs.executionMode, // Plan or edit mode
+    },
     reconnect: true,
     methods: {
       pause: createPauseMethodDefinition(async () => {
@@ -834,6 +784,11 @@ async function main() {
           Object.assign(currentSettings, newSettings);
           log(`Settings updated: ${JSON.stringify(currentSettings)}`);
 
+          // Update context tracker model if it changed
+          if (newSettings.model && contextTrackerRef) {
+            contextTrackerRef.setModel(newSettings.model);
+          }
+
           // Persist settings if session is available
           if (client.sessionKey) {
             try {
@@ -841,6 +796,24 @@ async function main() {
             } catch (err) {
               log(`Failed to persist settings: ${err}`);
             }
+          }
+
+          // Update metadata to reflect new settings (e.g., executionMode change)
+          const currentMetadata = client.clientId
+            ? client.roster[client.clientId]?.metadata
+            : undefined;
+          const metadata: ChatParticipantMetadata = {
+            name: "Claude Code",
+            type: "claude-code",
+            handle,
+            panelId: id,
+            ...currentMetadata,
+            executionMode: currentSettings.executionMode,
+          };
+          try {
+            await client.updateMetadata(metadata);
+          } catch (err) {
+            log(`Failed to update metadata after settings change: ${err}`);
           }
 
           return { success: true, settings: currentSettings };
@@ -919,6 +892,36 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
 
   log(`Connected to channel: ${channelName}`);
 
+  // Create context tracker for monitoring token usage across the session
+  // Use stateArgs.model directly since currentSettings isn't populated yet
+  const contextTracker = createContextTracker({
+    model: stateArgs.model,
+    log,
+    onUpdate: async (usage: ContextWindowUsage) => {
+      // Merge contextUsage into current metadata and update
+      const currentMetadata = client.clientId
+        ? client.roster[client.clientId]?.metadata
+        : undefined;
+      const metadata: ChatParticipantMetadata = {
+        name: "Claude Code",
+        type: "claude-code",
+        handle,
+        panelId: id,
+        ...currentMetadata,
+        contextUsage: usage,
+        executionMode: currentSettings.executionMode,
+      };
+      try {
+        await client.updateMetadata(metadata);
+      } catch (err) {
+        log(`Failed to update context usage metadata: ${err}`);
+      }
+    },
+  });
+
+  // Store reference for settings handler to update model
+  contextTrackerRef = contextTracker;
+
   // Config from stateArgs (required at spawn time)
   const { restrictedMode } = stateArgs;
   // workingDirectory: prefer stateArgs, fallback to channelConfig or env
@@ -952,6 +955,94 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       localSdkSessionId = client.sdkSessionId;
     }
 
+    // 2a. Session recovery: bidirectional sync between SDK transcript and pubsub
+    // This handles the case where the worker crashed mid-conversation and the two
+    // systems have diverged. We sync both directions:
+    // - SDK messages not in pubsub → post to pubsub
+    // - Pubsub messages not in SDK → feed to SDK as context in next prompt
+    if (client.status === "interrupted" && client.sdkSessionId && workingDirectory) {
+      log(`Session was interrupted - performing bidirectional sync...`);
+      try {
+        const recoveryResult = await recoverSession({
+          sdkSessionId: client.sdkSessionId,
+          workingDirectory,
+          sendMessage: async (content, metadata) => {
+            await client.send(content, { metadata, persist: true });
+          },
+          getPubsubMessages: () => {
+            // Convert AggregatedMessage to PubsubMessageWithMetadata
+            return client.getMessagesWithMetadata().map((msg) => ({
+              id: msg.id,
+              pubsubId: msg.pubsubId,
+              content: msg.content,
+              senderId: msg.senderId,
+              senderType: msg.senderType,
+              timestamp: msg.ts,
+              contentType: msg.contentType,
+              metadata: msg.metadata as PubsubMessageWithMetadata["metadata"],
+            }));
+          },
+          log,
+        });
+
+        if (recoveryResult.recovered) {
+          log(`Session recovery complete:`);
+          log(`  - ${recoveryResult.messagesPostedToPubsub} messages posted to pubsub`);
+          log(`  - ${recoveryResult.contextForSdk.length} messages queued as SDK context`);
+
+          // Store context to include in next SDK prompt
+          if (recoveryResult.contextForSdk.length > 1) {
+            // More than one message - show UI for user to review/edit
+            const panel = Object.values(client.roster).find(
+              (p) => p.metadata.type === "panel"
+            );
+            if (panel) {
+              log(`Showing recovery review UI for ${recoveryResult.contextForSdk.length} messages`);
+              const uiCode = generateRecoveryReviewUI(
+                recoveryResult.contextForSdk,
+                recoveryResult.formattedContextForSdk
+              );
+              try {
+                const handle = client.callMethod(panel.id, "feedback_custom", { code: uiCode });
+                const result = await handle.result;
+                // User can edit the context or skip it entirely
+                if (result && typeof result === "object" && "context" in result) {
+                  const userContext = (result as { context: string }).context;
+                  if (userContext) {
+                    pendingRecoveryContext = userContext;
+                    log(`Applied user-edited recovery context (${userContext.length} chars)`);
+                  } else {
+                    log(`User chose to skip recovery context`);
+                  }
+                } else {
+                  // Fallback to default if result is unexpected
+                  pendingRecoveryContext = recoveryResult.formattedContextForSdk;
+                  log(`Using default recovery context (unexpected result format)`);
+                }
+              } catch (err) {
+                log(`Recovery UI error, using default context: ${err}`);
+                pendingRecoveryContext = recoveryResult.formattedContextForSdk;
+              }
+            } else {
+              // No panel yet, use default context
+              log(`No panel found for recovery UI, using default context`);
+              pendingRecoveryContext = recoveryResult.formattedContextForSdk;
+            }
+          } else if (recoveryResult.formattedContextForSdk) {
+            // Only one message or less - apply silently
+            pendingRecoveryContext = recoveryResult.formattedContextForSdk;
+          }
+        } else if (recoveryResult.error) {
+          log(`Session recovery failed: ${recoveryResult.error.message}`);
+        } else {
+          log(`Session recovery: systems are in sync`);
+        }
+      } catch (err) {
+        log(`Session recovery error: ${err}`);
+        // Continue even if recovery fails - better to have partial state than crash
+      }
+    }
+
     try {
       const savedSettings = await client.getSettings<ClaudeCodeWorkerSettings>();
       if (savedSettings) {
@@ -972,6 +1063,11 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
   // =============================================================================
   // Create WorkerSession - bundles all session state into a single context object
   // =============================================================================
+  // Get contextId from client (set during "ready" message from server)
+  // Note: contextId is a top-level field on the client, NOT part of channelConfig
+  const serverContextId = client.contextId;
+  log(`Subagent contextId: ${serverContextId ?? "(none)"} (stateArgs: ${stateArgs.contextId ?? "(none)"})`);
+
   const session = createWorkerSession({
     client,
     config: {
@@ -979,11 +1075,13 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       claudeExecutable,
       restrictedMode,
     },
-    connectionOptions: {
+    // SubagentManager derives contextId lazily from parentClient.contextId
+    pubsubConfig: {
       serverUrl: pubsubConfig.serverUrl,
       token: pubsubConfig.token,
-      channel: channelName,
     },
+    channel: channelName,
+    contextTracker,
     updateActivity,
   });
 
@@ -997,9 +1095,13 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
   const messageQueue = new MessageQueue();
   const processingState: ProcessingState = { currentMessage: null, queryInstance: null };
 
-  // Start observer in background (fire-and-forget)
+  // Start observer in background
   // This continuously observes messages and enqueues them with immediate typing indicators
-  void observeMessages(session, messageQueue, processingState);
+  // If observer fails, close the queue so processor exits and worker can restart
+  void observeMessages(session, messageQueue, processingState).catch((err) => {
+    log(`Observer failed: ${err instanceof Error ? err.message : String(err)}`);
+    messageQueue.close();
+  });
 
   // Start processor (blocks until queue closes)
   // This processes messages sequentially from the queue
@@ -1011,7 +1113,7 @@ async function handleUserMessage(
   message: MessageContext
 ) {
   // Destructure session and message context
-  const { client, config, subagents } = session;
+  const { client, config, subagents, contextTracker } = session;
   const { workingDirectory, claudeExecutable, isRestrictedMode } = config;
   const { incoming, prompt, attachments, typingTracker: existingTypingTracker } = message;
 
@@ -1075,15 +1177,18 @@ async function handleUserMessage(
   // Defer creating the response message until we have text content
   // This avoids creating empty messages that pollute the chat
   let responseId: string | null = null;
-  const ensureResponseMessage = async (): Promise<string> => {
+  const ensureResponseMessage = async (sdkUuid?: string, sdkSessionId?: string): Promise<string> => {
     // Stop typing indicator when we start producing actual content
     if (typing.isTyping()) {
       await typing.stopTyping();
     }
     if (!responseId) {
-      const { messageId } = await client.send("", { replyTo: incoming.id });
+      // Include SDK UUID and session ID in metadata for session recovery correlation
+      const metadata: Record<string, unknown> | undefined =
+        sdkUuid || sdkSessionId ? { sdkUuid, sdkSessionId } : undefined;
+      const { messageId } = await client.send("", { replyTo: incoming.id, metadata });
       responseId = messageId;
-      log(`Created response message: ${responseId}`);
+      log(`Created response message: ${responseId}${sdkUuid ? ` (SDK: ${sdkUuid})` : ""}`);
     }
     return responseId;
   };
@@ -1162,7 +1267,10 @@ async function handleUserMessage(
         parentClient: client,
         availableTools: toolDefsWithExecute,
         claudeExecutable,
-        connectionOptions: subagents.connectionOptions,
+        connectionOptions: subagents.getConnectionOptionsForExternalUse(),
+        parentSettings: {
+          maxThinkingTokens: session.settings.maxThinkingTokens,
+        },
       });
 
       const mcpTools = toolDefs.map((toolDef: AgentSDKToolDefinition) => {
@@ -1245,6 +1353,11 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       version: "1.0.0",
       tools: [setTitleTool],
     });
+
+    // Add channel tool to allowedTools for restricted mode
+    if (isRestrictedMode) {
+      allowedTools.push("mcp__channel__set_title");
+    }
 
     // Create MCP server for image attachments (works in both restricted and unrestricted modes)
     // The Claude Agent SDK's query() only accepts string prompts, not content blocks.
@@ -1333,6 +1446,13 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       });
 
       log(`Created attachments MCP server with ${allImageAttachments.size} image(s) available`);
+
+      // Add attachment tools to allowedTools for restricted mode
+      if (isRestrictedMode) {
+        allowedTools.push("mcp__attachments__list_images");
+        allowedTools.push("mcp__attachments__get_image");
+        allowedTools.push("mcp__attachments__get_current_images");
+      }
     }
 
     // Build the final prompt - add note about images if present
@@ -1368,7 +1488,14 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         }
 
         // Transform SDK question format to feedback_form fields
-        const questions = (input as { questions: AskUserQuestionQuestion[] }).questions;
+        const questions = (input as { questions?: AskUserQuestionQuestion[] }).questions;
+        if (!Array.isArray(questions) || questions.length === 0) {
+          return {
+            behavior: "deny" as const,
+            message: "AskUserQuestion missing questions",
+            toolUseID: options.toolUseID,
+          };
+        }
         const fields: Array<{
           key: string;
           label?: string;
@@ -1383,17 +1510,26 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         for (let i = 0; i < questions.length; i++) {
           const q = questions[i]!;
           const fieldId = String(i);
+          if (!Array.isArray(q.options) || q.options.length === 0) {
+            return {
+              behavior: "deny" as const,
+              message: "AskUserQuestion question missing options",
+              toolUseID: options.toolUseID,
+            };
+          }
           const fieldOptions = q.options.map((opt) => ({
             value: opt.label,
             label: opt.label,
             description: opt.description,
           }));
           // Add "Other" option for free-text input
-          fieldOptions.push({
-            value: "__other__",
-            label: "Other",
-            description: "Provide a custom answer",
-          });
+          if (fieldOptions.length < 4) {
+            fieldOptions.push({
+              value: "__other__",
+              label: "Other",
+              description: "Provide a custom answer",
+            });
+          }
 
           if (q.multiSelect) {
             fields.push({
@@ -1668,6 +1804,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       // Apply user settings
       ...(currentSettings.model && { model: currentSettings.model }),
       ...(currentSettings.maxThinkingTokens && { maxThinkingTokens: currentSettings.maxThinkingTokens }),
+      ...(currentSettings.executionMode && { executionMode: currentSettings.executionMode }),
       // Permission handling: Always wire canUseTool so interactive tools (AskUserQuestion,
       // ExitPlanMode, EnterPlanMode) can prompt the user even in Full Auto mode.
       // We handle auto-approval logic inside canUseTool based on autonomy level and tool type.
@@ -1687,6 +1824,8 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     activeQueryInstance = queryInstance;
 
     let capturedSessionId: string | undefined;
+    let currentSdkMessageUuid: string | undefined;
+    let currentSdkSessionId: string | undefined;
     let checkpointCommitted = false;
     let sawStreamedText = false;
 
@@ -1697,6 +1836,15 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     }>();
 
     for await (const message of queryInstance) {
+      // Capture SDK message UUID and session ID for correlation with pubsub messages (session recovery)
+      const sdkMsg = message as { uuid?: string; session_id?: string };
+      if (sdkMsg.uuid) {
+        currentSdkMessageUuid = sdkMsg.uuid;
+      }
+      if (sdkMsg.session_id) {
+        currentSdkSessionId = sdkMsg.session_id;
+      }
+
       // Check if pause was requested and break early
       if (interruptHandler.isPaused()) {
         log("Execution paused, breaking out of query loop");
@@ -1710,17 +1858,8 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       const sdkMessage = message as { parent_tool_use_id?: string | null; type: string; event?: SDKStreamEvent };
       if (sdkMessage.parent_tool_use_id && sdkMessage.type === "stream_event" && sdkMessage.event) {
         const toolUseId = sdkMessage.parent_tool_use_id;
-        const subagent = subagents.active.get(toolUseId);
-
-        if (subagent) {
-          // Route to active subagent connection
-          await forwardStreamEventToSubagent(subagent, sdkMessage.event);
-        } else {
-          // Buffer events until subagent connection is created
-          const buffered = subagents.pendingEvents.get(toolUseId) ?? [];
-          buffered.push(sdkMessage.event);
-          subagents.pendingEvents.set(toolUseId, buffered);
-        }
+        // SubagentManager handles routing: forwards if subagent exists, buffers if not
+        await subagents.routeEvent(toolUseId, sdkMessage.event);
         // Skip main agent handling for subagent events
         continue;
       }
@@ -1729,7 +1868,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       if (sdkMessage.type === "user") {
         const toolResultIds = extractToolResultIds(message);
         for (const toolUseId of toolResultIds) {
-          if (subagents.active.has(toolUseId)) {
+          if (subagents.has(toolUseId)) {
             await subagents.cleanup(toolUseId, "complete");
             log(`Subagent ${toolUseId} completed`);
           }
@@ -1796,9 +1935,11 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
             });
 
             // Start action message for this tool use (with generic description initially)
+            // Prettify the tool name to strip MCP/pubsub prefixes (e.g., mcp__channel__set_title -> SetTitle)
+            const prettifiedToolName = prettifyToolName(toolBlock.name);
             await action.startAction({
-              type: toolBlock.name,
-              description: getActionDescription(toolBlock.name),
+              type: prettifiedToolName,
+              description: getActionDescription(prettifiedToolName),
               toolUseId: toolBlock.id,
             });
           } else if (blockType === "text") {
@@ -1827,7 +1968,8 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
           if (streamEvent.delta.text) {
             // Ensure we have a response message (creates lazily on first text)
             // All text within a single query() goes to the same message
-            const msgId = await ensureResponseMessage();
+            // Pass SDK UUID and session ID for session recovery correlation
+            const msgId = await ensureResponseMessage(currentSdkMessageUuid, currentSdkSessionId);
 
             // Send each text delta immediately (real streaming)
             await client.update(msgId, streamEvent.delta.text);
@@ -1912,32 +2054,15 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
                         subagent_type?: string;
                       };
 
-                      const subagentConn = await createSubagentConnection(
-                        {
-                          parentClient: client,
-                          taskDescription: taskArgs.description ?? "Subagent task",
-                          subagentType: taskArgs.subagent_type,
-                          parentToolUseId: currentAction.toolUseId,
-                        },
-                        subagents.connectionOptions
-                      );
-
-                      subagents.active.set(currentAction.toolUseId, subagentConn);
-                      log(`Created subagent connection for Task ${currentAction.toolUseId}: ${taskArgs.description}`);
-
-                      // Set timeout to prevent leaks if tool_result never arrives
-                      const toolUseIdForTimeout = currentAction.toolUseId;
-                      const timeoutId = setTimeout(async () => {
-                        await subagents.cleanup(toolUseIdForTimeout!, "timeout");
-                      }, SUBAGENT_TIMEOUT_MS);
-                      subagents.timeouts.set(currentAction.toolUseId, timeoutId);
-
-                      // Flush any buffered events for this subagent
-                      const buffered = subagents.pendingEvents.get(currentAction.toolUseId) ?? [];
-                      for (const bufferedEvent of buffered) {
-                        await forwardStreamEventToSubagent(subagentConn, bufferedEvent);
-                      }
-                      subagents.pendingEvents.delete(currentAction.toolUseId);
+                      // SubagentManager handles:
+                      // - Creating the connection
+                      // - Setting up timeout
+                      // - Flushing buffered events
+                      await subagents.create(currentAction.toolUseId, {
+                        taskDescription: taskArgs.description ?? "Subagent task",
+                        subagentType: taskArgs.subagent_type,
+                        parentToolUseId: currentAction.toolUseId,
+                      });
                     } catch (err) {
                       log(`Failed to create subagent connection: ${err}`);
                     }
@@ -1966,7 +2091,8 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
             (block): block is { type: "text"; text: string } => block.type === "text"
           );
           if (textBlocks.length > 0) {
-            const msgId = await ensureResponseMessage();
+            // Pass SDK UUID and session ID for session recovery correlation
+            const msgId = await ensureResponseMessage(currentSdkMessageUuid, currentSdkSessionId);
             for (const block of textBlocks) {
               await client.update(msgId, block.text);
             }
@@ -1983,6 +2109,16 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         if (resultMessage.subtype === "success" && resultMessage.session_id) {
           capturedSessionId = resultMessage.session_id;
         }
+
+        // Record token usage for context window tracking
+        if (resultMessage.usage) {
+          await contextTracker.recordUsage({
+            inputTokens: resultMessage.usage.input_tokens ?? 0,
+            outputTokens: resultMessage.usage.output_tokens ?? 0,
+            costUsd: resultMessage.total_cost_usd,
+          });
+        }
+
         log(`Query completed. Cost: $${message.total_cost_usd?.toFixed(4) ?? "unknown"}`);
       }
     }
@@ -2029,11 +2165,16 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       await typing.cleanup();
       log(`No response message was created for ${incoming.id}`);
     }
+
+    // Mark end of turn for context tracking (resets current turn, preserves session totals)
+    await contextTracker.endTurn();
   } catch (err) {
     // Cleanup any pending typing/thinking/action messages to avoid orphaned messages
     await typing.cleanup();
     await thinking.cleanup();
     await action.cleanup();
+    // Flush any pending context usage updates
+    await contextTracker.cleanup();
     // Clean up subagent connections
     await subagents.cleanupAll();
     // Stop the interrupt handler's monitoring loop
@@ -2058,4 +2199,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
   }
 }
 
-void main();
+void main().catch((err) => {
+  console.error("[Claude Code Worker] Fatal error:", err);
+  process.exit(1);
+});

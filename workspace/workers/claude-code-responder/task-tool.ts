@@ -10,6 +10,9 @@ import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk"
 import {
   createSubagentConnection,
   forwardStreamEventToSubagent,
+  extractMethodName,
+  getCanonicalToolName,
+  jsonSchemaToZodRawShape,
   type AgenticClient,
   type SubagentConnectionOptions,
   type SDKStreamEvent,
@@ -56,15 +59,20 @@ export interface TaskToolContext {
   claudeExecutable: string;
   /** Connection options for creating subagent pubsub connections */
   connectionOptions: SubagentConnectionOptions;
+  /** Parent settings to inherit (optional, subagent uses defaults if not provided) */
+  parentSettings?: {
+    maxThinkingTokens?: number;
+  };
 }
 
 /**
- * Extract canonical tool name from potentially prefixed MCP name.
- * MCP tools are named like "mcp__workspace__Read" -> extract "Read"
+ * Get canonical tool name (strip MCP/pubsub prefixes and map to PascalCase).
+ * Uses extractMethodName to properly parse prefixed names, then getCanonicalToolName
+ * to map snake_case to PascalCase (e.g., "pubsub_abc_file_read" → "Read").
  */
 function getCanonicalName(toolName: string): string {
-  const match = toolName.match(/^mcp__[^_]+__(.+)$|^pubsub_(.+)$/);
-  return match?.[1] ?? match?.[2] ?? toolName;
+  const methodName = extractMethodName(toolName);
+  return getCanonicalToolName(methodName);
 }
 
 /**
@@ -125,11 +133,13 @@ function getSystemPromptForSubagentType(subagentType: string): string {
  * Tools are exposed to the subagent using canonical names (e.g., "Read")
  * but execution uses the original tool's execute function which handles
  * the prefixed name mapping internally.
+ *
+ * Returns both the MCP server and the list of allowed tool names for SDK restriction.
  */
 function buildSubagentMcpServer(
   subagentType: string,
   parentTools: ToolDefinitionWithExecute[]
-): ReturnType<typeof createSdkMcpServer> {
+): { server: ReturnType<typeof createSdkMcpServer>; allowedTools: string[] } {
   const filteredTools = getToolsForSubagentType(subagentType, parentTools);
 
   const mcpTools = filteredTools.map((originalTool) => {
@@ -139,7 +149,8 @@ function buildSubagentMcpServer(
     return tool(
       canonicalName,
       originalTool.description ?? `Execute ${canonicalName}`,
-      originalTool.inputSchema as z.ZodRawShape,
+      // Convert JSON Schema to ZodRawShape (inputSchema from pubsub is JSON Schema format)
+      jsonSchemaToZodRawShape(originalTool.inputSchema as Record<string, unknown>),
       async (args) => {
         // Execute using the original tool's execute function directly
         const result = await originalTool.execute(args);
@@ -148,11 +159,17 @@ function buildSubagentMcpServer(
     );
   });
 
-  return createSdkMcpServer({
-    name: "subagent",
-    version: "1.0.0",
-    tools: mcpTools,
-  });
+  // Generate allowed tool names for SDK restriction (e.g., "mcp__subagent__Read")
+  const allowedTools = mcpTools.map((t) => `mcp__subagent__${t.name}`);
+
+  return {
+    server: createSdkMcpServer({
+      name: "subagent",
+      version: "1.0.0",
+      tools: mcpTools,
+    }),
+    allowedTools,
+  };
 }
 
 /**
@@ -162,8 +179,11 @@ interface SubagentSessionConfig {
   prompt: string;
   systemPrompt: string;
   mcpServer: ReturnType<typeof createSdkMcpServer>;
+  /** List of allowed tools for SDK restriction (e.g., ["mcp__subagent__Read"]) */
+  allowedTools: string[];
   model?: string;
   maxTurns?: number;
+  maxThinkingTokens?: number;
   claudeExecutable: string;
   onStreamEvent: (event: SDKStreamEvent) => Promise<void>;
 }
@@ -179,8 +199,11 @@ async function runSubagentSession(config: SubagentSessionConfig): Promise<string
       systemPrompt: config.systemPrompt,
       pathToClaudeCodeExecutable: config.claudeExecutable,
       includePartialMessages: true, // Enable streaming
+      // CRITICAL: Restrict subagent to only MCP tools - prevents bypassing restricted mode
+      allowedTools: config.allowedTools,
       ...(config.model && { model: config.model }),
       ...(config.maxTurns && { maxTurns: config.maxTurns }),
+      ...(config.maxThinkingTokens && { maxThinkingTokens: config.maxThinkingTokens }),
     },
   });
 
@@ -231,7 +254,10 @@ Available subagent types:
 
       try {
         // 2. Build MCP server with filtered tools for this subagent type
-        const mcpServer = buildSubagentMcpServer(args.subagent_type, context.availableTools);
+        const { server: mcpServer, allowedTools } = buildSubagentMcpServer(
+          args.subagent_type,
+          context.availableTools
+        );
 
         // 3. Get system prompt for subagent type
         const systemPrompt = getSystemPromptForSubagentType(args.subagent_type);
@@ -241,8 +267,10 @@ Available subagent types:
           prompt: args.prompt,
           systemPrompt,
           mcpServer,
+          allowedTools,
           model: args.model,
           maxTurns: args.max_turns,
+          maxThinkingTokens: context.parentSettings?.maxThinkingTokens,
           claudeExecutable: context.claudeExecutable,
           onStreamEvent: (event) => forwardStreamEventToSubagent(subagent, event),
         });
