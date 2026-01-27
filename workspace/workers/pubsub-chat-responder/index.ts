@@ -20,6 +20,8 @@ import {
   getCanonicalToolName,
   createThinkingTracker,
   createTypingTracker,
+  createActionTracker,
+  getDetailedActionDescription,
   CONTENT_TYPE_TYPING,
   CONTENT_TYPE_INLINE_UI,
   // TODO list utilities
@@ -111,8 +113,6 @@ async function main() {
       agentTypeId,       // Agent type for identification
     },
     reconnect: true,
-    // Enable session persistence for settings across worker reloads
-    workspaceId: stateArgs.contextId,
     methods: {
       pause: createPauseMethodDefinition(async () => {
         // Pause event is published by interrupt handler
@@ -209,9 +209,16 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     },
   });
 
-  // Track pending unload timeout - allows cancellation if panel rejoins
+  // Track pending unload timeout - allows cancellation if panel rejoins or recent activity
   let unloadTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  let lastActivityTime = Date.now(); // Timestamp of last activity
   const UNLOAD_DELAY_MS = 10_000; // 10 seconds grace period for panel recovery
+  const ACTIVITY_GRACE_PERIOD_MS = 2 * 60 * 1000; // 2 minutes - don't unload if activity recently
+
+  // Function to update activity timestamp (called from event loop)
+  const updateActivity = () => {
+    lastActivityTime = Date.now();
+  };
 
   // Log roster changes and auto-unload when channel is empty
   client.onRoster((roster) => {
@@ -230,6 +237,13 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       if (!unloadTimeoutId) {
         log(`No panels in channel, scheduling unload in ${UNLOAD_DELAY_MS / 1000}s...`);
         unloadTimeoutId = setTimeout(() => {
+          // Check if there was recent activity
+          const timeSinceActivity = Date.now() - lastActivityTime;
+          if (timeSinceActivity < ACTIVITY_GRACE_PERIOD_MS) {
+            log(`Recent activity (${Math.round(timeSinceActivity / 1000)}s ago), deferring unload...`);
+            unloadTimeoutId = null; // Reset so it can be rescheduled
+            return;
+          }
           log(`Unload timeout reached, unloading worker to conserve resources...`);
           // Gracefully close and unload
           void client.close().then(() => {
@@ -302,6 +316,9 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
 
     // Skip replay messages - don't respond to historical messages
     if (event.kind === "replay") continue;
+
+    // Track activity for auto-unload prevention (including typing indicators)
+    updateActivity();
 
     // Skip typing indicators - these are just presence notifications
     const contentType = (event as { contentType?: string }).contentType;
@@ -378,7 +395,10 @@ async function handleUserMessage(
 
   // Create thinking tracker for managing reasoning message state
   // Defined before try block so cleanup can be called in catch
-  const thinking = createThinkingTracker({ client, log });
+  const thinking = createThinkingTracker({ client, log, replyTo: incoming.id });
+
+  // Create action tracker for showing tool usage to users
+  const action = createActionTracker({ client, log, replyTo: incoming.id });
 
   // Set up interrupt handler to monitor for pause requests
   const interruptHandler = createInterruptHandler({
@@ -626,6 +646,16 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
               args: event.args,
             });
 
+            // Start action indicator for tool usage
+            const argsRecord = event.args && typeof event.args === "object"
+              ? event.args as Record<string, unknown>
+              : {};
+            await action.startAction({
+              type: event.toolName,
+              description: getDetailedActionDescription(event.toolName, argsRecord),
+              toolUseId: event.toolCallId,
+            });
+
             // Check if this tool needs approval (no execute function means it needs approval)
             const toolDef = tools[event.toolName];
             if (toolDef && !toolDef.execute) {
@@ -641,6 +671,8 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
           }
 
           case "tool-result":
+            // Complete action indicator
+            await action.completeAction();
             // Capture auto-executed tool results for message history
             autoToolResults.push({
               type: "tool-result",
@@ -767,9 +799,10 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
     }
 
   } catch (err) {
-    // Cleanup any pending thinking/typing messages to avoid orphaned messages
+    // Cleanup any pending thinking/typing/action messages to avoid orphaned messages
     await thinking.cleanup();
     await typing.cleanup();
+    await action.cleanup();
 
     // Pause tool returns successfully, so we shouldn't see pause-related errors
     // Any error here is a real error that should be reported

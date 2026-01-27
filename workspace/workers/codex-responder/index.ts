@@ -14,7 +14,7 @@
  * 6. Tool calls flow: Codex -> HTTP MCP server -> pubsub
  */
 
-import { pubsubConfig, id, getStateArgs } from "@natstack/runtime";
+import { pubsubConfig, id, getStateArgs, unloadSelf } from "@natstack/runtime";
 import {
   connect,
   createToolsForAgentSDK,
@@ -44,6 +44,7 @@ import {
   validateAttachments,
   type Attachment,
   type AgenticClient,
+  type Participant,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
 } from "@natstack/agentic-messaging";
@@ -376,8 +377,6 @@ async function main() {
     name: "Codex",
     type: "codex",
     reconnect: true,
-    // Enable session persistence for SDK session resumption across worker reloads
-    workspaceId: stateArgs.contextId,
     methods: {
       pause: createPauseMethodDefinition(async () => {
         // Pause event is published by interrupt handler
@@ -454,9 +453,54 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     },
   });
 
+  // Track pending unload timeout - allows cancellation if panel rejoins or recent activity
+  let unloadTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  let lastActivityTime = Date.now(); // Timestamp of last activity
+  const UNLOAD_DELAY_MS = 10_000; // 10 seconds grace period for panel recovery
+  const ACTIVITY_GRACE_PERIOD_MS = 2 * 60 * 1000; // 2 minutes - don't unload if activity recently
+
+  // Function to update activity timestamp (called from event loop)
+  const updateActivity = () => {
+    lastActivityTime = Date.now();
+  };
+
   client.onRoster((roster) => {
     const names = Object.values(roster.participants).map((p) => `${p.metadata.name} (${p.metadata.type})`);
     log(`Roster updated: ${names.join(", ")}`);
+
+    // Check if there are any panels (users) left in the channel
+    // If only agent workers remain (no panels), unload this worker to free resources
+    const participants = Object.values(roster.participants) as Participant<ChatParticipantMetadata>[];
+    const hasPanels = participants.some((p) => p.metadata.type === "panel");
+    const participantCount = participants.length;
+
+    // If no panels and more than just ourselves, it means only workers remain
+    // If only we remain or no panels, schedule unload after delay
+    if (!hasPanels && participantCount <= 1) {
+      // Only schedule if not already pending
+      if (!unloadTimeoutId) {
+        log(`No panels in channel, scheduling unload in ${UNLOAD_DELAY_MS / 1000}s...`);
+        unloadTimeoutId = setTimeout(() => {
+          // Check if there was recent activity
+          const timeSinceActivity = Date.now() - lastActivityTime;
+          if (timeSinceActivity < ACTIVITY_GRACE_PERIOD_MS) {
+            log(`Recent activity (${Math.round(timeSinceActivity / 1000)}s ago), deferring unload...`);
+            unloadTimeoutId = null; // Reset so it can be rescheduled
+            return;
+          }
+          log(`Unload timeout reached, unloading worker to conserve resources...`);
+          // Gracefully close and unload
+          void client.close().then(() => {
+            void unloadSelf();
+          });
+        }, UNLOAD_DELAY_MS);
+      }
+    } else if (hasPanels && unloadTimeoutId) {
+      // Panel rejoined - cancel pending unload
+      log(`Panel rejoined, canceling scheduled unload`);
+      clearTimeout(unloadTimeoutId);
+      unloadTimeoutId = null;
+    }
   });
 
   log(`Connected to channel: ${channelName}`);
@@ -537,6 +581,9 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
 
     // Skip replay messages - don't respond to historical messages
     if (event.kind === "replay") continue;
+
+    // Track activity for auto-unload prevention (including typing indicators)
+    updateActivity();
 
     // Skip typing indicators - these are just presence notifications
     const contentType = (event as { contentType?: string }).contentType;

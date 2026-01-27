@@ -731,7 +731,7 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   readonly handle: string;
   readonly clientId: string | null;
 
-  // === Session State (undefined if workspaceId not provided) ===
+  // === Session State (undefined if contextId not available from server) ===
   /** Whether session persistence is enabled and operational */
   readonly sessionEnabled: boolean;
   readonly sessionKey: string | undefined;
