@@ -7,6 +7,8 @@ export const NewMessageSchema = z.object({
   replyTo: z.string().uuid().optional(),
   /** IDs of intended recipients (empty = broadcast to all) */
   at: z.array(z.string()).optional(),
+  /** Arbitrary metadata (e.g., SDK session/message UUIDs for recovery) */
+  metadata: z.record(z.unknown()).optional(),
 });
 
 export const UpdateMessageSchema = z.object({

@@ -91,6 +91,8 @@ function aggregateMessage(
     complete,
     incomplete: !complete,
     replyTo: initial.replyTo,
+    contentType: initial.contentType,
+    metadata: initial.metadata,
   };
 }
 

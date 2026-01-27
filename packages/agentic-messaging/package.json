@@ -21,6 +21,10 @@
     "./registry": {
       "types": "./dist/agent-registry.d.ts",
       "default": "./dist/agent-registry.js"
+    },
+    "./recovery": {
+      "types": "./dist/recovery-entry.d.ts",
+      "default": "./dist/recovery-entry.js"
     }
   },
   "scripts": {
