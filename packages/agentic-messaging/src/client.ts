@@ -56,6 +56,7 @@ import {
   ToolRoleHandoffSchema,
 } from "./protocol.js";
 import { ALL_TOOL_GROUPS } from "./tool-schemas.js";
+import { AsyncQueue, createFanout } from "./async-queue.js";
 
 const INTERNAL_METADATA_KEY = "_agentic";
 
@@ -110,108 +111,6 @@ function randomId(): string {
 
 function zodToJsonSchema(schema: z.ZodTypeAny): JsonSchema {
   return convertZodToJsonSchema(schema, { target: "openApi3" }) as JsonSchema;
-}
-
-class AsyncQueue<T> implements AsyncIterable<T> {
-  private values: T[] = [];
-  private resolvers: Array<(value: IteratorResult<T>) => void> = [];
-  private closed = false;
-  private closeError: Error | null = null;
-
-  push(value: T): void {
-    if (this.closed) return;
-    const resolve = this.resolvers.shift();
-    if (resolve) resolve({ value, done: false });
-    else this.values.push(value);
-  }
-
-  close(error?: Error): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.closeError = error ?? null;
-    for (const resolve of this.resolvers.splice(0)) {
-      resolve({ value: undefined as never, done: true });
-    }
-  }
-
-  async *[Symbol.asyncIterator](): AsyncIterableIterator<T> {
-    while (true) {
-      if (this.values.length > 0) {
-        yield this.values.shift()!;
-        continue;
-      }
-      if (this.closed) {
-        if (this.closeError) throw this.closeError;
-        return;
-      }
-      const next = await new Promise<IteratorResult<T>>((resolve) => this.resolvers.push(resolve));
-      if (next.done) {
-        if (this.closeError) throw this.closeError;
-        return;
-      }
-      yield next.value;
-    }
-  }
-}
-
-function createFanout<T>() {
-  const subscribers = new Set<AsyncQueue<T>>();
-  return {
-    emit(value: T) {
-      for (const q of subscribers) q.push(value);
-    },
-    close(error?: Error) {
-      for (const q of subscribers) q.close(error);
-      subscribers.clear();
-    },
-    /**
-     * Subscribe to the fanout. The subscription is registered immediately
-     * (synchronously) when this method is called, before iteration begins.
-     * This ensures no messages are missed between subscribe() and the first await.
-     */
-    subscribe(): AsyncIterableIterator<T> {
-      const q = new AsyncQueue<T>();
-      // Register the subscription IMMEDIATELY, not when iteration starts
-      subscribers.add(q);
-
-      const cleanup = () => {
-        subscribers.delete(q);
-        q.close();
-      };
-
-      // Get a single iterator from the queue to use for all next() calls
-      const queueIterator = q[Symbol.asyncIterator]();
-
-      // Return an async iterator that yields from the queue
-      const iterator: AsyncIterableIterator<T> = {
-        [Symbol.asyncIterator]() {
-          return this;
-        },
-        async next(): Promise<IteratorResult<T>> {
-          try {
-            const result = await queueIterator.next();
-            if (result.done) {
-              cleanup();
-            }
-            return result;
-          } catch (err) {
-            cleanup();
-            throw err;
-          }
-        },
-        async return(value?: T): Promise<IteratorResult<T>> {
-          cleanup();
-          return { value: value as T, done: true };
-        },
-        async throw(err?: unknown): Promise<IteratorResult<T>> {
-          cleanup();
-          throw err;
-        },
-      };
-
-      return iterator;
-    },
-  };
 }
 
 interface MethodCallState {
@@ -938,6 +837,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         replyTo: parsed.replyTo,
         contentType: parsed.contentType,
         at: parsed.at,
+        metadata: parsed.metadata,
       };
     }
 
@@ -1384,6 +1284,8 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       contentType?: string;
       at?: string[];
       resolveHandles?: boolean;
+      /** Arbitrary metadata (e.g., SDK session/message UUIDs for recovery) */
+      metadata?: Record<string, unknown>;
     }
   ): Promise<SendResult> {
     const id = randomId();
@@ -1396,7 +1298,14 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
 
     const payload = validateSend(
       NewMessageSchema,
-      { id, content, replyTo: options?.replyTo, contentType: options?.contentType, at: resolvedAt },
+      {
+        id,
+        content,
+        replyTo: options?.replyTo,
+        contentType: options?.contentType,
+        at: resolvedAt,
+        metadata: options?.metadata,
+      },
       "NewMessage"
     );
     // Default to persisting messages (explicit true, not undefined)
@@ -1613,6 +1522,16 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       }));
   }
 
+  /**
+   * Get messages with full metadata for session recovery correlation.
+   * Returns raw aggregated messages including SDK UUIDs in metadata.
+   */
+  function getMessagesWithMetadata(): AggregatedMessage[] {
+    return missedMessages.filter(
+      (e): e is AggregatedMessage => e.type === "message" && !e.incomplete
+    );
+  }
+
   async function updateSettings(settings: Record<string, unknown>): Promise<void> {
     requireSessionEnabled("updateSettings");
     const db = getSessionDbOrThrow("updateSettings");
@@ -1647,7 +1566,8 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
 
   // Initialize session DB using channel name as the context identifier
   // The channel name is unique per session, making it the natural session key
-  const sessionInit = await initializeSessionDb(channel, handle, pubsub.channelConfig?.contextId);
+  // Note: Use pubsub.contextId (top-level field from ready message), NOT channelConfig.contextId
+  const sessionInit = await initializeSessionDb(channel, handle, pubsub.contextId);
   sessionDb = sessionInit.sessionDb;
   sessionRow = sessionInit.sessionRow;
 
@@ -1675,6 +1595,13 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     handle,
     get clientId() {
       return selfId;
+    },
+    // === Channel Info ===
+    get contextId() {
+      return pubsub.contextId;
+    },
+    get channel() {
+      return channel;
     },
     get sessionEnabled() {
       return sessionDb !== undefined;
@@ -1705,6 +1632,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     complete,
     error,
     getConversationHistory,
+    getMessagesWithMetadata,
     updateSettings,
     getSettings,
     discoverMethodDefs,
@@ -1781,7 +1709,14 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     },
     onDisconnect: pubsub.onDisconnect,
     onReconnect: pubsub.onReconnect,
-    pubsub,
+    // === Metadata ===
+    updateMetadata: async (metadata: T) => {
+      await pubsub.updateMetadata(metadata);
+    },
+    // === Low-level ===
+    publish: async (eventType: string, payload: unknown, options?: { persist?: boolean }) => {
+      await pubsub.publish(eventType, payload, options);
+    },
     sendMethodResult: async (
       callId: string,
       content: unknown,
