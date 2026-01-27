@@ -1,4 +1,4 @@
-import type { MethodAdvertisement, Attachment } from "@natstack/agentic-messaging";
+import type { MethodAdvertisement, Attachment, ContextWindowUsage } from "@natstack/agentic-messaging";
 import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 
 /** Metadata for participants in this channel */
@@ -8,6 +8,23 @@ export interface ChatParticipantMetadata {
   handle: string;
   /** Methods this participant provides (for menu display) */
   methods?: MethodAdvertisement[];
+  /** Runtime panel/worker ID - allows linking participant to child panel for focus/reload */
+  panelId?: string;
+  /** Agent type ID for identification (e.g., "claude-code-responder") */
+  agentTypeId?: string;
+  /** Context window usage tracking (updated by AI responders) */
+  contextUsage?: ContextWindowUsage;
+  /** Execution mode - "plan" for planning only, "edit" for full execution */
+  executionMode?: "plan" | "edit";
+}
+
+/** Info about a disconnected agent for notification display */
+export interface DisconnectedAgentInfo {
+  name: string;
+  handle: string;
+  panelId?: string;
+  agentTypeId?: string;
+  type: string;
 }
 
 /** A chat message in the conversation */
@@ -18,7 +35,7 @@ export interface ChatMessage {
   senderId: string;
   content: string;
   contentType?: string;  // e.g., "thinking", "text/plain", etc.
-  kind?: "message" | "method";
+  kind?: "message" | "method" | "system";
   complete?: boolean;
   replyTo?: string;
   error?: string;
@@ -28,4 +45,6 @@ export interface ChatMessage {
   attachments?: Attachment[];
   /** Sender metadata snapshot for historical messages */
   senderMetadata?: { name?: string; type?: string; handle?: string };
+  /** For system messages: disconnected agent info */
+  disconnectedAgent?: DisconnectedAgentInfo;
 }

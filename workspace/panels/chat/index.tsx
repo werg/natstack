@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { Flex, Text, Button, Card } from "@radix-ui/themes";
-import { pubsubConfig, id as panelClientId, buildNsLink, createChild, useStateArgs, forceRepaint } from "@natstack/runtime";
+import { pubsubConfig, id as panelClientId, buildNsLink, createChild, useStateArgs, forceRepaint, ensurePanelLoaded } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
 import { z } from "zod";
 import type { ComponentType } from "react";
@@ -60,7 +60,7 @@ import { ToolRoleConflictModal } from "./components/ToolRoleConflictModal";
 import { ChatPhase } from "./components/ChatPhase";
 import type { PendingImage } from "./components/ImageInput";
 import { cleanupPendingImages } from "./utils/imageUtils";
-import type { ChatParticipantMetadata } from "./types";
+import type { ChatParticipantMetadata, DisconnectedAgentInfo } from "./types";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { parseInlineUiData } from "./components/InlineUiMessage";
 
@@ -248,6 +248,8 @@ export default function AgenticChat() {
   const hasConnectedRef = useRef(false);
   // Ref to access current participants in memoized callbacks
   const participantsRef = useRef<Record<string, Participant<ChatParticipantMetadata>>>({});
+  // Ref to track previous participants for detecting disconnections
+  const prevParticipantsRef = useRef<Record<string, Participant<ChatParticipantMetadata>>>({});
   // Refs for tool role handlers - set after toolRole hook is created
   const toolRoleHandlerRef = useRef<((event: IncomingToolRoleRequestEvent) => void) | null>(null);
   const toolRoleResponseHandlerRef = useRef<((event: IncomingToolRoleResponseEvent) => void) | null>(null);
@@ -507,7 +509,48 @@ export default function AgenticChat() {
       ]
     ),
     onRoster: useCallback((roster) => {
-      setParticipants(roster.participants);
+      const newParticipants = roster.participants;
+      const prevParticipants = prevParticipantsRef.current;
+
+      // Detect disconnected participants (were in prev roster but not in new)
+      const prevIds = new Set(Object.keys(prevParticipants));
+      const newIds = new Set(Object.keys(newParticipants));
+
+      for (const prevId of prevIds) {
+        if (!newIds.has(prevId)) {
+          // This participant disconnected
+          const disconnected = prevParticipants[prevId];
+          const metadata = disconnected?.metadata;
+
+          // Only create notification for non-panel participants (agents/workers)
+          if (metadata && metadata.type !== "panel") {
+            const agentInfo: DisconnectedAgentInfo = {
+              name: metadata.name,
+              handle: metadata.handle,
+              panelId: metadata.panelId,
+              agentTypeId: metadata.agentTypeId,
+              type: metadata.type,
+            };
+
+            // Add system message for the disconnection
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `system-disconnect-${prevId}-${Date.now()}`,
+                senderId: "system",
+                content: "",
+                kind: "system",
+                complete: true,
+                disconnectedAgent: agentInfo,
+              },
+            ]);
+          }
+        }
+      }
+
+      // Update refs and state
+      prevParticipantsRef.current = newParticipants;
+      setParticipants(newParticipants);
     }, []),
     onError: useCallback((error) => {
       console.error("[Chat Panel] Connection error:", error);
@@ -1092,7 +1135,8 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
   const handleAddAgent = useCallback(async () => {
     if (!channelName) return;
     // Pass contextId so new agents join with the correct channel context
-    const contextId = clientRef.current?.channelConfig?.contextId;
+    // Note: Use client.contextId (top-level field), NOT channelConfig.contextId
+    const contextId = clientRef.current?.contextId;
     await createChild(
       "panels/chat-launcher",
       {
@@ -1181,6 +1225,26 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
     },
     [clientRef]
   );
+
+  // Focus a disconnected agent's panel
+  const handleFocusPanel = useCallback((panelId: string) => {
+    window.location.href = buildNsLink({ action: "focus", panelId });
+  }, []);
+
+  // Reload a disconnected agent's panel
+  const handleReloadPanel = useCallback(async (panelId: string) => {
+    try {
+      const result = await ensurePanelLoaded(panelId);
+      if (!result.success) {
+        console.error(`Failed to reload panel ${panelId}:`, result.error);
+        // If reload fails, focus the panel so user can investigate
+        handleFocusPanel(panelId);
+      }
+    } catch (error) {
+      console.error(`Error reloading panel ${panelId}:`, error);
+      handleFocusPanel(panelId);
+    }
+  }, [handleFocusPanel]);
 
   // Error state: no channel name provided
   if (!channelName) {
@@ -1290,6 +1354,8 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
         onFeedbackError={handleFeedbackError}
         onInterrupt={handleInterruptAgent}
         onCallMethod={handleCallMethod}
+        onFocusPanel={handleFocusPanel}
+        onReloadPanel={handleReloadPanel}
         toolApproval={{
           settings: approval.settings,
           onSetFloor: approval.setGlobalFloor,

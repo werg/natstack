@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, type ComponentType } from "re
 import { Badge, Box, Button, Callout, Card, Flex, IconButton, ScrollArea, Text, TextArea, Theme } from "@radix-ui/themes";
 import { PaperPlaneIcon, ImageIcon, CopyIcon, CheckIcon } from "@radix-ui/react-icons";
 import type { Participant, AttachmentInput } from "@natstack/agentic-messaging";
-import { CONTENT_TYPE_INLINE_UI } from "@natstack/agentic-messaging";
+import { CONTENT_TYPE_INLINE_UI, prettifyToolName } from "@natstack/agentic-messaging";
 import {
   FeedbackContainer,
   FeedbackFormRenderer,
@@ -23,6 +23,7 @@ import { NewContentIndicator } from "./NewContentIndicator";
 import { InlineUiMessage, parseInlineUiData } from "./InlineUiMessage";
 import { type PendingImage, getImagesFromClipboard, createPendingImage, validateImageFiles } from "../utils/imageUtils";
 import type { ChatMessage, ChatParticipantMetadata } from "../types";
+import { AgentDisconnectedMessage } from "./AgentDisconnectedMessage";
 import "../styles.css";
 
 // Re-export for backwards compatibility
@@ -66,6 +67,10 @@ interface ChatPhaseProps {
   onFeedbackError: (callId: string, error: Error) => void;
   onInterrupt?: (agentId: string, messageId?: string) => void;
   onCallMethod?: (providerId: string, methodName: string, args: unknown) => void;
+  /** Focus a disconnected agent's panel */
+  onFocusPanel?: (panelId: string) => void;
+  /** Reload a disconnected agent's panel */
+  onReloadPanel?: (panelId: string) => void;
   /** Tool approval configuration - optional, when provided enables approval UI */
   toolApproval?: ToolApprovalProps;
 }
@@ -94,6 +99,8 @@ export function ChatPhase({
   onFeedbackError,
   onInterrupt,
   onCallMethod,
+  onFocusPanel,
+  onReloadPanel,
   toolApproval,
 }: ChatPhaseProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -468,13 +475,33 @@ export function ChatPhase({
                       };
                     });
 
+                    // Deduplicate action/method items: prefer action over method when both exist for the same tool
+                    // This handles the case where an action message and a method-call event are both created
+                    // for the same conceptual tool call (e.g., when MCP tools delegate to pubsub methods)
+                    const actionToolNames = new Set<string>();
+                    for (const item of inlineItems) {
+                      if (item.type === "action") {
+                        actionToolNames.add(prettifyToolName(item.data.type));
+                      }
+                    }
+                    const deduplicatedItems = inlineItems.filter((item) => {
+                      if (item.type === "method") {
+                        const methodToolName = prettifyToolName(item.entry.methodName);
+                        // Skip method items that have a corresponding action with the same tool name
+                        if (actionToolNames.has(methodToolName)) {
+                          return false;
+                        }
+                      }
+                      return true;
+                    });
+
                     // Handler for interrupting typing indicators
                     const handleTypingInterrupt = (senderId: string) => {
                       // Interrupt the agent - no messageId needed for typing indicators
                       onInterrupt?.(senderId);
                     };
 
-                    return <InlineGroup key={item.key} items={inlineItems} onInterrupt={handleTypingInterrupt} />;
+                    return <InlineGroup key={item.key} items={deduplicatedItems} onInterrupt={handleTypingInterrupt} />;
                   }
 
                   const { msg, index } = item;
@@ -506,6 +533,22 @@ export function ChatPhase({
                         </Box>
                       );
                     }
+                  }
+
+                  // Handle system messages (e.g., agent disconnection notifications)
+                  if (msg.kind === "system" && msg.disconnectedAgent) {
+                    return (
+                      <Box
+                        key={msg.id || `fallback-msg-${index}`}
+                        style={{ maxWidth: "96%", alignSelf: "center" }}
+                      >
+                        <AgentDisconnectedMessage
+                          agent={msg.disconnectedAgent}
+                          onFocusPanel={onFocusPanel}
+                          onReloadPanel={onReloadPanel}
+                        />
+                      </Box>
+                    );
                   }
 
                   const sender = getSenderInfo(msg.senderId);
