@@ -8,7 +8,7 @@
 import { useState, useEffect } from "react";
 import { Card, Flex, Text, Select } from "@radix-ui/themes";
 import { ParameterEditor } from "@natstack/react";
-import { rpc, type FieldDefinition } from "@natstack/runtime";
+import { rpc, type FieldDefinition, type FieldValue } from "@natstack/runtime";
 import type { SessionConfig } from "../hooks/useAgentSelection";
 
 /** Template info returned from the bridge */
@@ -99,8 +99,8 @@ export function SessionSettings({ config, onChange }: SessionSettingsProps) {
 
         <ParameterEditor
           parameters={SESSION_FIELDS}
-          values={config as Record<string, unknown>}
-          onChange={(key, value) => onChange({ ...config, [key]: value })}
+          values={config as unknown as Record<string, FieldValue>}
+          onChange={(key, value) => onChange({ ...config, [key]: value } as SessionConfig)}
           size="1"
           showGroups={false}
         />

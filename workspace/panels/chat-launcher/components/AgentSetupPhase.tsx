@@ -12,6 +12,7 @@ import {
 } from "@radix-ui/themes";
 import { InfoCircledIcon, ChevronDownIcon, ChevronRightIcon } from "@radix-ui/react-icons";
 import { ParameterEditor } from "@natstack/react";
+import type { FieldValue } from "@natstack/runtime";
 import type {
   AgentSelectionWithRequirements,
   SessionConfig,
@@ -31,7 +32,7 @@ interface AgentSetupPhaseProps {
   onSessionConfigChange: (config: SessionConfig) => void;
   onChannelIdChange: (channelId: string) => void;
   onToggleAgent: (agentId: string) => void;
-  onUpdateConfig: (agentId: string, key: string, value: string | number | boolean) => void;
+  onUpdateConfig: (agentId: string, key: string, value: FieldValue) => void;
   onStartChat: () => void;
 }
 
@@ -148,7 +149,7 @@ interface AgentCardProps {
   agent: AgentSelectionWithRequirements;
   isMultiAgent: boolean;
   onToggle: () => void;
-  onUpdateConfig: (key: string, value: string | number | boolean) => void;
+  onUpdateConfig: (key: string, value: FieldValue) => void;
 }
 
 function AgentCard({ agent, isMultiAgent, onToggle, onUpdateConfig }: AgentCardProps) {

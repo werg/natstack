@@ -123,11 +123,9 @@ export default function ChatLauncher() {
         contextId = crypto.randomUUID();
       }
 
-      // Derive channel config from session config, include contextId
-      const channelConfig = {
-        ...toChannelConfig(sessionConfig),
-        contextId,
-      };
+      // Derive channel config from session config (note: contextId is NOT part of channelConfig)
+      const channelConfig = toChannelConfig(sessionConfig);
+
       // Spawn all selected agents directly via createChild
       const spawnPromises = selectedAgents.map(async (agent) => {
         const config = buildSpawnConfig(agent);
@@ -136,6 +134,7 @@ export default function ChatLauncher() {
           // Spawn worker directly
           // Pass channelConfig values via stateArgs to avoid race condition where workers
           // connect before chat panel and create the channel without config
+          // Note: contextId is passed separately, NOT as part of channelConfig
           await createChild(
             agent.agent.workerSource,
             { name: `${agent.agent.id}-${targetChannelId.slice(0, 8)}` },
@@ -145,7 +144,8 @@ export default function ChatLauncher() {
               // Channel config values passed directly to avoid timing issues
               workingDirectory: channelConfig.workingDirectory,
               restrictedMode: channelConfig.restrictedMode,
-              contextId: channelConfig.contextId,
+              // contextId passed separately (not part of channelConfig)
+              contextId,
               ...config,
             }
           );

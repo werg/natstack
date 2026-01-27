@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { db, type FieldDefinition } from "@natstack/runtime";
+import { db, type FieldDefinition, type FieldValue } from "@natstack/runtime";
 import type { ChannelConfig } from "@natstack/pubsub";
 import { getAgentRegistry, type AgentDefinition } from "@natstack/agentic-messaging/registry";
 
@@ -81,7 +81,7 @@ export interface AgentSelection {
   agent: AgentDefinition;
   selected: boolean;
   /** Parameter values configured by user (per-agent params only) */
-  config: Record<string, string | number | boolean>;
+  config: Record<string, FieldValue>;
 }
 
 /** Agent selection with computed unmet requirements */
@@ -152,7 +152,7 @@ export function useAgentSelection({ workspaceRoot, sessionConfig = DEFAULT_SESSI
 
         for (const agentDef of enabledAgents) {
           // Build config for per-agent params only (not channelLevel - those come from channel config)
-          const config: Record<string, string | number | boolean> = {};
+          const config: Record<string, FieldValue> = {};
           const persisted = persistedSettings[agentDef.id] ?? {};
           const perAgentParams = getPerAgentParams(agentDef.parameters);
 
@@ -203,7 +203,7 @@ export function useAgentSelection({ workspaceRoot, sessionConfig = DEFAULT_SESSI
   }, []);
 
   const updateAgentConfig = useCallback(
-    (agentId: string, key: string, value: string | number | boolean) => {
+    (agentId: string, key: string, value: FieldValue) => {
       // Update local state only - defaults are managed by Agent Manager
       setAvailableAgents((prev) =>
         prev.map((agent) =>

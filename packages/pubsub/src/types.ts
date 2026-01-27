@@ -5,13 +5,14 @@
 /**
  * Channel configuration persisted with the channel.
  * Set when the channel is created, readable by all participants.
+ *
+ * Note: contextId is NOT part of ChannelConfig. The server sends contextId
+ * as a separate top-level field in the ready message. Access it via client.contextId.
  */
 export interface ChannelConfig {
   workingDirectory?: string;
   restrictedMode?: boolean;
   title?: string;
-  /** Links channel to a sandbox context (OPFS partition) */
-  contextId?: string;
 }
 
 /**
