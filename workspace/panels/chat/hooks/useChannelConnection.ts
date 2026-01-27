@@ -103,9 +103,8 @@ export function useChannelConnection({
           serverUrl: pubsubConfig.serverUrl,
           token: pubsubConfig.token,
           channel: channelId,
-          // Use contextId from channelConfig (passed from chat-launcher)
-          // This enables session persistence and channel creation in the database
-          contextId: channelConfig?.contextId,
+          // Chat panel joins existing channels - contextId comes from server's ready message
+          // via client.contextId. Don't pass it here; the channel was created by workers.
           // Pass channel config (set when creating, read by joiners from server)
           channelConfig,
           handle: metadata.handle,

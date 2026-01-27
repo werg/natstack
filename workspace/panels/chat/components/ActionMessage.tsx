@@ -1,5 +1,6 @@
 import { Box, Code, Flex, Spinner, Text } from "@radix-ui/themes";
 import type { ActionData } from "@natstack/agentic-messaging";
+import { prettifyToolName } from "@natstack/agentic-messaging";
 import { ExpandableChevron } from "./shared/Chevron";
 
 // Collapsed state - compact pill (blue background to distinguish from thinking)
@@ -28,7 +29,7 @@ export function ActionPill({
     >
       {isStreaming && <Spinner size="1" />}
       <Text size="1" color="blue" weight="medium">
-        {data.type}
+        {prettifyToolName(data.type)}
       </Text>
       <Text size="1" color="gray" style={{ opacity: 0.7 }}>
         {data.description}
@@ -64,7 +65,7 @@ export function ExpandedAction({
           <ExpandableChevron expanded={true} />
         </Text>
         <Text size="1" color="blue" weight="medium">
-          {data.type}
+          {prettifyToolName(data.type)}
         </Text>
         <Text size="1" color="gray">
           {data.description}
