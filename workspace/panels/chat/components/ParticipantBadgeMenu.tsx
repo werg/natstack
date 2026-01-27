@@ -1,10 +1,11 @@
 import { useState, useCallback, useMemo } from "react";
 import { Badge, DropdownMenu, Text } from "@radix-ui/themes";
 import { DotFilledIcon, TriangleDownIcon } from "@radix-ui/react-icons";
-import type { Participant, MethodAdvertisement } from "@natstack/agentic-messaging";
+import type { Participant, MethodAdvertisement, ContextWindowUsage } from "@natstack/agentic-messaging";
 import type { ChatParticipantMetadata } from "../types";
 import { MethodArgumentsModal } from "./MethodArgumentsModal";
 import { schemaHasRequiredParams } from "./JsonSchemaForm";
+import { ContextUsageRing } from "./ContextUsageRing";
 
 export interface ParticipantBadgeMenuProps {
   participant: Participant<ChatParticipantMetadata>;
@@ -84,9 +85,22 @@ export function ParticipantBadgeMenu({
   const hasMenuItems = menuMethods.length > 0;
   const isAgent = participant.metadata.type !== "panel";
   const showGrantStatus = isAgent && isGranted !== undefined;
+  const isPlanMode = participant.metadata.executionMode === "plan";
 
-  // Render active indicator (pulsing dot) for agents working without menu
-  const activeIndicator = hasActiveMessage && !hasMenuItems && (
+  // Extract context usage from metadata (if available)
+  const contextUsage = participant.metadata.contextUsage as ContextWindowUsage | undefined;
+  const hasContextUsage = contextUsage && (contextUsage.usagePercent !== undefined || contextUsage.session?.inputTokens);
+
+  // Render context usage ring or fallback to pulsing dot when active
+  const statusIndicator = hasContextUsage ? (
+    <ContextUsageRing
+      usage={contextUsage}
+      size={12}
+      strokeWidth={1.5}
+      isActive={hasActiveMessage}
+      executionMode={participant.metadata.executionMode}
+    />
+  ) : hasActiveMessage && !hasMenuItems ? (
     <DotFilledIcon
       style={{
         marginLeft: 4,
@@ -96,14 +110,28 @@ export function ParticipantBadgeMenu({
       }}
       title="Agent working"
     />
-  );
+  ) : null;
+
+  // Plan mode indicator
+  const planModeIndicator = isPlanMode ? (
+    <Badge
+      color="amber"
+      variant="soft"
+      size="1"
+      style={{ marginLeft: 4, fontSize: "9px", padding: "0 4px" }}
+      title="Plan mode - exploring and planning without executing tools"
+    >
+      P
+    </Badge>
+  ) : null;
 
   // Simple badge without dropdown when no menu items and no grant status to show
   if (!hasMenuItems && !showGrantStatus) {
     return (
       <Badge color={color}>
         @{participant.metadata.handle}
-        {activeIndicator}
+        {planModeIndicator}
+        {statusIndicator}
       </Badge>
     );
   }
@@ -115,13 +143,15 @@ export function ParticipantBadgeMenu({
         <DropdownMenu.Trigger>
           <Badge color={color} style={{ cursor: "pointer" }}>
             @{participant.metadata.handle}
+            {planModeIndicator}
+            {statusIndicator}
             <TriangleDownIcon
               style={{
                 marginLeft: 4,
                 width: 10,
                 height: 10,
                 opacity: 0.6,
-                ...(hasActiveMessage && {
+                ...(hasActiveMessage && !hasContextUsage && {
                   animation: "pulse 1s ease-in-out infinite",
                   opacity: 1,
                 }),

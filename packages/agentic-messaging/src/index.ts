@@ -2,6 +2,9 @@
 export * from "./types.js";
 export * from "./protocol.js";
 export { connect, createToolsForAgentSDK, type AgentSDKToolDefinition } from "./client.js";
+
+// Async utilities
+export { AsyncQueue, createFanout } from "./async-queue.js";
 export type { AgenticClient } from "./types.js";
 export {
   DEFAULT_CHAT_ASSISTANT_PERSONA,
@@ -50,6 +53,19 @@ export {
   // Shared tracker client interface
   type TrackerClient,
 } from "./responder-utils.js";
+
+// Context window usage tracking
+export {
+  createContextTracker,
+  getModelContextLimit,
+  MODEL_CONTEXT_LIMITS,
+  type ContextTracker,
+  type ContextTrackerOptions,
+  type ContextTrackerState,
+  type ContextWindowUsage,
+  type TokenUsage,
+  type NormalizedUsage,
+} from "./context-tracker.js";
 
 // Execution pause/resume utilities
 export {
@@ -120,6 +136,13 @@ export {
   type SDKStreamEvent,
 } from "./subagent-connection.js";
 
+// Subagent manager (consolidates subagent lifecycle management)
+export {
+  SubagentManager,
+  type SubagentManagerConfig,
+  type SubagentConfig,
+} from "./subagent-manager.js";
+
 
 // Feedback UI types (formerly in broker-protocol.ts)
 export {
@@ -141,6 +164,9 @@ export {
   sendTodoListMessage,
   createTodoTracker,
 } from "./todo-ui.js";
+
+// Session recovery utilities: import from "@natstack/agentic-messaging/recovery"
+// (Node.js only - uses 'os' module for homedir)
 
 // For agent configs, use: import { ... } from "@natstack/agentic-messaging/config"
 // For session persistence, use: import { ... } from "@natstack/agentic-messaging/session"

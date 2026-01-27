@@ -5,7 +5,7 @@
  * results between distributed participants over pubsub.
  */
 
-import type { Participant, ParticipantMetadata, PubSubClient, RosterUpdate, Attachment, AttachmentInput, ChannelConfig } from "@natstack/pubsub";
+import type { Participant, ParticipantMetadata, RosterUpdate, Attachment, AttachmentInput, ChannelConfig } from "@natstack/pubsub";
 import type { z } from "zod";
 
 // Re-export attachment types from pubsub for convenience
@@ -346,6 +346,8 @@ export interface IncomingNewMessage extends IncomingBase {
   contentType?: string;
   /** IDs of intended recipients (empty/undefined = broadcast to all) */
   at?: string[];
+  /** Arbitrary metadata (e.g., SDK session/message UUIDs for recovery) */
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -496,6 +498,10 @@ export interface AggregatedMessage extends AggregatedEventBase {
   complete: boolean;
   incomplete: boolean;
   replyTo?: string;
+  /** Content type (e.g., for thinking, action, typing messages) */
+  contentType?: string;
+  /** Arbitrary metadata (e.g., SDK session/message UUIDs for recovery) */
+  metadata?: Record<string, unknown>;
 }
 
 export interface AggregatedMethodCall extends AggregatedEventBase {
@@ -672,7 +678,10 @@ export interface ConnectOptions<T extends AgenticParticipantMetadata = AgenticPa
   token: string;
   /** Channel name to connect to */
   channel: string;
-  /** Context ID for channel creators (triggers channel creation in database). Joiners get contextId from server. */
+  /**
+   * Context ID for channel creation. Required for channel creators (workers).
+   * Joiners (panels) get contextId from server's ready message via client.contextId.
+   */
   contextId?: string;
 
   /** Unique handle for @-mentions */
@@ -731,6 +740,12 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   readonly handle: string;
   readonly clientId: string | null;
 
+  // === Channel Info ===
+  /** Context ID for this channel (from server ready message, authoritative) */
+  readonly contextId: string | undefined;
+  /** Channel name */
+  readonly channel: string;
+
   // === Session State (undefined if contextId not available from server) ===
   /** Whether session persistence is enabled and operational */
   readonly sessionEnabled: boolean;
@@ -781,6 +796,8 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
 
   // === Conversation History (derived from pubsub replay) ===
   getConversationHistory(): ConversationMessage[];
+  /** Get messages with full metadata for session recovery correlation */
+  getMessagesWithMetadata(): AggregatedMessage[];
 
   // === Settings Persistence ===
   updateSettings(settings: Record<string, unknown>): Promise<void>;
@@ -847,8 +864,18 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   onDisconnect(handler: () => void): () => void;
   onReconnect(handler: () => void): () => void;
 
+  // === Metadata ===
+  /** Update this participant's metadata */
+  updateMetadata(metadata: T): Promise<void>;
+
   // === Low-level ===
-  readonly pubsub: PubSubClient<T>;
+  /** Publish a custom event to the channel */
+  publish(
+    eventType: string,
+    payload: unknown,
+    options?: { persist?: boolean }
+  ): Promise<void>;
+
   sendMethodResult(
     callId: string,
     content: unknown,
