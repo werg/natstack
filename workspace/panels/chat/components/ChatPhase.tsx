@@ -114,26 +114,26 @@ export function ChatPhase({
 
   // Refs for scroll position tracking
   const lastMessageCountRef = useRef(0);
-  const isAutoScrollingRef = useRef(false);
   const userScrolledAwayRef = useRef(false);
   const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const getViewport = useCallback(() => {
+    return scrollAreaRef.current?.querySelector<HTMLElement>('[data-radix-scroll-area-viewport]') ?? null;
+  }, []);
 
   // Check if user is near the bottom of the scroll area
   // Returns null if viewport not found (unknown state - don't make assumptions)
   const checkIfNearBottom = useCallback((): boolean | null => {
-    const viewport = scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]');
+    const viewport = getViewport();
     if (!viewport) return null;
     const { scrollTop, scrollHeight, clientHeight } = viewport;
     // Consider "near bottom" if within 20px of the bottom (tight threshold to avoid
     // false positives when user has scrolled up even slightly)
     return scrollHeight - scrollTop - clientHeight < 20;
-  }, []);
+  }, [getViewport]);
 
-  // Handle scroll events - distinguish user scrolls from programmatic scrolls
+  // Handle scroll events - keep track of whether the user left the bottom
   const handleScroll = useCallback(() => {
-    // Ignore scroll events triggered by our auto-scroll
-    if (isAutoScrollingRef.current) return;
-
     const isNearBottom = checkIfNearBottom();
     // If we can't determine scroll position, don't change state
     if (isNearBottom === null) return;
@@ -150,11 +150,11 @@ export function ChatPhase({
 
   // Attach scroll listener directly to viewport (Radix ScrollArea doesn't bubble scroll events)
   useEffect(() => {
-    const viewport = scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]');
+    const viewport = getViewport();
     if (!viewport) return;
     viewport.addEventListener('scroll', handleScroll);
     return () => viewport.removeEventListener('scroll', handleScroll);
-  }, [handleScroll]);
+  }, [getViewport, handleScroll]);
 
   // Cleanup scroll timeout on unmount
   useEffect(() => {
@@ -165,33 +165,34 @@ export function ChatPhase({
     };
   }, []);
 
-  // Auto-scroll helper that marks the scroll as programmatic
-  const autoScrollToBottom = useCallback(() => {
+  // Auto-scroll helper (throttled for streaming updates)
+  const autoScrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     // Cancel any pending timeout from a previous scroll
     if (scrollTimeoutRef.current) {
       clearTimeout(scrollTimeoutRef.current);
     }
 
-    isAutoScrollingRef.current = true;
-    scrollRef.current?.scrollIntoView({ behavior: "smooth" });
+    userScrolledAwayRef.current = false;
+    const viewport = getViewport();
+    if (viewport) {
+      viewport.scrollTo({ top: viewport.scrollHeight, behavior });
+    } else {
+      scrollRef.current?.scrollIntoView({ behavior });
+    }
 
-    // Reset flag after smooth scroll animation completes
+    // Clear throttle after the scroll settles
     scrollTimeoutRef.current = setTimeout(() => {
-      isAutoScrollingRef.current = false;
       scrollTimeoutRef.current = null;
-    }, 500);
-  }, []);
+    }, behavior === "smooth" ? 500 : 100);
+  }, [getViewport]);
 
-  // Handle new content: scroll to bottom or show notification
-  // We check scroll position DIRECTLY rather than relying on the ref,
-  // because the ref might be stale or scroll events might have been missed
+  // Handle new content: stick to bottom only if the user hasn't scrolled away
   useEffect(() => {
     const prevCount = lastMessageCountRef.current;
     const newCount = messages.length;
 
-    // Check scroll position directly for most reliable detection
-    const isNearBottom = checkIfNearBottom();
-    const shouldAutoScroll = isNearBottom === true; // Only if definitely at bottom (not null/unknown)
+    // Only auto-scroll when the user hasn't scrolled away from the bottom
+    const shouldAutoScroll = !userScrolledAwayRef.current;
 
     if (newCount > prevCount && prevCount > 0) {
       // New message(s) added
@@ -214,13 +215,13 @@ export function ChatPhase({
     // Note: if streaming while scrolled up, we do nothing (user is reading history)
 
     lastMessageCountRef.current = newCount;
-  }, [messages, autoScrollToBottom, checkIfNearBottom]);
+  }, [messages, autoScrollToBottom]);
 
   // Handler to scroll to new content when notification is clicked
   const handleScrollToNewContent = useCallback(() => {
-    scrollRef.current?.scrollIntoView({ behavior: "smooth" });
+    autoScrollToBottom("smooth");
     setShowNewContent(false);
-  }, []);
+  }, [autoScrollToBottom]);
 
   // Handler to copy message content to clipboard
   const handleCopyMessage = useCallback(async (messageId: string, content: string) => {
