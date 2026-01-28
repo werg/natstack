@@ -94,6 +94,27 @@ function getTypesCacheDir(): string {
 }
 
 /**
+ * Extract package name from a 404 error message.
+ * Handles both npm registry and Verdaccio URL formats:
+ * - npm: "404 ... registry.npmjs.org/@types%2freact-markdown ..."
+ * - Verdaccio: "404 Not Found - GET http://localhost:49564/@types%2freact-markdown - no such package"
+ */
+function extractPackageFrom404(errorMsg: string): string | null {
+  if (!errorMsg.includes("404")) {
+    return null;
+  }
+
+  // Pattern matches: URL ending with /@scope%2fname or /name, followed by space or end
+  // Works for both registry.npmjs.org and localhost:PORT URLs
+  const match = errorMsg.match(/https?:\/\/[^\s]+\/(@[a-z0-9_-]+%2f[a-z0-9_-]+|[a-z0-9_-]+)(?:\s|$|-)/i);
+  if (match?.[1]) {
+    return decodeURIComponent(match[1]);
+  }
+
+  return null;
+}
+
+/**
  * Hash a string for cache keys.
  */
 function hashString(str: string): string {
@@ -108,6 +129,30 @@ interface CachedTypeResult {
   files: Map<string, string>;
   referencedPackages: string[];
   entryPoint: string | null;
+}
+
+/** Result type for package types */
+export interface PackageTypesResult {
+  files: Record<string, string>;
+  referencedPackages?: string[];
+  entryPoint?: string;
+  error?: string;
+  skipped?: boolean;
+}
+
+/** Pending install request with its resolver */
+interface PendingInstall {
+  packageName: string;
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
+/** Per-depsDir batch queue state */
+interface BatchQueue {
+  /** Pending packages keyed by package name */
+  pending: Map<string, PendingInstall[]>;
+  flushTimer: NodeJS.Timeout | null;
+  activeFlush: Promise<void> | null;
 }
 
 /**
@@ -173,8 +218,11 @@ export class TypeDefinitionService {
   /** Lock for concurrent directory creation */
   private depsDirLocks = new Map<string, Promise<string>>();
 
-  /** Lock for concurrent installations */
-  private installLocks = new Map<string, Promise<void>>();
+  /** Batch queues for package installations, keyed by depsDir */
+  private batchQueues = new Map<string, BatchQueue>();
+
+  /** Debounce delay to collect concurrent requests into batches */
+  private readonly BATCH_DEBOUNCE_MS = 20;
 
   /** Cached @natstack package types (loaded lazily from packages dist folders) */
   private natstackTypes: Record<string, NatstackPackageTypes> | null = null;
@@ -208,16 +256,15 @@ export class TypeDefinitionService {
   /**
    * Get type definitions for a package.
    * Auto-installs via Arborist if not available.
+   * Always installs latest version (version parameter removed for batching simplicity).
    *
    * @param panelPath - Path to the panel requesting types
    * @param packageName - The package to get types for
-   * @param version - Optional specific version
    * @returns Object with files map and referenced packages
    */
   async getPackageTypes(
     panelPath: string,
-    packageName: string,
-    version?: string
+    packageName: string
   ): Promise<{ files: Record<string, string>; referencedPackages?: string[]; entryPoint?: string }> {
     // Handle @natstack/* packages - try local packages directory first
     if (packageName.startsWith("@natstack/")) {
@@ -236,7 +283,7 @@ export class TypeDefinitionService {
       return { files: {} };
     }
 
-    const cacheKey = `${packageName}@${version || "latest"}`;
+    const cacheKey = `${packageName}@latest`;
 
     // 1. Check global cache first (cache includes full metadata)
     const cached = this.globalTypeCache.get(cacheKey);
@@ -256,7 +303,7 @@ export class TypeDefinitionService {
 
     // 4. If not found, install via Arborist and retry
     if (!types) {
-      await this.installPackage(depsDir, packageName, version);
+      await this.installPackage(depsDir, packageName);
       types = await this.tryLoadTypes(depsDir, packageName);
     }
 
@@ -274,6 +321,99 @@ export class TypeDefinitionService {
     }
 
     return { files: {} }; // No types available
+  }
+
+  /**
+   * Install and load types for multiple packages in a single batch.
+   * This is the primary API - always use this instead of single-package calls when possible.
+   *
+   * @returns Map of package name -> result with types or error
+   */
+  async getPackageTypesBatch(
+    panelPath: string,
+    packageNames: string[]
+  ): Promise<Map<string, PackageTypesResult>> {
+    const depsDir = await this.ensurePanelDepsDir(panelPath);
+    const results = new Map<string, PackageTypesResult>();
+
+    // Partition: cached/skipped vs needs-install
+    const toInstall: string[] = [];
+
+    for (const packageName of packageNames) {
+      // Skip non-npm packages
+      if (shouldSkipPackage(packageName)) {
+        results.set(packageName, { files: {}, skipped: true });
+        continue;
+      }
+
+      // Check @natstack/* local packages
+      if (packageName.startsWith("@natstack/")) {
+        const types = this.getNatstackTypes(packageName);
+        if (Object.keys(types).length > 0) {
+          results.set(packageName, { files: types });
+          continue;
+        }
+      }
+
+      // Check global cache
+      const cacheKey = `${packageName}@latest`;
+      const cached = this.globalTypeCache.get(cacheKey);
+      if (cached && cached.files.size > 0) {
+        results.set(packageName, {
+          files: Object.fromEntries(cached.files),
+          referencedPackages: cached.referencedPackages,
+          entryPoint: cached.entryPoint ?? undefined,
+        });
+        continue;
+      }
+
+      toInstall.push(packageName);
+    }
+
+    if (toInstall.length === 0) return results;
+
+    // Batch install (they naturally batch via debounce)
+    const installResults = await Promise.allSettled(
+      toInstall.map(async pkg => {
+        await this.installPackage(depsDir, pkg);
+        return pkg;
+      })
+    );
+
+    // Load types for successfully installed packages and populate cache
+    for (let i = 0; i < toInstall.length; i++) {
+      const packageName = toInstall[i]!;
+      const result = installResults[i]!;
+
+      if (result.status === "rejected") {
+        const reason = result.reason;
+        results.set(packageName, {
+          files: {},
+          error: reason instanceof Error ? reason.message : String(reason),
+        });
+        continue;
+      }
+
+      // Load types and populate cache
+      const types = await this.tryLoadTypes(depsDir, packageName);
+      if (types && types.files.size > 0) {
+        const cacheKey = `${packageName}@latest`;
+        this.globalTypeCache.set(cacheKey, {
+          files: types.files,
+          referencedPackages: types.referencedPackages,
+          entryPoint: types.entryPoint,
+        });
+        results.set(packageName, {
+          files: Object.fromEntries(types.files),
+          referencedPackages: types.referencedPackages,
+          entryPoint: types.entryPoint ?? undefined,
+        });
+      } else {
+        results.set(packageName, { files: {} });
+      }
+    }
+
+    return results;
   }
 
   /**
@@ -347,44 +487,135 @@ export class TypeDefinitionService {
   }
 
   /**
-   * Install a package using Arborist.
-   * Uses a per-directory lock to prevent concurrent installations from corrupting package.json.
-   * Multiple packages for the same depsDir are serialized properly.
+   * Queue a package for batch installation.
+   * Multiple packages queued within BATCH_DEBOUNCE_MS are installed together.
+   *
+   * Always installs latest version (no version parameter - simplifies batching).
+   * All waiters for same package name share the result.
    */
   private async installPackage(
     depsDir: string,
-    packageName: string,
-    version?: string
+    packageName: string
   ): Promise<void> {
-    const spec = version ? `${packageName}@${version}` : packageName;
-    // Lock per-directory, not per-package, since all packages share the same package.json
-    const lockKey = depsDir;
-
-    // Spin-wait for lock to become available (proper serialization)
-    while (true) {
-      const existingLock = this.installLocks.get(lockKey);
-      if (!existingLock) {
-        break; // Lock is free, we can proceed
-      }
-      // Wait for existing install to complete
-      await existingLock;
-      // Loop back to check again (another waiter may have grabbed the lock)
+    // Get or create queue for this depsDir
+    let queue = this.batchQueues.get(depsDir);
+    if (!queue) {
+      queue = { pending: new Map(), flushTimer: null, activeFlush: null };
+      this.batchQueues.set(depsDir, queue);
     }
 
-    // Create the installation promise and store it atomically
-    const installPromise = this.doInstall(depsDir, spec).finally(() => {
-      this.installLocks.delete(lockKey);
-    });
+    // If flush in progress, wait for it then check if package was installed
+    while (queue.activeFlush) {
+      await queue.activeFlush;
+      if (await this.isPackageInstalled(depsDir, packageName)) {
+        return;
+      }
+      // Re-get queue (may have been pruned)
+      queue = this.batchQueues.get(depsDir);
+      if (!queue) {
+        queue = { pending: new Map(), flushTimer: null, activeFlush: null };
+        this.batchQueues.set(depsDir, queue);
+      }
+    }
 
-    this.installLocks.set(lockKey, installPromise);
-    return installPromise;
+    // Create promise for this request
+    return new Promise((resolve, reject) => {
+      // Key by package NAME for deduplication
+      if (!queue!.pending.has(packageName)) {
+        queue!.pending.set(packageName, []);
+      }
+      queue!.pending.get(packageName)!.push({ packageName, resolve, reject });
+
+      // Reset debounce timer
+      if (queue!.flushTimer) {
+        clearTimeout(queue!.flushTimer);
+      }
+
+      queue!.flushTimer = setTimeout(() => {
+        void this.flushBatch(depsDir);
+      }, this.BATCH_DEBOUNCE_MS);
+    });
   }
 
   /**
-   * Perform the actual package installation.
-   * Installs the main package first, then tries @types/* only if needed.
+   * Check if a package is already installed in node_modules.
    */
-  private async doInstall(depsDir: string, spec: string): Promise<void> {
+  private async isPackageInstalled(depsDir: string, packageName: string): Promise<boolean> {
+    const pkgPath = path.join(depsDir, "node_modules", ...packageName.split("/"), "package.json");
+    try {
+      await fs.access(pkgPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Flush the batch queue, installing all pending packages together.
+   * Serializes with any in-flight flush to prevent concurrent Arborist operations.
+   */
+  private async flushBatch(depsDir: string): Promise<void> {
+    const queue = this.batchQueues.get(depsDir);
+    if (!queue) return;
+
+    // CRITICAL: Wait for any in-flight flush to complete first
+    // This prevents concurrent doBatchInstall() calls racing on package.json/node_modules
+    while (queue.activeFlush) {
+      await queue.activeFlush;
+    }
+
+    // Check again after waiting - another flush may have processed our packages
+    if (queue.pending.size === 0) {
+      // Prune empty queue to prevent memory leak
+      this.batchQueues.delete(depsDir);
+      return;
+    }
+
+    // Clear timer
+    if (queue.flushTimer) {
+      clearTimeout(queue.flushTimer);
+      queue.flushTimer = null;
+    }
+
+    // Snapshot and clear pending
+    const batch = new Map(queue.pending);
+    queue.pending.clear();
+
+    // Extract package names for batch install
+    const packageNames = [...batch.keys()];
+    console.log(`[TypeDefinitionService] Batch installing ${packageNames.length} packages: ${packageNames.join(", ")}`);
+
+    // Execute batch install
+    queue.activeFlush = (async () => {
+      try {
+        await this.doBatchInstall(depsDir, packageNames);
+        // Resolve all waiters on success
+        for (const waiters of batch.values()) {
+          for (const w of waiters) w.resolve();
+        }
+      } catch (error) {
+        // Handle partial failures (async - properly awaited)
+        await this.handleBatchError(depsDir, batch, error as Error);
+      } finally {
+        queue.activeFlush = null;
+        // Prune empty queue
+        if (queue.pending.size === 0) {
+          this.batchQueues.delete(depsDir);
+        }
+      }
+    })();
+
+    await queue.activeFlush;
+  }
+
+  /**
+   * Perform batch package installation.
+   * Installs all packages in a single Arborist cycle, then adds @types/* for packages without built-in types.
+   */
+  private async doBatchInstall(
+    depsDir: string,
+    packageNames: string[]
+  ): Promise<void> {
     const packageJsonPath = path.join(depsDir, "package.json");
     const npmrcPath = path.join(depsDir, ".npmrc");
 
@@ -458,27 +689,15 @@ export class TypeDefinitionService {
       }
     }
 
-    // Parse spec to get package name and version
-    const atIndex = spec.lastIndexOf("@");
-    let pkgName: string;
-    let pkgVersion: string;
-
-    if (atIndex > 0) {
-      pkgName = spec.slice(0, atIndex);
-      pkgVersion = spec.slice(atIndex + 1);
-    } else {
-      pkgName = spec;
-      pkgVersion = "*";
+    // Add ALL packages to dependencies (always latest/*)
+    for (const name of packageNames) {
+      packageJson.dependencies[name] = "*";
     }
-
-    // Add only the main package first (not @types/*)
-    // Many packages ship their own types (zod, @radix-ui/*, etc.)
-    packageJson.dependencies[pkgName] = pkgVersion;
 
     // Write package.json
     await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
 
-    // Install the main package, with retry logic for stale @types/* 404 errors
+    // Install all packages with retry logic for stale @types/* 404 errors
     let retryCount = 0;
     const maxRetries = 5;
 
@@ -501,20 +720,16 @@ export class TypeDefinitionService {
         const errorMsg = error instanceof Error ? error.message : String(error);
 
         // Check if it's a 404 for a package (stale cache entry)
-        // URL format: https://registry.npmjs.org/@types%2fzod or https://registry.npmjs.org/some-pkg
-        const pkg404Match = errorMsg.match(/404.*registry\.npmjs\.org\/(@?[a-z0-9_-]+(?:%2f[a-z0-9_-]+)?)/i);
-        if (pkg404Match?.[1]) {
-          // Decode URL-encoded package name: @types%2fzod -> @types/zod
-          const failedPackage = decodeURIComponent(pkg404Match[1]);
-          if (packageJson.dependencies[failedPackage]) {
-            console.log(
-              `[TypeDefinitionService] Removing stale entry: ${failedPackage}`
-            );
-            delete packageJson.dependencies[failedPackage];
-            await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
-            retryCount++;
-            continue; // Retry without the stale entry
-          }
+        // Handles both npm registry and Verdaccio URLs
+        const failedPackage = extractPackageFrom404(errorMsg);
+        if (failedPackage && packageJson.dependencies[failedPackage]) {
+          console.log(
+            `[TypeDefinitionService] Removing stale entry: ${failedPackage}`
+          );
+          delete packageJson.dependencies[failedPackage];
+          await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
+          retryCount++;
+          continue; // Retry without the stale entry
         }
 
         // Check if it's an ERESOLVE error (peer dependency conflict)
@@ -530,7 +745,7 @@ export class TypeDefinitionService {
           } else if (conflictMatch) {
             cleanError = `Peer dependency conflict: ${conflictMatch[2]} requires ${conflictMatch[1]} at incompatible version`;
           } else {
-            cleanError = `Peer dependency conflict (run 'npm install ${spec} --legacy-peer-deps' manually to see details)`;
+            cleanError = `Peer dependency conflict during batch install`;
           }
 
           console.error(`[TypeDefinitionService] ${cleanError}`);
@@ -551,12 +766,15 @@ export class TypeDefinitionService {
               await fs.rm(depsDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
             }
             await fs.mkdir(depsDir, { recursive: true });
-            // Recreate package.json with just our package
+            // Recreate package.json with our packages
             packageJson = {
               name: "natstack-types-cache",
               private: true,
-              dependencies: { [pkgName]: pkgVersion },
+              dependencies: {},
             };
+            for (const name of packageNames) {
+              packageJson.dependencies[name] = "*";
+            }
             await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
             // Also recreate .npmrc if needed
             if (canServeNatstack) {
@@ -572,63 +790,151 @@ export class TypeDefinitionService {
 
         // Not a recoverable error
         console.error(
-          `[TypeDefinitionService] Failed to install ${spec}:`,
+          `[TypeDefinitionService] Failed batch install:`,
           errorMsg
         );
         throw new Error(
-          `Failed to install types for ${spec}: ${errorMsg}`
+          `Failed to install types: ${errorMsg}`
         );
       }
     }
 
     if (retryCount >= maxRetries) {
       throw new Error(
-        `Failed to install types for ${spec}: Too many stale @types/* entries in cache`
+        `Failed to install types: Too many stale @types/* entries in cache`
       );
     }
 
-    // Check if the installed package has its own types
-    const nodeModulesPath = path.join(depsDir, "node_modules");
-    const pkgJsonPath = path.join(nodeModulesPath, ...pkgName.split("/"), "package.json");
-    let hasOwnTypes = false;
+    // Batch @types/* installation for packages without built-in types
+    await this.installMissingTypesPackages(depsDir, packageNames, packageJson, canServeNatstack);
+  }
 
-    try {
-      const pkgContent = await fs.readFile(pkgJsonPath, "utf-8");
-      const pkg = JSON.parse(pkgContent) as { types?: string; typings?: string };
-      hasOwnTypes = Boolean(pkg.types || pkg.typings);
-    } catch {
-      // Package might not exist or have package.json
+  /**
+   * Check which packages need @types/* and install them in one batch.
+   */
+  private async installMissingTypesPackages(
+    depsDir: string,
+    packageNames: string[],
+    packageJson: { name: string; private: boolean; dependencies: Record<string, string> },
+    canServeNatstack: boolean
+  ): Promise<void> {
+    const packageJsonPath = path.join(depsDir, "package.json");
+    const nodeModulesPath = path.join(depsDir, "node_modules");
+    const typesNeeded: string[] = [];
+
+    // Check each package for built-in types
+    for (const name of packageNames) {
+      if (name.startsWith("@types/")) continue;
+
+      const pkgJsonPath = path.join(nodeModulesPath, ...name.split("/"), "package.json");
+      try {
+        const content = await fs.readFile(pkgJsonPath, "utf-8");
+        const pkg = JSON.parse(content) as { types?: string; typings?: string };
+        if (!pkg.types && !pkg.typings) {
+          const typesPackage = `@types/${name.replace("@", "").replace("/", "__")}`;
+          typesNeeded.push(typesPackage);
+        }
+      } catch {
+        // Package doesn't exist or no package.json
+      }
     }
 
-    // If package doesn't have its own types and it's not already a @types package, try @types/*
-    if (!hasOwnTypes && !pkgName.startsWith("@types/")) {
-      const typesPackage = `@types/${pkgName.replace("@", "").replace("/", "__")}`;
+    if (typesNeeded.length === 0) return;
 
-      // Add @types/* and try to install (but don't fail if it doesn't exist)
-      packageJson.dependencies[typesPackage] = "*";
-      await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
+    console.log(`[TypeDefinitionService] Installing @types/* for ${typesNeeded.length} packages`);
 
-      try {
-        // Pass registry directly to Arborist - .npmrc is not always read reliably
-        // Use legacyPeerDeps to handle peer dependency conflicts
-        const arboristOptions: { path: string; registry?: string; legacyPeerDeps?: boolean } = {
-          path: depsDir,
-          legacyPeerDeps: true,
-        };
-        if (canServeNatstack) {
-          arboristOptions.registry = getVerdaccioServer().getBaseUrl();
-        }
-        const arborist = new Arborist(arboristOptions);
-        await arborist.buildIdealTree();
-        await arborist.reify();
-      } catch (typesError) {
-        // @types/* doesn't exist - that's okay, remove it from dependencies
-        delete packageJson.dependencies[typesPackage];
+    // Add all @types/* packages
+    for (const typesPkg of typesNeeded) {
+      packageJson.dependencies[typesPkg] = "*";
+    }
+    await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
+
+    const arboristOptions: { path: string; registry?: string; legacyPeerDeps?: boolean } = {
+      path: depsDir,
+      legacyPeerDeps: true,
+    };
+    if (canServeNatstack) {
+      arboristOptions.registry = getVerdaccioServer().getBaseUrl();
+    }
+
+    try {
+      const arborist = new Arborist(arboristOptions);
+      await arborist.buildIdealTree();
+      await arborist.reify();
+    } catch (error) {
+      // Some @types/* don't exist - remove 404'd one and retry
+      const errorMsg = String(error);
+      const failedPkg = extractPackageFrom404(errorMsg);
+
+      if (failedPkg && packageJson.dependencies[failedPkg]) {
+        console.log(`[TypeDefinitionService] @types/* not found: ${failedPkg}`);
+        delete packageJson.dependencies[failedPkg];
         await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
-        console.log(
-          `[TypeDefinitionService] No @types/${pkgName} available (package may ship its own types)`
-        );
+
+        // Retry with remaining @types/*
+        const remaining = typesNeeded.filter(t => packageJson.dependencies[t]);
+        if (remaining.length > 0) {
+          try {
+            const arborist = new Arborist(arboristOptions);
+            await arborist.buildIdealTree();
+            await arborist.reify();
+          } catch (retryError) {
+            // Recursively handle additional 404s
+            const retryMsg = String(retryError);
+            const retryFailedPkg = extractPackageFrom404(retryMsg);
+            if (retryFailedPkg && packageJson.dependencies[retryFailedPkg]) {
+              console.log(`[TypeDefinitionService] @types/* not found: ${retryFailedPkg}`);
+              delete packageJson.dependencies[retryFailedPkg];
+              await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
+            }
+            // Don't throw - @types/* failures are non-fatal
+          }
+        }
       }
+      // Don't throw - @types/* failures are non-fatal
+    }
+  }
+
+  /**
+   * Handle batch install errors with partial failure isolation.
+   * Returns a promise that resolves when all retries are complete.
+   */
+  private async handleBatchError(
+    depsDir: string,
+    batch: Map<string, PendingInstall[]>,  // keyed by package name
+    error: Error
+  ): Promise<void> {
+    const errorMsg = error.message;
+
+    // Check for 404 on specific package (handles both npm registry and Verdaccio)
+    const failedPackage = extractPackageFrom404(errorMsg);
+
+    if (failedPackage && batch.has(failedPackage)) {
+      // Reject only failed package's waiters
+      const failedWaiters = batch.get(failedPackage) || [];
+      for (const w of failedWaiters) {
+        w.reject(new Error(`Package not found: ${failedPackage}`));
+      }
+      batch.delete(failedPackage);
+
+      // Retry remaining packages
+      if (batch.size > 0) {
+        const remainingNames = [...batch.keys()];
+        try {
+          await this.doBatchInstall(depsDir, remainingNames);
+          for (const waiters of batch.values()) {
+            for (const w of waiters) w.resolve();
+          }
+        } catch (retryError) {
+          await this.handleBatchError(depsDir, batch, retryError as Error);
+        }
+        return;
+      }
+    }
+
+    // Unknown error - reject all
+    for (const waiters of batch.values()) {
+      for (const w of waiters) w.reject(error);
     }
   }
 
@@ -664,7 +970,14 @@ export class TypeDefinitionService {
     this.globalTypeCache.clear();
     this.panelDepsCache.clear();
     this.natstackTypes = null;
-    // Note: depsDirLocks and installLocks clean themselves up via .finally()
+    // Clear batch queues
+    for (const queue of this.batchQueues.values()) {
+      if (queue.flushTimer) {
+        clearTimeout(queue.flushTimer);
+      }
+    }
+    this.batchQueues.clear();
+    // Note: depsDirLocks clean themselves up via .finally()
   }
 }
 
@@ -687,10 +1000,17 @@ export function getTypeDefinitionService(): TypeDefinitionService {
 export const typeCheckRpcMethods = {
   "typecheck.getPackageTypes": async (
     panelPath: string,
-    packageName: string,
-    version?: string
+    packageName: string
   ): Promise<{ files: Record<string, string>; referencedPackages?: string[]; entryPoint?: string }> => {
-    return getTypeDefinitionService().getPackageTypes(panelPath, packageName, version);
+    return getTypeDefinitionService().getPackageTypes(panelPath, packageName);
+  },
+
+  "typecheck.getPackageTypesBatch": async (
+    panelPath: string,
+    packageNames: string[]
+  ): Promise<Record<string, PackageTypesResult>> => {
+    const results = await getTypeDefinitionService().getPackageTypesBatch(panelPath, packageNames);
+    return Object.fromEntries(results);
   },
 
   "typecheck.getDepsDir": async (panelPath: string): Promise<string> => {

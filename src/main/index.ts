@@ -618,8 +618,12 @@ app.on("ready", async () => {
           case "getPackageTypes":
             return typeCheckRpcMethods["typecheck.getPackageTypes"](
               args[0] as string,
-              args[1] as string,
-              args[2] as string | undefined
+              args[1] as string
+            );
+          case "getPackageTypesBatch":
+            return typeCheckRpcMethods["typecheck.getPackageTypesBatch"](
+              args[0] as string,
+              args[1] as string[]
             );
           case "getDepsDir":
             return typeCheckRpcMethods["typecheck.getDepsDir"](args[0] as string);

@@ -29,6 +29,22 @@ export interface PackageTypesResult {
 }
 
 /**
+ * Result from batch API (record format for RPC serialization).
+ */
+export interface PackageTypesResultRecord {
+  /** Map of file paths to their contents (as Record for JSON serialization) */
+  files: Record<string, string>;
+  /** Package names referenced via /// <reference types="..." /> */
+  referencedPackages?: string[];
+  /** The main entry point file path */
+  entryPoint?: string;
+  /** Error message if package failed to load */
+  error?: string;
+  /** True if package was skipped (e.g., Node built-in) */
+  skipped?: boolean;
+}
+
+/**
  * Client for fetching type definitions from the main process.
  */
 export class TypeDefinitionClient {
@@ -41,16 +57,15 @@ export class TypeDefinitionClient {
   /**
    * Get type definitions for a package.
    * Main process will auto-install if missing.
+   * Always installs latest version (version parameter removed for batching simplicity).
    *
    * @param panelPath - Path to the panel requesting types
    * @param packageName - The package to get types for
-   * @param version - Optional specific version
    * @returns PackageTypesResult with files map and metadata, empty files on error
    */
   async getPackageTypes(
     panelPath: string,
-    packageName: string,
-    version?: string
+    packageName: string
   ): Promise<PackageTypesResult> {
     try {
       const result = await this.rpcCall<{
@@ -61,8 +76,7 @@ export class TypeDefinitionClient {
         "main",
         "typecheck.getPackageTypes",
         panelPath,
-        packageName,
-        version
+        packageName
       );
 
       return {
@@ -73,6 +87,43 @@ export class TypeDefinitionClient {
     } catch (error) {
       console.error(`[typecheck-client] Failed to get types for ${packageName}:`, error);
       return { files: new Map() };
+    }
+  }
+
+  /**
+   * Get type definitions for multiple packages in a batch.
+   * This is the primary API - use this instead of single-package calls when possible.
+   *
+   * @param panelPath - Path to the panel requesting types
+   * @param packageNames - Array of package names to get types for
+   * @returns Map of package name to result with types or error
+   */
+  async getPackageTypesBatch(
+    panelPath: string,
+    packageNames: string[]
+  ): Promise<Map<string, PackageTypesResult>> {
+    try {
+      const result = await this.rpcCall<Record<string, PackageTypesResultRecord> | null>(
+        "main",
+        "typecheck.getPackageTypesBatch",
+        panelPath,
+        packageNames
+      );
+
+      const resultMap = new Map<string, PackageTypesResult>();
+      if (result) {
+        for (const [name, data] of Object.entries(result)) {
+          resultMap.set(name, {
+            files: new Map(Object.entries(data.files)),
+            referencedPackages: data.referencedPackages,
+            entryPoint: data.entryPoint,
+          });
+        }
+      }
+      return resultMap;
+    } catch (error) {
+      console.error(`[typecheck-client] Failed to get types batch:`, error);
+      return new Map();
     }
   }
 

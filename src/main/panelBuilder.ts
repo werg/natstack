@@ -1025,23 +1025,24 @@ export class PanelBuilder {
       // Get the TypeDefinitionService for fetching external package types
       const typeDefService = getTypeDefinitionService();
 
-      // Start pre-loading types for dependencies in background (fire and forget)
+      // Pre-load types for all dependencies in a single batch
       // Results populate the LRU cache and will be available for subsequent requests
-      // Don't await - proceed to type checking immediately while pre-load runs
       const dependencyNames = Object.keys(dependencies ?? {});
+      let preloadedTypes = new Map<string, { files: Record<string, string>; referencedPackages?: string[]; entryPoint?: string; error?: string }>();
       if (dependencyNames.length > 0) {
-        log(`Pre-loading types for ${dependencyNames.length} dependencies in background...`);
-        void Promise.all(
-          dependencyNames.map((dep) =>
-            typeDefService.getPackageTypes(sourcePath, dep).catch(() => {
-              // Ignore failures - package might not have types
-            })
-          )
-        );
+        log(`Pre-loading types for ${dependencyNames.length} dependencies...`);
+        preloadedTypes = await typeDefService.getPackageTypesBatch(sourcePath, dependencyNames);
       }
 
       // Track type loading failures to enhance error messages
       const typeLoadingFailures = new Map<string, string>();
+
+      // Check preloaded types for errors
+      for (const [name, result] of preloadedTypes) {
+        if (result.error) {
+          typeLoadingFailures.set(name, result.error);
+        }
+      }
 
       // Create type check service with proper resolution config and external type fetching
       const service = createTypeCheckService({
@@ -1053,6 +1054,21 @@ export class PanelBuilder {
         workspaceRoot,
         // Callback to fetch external package types from the TypeDefinitionService
         requestExternalTypes: async (packageName: string) => {
+          // Check preloaded types first
+          const preloaded = preloadedTypes.get(packageName);
+          if (preloaded && Object.keys(preloaded.files).length > 0) {
+            return {
+              files: new Map(Object.entries(preloaded.files)),
+              referencedPackages: preloaded.referencedPackages,
+              entryPoint: preloaded.entryPoint,
+            };
+          }
+          if (preloaded?.error) {
+            typeLoadingFailures.set(packageName, preloaded.error);
+            return null;
+          }
+
+          // On-demand load for packages not in dependencies
           try {
             const result = await typeDefService.getPackageTypes(sourcePath, packageName);
             if (Object.keys(result.files).length > 0) {

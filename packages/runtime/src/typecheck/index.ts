@@ -104,6 +104,7 @@ export {
   createTypeDefinitionClient,
   type TypeDefinitionClientConfig,
   type PackageTypesResult,
+  type PackageTypesResultRecord,
 } from "./rpc-client.js";
 
 // Factory for easy service creation
