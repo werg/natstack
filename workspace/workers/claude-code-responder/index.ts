@@ -2284,15 +2284,15 @@ function handleFatalError(type: string, err: unknown): never {
 }
 
 // Catch unhandled promise rejections (e.g., from fire-and-forget async calls)
-process.on("unhandledRejection", (reason, promise) => {
-  console.error("[Claude Code Worker] Unhandled rejection at:", promise);
-  handleFatalError("Unhandled rejection", reason);
+window.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
+  console.error("[Claude Code Worker] Unhandled rejection at:", event.promise);
+  handleFatalError("Unhandled rejection", event.reason);
 });
 
 // Catch uncaught exceptions (synchronous errors that escape all try/catch)
-process.on("uncaughtException", (err, origin) => {
-  console.error("[Claude Code Worker] Uncaught exception origin:", origin);
-  handleFatalError("Uncaught exception", err);
+window.addEventListener("error", (event: ErrorEvent) => {
+  console.error("[Claude Code Worker] Uncaught exception:", event.message);
+  handleFatalError("Uncaught exception", event.error);
 });
 
 void main().catch((err) => {
