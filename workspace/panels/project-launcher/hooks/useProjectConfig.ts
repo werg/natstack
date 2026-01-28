@@ -3,8 +3,8 @@
  */
 
 import { useState, useCallback } from "react";
-import type { ProjectConfig } from "@natstack-panels/project-panel/types";
-import { createProjectConfig, PROJECT_DEFAULTS } from "@natstack-panels/project-panel/types";
+import type { ProjectConfig } from "@workspace-panels/project-panel/types";
+import { createProjectConfig, PROJECT_DEFAULTS } from "@workspace-panels/project-panel/types";
 
 export interface UseProjectConfigOptions {
   workspaceRoot?: string;

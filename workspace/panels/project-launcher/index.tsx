@@ -17,7 +17,7 @@ import { ExternalModeConfig } from "./components/ExternalModeConfig";
 import { ManagedModeConfig } from "./components/ManagedModeConfig";
 import { DefaultAgentConfig } from "./components/DefaultAgentConfig";
 import { AutonomySettings } from "./components/AutonomySettings";
-import { validateProjectConfig, type ProjectPanelStateArgs } from "@natstack-panels/project-panel/types";
+import { validateProjectConfig, type ProjectPanelStateArgs } from "@workspace-panels/project-panel/types";
 
 export default function ProjectLauncher() {
   const theme = usePanelTheme();

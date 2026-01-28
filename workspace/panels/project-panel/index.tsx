@@ -13,6 +13,7 @@ import { useChildSessions } from "./hooks/useChildSessions";
 import { getAgentById, getAgentWorkerSource, getAgentHandle } from "./utils/agents";
 import { ProjectHeader } from "./components/ProjectHeader";
 import { ConfigSection } from "./components/ConfigSection";
+import { TemplateSection } from "./components/TemplateSection";
 import { LaunchSection } from "./components/LaunchSection";
 import { SessionHistory } from "./components/SessionHistory";
 import {
@@ -44,6 +45,7 @@ export default function ProjectPanel() {
   const { projectConfig, contextId } = stateArgs;
 
   const [configExpanded, setConfigExpanded] = useState(false);
+  const [templateExpanded, setTemplateExpanded] = useState(false);
   const [isLaunching, setIsLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [agentName, setAgentName] = useState<string | undefined>();
@@ -158,6 +160,18 @@ export default function ProjectPanel() {
       <Box p="4" style={{ maxWidth: 600, margin: "0 auto" }}>
         <Flex direction="column" gap="4">
           <ProjectHeader config={projectConfig} />
+
+          {/* Template section for managed projects */}
+          {projectConfig.projectLocation === "managed" && projectConfig.includedRepos?.[0] && (
+            <>
+              <Separator size="4" />
+              <TemplateSection
+                repoPath={projectConfig.includedRepos[0]}
+                expanded={templateExpanded}
+                onToggle={() => setTemplateExpanded(!templateExpanded)}
+              />
+            </>
+          )}
 
           <Separator size="4" />
 

@@ -54,7 +54,7 @@ export interface ChildSessionInfo {
  * Default values for projects.
  */
 export const PROJECT_DEFAULTS = {
-  defaultAutonomy: 1 as const,
+  defaultAutonomy: 2 as const, // Full auto
 } satisfies Partial<ProjectConfig>;
 
 /**
