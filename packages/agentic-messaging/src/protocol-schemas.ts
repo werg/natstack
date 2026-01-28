@@ -36,9 +36,10 @@ const PrimitiveFieldValueSchema = z.union([z.string(), z.number(), z.boolean()])
 const FieldValueSchema = z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]);
 
 // Condition for field visibility/enabled state (uses primitives only)
+// Note: "contains" is for checking if an array field (multiSelect) contains a specific value
 const FieldConditionSchema = z.object({
   field: z.string(),
-  operator: z.enum(["eq", "neq", "gt", "gte", "lt", "lte", "in"]),
+  operator: z.enum(["eq", "neq", "gt", "gte", "lt", "lte", "in", "contains"]),
   value: z.union([PrimitiveFieldValueSchema, z.array(PrimitiveFieldValueSchema)]),
 });
 

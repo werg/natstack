@@ -73,6 +73,7 @@ interface ManagedView {
     domReady: () => void;
     contextMenu: (event: Electron.Event, params: Electron.ContextMenuParams) => void;
     renderProcessGone: (event: Electron.Event, details: Electron.RenderProcessGoneDetails) => void;
+    focus: () => void;
   };
 }
 
@@ -333,6 +334,13 @@ export class ViewManager {
           this.crashCallback(config.id, details.reason);
         }
       },
+      // Focus handler to recover from compositor stalls - when a user clicks on
+      // a panel that appears grey, this refreshes the view to restore painting.
+      focus: () => {
+        if (this.visiblePanelId === config.id) {
+          this.refreshVisiblePanel();
+        }
+      },
     };
 
     managed.handlers = handlers;
@@ -345,6 +353,9 @@ export class ViewManager {
 
     // Listen for render process crashes
     view.webContents.on("render-process-gone", handlers.renderProcessGone);
+
+    // Listen for focus to recover from potential compositor stalls
+    view.webContents.on("focus", handlers.focus);
 
     // Apply protection if this view is in the protected set
     // (handles case where view is recreated after crash while still protected)
@@ -439,6 +450,7 @@ export class ViewManager {
       managed.view.webContents.off("dom-ready", managed.handlers.domReady);
       managed.view.webContents.off("context-menu", managed.handlers.contextMenu);
       managed.view.webContents.off("render-process-gone", managed.handlers.renderProcessGone);
+      managed.view.webContents.off("focus", managed.handlers.focus);
     }
 
     // Remove from window
@@ -552,6 +564,29 @@ export class ViewManager {
     // Ensure shell stays on top for UI overlay elements
     // Actually, shell should be behind content views so panels show on top
     // This is correct - panels render above shell
+  }
+
+  /**
+   * Refresh the currently visible panel by re-establishing its z-order and bounds.
+   * This helps recover from compositor stalls where the view exists but isn't painting.
+   * Called when a panel receives focus (even if it was already visible).
+   */
+  refreshVisiblePanel(): void {
+    if (!this.visiblePanelId) {
+      return;
+    }
+
+    const managed = this.views.get(this.visiblePanelId);
+    if (!managed || !managed.visible) {
+      return;
+    }
+
+    // Refresh bounds and z-order - the remove/add cycle can help recover
+    // from compositor stalls by forcing Chromium to re-establish the view
+    const bounds = this.calculatePanelBounds();
+    managed.bounds = bounds;
+    managed.view.setBounds(bounds);
+    this.bringToFront(this.visiblePanelId);
   }
 
   /**

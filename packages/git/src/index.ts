@@ -31,6 +31,7 @@
 
 export { GitClient, GitAuthError, type FsPromisesLike } from "./client.js";
 export { bootstrap } from "./bootstrap.js";
+export { initAndPush, type InitAndPushOptions } from "./convenience.js";
 
 export type {
   RepoArgSpec,

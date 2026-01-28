@@ -29,7 +29,7 @@ import {
   type TypeCheckDiagnostic,
 } from "@natstack/runtime/typecheck";
 import { isVerdaccioServerInitialized, getVerdaccioServer } from "./verdaccioServer.js";
-import { getPackagesDir, getAppNodeModules } from "./paths.js";
+import { getPackagesDir, getAppNodeModules, getActiveWorkspace } from "./paths.js";
 import {
   getPackageStore,
   createPackageFetcher,
@@ -1034,6 +1034,8 @@ export class PanelBuilder {
       // Find workspace root for loading @natstack package types
       const packagesDir = getPackagesDir();
       const workspaceRoot = packagesDir ? path.dirname(packagesDir) : undefined;
+      // Get user workspace path for @natstack-panels/* and @natstack-workers/* resolution
+      const userWorkspace = getActiveWorkspace();
 
       // Create type check service that loads types from the build's node_modules.
       // React, @types/react, and other deduplicated packages are installed here.
@@ -1047,6 +1049,8 @@ export class PanelBuilder {
         skipSuggestions: true, // Build-time: only errors, not suggestions
         // Load types directly from the build's node_modules
         nodeModulesPaths: [runtimeNodeModules],
+        // Enable resolution of @natstack-panels/* and @natstack-workers/* from workspace
+        userWorkspacePath: userWorkspace?.path,
       });
 
       // Add all source files to the service with absolute paths

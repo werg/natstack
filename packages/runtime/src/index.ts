@@ -342,4 +342,12 @@ export const adblock = new Proxy({} as import("./panel/adblock.js").AdBlockApi, 
 });
 
 // fsReady - only available in panel/worker environments
-export const fsReady = Promise.reject(new Error("fsReady is only available in panel/worker environments"));
+// Use a getter that throws on access rather than Promise.reject() to avoid unhandled rejection errors
+// when this module is imported but fsReady is not used
+const fsReadyError = new Error("fsReady is only available in panel/worker environments");
+export const fsReady: Promise<void> = {
+  then() { throw fsReadyError; },
+  catch() { throw fsReadyError; },
+  finally() { throw fsReadyError; },
+  [Symbol.toStringTag]: "Promise",
+} as Promise<void>;

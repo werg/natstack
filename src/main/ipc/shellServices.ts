@@ -226,6 +226,11 @@ export async function handlePanelService(
         // Notify UI of the selected path change
         pm.notifyPanelTreeUpdate();
 
+        // Refresh the visible panel to recover from potential compositor stalls.
+        // The remove/add cycle in bringToFront can help restore painting when
+        // Chromium's compositor has stopped rendering the view.
+        vm.refreshVisiblePanel();
+
         // If panel was unloaded (pending state), rebuild it on focus
         // This is async but we don't need to wait for it
         void pm.rebuildUnloadedPanel(panelId);

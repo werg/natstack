@@ -13,6 +13,8 @@
  */
 
 import * as ts from "typescript";
+import * as fs from "fs";
+import * as path from "path";
 import {
   type ModuleResolutionConfig,
   resolveModule,
@@ -121,6 +123,12 @@ export interface TypeCheckServiceConfig {
    * are already installed.
    */
   nodeModulesPaths?: string[];
+  /**
+   * Path to the user's workspace root.
+   * If provided, enables resolution of @natstack-panels/* and @natstack-workers/*
+   * from workspace/panels/ and workspace/workers/ directories.
+   */
+  userWorkspacePath?: string;
 }
 
 /**
@@ -795,6 +803,13 @@ export class TypeCheckService {
       }
 
       case "standard":
+        // Check for workspace panel/worker imports before falling back to standard
+        if (this.config.userWorkspacePath) {
+          const workspaceResolution = this.resolveWorkspaceModule(moduleName);
+          if (workspaceResolution) {
+            return workspaceResolution;
+          }
+        }
         // Use standard resolution
         break;
     }
@@ -939,6 +954,115 @@ export class TypeCheckService {
       if (filePath.startsWith(prefix) && filePath.endsWith(".d.ts")) {
         return filePath;
       }
+    }
+
+    return null;
+  }
+
+  /**
+   * Resolve workspace panel/worker module imports.
+   * Handles @natstack-panels/* and @natstack-workers/* by looking in the user's workspace.
+   */
+  private resolveWorkspaceModule(
+    moduleName: string
+  ): ts.ResolvedModuleWithFailedLookupLocations | null {
+    const userWorkspace = this.config.userWorkspacePath;
+    if (!userWorkspace) return null;
+
+    let baseDir: string;
+    let scope: string;
+
+    if (moduleName.startsWith("@natstack-panels/")) {
+      baseDir = path.join(userWorkspace, "panels");
+      scope = "@natstack-panels/";
+    } else if (moduleName.startsWith("@natstack-workers/")) {
+      baseDir = path.join(userWorkspace, "workers");
+      scope = "@natstack-workers/";
+    } else {
+      return null;
+    }
+
+    // Parse: @natstack-panels/project-panel/types -> packageName=project-panel, subpath=types
+    const withoutScope = moduleName.slice(scope.length);
+    const slashIndex = withoutScope.indexOf("/");
+    const packageName = slashIndex === -1 ? withoutScope : withoutScope.slice(0, slashIndex);
+    const subpath = slashIndex === -1 ? null : withoutScope.slice(slashIndex + 1);
+
+    const packageDir = path.join(baseDir, packageName);
+    const packageJsonPath = path.join(packageDir, "package.json");
+
+    if (!fs.existsSync(packageJsonPath)) {
+      return null;
+    }
+
+    try {
+      const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as {
+        exports?: Record<string, string | { types?: string; default?: string }>;
+        types?: string;
+        main?: string;
+      };
+
+      let resolvedFile: string | null = null;
+
+      // Resolve via package.json exports
+      if (packageJson.exports) {
+        const exportKey = subpath ? `./${subpath}` : ".";
+        const exportValue = packageJson.exports[exportKey];
+
+        if (typeof exportValue === "string") {
+          resolvedFile = path.join(packageDir, exportValue);
+        } else if (exportValue?.types) {
+          resolvedFile = path.join(packageDir, exportValue.types);
+        } else if (exportValue?.default) {
+          resolvedFile = path.join(packageDir, exportValue.default);
+        }
+      }
+
+      // Fallback to types/main fields if no exports match
+      if (!resolvedFile && !subpath) {
+        if (packageJson.types) {
+          resolvedFile = path.join(packageDir, packageJson.types);
+        } else if (packageJson.main) {
+          resolvedFile = path.join(packageDir, packageJson.main);
+        } else {
+          // Try index.ts/tsx
+          for (const ext of [".ts", ".tsx", ".d.ts"]) {
+            const indexPath = path.join(packageDir, `index${ext}`);
+            if (fs.existsSync(indexPath)) {
+              resolvedFile = indexPath;
+              break;
+            }
+          }
+        }
+      }
+
+      if (resolvedFile && fs.existsSync(resolvedFile)) {
+        // Load the file into the service if not already loaded
+        const virtualPath = `/@workspace/${moduleName.replace(/\//g, "/")}`;
+        if (!this.files.has(virtualPath)) {
+          const content = fs.readFileSync(resolvedFile, "utf-8");
+          this.files.set(virtualPath, { content, version: 1 });
+        }
+
+        // Determine extension
+        const ext = resolvedFile.endsWith(".tsx")
+          ? ts.Extension.Tsx
+          : resolvedFile.endsWith(".ts")
+          ? ts.Extension.Ts
+          : resolvedFile.endsWith(".d.ts")
+          ? ts.Extension.Dts
+          : ts.Extension.Ts;
+
+        return {
+          resolvedModule: {
+            resolvedFileName: virtualPath,
+            isExternalLibraryImport: false,
+            extension: ext,
+          },
+        };
+      }
+    } catch {
+      // Failed to read/parse package.json
     }
 
     return null;

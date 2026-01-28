@@ -228,6 +228,15 @@ export class VerdaccioServer {
           access: "$all",
           publish: "$all",
         },
+        // Workspace panels and workers (for panel-to-panel dependencies)
+        "@natstack-panels/*": {
+          access: "$all",
+          publish: "$all",
+        },
+        "@natstack-workers/*": {
+          access: "$all",
+          publish: "$all",
+        },
         // All other packages proxy to npmjs
         "**": {
           access: "$all",
@@ -442,6 +451,7 @@ export class VerdaccioServer {
   /**
    * Discover all packages in a directory, supporting scoped packages.
    * Scoped packages live in directories starting with @ (e.g., @scope/mylib).
+   * Skips packages marked as private (they shouldn't be published).
    */
   private discoverPackagesInDir(packagesDir: string): Array<{ path: string; name: string }> {
     const packages: Array<{ path: string; name: string }> = [];
@@ -467,7 +477,9 @@ export class VerdaccioServer {
 
           if (fs.existsSync(pkgJsonPath)) {
             try {
-              const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string };
+              const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string; private?: boolean };
+              // Skip private packages - they shouldn't be published
+              if (pkgJson.private) continue;
               packages.push({ path: scopedPkgPath, name: pkgJson.name });
             } catch {
               // Skip packages with invalid package.json
@@ -480,7 +492,9 @@ export class VerdaccioServer {
 
         if (fs.existsSync(pkgJsonPath)) {
           try {
-            const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string };
+            const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string; private?: boolean };
+            // Skip private packages - they shouldn't be published
+            if (pkgJson.private) continue;
             packages.push({ path: entryPath, name: pkgJson.name });
           } catch {
             // Skip packages with invalid package.json
@@ -1014,10 +1028,14 @@ export class VerdaccioServer {
   private publishingInProgress: Set<string> = new Set();
 
   /**
-   * Check if a relative path is under the packages/ directory.
+   * Check if a relative path is under a publishable directory (packages, panels, or workers).
    */
-  private isInPackagesDir(repoPath: string): boolean {
-    return repoPath.startsWith("packages/") || repoPath.startsWith("packages\\");
+  private isInPublishableDir(repoPath: string): boolean {
+    return (
+      repoPath.startsWith("packages/") || repoPath.startsWith("packages\\") ||
+      repoPath.startsWith("panels/") || repoPath.startsWith("panels\\") ||
+      repoPath.startsWith("workers/") || repoPath.startsWith("workers\\")
+    );
   }
 
   /**
@@ -1034,7 +1052,7 @@ export class VerdaccioServer {
     const toAbsolutePath = (repoPath: string) => path.join(userWorkspacePath, repoPath);
 
     watcher.on("repoAdded", async (repoPath) => {
-      if (!this.isInPackagesDir(repoPath)) return;
+      if (!this.isInPublishableDir(repoPath)) return;
       if (!this.isRunning()) return;
 
       try {
@@ -1042,7 +1060,9 @@ export class VerdaccioServer {
         const pkgJsonPath = path.join(absolutePath, "package.json");
         if (!fs.existsSync(pkgJsonPath)) return;
 
-        const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string };
+        const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string; private?: boolean };
+        // Skip private packages
+        if (pkgJson.private) return;
         await this.publishPackage(absolutePath, pkgJson.name);
         console.log(`[Verdaccio] Published new workspace package: ${pkgJson.name}`);
         this.invalidateVerdaccioVersionsCache();
@@ -1052,7 +1072,7 @@ export class VerdaccioServer {
     });
 
     watcher.on("commitAdded", (repoPath) => {
-      if (!this.isInPackagesDir(repoPath)) return;
+      if (!this.isInPublishableDir(repoPath)) return;
       if (!this.isRunning()) return;
 
       // Debounce: cancel any pending publish for this repo and reschedule
@@ -1077,7 +1097,9 @@ export class VerdaccioServer {
           const pkgJsonPath = path.join(absolutePath, "package.json");
           if (!fs.existsSync(pkgJsonPath)) return;
 
-          const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string };
+          const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string; private?: boolean };
+          // Skip private packages
+          if (pkgJson.private) return;
           const result = await this.publishPackage(absolutePath, pkgJson.name);
           if (result === "published") {
             console.log(`[Verdaccio] Republished workspace package on commit: ${pkgJson.name}`);
@@ -1097,25 +1119,41 @@ export class VerdaccioServer {
   /**
    * Publish all existing packages from a user workspace on startup.
    * This handles packages that existed before the app started (GitWatcher uses ignoreInitial).
+   * Also publishes panels and workers so they can be dependencies of other panels/workers.
    *
    * @param userWorkspacePath - Absolute path to the user's workspace root
    */
   async publishUserWorkspacePackages(userWorkspacePath: string): Promise<void> {
+    // Collect packages from all publishable directories
+    const allPackages: Array<{ path: string; name: string }> = [];
+
+    // Traditional packages directory
     const packagesDir = path.join(userWorkspacePath, "packages");
-    if (!fs.existsSync(packagesDir)) {
+    if (fs.existsSync(packagesDir)) {
+      allPackages.push(...this.discoverPackagesInDir(packagesDir));
+    }
+
+    // Panels directory (for @natstack-panels/* dependencies)
+    const panelsDir = path.join(userWorkspacePath, "panels");
+    if (fs.existsSync(panelsDir)) {
+      allPackages.push(...this.discoverPackagesInDir(panelsDir));
+    }
+
+    // Workers directory (for @natstack-workers/* dependencies)
+    const workersDir = path.join(userWorkspacePath, "workers");
+    if (fs.existsSync(workersDir)) {
+      allPackages.push(...this.discoverPackagesInDir(workersDir));
+    }
+
+    if (allPackages.length === 0) {
       return;
     }
 
-    const packages = this.discoverPackagesInDir(packagesDir);
-    if (packages.length === 0) {
-      return;
-    }
-
-    console.log(`[Verdaccio] Publishing ${packages.length} existing user workspace packages...`);
+    console.log(`[Verdaccio] Publishing ${allPackages.length} existing user workspace packages...`);
 
     // Publish in parallel batches
-    for (let i = 0; i < packages.length; i += this.PUBLISH_CONCURRENCY) {
-      const batch = packages.slice(i, i + this.PUBLISH_CONCURRENCY);
+    for (let i = 0; i < allPackages.length; i += this.PUBLISH_CONCURRENCY) {
+      const batch = allPackages.slice(i, i + this.PUBLISH_CONCURRENCY);
 
       await Promise.allSettled(
         batch.map(async (pkg) => {

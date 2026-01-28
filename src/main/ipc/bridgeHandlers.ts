@@ -3,6 +3,7 @@
  * Handles panel lifecycle operations like createChild, close, navigation, etc.
  */
 
+import { dialog } from "electron";
 import type { PanelManager } from "../panelManager.js";
 import type { CreateChildOptions } from "../../shared/ipc/types.js";
 import { handleTemplateComplete, type TemplateCompleteResult } from "../contextTemplate/partitionBuilder.js";
@@ -129,7 +130,11 @@ export async function handleBridgeCall(
     }
     case "createContextFromTemplate": {
       // Create a new context from a template spec
-      const [templateSpec] = args as [string];
+      const [templateSpec] = (args ?? []) as [string?];
+      if (!templateSpec?.trim()) {
+        throw new Error("Template spec cannot be empty - select at least one repository");
+      }
+
       const { resolveTemplate } = await import("../contextTemplate/resolver.js");
       const { computeImmutableSpec } = await import("../contextTemplate/specHash.js");
       const { createContextId, generateInstanceId } = await import("../contextTemplate/contextId.js");
@@ -157,6 +162,20 @@ export async function handleBridgeCall(
       await ensureContextPartitionInitialized(contextId, immutableSpec, gitConfig);
 
       return contextId;
+    }
+    case "openFolderDialog": {
+      // Folder picker for panels (mirrors shell's workspace.openFolderDialog)
+      const [options] = (args ?? []) as [{ title?: string }?];
+      const result = await dialog.showOpenDialog({
+        properties: ["openDirectory", "createDirectory"],
+        title: options?.title ?? "Select Folder",
+      });
+      return result.canceled ? null : result.filePaths[0] ?? null;
+    }
+    case "getChildPanels": {
+      // Get child panels with slim projection (excludes full stateArgs for perf/security)
+      const [options] = (args ?? []) as [{ includeStateArgs?: boolean }?];
+      return pm.getChildPanels(callerId, options);
     }
     default:
       throw new Error(`Unknown bridge method: ${method}`);

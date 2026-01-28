@@ -3435,6 +3435,43 @@ export class PanelManager {
     };
   }
 
+  /**
+   * Get child panels for a given panel (slim projection).
+   * Used by project-panel to list child chat sessions.
+   *
+   * Note: createdAt is approximated with Date.now() since the Panel in-memory
+   * structure doesn't include it (it's only in the DB). This means timestamps
+   * will show "Just now" after refresh. For accurate timestamps, we'd need to
+   * query the database for each child panel.
+   */
+  getChildPanels(
+    panelId: string,
+    options?: { includeStateArgs?: boolean }
+  ): Array<{
+    id: string;
+    title: string;
+    source: string;
+    createdAt: number;
+    stateArgs?: Record<string, unknown>;
+  }> {
+    const panel = this.panels.get(panelId);
+    if (!panel) return [];
+    return panel.children.map((child) => {
+      const base = {
+        id: child.id,
+        title: child.title,
+        source: getPanelSource(child),
+        // TODO: Query DB for actual created_at if accurate timestamps are needed
+        createdAt: Date.now(),
+      };
+      // Only include stateArgs if explicitly requested (perf/data-exposure concern)
+      if (options?.includeStateArgs) {
+        return { ...base, stateArgs: getPanelStateArgs(child) };
+      }
+      return base;
+    });
+  }
+
   getSerializablePanelTree(): Panel[] {
     return this.rootPanels.map((panel) => this.serializePanel(panel));
   }
