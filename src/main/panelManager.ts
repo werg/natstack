@@ -62,6 +62,7 @@ import {
   type ContextMode,
 } from "./contextTemplate/index.js";
 import { buildBuiltinWorker } from "./builtinWorkerBuilder.js";
+import { logMemorySnapshot } from "./memoryMonitor.js";
 
 /** Default template spec used when none is explicitly provided */
 const DEFAULT_TEMPLATE_SPEC = "contexts/default";
@@ -3839,6 +3840,7 @@ export class PanelManager {
    */
   private handleViewCrashed(viewId: string, reason: string): void {
     console.warn(`[PanelManager] View ${viewId} crashed: ${reason}`);
+    void logMemorySnapshot({ reason: `view-crash:${viewId}:${reason}` });
 
     if (!this.shouldAttemptReload(viewId)) {
       console.error(`[PanelManager] Giving up on ${viewId} after repeated crashes`);

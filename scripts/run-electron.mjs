@@ -6,7 +6,17 @@ const require = createRequire(import.meta.url);
 const electronBinary = require("electron");
 
 const extraArgs = process.argv.slice(2);
-const args = [".", ...extraArgs];
+const args = [];
+
+const rendererMaxOldSpace = Number.parseInt(
+  process.env.NATSTACK_RENDERER_MAX_OLD_SPACE_MB ?? "",
+  10
+);
+if (Number.isFinite(rendererMaxOldSpace) && rendererMaxOldSpace > 0) {
+  args.push(`--js-flags=--max-old-space-size=${rendererMaxOldSpace}`);
+}
+
+args.push(".", ...extraArgs);
 
 const child = spawn(electronBinary, args, {
   stdio: "inherit",

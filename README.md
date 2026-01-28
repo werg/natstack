@@ -105,6 +105,27 @@ pnpm dev
 
 The app will open with DevTools enabled for debugging.
 
+### Memory Diagnostics (optional)
+
+You can enable lightweight memory logging to identify which panel/worker is growing.
+
+```bash
+# Log a snapshot every 60s
+NATSTACK_MEMORY_LOG_MS=60000 pnpm dev
+
+# Log only if any view exceeds the threshold (MB)
+NATSTACK_MEMORY_LOG_THRESHOLD_MB=1500 pnpm dev
+
+# Log a single snapshot at startup
+NATSTACK_MEMORY_LOG_ONCE=1 pnpm dev
+```
+
+To temporarily increase the renderer V8 heap limit in dev:
+
+```bash
+NATSTACK_RENDERER_MAX_OLD_SPACE_MB=4096 pnpm dev
+```
+
 ## Building for Production
 
 ```bash

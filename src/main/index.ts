@@ -63,6 +63,7 @@ import { setupTestApi } from "./testApi.js";
 import { getAdBlockManager } from "./adblock/index.js";
 import { handleAdBlockServiceCall } from "./ipc/adblockHandlers.js";
 import { preloadNatstackTypesAsync } from "@natstack/runtime/typecheck";
+import { startMemoryMonitor } from "./memoryMonitor.js";
 
 // =============================================================================
 // Protocol Registration (must happen before app ready)
@@ -198,6 +199,9 @@ function createWindow(): void {
   if (panelManager && viewManager) {
     panelManager.setViewManager(viewManager);
   }
+
+  // Optional memory diagnostics (env-driven).
+  startMemoryMonitor();
 
   // Setup application menu (uses shell webContents for menu events)
   setupMenu(mainWindow, viewManager.getShellWebContents(), {
