@@ -53,6 +53,8 @@ import {
   type IncomingNewMessage,
   // Async queue utility
   AsyncQueue,
+  // Error types for error handling
+  AgenticError,
 } from "@natstack/agentic-messaging";
 // Session recovery utilities (Node.js only)
 import {
@@ -1101,10 +1103,13 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
 
   // Start observer in background
   // This continuously observes messages and enqueues them with immediate typing indicators
-  // If observer fails, close the queue so processor exits and worker can restart
+  // If observer fails, close the queue so processor exits, then trigger fatal error for restart
   void observeMessages(session, messageQueue, processingState).catch((err) => {
     log(`Observer failed: ${err instanceof Error ? err.message : String(err)}`);
     messageQueue.close();
+    // Rethrow to trigger unhandledRejection handler and force worker restart
+    // This prevents silent death where worker exits without proper error handling
+    throw err;
   });
 
   // Start processor (blocks until queue closes)
@@ -1234,6 +1239,10 @@ async function handleUserMessage(
       }
     }
   });
+
+  // Declare outside try block so they're accessible in catch block for error recovery
+  let capturedSessionId: string | undefined;
+  let checkpointCommitted = false;
 
   try {
     // Start monitoring for pause events in background
@@ -1626,12 +1635,28 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
             toolUseID: options.toolUseID,
           };
         } catch (err) {
-          log(`AskUserQuestion failed: ${err}`);
-          return {
-            behavior: "deny" as const,
-            message: `Failed to show question form: ${err instanceof Error ? err.message : String(err)}`,
-            toolUseID: options.toolUseID,
-          };
+          // Classify errors: some can be handled gracefully, others indicate bugs
+          if (err instanceof AgenticError) {
+            const recoverableCodes = ["cancelled", "timeout", "provider-offline", "provider-not-found"];
+            if (recoverableCodes.includes(err.code)) {
+              // Recoverable errors: inform Claude and continue
+              const messages: Record<string, string> = {
+                cancelled: "User cancelled the question",
+                timeout: "Question prompt timed out - UI may be unresponsive",
+                "provider-offline": "Cannot show question - UI panel is offline",
+                "provider-not-found": "Cannot show question - no UI panel available",
+              };
+              log(`AskUserQuestion recoverable error (${err.code}): ${err.message}`);
+              return {
+                behavior: "deny" as const,
+                message: messages[err.code] || err.message,
+                toolUseID: options.toolUseID,
+              };
+            }
+          }
+          // For bugs (validation-error, execution-error) or unknown errors, crash to fix
+          log(`AskUserQuestion failed with unrecoverable error: ${err}`);
+          throw err;
         }
       }
 
@@ -1751,12 +1776,28 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
           };
         }
       } catch (err) {
-        log(`Permission prompt failed: ${err}`);
-        return {
-          behavior: "deny" as const,
-          message: `Permission prompt failed: ${err instanceof Error ? err.message : String(err)}`,
-          toolUseID: options.toolUseID,
-        };
+        // Classify errors: some can be handled gracefully, others indicate bugs
+        if (err instanceof AgenticError) {
+          const recoverableCodes = ["cancelled", "timeout", "provider-offline", "provider-not-found"];
+          if (recoverableCodes.includes(err.code)) {
+            // Recoverable errors: inform Claude and continue
+            const messages: Record<string, string> = {
+              cancelled: "User cancelled the permission prompt",
+              timeout: "Permission prompt timed out - UI may be unresponsive",
+              "provider-offline": "Cannot show permission prompt - UI panel is offline",
+              "provider-not-found": "Cannot show permission prompt - no UI panel available",
+            };
+            log(`Permission prompt recoverable error (${err.code}) for ${toolName}: ${err.message}`);
+            return {
+              behavior: "deny" as const,
+              message: messages[err.code] || err.message,
+              toolUseID: options.toolUseID,
+            };
+          }
+        }
+        // For bugs (validation-error, execution-error) or unknown errors, crash to fix
+        log(`Permission prompt failed with unrecoverable error for ${toolName}: ${err}`);
+        throw err;
       }
     };
 
@@ -1827,10 +1868,8 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     // Store reference for settings method to use for model discovery
     activeQueryInstance = queryInstance;
 
-    let capturedSessionId: string | undefined;
     let currentSdkMessageUuid: string | undefined;
     let currentSdkSessionId: string | undefined;
-    let checkpointCommitted = false;
     let sawStreamedText = false;
 
     // Track tool input JSON for accumulating input_json_delta events
@@ -1847,6 +1886,8 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       }
       if (sdkMsg.session_id) {
         currentSdkSessionId = sdkMsg.session_id;
+        // Capture early for error recovery - ensures we have session ID even if query fails mid-stream
+        capturedSessionId = sdkMsg.session_id;
       }
 
       // Check if pause was requested and break early
@@ -2173,6 +2214,27 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     // Mark end of turn for context tracking (resets current turn, preserves session totals)
     await contextTracker.endTurn();
   } catch (err) {
+    // CRITICAL: Persist session ID and checkpoint even on error to prevent zombie state
+    // This ensures we can resume the session after a crash/restart
+    if (capturedSessionId) {
+      session.setLocalSdkSessionId(capturedSessionId);
+      if (client.sessionKey) {
+        await client.updateSdkSession(capturedSessionId).catch((e) => {
+          log(`Failed to persist session ID on error: ${e}`);
+        });
+        log(`Session ID persisted on error: ${capturedSessionId}`);
+      }
+    }
+
+    // Also commit checkpoint on error to mark message as processed
+    // This prevents duplicate processing on restart
+    if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
+      await client.commitCheckpoint(incoming.pubsubId).catch((e) => {
+        log(`Failed to commit checkpoint on error: ${e}`);
+      });
+      log(`Checkpoint committed on error: ${incoming.pubsubId}`);
+    }
+
     // Cleanup any pending typing/thinking/action messages to avoid orphaned messages
     await typing.cleanup();
     await thinking.cleanup();
@@ -2200,10 +2262,39 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       const { messageId: errorMsgId } = await client.send("", { replyTo: incoming.id });
       await client.error(errorMsgId, err instanceof Error ? err.message : String(err));
     }
+
+    // CRITICAL: Rethrow to propagate error and trigger worker crash/restart
+    // This prevents zombie state where worker continues with lost session context
+    throw err;
   }
 }
 
-void main().catch((err) => {
-  console.error("[Claude Code Worker] Fatal error:", err);
+// =============================================================================
+// Global Error Handlers
+// =============================================================================
+// These handlers catch errors that escape normal try/catch blocks, preventing
+// silent failures and zombie states where the worker continues operating
+// without proper context.
+
+function handleFatalError(type: string, err: unknown): never {
+  console.error(`[Claude Code Worker] ${type}:`, err);
+  // Exit with error code to trigger worker restart
+  // The session recovery mechanism will restore context on next startup
   process.exit(1);
+}
+
+// Catch unhandled promise rejections (e.g., from fire-and-forget async calls)
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("[Claude Code Worker] Unhandled rejection at:", promise);
+  handleFatalError("Unhandled rejection", reason);
+});
+
+// Catch uncaught exceptions (synchronous errors that escape all try/catch)
+process.on("uncaughtException", (err, origin) => {
+  console.error("[Claude Code Worker] Uncaught exception origin:", origin);
+  handleFatalError("Uncaught exception", err);
+});
+
+void main().catch((err) => {
+  handleFatalError("Fatal error in main()", err);
 });
