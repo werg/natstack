@@ -395,6 +395,16 @@ export class PackageStore {
   }
 
   /**
+   * Clear all resolution cache entries.
+   */
+  clearResolutionCache(): number {
+    this.ensureInitialized();
+    const db = getDatabaseManager();
+    const result = db.run(this.dbHandle!, "DELETE FROM resolution_cache");
+    return result.changes;
+  }
+
+  /**
    * Get store statistics.
    */
   getStats(): {

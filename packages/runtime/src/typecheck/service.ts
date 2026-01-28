@@ -125,7 +125,7 @@ export interface TypeCheckServiceConfig {
   nodeModulesPaths?: string[];
   /**
    * Path to the user's workspace root.
-   * If provided, enables resolution of @natstack-panels/* and @natstack-workers/*
+   * If provided, enables resolution of @workspace-panels/* and @workspace-workers/*
    * from workspace/panels/ and workspace/workers/ directories.
    */
   userWorkspacePath?: string;
@@ -663,14 +663,37 @@ export class TypeCheckService {
       getScriptVersion: (fileName) =>
         String(this.files.get(fileName)?.version ?? 0),
       getScriptSnapshot: (fileName) => {
+        // Check virtual files first
         const file = this.files.get(fileName);
-        if (!file) return undefined;
-        return ts.ScriptSnapshot.fromString(file.content);
+        if (file) return ts.ScriptSnapshot.fromString(file.content);
+        // Fall back to file system for workspace packages
+        if (this.isWorkspacePackagePath(fileName) && fs.existsSync(fileName)) {
+          const content = fs.readFileSync(fileName, "utf-8");
+          return ts.ScriptSnapshot.fromString(content);
+        }
+        return undefined;
       },
       getCurrentDirectory: () => this.config.panelPath,
       getDefaultLibFileName: () => "/@typescript/lib/lib.es5.d.ts",
-      fileExists: (path) => this.files.has(path),
-      readFile: (path) => this.files.get(path)?.content,
+      fileExists: (filePath) => {
+        // Check virtual files first
+        if (this.files.has(filePath)) return true;
+        // Fall back to file system for workspace packages
+        if (this.isWorkspacePackagePath(filePath)) {
+          return fs.existsSync(filePath);
+        }
+        return false;
+      },
+      readFile: (filePath) => {
+        // Check virtual files first
+        const file = this.files.get(filePath);
+        if (file) return file.content;
+        // Fall back to file system for workspace packages
+        if (this.isWorkspacePackagePath(filePath) && fs.existsSync(filePath)) {
+          return fs.readFileSync(filePath, "utf-8");
+        }
+        return undefined;
+      },
 
       // Custom module resolution
       resolveModuleNameLiterals(
@@ -961,7 +984,8 @@ export class TypeCheckService {
 
   /**
    * Resolve workspace panel/worker module imports.
-   * Handles @natstack-panels/* and @natstack-workers/* by looking in the user's workspace.
+   * Handles @workspace-panels/*, @workspace-workers/*, and @workspace/* packages
+   * from workspace/panels/, workspace/workers/, and workspace/packages/ respectively.
    */
   private resolveWorkspaceModule(
     moduleName: string
@@ -972,17 +996,21 @@ export class TypeCheckService {
     let baseDir: string;
     let scope: string;
 
-    if (moduleName.startsWith("@natstack-panels/")) {
+    if (moduleName.startsWith("@workspace-panels/")) {
       baseDir = path.join(userWorkspace, "panels");
-      scope = "@natstack-panels/";
-    } else if (moduleName.startsWith("@natstack-workers/")) {
+      scope = "@workspace-panels/";
+    } else if (moduleName.startsWith("@workspace-workers/")) {
       baseDir = path.join(userWorkspace, "workers");
-      scope = "@natstack-workers/";
+      scope = "@workspace-workers/";
+    } else if (moduleName.startsWith("@workspace/")) {
+      // Shared workspace packages in workspace/packages/
+      baseDir = path.join(userWorkspace, "packages");
+      scope = "@workspace/";
     } else {
       return null;
     }
 
-    // Parse: @natstack-panels/project-panel/types -> packageName=project-panel, subpath=types
+    // Parse: @workspace-panels/project-panel/types -> packageName=project-panel, subpath=types
     const withoutScope = moduleName.slice(scope.length);
     const slashIndex = withoutScope.indexOf("/");
     const packageName = slashIndex === -1 ? withoutScope : withoutScope.slice(0, slashIndex);
@@ -1037,12 +1065,8 @@ export class TypeCheckService {
       }
 
       if (resolvedFile && fs.existsSync(resolvedFile)) {
-        // Load the file into the service if not already loaded
-        const virtualPath = `/@workspace/${moduleName.replace(/\//g, "/")}`;
-        if (!this.files.has(virtualPath)) {
-          const content = fs.readFileSync(resolvedFile, "utf-8");
-          this.files.set(virtualPath, { content, version: 1 });
-        }
+        // Use the real file path so TypeScript can resolve relative imports
+        // The language service host's fileExists/readFile will handle reading from disk
 
         // Determine extension
         const ext = resolvedFile.endsWith(".tsx")
@@ -1055,7 +1079,7 @@ export class TypeCheckService {
 
         return {
           resolvedModule: {
-            resolvedFileName: virtualPath,
+            resolvedFileName: resolvedFile,
             isExternalLibraryImport: false,
             extension: ext,
           },
@@ -1066,6 +1090,24 @@ export class TypeCheckService {
     }
 
     return null;
+  }
+
+  /**
+   * Check if a file path is within the user's workspace packages directory.
+   * Used to allow file system access for workspace package files during type checking.
+   */
+  private isWorkspacePackagePath(filePath: string): boolean {
+    const userWorkspace = this.config.userWorkspacePath;
+    if (!userWorkspace) return false;
+
+    // Allow access to files within workspace/panels/, workspace/workers/, workspace/packages/
+    const workspaceDirs = [
+      path.join(userWorkspace, "panels"),
+      path.join(userWorkspace, "workers"),
+      path.join(userWorkspace, "packages"),
+    ];
+
+    return workspaceDirs.some(dir => filePath.startsWith(dir + path.sep) || filePath.startsWith(dir + "/"));
   }
 
   /**

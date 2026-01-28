@@ -33,7 +33,7 @@ Panel configuration is specified in `package.json` with a `natstack` field:
 
 ```json
 {
-  "name": "@natstack-panels/my-panel",
+  "name": "@workspace-panels/my-panel",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -339,7 +339,7 @@ Workers use the same `package.json` format but with `runtime: "worker"`:
 
 ```json
 {
-  "name": "@natstack-workers/compute",
+  "name": "@workspace-workers/compute",
   "natstack": {
     "title": "Compute Worker",
     "runtime": "worker"

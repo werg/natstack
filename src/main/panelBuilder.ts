@@ -1034,7 +1034,7 @@ export class PanelBuilder {
       // Find workspace root for loading @natstack package types
       const packagesDir = getPackagesDir();
       const workspaceRoot = packagesDir ? path.dirname(packagesDir) : undefined;
-      // Get user workspace path for @natstack-panels/* and @natstack-workers/* resolution
+      // Get user workspace path for @workspace-panels/* and @workspace-workers/* resolution
       const userWorkspace = getActiveWorkspace();
 
       // Create type check service that loads types from the build's node_modules.
@@ -1049,7 +1049,7 @@ export class PanelBuilder {
         skipSuggestions: true, // Build-time: only errors, not suggestions
         // Load types directly from the build's node_modules
         nodeModulesPaths: [runtimeNodeModules],
-        // Enable resolution of @natstack-panels/* and @natstack-workers/* from workspace
+        // Enable resolution of @workspace-panels/* and @workspace-workers/* from workspace
         userWorkspacePath: userWorkspace?.path,
       });
 
@@ -1240,10 +1240,20 @@ export class PanelBuilder {
     // - Content hashes match but Verdaccio state is different
     //
     // Smart optimization: Only walk transitive deps when Verdaccio packages have actually changed.
-    // This avoids unnecessary npm installs when unrelated @natstack packages change.
-    const verdaccioVersions = await getVerdaccioServer().getVerdaccioVersions();
+    // This avoids unnecessary npm installs when unrelated packages change.
+    const verdaccioServer = getVerdaccioServer();
+    const natstackVersions = await verdaccioServer.getVerdaccioVersions();
 
-    // Fast path: check if any @natstack package changed since last known state
+    // Also get user workspace package versions (@workspace/*, @workspace-panels/*, @workspace-workers/*)
+    const userWorkspace = getActiveWorkspace();
+    const userWorkspaceVersions = userWorkspace
+      ? await verdaccioServer.getUserWorkspaceVersions(userWorkspace.path)
+      : {};
+
+    // Merge all versions
+    const verdaccioVersions = { ...natstackVersions, ...userWorkspaceVersions };
+
+    // Fast path: check if any package changed since last known state
     // Use union of all keys from both objects for consistent comparison
     const lastKnownVersions = this.lastVerdaccioVersions;
     const allKeys = [...new Set([
@@ -1259,7 +1269,7 @@ export class PanelBuilder {
       // Nothing changed - use cached relevant versions for this panel
       relevantVersions = this.panelRelevantVersionsCache.get(canonicalPath) ?? {};
     } else {
-      // Something changed - compute transitive @natstack deps for this panel
+      // Something changed - compute transitive deps for this panel
       relevantVersions = {};
 
       // Check if we're in a monorepo context (packages/ directory exists)
@@ -1276,14 +1286,36 @@ export class PanelBuilder {
         const visited = new Set<string>();
 
         const walkDeps = (pkgName: string) => {
-          if (!pkgName.startsWith("@natstack/") || visited.has(pkgName)) return;
+          if (visited.has(pkgName)) return;
+
+          // Determine base directory for this package
+          let pkgJsonPath: string | null = null;
+
+          if (pkgName.startsWith("@natstack/")) {
+            const pkgDir = pkgName.replace("@natstack/", "");
+            pkgJsonPath = path.join(packagesDir, pkgDir, "package.json");
+          } else if (userWorkspace) {
+            if (pkgName.startsWith("@workspace-panels/")) {
+              const pkgDir = pkgName.replace("@workspace-panels/", "");
+              pkgJsonPath = path.join(userWorkspace.path, "panels", pkgDir, "package.json");
+            } else if (pkgName.startsWith("@workspace-workers/")) {
+              const pkgDir = pkgName.replace("@workspace-workers/", "");
+              pkgJsonPath = path.join(userWorkspace.path, "workers", pkgDir, "package.json");
+            } else if (pkgName.startsWith("@workspace/")) {
+              const pkgDir = pkgName.replace("@workspace/", "");
+              pkgJsonPath = path.join(userWorkspace.path, "packages", pkgDir, "package.json");
+            }
+          }
+
+          // Only track packages we know about (Verdaccio-published packages)
+          if (!pkgJsonPath) return;
+
           visited.add(pkgName);
           if (verdaccioVersions[pkgName]) {
             relevantVersions[pkgName] = verdaccioVersions[pkgName];
           }
-          // Read package's deps from workspace packages dir
-          const pkgDir = pkgName.replace("@natstack/", "");
-          const pkgJsonPath = path.join(packagesDir, pkgDir, "package.json");
+
+          // Walk transitive deps
           if (fs.existsSync(pkgJsonPath)) {
             try {
               const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8"));
@@ -1297,7 +1329,7 @@ export class PanelBuilder {
           }
         };
 
-        // Start from panel's direct @natstack deps
+        // Start from panel's direct deps
         for (const dep of Object.keys(resolvedDependencies)) {
           walkDeps(dep);
         }

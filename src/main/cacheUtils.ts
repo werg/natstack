@@ -179,11 +179,20 @@ export async function clearAllCaches(options?: CacheClearOptions): Promise<Cache
     console.warn("[CacheUtils] Failed to measure cache sizes:", error);
   }
 
-  // Clear build cache (in-memory + disk)
+  // Clear build cache (in-memory + disk + resolution cache)
   if (opts.buildCache) {
     try {
       await getMainCacheManager().clear();
       await clearDiskCache();
+      // Also clear package store's resolution cache to ensure fresh dependency resolution
+      try {
+        const { getPackageStore } = await import("./package-store/store.js");
+        const store = await getPackageStore();
+        const cleared = store.clearResolutionCache();
+        console.log(`[CacheUtils] Cleared ${cleared} resolution cache entries`);
+      } catch (error) {
+        console.warn("[CacheUtils] Failed to clear resolution cache:", error);
+      }
       result.cleared.buildCache = true;
       result.bytesFreed += sizesBefore.buildCache;
       console.log("[CacheUtils] Cleared build cache");

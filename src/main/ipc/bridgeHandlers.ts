@@ -177,6 +177,56 @@ export async function handleBridgeCall(
       const [options] = (args ?? []) as [{ includeStateArgs?: boolean }?];
       return pm.getChildPanels(callerId, options);
     }
+    case "hasContextTemplate": {
+      // Check if a repo has a context-template.yml file
+      const [repoPath] = args as [string];
+      if (!repoPath?.trim()) {
+        throw new Error("Repo path is required");
+      }
+
+      const { hasContextTemplate } = await import("../contextTemplate/discovery.js");
+      return hasContextTemplate(repoPath);
+    }
+    case "loadContextTemplate": {
+      // Load context template info from a repo (returns null if doesn't exist)
+      const [repoPath] = args as [string];
+      if (!repoPath?.trim()) {
+        throw new Error("Repo path is required");
+      }
+
+      const { loadContextTemplate } = await import("../contextTemplate/discovery.js");
+      return loadContextTemplate(repoPath);
+    }
+    case "initContextTemplate": {
+      // Initialize a basic context-template.yml in a repo
+      const [repoPath] = args as [string];
+      if (!repoPath?.trim()) {
+        throw new Error("Repo path is required");
+      }
+
+      const { initContextTemplate } = await import("../contextTemplate/discovery.js");
+      return initContextTemplate(repoPath);
+    }
+    case "saveContextTemplate": {
+      // Save updated context template info to a repo
+      const [repoPath, info] = args as [string, { name?: string; description?: string; extends?: string; structure?: Record<string, string> }];
+      if (!repoPath?.trim()) {
+        throw new Error("Repo path is required");
+      }
+
+      const { saveContextTemplate } = await import("../contextTemplate/discovery.js");
+      return saveContextTemplate(repoPath, info);
+    }
+    case "createRepo": {
+      // Create a new git repo in the workspace
+      const [repoPath] = args as [string];
+      if (!repoPath?.trim()) {
+        throw new Error("Repo path is required");
+      }
+
+      const { createRepo } = await import("../contextTemplate/discovery.js");
+      return createRepo(repoPath);
+    }
     default:
       throw new Error(`Unknown bridge method: ${method}`);
   }

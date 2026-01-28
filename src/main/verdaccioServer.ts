@@ -229,11 +229,16 @@ export class VerdaccioServer {
           publish: "$all",
         },
         // Workspace panels and workers (for panel-to-panel dependencies)
-        "@natstack-panels/*": {
+        "@workspace-panels/*": {
           access: "$all",
           publish: "$all",
         },
-        "@natstack-workers/*": {
+        "@workspace-workers/*": {
+          access: "$all",
+          publish: "$all",
+        },
+        // Shared workspace packages (workspace/packages/)
+        "@workspace/*": {
           access: "$all",
           publish: "$all",
         },
@@ -463,6 +468,8 @@ export class VerdaccioServer {
     const entries = fs.readdirSync(packagesDir, { withFileTypes: true })
       .filter(entry => entry.isDirectory() && !entry.name.startsWith("."));
 
+    console.log(`[Verdaccio] discoverPackagesInDir: ${packagesDir} has ${entries.length} entries: ${entries.map(e => e.name).join(", ")}`);
+
     for (const entry of entries) {
       const entryPath = path.join(packagesDir, entry.name);
 
@@ -479,10 +486,13 @@ export class VerdaccioServer {
             try {
               const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string; private?: boolean };
               // Skip private packages - they shouldn't be published
-              if (pkgJson.private) continue;
+              if (pkgJson.private) {
+                console.log(`[Verdaccio] Skipping private package: ${pkgJson.name}`);
+                continue;
+              }
               packages.push({ path: scopedPkgPath, name: pkgJson.name });
-            } catch {
-              // Skip packages with invalid package.json
+            } catch (err) {
+              console.log(`[Verdaccio] Failed to parse package.json at ${pkgJsonPath}: ${err}`);
             }
           }
         }
@@ -494,11 +504,17 @@ export class VerdaccioServer {
           try {
             const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string; private?: boolean };
             // Skip private packages - they shouldn't be published
-            if (pkgJson.private) continue;
+            if (pkgJson.private) {
+              console.log(`[Verdaccio] Skipping private package: ${pkgJson.name}`);
+              continue;
+            }
+            console.log(`[Verdaccio] Found publishable package: ${pkgJson.name} at ${entryPath}`);
             packages.push({ path: entryPath, name: pkgJson.name });
-          } catch {
-            // Skip packages with invalid package.json
+          } catch (err) {
+            console.log(`[Verdaccio] Failed to parse package.json at ${pkgJsonPath}: ${err}`);
           }
+        } else {
+          console.log(`[Verdaccio] No package.json at ${pkgJsonPath}`);
         }
       }
     }
@@ -584,6 +600,7 @@ export class VerdaccioServer {
       files?: string[];
       main?: string;
       types?: string;
+      exports?: Record<string, unknown>;
     };
 
     // Hash the package.json itself (excluding version which we'll modify)
@@ -603,7 +620,40 @@ export class VerdaccioServer {
       this.hashDirectory(srcPath, hash);
     }
 
+    // For workspace packages that export TypeScript directly (no dist/src),
+    // hash all .ts/.tsx/.js/.jsx files in the package root and subdirectories
+    if (!fs.existsSync(distPath) && !fs.existsSync(srcPath)) {
+      this.hashSourceFiles(pkgPath, hash);
+    }
+
     return hash.digest("hex").slice(0, 12);
+  }
+
+  /**
+   * Hash all source files (.ts, .tsx, .js, .jsx) in a directory recursively.
+   * Used for workspace packages that don't have a dist/ or src/ folder.
+   */
+  private hashSourceFiles(dirPath: string, hash: crypto.Hash): void {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      // Skip node_modules, .git, and other common non-source directories
+      if (entry.name === "node_modules" || entry.name.startsWith(".")) {
+        continue;
+      }
+
+      const fullPath = path.join(dirPath, entry.name);
+
+      if (entry.isDirectory()) {
+        this.hashSourceFiles(fullPath, hash);
+      } else if (entry.isFile()) {
+        // Only hash source files
+        const ext = path.extname(entry.name).toLowerCase();
+        if ([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(ext)) {
+          hash.update(entry.name);
+          hash.update(fs.readFileSync(fullPath));
+        }
+      }
+    }
   }
 
   /**
@@ -736,6 +786,56 @@ export class VerdaccioServer {
 
     // Cache the results
     this.verdaccioVersionsCache = { versions, timestamp: Date.now() };
+    return versions;
+  }
+
+  /**
+   * Get the actual versions served by Verdaccio for user workspace packages.
+   * Includes @workspace/*, @workspace-panels/*, and @workspace-workers/* packages.
+   * Used to include in deps hash to detect when user workspace packages change.
+   */
+  async getUserWorkspaceVersions(userWorkspacePath: string): Promise<Record<string, string>> {
+    const versions: Record<string, string> = {};
+
+    // Collect packages from all user workspace directories
+    const allPackages: Array<{ path: string; name: string }> = [];
+
+    const packagesDir = path.join(userWorkspacePath, "packages");
+    if (fs.existsSync(packagesDir)) {
+      allPackages.push(...this.discoverPackagesInDir(packagesDir));
+    }
+
+    const panelsDir = path.join(userWorkspacePath, "panels");
+    if (fs.existsSync(panelsDir)) {
+      allPackages.push(...this.discoverPackagesInDir(panelsDir));
+    }
+
+    const workersDir = path.join(userWorkspacePath, "workers");
+    if (fs.existsSync(workersDir)) {
+      allPackages.push(...this.discoverPackagesInDir(workersDir));
+    }
+
+    if (allPackages.length === 0) {
+      return versions;
+    }
+
+    // Query versions in parallel
+    const queries = allPackages.map(async (pkg) => {
+      try {
+        const version = await this.getPackageVersion(pkg.name);
+        return version ? { name: pkg.name, version } : null;
+      } catch {
+        return null;
+      }
+    });
+
+    const results = await Promise.all(queries);
+    for (const result of results) {
+      if (result) {
+        versions[result.name] = result.version;
+      }
+    }
+
     return versions;
   }
 
@@ -1124,28 +1224,40 @@ export class VerdaccioServer {
    * @param userWorkspacePath - Absolute path to the user's workspace root
    */
   async publishUserWorkspacePackages(userWorkspacePath: string): Promise<void> {
+    console.log(`[Verdaccio] publishUserWorkspacePackages called with: ${userWorkspacePath}`);
+
     // Collect packages from all publishable directories
     const allPackages: Array<{ path: string; name: string }> = [];
 
     // Traditional packages directory
     const packagesDir = path.join(userWorkspacePath, "packages");
+    console.log(`[Verdaccio] Checking packages dir: ${packagesDir} (exists: ${fs.existsSync(packagesDir)})`);
     if (fs.existsSync(packagesDir)) {
-      allPackages.push(...this.discoverPackagesInDir(packagesDir));
+      const found = this.discoverPackagesInDir(packagesDir);
+      console.log(`[Verdaccio] Found ${found.length} packages in packages/: ${found.map(p => p.name).join(", ") || "(none)"}`);
+      allPackages.push(...found);
     }
 
-    // Panels directory (for @natstack-panels/* dependencies)
+    // Panels directory (for @workspace-panels/* dependencies)
     const panelsDir = path.join(userWorkspacePath, "panels");
+    console.log(`[Verdaccio] Checking panels dir: ${panelsDir} (exists: ${fs.existsSync(panelsDir)})`);
     if (fs.existsSync(panelsDir)) {
-      allPackages.push(...this.discoverPackagesInDir(panelsDir));
+      const found = this.discoverPackagesInDir(panelsDir);
+      console.log(`[Verdaccio] Found ${found.length} packages in panels/: ${found.map(p => p.name).join(", ") || "(none)"}`);
+      allPackages.push(...found);
     }
 
-    // Workers directory (for @natstack-workers/* dependencies)
+    // Workers directory (for @workspace-workers/* dependencies)
     const workersDir = path.join(userWorkspacePath, "workers");
+    console.log(`[Verdaccio] Checking workers dir: ${workersDir} (exists: ${fs.existsSync(workersDir)})`);
     if (fs.existsSync(workersDir)) {
-      allPackages.push(...this.discoverPackagesInDir(workersDir));
+      const found = this.discoverPackagesInDir(workersDir);
+      console.log(`[Verdaccio] Found ${found.length} packages in workers/: ${found.map(p => p.name).join(", ") || "(none)"}`);
+      allPackages.push(...found);
     }
 
     if (allPackages.length === 0) {
+      console.log(`[Verdaccio] No user workspace packages found to publish`);
       return;
     }
 

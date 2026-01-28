@@ -37,7 +37,7 @@ export default function MyApp() {
 ```json
 // panels/my-app/package.json
 {
-  "name": "@natstack-panels/my-app",
+  "name": "@workspace-panels/my-app",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -63,7 +63,7 @@ Every panel requires a `package.json` with a `natstack` field:
 
 ```json
 {
-  "name": "@natstack-panels/my-app",
+  "name": "@workspace-panels/my-app",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -167,7 +167,7 @@ Worker manifest uses `type: "worker"` (and may also include legacy `runtime: "wo
 
 ```json
 {
-  "name": "@natstack-workers/compute",
+  "name": "@workspace-workers/compute",
   "natstack": {
     "title": "Compute Worker",
     "type": "worker",
