@@ -491,6 +491,12 @@ export class ViewManager {
     managed.visible = visible;
     managed.view.setVisible(visible);
 
+    // Disable background throttling when showing a view to ensure immediate responsiveness.
+    // Hidden views get throttled by Chromium, causing input delay when re-shown.
+    if (visible && !managed.view.webContents.isDestroyed()) {
+      managed.view.webContents.setBackgroundThrottling(false);
+    }
+
     // Track visible panel and apply calculated bounds
     if (visible && managed.type !== "shell") {
       this.visiblePanelId = id;
