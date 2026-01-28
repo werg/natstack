@@ -40,7 +40,6 @@ export async function logMemorySnapshot(options: MemorySnapshotOptions = {}): Pr
     viewIds.map(async (id) => {
       const contents = vm.getWebContents(id);
       if (!contents) return null;
-      const info = await contents.getProcessMemoryInfo().catch(() => null);
       const pid = contents.getOSProcessId();
       const viewInfo = vm.getViewInfo(id);
       return {
@@ -49,7 +48,6 @@ export async function logMemorySnapshot(options: MemorySnapshotOptions = {}): Pr
         type: viewInfo?.type ?? "unknown",
         visible: vm.isViewVisible(id),
         url: contents.getURL(),
-        info,
         metric: metricsByPid.get(pid),
       };
     })
@@ -61,8 +59,8 @@ export async function logMemorySnapshot(options: MemorySnapshotOptions = {}): Pr
   const thresholdMb = options.thresholdMb ?? 0;
   if (thresholdMb > 0) {
     const anyOver = filtered.some((entry) => {
-      const resident = entry.info?.residentSet ?? 0;
-      return resident / 1024 >= thresholdMb;
+      const workingSet = entry.metric?.memory.workingSetSize ?? 0;
+      return workingSet / 1024 >= thresholdMb;
     });
     if (!anyOver) return;
   }
@@ -72,20 +70,19 @@ export async function logMemorySnapshot(options: MemorySnapshotOptions = {}): Pr
   console.log(`[Memory] Snapshot (${reason}) @ ${timestamp}`);
 
   const sorted = filtered.slice().sort((a, b) => {
-    const aResident = a.info?.residentSet ?? 0;
-    const bResident = b.info?.residentSet ?? 0;
-    return bResident - aResident;
+    const aWorkingSet = a.metric?.memory.workingSetSize ?? 0;
+    const bWorkingSet = b.metric?.memory.workingSetSize ?? 0;
+    return bWorkingSet - aWorkingSet;
   });
 
   for (const entry of sorted) {
-    const resident = formatMb(entry.info?.residentSet ?? null);
-    const privateMb = formatMb(entry.info?.private ?? null);
-    const sharedMb = formatMb(entry.info?.shared ?? null);
     const workingSet = formatMb(entry.metric?.memory.workingSetSize ?? null);
+    const peakWorkingSet = formatMb(entry.metric?.memory.peakWorkingSetSize ?? null);
+    const privateBytes = formatMb(entry.metric?.memory.privateBytes ?? null);
     const url = entry.url ? truncate(entry.url) : "about:blank";
     console.log(
       `[Memory] view=${entry.id} type=${entry.type} visible=${entry.visible} pid=${entry.pid}` +
-        ` resident=${resident} private=${privateMb} shared=${sharedMb} workingSet=${workingSet}` +
+        ` workingSet=${workingSet} peakWorkingSet=${peakWorkingSet} privateBytes=${privateBytes}` +
         ` url=${url}`
     );
   }
@@ -95,9 +92,9 @@ export function startMemoryMonitor(): void {
   if (monitorStarted) return;
   monitorStarted = true;
 
-  const intervalMs = parsePositiveInt(process.env.NATSTACK_MEMORY_LOG_MS) ?? 0;
-  const logOnce = process.env.NATSTACK_MEMORY_LOG_ONCE === "1";
-  const thresholdMb = parsePositiveInt(process.env.NATSTACK_MEMORY_LOG_THRESHOLD_MB) ?? 0;
+  const intervalMs = parsePositiveInt(process.env["NATSTACK_MEMORY_LOG_MS"]) ?? 0;
+  const logOnce = process.env["NATSTACK_MEMORY_LOG_ONCE"] === "1";
+  const thresholdMb = parsePositiveInt(process.env["NATSTACK_MEMORY_LOG_THRESHOLD_MB"]) ?? 0;
 
   if (intervalMs <= 0 && !logOnce) return;
 

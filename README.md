@@ -107,7 +107,7 @@ The app will open with DevTools enabled for debugging.
 
 ### Memory Diagnostics (optional)
 
-You can enable lightweight memory logging to identify which panel/worker is growing.
+You can enable lightweight memory logging to identify which panel/worker is growing. Logs are derived from `app.getAppMetrics()` and include working set, peak working set, and (Windows-only) private bytes for each view’s process.
 
 ```bash
 # Log a snapshot every 60s
