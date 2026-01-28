@@ -10,7 +10,6 @@ import { getMonaco, type MonacoNamespace } from "./modernMonaco.js";
 import {
   FS_TYPE_DEFINITIONS,
   PATH_TYPE_DEFINITIONS,
-  NATSTACK_RUNTIME_TYPES,
   GLOBAL_TYPE_DEFINITIONS,
   TS_LIB_FILES,
 } from "@natstack/runtime/typecheck";
@@ -177,11 +176,8 @@ export async function configureMonacoTypeCheck(config: MonacoTypeCheckConfig = {
     "file:///node_modules/@types/node/path.d.ts"
   );
 
-  // Add @natstack/runtime types
-  typescriptDefaults.addExtraLib(
-    NATSTACK_RUNTIME_TYPES,
-    "file:///node_modules/@natstack/runtime/index.d.ts"
-  );
+  // TODO: Add @natstack/runtime types from real package (currently broken)
+  // The virtual NATSTACK_RUNTIME_TYPES was removed - need to load real .d.ts files
 
   // Add global NatStack types
   typescriptDefaults.addExtraLib(

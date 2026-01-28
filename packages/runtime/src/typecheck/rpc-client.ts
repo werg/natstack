@@ -55,39 +55,15 @@ export class TypeDefinitionClient {
   }
 
   /**
-   * Get type definitions for a package.
-   * Main process will auto-install if missing.
-   * Always installs latest version (version parameter removed for batching simplicity).
-   *
-   * @param panelPath - Path to the panel requesting types
-   * @param packageName - The package to get types for
-   * @returns PackageTypesResult with files map and metadata, empty files on error
+   * Get type definitions for a single package.
+   * Delegates to getPackageTypesBatch for consistency.
    */
   async getPackageTypes(
     panelPath: string,
     packageName: string
   ): Promise<PackageTypesResult> {
-    try {
-      const result = await this.rpcCall<{
-        files: Record<string, string>;
-        referencedPackages?: string[];
-        entryPoint?: string;
-      } | null>(
-        "main",
-        "typecheck.getPackageTypes",
-        panelPath,
-        packageName
-      );
-
-      return {
-        files: new Map(Object.entries(result?.files ?? {})),
-        referencedPackages: result?.referencedPackages,
-        entryPoint: result?.entryPoint,
-      };
-    } catch (error) {
-      console.error(`[typecheck-client] Failed to get types for ${packageName}:`, error);
-      return { files: new Map() };
-    }
+    const results = await this.getPackageTypesBatch(panelPath, [packageName]);
+    return results.get(packageName) ?? { files: new Map() };
   }
 
   /**
@@ -127,27 +103,6 @@ export class TypeDefinitionClient {
     }
   }
 
-  /**
-   * Get the deps directory for a panel.
-   * Useful for direct file access if needed.
-   */
-  async getDepsDir(panelPath: string): Promise<string> {
-    return this.rpcCall<string>("main", "typecheck.getDepsDir", panelPath);
-  }
-
-  /**
-   * Clear the global type cache in main process.
-   */
-  async clearCache(): Promise<void> {
-    await this.rpcCall<void>("main", "typecheck.clearCache");
-  }
-
-  /**
-   * Clear cache for a specific package.
-   */
-  async clearPackageCache(packageName: string, version?: string): Promise<void> {
-    await this.rpcCall<void>("main", "typecheck.clearPackageCache", packageName, version);
-  }
 }
 
 /**

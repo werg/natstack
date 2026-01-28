@@ -83,6 +83,20 @@ export class DatabaseManager {
   }
 
   /**
+   * Open a database at an explicit file path.
+   * Use this for global databases that don't belong to a specific workspace.
+   *
+   * @param ownerId - The owner ID (for cleanup tracking)
+   * @param dbPath - Full absolute path to the database file
+   * @param readOnly - Whether to open in read-only mode
+   */
+  openAtPath(ownerId: string, dbPath: string, readOnly = false): string {
+    // Ensure parent directory exists
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    return this.openDatabase(dbPath, ownerId, readOnly);
+  }
+
+  /**
    * Open a database at the given path.
    * Each caller gets a unique handle, but the underlying connection is shared.
    * Uses reference counting to close connection only when all handles are closed.

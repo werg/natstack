@@ -161,7 +161,7 @@ export async function handleAppService(
     case "clearBuildCache": {
       // Invalidate @natstack types FIRST to prevent stale reads during cache clearing
       const { getTypeDefinitionService } = await import("../typecheck/service.js");
-      getTypeDefinitionService().invalidateNatstackTypes();
+      await getTypeDefinitionService().invalidateNatstackTypes();
       // Then clear all other caches (same as automatic invalidation on package changes)
       const { clearAllCaches } = await import("../cacheUtils.js");
       await clearAllCaches({
@@ -313,14 +313,12 @@ export async function handlePanelService(
         offset: number;
         limit: number;
       };
-      const persistence = getPanelPersistence();
-      return persistence.getChildrenPaginated(parentId, offset, limit);
+      return pm.getChildrenPaginated(parentId, offset, limit);
     }
 
     case "getRootPanelsPaginated": {
       const { offset, limit } = args[0] as { offset: number; limit: number };
-      const persistence = getPanelPersistence();
-      return persistence.getRootPanelsPaginated(offset, limit);
+      return pm.getRootPanelsPaginated(offset, limit);
     }
 
     case "getCollapsedIds": {
@@ -435,7 +433,7 @@ export async function handleMenuService(
       const clearBuildCache = async () => {
         // Use the same logic as the clearBuildCache IPC handler (app.clearBuildCache)
         const { getTypeDefinitionService } = await import("../typecheck/service.js");
-        getTypeDefinitionService().invalidateNatstackTypes();
+        await getTypeDefinitionService().invalidateNatstackTypes();
         const { clearAllCaches } = await import("../cacheUtils.js");
         await clearAllCaches({
           buildCache: true,

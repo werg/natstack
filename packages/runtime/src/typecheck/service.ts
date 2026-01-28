@@ -20,6 +20,7 @@ import {
 } from "./resolution.js";
 import { FS_TYPE_DEFINITIONS, PATH_TYPE_DEFINITIONS, GLOBAL_TYPE_DEFINITIONS, NODE_BUILTIN_TYPE_STUBS, loadNatstackPackageTypes, findPackagesDir, type NatstackPackageTypes } from "./lib/index.js";
 import { TS_LIB_FILES } from "./lib/typescript-libs.js";
+import { createTypeDefinitionLoader, type TypeDefinitionLoader } from "./loader.js";
 
 /**
  * Base diagnostic fields shared between internal and external types.
@@ -107,6 +108,19 @@ export interface TypeCheckServiceConfig {
    * This enables dynamic type loading without bundled natstack-packages.ts.
    */
   workspaceRoot?: string;
+  /**
+   * Skip suggestion diagnostics for faster checking.
+   * Use for build-time checks where only errors matter.
+   */
+  skipSuggestions?: boolean;
+  /**
+   * Paths to node_modules directories to load types from directly.
+   * When set, types are loaded from these paths using TypeDefinitionLoader
+   * instead of using the requestExternalTypes callback.
+   * This is more efficient for build-time type checking where packages
+   * are already installed.
+   */
+  nodeModulesPaths?: string[];
 }
 
 /**
@@ -128,6 +142,10 @@ export class TypeCheckService {
   private externalPackageEntryPoints = new Map<string, string>();
   /** Cache for module resolution results to avoid O(n) scans */
   private resolvedModuleCache = new Map<string, string | null>();
+  /** TypeScript module resolution cache for ts.resolveModuleName */
+  private tsResolutionCache: ts.ModuleResolutionCache | null = null;
+  /** Type definition loader for direct filesystem access (when nodeModulesPaths is set) */
+  private typeLoader: TypeDefinitionLoader | null = null;
 
   constructor(config: TypeCheckServiceConfig) {
     this.config = config;
@@ -136,6 +154,13 @@ export class TypeCheckService {
       dedupePackages: config.resolution?.dedupePackages ?? [...DEFAULT_DEDUPE_PACKAGES],
       runtimeNodeModules: config.resolution?.runtimeNodeModules,
     };
+
+    // Initialize type loader if nodeModulesPaths is provided
+    if (config.nodeModulesPaths && config.nodeModulesPaths.length > 0) {
+      this.typeLoader = createTypeDefinitionLoader({
+        nodeModulesPaths: config.nodeModulesPaths,
+      });
+    }
 
     // Add virtual type definitions
     this.addVirtualLibs();
@@ -207,6 +232,7 @@ export class TypeCheckService {
       content,
       version: (existing?.version ?? 0) + 1,
     });
+    this.invalidateTsResolutionCache();
   }
 
   /**
@@ -215,6 +241,7 @@ export class TypeCheckService {
    */
   removeFile(path: string): void {
     this.files.delete(path);
+    this.invalidateTsResolutionCache();
   }
 
   /**
@@ -256,57 +283,81 @@ export class TypeCheckService {
   /**
    * Load types for packages that were encountered during resolution but not yet available.
    * Returns true if new types were loaded (caller should re-check for updated diagnostics).
+   *
+   * When nodeModulesPaths is configured, loads directly from filesystem using TypeDefinitionLoader.
+   * Otherwise, fires requests concurrently to be batched by TypeDefinitionService.
    */
   async loadPendingTypes(): Promise<boolean> {
-    if (!this.config.requestExternalTypes || this.pendingExternalPackages.size === 0) {
+    // Need either typeLoader (direct filesystem) or requestExternalTypes (RPC callback)
+    if (!this.typeLoader && !this.config.requestExternalTypes) {
+      return false;
+    }
+
+    if (this.pendingExternalPackages.size === 0) {
       return false;
     }
 
     const packages = [...this.pendingExternalPackages];
     this.pendingExternalPackages.clear();
 
+    // Filter out already-loaded packages and mark remaining as attempted
+    const toLoad = packages.filter(pkg => {
+      if (this.loadedExternalPackages.has(pkg)) {
+        return false;
+      }
+      this.loadedExternalPackages.add(pkg);
+      return true;
+    });
+
+    if (toLoad.length === 0) {
+      return false;
+    }
+
+    // Use typeLoader for direct filesystem access, or requestExternalTypes for RPC
+    const results = await Promise.allSettled(
+      toLoad.map(pkg => this.loadTypesForPackage(pkg))
+    );
+
     let loadedAny = false;
 
-    for (const pkg of packages) {
-      if (this.loadedExternalPackages.has(pkg)) {
-        continue; // Already loaded or attempted
+    for (let i = 0; i < toLoad.length; i++) {
+      const pkg = toLoad[i]!;
+      const result = results[i]!;
+
+      if (result.status === "rejected") {
+        console.error(`[typecheck] Failed to load types for ${pkg}:`, result.reason);
+        continue;
       }
 
-      this.loadedExternalPackages.add(pkg);
+      const value = result.value;
+      if (!value) continue;
 
-      try {
-        const result = await this.config.requestExternalTypes(pkg);
-        if (!result) continue;
+      // Handle both Map<string, string> (legacy) and ExternalTypesResult
+      const files = value instanceof Map ? value : value.files;
+      const referencedPackages = value instanceof Map ? undefined : value.referencedPackages;
+      const entryPoint = value instanceof Map ? undefined : value.entryPoint;
 
-        // Handle both Map<string, string> (legacy) and ExternalTypesResult
-        const files = result instanceof Map ? result : result.files;
-        const referencedPackages = result instanceof Map ? undefined : result.referencedPackages;
-        const entryPoint = result instanceof Map ? undefined : result.entryPoint;
+      if (files && files.size > 0) {
+        for (const [filePath, content] of files) {
+          // Store types with a consistent path prefix
+          const typePath = `/@types/${pkg}/${filePath}`;
+          this.files.set(typePath, { content, version: 1 });
+        }
+        loadedAny = true;
 
-        if (files && files.size > 0) {
-          for (const [filePath, content] of files) {
-            // Store types with a consistent path prefix
-            const typePath = `/@types/${pkg}/${filePath}`;
-            this.files.set(typePath, { content, version: 1 });
-          }
-          loadedAny = true;
+        // Store entry point for this package (used by findLoadedTypesEntry)
+        if (entryPoint) {
+          this.externalPackageEntryPoints.set(pkg, entryPoint);
+        }
+      }
 
-          // Store entry point for this package (used by findLoadedTypesEntry)
-          if (entryPoint) {
-            this.externalPackageEntryPoints.set(pkg, entryPoint);
+      // Queue referenced packages for loading (e.g., /// <reference types="scheduler" />)
+      if (referencedPackages) {
+        for (const refPkg of referencedPackages) {
+          if (!this.loadedExternalPackages.has(refPkg)) {
+            this.pendingExternalPackages.add(refPkg);
           }
         }
-
-        // Queue referenced packages for loading (e.g., /// <reference types="scheduler" />)
-        if (referencedPackages) {
-          for (const refPkg of referencedPackages) {
-            if (!this.loadedExternalPackages.has(refPkg)) {
-              this.pendingExternalPackages.add(refPkg);
-            }
-          }
-        }
-      } catch (error) {
-        console.error(`[typecheck] Failed to load types for ${pkg}:`, error);
       }
     }
 
@@ -316,6 +367,33 @@ export class TypeCheckService {
     }
 
     return loadedAny;
+  }
+
+  /**
+   * Load types for a single package.
+   * Uses typeLoader for direct filesystem access when available,
+   * otherwise falls back to requestExternalTypes callback.
+   */
+  private async loadTypesForPackage(packageName: string): Promise<ExternalTypesResult | Map<string, string> | null> {
+    // Prefer direct filesystem access when nodeModulesPaths is configured
+    if (this.typeLoader) {
+      const result = await this.typeLoader.loadPackageTypes(packageName);
+      if (result && result.files.size > 0) {
+        return {
+          files: result.files,
+          referencedPackages: result.referencedPackages,
+          entryPoint: result.entryPoint ?? undefined,
+        };
+      }
+      return null;
+    }
+
+    // Fall back to requestExternalTypes callback (RPC to main process)
+    if (this.config.requestExternalTypes) {
+      return this.config.requestExternalTypes(packageName);
+    }
+
+    return null;
   }
 
   /**
@@ -362,13 +440,19 @@ export class TypeCheckService {
   private getFileDiagnostics(filePath: string): TypeCheckDiagnostic[] {
     const syntactic = this.languageService.getSyntacticDiagnostics(filePath);
     const semantic = this.languageService.getSemanticDiagnostics(filePath);
-    const suggestion = this.languageService.getSuggestionDiagnostics(filePath);
 
-    return [
+    const result = [
       ...syntactic.map((d) => this.convertDiagnostic(d, "error")),
       ...semantic.map((d) => this.convertDiagnostic(d)),
-      ...suggestion.map((d) => this.convertDiagnostic(d, "info")),
     ];
+
+    // Skip suggestion diagnostics if configured (faster for build-time)
+    if (!this.config.skipSuggestions) {
+      const suggestion = this.languageService.getSuggestionDiagnostics(filePath);
+      result.push(...suggestion.map((d) => this.convertDiagnostic(d, "info")));
+    }
+
+    return result;
   }
 
   /**
@@ -693,7 +777,8 @@ export class TypeCheckService {
             {
               fileExists: (p) => this.files.has(p),
               readFile: (p) => this.files.get(p)?.content,
-            }
+            },
+            this.getTsResolutionCache()
           );
           if (resolved.resolvedModule) {
             return resolved;
@@ -715,10 +800,16 @@ export class TypeCheckService {
     }
 
     // Standard TypeScript resolution
-    const resolved = ts.resolveModuleName(moduleName, containingFile, options, {
-      fileExists: (p) => this.files.has(p),
-      readFile: (p) => this.files.get(p)?.content,
-    });
+    const resolved = ts.resolveModuleName(
+      moduleName,
+      containingFile,
+      options,
+      {
+        fileExists: (p) => this.files.has(p),
+        readFile: (p) => this.files.get(p)?.content,
+      },
+      this.getTsResolutionCache()
+    );
 
     // If unresolved and looks like an external package, check for loaded types or mark as pending
     if (!resolved.resolvedModule && this.isBareSpecifier(moduleName)) {
@@ -872,6 +963,28 @@ export class TypeCheckService {
       isolatedModules: true,
       ...this.config.compilerOptions,
     };
+  }
+
+  /**
+   * Get or create the TypeScript module resolution cache.
+   */
+  private getTsResolutionCache(): ts.ModuleResolutionCache {
+    if (!this.tsResolutionCache) {
+      this.tsResolutionCache = ts.createModuleResolutionCache(
+        this.config.panelPath,
+        (fileName) => fileName, // getCanonicalFileName - identity for case-sensitive
+        this.getCompilerOptions()
+      );
+    }
+    return this.tsResolutionCache;
+  }
+
+  /**
+   * Invalidate the TypeScript module resolution cache.
+   * Called when files change.
+   */
+  private invalidateTsResolutionCache(): void {
+    this.tsResolutionCache = null;
   }
 }
 

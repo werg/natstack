@@ -31,6 +31,7 @@ import { createVerdaccioServer, type VerdaccioServer } from "./verdaccioServer.j
 import { createGitWatcher, type GitWatcher } from "./workspace/gitWatcher.js";
 import { eventService } from "./services/eventsService.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
+import { shutdownPackageStore, scheduleGC } from "./package-store/index.js";
 import { handleDbCall } from "./ipc/dbHandlers.js";
 import { handleBridgeCall } from "./ipc/bridgeHandlers.js";
 import { handleBrowserCall } from "./ipc/browserHandlers.js";
@@ -61,6 +62,7 @@ import { typeCheckRpcMethods } from "./typecheck/service.js";
 import { setupTestApi } from "./testApi.js";
 import { getAdBlockManager } from "./adblock/index.js";
 import { handleAdBlockServiceCall } from "./ipc/adblockHandlers.js";
+import { preloadNatstackTypesAsync } from "@natstack/runtime/typecheck";
 
 // =============================================================================
 // Protocol Registration (must happen before app ready)
@@ -466,6 +468,18 @@ app.on("ready", async () => {
   const cacheManager = getMainCacheManager();
   await cacheManager.initialize();
 
+  // Schedule package store garbage collection (runs daily, removes packages unused for 30 days)
+  // This is non-blocking and runs in the background
+  const cancelGC = scheduleGC(24 * 60 * 60 * 1000); // Run daily
+  app.on("will-quit", () => cancelGC());
+
+  // Pre-warm @natstack/* type cache before any TypeCheckService is created.
+  // This avoids blocking sync I/O when TypeCheckService is first instantiated.
+  const packagesDir = path.join(getAppRoot(), "packages");
+  if (fs.existsSync(packagesDir)) {
+    await preloadNatstackTypesAsync(packagesDir);
+  }
+
   // Initialize ad blocking (shared across all browser panels)
   try {
     const adBlockManager = getAdBlockManager();
@@ -522,7 +536,7 @@ app.on("ready", async () => {
           console.log(`[Verdaccio] ${changesDetected.changed.length} packages changed${changesDetected.freshStart ? " (fresh start)" : ""}, clearing build caches...`);
           // Invalidate @natstack types FIRST to prevent stale reads during cache clearing
           const { getTypeDefinitionService } = await import("./typecheck/service.js");
-          getTypeDefinitionService().invalidateNatstackTypes();
+          await getTypeDefinitionService().invalidateNatstackTypes();
           // Then clear all other caches
           const { clearAllCaches } = await import("./cacheUtils.js");
           await clearAllCaches({
@@ -624,15 +638,6 @@ app.on("ready", async () => {
             return typeCheckRpcMethods["typecheck.getPackageTypesBatch"](
               args[0] as string,
               args[1] as string[]
-            );
-          case "getDepsDir":
-            return typeCheckRpcMethods["typecheck.getDepsDir"](args[0] as string);
-          case "clearCache":
-            return typeCheckRpcMethods["typecheck.clearCache"]();
-          case "clearPackageCache":
-            return typeCheckRpcMethods["typecheck.clearPackageCache"](
-              args[0] as string,
-              args[1] as string | undefined
             );
           default:
             throw new Error(`Unknown typecheck method: ${serviceMethod}`);
@@ -738,6 +743,14 @@ app.on("will-quit", (event) => {
             console.error("Error stopping Verdaccio server:", error);
           })
       );
+    }
+
+    // Shutdown package store (closes SQLite connection)
+    try {
+      shutdownPackageStore();
+      console.log("[App] Package store shutdown");
+    } catch (error) {
+      console.error("[App] Error shutting down package store:", error);
     }
 
     // Add a timeout to ensure we exit even if cleanup hangs

@@ -30,7 +30,14 @@ import {
 } from "@natstack/runtime/typecheck";
 import { isVerdaccioServerInitialized, getVerdaccioServer } from "./verdaccioServer.js";
 import { getPackagesDir, getAppNodeModules } from "./paths.js";
-import { getTypeDefinitionService } from "./typecheck/service.js";
+import {
+  getPackageStore,
+  createPackageFetcher,
+  createPackageLinker,
+  collectPackagesFromTree,
+  serializeTree,
+  type SerializedTree,
+} from "./package-store/index.js";
 
 // ===========================================================================
 // Shared Build Plugins
@@ -700,11 +707,17 @@ function getReactDependenciesFromNatstackReact(): Record<string, string> | null 
     }
     const pkg = JSON.parse(fs.readFileSync(natstackReactPkgPath, "utf-8")) as {
       peerDependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
     };
     const peerDeps = pkg.peerDependencies ?? {};
+    const devDeps = pkg.devDependencies ?? {};
     const result: Record<string, string> = {};
+    // Add React runtime packages
     if (peerDeps["react"]) result["react"] = peerDeps["react"];
     if (peerDeps["react-dom"]) result["react-dom"] = peerDeps["react-dom"];
+    // Add @types packages for type checking (React 19 doesn't bundle types)
+    if (devDeps["@types/react"]) result["@types/react"] = devDeps["@types/react"];
+    if (devDeps["@types/react-dom"]) result["@types/react-dom"] = devDeps["@types/react-dom"];
     return Object.keys(result).length > 0 ? result : null;
   } catch {
     return null;
@@ -1001,7 +1014,7 @@ export class PanelBuilder {
     sourcePath: string,
     runtimeNodeModules: string,
     log: (message: string) => void,
-    dependencies?: Record<string, string>
+    _dependencies?: Record<string, string>
   ): Promise<TypeCheckDiagnostic[]> {
     log(`Type checking...`);
 
@@ -1022,29 +1035,8 @@ export class PanelBuilder {
       const packagesDir = getPackagesDir();
       const workspaceRoot = packagesDir ? path.dirname(packagesDir) : undefined;
 
-      // Get the TypeDefinitionService for fetching external package types
-      const typeDefService = getTypeDefinitionService();
-
-      // Pre-load types for all dependencies in a single batch
-      // Results populate the LRU cache and will be available for subsequent requests
-      const dependencyNames = Object.keys(dependencies ?? {});
-      let preloadedTypes = new Map<string, { files: Record<string, string>; referencedPackages?: string[]; entryPoint?: string; error?: string }>();
-      if (dependencyNames.length > 0) {
-        log(`Pre-loading types for ${dependencyNames.length} dependencies...`);
-        preloadedTypes = await typeDefService.getPackageTypesBatch(sourcePath, dependencyNames);
-      }
-
-      // Track type loading failures to enhance error messages
-      const typeLoadingFailures = new Map<string, string>();
-
-      // Check preloaded types for errors
-      for (const [name, result] of preloadedTypes) {
-        if (result.error) {
-          typeLoadingFailures.set(name, result.error);
-        }
-      }
-
-      // Create type check service with proper resolution config and external type fetching
+      // Create type check service that loads types from the build's node_modules.
+      // React, @types/react, and other deduplicated packages are installed here.
       const service = createTypeCheckService({
         panelPath: sourcePath,
         resolution: {
@@ -1052,42 +1044,9 @@ export class PanelBuilder {
           runtimeNodeModules,
         },
         workspaceRoot,
-        // Callback to fetch external package types from the TypeDefinitionService
-        requestExternalTypes: async (packageName: string) => {
-          // Check preloaded types first
-          const preloaded = preloadedTypes.get(packageName);
-          if (preloaded && Object.keys(preloaded.files).length > 0) {
-            return {
-              files: new Map(Object.entries(preloaded.files)),
-              referencedPackages: preloaded.referencedPackages,
-              entryPoint: preloaded.entryPoint,
-            };
-          }
-          if (preloaded?.error) {
-            typeLoadingFailures.set(packageName, preloaded.error);
-            return null;
-          }
-
-          // On-demand load for packages not in dependencies
-          try {
-            const result = await typeDefService.getPackageTypes(sourcePath, packageName);
-            if (Object.keys(result.files).length > 0) {
-              return {
-                files: new Map(Object.entries(result.files)),
-                referencedPackages: result.referencedPackages,
-                entryPoint: result.entryPoint,
-              };
-            }
-            // No types found - track failure
-            typeLoadingFailures.set(packageName, "could not resolve");
-            return null;
-          } catch (error) {
-            // Track the full error so we can enhance TypeScript errors
-            const errorMsg = error instanceof Error ? error.message : String(error);
-            typeLoadingFailures.set(packageName, errorMsg);
-            return null;
-          }
-        },
+        skipSuggestions: true, // Build-time: only errors, not suggestions
+        // Load types directly from the build's node_modules
+        nodeModulesPaths: [runtimeNodeModules],
       });
 
       // Add all source files to the service with absolute paths
@@ -1102,33 +1061,7 @@ export class PanelBuilder {
       const result = await service.checkWithExternalTypes();
 
       // Filter to only errors (not warnings or suggestions)
-      let errors = result.diagnostics.filter((d) => d.severity === "error");
-
-      // Enhance "Cannot find module" errors with actual failure reasons
-      if (typeLoadingFailures.size > 0) {
-        errors = errors.map((error) => {
-          // Check if this is a "Cannot find module" error (TS2307)
-          if (error.code === 2307) {
-            // Extract module name from error message
-            const moduleMatch = error.message.match(/Cannot find module ['"]([^'"]+)['"]/);
-            const moduleName = moduleMatch?.[1];
-            if (moduleName) {
-              // Check if we have a failure reason for this module or its package
-              const packageName = moduleName.startsWith("@")
-                ? moduleName.split("/").slice(0, 2).join("/")
-                : moduleName.split("/")[0] ?? moduleName;
-              const failureReason = typeLoadingFailures.get(moduleName) || typeLoadingFailures.get(packageName);
-              if (failureReason) {
-                return {
-                  ...error,
-                  message: `Cannot find module '${moduleName}' or its corresponding type declarations. Type loading failed: ${failureReason}`,
-                };
-              }
-            }
-          }
-          return error;
-        });
-      }
+      const errors = result.diagnostics.filter((d) => d.severity === "error");
 
       if (errors.length > 0) {
         log(`Type check found ${errors.length} error(s)`);
@@ -1391,22 +1324,55 @@ export class PanelBuilder {
 
     fs.writeFileSync(packageJsonPath, serialized);
 
-    if (fs.existsSync(nodeModulesPath)) {
-      fs.rmSync(nodeModulesPath, { recursive: true, force: true });
-    }
     if (fs.existsSync(packageLockPath)) {
       fs.rmSync(packageLockPath, { recursive: true, force: true });
     }
 
-    // Pass registry directly to Arborist - .npmrc is not always read reliably
-    // Always fetch fresh metadata from Verdaccio to get latest content-hash versions
-    const arborist = new Arborist({
-      path: depsDir,
-      registry: getVerdaccioServer().getBaseUrl(),
-      preferOnline: true,
-    });
-    await arborist.buildIdealTree();
-    await arborist.reify();
+    // Use content-addressable package store for efficient package installation
+    // 1. Resolution: Arborist builds ideal tree with hoisting/peer deps
+    // 2. Fetch: Store packages by content hash (deduplicated)
+    // 3. Link: Hard-link from store to node_modules (space efficient)
+
+    const store = await getPackageStore();
+
+    // Check resolution cache first (skip Arborist if deps unchanged)
+    // Use desiredHash as cache key - it includes both package.json content AND
+    // Verdaccio version state (relevantVersions), so republishes invalidate cache
+    const cachedResolution = store.getResolutionCache(desiredHash);
+
+    let tree: SerializedTree;
+
+    if (cachedResolution) {
+      // Use cached resolution
+      tree = JSON.parse(cachedResolution.treeJson) as SerializedTree;
+    } else {
+      // Run Arborist for dependency resolution (tree structure, hoisting, peer deps)
+      const arborist = new Arborist({
+        path: depsDir,
+        registry: verdaccioUrl,
+        preferOnline: true,
+      });
+      const idealTree = await arborist.buildIdealTree();
+
+      // Serialize tree for caching and linking
+      tree = serializeTree(idealTree);
+
+      // Cache the resolution (keyed by desiredHash which includes Verdaccio versions)
+      store.setResolutionCache(desiredHash, JSON.stringify(tree));
+    }
+
+    // Fetch all packages to store (deduplicates, verifies integrity)
+    const fetcher = await createPackageFetcher(verdaccioUrl);
+    const packages = tree.packages.map((p) => ({
+      name: p.name,
+      version: p.version,
+      integrity: p.integrity,
+    }));
+    await fetcher.fetchAll(packages, { concurrency: 10 });
+
+    // Link packages from store to node_modules (hard links, preserves tree structure)
+    const linker = await createPackageLinker(fetcher);
+    await linker.linkFromCache(depsDir, tree);
 
     return desiredHash;
   }
@@ -1715,7 +1681,7 @@ import ${JSON.stringify(relativeUserEntry)};
           .slice(0, 40) // Show first 40 errors
           .map((e) => `${e.file}:${e.line}:${e.column}: ${e.message}`)
           .join("\n");
-        const moreMsg = typeErrors.length > 5 ? `\n... and ${typeErrors.length - 5} more errors` : "";
+        const moreMsg = typeErrors.length > 40 ? `\n... and ${typeErrors.length - 40} more errors` : "";
         return {
           success: false,
           error: `TypeScript errors:\n${errorSummary}${moreMsg}`,
@@ -2374,10 +2340,10 @@ import ${JSON.stringify(relativeUserEntry)};
       // If there are type errors, fail the build
       if (typeErrors.length > 0) {
         const errorSummary = typeErrors
-          .slice(0, 5) // Show first 5 errors
+          .slice(0, 40) // Show first 40 errors
           .map((e) => `${e.file}:${e.line}:${e.column}: ${e.message}`)
           .join("\n");
-        const moreMsg = typeErrors.length > 5 ? `\n... and ${typeErrors.length - 5} more errors` : "";
+        const moreMsg = typeErrors.length > 40 ? `\n... and ${typeErrors.length - 40} more errors` : "";
         if (buildWorkspace) {
           try {
             await buildWorkspace.cleanupBuildDir();

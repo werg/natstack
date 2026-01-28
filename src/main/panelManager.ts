@@ -3963,6 +3963,59 @@ export class PanelManager {
   }
 
   /**
+   * Get children with pagination, enriched with runtime buildState.
+   * Routes through PanelManager to include in-memory build state.
+   */
+  getChildrenPaginated(
+    parentId: string,
+    offset: number,
+    limit: number
+  ): { children: SharedPanel.PanelSummary[]; total: number; hasMore: boolean } {
+    const persistence = getPanelPersistence();
+    const result = persistence.getChildrenPaginated(parentId, offset, limit);
+
+    // Enrich summaries with runtime buildState from in-memory panels
+    const enrichedChildren = result.children.map((summary) => {
+      const panel = this.panels.get(summary.id);
+      return {
+        ...summary,
+        buildState: panel?.artifacts?.buildState,
+      };
+    });
+
+    return {
+      ...result,
+      children: enrichedChildren,
+    };
+  }
+
+  /**
+   * Get root panels with pagination, enriched with runtime buildState.
+   * Routes through PanelManager to include in-memory build state.
+   */
+  getRootPanelsPaginated(
+    offset: number,
+    limit: number
+  ): { panels: SharedPanel.PanelSummary[]; total: number; hasMore: boolean } {
+    const persistence = getPanelPersistence();
+    const result = persistence.getRootPanelsPaginated(offset, limit);
+
+    // Enrich summaries with runtime buildState from in-memory panels
+    const enrichedPanels = result.panels.map((summary) => {
+      const panel = this.panels.get(summary.id);
+      return {
+        ...summary,
+        buildState: panel?.artifacts?.buildState,
+      };
+    });
+
+    return {
+      ...result,
+      panels: enrichedPanels,
+    };
+  }
+
+  /**
    * Get the workspace tree of all git repos.
    * Delegates to gitServer.
    */

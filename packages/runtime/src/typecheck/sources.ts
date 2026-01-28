@@ -266,8 +266,8 @@ export async function findTypeScriptFiles(
       const entries = await source.readdir(currentDir);
 
       for (const entry of entries) {
-        // Skip node_modules and hidden directories
-        if (entry === "node_modules" || entry.startsWith(".")) {
+        // Skip node_modules, hidden directories, and test directories
+        if (entry === "node_modules" || entry.startsWith(".") || entry === "__tests__") {
           continue;
         }
 
@@ -281,7 +281,9 @@ export async function findTypeScriptFiles(
           if (stats.isDirectory()) {
             await walk(entryPath);
           } else if (stats.isFile()) {
-            if (entry.endsWith(".ts") || entry.endsWith(".tsx")) {
+            // Skip test files (.test.ts, .test.tsx, .spec.ts, .spec.tsx)
+            const isTestFile = /\.(test|spec)\.(ts|tsx)$/.test(entry);
+            if (!isTestFile && (entry.endsWith(".ts") || entry.endsWith(".tsx"))) {
               // Normalize path: remove leading "./" to get clean relative path
               // Keep paths relative (not starting with /) so FileSource can resolve them
               let normalizedPath = entryPath;

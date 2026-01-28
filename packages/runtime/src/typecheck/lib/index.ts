@@ -8,8 +8,7 @@
 
 import { FS_INTERFACES, BUFFER_ENCODING_TYPE } from "./shared-types.js";
 
-export { NATSTACK_RUNTIME_TYPES } from "./natstack-runtime.js";
-export { loadNatstackPackageTypes, loadSinglePackageTypes, findPackagesDir, type NatstackPackageTypes } from "./load-natstack-types.js";
+export { loadNatstackPackageTypes, loadSinglePackageTypes, findPackagesDir, clearNatstackTypesCache, preloadNatstackTypesAsync, type NatstackPackageTypes } from "./load-natstack-types.js";
 export { BUFFER_ENCODING_TYPE };
 
 /**
