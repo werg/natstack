@@ -108,7 +108,6 @@ export function ParticipantBadgeMenu({
         height: 12,
         animation: "pulse 1.5s ease-in-out infinite",
       }}
-      title="Agent working"
     />
   ) : null;
 
@@ -156,7 +155,6 @@ export function ParticipantBadgeMenu({
                   opacity: 1,
                 }),
               }}
-              title={hasActiveMessage ? "Agent working" : undefined}
             />
           </Badge>
         </DropdownMenu.Trigger>

@@ -7,17 +7,19 @@
 
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { Flex, Text, Button, Card } from "@radix-ui/themes";
-import { pubsubConfig, id as panelClientId, buildNsLink, createChild, useStateArgs, forceRepaint, ensurePanelLoaded } from "@natstack/runtime";
+import { pubsubConfig, id as panelClientId, buildNsLink, buildFocusLink, createChild, useStateArgs, forceRepaint, ensurePanelLoaded } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
 import { z } from "zod";
 import type { ComponentType } from "react";
 import {
   type IncomingEvent,
   type IncomingPresenceEvent,
+  type IncomingMethodResult,
   type IncomingToolRoleRequestEvent,
   type IncomingToolRoleResponseEvent,
   type IncomingToolRoleHandoffEvent,
   type Participant,
+  type RosterUpdate,
   type MethodDefinition,
   type MethodExecutionContext,
   type Attachment,
@@ -58,8 +60,7 @@ import { useAgentRecovery } from "./hooks/useAgentRecovery";
 import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 import { ToolRoleConflictModal } from "./components/ToolRoleConflictModal";
 import { ChatPhase } from "./components/ChatPhase";
-import type { PendingImage } from "./components/ImageInput";
-import { cleanupPendingImages } from "./utils/imageUtils";
+import { cleanupPendingImages, type PendingImage } from "./utils/imageUtils";
 import type { ChatParticipantMetadata, DisconnectedAgentInfo } from "./types";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { parseInlineUiData } from "./components/InlineUiMessage";
@@ -107,7 +108,7 @@ function dispatchAgenticEvent(
     setHistoricalParticipants: (updater: (prev: Record<string, Participant<ChatParticipantMetadata>>) => Record<string, Participant<ChatParticipantMetadata>>) => void;
     setPresenceEvents: (updater: (prev: IncomingPresenceEvent[]) => IncomingPresenceEvent[]) => void;
     addMethodHistoryEntry: (entry: MethodHistoryEntry) => void;
-    handleMethodResult: (result: { callId: string; content?: unknown; complete: boolean; isError: boolean; progress?: number }) => void;
+    handleMethodResult: (result: IncomingMethodResult) => void;
   },
   selfId: string | null,
   participants: Record<string, Participant<ChatParticipantMetadata>>
@@ -191,13 +192,8 @@ function dispatchAgenticEvent(
     }
 
     case "method-result": {
-      handlers.handleMethodResult({
-        callId: event.callId,
-        content: event.content,
-        complete: event.complete,
-        isError: event.isError,
-        progress: event.progress,
-      });
+      // Pass the full event - it has all IncomingMethodResult properties
+      handlers.handleMethodResult(event as IncomingMethodResult);
       break;
     }
 
@@ -236,12 +232,14 @@ interface ChatStateArgs {
     workingDirectory?: string;
     restrictedMode?: boolean;
   };
+  /** Context ID for channel authorization (passed separately from channelConfig) */
+  contextId?: string;
 }
 
 export default function AgenticChat() {
   const theme = usePanelTheme();
   const workspaceRoot = process.env["NATSTACK_WORKSPACE"]?.trim();
-  const { channelName, channelConfig } = useStateArgs<ChatStateArgs>();
+  const { channelName, channelConfig, contextId } = useStateArgs<ChatStateArgs>();
 
   const selfIdRef = useRef<string | null>(null);
   // Track if we've already connected to prevent reconnection loops
@@ -508,7 +506,7 @@ export default function AgenticChat() {
         selfIdRef,
       ]
     ),
-    onRoster: useCallback((roster) => {
+    onRoster: useCallback((roster: RosterUpdate<ChatParticipantMetadata>) => {
       const newParticipants = roster.participants;
       const prevParticipants = prevParticipantsRef.current;
 
@@ -552,7 +550,7 @@ export default function AgenticChat() {
       prevParticipantsRef.current = newParticipants;
       setParticipants(newParticipants);
     }, []),
-    onError: useCallback((error) => {
+    onError: useCallback((error: Error) => {
       console.error("[Chat Panel] Connection error:", error);
       setStatus(`Error: ${error.message}`);
     }, []),
@@ -1067,7 +1065,7 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
         // Create file/search/git tools using workspace root
         // Wrap diagnostics publishing to use clientRef at runtime
         const diagnosticsPublisher = (eventType: string, payload: unknown) => {
-          clientRef.current?.pubsub.publish(eventType, payload);
+          void clientRef.current?.publish(eventType, payload);
         };
         const fileTools = createAllToolMethodDefinitions({
           workspaceRoot,
@@ -1100,6 +1098,8 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
           },
           // Pass channel config (set when creating channel, read by joiners from server)
           channelConfig,
+          // Pass contextId for channel authorization (separate from channelConfig)
+          contextId,
         });
 
         setStatus("Connected");
@@ -1119,6 +1119,7 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
   }, [
     channelName,
     channelConfig,
+    contextId,
     connectToChannel,
     workspaceRoot,
   ]);
@@ -1228,7 +1229,7 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
 
   // Focus a disconnected agent's panel
   const handleFocusPanel = useCallback((panelId: string) => {
-    window.location.href = buildNsLink({ action: "focus", panelId });
+    window.location.href = buildFocusLink(panelId);
   }, []);
 
   // Reload a disconnected agent's panel
@@ -1313,7 +1314,7 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
                   variant="soft"
                   onClick={() => {
                     // Focus the worker panel using ns: protocol
-                    window.location.href = buildNsLink({ action: "focus", panelId: err.workerPanelId });
+                    window.location.href = buildFocusLink(err.workerPanelId);
                   }}
                 >
                   {err.buildState === "dirty" ? "Resolve Changes" : "View Worker"}

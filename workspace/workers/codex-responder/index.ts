@@ -610,7 +610,8 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     if (event.type !== "message") continue;
 
     // Skip replay messages - don't respond to historical messages
-    if (event.kind === "replay") continue;
+    // (kind only exists on IncomingNewMessage, not AggregatedMessage)
+    if ("kind" in event && event.kind === "replay") continue;
 
     // Track activity for auto-unload prevention (including typing indicators)
     updateActivity();

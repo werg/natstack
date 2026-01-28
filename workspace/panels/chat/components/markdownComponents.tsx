@@ -52,11 +52,11 @@ export const markdownComponents: Components = {
     if (!inline) {
       return (
         <Box my="2">
-          <Box as="pre" className="ns-codeblock" m="0">
-            <Box as="code" className={className} style={{ display: "block" }}>
+          <pre className="ns-codeblock" style={{ margin: 0 }}>
+            <code className={className} style={{ display: "block" }}>
               {children}
-            </Box>
-          </Box>
+            </code>
+          </pre>
         </Box>
       );
     }
@@ -67,19 +67,19 @@ export const markdownComponents: Components = {
   pre: ({ children }) => <>{children}</>,
   blockquote: ({ children }) => <Blockquote>{children}</Blockquote>,
   ul: ({ children }) => (
-    <Box as="ul" pl="4" mb="2">
+    <ul style={{ paddingLeft: "var(--space-4)", marginBottom: "var(--space-2)" }}>
       {children}
-    </Box>
+    </ul>
   ),
   ol: ({ children }) => (
-    <Box as="ol" pl="4" mb="2">
+    <ol style={{ paddingLeft: "var(--space-4)", marginBottom: "var(--space-2)" }}>
       {children}
-    </Box>
+    </ol>
   ),
   li: ({ children }) => (
-    <Text as="li" size="2">
+    <li style={{ fontSize: "var(--font-size-2)" }}>
       {children}
-    </Text>
+    </li>
   ),
   strong: ({ children }) => <Text weight="bold">{children}</Text>,
   em: ({ children }) => <Text style={{ fontStyle: "italic" }}>{children}</Text>,

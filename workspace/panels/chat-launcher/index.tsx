@@ -192,14 +192,14 @@ export default function ChatLauncher() {
         // Fallback: navigate back to the chat panel
         const chatUrl = buildNsLink("panels/chat", {
           action: "navigate",
-          stateArgs: { channelName: targetChannelId },
+          stateArgs: { channelName: targetChannelId, contextId },
         });
         window.location.href = chatUrl;
       } else {
-        // New chat mode: navigate to the chat panel with channel ID and config
+        // New chat mode: navigate to the chat panel with channel ID, config, and contextId
         const chatUrl = buildNsLink("panels/chat", {
           action: "navigate",
-          stateArgs: { channelName: targetChannelId, channelConfig },
+          stateArgs: { channelName: targetChannelId, channelConfig, contextId },
         });
         window.location.href = chatUrl;
       }

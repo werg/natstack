@@ -254,7 +254,7 @@ async function findMostRecentPlanFile(): Promise<string | null> {
       })
     );
 
-    fileStats.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+    fileStats.sort((a, b) => new Date(b.mtime).getTime() - new Date(a.mtime).getTime());
     return fileStats[0]?.path ?? null;
   } catch {
     return null;
@@ -322,6 +322,8 @@ interface ClaudeCodeWorkerSettings {
   autonomyLevel?: number; // 0=Ask, 1=Auto-edits, 2=Full Auto
   /** Whether we've shown at least one approval prompt (for first-time grant UI) */
   hasShownApprovalPrompt?: boolean;
+  /** Index signature for Record<string, unknown> compatibility */
+  [key: string]: string | number | boolean | undefined;
 }
 
 // =============================================================================
@@ -551,7 +553,8 @@ async function observeMessages(
   for await (const event of client.events({ targetedOnly: true, respondWhenSolo: true })) {
     // Quick filtering (same as original)
     if (event.type !== "message") continue;
-    if (event.kind === "replay") continue;
+    // Skip replay events (kind only exists on IncomingNewMessage, not AggregatedMessage)
+    if ("kind" in event && event.kind === "replay") continue;
 
     // Track activity for auto-unload prevention (including typing indicators)
     session.updateActivity();
@@ -760,12 +763,12 @@ async function main() {
             });
 
           // Call feedback_form on the panel
-          const handle = client.callMethod(panel.id, "feedback_form", {
+          const callHandle = client.callMethod(panel.id, "feedback_form", {
             title: "Claude Code Settings",
             fields,
             values: currentSettings,
           });
-          const result = await handle.result;
+          const result = await callHandle.result;
           const feedbackResult = result.content as { type: string; value?: unknown; message?: string };
 
           // Handle the three cases: submit, cancel, error
@@ -967,7 +970,8 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
           sdkSessionId: client.sdkSessionId,
           workingDirectory,
           sendMessage: async (content, metadata) => {
-            await client.send(content, { metadata, persist: true });
+            // Cast to any to include metadata - type definitions may be out of sync
+            await client.send(content, { metadata, persist: true } as Parameters<typeof client.send>[1]);
           },
           getPubsubMessages: () => {
             // Convert AggregatedMessage to PubsubMessageWithMetadata
@@ -1003,8 +1007,8 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
                 recoveryResult.formattedContextForSdk
               );
               try {
-                const handle = client.callMethod(panel.id, "feedback_custom", { code: uiCode });
-                const result = await handle.result;
+                const feedbackHandle = client.callMethod(panel.id, "feedback_custom", { code: uiCode });
+                const result = await feedbackHandle.result;
                 // User can edit the context or skip it entirely
                 if (result && typeof result === "object" && "context" in result) {
                   const userContext = (result as { context: string }).context;
@@ -1186,7 +1190,7 @@ async function handleUserMessage(
       // Include SDK UUID and session ID in metadata for session recovery correlation
       const metadata: Record<string, unknown> | undefined =
         sdkUuid || sdkSessionId ? { sdkUuid, sdkSessionId } : undefined;
-      const { messageId } = await client.send("", { replyTo: incoming.id, metadata });
+      const { messageId } = await client.send("", { replyTo: incoming.id, metadata } as Parameters<typeof client.send>[1]);
       responseId = messageId;
       log(`Created response message: ${responseId}${sdkUuid ? ` (SDK: ${sdkUuid})` : ""}`);
     }
@@ -1565,12 +1569,12 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
 
         // Show feedback_form and wait for user response
         try {
-          const handle = client.callMethod(panel.id, "feedback_form", {
+          const formHandle = client.callMethod(panel.id, "feedback_form", {
             title: "Claude needs your input",
             fields,
             values: {},
           });
-          const result = await handle.result;
+          const result = await formHandle.result;
           const feedbackResult = result.content as { type: string; value?: Record<string, unknown>; message?: string };
 
           if (feedbackResult.type === "cancel") {
@@ -2087,7 +2091,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         // All text within a query() goes to the same message (no splitting)
         if (!sawStreamedText) {
           // Only create/update message if there's actual text content
-          const textBlocks = message.message.content.filter(
+          const textBlocks = (message.message.content as Array<{ type: string; text?: string }>).filter(
             (block): block is { type: "text"; text: string } => block.type === "text"
           );
           if (textBlocks.length > 0) {
@@ -2183,7 +2187,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     // Pause tool returns successfully, so we shouldn't see pause-related errors
     // Any error here is a real error that should be reported
     const errorDetails = err instanceof Error
-      ? { message: err.message, stack: err.stack, name: err.name, ...err }
+      ? { message: err.message, stack: err.stack, name: err.name }
       : err;
     console.error(`[Claude Code] Error:`, JSON.stringify(errorDetails, null, 2));
     console.error(`[Claude Code] Full error object:`, err);

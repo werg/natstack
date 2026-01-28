@@ -34,6 +34,8 @@ export interface ConnectOptions {
   methods: Record<string, MethodDefinition>;
   /** Channel configuration (set when creating channel, read by joiners) */
   channelConfig?: ChannelConfig;
+  /** Context ID for channel authorization (passed separately from channelConfig) */
+  contextId?: string;
 }
 
 export interface UseChannelConnectionResult {
@@ -84,7 +86,7 @@ export function useChannelConnection({
 
   const connectToChannel = useCallback(
     async (options: ConnectOptions): Promise<AgenticClient<ChatParticipantMetadata>> => {
-      const { channelId, methods, channelConfig } = options;
+      const { channelId, methods, channelConfig, contextId } = options;
 
       if (!pubsubConfig) {
         const error = new Error("PubSub configuration not available");
@@ -103,8 +105,8 @@ export function useChannelConnection({
           serverUrl: pubsubConfig.serverUrl,
           token: pubsubConfig.token,
           channel: channelId,
-          // Chat panel joins existing channels - contextId comes from server's ready message
-          // via client.contextId. Don't pass it here; the channel was created by workers.
+          // Pass contextId for channel authorization (passed separately from channelConfig)
+          contextId,
           // Pass channel config (set when creating, read by joiners from server)
           channelConfig,
           handle: metadata.handle,
@@ -124,8 +126,9 @@ export function useChannelConnection({
         // Set up unified event handling - single loop for all event types
         const eventIterator = newClient.events({ includeReplay: true });
         let eventLoopRunning = true;
-        // Store iterator ref for explicit cleanup
-        let eventIteratorRef: AsyncIterableIterator<IncomingEvent> | null = eventIterator;
+        // Store iterator ref for explicit cleanup - cast to any to avoid EventStreamItem vs IncomingEvent type mismatch
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let eventIteratorRef: AsyncIterableIterator<any> | null = eventIterator;
 
         void (async () => {
           try {

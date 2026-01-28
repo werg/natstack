@@ -8,13 +8,13 @@
 import { Badge, Button, DropdownMenu, Flex, Text } from "@radix-ui/themes";
 import { LockClosedIcon, CheckIcon } from "@radix-ui/react-icons";
 import type { Participant } from "@natstack/agentic-messaging";
-import { APPROVAL_LEVELS, type ToolApprovalSettings } from "@natstack/tool-ui";
+import { APPROVAL_LEVELS, type ToolApprovalSettings, type ApprovalLevel } from "@natstack/tool-ui";
 import type { ChatParticipantMetadata } from "../types";
 
 interface ToolPermissionsDropdownProps {
   settings: ToolApprovalSettings;
   participants: Record<string, Participant<ChatParticipantMetadata>>;
-  onSetFloor: (level: number) => void;
+  onSetFloor: (level: ApprovalLevel) => void;
   onGrantAgent: (agentId: string) => void;
   onRevokeAgent: (agentId: string) => void;
   onRevokeAll: () => void;

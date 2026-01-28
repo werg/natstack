@@ -33,7 +33,7 @@ function formatLineNumber(lineNum: number): string {
 /**
  * Check if a file is likely binary
  */
-function isBinaryFile(buffer: Buffer): boolean {
+function isBinaryFile(buffer: Uint8Array): boolean {
   // Check for null bytes in the first 8KB
   const checkLength = Math.min(buffer.length, 8192);
   for (let i = 0; i < checkLength; i++) {
@@ -54,7 +54,9 @@ export async function fileRead(args: FileReadArgs, workspaceRoot?: string): Prom
 
   try {
     // Read file as buffer to check for binary
-    const buffer = await fs.promises.readFile(resolvedPath);
+    const data = await fs.promises.readFile(resolvedPath);
+    // Convert to Uint8Array if string (shouldn't happen without encoding, but be safe)
+    const buffer = typeof data === "string" ? new TextEncoder().encode(data) : data;
 
     if (isBinaryFile(buffer)) {
       // Check if it's an image
@@ -73,13 +75,15 @@ export async function fileRead(args: FileReadArgs, workspaceRoot?: string): Prom
           ".svg": "image/svg+xml",
         };
         const mime = mimeTypes[ext] ?? "application/octet-stream";
-        return `[Image file: ${path.basename(resolvedPath)}]\ndata:${mime};base64,${buffer.toString("base64")}`;
+        // Convert Uint8Array to base64
+        const base64 = btoa(String.fromCharCode(...buffer));
+        return `[Image file: ${path.basename(resolvedPath)}]\ndata:${mime};base64,${base64}`;
       }
       return `[Binary file: ${path.basename(resolvedPath)} (${buffer.length} bytes)]`;
     }
 
     // Text file - split into lines and apply offset/limit
-    const content = buffer.toString("utf-8");
+    const content = new TextDecoder("utf-8").decode(buffer);
     const lines = content.split("\n");
 
     // Apply offset (1-indexed) and limit
@@ -124,7 +128,7 @@ export async function fileWrite(args: FileWriteArgs, workspaceRoot?: string): Pr
   // Write atomically: write to temp file, then rename
   const tempPath = `${resolvedPath}.tmp.${Date.now()}`;
   try {
-    await fs.promises.writeFile(tempPath, content, "utf-8");
+    await fs.promises.writeFile(tempPath, content);
     await fs.promises.rename(tempPath, resolvedPath);
   } catch (err) {
     // Clean up temp file on error
@@ -155,7 +159,8 @@ export async function fileEdit(args: FileEditArgs, workspaceRoot?: string): Prom
   // Read the file
   let content: string;
   try {
-    content = await fs.promises.readFile(resolvedPath, "utf-8");
+    const data = await fs.promises.readFile(resolvedPath, "utf-8");
+    content = typeof data === "string" ? data : new TextDecoder("utf-8").decode(data);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       throw new Error(`File not found: ${filePath}`);
@@ -184,7 +189,7 @@ export async function fileEdit(args: FileEditArgs, workspaceRoot?: string): Prom
   // Write atomically
   const tempPath = `${resolvedPath}.tmp.${Date.now()}`;
   try {
-    await fs.promises.writeFile(tempPath, newContent, "utf-8");
+    await fs.promises.writeFile(tempPath, newContent);
     await fs.promises.rename(tempPath, resolvedPath);
   } catch (err) {
     try {

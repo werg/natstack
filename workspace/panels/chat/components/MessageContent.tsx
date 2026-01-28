@@ -12,7 +12,7 @@ interface MessageContentProps {
 }
 
 const remarkPlugins = [remarkGfm];
-const rehypePlugins = [[rehypeHighlight, { ignoreMissing: true }]];
+const rehypePlugins: [typeof rehypeHighlight, { ignoreMissing: boolean }][] = [[rehypeHighlight, { ignoreMissing: true }]];
 
 async function compileMdx(content: string): Promise<ComponentType | null> {
   const { default: Component } = await evaluate(content, {

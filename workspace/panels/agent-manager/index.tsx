@@ -19,7 +19,7 @@ import {
   Separator,
 } from "@radix-ui/themes";
 import { usePanelTheme, ParameterEditor } from "@natstack/react";
-import { db } from "@natstack/runtime";
+import { db, type FieldValue } from "@natstack/runtime";
 import {
   getAgentRegistry,
   type AgentDefinition,
@@ -33,7 +33,7 @@ import {
 const PREFERENCES_DB_NAME = "agent-preferences";
 
 /** Persisted defaults structure - keyed by agent type ID */
-type AgentDefaults = Record<string, Record<string, string | number | boolean>>;
+type AgentDefaults = Record<string, Record<string, FieldValue>>;
 
 /** Preferences database singleton */
 let preferencesDbPromise: Promise<Awaited<ReturnType<typeof db.open>>> | null = null;
@@ -80,7 +80,7 @@ async function loadAgentDefaults(): Promise<AgentDefaults> {
 /** Save defaults for a specific agent type to SQLite */
 async function saveAgentDefaults(
   agentTypeId: string,
-  settings: Record<string, string | number | boolean>
+  settings: Record<string, FieldValue>
 ): Promise<void> {
   try {
     const database = await getPreferencesDb();
@@ -221,7 +221,7 @@ export default function AgentManager() {
   }, []);
 
   // Update a default value for an agent type
-  const updateDefault = useCallback((agentTypeId: string, key: string, value: string | number | boolean) => {
+  const updateDefault = useCallback((agentTypeId: string, key: string, value: FieldValue) => {
     setAgentDefaults((prev) => {
       const updated = {
         ...prev,
@@ -314,7 +314,7 @@ export default function AgentManager() {
                         <ParameterEditor
                           parameters={agent.parameters}
                           values={agentDefaults[agent.id] ?? {}}
-                          onChange={(key: string, value: string | number | boolean) =>
+                          onChange={(key: string, value: FieldValue) =>
                             updateDefault(agent.id, key, value)
                           }
                         />

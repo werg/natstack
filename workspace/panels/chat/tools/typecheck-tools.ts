@@ -17,16 +17,7 @@ import {
   type GetCompletionsArgs,
 } from "@natstack/agentic-messaging";
 import { rpc } from "@natstack/runtime";
-import {
-  TypeCheckService,
-  TYPECHECK_EVENTS,
-  createPanelTypeCheckService,
-  createDiskFileSource,
-  type TypeCheckResult,
-  type TypeCheckDiagnostic,
-  type TypeCheckDiagnosticsEvent,
-  type QuickInfo,
-} from "@natstack/runtime/typecheck";
+import { TypeCheckService, TYPECHECK_EVENTS, createPanelTypeCheckService, createDiskFileSource, type TypeCheckResult, type TypeCheckDiagnostic, type TypeCheckDiagnosticsEvent, type QuickInfo } from "@natstack/runtime/typecheck";
 
 // Cache of TypeCheckService instances per panel path
 const serviceCache = new Map<string, TypeCheckService>();

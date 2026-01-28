@@ -122,8 +122,8 @@ export interface TrackerClient {
     messageId: string,
     content: string,
     options?: { complete?: boolean; persist?: boolean; contentType?: string }
-  ): Promise<void>;
-  complete(messageId: string): Promise<void>;
+  ): Promise<void | number | undefined>;
+  complete(messageId: string): Promise<void | number | undefined>;
 }
 
 /**

@@ -5,6 +5,13 @@ import { homedir, platform, arch, cpus } from "os";
 import { Button, Card, Flex, Text, Heading, Callout, Badge, Code, Separator } from "@radix-ui/themes";
 import { usePanelId } from "@natstack/react";
 
+// Augment globalThis with natstack-specific properties set by unsafe preload
+declare global {
+  var __natstackFsRoot: string | undefined;
+  var __natstackId: string;
+  var __natstackKind: string;
+}
+
 /**
  * Unsafe FS Demo Panel
  *
@@ -24,9 +31,9 @@ export default function UnsafeFsDemo() {
   const [dirListing, setDirListing] = useState<string[]>([]);
 
   // Read globals set by unsafe preload
-  const fsRoot = (globalThis as any).__natstackFsRoot as string | undefined;
-  const natstackId = (globalThis as any).__natstackId as string;
-  const natstackKind = (globalThis as any).__natstackKind as string;
+  const fsRoot = globalThis.__natstackFsRoot;
+  const natstackId = globalThis.__natstackId;
+  const natstackKind = globalThis.__natstackKind;
   const workspaceEnv = process.env.NATSTACK_WORKSPACE;
 
   // System info available via os module

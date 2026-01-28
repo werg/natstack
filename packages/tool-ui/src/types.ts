@@ -132,7 +132,7 @@ export interface UseToolApprovalResult {
  */
 export interface ToolApprovalProps {
   settings: ToolApprovalSettings;
-  onSetFloor: (level: number) => void;
+  onSetFloor: (level: ApprovalLevel) => void;
   onGrantAgent: (agentId: string) => void;
   onRevokeAgent: (agentId: string) => void;
   onRevokeAll: () => void;

@@ -278,7 +278,7 @@ export function ImageButton({ onClick, disabled = false, hasImages = false, imag
       <IconButton
         size="1"
         variant={hasImages ? "solid" : "ghost"}
-        color={hasImages ? "accent" : "gray"}
+        color={hasImages ? "blue" : "gray"}
         disabled={disabled}
         onClick={onClick}
       >

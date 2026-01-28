@@ -16,6 +16,8 @@ export interface ChatParticipantMetadata {
   contextUsage?: ContextWindowUsage;
   /** Execution mode - "plan" for planning only, "edit" for full execution */
   executionMode?: "plan" | "edit";
+  /** Index signature to satisfy ParticipantMetadata constraint */
+  [key: string]: unknown;
 }
 
 /** Info about a disconnected agent for notification display */

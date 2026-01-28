@@ -5,6 +5,7 @@
  */
 
 import * as fs from "fs";
+import type { Dirent, Stats } from "fs";
 import * as path from "path";
 import type { MethodDefinition } from "@natstack/agentic-messaging";
 import { resolvePath } from "./utils";
@@ -34,7 +35,7 @@ export async function tree(args: TreeArgs, workspaceRoot?: string): Promise<stri
   async function buildTree(dir: string, currentDepth: number, prefix: string): Promise<string> {
     if (currentDepth > depth) return "";
 
-    let entries: fs.Dirent[];
+    let entries: Dirent[];
     try {
       entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch {
@@ -129,13 +130,15 @@ function formatSize(size: number): string {
 
 /**
  * Format date like ls -la
+ * Handles both Date objects (Node fs) and ISO strings (fs shim)
  */
-function formatDate(mtime: Date): string {
+function formatDate(mtime: Date | string): string {
+  const date = typeof mtime === "string" ? new Date(mtime) : mtime;
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const month = months[mtime.getMonth()];
-  const day = mtime.getDate().toString().padStart(2);
-  const hours = mtime.getHours().toString().padStart(2, "0");
-  const minutes = mtime.getMinutes().toString().padStart(2, "0");
+  const month = months[date.getMonth()];
+  const day = date.getDate().toString().padStart(2);
+  const hours = date.getHours().toString().padStart(2, "0");
+  const minutes = date.getMinutes().toString().padStart(2, "0");
   return `${month} ${day} ${hours}:${minutes}`;
 }
 
@@ -147,7 +150,7 @@ export async function listDirectory(args: ListDirectoryArgs, workspaceRoot?: str
   const absolutePath = resolvePath(targetPath, workspaceRoot);
 
   // Check if path exists and is a directory
-  let stats: fs.Stats;
+  let stats: Stats;
   try {
     stats = await fs.promises.stat(absolutePath);
   } catch (err) {
@@ -165,7 +168,7 @@ export async function listDirectory(args: ListDirectoryArgs, workspaceRoot?: str
   const entries = await fs.promises.readdir(absolutePath, { withFileTypes: true });
 
   // Get stats for each entry
-  const entryStats: Array<{ name: string; stats: fs.Stats; isDir: boolean }> = [];
+  const entryStats: Array<{ name: string; stats: Stats; isDir: boolean }> = [];
 
   for (const entry of entries) {
     try {

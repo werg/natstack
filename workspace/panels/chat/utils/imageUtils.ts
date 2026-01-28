@@ -97,7 +97,8 @@ export function filterImageFiles(files: FileList | File[]): File[] {
  * Create an object URL for previewing an image
  */
 export function createImagePreviewUrl(data: Uint8Array, mimeType: string): string {
-  const blob = new Blob([data], { type: mimeType });
+  // Cast to fix ArrayBufferLike vs ArrayBuffer type mismatch
+  const blob = new Blob([data as BlobPart], { type: mimeType });
   return URL.createObjectURL(blob);
 }
 

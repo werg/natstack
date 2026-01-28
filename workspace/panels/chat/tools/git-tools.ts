@@ -8,10 +8,11 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as git from "isomorphic-git";
-import { STAGE } from "isomorphic-git";
+import { STAGE, type WalkerEntry } from "isomorphic-git";
 import { createTwoFilesPatch } from "diff";
 import type { MethodDefinition } from "@natstack/agentic-messaging";
 import { resolvePath } from "./utils";
+import type { z } from "zod";
 import {
   GitStatusArgsSchema,
   GitDiffArgsSchema,
@@ -19,19 +20,13 @@ import {
   GitAddArgsSchema,
   GitCommitArgsSchema,
   GitCheckoutArgsSchema,
-  type GitStatusArgs,
-  type GitDiffArgs,
-  type GitLogArgs,
-  type GitAddArgs,
-  type GitCommitArgs,
-  type GitCheckoutArgs,
 } from "@natstack/agentic-messaging";
 
 
 /**
  * git_status - Show repository status
  */
-export async function gitStatus(args: GitStatusArgs, workspaceRoot?: string): Promise<string> {
+export async function gitStatus(args: z.infer<typeof GitStatusArgsSchema>, workspaceRoot?: string): Promise<string> {
   const repoPath = args.path ?? workspaceRoot ?? process.cwd();
 
   // Get current branch
@@ -153,7 +148,8 @@ async function getContentFromStage(repoPath: string, filepath: string): Promise<
       fs,
       dir: repoPath,
       trees: [STAGE()],
-      map: async (entryPath: string, [stage]: [{ oid: () => Promise<string> } | null]) => {
+      map: async (entryPath: string, walkerEntries: Array<WalkerEntry | null>) => {
+        const stage = walkerEntries[0];
         if (entryPath === filepath && stage) {
           return await stage.oid();
         }
@@ -188,7 +184,7 @@ async function getContentFromWorkdir(fullPath: string): Promise<string> {
 /**
  * git_diff - Show file changes in unified diff format
  */
-export async function gitDiff(args: GitDiffArgs, workspaceRoot?: string): Promise<string> {
+export async function gitDiff(args: z.infer<typeof GitDiffArgsSchema>, workspaceRoot?: string): Promise<string> {
   const repoPath = args.path ?? workspaceRoot ?? process.cwd();
   const { staged = false, file: specificFile } = args;
 
@@ -197,7 +193,9 @@ export async function gitDiff(args: GitDiffArgs, workspaceRoot?: string): Promis
 
   const diffs: string[] = [];
 
-  for (const [filepath, headStatus, workdirStatus, stageStatus] of statusMatrix) {
+  for (const row of statusMatrix) {
+    // Cast to number to avoid literal type comparison issues
+    const [filepath, headStatus, workdirStatus, stageStatus] = row as [string, number, number, number];
     // Filter by specific file if provided
     if (specificFile && filepath !== specificFile) continue;
 
@@ -270,7 +268,7 @@ export async function gitDiff(args: GitDiffArgs, workspaceRoot?: string): Promis
 /**
  * git_log - Show commit history
  */
-export async function gitLog(args: GitLogArgs, workspaceRoot?: string): Promise<string> {
+export async function gitLog(args: z.infer<typeof GitLogArgsSchema>, workspaceRoot?: string): Promise<string> {
   const repoPath = args.path ?? workspaceRoot ?? process.cwd();
   const { limit = 10, format = "oneline" } = args;
 
@@ -309,7 +307,7 @@ export async function gitLog(args: GitLogArgs, workspaceRoot?: string): Promise<
 /**
  * git_add - Stage files
  */
-export async function gitAdd(args: GitAddArgs, workspaceRoot?: string): Promise<string> {
+export async function gitAdd(args: z.infer<typeof GitAddArgsSchema>, workspaceRoot?: string): Promise<string> {
   const repoPath = args.path ?? workspaceRoot ?? process.cwd();
   const { files } = args;
 
@@ -330,7 +328,7 @@ export async function gitAdd(args: GitAddArgs, workspaceRoot?: string): Promise<
 /**
  * git_commit - Create a commit
  */
-export async function gitCommit(args: GitCommitArgs, workspaceRoot?: string): Promise<string> {
+export async function gitCommit(args: z.infer<typeof GitCommitArgsSchema>, workspaceRoot?: string): Promise<string> {
   const repoPath = args.path ?? workspaceRoot ?? process.cwd();
   const { message } = args;
 
@@ -364,7 +362,7 @@ export async function gitCommit(args: GitCommitArgs, workspaceRoot?: string): Pr
 /**
  * git_checkout - Switch branches or restore files
  */
-export async function gitCheckout(args: GitCheckoutArgs, workspaceRoot?: string): Promise<string> {
+export async function gitCheckout(args: z.infer<typeof GitCheckoutArgsSchema>, workspaceRoot?: string): Promise<string> {
   const repoPath = args.path ?? workspaceRoot ?? process.cwd();
   const { branch, file, create } = args;
 
@@ -378,8 +376,8 @@ export async function gitCheckout(args: GitCheckoutArgs, workspaceRoot?: string)
         oid: commitOid,
         filepath: file,
       });
-      // Write raw bytes to preserve binary files
-      await fs.promises.writeFile(path.join(repoPath, file), Buffer.from(blob));
+      // Write raw bytes to preserve binary files - blob is already Uint8Array
+      await fs.promises.writeFile(path.join(repoPath, file), blob);
       return `Restored ${file}`;
     } catch (err) {
       throw new Error(`Failed to restore ${file}: ${err instanceof Error ? err.message : String(err)}`);
@@ -424,8 +422,8 @@ Output format matches \`git status\`:
 - Changes not staged for commit
 - Untracked files`,
       parameters: GitStatusArgsSchema,
-      execute: async (args: unknown) => {
-        return await gitStatus(args as GitStatusArgs, workspaceRoot);
+      execute: async (args: z.infer<typeof GitStatusArgsSchema>) => {
+        return await gitStatus(args, workspaceRoot);
       },
     },
     git_diff: {
@@ -435,8 +433,8 @@ Options:
 - staged: Show staged changes (like --cached)
 - file: Diff a specific file only`,
       parameters: GitDiffArgsSchema,
-      execute: async (args: unknown) => {
-        return await gitDiff(args as GitDiffArgs, workspaceRoot);
+      execute: async (args: z.infer<typeof GitDiffArgsSchema>) => {
+        return await gitDiff(args, workspaceRoot);
       },
     },
     git_log: {
@@ -446,8 +444,8 @@ Formats:
 - oneline: Short hash + first line of message
 - full: Complete commit info with author, date, full message`,
       parameters: GitLogArgsSchema,
-      execute: async (args: unknown) => {
-        return await gitLog(args as GitLogArgs, workspaceRoot);
+      execute: async (args: z.infer<typeof GitLogArgsSchema>) => {
+        return await gitLog(args, workspaceRoot);
       },
     },
     git_add: {
@@ -455,8 +453,8 @@ Formats:
 
 Accepts an array of file paths to stage.`,
       parameters: GitAddArgsSchema,
-      execute: async (args: unknown) => {
-        return await gitAdd(args as GitAddArgs, workspaceRoot);
+      execute: async (args: z.infer<typeof GitAddArgsSchema>) => {
+        return await gitAdd(args, workspaceRoot);
       },
     },
     git_commit: {
@@ -464,8 +462,8 @@ Accepts an array of file paths to stage.`,
 
 Uses author info from git config (user.name, user.email).`,
       parameters: GitCommitArgsSchema,
-      execute: async (args: unknown) => {
-        return await gitCommit(args as GitCommitArgs, workspaceRoot);
+      execute: async (args: z.infer<typeof GitCommitArgsSchema>) => {
+        return await gitCommit(args, workspaceRoot);
       },
     },
     git_checkout: {
@@ -476,8 +474,8 @@ Use with:
 - branch + create: Create and switch to a new branch
 - file: Restore a file from HEAD`,
       parameters: GitCheckoutArgsSchema,
-      execute: async (args: unknown) => {
-        return await gitCheckout(args as GitCheckoutArgs, workspaceRoot);
+      execute: async (args: z.infer<typeof GitCheckoutArgsSchema>) => {
+        return await gitCheckout(args, workspaceRoot);
       },
     },
   };
