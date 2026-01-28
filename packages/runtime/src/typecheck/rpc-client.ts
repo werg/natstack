@@ -17,6 +17,18 @@ export interface TypeDefinitionClientConfig {
 }
 
 /**
+ * Result from getPackageTypes with full metadata.
+ */
+export interface PackageTypesResult {
+  /** Map of file paths to their contents */
+  files: Map<string, string>;
+  /** Package names referenced via /// <reference types="..." /> */
+  referencedPackages?: string[];
+  /** The main entry point file path */
+  entryPoint?: string;
+}
+
+/**
  * Client for fetching type definitions from the main process.
  */
 export class TypeDefinitionClient {
@@ -33,28 +45,34 @@ export class TypeDefinitionClient {
    * @param panelPath - Path to the panel requesting types
    * @param packageName - The package to get types for
    * @param version - Optional specific version
-   * @returns Map of file paths to contents, empty map on error
+   * @returns PackageTypesResult with files map and metadata, empty files on error
    */
   async getPackageTypes(
     panelPath: string,
     packageName: string,
     version?: string
-  ): Promise<Map<string, string>> {
+  ): Promise<PackageTypesResult> {
     try {
-      const result = await this.rpcCall<Record<string, string> | null>(
+      const result = await this.rpcCall<{
+        files: Record<string, string>;
+        referencedPackages?: string[];
+        entryPoint?: string;
+      } | null>(
         "main",
         "typecheck.getPackageTypes",
         panelPath,
         packageName,
         version
       );
-      if (!result || typeof result !== "object") {
-        return new Map();
-      }
-      return new Map(Object.entries(result));
+
+      return {
+        files: new Map(Object.entries(result?.files ?? {})),
+        referencedPackages: result?.referencedPackages,
+        entryPoint: result?.entryPoint,
+      };
     } catch (error) {
       console.error(`[typecheck-client] Failed to get types for ${packageName}:`, error);
-      return new Map();
+      return { files: new Map() };
     }
   }
 

@@ -43,6 +43,7 @@ export type {
   WorkerChildSpec,
   BrowserChildSpec,
   GitConfig,
+  PubSubConfig,
   EndpointInfo,
   EnsureLoadedResult,
   EventSchemaMap,
@@ -251,7 +252,8 @@ export const createChild = notInShell("createChild") as <
   EmitE extends import("./core/index.js").Rpc.RpcEventMap = import("./core/index.js").Rpc.RpcEventMap
 >(
   source: string,
-  options?: import("./core/index.js").CreateChildOptions
+  options?: import("./core/index.js").CreateChildOptions,
+  stateArgs?: Record<string, unknown>
 ) => Promise<import("./core/index.js").ChildHandle<T, E, EmitE>>;
 
 export const createBrowserChild = notInShell("createBrowserChild") as <
@@ -317,4 +319,27 @@ export const expose = shellRpc?.expose.bind(shellRpc) ?? notInShell("expose") as
 >(methods: T) => void;
 
 export const gitConfig = null as import("./core/index.js").GitConfig | null;
+export const pubsubConfig = null as import("./core/index.js").PubSubConfig | null;
 export const bootstrapPromise = Promise.resolve(null) as Promise<import("./types.js").BootstrapResult | null>;
+
+// State args API - only available in panel/worker environments
+export const getStateArgs = notInShell("getStateArgs") as <T = Record<string, unknown>>() => T;
+export const useStateArgs = notInShell("useStateArgs") as <T = Record<string, unknown>>() => T;
+export const setStateArgs = notInShell("setStateArgs") as (updates: Record<string, unknown>) => Promise<Record<string, unknown>>;
+
+// Path utilities - these work in any environment
+export { normalizePath, getFileName, resolvePath } from "./shared/pathUtils.js";
+
+// Ad blocking API - only available in panel/worker environments
+export type { AdBlockStats, AdBlockApi } from "./panel/adblock.js";
+export const adblock = new Proxy({} as import("./panel/adblock.js").AdBlockApi, {
+  get(_target, prop) {
+    throw new Error(
+      `adblock.${String(prop)} is only available in panel/worker environments. ` +
+      `Use the "natstack-panel" export condition.`
+    );
+  },
+});
+
+// fsReady - only available in panel/worker environments
+export const fsReady = Promise.reject(new Error("fsReady is only available in panel/worker environments"));

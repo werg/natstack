@@ -7,6 +7,7 @@ import * as fs from "fs";
 import * as path from "path";
 
 const PACKAGES_TO_LOAD = [
+  "runtime",
   "ai",
   "eval",
   "git",

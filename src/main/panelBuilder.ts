@@ -1025,12 +1025,13 @@ export class PanelBuilder {
       // Get the TypeDefinitionService for fetching external package types
       const typeDefService = getTypeDefinitionService();
 
-      // Pre-load types for all dependencies to avoid on-demand loading delays
-      // This is important for build-time type checking where we want fast results
+      // Start pre-loading types for dependencies in background (fire and forget)
+      // Results populate the LRU cache and will be available for subsequent requests
+      // Don't await - proceed to type checking immediately while pre-load runs
       const dependencyNames = Object.keys(dependencies ?? {});
       if (dependencyNames.length > 0) {
-        log(`Pre-loading types for ${dependencyNames.length} dependencies...`);
-        await Promise.all(
+        log(`Pre-loading types for ${dependencyNames.length} dependencies in background...`);
+        void Promise.all(
           dependencyNames.map((dep) =>
             typeDefService.getPackageTypes(sourcePath, dep).catch(() => {
               // Ignore failures - package might not have types
@@ -1038,6 +1039,9 @@ export class PanelBuilder {
           )
         );
       }
+
+      // Track type loading failures to enhance error messages
+      const typeLoadingFailures = new Map<string, string>();
 
       // Create type check service with proper resolution config and external type fetching
       const service = createTypeCheckService({
@@ -1058,8 +1062,13 @@ export class PanelBuilder {
                 entryPoint: result.entryPoint,
               };
             }
+            // No types found - track failure
+            typeLoadingFailures.set(packageName, "could not resolve");
             return null;
-          } catch {
+          } catch (error) {
+            // Track the full error so we can enhance TypeScript errors
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            typeLoadingFailures.set(packageName, errorMsg);
             return null;
           }
         },
@@ -1073,20 +1082,37 @@ export class PanelBuilder {
       }
 
       // Run type checking with automatic external type loading
-      // Loop until no more external types are pending (handles transitive dependencies)
-      let result = await service.checkWithExternalTypes();
-
-      // Additional cycles to handle transitive type dependencies
-      let maxCycles = 5;
-      while (service.hasPendingTypes() && maxCycles > 0) {
-        const loadedNew = await service.loadPendingTypes();
-        if (!loadedNew) break;
-        result = service.check();
-        maxCycles--;
-      }
+      // checkWithExternalTypes handles the transitive dependency loop internally
+      const result = await service.checkWithExternalTypes();
 
       // Filter to only errors (not warnings or suggestions)
-      const errors = result.diagnostics.filter((d) => d.severity === "error");
+      let errors = result.diagnostics.filter((d) => d.severity === "error");
+
+      // Enhance "Cannot find module" errors with actual failure reasons
+      if (typeLoadingFailures.size > 0) {
+        errors = errors.map((error) => {
+          // Check if this is a "Cannot find module" error (TS2307)
+          if (error.code === 2307) {
+            // Extract module name from error message
+            const moduleMatch = error.message.match(/Cannot find module ['"]([^'"]+)['"]/);
+            const moduleName = moduleMatch?.[1];
+            if (moduleName) {
+              // Check if we have a failure reason for this module or its package
+              const packageName = moduleName.startsWith("@")
+                ? moduleName.split("/").slice(0, 2).join("/")
+                : moduleName.split("/")[0] ?? moduleName;
+              const failureReason = typeLoadingFailures.get(moduleName) || typeLoadingFailures.get(packageName);
+              if (failureReason) {
+                return {
+                  ...error,
+                  message: `Cannot find module '${moduleName}' or its corresponding type declarations. Type loading failed: ${failureReason}`,
+                };
+              }
+            }
+          }
+          return error;
+        });
+      }
 
       if (errors.length > 0) {
         log(`Type check found ${errors.length} error(s)`);
@@ -1670,7 +1696,7 @@ import ${JSON.stringify(relativeUserEntry)};
       // If there are type errors, fail the build
       if (typeErrors.length > 0) {
         const errorSummary = typeErrors
-          .slice(0, 5) // Show first 5 errors
+          .slice(0, 40) // Show first 40 errors
           .map((e) => `${e.file}:${e.line}:${e.column}: ${e.message}`)
           .join("\n");
         const moreMsg = typeErrors.length > 5 ? `\n... and ${typeErrors.length - 5} more errors` : "";
@@ -2427,15 +2453,8 @@ import ${JSON.stringify(relativeUserEntry)};
     } else {
       await this.cacheManager.clear();
 
-      // Also reset error panels in SQLite so they can rebuild
-      try {
-        const { getPanelPersistence } = await import("./db/panelPersistence.js");
-        const persistence = getPanelPersistence();
-        persistence.resetErrorPanels();
-      } catch (error) {
-        // Panel persistence may not be available in all contexts
-        console.warn("[PanelBuilder] Could not reset error panels:", error);
-      }
+      // Note: Error panels are now reset in-memory by PanelManager.invalidateReadyPanels()
+      // No database reset needed since artifacts are runtime-only state.
     }
   }
 }

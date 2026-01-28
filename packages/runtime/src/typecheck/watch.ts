@@ -185,20 +185,10 @@ export class TypeCheckWatcher {
     this.isChecking = true;
 
     try {
-      // Always run full check - TypeScript diagnostics are interdependent
-      // (changing a type in one file affects all files that import it)
-      const result = this.service.check();
-
-      // Load any pending external types that were discovered during resolution
-      const loadedNewTypes = await this.service.loadPendingTypes();
-
-      if (loadedNewTypes) {
-        // Re-check with newly loaded types to get accurate diagnostics
-        const refinedResult = this.service.check();
-        this.onDiagnostics?.(refinedResult);
-      } else {
-        this.onDiagnostics?.(result);
-      }
+      // Use checkWithExternalTypes which handles the transitive loading loop
+      // This ensures all transitive dependencies are loaded, not just direct ones
+      const result = await this.service.checkWithExternalTypes();
+      this.onDiagnostics?.(result);
     } catch (error) {
       this.onError?.(error instanceof Error ? error : new Error(String(error)));
     } finally {

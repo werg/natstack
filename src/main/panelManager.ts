@@ -1418,11 +1418,11 @@ export class PanelManager {
       if (existingPanel && persistence.isArchived(panel.id)) {
         persistence.unarchivePanel(panel.id);
         // Update all panel data with current values
+        // Note: artifacts are NOT persisted - they're runtime-only state
         persistence.updatePanel(panel.id, {
           parentId,
           history: panel.history,
           historyIndex: panel.historyIndex,
-          artifacts: panel.artifacts,
         });
         if (parentId) {
           persistence.setSelectedChild(parentId, panel.id);
@@ -1434,12 +1434,12 @@ export class PanelManager {
 
       if (shouldCreate) {
         // Use the new v3 API with snapshot
+        // Note: artifacts are NOT persisted - they're runtime-only state
         persistence.createPanel({
           id: panel.id,
           title: panel.title,
           parentId,
           snapshot: currentSnapshot,
-          artifacts: panel.artifacts,
         });
 
         // Log created event
@@ -3053,35 +3053,32 @@ export class PanelManager {
   }
 
   /**
-   * Persist artifacts to the database.
+   * Update artifacts in memory.
+   * Note: Artifacts are NOT persisted to the database - they're runtime-only state.
+   * This method exists to maintain the call pattern but is now a no-op.
    */
-  private persistArtifacts(panelId: string, artifacts: SharedPanel.PanelArtifacts): void {
-    try {
-      getPanelPersistence().updateArtifacts(panelId, artifacts);
-    } catch (error) {
-      console.error(`[PanelManager] Failed to persist artifacts for ${panelId}:`, error);
-    }
+  private persistArtifacts(_panelId: string, _artifacts: SharedPanel.PanelArtifacts): void {
+    // Artifacts are runtime-only - no database persistence needed.
+    // The in-memory panel.artifacts is already updated by the caller.
   }
 
   /**
    * Invalidate all ready/error app/worker panels: reset to pending and unload resources.
    * Called when build cache is cleared to ensure panels rebuild with fresh code.
+   * Note: Artifacts are runtime-only, so we just iterate over in-memory panels.
    */
   invalidateReadyPanels(): void {
-    const persistence = getPanelPersistence();
     const focusedPanelId = this.focusedPanelId;
     let focusedWasReset = false;
 
-    // Reset and unload ready panels
-    for (const panelId of persistence.resetAllReadyPanels()) {
-      this.invalidatePanelInMemory(panelId);
-      if (panelId === focusedPanelId) focusedWasReset = true;
-    }
-
-    // Reset error panels (already have resetErrorPanels, sync in-memory)
-    persistence.resetErrorPanels();
+    // Reset and unload ready/error panels (in-memory only)
     for (const [panelId, panel] of this.panels) {
-      if (panel.artifacts?.buildState === "error") {
+      const buildState = panel.artifacts?.buildState;
+      const panelType = panel.history[panel.historyIndex]?.type;
+
+      // Only reset app/worker panels with ready or error state
+      if ((panelType === "app" || panelType === "worker") &&
+          (buildState === "ready" || buildState === "error")) {
         this.invalidatePanelInMemory(panelId);
         if (panelId === focusedPanelId) focusedWasReset = true;
       }

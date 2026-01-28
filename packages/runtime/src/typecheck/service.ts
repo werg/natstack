@@ -18,7 +18,7 @@ import {
   resolveModule,
   DEFAULT_DEDUPE_PACKAGES,
 } from "./resolution.js";
-import { FS_TYPE_DEFINITIONS, PATH_TYPE_DEFINITIONS, GLOBAL_TYPE_DEFINITIONS, NATSTACK_RUNTIME_TYPES, loadNatstackPackageTypes, findPackagesDir, type NatstackPackageTypes } from "./lib/index.js";
+import { FS_TYPE_DEFINITIONS, PATH_TYPE_DEFINITIONS, GLOBAL_TYPE_DEFINITIONS, NODE_BUILTIN_TYPE_STUBS, loadNatstackPackageTypes, findPackagesDir, type NatstackPackageTypes } from "./lib/index.js";
 import { TS_LIB_FILES } from "./lib/typescript-libs.js";
 
 /**
@@ -126,6 +126,8 @@ export class TypeCheckService {
   private natstackPackageTypes: Record<string, NatstackPackageTypes> = {};
   /** Entry points for loaded external packages (package name -> entry file path) */
   private externalPackageEntryPoints = new Map<string, string>();
+  /** Cache for module resolution results to avoid O(n) scans */
+  private resolvedModuleCache = new Map<string, string | null>();
 
   constructor(config: TypeCheckServiceConfig) {
     this.config = config;
@@ -163,6 +165,12 @@ export class TypeCheckService {
       version: 1,
     });
 
+    // Add Node.js built-in module type definitions (for workers)
+    this.files.set("/@natstack/virtual/node-builtins.d.ts", {
+      content: NODE_BUILTIN_TYPE_STUBS,
+      version: 1,
+    });
+
     // Add bundled TypeScript lib files (ES2022, DOM, etc.)
     for (const [libName, content] of Object.entries(TS_LIB_FILES)) {
       this.files.set(`/@typescript/lib/${libName}`, {
@@ -171,13 +179,7 @@ export class TypeCheckService {
       });
     }
 
-    // Add @natstack/runtime type definitions
-    this.files.set("/@natstack/virtual/runtime.d.ts", {
-      content: NATSTACK_RUNTIME_TYPES,
-      version: 1,
-    });
-
-    // Load @natstack/* package types dynamically from filesystem
+    // Load @natstack/* package types dynamically from filesystem (including runtime)
     const packagesDir = this.config.workspaceRoot
       ? findPackagesDir(this.config.workspaceRoot)
       : null;
@@ -306,6 +308,11 @@ export class TypeCheckService {
       } catch (error) {
         console.error(`[typecheck] Failed to load types for ${pkg}:`, error);
       }
+    }
+
+    // Clear module resolution cache when new types are loaded
+    if (loadedAny) {
+      this.resolvedModuleCache.clear();
     }
 
     return loadedAny;
@@ -621,17 +628,6 @@ export class TypeCheckService {
         };
 
       case "natstack": {
-        // Map @natstack/runtime to our virtual type definitions
-        if (result.packageName === "runtime") {
-          return {
-            resolvedModule: {
-              resolvedFileName: "/@natstack/virtual/runtime.d.ts",
-              isExternalLibraryImport: false,
-              extension: ts.Extension.Dts,
-            },
-          };
-        }
-
         // Check loaded @natstack/* packages (dynamically loaded from filesystem)
         const fullPkgName = `@natstack/${result.packageName}`;
         const pkgData = this.natstackPackageTypes[fullPkgName];
@@ -773,8 +769,24 @@ export class TypeCheckService {
   /**
    * Find the entry point for loaded types of a package or subpath.
    * Handles both package-level imports (react) and subpath imports (react/jsx-runtime).
+   * Results are cached to avoid O(n) scans on every resolution.
    */
   private findLoadedTypesEntry(moduleName: string): string | null {
+    // Check cache first
+    const cached = this.resolvedModuleCache.get(moduleName);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const result = this.findLoadedTypesEntryUncached(moduleName);
+    this.resolvedModuleCache.set(moduleName, result);
+    return result;
+  }
+
+  /**
+   * Uncached implementation of findLoadedTypesEntry.
+   */
+  private findLoadedTypesEntryUncached(moduleName: string): string | null {
     const pkgName = this.extractPackageName(moduleName);
     if (!pkgName) return null;
 

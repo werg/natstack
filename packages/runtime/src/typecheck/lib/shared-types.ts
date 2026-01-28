@@ -22,8 +22,14 @@ interface FileStats {
   isFile(): boolean;
   isDirectory(): boolean;
   size: number;
-  mtime: string;
-  ctime: string;
+  /** Modification time - ISO string from fs shim, or Date from Node fs */
+  mtime: Date | string;
+  ctime: Date | string;
+  atime: Date | string;
+  /** Modification time in milliseconds since epoch */
+  mtimeMs: number;
+  ctimeMs: number;
+  atimeMs: number;
   mode: number;
 }
 `;
@@ -86,7 +92,10 @@ interface ReaddirOptions {
  */
 export const RUNTIME_FS_INTERFACE = `
 interface RuntimeFs {
-  readFile(path: string, encoding?: BufferEncoding): Promise<string | Uint8Array>;
+  /** Read file as Uint8Array (no encoding) */
+  readFile(path: string): Promise<Uint8Array>;
+  /** Read file as string (with encoding) */
+  readFile(path: string, encoding: BufferEncoding): Promise<string>;
   writeFile(path: string, data: string | Uint8Array): Promise<void>;
   readdir(path: string): Promise<string[]>;
   readdir(path: string, options: { withFileTypes: true }): Promise<Dirent[]>;

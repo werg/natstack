@@ -9,7 +9,6 @@
  */
 
 import * as fs from "fs/promises";
-import * as fsSync from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import Arborist from "@npmcli/arborist";
@@ -104,19 +103,26 @@ function hashString(str: string): string {
 /** Maximum number of packages to cache type definitions for */
 const MAX_TYPE_CACHE_ENTRIES = 100;
 
+/** Cached type result with all metadata */
+interface CachedTypeResult {
+  files: Map<string, string>;
+  referencedPackages: string[];
+  entryPoint: string | null;
+}
+
 /**
  * Simple LRU cache for type definitions.
  * Uses a Map (which maintains insertion order) and moves accessed items to end.
  */
-class LRUTypeCache {
-  private cache = new Map<string, Map<string, string>>();
+class LRUTypeCache<T> {
+  private cache = new Map<string, T>();
   private maxSize: number;
 
   constructor(maxSize: number = MAX_TYPE_CACHE_ENTRIES) {
     this.maxSize = maxSize;
   }
 
-  get(key: string): Map<string, string> | undefined {
+  get(key: string): T | undefined {
     const value = this.cache.get(key);
     if (value !== undefined) {
       // Move to end (most recently used)
@@ -126,7 +132,7 @@ class LRUTypeCache {
     return value;
   }
 
-  set(key: string, value: Map<string, string>): void {
+  set(key: string, value: T): void {
     // If key exists, delete first to update position
     if (this.cache.has(key)) {
       this.cache.delete(key);
@@ -158,8 +164,8 @@ class LRUTypeCache {
  * Single instance service for providing type definitions to panels.
  */
 export class TypeDefinitionService {
-  /** Global cache: cacheKey -> types map (shared across all panels) with LRU eviction */
-  private globalTypeCache = new LRUTypeCache();
+  /** Global cache: cacheKey -> types result with metadata (shared across all panels) with LRU eviction */
+  private globalTypeCache = new LRUTypeCache<CachedTypeResult>();
 
   /** Per-panel deps directories */
   private panelDepsCache = new Map<string, string>();
@@ -232,10 +238,14 @@ export class TypeDefinitionService {
 
     const cacheKey = `${packageName}@${version || "latest"}`;
 
-    // 1. Check global cache first (cache doesn't include referencedPackages)
+    // 1. Check global cache first (cache includes full metadata)
     const cached = this.globalTypeCache.get(cacheKey);
-    if (cached && cached.size > 0) {
-      return { files: Object.fromEntries(cached) };
+    if (cached && cached.files.size > 0) {
+      return {
+        files: Object.fromEntries(cached.files),
+        referencedPackages: cached.referencedPackages,
+        entryPoint: cached.entryPoint ?? undefined,
+      };
     }
 
     // 2. Get or create deps directory for this panel
@@ -251,7 +261,11 @@ export class TypeDefinitionService {
     }
 
     if (types && types.files.size > 0) {
-      this.globalTypeCache.set(cacheKey, types.files);
+      this.globalTypeCache.set(cacheKey, {
+        files: types.files,
+        referencedPackages: types.referencedPackages,
+        entryPoint: types.entryPoint,
+      });
       return {
         files: Object.fromEntries(types.files),
         referencedPackages: types.referencedPackages,
@@ -380,10 +394,15 @@ export class TypeDefinitionService {
     // If Verdaccio is running, use it as the registry
     if (canServeNatstack) {
       const verdaccioUrl = getVerdaccioServer().getBaseUrl();
-      fsSync.writeFileSync(npmrcPath, `registry=${verdaccioUrl}\n`);
-    } else if (fsSync.existsSync(npmrcPath)) {
+      await fs.writeFile(npmrcPath, `registry=${verdaccioUrl}\n`);
+    } else {
       // Remove .npmrc if Verdaccio is not running (use default registry)
-      fsSync.rmSync(npmrcPath);
+      try {
+        await fs.access(npmrcPath);
+        await fs.rm(npmrcPath);
+      } catch {
+        // File doesn't exist, nothing to remove
+      }
     }
 
     // Read or create package.json, with recovery for corrupted files
@@ -466,7 +485,11 @@ export class TypeDefinitionService {
     while (retryCount < maxRetries) {
       try {
         // Pass registry directly to Arborist - .npmrc is not always read reliably
-        const arboristOptions: { path: string; registry?: string } = { path: depsDir };
+        // Use legacyPeerDeps to handle peer dependency conflicts (e.g., zod v3 vs v4)
+        const arboristOptions: { path: string; registry?: string; legacyPeerDeps?: boolean } = {
+          path: depsDir,
+          legacyPeerDeps: true,
+        };
         if (canServeNatstack) {
           arboristOptions.registry = getVerdaccioServer().getBaseUrl();
         }
@@ -494,6 +517,26 @@ export class TypeDefinitionService {
           }
         }
 
+        // Check if it's an ERESOLVE error (peer dependency conflict)
+        // This shouldn't happen with legacyPeerDeps but create a clear error if it does
+        if (errorMsg.includes("ERESOLVE") || errorMsg.includes("could not resolve")) {
+          // Extract conflicting package info for a cleaner error message
+          const conflictMatch = errorMsg.match(/peer\s+(\S+@[^\s]+)\s+from\s+(\S+)/);
+          const foundMatch = errorMsg.match(/Found:\s+(\S+@[^\s]+)/);
+
+          let cleanError: string;
+          if (conflictMatch && foundMatch) {
+            cleanError = `Peer dependency conflict: ${conflictMatch[2]} requires ${conflictMatch[1]}, but found ${foundMatch[1]}`;
+          } else if (conflictMatch) {
+            cleanError = `Peer dependency conflict: ${conflictMatch[2]} requires ${conflictMatch[1]} at incompatible version`;
+          } else {
+            cleanError = `Peer dependency conflict (run 'npm install ${spec} --legacy-peer-deps' manually to see details)`;
+          }
+
+          console.error(`[TypeDefinitionService] ${cleanError}`);
+          throw new Error(cleanError);
+        }
+
         // Check if it's an ENOTEMPTY error (corrupted node_modules/Arborist state)
         if (errorMsg.includes("ENOTEMPTY") && retryCount === 0) {
           // Only try this once - delete the entire deps directory for a fresh start
@@ -518,7 +561,7 @@ export class TypeDefinitionService {
             // Also recreate .npmrc if needed
             if (canServeNatstack) {
               const verdaccioUrl = getVerdaccioServer().getBaseUrl();
-              fsSync.writeFileSync(npmrcPath, `registry=${verdaccioUrl}\n`);
+              await fs.writeFile(npmrcPath, `registry=${verdaccioUrl}\n`);
             }
           } catch (cleanupError) {
             console.error(`[TypeDefinitionService] Failed to reset deps directory:`, cleanupError);
@@ -567,7 +610,11 @@ export class TypeDefinitionService {
 
       try {
         // Pass registry directly to Arborist - .npmrc is not always read reliably
-        const arboristOptions: { path: string; registry?: string } = { path: depsDir };
+        // Use legacyPeerDeps to handle peer dependency conflicts
+        const arboristOptions: { path: string; registry?: string; legacyPeerDeps?: boolean } = {
+          path: depsDir,
+          legacyPeerDeps: true,
+        };
         if (canServeNatstack) {
           arboristOptions.registry = getVerdaccioServer().getBaseUrl();
         }

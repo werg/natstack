@@ -523,9 +523,15 @@ ${FS_INTERFACES}
   /** Whether this panel is ephemeral (temporary) */
   export const isEphemeral: boolean;
 
-  interface EnsureLoadedResult {
-    wasLoaded: boolean;
-    panelId: string;
+  export interface EnsureLoadedResult {
+    /** Whether the panel is now loaded and ready */
+    success: boolean;
+    /** The current build state */
+    buildState: string;
+    /** Error message if failed */
+    error?: string;
+    /** Build log if available (for error diagnosis) */
+    buildLog?: string;
   }
 
   // ============================================================================

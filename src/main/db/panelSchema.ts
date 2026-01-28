@@ -2,8 +2,8 @@
  * Panel Tree SQLite Schema
  *
  * DB-first architecture for panel tree persistence:
- * - SQLite is the single source of truth
- * - Panels are append-only (never deleted)
+ * - SQLite stores ONLY persistent configuration (tree structure, history)
+ * - Ephemeral state (build artifacts, errors) is kept in memory only
  * - FTS5 for full-text search
  */
 
@@ -11,9 +11,9 @@ import type Database from "better-sqlite3";
 
 /**
  * Current schema version.
- * Unified PanelSnapshot architecture - history JSON is the source of truth.
+ * v2: Removed artifacts column - build state is now runtime-only.
  */
-export const PANEL_SCHEMA_VERSION = 1;
+export const PANEL_SCHEMA_VERSION = 2;
 
 /**
  * Panel types stored in the database.
@@ -21,25 +21,13 @@ export const PANEL_SCHEMA_VERSION = 1;
 export type DbPanelType = "app" | "worker" | "browser" | "shell";
 
 /**
- * Panel build states.
- */
-export type DbPanelBuildState =
-  | "pending"
-  | "cloning"
-  | "building"
-  | "ready"
-  | "error"
-  | "dirty"
-  | "not-git-repo";
-
-/**
  * Panel event types for audit log.
  */
 export type DbPanelEventType = "created" | "focused";
 
 /**
- * Panel row from the database (v3 schema).
- * Uses history JSON instead of type_data for unified PanelSnapshot architecture.
+ * Panel row from the database.
+ * Note: artifacts/buildState are NOT persisted - they're runtime-only.
  */
 export interface DbPanelRow {
   id: string;
@@ -54,7 +42,6 @@ export interface DbPanelRow {
   history: string;
   /** Current position in history (0-indexed) */
   history_index: number;
-  artifacts: string; // JSON
   archived_at: number | null; // Timestamp when archived, null = active
 }
 
@@ -89,7 +76,7 @@ export interface DbPanelSearchMetadataRow {
 
 /**
  * Schema creation SQL statements.
- * Unified PanelSnapshot architecture.
+ * v2: No artifacts column - build state is runtime-only.
  */
 const SCHEMA_SQL = `
 -- Core panel data
@@ -111,9 +98,6 @@ CREATE TABLE IF NOT EXISTS panels (
     -- Single source of truth: JSON array of PanelSnapshot
     history TEXT NOT NULL,  -- Never empty - must have at least one snapshot
     history_index INTEGER NOT NULL DEFAULT 0,
-
-    -- Build artifacts as JSON
-    artifacts TEXT NOT NULL DEFAULT '{}',
 
     -- Soft delete: timestamp when archived, NULL = active
     archived_at INTEGER DEFAULT NULL
@@ -265,6 +249,7 @@ export function initializePanelSchema(db: Database.Database): void {
 /**
  * SQL queries for common operations.
  * Note: type is extracted from history JSON using json_extract.
+ * Note: buildState is NOT stored - it's runtime-only.
  */
 export const PANEL_QUERIES = {
   /**
@@ -292,7 +277,7 @@ export const PANEL_QUERIES = {
   SIBLINGS: `
     SELECT p.id, p.title,
            json_extract(p.history, '$[' || p.history_index || '].type') as type,
-           p.position, p.artifacts,
+           p.position,
       (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
     FROM panels p
     WHERE p.parent_id = (SELECT parent_id FROM panels WHERE id = ?) AND p.archived_at IS NULL
@@ -305,7 +290,7 @@ export const PANEL_QUERIES = {
   CHILDREN: `
     SELECT p.id, p.title,
            json_extract(p.history, '$[' || p.history_index || '].type') as type,
-           p.position, p.artifacts,
+           p.position,
       (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
     FROM panels p WHERE p.parent_id = ? AND p.archived_at IS NULL
     ORDER BY p.position
@@ -317,7 +302,7 @@ export const PANEL_QUERIES = {
   ROOT_PANELS: `
     SELECT p.id, p.title,
            json_extract(p.history, '$[' || p.history_index || '].type') as type,
-           p.position, p.artifacts,
+           p.position,
       (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
     FROM panels p WHERE p.parent_id IS NULL AND p.workspace_id = ? AND p.archived_at IS NULL
     ORDER BY p.position
@@ -386,7 +371,7 @@ export const PANEL_QUERIES = {
   CHILDREN_PAGINATED: `
     SELECT p.id, p.title,
            json_extract(p.history, '$[' || p.history_index || '].type') as type,
-           p.position, p.artifacts,
+           p.position,
       (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
     FROM panels p WHERE p.parent_id = ? AND p.archived_at IS NULL
     ORDER BY p.position ASC
@@ -406,7 +391,7 @@ export const PANEL_QUERIES = {
   ROOT_PANELS_PAGINATED: `
     SELECT p.id, p.title,
            json_extract(p.history, '$[' || p.history_index || '].type') as type,
-           p.position, p.artifacts,
+           p.position,
       (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
     FROM panels p WHERE p.parent_id IS NULL AND p.workspace_id = ? AND p.archived_at IS NULL
     ORDER BY p.position ASC

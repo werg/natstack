@@ -2,7 +2,14 @@
  * Panel Persistence Layer
  *
  * CRUD operations for the panel tree SQLite database.
- * Uses unified PanelSnapshot architecture (v3 schema).
+ *
+ * IMPORTANT: This layer persists ONLY configuration state:
+ * - Tree structure (parent/child relationships, positions)
+ * - History (snapshots of panel configurations)
+ * - Metadata (title, timestamps)
+ *
+ * Ephemeral state (buildState, artifacts, errors) is NOT persisted.
+ * That state is managed in-memory by PanelManager.
  */
 
 import Database from "better-sqlite3";
@@ -18,7 +25,6 @@ import {
 import type {
   Panel,
   PanelSnapshot,
-  PanelArtifacts,
   PanelSummary,
   PanelType,
 } from "../../shared/ipc/types.js";
@@ -37,8 +43,8 @@ export interface PanelContext {
 }
 
 /**
- * Input for creating a new panel (v3 schema).
- * Uses PanelSnapshot for initial state.
+ * Input for creating a new panel.
+ * Note: artifacts are NOT persisted - they're runtime-only.
  */
 export interface CreatePanelInput {
   id: string;
@@ -46,11 +52,11 @@ export interface CreatePanelInput {
   parentId: string | null;
   /** Initial snapshot (source, type, options) */
   snapshot: PanelSnapshot;
-  artifacts?: PanelArtifacts;
 }
 
 /**
- * Input for updating a panel (v3 schema).
+ * Input for updating a panel.
+ * Note: artifacts are NOT persisted - they're runtime-only.
  */
 export interface UpdatePanelInput {
   selectedChildId?: string | null;
@@ -58,7 +64,6 @@ export interface UpdatePanelInput {
   history?: PanelSnapshot[];
   /** Update the history index */
   historyIndex?: number;
-  artifacts?: PanelArtifacts;
   parentId?: string | null;
 }
 
@@ -91,6 +96,7 @@ export function resetPanelPersistence(): void {
  * Panel Persistence class.
  *
  * Manages the panels database with CRUD operations.
+ * Does NOT persist ephemeral state (buildState, artifacts, errors).
  */
 export class PanelPersistence {
   private db: Database.Database | null = null;
@@ -167,8 +173,9 @@ export class PanelPersistence {
   // =========================================================================
 
   /**
-   * Create a new panel in the database (v3 schema).
+   * Create a new panel in the database.
    * New panels are prepended (position 0) so newest children appear first.
+   * Note: artifacts are NOT persisted - they start empty at runtime.
    */
   createPanel(input: CreatePanelInput): void {
     const db = this.ensureOpen();
@@ -192,8 +199,8 @@ export class PanelPersistence {
       INSERT INTO panels (
         id, title, workspace_id,
         parent_id, position, selected_child_id,
-        created_at, updated_at, history, history_index, artifacts
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, updated_at, history, history_index
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.id,
       input.title,
@@ -204,8 +211,7 @@ export class PanelPersistence {
       now,
       now,
       JSON.stringify(history),
-      0, // history_index starts at 0
-      JSON.stringify(input.artifacts ?? {})
+      0 // history_index starts at 0
     );
   }
 
@@ -215,6 +221,7 @@ export class PanelPersistence {
 
   /**
    * Get a panel by ID.
+   * Note: artifacts will be empty - they're runtime-only state.
    */
   getPanel(panelId: string): Panel | null {
     const db = this.ensureOpen();
@@ -229,6 +236,7 @@ export class PanelPersistence {
 
   /**
    * Get all root panels for the current workspace.
+   * Note: buildState is NOT included - it's runtime-only.
    */
   getRootPanels(): PanelSummary[] {
     const db = this.ensureOpen();
@@ -237,9 +245,8 @@ export class PanelPersistence {
     const rows = db.prepare(PANEL_QUERIES.ROOT_PANELS).all(workspaceId) as Array<{
       id: string;
       title: string;
-      type: PanelType; // Extracted from history JSON
+      type: PanelType;
       position: number;
-      artifacts: string;
       child_count: number;
     }>;
 
@@ -248,13 +255,14 @@ export class PanelPersistence {
       type: row.type,
       title: row.title,
       childCount: row.child_count,
-      buildState: this.extractBuildState(row.artifacts),
       position: row.position,
+      // buildState is NOT included - it's runtime-only
     }));
   }
 
   /**
    * Get children of a panel.
+   * Note: buildState is NOT included - it's runtime-only.
    */
   getChildren(parentId: string): PanelSummary[] {
     const db = this.ensureOpen();
@@ -262,9 +270,8 @@ export class PanelPersistence {
     const rows = db.prepare(PANEL_QUERIES.CHILDREN).all(parentId) as Array<{
       id: string;
       title: string;
-      type: PanelType; // Extracted from history JSON
+      type: PanelType;
       position: number;
-      artifacts: string;
       child_count: number;
     }>;
 
@@ -273,7 +280,6 @@ export class PanelPersistence {
       type: row.type,
       title: row.title,
       childCount: row.child_count,
-      buildState: this.extractBuildState(row.artifacts),
       position: row.position,
     }));
   }
@@ -287,9 +293,8 @@ export class PanelPersistence {
     const rows = db.prepare(PANEL_QUERIES.SIBLINGS).all(panelId) as Array<{
       id: string;
       title: string;
-      type: PanelType; // Extracted from history JSON
+      type: PanelType;
       position: number;
-      artifacts: string;
       child_count: number;
     }>;
 
@@ -298,7 +303,6 @@ export class PanelPersistence {
       type: row.type,
       title: row.title,
       childCount: row.child_count,
-      buildState: this.extractBuildState(row.artifacts),
       position: row.position,
     }));
   }
@@ -312,7 +316,7 @@ export class PanelPersistence {
     const rows = db.prepare(PANEL_QUERIES.ANCESTORS).all(panelId) as Array<{
       id: string;
       title: string;
-      type: PanelType; // Extracted from history JSON
+      type: PanelType;
       depth: number;
     }>;
 
@@ -366,7 +370,8 @@ export class PanelPersistence {
   // =========================================================================
 
   /**
-   * Update a panel (v3 schema).
+   * Update a panel.
+   * Note: artifacts are NOT persisted - use PanelManager for runtime state.
    */
   updatePanel(panelId: string, input: UpdatePanelInput): void {
     const db = this.ensureOpen();
@@ -379,11 +384,6 @@ export class PanelPersistence {
     if (input.selectedChildId !== undefined) {
       updates.push("selected_child_id = ?");
       params.push(input.selectedChildId);
-    }
-
-    if (input.artifacts !== undefined) {
-      updates.push("artifacts = ?");
-      params.push(JSON.stringify(input.artifacts));
     }
 
     if (input.parentId !== undefined) {
@@ -403,11 +403,6 @@ export class PanelPersistence {
 
     params.push(panelId);
 
-    // SECURITY: This dynamic SQL is safe because:
-    // 1. Column names come ONLY from hardcoded strings in UpdatePanelInput type checks above
-    // 2. All VALUES are passed via parameterized query (params array)
-    // 3. DO NOT add any user input to the 'updates' array - use params instead
-    // If you need to add a new updatable field, add it as a hardcoded string check above
     db.prepare(`UPDATE panels SET ${updates.join(", ")} WHERE id = ?`).run(...params);
   }
 
@@ -419,18 +414,6 @@ export class PanelPersistence {
     db.prepare("UPDATE panels SET history = ?, history_index = ?, updated_at = ? WHERE id = ?").run(
       JSON.stringify(history),
       historyIndex,
-      Date.now(),
-      panelId
-    );
-  }
-
-  /**
-   * Update panel artifacts.
-   */
-  updateArtifacts(panelId: string, artifacts: PanelArtifacts): void {
-    const db = this.ensureOpen();
-    db.prepare("UPDATE panels SET artifacts = ?, updated_at = ? WHERE id = ?").run(
-      JSON.stringify(artifacts),
       Date.now(),
       panelId
     );
@@ -495,7 +478,7 @@ export class PanelPersistence {
   }
 
   /**
-   * Update panel title (used internally for browser panel navigation).
+   * Update panel title.
    */
   setTitle(panelId: string, title: string): void {
     const db = this.ensureOpen();
@@ -518,7 +501,7 @@ export class PanelPersistence {
     // Get current parent for normalization later
     const oldParentId = this.getParentId(panelId);
 
-    // Get current position to determine if we need to adjust the target position
+    // Get current position
     const currentRow = db.prepare("SELECT parent_id, position FROM panels WHERE id = ?").get(panelId) as
       | { parent_id: string | null; position: number }
       | undefined;
@@ -530,10 +513,6 @@ export class PanelPersistence {
     const isSameParent =
       (oldParentId === newParentId) ||
       (oldParentId === null && newParentId === null);
-
-    // Note: targetPosition is the final desired position after the move.
-    // Callers (e.g., DnD) already compute this with the dragged item excluded,
-    // so no adjustment is needed here.
 
     // Shift positions in new parent to make room
     db.prepare(PANEL_QUERIES.SHIFT_SIBLING_POSITIONS).run(
@@ -615,9 +594,8 @@ export class PanelPersistence {
     const rows = db.prepare(PANEL_QUERIES.CHILDREN_PAGINATED).all(parentId, limit, offset) as Array<{
       id: string;
       title: string;
-      type: PanelType; // Extracted from history JSON
+      type: PanelType;
       position: number;
-      artifacts: string;
       child_count: number;
     }>;
 
@@ -626,7 +604,6 @@ export class PanelPersistence {
       type: row.type,
       title: row.title,
       childCount: row.child_count,
-      buildState: this.extractBuildState(row.artifacts),
       position: row.position,
     }));
 
@@ -657,9 +634,8 @@ export class PanelPersistence {
       .all(workspaceId, limit, offset) as Array<{
       id: string;
       title: string;
-      type: PanelType; // Extracted from history JSON
+      type: PanelType;
       position: number;
-      artifacts: string;
       child_count: number;
     }>;
 
@@ -668,7 +644,6 @@ export class PanelPersistence {
       type: row.type,
       title: row.title,
       childCount: row.child_count,
-      buildState: this.extractBuildState(row.artifacts),
       position: row.position,
     }));
 
@@ -749,6 +724,7 @@ export class PanelPersistence {
   /**
    * Get the full panel tree for the current workspace.
    * Used for initial tree load and serialization.
+   * Note: artifacts will be empty - they're runtime-only.
    */
   getFullTree(): Panel[] {
     const db = this.ensureOpen();
@@ -843,96 +819,6 @@ export class PanelPersistence {
   }
 
   // =========================================================================
-  // Build State Operations
-  // =========================================================================
-
-  /**
-   * Reset all panels with error buildState to pending.
-   * Called when the build cache is cleared so panels can rebuild.
-   * Returns the number of panels reset.
-   */
-  resetErrorPanels(): number {
-    const db = this.ensureOpen();
-    const workspaceId = this.getWorkspaceId();
-    const now = Date.now();
-
-    // Find all panels with buildState = 'error' in their artifacts JSON
-    const errorPanels = db
-      .prepare(
-        `SELECT id, artifacts FROM panels
-         WHERE workspace_id = ?
-         AND json_extract(artifacts, '$.buildState') = 'error'`
-      )
-      .all(workspaceId) as Array<{ id: string; artifacts: string }>;
-
-    if (errorPanels.length === 0) {
-      return 0;
-    }
-
-    // Update each panel to pending state
-    const updateStmt = db.prepare(
-      "UPDATE panels SET artifacts = ?, updated_at = ? WHERE id = ?"
-    );
-
-    const pendingArtifacts = JSON.stringify({
-      buildState: "pending",
-      buildProgress: "Build cache cleared - will rebuild when focused",
-    });
-
-    for (const panel of errorPanels) {
-      updateStmt.run(pendingArtifacts, now, panel.id);
-    }
-
-    console.log(
-      `[PanelPersistence] Reset ${errorPanels.length} error panels to pending state`
-    );
-    return errorPanels.length;
-  }
-
-  /**
-   * Reset all app/worker panels with "ready" buildState to "pending".
-   * Called when the build cache is cleared so panels can rebuild.
-   * Returns the IDs of panels that were reset (for unloading).
-   */
-  resetAllReadyPanels(): string[] {
-    const db = this.ensureOpen();
-    const workspaceId = this.getWorkspaceId();
-    const now = Date.now();
-
-    const readyPanels = db
-      .prepare(
-        `SELECT id FROM panels
-         WHERE workspace_id = ?
-         AND type IN ('app', 'worker')
-         AND json_extract(artifacts, '$.buildState') = 'ready'`
-      )
-      .all(workspaceId) as Array<{ id: string }>;
-
-    if (readyPanels.length === 0) {
-      return [];
-    }
-
-    const updateStmt = db.prepare(
-      "UPDATE panels SET artifacts = ?, updated_at = ? WHERE id = ?"
-    );
-    const pendingArtifacts = JSON.stringify({
-      buildState: "pending",
-      buildProgress: "Build cache cleared - will rebuild when focused",
-    });
-
-    const resetIds: string[] = [];
-    for (const panel of readyPanels) {
-      updateStmt.run(pendingArtifacts, now, panel.id);
-      resetIds.push(panel.id);
-    }
-
-    console.log(
-      `[PanelPersistence] Reset ${resetIds.length} ready panels to pending state`
-    );
-    return resetIds;
-  }
-
-  // =========================================================================
   // Archive Operations
   // =========================================================================
 
@@ -973,12 +859,12 @@ export class PanelPersistence {
   // =========================================================================
 
   /**
-   * Convert a database row to a Panel object (v3 schema).
+   * Convert a database row to a Panel object.
    * Validates that history is non-empty.
+   * Note: artifacts is initialized to empty {} - it's runtime-only state.
    */
   private rowToPanel(row: DbPanelRow): Panel {
     const history = JSON.parse(row.history) as PanelSnapshot[];
-    const artifacts = JSON.parse(row.artifacts) as PanelArtifacts;
 
     // Validate history is non-empty
     if (!Array.isArray(history) || history.length === 0) {
@@ -986,11 +872,12 @@ export class PanelPersistence {
     }
 
     // Validate historyIndex is within bounds
-    if (row.history_index < 0 || row.history_index >= history.length) {
+    let historyIndex = row.history_index;
+    if (historyIndex < 0 || historyIndex >= history.length) {
       console.warn(
-        `[PanelPersistence] Panel ${row.id} has out-of-bounds history_index ${row.history_index}, resetting to 0`
+        `[PanelPersistence] Panel ${row.id} has out-of-bounds history_index ${historyIndex}, resetting to 0`
       );
-      row.history_index = 0;
+      historyIndex = 0;
     }
 
     return {
@@ -999,21 +886,10 @@ export class PanelPersistence {
       children: [], // Will be populated by tree builder
       selectedChildId: row.selected_child_id,
       history,
-      historyIndex: row.history_index,
-      artifacts,
+      historyIndex,
+      // artifacts is runtime-only - start with empty object
+      // PanelManager will set buildState to "pending" on load
+      artifacts: {},
     };
-  }
-
-  /**
-   * Extract build state from artifacts JSON string.
-   */
-  private extractBuildState(artifactsJson: string): string | undefined {
-    try {
-      const artifacts = JSON.parse(artifactsJson) as PanelArtifacts;
-      return artifacts.buildState;
-    } catch (error) {
-      console.warn(`[PanelPersistence] Failed to parse artifacts JSON: ${error}`);
-      return undefined;
-    }
   }
 }

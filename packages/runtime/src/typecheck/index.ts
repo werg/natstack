@@ -55,7 +55,7 @@ export {
 } from "./resolution.js";
 
 // Virtual type definitions
-export { FS_TYPE_DEFINITIONS, PATH_TYPE_DEFINITIONS, GLOBAL_TYPE_DEFINITIONS, NATSTACK_RUNTIME_TYPES } from "./lib/index.js";
+export { FS_TYPE_DEFINITIONS, PATH_TYPE_DEFINITIONS, GLOBAL_TYPE_DEFINITIONS, NATSTACK_RUNTIME_TYPES, NODE_BUILTIN_TYPE_STUBS } from "./lib/index.js";
 
 // Dynamic natstack package type loading
 export {
@@ -103,6 +103,7 @@ export {
   TypeDefinitionClient,
   createTypeDefinitionClient,
   type TypeDefinitionClientConfig,
+  type PackageTypesResult,
 } from "./rpc-client.js";
 
 // Factory for easy service creation

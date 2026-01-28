@@ -10,6 +10,17 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 /**
+ * Pre-compiled regex patterns for extracting imports from TypeScript files.
+ * Hoisted to module level to avoid recompilation on every extractImports call.
+ */
+const IMPORT_PATTERNS = [
+  /import\s+(?:.*?\s+from\s+)?["']([^"']+)["']/g,
+  /export\s+(?:.*?\s+from\s+)?["']([^"']+)["']/g,
+  /\/\/\/\s*<reference\s+path\s*=\s*["']([^"']+)["']/g,
+];
+const REF_TYPES_PATTERN = /\/\/\/\s*<reference\s+types\s*=\s*["']([^"']+)["']/g;
+
+/**
  * Configuration for the TypeDefinitionLoader.
  */
 export interface TypeDefinitionLoaderConfig {
@@ -274,13 +285,8 @@ export class TypeDefinitionLoader {
     // Match: import "path"
     // Match: export ... from "path"
     // Match: /// <reference path="..." />
-    const importPatterns = [
-      /import\s+(?:.*?\s+from\s+)?["']([^"']+)["']/g,
-      /export\s+(?:.*?\s+from\s+)?["']([^"']+)["']/g,
-      /\/\/\/\s*<reference\s+path\s*=\s*["']([^"']+)["']/g,
-    ];
-
-    for (const pattern of importPatterns) {
+    for (const pattern of IMPORT_PATTERNS) {
+      pattern.lastIndex = 0; // Reset for reuse (required for /g patterns)
       let match;
       while ((match = pattern.exec(content)) !== null) {
         if (match[1]) {
@@ -290,9 +296,9 @@ export class TypeDefinitionLoader {
     }
 
     // Match: /// <reference types="..." /> separately
-    const refTypesPattern = /\/\/\/\s*<reference\s+types\s*=\s*["']([^"']+)["']/g;
+    REF_TYPES_PATTERN.lastIndex = 0; // Reset for reuse
     let match;
-    while ((match = refTypesPattern.exec(content)) !== null) {
+    while ((match = REF_TYPES_PATTERN.exec(content)) !== null) {
       if (match[1]) {
         referenceTypes.push(match[1]);
       }
