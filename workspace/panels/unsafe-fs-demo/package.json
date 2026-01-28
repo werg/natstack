@@ -1,5 +1,5 @@
 {
-  "name": "@natstack-panels/unsafe-fs-demo",
+  "name": "@workspace-panels/unsafe-fs-demo",
   "version": "0.0.1",
   "description": "Demo panel showcasing unsafe mode with real Node.js filesystem access",
   "natstack": {

@@ -1,5 +1,5 @@
 {
-  "name": "@natstack-panels/typed-rpc-child",
+  "name": "@workspace-panels/typed-rpc-child",
   "version": "0.1.0",
   "private": true,
   "type": "module",

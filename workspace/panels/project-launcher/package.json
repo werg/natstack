@@ -1,5 +1,5 @@
 {
-  "name": "@natstack-panels/project-launcher",
+  "name": "@workspace-panels/project-launcher",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -28,7 +28,8 @@
     "@natstack/runtime": "workspace:*",
     "@natstack/react": "workspace:*",
     "@natstack/agentic-messaging": "workspace:*",
-    "@natstack-panels/project-panel": "workspace:*",
+    "@workspace/context-template-editor": "workspace:*",
+    "@workspace-panels/project-panel": "workspace:*",
     "@radix-ui/themes": "^3.2.1",
     "@radix-ui/react-icons": "^1.3.2"
   }

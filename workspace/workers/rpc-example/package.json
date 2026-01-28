@@ -1,5 +1,5 @@
 {
-  "name": "@natstack-workers/rpc-example",
+  "name": "@workspace-workers/rpc-example",
   "version": "0.1.0",
   "private": true,
   "type": "module",

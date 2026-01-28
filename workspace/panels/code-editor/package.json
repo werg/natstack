@@ -1,5 +1,5 @@
 {
-  "name": "@natstack-panels/code-editor",
+  "name": "@workspace-panels/code-editor",
   "version": "0.1.0",
   "private": true,
   "type": "module",

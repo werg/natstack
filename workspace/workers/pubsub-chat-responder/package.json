@@ -1,5 +1,5 @@
 {
-  "name": "@natstack-workers/pubsub-chat-responder",
+  "name": "@workspace-workers/pubsub-chat-responder",
   "version": "0.1.0",
   "private": true,
   "type": "module",

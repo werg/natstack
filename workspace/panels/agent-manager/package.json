@@ -1,5 +1,5 @@
 {
-  "name": "@natstack-panels/agent-manager",
+  "name": "@workspace-panels/agent-manager",
   "version": "0.1.0",
   "private": true,
   "type": "module",

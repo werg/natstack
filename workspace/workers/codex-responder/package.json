@@ -1,5 +1,5 @@
 {
-  "name": "@natstack-workers/codex-responder",
+  "name": "@workspace-workers/codex-responder",
   "version": "0.1.0",
   "private": true,
   "type": "module",

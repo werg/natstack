@@ -1,5 +1,5 @@
 {
-  "name": "@natstack-workers/claude-code-responder",
+  "name": "@workspace-workers/claude-code-responder",
   "version": "0.1.0",
   "private": true,
   "type": "module",
