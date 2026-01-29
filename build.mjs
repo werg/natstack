@@ -160,8 +160,10 @@ async function buildWorkspacePackages() {
   console.log("Building other workspace packages...");
   try {
     // Build all packages except playwright-core (already built separately)
-    // Use --parallel for concurrent builds to speed up the process
-    execSync('pnpm --filter "!@natstack/playwright-core" --filter "@natstack/*" --parallel build', { stdio: 'inherit' });
+    // Note: We intentionally do NOT use --parallel here because packages have
+    // inter-dependencies (e.g., @natstack/ai depends on @natstack/runtime).
+    // pnpm will automatically build in topological order (dependencies first).
+    execSync('pnpm --filter "!@natstack/playwright-core" --filter "@natstack/*" build', { stdio: 'inherit' });
     console.log("Workspace packages built successfully!");
   } catch (error) {
     console.error("Failed to build workspace packages:", error);
