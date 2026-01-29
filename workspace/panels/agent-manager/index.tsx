@@ -165,18 +165,6 @@ async function saveAgentDefaults(
 /** Built-in agent definitions to seed on first run */
 const BUILT_IN_AGENTS: Omit<AgentDefinition, "createdAt" | "updatedAt">[] = [
   {
-    id: "ai-responder",
-    name: "AI Responder",
-    workerSource: "workers/pubsub-chat-responder",
-    proposedHandle: "ai",
-    description: "AI assistant using NatStack AI SDK with agentic tool support.",
-    parameters: AI_RESPONDER_PARAMETERS,
-    providesMethods: [],
-    requiresMethods: [{ name: "feedback_form", required: true }],
-    tags: ["chat", "ai", "agentic", "tools"],
-    enabled: true,
-  },
-  {
     id: "claude-code",
     name: "Claude Code",
     workerSource: "workers/claude-code-responder",
@@ -204,6 +192,7 @@ const BUILT_IN_AGENTS: Omit<AgentDefinition, "createdAt" | "updatedAt">[] = [
     ],
     tags: ["chat", "coding", "tools", "claude"],
     enabled: true,
+    sortOrder: 1,
   },
   {
     id: "codex",
@@ -216,6 +205,20 @@ const BUILT_IN_AGENTS: Omit<AgentDefinition, "createdAt" | "updatedAt">[] = [
     requiresMethods: [],
     tags: ["chat", "coding", "tools", "openai"],
     enabled: true,
+    sortOrder: 2,
+  },
+  {
+    id: "ai-responder",
+    name: "AI Responder",
+    workerSource: "workers/pubsub-chat-responder",
+    proposedHandle: "ai",
+    description: "AI assistant using NatStack AI SDK with agentic tool support.",
+    parameters: AI_RESPONDER_PARAMETERS,
+    providesMethods: [],
+    requiresMethods: [{ name: "feedback_form", required: true }],
+    tags: ["chat", "ai", "agentic", "tools"],
+    enabled: true,
+    sortOrder: 3,
   },
 ];
 

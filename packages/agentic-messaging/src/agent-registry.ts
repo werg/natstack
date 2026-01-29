@@ -46,6 +46,7 @@ export interface AgentDefinition {
   providesMethods?: MethodAdvertisement[];
   requiresMethods?: RequiredMethodSpec[];
   enabled: boolean;
+  sortOrder?: number;
   createdAt?: number;
   updatedAt?: number;
 }
@@ -64,6 +65,7 @@ interface AgentDefinitionRow {
   provides_methods: string | null;
   requires_methods: string | null;
   enabled: number;
+  sort_order: number;
   created_at: number;
   updated_at: number;
 }
@@ -97,10 +99,17 @@ export class AgentRegistry {
             provides_methods TEXT,
             requires_methods TEXT,
             enabled INTEGER DEFAULT 1,
+            sort_order INTEGER DEFAULT 999,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
           )
         `);
+        // Add sort_order column if it doesn't exist (migration for existing DBs)
+        try {
+          await database.exec(`ALTER TABLE agent_definitions ADD COLUMN sort_order INTEGER DEFAULT 999`);
+        } catch {
+          // Column already exists, ignore
+        }
         return database;
       })();
     }
@@ -122,6 +131,7 @@ export class AgentRegistry {
       providesMethods: row.provides_methods ? JSON.parse(row.provides_methods) : undefined,
       requiresMethods: row.requires_methods ? JSON.parse(row.requires_methods) : undefined,
       enabled: row.enabled === 1,
+      sortOrder: row.sort_order,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -133,7 +143,7 @@ export class AgentRegistry {
   async listEnabled(): Promise<AgentDefinition[]> {
     const database = await this.getDb();
     const rows = await database.query<AgentDefinitionRow>(
-      "SELECT * FROM agent_definitions WHERE enabled = 1 ORDER BY name"
+      "SELECT * FROM agent_definitions WHERE enabled = 1 ORDER BY sort_order, name"
     );
     return rows.map((row) => this.rowToDefinition(row));
   }
@@ -144,7 +154,7 @@ export class AgentRegistry {
   async listAll(): Promise<AgentDefinition[]> {
     const database = await this.getDb();
     const rows = await database.query<AgentDefinitionRow>(
-      "SELECT * FROM agent_definitions ORDER BY name"
+      "SELECT * FROM agent_definitions ORDER BY sort_order, name"
     );
     return rows.map((row) => this.rowToDefinition(row));
   }
@@ -185,6 +195,7 @@ export class AgentRegistry {
           provides_methods = ?,
           requires_methods = ?,
           enabled = ?,
+          sort_order = ?,
           updated_at = ?
         WHERE id = ?`,
         [
@@ -197,6 +208,7 @@ export class AgentRegistry {
           definition.providesMethods ? JSON.stringify(definition.providesMethods) : null,
           definition.requiresMethods ? JSON.stringify(definition.requiresMethods) : null,
           definition.enabled ? 1 : 0,
+          definition.sortOrder ?? 999,
           now,
           definition.id,
         ]
@@ -207,8 +219,8 @@ export class AgentRegistry {
         `INSERT INTO agent_definitions (
           id, name, description, proposed_handle, worker_source,
           tags, parameters, provides_methods, requires_methods,
-          enabled, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          enabled, sort_order, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           definition.id,
           definition.name,
@@ -220,6 +232,7 @@ export class AgentRegistry {
           definition.providesMethods ? JSON.stringify(definition.providesMethods) : null,
           definition.requiresMethods ? JSON.stringify(definition.requiresMethods) : null,
           definition.enabled ? 1 : 0,
+          definition.sortOrder ?? 999,
           now,
           now,
         ]

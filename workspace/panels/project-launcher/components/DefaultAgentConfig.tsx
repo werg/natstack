@@ -27,6 +27,10 @@ export function DefaultAgentConfig({
         await registry.initialize();
         const enabledAgents = await registry.listEnabled();
         setAgents(enabledAgents);
+        // Auto-select first agent if none selected and agents available
+        if (!defaultAgentId && enabledAgents.length > 0) {
+          onDefaultAgentChange(enabledAgents[0].id);
+        }
       } catch (err) {
         console.error("Failed to load agents:", err);
       } finally {
@@ -34,7 +38,7 @@ export function DefaultAgentConfig({
       }
     }
     void loadAgents();
-  }, []);
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps -- only run on mount
 
   const handleAgentChange = useCallback(
     (value: string) => {
@@ -61,16 +65,18 @@ export function DefaultAgentConfig({
 
       <RadioGroup.Root value={defaultAgentId ?? "none"} onValueChange={handleAgentChange}>
         <Flex direction="column" gap="2">
-          <Card size="1" asChild>
-            <label style={{ cursor: "pointer" }}>
-              <Flex align="center" gap="2">
-                <RadioGroup.Item value="none" />
-                <Text size="2" color="gray">
-                  No default agent
-                </Text>
-              </Flex>
-            </label>
-          </Card>
+          {agents.length === 0 && (
+            <Card size="1" asChild>
+              <label style={{ cursor: "pointer" }}>
+                <Flex align="center" gap="2">
+                  <RadioGroup.Item value="none" />
+                  <Text size="2" color="gray">
+                    No default agent
+                  </Text>
+                </Flex>
+              </label>
+            </Card>
+          )}
 
           {agents.map((agent) => (
             <Card key={agent.id} size="1" asChild>
@@ -99,7 +105,9 @@ export function DefaultAgentConfig({
       </RadioGroup.Root>
 
       <Text size="1" color="gray" mt="2">
-        This agent will be automatically spawned when launching new chat sessions
+        {agents.length > 0
+          ? "This agent will be automatically spawned when launching new chat sessions"
+          : "No agents available"}
       </Text>
     </Box>
   );
