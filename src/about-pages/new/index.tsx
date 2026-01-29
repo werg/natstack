@@ -378,6 +378,7 @@ function NewPanelPage() {
                 {shellPages.map((page) => (
                   <Card
                     key={page.page}
+                    tabIndex={0}
                     style={{ marginBottom: "8px", cursor: "pointer" }}
                     onClick={() => handleShellPageClick(page.page)}
                   >

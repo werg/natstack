@@ -336,11 +336,22 @@ export class ViewManager {
       },
       // Focus handler to recover from compositor stalls - when a user clicks on
       // a panel that appears grey, this refreshes the view to restore painting.
-      focus: () => {
-        if (this.visiblePanelId === config.id) {
-          this.refreshVisiblePanel();
-        }
-      },
+      // Debounced to avoid interfering with click events - the remove/add cycle
+      // in refreshVisiblePanel can swallow clicks if it fires synchronously with focus.
+      focus: (() => {
+        let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+        return () => {
+          if (debounceTimer) {
+            clearTimeout(debounceTimer);
+          }
+          debounceTimer = setTimeout(() => {
+            debounceTimer = null;
+            if (this.visiblePanelId === config.id) {
+              this.refreshVisiblePanel();
+            }
+          }, 150); // Delay allows click events to process first
+        };
+      })(),
     };
 
     managed.handlers = handlers;

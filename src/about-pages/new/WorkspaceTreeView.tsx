@@ -149,6 +149,7 @@ function TreeNode({
         gap="1"
         px="2"
         py="1"
+        tabIndex={isSelectable || hasChildren ? 0 : undefined}
         style={{
           marginLeft: depth * INDENT_WIDTH,
           cursor: isSelectable || hasChildren ? "pointer" : "default",
