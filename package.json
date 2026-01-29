@@ -103,6 +103,7 @@
     "node-git-server": "^1.0.0",
     "p-limit": "^6.2.0",
     "pacote": "^21.0.0",
+    "pathe": "^2.0.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tldts": "^7.0.19",
