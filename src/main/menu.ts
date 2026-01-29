@@ -1,5 +1,6 @@
 import { app, Menu, MenuItemConstructorOptions, type WebContents } from "electron";
 import { eventService } from "./services/eventsService.js";
+import { getViewManager, isViewManagerInitialized } from "./viewManager.js";
 
 /**
  * Build common menu items that are shared between the app menu and hamburger popup.
@@ -75,7 +76,16 @@ export function buildCommonMenuItems(
   }
   view.push(
     { label: "Reload", accelerator: "CmdOrCtrl+R", role: "reload" },
-    { label: "Force Reload", accelerator: "CmdOrCtrl+Shift+R", role: "forceReload" }
+    { label: "Force Reload", accelerator: "CmdOrCtrl+Shift+R", role: "forceReload" },
+    { type: "separator" },
+    {
+      label: "Refresh Panel Display",
+      click: () => {
+        if (isViewManagerInitialized()) {
+          getViewManager().refreshVisiblePanel();
+        }
+      },
+    }
   );
 
   const dev: MenuItemConstructorOptions[] = [
@@ -255,6 +265,15 @@ export function setupMenu(
         ...viewSubmenu,
         { role: "reload" },
         { role: "forceReload" },
+        { type: "separator" },
+        {
+          label: "Refresh Panel Display",
+          click: () => {
+            if (isViewManagerInitialized()) {
+              getViewManager().refreshVisiblePanel();
+            }
+          },
+        },
         { type: "separator" },
         { role: "resetZoom" },
         { role: "zoomIn" },

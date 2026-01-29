@@ -73,7 +73,6 @@ interface ManagedView {
     domReady: () => void;
     contextMenu: (event: Electron.Event, params: Electron.ContextMenuParams) => void;
     renderProcessGone: (event: Electron.Event, details: Electron.RenderProcessGoneDetails) => void;
-    focus: () => void;
   };
 }
 
@@ -337,18 +336,6 @@ export class ViewManager {
           this.crashCallback(config.id, details.reason);
         }
       },
-      // Focus handler to recover from compositor stalls (grey panel).
-      // Deferred with setImmediate so the click event that triggered focus
-      // completes before we do the refresh (which would otherwise swallow it).
-      focus: () => {
-        if (this.visiblePanelId === config.id) {
-          setImmediate(() => {
-            if (this.visiblePanelId === config.id) {
-              this.refreshVisiblePanel();
-            }
-          });
-        }
-      },
     };
 
     managed.handlers = handlers;
@@ -361,9 +348,6 @@ export class ViewManager {
 
     // Listen for render process crashes
     view.webContents.on("render-process-gone", handlers.renderProcessGone);
-
-    // Listen for focus to recover from potential compositor stalls
-    view.webContents.on("focus", handlers.focus);
 
     // Apply protection if this view is in the protected set
     // (handles case where view is recreated after crash while still protected)
@@ -458,7 +442,6 @@ export class ViewManager {
       managed.view.webContents.off("dom-ready", managed.handlers.domReady);
       managed.view.webContents.off("context-menu", managed.handlers.contextMenu);
       managed.view.webContents.off("render-process-gone", managed.handlers.renderProcessGone);
-      managed.view.webContents.off("focus", managed.handlers.focus);
     }
 
     // Remove from window
