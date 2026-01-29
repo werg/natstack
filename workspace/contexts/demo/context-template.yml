@@ -4,11 +4,12 @@
 # Demonstrates template inheritance with structure dependencies.
 
 name: demo
-description: Demo context with example worker cloned into OPFS
+description: Demo context extending default
 extends: contexts/default
 
 # Structure defines git repos to clone into the context's OPFS filesystem.
 # Supports both flat paths ("/deps/foo": repo) and nested format.
-structure:
-  deps:
-    rpc-example: workers/rpc-example
+# Example:
+# structure:
+#   deps:
+#     my-tool: workers/my-worker

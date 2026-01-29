@@ -422,10 +422,9 @@ The UI automatically shows:
 
 See these example panels in the repository:
 
-- `panels/example/` - Root panel with child management, OPFS, typed RPC
-- `panels/agentic-chat/` - AI integration with Vercel AI SDK
-- `panels/agentic-notebook/` - Jupyter-style notebook with AI
-- `panels/shared-opfs-demo/` - Shared file storage demo
+- `panels/chat/` - Full-featured AI chat with tool calling
+- `panels/code-editor/` - Monaco-based code editor
+- `panels/project-panel/` - Project management UI
 
 ## Development Workflow
 

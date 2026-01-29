@@ -965,79 +965,110 @@ The template resolver will auto-clone the repositories when resolving refs.
 
 ## AI Integration
 
-Use the Vercel AI SDK with NatStack's AI provider:
+NatStack provides `@natstack/ai` for AI model integration with streaming and tool calling support.
+
+### Basic Streaming
 
 ```tsx
-import { useState } from "react";
-import { models } from "@natstack/ai";
+import { ai } from "@natstack/ai";
 
-export default function AIChatPanel() {
-  const [messages, setMessages] = useState<Array<{ role: string; text: string }>>([]);
-  const [input, setInput] = useState("");
-  const [streaming, setStreaming] = useState(false);
+const stream = ai.streamText({
+  model: "fast",  // Role name from ai config
+  system: "You are a helpful assistant.",
+  messages: [{ role: "user", content: "Hello!" }],
+});
 
-  const handleSend = async () => {
-    if (!input.trim()) return;
-
-    const userMessage = { role: "user", text: input };
-    setMessages(prev => [...prev, userMessage]);
-    setInput("");
-    setStreaming(true);
-
-    try {
-      const model = models["claude-3-5-sonnet-20241022"];
-      const { stream } = await model.doStream({
-        prompt: [
-          { role: "system", content: "You are a helpful assistant." },
-          ...messages.map(m => ({
-            role: m.role,
-            content: [{ type: "text", text: m.text }]
-          })),
-          { role: "user", content: [{ type: "text", text: input }] }
-        ]
-      });
-
-      let assistantText = "";
-      const reader = stream.getReader();
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        if (value?.type === "text-delta") {
-          assistantText += value.delta;
-          setMessages(prev => [
-            ...prev.slice(0, -1),
-            { role: "assistant", text: assistantText }
-          ]);
-        }
-      }
-    } finally {
-      setStreaming(false);
-    }
-  };
-
-  return (
-    <div>
-      <div>
-        {messages.map((msg, i) => (
-          <div key={i}>
-            <strong>{msg.role}:</strong> {msg.text}
-          </div>
-        ))}
-      </div>
-      <input
-        value={input}
-        onChange={e => setInput(e.target.value)}
-        disabled={streaming}
-      />
-      <button onClick={handleSend} disabled={streaming}>
-        Send
-      </button>
-    </div>
-  );
+for await (const event of stream) {
+  if (event.type === "text-delta") {
+    console.log(event.text);  // Streaming text chunks
+  }
 }
 ```
+
+### Tool Calling
+
+Define tools with execute callbacks that run panel-side:
+
+```tsx
+import { ai, type ToolDefinition } from "@natstack/ai";
+
+// Define tools with JSON Schema parameters
+const TOOLS: Record<string, ToolDefinition> = {
+  get_current_time: {
+    description: "Get the current date and time",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+    execute: async () => ({
+      time: new Date().toISOString(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }),
+  },
+  calculate: {
+    description: "Evaluate a mathematical expression",
+    parameters: {
+      type: "object",
+      properties: {
+        expression: { type: "string", description: "Math expression (e.g., '2 + 2')" },
+      },
+      required: ["expression"],
+    },
+    execute: async ({ expression }) => {
+      const result = new Function(`return (${expression})`)();
+      return { expression, result };
+    },
+  },
+};
+
+// Stream with tools - agent loop runs server-side
+const stream = ai.streamText({
+  model: "fast",
+  system: "You are a helpful assistant with tools.",
+  messages,
+  tools: TOOLS,
+  maxSteps: 10,  // Max tool-use iterations
+});
+
+// Process stream events
+for await (const event of stream) {
+  switch (event.type) {
+    case "text-delta":
+      // Streaming text from model
+      console.log(event.text);
+      break;
+    case "tool-call":
+      // Model is calling a tool
+      console.log(`Calling ${event.toolName}:`, event.args);
+      break;
+    case "tool-result":
+      // Tool execution completed
+      console.log(`Result from ${event.toolName}:`, event.result);
+      break;
+    case "step-finish":
+      // A step completed (text or tool calls)
+      if (event.finishReason === "tool-calls") {
+        // More steps coming after tool results
+      }
+      break;
+    case "finish":
+      // All done
+      break;
+  }
+}
+```
+
+### Available Roles
+
+Query available AI roles from configuration:
+
+```tsx
+const roles = await ai.listRoles();
+// { fast: { displayName: "Claude 3.5 Sonnet", ... }, ... }
+```
+
+See [@natstack/ai README](packages/ai/README.md) for full API documentation.
 
 ---
 
@@ -1075,6 +1106,111 @@ await browserPanel.goForward()
 await browserPanel.reload()
 await browserPanel.stop()
 ```
+
+---
+
+## Unsafe Mode (Node.js APIs)
+
+By default, panels run in a sandboxed browser environment with OPFS storage. **Unsafe mode** enables full Node.js API access for panels that need real filesystem access, system information, or native modules.
+
+### Enabling Unsafe Mode
+
+Set `unsafe: true` in the panel manifest:
+
+```json
+{
+  "name": "@workspace-panels/terminal",
+  "natstack": {
+    "type": "app",
+    "title": "Terminal",
+    "unsafe": true
+  }
+}
+```
+
+Or when creating a child programmatically:
+
+```typescript
+const worker = await createChild("workers/compute", {
+  unsafe: true,  // Enable Node.js APIs
+  // Or: unsafe: "/path/to/scope"  // Restrict fs to specific directory
+});
+```
+
+### Available APIs in Unsafe Mode
+
+Unsafe panels have access to real Node.js built-in modules:
+
+```typescript
+// Real Node.js fs (not OPFS)
+import { readFileSync, readdirSync, existsSync } from "fs";
+import { promises as fsPromises } from "fs";
+
+// Sync APIs work (not available in safe OPFS mode)
+const content = readFileSync("/path/to/file", "utf-8");
+const files = readdirSync("/some/directory");
+
+// System information
+import { platform, arch, homedir, cpus } from "os";
+import { join, resolve } from "path";
+
+console.log(platform());  // "linux", "darwin", "win32"
+console.log(homedir());   // "/home/user"
+console.log(cpus().length); // CPU count
+
+// Full process.env access
+console.log(process.env.HOME);
+console.log(process.env.NATSTACK_WORKSPACE);
+
+// Dynamic require() for any Node.js module
+const crypto = require("crypto");
+const hash = crypto.createHash("sha256").update("data").digest("hex");
+```
+
+### Unsafe Globals
+
+Unsafe panels have access to special globals set by the preload:
+
+```typescript
+declare global {
+  var __natstackFsRoot: string | undefined;  // Scoped fs root (if configured)
+  var __natstackId: string;                  // Panel ID
+  var __natstackKind: string;                // "panel" or "worker"
+}
+
+// Check if fs is scoped
+if (globalThis.__natstackFsRoot) {
+  console.log(`Filesystem scoped to: ${globalThis.__natstackFsRoot}`);
+} else {
+  console.log("Full filesystem access");
+}
+```
+
+### Context IDs for Unsafe Panels
+
+Unsafe panels use a different context ID format:
+
+```typescript
+// Safe panels: use OPFS with templates
+"safe_tpl_a1b2c3d4e5f6_panels~editor"
+
+// Unsafe panels: no OPFS, no templates
+"unsafe_noctx_panels~terminal"
+```
+
+### When to Use Unsafe Mode
+
+Use unsafe mode when you need:
+- Real filesystem access (reading workspace files, writing to disk)
+- Synchronous fs APIs (`readFileSync`, `readdirSync`)
+- System information (`os.platform()`, `os.homedir()`)
+- Native Node.js modules (`crypto`, `child_process`)
+- Access to `process.env` with real environment variables
+
+Avoid unsafe mode when:
+- OPFS storage is sufficient for your use case
+- You want context templates for pre-populated environments
+- You need sandbox isolation for security
 
 ---
 
@@ -1177,11 +1313,9 @@ return <div>Storage: {partition}</div>;
 ## Complete Examples
 
 See the example panels:
-- [panels/example/](panels/example/) - **Root panel**: Comprehensive demo with child management, OPFS, typed RPC, and environment variables
-- [panels/typed-rpc-child/](panels/typed-rpc-child/) - **Contract-based typed RPC**: Demonstrates `defineContract`, typed events, and `noopParent`
-- [panels/agentic-chat/](panels/agentic-chat/) - AI integration with Vercel AI SDK streaming
-- [panels/agentic-notebook/](panels/agentic-notebook/) - Jupyter-style notebook with AI agent
-- [panels/shared-opfs-demo/](panels/shared-opfs-demo/) - Demonstrates shared file storage across panel instances
+- [panels/chat/](panels/chat/) - Full-featured AI chat with tool calling and streaming
+- [panels/code-editor/](panels/code-editor/) - Monaco-based code editor
+- [panels/project-panel/](panels/project-panel/) - Project management UI
 
 ---
 
