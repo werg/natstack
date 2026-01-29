@@ -135,7 +135,7 @@ export default function ChatLauncher() {
           // Pass channelConfig values via stateArgs to avoid race condition where workers
           // connect before chat panel and create the channel without config
           // Note: contextId is passed separately, NOT as part of channelConfig
-          await createChild(
+          const childHandle = await createChild(
             agent.agent.workerSource,
             { name: `${agent.agent.id}-${targetChannelId.slice(0, 8)}` },
             {
@@ -149,11 +149,11 @@ export default function ChatLauncher() {
               ...config,
             }
           );
-          return { agent, error: null };
+          return { agent, error: null, panelId: childHandle.id };
         } catch (err) {
           // Capture spawn errors per-agent
           const errorMsg = err instanceof Error ? err.message : String(err);
-          return { agent, error: errorMsg };
+          return { agent, error: errorMsg, panelId: null };
         }
       });
 
@@ -162,6 +162,12 @@ export default function ChatLauncher() {
       // Separate successful and failed spawns
       const succeeded = results.filter((r) => r.error === null);
       const failed = results.filter((r) => r.error !== null);
+
+      // Collect panel IDs from all spawn attempts (both succeeded and failed)
+      // This allows the chat panel to monitor them and detect build failures
+      const spawnedPanelIds = results
+        .map((r) => r.panelId)
+        .filter((id): id is string => id !== null);
 
       // Check if all spawns failed - still navigate to chat panel
       // The agent recovery system in chat will show build errors and allow retry
@@ -190,16 +196,27 @@ export default function ChatLauncher() {
           // Fall through to navigation
         }
         // Fallback: navigate back to the chat panel
+        // Include expectedWorkerPanelIds so chat panel can monitor them
         const chatUrl = buildNsLink("panels/chat", {
           action: "navigate",
-          stateArgs: { channelName: targetChannelId, contextId },
+          stateArgs: {
+            channelName: targetChannelId,
+            contextId,
+            expectedWorkerPanelIds: spawnedPanelIds.length > 0 ? spawnedPanelIds : undefined,
+          },
         });
         window.location.href = chatUrl;
       } else {
         // New chat mode: navigate to the chat panel with channel ID, config, and contextId
+        // Include expectedWorkerPanelIds so chat panel can monitor them for build failures
         const chatUrl = buildNsLink("panels/chat", {
           action: "navigate",
-          stateArgs: { channelName: targetChannelId, channelConfig, contextId },
+          stateArgs: {
+            channelName: targetChannelId,
+            channelConfig,
+            contextId,
+            expectedWorkerPanelIds: spawnedPanelIds.length > 0 ? spawnedPanelIds : undefined,
+          },
         });
         window.location.href = chatUrl;
       }

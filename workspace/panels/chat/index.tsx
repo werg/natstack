@@ -57,6 +57,7 @@ import { useChannelConnection } from "./hooks/useChannelConnection";
 import { useMethodHistory, type ChatMessage } from "./hooks/useMethodHistory";
 import { useToolRole } from "./hooks/useToolRole";
 import { useAgentRecovery } from "./hooks/useAgentRecovery";
+import { useExpectedWorkerMonitor } from "./hooks/useExpectedWorkerMonitor";
 import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 import { ToolRoleConflictModal } from "./components/ToolRoleConflictModal";
 import { ChatPhase } from "./components/ChatPhase";
@@ -234,12 +235,14 @@ interface ChatStateArgs {
   };
   /** Context ID for channel authorization (passed separately from channelConfig) */
   contextId?: string;
+  /** Expected worker panel IDs spawned by chat-launcher, for monitoring build failures */
+  expectedWorkerPanelIds?: string[];
 }
 
 export default function AgenticChat() {
   const theme = usePanelTheme();
   const workspaceRoot = process.env["NATSTACK_WORKSPACE"]?.trim();
-  const { channelName, channelConfig, contextId } = useStateArgs<ChatStateArgs>();
+  const { channelName, channelConfig, contextId, expectedWorkerPanelIds } = useStateArgs<ChatStateArgs>();
 
   const selfIdRef = useRef<string | null>(null);
   // Track if we've already connected to prevent reconnection loops
@@ -747,10 +750,39 @@ export default function AgenticChat() {
     });
   }, []);
 
+  // Callback for expected worker build errors - similar to handleAgentLoadError but with panelId
+  const handleWorkerBuildError = useCallback((error: { panelId: string; buildState: string; error: string; handle?: string }) => {
+    setAgentErrors((prev) => {
+      // Avoid duplicates - check if we already have an error for this panel
+      if (prev.some((e) => e.workerPanelId === error.panelId)) {
+        return prev;
+      }
+      const updated = [...prev, {
+        handle: error.handle ?? "unknown",
+        workerPanelId: error.panelId,
+        buildState: error.buildState,
+        error: error.error,
+      }];
+      // Limit array size to prevent memory growth
+      return updated.length > MAX_AGENT_ERRORS
+        ? updated.slice(-MAX_AGENT_ERRORS)
+        : updated;
+    });
+  }, []);
+
   useAgentRecovery(presenceEvents, {
     enabled: connected,
     participants: allParticipants,
     onAgentLoadError: handleAgentLoadError,
+  });
+
+  // Monitor expected worker panels for build failures
+  // This catches workers that never joined because they're stuck on build
+  useExpectedWorkerMonitor({
+    expectedWorkerPanelIds: expectedWorkerPanelIds ?? [],
+    participants: allParticipants,
+    enabled: connected,
+    onWorkerBuildError: handleWorkerBuildError,
   });
 
   // Keep the tool role handler refs updated so onEvent can call them
