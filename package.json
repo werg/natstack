@@ -9,7 +9,7 @@
     "postinstall": "electron-rebuild -f && bash commit-workspace.sh",
     "prebuild": "node scripts/generate-channels.mjs && node scripts/generate-injected.mjs",
     "build": "NODE_ENV=production node build.mjs",
-    "dev": "pnpm type-check & NODE_ENV=development node build.mjs && node scripts/run-electron.mjs --workspace=workspace",
+    "dev": "NODE_ENV=development node build.mjs && (pnpm type-check & node scripts/run-electron.mjs --workspace=workspace)",
     "start": "node scripts/run-electron.mjs",
     "cleanup": "bash scripts/cleanup-processes.sh",
     "lint": "eslint src",
