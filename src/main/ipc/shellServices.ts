@@ -212,7 +212,13 @@ export async function handlePanelService(
 
     case "notifyFocused": {
       const panelId = args[0] as string;
-      pm.sendPanelEvent(panelId, { type: "focus" });
+
+      // Only send focus event if panel has a view - otherwise we get
+      // "Render frame was disposed" errors for unloaded panels
+      if (vm.hasView(panelId)) {
+        pm.sendPanelEvent(panelId, { type: "focus" });
+      }
+
       // Update the selected path in both in-memory tree and database
       // for breadcrumb navigation, and log focused event for analytics
       try {
@@ -269,6 +275,8 @@ export async function handlePanelService(
 
     case "unload": {
       const panelId = args[0] as string;
+      console.log(`[ShellServices] Unload requested for panel: ${panelId}`);
+      console.log(`[ShellServices] Unload call stack:`, new Error().stack);
       await pm.unloadPanel(panelId);
       return;
     }

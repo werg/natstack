@@ -22,9 +22,12 @@ import * as path from "path";
 import * as fs from "fs";
 import * as crypto from "crypto";
 import * as http from "http";
+import { promisify } from "util";
 import { app } from "electron";
-import { spawn } from "child_process";
+import { spawn, exec } from "child_process";
 import { runServer, ConfigBuilder } from "verdaccio";
+
+const execAsync = promisify(exec);
 import { findAndBindPort, PORT_RANGES } from "./portUtils.js";
 
 import type { GitWatcher } from "./workspace/gitWatcher.js";
@@ -461,7 +464,34 @@ export class VerdaccioServer {
     console.log(`[VerdaccioServer] Started on http://localhost:${port}`);
     console.log(`[VerdaccioServer] Storage: ${this.storagePath}`);
 
+    // Pre-warm ESM cache in background (non-blocking)
+    this.preWarmEsmCache().catch(err => {
+      console.warn("[ESM] Pre-warming failed:", err instanceof Error ? err.message : err);
+    });
+
     return port;
+  }
+
+  /**
+   * Pre-warm ESM cache by transforming known safe packages at startup.
+   * Runs in background so it doesn't block server startup.
+   */
+  private async preWarmEsmCache(): Promise<void> {
+    if (!this.esmTransformer) {
+      return;
+    }
+
+    const packagesToWarm = Array.from(ESM_SAFE_PACKAGES);
+    console.log(`[ESM] Pre-warming ${packagesToWarm.length} packages...`);
+
+    for (const pkg of packagesToWarm) {
+      try {
+        await this.esmTransformer.getEsmBundle(pkg, "latest");
+      } catch (error) {
+        console.warn(`[ESM] Failed to pre-warm ${pkg}:`, error instanceof Error ? error.message : error);
+      }
+    }
+    console.log(`[ESM] Pre-warming complete`);
   }
 
   /**
@@ -979,6 +1009,108 @@ export class VerdaccioServer {
     }
   }
 
+  // ===========================================================================
+  // Git-Based Package Versioning
+  // ===========================================================================
+
+  /** Default branch names to check (in order of preference) */
+  private static readonly DEFAULT_BRANCHES = ["main", "master"];
+
+  /**
+   * Get the default branch name for a repo.
+   * Checks for main first, then master. Returns null if neither exists.
+   */
+  private async getDefaultBranch(repoPath: string): Promise<string | null> {
+    try {
+      // Check which default branch exists
+      for (const branch of VerdaccioServer.DEFAULT_BRANCHES) {
+        const { stdout } = await execAsync(
+          `git rev-parse --verify refs/heads/${branch}`,
+          { cwd: repoPath }
+        ).catch(() => ({ stdout: "" }));
+        if (stdout.trim()) {
+          return branch;
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Get the current git branch name, sanitized for npm tags.
+   * Returns null for detached HEAD or errors (skip tagging in these cases).
+   */
+  private async getCurrentBranch(repoPath: string): Promise<string | null> {
+    try {
+      const { stdout } = await execAsync(
+        "git rev-parse --abbrev-ref HEAD",
+        { cwd: repoPath }
+      );
+      const branch = stdout.trim();
+
+      // Don't tag detached HEAD or error states
+      if (branch === "HEAD" || !branch) {
+        return null;
+      }
+
+      // Sanitize for npm tags: replace / with -- (feature/foo → feature--foo)
+      return branch.replace(/\//g, "--");
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Check if the current branch is the default branch (main/master).
+   */
+  private async isOnDefaultBranch(repoPath: string): Promise<boolean> {
+    const current = await this.getCurrentBranch(repoPath);
+    if (!current) return false;
+    return VerdaccioServer.DEFAULT_BRANCHES.includes(current);
+  }
+
+  /**
+   * Get the short commit hash for the most recent commit affecting this package.
+   * Returns null if no commits or not a git repo.
+   */
+  private async getPackageCommitHash(pkgPath: string): Promise<string | null> {
+    try {
+      const { stdout } = await execAsync(
+        "git log -1 --format=%h -- .",
+        { cwd: pkgPath }
+      );
+      const hash = stdout.trim();
+      return hash || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Compute git-based version for a package.
+   * Format: {baseVersion}-git.{shortHash}
+   * Falls back to content hash if not in a git repo or no commits.
+   */
+  private async getPackageGitVersion(pkgPath: string): Promise<string> {
+    const hash = await this.getPackageCommitHash(pkgPath);
+
+    if (!hash) {
+      // Fall back to content hash for non-git packages
+      const contentHash = this.calculatePackageHash(pkgPath);
+      const pkgJson = JSON.parse(fs.readFileSync(path.join(pkgPath, "package.json"), "utf-8")) as { version: string };
+      const baseVersion = (pkgJson.version || "0.0.0").split("-")[0];
+      return `${baseVersion}-${contentHash}`;
+    }
+
+    const pkgJsonPath = path.join(pkgPath, "package.json");
+    const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { version: string };
+    const baseVersion = (pkgJson.version || "0.0.0").split("-")[0];
+
+    return `${baseVersion}-git.${hash}`;
+  }
+
   /**
    * Check if a specific version of a package exists in Verdaccio.
    */
@@ -1022,34 +1154,48 @@ export class VerdaccioServer {
    * Used when a version exists but isn't tagged as latest.
    */
   private async updateLatestTag(pkgName: string, version: string): Promise<void> {
+    return this.updateDistTag(pkgName, version, "latest");
+  }
+
+  /**
+   * Set a dist-tag to point to a specific version.
+   * Creates temp .npmrc for auth, same as publishPackage().
+   */
+  private async updateDistTag(pkgName: string, version: string, tag: string): Promise<void> {
     const registryUrl = this.getBaseUrl();
+    const registryHost = new URL(registryUrl).host;
+    const npmrcContent = `//${registryHost}/:_authToken="natstack-local-publish"\n`;
 
-    return new Promise((resolve, reject) => {
-      const proc = spawn(
-        "npm",
-        ["dist-tag", "add", `${pkgName}@${version}`, "latest", "--registry", registryUrl],
-        {
-          cwd: this.workspaceRoot,
-          stdio: ["ignore", "pipe", "pipe"],
-        }
-      );
+    // Write temp .npmrc in workspace root
+    const tempNpmrc = path.join(this.workspaceRoot, ".npmrc.dist-tag-temp");
+    fs.writeFileSync(tempNpmrc, npmrcContent);
 
-      let stderr = "";
-      proc.stderr?.on("data", (data) => {
-        stderr += data.toString();
+    try {
+      await new Promise<void>((resolve) => {
+        const proc = spawn(
+          "npm",
+          ["dist-tag", "add", `${pkgName}@${version}`, tag, "--registry", registryUrl, "--userconfig", tempNpmrc],
+          { cwd: this.workspaceRoot, stdio: ["ignore", "pipe", "pipe"] }
+        );
+
+        let stderr = "";
+        proc.stderr?.on("data", (data) => { stderr += data.toString(); });
+
+        proc.on("close", (code) => {
+          if (code === 0) {
+            console.log(`[VerdaccioServer] Tagged ${pkgName}@${version} as "${tag}"`);
+            resolve();
+          } else {
+            console.warn(`[VerdaccioServer] Failed to set tag "${tag}" for ${pkgName}: ${stderr}`);
+            resolve();  // Don't fail on tag errors
+          }
+        });
+
+        proc.on("error", () => resolve());
       });
-
-      proc.on("close", (code) => {
-        if (code === 0) {
-          console.log(`[VerdaccioServer] Updated latest tag: ${pkgName}@${version}`);
-          resolve();
-        } else {
-          reject(new Error(`Failed to update dist-tag for ${pkgName}: ${stderr}`));
-        }
-      });
-
-      proc.on("error", reject);
-    });
+    } finally {
+      fs.rmSync(tempNpmrc, { force: true });
+    }
   }
 
   /**
@@ -1263,7 +1409,7 @@ export class VerdaccioServer {
 
   /**
    * Publish a single package to the local registry.
-   * Uses content-hash based versioning to skip unchanged packages.
+   * Uses git-based versioning with branch support.
    * @returns "published" if newly published, "skipped" if content unchanged
    */
   private async publishPackage(pkgPath: string, pkgName: string): Promise<"published" | "skipped"> {
@@ -1271,33 +1417,46 @@ export class VerdaccioServer {
     const pkgJsonPath = path.join(pkgPath, "package.json");
     const npmrcPath = path.join(pkgPath, ".npmrc");
 
-    // Calculate content hash to create a unique version
-    const contentHash = this.calculatePackageHash(pkgPath);
+    // Use git-based version instead of content hash
+    const gitVersion = await this.getPackageGitVersion(pkgPath);
 
-    // Parse original package.json to get base version
-    const originalContent = fs.readFileSync(pkgJsonPath, "utf-8");
-    const pkgJson = JSON.parse(originalContent) as { version: string };
-    const baseVersion = pkgJson.version.split("-")[0]; // Strip any existing prerelease
-    const hashVersion = `${baseVersion}-${contentHash}`;
+    // Get current branch for tagging (null = skip branch tag)
+    const branch = await this.getCurrentBranch(pkgPath);
+
+    // Only update "latest" tag when on default branch (main/master)
+    const isDefault = await this.isOnDefaultBranch(pkgPath);
 
     // Check if this exact version already exists
-    const exists = await this.checkVersionExists(pkgName, hashVersion);
+    const exists = await this.checkVersionExists(pkgName, gitVersion);
     if (exists) {
-      // Version exists - check if it's already the "latest" tag
       const latestVersion = await this.getPackageVersion(pkgName);
-      if (latestVersion === hashVersion) {
-        console.log(`[VerdaccioServer] ${pkgName}@${hashVersion} unchanged (skipping)`);
+      if (latestVersion === gitVersion && !branch) {
+        // Version is latest and no branch tag to set
+        console.log(`[VerdaccioServer] ${pkgName}@${gitVersion} unchanged (skipping)`);
         return "skipped";
       }
-      // Version exists but isn't "latest" - update the tag
-      console.log(`[VerdaccioServer] ${pkgName}@${hashVersion} exists, updating latest tag`);
-      await this.updateLatestTag(pkgName, hashVersion);
-      return "published"; // Treat tag update as a publish for cache invalidation purposes
+
+      // Update tags as needed
+      if (isDefault) {
+        await this.updateLatestTag(pkgName, gitVersion);
+      }
+      if (branch) {
+        await this.updateDistTag(pkgName, gitVersion, branch);
+      }
+      return "published";
     }
 
-    // Rewrite workspace:* deps to * and set hash-based version
+    // Parse original package.json
+    const originalContent = fs.readFileSync(pkgJsonPath, "utf-8");
+
+    // Publish with --tag based on whether we're on default branch
+    // If on default branch: npm publish --tag latest
+    // If on feature branch: npm publish --tag {branch} (don't touch latest)
+    const publishTag = isDefault ? "latest" : (branch || "latest");
+
+    // Rewrite workspace:* deps to * and set git-based version
     const modifiedPkgJson = JSON.parse(originalContent) as Record<string, unknown>;
-    modifiedPkgJson["version"] = hashVersion;
+    modifiedPkgJson["version"] = gitVersion;
 
     // Rewrite workspace:* dependencies
     for (const depKey of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
@@ -1318,7 +1477,7 @@ export class VerdaccioServer {
     const registryHost = new URL(registryUrl).host;
     const npmrcContent = `//${registryHost}/:_authToken="natstack-local-publish"\nregistry=${registryUrl}\n`;
 
-    console.log(`[VerdaccioServer] Publishing ${pkgName}@${hashVersion} to ${registryUrl}`);
+    console.log(`[VerdaccioServer] Publishing ${pkgName}@${gitVersion} to ${registryUrl} (tag: ${publishTag})`);
 
     // All file modifications inside try block to ensure cleanup
     try {
@@ -1326,10 +1485,10 @@ export class VerdaccioServer {
       fs.writeFileSync(npmrcPath, npmrcContent);
       const PUBLISH_TIMEOUT_MS = 60000; // 60 second timeout for npm publish
 
-      return await new Promise((resolve, reject) => {
+      const result = await new Promise<"published" | "skipped">((resolve, reject) => {
         const proc = spawn(
           "npm",
-          ["publish", "--registry", registryUrl, "--access", "public", "--tag", "latest"],
+          ["publish", "--registry", registryUrl, "--access", "public", "--tag", publishTag],
           {
             cwd: pkgPath,
             stdio: ["ignore", "pipe", "pipe"],
@@ -1368,11 +1527,11 @@ export class VerdaccioServer {
           if (timedOut) {
             reject(new Error(`npm publish timed out for ${pkgName}`));
           } else if (code === 0) {
-            console.log(`[VerdaccioServer] Published: ${pkgName}@${hashVersion}`);
+            console.log(`[VerdaccioServer] Published: ${pkgName}@${gitVersion}`);
             resolve("published");
           } else if (stderr.includes("E409") || stderr.includes("this package is already present")) {
             // E409 Conflict means another publish beat us to it - treat as success
-            console.log(`[VerdaccioServer] ${pkgName}@${hashVersion} already published (race condition)`);
+            console.log(`[VerdaccioServer] ${pkgName}@${gitVersion} already published (race condition)`);
             resolve("skipped");
           } else {
             // Log errors for debugging
@@ -1388,6 +1547,13 @@ export class VerdaccioServer {
           reject(err);
         });
       });
+
+      // After successful publish, also set branch tag (if different from publish tag)
+      if (result === "published" && branch && branch !== publishTag) {
+        await this.updateDistTag(pkgName, gitVersion, branch);
+      }
+
+      return result;
     } finally {
       // Always restore original package.json
       fs.writeFileSync(pkgJsonPath, originalContent);
@@ -1765,7 +1931,7 @@ export class VerdaccioServer {
     // Query all in parallel
     const checks = packages.map(async (pkg) => {
       try {
-        const expectedVersion = this.getExpectedVersion(pkg.path);
+        const expectedVersion = await this.getExpectedVersion(pkg.path);  // Now async
         const actualVersion = await this.getPackageVersion(pkg.name);
 
         return {
@@ -1791,14 +1957,11 @@ export class VerdaccioServer {
   }
 
   /**
-   * Get the expected version string for a package based on its current hash.
+   * Get the expected version string for a package based on its current git commit.
+   * Falls back to content hash for non-git packages.
    */
-  private getExpectedVersion(pkgPath: string): string {
-    const pkgJsonPath = path.join(pkgPath, "package.json");
-    const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { version: string };
-    const baseVersion = pkgJson.version.split("-")[0];
-    const contentHash = this.calculatePackageHash(pkgPath);
-    return `${baseVersion}-${contentHash}`;
+  private async getExpectedVersion(pkgPath: string): Promise<string> {
+    return this.getPackageGitVersion(pkgPath);
   }
 
   /**

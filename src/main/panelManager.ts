@@ -976,8 +976,11 @@ export class PanelManager {
     this.updateSelectedPath(targetPanelId);
     this.notifyPanelTreeUpdate();
 
-    // Emit focus event to the panel
-    this.sendPanelEvent(targetPanelId, { type: "focus" });
+    // Emit focus event to the panel only if it has a view
+    // Unloaded panels (pending state) don't have views yet
+    if (this.viewManager?.hasView(targetPanelId)) {
+      this.sendPanelEvent(targetPanelId, { type: "focus" });
+    }
 
     // Notify shell to navigate to this panel
     eventService.emit("navigate-to-panel", { panelId: targetPanelId });
@@ -3592,7 +3595,10 @@ export class PanelManager {
 
   broadcastTheme(theme: "light" | "dark"): void {
     for (const panelId of this.panels.keys()) {
-      this.sendPanelEvent(panelId, { type: "theme", theme });
+      // Only send to panels that have views (skip unloaded panels)
+      if (this.viewManager?.hasView(panelId)) {
+        this.sendPanelEvent(panelId, { type: "theme", theme });
+      }
     }
   }
 

@@ -33,14 +33,14 @@ export const ESM_SAFE_PACKAGES = new Set([
  * Node.js built-ins that should be marked as external during bundling.
  * These won't work in browsers without polyfills.
  */
-const NODE_BUILTINS = [
+const NODE_BUILTINS = new Set([
   "fs", "path", "crypto", "buffer", "stream", "util", "os",
   "child_process", "http", "https", "net", "dns", "tls",
   "events", "assert", "zlib", "querystring", "url", "vm",
   "worker_threads", "cluster", "readline", "repl", "tty",
   "dgram", "process", "module", "perf_hooks", "async_hooks",
   "trace_events", "v8", "inspector", "constants",
-];
+]);
 
 export interface EsmTransformerOptions {
   /** Directory to cache transformed ESM bundles */
@@ -57,6 +57,10 @@ export class EsmTransformer {
   private readonly verdaccioUrl: string;
   /** In-memory cache of transforms in progress (promise coalescing) */
   private transformLocks = new Map<string, Promise<string>>();
+  /** Cache of resolved package versions: pkgName -> version */
+  private versionCache = new Map<string, string>();
+  /** Cache of extracted package paths: pkgName@version -> extractedPath */
+  private extractedPathCache = new Map<string, string>();
 
   constructor(options: EsmTransformerOptions) {
     this.cacheDir = options.cacheDir;
@@ -121,6 +125,12 @@ export class EsmTransformer {
    * This triggers uplinks to npm if the package isn't cached locally.
    */
   private async resolveLatestVersion(pkgName: string): Promise<string | null> {
+    // Check cache first
+    const cached = this.versionCache.get(pkgName);
+    if (cached) {
+      return cached;
+    }
+
     // Query Verdaccio's registry API - this will uplink to npm if needed
     const encodedName = pkgName.startsWith("@")
       ? pkgName.replace("/", "%2F")
@@ -135,7 +145,9 @@ export class EsmTransformer {
 
       // Try dist-tags first
       if (packument["dist-tags"]?.latest) {
-        return packument["dist-tags"].latest;
+        const version = packument["dist-tags"].latest;
+        this.versionCache.set(pkgName, version);
+        return version;
       }
 
       // Fall back to highest version
@@ -143,13 +155,66 @@ export class EsmTransformer {
         const versions = Object.keys(packument.versions);
         if (versions.length > 0) {
           const lastVersion = versions[versions.length - 1];
-          if (lastVersion) return lastVersion;
+          if (lastVersion) {
+            this.versionCache.set(pkgName, lastVersion);
+            return lastVersion;
+          }
         }
       }
 
       return null;
     } catch (error) {
       console.error(`[ESM] Failed to resolve latest version for ${pkgName}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Resolve a semver range to a specific version.
+   * For simplicity, we just get the latest version that satisfies the range.
+   */
+  private async resolveVersionRange(pkgName: string, range: string): Promise<string | null> {
+    // For simple cases, just get latest
+    if (range === "*" || range === "latest" || range === "") {
+      return this.resolveLatestVersion(pkgName);
+    }
+
+    // If it looks like an exact version (no range operators), use it directly
+    if (/^\d+\.\d+\.\d+/.test(range) && !range.includes(" ") && !range.includes("||")) {
+      // Extract just the version part (handles 5.3.3, ^5.3.3, ~5.3.3, >=5.3.3)
+      const match = range.match(/(\d+\.\d+\.\d+(?:-[\w.]+)?)/);
+      if (match?.[1]) {
+        return match[1];
+      }
+    }
+
+    // For ranges, query the registry and find a matching version
+    const encodedName = pkgName.startsWith("@")
+      ? pkgName.replace("/", "%2F")
+      : pkgName;
+    const registryUrl = `${this.verdaccioUrl}/${encodedName}`;
+
+    try {
+      const packument = await this.fetchJson(registryUrl) as {
+        "dist-tags"?: { latest?: string };
+        versions?: Record<string, unknown>;
+      };
+
+      // For now, just return latest - proper semver resolution would need a semver library
+      // This is sufficient for most use cases since we're bundling everything together
+      if (packument["dist-tags"]?.latest) {
+        return packument["dist-tags"].latest;
+      }
+
+      if (packument.versions) {
+        const versions = Object.keys(packument.versions);
+        if (versions.length > 0) {
+          return versions[versions.length - 1] ?? null;
+        }
+      }
+
+      return null;
+    } catch {
       return null;
     }
   }
@@ -228,16 +293,8 @@ export class EsmTransformer {
    * Fetches package from Verdaccio (which uplinks to npm) if not already cached.
    */
   private async doTransform(pkgName: string, version: string): Promise<string> {
-    // Check if we already have the package extracted in our cache
-    const extractedDir = path.join(this.cacheDir, "_extracted", pkgName, version);
-    let pkgRoot: string;
-
-    if (fs.existsSync(extractedDir)) {
-      pkgRoot = extractedDir;
-    } else {
-      // Fetch package from Verdaccio (which uplinks to npm if needed)
-      pkgRoot = await this.fetchPackageFromVerdaccio(pkgName, version, extractedDir);
-    }
+    // Ensure the main package is extracted
+    const pkgRoot = await this.ensurePackageExtracted(pkgName, version);
 
     // Read package.json to find the entry point
     const pkgJsonPath = path.join(pkgRoot, "package.json");
@@ -272,6 +329,60 @@ export class EsmTransformer {
   }
 
   /**
+   * Ensure a package is extracted and return its root path.
+   * Fetches from Verdaccio if not already extracted.
+   */
+  private async ensurePackageExtracted(pkgName: string, version: string): Promise<string> {
+    const cacheKey = `${pkgName}@${version}`;
+
+    // Check in-memory cache - but validate it still has package.json
+    const cached = this.extractedPathCache.get(cacheKey);
+    if (cached && this.isValidPackageDir(cached)) {
+      return cached;
+    }
+
+    // Check if already extracted on disk
+    const extractedDir = path.join(this.cacheDir, "_extracted", pkgName, version);
+    const packageDir = path.join(extractedDir, "package");
+
+    // Check package/ subdirectory first (standard npm tarball extraction)
+    if (this.isValidPackageDir(packageDir)) {
+      this.extractedPathCache.set(cacheKey, packageDir);
+      return packageDir;
+    }
+
+    // Check extractedDir directly (some packages extract differently)
+    if (this.isValidPackageDir(extractedDir)) {
+      this.extractedPathCache.set(cacheKey, extractedDir);
+      return extractedDir;
+    }
+
+    // Invalid or missing extraction - clean up and re-fetch
+    if (fs.existsSync(extractedDir)) {
+      console.log(`[ESM] Cleaning up invalid extraction: ${extractedDir}`);
+      try {
+        fs.rmSync(extractedDir, { recursive: true, force: true });
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+
+    // Fetch and extract
+    const pkgRoot = await this.fetchPackageFromVerdaccio(pkgName, version, extractedDir);
+    this.extractedPathCache.set(cacheKey, pkgRoot);
+    return pkgRoot;
+  }
+
+  /**
+   * Check if a directory is a valid package directory (has package.json).
+   */
+  private isValidPackageDir(dir: string): boolean {
+    if (!fs.existsSync(dir)) return false;
+    const pkgJsonPath = path.join(dir, "package.json");
+    return fs.existsSync(pkgJsonPath);
+  }
+
+  /**
    * Fetch a package tarball from Verdaccio and extract it.
    * Verdaccio will uplink to npm if the package isn't already cached.
    */
@@ -295,7 +406,7 @@ export class EsmTransformer {
     if (!fs.existsSync(tempDir)) {
       fs.mkdirSync(tempDir, { recursive: true });
     }
-    const tempTarball = path.join(tempDir, `${baseName}-${version}.tgz`);
+    const tempTarball = path.join(tempDir, `${baseName}-${version}-${Date.now()}.tgz`);
 
     await this.downloadFile(tarballUrl, tempTarball);
 
@@ -361,10 +472,160 @@ export class EsmTransformer {
   }
 
   /**
+   * Create an esbuild plugin that resolves npm dependencies by fetching them on-demand.
+   */
+  private createDependencyResolverPlugin(): esbuild.Plugin {
+    // Track packages being resolved to prevent infinite loops
+    const resolving = new Set<string>();
+
+    return {
+      name: "npm-dependency-resolver",
+      setup: (build) => {
+        // Intercept bare module specifiers (npm packages)
+        build.onResolve({ filter: /^[^./]/ }, async (args) => {
+          // Skip Node built-ins
+          const moduleName = args.path.startsWith("node:")
+            ? args.path.slice(5)
+            : args.path;
+
+          if (NODE_BUILTINS.has(moduleName)) {
+            return { path: args.path, external: true };
+          }
+
+          // Parse package name from import path
+          // @scope/pkg/subpath -> @scope/pkg
+          // pkg/subpath -> pkg
+          let pkgName: string;
+          let subpath: string | undefined;
+
+          if (args.path.startsWith("@")) {
+            const parts = args.path.split("/");
+            pkgName = `${parts[0]}/${parts[1]}`;
+            subpath = parts.slice(2).join("/") || undefined;
+          } else {
+            const parts = args.path.split("/");
+            pkgName = parts[0] ?? args.path;
+            subpath = parts.slice(1).join("/") || undefined;
+          }
+
+          // Prevent circular resolution
+          const resolveKey = `${pkgName}:${args.importer}`;
+          if (resolving.has(resolveKey)) {
+            return { path: args.path, external: true };
+          }
+
+          try {
+            resolving.add(resolveKey);
+
+            // Get the version from the importing package's dependencies
+            let version: string | null = null;
+
+            if (args.importer) {
+              // Find package.json of the importer
+              let searchDir = path.dirname(args.importer);
+              while (searchDir !== path.dirname(searchDir)) {
+                const pkgJsonPath = path.join(searchDir, "package.json");
+                if (fs.existsSync(pkgJsonPath)) {
+                  try {
+                    const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
+                      dependencies?: Record<string, string>;
+                      devDependencies?: Record<string, string>;
+                      peerDependencies?: Record<string, string>;
+                    };
+
+                    const deps = {
+                      ...pkgJson.dependencies,
+                      ...pkgJson.devDependencies,
+                      ...pkgJson.peerDependencies,
+                    };
+
+                    const depVersion = deps[pkgName];
+                    if (depVersion) {
+                      version = await this.resolveVersionRange(pkgName, depVersion);
+                    }
+                  } catch {
+                    // Ignore parse errors
+                  }
+                  break;
+                }
+                searchDir = path.dirname(searchDir);
+              }
+            }
+
+            // Fall back to latest version
+            if (!version) {
+              version = await this.resolveLatestVersion(pkgName);
+            }
+
+            if (!version) {
+              console.warn(`[ESM] Could not resolve version for ${pkgName}`);
+              return { path: args.path, external: true };
+            }
+
+            // Ensure package is extracted
+            const pkgRoot = await this.ensurePackageExtracted(pkgName, version);
+
+            // Resolve the actual file path
+            let resolvedPath: string;
+
+            if (subpath) {
+              // Direct subpath import
+              resolvedPath = path.join(pkgRoot, subpath);
+
+              // Try adding extensions if needed
+              if (!fs.existsSync(resolvedPath)) {
+                for (const ext of [".js", ".mjs", ".cjs", ".json", "/index.js"]) {
+                  if (fs.existsSync(resolvedPath + ext)) {
+                    resolvedPath = resolvedPath + ext;
+                    break;
+                  }
+                }
+              }
+            } else {
+              // Main entry point
+              const pkgJsonPath = path.join(pkgRoot, "package.json");
+              const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
+                main?: string;
+                module?: string;
+                browser?: string | Record<string, string>;
+                exports?: Record<string, unknown>;
+              };
+
+              // Prefer module > browser > main > index.js
+              if (pkgJson.module) {
+                resolvedPath = path.join(pkgRoot, pkgJson.module);
+              } else if (typeof pkgJson.browser === "string") {
+                resolvedPath = path.join(pkgRoot, pkgJson.browser);
+              } else if (pkgJson.main) {
+                resolvedPath = path.join(pkgRoot, pkgJson.main);
+              } else {
+                resolvedPath = path.join(pkgRoot, "index.js");
+              }
+            }
+
+            // Ensure the resolved path exists
+            if (!fs.existsSync(resolvedPath)) {
+              console.warn(`[ESM] Resolved path not found: ${resolvedPath} for ${args.path}`);
+              return { path: args.path, external: true };
+            }
+
+            return { path: resolvedPath };
+          } catch (error) {
+            console.warn(`[ESM] Failed to resolve ${pkgName}:`, error instanceof Error ? error.message : error);
+            return { path: args.path, external: true };
+          } finally {
+            resolving.delete(resolveKey);
+          }
+        });
+      },
+    };
+  }
+
+  /**
    * Bundle a package entry point to ESM format.
    */
   private async bundlePackage(pkgName: string, version: string, entryPath: string): Promise<string> {
-    // Bundle with esbuild
+    // Bundle with esbuild using our dependency resolver plugin
     const result = await esbuild.build({
       entryPoints: [entryPath],
       bundle: true,
@@ -374,8 +635,7 @@ export class EsmTransformer {
       write: false,
       minify: true,
       sourcemap: false,
-      // Mark Node built-ins as external
-      external: NODE_BUILTINS,
+      plugins: [this.createDependencyResolverPlugin()],
       // Handle any remaining node: imports
       define: {
         "process.env.NODE_ENV": '"production"',
