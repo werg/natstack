@@ -69,6 +69,7 @@ export function TemplateSection({ repoPath, expanded, onToggle }: TemplateSectio
       <Flex
         align="center"
         gap="2"
+        tabIndex={0}
         style={{ cursor: "pointer" }}
         onClick={onToggle}
       >

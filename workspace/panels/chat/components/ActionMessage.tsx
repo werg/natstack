@@ -18,6 +18,7 @@ export function ActionPill({
       align="center"
       gap="1"
       onClick={onClick}
+      tabIndex={0}
       style={{
         cursor: "pointer",
         userSelect: "none",
@@ -59,6 +60,7 @@ export function ExpandedAction({
         align="center"
         gap="2"
         onClick={onCollapse}
+        tabIndex={0}
         style={{ cursor: "pointer", userSelect: "none" }}
       >
         <Text color="blue" style={{ display: "flex", alignItems: "center" }}>

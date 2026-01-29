@@ -26,6 +26,7 @@ function ThinkingPill({
         backgroundColor: "var(--gray-a3)",
         display: "inline-flex",
       }}
+      tabIndex={0}
     >
       {isStreaming && <Spinner size="1" />}
       <Text size="1" color="gray" weight="medium">
@@ -62,6 +63,7 @@ function ExpandedThinking({
         gap="2"
         onClick={onCollapse}
         style={{ cursor: "pointer", userSelect: "none" }}
+        tabIndex={0}
       >
         <Text color="gray" style={{ display: "flex", alignItems: "center" }}>
           <ExpandableChevron expanded={true} />

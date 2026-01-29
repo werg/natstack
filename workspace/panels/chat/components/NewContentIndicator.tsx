@@ -23,6 +23,7 @@ export function NewContentIndicator({ onClick }: NewContentIndicatorProps) {
         size="2"
         style={{ cursor: "pointer", padding: "4px 12px" }}
         onClick={onClick}
+        tabIndex={0}
       >
         <Flex align="center" gap="1">
           <ArrowDownIcon />

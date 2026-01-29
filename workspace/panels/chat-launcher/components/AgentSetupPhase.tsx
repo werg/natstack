@@ -174,6 +174,7 @@ function AgentCard({ agent, isMultiAgent, onToggle, onUpdateConfig }: AgentCardP
           align="start"
           style={{ cursor: hasUnmetRequirements ? "not-allowed" : "pointer" }}
           onClick={hasUnmetRequirements ? undefined : onToggle}
+          tabIndex={hasUnmetRequirements ? undefined : 0}
         >
           <Checkbox checked={agent.selected} disabled={hasUnmetRequirements} />
           <Flex direction="column" gap="1" style={{ flex: 1 }}>
@@ -232,6 +233,7 @@ function AgentCard({ agent, isMultiAgent, onToggle, onUpdateConfig }: AgentCardP
                     e.stopPropagation();
                     setShowAdvanced(!showAdvanced);
                   }}
+                  tabIndex={0}
                 >
                   {showAdvanced ? <ChevronDownIcon /> : <ChevronRightIcon />}
                   <Text size="1" color="gray">

@@ -1,11 +1,11 @@
-import type { ComponentType } from "react";
+import type { ComponentType, ReactNode } from "react";
 import type { Components } from "react-markdown";
 import {
   Badge,
   Blockquote,
   Box,
   Button,
-  Callout,
+  Callout as RadixCallout,
   Card,
   Code,
   Flex,
@@ -15,6 +15,20 @@ import {
   Text,
 } from "@radix-ui/themes";
 import * as Icons from "@radix-ui/react-icons";
+
+// Custom Callout wrapper that uses div instead of p for Text to avoid HTML nesting issues
+// (MDX content inside Callout.Text can contain <p>, <ul>, <ol> which can't nest in <p>)
+const CalloutText = ({ children, ...props }: { children?: ReactNode }) => (
+  <Text as="div" size="2" {...props}>
+    {children}
+  </Text>
+);
+
+const Callout = Object.assign(RadixCallout.Root, {
+  Root: RadixCallout.Root,
+  Icon: RadixCallout.Icon,
+  Text: CalloutText,
+});
 
 export const markdownComponents: Components = {
   h1: ({ children }) => (

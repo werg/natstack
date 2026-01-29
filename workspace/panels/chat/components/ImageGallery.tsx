@@ -70,6 +70,7 @@ export function ImageGallery({ attachments, maxVisible = 4 }: ImageGalleryProps)
             key={index}
             position="relative"
             overflow="hidden"
+            tabIndex={0}
             style={{ cursor: "pointer", borderRadius: "var(--radius-2)" }}
             onClick={() => setSelectedImage(preview)}
           >
@@ -119,6 +120,7 @@ export function ImageGallery({ attachments, maxVisible = 4 }: ImageGalleryProps)
             justify="center"
             width="120px"
             height="120px"
+            tabIndex={0}
             style={{ background: "var(--gray-4)", borderRadius: "var(--radius-2)", cursor: "pointer" }}
             onClick={() => setShowAll(true)}
           >
@@ -193,6 +195,7 @@ export function ImageIndicator({ count, onClick }: ImageIndicatorProps) {
       align="center"
       px="2"
       py="1"
+      tabIndex={0}
       style={{ background: "var(--gray-3)", borderRadius: "var(--radius-2)", cursor: onClick ? "pointer" : undefined }}
       onClick={onClick}
     >

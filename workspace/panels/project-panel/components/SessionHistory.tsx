@@ -56,6 +56,7 @@ export function SessionHistory({ sessions, loading, onNavigate, onRefresh }: Ses
               size="1"
               style={{ cursor: "pointer" }}
               onClick={() => onNavigate(session.id)}
+              tabIndex={0}
             >
               <Flex justify="between" align="center">
                 <Flex align="center" gap="2">

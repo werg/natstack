@@ -28,6 +28,7 @@ export function ConfigSection({ config, expanded, onToggle, onUpdate }: ConfigSe
       <Flex
         align="center"
         gap="2"
+        tabIndex={0}
         style={{ cursor: "pointer" }}
         onClick={onToggle}
       >

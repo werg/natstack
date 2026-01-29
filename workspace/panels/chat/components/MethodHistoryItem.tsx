@@ -142,6 +142,7 @@ function CollapsibleSection({
         gap="1"
         onClick={() => setIsOpen(!isOpen)}
         style={{ cursor: "pointer", userSelect: "none" }}
+        tabIndex={0}
       >
         <Text size="1" color={color}>
           <ExpandableChevron expanded={isOpen} />
@@ -190,6 +191,7 @@ function JsonValue({ value, depth = 0 }: { value: unknown; depth?: number }) {
             gap="1"
             onClick={() => setIsExpanded(!isExpanded)}
             style={{ cursor: "pointer", userSelect: "none" }}
+            tabIndex={0}
           >
             <ExpandableChevron expanded={isExpanded} />
             <Text size="1" color="gray">{value.length} chars</Text>
@@ -230,6 +232,7 @@ function JsonValue({ value, depth = 0 }: { value: unknown; depth?: number }) {
           gap="1"
           onClick={() => setIsExpanded(!isExpanded)}
           style={{ cursor: "pointer", userSelect: "none" }}
+          tabIndex={0}
         >
           <ExpandableChevron expanded={isExpanded} />
           <Text size="1" color="gray">[{value.length}]</Text>
@@ -264,6 +267,7 @@ function JsonValue({ value, depth = 0 }: { value: unknown; depth?: number }) {
           gap="1"
           onClick={() => setIsExpanded(!isExpanded)}
           style={{ cursor: "pointer", userSelect: "none" }}
+          tabIndex={0}
         >
           <ExpandableChevron expanded={isExpanded} />
           <Text size="1" color="gray">{"{"}...{"}"}</Text>
@@ -334,6 +338,7 @@ function CompactMethodPill({
         display: "inline-flex",
         maxWidth: "100%",
       }}
+      tabIndex={0}
     >
       <Box
         style={{
@@ -391,6 +396,7 @@ function ExpandedMethodDetail({
         gap="2"
         onClick={onCollapse}
         style={{ cursor: "pointer", userSelect: "none" }}
+        tabIndex={0}
       >
         <Text color="gray" style={{ display: "flex", alignItems: "center" }}>
           <ExpandableChevron expanded={true} />
