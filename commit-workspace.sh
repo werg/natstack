@@ -1,4 +1,5 @@
 #!/bin/bash
+shopt -s nullglob
 msg="${1:-Update}"
 for dir in workspace/workers/*/ workspace/panels/*/ workspace/contexts/*/ workspace/projects/*/ workspace/packages/*/; do
   if [ -d "$dir/.git" ]; then
