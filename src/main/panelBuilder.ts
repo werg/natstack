@@ -29,12 +29,12 @@ import {
   type TypeCheckDiagnostic,
 } from "@natstack/runtime/typecheck";
 import { isVerdaccioServerInitialized, getVerdaccioServer } from "./verdaccioServer.js";
+import { ESM_SAFE_PACKAGES } from "./lazyBuild/esmTransformer.js";
 import { getPackagesDir, getAppNodeModules, getActiveWorkspace } from "./paths.js";
 import {
   getPackageStore,
   createPackageFetcher,
   createPackageLinker,
-  collectPackagesFromTree,
   serializeTree,
   type SerializedTree,
 } from "./package-store/index.js";
@@ -1215,30 +1215,26 @@ export class PanelBuilder {
       );
     }
 
-    const verdaccioRunning = await getVerdaccioServer().ensureRunning();
+    const verdaccio = getVerdaccioServer();
+    const verdaccioRunning = await verdaccio.ensureRunning();
     if (!verdaccioRunning) {
       throw new Error(
         "Verdaccio server failed to start. Cannot resolve dependencies. " +
-        `Last error: ${getVerdaccioServer().getExitError()?.message ?? "unknown"}`
+        `Last error: ${verdaccio.getExitError()?.message ?? "unknown"}`
       );
     }
 
-    // Ensure workspace dependencies are published on-demand before resolution
-    const verdaccio = getVerdaccioServer();
+    // Set user workspace path for lazy building of @workspace/* packages
     const userWorkspace = getActiveWorkspace();
-    const publishResult = await verdaccio.ensureDependenciesPublished(
-      dependencies,
-      userWorkspace?.path
-    );
-
-    if (publishResult.published.length > 0) {
-      console.log(`[PanelBuilder] On-demand published: ${publishResult.published.join(", ")}`);
-    }
-    if (publishResult.notFound.length > 0) {
-      console.warn(`[PanelBuilder] Workspace packages not found: ${publishResult.notFound.join(", ")}`);
+    if (userWorkspace?.path) {
+      verdaccio.setUserWorkspacePath(userWorkspace.path);
     }
 
-    // With Verdaccio, translate workspace:* to * (Verdaccio serves local packages)
+    // Lazy building: packages are built on-demand when npm requests them
+    // No need to pre-publish - the Verdaccio middleware intercepts requests
+    // and builds workspace packages just-in-time during npm install
+
+    // Translate workspace:* to * (Verdaccio serves local packages)
     const resolvedDependencies: Record<string, string> = {};
     for (const [name, version] of Object.entries(dependencies)) {
       resolvedDependencies[name] = version.startsWith("workspace:") ? "*" : version;
@@ -1515,6 +1511,23 @@ export class PanelBuilder {
 
       // Get externals from manifest (packages loaded via import map / CDN)
       const externals: Record<string, string> = { ...(manifest.externals ?? {}) };
+
+      // Auto-externalize ALL ESM-safe packages (including transitive dependencies)
+      // These will be loaded from Verdaccio's ESM endpoint at runtime
+      // This is critical for heavy packages like typescript (17MB) that come through transitive deps
+      if (isVerdaccioServerInitialized()) {
+        const verdaccioUrl = getVerdaccioServer().getBaseUrl();
+
+        // Externalize all known ESM-safe packages regardless of whether they're direct deps
+        // If they're not used, it's a no-op. If they are (even transitively), we save bundle size.
+        for (const pkgName of ESM_SAFE_PACKAGES) {
+          if (!(pkgName in externals)) {
+            externals[pkgName] = `${verdaccioUrl}/-/esm/${pkgName}`;
+            log(`Auto-externalizing ESM-safe package: ${pkgName}`);
+          }
+        }
+      }
+
       const externalModules = Object.keys(externals);
       // For unsafe panels with platform: "node", don't manually mark Node.js built-ins as external
       // esbuild will handle them correctly as built-ins provided by the Node.js runtime
@@ -1605,55 +1618,77 @@ import ${JSON.stringify(relativeUserEntry)};
         : [generateAsyncTrackingBanner(), generateModuleMapBanner()].join("\n");
 
       // Helper to create consistent esbuild configuration
-      const createBuildConfig = (): esbuild.BuildOptions => ({
-        entryPoints: [tempEntryPath],
-        bundle: true,
-        // Use "node" platform for unsafe panels to enable Node.js built-in modules
-        platform: unsafe ? "node" : "browser",
-        target: "es2022",
-        conditions: ["natstack-panel"],
-        outfile: bundlePath,
-        sourcemap: inlineSourcemap ? "inline" : false,
-        keepNames: true, // Preserve class/function names
-        // CJS format required for unsafe panels: nodeIntegration only patches require(), not ES imports
-        format: unsafe ? "cjs" : "esm",
-        absWorkingDir: sourcePath,
-        nodePaths,
-        plugins,
-        external: externalModules,
-        loader: PANEL_ASSET_LOADERS,
-        assetNames: "assets/[name]-[hash]",
-        banner: {
-          js: bannerJs,
-        },
-        metafile: true,
-        // For CJS (unsafe panels), dynamic import() must be transformed to require()
-        // because WebContentsView doesn't have an ESM loader to resolve bare specifiers.
-        supported: unsafe ? { "dynamic-import": false } : undefined,
-        // For CJS bundles, provide import.meta.url shim since CJS doesn't have import.meta
-        // This allows ES modules that use import.meta.url to work when bundled
-        // The actual value is computed in the banner and stored in __import_meta_url
-        define: unsafe
-          ? { "import.meta.url": "__import_meta_url" }
-          : undefined,
-        // Use a build-owned tsconfig. Only allowlisted user compilerOptions are merged.
-        tsconfig: this.writeBuildTsconfig(workspace.buildDir, sourcePath, "panel", {
-          jsx: "react-jsx",
-          target: "ES2022",
-          useDefineForClassFields: true,
-        }),
-      });
+      const createBuildConfig = (): esbuild.BuildOptions => {
+        // Code splitting only works with ESM format (safe panels)
+        const useSplitting = !unsafe;
+
+        const baseConfig: esbuild.BuildOptions = {
+          entryPoints: [tempEntryPath],
+          bundle: true,
+          // Use "node" platform for unsafe panels to enable Node.js built-in modules
+          platform: unsafe ? "node" : "browser",
+          target: "es2022",
+          conditions: ["natstack-panel"],
+          sourcemap: inlineSourcemap ? "inline" : false,
+          keepNames: true, // Preserve class/function names
+          // CJS format required for unsafe panels: nodeIntegration only patches require(), not ES imports
+          format: unsafe ? "cjs" : "esm",
+          absWorkingDir: sourcePath,
+          nodePaths,
+          plugins,
+          external: externalModules,
+          loader: PANEL_ASSET_LOADERS,
+          assetNames: "assets/[name]-[hash]",
+          banner: {
+            js: bannerJs,
+          },
+          metafile: true,
+          // For CJS (unsafe panels), dynamic import() must be transformed to require()
+          // because WebContentsView doesn't have an ESM loader to resolve bare specifiers.
+          supported: unsafe ? { "dynamic-import": false } : undefined,
+          // For CJS bundles, provide import.meta.url shim since CJS doesn't have import.meta
+          // This allows ES modules that use import.meta.url to work when bundled
+          // The actual value is computed in the banner and stored in __import_meta_url
+          define: unsafe ? { "import.meta.url": "__import_meta_url" } : undefined,
+          // Use a build-owned tsconfig. Only allowlisted user compilerOptions are merged.
+          tsconfig: this.writeBuildTsconfig(workspace.buildDir, sourcePath, "panel", {
+            jsx: "react-jsx",
+            target: "ES2022",
+            useDefineForClassFields: true,
+          }),
+        };
+
+        if (useSplitting) {
+          // ESM with code splitting: use outdir with entry/chunk naming
+          return {
+            ...baseConfig,
+            splitting: true,
+            outdir: workspace.buildDir,
+            entryNames: "bundle", // Entry point -> bundle.js
+            chunkNames: "chunk-[hash]", // Chunks -> chunk-XXXX.js
+          };
+        } else {
+          // CJS without splitting: use single outfile
+          return {
+            ...baseConfig,
+            outfile: bundlePath,
+          };
+        }
+      };
 
       // Run esbuild and type checking in parallel
       // Type checking uses the original source files, so it can run while esbuild bundles
-      const [buildResult, typeErrors] = await Promise.all([
-        esbuild.build(createBuildConfig()),
-        this.runTypeCheck(sourcePath, workspace.nodeModulesDir, log, runtimeDependencies),
-      ]);
+      // Start type checking immediately - don't await yet
+      const typeCheckPromise = this.runTypeCheck(sourcePath, workspace.nodeModulesDir, log, runtimeDependencies);
+
+      // Run first build and wait for it (needed for expose module discovery)
+      const buildResult = await esbuild.build(createBuildConfig());
 
       let buildMetafile = buildResult.metafile;
       let exposeModulesWarning: string | undefined;
 
+      // Check if we need a rebuild for expose modules
+      // This can run in parallel with type checking since it only needs the first build's output
       if (buildResult.metafile) {
         const externalSet = new Set(externalModules);
         const depsToExpose = collectExposedDepsFromMetafile(buildResult.metafile, externalSet);
@@ -1698,6 +1733,9 @@ import ${JSON.stringify(relativeUserEntry)};
           log(`Cached expose modules for future builds`);
         }
       }
+
+      // Now wait for type checking to complete (it's been running in parallel)
+      const typeErrors = await typeCheckPromise;
 
       const bundle = fs.readFileSync(bundlePath, "utf-8");
       const cssPath = bundlePath.replace(".js", ".css");
@@ -1865,9 +1903,19 @@ import ${JSON.stringify(relativeUserEntry)};
     cssPath: string,
     log?: (message: string) => void
   ): PanelAssetMap | undefined {
-    if (!metafile) return undefined;
+    if (!metafile) {
+      log?.(`[collectPanelAssets] No metafile provided`);
+      return undefined;
+    }
     const outputs = Object.keys(metafile.outputs ?? {});
-    if (outputs.length === 0) return undefined;
+    if (outputs.length === 0) {
+      log?.(`[collectPanelAssets] No outputs in metafile`);
+      return undefined;
+    }
+
+    // Use bundle's directory as reference - chunks are always output alongside the bundle
+    const bundleDir = path.dirname(path.resolve(bundlePath));
+    log?.(`[collectPanelAssets] Checking ${outputs.length} outputs, buildDir=${buildDir}, bundleDir=${bundleDir}`);
 
     const ignoredOutputs = new Set<string>([
       path.resolve(bundlePath),
@@ -1876,13 +1924,43 @@ import ${JSON.stringify(relativeUserEntry)};
     const assets: PanelAssetMap = {};
 
     for (const output of outputs) {
-      const resolvedOutput = path.isAbsolute(output) ? output : path.join(buildDir, output);
-      const absoluteOutput = path.resolve(resolvedOutput);
+      // esbuild metafile outputs can be relative or absolute.
+      // Relative paths may be:
+      // 1. Simple relative to buildDir (e.g., "assets/image.png" for assetNames)
+      // 2. Complex CWD-relative paths (e.g., "../../../../.config/.../chunk-xxx.js" for chunks)
+      // In both cases, the files are actually in buildDir - just resolve against it.
+      let absoluteOutput: string;
+
+      if (path.isAbsolute(output)) {
+        absoluteOutput = output;
+      } else {
+        // First try the full relative path against buildDir (for assets like "assets/image.png")
+        const fullPathInBuildDir = path.join(buildDir, output);
+        if (fs.existsSync(fullPathInBuildDir)) {
+          absoluteOutput = fullPathInBuildDir;
+        } else {
+          // For chunks with complex paths, use just the basename in buildDir
+          // (chunks are always output to the root of buildDir)
+          absoluteOutput = path.join(buildDir, path.basename(output));
+        }
+      }
+
       if (ignoredOutputs.has(absoluteOutput)) continue;
-      if (!fs.existsSync(absoluteOutput)) continue;
+
+      const exists = fs.existsSync(absoluteOutput);
+      if (!exists) {
+        // Log chunks that don't exist - this might help debug issues
+        if (output.includes("chunk-")) {
+          log?.(`[collectPanelAssets] Chunk not found: ${absoluteOutput} (original: ${output})`);
+        }
+        continue;
+      }
 
       const relative = path.relative(buildDir, absoluteOutput);
-      if (relative.startsWith("..")) continue;
+      if (relative.startsWith("..")) {
+        log?.(`[collectPanelAssets] Skipping outside buildDir: ${output} -> ${relative}`);
+        continue;
+      }
       const assetPath = `/${relative.replace(/\\/g, "/")}`;
       const ext = path.extname(relative).toLowerCase();
       const isText = TEXT_ASSET_EXTENSIONS.has(ext);
@@ -1895,10 +1973,19 @@ import ${JSON.stringify(relativeUserEntry)};
 
     const assetCount = Object.keys(assets).length;
     if (assetCount === 0) {
+      log?.(`[collectPanelAssets] No assets found after filtering`);
       return undefined;
     }
 
-    log?.(`Bundled ${assetCount} panel asset${assetCount === 1 ? "" : "s"}.`);
+    // Count code chunks for logging
+    const chunkCount = Object.keys(assets).filter(
+      (k) => k.startsWith("/chunk-") && k.endsWith(".js")
+    ).length;
+    if (chunkCount > 0) {
+      log?.(`Bundled ${assetCount} panel assets (${chunkCount} code chunks).`);
+    } else {
+      log?.(`Bundled ${assetCount} panel asset${assetCount === 1 ? "" : "s"}.`);
+    }
     return assets;
   }
 

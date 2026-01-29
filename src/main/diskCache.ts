@@ -20,7 +20,7 @@ export interface DiskCacheData {
   entries: Record<string, DiskCacheEntry>;
 }
 
-const CACHE_VERSION = "4"; // Bumped: recursive workspace:* resolution + recursive worker discovery
+const CACHE_VERSION = "5"; // Bumped: added assets/chunks to cache + fixed referer auth
 const CACHE_FILENAME = "build-cache.json";
 
 /**

@@ -34,7 +34,7 @@ export const DEFAULT_MAX_STEPS = 10;
  */
 export const PANEL_CSP = [
   "default-src 'self' natstack-panel: https: data: blob:",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval' natstack-panel: https:",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' natstack-panel: https: http://localhost:* http://127.0.0.1:*",
   "style-src 'self' 'unsafe-inline' https:",
   "img-src 'self' natstack-panel: https: data: blob:",
   "font-src 'self' https: data:",

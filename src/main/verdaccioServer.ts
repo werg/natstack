@@ -10,15 +10,25 @@
  * - Shared package cache across all panel builds
  * - Proper transitive dependency resolution
  * - Offline support for cached packages
+ * - Lazy building: packages are built on-demand when first requested
+ *
+ * Architecture:
+ * - Runs Verdaccio in-process using runServer() programmatic API
+ * - Injects lazy-build middleware to intercept workspace package requests
+ * - Packages are built and published just-in-time during npm install
  */
 
 import * as path from "path";
 import * as fs from "fs";
 import * as crypto from "crypto";
+import * as http from "http";
 import { app } from "electron";
 import { spawn } from "child_process";
+import { runServer, ConfigBuilder } from "verdaccio";
 import { findAndBindPort, PORT_RANGES } from "./portUtils.js";
+
 import type { GitWatcher } from "./workspace/gitWatcher.js";
+import { EsmTransformer, ESM_SAFE_PACKAGES } from "./lazyBuild/esmTransformer.js";
 
 /**
  * Configuration options for the Verdaccio server.
@@ -34,19 +44,6 @@ export interface VerdaccioServerConfig {
   maxRestartAttempts?: number;
   /** Delay between restart attempts in ms. Defaults to 1000. */
   restartDelayMs?: number;
-}
-
-/**
- * Verdaccio configuration type (simplified).
- */
-interface VerdaccioConfig {
-  storage: string;
-  uplinks: Record<string, { url: string; cache?: boolean }>;
-  packages: Record<string, { access?: string; publish?: string; proxy?: string }>;
-  log?: { type: string; level: string };
-  self_path: string;
-  web?: { enable: boolean };
-  auth?: { htpasswd: { file: string; max_users?: number } };
 }
 
 /**
@@ -108,19 +105,127 @@ export interface WorkspaceChangesResult {
   freshStart: boolean;
 }
 
+/**
+ * Extract package name from a Verdaccio request URL.
+ * Handles URL-encoded scoped packages (e.g., /@scope%2Fname or /@scope/name).
+ */
+function extractPackageName(url: string): string | null {
+  // Remove query string
+  const urlPath = url.split("?")[0];
+  if (!urlPath) return null;
+
+  // Handle URL-encoded scoped packages
+  const decoded = decodeURIComponent(urlPath);
+
+  // Match package name patterns:
+  // - /@scope/name (scoped)
+  // - /name (unscoped)
+  // Stop at /- for tarballs, dist-tags, etc.
+  const match = decoded.match(/^\/(@[^/]+\/[^/]+|[^/@][^/]*)(?:\/|$|-)/);
+  if (!match || !match[1]) return null;
+
+  return match[1];
+}
+
+/**
+ * Check if a package name is a workspace package that should be lazily built.
+ */
+function isWorkspacePackage(pkgName: string): boolean {
+  return (
+    pkgName.startsWith("@natstack/") ||
+    pkgName.startsWith("@workspace/") ||
+    pkgName.startsWith("@workspace-panels/") ||
+    pkgName.startsWith("@workspace-workers/")
+  );
+}
+
+/**
+ * Build queue for managing on-demand package builds with promise coalescing.
+ */
+class BuildQueue {
+  private locks = new Map<string, Promise<void>>();
+  private buildStack = new Set<string>(); // Cycle detection
+  private building = new Set<string>(); // Packages currently being built
+
+  constructor(
+    private readonly publishPackage: (pkgPath: string, pkgName: string) => Promise<"published" | "skipped">,
+    private readonly resolvePackagePath: (pkgName: string, userWorkspacePath?: string) => string | null,
+    private readonly checkPackageInStorage: (pkgName: string) => boolean,
+    private readonly userWorkspacePath?: string
+  ) {}
+
+  /**
+   * Check if a package is currently being built.
+   * Used to avoid deadlocks where npm publish's GET request would wait for itself.
+   */
+  isBuilding(pkgName: string): boolean {
+    return this.building.has(pkgName);
+  }
+
+  /**
+   * Ensure a package is built and published.
+   * Uses promise coalescing so concurrent requests share the same build.
+   */
+  async ensureBuilt(pkgName: string): Promise<void> {
+    // Check if already exists in storage
+    if (this.checkPackageInStorage(pkgName)) {
+      return;
+    }
+
+    // If already building, DON'T wait - just return immediately.
+    // This prevents deadlocks where npm publish makes GET requests during publish.
+    // Those GET requests should go through to Verdaccio (which will 404) rather than waiting.
+    const existing = this.locks.get(pkgName);
+    if (existing) {
+      return; // Don't wait - let the request go to Verdaccio
+    }
+
+    const promise = this.doBuild(pkgName)
+      .finally(() => this.locks.delete(pkgName));
+
+    this.locks.set(pkgName, promise);
+    return promise;
+  }
+
+  private async doBuild(pkgName: string): Promise<void> {
+    // Cycle detection
+    if (this.buildStack.has(pkgName)) {
+      throw new Error(`Circular dependency detected: ${pkgName}`);
+    }
+
+    this.buildStack.add(pkgName);
+    this.building.add(pkgName);
+    try {
+      const pkgPath = this.resolvePackagePath(pkgName, this.userWorkspacePath);
+      if (!pkgPath) {
+        throw new Error(`Cannot resolve path for package: ${pkgName}`);
+      }
+
+      // Check if package.json exists
+      const pkgJsonPath = path.join(pkgPath, "package.json");
+      if (!fs.existsSync(pkgJsonPath)) {
+        throw new Error(`Package not found: ${pkgName} (expected at ${pkgPath})`);
+      }
+
+      console.log(`[LazyBuild] Building ${pkgName} on-demand...`);
+      await this.publishPackage(pkgPath, pkgName);
+      console.log(`[LazyBuild] Built ${pkgName}`);
+    } finally {
+      this.buildStack.delete(pkgName);
+      this.building.delete(pkgName);
+    }
+  }
+}
+
 export class VerdaccioServer {
-  private server: ReturnType<typeof spawn> | null = null;
+  private httpServer: http.Server | null = null;
+  private verdaccioInternalServer: http.Server | null = null;
   private configuredPort: number;
   private actualPort: number | null = null;
   private storagePath: string;
   private workspaceRoot: string;
-  private configPath: string | null = null;
   private isStarting = false;
   private startPromise: Promise<number> | null = null;
-  /** Set to true when the process exits unexpectedly (not via stop()) */
-  private unexpectedExit = false;
-  /** Error from unexpected process exit */
-  private exitError: Error | null = null;
   /** Maximum restart attempts after unexpected exit */
   private maxRestartAttempts: number;
   /** Delay between restart attempts in ms */
@@ -131,6 +236,16 @@ export class VerdaccioServer {
   private verdaccioVersionsCache: { versions: Record<string, string>; timestamp: number } | null = null;
   /** TTL for Verdaccio versions cache (30 seconds) */
   private readonly VERDACCIO_VERSIONS_TTL_MS = 30_000;
+  /** Build queue for lazy building */
+  private buildQueue: BuildQueue | null = null;
+  /** User workspace path for lazy builds (set via setUserWorkspacePath) */
+  private userWorkspacePath: string | undefined;
+  /** ESM transformer for on-demand ESM bundling */
+  private esmTransformer: EsmTransformer | null = null;
+  /** Cache for discovered packages by directory path */
+  private packageDiscoveryCache = new Map<string, Array<{ path: string; name: string }>>();
+  /** HTTP agent for connection pooling to internal Verdaccio */
+  private proxyAgent: http.Agent | null = null;
 
   constructor(config?: VerdaccioServerConfig) {
     this.configuredPort = config?.port ?? PORT_RANGES.verdaccio.start;
@@ -138,6 +253,23 @@ export class VerdaccioServer {
     this.workspaceRoot = config?.workspaceRoot ?? process.cwd();
     this.maxRestartAttempts = config?.maxRestartAttempts ?? 3;
     this.restartDelayMs = config?.restartDelayMs ?? 1000;
+  }
+
+  /**
+   * Set the user workspace path for lazy building of @workspace/* packages.
+   * Call this when a workspace is opened/changed.
+   */
+  setUserWorkspacePath(workspacePath: string | undefined): void {
+    this.userWorkspacePath = workspacePath;
+    // Clear package discovery cache since workspace changed
+    this.invalidatePackageDiscoveryCache();
+    // Recreate build queue with new workspace path
+    this.buildQueue = new BuildQueue(
+      this.publishPackage.bind(this),
+      this.resolvePackagePath.bind(this),
+      this.checkPackageInStorage.bind(this),
+      workspacePath
+    );
   }
 
   /**
@@ -168,13 +300,29 @@ export class VerdaccioServer {
   }
 
   private async doStart(): Promise<number> {
-    // Reset unexpected exit state from any previous run
-    this.unexpectedExit = false;
-    this.exitError = null;
+    // Stop any existing servers before starting new ones
+    // This prevents EADDRINUSE errors on restart
+    if (this.httpServer || this.verdaccioInternalServer) {
+      console.log("[VerdaccioServer] Stopping existing servers before restart...");
+      await this.stop();
+    }
 
     // Ensure storage directory exists
-    if (!fs.existsSync(this.storagePath)) {
-      fs.mkdirSync(this.storagePath, { recursive: true });
+    const packagesStoragePath = path.join(this.storagePath, "packages");
+    if (!fs.existsSync(packagesStoragePath)) {
+      fs.mkdirSync(packagesStoragePath, { recursive: true });
+    }
+
+    // Ensure htpasswd directory exists
+    const configDir = path.join(this.storagePath, "config");
+    if (!fs.existsSync(configDir)) {
+      fs.mkdirSync(configDir, { recursive: true });
+    }
+
+    // Create empty htpasswd file if it doesn't exist
+    const htpasswdPath = path.join(configDir, "htpasswd");
+    if (!fs.existsSync(htpasswdPath)) {
+      fs.writeFileSync(htpasswdPath, "", "utf-8");
     }
 
     // Find available port
@@ -190,14 +338,125 @@ export class VerdaccioServer {
     // Close temp server before starting Verdaccio
     await new Promise<void>((resolve) => tempServer.close(() => resolve()));
 
-    // Create Verdaccio config file
-    this.configPath = await this.createConfigFile(port);
+    // Build Verdaccio configuration programmatically
+    // Use 'json' format to avoid pino's prettify transport (which doesn't work in bundled apps)
+    const config = new ConfigBuilder({
+      storage: packagesStoragePath,
+      self_path: "./",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      web: { enable: false } as any,
+      auth: {
+        htpasswd: {
+          file: htpasswdPath,
+          max_users: -1,
+        },
+      },
+      // Use JSON format logging to avoid @verdaccio/logger-prettify transport
+      // which doesn't work in bundled Electron apps (pino can't resolve the module)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      log: { type: "stdout", format: "json", level: "warn" } as any,
+    })
+      .addUplink("npmjs", {
+        url: "https://registry.npmjs.org/",
+        cache: true,
+      })
+      // Workspace packages are served locally (no uplink proxy)
+      .addPackageAccess("@natstack/*", {
+        access: "$all",
+        publish: "$all",
+      })
+      .addPackageAccess("@workspace-panels/*", {
+        access: "$all",
+        publish: "$all",
+      })
+      .addPackageAccess("@workspace-workers/*", {
+        access: "$all",
+        publish: "$all",
+      })
+      .addPackageAccess("@workspace/*", {
+        access: "$all",
+        publish: "$all",
+      })
+      // All other packages proxy to npmjs
+      .addPackageAccess("**", {
+        access: "$all",
+        proxy: "npmjs",
+      })
+      .getConfig();
 
-    // Start Verdaccio as a subprocess using npx
-    await this.startVerdaccioProcess(port);
+    // Run Verdaccio in-process
+    // Set NODE_ENV=production to avoid Verdaccio's logger trying to load @verdaccio/logger-prettify
+    // (the pino transport doesn't work in bundled Electron apps)
+    const originalNodeEnv = process.env["NODE_ENV"];
+    process.env["NODE_ENV"] = "production";
+
+    console.log("[VerdaccioServer] Starting Verdaccio in-process...");
+
+    // runServer returns an HTTP server factory/app that we need to call .listen() on
+    const internalPort = port + 1;
+    let verdaccioServer: http.Server;
+    try {
+      console.log(`[VerdaccioServer] Calling runServer...`);
+      const serverFactory = await runServer(config);
+      console.log(`[VerdaccioServer] runServer completed, calling listen(${internalPort})...`);
+
+      // The serverFactory is an Express-like app with a listen method
+      // Wait for the server to actually be listening before proceeding
+      verdaccioServer = await new Promise<http.Server>((resolve, reject) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const server = (serverFactory as any).listen(internalPort, "127.0.0.1", () => {
+          console.log(`[VerdaccioServer] Internal server listening on 127.0.0.1:${internalPort}`);
+          resolve(server as http.Server);
+        });
+        server.on("error", (err: Error) => {
+          console.error(`[VerdaccioServer] Internal server error:`, err);
+          reject(err);
+        });
+      });
+    } finally {
+      // Restore original NODE_ENV
+      if (originalNodeEnv !== undefined) {
+        process.env["NODE_ENV"] = originalNodeEnv;
+      } else {
+        delete process.env["NODE_ENV"];
+      }
+    }
+
+    this.verdaccioInternalServer = verdaccioServer;
+
+    // Initialize build queue
+    this.buildQueue = new BuildQueue(
+      this.publishPackage.bind(this),
+      this.resolvePackagePath.bind(this),
+      this.checkPackageInStorage.bind(this),
+      this.userWorkspacePath
+    );
+
+    // Initialize ESM transformer with internal Verdaccio URL for fetching packages
+    this.esmTransformer = new EsmTransformer({
+      cacheDir: path.join(this.storagePath, "esm-cache"),
+      verdaccioUrl: `http://127.0.0.1:${internalPort}`,
+    });
+
+    // Create HTTP agent for connection pooling to internal Verdaccio
+    this.proxyAgent = new http.Agent({
+      keepAlive: true,
+      keepAliveMsecs: 30000,
+      maxSockets: 50,  // Allow many concurrent connections
+      maxFreeSockets: 10,
+    });
+
+    // Create our proxy server that handles lazy-build and ESM routes
+    this.httpServer = this.createProxyServer(internalPort);
+
+    // Start the proxy server on the external port
+    this.httpServer.listen(port);
+
+    // Wait for both servers to be ready
+    await this.waitForServerReady(internalPort); // Wait for internal Verdaccio
+    await this.waitForServerReady(port); // Wait for proxy
 
     this.actualPort = port;
-    // Reset restart attempts on successful start
     this.restartAttempts = 0;
     console.log(`[VerdaccioServer] Started on http://localhost:${port}`);
     console.log(`[VerdaccioServer] Storage: ${this.storagePath}`);
@@ -206,202 +465,222 @@ export class VerdaccioServer {
   }
 
   /**
-   * Create the Verdaccio configuration file.
+   * Create a proxy server that handles lazy-build and ESM routes,
+   * then proxies to the internal Verdaccio server.
    */
-  private async createConfigFile(port: number): Promise<string> {
-    const configDir = path.join(this.storagePath, "config");
-    if (!fs.existsSync(configDir)) {
-      fs.mkdirSync(configDir, { recursive: true });
+  private createProxyServer(verdaccioPort: number): http.Server {
+    // Don't capture buildQueue in a closure - always use this.buildQueue
+    // so that setUserWorkspacePath() updates are visible
+    const checkStorage = this.checkPackageInStorage.bind(this);
+
+    return http.createServer(async (req, res) => {
+      const url = req.url ?? "/";
+      const requestId = Math.random().toString(36).slice(2, 8);
+
+      // Handle ESM routes: /-/esm/*
+      if (url.startsWith("/-/esm/") && this.esmTransformer) {
+        await this.handleEsmRequest(req, res, this.esmTransformer);
+        return;
+      }
+
+      // Handle lazy-build for workspace packages
+      // Only trigger lazy builds for GET requests (package metadata/tarball fetches)
+      // PUT requests are npm publish - don't intercept those or we get infinite loops
+      const pkgName = extractPackageName(url);
+      if (req.method === "GET" && pkgName && isWorkspacePackage(pkgName) && this.buildQueue) {
+        const inStorage = checkStorage(pkgName);
+        if (!inStorage) {
+          try {
+            // Use this.buildQueue to get the current build queue (may be updated by setUserWorkspacePath)
+            await this.buildQueue.ensureBuilt(pkgName);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`[LazyBuild] Failed to build ${pkgName}:`, message);
+            res.statusCode = 404;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({
+              error: "not_found",
+              reason: `Build failed: ${message}`,
+            }));
+            return;
+          }
+        }
+      }
+
+      // Proxy to Verdaccio
+      this.proxyToVerdaccio(req, res, verdaccioPort);
+    });
+  }
+
+  /**
+   * Handle ESM transform requests.
+   */
+  private async handleEsmRequest(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    esmTransformer: EsmTransformer
+  ): Promise<void> {
+    // Add CORS headers for cross-origin script loading from natstack-panel://
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+    // Handle CORS preflight
+    if (req.method === "OPTIONS") {
+      res.statusCode = 204;
+      res.end();
+      return;
     }
 
-    const config: VerdaccioConfig = {
-      storage: path.join(this.storagePath, "packages"),
-      uplinks: {
-        npmjs: {
-          url: "https://registry.npmjs.org/",
-          cache: true,
-        },
-      },
-      packages: {
-        // Workspace packages are served locally (no uplink proxy)
-        "@natstack/*": {
-          access: "$all",
-          publish: "$all",
-        },
-        // Workspace panels and workers (for panel-to-panel dependencies)
-        "@workspace-panels/*": {
-          access: "$all",
-          publish: "$all",
-        },
-        "@workspace-workers/*": {
-          access: "$all",
-          publish: "$all",
-        },
-        // Shared workspace packages (workspace/packages/)
-        "@workspace/*": {
-          access: "$all",
-          publish: "$all",
-        },
-        // All other packages proxy to npmjs
-        "**": {
-          access: "$all",
-          proxy: "npmjs",
-        },
-      },
-      log: { type: "stdout", level: "warn" },
-      self_path: "./",
-      web: { enable: false }, // Disable web UI for security
-      auth: {
-        htpasswd: {
-          file: path.join(configDir, "htpasswd"),
-          // Allow unlimited user creation (for dummy auth tokens)
-          max_users: -1,
-        },
-      },
+    const url = req.url ?? "";
+    const urlPath = url.replace("/-/esm/", "");
+    const decoded = decodeURIComponent(urlPath.split("?")[0] ?? urlPath);
+
+    let pkgName: string;
+    let version: string = "latest";
+
+    // Handle scoped packages
+    if (decoded.startsWith("@")) {
+      const match = decoded.match(/^(@[^/]+\/[^@]+)(?:@(.+))?$/);
+      if (!match || !match[1]) {
+        res.statusCode = 400;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ error: "Invalid package name" }));
+        return;
+      }
+      pkgName = match[1];
+      version = match[2] ?? "latest";
+    } else {
+      const atIndex = decoded.indexOf("@");
+      if (atIndex > 0) {
+        pkgName = decoded.substring(0, atIndex);
+        version = decoded.substring(atIndex + 1);
+      } else {
+        pkgName = decoded;
+      }
+    }
+
+    // Check if package is in the ESM-safe allowlist
+    if (!esmTransformer.isEsmSafe(pkgName)) {
+      res.statusCode = 400;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({
+        error: "not_esm_safe",
+        reason: `Package "${pkgName}" is not in the ESM-safe allowlist. ` +
+          `Known safe packages: ${Array.from(ESM_SAFE_PACKAGES).join(", ")}`,
+      }));
+      return;
+    }
+
+    try {
+      console.log(`[ESM] Request: ${pkgName}@${version}`);
+      const bundle = await esmTransformer.getEsmBundle(pkgName, version);
+
+      res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      res.end(bundle);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[ESM] Transform failed for ${pkgName}@${version}:`, message);
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({
+        error: "transform_failed",
+        reason: message,
+      }));
+    }
+  }
+
+  /**
+   * Proxy a request to the internal Verdaccio server.
+   * GET requests are retried on transient errors (ECONNRESET, socket hang up).
+   */
+  private proxyToVerdaccio(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    verdaccioPort: number,
+    retryCount = 0
+  ): void {
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY_MS = 100;
+
+    const options: http.RequestOptions = {
+      hostname: "127.0.0.1", // Use IPv4 explicitly to avoid IPv6 issues
+      port: verdaccioPort,
+      path: req.url,
+      method: req.method,
+      headers: req.headers,
+      timeout: 60000, // 60 second timeout
+      agent: this.proxyAgent ?? undefined, // Use connection pooling
     };
 
-    const configPath = path.join(configDir, "config.yaml");
-    const yaml = this.configToYaml(config);
-    fs.writeFileSync(configPath, yaml, "utf-8");
+    const proxyReq = http.request(options, (proxyRes) => {
+      res.writeHead(proxyRes.statusCode ?? 200, proxyRes.headers);
+      proxyRes.pipe(res);
+    });
 
-    // Create empty htpasswd file if it doesn't exist
-    const htpasswdPath = path.join(configDir, "htpasswd");
-    if (!fs.existsSync(htpasswdPath)) {
-      fs.writeFileSync(htpasswdPath, "", "utf-8");
-    }
+    proxyReq.on("error", (error: NodeJS.ErrnoException) => {
+      // Retry GET requests on transient connection errors
+      const isTransient = error.code === "ECONNRESET" || error.code === "ECONNREFUSED" || error.message?.includes("socket hang up");
+      const canRetry = req.method === "GET" && isTransient && retryCount < MAX_RETRIES;
 
-    return configPath;
+      if (canRetry) {
+        setTimeout(() => {
+          this.proxyToVerdaccio(req, res, verdaccioPort, retryCount + 1);
+        }, RETRY_DELAY_MS * (retryCount + 1));
+        return;
+      }
+
+      // Only log as error if we've exhausted retries or it's not a GET request
+      if (retryCount > 0 || req.method !== "GET") {
+        console.error(`[Verdaccio] Proxy error for ${req.method} ${req.url} (attempt ${retryCount + 1}):`, error.message);
+      }
+      if (!res.headersSent) {
+        res.statusCode = 502;
+        res.end("Bad Gateway");
+      }
+    });
+
+    proxyReq.on("timeout", () => {
+      console.error(`[Verdaccio] Proxy timeout for ${req.method} ${req.url}`);
+      proxyReq.destroy();
+      if (!res.headersSent) {
+        res.statusCode = 504;
+        res.end("Gateway Timeout");
+      }
+    });
+
+    req.pipe(proxyReq);
   }
 
   /**
-   * Convert config object to YAML string (simple implementation).
+   * Check if a package exists in Verdaccio's storage directory.
    */
-  private configToYaml(config: VerdaccioConfig): string {
-    const lines: string[] = [];
-
-    lines.push(`storage: ${config.storage}`);
-    lines.push("");
-
-    lines.push("uplinks:");
-    for (const [name, uplink] of Object.entries(config.uplinks)) {
-      lines.push(`  ${name}:`);
-      lines.push(`    url: ${uplink.url}`);
-      if (uplink.cache !== undefined) {
-        lines.push(`    cache: ${uplink.cache}`);
-      }
+  private checkPackageInStorage(pkgName: string): boolean {
+    // Handle scoped packages: @scope/name → @scope/name or @scope%2fname
+    const storageBase = path.join(this.storagePath, "packages");
+    const directPath = path.join(storageBase, pkgName);
+    if (fs.existsSync(directPath)) {
+      return true;
     }
-    lines.push("");
-
-    lines.push("packages:");
-    for (const [pattern, pkg] of Object.entries(config.packages)) {
-      lines.push(`  '${pattern}':`);
-      if (pkg.access) lines.push(`    access: ${pkg.access}`);
-      if (pkg.publish) lines.push(`    publish: ${pkg.publish}`);
-      if (pkg.proxy) lines.push(`    proxy: ${pkg.proxy}`);
+    if (pkgName.startsWith("@")) {
+      const encodedPath = path.join(storageBase, pkgName.replace("/", "%2F"));
+      return fs.existsSync(encodedPath);
     }
-    lines.push("");
-
-    if (config.log) {
-      lines.push("log:");
-      lines.push(`  type: ${config.log.type}`);
-      lines.push(`  level: ${config.log.level}`);
-      lines.push("");
-    }
-
-    if (config.web) {
-      lines.push("web:");
-      lines.push(`  enable: ${config.web.enable}`);
-      lines.push("");
-    }
-
-    if (config.auth) {
-      lines.push("auth:");
-      lines.push("  htpasswd:");
-      lines.push(`    file: ${config.auth.htpasswd.file}`);
-      if (config.auth.htpasswd.max_users !== undefined) {
-        lines.push(`    max_users: ${config.auth.htpasswd.max_users}`);
-      }
-      lines.push("");
-    }
-
-    return lines.join("\n");
-  }
-
-  /**
-   * Start the Verdaccio process and wait for it to be ready.
-   */
-  private async startVerdaccioProcess(port: number): Promise<void> {
-    // Use npx to run verdaccio with the config file
-    this.server = spawn(
-      "npx",
-      ["verdaccio", "--config", this.configPath!, "--listen", `${port}`],
-      {
-        cwd: this.workspaceRoot,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: {
-          ...process.env,
-          // Disable Verdaccio telemetry
-          VERDACCIO_DISABLE_ANALYTICS: "true",
-        },
-      }
-    );
-
-    let startupError: Error | null = null;
-
-    // Capture stderr for error reporting
-    this.server.stderr?.on("data", (data) => {
-      const text = data.toString();
-      // Only log warnings/errors, filter out noisy output
-      if (text.includes("warn") || text.includes("error") || text.includes("fatal")) {
-        console.error(`[VerdaccioServer] ${text.trim()}`);
-      }
-    });
-
-    this.server.on("error", (error) => {
-      startupError = error;
-      // Also track as unexpected exit if this happens after startup
-      if (this.actualPort !== null) {
-        this.unexpectedExit = true;
-        this.exitError = error;
-        console.error("[VerdaccioServer] Process error:", error);
-      }
-    });
-
-    this.server.on("exit", (code, signal) => {
-      // Only log as unexpected if we didn't initiate the stop (actualPort still set)
-      const wasRunning = this.actualPort !== null;
-      if (wasRunning) {
-        this.unexpectedExit = true;
-        this.exitError = new Error(`Verdaccio process exited unexpectedly (code: ${code}, signal: ${signal})`);
-        console.error(`[VerdaccioServer] Process exited unexpectedly with code ${code}, signal ${signal}`);
-      } else {
-        console.log(`[VerdaccioServer] Process exited with code ${code}`);
-      }
-      this.actualPort = null;
-      this.server = null;
-    });
-
-    // Wait for server to be ready via HTTP polling
-    await this.waitForServerReady(port, 30000);
-
-    // Check if process crashed during startup
-    if (startupError) {
-      throw startupError;
-    }
+    return false;
   }
 
   /**
    * Wait for Verdaccio to respond to HTTP requests.
-   * More robust than parsing stdout messages.
    */
   private async waitForServerReady(port: number, timeoutMs: number = 30000): Promise<void> {
     const startTime = Date.now();
     const pollInterval = 100;
 
     while (Date.now() - startTime < timeoutMs) {
-      // Check if process died
-      if (this.server === null) {
-        throw new Error("Verdaccio process exited during startup");
+      // Check if server died
+      if (this.httpServer === null) {
+        throw new Error("Verdaccio server failed to start");
       }
 
       try {
@@ -431,7 +710,7 @@ export class VerdaccioServer {
    * Check if Verdaccio is healthy and responding.
    */
   async healthCheck(): Promise<boolean> {
-    if (!this.actualPort || !this.server) {
+    if (!this.actualPort || !this.httpServer) {
       return false;
     }
 
@@ -459,16 +738,21 @@ export class VerdaccioServer {
    * Skips packages marked as private (they shouldn't be published).
    */
   private discoverPackagesInDir(packagesDir: string): Array<{ path: string; name: string }> {
+    // Check cache first
+    const cached = this.packageDiscoveryCache.get(packagesDir);
+    if (cached) {
+      return cached;
+    }
+
     const packages: Array<{ path: string; name: string }> = [];
 
     if (!fs.existsSync(packagesDir)) {
+      this.packageDiscoveryCache.set(packagesDir, packages);
       return packages;
     }
 
     const entries = fs.readdirSync(packagesDir, { withFileTypes: true })
       .filter(entry => entry.isDirectory() && !entry.name.startsWith("."));
-
-    console.log(`[Verdaccio] discoverPackagesInDir: ${packagesDir} has ${entries.length} entries: ${entries.map(e => e.name).join(", ")}`);
 
     for (const entry of entries) {
       const entryPath = path.join(packagesDir, entry.name);
@@ -486,13 +770,11 @@ export class VerdaccioServer {
             try {
               const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string; private?: boolean };
               // Skip private packages - they shouldn't be published
-              if (pkgJson.private) {
-                console.log(`[Verdaccio] Skipping private package: ${pkgJson.name}`);
-                continue;
+              if (!pkgJson.private) {
+                packages.push({ path: scopedPkgPath, name: pkgJson.name });
               }
-              packages.push({ path: scopedPkgPath, name: pkgJson.name });
-            } catch (err) {
-              console.log(`[Verdaccio] Failed to parse package.json at ${pkgJsonPath}: ${err}`);
+            } catch {
+              // Skip malformed package.json
             }
           }
         }
@@ -504,22 +786,44 @@ export class VerdaccioServer {
           try {
             const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { name: string; private?: boolean };
             // Skip private packages - they shouldn't be published
-            if (pkgJson.private) {
-              console.log(`[Verdaccio] Skipping private package: ${pkgJson.name}`);
-              continue;
+            if (!pkgJson.private) {
+              packages.push({ path: entryPath, name: pkgJson.name });
             }
-            console.log(`[Verdaccio] Found publishable package: ${pkgJson.name} at ${entryPath}`);
-            packages.push({ path: entryPath, name: pkgJson.name });
-          } catch (err) {
-            console.log(`[Verdaccio] Failed to parse package.json at ${pkgJsonPath}: ${err}`);
+          } catch {
+            // Skip malformed package.json
           }
-        } else {
-          console.log(`[Verdaccio] No package.json at ${pkgJsonPath}`);
         }
       }
     }
 
+    // Cache the result
+    this.packageDiscoveryCache.set(packagesDir, packages);
+
+    // Log only on first discovery
+    if (packages.length > 0) {
+      console.log(`[Verdaccio] Discovered ${packages.length} packages in ${path.basename(packagesDir)}/: ${packages.map(p => p.name).join(", ")}`);
+    }
+
     return packages;
+  }
+
+  /**
+   * Clean up orphaned .npmrc files from package directories.
+   * These can be left behind if the process crashes during npm publish.
+   */
+  private cleanupOrphanedNpmrc(packagesDir: string): void {
+    const packages = this.discoverPackagesInDir(packagesDir);
+    for (const pkg of packages) {
+      const npmrcPath = path.join(pkg.path, ".npmrc");
+      if (fs.existsSync(npmrcPath)) {
+        try {
+          fs.rmSync(npmrcPath);
+          console.log(`[Verdaccio] Cleaned up orphaned .npmrc in ${pkg.name}`);
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+    }
   }
 
   /**
@@ -540,6 +844,9 @@ export class VerdaccioServer {
       console.log("[VerdaccioServer] No packages directory found, skipping publish");
       return result;
     }
+
+    // Clean up any orphaned .npmrc files from previous crashes
+    this.cleanupOrphanedNpmrc(packagesDir);
 
     // Collect all packages to publish (supports scoped packages)
     const packagesToPublish = this.discoverPackagesInDir(packagesDir);
@@ -847,6 +1154,18 @@ export class VerdaccioServer {
     this.verdaccioVersionsCache = null;
   }
 
+  /**
+   * Invalidate the package discovery cache.
+   * Call when packages are added/removed from the workspace.
+   */
+  invalidatePackageDiscoveryCache(directory?: string): void {
+    if (directory) {
+      this.packageDiscoveryCache.delete(directory);
+    } else {
+      this.packageDiscoveryCache.clear();
+    }
+  }
+
   // ===========================================================================
   // Lazy/On-Demand Publishing
   // ===========================================================================
@@ -867,23 +1186,25 @@ export class VerdaccioServer {
       return path.join(this.workspaceRoot, "packages", name);
     }
 
-    if (!userWorkspacePath) {
+    // Use instance userWorkspacePath if not provided as argument
+    const workspacePath = userWorkspacePath ?? this.userWorkspacePath;
+    if (!workspacePath) {
       return null;
     }
 
     if (pkgName.startsWith("@workspace-panels/")) {
       const name = pkgName.replace("@workspace-panels/", "");
-      return path.join(userWorkspacePath, "panels", name);
+      return path.join(workspacePath, "panels", name);
     }
 
     if (pkgName.startsWith("@workspace-workers/")) {
       const name = pkgName.replace("@workspace-workers/", "");
-      return path.join(userWorkspacePath, "workers", name);
+      return path.join(workspacePath, "workers", name);
     }
 
     if (pkgName.startsWith("@workspace/")) {
       const name = pkgName.replace("@workspace/", "");
-      return path.join(userWorkspacePath, "packages", name);
+      return path.join(workspacePath, "packages", name);
     }
 
     return null;
@@ -941,108 +1262,6 @@ export class VerdaccioServer {
   }
 
   /**
-   * Ensure all workspace dependencies are published to Verdaccio.
-   * Walks transitive dependencies to publish everything needed.
-   *
-   * @param dependencies - Direct dependencies (from panel's package.json)
-   * @param userWorkspacePath - Path to user's workspace (for @workspace* packages)
-   * @returns Summary of what was published, skipped, or not found
-   */
-  async ensureDependenciesPublished(
-    dependencies: Record<string, string>,
-    userWorkspacePath?: string
-  ): Promise<{ published: string[]; skipped: string[]; notFound: string[] }> {
-    const result = {
-      published: [] as string[],
-      skipped: [] as string[],
-      notFound: [] as string[],
-    };
-
-    // Collect all workspace packages (direct + transitive)
-    const toProcess = new Set<string>();
-    const processed = new Set<string>();
-
-    // Helper to check if a package is a workspace package
-    const isWorkspacePackage = (name: string): boolean => {
-      return (
-        name.startsWith("@natstack/") ||
-        name.startsWith("@workspace/") ||
-        name.startsWith("@workspace-panels/") ||
-        name.startsWith("@workspace-workers/")
-      );
-    };
-
-    // Add direct workspace dependencies
-    for (const depName of Object.keys(dependencies)) {
-      if (isWorkspacePackage(depName)) {
-        toProcess.add(depName);
-      }
-    }
-
-    // Walk transitive deps
-    while (toProcess.size > 0) {
-      const pkgName = toProcess.values().next().value!;
-      toProcess.delete(pkgName);
-
-      if (processed.has(pkgName)) {
-        continue;
-      }
-      processed.add(pkgName);
-
-      // Read package.json to find transitive workspace deps
-      const pkgPath = this.resolvePackagePath(pkgName, userWorkspacePath);
-      if (!pkgPath) {
-        continue;
-      }
-
-      const pkgJsonPath = path.join(pkgPath, "package.json");
-      if (!fs.existsSync(pkgJsonPath)) {
-        continue;
-      }
-
-      try {
-        const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
-          dependencies?: Record<string, string>;
-        };
-        if (pkgJson.dependencies) {
-          for (const depName of Object.keys(pkgJson.dependencies)) {
-            if (isWorkspacePackage(depName) && !processed.has(depName)) {
-              toProcess.add(depName);
-            }
-          }
-        }
-      } catch {
-        // Skip malformed package.json
-      }
-    }
-
-    // Publish all collected packages in parallel (with locking for dedup)
-    const publishPromises = Array.from(processed).map(async (pkgName) => {
-      const status = await this.ensurePackagePublished(pkgName, userWorkspacePath);
-      return { pkgName, status };
-    });
-
-    const results = await Promise.all(publishPromises);
-
-    for (const { pkgName, status } of results) {
-      if (status === "published") {
-        result.published.push(pkgName);
-      } else if (status === "skipped") {
-        result.skipped.push(pkgName);
-      } else {
-        result.notFound.push(pkgName);
-      }
-    }
-
-    // Invalidate cache if anything was published
-    if (result.published.length > 0) {
-      this.invalidateVerdaccioVersionsCache();
-    }
-
-    return result;
-  }
-
-  /**
    * Publish a single package to the local registry.
    * Uses content-hash based versioning to skip unchanged packages.
    * @returns "published" if newly published, "skipped" if content unchanged
@@ -1092,19 +1311,21 @@ export class VerdaccioServer {
       }
     }
 
-    fs.writeFileSync(pkgJsonPath, JSON.stringify(modifiedPkgJson, null, 2));
-
-    // Save existing .npmrc if present
+    // Save existing .npmrc if present (before we modify anything)
     const existingNpmrc = fs.existsSync(npmrcPath) ? fs.readFileSync(npmrcPath, "utf-8") : null;
 
-    // Write temporary .npmrc with auth token for local registry
+    // Prepare .npmrc content
     const registryHost = new URL(registryUrl).host;
     const npmrcContent = `//${registryHost}/:_authToken="natstack-local-publish"\nregistry=${registryUrl}\n`;
-    fs.writeFileSync(npmrcPath, npmrcContent);
 
-    console.log(`[VerdaccioServer] Publishing ${pkgName}@${hashVersion}`);
+    console.log(`[VerdaccioServer] Publishing ${pkgName}@${hashVersion} to ${registryUrl}`);
 
+    // All file modifications inside try block to ensure cleanup
     try {
+      fs.writeFileSync(pkgJsonPath, JSON.stringify(modifiedPkgJson, null, 2));
+      fs.writeFileSync(npmrcPath, npmrcContent);
+      const PUBLISH_TIMEOUT_MS = 60000; // 60 second timeout for npm publish
+
       return await new Promise((resolve, reject) => {
         const proc = spawn(
           "npm",
@@ -1117,6 +1338,22 @@ export class VerdaccioServer {
 
         let stdout = "";
         let stderr = "";
+        let timedOut = false;
+
+        // Timeout to prevent hanging forever
+        const timeout = setTimeout(() => {
+          timedOut = true;
+          console.error(`[VerdaccioServer] npm publish timeout for ${pkgName} after ${PUBLISH_TIMEOUT_MS}ms`);
+          console.error(`[VerdaccioServer] stdout so far: ${stdout}`);
+          console.error(`[VerdaccioServer] stderr so far: ${stderr}`);
+          proc.kill("SIGTERM");
+          // Give it a moment to terminate gracefully, then force kill
+          setTimeout(() => {
+            if (!proc.killed) {
+              proc.kill("SIGKILL");
+            }
+          }, 5000);
+        }, PUBLISH_TIMEOUT_MS);
 
         proc.stdout?.on("data", (data) => {
           stdout += data.toString();
@@ -1127,9 +1364,16 @@ export class VerdaccioServer {
         });
 
         proc.on("close", (code) => {
-          if (code === 0) {
+          clearTimeout(timeout);
+          if (timedOut) {
+            reject(new Error(`npm publish timed out for ${pkgName}`));
+          } else if (code === 0) {
             console.log(`[VerdaccioServer] Published: ${pkgName}@${hashVersion}`);
             resolve("published");
+          } else if (stderr.includes("E409") || stderr.includes("this package is already present")) {
+            // E409 Conflict means another publish beat us to it - treat as success
+            console.log(`[VerdaccioServer] ${pkgName}@${hashVersion} already published (race condition)`);
+            resolve("skipped");
           } else {
             // Log errors for debugging
             if (stderr.trim()) {
@@ -1139,7 +1383,10 @@ export class VerdaccioServer {
           }
         });
 
-        proc.on("error", reject);
+        proc.on("error", (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
       });
     } finally {
       // Always restore original package.json
@@ -1158,40 +1405,60 @@ export class VerdaccioServer {
    * Stop the Verdaccio server.
    */
   async stop(): Promise<void> {
-    if (!this.server) {
-      return;
-    }
+    console.log("[VerdaccioServer] Stopping servers...");
+    const proxyServer = this.httpServer;
+    const verdaccioServer = this.verdaccioInternalServer;
 
-    const proc = this.server;
-    this.server = null;
+    this.httpServer = null;
+    this.verdaccioInternalServer = null;
     this.actualPort = null;
 
-    return new Promise((resolve) => {
-      let resolved = false;
-
-      const done = () => {
-        if (!resolved) {
-          resolved = true;
-          console.log("[VerdaccioServer] Stopped");
+    // Helper to close a server with timeout and force destroy
+    const closeServer = (server: http.Server, name: string): Promise<void> => {
+      return new Promise((resolve) => {
+        // First, stop accepting new connections
+        server.close(() => {
+          console.log(`[VerdaccioServer] ${name} closed gracefully`);
           resolve();
-        }
-      };
+        });
 
-      // Listen for exit (fires when process ends, before streams close)
-      proc.on("exit", done);
+        // Force close after timeout
+        const timeout = setTimeout(() => {
+          console.log(`[VerdaccioServer] ${name} force closing after timeout`);
+          // closeAllConnections is available in Node 18.2+
+          const serverWithCloseAll = server as http.Server & { closeAllConnections?: () => void };
+          if (typeof serverWithCloseAll.closeAllConnections === "function") {
+            serverWithCloseAll.closeAllConnections();
+          }
+          resolve();
+        }, 2000);
 
-      // Try graceful shutdown first
-      proc.kill("SIGTERM");
+        // Clear timeout if server closes gracefully
+        server.once("close", () => clearTimeout(timeout));
+      });
+    };
 
-      // Force kill and resolve after 3 seconds if still running
-      setTimeout(() => {
-        if (proc.exitCode === null) {
-          proc.kill("SIGKILL");
-        }
-        // Resolve anyway after timeout
-        done();
-      }, 3000);
-    });
+    // Stop both servers
+    const closePromises: Promise<void>[] = [];
+
+    if (proxyServer) {
+      closePromises.push(closeServer(proxyServer, "proxy server"));
+    }
+
+    if (verdaccioServer) {
+      closePromises.push(closeServer(verdaccioServer, "internal Verdaccio"));
+    }
+
+    if (closePromises.length > 0) {
+      await Promise.all(closePromises);
+      console.log("[VerdaccioServer] Stopped");
+    }
+
+    // Destroy the HTTP agent to close pooled connections
+    if (this.proxyAgent) {
+      this.proxyAgent.destroy();
+      this.proxyAgent = null;
+    }
   }
 
   /**
@@ -1210,25 +1477,26 @@ export class VerdaccioServer {
 
   /**
    * Check if the server is running.
-   * Returns false if the process exited unexpectedly.
    */
   isRunning(): boolean {
-    return this.actualPort !== null && this.server !== null && !this.unexpectedExit;
+    return this.actualPort !== null && this.httpServer !== null;
   }
 
   /**
    * Check if the server exited unexpectedly.
-   * Use this to detect crashes and trigger recovery logic.
+   * With in-process Verdaccio, this is always false (no subprocess to crash).
+   * @deprecated Not needed with in-process Verdaccio
    */
   hasUnexpectedExit(): boolean {
-    return this.unexpectedExit;
+    return false;
   }
 
   /**
    * Get the error from an unexpected exit, if any.
+   * @deprecated Not needed with in-process Verdaccio
    */
   getExitError(): Error | null {
-    return this.exitError;
+    return null;
   }
 
   /**
@@ -1236,15 +1504,14 @@ export class VerdaccioServer {
    * Returns the new port if successful, or throws if restart fails.
    */
   async restart(): Promise<number> {
-    if (this.isRunning()) {
+    if (this.isRunning() && this.actualPort !== null) {
       console.log("[VerdaccioServer] Server is already running, no restart needed");
-      return this.actualPort!;
+      return this.actualPort;
     }
 
     if (this.restartAttempts >= this.maxRestartAttempts) {
       throw new Error(
-        `[VerdaccioServer] Max restart attempts (${this.maxRestartAttempts}) exceeded. ` +
-        `Last error: ${this.exitError?.message ?? "unknown"}`
+        `[VerdaccioServer] Max restart attempts (${this.maxRestartAttempts}) exceeded.`
       );
     }
 
@@ -1276,24 +1543,18 @@ export class VerdaccioServer {
       if (healthy) {
         return true;
       }
-      // Process exists but not responding - mark as unexpected exit
-      console.warn("[VerdaccioServer] Health check failed, marking as crashed");
-      this.unexpectedExit = true;
-      this.exitError = new Error("Verdaccio health check failed");
+      // Server exists but not responding - something is wrong
+      console.warn("[VerdaccioServer] Health check failed, attempting restart");
     }
 
-    // Not running - try to restart if we haven't exceeded attempts
-    if (this.unexpectedExit || this.server === null) {
-      try {
-        await this.restart();
-        return true;
-      } catch (error) {
-        console.error("[VerdaccioServer] Failed to restart:", error);
-        return false;
-      }
+    // Not running - try to restart
+    try {
+      await this.restart();
+      return true;
+    } catch (error) {
+      console.error("[VerdaccioServer] Failed to restart:", error);
+      return false;
     }
-
-    return false;
   }
 
   /**
@@ -1346,9 +1607,16 @@ export class VerdaccioServer {
     // Convert workspace-relative repo path to absolute path
     const toAbsolutePath = (repoPath: string) => path.join(userWorkspacePath, repoPath);
 
+    // Update user workspace path for lazy building
+    this.setUserWorkspacePath(userWorkspacePath);
+
     watcher.on("repoAdded", async (repoPath) => {
       if (!this.isInPublishableDir(repoPath)) return;
       if (!this.isRunning()) return;
+
+      // Invalidate package discovery cache for the parent directory
+      const parentDir = path.dirname(toAbsolutePath(repoPath));
+      this.invalidatePackageDiscoveryCache(parentDir);
 
       try {
         const absolutePath = toAbsolutePath(repoPath);
@@ -1416,47 +1684,43 @@ export class VerdaccioServer {
    * This handles packages that existed before the app started (GitWatcher uses ignoreInitial).
    * Also publishes panels and workers so they can be dependencies of other panels/workers.
    *
+   * @deprecated With lazy building, this is no longer strictly needed.
+   * Packages will be built on-demand. However, pre-publishing can warm the cache.
+   *
    * @param userWorkspacePath - Absolute path to the user's workspace root
    */
   async publishUserWorkspacePackages(userWorkspacePath: string): Promise<void> {
-    console.log(`[Verdaccio] publishUserWorkspacePackages called with: ${userWorkspacePath}`);
+    // Update user workspace path for lazy building
+    this.setUserWorkspacePath(userWorkspacePath);
 
-    // Collect packages from all publishable directories
+    const packagesDir = path.join(userWorkspacePath, "packages");
+    const panelsDir = path.join(userWorkspacePath, "panels");
+    const workersDir = path.join(userWorkspacePath, "workers");
+
+    // Clean up any orphaned .npmrc files from previous crashes
+    if (fs.existsSync(packagesDir)) this.cleanupOrphanedNpmrc(packagesDir);
+    if (fs.existsSync(panelsDir)) this.cleanupOrphanedNpmrc(panelsDir);
+    if (fs.existsSync(workersDir)) this.cleanupOrphanedNpmrc(workersDir);
+
+    // Collect packages from all publishable directories (discovery is cached)
     const allPackages: Array<{ path: string; name: string }> = [];
 
-    // Traditional packages directory
-    const packagesDir = path.join(userWorkspacePath, "packages");
-    console.log(`[Verdaccio] Checking packages dir: ${packagesDir} (exists: ${fs.existsSync(packagesDir)})`);
     if (fs.existsSync(packagesDir)) {
-      const found = this.discoverPackagesInDir(packagesDir);
-      console.log(`[Verdaccio] Found ${found.length} packages in packages/: ${found.map(p => p.name).join(", ") || "(none)"}`);
-      allPackages.push(...found);
+      allPackages.push(...this.discoverPackagesInDir(packagesDir));
     }
 
-    // Panels directory (for @workspace-panels/* dependencies)
-    const panelsDir = path.join(userWorkspacePath, "panels");
-    console.log(`[Verdaccio] Checking panels dir: ${panelsDir} (exists: ${fs.existsSync(panelsDir)})`);
     if (fs.existsSync(panelsDir)) {
-      const found = this.discoverPackagesInDir(panelsDir);
-      console.log(`[Verdaccio] Found ${found.length} packages in panels/: ${found.map(p => p.name).join(", ") || "(none)"}`);
-      allPackages.push(...found);
+      allPackages.push(...this.discoverPackagesInDir(panelsDir));
     }
-
-    // Workers directory (for @workspace-workers/* dependencies)
-    const workersDir = path.join(userWorkspacePath, "workers");
-    console.log(`[Verdaccio] Checking workers dir: ${workersDir} (exists: ${fs.existsSync(workersDir)})`);
     if (fs.existsSync(workersDir)) {
-      const found = this.discoverPackagesInDir(workersDir);
-      console.log(`[Verdaccio] Found ${found.length} packages in workers/: ${found.map(p => p.name).join(", ") || "(none)"}`);
-      allPackages.push(...found);
+      allPackages.push(...this.discoverPackagesInDir(workersDir));
     }
 
     if (allPackages.length === 0) {
-      console.log(`[Verdaccio] No user workspace packages found to publish`);
       return;
     }
 
-    console.log(`[Verdaccio] Publishing ${allPackages.length} existing user workspace packages...`);
+    console.log(`[Verdaccio] Pre-publishing ${allPackages.length} workspace packages...`);
 
     // Publish in parallel batches
     for (let i = 0; i < allPackages.length; i += this.PUBLISH_CONCURRENCY) {

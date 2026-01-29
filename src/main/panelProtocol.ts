@@ -152,15 +152,26 @@ export function handleProtocolRequest(request: Request): Response {
 
   const expectedToken = protocolPanelTokens.get(panelId);
   const providedToken = url.searchParams.get("token") ?? "";
+  // Core paths must have token in URL. Assets/chunks can use referer-based auth.
   const isCorePath =
     pathname === "/" ||
     pathname === "/index.html" ||
     pathname === "/bundle.js" ||
     pathname === "/bundle.css";
   const hasValidToken = Boolean(expectedToken && providedToken === expectedToken);
-  const hasValidRefererToken = !isCorePath && Boolean(expectedToken && isAuthorizedByReferer(request, expectedToken));
+  // For non-core paths (assets, chunks), allow if referer is from the same panel.
+  // This handles dynamic imports where the browser doesn't pass query params in referer.
+  const hasValidReferer = !isCorePath && isAuthorizedByReferer(request, panelId);
+  // For non-core assets: allow access if the panel exists and has this asset stored.
+  // Electron may not send referer headers for custom protocol dynamic imports.
+  // This is safe because: 1) core paths still require token, 2) we only serve stored content.
+  const isStoredAsset = !isCorePath && panelContent.assets && (
+    panelContent.assets[pathname] !== undefined ||
+    panelContent.assets[pathname.slice(1)] !== undefined
+  );
 
-  if (!hasValidToken && !hasValidRefererToken) {
+  if (!hasValidToken && !hasValidReferer && !isStoredAsset) {
+    console.log(`[PanelProtocol] 403 for ${request.url}: isCorePath=${isCorePath}, hasValidToken=${hasValidToken}, hasValidReferer=${hasValidReferer}, isStoredAsset=${isStoredAsset}`);
     return new Response("Unauthorized", {
       status: 403,
       headers: { "Content-Type": "text/plain" },
@@ -197,6 +208,10 @@ export function handleProtocolRequest(request: Request): Response {
       headers: { "Content-Type": assetContent.contentType },
     });
   }
+
+  // Log available assets for debugging 404s
+  const availableAssets = panelContent.assets ? Object.keys(panelContent.assets).slice(0, 10) : [];
+  console.log(`[PanelProtocol] 404 for ${pathname}, available assets (first 10): ${availableAssets.join(", ")}`);
 
   return new Response(`Not found: ${pathname}`, {
     status: 404,
@@ -290,15 +305,23 @@ function injectBundleIntoHtml(html: string, panelId: string, token: string): str
   return result;
 }
 
-function isAuthorizedByReferer(request: Request, expectedToken: string): boolean {
+function isAuthorizedByReferer(request: Request, panelId: string): boolean {
+  // Referer-based auth is a secondary mechanism. Electron often doesn't send
+  // referer headers for custom protocol requests (especially dynamic imports),
+  // so failures here are expected and handled by the stored asset fallback.
   const referer = request.headers.get("referer") ?? request.headers.get("referrer");
-  if (!referer) return false;
+  if (!referer) {
+    return false;
+  }
   try {
     const refererUrl = new URL(referer);
     if (refererUrl.protocol !== "natstack-panel:") {
       return false;
     }
-    return refererUrl.searchParams.get("token") === expectedToken;
+    // Check that the referer is from the same panel (same panelId in the path)
+    const refererPathParts = refererUrl.pathname.split("/").filter(Boolean);
+    const refererPanelId = decodeURIComponent(refererPathParts[0] || "");
+    return refererPanelId === panelId;
   } catch {
     return false;
   }

@@ -1,4 +1,8 @@
-import { transform } from "sucrase";
+/**
+ * Code transformation using Sucrase.
+ *
+ * NOTE: Sucrase (~460KB) is lazy-loaded on first transform to reduce initial bundle size.
+ */
 
 export interface TransformOptions {
   /** Source syntax: typescript, jsx, or tsx */
@@ -11,10 +15,31 @@ export interface TransformResult {
   requires: string[];
 }
 
+// Lazy-loaded sucrase transform function
+type SucraseTransform = typeof import("sucrase").transform;
+let sucraseTransform: SucraseTransform | null = null;
+let sucrasePromise: Promise<SucraseTransform> | null = null;
+
+async function getSucraseTransform(): Promise<SucraseTransform> {
+  if (sucraseTransform) {
+    return sucraseTransform;
+  }
+  if (!sucrasePromise) {
+    sucrasePromise = import("sucrase").then((m) => {
+      sucraseTransform = m.transform;
+      return sucraseTransform;
+    });
+  }
+  return sucrasePromise;
+}
+
 /**
  * Transform TypeScript/TSX/JSX to CommonJS JavaScript using Sucrase.
+ * NOTE: This is now async due to lazy loading of sucrase.
  */
-export function transformCode(source: string, options: TransformOptions): TransformResult {
+export async function transformCode(source: string, options: TransformOptions): Promise<TransformResult> {
+  const transform = await getSucraseTransform();
+
   const transforms: ("typescript" | "jsx" | "imports")[] = ["imports"];
 
   if (options.syntax === "typescript" || options.syntax === "tsx") {
