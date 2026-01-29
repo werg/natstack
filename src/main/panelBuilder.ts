@@ -812,7 +812,8 @@ export class PanelBuilder {
 
   /**
    * Get a hash of all current Verdaccio package versions.
-   * Used in cache keys to invalidate when any @natstack dependency changes.
+   * Used in cache keys to invalidate when any workspace dependency changes.
+   * Includes both @natstack/* and user workspace packages (@workspace/*, @workspace-panels/*, @workspace-workers/*).
    * Returns empty string if Verdaccio is not initialized.
    */
   private async getVerdaccioVersionsHash(): Promise<string> {
@@ -821,13 +822,26 @@ export class PanelBuilder {
     }
 
     try {
-      const verdaccioVersions = await getVerdaccioServer().getVerdaccioVersions();
-      if (Object.keys(verdaccioVersions).length === 0) {
+      const verdaccio = getVerdaccioServer();
+
+      // Get @natstack/* package versions
+      const natstackVersions = await verdaccio.getVerdaccioVersions();
+
+      // Get user workspace package versions (@workspace/*, @workspace-panels/*, @workspace-workers/*)
+      const userWorkspace = getActiveWorkspace();
+      const userWorkspaceVersions = userWorkspace
+        ? await verdaccio.getUserWorkspaceVersions(userWorkspace.path)
+        : {};
+
+      // Merge all versions
+      const allVersions = { ...natstackVersions, ...userWorkspaceVersions };
+
+      if (Object.keys(allVersions).length === 0) {
         return "";
       }
 
-      const sorted = Object.keys(verdaccioVersions).sort();
-      return crypto.createHash("sha256").update(JSON.stringify(verdaccioVersions, sorted)).digest("hex").slice(0, 12);
+      const sorted = Object.keys(allVersions).sort();
+      return crypto.createHash("sha256").update(JSON.stringify(allVersions, sorted)).digest("hex").slice(0, 12);
     } catch {
       return "";
     }
@@ -1275,6 +1289,13 @@ export class PanelBuilder {
     ])].sort();
     const versionsChanged = !lastKnownVersions ||
       JSON.stringify(verdaccioVersions, allKeys) !== JSON.stringify(lastKnownVersions, allKeys);
+
+    // When versions change, clear ALL panels' cached relevantVersions.
+    // This prevents stale cache hits when: Panel A built → versions change → Panel B built
+    // (updates lastKnownVersions) → Panel A rebuilt (would incorrectly use stale cache).
+    if (versionsChanged) {
+      this.panelRelevantVersionsCache.clear();
+    }
 
     let relevantVersions: Record<string, string>;
 
