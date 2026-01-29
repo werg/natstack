@@ -83,6 +83,8 @@ export interface ExternalTypesResult {
   referencedPackages?: string[];
   /** The main entry point file path (e.g., "index.d.ts" or "dist/index.d.ts") */
   entryPoint?: string;
+  /** Subpath exports (e.g., "./jsx-runtime" -> "jsx-runtime.d.ts") */
+  subpaths?: Map<string, string>;
 }
 
 /**
@@ -148,6 +150,8 @@ export class TypeCheckService {
   private natstackPackageTypes: Record<string, NatstackPackageTypes> = {};
   /** Entry points for loaded external packages (package name -> entry file path) */
   private externalPackageEntryPoints = new Map<string, string>();
+  /** Subpath exports for loaded external packages (package name -> (subpath -> file path)) */
+  private externalPackageSubpaths = new Map<string, Map<string, string>>();
   /** Cache for module resolution results to avoid O(n) scans */
   private resolvedModuleCache = new Map<string, string | null>();
   /** TypeScript module resolution cache for ts.resolveModuleName */
@@ -344,6 +348,7 @@ export class TypeCheckService {
       const files = value instanceof Map ? value : value.files;
       const referencedPackages = value instanceof Map ? undefined : value.referencedPackages;
       const entryPoint = value instanceof Map ? undefined : value.entryPoint;
+      const subpaths = value instanceof Map ? undefined : value.subpaths;
 
       if (files && files.size > 0) {
         for (const [filePath, content] of files) {
@@ -356,6 +361,11 @@ export class TypeCheckService {
         // Store entry point for this package (used by findLoadedTypesEntry)
         if (entryPoint) {
           this.externalPackageEntryPoints.set(pkg, entryPoint);
+        }
+
+        // Store subpath exports for this package
+        if (subpaths && subpaths.size > 0) {
+          this.externalPackageSubpaths.set(pkg, subpaths);
         }
       }
 
@@ -391,6 +401,7 @@ export class TypeCheckService {
           files: result.files,
           referencedPackages: result.referencedPackages,
           entryPoint: result.entryPoint ?? undefined,
+          subpaths: result.subpaths.size > 0 ? result.subpaths : undefined,
         };
       }
       return null;
@@ -914,6 +925,8 @@ export class TypeCheckService {
 
   /**
    * Uncached implementation of findLoadedTypesEntry.
+   * Uses entry point and subpath information from TypeDefinitionLoader,
+   * with fallback for packages that don't use exports field (e.g., @types/*).
    */
   private findLoadedTypesEntryUncached(moduleName: string): string | null {
     const pkgName = this.extractPackageName(moduleName);
@@ -928,54 +941,41 @@ export class TypeCheckService {
       : null;
 
     if (subpath) {
-      // Try subpath-specific entry points first
-      const subpathEntries = [
-        `${basePath}/${subpath}.d.ts`,
-        `${basePath}/${subpath}.d.mts`,
-        `${basePath}/${subpath}/index.d.ts`,
-        `${basePath}/${subpath}/index.d.mts`,
-        `${basePath}/dist/${subpath}.d.ts`,
-        `${basePath}/dist/${subpath}/index.d.ts`,
-      ];
-
-      for (const entryPoint of subpathEntries) {
-        if (this.files.has(entryPoint)) {
-          return entryPoint;
+      // First, check if we have a known subpath export from package.json exports
+      const pkgSubpaths = this.externalPackageSubpaths.get(pkgName);
+      if (pkgSubpaths) {
+        // Try both "./" prefixed and raw subpath (exports use "./" prefix)
+        const subpathFile = pkgSubpaths.get(`./${subpath}`) ?? pkgSubpaths.get(subpath);
+        if (subpathFile) {
+          const fullPath = `${basePath}/${subpathFile}`;
+          if (this.files.has(fullPath)) {
+            return fullPath;
+          }
         }
       }
+
+      // Fallback for packages without exports field (e.g., @types/react)
+      // Check if a file with the subpath name exists directly
+      const directFile = `${basePath}/${subpath}.d.ts`;
+      if (this.files.has(directFile)) {
+        return directFile;
+      }
+
+      // Try index.d.ts in subpath directory
+      const indexFile = `${basePath}/${subpath}/index.d.ts`;
+      if (this.files.has(indexFile)) {
+        return indexFile;
+      }
+
+      return null;
     }
 
-    // First, check if we have a known entry point from loading this package
+    // Main package import - check if we have a known entry point
     const knownEntryPoint = this.externalPackageEntryPoints.get(pkgName);
     if (knownEntryPoint) {
       const fullPath = `${basePath}/${knownEntryPoint}`;
       if (this.files.has(fullPath)) {
         return fullPath;
-      }
-    }
-
-    // Try common package-level entry points in order of priority
-    const entryPoints = [
-      `${basePath}/index.d.ts`,
-      `${basePath}/index.d.mts`,
-      `${basePath}/dist/index.d.ts`,
-      `${basePath}/dist/index.d.mts`,
-      `${basePath}/types/index.d.ts`,
-      `${basePath}/lib/index.d.ts`,
-      `${basePath}/build/index.d.ts`,
-    ];
-
-    for (const entryPoint of entryPoints) {
-      if (this.files.has(entryPoint)) {
-        return entryPoint;
-      }
-    }
-
-    // If no common entry found, search for any .d.ts file in the package
-    const prefix = basePath + "/";
-    for (const filePath of this.files.keys()) {
-      if (filePath.startsWith(prefix) && filePath.endsWith(".d.ts")) {
-        return filePath;
       }
     }
 

@@ -40,6 +40,8 @@ export interface LoadedTypeDefinitions {
   errors: string[];
   /** Package names referenced via /// <reference types="..." /> that should be loaded separately */
   referencedPackages: string[];
+  /** Subpath exports map (e.g., "./jsx-runtime" -> "jsx-runtime.d.ts") */
+  subpaths: Map<string, string>;
 }
 
 /**
@@ -71,6 +73,7 @@ export class TypeDefinitionLoader {
       entryPoint: null,
       errors: [],
       referencedPackages: [],
+      subpaths: new Map(),
     };
 
     // Try to find the package
@@ -144,12 +147,19 @@ export class TypeDefinitionLoader {
         exports?: unknown;
       };
 
-      // Find the types entry point
+      // Find the types entry point and subpath exports
       let typesEntry = packageJson.types || packageJson.typings;
 
-      // Check exports field for types
-      if (!typesEntry && packageJson.exports) {
-        typesEntry = this.extractTypesFromExports(packageJson.exports);
+      // Check exports field for types and subpaths
+      if (packageJson.exports) {
+        const { main, subpaths } = this.extractAllExports(packageJson.exports);
+        if (!typesEntry && main) {
+          typesEntry = main;
+        }
+        // Store subpath exports
+        for (const [subpath, filePath] of subpaths) {
+          result.subpaths.set(subpath, filePath);
+        }
       }
 
       // Fall back to index.d.ts
@@ -175,6 +185,10 @@ export class TypeDefinitionLoader {
       result.entryPoint = typesEntry.startsWith("./") ? typesEntry.slice(2) : typesEntry;
       await this.loadTypeFile(entryPath, packageDir, result, visitedFiles);
 
+      // Also load any other .d.ts files at root level (subpath entry points like jsx-runtime.d.ts)
+      // These are often not imported by the main entry but needed for subpath imports
+      await this.loadRootSubpathEntries(packageDir, result, visitedFiles);
+
       return result;
     } catch (error) {
       result.errors.push(`Error loading package at ${packageDir}: ${error}`);
@@ -183,41 +197,103 @@ export class TypeDefinitionLoader {
   }
 
   /**
-   * Extract types path from package.json exports field.
+   * Extract types paths from package.json exports field.
+   * Returns main entry point and a map of subpath exports.
    */
-  private extractTypesFromExports(exports: unknown): string | undefined {
+  private extractAllExports(exports: unknown): { main: string | undefined; subpaths: Map<string, string> } {
+    const subpaths = new Map<string, string>();
+
     if (!exports || typeof exports !== "object") {
-      return undefined;
+      return { main: undefined, subpaths };
     }
 
     const exportsObj = exports as Record<string, unknown>;
+    let main: string | undefined;
 
-    // Check "." entry
-    const mainExport = exportsObj["."];
-    if (mainExport) {
-      if (typeof mainExport === "string" && mainExport.endsWith(".d.ts")) {
-        return mainExport;
+    for (const [key, value] of Object.entries(exportsObj)) {
+      const typesPath = this.extractTypesPathFromExport(value);
+      if (!typesPath) continue;
+
+      // Normalize the path (remove leading ./)
+      const normalizedPath = typesPath.startsWith("./") ? typesPath.slice(2) : typesPath;
+
+      if (key === ".") {
+        main = normalizedPath;
+      } else if (key.startsWith("./")) {
+        // Subpath export like "./jsx-runtime"
+        subpaths.set(key, normalizedPath);
       }
-      if (typeof mainExport === "object" && mainExport !== null) {
-        const entry = mainExport as Record<string, unknown>;
-        // Check for types, import, or default with .d.ts
-        for (const key of ["types", "import", "default"]) {
-          const value = entry[key];
-          if (typeof value === "string" && value.endsWith(".d.ts")) {
-            return value;
-          }
-          // Nested condition (like "types" inside "import")
-          if (typeof value === "object" && value !== null) {
-            const nested = value as Record<string, unknown>;
-            if (typeof nested["types"] === "string") {
-              return nested["types"];
-            }
+    }
+
+    return { main, subpaths };
+  }
+
+  /**
+   * Extract types path from a single export value.
+   */
+  private extractTypesPathFromExport(exportValue: unknown): string | undefined {
+    if (typeof exportValue === "string" && exportValue.endsWith(".d.ts")) {
+      return exportValue;
+    }
+
+    if (typeof exportValue === "object" && exportValue !== null) {
+      const entry = exportValue as Record<string, unknown>;
+      // Check for types, import, or default with .d.ts
+      for (const key of ["types", "import", "default"]) {
+        const value = entry[key];
+        if (typeof value === "string" && value.endsWith(".d.ts")) {
+          return value;
+        }
+        // Nested condition (like "types" inside "import")
+        if (typeof value === "object" && value !== null) {
+          const nested = value as Record<string, unknown>;
+          if (typeof nested["types"] === "string") {
+            return nested["types"];
           }
         }
       }
     }
 
     return undefined;
+  }
+
+  /**
+   * Load .d.ts files at package root that are subpath entry points.
+   * These files (like jsx-runtime.d.ts in @types/react) are often not imported
+   * by the main entry but are needed for subpath imports.
+   */
+  private async loadRootSubpathEntries(
+    packageDir: string,
+    result: LoadedTypeDefinitions,
+    visitedFiles: Set<string>
+  ): Promise<void> {
+    try {
+      const entries = await fs.readdir(packageDir, { withFileTypes: true });
+
+      for (const entry of entries) {
+        // Only process .d.ts files at root (not directories)
+        if (!entry.isFile() || !entry.name.endsWith(".d.ts")) {
+          continue;
+        }
+
+        // Skip if already loaded (e.g., index.d.ts)
+        const filePath = path.join(packageDir, entry.name);
+        if (visitedFiles.has(filePath)) {
+          continue;
+        }
+
+        // Load this subpath entry file
+        await this.loadTypeFile(filePath, packageDir, result, visitedFiles);
+
+        // Register as a subpath (e.g., "jsx-runtime.d.ts" -> "./jsx-runtime")
+        const subpathName = entry.name.replace(/\.d\.ts$/, "");
+        if (subpathName !== "index") {
+          result.subpaths.set(`./${subpathName}`, entry.name);
+        }
+      }
+    } catch {
+      // Ignore errors reading directory
+    }
   }
 
   /**
