@@ -229,21 +229,22 @@ function HoverableBreadcrumbItem({
           size="1"
           variant="ghost"
           color="gray"
+          radius="small"
           aria-label="Archive panel"
           onClick={handleArchive}
           className="breadcrumb-archive-btn"
           style={{
             position: "absolute",
-            right: -3,
+            right: 2,
             top: "50%",
             transform: "translateY(-50%)",
-            width: 18,
-            height: 18,
+            width: 16,
+            height: 16,
             padding: 0,
             opacity: 0.6,
           }}
         >
-          <Cross2Icon width={12} height={12} />
+          <Cross2Icon width={10} height={10} />
         </IconButton>
       )}
     </span>
