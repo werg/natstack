@@ -205,14 +205,14 @@ export class PanelManager {
 
           this.notifyPanelTreeUpdate();
         } else {
-          // All panels were cleaned up, show launcher
-          console.log("[PanelManager] No panels remaining after cleanup, showing launcher");
-          await this.createShellPanel("new");
+          // All panels were cleaned up - run init panels and show launcher
+          console.log("[PanelManager] No panels remaining after cleanup, running initialization");
+          await this.runInitPanelsAndLauncher();
         }
       } else {
-        // No existing panels, show the launcher
-        console.log("[PanelManager] No existing panels, showing launcher");
-        await this.createShellPanel("new");
+        // No existing panels - run init panels and show launcher
+        console.log("[PanelManager] No existing panels, running initialization");
+        await this.runInitPanelsAndLauncher();
       }
     } catch (error) {
       console.error("[PanelManager] Failed to load panel tree from database:", error);
@@ -229,6 +229,32 @@ export class PanelManager {
       // Re-throw to let setViewManager's catch block handle notification
       throw error;
     }
+  }
+
+  /**
+   * Run workspace init panels and show the launcher.
+   * Called when panel tree is empty (fresh install or after cleanup).
+   */
+  private async runInitPanelsAndLauncher(): Promise<void> {
+    const workspace = getActiveWorkspace();
+    const initPanels = workspace?.config.initPanels ?? [];
+
+    // Create init panels first (they run in background, seeding data etc.)
+    if (initPanels.length > 0) {
+      console.log(`[PanelManager] Creating ${initPanels.length} init panel(s) from workspace config`);
+      for (const panelSource of initPanels) {
+        try {
+          const result = await this.createInitPanel(panelSource);
+          console.log(`[PanelManager] Created init panel: ${result.id}`);
+        } catch (error) {
+          console.error(`[PanelManager] Failed to create init panel ${panelSource}:`, error);
+          // Continue with other init panels even if one fails
+        }
+      }
+    }
+
+    // Always show the launcher
+    await this.createShellPanel("new");
   }
 
   /**
@@ -1205,6 +1231,10 @@ export class PanelManager {
    * Shared creation path for both root and child panels.
    * When replacePanel is provided, it replaces that panel in the tree at the same position.
    * templateSpec is REQUIRED - every panel must have a context template.
+   *
+   * Root panel modes:
+   * - isRoot: true, addAsRoot: false (default) - Reset tree and create single root panel
+   * - isRoot: true, addAsRoot: true - Add as root panel without resetting tree
    */
   private async createPanelFromManifest(params: {
     manifest: PanelManifest;
@@ -1212,10 +1242,11 @@ export class PanelManager {
     parent: Panel | null;
     options: PanelCreateOptions;
     isRoot?: boolean;
+    addAsRoot?: boolean;
     replacePanel?: Panel;
     stateArgs?: Record<string, unknown>;
   }): Promise<{ id: string; type: SharedPanel.PanelType; title: string }> {
-    const { manifest, relativePath, parent, options, isRoot, replacePanel, stateArgs } = params;
+    const { manifest, relativePath, parent, options, isRoot, addAsRoot, replacePanel, stateArgs } = params;
 
     const isWorker = manifest.type === "worker";
     // Determine unsafe mode from manifest or options
@@ -1365,6 +1396,10 @@ export class PanelManager {
           // Root replacement - insert at same index
           this.rootPanels.splice(replaceIndex, 0, panel);
         }
+        this.panels.set(panel.id, panel);
+      } else if (isRoot && addAsRoot) {
+        // Add as root without resetting - used for init panels
+        this.rootPanels.unshift(panel);
         this.panels.set(panel.id, panel);
       } else if (isRoot) {
         // Fresh root creation (NOT replacement) - reset everything
@@ -2634,6 +2669,45 @@ export class PanelManager {
     this.focusPanel(panel.id);
 
     return { id: panel.id, type: getPanelType(panel), title: panel.title };
+  }
+
+  /**
+   * Create an initialization panel as a root panel.
+   * Used for panels specified in workspace config's initPanels array.
+   * These panels are created on first initialization when the panel tree is empty.
+   * Unlike createPanel, this doesn't require a caller and adds to roots without resetting.
+   */
+  async createInitPanel(
+    source: string
+  ): Promise<{ id: string; type: SharedPanel.PanelType; title: string }> {
+    const { relativePath, absolutePath } = this.normalizePanelPath(source);
+
+    // Read manifest
+    let manifest: PanelManifest;
+    try {
+      manifest = this.builder.loadManifest(absolutePath);
+    } catch (error) {
+      throw new Error(
+        `Failed to load manifest for init panel ${source}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    // Workers are not supported as init panels
+    if (manifest.type === "worker") {
+      throw new Error(`Init panels cannot be workers: ${source}`);
+    }
+
+    // Use default template spec
+    const options: PanelCreateOptions = { templateSpec: DEFAULT_TEMPLATE_SPEC };
+
+    return this.createPanelFromManifest({
+      manifest,
+      relativePath,
+      parent: null,
+      options,
+      isRoot: true,
+      addAsRoot: true, // Add to roots without resetting tree
+    });
   }
 
   /**
