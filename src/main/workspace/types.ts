@@ -136,6 +136,11 @@ export interface WorkspaceConfig {
   /** Git server configuration */
   git?: GitConfig;
   /**
+   * Default panel to open when workspace loads.
+   * Example: "panels/chat-launcher"
+   */
+  rootPanel?: string;
+  /**
    * Panels to create on first initialization (when panel tree is empty).
    * These panels are created as root panels before the launcher.
    * Useful for panels that need to run once to seed data or perform setup.

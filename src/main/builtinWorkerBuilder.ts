@@ -11,7 +11,7 @@
 import * as esbuild from "esbuild";
 import * as fs from "fs";
 import * as path from "path";
-import { getPackagesDir, getCentralConfigDirectory, getAppNodeModules, getAppRoot } from "./paths.js";
+import { getPackagesDir, getCentralConfigDirectory, getAppNodeModules, getAppRoot, getPrebuiltBuiltinWorkersDir } from "./paths.js";
 import {
   generateAsyncTrackingBanner,
   generateModuleMapBanner,
@@ -89,8 +89,40 @@ function getBuiltinWorkersDir(): string {
 }
 
 /**
+ * Try to load a pre-built worker from the app resources.
+ * Returns null if the worker is not pre-built (needs runtime compilation).
+ */
+function tryLoadPrebuiltWorker(worker: BuiltinWorker): string | null {
+  const prebuiltDir = getPrebuiltBuiltinWorkersDir();
+  if (!prebuiltDir) {
+    // Development mode or prebuilt workers not available
+    return null;
+  }
+
+  const workerDir = path.join(prebuiltDir, worker);
+  const bundlePath = path.join(workerDir, "bundle.js");
+
+  if (!fs.existsSync(bundlePath)) {
+    return null;
+  }
+
+  try {
+    const bundle = fs.readFileSync(bundlePath, "utf-8");
+    console.log(`[BuiltinWorkerBuilder] Loaded prebuilt worker: ${worker}`);
+    return bundle;
+  } catch (error) {
+    console.warn(
+      `[BuiltinWorkerBuilder] Failed to load prebuilt worker ${worker}:`,
+      error instanceof Error ? error.message : String(error)
+    );
+    return null;
+  }
+}
+
+/**
  * Build a built-in worker for safe mode (OPFS).
  * Built-in workers only run in safe mode.
+ * In production, tries to load pre-built workers first.
  */
 export async function buildBuiltinWorker(worker: BuiltinWorker): Promise<string> {
   const cached = builtinWorkerBundles.get(worker);
@@ -99,6 +131,14 @@ export async function buildBuiltinWorker(worker: BuiltinWorker): Promise<string>
     return cached;
   }
 
+  // Try to load prebuilt worker first (production builds)
+  const prebuilt = tryLoadPrebuiltWorker(worker);
+  if (prebuilt) {
+    builtinWorkerBundles.set(worker, prebuilt);
+    return prebuilt;
+  }
+
+  // Fall back to runtime build
   console.log(`[BuiltinWorkerBuilder] Building ${worker}...`);
 
   const workersDir = getBuiltinWorkersDir();

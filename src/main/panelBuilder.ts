@@ -29,7 +29,7 @@ import {
   type TypeCheckDiagnostic,
 } from "@natstack/runtime/typecheck";
 import { isVerdaccioServerInitialized, getVerdaccioServer } from "./verdaccioServer.js";
-import { getPackagesDir, getAppNodeModules, getActiveWorkspace, getAppRoot } from "./paths.js";
+import { getPackagesDir, getAppNodeModules, getActiveWorkspace, getAppRoot, getShippedPanelsDir } from "./paths.js";
 import {
   getPackageStore,
   createPackageFetcher,
@@ -1993,12 +1993,109 @@ import ${JSON.stringify(relativeUserEntry)};
   }
 
   // ===========================================================================
+  // Shipped Panel Loading (for production builds)
+  // ===========================================================================
+
+  /**
+   * Try to load a pre-built shipped panel from the app resources.
+   * Returns null if the panel is not shipped (user panels need runtime compilation).
+   *
+   * @param panelName - Name of the panel (e.g., "chat", "agent-manager")
+   * @returns ChildBuildResult if shipped panel found, null otherwise
+   */
+  tryLoadShippedPanel(panelName: string): ChildBuildResult | null {
+    const shippedDir = getShippedPanelsDir();
+    if (!shippedDir) {
+      // Development mode or shipped panels not available
+      return null;
+    }
+
+    const panelDir = path.join(shippedDir, panelName);
+    const bundlePath = path.join(panelDir, "bundle.js");
+    const htmlPath = path.join(panelDir, "html.html");
+    const manifestPath = path.join(panelDir, "manifest.json");
+    const assetsPath = path.join(panelDir, "assets.json");
+
+    // Check if all required files exist
+    if (!fs.existsSync(bundlePath) || !fs.existsSync(htmlPath) || !fs.existsSync(manifestPath)) {
+      return null;
+    }
+
+    try {
+      const bundle = fs.readFileSync(bundlePath, "utf-8");
+      const html = fs.readFileSync(htmlPath, "utf-8");
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as PanelManifest;
+
+      // Read CSS if present
+      const cssPath = path.join(panelDir, "bundle.css");
+      const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, "utf-8") : undefined;
+
+      // Read assets if present
+      let assets: ChildBuildResult["assets"] | undefined;
+      if (fs.existsSync(assetsPath)) {
+        assets = JSON.parse(fs.readFileSync(assetsPath, "utf-8"));
+      }
+
+      console.log(`[PanelBuilder] Loaded shipped panel: ${panelName}`);
+
+      return {
+        success: true,
+        bundle,
+        html,
+        css,
+        assets,
+        manifest,
+        buildLog: `Loaded from shipped panel: ${panelName}`,
+      };
+    } catch (error) {
+      console.warn(
+        `[PanelBuilder] Failed to load shipped panel ${panelName}:`,
+        error instanceof Error ? error.message : String(error)
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Check if a panel path corresponds to a shipped panel.
+   * Shipped panels are in workspace/panels/<name> and match known shipped names.
+   *
+   * @param panelPath - Relative panel path (e.g., "panels/chat")
+   * @returns The panel name if it's a shipped panel, null otherwise
+   */
+  private getShippedPanelName(panelPath: string): string | null {
+    // Shipped panels are always in "panels/<name>" format
+    const match = panelPath.match(/^panels\/([^/]+)$/);
+    if (!match) {
+      return null;
+    }
+
+    const panelName = match[1];
+
+    // Check if this panel exists in shipped panels directory
+    const shippedDir = getShippedPanelsDir();
+    if (!shippedDir) {
+      return null;
+    }
+
+    const panelDir = path.join(shippedDir, panelName!);
+    if (fs.existsSync(panelDir)) {
+      return panelName!;
+    }
+
+    return null;
+  }
+
+  // ===========================================================================
   // Public Build API
   // ===========================================================================
 
   /**
    * Build a panel from a workspace path with optional version specifier.
    * All panels (root and child) are built and served via natstack-panel:// protocol.
+   *
+   * In production, shipped panels are loaded from pre-built bundles instead of
+   * being compiled at runtime. User panels are still compiled at runtime.
    *
    * @param panelsRoot - Absolute path to workspace root
    * @param panelPath - Relative path to panel within workspace (e.g., "panels/root")
@@ -2022,6 +2119,20 @@ import ${JSON.stringify(relativeUserEntry)};
     };
 
     try {
+      // Step 0: Check for shipped panels first (production builds only)
+      // Shipped panels don't need version specifiers - they're always at the built-in version
+      if (!version) {
+        const shippedPanelName = this.getShippedPanelName(panelPath);
+        if (shippedPanelName) {
+          const shippedResult = this.tryLoadShippedPanel(shippedPanelName);
+          if (shippedResult) {
+            log(`Loaded shipped panel: ${shippedPanelName}`);
+            onProgress?.({ state: "ready", message: "Loaded shipped panel", log: buildLog });
+            return shippedResult;
+          }
+        }
+      }
+
       // Get verdaccio versions hash once at the start for consistent cache keys
       const versionsHash = await this.getVerdaccioVersionsHash();
 

@@ -252,7 +252,8 @@ function getDefaultWorkspacePath(): string {
 }
 
 /**
- * Create a minimal default workspace configuration
+ * Create a default workspace configuration with full scaffolding.
+ * This is the first-run experience for new users.
  */
 function createDefaultWorkspaceConfig(workspacePath: string): WorkspaceConfig {
   const configPath = path.join(workspacePath, WORKSPACE_CONFIG_FILE);
@@ -260,17 +261,51 @@ function createDefaultWorkspaceConfig(workspacePath: string): WorkspaceConfig {
   // Generate a simple ID
   const id = `workspace-${Date.now().toString(36)}`;
 
+  // Create workspace config that references shipped panels
+  // In production, these will be loaded from pre-built bundles
   const config: WorkspaceConfig = {
     id,
+    // Root panel to show when workspace opens (uses shipped chat-launcher)
+    rootPanel: "panels/chat-launcher",
   };
 
-  // Ensure directory exists
-  fs.mkdirSync(workspacePath, { recursive: true });
-  fs.mkdirSync(path.join(workspacePath, "panels"), { recursive: true });
-  fs.mkdirSync(path.join(workspacePath, ".cache"), { recursive: true });
+  console.log(`[Workspace] Creating default workspace at ${workspacePath}`);
 
-  // Write config
-  fs.writeFileSync(configPath, YAML.stringify(config), "utf-8");
+  // Create workspace directory structure
+  fs.mkdirSync(workspacePath, { recursive: true });
+
+  // Core directories
+  fs.mkdirSync(path.join(workspacePath, "panels"), { recursive: true });
+  fs.mkdirSync(path.join(workspacePath, "workers"), { recursive: true });
+  fs.mkdirSync(path.join(workspacePath, "packages"), { recursive: true });
+  fs.mkdirSync(path.join(workspacePath, "contexts"), { recursive: true });
+  fs.mkdirSync(path.join(workspacePath, ".cache"), { recursive: true });
+  fs.mkdirSync(path.join(workspacePath, ".databases"), { recursive: true });
+
+  // Write config with helpful comments
+  const configContent = `# NatStack Workspace Configuration
+# Generated: ${new Date().toISOString()}
+
+# Unique workspace identifier
+id: ${id}
+
+# Default panel to open when workspace loads
+# In production, this uses the shipped chat-launcher panel
+rootPanel: panels/chat-launcher
+
+# Git server configuration (optional)
+# git:
+#   port: 7878
+#   github:
+#     token: \${GITHUB_TOKEN}  # Can use environment variable
+
+# Custom panels can be added to the panels/ directory
+# Each panel needs a package.json with a natstack configuration
+`;
+
+  fs.writeFileSync(configPath, configContent, "utf-8");
+
+  console.log(`[Workspace] Default workspace created successfully`);
 
   return config;
 }

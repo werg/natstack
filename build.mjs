@@ -33,6 +33,14 @@ const mainConfig = {
   sourcemap: isDev,
   minify: !isDev,
   logOverride,
+  // Inject __dirname and __filename for CJS compatibility
+  // esbuild should do this automatically for CJS output, but we ensure it explicitly
+  banner: {
+    js: `
+const __injected_filename__ = typeof __filename !== 'undefined' ? __filename : '';
+const __injected_dirname__ = typeof __dirname !== 'undefined' ? __dirname : (typeof __filename !== 'undefined' ? require('path').dirname(__filename) : '');
+`.trim(),
+  },
 };
 
 const preloadConfig = {

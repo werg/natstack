@@ -1,6 +1,6 @@
 {
   "name": "@natstack/pubsub",
-  "version": "0.1.0",
+  "version": "0.1.0-cb2e1f6573b3",
   "description": "WebSocket pub/sub client for NatStack",
   "type": "module",
   "main": "./dist/index.js",

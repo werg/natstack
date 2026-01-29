@@ -66,6 +66,25 @@ import { preloadNatstackTypesAsync } from "@natstack/runtime/typecheck";
 import { startMemoryMonitor } from "./memoryMonitor.js";
 
 // =============================================================================
+// Early Diagnostics (enabled via NATSTACK_DEBUG_PATHS=1)
+// =============================================================================
+
+if (process.env["NATSTACK_DEBUG_PATHS"] === "1") {
+  console.log("=".repeat(60));
+  console.log("[diagnostics] NatStack startup diagnostics");
+  console.log("[diagnostics] process.platform:", process.platform);
+  console.log("[diagnostics] process.arch:", process.arch);
+  console.log("[diagnostics] process.cwd():", process.cwd());
+  console.log("[diagnostics] process.execPath:", process.execPath);
+  console.log("[diagnostics] app.getAppPath():", app.getAppPath());
+  console.log("[diagnostics] app.getPath('userData'):", app.getPath("userData"));
+  console.log("[diagnostics] NODE_ENV:", process.env["NODE_ENV"]);
+  console.log("[diagnostics] isDev():", isDev());
+  console.log("[diagnostics] getAppRoot():", getAppRoot());
+  console.log("=".repeat(60));
+}
+
+// =============================================================================
 // Protocol Registration (must happen before app ready)
 // =============================================================================
 
@@ -467,6 +486,52 @@ app.on("ready", async () => {
   // Set up panel protocol handler
   setupPanelProtocol();
   setupAboutProtocol();
+
+  // Auto-update check (production only)
+  if (!isDev()) {
+    try {
+      // Dynamic import to avoid bundling electron-updater in development
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { autoUpdater } = require("electron-updater") as {
+        autoUpdater: {
+          logger: unknown;
+          autoDownload: boolean;
+          autoInstallOnAppQuit: boolean;
+          on: (event: string, callback: (info: { version?: string; message?: string }) => void) => void;
+          checkForUpdates: () => Promise<unknown>;
+        };
+      };
+
+      autoUpdater.logger = {
+        info: (msg: string) => console.log(`[AutoUpdater] ${msg}`),
+        warn: (msg: string) => console.warn(`[AutoUpdater] ${msg}`),
+        error: (msg: string) => console.error(`[AutoUpdater] ${msg}`),
+        debug: (msg: string) => console.log(`[AutoUpdater:debug] ${msg}`),
+      };
+      autoUpdater.autoDownload = false; // Don't auto-download, let user decide
+      autoUpdater.autoInstallOnAppQuit = true;
+
+      autoUpdater.on("update-available", (info: { version?: string }) => {
+        console.log(`[AutoUpdater] Update available: ${info.version}`);
+      });
+
+      autoUpdater.on("update-downloaded", (info: { version?: string }) => {
+        console.log(`[AutoUpdater] Update downloaded: ${info.version}`);
+      });
+
+      autoUpdater.on("error", (error: { message?: string }) => {
+        console.warn(`[AutoUpdater] Error: ${error.message}`);
+      });
+
+      // Check for updates (non-blocking)
+      autoUpdater.checkForUpdates().catch((err: Error) => {
+        console.warn(`[AutoUpdater] Failed to check for updates: ${err.message}`);
+      });
+    } catch {
+      // electron-updater not available or failed to load - this is fine in development
+      console.log("[AutoUpdater] Not available (this is normal in development)");
+    }
+  }
 
   // Initialize cache manager (shared across all panels)
   const cacheManager = getMainCacheManager();

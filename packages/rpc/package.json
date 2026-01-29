@@ -1,6 +1,6 @@
 {
   "name": "@natstack/rpc",
-  "version": "0.1.0",
+  "version": "0.1.0-b15c87a08b3b",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

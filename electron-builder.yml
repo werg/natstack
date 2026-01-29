@@ -1,0 +1,104 @@
+appId: com.natstack.app
+productName: NatStack
+
+directories:
+  output: release
+  buildResources: build-resources
+
+files:
+  - "dist/**/*"
+  - "packages/**/*"
+  - "node_modules/**/*"
+  - "package.json"
+
+asar: true
+asarUnpack:
+  # Native modules that need to be unpacked for execution
+  - "node_modules/better-sqlite3/**/*"
+  # esbuild binaries for runtime panel compilation
+  - "node_modules/esbuild/**/*"
+  - "node_modules/@esbuild/**/*"
+  # TypeScript for type checking
+  - "node_modules/typescript/**/*"
+  # Package resolution tools
+  - "node_modules/@npmcli/arborist/**/*"
+  - "node_modules/pacote/**/*"
+  # @natstack packages need to be unpacked for panel builds
+  - "packages/**/*"
+
+extraResources:
+  # Pre-built shipped panels
+  - from: "dist/shipped-panels"
+    to: "shipped-panels"
+    filter:
+      - "**/*"
+  # Pre-built about pages
+  - from: "dist/about-pages"
+    to: "about-pages"
+    filter:
+      - "**/*"
+  # Pre-built builtin workers
+  - from: "dist/builtin-workers"
+    to: "builtin-workers"
+    filter:
+      - "**/*"
+
+# macOS configuration
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+    - target: zip
+      arch:
+        - x64
+        - arm64
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build-resources/entitlements.mac.plist
+  entitlementsInherit: build-resources/entitlements.mac.plist
+  icon: build-resources/icon.icns
+
+# DMG configuration
+dmg:
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+# Windows configuration
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build-resources/icon.ico
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+
+# Linux configuration
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
+  category: Development
+  icon: build-resources/icons
+
+# Auto-update configuration
+publish:
+  provider: github
+  owner: werg
+  repo: natstack
+  releaseType: release

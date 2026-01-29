@@ -22,7 +22,9 @@ import {
   getAppNodeModules,
   getPackagesDir,
   getCentralConfigDirectory,
+  getPrebuiltAboutPagesDir,
 } from "./paths.js";
+import { DEFAULT_DEDUPE_PACKAGES, packageToRegex } from "@natstack/runtime/typecheck";
 
 /**
  * Shell page metadata for display.
@@ -106,6 +108,48 @@ interface AboutBuildResult {
 }
 
 /**
+ * Create a plugin that deduplicates React and related packages.
+ * This ensures only one copy of React is bundled, preventing the
+ * "Invalid hook call" error from multiple React instances.
+ */
+function createDedupePlugin(nodeModulesDir: string): esbuild.Plugin {
+  const resolvedNodeModules = path.resolve(nodeModulesDir);
+
+  // Convert to regex patterns
+  const patterns: RegExp[] = [];
+  for (const pkg of DEFAULT_DEDUPE_PACKAGES) {
+    patterns.push(packageToRegex(pkg));
+  }
+
+  return {
+    name: "about-page-dedupe",
+    setup(build) {
+      for (const pattern of patterns) {
+        build.onResolve({ filter: pattern }, async (args) => {
+          // Skip if already resolving from within the target tree
+          if (path.resolve(args.resolveDir).startsWith(resolvedNodeModules)) {
+            return null;
+          }
+          // Force resolution from the app's node_modules
+          try {
+            const result = await build.resolve(args.path, {
+              kind: args.kind,
+              resolveDir: resolvedNodeModules,
+            });
+            if (!result.errors || result.errors.length === 0) {
+              return result;
+            }
+          } catch {
+            // Resolution failed, fall back to default resolver
+          }
+          return null;
+        });
+      }
+    },
+  };
+}
+
+/**
  * Builder for shell about pages.
  * Builds React pages from src/about-pages/ directory.
  */
@@ -168,6 +212,8 @@ export class AboutBuilder {
         generateModuleMapBanner(),
       ].join("\n");
 
+      const appNodeModules = getAppNodeModules();
+
       await esbuild.build({
         entryPoints: [entryPath],
         bundle: true,
@@ -179,7 +225,7 @@ export class AboutBuilder {
         keepNames: true,
         format: "cjs", // CJS for nodeIntegration
         absWorkingDir: pageDir,
-        nodePaths: [getAppNodeModules(), packagesDir],
+        nodePaths: [appNodeModules, packagesDir],
         // Disable tsconfig paths - the root tsconfig maps @natstack/runtime to src/index.ts
         // which is the shell entry. We need package.json exports to resolve to the panel entry.
         tsconfigRaw: "{}",
@@ -198,6 +244,8 @@ export class AboutBuilder {
         // Compatibility banners for hybrid browser/Node.js environment
         banner: { js: bannerJs },
         metafile: true,
+        // Deduplicate React to prevent multiple React instances
+        plugins: [createDedupePlugin(appNodeModules)],
       });
 
       const bundle = fs.readFileSync(bundlePath, "utf-8");
@@ -230,6 +278,51 @@ export class AboutBuilder {
   }
 
   /**
+   * Try to load a pre-built about page from the app resources.
+   * Returns null if the page is not pre-built (needs runtime compilation).
+   */
+  private tryLoadPrebuiltPage(page: ShellPage): AboutBuildResult | null {
+    const prebuiltDir = getPrebuiltAboutPagesDir();
+    if (!prebuiltDir) {
+      // Development mode or prebuilt pages not available
+      return null;
+    }
+
+    const pageDir = path.join(prebuiltDir, page);
+    const bundlePath = path.join(pageDir, "bundle.js");
+    const htmlPath = path.join(pageDir, "html.html");
+
+    // Check if required files exist
+    if (!fs.existsSync(bundlePath) || !fs.existsSync(htmlPath)) {
+      return null;
+    }
+
+    try {
+      const bundle = fs.readFileSync(bundlePath, "utf-8");
+      const html = fs.readFileSync(htmlPath, "utf-8");
+
+      // Read CSS if present
+      const cssPath = path.join(pageDir, "bundle.css");
+      const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, "utf-8") : undefined;
+
+      console.log(`[AboutBuilder] Loaded prebuilt page: ${page}`);
+
+      return {
+        success: true,
+        bundle,
+        html,
+        css,
+      };
+    } catch (error) {
+      console.warn(
+        `[AboutBuilder] Failed to load prebuilt page ${page}:`,
+        error instanceof Error ? error.message : String(error)
+      );
+      return null;
+    }
+  }
+
+  /**
    * Build and store a page for protocol serving.
    * Returns the URL for the page.
    */
@@ -241,6 +334,21 @@ export class AboutBuilder {
       return getAboutPageUrl(page);
     }
 
+    // Try to load prebuilt page first (production builds)
+    const prebuilt = this.tryLoadPrebuiltPage(page);
+    if (prebuilt && prebuilt.success && prebuilt.bundle && prebuilt.html) {
+      console.log(`[AboutBuilder] Using prebuilt about page: ${page}`);
+      const artifacts: ProtocolBuildArtifacts = {
+        bundle: prebuilt.bundle,
+        html: prebuilt.html,
+        title: SHELL_PAGE_META[page].title,
+        css: prebuilt.css,
+        injectHostThemeVariables: true,
+      };
+      return storeAboutPage(page, artifacts);
+    }
+
+    // Fall back to runtime build
     console.log(`[AboutBuilder] Building about page: ${page}`);
     const result = await this.buildPage(page);
 

@@ -16,6 +16,9 @@ packages/*/**/*.map
 .env.local
 .env.*.local
 
+# Build artifacts
+**/.npmrc
+
 # IDE
 .vscode/settings.json
 .idea

@@ -1,24 +1,59 @@
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
-import { fileURLToPath } from "url";
 import { app } from "electron";
 import type { Workspace } from "./workspace/types.js";
 import { isDev } from "./utils.js";
 
-// Derive __dirname in a way that works in both CJS (bundler-injected) and ESM contexts
-// In CJS builds, esbuild injects __dirname; in ESM, we derive it from import.meta.url
+// Derive __dirname in a way that works in CJS builds
+// esbuild should inject __dirname when bundling to CJS, but we also inject fallbacks via banner
 declare const __dirname: string | undefined;
+declare const __filename: string | undefined;
+// These are injected by our build banner as fallbacks (see build.mjs)
+declare const __injected_dirname__: string | undefined;
+declare const __injected_filename__: string | undefined;
+
 const __dirnameResolved: string = (() => {
+  const DEBUG = process.env["NATSTACK_DEBUG_PATHS"] === "1";
+
   // Check for bundler-injected __dirname first (CJS context)
   if (typeof __dirname === "string" && __dirname) {
+    if (DEBUG) console.log("[paths] Using bundler __dirname:", __dirname);
     return __dirname;
   }
-  // ESM context - derive from import.meta.url
-  if (import.meta.url) {
-    return path.dirname(fileURLToPath(import.meta.url));
+
+  // Check for our banner-injected fallback
+  if (typeof __injected_dirname__ === "string" && __injected_dirname__) {
+    if (DEBUG) console.log("[paths] Using banner-injected __dirname:", __injected_dirname__);
+    return __injected_dirname__;
   }
-  throw new Error("Cannot determine __dirname: neither __dirname nor import.meta.url available");
+
+  // Check for bundler-injected __filename and derive dirname
+  if (typeof __filename === "string" && __filename) {
+    const dir = path.dirname(__filename);
+    if (DEBUG) console.log("[paths] Derived from __filename:", dir);
+    return dir;
+  }
+
+  // Check for our banner-injected __filename fallback
+  if (typeof __injected_filename__ === "string" && __injected_filename__) {
+    const dir = path.dirname(__injected_filename__);
+    if (DEBUG) console.log("[paths] Derived from banner __filename:", dir);
+    return dir;
+  }
+
+  // Final fallback: use process.cwd() and look for dist/ directory
+  // This handles edge cases where bundler doesn't inject __dirname
+  const cwd = process.cwd();
+  const distPath = path.join(cwd, "dist");
+  if (fs.existsSync(path.join(distPath, "main.cjs"))) {
+    console.warn("[paths] Using fallback __dirname detection from cwd:", distPath);
+    return distPath;
+  }
+
+  // Last resort - assume we're in the dist directory relative to cwd
+  console.warn("[paths] Could not determine __dirname, using cwd:", cwd);
+  return cwd;
 })();
 
 /**
@@ -223,12 +258,122 @@ export function getTemplateBuildLockPath(specHash: string): string {
  * In production: App resources location
  */
 export function getAppRoot(): string {
+  const DEBUG = process.env["NATSTACK_DEBUG_PATHS"] === "1";
+
   if (isDev()) {
-    // Development: __dirnameResolved is dist/main, walk up to monorepo root
-    return path.resolve(__dirnameResolved, "..", "..");
+    // Development: __dirnameResolved is dist/ (where main.cjs lives), walk up to monorepo root
+    const root = path.resolve(__dirnameResolved, "..");
+
+    if (DEBUG) {
+      console.log("[paths] getAppRoot: __dirnameResolved =", __dirnameResolved);
+      console.log("[paths] getAppRoot: computed root =", root);
+    }
+
+    // Validate the resolved root by checking for expected files
+    const packageJsonPath = path.join(root, "package.json");
+    if (!fs.existsSync(packageJsonPath)) {
+      if (DEBUG) console.log("[paths] getAppRoot: package.json not found at", packageJsonPath);
+
+      // Try alternative: maybe we're already at root or in a different structure
+      if (fs.existsSync(path.join(__dirnameResolved, "package.json"))) {
+        console.warn(`[paths] getAppRoot: Using __dirname directly as root: ${__dirnameResolved}`);
+        return __dirnameResolved;
+      }
+      // Walk up further if needed
+      const parentRoot = path.resolve(root, "..");
+      if (fs.existsSync(path.join(parentRoot, "package.json"))) {
+        console.warn(`[paths] getAppRoot: Using parent of expected root: ${parentRoot}`);
+        return parentRoot;
+      }
+      console.warn(`[paths] getAppRoot: Could not validate root path, using ${root}`);
+    } else if (DEBUG) {
+      console.log("[paths] getAppRoot: validated root:", root);
+    }
+
+    return root;
   }
   // Production: use Electron's app path (asar root or extracted resources)
-  return app.getAppPath();
+  const appPath = app.getAppPath();
+  if (DEBUG) console.log("[paths] getAppRoot (production):", appPath);
+  return appPath;
+}
+
+/**
+ * Get the Electron resources path for accessing extraResources in production.
+ * In development, returns the app root (extraResources don't exist yet).
+ * In production, returns the app's resources directory.
+ */
+export function getResourcesPath(): string {
+  if (isDev()) {
+    return getAppRoot();
+  }
+  // In production, resources are at app.getPath('exe')/../Resources on macOS
+  // or app.getAppPath()/.. on other platforms
+  // process.resourcesPath is the reliable way to get this in Electron
+  return process.resourcesPath;
+}
+
+/**
+ * Get a path inside the .asar.unpacked directory for native modules.
+ * Some modules (esbuild, better-sqlite3) need to be unpacked from ASAR for execution.
+ *
+ * @param relativePath - Path relative to app root (e.g., "node_modules/esbuild")
+ * @returns Absolute path to the unpacked location
+ */
+export function getUnpackedPath(relativePath: string): string {
+  if (isDev()) {
+    // In development, everything is unpacked
+    return path.join(getAppRoot(), relativePath);
+  }
+  // In production, unpacked files are at app.asar.unpacked
+  const appPath = app.getAppPath();
+  const unpackedPath = appPath.replace(/\.asar$/, ".asar.unpacked");
+  return path.join(unpackedPath, relativePath);
+}
+
+/**
+ * Get the directory containing shipped (pre-built) panels.
+ * These panels are bundled with the app and don't need runtime compilation.
+ *
+ * In production: Returns path to shipped-panels in resources directory
+ * In development: Returns null (panels are compiled at runtime)
+ */
+export function getShippedPanelsDir(): string | null {
+  if (isDev()) {
+    return null;
+  }
+  const shippedPath = path.join(getResourcesPath(), "shipped-panels");
+  return fs.existsSync(shippedPath) ? shippedPath : null;
+}
+
+/**
+ * Get the directory containing pre-built about pages.
+ * These pages are bundled with the app and don't need runtime compilation.
+ *
+ * In production: Returns path to about-pages in resources directory
+ * In development: Returns null (pages are compiled at runtime)
+ */
+export function getPrebuiltAboutPagesDir(): string | null {
+  if (isDev()) {
+    return null;
+  }
+  const pagesPath = path.join(getResourcesPath(), "about-pages");
+  return fs.existsSync(pagesPath) ? pagesPath : null;
+}
+
+/**
+ * Get the directory containing pre-built builtin workers.
+ * These workers are bundled with the app and don't need runtime compilation.
+ *
+ * In production: Returns path to builtin-workers in resources directory
+ * In development: Returns null (workers are compiled at runtime)
+ */
+export function getPrebuiltBuiltinWorkersDir(): string | null {
+  if (isDev()) {
+    return null;
+  }
+  const workersPath = path.join(getResourcesPath(), "builtin-workers");
+  return fs.existsSync(workersPath) ? workersPath : null;
 }
 
 /**
