@@ -6,6 +6,7 @@ This guide covers developing mini-apps (panels) for NatStack with the simplified
 
 - [Quick Start](#quick-start)
 - [Panel Basics](#panel-basics)
+- [Workspace Package System](#workspace-package-system)
 - [TypeScript Configuration](#typescript-configuration)
 - [Panel Types](#panel-types)
 - [Child Links & Protocols](#child-links--protocols)
@@ -100,9 +101,94 @@ Every panel requires a `package.json` with a `natstack` field:
 panels/my-app/
   ├── package.json        # Manifest with natstack field (required)
   ├── index.tsx           # Entry point (or specify in natstack.entry)
-  ├── api.ts              # Optional: Exported RPC types for parent panels
+  ├── contract.ts         # Optional: RPC contract for typed parent-child communication
   └── style.css           # Optional: Custom styles
 ```
+
+---
+
+## Workspace Package System
+
+NatStack uses an internal Verdaccio npm registry to enable sharing code between panels. This enables typed RPC contracts, shared utilities, and type sharing across panel boundaries.
+
+### Package Scopes
+
+| Scope | Location | Description |
+|-------|----------|-------------|
+| `@workspace-panels/*` | `workspace/panels/` | Panel packages (apps and workers) |
+| `@workspace-workers/*` | `workspace/workers/` | Worker packages |
+| `@workspace/*` | `workspace/packages/` | Shared utility packages |
+
+### Sharing Code Between Panels
+
+**1. Export modules from your panel:**
+
+```json
+// panels/my-panel/package.json
+{
+  "name": "@workspace-panels/my-panel",
+  "exports": {
+    ".": "./index.tsx",
+    "./contract": "./contract.ts",
+    "./types": "./types.ts",
+    "./utils": "./utils.ts"
+  }
+}
+```
+
+**2. Depend on the panel from another panel:**
+
+```json
+// panels/other-panel/package.json
+{
+  "dependencies": {
+    "@workspace-panels/my-panel": "workspace:*"
+  }
+}
+```
+
+**3. Import the exported modules:**
+
+```typescript
+// panels/other-panel/index.tsx
+import { myContract } from "@workspace-panels/my-panel/contract";
+import type { MyType } from "@workspace-panels/my-panel/types";
+import { myUtil } from "@workspace-panels/my-panel/utils";
+```
+
+### Creating Shared Packages
+
+For utilities shared across many panels, create a package in `workspace/packages/`:
+
+```json
+// workspace/packages/my-utils/package.json
+{
+  "name": "@workspace/my-utils",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  }
+}
+```
+
+Then depend on it from panels:
+
+```json
+// panels/my-panel/package.json
+{
+  "dependencies": {
+    "@workspace/my-utils": "workspace:*"
+  }
+}
+```
+
+### How It Works
+
+1. **Verdaccio Registry**: NatStack runs a local npm registry that serves workspace packages
+2. **TypeCheckService**: Resolves workspace imports for TypeScript type checking
+3. **esbuild**: Bundles workspace dependencies into the final panel build
+4. **Build Cache**: Rebuilt when source files change (based on file hashes)
 
 ---
 
@@ -341,11 +427,55 @@ function MyPanel() {
 
 ## Typed RPC Communication
 
-NatStack’s recommended typed RPC pattern is contract-based:
+NatStack's recommended typed RPC pattern is contract-based:
 
 1. Define a shared contract object with `defineContract(...)`
 2. Parent creates the child with `createChildWithContract(contract, ...)`
 3. Child gets a typed parent handle with `getParentWithContract(contract)`
+
+### Cross-Panel Contract Imports
+
+The key to typed RPC is that **both parent and child import the same contract**. NatStack's workspace package system makes this seamless:
+
+**Step 1: Child panel exports its contract**
+
+```json
+// panels/editor/package.json
+{
+  "name": "@workspace-panels/editor",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./index.tsx",
+    "./contract": "./contract.ts"
+  },
+  "natstack": {
+    "type": "app",
+    "title": "Editor"
+  }
+}
+```
+
+**Step 2: Parent panel declares dependency**
+
+```json
+// panels/ide/package.json
+{
+  "name": "@workspace-panels/ide",
+  "dependencies": {
+    "@workspace-panels/editor": "workspace:*"
+  }
+}
+```
+
+**Step 3: Parent imports the contract**
+
+```typescript
+// panels/ide/index.tsx
+import { editorContract } from "@workspace-panels/editor/contract";
+```
+
+This enables full type safety across panel boundaries without code duplication.
 
 ### Defining a Contract
 
@@ -362,11 +492,20 @@ export interface EditorApi {
 export const editorContract = defineContract({
   source: "panels/editor",
   child: {
+    // TypeScript interface for RPC methods (phantom type at runtime)
     methods: {} as EditorApi,
+    // Zod schemas for events (validated at runtime)
     emits: {
       "saved": z.object({ path: z.string(), timestamp: z.string() }),
+      "content-changed": z.object({ content: z.string() }),
     },
   },
+  // Optional: events/methods on parent side
+  // parent: {
+  //   emits: {
+  //     "theme-changed": z.object({ theme: z.enum(["light", "dark"]) }),
+  //   },
+  // },
 });
 ```
 
@@ -378,6 +517,7 @@ import { useEffect, useState } from "react";
 import { rpc, getParentWithContract, noopParent } from "@natstack/runtime";
 import { editorContract } from "./contract.js";
 
+// noopParent provides a safe fallback when panel runs without parent
 const parent = getParentWithContract(editorContract) ?? noopParent;
 
 export default function Editor() {
@@ -392,6 +532,7 @@ export default function Editor() {
         setContent(text);
       },
       async save(path: string) {
+        // Typed event emission
         await parent.emit("saved", { path, timestamp: new Date().toISOString() });
       },
     });
@@ -404,15 +545,18 @@ export default function Editor() {
 ### Calling Methods + Listening to Events (Parent Panel)
 
 ```tsx
+// panels/ide/index.tsx
 import { useState, useEffect } from "react";
 import { createChildWithContract, type ChildHandleFromContract } from "@natstack/runtime";
-import { editorContract } from "../editor/contract.js";
+// Import contract from child panel package
+import { editorContract } from "@workspace-panels/editor/contract";
 
-export default function Parent() {
+export default function IDE() {
   const [editor, setEditor] = useState<ChildHandleFromContract<typeof editorContract> | null>(null);
 
   useEffect(() => {
     if (!editor) return;
+    // Typed event listener - payload type is inferred from contract
     return editor.onEvent("saved", (payload) => {
       console.log("Saved:", payload.path, payload.timestamp);
     });
@@ -424,6 +568,7 @@ export default function Parent() {
   };
 
   const save = async () => {
+    // Typed method call - arguments and return type are inferred
     await editor?.call.save("/file.txt");
   };
 
@@ -434,6 +579,39 @@ export default function Parent() {
     </div>
   );
 }
+```
+
+### noopParent Fallback
+
+When a panel may run standalone (without a parent), use `noopParent` to avoid null checks:
+
+```typescript
+import { getParentWithContract, noopParent } from "@natstack/runtime";
+
+// Without noopParent - requires null checks everywhere
+const parent = getParentWithContract(contract);
+if (parent) {
+  parent.emit("event", payload);
+}
+
+// With noopParent - always safe to call
+const parent = getParentWithContract(contract) ?? noopParent;
+parent.emit("event", payload); // Silently does nothing if no parent
+```
+
+### Existing Cross-Panel Dependencies
+
+Several workspace panels already use cross-panel imports:
+
+```typescript
+// project-launcher imports from project-panel
+import { type ProjectConfig } from "@workspace-panels/project-panel/types";
+
+// chat-launcher imports from agent-manager
+import { loadGlobalSettings } from "@workspace-panels/agent-manager";
+```
+
+This pattern works for both typed contracts and shared utility functions
 ```
 
 ---
@@ -925,10 +1103,10 @@ function MyPanel() {
 
 ### 2. Use Contracts for Typed RPC
 
-Prefer `defineContract(...)` + `createChildWithContract(...)` + `getParentWithContract(...)` (see “Typed RPC Communication”).
+Prefer `defineContract(...)` + `createChildWithContract(...)` + `getParentWithContract(...)` (see "Typed RPC Communication").
 
 ```tsx
-// contract.ts
+// panels/my-panel/contract.ts
 import { z, defineContract } from "@natstack/runtime";
 
 export const myContract = defineContract({
@@ -939,7 +1117,39 @@ export const myContract = defineContract({
 });
 ```
 
-### 3. Clean Up Resources
+### 3. Export Contracts for Parent Panels
+
+When building panels that will be launched by other panels, export the contract:
+
+```json
+// panels/my-panel/package.json
+{
+  "exports": {
+    ".": "./index.tsx",
+    "./contract": "./contract.ts"
+  }
+}
+```
+
+Parents can then import and use it:
+
+```tsx
+// panels/parent/index.tsx
+import { myContract } from "@workspace-panels/my-panel/contract";
+const child = await createChildWithContract(myContract);
+```
+
+### 4. Use Shared Packages for Common Code
+
+Put shared utilities in `workspace/packages/` to avoid duplication:
+
+```
+workspace/packages/my-utils/
+  ├── package.json    # name: "@workspace/my-utils"
+  └── index.ts        # Exports shared utilities
+```
+
+### 5. Clean Up Resources
 
 Hooks handle cleanup automatically, but for manual subscriptions:
 
@@ -950,7 +1160,7 @@ useEffect(() => {
 }, []);
 ```
 
-### 4. Handle Loading States
+### 6. Handle Loading States
 
 ```tsx
 const partition = usePanelPartition();
@@ -968,6 +1178,7 @@ return <div>Storage: {partition}</div>;
 
 See the example panels:
 - [panels/example/](panels/example/) - **Root panel**: Comprehensive demo with child management, OPFS, typed RPC, and environment variables
+- [panels/typed-rpc-child/](panels/typed-rpc-child/) - **Contract-based typed RPC**: Demonstrates `defineContract`, typed events, and `noopParent`
 - [panels/agentic-chat/](panels/agentic-chat/) - AI integration with Vercel AI SDK streaming
 - [panels/agentic-notebook/](panels/agentic-notebook/) - Jupyter-style notebook with AI agent
 - [panels/shared-opfs-demo/](panels/shared-opfs-demo/) - Demonstrates shared file storage across panel instances

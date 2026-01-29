@@ -23,7 +23,7 @@ my-panel/
 ├── package.json        # Manifest with natstack field (required)
 ├── index.tsx           # Default entry (index.ts / index.jsx also detected)
 ├── index.html          # HTML template (optional, auto-generated if missing)
-├── api.ts              # Optional: Exported RPC types for parent panels
+├── contract.ts         # Optional: RPC contract for typed parent-child communication
 └── style.css           # Styles (optional)
 ```
 
@@ -485,6 +485,210 @@ This ensures templates are built once and reused across many panel instances.
 
 See [OPFS_PARTITIONS.md](OPFS_PARTITIONS.md) for full documentation on context templates.
 
+## Workspace Package System
+
+NatStack uses a workspace package system that enables panels to share code, types, and RPC contracts with each other. Panels and packages are published to an internal Verdaccio npm registry that runs locally.
+
+### Package Scopes
+
+| Scope | Location | Description |
+|-------|----------|-------------|
+| `@workspace-panels/*` | `workspace/panels/` | Panel packages (apps and workers) |
+| `@workspace-workers/*` | `workspace/workers/` | Worker packages |
+| `@workspace/*` | `workspace/packages/` | Shared utility packages |
+
+### Cross-Panel Imports
+
+Panels can depend on other panels to share types, utilities, and RPC contracts. This enables **typed communication** between parent and child panels.
+
+**1. Child panel exports its contract:**
+
+```json
+// panels/editor/package.json
+{
+  "name": "@workspace-panels/editor",
+  "exports": {
+    ".": "./index.tsx",
+    "./contract": "./contract.ts"
+  }
+}
+```
+
+**2. Parent panel declares dependency:**
+
+```json
+// panels/ide/package.json
+{
+  "dependencies": {
+    "@workspace-panels/editor": "workspace:*"
+  }
+}
+```
+
+**3. Parent imports and uses the contract:**
+
+```typescript
+// panels/ide/index.tsx
+import { editorContract } from "@workspace-panels/editor/contract";
+import { createChildWithContract } from "@natstack/runtime";
+
+const editor = await createChildWithContract(editorContract);
+await editor.call.setContent("Hello!"); // Fully typed!
+```
+
+### Existing Cross-Panel Dependencies
+
+Several panels already use this pattern:
+
+- `project-launcher` imports types from `@workspace-panels/project-panel/types`
+- `chat-launcher` imports utilities from `@workspace-panels/agent-manager`
+
+### TypeScript Resolution
+
+The build system resolves workspace imports at both type-check time and bundle time:
+
+- TypeCheckService resolves `@workspace-panels/*`, `@workspace-workers/*`, and `@workspace/*` imports
+- esbuild bundles the dependencies into the final panel build
+- The Verdaccio registry serves packages for dependency resolution
+
+## Typed RPC Contracts
+
+For type-safe parent-child communication, use the contract-based RPC pattern:
+
+### Defining a Contract
+
+```typescript
+// panels/editor/contract.ts
+import { z, defineContract } from "@natstack/runtime";
+
+export interface EditorApi {
+  getContent(): Promise<string>;
+  setContent(text: string): Promise<void>;
+  save(path: string): Promise<void>;
+}
+
+export const editorContract = defineContract({
+  source: "panels/editor",
+  child: {
+    methods: {} as EditorApi,
+    emits: {
+      "saved": z.object({ path: z.string(), timestamp: z.string() }),
+      "content-changed": z.object({ content: z.string() }),
+    },
+  },
+  // Optional: events parent sends to child
+  // parent: {
+  //   emits: {
+  //     "theme-changed": z.object({ theme: z.enum(["light", "dark"]) }),
+  //   },
+  // },
+});
+```
+
+### Child Panel Implementation
+
+```typescript
+// panels/editor/index.tsx
+import { useEffect, useState } from "react";
+import { rpc, getParentWithContract, noopParent } from "@natstack/runtime";
+import { editorContract } from "./contract.js";
+
+// Get typed parent handle (noop fallback avoids null checks)
+const parent = getParentWithContract(editorContract) ?? noopParent;
+
+export default function Editor() {
+  const [content, setContent] = useState("");
+
+  useEffect(() => {
+    rpc.expose({
+      async getContent() { return content; },
+      async setContent(text: string) { setContent(text); },
+      async save(path: string) {
+        // Emit typed event to parent
+        parent.emit("saved", { path, timestamp: new Date().toISOString() });
+      },
+    });
+  }, [content]);
+
+  return <textarea value={content} onChange={(e) => setContent(e.target.value)} />;
+}
+```
+
+### Parent Panel Implementation
+
+```typescript
+// panels/ide/index.tsx
+import { useState, useEffect } from "react";
+import { createChildWithContract } from "@natstack/runtime";
+import { editorContract } from "@workspace-panels/editor/contract";
+
+export default function IDE() {
+  const [editor, setEditor] = useState<Awaited<ReturnType<typeof createChildWithContract<typeof editorContract>>> | null>(null);
+
+  const launchEditor = async () => {
+    const child = await createChildWithContract(editorContract, { name: "editor" });
+    setEditor(child);
+  };
+
+  useEffect(() => {
+    if (!editor) return;
+    // Typed event listener
+    return editor.onEvent("saved", ({ path, timestamp }) => {
+      console.log(`File saved: ${path} at ${timestamp}`);
+    });
+  }, [editor]);
+
+  return (
+    <div>
+      <button onClick={launchEditor}>Launch Editor</button>
+      <button onClick={() => editor?.call.save("/file.txt")}>Save</button>
+    </div>
+  );
+}
+```
+
+### Contract API Reference
+
+```typescript
+// Define a contract
+defineContract({
+  source: string;                    // Panel source path
+  child?: {
+    methods?: InterfaceType;         // TypeScript interface (phantom type)
+    emits?: Record<string, ZodSchema>; // Events child emits (validated)
+  };
+  parent?: {
+    methods?: InterfaceType;         // Methods parent exposes
+    emits?: Record<string, ZodSchema>; // Events parent emits
+  };
+});
+
+// Parent side
+const child = await createChildWithContract(contract, options?);
+child.call.methodName(...args);      // Typed RPC calls
+child.onEvent("event", (payload) => {}); // Typed event listeners
+child.emit("parent-event", payload); // Emit to child (if parent.emits defined)
+
+// Child side
+const parent = getParentWithContract(contract) ?? noopParent;
+parent.emit("event", payload);       // Typed event emission
+parent.call.methodName(...args);     // Call parent methods (if parent.methods defined)
+parent.onEvent("event", (payload) => {}); // Listen for parent events
+```
+
+### noopParent
+
+Use `noopParent` as a fallback when the panel may run without a parent:
+
+```typescript
+import { getParentWithContract, noopParent } from "@natstack/runtime";
+
+const parent = getParentWithContract(contract) ?? noopParent;
+
+// Safe to call even if no parent exists
+parent.emit("event", payload); // Silently does nothing
+```
+
 ## Notes
 
 - Panels are isolated in separate webviews
@@ -492,3 +696,4 @@ See [OPFS_PARTITIONS.md](OPFS_PARTITIONS.md) for full documentation on context t
 - Safe panels can use context templates for pre-populated OPFS sandboxes
 - Workers run in WebContentsView with a built-in console UI for logging
 - Browser panels support full Playwright automation via CDP
+- Panels can import from other panels using workspace package dependencies

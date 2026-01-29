@@ -1,8 +1,12 @@
 {
   "name": "@workspace-panels/typed-rpc-child",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
+  "exports": {
+    ".": "./index.tsx",
+    "./contract": "./contract.ts"
+  },
   "natstack": {
     "type": "app",
     "title": "Typed RPC Child"
