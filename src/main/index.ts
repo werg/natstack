@@ -525,34 +525,7 @@ app.on("ready", async () => {
         });
         const verdaccioPort = await verdaccioServer.start();
         console.log(`[Verdaccio] Registry started on port ${verdaccioPort}`);
-
-        // Publish only changed workspace packages (automatic cache invalidation)
-        const publishResult = await verdaccioServer.publishChangedPackages();
-        if (!publishResult.success) {
-          console.warn(`[Verdaccio] Some packages failed to publish: ${publishResult.failed.map(f => f.name).join(", ")}`);
-        }
-
-        // If packages changed, clear dependent caches.
-        // On fresh start, there's no valid Verdaccio state to match cached builds against,
-        // so we must also clear caches to prevent stale builds from being reused.
-        const { changesDetected } = publishResult;
-        if (changesDetected.changed.length > 0) {
-          console.log(`[Verdaccio] ${changesDetected.changed.length} packages changed${changesDetected.freshStart ? " (fresh start)" : ""}, clearing build caches...`);
-          // Invalidate @natstack types FIRST to prevent stale reads during cache clearing
-          const { getTypeDefinitionService } = await import("./typecheck/service.js");
-          await getTypeDefinitionService().invalidateNatstackTypes();
-          // Then clear all other caches
-          const { clearAllCaches } = await import("./cacheUtils.js");
-          await clearAllCaches({
-            buildCache: true,
-            buildArtifacts: true,
-            typesCache: true,
-            // Don't clear Verdaccio storage - we just updated it
-            verdaccioStorage: false,
-            npmCache: false,
-            pnpmStore: false,
-          });
-        }
+        console.log("[Verdaccio] Lazy publishing enabled - packages published on demand during panel builds");
       } catch (verdaccioError) {
         // Verdaccio is required - log error but continue (panel builds will fail gracefully)
         console.error("[Verdaccio] Failed to start. Panel builds will fail until Verdaccio is running:", verdaccioError);
@@ -573,11 +546,7 @@ app.on("ready", async () => {
         // Pass workspace path so Verdaccio can resolve workspace-relative paths
         // (distinct from workspaceRoot which is for built-in @natstack/* packages)
         verdaccioServer.subscribeToGitWatcher(gitWatcher, workspace.path);
-
-        // Publish any existing user workspace packages (fire-and-forget, don't block startup)
-        verdaccioServer.publishUserWorkspacePackages(workspace.path).catch((err) => {
-          console.error("[Verdaccio] Failed to publish existing workspace packages:", err);
-        });
+        // Note: User workspace packages are now published on-demand during panel builds
       }
 
       // Start CDP server for browser automation

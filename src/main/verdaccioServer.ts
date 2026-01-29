@@ -847,6 +847,201 @@ export class VerdaccioServer {
     this.verdaccioVersionsCache = null;
   }
 
+  // ===========================================================================
+  // Lazy/On-Demand Publishing
+  // ===========================================================================
+
+  /** Locks to prevent concurrent publishes of the same package */
+  private publishLocks = new Map<string, Promise<"published" | "skipped">>();
+
+  /**
+   * Resolve a package name to its filesystem path.
+   * Returns null if the package scope is not recognized.
+   *
+   * @param pkgName - Package name (e.g., "@natstack/utils", "@workspace/mylib")
+   * @param userWorkspacePath - Path to user's workspace (required for @workspace* packages)
+   */
+  resolvePackagePath(pkgName: string, userWorkspacePath?: string): string | null {
+    if (pkgName.startsWith("@natstack/")) {
+      const name = pkgName.replace("@natstack/", "");
+      return path.join(this.workspaceRoot, "packages", name);
+    }
+
+    if (!userWorkspacePath) {
+      return null;
+    }
+
+    if (pkgName.startsWith("@workspace-panels/")) {
+      const name = pkgName.replace("@workspace-panels/", "");
+      return path.join(userWorkspacePath, "panels", name);
+    }
+
+    if (pkgName.startsWith("@workspace-workers/")) {
+      const name = pkgName.replace("@workspace-workers/", "");
+      return path.join(userWorkspacePath, "workers", name);
+    }
+
+    if (pkgName.startsWith("@workspace/")) {
+      const name = pkgName.replace("@workspace/", "");
+      return path.join(userWorkspacePath, "packages", name);
+    }
+
+    return null;
+  }
+
+  /**
+   * Ensure a single package is published to Verdaccio.
+   * Uses locking to prevent concurrent publishes of the same package.
+   *
+   * @param pkgName - Package name (e.g., "@natstack/utils")
+   * @param userWorkspacePath - Path to user's workspace (for @workspace* packages)
+   * @returns "published" if newly published, "skipped" if already up-to-date, "not-found" if package doesn't exist
+   */
+  async ensurePackagePublished(
+    pkgName: string,
+    userWorkspacePath?: string
+  ): Promise<"published" | "skipped" | "not-found"> {
+    // Check if already publishing this package
+    const existingLock = this.publishLocks.get(pkgName);
+    if (existingLock) {
+      return existingLock;
+    }
+
+    // Resolve package path
+    const pkgPath = this.resolvePackagePath(pkgName, userWorkspacePath);
+    if (!pkgPath) {
+      return "not-found";
+    }
+
+    // Check if package exists on filesystem
+    const pkgJsonPath = path.join(pkgPath, "package.json");
+    if (!fs.existsSync(pkgJsonPath)) {
+      return "not-found";
+    }
+
+    // Check if package is private (shouldn't be published)
+    try {
+      const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { private?: boolean };
+      if (pkgJson.private) {
+        return "skipped";
+      }
+    } catch {
+      console.warn(`[Verdaccio] Failed to parse package.json for ${pkgName}`);
+      return "not-found";
+    }
+
+    // Create a lock for this package
+    const publishPromise = this.publishPackage(pkgPath, pkgName)
+      .finally(() => {
+        this.publishLocks.delete(pkgName);
+      });
+
+    this.publishLocks.set(pkgName, publishPromise);
+    return publishPromise;
+  }
+
+  /**
+   * Ensure all workspace dependencies are published to Verdaccio.
+   * Walks transitive dependencies to publish everything needed.
+   *
+   * @param dependencies - Direct dependencies (from panel's package.json)
+   * @param userWorkspacePath - Path to user's workspace (for @workspace* packages)
+   * @returns Summary of what was published, skipped, or not found
+   */
+  async ensureDependenciesPublished(
+    dependencies: Record<string, string>,
+    userWorkspacePath?: string
+  ): Promise<{ published: string[]; skipped: string[]; notFound: string[] }> {
+    const result = {
+      published: [] as string[],
+      skipped: [] as string[],
+      notFound: [] as string[],
+    };
+
+    // Collect all workspace packages (direct + transitive)
+    const toProcess = new Set<string>();
+    const processed = new Set<string>();
+
+    // Helper to check if a package is a workspace package
+    const isWorkspacePackage = (name: string): boolean => {
+      return (
+        name.startsWith("@natstack/") ||
+        name.startsWith("@workspace/") ||
+        name.startsWith("@workspace-panels/") ||
+        name.startsWith("@workspace-workers/")
+      );
+    };
+
+    // Add direct workspace dependencies
+    for (const depName of Object.keys(dependencies)) {
+      if (isWorkspacePackage(depName)) {
+        toProcess.add(depName);
+      }
+    }
+
+    // Walk transitive deps
+    while (toProcess.size > 0) {
+      const pkgName = toProcess.values().next().value!;
+      toProcess.delete(pkgName);
+
+      if (processed.has(pkgName)) {
+        continue;
+      }
+      processed.add(pkgName);
+
+      // Read package.json to find transitive workspace deps
+      const pkgPath = this.resolvePackagePath(pkgName, userWorkspacePath);
+      if (!pkgPath) {
+        continue;
+      }
+
+      const pkgJsonPath = path.join(pkgPath, "package.json");
+      if (!fs.existsSync(pkgJsonPath)) {
+        continue;
+      }
+
+      try {
+        const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
+          dependencies?: Record<string, string>;
+        };
+        if (pkgJson.dependencies) {
+          for (const depName of Object.keys(pkgJson.dependencies)) {
+            if (isWorkspacePackage(depName) && !processed.has(depName)) {
+              toProcess.add(depName);
+            }
+          }
+        }
+      } catch {
+        // Skip malformed package.json
+      }
+    }
+
+    // Publish all collected packages in parallel (with locking for dedup)
+    const publishPromises = Array.from(processed).map(async (pkgName) => {
+      const status = await this.ensurePackagePublished(pkgName, userWorkspacePath);
+      return { pkgName, status };
+    });
+
+    const results = await Promise.all(publishPromises);
+
+    for (const { pkgName, status } of results) {
+      if (status === "published") {
+        result.published.push(pkgName);
+      } else if (status === "skipped") {
+        result.skipped.push(pkgName);
+      } else {
+        result.notFound.push(pkgName);
+      }
+    }
+
+    // Invalidate cache if anything was published
+    if (result.published.length > 0) {
+      this.invalidateVerdaccioVersionsCache();
+    }
+
+    return result;
+  }
+
   /**
    * Publish a single package to the local registry.
    * Uses content-hash based versioning to skip unchanged packages.

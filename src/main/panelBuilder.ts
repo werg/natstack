@@ -1209,6 +1209,21 @@ export class PanelBuilder {
       );
     }
 
+    // Ensure workspace dependencies are published on-demand before resolution
+    const verdaccio = getVerdaccioServer();
+    const userWorkspace = getActiveWorkspace();
+    const publishResult = await verdaccio.ensureDependenciesPublished(
+      dependencies,
+      userWorkspace?.path
+    );
+
+    if (publishResult.published.length > 0) {
+      console.log(`[PanelBuilder] On-demand published: ${publishResult.published.join(", ")}`);
+    }
+    if (publishResult.notFound.length > 0) {
+      console.warn(`[PanelBuilder] Workspace packages not found: ${publishResult.notFound.join(", ")}`);
+    }
+
     // With Verdaccio, translate workspace:* to * (Verdaccio serves local packages)
     const resolvedDependencies: Record<string, string> = {};
     for (const [name, version] of Object.entries(dependencies)) {
@@ -1241,13 +1256,11 @@ export class PanelBuilder {
     //
     // Smart optimization: Only walk transitive deps when Verdaccio packages have actually changed.
     // This avoids unnecessary npm installs when unrelated packages change.
-    const verdaccioServer = getVerdaccioServer();
-    const natstackVersions = await verdaccioServer.getVerdaccioVersions();
+    const natstackVersions = await verdaccio.getVerdaccioVersions();
 
     // Also get user workspace package versions (@workspace/*, @workspace-panels/*, @workspace-workers/*)
-    const userWorkspace = getActiveWorkspace();
     const userWorkspaceVersions = userWorkspace
-      ? await verdaccioServer.getUserWorkspaceVersions(userWorkspace.path)
+      ? await verdaccio.getUserWorkspaceVersions(userWorkspace.path)
       : {};
 
     // Merge all versions
