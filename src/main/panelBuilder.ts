@@ -29,7 +29,7 @@ import {
   type TypeCheckDiagnostic,
 } from "@natstack/runtime/typecheck";
 import { isVerdaccioServerInitialized, getVerdaccioServer } from "./verdaccioServer.js";
-import { getPackagesDir, getAppNodeModules, getActiveWorkspace } from "./paths.js";
+import { getPackagesDir, getAppNodeModules, getActiveWorkspace, getAppRoot } from "./paths.js";
 import {
   getPackageStore,
   createPackageFetcher,
@@ -1586,11 +1586,12 @@ import ${JSON.stringify(relativeUserEntry)};
 
       // Use panel fs and path shim plugins for safe panels.
       // For unsafe panels, skip the shims to allow direct Node.js fs/path access.
-      // resolveDir points at the deps dir where @natstack/runtime and pathe are installed.
+      // fs shim resolveDir points at deps dir where @natstack/runtime is installed.
+      // path shim resolveDir uses app root so it can resolve 'pathe' from node_modules.
       const plugins: esbuild.Plugin[] = [];
       if (!unsafe) {
         plugins.push(createPanelFsShimPlugin(workspace.depsDir));
-        plugins.push(createPanelPathShimPlugin(workspace.depsDir));
+        plugins.push(createPanelPathShimPlugin(getAppRoot()));
       }
       if (hasNatstackReact) {
         // Dedupe React, Radix UI, and any manifest-specified packages
@@ -2322,9 +2323,10 @@ import ${JSON.stringify(relativeUserEntry)};
       const plugins: esbuild.Plugin[] = [];
 
       // For safe workers, use panel fs and path shims
+      // path shim uses app root so it can resolve 'pathe' from node_modules
       if (!options?.unsafe) {
         plugins.push(createPanelFsShimPlugin(buildWorkspace.depsDir));
-        plugins.push(createPanelPathShimPlugin(buildWorkspace.depsDir));
+        plugins.push(createPanelPathShimPlugin(getAppRoot()));
       }
 
       // Generate banners - include Node.js compatibility patch for unsafe workers

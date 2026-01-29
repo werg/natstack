@@ -146,7 +146,8 @@ export async function buildBuiltinWorker(worker: BuiltinWorker): Promise<string>
     nodePaths: [getAppNodeModules(), packagesDir],
     plugins: [
       createFsShimPlugin(packagesDir),
-      createPathShimPlugin(packagesDir),
+      // Path shim uses appRoot so it can resolve 'pathe' from node_modules
+      createPathShimPlugin(getAppRoot()),
     ],
     banner: { js: bannerJs },
     tsconfigRaw: "{}", // Intentional: disable tsconfig paths so natstack-panel condition works
