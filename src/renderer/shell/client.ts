@@ -49,6 +49,7 @@ export const panel = {
   openDevTools: (panelId: string) => rpc.call<void>("main", "panel.openDevTools", panelId),
   reload: (panelId: string) => rpc.call<void>("main", "panel.reload", panelId),
   unload: (panelId: string) => rpc.call<void>("main", "panel.unload", panelId),
+  archive: (panelId: string) => rpc.call<void>("main", "panel.archive", panelId),
   retryDirtyBuild: (panelId: string) => rpc.call<void>("main", "panel.retryDirtyBuild", panelId),
   initGitRepo: (panelId: string) => rpc.call<void>("main", "panel.initGitRepo", panelId),
   updateBrowserState: (browserId: string, state: Partial<BrowserState> & { url?: string }) =>

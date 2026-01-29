@@ -30,6 +30,7 @@ interface PanelStackProps {
   onRegisterDevToolsHandler?: (handler: () => void) => void;
   onRegisterNavigateToId?: (navigate: (panelId: string) => void) => void;
   onRegisterPanelAction?: (handler: (panelId: string, action: PanelContextMenuAction) => void) => void;
+  onRegisterArchive?: (handler: (panelId: string) => void) => void;
 }
 
 function captureHostThemeCss(): string {
@@ -67,6 +68,7 @@ export function PanelStack({
   onRegisterDevToolsHandler,
   onRegisterNavigateToId,
   onRegisterPanelAction,
+  onRegisterArchive,
 }: PanelStackProps) {
   const {
     mode: navigationMode,
@@ -206,6 +208,10 @@ export function PanelStack({
           // Unload panel resources but keep in tree (can be re-loaded later)
           await panelService.unload(panelId);
           break;
+        case "archive":
+          // Archive panel (remove from tree)
+          await panelService.archive(panelId);
+          break;
       }
     },
     []
@@ -215,6 +221,19 @@ export function PanelStack({
   useEffect(() => {
     onRegisterPanelAction?.(handlePanelAction);
   }, [onRegisterPanelAction, handlePanelAction]);
+
+  // Handle direct archive button clicks (X button in tree sidebar)
+  const handleArchive = useCallback(
+    async (panelId: string) => {
+      await panelService.archive(panelId);
+    },
+    []
+  );
+
+  // Register archive handler with parent (for titlebar X buttons)
+  useEffect(() => {
+    onRegisterArchive?.(handleArchive);
+  }, [onRegisterArchive, handleArchive]);
 
   const startSidebarResize = (event: React.PointerEvent) => {
     event.preventDefault();
@@ -477,6 +496,7 @@ export function PanelStack({
                 ancestorIds={ancestorIds}
                 onSelect={navigateToPanelId}
                 onPanelAction={handlePanelAction}
+                onArchive={handleArchive}
               />
             </Flex>
           </Card>

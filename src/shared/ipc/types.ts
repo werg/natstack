@@ -489,7 +489,7 @@ export interface SettingsData {
 }
 
 /** Actions available in panel context menus */
-export type PanelContextMenuAction = "reload" | "unload";
+export type PanelContextMenuAction = "reload" | "unload" | "archive";
 
 // =============================================================================
 // Panel Move/Drag-and-Drop Types

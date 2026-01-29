@@ -32,6 +32,7 @@ function PanelAppContent() {
   const handlePanelActionRef = useRef<(panelId: string, action: PanelContextMenuAction) => void>(
     () => {}
   );
+  const handleArchiveRef = useRef<(panelId: string) => void>(() => {});
 
   const { navigateToId, registerNavigateToId } = useNavigation();
 
@@ -40,6 +41,10 @@ function PanelAppContent() {
   const handlePanelAction = useCallback(
     (panelId: string, action: PanelContextMenuAction) =>
       handlePanelActionRef.current(panelId, action),
+    []
+  );
+  const handleArchive = useCallback(
+    (panelId: string) => handleArchiveRef.current(panelId),
     []
   );
 
@@ -80,7 +85,7 @@ function PanelAppContent() {
 
   return (
     <Flex direction="column" height="100vh" style={{ overflow: "hidden" }}>
-      <TitleBar title={currentTitle} onNavigateToId={navigateToId} onPanelAction={handlePanelAction} />
+      <TitleBar title={currentTitle} onNavigateToId={navigateToId} onPanelAction={handlePanelAction} onArchive={handleArchive} />
       <PanelStack
         onTitleChange={setCurrentTitle}
         hostTheme={effectiveTheme}
@@ -90,6 +95,9 @@ function PanelAppContent() {
         onRegisterNavigateToId={registerNavigateToId}
         onRegisterPanelAction={(handler) => {
           handlePanelActionRef.current = handler;
+        }}
+        onRegisterArchive={(handler) => {
+          handleArchiveRef.current = handler;
         }}
       />
     </Flex>

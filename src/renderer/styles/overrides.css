@@ -28,3 +28,8 @@
 .accordion-trigger[data-state="closed"] .accordion-chevron {
   transform: rotate(-90deg);
 }
+
+/* Breadcrumb archive button hover effect */
+.breadcrumb-archive-btn:hover {
+  background-color: var(--red-a4);
+}

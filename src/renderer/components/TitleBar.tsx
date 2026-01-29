@@ -1,4 +1,5 @@
 import {
+  Cross2Icon,
   DotsHorizontalIcon,
   HamburgerMenuIcon,
   BoxIcon,
@@ -8,7 +9,7 @@ import {
   PlusIcon,
 } from "@radix-ui/react-icons";
 import { Box, Flex, IconButton, Text, Tooltip } from "@radix-ui/themes";
-import type { CSSProperties, MouseEvent } from "react";
+import { useState, type CSSProperties, type MouseEvent } from "react";
 
 import { useNavigation } from "./NavigationContext";
 import { panel } from "../shell/client";
@@ -27,9 +28,10 @@ interface TitleBarProps {
   title: string;
   onNavigateToId?: (panelId: string) => void;
   onPanelAction?: (panelId: string, action: PanelContextMenuAction) => void;
+  onArchive?: (panelId: string) => void;
 }
 
-export function TitleBar({ title, onNavigateToId, onPanelAction }: TitleBarProps) {
+export function TitleBar({ title, onNavigateToId, onPanelAction, onArchive }: TitleBarProps) {
   const {
     mode: navigationMode,
     setMode,
@@ -121,6 +123,7 @@ export function TitleBar({ title, onNavigateToId, onPanelAction }: TitleBarProps
             statusNavigation={statusNavigation}
             onNavigateToId={onNavigateToId}
             onPanelAction={onPanelAction}
+            onArchive={onArchive}
           />
         </Box>
 
@@ -137,6 +140,7 @@ interface BreadcrumbBarProps {
   statusNavigation?: LazyStatusNavigationData | null;
   onNavigateToId?: (panelId: string) => void;
   onPanelAction?: (panelId: string, action: PanelContextMenuAction) => void;
+  onArchive?: (panelId: string) => void;
 }
 
 const MAX_VISIBLE_ANCESTORS = 2;
@@ -173,12 +177,86 @@ const groupStyle: CSSProperties = {
   border: "1px solid var(--gray-6)",
 };
 
+// Hoverable breadcrumb item with X button on hover
+interface HoverableBreadcrumbItemProps {
+  panelId: string;
+  title: string;
+  isActive: boolean;
+  isCurrent: boolean;
+  onNavigate: () => void;
+  onContextMenu: (e: MouseEvent<HTMLSpanElement>) => void;
+  onArchive?: (panelId: string) => void;
+}
+
+function HoverableBreadcrumbItem({
+  panelId,
+  title,
+  isActive,
+  isCurrent,
+  onNavigate,
+  onContextMenu,
+  onArchive,
+}: HoverableBreadcrumbItemProps) {
+  const [isHovered, setIsHovered] = useState(false);
+
+  const handleArchive = (e: MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    onArchive?.(panelId);
+  };
+
+  return (
+    <span
+      style={{
+        position: "relative",
+        ...itemStyle,
+        backgroundColor: isCurrent && isActive ? "var(--gray-a4)" : isHovered ? "var(--gray-a3)" : undefined,
+      }}
+      onClick={onNavigate}
+      onContextMenu={onContextMenu}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      <Text
+        as="span"
+        size="2"
+        color={isActive ? undefined : "gray"}
+        style={{ whiteSpace: "nowrap" }}
+      >
+        {title}
+      </Text>
+      {isHovered && onArchive && (
+        <IconButton
+          size="1"
+          variant="ghost"
+          color="gray"
+          aria-label="Archive panel"
+          onClick={handleArchive}
+          className="breadcrumb-archive-btn"
+          style={{
+            position: "absolute",
+            right: -3,
+            top: "50%",
+            transform: "translateY(-50%)",
+            width: 18,
+            height: 18,
+            padding: 0,
+            opacity: 0.6,
+          }}
+        >
+          <Cross2Icon width={12} height={12} />
+        </IconButton>
+      )}
+    </span>
+  );
+}
+
 function BreadcrumbBar({
   title,
   navigationData,
   statusNavigation,
   onNavigateToId,
   onPanelAction,
+  onArchive,
 }: BreadcrumbBarProps) {
   const ancestors = navigationData?.ancestors ?? [];
   const currentSiblings = navigationData?.currentSiblings ?? [];
@@ -207,47 +285,29 @@ function BreadcrumbBar({
     isActive: boolean,
     isCurrent: boolean
   ) => (
-    <Text
+    <HoverableBreadcrumbItem
       key={panel.id}
-      as="span"
-      size="2"
-      color={isActive ? undefined : "gray"}
-      style={{
-        ...itemStyle,
-        backgroundColor: isCurrent && isActive ? "var(--gray-a4)" : undefined,
-      }}
-      onClick={() => onNavigateToId?.(panel.id)}
-      onContextMenu={(e: MouseEvent<HTMLSpanElement>) => handlePanelContextMenu(e, panel)}
-      onMouseEnter={(e: MouseEvent<HTMLSpanElement>) => {
-        if (!isCurrent || !isActive) {
-          e.currentTarget.style.backgroundColor = "var(--gray-a3)";
-        }
-      }}
-      onMouseLeave={(e: MouseEvent<HTMLSpanElement>) => {
-        e.currentTarget.style.backgroundColor = isCurrent && isActive ? "var(--gray-a4)" : "";
-      }}
-    >
-      {panel.title}
-    </Text>
+      panelId={panel.id}
+      title={panel.title}
+      isActive={isActive}
+      isCurrent={isCurrent}
+      onNavigate={() => onNavigateToId?.(panel.id)}
+      onContextMenu={(e) => handlePanelContextMenu(e, panel)}
+      onArchive={onArchive}
+    />
   );
 
   const renderAncestorItem = (ancestor: PanelAncestor) => (
-    <Text
+    <HoverableBreadcrumbItem
       key={ancestor.id}
-      as="span"
-      size="2"
-      style={itemStyle}
-      onClick={() => onNavigateToId?.(ancestor.id)}
-      onContextMenu={(e: MouseEvent<HTMLSpanElement>) => handlePanelContextMenu(e, ancestor)}
-      onMouseEnter={(e: MouseEvent<HTMLSpanElement>) => {
-        e.currentTarget.style.backgroundColor = "var(--gray-a3)";
-      }}
-      onMouseLeave={(e: MouseEvent<HTMLSpanElement>) => {
-        e.currentTarget.style.backgroundColor = "";
-      }}
-    >
-      {ancestor.title}
-    </Text>
+      panelId={ancestor.id}
+      title={ancestor.title}
+      isActive={true}
+      isCurrent={false}
+      onNavigate={() => onNavigateToId?.(ancestor.id)}
+      onContextMenu={(e) => handlePanelContextMenu(e, ancestor)}
+      onArchive={onArchive}
+    />
   );
 
   const renderSiblingGroup = (

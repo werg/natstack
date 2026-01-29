@@ -11,6 +11,7 @@
 import { useState, useCallback, useEffect, useMemo, useRef, type CSSProperties } from "react";
 import {
   CaretRightIcon,
+  Cross2Icon,
   PlusIcon,
 } from "@radix-ui/react-icons";
 import {
@@ -91,6 +92,7 @@ interface SortableTreeItemProps {
   onSelect: (panelId: string) => void;
   onToggleCollapse: (panelId: string) => void;
   onPanelAction?: (panelId: string, action: PanelContextMenuAction) => void;
+  onArchive?: (panelId: string) => void;
   onIndent: (panelId: string) => void;
   onUnindent: (panelId: string) => void;
 }
@@ -105,6 +107,7 @@ function SortableTreeItem({
   onSelect,
   onToggleCollapse,
   onPanelAction,
+  onArchive,
   onIndent,
   onUnindent,
 }: SortableTreeItemProps) {
@@ -208,6 +211,14 @@ function SortableTreeItem({
       }
     },
     [panel.id, onIndent, onUnindent]
+  );
+
+  const handleArchive = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onArchive?.(panel.id);
+    },
+    [panel.id, onArchive]
   );
 
   // Connector line for visual hierarchy (only for non-root nodes)
@@ -338,6 +349,33 @@ function SortableTreeItem({
             }}
           />
         )}
+
+        {/* Archive (X) button - shown on hover, hidden during drag */}
+        {isHovered && !isDraggingAny && (
+          <IconButton
+            size="1"
+            variant="ghost"
+            color="gray"
+            aria-label="Archive panel"
+            onClick={handleArchive}
+            style={{
+              width: 16,
+              height: 16,
+              flexShrink: 0,
+              opacity: 0.7,
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.opacity = "1";
+              e.currentTarget.style.backgroundColor = "var(--red-a4)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.opacity = "0.7";
+              e.currentTarget.style.backgroundColor = "transparent";
+            }}
+          >
+            <Cross2Icon width={10} height={10} />
+          </IconButton>
+        )}
       </Flex>
     </Box>
   );
@@ -389,6 +427,7 @@ interface LazyPanelTreeSidebarProps {
   ancestorIds: string[];
   onSelect: (panelId: string) => void;
   onPanelAction?: (panelId: string, action: PanelContextMenuAction) => void;
+  onArchive?: (panelId: string) => void;
 }
 
 export function LazyPanelTreeSidebar({
@@ -396,6 +435,7 @@ export function LazyPanelTreeSidebar({
   ancestorIds,
   onSelect,
   onPanelAction,
+  onArchive,
 }: LazyPanelTreeSidebarProps) {
   const {
     flattenedItems,
@@ -466,6 +506,7 @@ export function LazyPanelTreeSidebar({
               onSelect={onSelect}
               onToggleCollapse={toggleCollapse}
               onPanelAction={onPanelAction}
+              onArchive={onArchive}
               onIndent={indentPanel}
               onUnindent={unindentPanel}
             />

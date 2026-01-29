@@ -273,6 +273,12 @@ export async function handlePanelService(
       return;
     }
 
+    case "archive": {
+      const panelId = args[0] as string;
+      await pm.closePanel(panelId);  // closePanel already archives
+      return;
+    }
+
     case "retryDirtyBuild": {
       const panelId = args[0] as string;
       await pm.retryBuild(panelId);
@@ -515,6 +521,13 @@ export async function handleMenuService(
         template.push({
           label: "Unload",
           click: () => resolve("unload"),
+        });
+
+        template.push({ type: "separator" });
+
+        template.push({
+          label: "Archive",
+          click: () => resolve("archive"),
         });
 
         const menu = Menu.buildFromTemplate(template);
