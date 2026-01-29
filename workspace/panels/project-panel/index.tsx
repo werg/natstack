@@ -6,8 +6,8 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { Theme, Box, Flex, Separator, Card } from "@radix-ui/themes";
-import { useStateArgs, usePanelTheme } from "@natstack/react";
-import { rpc, createChild, setStateArgs } from "@natstack/runtime";
+import { usePanelTheme } from "@natstack/react";
+import { rpc, createChild, setStateArgs, useStateArgs } from "@natstack/runtime";
 
 import { useChildSessions } from "./hooks/useChildSessions";
 import { getAgentById, getAgentWorkerSource, getAgentHandle } from "./utils/agents";
@@ -52,9 +52,19 @@ export default function ProjectPanel() {
 
   const { sessions, loadSessions, loading: sessionsLoading } = useChildSessions();
 
-  // Load child panels on mount
+  // Load child panels on mount and when panel becomes visible
   useEffect(() => {
     void loadSessions();
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        void loadSessions();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [loadSessions]);
 
   // Load agent name for display
@@ -123,7 +133,7 @@ export default function ProjectPanel() {
         : projectConfig.workingDirectory;
 
       // Create chat panel as child
-      await createChild("panels/chat", { name: `Chat - ${channelId}` }, {
+      const chatHandle = await createChild("panels/chat", { name: `chat-${channelId.slice(0, 8)}` }, {
         channelName: channelId,
         channelConfig: {
           workingDirectory: effectiveWorkingDirectory,
@@ -152,6 +162,9 @@ export default function ProjectPanel() {
         }
       }
 
+      // Focus the new chat panel
+      navigateToSession(chatHandle.id);
+
       // Refresh session list
       await loadSessions();
     } catch (err) {
@@ -159,7 +172,7 @@ export default function ProjectPanel() {
     } finally {
       setIsLaunching(false);
     }
-  }, [projectConfig, contextId, loadSessions]);
+  }, [projectConfig, contextId, loadSessions, navigateToSession]);
 
   return (
     <Theme appearance={theme}>
