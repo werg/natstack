@@ -753,9 +753,9 @@ async function main() {
             modelOptions = CLAUDE_MODEL_FALLBACKS;
           }
 
-          // Build fields with dynamic model options
+          // Build fields with dynamic model options (filter out channel-level params)
           const fields = CLAUDE_CODE_PARAMETERS
-            .filter((p) => p.key !== "workingDirectory") // workingDirectory is set at init only
+            .filter((p) => !p.channelLevel)
             .map((f) => {
               // Override model options with dynamic list if available
               if (f.key === "model" && modelOptions.length > 0) {
@@ -965,7 +965,8 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     // systems have diverged. We sync both directions:
     // - SDK messages not in pubsub → post to pubsub
     // - Pubsub messages not in SDK → feed to SDK as context in next prompt
-    if (client.status === "interrupted" && client.sdkSessionId && workingDirectory) {
+    // Note: Only in unrestricted mode - recovery reads SDK transcripts from native filesystem
+    if (client.status === "interrupted" && client.sdkSessionId && workingDirectory && !restrictedMode) {
       log(`Session was interrupted - performing bidirectional sync...`);
       try {
         const recoveryResult = await recoverSession({
@@ -1839,8 +1840,9 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       disallowedTools: isRestrictedMode
         ? ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Task", "NotebookEdit"]
         : [],
-      // Set working directory if provided via config
-      ...(workingDirectory && { cwd: workingDirectory }),
+      // Set working directory if provided via config (only in unrestricted mode)
+      // In restricted mode, file tools come from pubsub and don't use native filesystem
+      ...(!isRestrictedMode && workingDirectory && { cwd: workingDirectory }),
       // Enable streaming of partial messages for token-by-token delivery
       includePartialMessages: true,
       // Resume from previous session if available

@@ -116,12 +116,18 @@ export default function ProjectPanel() {
         sessionContextId = crypto.randomUUID();
       }
 
+      // Determine working directory based on mode
+      const isManaged = projectConfig.projectLocation === "managed";
+      const effectiveWorkingDirectory = isManaged
+        ? (projectConfig.browserWorkingDirectory ?? PROJECT_DEFAULTS.browserWorkingDirectory)
+        : projectConfig.workingDirectory;
+
       // Create chat panel as child
       await createChild("panels/chat", { name: `Chat - ${channelId}` }, {
         channelName: channelId,
         channelConfig: {
-          workingDirectory: projectConfig.workingDirectory,
-          restrictedMode: projectConfig.projectLocation === "managed",
+          workingDirectory: effectiveWorkingDirectory,
+          restrictedMode: isManaged,
         },
         contextId: sessionContextId,
       });
@@ -136,8 +142,8 @@ export default function ProjectPanel() {
             {
               channel: channelId,
               handle: getAgentHandle(agentDef),
-              workingDirectory: projectConfig.workingDirectory,
-              restrictedMode: projectConfig.projectLocation === "managed",
+              workingDirectory: effectiveWorkingDirectory,
+              restrictedMode: isManaged,
               contextId: sessionContextId,
               autonomyLevel: projectConfig.defaultAutonomy ?? PROJECT_DEFAULTS.defaultAutonomy,
               ...projectConfig.defaultAgentConfig,

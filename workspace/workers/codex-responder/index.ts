@@ -397,8 +397,8 @@ async function main() {
           );
           if (!panel) throw new Error("No panel found");
 
-          // Build fields (filter out workingDirectory which is set at init only)
-          const fields = CODEX_PARAMETERS.filter((p) => p.key !== "workingDirectory");
+          // Build fields (filter out channel-level params which are set at init only)
+          const fields = CODEX_PARAMETERS.filter((p) => !p.channelLevel);
 
           // Call feedback_form on the panel
           const handle = client.callMethod(panel.id, "feedback_form", {
@@ -891,10 +891,14 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
     if (process.env["OPENAI_API_KEY"]) baseEnv["OPENAI_API_KEY"] = process.env["OPENAI_API_KEY"];
     if (process.env["CODEX_API_KEY"]) baseEnv["CODEX_API_KEY"] = process.env["CODEX_API_KEY"];
     if (codexHome) baseEnv["CODEX_HOME"] = codexHome;
-    const workspaceOverride = workingDirectory ?? process.env["NATSTACK_WORKSPACE"];
-    if (workspaceOverride) {
-      baseEnv["NATSTACK_WORKSPACE"] = workspaceOverride;
-      baseEnv["PWD"] = workspaceOverride;
+    // Only set workspace env vars in unrestricted mode (native filesystem)
+    // In restricted mode, file tools come from pubsub and don't use native filesystem
+    if (!isRestrictedMode) {
+      const workspaceOverride = workingDirectory ?? process.env["NATSTACK_WORKSPACE"];
+      if (workspaceOverride) {
+        baseEnv["NATSTACK_WORKSPACE"] = workspaceOverride;
+        baseEnv["PWD"] = workspaceOverride;
+      }
     }
 
     // Use globally installed codex from PATH
@@ -916,7 +920,8 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
       : getSandboxModeFromAutonomy(currentSettings.autonomyLevel);
     const threadOptions = {
       skipGitRepoCheck: true,
-      ...(workingDirectory && { cwd: workingDirectory }),
+      // Only set cwd in unrestricted mode (native filesystem)
+      ...(!isRestrictedMode && workingDirectory && { cwd: workingDirectory }),
       ...(currentSettings.model && { model: currentSettings.model }),
       ...(reasoningEffort && { modelReasoningEffort: reasoningEffort }),
       sandboxMode,

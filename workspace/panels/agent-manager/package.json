@@ -1,7 +1,7 @@
 {
   "name": "@workspace-panels/agent-manager",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "natstack": {
     "type": "app",

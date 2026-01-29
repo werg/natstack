@@ -241,8 +241,15 @@ interface ChatStateArgs {
 
 export default function AgenticChat() {
   const theme = usePanelTheme();
-  const workspaceRoot = process.env["NATSTACK_WORKSPACE"]?.trim();
   const { channelName, channelConfig, contextId, expectedWorkerPanelIds } = useStateArgs<ChatStateArgs>();
+
+  // Derive workspace root with proper priority:
+  // 1. channelConfig.workingDirectory (passed from chat-launcher)
+  // 2. NATSTACK_WORKSPACE env var (legacy/backwards compatibility)
+  // 3. "/" for restricted/OPFS mode (sandbox root)
+  const workspaceRoot = channelConfig?.workingDirectory
+    || process.env["NATSTACK_WORKSPACE"]?.trim()
+    || (channelConfig?.restrictedMode ? "/" : undefined);
 
   const selfIdRef = useRef<string | null>(null);
   // Track if we've already connected to prevent reconnection loops

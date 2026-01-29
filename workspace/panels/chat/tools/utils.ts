@@ -21,7 +21,12 @@ export function resolvePath(targetPath: string, workspaceRoot?: string): string 
   const normalized = path.normalize(resolved);
 
   // Ensure the path is within workspace root
-  if (!normalized.startsWith(absoluteRoot + path.sep) && normalized !== absoluteRoot) {
+  // Special case: when root is "/", all absolute paths are valid
+  const isWithinRoot = absoluteRoot === "/"
+    ? normalized.startsWith("/")
+    : (normalized.startsWith(absoluteRoot + path.sep) || normalized === absoluteRoot);
+
+  if (!isWithinRoot) {
     throw new Error(`Path escapes workspace: ${targetPath}`);
   }
 

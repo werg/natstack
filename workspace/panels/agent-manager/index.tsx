@@ -17,9 +17,10 @@ import {
   ScrollArea,
   Switch,
   Separator,
+  SegmentedControl,
 } from "@radix-ui/themes";
 import { usePanelTheme, ParameterEditor } from "@natstack/react";
-import { db, type FieldValue } from "@natstack/runtime";
+import { db, type FieldValue, type FieldDefinition } from "@natstack/runtime";
 import {
   getAgentRegistry,
   type AgentDefinition,
@@ -31,6 +32,20 @@ import {
 } from "@natstack/agentic-messaging/config";
 
 const PREFERENCES_DB_NAME = "agent-preferences";
+
+/** Global settings that apply across all sessions unless overridden */
+export interface GlobalAgentSettings {
+  /** Default project location mode for new sessions */
+  defaultProjectLocation: "external" | "browser";
+  /** Default autonomy level for agents */
+  defaultAutonomy: 0 | 1 | 2;
+}
+
+/** Default global settings */
+export const DEFAULT_GLOBAL_SETTINGS: GlobalAgentSettings = {
+  defaultProjectLocation: "external",
+  defaultAutonomy: 2,
+};
 
 /** Persisted defaults structure - keyed by agent type ID */
 type AgentDefaults = Record<string, Record<string, FieldValue>>;
@@ -49,10 +64,60 @@ async function getPreferencesDb() {
           updated_at INTEGER NOT NULL
         )
       `);
+      // Global settings table
+      await database.exec(`
+        CREATE TABLE IF NOT EXISTS global_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
       return database;
     })();
   }
   return preferencesDbPromise;
+}
+
+/** Load global settings from SQLite */
+export async function loadGlobalSettings(): Promise<GlobalAgentSettings> {
+  try {
+    const database = await getPreferencesDb();
+    const rows = await database.query<{ key: string; value: string }>(
+      "SELECT key, value FROM global_settings"
+    );
+    const result: Partial<GlobalAgentSettings> = {};
+    for (const row of rows) {
+      try {
+        (result as Record<string, unknown>)[row.key] = JSON.parse(row.value);
+      } catch {
+        // Skip malformed entries
+      }
+    }
+    return { ...DEFAULT_GLOBAL_SETTINGS, ...result };
+  } catch (err) {
+    console.warn("[AgentManager] Failed to load global settings:", err);
+    return { ...DEFAULT_GLOBAL_SETTINGS };
+  }
+}
+
+/** Save a global setting to SQLite */
+export async function saveGlobalSetting(
+  key: keyof GlobalAgentSettings,
+  value: GlobalAgentSettings[typeof key]
+): Promise<void> {
+  try {
+    const database = await getPreferencesDb();
+    const valueJson = JSON.stringify(value);
+    const now = Date.now();
+    await database.run(
+      `INSERT INTO global_settings (key, value, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = ?`,
+      [key, valueJson, now, valueJson, now]
+    );
+  } catch (err) {
+    console.warn("[AgentManager] Failed to save global setting:", err);
+  }
 }
 
 /** Load all agent defaults from SQLite */
@@ -158,6 +223,7 @@ export default function AgentManager() {
   const theme = usePanelTheme();
   const [agents, setAgents] = useState<AgentDefinition[]>([]);
   const [agentDefaults, setAgentDefaults] = useState<AgentDefaults>({});
+  const [globalSettings, setGlobalSettings] = useState<GlobalAgentSettings>(DEFAULT_GLOBAL_SETTINGS);
   const [status, setStatus] = useState("Loading...");
   const [isLoading, setIsLoading] = useState(true);
 
@@ -179,13 +245,15 @@ export default function AgentManager() {
           }
         }
 
-        // Load all agents
+        // Load all agents and settings
         const allAgents = await registry.listAll();
         const defaults = await loadAgentDefaults();
+        const global = await loadGlobalSettings();
 
         if (mounted) {
           setAgents(allAgents);
           setAgentDefaults(defaults);
+          setGlobalSettings(global);
           setStatus(`${allAgents.length} agents registered`);
           setIsLoading(false);
         }
@@ -202,6 +270,15 @@ export default function AgentManager() {
     return () => {
       mounted = false;
     };
+  }, []);
+
+  // Update a global setting
+  const updateGlobalSetting = useCallback(<K extends keyof GlobalAgentSettings>(
+    key: K,
+    value: GlobalAgentSettings[K]
+  ) => {
+    setGlobalSettings((prev) => ({ ...prev, [key]: value }));
+    void saveGlobalSetting(key, value);
   }, []);
 
   // Toggle agent enabled state
@@ -255,6 +332,57 @@ export default function AgentManager() {
         <Text size="2" color="gray">
           Manage registered agents. Changes take effect immediately for new chat sessions.
         </Text>
+
+        {/* Global Settings */}
+        <Card variant="surface">
+          <Flex direction="column" gap="3" p="2">
+            <Text size="2" weight="bold">Global Defaults</Text>
+            <Text size="1" color="gray">
+              These defaults apply to all new sessions unless overridden in project or session settings.
+            </Text>
+
+            <Flex direction="column" gap="2">
+              <Text size="2" weight="medium">Default Project Location</Text>
+              <SegmentedControl.Root
+                value={globalSettings.defaultProjectLocation}
+                onValueChange={(value) =>
+                  updateGlobalSetting("defaultProjectLocation", value as "external" | "browser")
+                }
+              >
+                <SegmentedControl.Item value="external">
+                  External Filesystem
+                </SegmentedControl.Item>
+                <SegmentedControl.Item value="browser">
+                  Browser Storage (Restricted)
+                </SegmentedControl.Item>
+              </SegmentedControl.Root>
+              <Text size="1" color="gray">
+                {globalSettings.defaultProjectLocation === "external"
+                  ? "Agents have native filesystem access to your local machine."
+                  : "Agents run in a sandboxed browser environment with limited filesystem access."}
+              </Text>
+            </Flex>
+
+            <Flex direction="column" gap="2">
+              <Text size="2" weight="medium">Default Autonomy Level</Text>
+              <SegmentedControl.Root
+                value={String(globalSettings.defaultAutonomy)}
+                onValueChange={(value) =>
+                  updateGlobalSetting("defaultAutonomy", Number(value) as 0 | 1 | 2)
+                }
+              >
+                <SegmentedControl.Item value="0">Restricted</SegmentedControl.Item>
+                <SegmentedControl.Item value="1">Standard</SegmentedControl.Item>
+                <SegmentedControl.Item value="2">Autonomous</SegmentedControl.Item>
+              </SegmentedControl.Root>
+              <Text size="1" color="gray">
+                {globalSettings.defaultAutonomy === 0 && "Read-only access, requires approval for all actions."}
+                {globalSettings.defaultAutonomy === 1 && "Can modify workspace files with standard permissions."}
+                {globalSettings.defaultAutonomy === 2 && "Full access with minimal restrictions."}
+              </Text>
+            </Flex>
+          </Flex>
+        </Card>
 
         {/* Agent List */}
         <ScrollArea style={{ flex: 1 }}>

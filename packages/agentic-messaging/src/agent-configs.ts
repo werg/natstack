@@ -50,7 +50,7 @@ export const CLAUDE_CODE_PARAMETERS: FieldDefinition[] = [
     description: "Claude model for code generation",
     type: "select",
     required: false,
-    default: "claude-sonnet-4-5-20250929",
+    default: "claude-opus-4-5-20251101",
     // Fallback options - workers may override with dynamic SDK list at runtime
     options: CLAUDE_MODEL_FALLBACKS,
     group: "Model",
@@ -86,7 +86,7 @@ export const CLAUDE_CODE_PARAMETERS: FieldDefinition[] = [
     key: "autonomyLevel",
     label: "Autonomy",
     type: "slider",
-    // No default - uses session defaultAutonomy
+    default: 2,
     min: 0,
     max: 2,
     step: 1,
@@ -123,7 +123,7 @@ export const AI_RESPONDER_PARAMETERS: FieldDefinition[] = [
     description: "Optimized model configuration for different tasks",
     type: "select",
     required: false,
-    default: "fast",
+    default: "coding",
     // Fallback options - workers may override with dynamic ai.listRoles() at runtime
     options: AI_ROLE_FALLBACKS,
     group: "Model",
@@ -161,7 +161,7 @@ export const AI_RESPONDER_PARAMETERS: FieldDefinition[] = [
     key: "autonomyLevel",
     label: "Autonomy",
     type: "slider",
-    // No default - uses session defaultAutonomy
+    default: 2,
     min: 0,
     max: 2,
     step: 1,
@@ -241,7 +241,7 @@ export const CODEX_PARAMETERS: FieldDefinition[] = [
     description: "Higher effort = more thorough but slower",
     type: "slider",
     required: false,
-    default: 2, // medium
+    default: 3, // high
     min: 0,
     max: 3,
     step: 1,
@@ -258,7 +258,7 @@ export const CODEX_PARAMETERS: FieldDefinition[] = [
     key: "autonomyLevel",
     label: "Autonomy",
     type: "slider",
-    // No default - uses session defaultAutonomy
+    default: 2,
     min: 0,
     max: 2,
     step: 1,
@@ -277,7 +277,7 @@ export const CODEX_PARAMETERS: FieldDefinition[] = [
     description: "Allow web search capabilities",
     type: "boolean",
     required: false,
-    default: false,
+    default: true,
     group: "Permissions",
     order: 4,
   },

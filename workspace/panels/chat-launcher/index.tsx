@@ -7,7 +7,7 @@
  * In channel mode (channelName set): After spawning agents, closes self or navigates back.
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { pubsubConfig, buildNsLink, closeSelf, getStateArgs, createChild, rpc } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
 import { Theme } from "@radix-ui/themes";
@@ -18,6 +18,10 @@ import {
   type SessionConfig,
 } from "./hooks/useAgentSelection";
 import { AgentSetupPhase } from "./components/AgentSetupPhase";
+import {
+  loadGlobalSettings,
+  type GlobalAgentSettings,
+} from "@workspace-panels/agent-manager";
 
 const generateChannelId = () => `chat-${crypto.randomUUID().slice(0, 8)}`;
 
@@ -43,12 +47,36 @@ export default function ChatLauncher() {
   const [channelId, setChannelId] = useState<string>(existingChannelName ?? generateChannelId);
   const [status, setStatus] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
+  const [globalSettingsLoaded, setGlobalSettingsLoaded] = useState(false);
 
   // Session config - includes channel config (workingDirectory, restrictedMode) and session defaults
+  // Initial values are from DEFAULT_SESSION_CONFIG, then overwritten by global settings
   const [sessionConfig, setSessionConfig] = useState<SessionConfig>(() => ({
     ...DEFAULT_SESSION_CONFIG,
     workingDirectory: workspaceRoot ?? "",
   }));
+
+  // Load global settings and apply to session config (only on first mount)
+  useEffect(() => {
+    if (globalSettingsLoaded) return;
+
+    async function applyGlobalSettings() {
+      try {
+        const global = await loadGlobalSettings();
+        setSessionConfig((prev) => ({
+          ...prev,
+          projectLocation: global.defaultProjectLocation,
+          defaultAutonomy: global.defaultAutonomy,
+        }));
+      } catch (err) {
+        console.warn("[ChatLauncher] Failed to load global settings:", err);
+      } finally {
+        setGlobalSettingsLoaded(true);
+      }
+    }
+
+    void applyGlobalSettings();
+  }, [globalSettingsLoaded]);
 
   const {
     agentsWithRequirements,

@@ -56,7 +56,10 @@ async function loadPersistedSettings(): Promise<PersistedSettings> {
  */
 export interface SessionConfig {
   projectLocation: "external" | "browser";
+  /** Working directory for external/native filesystem mode */
   workingDirectory: string;
+  /** Working directory for browser/OPFS mode (defaults to "/") */
+  browserWorkingDirectory: string;
   defaultAutonomy: 0 | 1 | 2;
   /** Selected template spec for browser mode (e.g., "contexts/default") */
   contextTemplateSpec?: string;
@@ -64,16 +67,22 @@ export interface SessionConfig {
 
 /** Derive ChannelConfig from SessionConfig */
 export function toChannelConfig(session: SessionConfig): ChannelConfig {
+  const isRestricted = session.projectLocation === "browser";
+  // Use the appropriate working directory based on mode
+  const workingDir = isRestricted
+    ? session.browserWorkingDirectory
+    : session.workingDirectory;
   return {
-    workingDirectory: session.workingDirectory || undefined,
-    restrictedMode: session.projectLocation === "browser",
+    workingDirectory: workingDir || undefined,
+    restrictedMode: isRestricted,
   };
 }
 
 export const DEFAULT_SESSION_CONFIG: SessionConfig = {
   projectLocation: "external",
   workingDirectory: "",
-  defaultAutonomy: 0,
+  browserWorkingDirectory: "/",
+  defaultAutonomy: 2,
 };
 
 /** Agent selection state */
@@ -157,9 +166,6 @@ export function useAgentSelection({ workspaceRoot, sessionConfig = DEFAULT_SESSI
           const perAgentParams = getPerAgentParams(agentDef.parameters);
 
           for (const param of perAgentParams) {
-            // Skip autonomyLevel - it uses session default unless explicitly overridden
-            if (param.key === "autonomyLevel") continue;
-
             // Check persisted settings first
             if (param.key in persisted) {
               config[param.key] = persisted[param.key]!;
