@@ -13,6 +13,9 @@ import { useState, type CSSProperties, type MouseEvent } from "react";
 
 import { useNavigation } from "./NavigationContext";
 import { panel } from "../shell/client";
+
+const isMac = process.platform === "darwin";
+
 import type {
   NavigationMode,
   LazyTitleNavigationData,
@@ -69,6 +72,9 @@ export function TitleBar({ title, onNavigateToId, onPanelAction, onArchive }: Ti
           gap="2"
           style={{ appRegion: "no-drag", WebkitAppRegion: "no-drag" } as CSSProperties}
         >
+          {/* macOS: spacer for traffic light buttons */}
+          {isMac && <Box style={{ width: "78px", flexShrink: 0 }} />}
+
           <IconButton variant="ghost" size="1" onClick={handleHamburgerClick}>
             <HamburgerMenuIcon />
           </IconButton>
@@ -127,8 +133,8 @@ export function TitleBar({ title, onNavigateToId, onPanelAction, onArchive }: Ti
           />
         </Box>
 
-        {/* Right side: spacer for native window controls (titleBarOverlay) */}
-        <Box style={{ width: "138px" }} />
+        {/* Right side: spacer for native window controls (titleBarOverlay) - Windows/Linux only */}
+        {!isMac && <Box style={{ width: "138px" }} />}
       </Flex>
     </Box>
   );
