@@ -269,6 +269,9 @@ export class ViewManager {
       sandbox: !isUnsafe,
       session: ses,
       webviewTag: false,
+      // Disable background throttling so views respond immediately when re-shown.
+      // Without this, Chromium throttles hidden views causing input delay on refocus.
+      backgroundThrottling: false,
     };
 
     // Set preload: use provided preload, fall back to safe/unsafe preload, or omit if null
@@ -334,24 +337,18 @@ export class ViewManager {
           this.crashCallback(config.id, details.reason);
         }
       },
-      // Focus handler to recover from compositor stalls - when a user clicks on
-      // a panel that appears grey, this refreshes the view to restore painting.
-      // Debounced to avoid interfering with click events - the remove/add cycle
-      // in refreshVisiblePanel can swallow clicks if it fires synchronously with focus.
-      focus: (() => {
-        let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-        return () => {
-          if (debounceTimer) {
-            clearTimeout(debounceTimer);
-          }
-          debounceTimer = setTimeout(() => {
-            debounceTimer = null;
+      // Focus handler to recover from compositor stalls (grey panel).
+      // Deferred with setImmediate so the click event that triggered focus
+      // completes before we do the refresh (which would otherwise swallow it).
+      focus: () => {
+        if (this.visiblePanelId === config.id) {
+          setImmediate(() => {
             if (this.visiblePanelId === config.id) {
               this.refreshVisiblePanel();
             }
-          }, 150); // Delay allows click events to process first
-        };
-      })(),
+          });
+        }
+      },
     };
 
     managed.handlers = handlers;
@@ -501,12 +498,6 @@ export class ViewManager {
 
     managed.visible = visible;
     managed.view.setVisible(visible);
-
-    // Disable background throttling when showing a view to ensure immediate responsiveness.
-    // Hidden views get throttled by Chromium, causing input delay when re-shown.
-    if (visible && !managed.view.webContents.isDestroyed()) {
-      managed.view.webContents.setBackgroundThrottling(false);
-    }
 
     // Track visible panel and apply calculated bounds
     if (visible && managed.type !== "shell") {
