@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import { ensurePanelLoaded } from "@natstack/runtime";
 import type { Participant } from "@natstack/agentic-messaging";
 import type { ChatParticipantMetadata } from "../types";
@@ -58,99 +58,109 @@ export function useExpectedWorkerMonitor(options: UseExpectedWorkerMonitorOption
 
   // Track which workers we've already checked to avoid duplicate checks
   const checkedRef = useRef<Set<string>>(new Set());
-  // Track timer so we can clean up
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Track which panel IDs we've scheduled checks for
+  const scheduledRef = useRef<Set<string>>(new Set());
+  // Keep current participants in a ref so setTimeout can access fresh values
+  const participantsRef = useRef(participants);
+  participantsRef.current = participants;
+  // Keep callback in a ref to avoid stale closures
+  const onErrorRef = useRef(onWorkerBuildError);
+  onErrorRef.current = onWorkerBuildError;
 
+  // Function to check a single panel's status
+  const checkPanel = useCallback((panelId: string) => {
+    // Skip if already checked
+    if (checkedRef.current.has(panelId)) {
+      return;
+    }
+
+    // Check if the worker has joined by now
+    const currentParticipants = participantsRef.current;
+    const joinedWorkerPanelIds = new Set(
+      Object.values(currentParticipants)
+        .map((p) => (p.metadata as { workerPanelId?: string } | undefined)?.workerPanelId)
+        .filter((id): id is string => !!id)
+    );
+
+    if (joinedWorkerPanelIds.has(panelId)) {
+      console.log(`[ExpectedWorkerMonitor] Worker panel ${panelId} has joined, skipping check`);
+      checkedRef.current.add(panelId);
+      return;
+    }
+
+    // Mark as checked to avoid duplicate checks
+    checkedRef.current.add(panelId);
+
+    // Check the panel's status
+    console.log(`[ExpectedWorkerMonitor] Checking status of expected worker panel: ${panelId}`);
+
+    void ensurePanelLoaded(panelId)
+      .then((result) => {
+        if (!result.success) {
+          // Panel failed to load - this is the issue we're looking for
+          console.warn(
+            `[ExpectedWorkerMonitor] Worker panel ${panelId} failed to load: ${result.buildState} - ${result.error}`
+          );
+
+          // Special case: panel was deleted - just log, don't show prominent error
+          if (result.buildState === "not-found") {
+            console.warn(
+              `[ExpectedWorkerMonitor] Worker panel ${panelId} no longer exists`
+            );
+            return;
+          }
+
+          // Report the error
+          onErrorRef.current?.({
+            panelId,
+            buildState: result.buildState,
+            error: result.error ?? `Build failed: ${result.buildState}`,
+          });
+        } else {
+          // Panel loaded successfully but hasn't joined yet - might just be slow
+          // Give it more time; if it still doesn't join, useAgentRecovery will handle it
+          console.log(
+            `[ExpectedWorkerMonitor] Worker panel ${panelId} loaded successfully, waiting for join`
+          );
+        }
+      })
+      .catch((err) => {
+        console.error(`[ExpectedWorkerMonitor] Error checking worker panel ${panelId}:`, err);
+      });
+  }, []);
+
+  // Schedule checks for new panel IDs when they arrive
   useEffect(() => {
     if (!enabled || expectedWorkerPanelIds.length === 0) {
       return;
     }
 
-    // Clear any existing timer
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-
-    // Get list of worker panel IDs that have joined (from participant metadata)
-    const joinedWorkerPanelIds = new Set(
-      Object.values(participants)
-        .map((p) => (p.metadata as { workerPanelId?: string } | undefined)?.workerPanelId)
-        .filter((id): id is string => !!id)
+    // Find panel IDs we haven't scheduled yet
+    const newPanelIds = expectedWorkerPanelIds.filter(
+      (id) => !scheduledRef.current.has(id) && !checkedRef.current.has(id)
     );
 
-    // Find workers that haven't joined yet and haven't been checked
-    const unjoinedWorkers = expectedWorkerPanelIds.filter(
-      (panelId) => !joinedWorkerPanelIds.has(panelId) && !checkedRef.current.has(panelId)
-    );
-
-    if (unjoinedWorkers.length === 0) {
+    if (newPanelIds.length === 0) {
       return;
     }
 
-    // Set a timer to check the unjoined workers after the delay
-    // This gives them time to build and join
-    timerRef.current = setTimeout(() => {
-      // Re-check which workers have joined (state may have changed during delay)
-      const currentJoinedIds = new Set(
-        Object.values(participants)
-          .map((p) => (p.metadata as { workerPanelId?: string } | undefined)?.workerPanelId)
-          .filter((id): id is string => !!id)
-      );
+    console.log(`[ExpectedWorkerMonitor] Scheduling checks for ${newPanelIds.length} worker panels:`, newPanelIds);
 
-      for (const panelId of unjoinedWorkers) {
-        // Skip if already joined or already checked
-        if (currentJoinedIds.has(panelId) || checkedRef.current.has(panelId)) {
-          continue;
-        }
-
-        // Mark as checked to avoid duplicate checks
-        checkedRef.current.add(panelId);
-
-        // Check the panel's status
-        console.log(`[ExpectedWorkerMonitor] Checking status of expected worker panel: ${panelId}`);
-
-        void ensurePanelLoaded(panelId)
-          .then((result) => {
-            if (!result.success) {
-              // Panel failed to load - this is the issue we're looking for
-              console.warn(
-                `[ExpectedWorkerMonitor] Worker panel ${panelId} failed to load: ${result.buildState} - ${result.error}`
-              );
-
-              // Special case: panel was deleted - just log, don't show prominent error
-              if (result.buildState === "not-found") {
-                console.warn(
-                  `[ExpectedWorkerMonitor] Worker panel ${panelId} no longer exists`
-                );
-                return;
-              }
-
-              // Report the error
-              onWorkerBuildError?.({
-                panelId,
-                buildState: result.buildState,
-                error: result.error ?? `Build failed: ${result.buildState}`,
-              });
-            } else {
-              // Panel loaded successfully but hasn't joined yet - might just be slow
-              // Give it more time; if it still doesn't join, useAgentRecovery will handle it
-              console.log(
-                `[ExpectedWorkerMonitor] Worker panel ${panelId} loaded successfully, waiting for join`
-              );
-            }
-          })
-          .catch((err) => {
-            console.error(`[ExpectedWorkerMonitor] Error checking worker panel ${panelId}:`, err);
-          });
-      }
-    }, checkDelayMs);
+    // Schedule a check for each new panel ID
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    for (const panelId of newPanelIds) {
+      scheduledRef.current.add(panelId);
+      const timer = setTimeout(() => {
+        checkPanel(panelId);
+      }, checkDelayMs);
+      timers.push(timer);
+    }
 
     return () => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
+      // Clean up timers on unmount
+      for (const timer of timers) {
+        clearTimeout(timer);
       }
     };
-  }, [enabled, expectedWorkerPanelIds, participants, onWorkerBuildError, checkDelayMs]);
+  }, [enabled, expectedWorkerPanelIds, checkDelayMs, checkPanel]);
 }

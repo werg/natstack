@@ -215,7 +215,17 @@ export default function ChatLauncher() {
 
       // Post-spawn behavior depends on mode
       if (isChannelMode) {
-        // Channel modification mode: try to close self, otherwise navigate back
+        // Channel modification mode: store panel IDs in localStorage for the chat panel to pick up
+        // This is needed because the chat panel is already open and we can't pass stateArgs to it
+        if (spawnedPanelIds.length > 0) {
+          const storageKey = `expectedWorkers:${targetChannelId}`;
+          const existing = JSON.parse(localStorage.getItem(storageKey) ?? "[]") as string[];
+          const combined = [...new Set([...existing, ...spawnedPanelIds])];
+          localStorage.setItem(storageKey, JSON.stringify(combined));
+          console.log(`[Chat Launcher] Stored ${spawnedPanelIds.length} expected worker panel IDs for channel ${targetChannelId}`);
+        }
+
+        // Try to close self, otherwise navigate back
         try {
           await closeSelf();
           return; // Panel closed, done
