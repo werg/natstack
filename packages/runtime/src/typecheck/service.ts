@@ -20,7 +20,7 @@ import {
   resolveModule,
   DEFAULT_DEDUPE_PACKAGES,
 } from "./resolution.js";
-import { FS_TYPE_DEFINITIONS, PATH_TYPE_DEFINITIONS, GLOBAL_TYPE_DEFINITIONS, NODE_BUILTIN_TYPE_STUBS, loadNatstackPackageTypes, findPackagesDir, type NatstackPackageTypes } from "./lib/index.js";
+import { FS_TYPE_DEFINITIONS, PATH_TYPE_DEFINITIONS, GLOBAL_TYPE_DEFINITIONS, NODE_BUILTIN_TYPE_STUBS, NODE_FS_TYPE_DEFINITIONS, loadNatstackPackageTypes, findPackagesDir, type NatstackPackageTypes } from "./lib/index.js";
 import { TS_LIB_FILES } from "./lib/typescript-libs.js";
 import { createTypeDefinitionLoader, type TypeDefinitionLoader } from "./loader.js";
 
@@ -205,6 +205,12 @@ export class TypeCheckService {
     // Add Node.js built-in module type definitions (for workers)
     this.files.set("/@natstack/virtual/node-builtins.d.ts", {
       content: NODE_BUILTIN_TYPE_STUBS,
+      version: 1,
+    });
+
+    // Add node: prefix module declarations (for workers using node:fs, node:path, etc.)
+    this.files.set("/@natstack/virtual/node-prefix-modules.d.ts", {
+      content: NODE_FS_TYPE_DEFINITIONS,
       version: 1,
     });
 
@@ -936,11 +942,21 @@ export class TypeCheckService {
     const basePath = `/@types/${pkgName}`;
 
     // Extract subpath if present (e.g., "react/jsx-runtime" -> "jsx-runtime")
-    const subpath = moduleName.length > pkgName.length
+    let subpath = moduleName.length > pkgName.length
       ? moduleName.slice(pkgName.length + 1) // +1 for the "/"
       : null;
 
     if (subpath) {
+      // Strip .js/.mjs/.cjs extensions from subpath - ESM imports use .js but types are .d.ts
+      // e.g., "server/mcp.js" -> "server/mcp"
+      const jsExtensions = [".js", ".mjs", ".cjs", ".jsx"];
+      for (const ext of jsExtensions) {
+        if (subpath.endsWith(ext)) {
+          subpath = subpath.slice(0, -ext.length);
+          break;
+        }
+      }
+
       // First, check if we have a known subpath export from package.json exports
       const pkgSubpaths = this.externalPackageSubpaths.get(pkgName);
       if (pkgSubpaths) {

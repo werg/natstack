@@ -284,6 +284,307 @@ declare module "util" {
   };
 }
 
+declare module "http" {
+  import { Readable, Writable, Duplex } from "stream";
+
+  export interface IncomingHttpHeaders {
+    [header: string]: string | string[] | undefined;
+  }
+
+  export interface OutgoingHttpHeaders {
+    [header: string]: string | number | string[] | undefined;
+  }
+
+  export interface IncomingMessage extends Readable {
+    httpVersion: string;
+    httpVersionMajor: number;
+    httpVersionMinor: number;
+    complete: boolean;
+    headers: IncomingHttpHeaders;
+    rawHeaders: string[];
+    trailers: IncomingHttpHeaders;
+    rawTrailers: string[];
+    method?: string;
+    url?: string;
+    statusCode?: number;
+    statusMessage?: string;
+    socket: Duplex;
+    setTimeout(msecs: number, callback?: () => void): this;
+    destroy(error?: Error): this;
+  }
+
+  export interface ServerResponse extends Writable {
+    statusCode: number;
+    statusMessage: string;
+    headersSent: boolean;
+    setHeader(name: string, value: string | number | string[]): this;
+    getHeader(name: string): string | number | string[] | undefined;
+    getHeaders(): OutgoingHttpHeaders;
+    getHeaderNames(): string[];
+    hasHeader(name: string): boolean;
+    removeHeader(name: string): void;
+    writeHead(statusCode: number, headers?: OutgoingHttpHeaders): this;
+    writeHead(statusCode: number, statusMessage?: string, headers?: OutgoingHttpHeaders): this;
+    setTimeout(msecs: number, callback?: () => void): this;
+    flushHeaders(): void;
+  }
+
+  export interface RequestOptions {
+    protocol?: string;
+    host?: string;
+    hostname?: string;
+    port?: number | string;
+    path?: string;
+    method?: string;
+    headers?: OutgoingHttpHeaders;
+    timeout?: number;
+    signal?: AbortSignal;
+  }
+
+  export interface Server {
+    listen(port?: number, hostname?: string, listeningListener?: () => void): this;
+    listen(port?: number, listeningListener?: () => void): this;
+    listen(options: { port?: number; host?: string }, listeningListener?: () => void): this;
+    close(callback?: (err?: Error) => void): this;
+    address(): { port: number; family: string; address: string } | string | null;
+    on(event: "request", listener: (req: IncomingMessage, res: ServerResponse) => void): this;
+    on(event: "error", listener: (err: Error) => void): this;
+    on(event: "listening", listener: () => void): this;
+    on(event: "close", listener: () => void): this;
+    on(event: string, listener: (...args: unknown[]) => void): this;
+  }
+
+  export function createServer(requestListener?: (req: IncomingMessage, res: ServerResponse) => void): Server;
+  export function request(options: RequestOptions | string, callback?: (res: IncomingMessage) => void): Writable;
+  export function get(options: RequestOptions | string, callback?: (res: IncomingMessage) => void): Writable;
+}
+
+declare module "node:http" {
+  export * from "http";
+}
+
+declare module "crypto" {
+  export function randomBytes(size: number): Buffer;
+  export function randomBytes(size: number, callback: (err: Error | null, buf: Buffer) => void): void;
+  export function randomUUID(): string;
+  export function createHash(algorithm: string): Hash;
+  export function createHmac(algorithm: string, key: string | Buffer): Hmac;
+  export function createCipheriv(algorithm: string, key: Buffer, iv: Buffer | null): Cipher;
+  export function createDecipheriv(algorithm: string, key: Buffer, iv: Buffer | null): Decipher;
+  export function pbkdf2(password: string | Buffer, salt: string | Buffer, iterations: number, keylen: number, digest: string, callback: (err: Error | null, derivedKey: Buffer) => void): void;
+  export function pbkdf2Sync(password: string | Buffer, salt: string | Buffer, iterations: number, keylen: number, digest: string): Buffer;
+  export function scrypt(password: string | Buffer, salt: string | Buffer, keylen: number, callback: (err: Error | null, derivedKey: Buffer) => void): void;
+  export function scryptSync(password: string | Buffer, salt: string | Buffer, keylen: number): Buffer;
+  export function timingSafeEqual(a: Buffer, b: Buffer): boolean;
+
+  export interface Hash {
+    update(data: string | Buffer): this;
+    digest(): Buffer;
+    digest(encoding: "hex" | "base64" | "latin1"): string;
+  }
+
+  export interface Hmac {
+    update(data: string | Buffer): this;
+    digest(): Buffer;
+    digest(encoding: "hex" | "base64" | "latin1"): string;
+  }
+
+  export interface Cipher {
+    update(data: string | Buffer): Buffer;
+    final(): Buffer;
+    setAutoPadding(autoPadding?: boolean): this;
+  }
+
+  export interface Decipher {
+    update(data: Buffer): Buffer;
+    final(): Buffer;
+    setAutoPadding(autoPadding?: boolean): this;
+  }
+}
+
+declare module "node:crypto" {
+  export * from "crypto";
+}
+
+declare module "node:os" {
+  export * from "os";
+}
+
+declare module "fs" {
+  export interface Stats {
+    isFile(): boolean;
+    isDirectory(): boolean;
+    isSymbolicLink(): boolean;
+    size: number;
+    mtime: Date;
+    ctime: Date;
+    atime: Date;
+    mtimeMs: number;
+    ctimeMs: number;
+    atimeMs: number;
+    mode: number;
+  }
+
+  export interface Dirent {
+    name: string;
+    isFile(): boolean;
+    isDirectory(): boolean;
+    isSymbolicLink(): boolean;
+  }
+
+  export function readFile(path: string): Promise<Buffer>;
+  export function readFile(path: string, encoding: BufferEncoding): Promise<string>;
+  export function readFileSync(path: string): Buffer;
+  export function readFileSync(path: string, encoding: BufferEncoding): string;
+  export function writeFile(path: string, data: string | Buffer | Uint8Array): Promise<void>;
+  export function writeFileSync(path: string, data: string | Buffer | Uint8Array): void;
+  export function readdir(path: string): Promise<string[]>;
+  export function readdir(path: string, options: { withFileTypes: true }): Promise<Dirent[]>;
+  export function readdirSync(path: string): string[];
+  export function readdirSync(path: string, options: { withFileTypes: true }): Dirent[];
+  export function stat(path: string): Promise<Stats>;
+  export function statSync(path: string): Stats;
+  export function lstat(path: string): Promise<Stats>;
+  export function lstatSync(path: string): Stats;
+  export function mkdir(path: string, options?: { recursive?: boolean }): Promise<string | undefined>;
+  export function mkdirSync(path: string, options?: { recursive?: boolean }): string | undefined;
+  export function rmdir(path: string): Promise<void>;
+  export function rmdirSync(path: string): void;
+  export function rm(path: string, options?: { recursive?: boolean; force?: boolean }): Promise<void>;
+  export function rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;
+  export function unlink(path: string): Promise<void>;
+  export function unlinkSync(path: string): void;
+  export function access(path: string, mode?: number): Promise<void>;
+  export function accessSync(path: string, mode?: number): void;
+  export function copyFile(src: string, dest: string): Promise<void>;
+  export function copyFileSync(src: string, dest: string): void;
+  export function rename(oldPath: string, newPath: string): Promise<void>;
+  export function renameSync(oldPath: string, newPath: string): void;
+  export function realpath(path: string): Promise<string>;
+  export function realpathSync(path: string): string;
+  export function readlink(path: string): Promise<string>;
+  export function readlinkSync(path: string): string;
+  export function symlink(target: string, path: string): Promise<void>;
+  export function symlinkSync(target: string, path: string): void;
+  export function chmod(path: string, mode: number): Promise<void>;
+  export function chmodSync(path: string, mode: number): void;
+  export function chown(path: string, uid: number, gid: number): Promise<void>;
+  export function chownSync(path: string, uid: number, gid: number): void;
+  export function existsSync(path: string): boolean;
+  export function mkdtemp(prefix: string): Promise<string>;
+  export function mkdtempSync(prefix: string): string;
+
+  export const promises: {
+    readFile(path: string): Promise<Buffer>;
+    readFile(path: string, encoding: BufferEncoding): Promise<string>;
+    writeFile(path: string, data: string | Buffer | Uint8Array): Promise<void>;
+    readdir(path: string): Promise<string[]>;
+    readdir(path: string, options: { withFileTypes: true }): Promise<Dirent[]>;
+    stat(path: string): Promise<Stats>;
+    lstat(path: string): Promise<Stats>;
+    mkdir(path: string, options?: { recursive?: boolean }): Promise<string | undefined>;
+    rmdir(path: string): Promise<void>;
+    rm(path: string, options?: { recursive?: boolean; force?: boolean }): Promise<void>;
+    unlink(path: string): Promise<void>;
+    access(path: string, mode?: number): Promise<void>;
+    copyFile(src: string, dest: string): Promise<void>;
+    rename(oldPath: string, newPath: string): Promise<void>;
+    realpath(path: string): Promise<string>;
+    readlink(path: string): Promise<string>;
+    symlink(target: string, path: string): Promise<void>;
+    chmod(path: string, mode: number): Promise<void>;
+    chown(path: string, uid: number, gid: number): Promise<void>;
+    mkdtemp(prefix: string): Promise<string>;
+  };
+
+  export const constants: {
+    F_OK: 0;
+    R_OK: 4;
+    W_OK: 2;
+    X_OK: 1;
+  };
+}
+
+declare module "fs/promises" {
+  import { Stats, Dirent } from "fs";
+  export function readFile(path: string): Promise<Buffer>;
+  export function readFile(path: string, encoding: BufferEncoding): Promise<string>;
+  export function writeFile(path: string, data: string | Buffer | Uint8Array): Promise<void>;
+  export function readdir(path: string): Promise<string[]>;
+  export function readdir(path: string, options: { withFileTypes: true }): Promise<Dirent[]>;
+  export function stat(path: string): Promise<Stats>;
+  export function lstat(path: string): Promise<Stats>;
+  export function mkdir(path: string, options?: { recursive?: boolean }): Promise<string | undefined>;
+  export function rmdir(path: string): Promise<void>;
+  export function rm(path: string, options?: { recursive?: boolean; force?: boolean }): Promise<void>;
+  export function unlink(path: string): Promise<void>;
+  export function access(path: string, mode?: number): Promise<void>;
+  export function copyFile(src: string, dest: string): Promise<void>;
+  export function rename(oldPath: string, newPath: string): Promise<void>;
+  export function realpath(path: string): Promise<string>;
+  export function readlink(path: string): Promise<string>;
+  export function symlink(target: string, path: string): Promise<void>;
+  export function chmod(path: string, mode: number): Promise<void>;
+  export function chown(path: string, uid: number, gid: number): Promise<void>;
+  export function mkdtemp(prefix: string): Promise<string>;
+  export { Stats, Dirent };
+}
+
+declare module "path" {
+  export const sep: string;
+  export const delimiter: string;
+  export function normalize(p: string): string;
+  export function join(...paths: string[]): string;
+  export function resolve(...paths: string[]): string;
+  export function isAbsolute(p: string): boolean;
+  export function relative(from: string, to: string): string;
+  export function dirname(p: string): string;
+  export function basename(p: string, ext?: string): string;
+  export function extname(p: string): string;
+  export function parse(p: string): { root: string; dir: string; base: string; ext: string; name: string };
+  export function format(pathObject: { root?: string; dir?: string; base?: string; ext?: string; name?: string }): string;
+  export const posix: typeof import("path");
+  export const win32: typeof import("path");
+}
+
+// MCP SDK type declarations for workers
+declare module "@modelcontextprotocol/sdk/server/mcp.js" {
+  import { z } from "zod";
+
+  export interface McpServerOptions {
+    name: string;
+    version: string;
+  }
+
+  export class McpServer {
+    constructor(options: McpServerOptions);
+    tool<T extends z.ZodRawShape>(
+      name: string,
+      description: string,
+      inputSchema: T,
+      handler: (args: z.infer<z.ZodObject<T>>) => Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>
+    ): void;
+    connect(transport: unknown): Promise<void>;
+  }
+}
+
+declare module "@modelcontextprotocol/sdk/server/streamableHttp.js" {
+  export interface StreamableHTTPServerTransportOptions {
+    sessionIdGenerator?: () => string;
+  }
+
+  export class StreamableHTTPServerTransport {
+    constructor(options?: StreamableHTTPServerTransportOptions);
+    handleRequest(req: unknown, res: unknown, body?: unknown): Promise<void>;
+    close(): Promise<void>;
+    onclose?: () => void;
+  }
+}
+
+declare module "@modelcontextprotocol/sdk/types.js" {
+  export function isInitializeRequest(body: unknown): boolean;
+}
+
 declare namespace NodeJS {
   type TypedArray = Int8Array | Uint8Array | Uint8ClampedArray | Int16Array | Uint16Array | Int32Array | Uint32Array | Float32Array | Float64Array | BigInt64Array | BigUint64Array;
 
@@ -387,10 +688,58 @@ export const utimes: RuntimeFs["utimes"];
 export const truncate: RuntimeFs["truncate"];
 export function mkdtemp(prefix: string): Promise<string>;
 
+// Sync methods (available in Node.js workers, throws in sandboxed panels)
+export function readFileSync(path: string): Buffer;
+export function readFileSync(path: string, encoding: BufferEncoding): string;
+export function writeFileSync(path: string, data: string | Buffer | Uint8Array): void;
+export function readdirSync(path: string): string[];
+export function readdirSync(path: string, options: { withFileTypes: true }): Dirent[];
+export function statSync(path: string): FileStats;
+export function lstatSync(path: string): FileStats;
+export function mkdirSync(path: string, options?: MkdirOptions): string | undefined;
+export function rmdirSync(path: string): void;
+export function rmSync(path: string, options?: RmOptions): void;
+export function unlinkSync(path: string): void;
+export function existsSync(path: string): boolean;
+export function accessSync(path: string, mode?: number): void;
+export function appendFileSync(path: string, data: string | Uint8Array): void;
+export function copyFileSync(src: string, dest: string): void;
+export function renameSync(oldPath: string, newPath: string): void;
+export function realpathSync(path: string): string;
+export function readlinkSync(path: string): string;
+export function symlinkSync(target: string, path: string): void;
+export function chmodSync(path: string, mode: number): void;
+export function chownSync(path: string, uid: number, gid: number): void;
+export function utimesSync(path: string, atime: Date | number, mtime: Date | number): void;
+export function truncateSync(path: string, len?: number): void;
+export function mkdtempSync(prefix: string): string;
+
 // fs module has promises property and default export
 export const promises: RuntimeFs & { mkdtemp(prefix: string): Promise<string> };
 export { constants };
 export default fs;
+`;
+
+/**
+ * Type definitions for node:fs module (re-exports fs).
+ * Workers use the node: prefix for built-in modules.
+ */
+export const NODE_FS_TYPE_DEFINITIONS = `
+declare module "node:fs" {
+  export * from "fs";
+  import fs from "fs";
+  export default fs;
+}
+
+declare module "node:fs/promises" {
+  export * from "fs/promises";
+}
+
+declare module "node:path" {
+  export * from "path";
+  import path from "path";
+  export default path;
+}
 `;
 
 /**
