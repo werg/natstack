@@ -3,9 +3,13 @@
  *
  * Provides tools for analyzing esbuild metafiles to identify
  * large dependencies and bundle composition.
+ *
+ * Note: Bundle analysis output is controlled by NATSTACK_LOG_LEVEL.
+ * Set to "verbose" to see detailed bundle analysis during builds.
  */
 
 import type * as esbuild from "esbuild";
+import { isVerbose } from "../devLog.js";
 
 function formatSize(bytes: number): string {
   if (bytes > 1024 * 1024) {
@@ -35,11 +39,18 @@ function extractPackageName(inputPath: string): string {
  * Analyze metafile to identify largest contributors to bundle size.
  * Groups by package name and returns top contributors.
  * With code splitting, also reports main bundle vs chunk sizes.
+ *
+ * Note: Only outputs detailed analysis when NATSTACK_LOG_LEVEL=verbose
  */
 export function analyzeBundleSize(
   metafile: esbuild.Metafile,
   log?: (message: string) => void
 ): void {
+  // Skip detailed bundle analysis unless verbose logging is enabled
+  if (!isVerbose()) {
+    return;
+  }
+
   const outputs = Object.entries(metafile.outputs);
 
   // Separate entry bundle from chunks

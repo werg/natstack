@@ -283,12 +283,20 @@ export class AIHandler {
     // Auto-detect providers from environment variables
     // API keys come from central .secrets.yml (loaded into env) or .env file
     let registeredCount = 0;
+    const skippedProviders: string[] = [];
     for (const providerId of getSupportedProviders()) {
       const providerRegistration = createProviderFromConfig(providerId);
       if (providerRegistration) {
         this.registerProvider(providerRegistration);
         registeredCount++;
+      } else {
+        skippedProviders.push(providerId);
       }
+    }
+
+    // Log skipped providers in one line (cleaner than per-provider logging)
+    if (skippedProviders.length > 0) {
+      this.logger.debug(requestId, `Providers skipped (no API key): ${skippedProviders.join(", ")}`);
     }
 
     this.logger.info(requestId, "AI handler initialization complete", { registeredCount });

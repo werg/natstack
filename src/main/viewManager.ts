@@ -433,9 +433,7 @@ export class ViewManager {
         // AdBlockManager might not be initialized yet
       }
     }
-    // Log destruction with stack trace for debugging unexpected view removal
-    console.log(`[ViewManager] Destroying view: ${id}`);
-    console.log(new Error("View destruction stack trace").stack);
+    // View destruction is a normal operation - no need to log
 
     // Remove only our specific handlers (not others' listeners)
     if (managed.handlers && !managed.view.webContents.isDestroyed()) {

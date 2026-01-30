@@ -29,6 +29,7 @@ import {
   type TypeCheckDiagnostic,
 } from "@natstack/runtime/typecheck";
 import { isVerdaccioServerInitialized, getVerdaccioServer } from "./verdaccioServer.js";
+import { isVerbose } from "./devLog.js";
 import { ESM_SAFE_PACKAGES } from "./lazyBuild/esmTransformer.js";
 import { getPackagesDir, getAppNodeModules, getActiveWorkspace } from "./paths.js";
 import {
@@ -1520,11 +1521,15 @@ export class PanelBuilder {
 
         // Externalize all known ESM-safe packages regardless of whether they're direct deps
         // If they're not used, it's a no-op. If they are (even transitively), we save bundle size.
+        const autoExternalized: string[] = [];
         for (const pkgName of ESM_SAFE_PACKAGES) {
           if (!(pkgName in externals)) {
             externals[pkgName] = `${verdaccioUrl}/-/esm/${pkgName}`;
-            log(`Auto-externalizing ESM-safe package: ${pkgName}`);
+            autoExternalized.push(pkgName);
           }
+        }
+        if (isVerbose() && autoExternalized.length > 0) {
+          log(`Auto-externalizing ESM-safe packages: ${autoExternalized.join(", ")}`);
         }
       }
 

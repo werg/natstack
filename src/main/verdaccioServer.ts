@@ -247,6 +247,8 @@ export class VerdaccioServer {
   private esmTransformer: EsmTransformer | null = null;
   /** Cache for discovered packages by directory path */
   private packageDiscoveryCache = new Map<string, Array<{ path: string; name: string }>>();
+  /** Tracks which directories have already been logged (persists across cache invalidations) */
+  private discoveryLoggedDirs = new Set<string>();
   /** HTTP agent for connection pooling to internal Verdaccio */
   private proxyAgent: http.Agent | null = null;
 
@@ -829,8 +831,9 @@ export class VerdaccioServer {
     // Cache the result
     this.packageDiscoveryCache.set(packagesDir, packages);
 
-    // Log only on first discovery
-    if (packages.length > 0) {
+    // Log only on first discovery (persists across cache invalidations)
+    if (packages.length > 0 && !this.discoveryLoggedDirs.has(packagesDir)) {
+      this.discoveryLoggedDirs.add(packagesDir);
       console.log(`[Verdaccio] Discovered ${packages.length} packages in ${path.basename(packagesDir)}/: ${packages.map(p => p.name).join(", ")}`);
     }
 
