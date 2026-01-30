@@ -6,31 +6,12 @@
  */
 
 import { db } from "@natstack/runtime";
-import type { FieldDefinition } from "@natstack/runtime";
+import type { FieldDefinition, MethodAdvertisement, RequiredMethodSpec } from "@natstack/core";
+
+// Re-export types for backward compatibility
+export type { MethodAdvertisement, RequiredMethodSpec } from "@natstack/core";
 
 const REGISTRY_DB_NAME = "agent-registry";
-
-/**
- * Required method specification for an agent.
- */
-export interface RequiredMethodSpec {
-  name?: string;
-  pattern?: string;
-  description?: string;
-  required: boolean;
-}
-
-/**
- * Method advertisement for an agent.
- */
-export interface MethodAdvertisement {
-  name: string;
-  description?: string;
-  parameters: Record<string, unknown>;
-  returns?: Record<string, unknown>;
-  streaming?: boolean;
-  timeout?: number;
-}
 
 /**
  * Agent definition stored in the registry.

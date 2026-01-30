@@ -15,7 +15,7 @@ import {
   getCanonicalToolName,
   hasRichPreview,
 } from "./tool-schemas.js";
-import type { FieldDefinition } from "@natstack/runtime";
+import type { FieldDefinition } from "@natstack/core";
 
 // ============================================================================
 // Unified Approval Schema

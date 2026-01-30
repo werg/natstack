@@ -21,6 +21,7 @@
     "dev": "tsc --project tsconfig.build.json --watch"
   },
   "dependencies": {
+    "@natstack/core": "workspace:*",
     "@natstack/rpc": "workspace:*",
     "@zenfs/core": "^2.4.4",
     "@zenfs/dom": "^1.2.5",

@@ -205,15 +205,8 @@ export interface GitConfig {
   resolvedRepoArgs: Record<string, RepoArgSpec>;
 }
 
-/**
- * PubSub configuration for a panel or worker.
- */
-export interface PubSubConfig {
-  /** WebSocket server URL (e.g., ws://127.0.0.1:49452) */
-  serverUrl: string;
-  /** Bearer token for authentication */
-  token: string;
-}
+// PubSubConfig is re-exported from @natstack/core
+export type { PubSubConfig } from "@natstack/core";
 
 /**
  * Information about a panel or worker.

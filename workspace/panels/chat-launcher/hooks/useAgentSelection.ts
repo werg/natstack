@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { db, type FieldDefinition, type FieldValue } from "@natstack/runtime";
+import { db } from "@natstack/runtime";
+import type { FieldDefinition, FieldValue } from "@natstack/core";
 import type { ChannelConfig } from "@natstack/pubsub";
 import { getAgentRegistry, type AgentDefinition } from "@natstack/agentic-messaging/registry";
 

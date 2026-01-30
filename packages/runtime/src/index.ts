@@ -12,7 +12,7 @@
 import { createRpcBridge, type RpcBridge, type RpcTransport, type RpcMessage } from "@natstack/rpc";
 import { encodeBase64 as encodeBase64Impl, decodeBase64 as decodeBase64Impl } from "./shared/base64.js";
 import { createDbClient, type Database } from "./shared/db.js";
-import * as formSchema from "./shared/form-schema.js";
+import * as formSchema from "@natstack/core/form-schema";
 import * as contextUtils from "./core/context.js";
 import {
   buildNsLink as buildNsLinkImpl,
@@ -69,7 +69,7 @@ export type {
 
 export type { Runtime } from "./setup/createRuntime.js";
 
-// Form schema types
+// Form schema types - re-exported from @natstack/core for backward compatibility
 export type {
   PrimitiveFieldValue,
   FieldValue,
@@ -81,7 +81,23 @@ export type {
   FieldWarning,
   FieldDefinition,
   FormSchema,
-} from "./shared/form-schema.js";
+} from "@natstack/core";
+
+// Re-export additional core types
+export type {
+  MethodAdvertisement,
+  RequiredMethodSpec,
+  AgentManifest,
+  AgentState,
+  AgentInstanceInfo,
+  HostToAgentMessage,
+  AgentToHostMessage,
+  AgentInitConfig,
+  DbRunResult,
+  DatabaseInterface,
+  DatabaseOpener,
+} from "@natstack/core";
+export { isHostToAgentMessage, isAgentToHostMessage } from "@natstack/core";
 
 // =============================================================================
 // Shell Transport Detection and RPC Bridge Creation

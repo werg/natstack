@@ -24,6 +24,12 @@
     "types": ["node"],
     "baseUrl": ".",
     "paths": {
+      "@natstack/core": ["packages/core/src/index.ts"],
+      "@natstack/core/agent-types": ["packages/core/src/agent-types.ts"],
+      "@natstack/core/ipc-protocol": ["packages/core/src/ipc-protocol.ts"],
+      "@natstack/core/form-schema": ["packages/core/src/form-schema.ts"],
+      "@natstack/core/config-types": ["packages/core/src/config-types.ts"],
+      "@natstack/core/database": ["packages/core/src/database.ts"],
       "@natstack/ai": ["packages/ai/src/index.ts"],
       "@natstack/git": ["packages/git/src/index.ts"],
       "@natstack/pubsub": ["packages/pubsub/src/index.ts"],
