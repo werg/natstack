@@ -6,7 +6,7 @@
  */
 
 import { execSync } from "child_process";
-import { readdir, stat, readFile } from "fs/promises";
+import { readFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
 import { pubsubConfig, id, getStateArgs, unloadSelf } from "@natstack/runtime";
@@ -238,32 +238,6 @@ function findExecutable(name: string): string | undefined {
   }
 }
 
-/**
- * Find the most recently modified plan file in ~/.claude/plans/
- * Used as a heuristic to find the current plan when ExitPlanMode is called.
- */
-async function findMostRecentPlanFile(): Promise<string | null> {
-  const plansDir = join(homedir(), ".claude", "plans");
-  try {
-    const files = await readdir(plansDir);
-    const mdFiles = files.filter((f: string) => f.endsWith(".md"));
-
-    if (mdFiles.length === 0) return null;
-
-    const fileStats = await Promise.all(
-      mdFiles.map(async (f: string) => {
-        const filePath = join(plansDir, f);
-        const stats = await stat(filePath);
-        return { path: filePath, mtime: stats.mtime };
-      })
-    );
-
-    fileStats.sort((a: { path: string; mtime: Date }, b: { path: string; mtime: Date }) => new Date(b.mtime).getTime() - new Date(a.mtime).getTime());
-    return fileStats[0]?.path ?? null;
-  } catch {
-    return null;
-  }
-}
 
 /** Type for SDK's AskUserQuestion question structure */
 interface AskUserQuestionQuestion {
@@ -1639,14 +1613,9 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       // Read the plan file and include its content in the tool input
       // so the UI can display it.
       if (toolName === "ExitPlanMode") {
-        let planFilePath = (input as Record<string, unknown>).planFilePath as string | undefined;
+        const planFilePath = (input as Record<string, unknown>).planFilePath as string | undefined;
 
-        // If SDK didn't provide path, find most recently modified plan file
-        if (!planFilePath) {
-          planFilePath = await findMostRecentPlanFile() ?? undefined;
-        }
-
-        // Read plan content if we have a path
+        // Read plan content only if SDK provided a path
         let plan: string | undefined;
         if (planFilePath) {
           try {
