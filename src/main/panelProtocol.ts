@@ -3,6 +3,7 @@ import * as path from "path";
 import type { ProtocolBuildArtifacts } from "../shared/ipc/types.js";
 import { randomBytes } from "crypto";
 import { createDevLogger } from "./devLog.js";
+import { getVerdaccioServer, isVerdaccioServerInitialized } from "./verdaccioServer.js";
 
 const log = createDevLogger("PanelProtocol");
 
@@ -277,8 +278,9 @@ export async function registerProtocolForPartition(partition: string): Promise<v
 }
 
 /**
- * Inject bundle script into HTML
- * Replaces placeholder or appends before </body>
+ * Inject bundle script into HTML and replace dynamic placeholders.
+ * - Replaces bundle/CSS placeholder or appends before </body>
+ * - Replaces __VERDACCIO_ESM__ with current Verdaccio URL (for import maps)
  */
 function injectBundleIntoHtml(html: string, panelId: string, token: string): string {
   const encodedPanelId = encodeURIComponent(panelId);
@@ -288,6 +290,20 @@ function injectBundleIntoHtml(html: string, panelId: string, token: string): str
   const bundleScript = `<script type="module" src="${bundleUrl}"></script>`;
 
   let result = html;
+
+  // Replace Verdaccio ESM placeholder with current URL
+  // This allows cached builds to work even if Verdaccio restarts on a different port
+  if (result.includes("__VERDACCIO_ESM__")) {
+    if (isVerdaccioServerInitialized()) {
+      const verdaccioUrl = getVerdaccioServer().getBaseUrl();
+      result = result.replace(/__VERDACCIO_ESM__/g, `${verdaccioUrl}/-/esm`);
+    } else {
+      // Verdaccio not running - remove the import map to avoid broken imports
+      // The panel will fail to load external modules, but at least won't have connection errors
+      console.warn("[PanelProtocol] Verdaccio not initialized, removing ESM import map entries");
+      result = result.replace(/__VERDACCIO_ESM__\/[^"]+/g, "data:text/javascript,");
+    }
+  }
 
   // Check if there's a placeholder script tag to replace
   if (result.includes("<!-- BUNDLE_PLACEHOLDER -->")) {

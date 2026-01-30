@@ -1026,12 +1026,14 @@ export class PanelBuilder {
   /**
    * Run TypeScript type checking on a panel or worker source directory.
    * Returns an array of type errors (diagnostics with severity "error").
+   * @param options.unsafe - If true, disable fs shimming for full Node.js access
    */
   private async runTypeCheck(
     sourcePath: string,
     runtimeNodeModules: string,
     log: (message: string) => void,
-    _dependencies?: Record<string, string>
+    _dependencies?: Record<string, string>,
+    options?: { unsafe?: boolean }
   ): Promise<TypeCheckDiagnostic[]> {
     log(`Type checking...`);
 
@@ -1056,10 +1058,11 @@ export class PanelBuilder {
 
       // Create type check service that loads types from the build's node_modules.
       // React, @types/react, and other deduplicated packages are installed here.
+      // For unsafe workers, disable fs shimming to allow full Node.js fs access
       const service = createTypeCheckService({
         panelPath: sourcePath,
         resolution: {
-          fsShimEnabled: true,
+          fsShimEnabled: !options?.unsafe,
           runtimeNodeModules,
         },
         workspaceRoot,
@@ -1518,15 +1521,21 @@ export class PanelBuilder {
       // Auto-externalize ALL ESM-safe packages (including transitive dependencies)
       // These will be loaded from Verdaccio's ESM endpoint at runtime
       // This is critical for heavy packages like typescript (17MB) that come through transitive deps
+      //
+      // NOTE: We use __VERDACCIO_ESM__ placeholder instead of the actual URL because:
+      // 1. Panel builds are cached
+      // 2. Verdaccio port can change between app restarts
+      // 3. The placeholder is replaced with the current URL when serving HTML (see panelProtocol.ts)
       if (isVerdaccioServerInitialized()) {
-        const verdaccioUrl = getVerdaccioServer().getBaseUrl();
-
         // Externalize all known ESM-safe packages regardless of whether they're direct deps
         // If they're not used, it's a no-op. If they are (even transitively), we save bundle size.
         const autoExternalized: string[] = [];
         for (const pkgName of ESM_SAFE_PACKAGES) {
           if (!(pkgName in externals)) {
-            externals[pkgName] = `${verdaccioUrl}/-/esm/${pkgName}`;
+            externals[pkgName] = `__VERDACCIO_ESM__/${pkgName}`;
+            // Also add trailing slash mapping for subpath imports (e.g., highlight.js/lib/languages/*)
+            // This allows dynamic imports like import('highlight.js/lib/languages/arduino') to resolve
+            externals[`${pkgName}/`] = `__VERDACCIO_ESM__/${pkgName}/`;
             autoExternalized.push(pkgName);
           }
         }
@@ -1686,7 +1695,7 @@ import ${JSON.stringify(relativeUserEntry)};
       // Run esbuild and type checking in parallel
       // Type checking uses the original source files, so it can run while esbuild bundles
       // Start type checking immediately - don't await yet
-      const typeCheckPromise = this.runTypeCheck(sourcePath, workspace.nodeModulesDir, log, runtimeDependencies);
+      const typeCheckPromise = this.runTypeCheck(sourcePath, workspace.nodeModulesDir, log, runtimeDependencies, { unsafe: Boolean(unsafe) });
 
       // Run first build and wait for it (needed for expose module discovery)
       const buildResult = await esbuild.build(createBuildConfig());
@@ -2473,7 +2482,7 @@ import ${JSON.stringify(relativeUserEntry)};
             js: bannerJs,
           },
         }),
-        this.runTypeCheck(sourcePath, buildWorkspace.nodeModulesDir, log, workerDependencies),
+        this.runTypeCheck(sourcePath, buildWorkspace.nodeModulesDir, log, workerDependencies, { unsafe: Boolean(options?.unsafe) }),
       ]);
 
       // Read the built bundle

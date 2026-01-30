@@ -573,10 +573,12 @@ export class VerdaccioServer {
 
     let pkgName: string;
     let version: string = "latest";
+    let subpath: string | undefined;
 
-    // Handle scoped packages
+    // Handle scoped packages: @scope/pkg, @scope/pkg@version, @scope/pkg/subpath, @scope/pkg@version/subpath
     if (decoded.startsWith("@")) {
-      const match = decoded.match(/^(@[^/]+\/[^@]+)(?:@(.+))?$/);
+      // Match @scope/pkg with optional @version and optional /subpath
+      const match = decoded.match(/^(@[^/@]+\/[^/@]+)(?:@([^/]+))?(\/.*)?$/);
       if (!match || !match[1]) {
         res.statusCode = 400;
         res.setHeader("Content-Type", "application/json");
@@ -585,12 +587,30 @@ export class VerdaccioServer {
       }
       pkgName = match[1];
       version = match[2] ?? "latest";
+      subpath = match[3]?.slice(1); // Remove leading /
     } else {
+      // Handle unscoped packages: pkg, pkg@version, pkg/subpath, pkg@version/subpath
+      // First check for version (@) then subpath (/)
       const atIndex = decoded.indexOf("@");
-      if (atIndex > 0) {
+      const slashIndex = decoded.indexOf("/");
+
+      if (atIndex > 0 && (slashIndex === -1 || atIndex < slashIndex)) {
+        // Has version: pkg@version or pkg@version/subpath
         pkgName = decoded.substring(0, atIndex);
-        version = decoded.substring(atIndex + 1);
+        const afterAt = decoded.substring(atIndex + 1);
+        const versionSlashIndex = afterAt.indexOf("/");
+        if (versionSlashIndex > 0) {
+          version = afterAt.substring(0, versionSlashIndex);
+          subpath = afterAt.substring(versionSlashIndex + 1);
+        } else {
+          version = afterAt;
+        }
+      } else if (slashIndex > 0) {
+        // No version but has subpath: pkg/subpath
+        pkgName = decoded.substring(0, slashIndex);
+        subpath = decoded.substring(slashIndex + 1);
       } else {
+        // Just package name
         pkgName = decoded;
       }
     }
@@ -608,8 +628,9 @@ export class VerdaccioServer {
     }
 
     try {
-      log.verbose(`[ESM] Request: ${pkgName}@${version}`);
-      const bundle = await esmTransformer.getEsmBundle(pkgName, version);
+      const requestDesc = subpath ? `${pkgName}@${version}/${subpath}` : `${pkgName}@${version}`;
+      log.verbose(`[ESM] Request: ${requestDesc}`);
+      const bundle = await esmTransformer.getEsmBundle(pkgName, version, subpath);
 
       res.setHeader("Content-Type", "application/javascript; charset=utf-8");
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");

@@ -23,7 +23,7 @@ export interface DiskCacheData {
   entries: Record<string, DiskCacheEntry>;
 }
 
-const CACHE_VERSION = "5"; // Bumped: added assets/chunks to cache + fixed referer auth
+const CACHE_VERSION = "6"; // Bumped: use __VERDACCIO_ESM__ placeholder for port-independent caching
 const CACHE_FILENAME = "build-cache.json";
 
 /**

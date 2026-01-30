@@ -23,13 +23,14 @@ const log = createDevLogger("ESM");
  * Others fall back to normal bundling in the panel build.
  */
 export const ESM_SAFE_PACKAGES = new Set([
-  "typescript",      // Pure JS, no Node deps
-  "highlight.js",    // Browser-compatible
-  "sucrase",         // Pure JS transform
-  "@babel/parser",   // Pure JS parser
-  "@babel/types",    // Pure JS types
-  "acorn",           // Pure JS parser
-  "prettier",        // Pure JS (standalone build)
+  "typescript",           // Pure JS, no Node deps
+  "highlight.js",         // Browser-compatible
+  "sucrase",              // Pure JS transform
+  "ts-interface-checker", // Dependency of sucrase
+  "@babel/parser",        // Pure JS parser
+  "@babel/types",         // Pure JS types
+  "acorn",                // Pure JS parser
+  "prettier",             // Pure JS (standalone build)
 ]);
 
 /**
@@ -84,14 +85,15 @@ export class EsmTransformer {
   }
 
   /**
-   * Get the ESM bundle for a package.
+   * Get the ESM bundle for a package or a specific subpath within it.
    * Returns cached version if available, otherwise transforms on-demand.
    *
    * @param pkgName - Package name (e.g., "typescript")
    * @param version - Version string (e.g., "5.3.3") or "latest"
+   * @param subpath - Optional subpath within the package (e.g., "lib/languages/arduino")
    * @returns The ESM bundle as a string
    */
-  async getEsmBundle(pkgName: string, version: string = "latest"): Promise<string> {
+  async getEsmBundle(pkgName: string, version: string = "latest", subpath?: string): Promise<string> {
     // Resolve "latest" to actual version if needed
     const resolvedVersion = version === "latest"
       ? await this.resolveLatestVersion(pkgName)
@@ -101,10 +103,13 @@ export class EsmTransformer {
       throw new Error(`Package not found: ${pkgName}`);
     }
 
-    const cacheKey = `${pkgName}@${resolvedVersion}`;
+    // Include subpath in cache key for subpath-specific bundles
+    const cacheKey = subpath
+      ? `${pkgName}@${resolvedVersion}/${subpath}`
+      : `${pkgName}@${resolvedVersion}`;
 
     // Check cache
-    const cached = this.getCached(pkgName, resolvedVersion);
+    const cached = this.getCached(pkgName, resolvedVersion, subpath);
     if (cached) {
       return cached;
     }
@@ -116,7 +121,7 @@ export class EsmTransformer {
     }
 
     log.verbose(` Transforming: ${cacheKey}`);
-    const promise = this.doTransform(pkgName, resolvedVersion)
+    const promise = this.doTransform(pkgName, resolvedVersion, subpath)
       .finally(() => this.transformLocks.delete(cacheKey));
 
     this.transformLocks.set(cacheKey, promise);
@@ -275,8 +280,8 @@ export class EsmTransformer {
   /**
    * Get cached ESM bundle if it exists.
    */
-  private getCached(pkgName: string, version: string): string | null {
-    const cachePath = this.getCachePath(pkgName, version);
+  private getCached(pkgName: string, version: string, subpath?: string): string | null {
+    const cachePath = this.getCachePath(pkgName, version, subpath);
     if (fs.existsSync(cachePath)) {
       return fs.readFileSync(cachePath, "utf-8");
     }
@@ -284,51 +289,78 @@ export class EsmTransformer {
   }
 
   /**
-   * Get the cache path for a package version.
+   * Get the cache path for a package version (and optional subpath).
    */
-  private getCachePath(pkgName: string, version: string): string {
+  private getCachePath(pkgName: string, version: string, subpath?: string): string {
     // Handle scoped packages: @scope/name → @scope/name/version.js
+    // For subpaths: @scope/name/subpath → @scope/name/_subpaths/version/subpath.js
+    if (subpath) {
+      // Sanitize subpath for filesystem (replace slashes in subpath with __)
+      const sanitizedSubpath = subpath.replace(/\//g, "__");
+      return path.join(this.cacheDir, pkgName, "_subpaths", version, `${sanitizedSubpath}.js`);
+    }
     return path.join(this.cacheDir, pkgName, `${version}.js`);
   }
 
   /**
-   * Transform a package to ESM format.
+   * Transform a package (or subpath within it) to ESM format.
    * Fetches package from Verdaccio (which uplinks to npm) if not already cached.
    */
-  private async doTransform(pkgName: string, version: string): Promise<string> {
+  private async doTransform(pkgName: string, version: string, subpath?: string): Promise<string> {
     // Ensure the main package is extracted
     const pkgRoot = await this.ensurePackageExtracted(pkgName, version);
 
-    // Read package.json to find the entry point
-    const pkgJsonPath = path.join(pkgRoot, "package.json");
-    if (!fs.existsSync(pkgJsonPath)) {
-      throw new Error(`package.json not found for ${pkgName}`);
-    }
+    let entryPath: string;
 
-    const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
-      main?: string;
-      module?: string;
-      browser?: string | Record<string, string>;
-    };
+    if (subpath) {
+      // Subpath import - resolve the specific file
+      entryPath = path.join(pkgRoot, subpath);
 
-    // Determine entry point (prefer ESM if available)
-    let entryPoint: string;
-    if (typeof pkgJson.module === "string") {
-      entryPoint = pkgJson.module;
-    } else if (typeof pkgJson.browser === "string") {
-      entryPoint = pkgJson.browser;
-    } else if (pkgJson.main) {
-      entryPoint = pkgJson.main;
+      // Try adding extensions if the exact path doesn't exist
+      if (!fs.existsSync(entryPath)) {
+        for (const ext of [".js", ".mjs", ".cjs", ".json", "/index.js"]) {
+          if (fs.existsSync(entryPath + ext)) {
+            entryPath = entryPath + ext;
+            break;
+          }
+        }
+      }
+
+      if (!fs.existsSync(entryPath)) {
+        throw new Error(`Subpath not found: ${pkgName}/${subpath} (tried ${entryPath})`);
+      }
     } else {
-      entryPoint = "index.js";
+      // Main entry point - read package.json to find it
+      const pkgJsonPath = path.join(pkgRoot, "package.json");
+      if (!fs.existsSync(pkgJsonPath)) {
+        throw new Error(`package.json not found for ${pkgName}`);
+      }
+
+      const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
+        main?: string;
+        module?: string;
+        browser?: string | Record<string, string>;
+      };
+
+      // Determine entry point (prefer ESM if available)
+      let entryPoint: string;
+      if (typeof pkgJson.module === "string") {
+        entryPoint = pkgJson.module;
+      } else if (typeof pkgJson.browser === "string") {
+        entryPoint = pkgJson.browser;
+      } else if (pkgJson.main) {
+        entryPoint = pkgJson.main;
+      } else {
+        entryPoint = "index.js";
+      }
+
+      entryPath = path.join(pkgRoot, entryPoint);
+      if (!fs.existsSync(entryPath)) {
+        throw new Error(`Entry point not found: ${entryPath}`);
+      }
     }
 
-    const entryPath = path.join(pkgRoot, entryPoint);
-    if (!fs.existsSync(entryPath)) {
-      throw new Error(`Entry point not found: ${entryPath}`);
-    }
-
-    return this.bundlePackage(pkgName, version, entryPath);
+    return this.bundlePackage(pkgName, version, entryPath, subpath);
   }
 
   /**
@@ -627,7 +659,7 @@ export class EsmTransformer {
   /**
    * Bundle a package entry point to ESM format.
    */
-  private async bundlePackage(pkgName: string, version: string, entryPath: string): Promise<string> {
+  private async bundlePackage(pkgName: string, version: string, entryPath: string, subpath?: string): Promise<string> {
     // Bundle with esbuild using our dependency resolver plugin
     const result = await esbuild.build({
       entryPoints: [entryPath],
@@ -652,11 +684,11 @@ export class EsmTransformer {
 
     const bundle = result.outputFiles[0]?.text;
     if (!bundle) {
-      throw new Error(`ESBuild produced no output for ${pkgName}@${version}`);
+      throw new Error(`ESBuild produced no output for ${pkgName}@${version}${subpath ? `/${subpath}` : ""}`);
     }
 
     // Cache the result
-    const cachePath = this.getCachePath(pkgName, version);
+    const cachePath = this.getCachePath(pkgName, version, subpath);
     const cacheDir = path.dirname(cachePath);
     if (!fs.existsSync(cacheDir)) {
       fs.mkdirSync(cacheDir, { recursive: true });
@@ -666,7 +698,8 @@ export class EsmTransformer {
     // Cleanup old cache entries if needed (simple LRU based on mtime)
     this.evictCacheIfNeeded();
 
-    log.verbose(` Transformed ${pkgName}@${version} (${bundle.length} bytes)`);
+    const transformedName = subpath ? `${pkgName}@${version}/${subpath}` : `${pkgName}@${version}`;
+    log.verbose(` Transformed ${transformedName} (${bundle.length} bytes)`);
     return bundle;
   }
 
