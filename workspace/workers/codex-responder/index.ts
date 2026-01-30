@@ -28,6 +28,7 @@ import {
   createRestrictedModeSystemPrompt,
   validateRestrictedMode,
   getCanonicalToolName,
+  prettifyToolName,
   createThinkingTracker,
   createTypingTracker,
   createActionTracker,
@@ -49,6 +50,14 @@ import {
   type Participant,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
+  // Message queue utilities
+  MessageQueue,
+  createQueuePositionText,
+  type QueuedMessageBase,
+  // Tool approval utilities
+  needsApprovalForTool,
+  showPermissionPrompt,
+  APPROVAL_LEVELS,
 } from "@natstack/agentic-messaging";
 import { CODEX_PARAMETERS } from "@natstack/agentic-messaging/config";
 import { z } from "zod";
@@ -88,7 +97,26 @@ interface CodexWorkerSettings {
   reasoningEffort?: number; // 0=minimal, 1=low, 2=medium, 3=high
   autonomyLevel?: number; // 0=restricted/read-only, 1=standard/workspace, 2=autonomous/full-access
   webSearchEnabled?: boolean;
+  /** Whether we've shown at least one approval prompt (for first-time grant UI) */
+  hasShownApprovalPrompt?: boolean;
   [key: string]: string | number | boolean | undefined; // Index signature for Record<string, unknown> compatibility
+}
+
+// =============================================================================
+// Message Queue - Producer-Consumer Pattern for Message Interleaving
+// =============================================================================
+
+/** A queued message waiting to be processed (extends shared base) */
+interface CodexQueuedMessage extends QueuedMessageBase {
+  event: IncomingNewMessage;
+  prompt: string;
+  attachments?: Attachment[];
+  typingTracker: ReturnType<typeof createTypingTracker> | null;
+}
+
+/** Current processing state shared between observer and processor */
+interface CodexProcessingState {
+  currentMessage: CodexQueuedMessage | null;
 }
 
 /** Map reasoning effort slider value to SDK string */
@@ -203,6 +231,7 @@ async function createMcpHttpServer(
   // Create HTTP server
   const httpServer = http.createServer(async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = new URL(req.url ?? "/", `http://localhost`);
+    log(`MCP HTTP: ${req.method} ${url.pathname}`);
 
     // Only handle /mcp endpoint
     if (url.pathname !== "/mcp") {
@@ -235,30 +264,35 @@ async function createMcpHttpServer(
 
     if (req.method === "POST") {
       // Check if this is an initialization request
-      if (isInitializeRequest(body)) {
-        // Create new session
-        const transport = new StreamableHTTPServerTransport({
+      if (!sessionId && isInitializeRequest(body)) {
+        // Create new session with callback to store it immediately
+        // This avoids race conditions where the client sends the initialized
+        // notification before we've stored the session
+        let transport: StreamableHTTPServerTransport;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
-        });
+          onsessioninitialized: (newSessionId: string) => {
+            sessions.set(newSessionId, transport);
+            log(`MCP session created: ${newSessionId}`);
+          },
+        } as any);
+
+        // Set up onclose handler before connecting
+        transport.onclose = () => {
+          // Get session ID from response header or iterate sessions
+          const sid = [...sessions.entries()].find(([, t]) => t === transport)?.[0];
+          if (sid) {
+            sessions.delete(sid);
+            log(`MCP session closed: ${sid}`);
+          }
+        };
 
         // Connect transport to MCP server
         await mcpServer.connect(transport);
 
         // Handle the request
         await transport.handleRequest(req, res, body);
-
-        // Store session after handling (session ID is set by transport)
-        const newSessionId = res.getHeader("mcp-session-id") as string | undefined;
-        if (newSessionId) {
-          sessions.set(newSessionId, transport);
-          log(`MCP session created: ${newSessionId}`);
-
-          // Clean up on close
-          transport.onclose = () => {
-            sessions.delete(newSessionId);
-            log(`MCP session closed: ${newSessionId}`);
-          };
-        }
       } else if (sessionId && sessions.has(sessionId)) {
         // Existing session
         const transport = sessions.get(sessionId)!;
@@ -317,10 +351,96 @@ async function createMcpHttpServer(
 }
 
 /**
- * Create temporary Codex config directory with MCP server configuration
+ * Get the NatStack config directory (without Electron app module).
+ * Platform-specific paths:
+ * - Linux: ~/.config/natstack
+ * - macOS: ~/Library/Application Support/natstack
+ * - Windows: %APPDATA%/natstack
  */
-function createCodexConfig(mcpServerUrl: string): string {
+function getNatStackConfigDir(): string {
+  const home = os.homedir();
+
+  switch (process.platform) {
+    case "win32": {
+      const appData = process.env["APPDATA"] ?? path.join(home, "AppData", "Roaming");
+      return path.join(appData, "natstack");
+    }
+    case "darwin":
+      return path.join(home, "Library", "Application Support", "natstack");
+    default: {
+      const xdgConfig = process.env["XDG_CONFIG_HOME"] ?? path.join(home, ".config");
+      return path.join(xdgConfig, "natstack");
+    }
+  }
+}
+
+/**
+ * Get or create a persistent Codex home directory for a session.
+ * Sessions are stored in <natstack-config>/codex-sessions/<sessionKey>/
+ * This allows session recovery across worker/app restarts.
+ *
+ * @param sessionKey - Unique session identifier (from pubsub client.sessionKey)
+ */
+function getCodexHomeForSession(sessionKey: string): string {
+  // Sanitize session key for filesystem use
+  const safeKey = sessionKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const codexSessionsDir = path.join(getNatStackConfigDir(), "codex-sessions");
+  const codexHome = path.join(codexSessionsDir, safeKey);
+
+  // Create directory if it doesn't exist
+  fs.mkdirSync(codexHome, { recursive: true });
+
+  // Copy auth.json from default Codex home if not already present
+  const defaultCodexHome = path.join(os.homedir(), ".codex");
+  const defaultAuthPath = path.join(defaultCodexHome, "auth.json");
+  const targetAuthPath = path.join(codexHome, "auth.json");
+
+  if (!fs.existsSync(targetAuthPath) && fs.existsSync(defaultAuthPath)) {
+    try {
+      fs.copyFileSync(defaultAuthPath, targetAuthPath);
+      log(`Copied auth.json from ${defaultCodexHome}`);
+    } catch (err) {
+      log(`Warning: Failed to copy auth.json: ${err}`);
+    }
+  } else if (!fs.existsSync(defaultAuthPath)) {
+    log(`Warning: No auth.json found at ${defaultAuthPath} - run 'codex login' to authenticate`);
+  }
+
+  return codexHome;
+}
+
+/**
+ * Create a temporary Codex home directory (fallback when no session key available).
+ * This is cleaned up when the worker unloads.
+ */
+function createTempCodexHome(): string {
   const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-"));
+  log(`Created temp Codex home at ${codexHome}`);
+
+  // Copy auth.json from default Codex home
+  const defaultCodexHome = path.join(os.homedir(), ".codex");
+  const defaultAuthPath = path.join(defaultCodexHome, "auth.json");
+  const targetAuthPath = path.join(codexHome, "auth.json");
+
+  if (fs.existsSync(defaultAuthPath)) {
+    try {
+      fs.copyFileSync(defaultAuthPath, targetAuthPath);
+      log(`Copied auth.json from ${defaultCodexHome}`);
+    } catch (err) {
+      log(`Warning: Failed to copy auth.json: ${err}`);
+    }
+  } else {
+    log(`Warning: No auth.json found at ${defaultAuthPath} - run 'codex login' to authenticate`);
+  }
+
+  return codexHome;
+}
+
+/**
+ * Update Codex config.toml with MCP server URL.
+ * Called each time we start an MCP server (which may be on a different port).
+ */
+function updateCodexConfig(codexHome: string, mcpServerUrl: string): void {
   const configPath = path.join(codexHome, "config.toml");
 
   // Write config.toml with HTTP MCP server configuration
@@ -333,18 +453,20 @@ tool_timeout_sec = 120
 `;
 
   fs.writeFileSync(configPath, config);
-  log(`Created Codex config at ${configPath}`);
-
-  return codexHome;
+  log(`Updated Codex config at ${configPath}`);
 }
 
 /**
- * Clean up temporary Codex config
+ * Clean up Codex home directory (only called when worker unloads)
  */
-function cleanupCodexConfig(codexHome: string): void {
+/**
+ * Clean up a temporary Codex home directory.
+ * Only call this for temp directories, not persistent session directories.
+ */
+function cleanupTempCodexHome(codexHome: string): void {
   try {
     fs.rmSync(codexHome, { recursive: true, force: true });
-    log(`Cleaned up Codex config at ${codexHome}`);
+    log(`Cleaned up temp Codex home at ${codexHome}`);
   } catch {
     // Ignore cleanup errors
   }
@@ -368,6 +490,15 @@ async function main() {
 
   log("Starting Codex responder...");
   log(`Handle: @${handle}`);
+
+  // Create Codex home directory for session storage
+  // Use contextId for persistent storage (allows session recovery across restarts)
+  // Fall back to temp directory if no contextId available
+  const codexHome = stateArgs.contextId
+    ? getCodexHomeForSession(stateArgs.contextId)
+    : createTempCodexHome();
+  const isPersistentCodexHome = !!stateArgs.contextId;
+  log(`Codex home: ${codexHome} (${isPersistentCodexHome ? "persistent" : "temporary"})`);
 
   // Connect to agentic messaging channel
   // Pass contextId from stateArgs for channel creation (more reliable than runtime contextId)
@@ -495,6 +626,10 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
             return;
           }
           log(`Unload timeout reached, unloading worker to conserve resources...`);
+          // Only clean up temp Codex home - persistent sessions should survive for recovery
+          if (!isPersistentCodexHome) {
+            cleanupTempCodexHome(codexHome);
+          }
           // Gracefully close and unload
           void client.close().then(() => {
             void unloadSelf();
@@ -588,11 +723,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     log(`Final settings: ${JSON.stringify(currentSettings)}`);
   }
 
-  // Validate required methods in restricted mode (from channel config)
-  if (restrictedMode) {
-    await validateRestrictedMode(client, log);
-  }
-
+  // Missed context management
   let lastMissedPubsubId = 0;
   const buildMissedContext = () => {
     const missed = client.missedMessages.filter((event) => event.pubsubId > lastMissedPubsubId);
@@ -606,36 +737,139 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     pendingMissedContext = buildMissedContext();
   });
 
-  // Process incoming events using unified API
-  for await (const event of client.events({ targetedOnly: true, respondWhenSolo: true })) {
-    if (event.type !== "message") continue;
+  // --- Message Queue Pattern ---
+  // Uses producer-consumer pattern for proper queue position tracking:
+  // - Observer (producer): Non-blocking loop that immediately acknowledges messages
+  // - Processor (consumer): Sequential processing loop
+  // This allows new messages to be observed and acknowledged while processing others.
 
-    // Skip replay messages - don't respond to historical messages
-    // (kind only exists on IncomingNewMessage, not AggregatedMessage)
-    if ("kind" in event && event.kind === "replay") continue;
+  const messageQueue = new MessageQueue<CodexQueuedMessage>();
+  const processingState: CodexProcessingState = { currentMessage: null };
 
-    // Track activity for auto-unload prevention (including typing indicators)
-    updateActivity();
+  // Track whether we've validated restricted mode (happens on first message)
+  let restrictedModeValidated = !restrictedMode; // Skip if not in restricted mode
 
-    // Skip typing indicators - these are just presence notifications
-    const contentType = (event as { contentType?: string }).contentType;
-    if (contentType === CONTENT_TYPE_TYPING) continue;
+  /**
+   * Observer (Producer) - Non-blocking message observation and queuing.
+   * Listens for events, creates typing indicators with queue position, and enqueues messages.
+   */
+  const observeMessages = async (): Promise<void> => {
+    for await (const event of client.events({ targetedOnly: true, respondWhenSolo: true })) {
+      if (event.type !== "message") continue;
 
-    const sender = client.roster[event.senderId];
+      // Skip replay messages - don't respond to historical messages
+      if ("kind" in event && event.kind === "replay") continue;
 
-    // Only respond to messages from panels (not our own or other workers)
-    if (sender?.metadata.type === "panel" && event.senderId !== id) {
-      let prompt = event.content;
-      if (pendingMissedContext && pendingMissedContext.count > 0) {
-        prompt = `<missed_context>\n${pendingMissedContext.formatted}\n</missed_context>\n\n${prompt}`;
-        lastMissedPubsubId = pendingMissedContext.lastPubsubId;
-        pendingMissedContext = null;
-      }
-      // Extract attachments from the event
-      const attachments = (event as { attachments?: Attachment[] }).attachments;
-      await handleUserMessage(client, event as IncomingNewMessage, prompt, workingDirectory, restrictedMode ?? false, attachments, contextTracker);
+      // Track activity for auto-unload prevention
+      updateActivity();
+
+      // Skip typing indicators - these are just presence notifications
+      const contentType = (event as { contentType?: string }).contentType;
+      if (contentType === CONTENT_TYPE_TYPING) continue;
+
+      const sender = client.roster[event.senderId];
+      if (sender?.metadata.type !== "panel" || event.senderId === id) continue;
+
+      // Calculate queue position for typing context
+      const typingContext = createQueuePositionText({
+        queueLength: messageQueue.pending.length,
+        isProcessing: processingState.currentMessage !== null,
+      });
+
+      // Create typing indicator immediately
+      const typing = createTypingTracker({
+        client,
+        log,
+        replyTo: event.id,
+        senderInfo: {
+          senderId: client.clientId ?? "",
+          senderName: "Codex",
+          senderType: "codex",
+        },
+      });
+      await typing.startTyping(typingContext);
+
+      // Enqueue the message
+      messageQueue.enqueue({
+        event: event as IncomingNewMessage,
+        prompt: event.content,
+        attachments: (event as { attachments?: Attachment[] }).attachments,
+        enqueuedAt: Date.now(),
+        typingTracker: typing,
+      });
+
+      log(`Message queued: ${event.content.slice(0, 50)}... (position ${messageQueue.length})`);
     }
-  }
+  };
+
+  /**
+   * Processor (Consumer) - Sequential message processing from queue.
+   * Updates queue position indicators for waiting messages and processes them one at a time.
+   */
+  const processMessages = async (): Promise<void> => {
+    for await (const queuedMessage of messageQueue) {
+      processingState.currentMessage = queuedMessage;
+      messageQueue.dequeue();
+
+      log(`Processing message: ${queuedMessage.event.content.slice(0, 50)}...`);
+
+      // Validate restricted mode on first message (when panel should be connected)
+      if (!restrictedModeValidated) {
+        await validateRestrictedMode(client, log);
+        restrictedModeValidated = true;
+      }
+
+      // Update queue position indicators for remaining messages
+      for (let i = 0; i < messageQueue.pending.length; i++) {
+        const msg = messageQueue.pending[i];
+        if (msg.typingTracker) {
+          const positionText = createQueuePositionText({
+            queueLength: i,
+            isProcessing: true,
+          });
+          await msg.typingTracker.startTyping(positionText);
+        }
+      }
+
+      try {
+        // Apply missed context if available
+        let prompt = queuedMessage.prompt;
+        if (pendingMissedContext && pendingMissedContext.count > 0) {
+          prompt = `<missed_context>\n${pendingMissedContext.formatted}\n</missed_context>\n\n${prompt}`;
+          lastMissedPubsubId = pendingMissedContext.lastPubsubId;
+          pendingMissedContext = null;
+        }
+
+        await handleUserMessage(
+          client,
+          queuedMessage.event,
+          prompt,
+          workingDirectory,
+          restrictedMode ?? false,
+          queuedMessage.attachments,
+          contextTracker,
+          codexHome,
+          queuedMessage.typingTracker ?? undefined
+        );
+      } catch (err) {
+        // Clean up typing indicator if handleUserMessage threw before its internal cleanup
+        await queuedMessage.typingTracker?.cleanup();
+        throw err;
+      } finally {
+        processingState.currentMessage = null;
+      }
+    }
+  };
+
+  // Start observer in background
+  void observeMessages().catch((err) => {
+    log(`Observer failed: ${err instanceof Error ? err.message : String(err)}`);
+    messageQueue.close();
+    throw err;
+  });
+
+  // Start processor (blocks until queue closes)
+  await processMessages();
 }
 
 async function handleUserMessage(
@@ -645,7 +879,9 @@ async function handleUserMessage(
   workingDirectory: string | undefined,
   isRestrictedMode: boolean,
   attachments?: Attachment[],
-  contextTracker?: ReturnType<typeof createContextTracker>
+  contextTracker?: ReturnType<typeof createContextTracker>,
+  codexHome?: string,
+  existingTypingTracker?: ReturnType<typeof createTypingTracker>
 ) {
   log(`Received message: ${incoming.content}`);
 
@@ -674,8 +910,8 @@ async function handleUserMessage(
 
   log(`Discovered ${toolDefs.length} tools from pubsub participants${isRestrictedMode ? " (restricted mode)" : ""}`);
 
-  // Create typing tracker for ephemeral "preparing response" indicator
-  const typing = createTypingTracker({
+  // Use existing typing tracker from queue if available, or create a new one
+  const typing = existingTypingTracker ?? createTypingTracker({
     client,
     log,
     replyTo: incoming.id,
@@ -686,7 +922,7 @@ async function handleUserMessage(
     },
   });
 
-  // Start typing indicator while setting up
+  // Update typing indicator while setting up (will already be showing queue position from observer)
   await typing.startTyping("preparing response");
 
   // Defer creating the response message until we have text content
@@ -793,8 +1029,6 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
   });
 
   let mcpServer: McpHttpServer | null = null;
-  // Track TODO message ID for updates
-  let codexHome: string | null = null;
 
   // Set up RPC pause handler - monitors for pause tool calls
   // Defined before try block so cleanup can be called in finally
@@ -814,12 +1048,72 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
     }
   }
 
-  // Wrap executeTool with action tracking
+  // Wrap executeTool with action tracking and approval prompts
   const executeToolWithActions = async (name: string, args: unknown): Promise<unknown> => {
     const toolUseId = randomUUID();
     // Get display name for better action descriptions (use canonical name if available)
     const displayName = originalToDisplayName.get(name) ?? name;
     const argsRecord = args && typeof args === "object" ? args as Record<string, unknown> : {};
+
+    // Check if approval needed based on autonomy level
+    const autonomyLevel = currentSettings.autonomyLevel ?? APPROVAL_LEVELS.AUTO_SAFE;
+
+    // Skip approval for internal tools (set_title, TodoWrite)
+    const isInternalTool = name === "__set_title__" || name === "__todo_write__";
+
+    if (!isInternalTool && needsApprovalForTool(displayName, autonomyLevel)) {
+      // Find the chat panel participant to show approval prompt
+      const panel = Object.values(client.roster).find(
+        (p) => p.metadata.type === "panel"
+      );
+
+      if (!panel) {
+        log(`No panel available for approval prompt, denying tool: ${displayName}`);
+        throw new Error(`Permission denied: No panel available to approve ${displayName}`);
+      }
+
+      const { allow, alwaysAllow } = await showPermissionPrompt(
+        client,
+        panel.id,
+        displayName,
+        argsRecord,
+        {
+          isFirstTimeGrant: !currentSettings.hasShownApprovalPrompt,
+          floorLevel: autonomyLevel,
+        }
+      );
+
+      // Mark that we've shown at least one approval prompt
+      if (!currentSettings.hasShownApprovalPrompt) {
+        currentSettings.hasShownApprovalPrompt = true;
+        // Persist the setting if session is available
+        if (client.sessionKey) {
+          try {
+            await client.updateSettings(currentSettings);
+          } catch (err) {
+            log(`Failed to persist hasShownApprovalPrompt: ${err}`);
+          }
+        }
+      }
+
+      if (!allow) {
+        log(`Permission denied for tool: ${displayName}`);
+        throw new Error(`Permission denied: User denied access to ${displayName}`);
+      }
+
+      // If user selected "Always Allow", upgrade to full auto
+      if (alwaysAllow) {
+        log(`User granted "Always Allow" - upgrading to full auto`);
+        currentSettings.autonomyLevel = APPROVAL_LEVELS.FULL_AUTO;
+        if (client.sessionKey) {
+          try {
+            await client.updateSettings(currentSettings);
+          } catch (err) {
+            log(`Failed to persist autonomyLevel upgrade: ${err}`);
+          }
+        }
+      }
+    }
 
     await action.startAction({
       type: displayName,
@@ -878,10 +1172,11 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
 
   try {
     // Start MCP HTTP server if we have tools
-    if (mcpTools.length > 0) {
+    if (mcpTools.length > 0 && codexHome) {
       mcpServer = await createMcpHttpServer(mcpTools, executeToolWithActions);
       const mcpServerUrl = `http://127.0.0.1:${mcpServer.port}/mcp`;
-      codexHome = createCodexConfig(mcpServerUrl);
+      // Update config.toml with new MCP server URL (port may change per message)
+      updateCodexConfig(codexHome, mcpServerUrl);
     }
 
     // Initialize Codex SDK with custom config location
@@ -970,6 +1265,9 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
     let checkpointCommitted = false;
 
     for await (const event of events) {
+      // Log all events for debugging
+      log(`Event: ${event.type}${event.type === "error" ? ` - ${JSON.stringify((event as { error?: unknown }).error ?? "unknown")}` : ""}`);
+
       // Break if pause RPC was received
       if (interruptHandler.isPaused()) {
         log(`Execution paused, stopping event processing`);
@@ -998,7 +1296,20 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
         case "item.started":
         case "item.updated": {
           // Handle different item types
-          const item = event.item as { id?: string; type?: string; text?: string };
+          // Codex has many item types: agent_message, reasoning, command_execution, file_change, mcp_tool_call, web_search, todo_list, error
+          const item = event.item as {
+            id?: string;
+            type?: string;
+            text?: string;
+            command?: string;
+            aggregated_output?: string;
+            status?: string;
+            changes?: Array<{ path: string; kind: string }>;
+            server?: string;
+            tool?: string;
+            arguments?: unknown;
+          };
+          log(`  Item ${event.type}: type=${item?.type}, id=${item?.id}`);
 
           // Handle reasoning items (thinking content)
           if (item && item.type === "reasoning" && typeof item.text === "string" && item.id) {
@@ -1054,12 +1365,114 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
               }
             }
           }
+
+          // Handle command_execution items (show commands being run)
+          if (item && item.type === "command_execution" && item.id && item.command) {
+            // Stop typing indicator when we have actual content
+            if (typing.isTyping()) {
+              await typing.stopTyping();
+            }
+            // Format command nicely - truncate long commands
+            const cmd = item.command.trim();
+            const shortCmd = cmd.length > 60 ? cmd.slice(0, 60) + "..." : cmd;
+            await action.startAction({
+              type: "Bash",
+              description: `Running: ${shortCmd}`,
+              toolUseId: item.id,
+            });
+          }
+
+          // Handle file_change items (show files being edited)
+          if (item && item.type === "file_change" && item.id && item.changes) {
+            // Stop typing indicator when we have actual content
+            if (typing.isTyping()) {
+              await typing.stopTyping();
+            }
+            // Format file changes nicely - show first file or count
+            const changes = item.changes;
+            let description: string;
+            if (changes.length === 1) {
+              const filename = changes[0].path.split("/").pop() ?? changes[0].path;
+              description = `Editing ${filename}`;
+            } else {
+              description = `Editing ${changes.length} files`;
+            }
+            await action.startAction({
+              type: "Edit",
+              description,
+              toolUseId: item.id,
+            });
+          }
+
+          // Handle mcp_tool_call items (show MCP tool calls - our pubsub tools)
+          if (item && item.type === "mcp_tool_call" && item.id && item.tool) {
+            // Stop typing indicator when we have actual content
+            if (typing.isTyping()) {
+              await typing.stopTyping();
+            }
+            // Prettify the tool name and get a detailed description
+            const prettifiedName = prettifyToolName(item.tool);
+            const args = typeof item.arguments === "object" && item.arguments !== null
+              ? item.arguments as Record<string, unknown>
+              : {};
+            const description = getDetailedActionDescription(item.tool, args);
+            await action.startAction({
+              type: prettifiedName,
+              description,
+              toolUseId: item.id,
+            });
+          }
+
+          // Handle web_search items
+          if (item && item.type === "web_search" && item.id) {
+            if (typing.isTyping()) {
+              await typing.stopTyping();
+            }
+            const query = (item as { query?: string }).query ?? "searching...";
+            const shortQuery = query.length > 50 ? query.slice(0, 50) + "..." : query;
+            await action.startAction({
+              type: "WebSearch",
+              description: `Searching: ${shortQuery}`,
+              toolUseId: item.id,
+            });
+          }
+
+          // Handle error items - log them but don't show action indicator
+          if (item && item.type === "error" && item.id) {
+            const errorMsg = (item as { message?: string }).message ?? "Unknown error";
+            log(`  Codex error item: ${errorMsg}`);
+          }
           break;
         }
 
         case "item.completed": {
-          // Extract final text from completed item if we haven't streamed it yet
-          const item = "item" in event ? (event.item as { id?: string; type?: string; text?: string }) : null;
+          // Extract final content from completed item
+          // Codex item types: agent_message, reasoning, command_execution, file_change, mcp_tool_call, web_search, todo_list, error
+          const item = "item" in event ? (event.item as {
+            id?: string;
+            type?: string;
+            text?: string;
+            // command_execution fields
+            command?: string;
+            aggregated_output?: string;
+            status?: string;
+            exit_code?: number;
+            // file_change fields
+            changes?: Array<{ path: string; kind: string }>;
+            // mcp_tool_call fields
+            server?: string;
+            tool?: string;
+            arguments?: unknown;
+            result?: unknown;
+            // web_search fields
+            query?: string;
+            // todo_list fields
+            items?: Array<{ text: string; completed: boolean }>;
+            // error fields
+            message?: string;
+            error?: { message?: string };
+          }) : null;
+          log(`  Item completed: type=${item?.type}, id=${item?.id}`);
 
           // Handle completed reasoning items
           if (item && item.type === "reasoning" && item.id && thinking.isThinkingItem(item.id)) {
@@ -1075,6 +1488,10 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
 
           // Handle completed agent_message items
           if (item && item.type === "agent_message" && typeof item.text === "string" && item.id) {
+            // Stop typing indicator when we have actual content
+            if (typing.isTyping()) {
+              await typing.stopTyping();
+            }
             // Check if this is a new agent_message item (turn boundary)
             if (currentAgentMessageId !== null && currentAgentMessageId !== item.id && responseId) {
               // New agent message item = new turn, complete previous and create new
@@ -1094,6 +1511,54 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
               if (!checkpointCommitted && incoming.pubsubId !== undefined && client.sessionKey) {
                 await client.commitCheckpoint(incoming.pubsubId);
                 checkpointCommitted = true;
+              }
+            }
+          }
+
+          // Handle completed command_execution items - complete the action
+          if (item && item.type === "command_execution" && item.id) {
+            await action.completeAction();
+          }
+
+          // Handle completed file_change items - complete the action
+          if (item && item.type === "file_change" && item.id) {
+            await action.completeAction();
+          }
+
+          // Handle completed mcp_tool_call items - complete the action
+          if (item && item.type === "mcp_tool_call" && item.id) {
+            await action.completeAction();
+          }
+
+          // Handle completed web_search items - complete the action
+          if (item && item.type === "web_search" && item.id) {
+            await action.completeAction();
+          }
+
+          // Handle completed todo_list items - send inline UI
+          if (item && item.type === "todo_list" && item.id) {
+            const todoItems = item.items;
+            if (todoItems && todoItems.length > 0) {
+              try {
+                // Convert Codex todo format to our format
+                const todos: TodoItem[] = todoItems.map((t, i) => ({
+                  id: `codex-todo-${i}`,
+                  content: t.text,
+                  activeForm: t.text,
+                  status: t.completed ? "completed" : "pending",
+                }));
+                const inlineData: InlineUiData = {
+                  id: "agent-todos",
+                  code: getCachedTodoListCode(),
+                  props: { todos },
+                };
+                await client.send(JSON.stringify(inlineData), {
+                  contentType: CONTENT_TYPE_INLINE_UI,
+                  persist: true,
+                });
+                log(`Sent TODO list: ${todos.length} items`);
+              } catch (err) {
+                log(`Failed to send TODO list: ${err}`);
               }
             }
           }
@@ -1147,6 +1612,21 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
           break;
         }
 
+        case "error": {
+          // Handle ThreadErrorEvent - fatal stream error
+          const errorEvent = event as { type: "error"; error?: { message?: string } };
+          const errorMsg = errorEvent.error?.message ?? "Unknown stream error";
+          log(`Stream error: ${errorMsg}`);
+          // Create a message for the error if none exists
+          if (responseId) {
+            await client.error(responseId, errorMsg);
+          } else {
+            const { messageId: errorMsgId } = await client.send("", { replyTo: incoming.id });
+            await client.error(errorMsgId, errorMsg);
+          }
+          break;
+        }
+
         default:
           // Log unhandled event types for debugging
           log(`Unhandled event type: ${(event as { type: string }).type}`);
@@ -1175,14 +1655,13 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
       await client.error(errorMsgId, err instanceof Error ? err.message : String(err));
     }
   } finally {
-    // Cleanup resources
+    // Cleanup per-message resources (but NOT codexHome - it persists across messages)
     interruptHandler.cleanup();
     if (mcpServer) {
       await mcpServer.close();
     }
-    if (codexHome) {
-      cleanupCodexConfig(codexHome);
-    }
+    // Note: codexHome is NOT cleaned up here - it persists for session continuity
+    // It will be cleaned up when the worker unloads
   }
 }
 

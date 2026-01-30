@@ -51,8 +51,10 @@ import {
   type AgentSDKToolDefinition,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
-  // Async queue utility
-  AsyncQueue,
+  // Message queue utility
+  MessageQueue,
+  createQueuePositionText,
+  type QueuedMessageBase,
   // Error types for error handling
   AgenticError,
 } from "@natstack/agentic-messaging";
@@ -332,50 +334,18 @@ interface ClaudeCodeWorkerSettings {
 // Message Queue - Producer-Consumer Pattern for Message Interleaving
 // =============================================================================
 
-/** A queued message waiting to be processed */
-interface QueuedMessage {
+/** A queued message waiting to be processed (extends shared base) */
+interface ClaudeQueuedMessage extends QueuedMessageBase {
   event: IncomingNewMessage;
   prompt: string;
   attachments?: Attachment[];
-  enqueuedAt: number;
   typingTracker: ReturnType<typeof createTypingTracker> | null;
 }
 
 /** Current processing state shared between observer and processor */
 interface ProcessingState {
-  currentMessage: QueuedMessage | null;
+  currentMessage: ClaudeQueuedMessage | null;
   queryInstance: Query | null;
-}
-
-/**
- * MessageQueue - FIFO queue with inspection capability for managing queued messages.
- * Allows both async iteration (for processor) and inspection (for queue position tracking).
- * Uses the shared AsyncQueue from agentic-messaging.
- */
-class MessageQueue implements AsyncIterable<QueuedMessage> {
-  private queue = new AsyncQueue<QueuedMessage>();
-  private _pending: QueuedMessage[] = [];
-
-  enqueue(msg: QueuedMessage): void {
-    this._pending.push(msg);
-    this.queue.push(msg);
-  }
-
-  dequeue(): void {
-    this._pending.shift();
-  }
-
-  get pending(): readonly QueuedMessage[] {
-    return this._pending;
-  }
-
-  close(): void {
-    this.queue.close();
-  }
-
-  [Symbol.asyncIterator](): AsyncIterableIterator<QueuedMessage> {
-    return this.queue[Symbol.asyncIterator]();
-  }
 }
 
 // =============================================================================
@@ -547,7 +517,7 @@ let contextTrackerRef: ReturnType<typeof createContextTracker> | null = null;
  */
 async function observeMessages(
   session: WorkerSession,
-  queue: MessageQueue,
+  queue: MessageQueue<ClaudeQueuedMessage>,
   state: ProcessingState
 ): Promise<void> {
   const { client } = session;
@@ -568,10 +538,10 @@ async function observeMessages(
     if (sender?.metadata.type !== "panel" || event.senderId === id) continue;
 
     // Calculate queue position for typing context
-    const queuePosition = queue.pending.length;
-    const typingContext = state.currentMessage
-      ? (queuePosition === 0 ? "queued, waiting..." : `queued (position ${queuePosition + 1})`)
-      : "preparing response";
+    const typingContext = createQueuePositionText({
+      queueLength: queue.pending.length,
+      isProcessing: state.currentMessage !== null,
+    });
 
     // Create typing indicator immediately
     const typing = createTypingTracker({
@@ -595,7 +565,7 @@ async function observeMessages(
       typingTracker: typing,
     });
 
-    log(`Message queued: ${event.content.slice(0, 50)}... (position ${queuePosition + 1})`);
+    log(`Message queued: ${event.content.slice(0, 50)}... (position ${queue.length})`);
   }
 }
 
@@ -609,7 +579,7 @@ async function observeMessages(
  */
 async function processMessages(
   session: WorkerSession,
-  queue: MessageQueue,
+  queue: MessageQueue<ClaudeQueuedMessage>,
   state: ProcessingState
 ): Promise<void> {
   const { client, config, missedContext } = session;
@@ -635,9 +605,11 @@ async function processMessages(
       const msg = queue.pending[i];
       if (msg.typingTracker) {
         // startTyping automatically stops previous indicator
-        await msg.typingTracker.startTyping(
-          i === 0 ? "queued, waiting..." : `queued (position ${i + 1})`
-        );
+        const positionText = createQueuePositionText({
+          queueLength: i,
+          isProcessing: true,
+        });
+        await msg.typingTracker.startTyping(positionText);
       }
     }
 
@@ -1099,7 +1071,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
   // - Processor (consumer): Sequential processing loop
   // This allows new messages to be observed and acknowledged while processing others.
 
-  const messageQueue = new MessageQueue();
+  const messageQueue = new MessageQueue<ClaudeQueuedMessage>();
   const processingState: ProcessingState = { currentMessage: null, queryInstance: null };
 
   // Start observer in background

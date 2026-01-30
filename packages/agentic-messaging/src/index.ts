@@ -5,6 +5,14 @@ export { connect, createToolsForAgentSDK, type AgentSDKToolDefinition } from "./
 
 // Async utilities
 export { AsyncQueue, createFanout } from "./async-queue.js";
+
+// Message queue utilities (for responder workers)
+export {
+  MessageQueue,
+  createQueuePositionText,
+  type QueuedMessageBase,
+  type QueuePositionTextOptions,
+} from "./message-queue.js";
 export type { AgenticClient } from "./types.js";
 export {
   DEFAULT_CHAT_ASSISTANT_PERSONA,
