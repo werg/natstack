@@ -10,6 +10,9 @@ import { createServer, type Server as HttpServer, type IncomingMessage } from "h
 import { getTokenManager } from "./tokenManager.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
 import { findAvailablePortForService } from "./portUtils.js";
+import { createDevLogger } from "./devLog.js";
+
+const log = createDevLogger("PubSubServer");
 
 const DB_NAME = "pubsub-messages";
 
@@ -784,7 +787,7 @@ export class PubSubServer {
         if (addr && typeof addr === "object") {
           this.port = addr.port;
         }
-        console.log(`[PubSub] Server listening on port ${this.port}`);
+        log.verbose(`[PubSub] Server listening on port ${this.port}`);
         resolve(this.port!);
       });
     });
@@ -833,7 +836,7 @@ export class PubSubServer {
       ws.close(4001, "unauthorized");
       return;
     }
-    console.log(`[PubSubServer] Accepted connection from ${clientId}`);
+    log.verbose(`Accepted connection from ${clientId}`);
 
     if (!channel) {
       ws.close(4002, "channel required");

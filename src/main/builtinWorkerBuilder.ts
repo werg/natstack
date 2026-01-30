@@ -12,6 +12,9 @@ import * as esbuild from "esbuild";
 import * as fs from "fs";
 import * as path from "path";
 import { getPackagesDir, getCentralConfigDirectory, getAppNodeModules, getAppRoot } from "./paths.js";
+import { createDevLogger } from "./devLog.js";
+
+const log = createDevLogger("BuiltinWorkerBuilder");
 import {
   generateAsyncTrackingBanner,
   generateModuleMapBanner,
@@ -95,11 +98,11 @@ function getBuiltinWorkersDir(): string {
 export async function buildBuiltinWorker(worker: BuiltinWorker): Promise<string> {
   const cached = builtinWorkerBundles.get(worker);
   if (cached) {
-    console.log(`[BuiltinWorkerBuilder] Using cached bundle for ${worker}`);
+    log.verbose(` Using cached bundle for ${worker}`);
     return cached;
   }
 
-  console.log(`[BuiltinWorkerBuilder] Building ${worker}...`);
+  log.verbose(` Building ${worker}...`);
 
   const workersDir = getBuiltinWorkersDir();
   const workerDir = path.join(workersDir, worker);
@@ -159,7 +162,7 @@ export async function buildBuiltinWorker(worker: BuiltinWorker): Promise<string>
   } catch { /* best effort */ }
 
   builtinWorkerBundles.set(worker, bundle);
-  console.log(`[BuiltinWorkerBuilder] Built ${worker} (${bundle.length} bytes)`);
+  log.verbose(` Built ${worker} (${bundle.length} bytes)`);
 
   return bundle;
 }

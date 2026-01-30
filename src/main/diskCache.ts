@@ -7,6 +7,9 @@
 import { promises as fsPromises } from "fs";
 import * as path from "path";
 import { app } from "electron";
+import { createDevLogger } from "./devLog.js";
+
+const log = createDevLogger("DiskCache");
 
 export interface DiskCacheEntry {
   key: string;
@@ -58,7 +61,7 @@ export async function loadDiskCache(): Promise<Record<string, DiskCacheEntry>> {
     }
 
     const entryCount = Object.keys(data.entries).length;
-    console.log(`[DiskCache] Loaded ${entryCount} entries from disk`);
+    log.verbose(` Loaded ${entryCount} entries from disk`);
     return data.entries;
   } catch (error) {
     console.error("[DiskCache] Failed to load cache from disk:", error);
@@ -110,7 +113,7 @@ export async function saveDiskCache(entries: Record<string, DiskCacheEntry>): Pr
     await fsPromises.rename(tempPath, cacheFilePath);
 
     const entryCount = Object.keys(entries).length;
-    console.log(`[DiskCache] Saved ${entryCount} entries to disk (${contentSizeMB}MB)`);
+    log.verbose(` Saved ${entryCount} entries to disk (${contentSizeMB}MB)`);
   } catch (error) {
     console.error("[DiskCache] Failed to save cache to disk:", error);
 

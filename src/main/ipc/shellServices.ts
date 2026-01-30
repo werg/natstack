@@ -18,6 +18,9 @@ import { app, nativeTheme, dialog, Menu, type MenuItemConstructorOptions } from 
 import * as path from "path";
 import * as fs from "fs";
 import type { ServiceContext } from "../serviceDispatcher.js";
+import { createDevLogger } from "../devLog.js";
+
+const log = createDevLogger("ShellServices");
 import type {
   ThemeMode,
   ThemeAppearance,
@@ -275,8 +278,8 @@ export async function handlePanelService(
 
     case "unload": {
       const panelId = args[0] as string;
-      console.log(`[ShellServices] Unload requested for panel: ${panelId}`);
-      console.log(`[ShellServices] Unload call stack:`, new Error().stack);
+      log.verbose(` Unload requested for panel: ${panelId}`);
+      log.verbose(` Unload call stack:`, new Error().stack);
       await pm.unloadPanel(panelId);
       return;
     }

@@ -16,6 +16,9 @@ import Database from "better-sqlite3";
 import * as path from "path";
 import * as fs from "fs";
 import { getActiveWorkspace } from "../paths.js";
+import { createDevLogger } from "../devLog.js";
+
+const log = createDevLogger("PanelPersistence");
 import {
   initializePanelSchema,
   PANEL_QUERIES,
@@ -132,7 +135,7 @@ export class PanelPersistence {
       initializePanelSchema(this.db);
       this.workspaceId = workspace.config.id;
 
-      console.log(`[PanelPersistence] Opened database: ${dbPath}`);
+      log.verbose(` Opened database: ${dbPath}`);
     }
 
     return this.db;

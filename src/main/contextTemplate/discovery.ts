@@ -12,6 +12,9 @@ import { execSync } from "child_process";
 import { hasTemplateFile, loadTemplateFromDir } from "./parser.js";
 import { getActiveWorkspace } from "../paths.js";
 import type { AvailableTemplate } from "../../shared/contextTemplate.js";
+import { createDevLogger } from "../devLog.js";
+
+const log = createDevLogger("discovery");
 
 /**
  * List all available context templates in the workspace.
@@ -157,7 +160,7 @@ description: Context template for ${repoName}
   try {
     execSync("git add context-template.yml", { cwd: absolutePath, stdio: "pipe" });
     execSync('git commit -m "Initialize context template"', { cwd: absolutePath, stdio: "pipe" });
-    console.log(`[discovery] Created context template in ${repoPath}`);
+    log.verbose(` Created context template in ${repoPath}`);
   } catch (err) {
     console.error(`[discovery] Failed to commit context template:`, err);
     throw new Error("Created template file but failed to commit");
@@ -198,7 +201,7 @@ export async function createRepo(repoPath: string): Promise<void> {
     execSync("git add README.md", { cwd: absolutePath, stdio: "pipe" });
     execSync('git commit -m "Initial commit"', { cwd: absolutePath, stdio: "pipe" });
 
-    console.log(`[discovery] Created new repo at ${repoPath}`);
+    log.verbose(` Created new repo at ${repoPath}`);
   } catch (err) {
     console.error(`[discovery] Failed to initialize repo:`, err);
     throw new Error("Failed to initialize git repository");
@@ -253,7 +256,7 @@ export async function saveContextTemplate(repoPath: string, info: TemplateInfo):
   try {
     execSync("git add context-template.yml", { cwd: absolutePath, stdio: "pipe" });
     execSync('git commit -m "Update context template"', { cwd: absolutePath, stdio: "pipe" });
-    console.log(`[discovery] Updated context template in ${repoPath}`);
+    log.verbose(` Updated context template in ${repoPath}`);
   } catch (err) {
     // If nothing to commit (no changes), that's fine
     const errorMsg = err instanceof Error ? err.message : String(err);

@@ -8,6 +8,9 @@
 import * as fs from "fs";
 import * as path from "path";
 import { getPartitionPath, getPartitionsDirectory } from "../paths.js";
+import { createDevLogger } from "../devLog.js";
+
+const log = createDevLogger("PartitionCopier");
 
 /**
  * Copy a partition folder from source to destination.
@@ -25,7 +28,7 @@ export async function copyPartitionFolder(
   const sourcePath = getPartitionPath(sourcePartitionName);
   const destPath = getPartitionPath(destPartitionName);
 
-  console.log(`[PartitionCopier] Copying partition ${sourcePartitionName} -> ${destPartitionName}`);
+  log.verbose(` Copying partition ${sourcePartitionName} -> ${destPartitionName}`);
 
   // Verify source exists
   if (!fs.existsSync(sourcePath)) {
@@ -34,14 +37,14 @@ export async function copyPartitionFolder(
 
   // Remove existing destination if present
   if (fs.existsSync(destPath)) {
-    console.log(`[PartitionCopier] Removing existing destination: ${destPath}`);
+    log.verbose(` Removing existing destination: ${destPath}`);
     fs.rmSync(destPath, { recursive: true, force: true });
   }
 
   try {
     // Perform recursive copy
     await copyDirRecursive(sourcePath, destPath);
-    console.log(`[PartitionCopier] Copy complete: ${destPartitionName}`);
+    log.verbose(` Copy complete: ${destPartitionName}`);
   } catch (error) {
     // Clean up partial copy on failure
     console.error(`[PartitionCopier] Copy failed, cleaning up: ${destPartitionName}`);
@@ -89,7 +92,7 @@ export async function cleanupPartition(partitionName: string): Promise<void> {
   const partitionPath = getPartitionPath(partitionName);
 
   if (fs.existsSync(partitionPath)) {
-    console.log(`[PartitionCopier] Cleaning up partition: ${partitionName}`);
+    log.verbose(` Cleaning up partition: ${partitionName}`);
     fs.rmSync(partitionPath, { recursive: true, force: true });
   }
 }

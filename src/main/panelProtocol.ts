@@ -2,6 +2,9 @@ import { protocol, session } from "electron";
 import * as path from "path";
 import type { ProtocolBuildArtifacts } from "../shared/ipc/types.js";
 import { randomBytes } from "crypto";
+import { createDevLogger } from "./devLog.js";
+
+const log = createDevLogger("PanelProtocol");
 
 type PanelAssets = NonNullable<ProtocolBuildArtifacts["assets"]>;
 
@@ -171,7 +174,7 @@ export function handleProtocolRequest(request: Request): Response {
   );
 
   if (!hasValidToken && !hasValidReferer && !isStoredAsset) {
-    console.log(`[PanelProtocol] 403 for ${request.url}: isCorePath=${isCorePath}, hasValidToken=${hasValidToken}, hasValidReferer=${hasValidReferer}, isStoredAsset=${isStoredAsset}`);
+    log.verbose(` 403 for ${request.url}: isCorePath=${isCorePath}, hasValidToken=${hasValidToken}, hasValidReferer=${hasValidReferer}, isStoredAsset=${isStoredAsset}`);
     return new Response("Unauthorized", {
       status: 403,
       headers: { "Content-Type": "text/plain" },
@@ -211,7 +214,7 @@ export function handleProtocolRequest(request: Request): Response {
 
   // Log available assets for debugging 404s
   const availableAssets = panelContent.assets ? Object.keys(panelContent.assets).slice(0, 10) : [];
-  console.log(`[PanelProtocol] 404 for ${pathname}, available assets (first 10): ${availableAssets.join(", ")}`);
+  log.verbose(` 404 for ${pathname}, available assets (first 10): ${availableAssets.join(", ")}`);
 
   return new Response(`Not found: ${pathname}`, {
     status: 404,
@@ -258,7 +261,7 @@ export async function registerProtocolForPartition(partition: string): Promise<v
         return;
       }
 
-      console.log(`[PanelProtocol] Registering protocol for partition: ${partition}`);
+      log.verbose(` Registering protocol for partition: ${partition}`);
       const ses = session.fromPartition(partition);
       ses.protocol.handle("natstack-panel", handleProtocolRequest);
       registeredPartitions.add(partition);
@@ -347,9 +350,9 @@ export function storeProtocolPanel(panelId: string, artifacts: ProtocolBuildArti
   const assetKeys = artifacts.assets ? Object.keys(artifacts.assets) : [];
   const monacoKeys = assetKeys.filter(k => k.includes("monaco"));
   const assetSuffix = assetCount > 0 ? ` (assets: ${assetCount}, monaco: ${monacoKeys.length})` : " (no assets)";
-  console.log(`[PanelProtocol] Stored panel: ${panelId}${assetSuffix}`);
+  log.verbose(` Stored panel: ${panelId}${assetSuffix}`);
   if (monacoKeys.length > 0) {
-    console.log(`[PanelProtocol] Monaco assets: ${monacoKeys.join(", ")}`);
+    log.verbose(` Monaco assets: ${monacoKeys.join(", ")}`);
   }
 
   // Return the URL for this panel

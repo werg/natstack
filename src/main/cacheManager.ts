@@ -7,6 +7,9 @@
 
 import { loadDiskCache, saveDiskCache } from "./diskCache.js";
 import { getCacheConfig } from "./cacheConfig.js";
+import { createDevLogger } from "./devLog.js";
+
+const log = createDevLogger("MainCache");
 
 interface CacheEntry {
   key: string;
@@ -116,7 +119,7 @@ class MainCacheManager {
     await saveDiskCache({});
     this.isDirty = false;
 
-    console.log(`[MainCache] Cleared ${size} entries`);
+    log.verbose(` Cleared ${size} entries`);
   }
 
   /**
@@ -179,7 +182,7 @@ class MainCacheManager {
     try {
       await saveDiskCache(entries);
       this.isDirty = false;
-      console.log(`[MainCache] Saved ${Object.keys(entries).length} entries to disk`);
+      log.verbose(` Saved ${Object.keys(entries).length} entries to disk`);
     } catch (error) {
       console.error("[MainCache] Failed to save to disk, will retry on next change:", error);
       // Keep isDirty = true to retry on next change
@@ -204,7 +207,7 @@ class MainCacheManager {
         if (entry) {
           this.totalSize -= entry.size;
           this.cache.delete(oldestKey);
-          console.log(`[MainCache] Evicted ${oldestKey} (${reason})`);
+          log.verbose(` Evicted ${oldestKey} (${reason})`);
           return true;
         }
       }

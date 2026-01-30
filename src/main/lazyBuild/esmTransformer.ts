@@ -13,6 +13,9 @@ import * as path from "path";
 import * as fs from "fs";
 import * as http from "http";
 import * as esbuild from "esbuild";
+import { createDevLogger } from "../devLog.js";
+
+const log = createDevLogger("ESM");
 
 /**
  * Packages that are known to work as browser ESM.
@@ -112,7 +115,7 @@ export class EsmTransformer {
       return existing;
     }
 
-    console.log(`[ESM] Transforming: ${cacheKey}`);
+    log.verbose(` Transforming: ${cacheKey}`);
     const promise = this.doTransform(pkgName, resolvedVersion)
       .finally(() => this.transformLocks.delete(cacheKey));
 
@@ -359,7 +362,7 @@ export class EsmTransformer {
 
     // Invalid or missing extraction - clean up and re-fetch
     if (fs.existsSync(extractedDir)) {
-      console.log(`[ESM] Cleaning up invalid extraction: ${extractedDir}`);
+      log.verbose(` Cleaning up invalid extraction: ${extractedDir}`);
       try {
         fs.rmSync(extractedDir, { recursive: true, force: true });
       } catch {
@@ -399,7 +402,7 @@ export class EsmTransformer {
       : pkgName;
     const tarballUrl = `${this.verdaccioUrl}/${pkgName}/-/${baseName}-${version}.tgz`;
 
-    console.log(`[ESM] Fetching tarball: ${tarballUrl}`);
+    log.verbose(` Fetching tarball: ${tarballUrl}`);
 
     // Download tarball to temp location
     const tempDir = path.join(this.cacheDir, "_temp");
@@ -420,7 +423,7 @@ export class EsmTransformer {
       // Ignore cleanup errors
     }
 
-    console.log(`[ESM] Extracted ${pkgName}@${version} to ${extractedRoot}`);
+    log.verbose(` Extracted ${pkgName}@${version} to ${extractedRoot}`);
     return extractedRoot;
   }
 
@@ -663,7 +666,7 @@ export class EsmTransformer {
     // Cleanup old cache entries if needed (simple LRU based on mtime)
     this.evictCacheIfNeeded();
 
-    console.log(`[ESM] Transformed ${pkgName}@${version} (${bundle.length} bytes)`);
+    log.verbose(` Transformed ${pkgName}@${version} (${bundle.length} bytes)`);
     return bundle;
   }
 
@@ -717,7 +720,7 @@ export class EsmTransformer {
         try {
           fs.rmSync(file.path);
           totalSize -= file.size;
-          console.log(`[ESM] Evicted from cache: ${file.path}`);
+          log.verbose(` Evicted from cache: ${file.path}`);
         } catch {
           // Ignore errors during eviction
         }

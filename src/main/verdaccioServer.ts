@@ -32,6 +32,9 @@ import { findAndBindPort, PORT_RANGES } from "./portUtils.js";
 
 import type { GitWatcher } from "./workspace/gitWatcher.js";
 import { EsmTransformer, ESM_SAFE_PACKAGES } from "./lazyBuild/esmTransformer.js";
+import { createDevLogger } from "./devLog.js";
+
+const log = createDevLogger("Verdaccio");
 
 /**
  * Configuration options for the Verdaccio server.
@@ -210,9 +213,9 @@ class BuildQueue {
         throw new Error(`Package not found: ${pkgName} (expected at ${pkgPath})`);
       }
 
-      console.log(`[LazyBuild] Building ${pkgName} on-demand...`);
+      log.verbose(`[LazyBuild] Building ${pkgName} on-demand...`);
       await this.publishPackage(pkgPath, pkgName);
-      console.log(`[LazyBuild] Built ${pkgName}`);
+      log.verbose(`[LazyBuild] Built ${pkgName}`);
     } finally {
       this.buildStack.delete(pkgName);
       this.building.delete(pkgName);
@@ -288,7 +291,7 @@ export class VerdaccioServer {
     }
 
     if (this.actualPort !== null) {
-      console.log(`[VerdaccioServer] Already running on port ${this.actualPort}`);
+      log.verbose(` Already running on port ${this.actualPort}`);
       return this.actualPort;
     }
 
@@ -337,7 +340,7 @@ export class VerdaccioServer {
     );
 
     if (port !== this.configuredPort) {
-      console.log(`[VerdaccioServer] Configured port ${this.configuredPort} unavailable, using ${port}`);
+      log.verbose(` Configured port ${this.configuredPort} unavailable, using ${port}`);
     }
 
     // Close temp server before starting Verdaccio
@@ -401,16 +404,16 @@ export class VerdaccioServer {
     const internalPort = port + 1;
     let verdaccioServer: http.Server;
     try {
-      console.log(`[VerdaccioServer] Calling runServer...`);
+      log.verbose(` Calling runServer...`);
       const serverFactory = await runServer(config);
-      console.log(`[VerdaccioServer] runServer completed, calling listen(${internalPort})...`);
+      log.verbose(` runServer completed, calling listen(${internalPort})...`);
 
       // The serverFactory is an Express-like app with a listen method
       // Wait for the server to actually be listening before proceeding
       verdaccioServer = await new Promise<http.Server>((resolve, reject) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const server = (serverFactory as any).listen(internalPort, "127.0.0.1", () => {
-          console.log(`[VerdaccioServer] Internal server listening on 127.0.0.1:${internalPort}`);
+          log.verbose(` Internal server listening on 127.0.0.1:${internalPort}`);
           resolve(server as http.Server);
         });
         server.on("error", (err: Error) => {
@@ -463,8 +466,8 @@ export class VerdaccioServer {
 
     this.actualPort = port;
     this.restartAttempts = 0;
-    console.log(`[VerdaccioServer] Started on http://localhost:${port}`);
-    console.log(`[VerdaccioServer] Storage: ${this.storagePath}`);
+    log.verbose(` Started on http://localhost:${port}`);
+    log.verbose(` Storage: ${this.storagePath}`);
 
     // Pre-warm ESM cache in background (non-blocking)
     this.preWarmEsmCache().catch(err => {
@@ -484,7 +487,7 @@ export class VerdaccioServer {
     }
 
     const packagesToWarm = Array.from(ESM_SAFE_PACKAGES);
-    console.log(`[ESM] Pre-warming ${packagesToWarm.length} packages...`);
+    log.verbose(`[ESM] Pre-warming ${packagesToWarm.length} packages...`);
 
     for (const pkg of packagesToWarm) {
       try {
@@ -493,7 +496,7 @@ export class VerdaccioServer {
         console.warn(`[ESM] Failed to pre-warm ${pkg}:`, error instanceof Error ? error.message : error);
       }
     }
-    console.log(`[ESM] Pre-warming complete`);
+    log.verbose(`[ESM] Pre-warming complete`);
   }
 
   /**
@@ -605,7 +608,7 @@ export class VerdaccioServer {
     }
 
     try {
-      console.log(`[ESM] Request: ${pkgName}@${version}`);
+      log.verbose(`[ESM] Request: ${pkgName}@${version}`);
       const bundle = await esmTransformer.getEsmBundle(pkgName, version);
 
       res.setHeader("Content-Type", "application/javascript; charset=utf-8");
@@ -834,7 +837,7 @@ export class VerdaccioServer {
     // Log only on first discovery (persists across cache invalidations)
     if (packages.length > 0 && !this.discoveryLoggedDirs.has(packagesDir)) {
       this.discoveryLoggedDirs.add(packagesDir);
-      console.log(`[Verdaccio] Discovered ${packages.length} packages in ${path.basename(packagesDir)}/: ${packages.map(p => p.name).join(", ")}`);
+      log.verbose(` Discovered ${packages.length} packages in ${path.basename(packagesDir)}/: ${packages.map(p => p.name).join(", ")}`);
     }
 
     return packages;
@@ -851,7 +854,7 @@ export class VerdaccioServer {
       if (fs.existsSync(npmrcPath)) {
         try {
           fs.rmSync(npmrcPath);
-          console.log(`[Verdaccio] Cleaned up orphaned .npmrc in ${pkg.name}`);
+          log.verbose(` Cleaned up orphaned .npmrc in ${pkg.name}`);
         } catch {
           // Ignore cleanup errors
         }
@@ -884,7 +887,7 @@ export class VerdaccioServer {
     // Collect all packages to publish (supports scoped packages)
     const packagesToPublish = this.discoverPackagesInDir(packagesDir);
 
-    console.log(`[VerdaccioServer] Publishing ${packagesToPublish.length} workspace packages (concurrency: ${this.PUBLISH_CONCURRENCY})...`);
+    log.verbose(` Publishing ${packagesToPublish.length} workspace packages (concurrency: ${this.PUBLISH_CONCURRENCY})...`);
 
     // Publish in parallel batches
     for (let i = 0; i < packagesToPublish.length; i += this.PUBLISH_CONCURRENCY) {
@@ -924,7 +927,7 @@ export class VerdaccioServer {
       result.failed.length > 0 ? `${result.failed.length} failed` : null,
     ].filter(Boolean).join(", ");
 
-    console.log(`[VerdaccioServer] Workspace packages: ${summary || "none"}`);
+    log.verbose(` Workspace packages: ${summary || "none"}`);
     return result;
   }
 
@@ -1186,7 +1189,7 @@ export class VerdaccioServer {
 
         proc.on("close", (code) => {
           if (code === 0) {
-            console.log(`[VerdaccioServer] Tagged ${pkgName}@${version} as "${tag}"`);
+            log.verbose(` Tagged ${pkgName}@${version} as "${tag}"`);
             resolve();
           } else {
             console.warn(`[VerdaccioServer] Failed to set tag "${tag}" for ${pkgName}: ${stderr}`);
@@ -1435,7 +1438,7 @@ export class VerdaccioServer {
       const latestVersion = await this.getPackageVersion(pkgName);
       if (latestVersion === gitVersion && !branch) {
         // Version is latest and no branch tag to set
-        console.log(`[VerdaccioServer] ${pkgName}@${gitVersion} unchanged (skipping)`);
+        log.verbose(` ${pkgName}@${gitVersion} unchanged (skipping)`);
         return "skipped";
       }
 
@@ -1480,7 +1483,7 @@ export class VerdaccioServer {
     const registryHost = new URL(registryUrl).host;
     const npmrcContent = `//${registryHost}/:_authToken="natstack-local-publish"\nregistry=${registryUrl}\n`;
 
-    console.log(`[VerdaccioServer] Publishing ${pkgName}@${gitVersion} to ${registryUrl} (tag: ${publishTag})`);
+    log.verbose(` Publishing ${pkgName}@${gitVersion} to ${registryUrl} (tag: ${publishTag})`);
 
     // All file modifications inside try block to ensure cleanup
     try {
@@ -1530,16 +1533,16 @@ export class VerdaccioServer {
           if (timedOut) {
             reject(new Error(`npm publish timed out for ${pkgName}`));
           } else if (code === 0) {
-            console.log(`[VerdaccioServer] Published: ${pkgName}@${gitVersion}`);
+            log.verbose(` Published: ${pkgName}@${gitVersion}`);
             resolve("published");
           } else if (stderr.includes("E409") || stderr.includes("this package is already present")) {
             // E409 Conflict means another publish beat us to it - treat as success
-            console.log(`[VerdaccioServer] ${pkgName}@${gitVersion} already published (race condition)`);
+            log.verbose(` ${pkgName}@${gitVersion} already published (race condition)`);
             resolve("skipped");
           } else {
             // Log errors for debugging
             if (stderr.trim()) {
-              console.log(`[VerdaccioServer] ${pkgName} stderr: ${stderr.trim()}`);
+              log.verbose(` ${pkgName} stderr: ${stderr.trim()}`);
             }
             reject(new Error(`npm publish failed for ${pkgName} (exit code ${code}): ${stderr || stdout}`));
           }
@@ -1587,13 +1590,13 @@ export class VerdaccioServer {
       return new Promise((resolve) => {
         // First, stop accepting new connections
         server.close(() => {
-          console.log(`[VerdaccioServer] ${name} closed gracefully`);
+          log.verbose(` ${name} closed gracefully`);
           resolve();
         });
 
         // Force close after timeout
         const timeout = setTimeout(() => {
-          console.log(`[VerdaccioServer] ${name} force closing after timeout`);
+          log.verbose(` ${name} force closing after timeout`);
           // closeAllConnections is available in Node 18.2+
           const serverWithCloseAll = server as http.Server & { closeAllConnections?: () => void };
           if (typeof serverWithCloseAll.closeAllConnections === "function") {
@@ -1796,7 +1799,7 @@ export class VerdaccioServer {
         // Skip private packages
         if (pkgJson.private) return;
         await this.publishPackage(absolutePath, pkgJson.name);
-        console.log(`[Verdaccio] Published new workspace package: ${pkgJson.name}`);
+        log.verbose(` Published new workspace package: ${pkgJson.name}`);
         this.invalidateVerdaccioVersionsCache();
       } catch (err) {
         console.error("[Verdaccio] Failed to publish new package:", err);
@@ -1818,7 +1821,7 @@ export class VerdaccioServer {
 
         // Skip if a publish is already in progress for this repo
         if (this.publishingInProgress.has(repoPath)) {
-          console.log(`[Verdaccio] Skipping publish for ${repoPath} - already in progress`);
+          log.verbose(` Skipping publish for ${repoPath} - already in progress`);
           return;
         }
 
@@ -1834,7 +1837,7 @@ export class VerdaccioServer {
           if (pkgJson.private) return;
           const result = await this.publishPackage(absolutePath, pkgJson.name);
           if (result === "published") {
-            console.log(`[Verdaccio] Republished workspace package on commit: ${pkgJson.name}`);
+            log.verbose(` Republished workspace package on commit: ${pkgJson.name}`);
             this.invalidateVerdaccioVersionsCache();
           }
         } catch (err) {
@@ -1889,7 +1892,7 @@ export class VerdaccioServer {
       return;
     }
 
-    console.log(`[Verdaccio] Pre-publishing ${allPackages.length} workspace packages...`);
+    log.verbose(` Pre-publishing ${allPackages.length} workspace packages...`);
 
     // Publish in parallel batches
     for (let i = 0; i < allPackages.length; i += this.PUBLISH_CONCURRENCY) {
@@ -1900,7 +1903,7 @@ export class VerdaccioServer {
           try {
             const result = await this.publishPackage(pkg.path, pkg.name);
             if (result === "published") {
-              console.log(`[Verdaccio] Published user workspace package: ${pkg.name}`);
+              log.verbose(` Published user workspace package: ${pkg.name}`);
             }
           } catch (err) {
             console.error(`[Verdaccio] Failed to publish ${pkg.name}:`, err);
@@ -1976,7 +1979,7 @@ export class VerdaccioServer {
   async publishChangedPackages(): Promise<PublishResult & { changesDetected: WorkspaceChangesResult }> {
     const changes = await this.checkWorkspaceChanges();
 
-    console.log(`[VerdaccioServer] Workspace changes: ${changes.changed.length} changed, ${changes.unchanged.length} unchanged`);
+    log.verbose(` Workspace changes: ${changes.changed.length} changed, ${changes.unchanged.length} unchanged`);
 
     if (changes.freshStart) {
       console.log("[VerdaccioServer] Fresh start - publishing all packages");

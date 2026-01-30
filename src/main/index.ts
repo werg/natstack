@@ -7,6 +7,9 @@ import * as os from "os";
 process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
 
 import { isDev } from "./utils.js";
+import { createDevLogger } from "./devLog.js";
+
+const log = createDevLogger("App");
 import { PanelManager, setGlobalPanelManager } from "./panelManager.js";
 import { GitServer } from "./gitServer.js";
 import { handle } from "./ipc/handlers.js";
@@ -126,7 +129,7 @@ if (appMode === "main" && hasWorkspaceConfig) {
   try {
     workspace = createWorkspace(discoveredWorkspacePath);
     setActiveWorkspace(workspace);
-    console.log(`[Workspace] Loaded: ${workspace.path} (id: ${workspace.config.id})`);
+    log.info(`[Workspace] Loaded: ${workspace.path} (id: ${workspace.config.id})`);
 
     // Add to recent workspaces
     const centralData = getCentralData();
@@ -160,7 +163,7 @@ if (appMode === "main" && hasWorkspaceConfig) {
 }
 
 setShellServicesAppMode(appMode);
-console.log(`[App] Starting in ${appMode} mode`);
+log.info(` Starting in ${appMode} mode`);
 
 // =============================================================================
 // Window Creation
@@ -331,7 +334,7 @@ handle("panel:register-browser-webview", async (_event, browserId: string, webCo
     throw new Error(`Parent panel not found for browser: ${browserId}`);
   }
 
-  console.log(`[CDP] registerBrowser: browserId=${browserId}, parentId=${parentId}, webContentsId=${webContentsId}`);
+  log.verbose(`[CDP] registerBrowser: browserId=${browserId}, parentId=${parentId}, webContentsId=${webContentsId}`);
   // Register with CDP server (idempotent - may be called multiple times on dom-ready)
   getCdpServer().registerBrowser(browserId, webContentsId, parentId);
 });
@@ -524,8 +527,8 @@ app.on("ready", async () => {
           storagePath: path.join(app.getPath("userData"), "verdaccio-storage"),
         });
         const verdaccioPort = await verdaccioServer.start();
-        console.log(`[Verdaccio] Registry started on port ${verdaccioPort}`);
-        console.log("[Verdaccio] Lazy publishing enabled - packages published on demand during panel builds");
+        log.info(`[Verdaccio] Registry started on port ${verdaccioPort}`);
+        log.info("[Verdaccio] Lazy publishing enabled - packages published on demand during panel builds");
       } catch (verdaccioError) {
         // Verdaccio is required - log error but continue (panel builds will fail gracefully)
         console.error("[Verdaccio] Failed to start. Panel builds will fail until Verdaccio is running:", verdaccioError);
@@ -534,11 +537,11 @@ app.on("ready", async () => {
 
       // Start git server
       const port = await gitServer.start();
-      console.log(`[Git] Server started on port ${port}`);
+      log.info(`[Git] Server started on port ${port}`);
 
       // Create GitWatcher to monitor workspace for repo changes
       gitWatcher = createGitWatcher(workspace);
-      console.log("[GitWatcher] Started watching workspace for git changes");
+      log.info("[GitWatcher] Started watching workspace for git changes");
 
       // Subscribe servers to GitWatcher events
       gitServer.subscribeToGitWatcher(gitWatcher);
@@ -552,12 +555,12 @@ app.on("ready", async () => {
       // Start CDP server for browser automation
       cdpServer = getCdpServer();
       const cdpPort = await cdpServer.start();
-      console.log(`[CDP] Server started on port ${cdpPort}`);
+      log.info(`[CDP] Server started on port ${cdpPort}`);
 
       // Start PubSub server for real-time messaging
       pubsubServer = getPubSubServer();
       const pubsubPort = await pubsubServer.start();
-      console.log(`[PubSub] Server started on port ${pubsubPort}`);
+      log.info(`[PubSub] Server started on port ${pubsubPort}`);
 
       // Initialize RPC handler
       const { PanelRpcHandler } = await import("./ipc/rpcHandler.js");

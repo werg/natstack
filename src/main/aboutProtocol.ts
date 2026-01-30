@@ -10,6 +10,9 @@ import * as path from "path";
 import { randomBytes } from "crypto";
 import type { ProtocolBuildArtifacts, ShellPage } from "../shared/ipc/types.js";
 import { getShellPageKeys } from "./aboutBuilder.js";
+import { createDevLogger } from "./devLog.js";
+
+const log = createDevLogger("AboutProtocol");
 
 /** MIME types for serving assets */
 const ASSET_MIME_TYPES: Record<string, string> = {
@@ -253,7 +256,7 @@ export async function registerAboutProtocolForPartition(partition: string): Prom
         return;
       }
 
-      console.log(`[AboutProtocol] Registering protocol for partition: ${partition}`);
+      log.verbose(` Registering protocol for partition: ${partition}`);
       const ses = session.fromPartition(partition);
       ses.protocol.handle("natstack-about", handleAboutProtocolRequest);
       registeredPartitions.add(partition);
@@ -283,7 +286,7 @@ export function storeAboutPage(page: ShellPage, artifacts: ProtocolBuildArtifact
     aboutPageTokens.set(page, randomBytes(32).toString("hex"));
   }
 
-  console.log(`[AboutProtocol] Stored about page: ${page}`);
+  log.verbose(` Stored about page: ${page}`);
 
   // Return the URL for this page
   const token = aboutPageTokens.get(page)!;

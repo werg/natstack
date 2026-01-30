@@ -29,7 +29,9 @@ import {
   type TypeCheckDiagnostic,
 } from "@natstack/runtime/typecheck";
 import { isVerdaccioServerInitialized, getVerdaccioServer } from "./verdaccioServer.js";
-import { isVerbose } from "./devLog.js";
+import { isVerbose, createDevLogger } from "./devLog.js";
+
+const devLog = createDevLogger("PanelBuilder");
 import { ESM_SAFE_PACKAGES } from "./lazyBuild/esmTransformer.js";
 import { getPackagesDir, getAppNodeModules, getActiveWorkspace } from "./paths.js";
 import {
@@ -2109,7 +2111,7 @@ import ${JSON.stringify(relativeUserEntry)};
 
     const log = (message: string) => {
       buildLog += message + "\n";
-      console.log(`[PanelBuilder] ${message}`);
+      devLog.verbose(message);
     };
 
     try {
@@ -2301,7 +2303,7 @@ import ${JSON.stringify(relativeUserEntry)};
 
     const log = (message: string) => {
       buildLog += message + "\n";
-      console.log(`[PanelBuilder:Worker] ${message}`);
+      devLog.verbose(`[Worker] ${message}`);
     };
 
     try {
