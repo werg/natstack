@@ -10,9 +10,9 @@
     "runtime": "panel"
   },
   "dependencies": {
-    "@natstack/runtime": "*",
-    "@natstack/react": "*",
-    "@natstack/agentic-messaging": "*",
+    "@natstack/runtime": "workspace:*",
+    "@natstack/react": "workspace:*",
+    "@natstack/agentic-messaging": "workspace:*",
     "@radix-ui/themes": "^3.2.1"
   }
 }
