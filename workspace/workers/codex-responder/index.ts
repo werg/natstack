@@ -88,6 +88,7 @@ interface CodexWorkerSettings {
   reasoningEffort?: number; // 0=minimal, 1=low, 2=medium, 3=high
   autonomyLevel?: number; // 0=restricted/read-only, 1=standard/workspace, 2=autonomous/full-access
   webSearchEnabled?: boolean;
+  [key: string]: string | number | boolean | undefined; // Index signature for Record<string, unknown> compatibility
 }
 
 /** Map reasoning effort slider value to SDK string */
@@ -200,7 +201,7 @@ async function createMcpHttpServer(
   const sessions = new Map<string, StreamableHTTPServerTransport>();
 
   // Create HTTP server
-  const httpServer = http.createServer(async (req, res) => {
+  const httpServer = http.createServer(async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = new URL(req.url ?? "/", `http://localhost`);
 
     // Only handle /mcp endpoint
@@ -308,7 +309,7 @@ async function createMcpHttpServer(
       sessions.clear();
       // Close HTTP server
       await new Promise<void>((resolve, reject) => {
-        httpServer.close((err) => (err ? reject(err) : resolve()));
+        httpServer.close((err: Error | undefined) => (err ? reject(err) : resolve()));
       });
       log(`MCP HTTP server closed`);
     },
@@ -632,7 +633,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       }
       // Extract attachments from the event
       const attachments = (event as { attachments?: Attachment[] }).attachments;
-      await handleUserMessage(client, event, prompt, workingDirectory, restrictedMode ?? false, attachments);
+      await handleUserMessage(client, event as IncomingNewMessage, prompt, workingDirectory, restrictedMode ?? false, attachments, contextTracker);
     }
   }
 }
@@ -643,7 +644,8 @@ async function handleUserMessage(
   prompt: string,
   workingDirectory: string | undefined,
   isRestrictedMode: boolean,
-  attachments?: Attachment[]
+  attachments?: Attachment[],
+  contextTracker?: ReturnType<typeof createContextTracker>
 ) {
   log(`Received message: ${incoming.content}`);
 
@@ -1106,7 +1108,7 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
 
           // Record token usage for context window tracking
           const turnCompletedEvent = event as { type: "turn.completed"; usage?: { input_tokens?: number; output_tokens?: number } };
-          if (turnCompletedEvent.usage) {
+          if (turnCompletedEvent.usage && contextTracker) {
             await contextTracker.recordUsage({
               inputTokens: turnCompletedEvent.usage.input_tokens ?? 0,
               outputTokens: turnCompletedEvent.usage.output_tokens ?? 0,
@@ -1124,7 +1126,9 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
           }
 
           // Mark end of turn for context tracking
-          await contextTracker.endTurn();
+          if (contextTracker) {
+            await contextTracker.endTurn();
+          }
           break;
         }
 
@@ -1155,7 +1159,9 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
     await typing.cleanup();
     await action.cleanup();
     // Flush any pending context usage updates
-    await contextTracker.cleanup();
+    if (contextTracker) {
+      await contextTracker.cleanup();
+    }
 
     // Pause tool returns successfully, so we shouldn't see pause-related errors
     // Any error here is a real error that should be reported

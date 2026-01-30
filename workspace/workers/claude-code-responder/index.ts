@@ -244,19 +244,19 @@ async function findMostRecentPlanFile(): Promise<string | null> {
   const plansDir = join(homedir(), ".claude", "plans");
   try {
     const files = await readdir(plansDir);
-    const mdFiles = files.filter((f) => f.endsWith(".md"));
+    const mdFiles = files.filter((f: string) => f.endsWith(".md"));
 
     if (mdFiles.length === 0) return null;
 
     const fileStats = await Promise.all(
-      mdFiles.map(async (f) => {
+      mdFiles.map(async (f: string) => {
         const filePath = join(plansDir, f);
         const stats = await stat(filePath);
         return { path: filePath, mtime: stats.mtime };
       })
     );
 
-    fileStats.sort((a, b) => new Date(b.mtime).getTime() - new Date(a.mtime).getTime());
+    fileStats.sort((a: { path: string; mtime: Date }, b: { path: string; mtime: Date }) => new Date(b.mtime).getTime() - new Date(a.mtime).getTime());
     return fileStats[0]?.path ?? null;
   } catch {
     return null;
@@ -1679,7 +1679,9 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         if (planFilePath) {
           try {
             plan = await readFile(planFilePath, "utf-8");
-            log(`Read plan file: ${planFilePath} (${plan.length} chars)`);
+            if (plan) {
+              log(`Read plan file: ${planFilePath} (${plan.length} chars)`);
+            }
           } catch (err) {
             log(`Failed to read plan file ${planFilePath}: ${err}`);
           }
