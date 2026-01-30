@@ -229,7 +229,7 @@ export async function executeEvalTool(
   });
 
   try {
-    const transformed = transformCode(code, { syntax });
+    const transformed = await transformCode(code, { syntax });
 
     // Use unified require validation from @natstack/eval
     const require = getDefaultRequire();

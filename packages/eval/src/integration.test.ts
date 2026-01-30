@@ -19,40 +19,40 @@ describe("Worker-like usage (custom require)", () => {
     throw new Error(`Module not found: ${id}`);
   };
 
-  it("transforms and executes TypeScript code with custom require", () => {
+  it("transforms and executes TypeScript code with custom require", async () => {
     const source = `
       import { capitalize } from "lodash";
       export default capitalize("hello");
     `;
 
-    const transformed = transformCode(source, { syntax: "typescript" });
+    const transformed = await transformCode(source, { syntax: "typescript" });
     const result = execute(transformed.code, { require: workerRequire });
 
     expect(result.exports["default"]).toBe("Hello");
   });
 
-  it("validates requires before execution", () => {
+  it("validates requires before execution", async () => {
     const source = `
       import { capitalize } from "lodash";
       import { missing } from "nonexistent";
       console.log(capitalize, missing); // Use them so Sucrase doesn't tree-shake
     `;
 
-    const transformed = transformCode(source, { syntax: "typescript" });
+    const transformed = await transformCode(source, { syntax: "typescript" });
     const validation = validateRequires(transformed.requires, workerRequire);
 
     expect(validation.valid).toBe(false);
     expect(validation.missingModule).toBe("nonexistent");
   });
 
-  it("captures console output during execution", () => {
+  it("captures console output during execution", async () => {
     const source = `
       console.log("Starting...");
       console.warn("Warning!");
       console.log("Done");
     `;
 
-    const transformed = transformCode(source, { syntax: "typescript" });
+    const transformed = await transformCode(source, { syntax: "typescript" });
     const capture = createConsoleCapture();
 
     execute(transformed.code, {
@@ -66,13 +66,13 @@ describe("Worker-like usage (custom require)", () => {
     expect(output).toContain("Done");
   });
 
-  it("works with scope bindings", () => {
+  it("works with scope bindings", async () => {
     const source = `
       import { double } from "utils";
       export default double(inputValue);
     `;
 
-    const transformed = transformCode(source, { syntax: "typescript" });
+    const transformed = await transformCode(source, { syntax: "typescript" });
     const result = execute(transformed.code, {
       require: workerRequire,
       bindings: { inputValue: 21 },
@@ -89,7 +89,7 @@ describe("Worker-like usage (custom require)", () => {
       export default fetchData();
     `;
 
-    const transformed = transformCode(source, { syntax: "typescript" });
+    const transformed = await transformCode(source, { syntax: "typescript" });
     const result = execute(transformed.code, { require: workerRequire });
 
     // Workers would need to await the returned promise manually
@@ -111,7 +111,7 @@ describe("Full transform-validate-execute pipeline", () => {
     throw new Error(`Module not found: ${id}`);
   };
 
-  it("demonstrates safe eval workflow", () => {
+  it("demonstrates safe eval workflow", async () => {
     const userCode = `
       import { add, multiply } from "math-utils";
 
@@ -122,7 +122,7 @@ describe("Full transform-validate-execute pipeline", () => {
     `;
 
     // Step 1: Transform
-    const transformed = transformCode(userCode, { syntax: "typescript" });
+    const transformed = await transformCode(userCode, { syntax: "typescript" });
     expect(transformed.requires).toContain("math-utils");
 
     // Step 2: Validate (before execution)

@@ -13,8 +13,10 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs";
 import * as path from "path";
+import { createDevLogger } from "./devLog.js";
 
 const execFileAsync = promisify(execFile);
+const log = createDevLogger("GitHubCloner");
 
 // =============================================================================
 // Types
@@ -192,7 +194,7 @@ export async function ensureGitHubRepo(
   // Check for in-flight clone (deduplicate concurrent requests)
   const existing = inFlightClones.get(targetPath);
   if (existing) {
-    console.log(`[GitHubCloner] Waiting for in-flight clone: ${targetPath}`);
+    log.verbose(` Waiting for in-flight clone: ${targetPath}`);
     return existing;
   }
 
@@ -213,7 +215,7 @@ export async function ensureGitHubRepo(
 async function performClone(options: GitHubCloneOptions): Promise<CloneResult> {
   const { targetPath, remoteUrl, branch, depth = 1, token } = options;
 
-  console.log(`[GitHubCloner] Cloning ${remoteUrl} to ${targetPath}`);
+  log.verbose(` Cloning ${remoteUrl} to ${targetPath}`);
 
   try {
     // Ensure parent directory exists
@@ -262,7 +264,7 @@ async function performClone(options: GitHubCloneOptions): Promise<CloneResult> {
     // Configure the cloned repo for local use
     await configureClonedRepo(targetPath);
 
-    console.log(`[GitHubCloner] Successfully cloned ${remoteUrl}`);
+    log.verbose(` Successfully cloned ${remoteUrl}`);
     return { success: true, path: targetPath };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -373,7 +375,7 @@ export async function fetchGitHubRepo(repoPath: string): Promise<void> {
       cwd: repoPath,
       timeout: 60000, // 1 minute timeout
     });
-    console.log(`[GitHubCloner] Fetched updates for ${repoPath}`);
+    log.verbose(` Fetched updates for ${repoPath}`);
   } catch (error) {
     console.warn(`[GitHubCloner] Failed to fetch ${repoPath}: ${error}`);
   }

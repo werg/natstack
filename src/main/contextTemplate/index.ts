@@ -155,6 +155,9 @@ import { computeImmutableSpec } from "./specHash.js";
 import { createContextId } from "./contextId.js";
 import { ensureTemplatePartition } from "./partitionBuilder.js";
 import { copyPartitionFolder, partitionExists } from "./partitionCopier.js";
+import { createDevLogger } from "../devLog.js";
+
+const log = createDevLogger("ContextTemplate");
 
 /**
  * Create a context ID from a template git spec.
@@ -195,7 +198,7 @@ export async function ensureContextPartitionInitialized(
   gitConfig: PartitionBuildGitConfig,
   onProgress?: (progress: TemplateProgress) => void
 ): Promise<void> {
-  console.log(`[ContextTemplate] ensureContextPartitionInitialized:`, {
+  log.verbose(` ensureContextPartitionInitialized:`, {
     contextId,
     specHash: spec.specHash.slice(0, 12),
     structureEntries: Object.keys(spec.structure).length,
@@ -203,19 +206,19 @@ export async function ensureContextPartitionInitialized(
 
   // Check if partition already exists
   if (partitionExists(contextId)) {
-    console.log(`[ContextTemplate] Partition already exists for context`);
+    log.verbose(` Partition already exists for context`);
     return;
   }
 
   // Ensure template partition exists (build if needed)
-  console.log(`[ContextTemplate] Ensuring template partition...`);
+  log.verbose(` Ensuring template partition...`);
   onProgress?.({ stage: "cloning", message: "Building template partition..." });
   const templatePartitionName = await ensureTemplatePartition(spec, gitConfig, onProgress);
 
   // Copy template partition to context partition
-  console.log(`[ContextTemplate] Copying partition to context...`);
+  log.verbose(` Copying partition to context...`);
   onProgress?.({ stage: "copying", message: "Initializing context partition..." });
   await copyPartitionFolder(templatePartitionName, contextId);
 
-  console.log(`[ContextTemplate] Context partition initialized successfully`);
+  log.verbose(` Context partition initialized successfully`);
 }

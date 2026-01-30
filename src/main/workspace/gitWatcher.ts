@@ -14,6 +14,9 @@ import chokidar from "chokidar";
 import { EventEmitter } from "events";
 import * as path from "path";
 import type { Workspace } from "./types.js";
+import { createDevLogger } from "../devLog.js";
+
+const log = createDevLogger("GitWatcher");
 
 export type GitEvent = "repoAdded" | "repoRemoved" | "commitAdded";
 
@@ -75,7 +78,7 @@ export function createGitWatcher(workspace: Workspace): GitWatcher {
   watcher.on("addDir", (dirPath) => {
     if (isGitDir(dirPath)) {
       const repoRoot = toRelativePath(path.dirname(dirPath));
-      console.log(`[GitWatcher] Repo added: ${repoRoot}`);
+      log.verbose(` Repo added: ${repoRoot}`);
       emitter.emit("repoAdded", repoRoot);
     }
   });
@@ -84,7 +87,7 @@ export function createGitWatcher(workspace: Workspace): GitWatcher {
   watcher.on("unlinkDir", (dirPath) => {
     if (isGitDir(dirPath)) {
       const repoRoot = toRelativePath(path.dirname(dirPath));
-      console.log(`[GitWatcher] Repo removed: ${repoRoot}`);
+      log.verbose(` Repo removed: ${repoRoot}`);
       emitter.emit("repoRemoved", repoRoot);
     }
   });
@@ -94,7 +97,7 @@ export function createGitWatcher(workspace: Workspace): GitWatcher {
     if (isRefPath(filePath)) {
       const repoRoot = getRepoRoot(filePath);
       if (repoRoot) {
-        console.log(`[GitWatcher] Commit detected in: ${repoRoot}`);
+        log.verbose(` Commit detected in: ${repoRoot}`);
         emitter.emit("commitAdded", repoRoot);
       }
     }
@@ -104,7 +107,7 @@ export function createGitWatcher(workspace: Workspace): GitWatcher {
     if (isRefPath(filePath)) {
       const repoRoot = getRepoRoot(filePath);
       if (repoRoot) {
-        console.log(`[GitWatcher] New branch/commit in: ${repoRoot}`);
+        log.verbose(` New branch/commit in: ${repoRoot}`);
         emitter.emit("commitAdded", repoRoot);
       }
     }

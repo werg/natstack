@@ -13,6 +13,9 @@ import {
   getTemplateBuildDirectory,
   getTemplateBuildPath,
 } from "../paths.js";
+import { createDevLogger } from "../devLog.js";
+
+const log = createDevLogger("ContextTemplate");
 import type { TemplateBuild, ImmutableTemplateSpec } from "./types.js";
 
 /** Name of the metadata file in each build directory */
@@ -141,7 +144,7 @@ export function cleanupOrphanedTempBuilds(): number {
       try {
         fs.rmSync(tempPath, { recursive: true, force: true });
         cleaned++;
-        console.log(`[ContextTemplate] Cleaned up orphaned temp build: ${entry.name}`);
+        log.verbose(` Cleaned up orphaned temp build: ${entry.name}`);
       } catch (error) {
         console.warn(
           `[ContextTemplate] Failed to clean up orphaned temp build: ${entry.name}`,
@@ -180,7 +183,7 @@ export function cleanupStaleLocks(staleMs = 60000): number {
         if (age > staleMs) {
           fs.rmSync(lockPath, { force: true });
           cleaned++;
-          console.log(`[ContextTemplate] Cleaned up stale lock: ${entry.name}`);
+          log.verbose(` Cleaned up stale lock: ${entry.name}`);
         }
       } catch {
         // Ignore errors - lock might have been removed

@@ -26,6 +26,9 @@ import {
 } from "electron";
 import { handleProtocolRequest } from "./panelProtocol.js";
 import { getAdBlockManager } from "./adblock/index.js";
+import { createDevLogger } from "./devLog.js";
+
+const log = createDevLogger("ViewManager");
 
 export interface ViewBounds {
   x: number;
@@ -256,7 +259,7 @@ export class ViewManager {
         // Protocol might already be registered (e.g., defaultSession at app startup)
         // Mark as registered to avoid future attempts
         this.registeredProtocolSessions.add(sessionKey);
-        console.log(`[ViewManager] Protocol already registered for session: ${sessionKey}`);
+        log.verbose(` Protocol already registered for session: ${sessionKey}`);
       }
     }
 
@@ -310,7 +313,7 @@ export class ViewManager {
       injectHostThemeVariables: config.injectHostThemeVariables ?? true,
     };
     this.views.set(config.id, managed);
-    console.log(`[ViewManager] Created view for ${config.id}, type: ${config.type}, url: ${config.url?.slice(0, 80)}...`);
+    log.verbose(` Created view for ${config.id}, type: ${config.type}, url: ${config.url?.slice(0, 80)}...`);
 
     // Load URL if provided
     if (config.url) {
@@ -433,9 +436,7 @@ export class ViewManager {
         // AdBlockManager might not be initialized yet
       }
     }
-    // Log destruction with stack trace for debugging unexpected view removal
-    console.log(`[ViewManager] Destroying view: ${id}`);
-    console.log(new Error("View destruction stack trace").stack);
+    // View destruction is a normal operation - no need to log
 
     // Remove only our specific handlers (not others' listeners)
     if (managed.handlers && !managed.view.webContents.isDestroyed()) {
@@ -606,7 +607,7 @@ export class ViewManager {
       await contents.executeJavaScript(
         "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))"
       );
-      console.log(`[ViewManager] waitForRender: frame rendered after ${Date.now() - startTime}ms`);
+      log.verbose(` waitForRender: frame rendered after ${Date.now() - startTime}ms`);
     } catch (error) {
       // Fall back to a short timeout if executeJavaScript fails (e.g., page not ready)
       console.warn(
@@ -1009,7 +1010,7 @@ export class ViewManager {
       return false;
     }
 
-    console.log(`[ViewManager] Forcing repaint for view: ${viewId}`);
+    log.verbose(` Forcing repaint for view: ${viewId}`);
 
     try {
       // Method 1: Invalidate the frame to trigger a repaint

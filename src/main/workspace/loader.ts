@@ -18,6 +18,9 @@ import * as os from "os";
 import { app } from "electron";
 import YAML from "yaml";
 import dotenv from "dotenv";
+import { createDevLogger } from "../devLog.js";
+
+const log = createDevLogger("Workspace");
 import type { Workspace, WorkspaceConfig, CentralConfig, CentralConfigPaths } from "./types.js";
 
 const WORKSPACE_CONFIG_FILE = "natstack.yml";
@@ -364,7 +367,7 @@ export function loadWorkspaceConfig(
 
   if (!fs.existsSync(configPath)) {
     if (options?.createIfMissing) {
-      console.log(`[Workspace] No ${WORKSPACE_CONFIG_FILE} found, creating default`);
+      log.verbose(` No ${WORKSPACE_CONFIG_FILE} found, creating default`);
       return createDefaultWorkspaceConfig(workspacePath);
     }
     throw new Error(`${WORKSPACE_CONFIG_FILE} not found at ${workspacePath}`);

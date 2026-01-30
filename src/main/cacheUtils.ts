@@ -18,6 +18,9 @@ import { promises as fsPromises, existsSync } from "fs";
 import * as path from "path";
 import { app } from "electron";
 import { exec } from "child_process";
+import { createDevLogger } from "./devLog.js";
+
+const log = createDevLogger("CacheUtils");
 import { promisify } from "util";
 import { getMainCacheManager } from "./cacheManager.js";
 import { clearDiskCache, getDiskCacheSize } from "./diskCache.js";
@@ -189,7 +192,7 @@ export async function clearAllCaches(options?: CacheClearOptions): Promise<Cache
         const { getPackageStore } = await import("./package-store/store.js");
         const store = await getPackageStore();
         const cleared = store.clearResolutionCache();
-        console.log(`[CacheUtils] Cleared ${cleared} resolution cache entries`);
+        log.verbose(` Cleared ${cleared} resolution cache entries`);
       } catch (error) {
         console.warn("[CacheUtils] Failed to clear resolution cache:", error);
       }
@@ -278,7 +281,7 @@ export async function clearAllCaches(options?: CacheClearOptions): Promise<Cache
   }
 
   const freedMB = (result.bytesFreed / 1024 / 1024).toFixed(2);
-  console.log(`[CacheUtils] Cache clearing complete. Freed ~${freedMB}MB`);
+  log.verbose(` Cache clearing complete. Freed ~${freedMB}MB`);
 
   return result;
 }

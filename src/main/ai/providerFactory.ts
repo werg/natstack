@@ -348,7 +348,7 @@ export function createProviderFromConfig(providerId: SupportedProvider): AIProvi
   const apiKey = getApiKey(providerId);
 
   if (!apiKey) {
-    console.warn(`[ProviderFactory] No API key for ${providerId}, skipping`);
+    // No log here - caller (aiHandler) batches these for cleaner output
     return null;
   }
 

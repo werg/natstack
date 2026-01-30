@@ -2,6 +2,9 @@ import * as path from "path";
 import * as fs from "fs";
 import { randomBytes } from "crypto";
 import { nativeTheme } from "electron";
+import { createDevLogger } from "./devLog.js";
+
+const log = createDevLogger("PanelManager");
 import { PanelBuilder } from "./panelBuilder.js";
 import type { PanelEventPayload, Panel, PanelManifest, PanelSnapshot } from "./panelTypes.js";
 import {
@@ -186,7 +189,7 @@ export class PanelManager {
 
         if (remainingPanels.length > 0) {
           // Restore panels from database
-          console.log(`[PanelManager] Restoring ${remainingPanels.length} root panel(s) from database`);
+          log.verbose(` Restoring ${remainingPanels.length} root panel(s) from database`);
           this.rootPanels = remainingPanels;
 
           // Rebuild the panels map
@@ -241,11 +244,11 @@ export class PanelManager {
 
     // Create init panels first (they run in background, seeding data etc.)
     if (initPanels.length > 0) {
-      console.log(`[PanelManager] Creating ${initPanels.length} init panel(s) from workspace config`);
+      log.verbose(` Creating ${initPanels.length} init panel(s) from workspace config`);
       for (const panelSource of initPanels) {
         try {
           const result = await this.createInitPanel(panelSource);
-          console.log(`[PanelManager] Created init panel: ${result.id}`);
+          log.verbose(` Created init panel: ${result.id}`);
         } catch (error) {
           console.error(`[PanelManager] Failed to create init panel ${panelSource}:`, error);
           // Continue with other init panels even if one fails
@@ -282,7 +285,7 @@ export class PanelManager {
 
       // Archive childless shell panels
       if (getPanelType(panel) === "shell" && panel.children.length === 0) {
-        console.log(`[PanelManager] Archiving childless shell panel: ${panel.id}`);
+        log.verbose(` Archiving childless shell panel: ${panel.id}`);
         try {
           persistence.archivePanel(panel.id);
         } catch (e) {
@@ -655,7 +658,7 @@ export class PanelManager {
     // Store named handlers for removal
     const handlers = {
       didNavigate: (_event: Electron.Event, url: string) => {
-        console.log(`[PanelManager] Panel ${panelId} navigated to: ${url}`);
+        log.verbose(` Panel ${panelId} navigated to: ${url}`);
         queueStateUpdate({ url });
       },
       didNavigateInPage: (_event: Electron.Event, url: string) => {
@@ -678,7 +681,7 @@ export class PanelManager {
         console.warn(`[PanelManager] Panel ${panelId} became unresponsive`);
       },
       responsive: () => {
-        console.log(`[PanelManager] Panel ${panelId} became responsive again`);
+        log.verbose(` Panel ${panelId} became responsive again`);
       },
       didStartLoading: () => {
         queueStateUpdate({ isLoading: true });
@@ -976,8 +979,11 @@ export class PanelManager {
     this.updateSelectedPath(targetPanelId);
     this.notifyPanelTreeUpdate();
 
-    // Emit focus event to the panel
-    this.sendPanelEvent(targetPanelId, { type: "focus" });
+    // Emit focus event to the panel only if it has a view
+    // Unloaded panels (pending state) don't have views yet
+    if (this.viewManager?.hasView(targetPanelId)) {
+      this.sendPanelEvent(targetPanelId, { type: "focus" });
+    }
 
     // Notify shell to navigate to this panel
     eventService.emit("navigate-to-panel", { panelId: targetPanelId });
@@ -1054,7 +1060,7 @@ export class PanelManager {
       // Create a simple context ID without the template system
       const instanceId = deriveInstanceIdFromPanelId(panelId);
       const contextId = createUnsafeContextId(instanceId);
-      console.log(`[PanelManager] Created unsafe context ID: ${contextId}`);
+      log.verbose(` Created unsafe context ID: ${contextId}`);
       return contextId;
     }
 
@@ -1073,13 +1079,13 @@ export class PanelManager {
     const workspace = getActiveWorkspace();
     if (!workspace) throw new Error("No active workspace");
 
-    console.log(`[PanelManager] Resolving template: ${templateSpec}`);
+    log.verbose(` Resolving template: ${templateSpec}`);
 
     // Resolve template and compute spec
     const resolved = await resolveTemplate(templateSpec);
     const immutableSpec = computeImmutableSpec(resolved);
 
-    console.log(`[PanelManager] Template resolved:`, {
+    log.verbose(` Template resolved:`, {
       specHash: immutableSpec.specHash.slice(0, 12),
       structureKeys: Object.keys(immutableSpec.structure),
       inheritanceChain: immutableSpec.inheritanceChain,
@@ -1090,7 +1096,7 @@ export class PanelManager {
     const contextId = createContextId("safe", immutableSpec.specHash, instanceId);
 
     // Initialize context via OPFS partition copying
-    console.log(`[PanelManager] Initializing safe context: ${contextId}`);
+    log.verbose(` Initializing safe context: ${contextId}`);
     const gitConfig = {
       serverUrl: this.gitServer.getBaseUrl(),
       token: this.gitServer.getTokenForPanel(panelId),
@@ -1100,7 +1106,7 @@ export class PanelManager {
       immutableSpec,
       gitConfig
     );
-    console.log(`[PanelManager] Context initialized successfully`);
+    log.verbose(` Context initialized successfully`);
 
     return contextId;
   }
@@ -1120,7 +1126,7 @@ export class PanelManager {
 
     // Create a fresh token for this panel
     const freshToken = getTokenManager().getOrCreateToken(panelId);
-    console.log(`[PanelManager] Refreshing env tokens for ${panelId}`);
+    log.verbose(` Refreshing env tokens for ${panelId}`);
 
     // Create a mutable copy
     const refreshedEnv = { ...env };
@@ -3305,7 +3311,7 @@ export class PanelManager {
   async ensurePanelLoaded(panelId: string): Promise<SharedPanel.EnsureLoadedResult> {
     const panel = this.panels.get(panelId);
     if (!panel) {
-      console.log(`[PanelManager] ensurePanelLoaded: Panel not found: ${panelId}`);
+      log.verbose(` ensurePanelLoaded: Panel not found: ${panelId}`);
       return { success: false, buildState: "not-found", error: "Panel not found" };
     }
 
@@ -3313,13 +3319,13 @@ export class PanelManager {
 
     // Already loaded - return success
     if (currentState === "ready") {
-      console.log(`[PanelManager] ensurePanelLoaded: Panel already loaded: ${panelId}`);
+      log.verbose(` ensurePanelLoaded: Panel already loaded: ${panelId}`);
       return { success: true, buildState: "ready" };
     }
 
     // Currently building - wait for completion
     if (currentState === "building" || currentState === "cloning") {
-      console.log(`[PanelManager] ensurePanelLoaded: Waiting for build: ${panelId}`);
+      log.verbose(` ensurePanelLoaded: Waiting for build: ${panelId}`);
       return await this.waitForBuildComplete(panelId);
     }
 
@@ -3342,7 +3348,7 @@ export class PanelManager {
     }
 
     // State is "pending" - trigger rebuild
-    console.log(`[PanelManager] ensurePanelLoaded: Rebuilding unloaded panel: ${panelId}`);
+    log.verbose(` ensurePanelLoaded: Rebuilding unloaded panel: ${panelId}`);
     await this.rebuildUnloadedPanel(panelId);
 
     // Wait for rebuild to complete
@@ -3592,7 +3598,10 @@ export class PanelManager {
 
   broadcastTheme(theme: "light" | "dark"): void {
     for (const panelId of this.panels.keys()) {
-      this.sendPanelEvent(panelId, { type: "theme", theme });
+      // Only send to panels that have views (skip unloaded panels)
+      if (this.viewManager?.hasView(panelId)) {
+        this.sendPanelEvent(panelId, { type: "theme", theme });
+      }
     }
   }
 
@@ -3921,7 +3930,7 @@ export class PanelManager {
       return;
     }
 
-    console.log(`[PanelManager] Attempting reload of ${viewId}`);
+    log.verbose(` Attempting reload of ${viewId}`);
     const reloadSuccess = this.viewManager?.reloadView(viewId) ?? false;
 
     if (!reloadSuccess) {
@@ -3964,7 +3973,7 @@ export class PanelManager {
 
     // Destroy the zombie view if it exists
     if (this.viewManager?.hasView(panelId)) {
-      console.log(`[PanelManager] Destroying zombie view for ${panelId}`);
+      log.verbose(` Destroying zombie view for ${panelId}`);
       this.viewManager.destroyView(panelId);
     }
 
@@ -3977,10 +3986,10 @@ export class PanelManager {
         const snapshot = getCurrentSnapshot(panel);
         const url = snapshot.resolvedUrl ?? getPanelSource(panel);
         this.createViewForPanel(panelId, url, "browser", contextId);
-        console.log(`[PanelManager] Recreated browser view for ${panelId}`);
+        log.verbose(` Recreated browser view for ${panelId}`);
       } else if (panelType === "shell") {
         await this.restoreShellPanel(panel);
-        console.log(`[PanelManager] Recreated shell view for ${panelId}`);
+        log.verbose(` Recreated shell view for ${panelId}`);
       } else if (panelType === "app" || panelType === "worker") {
         // For app/worker panels, check if we have a built URL to restore
         const snapshot = getCurrentSnapshot(panel);
@@ -3989,10 +3998,10 @@ export class PanelManager {
           // Panel was built, recreate with the built URL
           const viewType = panelType === "worker" ? "worker" : "panel";
           this.createViewForPanel(panelId, builtUrl, viewType, contextId);
-          console.log(`[PanelManager] Recreated ${panelType} view for ${panelId}`);
+          log.verbose(` Recreated ${panelType} view for ${panelId}`);
         } else {
           // Panel wasn't built yet or lost build state - trigger rebuild
-          console.log(`[PanelManager] No built URL for ${panelId}, triggering rebuild`);
+          log.verbose(` No built URL for ${panelId}, triggering rebuild`);
           panel.artifacts = { buildState: "pending" };
           this.notifyPanelTreeUpdate();
         }
@@ -4266,7 +4275,7 @@ export class PanelManager {
       throw new Error("ViewManager not available");
     }
 
-    console.log(`[PanelManager] Creating template builder worker: ${workerId}`);
+    log.verbose(` Creating template builder worker: ${workerId}`);
 
     // Generate auth token for the worker
     const { randomBytes } = await import("crypto");
@@ -4320,7 +4329,7 @@ export class PanelManager {
 
     // Track this worker
     this.templateBuilderWorkers.add(workerId);
-    console.log(`[PanelManager] Template builder worker created: ${workerId}`);
+    log.verbose(` Template builder worker created: ${workerId}`);
   }
 
   /**
@@ -4329,7 +4338,7 @@ export class PanelManager {
    * @param workerId - The worker ID to close
    */
   async closeTemplateBuilderWorker(workerId: string): Promise<void> {
-    console.log(`[PanelManager] Closing template builder worker: ${workerId}`);
+    log.verbose(` Closing template builder worker: ${workerId}`);
 
     // Remove from tracking
     this.templateBuilderWorkers.delete(workerId);
@@ -4347,7 +4356,7 @@ export class PanelManager {
       this.viewManager.destroyView(workerId);
     }
 
-    console.log(`[PanelManager] Template builder worker closed: ${workerId}`);
+    log.verbose(` Template builder worker closed: ${workerId}`);
   }
 }
 

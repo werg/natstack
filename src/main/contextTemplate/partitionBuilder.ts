@@ -22,6 +22,9 @@ import {
   getTemplatePartitionName,
 } from "../paths.js";
 import type { ImmutableTemplateSpec, TemplateProgress, PartitionBuildGitConfig } from "./types.js";
+import { createDevLogger } from "../devLog.js";
+
+const log = createDevLogger("PartitionBuilder");
 
 /** Lock retry configuration */
 const LOCK_RETRIES = 10;
@@ -275,7 +278,7 @@ export async function ensureTemplatePartition(
 
   // Quick check without lock
   if (isTemplatePartitionReady(spec.specHash)) {
-    console.log(`[PartitionBuilder] Using cached partition: ${partitionName}`);
+    log.verbose(` Using cached partition: ${partitionName}`);
     return partitionName;
   }
 

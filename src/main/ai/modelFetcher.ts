@@ -6,6 +6,9 @@
  */
 
 import type { SupportedProvider } from "../workspace/types.js";
+import { createDevLogger } from "../devLog.js";
+
+const log = createDevLogger("ModelFetcher");
 
 /**
  * Model information returned from provider APIs
@@ -274,7 +277,7 @@ export async function fetchModelsForProvider(
     const data = await response.json();
     const models = config.parseResponse(data);
 
-    console.log(`[ModelFetcher] Fetched ${models.length} models for ${providerId}`);
+    log.verbose(` Fetched ${models.length} models for ${providerId}`);
     return models;
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {

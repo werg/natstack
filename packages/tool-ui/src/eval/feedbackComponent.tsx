@@ -41,7 +41,7 @@ export async function compileFeedbackComponent(args: FeedbackUiToolArgs): Promis
   const { code } = args;
 
   try {
-    const transformed = transformCode(code, { syntax: "tsx" });
+    const transformed = await transformCode(code, { syntax: "tsx" });
 
     // Preload all required modules (async - may load from CDN if not pre-bundled)
     const preloadResult = await preloadRequires(transformed.requires);
@@ -160,7 +160,7 @@ export async function compileInlineUiComponent(args: { code: string }): Promise<
   const { code } = args;
 
   try {
-    const transformed = transformCode(code, { syntax: "tsx" });
+    const transformed = await transformCode(code, { syntax: "tsx" });
 
     // Preload all required modules (async - may load from CDN if not pre-bundled)
     const preloadResult = await preloadRequires(transformed.requires);

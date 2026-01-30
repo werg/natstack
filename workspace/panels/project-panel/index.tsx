@@ -7,7 +7,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Theme, Box, Flex, Separator, Card } from "@radix-ui/themes";
 import { usePanelTheme } from "@natstack/react";
-import { rpc, createChild, setStateArgs, useStateArgs } from "@natstack/runtime";
+import { rpc, createChild, setStateArgs, useStateArgs, buildFocusLink } from "@natstack/runtime";
 
 import { useChildSessions } from "./hooks/useChildSessions";
 import { getAgentById, getAgentWorkerSource, getAgentHandle } from "./utils/agents";
@@ -83,6 +83,11 @@ export default function ProjectPanel() {
     }
   }, [projectConfig.defaultAgentId]);
 
+  // Update panel title with project name
+  useEffect(() => {
+    document.title = projectConfig.name || "Project";
+  }, [projectConfig.name]);
+
   // Handle config updates and persist via stateArgs
   const handleConfigUpdate = useCallback(
     async (updates: Partial<ProjectConfig>) => {
@@ -94,8 +99,7 @@ export default function ProjectPanel() {
 
   // Navigate to a child chat session
   const navigateToSession = useCallback((sessionId: string) => {
-    // Encode the session ID in case it contains special characters
-    window.location.href = `ns-focus:///${encodeURIComponent(sessionId)}`;
+    window.location.href = buildFocusLink(sessionId);
   }, []);
 
   const launchChat = useCallback(async () => {

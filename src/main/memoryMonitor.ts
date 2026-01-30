@@ -1,5 +1,8 @@
 import { app } from "electron";
 import { getViewManager, isViewManagerInitialized } from "./viewManager.js";
+import { createDevLogger } from "./devLog.js";
+
+const log = createDevLogger("MemoryMonitor");
 
 const DEFAULT_LOG_INTERVAL_MS = 60_000;
 
@@ -67,7 +70,7 @@ export async function logMemorySnapshot(options: MemorySnapshotOptions = {}): Pr
 
   const reason = options.reason ?? "snapshot";
   const timestamp = new Date().toISOString();
-  console.log(`[Memory] Snapshot (${reason}) @ ${timestamp}`);
+  log.verbose(`[Memory] Snapshot (${reason}) @ ${timestamp}`);
 
   const sorted = filtered.slice().sort((a, b) => {
     const aWorkingSet = a.metric?.memory.workingSetSize ?? 0;

@@ -1,6 +1,6 @@
 {
   "name": "@natstack/tool-ui",
-  "version": "0.1.0",
+  "version": "0.1.0-dd37075e9e56",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

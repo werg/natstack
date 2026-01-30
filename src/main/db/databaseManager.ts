@@ -11,6 +11,9 @@ import * as fs from "fs";
 import * as crypto from "crypto";
 import { getActiveWorkspace } from "../paths.js";
 import type { DbRunResult } from "../../shared/db/types.js";
+import { createDevLogger } from "../devLog.js";
+
+const log = createDevLogger("DatabaseManager");
 
 /**
  * Singleton DatabaseManager instance.
@@ -77,7 +80,7 @@ export class DatabaseManager {
         // Ignore stat errors
       }
     }
-    console.log(`[DatabaseManager] Opening database: path=${dbPath}, workspaceId=${workspace.config.id}, owner=${ownerId}, fileExisted=${fileExisted}, birthTime=${birthTime?.toISOString()}, size=${fileSize}`);
+    log.verbose(`Opening database: path=${dbPath}, workspaceId=${workspace.config.id}, owner=${ownerId}, fileExisted=${fileExisted}, birthTime=${birthTime?.toISOString()}, size=${fileSize}`);
 
     return this.openDatabase(dbPath, ownerId, readOnly);
   }
@@ -110,21 +113,20 @@ export class DatabaseManager {
     if (!db) {
       db = new Database(dbPath, { readonly: readOnly });
 
-      // Debug: Log the actual path better-sqlite3 is using
-      console.log(`[DatabaseManager] Created new connection: requested=${dbPath}, actual=${db.name}, inTransaction=${db.inTransaction}, open=${db.open}, memory=${db.memory}, readonly=${db.readonly}`);
+      log.verbose(`Created new connection: requested=${dbPath}, actual=${db.name}, inTransaction=${db.inTransaction}, open=${db.open}, memory=${db.memory}, readonly=${db.readonly}`);
 
       // Enable WAL mode for better concurrent access (unless read-only)
       if (!readOnly) {
         const walResult = db.pragma("journal_mode = WAL");
         db.pragma("synchronous = NORMAL");
-        console.log(`[DatabaseManager] Set WAL mode, result:`, walResult);
+        log.verbose(`Set WAL mode, result:`, walResult);
       }
       db.pragma("foreign_keys = ON");
 
       this.pathToConnection.set(dbPath, db);
       this.pathRefCount.set(dbPath, 0);
     } else {
-      console.log(`[DatabaseManager] Reusing existing connection for: ${dbPath}`);
+      log.verbose(`Reusing existing connection for: ${dbPath}`);
     }
 
     // Increment ref count and track handle

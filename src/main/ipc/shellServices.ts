@@ -18,6 +18,9 @@ import { app, nativeTheme, dialog, Menu, type MenuItemConstructorOptions } from 
 import * as path from "path";
 import * as fs from "fs";
 import type { ServiceContext } from "../serviceDispatcher.js";
+import { createDevLogger } from "../devLog.js";
+
+const log = createDevLogger("ShellServices");
 import type {
   ThemeMode,
   ThemeAppearance,
@@ -212,7 +215,13 @@ export async function handlePanelService(
 
     case "notifyFocused": {
       const panelId = args[0] as string;
-      pm.sendPanelEvent(panelId, { type: "focus" });
+
+      // Only send focus event if panel has a view - otherwise we get
+      // "Render frame was disposed" errors for unloaded panels
+      if (vm.hasView(panelId)) {
+        pm.sendPanelEvent(panelId, { type: "focus" });
+      }
+
       // Update the selected path in both in-memory tree and database
       // for breadcrumb navigation, and log focused event for analytics
       try {
@@ -269,6 +278,8 @@ export async function handlePanelService(
 
     case "unload": {
       const panelId = args[0] as string;
+      log.verbose(` Unload requested for panel: ${panelId}`);
+      log.verbose(` Unload call stack:`, new Error().stack);
       await pm.unloadPanel(panelId);
       return;
     }

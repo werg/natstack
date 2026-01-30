@@ -1,7 +1,6 @@
 import { type ComponentType, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import rehypeHighlight from "rehype-highlight";
 import { evaluate } from "@mdx-js/mdx";
 import * as runtime from "react/jsx-runtime";
 import { markdownComponents, mdxComponents } from "./markdownComponents";
@@ -12,9 +11,27 @@ interface MessageContentProps {
 }
 
 const remarkPlugins = [remarkGfm];
-const rehypePlugins: [typeof rehypeHighlight, { ignoreMissing: boolean }][] = [[rehypeHighlight, { ignoreMissing: true }]];
 
-async function compileMdx(content: string): Promise<ComponentType | null> {
+// Lazy-loaded rehype-highlight plugin (~1.5MB highlight.js deferred until first render)
+type RehypeHighlightPlugin = typeof import("rehype-highlight").default;
+let rehypeHighlightPlugin: RehypeHighlightPlugin | null = null;
+let rehypeHighlightPromise: Promise<RehypeHighlightPlugin> | null = null;
+
+function getRehypeHighlight(): Promise<RehypeHighlightPlugin> {
+  if (rehypeHighlightPlugin) {
+    return Promise.resolve(rehypeHighlightPlugin);
+  }
+  if (!rehypeHighlightPromise) {
+    rehypeHighlightPromise = import("rehype-highlight").then((m) => {
+      rehypeHighlightPlugin = m.default;
+      return rehypeHighlightPlugin;
+    });
+  }
+  return rehypeHighlightPromise;
+}
+
+async function compileMdx(content: string, rehypeHighlight: RehypeHighlightPlugin): Promise<ComponentType | null> {
+  const rehypePlugins: [RehypeHighlightPlugin, { ignoreMissing: boolean }][] = [[rehypeHighlight, { ignoreMissing: true }]];
   const { default: Component } = await evaluate(content, {
     ...runtime,
     development: false,
@@ -27,8 +44,16 @@ async function compileMdx(content: string): Promise<ComponentType | null> {
 
 export function MessageContent({ content, isStreaming }: MessageContentProps) {
   const [MdxComponent, setMdxComponent] = useState<ComponentType | null>(null);
+  const [highlightLoaded, setHighlightLoaded] = useState<RehypeHighlightPlugin | null>(rehypeHighlightPlugin);
   const contentRef = useRef(content);
   contentRef.current = content;
+
+  // Lazy-load highlight.js on first render
+  useEffect(() => {
+    if (!highlightLoaded) {
+      void getRehypeHighlight().then(setHighlightLoaded);
+    }
+  }, [highlightLoaded]);
 
   useEffect(() => {
     if (isStreaming) {
@@ -42,10 +67,13 @@ export function MessageContent({ content, isStreaming }: MessageContentProps) {
       return;
     }
 
+    // Wait for highlight.js to load before compiling MDX
+    if (!highlightLoaded) return;
+
     let cancelled = false;
 
     // Try immediately
-    compileMdx(content)
+    compileMdx(content, highlightLoaded)
       .then((Component) => {
         if (!cancelled) setMdxComponent(() => Component);
       })
@@ -59,7 +87,7 @@ export function MessageContent({ content, isStreaming }: MessageContentProps) {
       // Only retry if content hasn't changed
       if (contentRef.current !== content) return;
 
-      compileMdx(content)
+      compileMdx(content, highlightLoaded)
         .then((Component) => {
           if (!cancelled) setMdxComponent(() => Component);
         })
@@ -72,11 +100,16 @@ export function MessageContent({ content, isStreaming }: MessageContentProps) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [content, isStreaming]);
+  }, [content, isStreaming, highlightLoaded]);
 
   if (MdxComponent) {
     return <MdxComponent />;
   }
+
+  // Render markdown - with or without syntax highlighting depending on load state
+  const rehypePlugins = highlightLoaded
+    ? ([[highlightLoaded, { ignoreMissing: true }]] as [RehypeHighlightPlugin, { ignoreMissing: boolean }][])
+    : [];
 
   return (
     <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={markdownComponents}>

@@ -16,6 +16,9 @@ import * as path from "path";
 import { session, ipcMain } from "electron";
 import { parse } from "tldts";
 import { getCentralConfigDirectory } from "../paths.js";
+import { createDevLogger } from "../devLog.js";
+
+const log = createDevLogger("AdBlock");
 
 /**
  * Configuration for which filter lists are enabled.
@@ -252,7 +255,7 @@ export class AdBlockManager {
       return;
     }
 
-    console.log(`[AdBlock] Building engine from ${lists.length} filter lists...`);
+    log.info(` Building engine from ${lists.length} filter lists...`);
 
     try {
       this.engine = await FiltersEngine.fromLists(fetch, lists, {
@@ -757,10 +760,10 @@ export class AdBlockManager {
   setEnabledForPanel(webContentsId: number, enabled: boolean): void {
     if (enabled) {
       this.disabledPanels.delete(webContentsId);
-      console.log(`[AdBlock] Enabled for panel ${webContentsId}`);
+      log.info(` Enabled for panel ${webContentsId}`);
     } else {
       this.disabledPanels.add(webContentsId);
-      console.log(`[AdBlock] Disabled for panel ${webContentsId}`);
+      log.info(` Disabled for panel ${webContentsId}`);
     }
   }
 

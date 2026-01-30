@@ -1,14 +1,13 @@
 {
-  "name": "@workspace/context-template-editor",
-  "version": "0.1.0-cbf41353b9a2",
+  "name": "@workspace/agentic-components",
+  "version": "0.1.0",
   "type": "module",
   "exports": {
     ".": "./index.ts",
     "./types": "./types.ts"
   },
   "dependencies": {
-    "@natstack/runtime": "*",
-    "@natstack/react": "*",
+    "@natstack/agentic-messaging": "*",
     "@radix-ui/themes": "^3.2.1",
     "@radix-ui/react-icons": "^1.3.2"
   }

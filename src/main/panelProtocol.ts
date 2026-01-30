@@ -2,6 +2,10 @@ import { protocol, session } from "electron";
 import * as path from "path";
 import type { ProtocolBuildArtifacts } from "../shared/ipc/types.js";
 import { randomBytes } from "crypto";
+import { createDevLogger } from "./devLog.js";
+import { getVerdaccioServer, isVerdaccioServerInitialized } from "./verdaccioServer.js";
+
+const log = createDevLogger("PanelProtocol");
 
 type PanelAssets = NonNullable<ProtocolBuildArtifacts["assets"]>;
 
@@ -152,15 +156,26 @@ export function handleProtocolRequest(request: Request): Response {
 
   const expectedToken = protocolPanelTokens.get(panelId);
   const providedToken = url.searchParams.get("token") ?? "";
+  // Core paths must have token in URL. Assets/chunks can use referer-based auth.
   const isCorePath =
     pathname === "/" ||
     pathname === "/index.html" ||
     pathname === "/bundle.js" ||
     pathname === "/bundle.css";
   const hasValidToken = Boolean(expectedToken && providedToken === expectedToken);
-  const hasValidRefererToken = !isCorePath && Boolean(expectedToken && isAuthorizedByReferer(request, expectedToken));
+  // For non-core paths (assets, chunks), allow if referer is from the same panel.
+  // This handles dynamic imports where the browser doesn't pass query params in referer.
+  const hasValidReferer = !isCorePath && isAuthorizedByReferer(request, panelId);
+  // For non-core assets: allow access if the panel exists and has this asset stored.
+  // Electron may not send referer headers for custom protocol dynamic imports.
+  // This is safe because: 1) core paths still require token, 2) we only serve stored content.
+  const isStoredAsset = !isCorePath && panelContent.assets && (
+    panelContent.assets[pathname] !== undefined ||
+    panelContent.assets[pathname.slice(1)] !== undefined
+  );
 
-  if (!hasValidToken && !hasValidRefererToken) {
+  if (!hasValidToken && !hasValidReferer && !isStoredAsset) {
+    log.verbose(` 403 for ${request.url}: isCorePath=${isCorePath}, hasValidToken=${hasValidToken}, hasValidReferer=${hasValidReferer}, isStoredAsset=${isStoredAsset}`);
     return new Response("Unauthorized", {
       status: 403,
       headers: { "Content-Type": "text/plain" },
@@ -197,6 +212,10 @@ export function handleProtocolRequest(request: Request): Response {
       headers: { "Content-Type": assetContent.contentType },
     });
   }
+
+  // Log available assets for debugging 404s
+  const availableAssets = panelContent.assets ? Object.keys(panelContent.assets).slice(0, 10) : [];
+  log.verbose(` 404 for ${pathname}, available assets (first 10): ${availableAssets.join(", ")}`);
 
   return new Response(`Not found: ${pathname}`, {
     status: 404,
@@ -243,7 +262,7 @@ export async function registerProtocolForPartition(partition: string): Promise<v
         return;
       }
 
-      console.log(`[PanelProtocol] Registering protocol for partition: ${partition}`);
+      log.verbose(` Registering protocol for partition: ${partition}`);
       const ses = session.fromPartition(partition);
       ses.protocol.handle("natstack-panel", handleProtocolRequest);
       registeredPartitions.add(partition);
@@ -259,8 +278,9 @@ export async function registerProtocolForPartition(partition: string): Promise<v
 }
 
 /**
- * Inject bundle script into HTML
- * Replaces placeholder or appends before </body>
+ * Inject bundle script into HTML and replace dynamic placeholders.
+ * - Replaces bundle/CSS placeholder or appends before </body>
+ * - Replaces __VERDACCIO_ESM__ with current Verdaccio URL (for import maps)
  */
 function injectBundleIntoHtml(html: string, panelId: string, token: string): string {
   const encodedPanelId = encodeURIComponent(panelId);
@@ -270,6 +290,20 @@ function injectBundleIntoHtml(html: string, panelId: string, token: string): str
   const bundleScript = `<script type="module" src="${bundleUrl}"></script>`;
 
   let result = html;
+
+  // Replace Verdaccio ESM placeholder with current URL
+  // This allows cached builds to work even if Verdaccio restarts on a different port
+  if (result.includes("__VERDACCIO_ESM__")) {
+    if (isVerdaccioServerInitialized()) {
+      const verdaccioUrl = getVerdaccioServer().getBaseUrl();
+      result = result.replace(/__VERDACCIO_ESM__/g, `${verdaccioUrl}/-/esm`);
+    } else {
+      // Verdaccio not running - remove the import map to avoid broken imports
+      // The panel will fail to load external modules, but at least won't have connection errors
+      console.warn("[PanelProtocol] Verdaccio not initialized, removing ESM import map entries");
+      result = result.replace(/__VERDACCIO_ESM__\/[^"]+/g, "data:text/javascript,");
+    }
+  }
 
   // Check if there's a placeholder script tag to replace
   if (result.includes("<!-- BUNDLE_PLACEHOLDER -->")) {
@@ -290,15 +324,23 @@ function injectBundleIntoHtml(html: string, panelId: string, token: string): str
   return result;
 }
 
-function isAuthorizedByReferer(request: Request, expectedToken: string): boolean {
+function isAuthorizedByReferer(request: Request, panelId: string): boolean {
+  // Referer-based auth is a secondary mechanism. Electron often doesn't send
+  // referer headers for custom protocol requests (especially dynamic imports),
+  // so failures here are expected and handled by the stored asset fallback.
   const referer = request.headers.get("referer") ?? request.headers.get("referrer");
-  if (!referer) return false;
+  if (!referer) {
+    return false;
+  }
   try {
     const refererUrl = new URL(referer);
     if (refererUrl.protocol !== "natstack-panel:") {
       return false;
     }
-    return refererUrl.searchParams.get("token") === expectedToken;
+    // Check that the referer is from the same panel (same panelId in the path)
+    const refererPathParts = refererUrl.pathname.split("/").filter(Boolean);
+    const refererPanelId = decodeURIComponent(refererPathParts[0] || "");
+    return refererPanelId === panelId;
   } catch {
     return false;
   }
@@ -324,9 +366,9 @@ export function storeProtocolPanel(panelId: string, artifacts: ProtocolBuildArti
   const assetKeys = artifacts.assets ? Object.keys(artifacts.assets) : [];
   const monacoKeys = assetKeys.filter(k => k.includes("monaco"));
   const assetSuffix = assetCount > 0 ? ` (assets: ${assetCount}, monaco: ${monacoKeys.length})` : " (no assets)";
-  console.log(`[PanelProtocol] Stored panel: ${panelId}${assetSuffix}`);
+  log.verbose(` Stored panel: ${panelId}${assetSuffix}`);
   if (monacoKeys.length > 0) {
-    console.log(`[PanelProtocol] Monaco assets: ${monacoKeys.join(", ")}`);
+    log.verbose(` Monaco assets: ${monacoKeys.join(", ")}`);
   }
 
   // Return the URL for this panel

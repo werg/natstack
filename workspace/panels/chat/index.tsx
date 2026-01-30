@@ -785,11 +785,70 @@ export default function AgenticChat() {
 
   // Monitor expected worker panels for build failures
   // This catches workers that never joined because they're stuck on build
+  // Combine panel IDs from stateArgs AND localStorage (for channel mode where launcher closes)
+  const [allExpectedWorkerPanelIds, setAllExpectedWorkerPanelIds] = useState<string[]>(
+    expectedWorkerPanelIds ?? []
+  );
+
+  // Check localStorage for expected workers (used when adding agents to existing chat)
+  useEffect(() => {
+    if (!channelName) return;
+
+    const storageKey = `expectedWorkers:${channelName}`;
+
+    // Function to read and clear localStorage
+    const checkStorage = () => {
+      const stored = localStorage.getItem(storageKey);
+      if (stored) {
+        try {
+          const panelIds = JSON.parse(stored) as string[];
+          if (panelIds.length > 0) {
+            console.log(`[Chat] Found ${panelIds.length} expected worker panel IDs in localStorage:`, panelIds);
+            setAllExpectedWorkerPanelIds((prev) => [...new Set([...prev, ...panelIds])]);
+            // Clear after reading
+            localStorage.removeItem(storageKey);
+          }
+        } catch (err) {
+          console.error("[Chat] Failed to parse expected workers from localStorage:", err);
+          localStorage.removeItem(storageKey);
+        }
+      }
+    };
+
+    // Check immediately
+    checkStorage();
+
+    // Also listen for storage events (in case another tab/window updates it)
+    const handleStorageChange = (event: StorageEvent) => {
+      if (event.key === storageKey && event.newValue) {
+        checkStorage();
+      }
+    };
+    window.addEventListener("storage", handleStorageChange);
+
+    // Poll periodically in case the launcher writes while we're open
+    // (storage events don't fire for same-origin same-window writes)
+    const pollInterval = setInterval(checkStorage, 2000);
+
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
+      clearInterval(pollInterval);
+    };
+  }, [channelName]);
+
+  // Debug: log when we have expected workers
+  useEffect(() => {
+    if (allExpectedWorkerPanelIds.length > 0) {
+      console.log("[Chat] Monitoring expectedWorkerPanelIds:", allExpectedWorkerPanelIds);
+    }
+  }, [allExpectedWorkerPanelIds]);
+
   useExpectedWorkerMonitor({
-    expectedWorkerPanelIds: expectedWorkerPanelIds ?? [],
+    expectedWorkerPanelIds: allExpectedWorkerPanelIds,
     participants: allParticipants,
     enabled: connected,
     onWorkerBuildError: handleWorkerBuildError,
+    checkDelayMs: 5000, // 5 seconds for faster feedback
   });
 
   // Keep the tool role handler refs updated so onEvent can call them

@@ -5,6 +5,9 @@ import * as fs from "fs";
 import * as fsPromises from "fs/promises";
 import * as http from "http";
 import { spawn, spawnSync } from "child_process";
+import { createDevLogger } from "./devLog.js";
+
+const log = createDevLogger("GitServer");
 import type { WorkspaceNode, WorkspaceTree, BranchInfo, CommitInfo } from "../shared/ipc/types.js";
 import { GitAuthManager, getTokenManager } from "./tokenManager.js";
 import { tryBindPort } from "./portUtils.js";
@@ -131,7 +134,7 @@ export class GitServer {
         if (result.valid) {
           next();
         } else {
-          console.log(`[GitServer] Auth failed for ${operation} on ${repo}: ${result.reason}`);
+          log.verbose(` Auth failed for ${operation} on ${repo}: ${result.reason}`);
           next(new Error(result.reason || "Authentication failed"));
         }
       },
@@ -139,20 +142,20 @@ export class GitServer {
 
     // Handle push events
     this.git.on("push", (push) => {
-      console.log(`[GitServer] Push to ${push.repo}/${push.branch} (${push.commit})`);
+      log.verbose(` Push to ${push.repo}/${push.branch} (${push.commit})`);
       push.accept();
     });
 
     // Handle fetch events
     this.git.on("fetch", (fetch) => {
-      console.log(`[GitServer] Fetch from ${fetch.repo} (${fetch.commit})`);
+      log.verbose(` Fetch from ${fetch.repo} (${fetch.commit})`);
       fetch.accept();
     });
 
     // Find an available port, starting from the configured one (TOCTOU-safe)
     const { port, tempServer } = await this.findAvailablePort(this.configuredPort);
     if (port !== this.configuredPort) {
-      console.log(`[GitServer] Configured port ${this.configuredPort} unavailable, using ${port}`);
+      log.verbose(` Configured port ${this.configuredPort} unavailable, using ${port}`);
     }
 
     // Close temp server and immediately bind our real server
@@ -205,8 +208,8 @@ export class GitServer {
 
       server.listen(port, () => {
         this.actualPort = port;
-        console.log(`[GitServer] Started on http://localhost:${port}`);
-        console.log(`[GitServer] Repos directory: ${this.ensureReposPath()}`);
+        log.verbose(` Started on http://localhost:${port}`);
+        log.verbose(` Repos directory: ${this.ensureReposPath()}`);
         resolve(port);
       });
     });
@@ -304,7 +307,7 @@ export class GitServer {
     }
 
     const dirName = path.basename(dirPath);
-    console.log(`[GitServer] Initializing git repo: ${dirName}`);
+    log.verbose(` Initializing git repo: ${dirName}`);
 
     try {
       // Initialize git repo
@@ -327,7 +330,7 @@ export class GitServer {
         stdio: "ignore",
       });
 
-      console.log(`[GitServer] Initialized git repo: ${dirName}`);
+      log.verbose(` Initialized git repo: ${dirName}`);
     } catch (error) {
       console.error(`[GitServer] Failed to initialize git repo ${dirName}:`, error);
     }
@@ -462,7 +465,7 @@ export class GitServer {
     }
 
     // Need to clone from GitHub
-    console.log(`[GitServer] Cloning GitHub repo: ${spec.owner}/${spec.repo}`);
+    log.verbose(` Cloning GitHub repo: ${spec.owner}/${spec.repo}`);
 
     const remoteUrl = toGitHubUrl(spec);
     const result = await ensureGitHubRepo({
@@ -487,7 +490,7 @@ export class GitServer {
     // Re-add since invalidate clears the set
     this.discoveredRepoPaths.add(relPath);
 
-    console.log(`[GitServer] GitHub repo ready: ${relPath}`);
+    log.verbose(` GitHub repo ready: ${relPath}`);
     return true;
   }
 
@@ -758,7 +761,7 @@ export class GitServer {
     }
 
     // Clone from GitHub (full clone for ref resolution - need all refs/tags)
-    console.log(`[GitServer] Auto-cloning for ref resolution: ${spec.owner}/${spec.repo}`);
+    log.verbose(` Auto-cloning for ref resolution: ${spec.owner}/${spec.repo}`);
     const result = await ensureGitHubRepo({
       targetPath,
       remoteUrl: toGitHubUrl(spec),
@@ -776,7 +779,7 @@ export class GitServer {
     // Re-add since invalidate clears the set
     this.discoveredRepoPaths.add(relPath);
 
-    console.log(`[GitServer] GitHub repo ready for ref resolution: ${relPath}`);
+    log.verbose(` GitHub repo ready for ref resolution: ${relPath}`);
   }
 
   /**

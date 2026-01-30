@@ -12,6 +12,9 @@ import * as path from "path";
 import type { ShellPage, ProtocolBuildArtifacts } from "../shared/ipc/types.js";
 import { storeAboutPage, hasAboutPage } from "./aboutProtocol.js";
 import { PANEL_CSP_META } from "../shared/constants.js";
+import { createDevLogger } from "./devLog.js";
+
+const log = createDevLogger("AboutBuilder");
 import {
   generateNodeCompatibilityPatch,
   generateAsyncTrackingBanner,
@@ -329,7 +332,7 @@ export class AboutBuilder {
   async buildAndStorePage(page: ShellPage): Promise<string> {
     // Check if already built
     if (hasAboutPage(page)) {
-      console.log(`[AboutBuilder] Page ${page} already built, reusing`);
+      log.verbose(` Page ${page} already built, reusing`);
       const { getAboutPageUrl } = await import("./aboutProtocol.js");
       return getAboutPageUrl(page);
     }
@@ -337,7 +340,7 @@ export class AboutBuilder {
     // Try to load prebuilt page first (production builds)
     const prebuilt = this.tryLoadPrebuiltPage(page);
     if (prebuilt && prebuilt.success && prebuilt.bundle && prebuilt.html) {
-      console.log(`[AboutBuilder] Using prebuilt about page: ${page}`);
+      log.verbose(` Using prebuilt about page: ${page}`);
       const artifacts: ProtocolBuildArtifacts = {
         bundle: prebuilt.bundle,
         html: prebuilt.html,
@@ -349,7 +352,7 @@ export class AboutBuilder {
     }
 
     // Fall back to runtime build
-    console.log(`[AboutBuilder] Building about page: ${page}`);
+    log.verbose(` Building about page: ${page}`);
     const result = await this.buildPage(page);
 
     if (!result.success || !result.bundle || !result.html) {

@@ -15,7 +15,7 @@ import { useProjectConfig } from "./hooks/useProjectConfig";
 import { LocationSettings } from "./components/LocationSettings";
 import { ExternalModeConfig } from "./components/ExternalModeConfig";
 import { ManagedModeConfig } from "./components/ManagedModeConfig";
-import { DefaultAgentConfig } from "./components/DefaultAgentConfig";
+import { AgentSelector } from "@workspace/agentic-components";
 import { AutonomySettings } from "./components/AutonomySettings";
 import { validateProjectConfig, type ProjectPanelStateArgs } from "@workspace-panels/project-panel/types";
 
@@ -126,7 +126,7 @@ export default function ProjectLauncher() {
               <Separator size="4" />
 
               {/* Default Agent */}
-              <DefaultAgentConfig
+              <AgentSelector
                 defaultAgentId={projectConfig.defaultAgentId}
                 onDefaultAgentChange={(id) => setDefaultAgent(id)}
               />

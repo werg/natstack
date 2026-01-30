@@ -5,6 +5,9 @@ import { URL } from "url";
 import { findAvailablePortForService } from "./portUtils.js";
 import { getTokenManager, type TokenManager } from "./tokenManager.js";
 import { isViewManagerInitialized, getViewManager } from "./viewManager.js";
+import { createDevLogger } from "./devLog.js";
+
+const log = createDevLogger("CdpServer");
 
 /**
  * CDP WebSocket server for browser panel automation.
@@ -107,7 +110,7 @@ export class CdpServer {
     // Detach debugger if attached
     this.debuggerAttached.delete(browserId);
 
-    console.log(`[CdpServer] Unregistered browser ${browserId}`);
+    log.verbose(` Unregistered browser ${browserId}`);
   }
 
   /**
@@ -130,7 +133,7 @@ export class CdpServer {
     // Check direct ownership first
     const ownedBrowsers = this.panelBrowsers.get(panelId);
     if (ownedBrowsers?.has(browserId)) {
-      console.log(`[CDP Access] Direct ownership: panel ${panelId} owns ${browserId}`);
+      log.verbose(`[CDP Access] Direct ownership: panel ${panelId} owns ${browserId}`);
       return true;
     }
 
@@ -139,15 +142,15 @@ export class CdpServer {
     for (const [ownerId, browsers] of this.panelBrowsers) {
       if (browsers.has(browserId)) {
         // Found the owner, check if requesting panel is an ancestor
-        console.log(`[CDP Access] Browser ${browserId} owned by ${ownerId}, checking ancestor ${panelId}`);
+        log.verbose(`[CDP Access] Browser ${browserId} owned by ${ownerId}, checking ancestor ${panelId}`);
         if (ownerId.startsWith(panelId + "/")) {
-          console.log(`[CDP Access] Granted: ${panelId} is ancestor of ${ownerId}`);
+          log.verbose(`[CDP Access] Granted: ${panelId} is ancestor of ${ownerId}`);
           return true;
         }
       }
     }
 
-    console.log(`[CDP Access] Denied: ${panelId} has no access to ${browserId}. panelBrowsers:`, Array.from(this.panelBrowsers.entries()).map(([id, set]) => `${id}->[${Array.from(set).join(",")}]`));
+    log.verbose(`[CDP Access] Denied: ${panelId} has no access to ${browserId}. panelBrowsers:`, Array.from(this.panelBrowsers.entries()).map(([id, set]) => `${id}->[${Array.from(set).join(",")}]`));
     return false;
   }
 
@@ -199,7 +202,7 @@ export class CdpServer {
       this.server!.on("error", reject);
       this.server!.listen(port, () => {
         this.actualPort = port;
-        console.log(`[CdpServer] Started on ws://localhost:${port}`);
+        log.verbose(` Started on ws://localhost:${port}`);
         resolve(port);
       });
     });
@@ -236,7 +239,7 @@ export class CdpServer {
       return;
     }
 
-    console.log(`[CdpServer] Client connected for browser ${browserId} from panel ${panelId}`);
+    log.verbose(` Client connected for browser ${browserId} from panel ${panelId}`);
 
     // Track this connection (supports multiple connections per browser)
     if (!this.activeConnections.has(browserId)) {
@@ -336,7 +339,7 @@ export class CdpServer {
     contents.debugger.on("message", debuggerMessageHandler);
 
     ws.on("close", () => {
-      console.log(`[CdpServer] Client disconnected for browser ${browserId}`);
+      log.verbose(` Client disconnected for browser ${browserId}`);
 
       // Remove this connection from the set
       const connections = this.activeConnections.get(browserId);

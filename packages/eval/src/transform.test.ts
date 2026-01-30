@@ -3,8 +3,8 @@ import { transformCode } from "./transform";
 
 describe("transformCode", () => {
   describe("syntax detection", () => {
-    it("transforms TypeScript to CommonJS", () => {
-      const result = transformCode(
+    it("transforms TypeScript to CommonJS", async () => {
+      const result = await transformCode(
         `const x: number = 42; export default x;`,
         { syntax: "typescript" }
       );
@@ -15,8 +15,8 @@ describe("transformCode", () => {
       expect(result.code).not.toContain(": number");
     });
 
-    it("transforms TSX to CommonJS with JSX runtime", () => {
-      const result = transformCode(
+    it("transforms TSX to CommonJS with JSX runtime", async () => {
+      const result = await transformCode(
         `export default function App() { return <div>Hello</div>; }`,
         { syntax: "tsx" }
       );
@@ -26,8 +26,8 @@ describe("transformCode", () => {
       expect(result.code).not.toContain("<div>");
     });
 
-    it("transforms JSX to CommonJS", () => {
-      const result = transformCode(
+    it("transforms JSX to CommonJS", async () => {
+      const result = await transformCode(
         `export default function App() { return <span>Hi</span>; }`,
         { syntax: "jsx" }
       );
@@ -38,8 +38,8 @@ describe("transformCode", () => {
   });
 
   describe("require extraction", () => {
-    it("extracts single require", () => {
-      const result = transformCode(
+    it("extracts single require", async () => {
+      const result = await transformCode(
         `import React from "react"; export default React;`,
         { syntax: "typescript" }
       );
@@ -47,8 +47,8 @@ describe("transformCode", () => {
       expect(result.requires).toContain("react");
     });
 
-    it("extracts multiple requires", () => {
-      const result = transformCode(
+    it("extracts multiple requires", async () => {
+      const result = await transformCode(
         `import React from "react";
          import { Button } from "@radix-ui/themes";
          export default function() { return <Button />; }`,
@@ -59,8 +59,8 @@ describe("transformCode", () => {
       expect(result.requires).toContain("@radix-ui/themes");
     });
 
-    it("extracts jsx-runtime require from TSX", () => {
-      const result = transformCode(
+    it("extracts jsx-runtime require from TSX", async () => {
+      const result = await transformCode(
         `export default function() { return <div />; }`,
         { syntax: "tsx" }
       );
@@ -72,8 +72,8 @@ describe("transformCode", () => {
       expect(hasJsxRuntime).toBe(true);
     });
 
-    it("deduplicates requires", () => {
-      const result = transformCode(
+    it("deduplicates requires", async () => {
+      const result = await transformCode(
         `import { useState, useEffect } from "react";
          import { useCallback } from "react";
          console.log(useState, useEffect, useCallback);`,
@@ -84,8 +84,8 @@ describe("transformCode", () => {
       expect(reactCount).toBe(1);
     });
 
-    it("returns empty array when no imports", () => {
-      const result = transformCode(
+    it("returns empty array when no imports", async () => {
+      const result = await transformCode(
         `const x = 42; export default x;`,
         { syntax: "typescript" }
       );
@@ -95,8 +95,8 @@ describe("transformCode", () => {
   });
 
   describe("ESM to CJS conversion", () => {
-    it("converts named exports", () => {
-      const result = transformCode(
+    it("converts named exports", async () => {
+      const result = await transformCode(
         `export const foo = 1; export const bar = 2;`,
         { syntax: "typescript" }
       );
@@ -105,8 +105,8 @@ describe("transformCode", () => {
       expect(result.code).toContain("exports.bar");
     });
 
-    it("converts default exports", () => {
-      const result = transformCode(
+    it("converts default exports", async () => {
+      const result = await transformCode(
         `export default 42;`,
         { syntax: "typescript" }
       );
@@ -117,8 +117,8 @@ describe("transformCode", () => {
       expect(result.code).toContain("42");
     });
 
-    it("converts named imports to require", () => {
-      const result = transformCode(
+    it("converts named imports to require", async () => {
+      const result = await transformCode(
         `import { useState } from "react"; console.log(useState);`,
         { syntax: "typescript" }
       );
@@ -129,16 +129,16 @@ describe("transformCode", () => {
   });
 
   describe("error handling", () => {
-    it("throws on syntax errors", () => {
-      expect(() =>
+    it("throws on syntax errors", async () => {
+      await expect(
         transformCode(`const x = {`, { syntax: "typescript" })
-      ).toThrow();
+      ).rejects.toThrow();
     });
 
-    it("throws on invalid JSX", () => {
-      expect(() =>
+    it("throws on invalid JSX", async () => {
+      await expect(
         transformCode(`const x = <div><span></div>;`, { syntax: "tsx" })
-      ).toThrow();
+      ).rejects.toThrow();
     });
   });
 });

@@ -3,6 +3,8 @@
  *
  * Implements: check_types, get_type_info, get_completions
  * These tools provide TypeScript language service features for panel/worker development.
+ *
+ * NOTE: TypeScript (~17MB) is lazy-loaded on first tool invocation to reduce initial bundle size.
  */
 
 import * as fs from "fs";
@@ -17,7 +19,17 @@ import {
   type GetCompletionsArgs,
 } from "@natstack/agentic-messaging";
 import { rpc } from "@natstack/runtime";
-import { TypeCheckService, TYPECHECK_EVENTS, createPanelTypeCheckService, createDiskFileSource, type TypeCheckResult, type TypeCheckDiagnostic, type TypeCheckDiagnosticsEvent, type QuickInfo } from "@natstack/runtime/typecheck";
+import type { TypeCheckService, TypeCheckDiagnostic, TypeCheckDiagnosticsEvent } from "@natstack/runtime/typecheck";
+
+// Lazy-loaded typecheck module (defers ~17MB TypeScript load until first use)
+let typecheckModule: typeof import("@natstack/runtime/typecheck") | null = null;
+
+async function getTypecheckModule() {
+  if (!typecheckModule) {
+    typecheckModule = await import("@natstack/runtime/typecheck");
+  }
+  return typecheckModule;
+}
 
 // Cache of TypeCheckService instances per panel path
 const serviceCache = new Map<string, TypeCheckService>();
@@ -32,6 +44,9 @@ async function getOrCreateService(panelPath: string): Promise<TypeCheckService> 
   if (serviceCache.has(resolved)) {
     return serviceCache.get(resolved)!;
   }
+
+  // Lazy load the typecheck module
+  const { createPanelTypeCheckService, createDiskFileSource } = await getTypecheckModule();
 
   // Use the factory to create a properly configured service with RPC support
   const service = await createPanelTypeCheckService({
@@ -225,6 +240,7 @@ export function createTypeCheckToolMethodDefinitions(
 
         // Broadcast diagnostics if publisher available
         if (publish) {
+          const { TYPECHECK_EVENTS } = await getTypecheckModule();
           const event: TypeCheckDiagnosticsEvent = {
             panelPath: args.panel_path,
             diagnostics: checkResult.diagnostics,

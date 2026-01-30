@@ -8,6 +8,9 @@
 import type Database from "better-sqlite3";
 import { getPanelPersistence } from "./panelPersistence.js";
 import type { DbPanelRow } from "./panelSchema.js";
+import { createDevLogger } from "../devLog.js";
+
+const log = createDevLogger("PanelSearchIndex");
 
 /**
  * Search result with relevance score.
@@ -249,7 +252,7 @@ export class PanelSearchIndex {
         .prepare("SELECT * FROM panels WHERE workspace_id = ? AND archived_at IS NULL")
         .all(workspaceId) as DbPanelRow[];
 
-      console.log(`[PanelSearchIndex] Rebuilding index for ${panels.length} panels`);
+      log.verbose(` Rebuilding index for ${panels.length} panels`);
 
       // Clear existing search metadata
       db.prepare("DELETE FROM panel_search_metadata WHERE panel_id IN (SELECT id FROM panels WHERE workspace_id = ?)").run(
