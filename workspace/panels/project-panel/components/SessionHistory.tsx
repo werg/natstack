@@ -61,14 +61,14 @@ export function SessionHistory({ sessions, loading, onNavigate, onRefresh }: Ses
               <Flex justify="between" align="center">
                 <Flex align="center" gap="2">
                   <ChatBubbleIcon />
-                  <Box>
+                  <Flex direction="column" gap="1">
                     <Text size="2" weight="medium">
                       {session.title}
                     </Text>
                     <Text size="1" color="gray">
                       {formatTime(session.createdAt)}
                     </Text>
-                  </Box>
+                  </Flex>
                 </Flex>
                 <ExternalLinkIcon color="var(--gray-9)" />
               </Flex>

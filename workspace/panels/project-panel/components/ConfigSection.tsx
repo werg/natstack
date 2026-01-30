@@ -5,6 +5,7 @@
 import { useState } from "react";
 import { Box, Text, Card, Flex, Button, TextField, Separator } from "@radix-ui/themes";
 import { ChevronDownIcon, ChevronRightIcon, GearIcon } from "@radix-ui/react-icons";
+import { AgentSelector } from "@workspace/agentic-components";
 import type { ProjectConfig } from "../types";
 
 interface ConfigSectionProps {
@@ -78,12 +79,14 @@ export function ConfigSection({ config, expanded, onToggle, onUpdate }: ConfigSe
               </Text>
             </Box>
 
-            {/* Default Agent Info */}
+            {/* Default Agent */}
             <Box>
-              <Text as="label" size="1" color="gray" mb="1" style={{ display: "block" }}>
-                Default Agent
-              </Text>
-              <Text size="2">{config.defaultAgentId ?? "None"}</Text>
+              <AgentSelector
+                defaultAgentId={config.defaultAgentId}
+                onDefaultAgentChange={(agentId: string | undefined) => {
+                  void onUpdate({ defaultAgentId: agentId });
+                }}
+              />
             </Box>
 
             {/* Autonomy Level */}

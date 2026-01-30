@@ -39,6 +39,7 @@
     "@natstack/react": "*",
     "@natstack/agentic-messaging": "*",
     "@workspace/context-template-editor": "*",
+    "@workspace/agentic-components": "*",
     "@radix-ui/themes": "^3.2.1",
     "@radix-ui/react-icons": "^1.3.2"
   }

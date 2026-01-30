@@ -1,5 +1,5 @@
 /**
- * Default agent selection for the project.
+ * Default agent selection for projects.
  * Reuses agent selection patterns from chat-launcher.
  */
 
@@ -7,16 +7,12 @@ import { useState, useEffect, useCallback } from "react";
 import { Box, Text, Card, Flex, RadioGroup, Badge } from "@radix-ui/themes";
 import { PersonIcon } from "@radix-ui/react-icons";
 import { getAgentRegistry, type AgentDefinition } from "@natstack/agentic-messaging/registry";
+import type { AgentSelectorProps } from "../types";
 
-interface DefaultAgentConfigProps {
-  defaultAgentId?: string;
-  onDefaultAgentChange: (agentId: string | undefined) => void;
-}
-
-export function DefaultAgentConfig({
+export function AgentSelector({
   defaultAgentId,
   onDefaultAgentChange,
-}: DefaultAgentConfigProps) {
+}: AgentSelectorProps) {
   const [agents, setAgents] = useState<AgentDefinition[]>([]);
   const [loading, setLoading] = useState(true);
 
