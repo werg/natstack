@@ -8,7 +8,23 @@ import { createRequire } from "module";
 import type { PanelManifest } from "./panelTypes.js";
 import { getMainCacheManager } from "./cacheManager.js";
 import { isDev } from "./utils.js";
-import { provisionPanelVersion, resolveTargetCommit, type VersionSpec } from "./gitProvisioner.js";
+// Import git provisioning from sharedBuild (re-exported from gitProvisioner for compatibility)
+import {
+  provisionSource,
+  resolveTargetCommit,
+  type VersionSpec,
+  type ProvisionProgress,
+  // Shared build functions
+  installDependencies as sharedInstallDependencies,
+  getNodeResolutionPaths as sharedGetNodeResolutionPaths,
+  getVerdaccioVersionsHash as sharedGetVerdaccioVersionsHash,
+  readUserCompilerOptions,
+  pickSafeCompilerOptions,
+  writeBuildTsconfig as sharedWriteBuildTsconfig,
+  runTypeCheck as sharedRunTypeCheck,
+  getDependencyHashFromCache,
+  saveDependencyHashToCache,
+} from "./build/sharedBuild.js";
 import type { PanelBuildState, ProtocolBuildArtifacts } from "../shared/ipc/types.js";
 import { createBuildWorkspace, type BuildArtifactKey } from "./build/artifacts.js";
 import { analyzeBundleSize } from "./build/bundleAnalysis.js";
@@ -23,9 +39,6 @@ import {
   isBareSpecifier,
   packageToRegex,
   DEFAULT_DEDUPE_PACKAGES,
-  createTypeCheckService,
-  createDiskFileSource,
-  loadSourceFiles,
   type TypeCheckDiagnostic,
 } from "@natstack/runtime/typecheck";
 import { isVerdaccioServerInitialized, getVerdaccioServer } from "./verdaccioServer.js";
@@ -791,178 +804,17 @@ interface BuildFromSourceResult {
 export class PanelBuilder {
   private cacheManager = getMainCacheManager();
 
-  /** Last known Verdaccio versions (for detecting changes) */
-  private lastVerdaccioVersions: Record<string, string> | null = null;
-
-  /** Per-panel cache of relevant @natstack package versions */
-  private panelRelevantVersionsCache = new Map<string, Record<string, string>>();
-
   /**
-   * Get cached dependency hash for a panel source path.
-   * This helps avoid unnecessary npm installs when dependencies haven't changed.
+   * Write a build-specific tsconfig.json.
+   * Delegates to sharedBuild.ts for the actual implementation.
    */
-  private getDependencyHashFromCache(cacheKey: string): string | undefined {
-    const cached = this.cacheManager.get(cacheKey, isDev());
-    return cached ?? undefined;
-  }
-
-  /**
-   * Save dependency hash to cache
-   */
-  private async saveDependencyHashToCache(cacheKey: string, hash: string): Promise<void> {
-    await this.cacheManager.set(cacheKey, hash);
-  }
-
-  /**
-   * Get a hash of all current Verdaccio package versions.
-   * Used in cache keys to invalidate when any workspace dependency changes.
-   * Includes both @natstack/* and user workspace packages (@workspace/*, @workspace-panels/*, @workspace-workers/*).
-   * Returns empty string if Verdaccio is not initialized.
-   */
-  private async getVerdaccioVersionsHash(): Promise<string> {
-    if (!isVerdaccioServerInitialized()) {
-      return "";
-    }
-
-    try {
-      const verdaccio = getVerdaccioServer();
-
-      // Get @natstack/* package versions
-      const natstackVersions = await verdaccio.getVerdaccioVersions();
-
-      // Get user workspace package versions (@workspace/*, @workspace-panels/*, @workspace-workers/*)
-      const userWorkspace = getActiveWorkspace();
-      const userWorkspaceVersions = userWorkspace
-        ? await verdaccio.getUserWorkspaceVersions(userWorkspace.path)
-        : {};
-
-      // Merge all versions
-      const allVersions = { ...natstackVersions, ...userWorkspaceVersions };
-
-      if (Object.keys(allVersions).length === 0) {
-        return "";
-      }
-
-      const sorted = Object.keys(allVersions).sort();
-      return crypto.createHash("sha256").update(JSON.stringify(allVersions, sorted)).digest("hex").slice(0, 12);
-    } catch {
-      return "";
-    }
-  }
-
-  private readUserCompilerOptions(sourcePath: string): Record<string, unknown> {
-    const tsconfigPath = path.join(sourcePath, "tsconfig.json");
-    if (!fs.existsSync(tsconfigPath)) {
-      return {};
-    }
-
-    try {
-      const visited = new Set<string>();
-      const read = (configPath: string): Record<string, unknown> => {
-        const resolvedPath = path.resolve(configPath);
-        if (visited.has(resolvedPath)) {
-          return {};
-        }
-        visited.add(resolvedPath);
-
-        const content = fs.readFileSync(resolvedPath, "utf-8");
-        const parsed = ts.parseConfigFileTextToJson(resolvedPath, content);
-        const config = (parsed.config ?? {}) as {
-          extends?: string | string[];
-          compilerOptions?: Record<string, unknown>;
-        };
-
-        const baseExtends = config.extends;
-        let baseOptions: Record<string, unknown> = {};
-        if (typeof baseExtends === "string") {
-          const basePath = this.resolveTsconfigExtends(resolvedPath, baseExtends);
-          if (basePath) {
-            baseOptions = read(basePath);
-          }
-        }
-
-        return { ...baseOptions, ...(config.compilerOptions ?? {}) };
-      };
-
-      return read(tsconfigPath);
-    } catch {
-      return {};
-    }
-  }
-
-  private resolveTsconfigExtends(fromTsconfigPath: string, extendsValue: string): string | null {
-    const baseDir = path.dirname(fromTsconfigPath);
-
-    // Relative/absolute path (most common)
-    const isFileLike =
-      extendsValue.startsWith(".") ||
-      extendsValue.startsWith("/") ||
-      extendsValue.includes(path.sep) ||
-      extendsValue.includes("/");
-    if (isFileLike) {
-      const candidate = path.resolve(baseDir, extendsValue);
-      const withJson = candidate.endsWith(".json") ? candidate : `${candidate}.json`;
-      if (fs.existsSync(candidate)) return candidate;
-      if (fs.existsSync(withJson)) return withJson;
-      return null;
-    }
-
-    // Package-style specifier: best-effort support
-    // (tsc supports resolving node module tsconfigs; we keep this conservative)
-    try {
-      const req = createRequire(import.meta.url);
-      const resolved = req.resolve(extendsValue, { paths: [baseDir] });
-      return resolved;
-    } catch {
-      return null;
-    }
-  }
-
-  private pickSafeCompilerOptions(
-    userCompilerOptions: Record<string, unknown>,
-    kind: "panel" | "worker"
-  ): Record<string, unknown> {
-    const allowlist = new Set<string>([
-      "experimentalDecorators",
-      "emitDecoratorMetadata",
-      "useDefineForClassFields",
-    ]);
-
-    if (kind === "panel") {
-      allowlist.add("jsxImportSource");
-    }
-
-    const safe: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(userCompilerOptions)) {
-      if (allowlist.has(key) && value !== undefined) {
-        safe[key] = value;
-      }
-    }
-    return safe;
-  }
-
   private writeBuildTsconfig(
     buildDir: string,
     sourcePath: string,
     kind: "panel" | "worker",
     baseCompilerOptions: Record<string, unknown>
   ): string {
-    const userOptions = this.readUserCompilerOptions(sourcePath);
-    const safeOverrides = this.pickSafeCompilerOptions(userOptions, kind);
-    const compilerOptions = { ...baseCompilerOptions, ...safeOverrides };
-
-    const tsconfigPath = path.join(buildDir, "tsconfig.json");
-    fs.writeFileSync(
-      tsconfigPath,
-      JSON.stringify(
-        {
-          compilerOptions,
-        },
-        null,
-        2
-      )
-    );
-    return tsconfigPath;
+    return sharedWriteBuildTsconfig(buildDir, sourcePath, kind, baseCompilerOptions);
   }
 
   private resolveHtml(
@@ -1013,14 +865,7 @@ export class PanelBuilder {
   }
 
   private getNodeResolutionPaths(sourcePath: string, runtimeNodeModules: string): string[] {
-    const localNodeModules = path.join(sourcePath, "node_modules");
-    const projectNodeModules = getAppNodeModules();
-
-    const paths: string[] = [];
-    for (const candidate of [runtimeNodeModules, localNodeModules, projectNodeModules]) {
-      paths.push(candidate);
-    }
-    return paths;
+    return sharedGetNodeResolutionPaths(sourcePath, runtimeNodeModules, getAppNodeModules());
   }
 
   /**
@@ -1035,79 +880,12 @@ export class PanelBuilder {
     _dependencies?: Record<string, string>,
     options?: { unsafe?: boolean }
   ): Promise<TypeCheckDiagnostic[]> {
-    log(`Type checking...`);
-
-    try {
-      // Create file source for reading from disk
-      const fileSource = createDiskFileSource(sourcePath);
-
-      // Load all TypeScript source files
-      const files = await loadSourceFiles(fileSource, ".");
-      if (files.size === 0) {
-        log(`No TypeScript files found to type check`);
-        return [];
-      }
-
-      log(`Type checking ${files.size} files...`);
-
-      // Find workspace root for loading @natstack package types
-      const packagesDir = getPackagesDir();
-      const workspaceRoot = packagesDir ? path.dirname(packagesDir) : undefined;
-      // Get user workspace path for @workspace-panels/* and @workspace-workers/* resolution
-      const userWorkspace = getActiveWorkspace();
-
-      // Create type check service that loads types from the build's node_modules.
-      // React, @types/react, and other deduplicated packages are installed here.
-      // For unsafe workers, disable fs shimming to allow full Node.js fs access
-      const service = createTypeCheckService({
-        panelPath: sourcePath,
-        resolution: {
-          fsShimEnabled: !options?.unsafe,
-          runtimeNodeModules,
-        },
-        workspaceRoot,
-        skipSuggestions: true, // Build-time: only errors, not suggestions
-        // Load types directly from the build's node_modules
-        nodeModulesPaths: [runtimeNodeModules],
-        // Enable resolution of @workspace-panels/* and @workspace-workers/* from workspace
-        userWorkspacePath: userWorkspace?.path,
-      });
-
-      // Add all source files to the service with absolute paths
-      // TypeScript's module resolution uses absolute paths, so we need to match
-      for (const [relativePath, content] of files) {
-        const absolutePath = path.join(sourcePath, relativePath);
-        service.updateFile(absolutePath, content);
-      }
-
-      // Run type checking with automatic external type loading
-      // checkWithExternalTypes handles the transitive dependency loop internally
-      const result = await service.checkWithExternalTypes();
-
-      // Filter to only errors (not warnings or suggestions)
-      const errors = result.diagnostics.filter((d) => d.severity === "error");
-
-      if (errors.length > 0) {
-        log(`Type check found ${errors.length} error(s)`);
-      } else {
-        log(`Type check passed`);
-      }
-
-      return errors;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      log(`Type check failed: ${message}`);
-      // Return a synthetic error diagnostic
-      return [{
-        file: sourcePath,
-        line: 1,
-        column: 1,
-        message: `Type checking failed: ${message}`,
-        severity: "error",
-        code: 0,
-        category: ts.DiagnosticCategory.Error,
-      }];
-    }
+    return sharedRunTypeCheck({
+      sourcePath,
+      nodeModulesDir: runtimeNodeModules,
+      fsShimEnabled: !options?.unsafe,
+      log,
+    });
   }
 
   loadManifest(panelPath: string): PanelManifest {
@@ -1198,6 +976,10 @@ export class PanelBuilder {
     );
   }
 
+  /**
+   * Install dependencies using the shared build infrastructure.
+   * Delegates to sharedInstallDependencies and returns just the hash.
+   */
   private async installDependencies(
     depsDir: string,
     dependencies: Record<string, string> | undefined,
@@ -1208,245 +990,15 @@ export class PanelBuilder {
       return undefined;
     }
 
-    fs.mkdirSync(depsDir, { recursive: true });
-    const packageJsonPath = path.join(depsDir, "package.json");
-    const npmrcPath = path.join(depsDir, ".npmrc");
+    const result = await sharedInstallDependencies({
+      depsDir,
+      dependencies,
+      previousHash,
+      canonicalPath,
+      log: devLog.verbose.bind(devLog),
+    });
 
-    // Verdaccio is required for dependency resolution
-    // ensureRunning() will auto-restart Verdaccio if it crashed
-    if (!isVerdaccioServerInitialized()) {
-      throw new Error(
-        "Verdaccio server not initialized. Cannot resolve dependencies without local npm registry. " +
-        "Ensure Verdaccio starts successfully during app initialization."
-      );
-    }
-
-    const verdaccio = getVerdaccioServer();
-    const verdaccioRunning = await verdaccio.ensureRunning();
-    if (!verdaccioRunning) {
-      throw new Error(
-        "Verdaccio server failed to start. Cannot resolve dependencies. " +
-        `Last error: ${verdaccio.getExitError()?.message ?? "unknown"}`
-      );
-    }
-
-    // Set user workspace path for lazy building of @workspace/* packages
-    const userWorkspace = getActiveWorkspace();
-    if (userWorkspace?.path) {
-      verdaccio.setUserWorkspacePath(userWorkspace.path);
-    }
-
-    // Lazy building: packages are built on-demand when npm requests them
-    // No need to pre-publish - the Verdaccio middleware intercepts requests
-    // and builds workspace packages just-in-time during npm install
-
-    // Translate workspace:* to * (Verdaccio serves local packages)
-    const resolvedDependencies: Record<string, string> = {};
-    for (const [name, version] of Object.entries(dependencies)) {
-      resolvedDependencies[name] = version.startsWith("workspace:") ? "*" : version;
-    }
-
-    // Write .npmrc to point to local Verdaccio registry
-    const verdaccioUrl = getVerdaccioServer().getBaseUrl();
-    fs.writeFileSync(npmrcPath, `registry=${verdaccioUrl}\n`);
-
-    type PanelRuntimePackageJson = {
-      name: string;
-      private: boolean;
-      version: string;
-      dependencies?: Record<string, string>;
-    };
-
-    const desiredPackageJson: PanelRuntimePackageJson = {
-      name: "natstack-panel-runtime",
-      private: true,
-      version: "1.0.0",
-      dependencies: resolvedDependencies,
-    };
-    const serialized = JSON.stringify(desiredPackageJson, null, 2);
-
-    // Include actual Verdaccio package versions in the dependency hash.
-    // This ensures we reinstall when Verdaccio packages change, even if:
-    // - Version specifiers (like "*") remain the same
-    // - Content hashes match but Verdaccio state is different
-    //
-    // Smart optimization: Only walk transitive deps when Verdaccio packages have actually changed.
-    // This avoids unnecessary npm installs when unrelated packages change.
-    const natstackVersions = await verdaccio.getVerdaccioVersions();
-
-    // Also get user workspace package versions (@workspace/*, @workspace-panels/*, @workspace-workers/*)
-    const userWorkspaceVersions = userWorkspace
-      ? await verdaccio.getUserWorkspaceVersions(userWorkspace.path)
-      : {};
-
-    // Merge all versions
-    const verdaccioVersions = { ...natstackVersions, ...userWorkspaceVersions };
-
-    // Fast path: check if any package changed since last known state
-    // Use union of all keys from both objects for consistent comparison
-    const lastKnownVersions = this.lastVerdaccioVersions;
-    const allKeys = [...new Set([
-      ...Object.keys(verdaccioVersions),
-      ...Object.keys(lastKnownVersions ?? {})
-    ])].sort();
-    const versionsChanged = !lastKnownVersions ||
-      JSON.stringify(verdaccioVersions, allKeys) !== JSON.stringify(lastKnownVersions, allKeys);
-
-    // When versions change, clear ALL panels' cached relevantVersions.
-    // This prevents stale cache hits when: Panel A built → versions change → Panel B built
-    // (updates lastKnownVersions) → Panel A rebuilt (would incorrectly use stale cache).
-    if (versionsChanged) {
-      this.panelRelevantVersionsCache.clear();
-    }
-
-    let relevantVersions: Record<string, string>;
-
-    if (!versionsChanged && canonicalPath) {
-      // Nothing changed - use cached relevant versions for this panel
-      relevantVersions = this.panelRelevantVersionsCache.get(canonicalPath) ?? {};
-    } else {
-      // Something changed - compute transitive deps for this panel
-      relevantVersions = {};
-
-      // Check if we're in a monorepo context (packages/ directory exists)
-      // If not, we can't walk transitive deps - fall back to including all verdaccioVersions
-      // Use app packages dir (returns null in packaged builds)
-      const packagesDir = getPackagesDir();
-
-      if (!packagesDir) {
-        // Non-monorepo context: include all Verdaccio versions in hash
-        // This is safe (may cause extra reinstalls) but correct
-        relevantVersions = { ...verdaccioVersions };
-      } else {
-        // Monorepo context: walk transitive deps for precise hash
-        const visited = new Set<string>();
-
-        const walkDeps = (pkgName: string) => {
-          if (visited.has(pkgName)) return;
-
-          // Determine base directory for this package
-          let pkgJsonPath: string | null = null;
-
-          if (pkgName.startsWith("@natstack/")) {
-            const pkgDir = pkgName.replace("@natstack/", "");
-            pkgJsonPath = path.join(packagesDir, pkgDir, "package.json");
-          } else if (userWorkspace) {
-            if (pkgName.startsWith("@workspace-panels/")) {
-              const pkgDir = pkgName.replace("@workspace-panels/", "");
-              pkgJsonPath = path.join(userWorkspace.path, "panels", pkgDir, "package.json");
-            } else if (pkgName.startsWith("@workspace-workers/")) {
-              const pkgDir = pkgName.replace("@workspace-workers/", "");
-              pkgJsonPath = path.join(userWorkspace.path, "workers", pkgDir, "package.json");
-            } else if (pkgName.startsWith("@workspace/")) {
-              const pkgDir = pkgName.replace("@workspace/", "");
-              pkgJsonPath = path.join(userWorkspace.path, "packages", pkgDir, "package.json");
-            }
-          }
-
-          // Only track packages we know about (Verdaccio-published packages)
-          if (!pkgJsonPath) return;
-
-          visited.add(pkgName);
-          if (verdaccioVersions[pkgName]) {
-            relevantVersions[pkgName] = verdaccioVersions[pkgName];
-          }
-
-          // Walk transitive deps
-          if (fs.existsSync(pkgJsonPath)) {
-            try {
-              const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8"));
-              for (const dep of Object.keys(pkgJson.dependencies ?? {})) {
-                walkDeps(dep);
-              }
-            } catch {
-              // Malformed package.json - skip this package's transitive deps
-              // The direct dep is already added to relevantVersions above
-            }
-          }
-        };
-
-        // Start from panel's direct deps
-        for (const dep of Object.keys(resolvedDependencies)) {
-          walkDeps(dep);
-        }
-      }
-
-      // Cache for next time
-      if (canonicalPath) {
-        this.panelRelevantVersionsCache.set(canonicalPath, relevantVersions);
-      }
-      this.lastVerdaccioVersions = verdaccioVersions;
-    }
-
-    const hashInput = serialized + JSON.stringify(relevantVersions, Object.keys(relevantVersions).sort());
-    const desiredHash = crypto.createHash("sha256").update(hashInput).digest("hex");
-
-    const nodeModulesPath = path.join(depsDir, "node_modules");
-    const packageLockPath = path.join(depsDir, "package-lock.json");
-
-    if (previousHash === desiredHash && fs.existsSync(nodeModulesPath)) {
-      const existingContent = fs.existsSync(packageJsonPath)
-        ? fs.readFileSync(packageJsonPath, "utf-8")
-        : null;
-      if (existingContent !== serialized) {
-        fs.writeFileSync(packageJsonPath, serialized);
-      }
-      return desiredHash;
-    }
-
-    fs.writeFileSync(packageJsonPath, serialized);
-
-    if (fs.existsSync(packageLockPath)) {
-      fs.rmSync(packageLockPath, { recursive: true, force: true });
-    }
-
-    // Use content-addressable package store for efficient package installation
-    // 1. Resolution: Arborist builds ideal tree with hoisting/peer deps
-    // 2. Fetch: Store packages by content hash (deduplicated)
-    // 3. Link: Hard-link from store to node_modules (space efficient)
-
-    const store = await getPackageStore();
-
-    // Check resolution cache first (skip Arborist if deps unchanged)
-    // Use desiredHash as cache key - it includes both package.json content AND
-    // Verdaccio version state (relevantVersions), so republishes invalidate cache
-    const cachedResolution = store.getResolutionCache(desiredHash);
-
-    let tree: SerializedTree;
-
-    if (cachedResolution) {
-      // Use cached resolution
-      tree = JSON.parse(cachedResolution.treeJson) as SerializedTree;
-    } else {
-      // Run Arborist for dependency resolution (tree structure, hoisting, peer deps)
-      const arborist = new Arborist({
-        path: depsDir,
-        registry: verdaccioUrl,
-        preferOnline: true,
-      });
-      const idealTree = await arborist.buildIdealTree();
-
-      // Serialize tree for caching and linking
-      tree = serializeTree(idealTree);
-
-      // Cache the resolution (keyed by desiredHash which includes Verdaccio versions)
-      store.setResolutionCache(desiredHash, JSON.stringify(tree));
-    }
-
-    // Fetch all packages to store (deduplicates, verifies integrity)
-    const fetcher = await createPackageFetcher(verdaccioUrl);
-    const packages = tree.packages.map((p) => ({
-      name: p.name,
-      version: p.version,
-      integrity: p.integrity,
-    }));
-    await fetcher.fetchAll(packages, { concurrency: 10 });
-
-    // Link packages from store to node_modules (hard links, preserves tree structure)
-    const linker = await createPackageLinker(fetcher);
-    await linker.linkFromCache(depsDir, tree);
-
-    return desiredHash;
+    return result?.hash;
   }
 
   // ===========================================================================
@@ -2237,7 +1789,7 @@ import ${JSON.stringify(relativeUserEntry)};
       }
 
       // Get verdaccio versions hash once at the start for consistent cache keys
-      const versionsHash = await this.getVerdaccioVersionsHash();
+      const versionsHash = await sharedGetVerdaccioVersionsHash();
 
       // Step 1: Early cache check (fast - no git checkout needed)
       const earlyCommit = await resolveTargetCommit(panelsRoot, panelPath, version);
@@ -2262,9 +1814,14 @@ import ${JSON.stringify(relativeUserEntry)};
       onProgress?.({ state: "cloning", message: "Fetching panel source...", log: buildLog });
       log(`Provisioning ${panelPath}${version ? ` at ${JSON.stringify(version)}` : ""}`);
 
-      const provision = await provisionPanelVersion(panelsRoot, panelPath, version, (progress) => {
-        log(`Git: ${progress.message}`);
-        onProgress?.({ state: "cloning", message: progress.message, log: buildLog });
+      const provision = await provisionSource({
+        sourceRoot: panelsRoot,
+        sourcePath: panelPath,
+        version,
+        onProgress: (progress: ProvisionProgress) => {
+          log(`Git: ${progress.message}`);
+          onProgress?.({ state: "cloning", message: progress.message, log: buildLog });
+        },
       });
 
       cleanup = provision.cleanup;
@@ -2281,7 +1838,7 @@ import ${JSON.stringify(relativeUserEntry)};
 
       // Check for cached dependency hash to avoid unnecessary npm installs
       const dependencyCacheKey = `deps:${canonicalPanelPath}:${sourceCommit}`;
-      const previousDependencyHash = this.getDependencyHashFromCache(dependencyCacheKey);
+      const previousDependencyHash = getDependencyHashFromCache(dependencyCacheKey);
 
       const buildResult = await this.buildFromSource({
         sourcePath,
@@ -2294,7 +1851,7 @@ import ${JSON.stringify(relativeUserEntry)};
 
       // Save the new dependency hash for next time
       if (buildResult.success && buildResult.dependencyHash) {
-        await this.saveDependencyHashToCache(dependencyCacheKey, buildResult.dependencyHash);
+        await saveDependencyHashToCache(dependencyCacheKey, buildResult.dependencyHash);
       }
 
       if (!buildResult.success) {
@@ -2429,7 +1986,7 @@ import ${JSON.stringify(relativeUserEntry)};
 
     try {
       // Get verdaccio versions hash once at the start for consistent cache keys
-      const versionsHash = await this.getVerdaccioVersionsHash();
+      const versionsHash = await sharedGetVerdaccioVersionsHash();
 
       // Step 1: Early cache check (fast - no git checkout needed)
       const earlyCommit = await resolveTargetCommit(panelsRoot, workerPath, version);
@@ -2454,9 +2011,14 @@ import ${JSON.stringify(relativeUserEntry)};
       onProgress?.({ state: "cloning", message: "Fetching worker source...", log: buildLog });
       log(`Provisioning ${workerPath}${version ? ` at ${JSON.stringify(version)}` : ""}`);
 
-      const provision = await provisionPanelVersion(panelsRoot, workerPath, version, (progress) => {
-        log(`Git: ${progress.message}`);
-        onProgress?.({ state: "cloning", message: progress.message, log: buildLog });
+      const provision = await provisionSource({
+        sourceRoot: panelsRoot,
+        sourcePath: workerPath,
+        version,
+        onProgress: (progress: ProvisionProgress) => {
+          log(`Git: ${progress.message}`);
+          onProgress?.({ state: "cloning", message: progress.message, log: buildLog });
+        },
       });
 
       cleanup = provision.cleanup;
@@ -2492,7 +2054,7 @@ import ${JSON.stringify(relativeUserEntry)};
       log(`Installing dependencies...`);
 
       const dependencyCacheKey = `deps:${canonicalWorkerPath}:${sourceCommit}`;
-      const previousDependencyHash = this.getDependencyHashFromCache(dependencyCacheKey);
+      const previousDependencyHash = getDependencyHashFromCache(dependencyCacheKey);
 
       const workerDependencies = this.mergeWorkerDependencies(manifest.dependencies);
       const dependencyHash = await this.installDependencies(
@@ -2503,7 +2065,7 @@ import ${JSON.stringify(relativeUserEntry)};
       );
 
       if (dependencyHash) {
-        await this.saveDependencyHashToCache(dependencyCacheKey, dependencyHash);
+        await saveDependencyHashToCache(dependencyCacheKey, dependencyHash);
       }
       log(`Dependencies installed`);
 

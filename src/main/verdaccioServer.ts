@@ -141,7 +141,8 @@ function isWorkspacePackage(pkgName: string): boolean {
     pkgName.startsWith("@natstack/") ||
     pkgName.startsWith("@workspace/") ||
     pkgName.startsWith("@workspace-panels/") ||
-    pkgName.startsWith("@workspace-workers/")
+    pkgName.startsWith("@workspace-workers/") ||
+    pkgName.startsWith("@workspace-agents/")
   );
 }
 
@@ -378,6 +379,10 @@ export class VerdaccioServer {
         publish: "$all",
       })
       .addPackageAccess("@workspace-workers/*", {
+        access: "$all",
+        publish: "$all",
+      })
+      .addPackageAccess("@workspace-agents/*", {
         access: "$all",
         publish: "$all",
       })
@@ -1295,6 +1300,11 @@ export class VerdaccioServer {
       allPackages.push(...this.discoverPackagesInDir(workersDir));
     }
 
+    const agentsDir = path.join(userWorkspacePath, "agents");
+    if (fs.existsSync(agentsDir)) {
+      allPackages.push(...this.discoverPackagesInDir(agentsDir));
+    }
+
     if (allPackages.length === 0) {
       return versions;
     }
@@ -1373,6 +1383,11 @@ export class VerdaccioServer {
     if (pkgName.startsWith("@workspace-workers/")) {
       const name = pkgName.replace("@workspace-workers/", "");
       return path.join(workspacePath, "workers", name);
+    }
+
+    if (pkgName.startsWith("@workspace-agents/")) {
+      const name = pkgName.replace("@workspace-agents/", "");
+      return path.join(workspacePath, "agents", name);
     }
 
     if (pkgName.startsWith("@workspace/")) {

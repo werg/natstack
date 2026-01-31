@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { getBuildArtifactsDirectory } from "../paths.js";
 
-export type BuildKind = "panel" | "worker";
+export type BuildKind = "panel" | "worker" | "agent";
 
 export interface BuildArtifactKey {
   kind: BuildKind;
