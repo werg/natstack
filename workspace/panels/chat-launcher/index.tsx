@@ -8,7 +8,12 @@
  */
 
 import { useState, useCallback, useEffect } from "react";
-import { pubsubConfig, buildNsLink, closeSelf, getStateArgs, createChild, rpc } from "@natstack/runtime";
+import { pubsubConfig, buildNsLink, closeSelf, getStateArgs, createChild, rpc, db } from "@natstack/runtime";
+import { setDbOpen } from "@natstack/agentic-messaging";
+
+// Configure agentic-messaging to use runtime's db
+setDbOpen(db.open);
+
 import { usePanelTheme } from "@natstack/react";
 import { Theme } from "@radix-ui/themes";
 import {

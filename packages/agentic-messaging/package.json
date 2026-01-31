@@ -35,7 +35,6 @@
   "dependencies": {
     "@natstack/core": "workspace:*",
     "@natstack/pubsub": "workspace:*",
-    "@natstack/runtime": "workspace:*",
     "ignore": "^5.3.2",
     "picomatch": "^4.0.0",
     "zod": "^3.24.1",

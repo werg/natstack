@@ -1,4 +1,5 @@
-import type { MethodAdvertisement, Attachment, ContextWindowUsage } from "@natstack/agentic-messaging";
+import type { MethodAdvertisement, ContextWindowUsage } from "@natstack/agentic-messaging";
+import type { Attachment } from "@natstack/pubsub";
 import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 
 /** Metadata for participants in this channel */

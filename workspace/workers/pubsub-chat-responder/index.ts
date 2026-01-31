@@ -5,7 +5,15 @@
  * Listens for user messages on a channel and responds using AI streaming.
  */
 
-import { pubsubConfig, id, unloadSelf, getStateArgs } from "@natstack/runtime";
+import { pubsubConfig, id, unloadSelf, getStateArgs, db, rpc } from "@natstack/runtime";
+import { setDbOpen } from "@natstack/agentic-messaging";
+import { setRpc } from "@natstack/ai";
+
+// Configure agentic-messaging to use runtime's db
+setDbOpen(db.open);
+// Configure ai package to use runtime's rpc
+setRpc(rpc);
+
 import {
   connect,
   createLogger,
@@ -34,11 +42,11 @@ import {
   filterImageAttachments,
   validateAttachments,
   uint8ArrayToBase64,
-  type Attachment,
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
 } from "@natstack/agentic-messaging";
+import type { Attachment } from "@natstack/pubsub";
 import type { Message, ToolResultPart, ToolDefinition } from "@natstack/ai";
 import {
   AI_RESPONDER_PARAMETERS,

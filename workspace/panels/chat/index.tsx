@@ -18,12 +18,8 @@ import {
   type IncomingToolRoleRequestEvent,
   type IncomingToolRoleResponseEvent,
   type IncomingToolRoleHandoffEvent,
-  type Participant,
-  type RosterUpdate,
   type MethodDefinition,
   type MethodExecutionContext,
-  type Attachment,
-  type AttachmentInput,
   CONTENT_TYPE_TYPING,
   CONTENT_TYPE_INLINE_UI,
   type TypingData,
@@ -33,6 +29,7 @@ import {
   FeedbackFormArgsSchema,
   FeedbackCustomArgsSchema,
 } from "@natstack/agentic-messaging";
+import type { Participant, RosterUpdate, Attachment, AttachmentInput } from "@natstack/pubsub";
 import {
   useFeedbackManager,
   useToolApproval,

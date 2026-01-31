@@ -14,7 +14,12 @@
  * 6. Tool calls flow: Codex -> HTTP MCP server -> pubsub
  */
 
-import { pubsubConfig, id, getStateArgs, unloadSelf } from "@natstack/runtime";
+import { pubsubConfig, id, getStateArgs, unloadSelf, db } from "@natstack/runtime";
+import { setDbOpen } from "@natstack/agentic-messaging";
+
+// Configure agentic-messaging to use runtime's db
+setDbOpen(db.open);
+
 import {
   connect,
   createToolsForAgentSDK,
@@ -44,12 +49,11 @@ import {
   buildOpenAIContents,
   filterImageAttachments,
   validateAttachments,
-  type Attachment,
   type AgenticClient,
-  type Participant,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
 } from "@natstack/agentic-messaging";
+import type { Attachment, Participant } from "@natstack/pubsub";
 import { CODEX_PARAMETERS } from "@natstack/agentic-messaging/config";
 import { z } from "zod";
 import { Codex } from "@openai/codex-sdk";

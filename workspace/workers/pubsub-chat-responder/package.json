@@ -25,6 +25,7 @@
   "dependencies": {
     "@natstack/runtime": "workspace:*",
     "@natstack/ai": "workspace:*",
-    "@natstack/agentic-messaging": "workspace:*"
+    "@natstack/agentic-messaging": "workspace:*",
+    "@natstack/pubsub": "workspace:*"
   }
 }

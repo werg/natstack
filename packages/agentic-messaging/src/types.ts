@@ -706,6 +706,28 @@ export interface ConnectOptions<T extends AgenticParticipantMetadata = AgenticPa
   /** Replay behavior: collect (default), stream, or skip */
   replayMode?: "collect" | "stream" | "skip";
 
+  /**
+   * Resume replay from a specific pubsub message ID (for checkpoint-based recovery).
+   *
+   * When provided (and replayMode !== "skip"), the server replays messages starting
+   * from this ID instead of from the beginning. This enables agents to persist their
+   * last processed pubsub ID and resume without full replay on restart.
+   *
+   * - undefined: Full replay from beginning (default for "collect"/"stream" modes)
+   * - number: Resume from this checkpoint (server sends messages with id > replaySinceId)
+   *
+   * @example
+   * ```typescript
+   * // Agent persists lastPubsubId in state, uses it on restart:
+   * const client = await connect({
+   *   ...options,
+   *   replayMode: "collect",
+   *   replaySinceId: this.state.lastPubsubId, // Resume from checkpoint
+   * });
+   * ```
+   */
+  replaySinceId?: number;
+
   /** This client's ID (for skipOwnMessages filtering) */
   clientId?: string;
   /** Skip messages sent by this client (echo suppression) */

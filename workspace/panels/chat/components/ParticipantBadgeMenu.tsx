@@ -1,7 +1,8 @@
 import { useState, useCallback, useMemo } from "react";
 import { Badge, DropdownMenu, Text } from "@radix-ui/themes";
 import { DotFilledIcon, TriangleDownIcon } from "@radix-ui/react-icons";
-import type { Participant, MethodAdvertisement, ContextWindowUsage } from "@natstack/agentic-messaging";
+import type { Participant } from "@natstack/pubsub";
+import type { MethodAdvertisement, ContextWindowUsage } from "@natstack/agentic-messaging";
 import type { ChatParticipantMetadata } from "../types";
 import { MethodArgumentsModal } from "./MethodArgumentsModal";
 import { schemaHasRequiredParams } from "./JsonSchemaForm";

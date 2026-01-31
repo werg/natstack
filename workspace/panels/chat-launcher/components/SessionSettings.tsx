@@ -8,7 +8,8 @@
 import { useState, useEffect } from "react";
 import { Card, Flex, Text, Select } from "@radix-ui/themes";
 import { ParameterEditor } from "@natstack/react";
-import { rpc, type FieldDefinition, type FieldValue } from "@natstack/runtime";
+import { rpc } from "@natstack/runtime";
+import type { FieldDefinition, FieldValue } from "@natstack/core";
 import type { SessionConfig } from "../hooks/useAgentSelection";
 
 /** Template info returned from the bridge */

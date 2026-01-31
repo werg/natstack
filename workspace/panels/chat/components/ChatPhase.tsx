@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, type ComponentType } from "react";
 import { Badge, Box, Button, Callout, Card, Flex, IconButton, ScrollArea, Text, TextArea, Theme } from "@radix-ui/themes";
 import { PaperPlaneIcon, ImageIcon, CopyIcon, CheckIcon } from "@radix-ui/react-icons";
-import type { Participant, AttachmentInput } from "@natstack/agentic-messaging";
+import type { Participant, AttachmentInput } from "@natstack/pubsub";
 import { CONTENT_TYPE_INLINE_UI, prettifyToolName } from "@natstack/agentic-messaging";
 import {
   FeedbackContainer,

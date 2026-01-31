@@ -26,6 +26,7 @@
   "dependencies": {
     "@natstack/runtime": "workspace:*",
     "@natstack/agentic-messaging": "workspace:*",
+    "@natstack/pubsub": "workspace:*",
     "@anthropic-ai/claude-agent-sdk": "*",
     "zod": "*"
   }

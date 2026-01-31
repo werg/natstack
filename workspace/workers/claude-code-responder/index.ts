@@ -9,7 +9,12 @@ import { execSync } from "child_process";
 import { readdir, stat, readFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
-import { pubsubConfig, id, getStateArgs, unloadSelf } from "@natstack/runtime";
+import { pubsubConfig, id, getStateArgs, unloadSelf, db } from "@natstack/runtime";
+import { setDbOpen } from "@natstack/agentic-messaging";
+
+// Configure agentic-messaging to use runtime's db
+setDbOpen(db.open);
+
 import {
   connect,
   createToolsForAgentSDK,
@@ -45,9 +50,7 @@ import {
   // Subagent utilities
   SubagentManager,
   type SDKStreamEvent,
-  type Attachment,
   type AgenticClient,
-  type Participant,
   type AgentSDKToolDefinition,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
@@ -56,6 +59,7 @@ import {
   // Error types for error handling
   AgenticError,
 } from "@natstack/agentic-messaging";
+import type { Attachment, Participant } from "@natstack/pubsub";
 // Session recovery utilities (Node.js only)
 import {
   recoverSession,

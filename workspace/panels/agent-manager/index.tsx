@@ -20,7 +20,13 @@ import {
   SegmentedControl,
 } from "@radix-ui/themes";
 import { usePanelTheme, ParameterEditor } from "@natstack/react";
-import { db, type FieldValue, type FieldDefinition } from "@natstack/runtime";
+import { db } from "@natstack/runtime";
+import { setDbOpen } from "@natstack/agentic-messaging";
+
+// Configure agentic-messaging to use runtime's db
+setDbOpen(db.open);
+
+import type { FieldValue, FieldDefinition } from "@natstack/core";
 import {
   getAgentRegistry,
   type AgentDefinition,

@@ -1,6 +1,4 @@
-import { db } from "@natstack/runtime";
-
-type Database = Awaited<ReturnType<typeof db.open>>;
+import { openDb, type Database } from "./db-inject.js";
 
 export interface SessionRow {
   sessionKey: string;
@@ -39,7 +37,7 @@ export class SessionDb {
   async initialize(): Promise<void> {
     // Database named by channel for session isolation
     const dbName = `channel-${this.channel}-sessions`;
-    this.db = await db.open(dbName);
+    this.db = await openDb(dbName);
     await this.initializeSchema();
   }
 

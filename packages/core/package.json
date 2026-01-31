@@ -29,6 +29,10 @@
     "./database": {
       "types": "./dist/database.d.ts",
       "default": "./dist/database.js"
+    },
+    "./base64": {
+      "types": "./dist/base64.d.ts",
+      "default": "./dist/base64.js"
     }
   },
   "files": [

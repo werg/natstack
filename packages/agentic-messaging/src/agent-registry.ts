@@ -5,7 +5,7 @@
  * with a simple database table that chat-launcher reads directly.
  */
 
-import { db } from "@natstack/runtime";
+import { openDb, type Database } from "./db-inject.js";
 import type { FieldDefinition, MethodAdvertisement, RequiredMethodSpec } from "@natstack/core";
 
 // Re-export types for backward compatibility
@@ -55,7 +55,7 @@ interface AgentDefinitionRow {
  * Agent Registry - CRUD operations for agent definitions.
  */
 export class AgentRegistry {
-  private dbPromise: Promise<Awaited<ReturnType<typeof db.open>>> | null = null;
+  private dbPromise: Promise<Database> | null = null;
 
   /**
    * Initialize the database and create the table if needed.
@@ -67,7 +67,7 @@ export class AgentRegistry {
   private async getDb() {
     if (!this.dbPromise) {
       this.dbPromise = (async () => {
-        const database = await db.open(REGISTRY_DB_NAME);
+        const database = await openDb(REGISTRY_DB_NAME);
         await database.exec(`
           CREATE TABLE IF NOT EXISTS agent_definitions (
             id TEXT PRIMARY KEY,

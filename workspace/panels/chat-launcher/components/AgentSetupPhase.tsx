@@ -12,7 +12,7 @@ import {
 } from "@radix-ui/themes";
 import { InfoCircledIcon, ChevronDownIcon, ChevronRightIcon } from "@radix-ui/react-icons";
 import { ParameterEditor } from "@natstack/react";
-import type { FieldValue } from "@natstack/runtime";
+import type { FieldValue } from "@natstack/core";
 import type {
   AgentSelectionWithRequirements,
   SessionConfig,

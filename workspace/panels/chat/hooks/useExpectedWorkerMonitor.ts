@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from "react";
 import { ensurePanelLoaded } from "@natstack/runtime";
-import type { Participant } from "@natstack/agentic-messaging";
+import type { Participant } from "@natstack/pubsub";
 import type { ChatParticipantMetadata } from "../types";
 
 export interface WorkerBuildError {

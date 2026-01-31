@@ -1,6 +1,6 @@
 {
-  "name": "@natstack/ai",
-  "version": "0.1.0-f8a5baa65ee1",
+  "name": "@natstack/agent-runtime",
+  "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -10,24 +10,20 @@
       "default": "./dist/index.js"
     }
   },
-  "files": [
-    "dist"
-  ],
+  "files": ["dist"],
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
     "dev": "tsc --project tsconfig.build.json --watch"
   },
   "dependencies": {
     "@natstack/core": "workspace:*",
-    "@natstack/rpc": "workspace:*",
-    "zod": "^3.24.1",
-    "zod-to-json-schema": "^3.25.0"
+    "@natstack/rpc": "workspace:*"
   },
   "peerDependencies": {
-    "ai": "^6.0.0"
+    "@natstack/agentic-messaging": "workspace:*",
+    "@natstack/ai": "workspace:*"
   },
   "devDependencies": {
-    "ai": "6.0.0-beta.114",
     "typescript": "^5.9.3"
   }
 }

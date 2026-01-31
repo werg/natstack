@@ -1,8 +1,18 @@
+/**
+ * Base64 - Portable base64 encoding/decoding utilities.
+ *
+ * Works in both Node.js and browser environments.
+ * Used by @natstack/ai and other packages that need to encode binary data.
+ */
+
 const getBuffer = (): (typeof Buffer) | null => {
   const BufferCtor = (globalThis as unknown as { Buffer?: typeof Buffer }).Buffer;
   return typeof BufferCtor?.from === "function" ? BufferCtor : null;
 };
 
+/**
+ * Encode a Uint8Array to base64 string.
+ */
 export function encodeBase64(data: Uint8Array): string {
   if (!(data instanceof Uint8Array)) {
     throw new TypeError("Input must be Uint8Array");
@@ -29,6 +39,9 @@ export function encodeBase64(data: Uint8Array): string {
   return btoaFn(binary);
 }
 
+/**
+ * Decode a base64 string to Uint8Array.
+ */
 export function decodeBase64(encoded: string): Uint8Array {
   if (typeof encoded !== "string") {
     throw new TypeError("Input must be string");

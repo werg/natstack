@@ -3,6 +3,9 @@ export * from "./types.js";
 export * from "./protocol.js";
 export { connect, createToolsForAgentSDK, type AgentSDKToolDefinition } from "./client.js";
 
+// Database injection (for runtime configuration)
+export { setDbOpen, getDbOpen, openDb, type Database, type DbOpener } from "./db-inject.js";
+
 // Async utilities
 export { AsyncQueue, createFanout } from "./async-queue.js";
 export type { AgenticClient } from "./types.js";
@@ -13,9 +16,6 @@ export {
   createRichTextChatSystemPrompt,
   createRestrictedModeSystemPrompt,
 } from "./prompts.js";
-
-// Re-export commonly needed types from pubsub so consumers don't need a direct dependency
-export type { Participant, RosterUpdate, ParticipantMetadata, Attachment, AttachmentInput } from "@natstack/pubsub";
 
 // JSON Schema utilities
 export { jsonSchemaToZod, jsonSchemaToZodRawShape, isRecord } from "./json-schema-to-zod.js";

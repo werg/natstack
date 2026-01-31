@@ -341,6 +341,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     channelConfig: providedChannelConfig,
     reconnect,
     replayMode = "collect",
+    replaySinceId,
     methods: initialMethods,
     clientId,
     skipOwnMessages,
@@ -368,10 +369,15 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
 
   // Determine replay starting point:
   // - undefined: No replay (skip mode) - server sends no historical messages
-  // - 0: Replay everything from beginning
-  // Note: Checkpoint-based resumption happens on RECONNECTION (handled by pubsub layer),
-  // not on initial connection. Initial connection always replays from beginning.
-  const sinceId = replayMode === "skip" ? undefined : 0;
+  // - 0: Replay everything from beginning (default for collect/stream modes)
+  // - number: Resume from checkpoint (replaySinceId) - server sends messages with id > replaySinceId
+  //
+  // This enables agents to persist their last processed pubsub ID and resume without
+  // full replay on restart. The pubsub layer handles reconnection replay automatically
+  // using lastSeenId, but initial connection now also supports checkpoint-based resumption.
+  const sinceId = replayMode === "skip"
+    ? undefined
+    : (replaySinceId ?? 0);
 
   const instanceId = randomId();
 

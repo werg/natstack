@@ -10,9 +10,7 @@
  */
 
 import { createRpcBridge, type RpcBridge, type RpcTransport, type RpcMessage } from "@natstack/rpc";
-import { encodeBase64 as encodeBase64Impl, decodeBase64 as decodeBase64Impl } from "./shared/base64.js";
-import { createDbClient, type Database } from "./shared/db.js";
-import * as formSchema from "@natstack/core/form-schema";
+import { createDbClient, type DatabaseInterface } from "@natstack/core";
 import * as contextUtils from "./core/context.js";
 import {
   buildNsLink as buildNsLinkImpl,
@@ -33,7 +31,7 @@ export type {
   BootstrapResult,
 } from "./types.js";
 
-export type { Database } from "./shared/db.js";
+export type { DatabaseInterface as Database } from "@natstack/core";
 
 export type {
   CreateChildOptions,
@@ -68,36 +66,6 @@ export type {
 } from "./core/index.js";
 
 export type { Runtime } from "./setup/createRuntime.js";
-
-// Form schema types - re-exported from @natstack/core for backward compatibility
-export type {
-  PrimitiveFieldValue,
-  FieldValue,
-  FieldType,
-  ConditionOperator,
-  FieldCondition,
-  FieldOption,
-  SliderNotch,
-  FieldWarning,
-  FieldDefinition,
-  FormSchema,
-} from "@natstack/core";
-
-// Re-export additional core types
-export type {
-  MethodAdvertisement,
-  RequiredMethodSpec,
-  AgentManifest,
-  AgentState,
-  AgentInstanceInfo,
-  HostToAgentMessage,
-  AgentToHostMessage,
-  AgentInitConfig,
-  DbRunResult,
-  DatabaseInterface,
-  DatabaseOpener,
-} from "@natstack/core";
-export { isHostToAgentMessage, isAgentToHostMessage } from "@natstack/core";
 
 // =============================================================================
 // Shell Transport Detection and RPC Bridge Creation
@@ -153,6 +121,18 @@ function createShellRpcBridge(): RpcBridge | null {
 // Initialize RPC bridge for shell
 const shellRpc = createShellRpcBridge();
 
+// Configure dependency injection for shared packages when in shell environment
+// These packages use injection to avoid circular dependencies with runtime
+if (shellRpc) {
+  // Lazy import to avoid loading these modules when not in shell
+  import("@natstack/agentic-messaging").then(({ setDbOpen }) => {
+    setDbOpen((name, readOnly) => createDbClient(shellRpc).open(name, readOnly));
+  });
+  import("@natstack/ai").then(({ setRpc }) => {
+    setRpc(shellRpc);
+  });
+}
+
 // =============================================================================
 // Exports - Actual values for shell, declarations for panel/worker
 // =============================================================================
@@ -176,8 +156,6 @@ export const contextId: string = g.__natstackContextId ?? "";
 export const parentId: string | null = null; // Shell has no parent
 
 // Utility exports - these work in any environment
-export const encodeBase64 = encodeBase64Impl;
-export const decodeBase64 = decodeBase64Impl;
 export const z = zImpl;
 export const defineContract = defineContractImpl;
 export const noopParent = noopParentImpl;
@@ -185,14 +163,6 @@ export const noopParent = noopParentImpl;
 export const buildNsLink = buildNsLinkImpl;
 export const buildAboutLink = buildAboutLinkImpl;
 export const buildFocusLink = buildFocusLinkImpl;
-
-// Form schema utilities
-export const evaluateCondition = formSchema.evaluateCondition;
-export const isFieldVisible = formSchema.isFieldVisible;
-export const isFieldEnabled = formSchema.isFieldEnabled;
-export const getFieldWarning = formSchema.getFieldWarning;
-export const groupFields = formSchema.groupFields;
-export const getFieldDefaults = formSchema.getFieldDefaults;
 
 // Context utilities
 export const parseContextId = contextUtils.parseContextId;
@@ -234,9 +204,9 @@ const notInShell = (name: string) => () => {
 };
 
 // Create db client for shell using the shell RPC bridge
-export const db: { open(name: string, readOnly?: boolean): Promise<Database> } = shellRpc
+export const db: { open(name: string, readOnly?: boolean): Promise<DatabaseInterface> } = shellRpc
   ? createDbClient(shellRpc)
-  : { open: notInShell("db.open") as () => Promise<Database> };
+  : { open: notInShell("db.open") as () => Promise<DatabaseInterface> };
 
 // fs is only available in panels/workers via natstack-panel condition
 export const fs = new Proxy({} as import("./types.js").RuntimeFs, {

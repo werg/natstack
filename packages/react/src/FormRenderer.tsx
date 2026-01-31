@@ -27,13 +27,13 @@ import type {
   FieldValue,
   FieldWarning,
   FormSchema,
-} from "@natstack/runtime";
+} from "@natstack/core";
 import {
   isFieldVisible,
   isFieldEnabled,
   getFieldWarning,
   groupFields,
-} from "@natstack/runtime";
+} from "@natstack/core";
 import { formatSliderValue } from "./ParameterEditor.js";
 
 /**

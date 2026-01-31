@@ -53,4 +53,8 @@ export {
 export type { PubSubConfig } from "./config-types.js";
 
 // Database
-export type { DbRunResult, DatabaseInterface, DatabaseOpener } from "./database.js";
+export type { DbRunResult, DatabaseInterface, DatabaseOpener, RpcCaller, DbClient } from "./database.js";
+export { createDbClient } from "./database.js";
+
+// Base64 utilities
+export { encodeBase64, decodeBase64 } from "./base64.js";

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { ensurePanelLoaded } from "@natstack/runtime";
-import type { Participant, IncomingPresenceEvent } from "@natstack/agentic-messaging";
+import type { Participant } from "@natstack/pubsub";
+import type { IncomingPresenceEvent } from "@natstack/agentic-messaging";
 import type { ChatParticipantMetadata } from "../types";
 
 interface AgentRecoveryState {

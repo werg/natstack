@@ -10,6 +10,9 @@
 // Export the pre-wired ai client
 export { ai } from "./client.js";
 
+// RPC injection (for runtime configuration)
+export { setRpc, getRpc } from "./rpc-inject.js";
+
 // Re-export all public types.
 export type * from "./types.js";
 

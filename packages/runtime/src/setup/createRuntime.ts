@@ -1,5 +1,5 @@
 import { createRpcBridge, type RpcTransport } from "@natstack/rpc";
-import { createDbClient } from "../shared/db.js";
+import { createDbClient } from "@natstack/core";
 import { createChildManager } from "../shared/children.js";
 import {
   noopParent,
