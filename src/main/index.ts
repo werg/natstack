@@ -32,6 +32,7 @@ import { getCdpServer, type CdpServer } from "./cdpServer.js";
 import { getPubSubServer, type PubSubServer } from "./pubsubServer.js";
 import { createVerdaccioServer, type VerdaccioServer } from "./verdaccioServer.js";
 import { createGitWatcher, type GitWatcher } from "./workspace/gitWatcher.js";
+import { initAgentDiscovery, shutdownAgentDiscovery } from "./agentDiscovery.js";
 import { eventService } from "./services/eventsService.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
 import { shutdownPackageStore, scheduleGC } from "./package-store/index.js";
@@ -584,6 +585,10 @@ app.on("ready", async () => {
       dispatcher.register("panel", handlePanelService);
       setShellServicesPanelManager(panelManager);
 
+      // Initialize agent discovery (scans agents/ directory and starts file watching)
+      await initAgentDiscovery(workspace.path);
+      log.info("[AgentDiscovery] Initialized");
+
       // Start Verdaccio server FIRST (other services may need to install packages)
       try {
         // Use app root for finding packages/ (not workspace parent)
@@ -720,6 +725,9 @@ app.on("will-quit", (event) => {
       console.error("[App] Failed to run shutdown cleanup:", e);
     }
   }
+
+  // Stop agent discovery file watching
+  shutdownAgentDiscovery();
 
   const hasResourcesToClean = gitServer || gitWatcher || cdpServer || pubsubServer || verdaccioServer;
   if (hasResourcesToClean) {

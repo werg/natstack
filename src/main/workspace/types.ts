@@ -169,6 +169,8 @@ export interface Workspace {
   gitReposPath: string;
   /** Absolute path to cache directory (workspace/.cache) */
   cachePath: string;
+  /** Absolute path to agents directory (workspace/agents) */
+  agentsPath: string;
 }
 
 /**

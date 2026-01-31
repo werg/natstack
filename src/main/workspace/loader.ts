@@ -400,6 +400,7 @@ export function createWorkspace(
   const contextsPath = path.join(resolvedPath, "contexts");
   const gitReposPath = resolvedPath;
   const cachePath = path.join(resolvedPath, ".cache");
+  const agentsPath = path.join(resolvedPath, "agents");
 
   // Only create directories/config when explicitly allowed
   const configPath = path.join(resolvedPath, WORKSPACE_CONFIG_FILE);
@@ -430,5 +431,6 @@ export function createWorkspace(
     contextsPath,
     gitReposPath,
     cachePath,
+    agentsPath,
   };
 }

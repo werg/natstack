@@ -36,6 +36,7 @@ import { getMainCacheManager } from "./cacheManager.js";
 import { isDev } from "./utils.js";
 import { getActiveWorkspace, getAppNodeModules } from "./paths.js";
 import { createDevLogger } from "./devLog.js";
+import { getAgentDiscovery } from "./agentDiscovery.js";
 
 const devLog = createDevLogger("AgentBuilder");
 
@@ -184,6 +185,19 @@ export class AgentBuilder {
       buildLog += message + "\n";
       devLog.verbose(message);
     };
+
+    // Verify agent exists in discovery
+    const discovery = getAgentDiscovery();
+    if (!discovery) {
+      return { success: false, error: "Agent discovery not initialized", buildLog };
+    }
+    const agent = discovery.get(agentName); // agentName = directory name = manifest.id
+    if (!agent) {
+      return { success: false, error: `Agent not found: ${agentName}`, buildLog };
+    }
+    if (!agent.valid) {
+      return { success: false, error: `Agent manifest invalid: ${agent.error}`, buildLog };
+    }
 
     try {
       // Step 1: Get verdaccio versions hash for cache key
