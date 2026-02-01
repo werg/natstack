@@ -137,7 +137,11 @@ export default function ProjectPanel() {
         : projectConfig.workingDirectory;
 
       // Create chat panel as child
-      const chatHandle = await createChild("panels/chat", { name: `chat-${channelId.slice(0, 8)}` }, {
+      // contextId in options sets storage partition, in stateArgs tells app which context
+      const chatHandle = await createChild("panels/chat", {
+        name: `chat-${channelId.slice(0, 8)}`,
+        contextId: sessionContextId,
+      }, {
         channelName: channelId,
         channelConfig: {
           workingDirectory: effectiveWorkingDirectory,
@@ -147,12 +151,16 @@ export default function ProjectPanel() {
       });
 
       // Spawn default agent with autonomy setting applied
+      // contextId in options sets storage partition for OPFS/IndexedDB sharing
       if (projectConfig.defaultAgentId) {
         const agentDef = await getAgentById(projectConfig.defaultAgentId);
         if (agentDef) {
           await createChild(
             getAgentWorkerSource(agentDef),
-            { name: `agent-${channelId.slice(0, 8)}` },
+            {
+              name: `agent-${channelId.slice(0, 8)}`,
+              contextId: sessionContextId,
+            },
             {
               channel: channelId,
               handle: getAgentHandle(agentDef),

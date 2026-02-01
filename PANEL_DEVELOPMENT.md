@@ -93,6 +93,41 @@ function ParentPanel() {
 }
 ```
 
+### Shared Storage with contextId
+
+When panels need to share the same OPFS/IndexedDB storage (e.g., chat + agents in a session):
+
+```tsx
+function SessionLauncher() {
+  const launchSession = async () => {
+    // Generate shared context ID for the session
+    const sessionContextId = crypto.randomUUID();
+
+    // Create chat panel with shared storage
+    const chat = await createChild("panels/chat", {
+      name: "chat-session",
+      contextId: sessionContextId,  // Sets storage partition
+    }, {
+      channelName: "my-channel",
+      contextId: sessionContextId,  // App logic also needs context ID
+    });
+
+    // Create agent worker sharing the same storage
+    await createChild("workers/agent", {
+      name: "agent",
+      contextId: sessionContextId,  // Same partition as chat
+    }, {
+      channel: "my-channel",
+      contextId: sessionContextId,
+    });
+  };
+
+  return <button onClick={launchSession}>Start Session</button>;
+}
+```
+
+**Important:** Pass `contextId` in both options (for storage) and stateArgs (for app logic).
+
 ### Bootstrap State
 
 When your panel declares `repoArgs`, use `useBootstrap` to track cloning progress:

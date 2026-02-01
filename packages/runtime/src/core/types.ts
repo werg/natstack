@@ -81,6 +81,12 @@ export interface CreateChildOptions {
    * If not provided, defaults to "contexts/default".
    */
   templateSpec?: string;
+  /**
+   * Explicit context ID for storage partition sharing.
+   * If provided, the panel will use this context ID instead of generating a new one.
+   * This enables multiple panels to share the same OPFS/IndexedDB partition.
+   */
+  contextId?: string;
 }
 
 export interface ChildCreationResult {

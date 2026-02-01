@@ -1235,14 +1235,16 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
     if (!channelName) return;
     // Pass contextId so new agents join with the correct channel context
     // Note: Use client.contextId (top-level field), NOT channelConfig.contextId
-    const contextId = clientRef.current?.contextId;
+    const launcherContextId = clientRef.current?.contextId;
     await createChild(
       "panels/chat-launcher",
       {
         name: "add-agent",
         focus: true,
+        // contextId in options ensures chat-launcher can access channel storage if needed
+        contextId: launcherContextId,
       },
-      { channelName, contextId }  // Pass via stateArgs
+      { channelName, contextId: launcherContextId }  // Also in stateArgs for app logic
     );
   }, [channelName, clientRef]);
 

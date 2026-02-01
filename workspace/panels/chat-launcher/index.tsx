@@ -165,14 +165,18 @@ export default function ChatLauncher() {
           // Note: contextId is passed separately, NOT as part of channelConfig
           const childHandle = await createChild(
             agent.agent.workerSource,
-            { name: `${agent.agent.id}-${targetChannelId.slice(0, 8)}` },
+            {
+              name: `${agent.agent.id}-${targetChannelId.slice(0, 8)}`,
+              // contextId in options sets the storage partition (OPFS/IndexedDB sharing)
+              contextId,
+            },
             {
               channel: targetChannelId,
               handle: agent.agent.proposedHandle,
               // Channel config values passed directly to avoid timing issues
               workingDirectory: channelConfig.workingDirectory,
               restrictedMode: channelConfig.restrictedMode,
-              // contextId passed separately (not part of channelConfig)
+              // contextId in stateArgs tells the worker which channel context it belongs to
               contextId,
               ...config,
             }
@@ -235,8 +239,10 @@ export default function ChatLauncher() {
         }
         // Fallback: navigate back to the chat panel
         // Include expectedWorkerPanelIds so chat panel can monitor them
+        // contextId in options sets storage partition, in stateArgs tells app which channel context
         const chatUrl = buildNsLink("panels/chat", {
           action: "navigate",
+          contextId,
           stateArgs: {
             channelName: targetChannelId,
             contextId,
@@ -247,8 +253,10 @@ export default function ChatLauncher() {
       } else {
         // New chat mode: navigate to the chat panel with channel ID, config, and contextId
         // Include expectedWorkerPanelIds so chat panel can monitor them for build failures
+        // contextId in options sets storage partition, in stateArgs tells app which channel context
         const chatUrl = buildNsLink("panels/chat", {
           action: "navigate",
+          contextId,
           stateArgs: {
             channelName: targetChannelId,
             channelConfig,

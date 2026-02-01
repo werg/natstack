@@ -82,6 +82,12 @@ type PanelCreateOptions = {
    * REQUIRED: Every panel must have a template for context initialization.
    */
   templateSpec: string;
+  /**
+   * Explicit context ID for storage partition sharing.
+   * If provided, the panel will use this context ID instead of generating a new one.
+   * This enables multiple panels to share the same OPFS/IndexedDB partition.
+   */
+  contextId?: string;
   /** If true, immediately focus the new panel after creation (only applies to app panels) */
   focus?: boolean;
   /** If true, replace the caller panel instead of creating a sibling */
@@ -796,13 +802,14 @@ export class PanelManager {
       // ns:// - New navigation protocol (middle/ctrl-click always creates child)
       if (url.startsWith("ns:")) {
         try {
-          const { source, gitRef, templateSpec, repoArgs, env, stateArgs, name, focus, unsafe } = parseNsUrl(url);
+          const { source, gitRef, templateSpec, contextId, repoArgs, env, stateArgs, name, focus, unsafe } = parseNsUrl(url);
           this.createPanel(
             panelId,
             source,
             {
               gitRef,
               templateSpec: templateSpec ?? DEFAULT_TEMPLATE_SPEC,
+              contextId,
               repoArgs,
               env,
               name,
@@ -861,7 +868,7 @@ export class PanelManager {
       if (url.startsWith("ns:")) {
         event.preventDefault();
         try {
-          const { source, action, gitRef, templateSpec, repoArgs, env, stateArgs, name, focus, unsafe } = parseNsUrl(url);
+          const { source, action, gitRef, templateSpec, contextId, repoArgs, env, stateArgs, name, focus, unsafe } = parseNsUrl(url);
 
           // Determine the operation:
           // 1. action=child → create child panel under caller
@@ -878,6 +885,7 @@ export class PanelManager {
               {
                 gitRef,
                 templateSpec: templateSpec ?? DEFAULT_TEMPLATE_SPEC,
+                contextId,
                 repoArgs,
                 env,
                 name,
@@ -895,6 +903,27 @@ export class PanelManager {
               {
                 gitRef,
                 templateSpec: templateSpec ?? DEFAULT_TEMPLATE_SPEC,
+                contextId,
+                repoArgs,
+                env,
+                name,
+                focus,
+                unsafe,
+                replace: true,
+              },
+              stateArgs
+            ).catch((err: unknown) => this.handleChildCreationError(panelId, err, url));
+          } else if (contextId) {
+            // Non-shell navigation with contextId: replace panel to get new storage partition
+            // This is needed when panels (like chat-launcher) need to navigate to a panel
+            // that uses a different storage context (like chat with a specific channel context)
+            this.createPanel(
+              panelId,
+              source,
+              {
+                gitRef,
+                templateSpec: templateSpec ?? DEFAULT_TEMPLATE_SPEC,
+                contextId,
                 repoArgs,
                 env,
                 name,
@@ -1310,9 +1339,9 @@ export class PanelManager {
       isRoot,
     });
 
-    // Resolve context ID based on panel ID and template spec
+    // Resolve context ID: use provided contextId if available, otherwise generate from template
     const isUnsafe = Boolean(unsafeFlag);
-    const contextId = await this.resolveContext(panelId, options.templateSpec, isUnsafe);
+    const contextId = options.contextId ?? await this.resolveContext(panelId, options.templateSpec, isUnsafe);
 
     if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
       throw new Error(`A panel with id "${panelId}" is already running`);
