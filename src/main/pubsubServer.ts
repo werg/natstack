@@ -12,6 +12,7 @@ import { getDatabaseManager } from "./db/databaseManager.js";
 import { findAvailablePortForService } from "./portUtils.js";
 import { createDevLogger } from "./devLog.js";
 import type { AgentHost } from "./agentHost.js";
+import type { AgentManifest } from "@natstack/core";
 
 const log = createDevLogger("PubSubServer");
 
@@ -124,8 +125,20 @@ interface AttachmentMeta {
   size: number;
 }
 
+/**
+ * Agent instance summary for client responses.
+ * Maps AgentInstanceInfo.id → instanceId for API clarity.
+ */
+interface AgentInstanceSummary {
+  instanceId: string;
+  agentId: string;
+  handle: string;
+  startedAt: number;
+}
+
 interface ServerMessage {
-  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error" | "messages-before";
+  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error" | "messages-before"
+    | "list-agents-response" | "invite-agent-response" | "channel-agents-response" | "remove-agent-response";
   id?: number;
   type?: string;
   payload?: unknown;
@@ -154,6 +167,12 @@ interface ServerMessage {
   }>;
   /** Whether there are more messages before these (sent in messages-before response) */
   hasMore?: boolean;
+  /** Agent manifests (list-agents-response) */
+  agents?: AgentManifest[] | AgentInstanceSummary[];
+  /** Whether operation succeeded (invite/remove-agent responses) */
+  success?: boolean;
+  /** Instance ID of spawned agent (invite-agent-response) */
+  instanceId?: string;
 }
 
 /** Presence event types for join/leave tracking */
@@ -204,7 +223,40 @@ interface GetMessagesBeforeClientMessage {
   ref?: number;
 }
 
-type ClientMessage = PublishClientMessage | UpdateMetadataClientMessage | CloseClientMessage | UpdateConfigClientMessage | GetMessagesBeforeClientMessage;
+interface ListAgentsClientMessage {
+  action: "list-agents";
+  ref: number; // Required for agent ops
+}
+
+interface InviteAgentClientMessage {
+  action: "invite-agent";
+  ref: number; // Required
+  agentId: string;
+  handle?: string;
+  config?: Record<string, unknown>;
+}
+
+interface ChannelAgentsClientMessage {
+  action: "channel-agents";
+  ref: number; // Required
+}
+
+interface RemoveAgentClientMessage {
+  action: "remove-agent";
+  ref: number; // Required
+  instanceId: string;
+}
+
+type ClientMessage =
+  | PublishClientMessage
+  | UpdateMetadataClientMessage
+  | CloseClientMessage
+  | UpdateConfigClientMessage
+  | GetMessagesBeforeClientMessage
+  | ListAgentsClientMessage
+  | InviteAgentClientMessage
+  | ChannelAgentsClientMessage
+  | RemoveAgentClientMessage;
 
 interface MessageRow {
   id: number;
@@ -1116,6 +1168,27 @@ export class PubSubServer {
       return;
     }
 
+    // Agent protocol handlers
+    if (msg.action === "list-agents") {
+      this.handleListAgents(client, ref);
+      return;
+    }
+
+    if (msg.action === "invite-agent") {
+      void this.handleInviteAgent(client, msg as InviteAgentClientMessage, ref);
+      return;
+    }
+
+    if (msg.action === "channel-agents") {
+      this.handleChannelAgents(client, ref);
+      return;
+    }
+
+    if (msg.action === "remove-agent") {
+      void this.handleRemoveAgent(client, msg as RemoveAgentClientMessage, ref);
+      return;
+    }
+
     if (msg.action !== "publish") {
       this.send(client.ws, { kind: "error", error: "unknown action", ref });
       return;
@@ -1298,6 +1371,165 @@ export class PubSubServer {
   private send(ws: WebSocket, msg: ServerMessage): void {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(msg));
+    }
+  }
+
+  // ===========================================================================
+  // Agent Protocol Handlers
+  // ===========================================================================
+
+  private handleListAgents(client: ClientConnection, ref: number | undefined): void {
+    // Validate ref is present
+    if (ref === undefined) {
+      this.send(client.ws, { kind: "error", error: "ref required for list-agents" });
+      return;
+    }
+
+    if (!this.agentHost) {
+      this.send(client.ws, {
+        kind: "list-agents-response",
+        ref,
+        agents: [],
+      });
+      return;
+    }
+
+    const agents = this.agentHost.listAvailableAgents();
+    this.send(client.ws, {
+      kind: "list-agents-response",
+      ref,
+      agents,
+    });
+  }
+
+  private async handleInviteAgent(
+    client: ClientConnection,
+    msg: InviteAgentClientMessage,
+    ref: number | undefined
+  ): Promise<void> {
+    // Validate ref is present
+    if (ref === undefined) {
+      this.send(client.ws, { kind: "error", error: "ref required for invite-agent" });
+      return;
+    }
+
+    if (!this.agentHost) {
+      this.send(client.ws, {
+        kind: "invite-agent-response",
+        ref,
+        success: false,
+        error: "Agent host not initialized",
+      });
+      return;
+    }
+
+    // Note: Manifest constraints (channels, proposedHandle) are not enforced here.
+    // This is intentional to allow flexibility during development. Agents can
+    // validate their own config on startup and reject invalid configurations.
+    // Future: Consider adding optional manifest constraint enforcement.
+    try {
+      const instance = await this.agentHost.spawn(msg.agentId, {
+        channel: client.channel,
+        handle: msg.handle ?? msg.agentId,
+        config: msg.config ?? {},
+      });
+
+      this.send(client.ws, {
+        kind: "invite-agent-response",
+        ref,
+        success: true,
+        instanceId: instance.id,
+      });
+    } catch (err) {
+      this.send(client.ws, {
+        kind: "invite-agent-response",
+        ref,
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private handleChannelAgents(client: ClientConnection, ref: number | undefined): void {
+    // Validate ref is present
+    if (ref === undefined) {
+      this.send(client.ws, { kind: "error", error: "ref required for channel-agents" });
+      return;
+    }
+
+    if (!this.agentHost) {
+      this.send(client.ws, {
+        kind: "channel-agents-response",
+        ref,
+        agents: [],
+      });
+      return;
+    }
+
+    const agents = this.agentHost.getChannelAgents(client.channel);
+    // Map AgentInstanceInfo.id → AgentInstanceSummary.instanceId
+    this.send(client.ws, {
+      kind: "channel-agents-response",
+      ref,
+      agents: agents.map((a) => ({
+        instanceId: a.id,
+        agentId: a.agentId,
+        handle: a.handle,
+        startedAt: a.startedAt,
+      })),
+    });
+  }
+
+  private async handleRemoveAgent(
+    client: ClientConnection,
+    msg: RemoveAgentClientMessage,
+    ref: number | undefined
+  ): Promise<void> {
+    // Validate ref is present
+    if (ref === undefined) {
+      this.send(client.ws, { kind: "error", error: "ref required for remove-agent" });
+      return;
+    }
+
+    if (!this.agentHost) {
+      this.send(client.ws, {
+        kind: "remove-agent-response",
+        ref,
+        success: false,
+        error: "Agent host not initialized",
+      });
+      return;
+    }
+
+    // Security: Verify the instance belongs to the client's channel
+    // This prevents cross-channel agent termination attacks
+    const channelAgents = this.agentHost.getChannelAgents(client.channel);
+    const instanceBelongsToChannel = channelAgents.some((a) => a.id === msg.instanceId);
+    if (!instanceBelongsToChannel) {
+      this.send(client.ws, {
+        kind: "remove-agent-response",
+        ref,
+        success: false,
+        error: "Agent instance not found on this channel",
+      });
+      return;
+    }
+
+    try {
+      const success = await this.agentHost.kill(msg.instanceId);
+      this.send(client.ws, {
+        kind: "remove-agent-response",
+        ref,
+        success,
+        error: success ? undefined : "Agent instance not found",
+      });
+    } catch (err) {
+      this.send(client.ws, {
+        kind: "remove-agent-response",
+        ref,
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

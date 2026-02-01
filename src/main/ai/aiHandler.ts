@@ -30,7 +30,7 @@ import {
 } from "./claudeCodeConversationManager.js";
 import { type ToolExecutionResult } from "./claudeCodeToolProxy.js";
 
-interface StreamTarget {
+export interface StreamTarget {
   targetId: string;
   isAvailable(): boolean;
   sendChunk(event: StreamTextEvent): void;
@@ -434,6 +434,29 @@ export class AIHandler {
     const resolvedModelId = this.resolveModelId(options.model);
 
     void this.streamTextToPanel(sender, requestId, panelId, resolvedModelId, options, streamId);
+  }
+
+  /**
+   * Start a stream to an arbitrary StreamTarget (for agents, workers, etc).
+   * This is the public entry point for non-panel streaming.
+   */
+  startTargetStream(
+    target: StreamTarget,
+    options: StreamTextOptions,
+    streamId: string,
+    requestId: string = generateRequestId()
+  ): void {
+    this.logger.info(requestId, "[Main AI] stream-text-start for target", {
+      targetId: target.targetId,
+      model: options.model,
+      messageCount: options.messages?.length,
+      toolCount: options.tools?.length,
+      streamId,
+    });
+
+    const resolvedModelId = this.resolveModelId(options.model);
+
+    void this.streamTextToTarget(target, requestId, resolvedModelId, options, streamId);
   }
 
   // ===========================================================================

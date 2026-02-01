@@ -27,8 +27,21 @@ import { getAgentBuilder } from "./agentBuilder.js";
 import { getAgentDiscovery } from "./agentDiscovery.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
 import { createDevLogger } from "./devLog.js";
+import type { AIHandler, StreamTarget } from "./ai/aiHandler.js";
+import type { StreamTextOptions, StreamTextEvent } from "../shared/ipc/types.js";
+import type { ToolExecutionResult } from "./ai/claudeCodeToolProxy.js";
 
 const log = createDevLogger("AgentHost");
+
+// Module-level AI handler reference (set via setAgentHostAiHandler)
+let _aiHandler: AIHandler | null = null;
+
+/**
+ * Set the AI handler instance for agents (called during initialization).
+ */
+export function setAgentHostAiHandler(handler: AIHandler | null): void {
+  _aiHandler = handler;
+}
 
 // ===========================================================================
 // Types
@@ -239,7 +252,7 @@ export class AgentHost {
 
     // Expose RPC methods to the agent
     this.setupDbHandlers(rpcBridge, instanceId);
-    this.setupAiHandlers(rpcBridge);
+    this.setupAiHandlers(rpcBridge, instanceId);
 
     // 7. Create instance record with all fields initialized
     const instance: AgentInstance = {
@@ -422,15 +435,87 @@ export class AgentHost {
   }
 
   /**
-   * Set up AI RPC handlers (stub - returns clear errors until AI support is implemented).
+   * Set up AI RPC handlers for agents.
+   * Wires ai.listRoles, ai.streamTextStart, ai.streamCancel to the shared AIHandler.
    */
-  private setupAiHandlers(bridge: RpcBridge): void {
-    const notImplemented = (method: string) => () => {
-      throw new Error(`AI RPC method "${method}" is not yet implemented. AI support will be added in a future phase.`);
-    };
+  private setupAiHandlers(bridge: RpcBridge, instanceId: string): void {
+    // ai.listRoles - returns available AI roles/models
+    bridge.exposeMethod("ai.listRoles", () => {
+      if (!_aiHandler) {
+        throw new Error("AI handler not initialized");
+      }
+      return _aiHandler.getAvailableRoles();
+    });
 
-    bridge.exposeMethod("ai.chat", notImplemented("ai.chat"));
-    bridge.exposeMethod("ai.stream", notImplemented("ai.stream"));
+    // ai.streamCancel - cancel an active stream
+    bridge.exposeMethod("ai.streamCancel", (streamId: string) => {
+      if (!_aiHandler) {
+        throw new Error("AI handler not initialized");
+      }
+      _aiHandler.cancelStream(streamId);
+    });
+
+    // ai.streamTextStart - start a streaming AI request
+    bridge.exposeMethod(
+      "ai.streamTextStart",
+      (options: StreamTextOptions, streamId: string) => {
+        if (!_aiHandler) {
+          throw new Error("AI handler not initialized");
+        }
+
+        // Create an agent-specific StreamTarget that uses the RPC bridge
+        const target: StreamTarget = {
+          targetId: instanceId,
+
+          isAvailable: () => {
+            // Check if the agent instance is still running
+            return this.instances.has(instanceId);
+          },
+
+          sendChunk: (event: StreamTextEvent) => {
+            // Send stream chunk via RPC event
+            void bridge.emit("agent", "ai:stream-text-chunk", { streamId, chunk: event });
+          },
+
+          sendEnd: () => {
+            // Send stream end via RPC event
+            void bridge.emit("agent", "ai:stream-text-end", { streamId });
+          },
+
+          executeTool: async (
+            toolName: string,
+            args: Record<string, unknown>
+          ): Promise<ToolExecutionResult> => {
+            // Call the agent's ai.executeTool method via RPC
+            return bridge.call<ToolExecutionResult>(
+              "agent",
+              "ai.executeTool",
+              streamId,
+              toolName,
+              args
+            );
+          },
+
+          onUnavailable: (listener: () => void) => {
+            // Monitor for agent exit
+            const instance = this.instances.get(instanceId);
+            if (!instance) {
+              // Already unavailable
+              listener();
+              return () => {};
+            }
+
+            // Watch for process exit
+            const exitHandler = () => listener();
+            instance.process.on("exit", exitHandler);
+            return () => instance.process.off("exit", exitHandler);
+          },
+        };
+
+        // Start streaming to the agent target
+        _aiHandler.startTargetStream(target, options, streamId);
+      }
+    );
   }
 
   /**

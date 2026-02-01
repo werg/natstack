@@ -17,13 +17,19 @@ import type {
   Participant,
   Attachment,
   ChannelConfig,
+  AgentManifest,
+  AgentInstanceSummary,
+  InviteAgentOptions,
+  InviteAgentResult,
+  RemoveAgentResult,
 } from "./types.js";
 
 /**
  * Server message envelope.
  */
 interface ServerMessage {
-  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error" | "config-update" | "messages-before";
+  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error" | "config-update" | "messages-before"
+    | "list-agents-response" | "invite-agent-response" | "channel-agents-response" | "remove-agent-response";
   id?: number;
   type?: string;
   payload?: unknown;
@@ -51,6 +57,12 @@ interface ServerMessage {
   }>;
   /** Whether there are more messages before these (sent in messages-before response) */
   hasMore?: boolean;
+  /** Agent manifests (list-agents-response) */
+  agents?: AgentManifest[] | AgentInstanceSummary[];
+  /** Whether operation succeeded (invite/remove-agent responses) */
+  success?: boolean;
+  /** Instance ID of spawned agent (invite-agent-response) */
+  instanceId?: string;
 }
 
 type PresenceAction = "join" | "leave" | "update";
@@ -131,6 +143,30 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
     }>;
     hasMore: boolean;
   }>;
+
+  // ===========================================================================
+  // Agent API
+  // ===========================================================================
+
+  /**
+   * List all available agents in the workspace.
+   */
+  listAgents(timeoutMs?: number): Promise<AgentManifest[]>;
+
+  /**
+   * Invite an agent to join this channel.
+   */
+  inviteAgent(agentId: string, options?: InviteAgentOptions): Promise<InviteAgentResult>;
+
+  /**
+   * List agents currently on this channel.
+   */
+  channelAgents(timeoutMs?: number): Promise<AgentInstanceSummary[]>;
+
+  /**
+   * Remove an agent from this channel.
+   */
+  removeAgent(instanceId: string, timeoutMs?: number): Promise<RemoveAgentResult>;
 }
 
 /** Default reconnection configuration */
@@ -217,6 +253,27 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   const pendingMessagesBeforeRequests = new Map<
     number,
     { resolve: (result: MessagesBeforeResult) => void; reject: (err: Error) => void; timeoutId: ReturnType<typeof setTimeout> }
+  >();
+
+  // Pending agent request maps
+  const pendingListAgents = new Map<
+    number,
+    { resolve: (agents: AgentManifest[]) => void; reject: (err: Error) => void; timeoutId: ReturnType<typeof setTimeout> }
+  >();
+
+  const pendingInviteAgent = new Map<
+    number,
+    { resolve: (result: InviteAgentResult) => void; reject: (err: Error) => void; timeoutId: ReturnType<typeof setTimeout> }
+  >();
+
+  const pendingChannelAgents = new Map<
+    number,
+    { resolve: (agents: AgentInstanceSummary[]) => void; reject: (err: Error) => void; timeoutId: ReturnType<typeof setTimeout> }
+  >();
+
+  const pendingRemoveAgent = new Map<
+    number,
+    { resolve: (result: RemoveAgentResult) => void; reject: (err: Error) => void; timeoutId: ReturnType<typeof setTimeout> }
   >();
 
   // Current roster state
@@ -391,6 +448,62 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         break;
       }
 
+      // Agent protocol response handlers
+      case "list-agents-response": {
+        if (msg.ref !== undefined) {
+          const pending = pendingListAgents.get(msg.ref);
+          if (pending) {
+            clearTimeout(pending.timeoutId);
+            pending.resolve((msg.agents as AgentManifest[]) ?? []);
+            pendingListAgents.delete(msg.ref);
+          }
+        }
+        break;
+      }
+
+      case "invite-agent-response": {
+        if (msg.ref !== undefined) {
+          const pending = pendingInviteAgent.get(msg.ref);
+          if (pending) {
+            clearTimeout(pending.timeoutId);
+            pending.resolve({
+              success: msg.success ?? false,
+              instanceId: msg.instanceId,
+              error: msg.error,
+            });
+            pendingInviteAgent.delete(msg.ref);
+          }
+        }
+        break;
+      }
+
+      case "channel-agents-response": {
+        if (msg.ref !== undefined) {
+          const pending = pendingChannelAgents.get(msg.ref);
+          if (pending) {
+            clearTimeout(pending.timeoutId);
+            pending.resolve((msg.agents as AgentInstanceSummary[]) ?? []);
+            pendingChannelAgents.delete(msg.ref);
+          }
+        }
+        break;
+      }
+
+      case "remove-agent-response": {
+        if (msg.ref !== undefined) {
+          const pending = pendingRemoveAgent.get(msg.ref);
+          if (pending) {
+            clearTimeout(pending.timeoutId);
+            pending.resolve({
+              success: msg.success ?? false,
+              error: msg.error,
+            });
+            pendingRemoveAgent.delete(msg.ref);
+          }
+        }
+        break;
+      }
+
       case "error": {
         const errorMsg = msg.error || "unknown server error";
         let code: "validation" | "server" = "server";
@@ -417,6 +530,31 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
             clearTimeout(pendingConfig.timeoutId);
             pendingConfig.reject(error);
             pendingConfigUpdates.delete(msg.ref);
+          }
+          // Agent pending requests
+          const pendingList = pendingListAgents.get(msg.ref);
+          if (pendingList) {
+            clearTimeout(pendingList.timeoutId);
+            pendingList.reject(error);
+            pendingListAgents.delete(msg.ref);
+          }
+          const pendingInvite = pendingInviteAgent.get(msg.ref);
+          if (pendingInvite) {
+            clearTimeout(pendingInvite.timeoutId);
+            pendingInvite.reject(error);
+            pendingInviteAgent.delete(msg.ref);
+          }
+          const pendingChannel = pendingChannelAgents.get(msg.ref);
+          if (pendingChannel) {
+            clearTimeout(pendingChannel.timeoutId);
+            pendingChannel.reject(error);
+            pendingChannelAgents.delete(msg.ref);
+          }
+          const pendingRemove = pendingRemoveAgent.get(msg.ref);
+          if (pendingRemove) {
+            clearTimeout(pendingRemove.timeoutId);
+            pendingRemove.reject(error);
+            pendingRemoveAgent.delete(msg.ref);
           }
         }
 
@@ -544,6 +682,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
       rejectPendingMetadataUpdates(new PubSubError(errorMessage, "connection"));
       rejectPendingConfigUpdates(new PubSubError(errorMessage, "connection"));
       rejectPendingMessagesBeforeRequests(new PubSubError(errorMessage, "connection"));
+      rejectPendingAgentRequests(new PubSubError(errorMessage, "connection"));
       readyReject?.(new PubSubError(errorMessage, "connection"));
       readyResolve = null;
       readyReject = null;
@@ -564,6 +703,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
       rejectPendingMetadataUpdates(new PubSubError(errorMessage, "connection"));
       rejectPendingConfigUpdates(new PubSubError(errorMessage, "connection"));
       rejectPendingMessagesBeforeRequests(new PubSubError(errorMessage, "connection"));
+      rejectPendingAgentRequests(new PubSubError(errorMessage, "connection"));
       readyReject?.(new PubSubError(errorMessage, "connection"));
       readyResolve = null;
       readyReject = null;
@@ -602,6 +742,32 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     pendingMessagesBeforeRequests.clear();
   }
 
+  function rejectPendingAgentRequests(error: PubSubError): void {
+    for (const [, pending] of pendingListAgents) {
+      clearTimeout(pending.timeoutId);
+      pending.reject(error);
+    }
+    pendingListAgents.clear();
+
+    for (const [, pending] of pendingInviteAgent) {
+      clearTimeout(pending.timeoutId);
+      pending.reject(error);
+    }
+    pendingInviteAgent.clear();
+
+    for (const [, pending] of pendingChannelAgents) {
+      clearTimeout(pending.timeoutId);
+      pending.reject(error);
+    }
+    pendingChannelAgents.clear();
+
+    for (const [, pending] of pendingRemoveAgent) {
+      clearTimeout(pending.timeoutId);
+      pending.reject(error);
+    }
+    pendingRemoveAgent.clear();
+  }
+
   function scheduleReconnect(): void {
     if (closed) return;
 
@@ -622,6 +788,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
       rejectPendingMetadataUpdates(error);
       rejectPendingConfigUpdates(error);
       rejectPendingMessagesBeforeRequests(error);
+      rejectPendingAgentRequests(error);
       return;
     }
 
@@ -1002,6 +1169,107 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
           pendingMessagesBeforeRequests.delete(ref);
           reject(new PubSubError(`send failed: ${err}`, "connection"));
         }
+      });
+    },
+
+    // =========================================================================
+    // Agent API
+    // =========================================================================
+
+    async listAgents(timeoutMs = 30000): Promise<AgentManifest[]> {
+      const ref = ++refCounter;
+
+      return new Promise((resolve, reject) => {
+        if (ws.readyState !== WebSocket.OPEN) {
+          reject(new PubSubError("not connected", "connection"));
+          return;
+        }
+
+        const timeoutId = setTimeout(() => {
+          pendingListAgents.delete(ref);
+          reject(new PubSubError("list-agents timeout", "timeout"));
+        }, timeoutMs);
+
+        pendingListAgents.set(ref, { resolve, reject, timeoutId });
+
+        ws.send(JSON.stringify({ action: "list-agents", ref }));
+      });
+    },
+
+    async inviteAgent(
+      agentId: string,
+      options: InviteAgentOptions = {}
+    ): Promise<InviteAgentResult> {
+      const ref = ++refCounter;
+      const { handle, config, timeoutMs = 30000 } = options;
+
+      return new Promise((resolve, reject) => {
+        if (ws.readyState !== WebSocket.OPEN) {
+          reject(new PubSubError("not connected", "connection"));
+          return;
+        }
+
+        const timeoutId = setTimeout(() => {
+          pendingInviteAgent.delete(ref);
+          reject(new PubSubError("invite-agent timeout", "timeout"));
+        }, timeoutMs);
+
+        pendingInviteAgent.set(ref, { resolve, reject, timeoutId });
+
+        ws.send(JSON.stringify({
+          action: "invite-agent",
+          ref,
+          agentId,
+          handle,
+          config,
+        }));
+      });
+    },
+
+    async channelAgents(timeoutMs = 30000): Promise<AgentInstanceSummary[]> {
+      const ref = ++refCounter;
+
+      return new Promise((resolve, reject) => {
+        if (ws.readyState !== WebSocket.OPEN) {
+          reject(new PubSubError("not connected", "connection"));
+          return;
+        }
+
+        const timeoutId = setTimeout(() => {
+          pendingChannelAgents.delete(ref);
+          reject(new PubSubError("channel-agents timeout", "timeout"));
+        }, timeoutMs);
+
+        pendingChannelAgents.set(ref, { resolve, reject, timeoutId });
+
+        ws.send(JSON.stringify({ action: "channel-agents", ref }));
+      });
+    },
+
+    async removeAgent(
+      instanceId: string,
+      timeoutMs = 30000
+    ): Promise<RemoveAgentResult> {
+      const ref = ++refCounter;
+
+      return new Promise((resolve, reject) => {
+        if (ws.readyState !== WebSocket.OPEN) {
+          reject(new PubSubError("not connected", "connection"));
+          return;
+        }
+
+        const timeoutId = setTimeout(() => {
+          pendingRemoveAgent.delete(ref);
+          reject(new PubSubError("remove-agent timeout", "timeout"));
+        }, timeoutMs);
+
+        pendingRemoveAgent.set(ref, { resolve, reject, timeoutId });
+
+        ws.send(JSON.stringify({
+          action: "remove-agent",
+          ref,
+          instanceId,
+        }));
       });
     },
   };

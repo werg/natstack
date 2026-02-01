@@ -33,7 +33,7 @@ import { getPubSubServer, type PubSubServer } from "./pubsubServer.js";
 import { createVerdaccioServer, type VerdaccioServer } from "./verdaccioServer.js";
 import { createGitWatcher, type GitWatcher } from "./workspace/gitWatcher.js";
 import { initAgentDiscovery, shutdownAgentDiscovery } from "./agentDiscovery.js";
-import { initAgentHost, shutdownAgentHost } from "./agentHost.js";
+import { initAgentHost, shutdownAgentHost, setAgentHostAiHandler } from "./agentHost.js";
 import { getTokenManager } from "./tokenManager.js";
 import { eventService } from "./services/eventsService.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
@@ -674,6 +674,7 @@ app.on("ready", async () => {
       aiHandler = new AIHandler();
       await aiHandler.initialize();
       setShellServicesAiHandler(aiHandler);
+      setAgentHostAiHandler(aiHandler);
 
       dispatcher.register("ai", async (ctx, serviceMethod, serviceArgs) => {
         return handleAiServiceCall(aiHandler, serviceMethod, serviceArgs, (handler, options, streamId) => {

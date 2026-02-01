@@ -16,7 +16,9 @@
     "dev": "tsc --project tsconfig.build.json --watch",
     "test": "vitest run"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@natstack/core": "workspace:*"
+  },
   "devDependencies": {
     "@types/ws": "^8.18.1",
     "typescript": "^5.9.3",

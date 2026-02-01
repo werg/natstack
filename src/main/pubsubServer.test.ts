@@ -514,4 +514,123 @@ describe("PubSub Server", () => {
       expect(presence.payload?.metadata).toEqual(metadata);
     });
   });
+
+  describe("agent protocol", () => {
+    it("returns empty agents list when agentHost not set", async () => {
+      // Server doesn't have agentHost set in this test suite
+      const client = await createClient("valid-token", "agent-test-1");
+      await waitForMessage(client); // ready
+      await waitForMessage(client); // join presence
+
+      client.ws.send(JSON.stringify({ action: "list-agents", ref: 1 }));
+
+      const response = (await waitForMessage(client)) as {
+        kind: string;
+        ref: number;
+        agents: unknown[];
+      };
+
+      expect(response.kind).toBe("list-agents-response");
+      expect(response.ref).toBe(1);
+      expect(response.agents).toEqual([]);
+    });
+
+    it("returns error when list-agents called without ref", async () => {
+      const client = await createClient("valid-token", "agent-test-2");
+      await waitForMessage(client); // ready
+      await waitForMessage(client); // join presence
+
+      client.ws.send(JSON.stringify({ action: "list-agents" })); // no ref
+
+      const response = (await waitForMessage(client)) as {
+        kind: string;
+        error?: string;
+      };
+
+      expect(response.kind).toBe("error");
+      expect(response.error).toContain("ref required");
+    });
+
+    it("returns error when invite-agent called without agentHost", async () => {
+      const client = await createClient("valid-token", "agent-test-3");
+      await waitForMessage(client); // ready
+      await waitForMessage(client); // join presence
+
+      client.ws.send(JSON.stringify({
+        action: "invite-agent",
+        ref: 1,
+        agentId: "test-agent",
+      }));
+
+      const response = (await waitForMessage(client)) as {
+        kind: string;
+        ref: number;
+        success: boolean;
+        error?: string;
+      };
+
+      expect(response.kind).toBe("invite-agent-response");
+      expect(response.ref).toBe(1);
+      expect(response.success).toBe(false);
+      expect(response.error).toContain("not initialized");
+    });
+
+    it("returns empty channel agents when agentHost not set", async () => {
+      const client = await createClient("valid-token", "agent-test-4");
+      await waitForMessage(client); // ready
+      await waitForMessage(client); // join presence
+
+      client.ws.send(JSON.stringify({ action: "channel-agents", ref: 1 }));
+
+      const response = (await waitForMessage(client)) as {
+        kind: string;
+        ref: number;
+        agents: unknown[];
+      };
+
+      expect(response.kind).toBe("channel-agents-response");
+      expect(response.ref).toBe(1);
+      expect(response.agents).toEqual([]);
+    });
+
+    it("returns error when remove-agent called without agentHost", async () => {
+      const client = await createClient("valid-token", "agent-test-5");
+      await waitForMessage(client); // ready
+      await waitForMessage(client); // join presence
+
+      client.ws.send(JSON.stringify({
+        action: "remove-agent",
+        ref: 1,
+        instanceId: "some-instance",
+      }));
+
+      const response = (await waitForMessage(client)) as {
+        kind: string;
+        ref: number;
+        success: boolean;
+        error?: string;
+      };
+
+      expect(response.kind).toBe("remove-agent-response");
+      expect(response.ref).toBe(1);
+      expect(response.success).toBe(false);
+      expect(response.error).toContain("not initialized");
+    });
+
+    it("returns error when channel-agents called without ref", async () => {
+      const client = await createClient("valid-token", "agent-test-6");
+      await waitForMessage(client); // ready
+      await waitForMessage(client); // join presence
+
+      client.ws.send(JSON.stringify({ action: "channel-agents" })); // no ref
+
+      const response = (await waitForMessage(client)) as {
+        kind: string;
+        error?: string;
+      };
+
+      expect(response.kind).toBe("error");
+      expect(response.error).toContain("ref required");
+    });
+  });
 });
