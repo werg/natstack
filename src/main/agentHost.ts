@@ -251,8 +251,10 @@ export class AgentHost {
     const rpcBridge = createRpcBridge({ selfId: "main", transport });
 
     // Expose RPC methods to the agent
+    // Agent's RPC selfId matches what agent-runtime uses: agent:${agentId}:${handle}
+    const agentSelfId = `agent:${agentId}:${options.handle}`;
     this.setupDbHandlers(rpcBridge, instanceId);
-    this.setupAiHandlers(rpcBridge, instanceId);
+    this.setupAiHandlers(rpcBridge, instanceId, agentSelfId);
 
     // 7. Create instance record with all fields initialized
     const instance: AgentInstance = {
@@ -437,8 +439,12 @@ export class AgentHost {
   /**
    * Set up AI RPC handlers for agents.
    * Wires ai.listRoles, ai.streamTextStart, ai.streamCancel to the shared AIHandler.
+   *
+   * @param bridge - RPC bridge to the agent
+   * @param instanceId - Agent instance ID
+   * @param agentSelfId - Agent's RPC self ID (e.g., "agent:my-agent:handle")
    */
-  private setupAiHandlers(bridge: RpcBridge, instanceId: string): void {
+  private setupAiHandlers(bridge: RpcBridge, instanceId: string, agentSelfId: string): void {
     // ai.listRoles - returns available AI roles/models
     bridge.exposeMethod("ai.listRoles", () => {
       if (!_aiHandler) {
@@ -473,13 +479,13 @@ export class AgentHost {
           },
 
           sendChunk: (event: StreamTextEvent) => {
-            // Send stream chunk via RPC event
-            void bridge.emit("agent", "ai:stream-text-chunk", { streamId, chunk: event });
+            // Send stream chunk via RPC event to the agent's selfId
+            void bridge.emit(agentSelfId, "ai:stream-text-chunk", { streamId, chunk: event });
           },
 
           sendEnd: () => {
-            // Send stream end via RPC event
-            void bridge.emit("agent", "ai:stream-text-end", { streamId });
+            // Send stream end via RPC event to the agent's selfId
+            void bridge.emit(agentSelfId, "ai:stream-text-end", { streamId });
           },
 
           executeTool: async (
@@ -488,7 +494,7 @@ export class AgentHost {
           ): Promise<ToolExecutionResult> => {
             // Call the agent's ai.executeTool method via RPC
             return bridge.call<ToolExecutionResult>(
-              "agent",
+              agentSelfId,
               "ai.executeTool",
               streamId,
               toolName,

@@ -38,7 +38,7 @@
  */
 
 // Agent base class and types
-export { Agent } from "./agent.js";
+export { Agent, deepMerge } from "./agent.js";
 export type {
   AgentState,
   AgentContext,

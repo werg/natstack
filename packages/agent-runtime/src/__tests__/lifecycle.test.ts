@@ -4,90 +4,71 @@
  * These tests verify LifecycleManager behavior.
  */
 
-import { createLifecycleManager, type LifecycleManager } from "../lifecycle.js";
+import { describe, it, expect } from "vitest";
+import { createLifecycleManager } from "../lifecycle.js";
 
-// Test: markActive resets idle state
-export function testMarkActiveResetsIdle(): void {
-  let idleCalled = false;
+describe("createLifecycleManager", () => {
+  it("should reset idle state on markActive", () => {
+    let idleCalled = false;
 
-  const lifecycle = createLifecycleManager({
-    onIdle: () => {
-      idleCalled = true;
-    },
-    eluThreshold: 0.01,
-    idleDebounceMs: 100,
+    const lifecycle = createLifecycleManager({
+      onIdle: () => {
+        idleCalled = true;
+      },
+      eluThreshold: 0.01,
+      idleDebounceMs: 100,
+    });
+
+    lifecycle.startIdleMonitoring();
+
+    // Mark active should reset idle state
+    lifecycle.markActive();
+
+    expect(lifecycle.isIdle()).toBe(false);
+
+    lifecycle.stopIdleMonitoring();
   });
 
-  lifecycle.startIdleMonitoring();
+  it("should clear state on stopIdleMonitoring", () => {
+    const lifecycle = createLifecycleManager({
+      onIdle: () => {},
+      eluThreshold: 0.01,
+      idleDebounceMs: 100,
+    });
 
-  // Mark active should reset idle state
-  lifecycle.markActive();
+    lifecycle.startIdleMonitoring();
+    lifecycle.stopIdleMonitoring();
 
-  if (lifecycle.isIdle()) {
-    throw new Error("Expected isIdle=false after markActive");
-  }
-
-  lifecycle.stopIdleMonitoring();
-}
-
-// Test: stopIdleMonitoring clears state
-export function testStopIdleMonitoringClearsState(): void {
-  const lifecycle = createLifecycleManager({
-    onIdle: () => {},
-    eluThreshold: 0.01,
-    idleDebounceMs: 100,
+    expect(lifecycle.isIdle()).toBe(false);
   });
 
-  lifecycle.startIdleMonitoring();
-  lifecycle.stopIdleMonitoring();
+  it("should register beforeExit handler without throwing", () => {
+    const lifecycle = createLifecycleManager({
+      onIdle: () => {},
+    });
 
-  if (lifecycle.isIdle()) {
-    throw new Error("Expected isIdle=false after stop");
-  }
-}
+    const handler = async () => {
+      // No-op handler
+    };
 
-// Test: onBeforeExit registers handler
-export function testOnBeforeExitRegistersHandler(): void {
-  const handlers: Array<() => Promise<void>> = [];
-
-  const lifecycle = createLifecycleManager({
-    onIdle: () => {},
+    // Should not throw
+    expect(() => lifecycle.onBeforeExit(handler)).not.toThrow();
   });
 
-  const handler = async () => {
-    handlers.push(handler);
-  };
+  it("should return false for isIdle initially", () => {
+    const lifecycle = createLifecycleManager({
+      onIdle: () => {},
+    });
 
-  // Just verify it doesn't throw
-  lifecycle.onBeforeExit(handler);
-}
-
-// Test: isIdle returns false initially
-export function testIsIdleReturnsFalseInitially(): void {
-  const lifecycle = createLifecycleManager({
-    onIdle: () => {},
+    expect(lifecycle.isIdle()).toBe(false);
   });
 
-  if (lifecycle.isIdle()) {
-    throw new Error("Expected isIdle=false initially");
-  }
-}
+  it("should start and stop monitoring without errors", () => {
+    const lifecycle = createLifecycleManager({
+      onIdle: () => {},
+    });
 
-// Run all tests
-export function runTests(): void {
-  const tests = [
-    { name: "markActive resets idle", fn: testMarkActiveResetsIdle },
-    { name: "stopIdleMonitoring clears state", fn: testStopIdleMonitoringClearsState },
-    { name: "onBeforeExit registers handler", fn: testOnBeforeExitRegistersHandler },
-    { name: "isIdle returns false initially", fn: testIsIdleReturnsFalseInitially },
-  ];
-
-  for (const test of tests) {
-    try {
-      test.fn();
-      console.log(`✓ ${test.name}`);
-    } catch (err) {
-      console.error(`✗ ${test.name}:`, err);
-    }
-  }
-}
+    expect(() => lifecycle.startIdleMonitoring()).not.toThrow();
+    expect(() => lifecycle.stopIdleMonitoring()).not.toThrow();
+  });
+});

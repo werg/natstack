@@ -4,7 +4,8 @@
  * These tests verify StateStore behavior with a mock database.
  */
 
-import { createStateStore, type StateStore, type StateChangeEvent } from "../state.js";
+import { describe, it, expect } from "vitest";
+import { createStateStore, type StateChangeEvent } from "../state.js";
 import type { DatabaseInterface, AgentState } from "@natstack/core";
 
 interface TestState extends AgentState {
@@ -69,272 +70,192 @@ function createMockDb(): DatabaseInterface & { data: Map<string, string>; metada
   };
 }
 
-// Test: load returns initial state when no persisted state exists
-export async function testLoadReturnsInitialState(): Promise<void> {
-  const db = createMockDb();
-  const store = createStateStore<TestState>({
-    db,
-    key: { agentId: "test", channel: "ch", handle: "h" },
-    initial: { count: 0, name: "initial" },
-    autoSaveDelayMs: 0, // Immediate save for testing
+describe("createStateStore", () => {
+  it("should return initial state when no persisted state exists", async () => {
+    const db = createMockDb();
+    const store = createStateStore<TestState>({
+      db,
+      key: { agentId: "test", channel: "ch", handle: "h" },
+      initial: { count: 0, name: "initial" },
+      autoSaveDelayMs: 0,
+    });
+
+    const state = await store.load();
+
+    expect(state.count).toBe(0);
+    expect(state.name).toBe("initial");
   });
 
-  const state = await store.load();
+  it("should persist state to database on set", async () => {
+    const db = createMockDb();
+    const store = createStateStore<TestState>({
+      db,
+      key: { agentId: "test", channel: "ch", handle: "h" },
+      initial: { count: 0, name: "initial" },
+      autoSaveDelayMs: 0,
+    });
 
-  if (state.count !== 0) {
-    throw new Error(`Expected count=0, got ${state.count}`);
-  }
-  if (state.name !== "initial") {
-    throw new Error(`Expected name='initial', got ${state.name}`);
-  }
-}
+    await store.load();
+    store.set({ count: 42, name: "updated" });
+    await store.flush();
 
-// Test: set persists state to database
-export async function testSetPersistsState(): Promise<void> {
-  const db = createMockDb();
-  const store = createStateStore<TestState>({
-    db,
-    key: { agentId: "test", channel: "ch", handle: "h" },
-    initial: { count: 0, name: "initial" },
-    autoSaveDelayMs: 0, // Immediate save
+    const key = "test:ch:h";
+    const persisted = db.data.get(key);
+    expect(persisted).toBeDefined();
+
+    const parsed = JSON.parse(persisted!) as TestState;
+    expect(parsed.count).toBe(42);
   });
 
-  await store.load();
-  store.set({ count: 42, name: "updated" });
-  await store.flush(); // Ensure save completes
+  it("should return persisted state on load", async () => {
+    const db = createMockDb();
+    db.data.set("test:ch:h", JSON.stringify({ count: 100, name: "persisted" }));
+    db.metadata.set("test:ch:h:version", 1);
+    db.metadata.set("test:ch:h:createdAt", Date.now());
+    db.metadata.set("test:ch:h:updatedAt", Date.now());
 
-  const key = "test:ch:h";
-  const persisted = db.data.get(key);
-  if (!persisted) {
-    throw new Error("State was not persisted");
-  }
+    const store = createStateStore<TestState>({
+      db,
+      key: { agentId: "test", channel: "ch", handle: "h" },
+      initial: { count: 0, name: "initial" },
+    });
 
-  const parsed = JSON.parse(persisted) as TestState;
-  if (parsed.count !== 42) {
-    throw new Error(`Expected persisted count=42, got ${parsed.count}`);
-  }
-}
+    const state = await store.load();
 
-// Test: load returns persisted state
-export async function testLoadReturnsPersistedState(): Promise<void> {
-  const db = createMockDb();
-  db.data.set("test:ch:h", JSON.stringify({ count: 100, name: "persisted" }));
-  db.metadata.set("test:ch:h:version", 1);
-  db.metadata.set("test:ch:h:createdAt", Date.now());
-  db.metadata.set("test:ch:h:updatedAt", Date.now());
-
-  const store = createStateStore<TestState>({
-    db,
-    key: { agentId: "test", channel: "ch", handle: "h" },
-    initial: { count: 0, name: "initial" },
+    expect(state.count).toBe(100);
+    expect(state.name).toBe("persisted");
   });
 
-  const state = await store.load();
+  it("should return current state synchronously via get()", async () => {
+    const db = createMockDb();
+    const store = createStateStore<TestState>({
+      db,
+      key: { agentId: "test", channel: "ch", handle: "h" },
+      initial: { count: 0, name: "initial" },
+      autoSaveDelayMs: 0,
+    });
 
-  if (state.count !== 100) {
-    throw new Error(`Expected count=100, got ${state.count}`);
-  }
-  if (state.name !== "persisted") {
-    throw new Error(`Expected name='persisted', got ${state.name}`);
-  }
-}
+    await store.load();
 
-// Test: get returns current state synchronously
-export async function testGetReturnsSyncState(): Promise<void> {
-  const db = createMockDb();
-  const store = createStateStore<TestState>({
-    db,
-    key: { agentId: "test", channel: "ch", handle: "h" },
-    initial: { count: 0, name: "initial" },
-    autoSaveDelayMs: 0,
+    const beforeUpdate = store.get();
+    expect(beforeUpdate.count).toBe(0);
+
+    store.set({ count: 5, name: "five" });
+    const afterSet = store.get();
+    expect(afterSet.count).toBe(5);
   });
 
-  await store.load();
+  it("should merge partial state on update()", async () => {
+    const db = createMockDb();
+    const store = createStateStore<TestState>({
+      db,
+      key: { agentId: "test", channel: "ch", handle: "h" },
+      initial: { count: 0, name: "initial" },
+      autoSaveDelayMs: 0,
+    });
 
-  // Before any updates, get returns initial
-  const beforeUpdate = store.get();
-  if (beforeUpdate.count !== 0) {
-    throw new Error(`Expected count=0 before update, got ${beforeUpdate.count}`);
-  }
+    await store.load();
+    store.update({ count: 10 });
 
-  // After set, get returns updated (synchronously, before save)
-  store.set({ count: 5, name: "five" });
-  const afterSet = store.get();
-  if (afterSet.count !== 5) {
-    throw new Error(`Expected count=5 after set, got ${afterSet.count}`);
-  }
-}
-
-// Test: update merges partial state
-export async function testUpdateMergesState(): Promise<void> {
-  const db = createMockDb();
-  const store = createStateStore<TestState>({
-    db,
-    key: { agentId: "test", channel: "ch", handle: "h" },
-    initial: { count: 0, name: "initial" },
-    autoSaveDelayMs: 0,
+    const state = store.get();
+    expect(state.count).toBe(10);
+    expect(state.name).toBe("initial");
   });
 
-  await store.load();
-  store.update({ count: 10 }); // Only update count, keep name
+  it("should track dirty state", async () => {
+    const db = createMockDb();
+    const store = createStateStore<TestState>({
+      db,
+      key: { agentId: "test", channel: "ch", handle: "h" },
+      initial: { count: 0, name: "initial" },
+      autoSaveDelayMs: 1000,
+    });
 
-  const state = store.get();
-  if (state.count !== 10) {
-    throw new Error(`Expected count=10, got ${state.count}`);
-  }
-  if (state.name !== "initial") {
-    throw new Error(`Expected name='initial', got ${state.name}`);
-  }
-}
+    await store.load();
+    expect(store.isDirty()).toBe(false);
 
-// Test: isDirty tracks unsaved changes
-export async function testIsDirtyTracksChanges(): Promise<void> {
-  const db = createMockDb();
-  const store = createStateStore<TestState>({
-    db,
-    key: { agentId: "test", channel: "ch", handle: "h" },
-    initial: { count: 0, name: "initial" },
-    autoSaveDelayMs: 1000, // Slow save to test dirty state
+    store.update({ count: 1 });
+    expect(store.isDirty()).toBe(true);
+
+    await store.flush();
+    expect(store.isDirty()).toBe(false);
+
+    store.destroy();
   });
 
-  await store.load();
+  it("should notify subscribers on state changes", async () => {
+    const db = createMockDb();
+    const store = createStateStore<TestState>({
+      db,
+      key: { agentId: "test", channel: "ch", handle: "h" },
+      initial: { count: 0, name: "initial" },
+      autoSaveDelayMs: 0,
+    });
 
-  if (store.isDirty()) {
-    throw new Error("Expected isDirty=false after load");
-  }
+    await store.load();
 
-  store.update({ count: 1 });
+    const events: StateChangeEvent<TestState>[] = [];
+    const unsubscribe = store.subscribe((event) => {
+      events.push(event);
+    });
 
-  if (!store.isDirty()) {
-    throw new Error("Expected isDirty=true after update");
-  }
+    store.update({ count: 1 });
+    store.update({ name: "updated" });
 
-  await store.flush();
+    expect(events).toHaveLength(2);
+    expect(events[0]!.changedKeys).toContain("count");
+    expect(events[1]!.changedKeys).toContain("name");
 
-  if (store.isDirty()) {
-    throw new Error("Expected isDirty=false after flush");
-  }
-
-  store.destroy();
-}
-
-// Test: subscribe notifies on state changes
-export async function testSubscribeNotifiesOnChanges(): Promise<void> {
-  const db = createMockDb();
-  const store = createStateStore<TestState>({
-    db,
-    key: { agentId: "test", channel: "ch", handle: "h" },
-    initial: { count: 0, name: "initial" },
-    autoSaveDelayMs: 0,
+    unsubscribe();
+    store.destroy();
   });
 
-  await store.load();
+  it("should persist checkpoint (pubsub ID)", async () => {
+    const db = createMockDb();
+    const store = createStateStore<TestState>({
+      db,
+      key: { agentId: "test", channel: "ch", handle: "h" },
+      initial: { count: 0, name: "initial" },
+      autoSaveDelayMs: 0,
+    });
 
-  const events: StateChangeEvent<TestState>[] = [];
-  const unsubscribe = store.subscribe((event) => {
-    events.push(event);
+    await store.load();
+    store.setCheckpoint(12345);
+    await store.flush();
+
+    const meta = store.getMetadata();
+    expect(meta.lastPubsubId).toBe(12345);
+
+    const persistedId = db.metadata.get("test:ch:h:lastPubsubId");
+    expect(persistedId).toBe(12345);
   });
 
-  store.update({ count: 1 });
-  store.update({ name: "updated" });
+  it("should migrate old state versions", async () => {
+    const db = createMockDb();
 
-  if (events.length !== 2) {
-    throw new Error(`Expected 2 events, got ${events.length}`);
-  }
+    // Pre-populate with v1 state (missing 'name' field)
+    db.data.set("test:ch:h", JSON.stringify({ count: 50 }));
+    db.metadata.set("test:ch:h:version", 1);
+    db.metadata.set("test:ch:h:createdAt", Date.now());
+    db.metadata.set("test:ch:h:updatedAt", Date.now());
 
-  if (!events[0]!.changedKeys.includes("count")) {
-    throw new Error("Expected first event to have 'count' in changedKeys");
-  }
+    const store = createStateStore<TestState>({
+      db,
+      key: { agentId: "test", channel: "ch", handle: "h" },
+      initial: { count: 0, name: "default" },
+      version: 2,
+      migrate: (old, oldVersion) => {
+        if (oldVersion < 2) {
+          return { ...old, name: "migrated" } as TestState;
+        }
+        return old as TestState;
+      },
+      autoSaveDelayMs: 0,
+    });
 
-  if (!events[1]!.changedKeys.includes("name")) {
-    throw new Error("Expected second event to have 'name' in changedKeys");
-  }
+    const state = await store.load();
 
-  unsubscribe();
-  store.destroy();
-}
-
-// Test: setCheckpoint persists pubsub ID
-export async function testSetCheckpointPersists(): Promise<void> {
-  const db = createMockDb();
-  const store = createStateStore<TestState>({
-    db,
-    key: { agentId: "test", channel: "ch", handle: "h" },
-    initial: { count: 0, name: "initial" },
-    autoSaveDelayMs: 0,
+    expect(state.count).toBe(50);
+    expect(state.name).toBe("migrated");
   });
-
-  await store.load();
-  store.setCheckpoint(12345);
-  await store.flush();
-
-  const meta = store.getMetadata();
-  if (meta.lastPubsubId !== 12345) {
-    throw new Error(`Expected lastPubsubId=12345, got ${meta.lastPubsubId}`);
-  }
-
-  // Verify it was persisted
-  const persistedId = db.metadata.get("test:ch:h:lastPubsubId");
-  if (persistedId !== 12345) {
-    throw new Error(`Expected persisted lastPubsubId=12345, got ${persistedId}`);
-  }
-}
-
-// Test: migration upgrades old state
-export async function testMigrationUpgradesState(): Promise<void> {
-  const db = createMockDb();
-
-  // Pre-populate with v1 state (missing 'name' field)
-  db.data.set("test:ch:h", JSON.stringify({ count: 50 }));
-  db.metadata.set("test:ch:h:version", 1);
-  db.metadata.set("test:ch:h:createdAt", Date.now());
-  db.metadata.set("test:ch:h:updatedAt", Date.now());
-
-  const store = createStateStore<TestState>({
-    db,
-    key: { agentId: "test", channel: "ch", handle: "h" },
-    initial: { count: 0, name: "default" },
-    version: 2, // Current version
-    migrate: (old, oldVersion) => {
-      if (oldVersion < 2) {
-        // Add name field
-        return { ...old, name: "migrated" } as TestState;
-      }
-      return old as TestState;
-    },
-    autoSaveDelayMs: 0,
-  });
-
-  const state = await store.load();
-
-  if (state.count !== 50) {
-    throw new Error(`Expected count=50, got ${state.count}`);
-  }
-  if (state.name !== "migrated") {
-    throw new Error(`Expected name='migrated', got ${state.name}`);
-  }
-}
-
-// Run all tests
-export async function runTests(): Promise<void> {
-  const tests = [
-    { name: "load returns initial state", fn: testLoadReturnsInitialState },
-    { name: "set persists state", fn: testSetPersistsState },
-    { name: "load returns persisted state", fn: testLoadReturnsPersistedState },
-    { name: "get returns sync state", fn: testGetReturnsSyncState },
-    { name: "update merges state", fn: testUpdateMergesState },
-    { name: "isDirty tracks changes", fn: testIsDirtyTracksChanges },
-    { name: "subscribe notifies on changes", fn: testSubscribeNotifiesOnChanges },
-    { name: "setCheckpoint persists", fn: testSetCheckpointPersists },
-    { name: "migration upgrades state", fn: testMigrationUpgradesState },
-  ];
-
-  for (const test of tests) {
-    try {
-      await test.fn();
-      console.log(`✓ ${test.name}`);
-    } catch (err) {
-      console.error(`✗ ${test.name}:`, err);
-    }
-  }
-}
+});

@@ -7,6 +7,7 @@
  * - RPC bridge initialization
  * - Database client injection
  * - Pubsub connection
+ * - Automatic state management
  * - Lifecycle management
  * - Graceful shutdown
  */
@@ -20,16 +21,20 @@ import {
   type AgentState,
 } from "@natstack/core";
 import { connect, setDbOpen } from "@natstack/agentic-messaging";
-import type { AgenticClient } from "@natstack/agentic-messaging";
+import type { AgenticClient, EventStreamItem } from "@natstack/agentic-messaging";
 import { setRpc } from "@natstack/ai";
 
-import { Agent, type AgentContext, type AgentLogger } from "./agent.js";
+import { Agent, deepMerge, type AgentContext, type AgentLogger } from "./agent.js";
 import { createParentPortTransport, type ParentPort } from "./transport.js";
 import { createLifecycleManager } from "./lifecycle.js";
+import { createStateStore, type StateStore } from "./state.js";
 
 // Shutdown timeouts
 const SHUTDOWN_TIMEOUT_MS = 5000;
 const SLEEP_TIMEOUT_MS = 3000;
+
+// State persistence debounce
+const STATE_PERSIST_DEBOUNCE_MS = 100;
 
 /**
  * Send a message to the host process.
@@ -95,10 +100,11 @@ function waitForInit(parentPort: ParentPort): Promise<AgentInitConfig> {
  * 1. Validates we're running in utilityProcess
  * 2. Waits for init config from host (or uses provided config)
  * 3. Sets up RPC bridge and DB client
- * 4. Connects to pubsub
- * 5. Initializes the agent (onWake)
- * 6. Enters the message loop
- * 7. Handles graceful shutdown
+ * 4. Loads persisted state (so getConnectOptions can use lastCheckpoint)
+ * 5. Connects to pubsub
+ * 6. Initializes the agent (init, onWake)
+ * 7. Enters the message loop
+ * 8. Handles graceful shutdown with state flush
  *
  * @param AgentClass - The agent class to instantiate
  * @param config - Optional init config (if not provided, waits for host message)
@@ -110,10 +116,11 @@ function waitForInit(parentPort: ParentPort): Promise<AgentInitConfig> {
  *
  * class MyAgent extends Agent<{ count: number }> {
  *   state = { count: 0 };
+ *   readonly stateVersion = 1;
  *
  *   async onEvent(event) {
- *     if (event.type === 'message') {
- *       this.state.count++;
+ *     if (event.type === 'message' && event.kind !== 'replay') {
+ *       this.setState({ count: this.state.count + 1 });
  *       await this.ctx.client.send(`Message #${this.state.count}`);
  *     }
  *   }
@@ -148,6 +155,7 @@ export async function runAgent<S extends AgentState>(
 
   // Step 3: Instantiate agent with default state
   const agent = new AgentClass();
+  const defaultState = { ...agent.state }; // Capture default state for merging
 
   // Step 4: Initialize RPC + DB client
   const selfId = `agent:${agentId}:${handle}`;
@@ -159,7 +167,56 @@ export async function runAgent<S extends AgentState>(
   setDbOpen(dbClient.open);  // For agentic-messaging session persistence
   setRpc(rpc);               // For @natstack/ai streaming and tool execution
 
-  // Step 5: Connect to pubsub
+  // Step 5: Set up state management BEFORE pubsub connect
+  // This allows getConnectOptions() to use lastCheckpoint for replay recovery
+  const db = await dbClient.open("agent-state.db");
+
+  // Access protected migrateState via type cast
+  const agentInternal = agent as unknown as {
+    migrateState?: (oldState: AgentState, oldVersion: number) => S;
+    init?: () => void;
+  };
+
+  const stateStore: StateStore<S> = createStateStore({
+    db,
+    key: { agentId, channel, handle },
+    initial: defaultState,
+    version: agent.stateVersion,
+    migrate: agentInternal.migrateState?.bind(agent),
+    autoSaveDelayMs: STATE_PERSIST_DEBOUNCE_MS,
+  });
+
+  // Load persisted state and merge with defaults
+  const persistedState = await stateStore.load();
+
+  // Deep merge persisted state with defaults
+  agent.state = deepMerge(defaultState, persistedState);
+
+  // IMPORTANT: Sync the merged state back to stateStore so it's consistent
+  stateStore.set(agent.state);
+
+  const checkpoint = stateStore.getMetadata().lastPubsubId;
+  log.debug(`State loaded: checkpoint=${checkpoint ?? "none"}`);
+
+  // Inject setState helper
+  (agent as unknown as { setState: (partial: Partial<S>) => void }).setState = (partial: Partial<S>) => {
+    agent.state = deepMerge(agent.state, partial);
+    stateStore.set(agent.state);
+  };
+
+  // Inject lastCheckpoint getter
+  Object.defineProperty(agent, "lastCheckpoint", {
+    get: () => stateStore.getMetadata().lastPubsubId,
+    configurable: true,
+  });
+
+  // Inject commitCheckpoint method for explicit checkpoint management
+  // Agents should call this when they've actually finished processing an event
+  (agent as unknown as { commitCheckpoint: (pubsubId: number) => void }).commitCheckpoint = (pubsubId: number) => {
+    stateStore.setCheckpoint(pubsubId);
+  };
+
+  // Step 6: Connect to pubsub (NOW getConnectOptions can use lastCheckpoint)
   let client: AgenticClient;
   try {
     const customOptions = agent.getConnectOptions?.() ?? {};
@@ -193,7 +250,7 @@ export async function runAgent<S extends AgentState>(
 
   log.info(`Connected to pubsub channel: ${channel}`);
 
-  // Step 6: Create context and inject into agent
+  // Step 7: Create context and inject into agent
   const ctx: AgentContext = {
     agentId,
     channel,
@@ -206,7 +263,10 @@ export async function runAgent<S extends AgentState>(
   // Inject context (accessing protected property)
   (agent as unknown as { ctx: AgentContext }).ctx = ctx;
 
-  // Step 7: Set up lifecycle management
+  // Call optional init hook (after state loading, after context injection)
+  agentInternal.init?.();
+
+  // Step 8: Set up lifecycle management
   let isShuttingDown = false;
 
   const lifecycle = createLifecycleManager({
@@ -247,6 +307,18 @@ export async function runAgent<S extends AgentState>(
         log.warn("onSleep error/timeout:", err);
       }
 
+      // Sync current state to store and flush to DB
+      stateStore.set(agent.state);
+      await stateStore.flush();
+      log.debug("State flushed");
+
+      // Close database
+      try {
+        await db.close();
+      } catch (err) {
+        log.warn("Error closing database:", err);
+      }
+
       // Close pubsub connection
       try {
         await client.close();
@@ -285,7 +357,7 @@ export async function runAgent<S extends AgentState>(
     // Don't shutdown on unhandled rejection, just log
   });
 
-  // Step 8: Set up reconnection handlers
+  // Step 9: Set up reconnection handlers
   client.onDisconnect(() => {
     log.warn("Pubsub disconnected");
   });
@@ -299,7 +371,7 @@ export async function runAgent<S extends AgentState>(
     log.error("Pubsub error:", err.message);
   });
 
-  // Step 9: Call agent.onWake()
+  // Step 10: Call agent.onWake()
   try {
     await agent.onWake();
   } catch (err) {
@@ -313,14 +385,17 @@ export async function runAgent<S extends AgentState>(
     process.exit(1);
   }
 
-  // Step 10: Send ready to host
+  // Step 11: Send ready to host
   sendToHost({ type: "ready" });
   log.info("Agent ready");
 
-  // Step 11: Start idle monitoring
+  // Step 12: Start idle monitoring
   lifecycle.startIdleMonitoring();
 
-  // Step 12: Enter message loop (fire-and-forget pattern)
+  // Step 13: Enter message loop (fire-and-forget pattern)
+  // NOTE: Checkpoints are NOT automatically updated. Agents should call
+  // this.commitCheckpoint(event.pubsubId) when they've finished processing
+  // an event (e.g., after queue.drain() in onSleep).
   const eventsOptions = agent.getEventsOptions?.() ?? {};
 
   try {
