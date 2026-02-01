@@ -300,9 +300,10 @@ export const onChildCreationError = notInShell("onChildCreationError") as (
   callback: (error: { url: string; error: string }) => void
 ) => () => void;
 
-export const expose = shellRpc?.expose.bind(shellRpc) ?? notInShell("expose") as <
-  T extends import("./core/index.js").Rpc.ExposedMethods
->(methods: T) => void;
+export const exposeMethod = shellRpc?.exposeMethod.bind(shellRpc) ?? notInShell("exposeMethod") as <
+  TArgs extends unknown[],
+  TReturn
+>(method: string, handler: (...args: TArgs) => TReturn | Promise<TReturn>) => void;
 
 export const gitConfig = null as import("./core/index.js").GitConfig | null;
 export const pubsubConfig = null as import("./core/index.js").PubSubConfig | null;

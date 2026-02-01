@@ -39,11 +39,9 @@ const rpc = createRpcBridge({
 });
 
 // 3. Expose methods that others can call
-rpc.expose({
-  greet: (name: string) => `Hello, ${name}!`,
-  async fetchData(id: string) {
-    return await database.get(id);
-  },
+rpc.exposeMethod("greet", (name: string) => `Hello, ${name}!`);
+rpc.exposeMethod("fetchData", async (id: string) => {
+  return await database.get(id);
 });
 
 // 4. Call methods on other endpoints
@@ -79,15 +77,13 @@ interface RpcBridgeConfig {
 
 Returns an `RpcBridge` with these methods:
 
-#### `rpc.expose(methods)`
+#### `rpc.exposeMethod(method, handler)`
 
-Register methods that can be called by other endpoints.
+Register a method that can be called by other endpoints.
 
 ```typescript
-rpc.expose({
-  methodName: (arg1, arg2) => result,
-  asyncMethod: async (arg) => await doWork(arg),
-});
+rpc.exposeMethod("methodName", (arg1: string, arg2: number) => result);
+rpc.exposeMethod("asyncMethod", async (arg: string) => await doWork(arg));
 ```
 
 #### `rpc.call<T>(targetId, method, ...args)`
@@ -137,18 +133,6 @@ const transport = {
 ipc.on("message", (sourceId, message) => {
   registry.deliver(sourceId, message);
 });
-```
-
-### Endpoint ID Helpers
-
-```typescript
-import { panelId, workerId, parseEndpointId } from "@natstack/rpc";
-
-panelId("abc");        // "panel:abc"
-workerId("xyz");       // "worker:xyz"
-
-parseEndpointId("panel:abc");  // { type: "panel", id: "abc" }
-parseEndpointId("worker:xyz"); // { type: "worker", id: "xyz" }
 ```
 
 ## Transport Implementation

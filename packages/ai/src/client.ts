@@ -156,24 +156,21 @@ function createAiClient(): AiClient {
       for (const listener of streamEndListeners) listener(streamId);
     });
 
-    rpc.expose({
-      "ai.executeTool": async (
-        streamId: unknown,
-        toolName: unknown,
-        toolArgs: unknown
+    rpc.exposeMethod(
+      "ai.executeTool",
+      async (
+        streamId: string,
+        toolName: string,
+        toolArgs: Record<string, unknown>
       ): Promise<ToolExecutionResult> => {
-        const sid = streamId as string;
-        const name = toolName as string;
-        const args = toolArgs as Record<string, unknown>;
-
-        const streamCallbacks = registeredToolCallbacks.get(sid);
-        const callback = streamCallbacks?.get(name);
+        const streamCallbacks = registeredToolCallbacks.get(streamId);
+        const callback = streamCallbacks?.get(toolName);
         if (!callback) {
-          return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
+          return { content: [{ type: "text", text: `Unknown tool: ${toolName}` }], isError: true };
         }
 
         try {
-          const result = await callback(args);
+          const result = await callback(toolArgs);
 
           // Pass through already-wrapped ToolExecutionResult results (supports optional `data`).
           if (
@@ -202,8 +199,8 @@ function createAiClient(): AiClient {
             isError: true,
           };
         }
-      },
-    });
+      }
+    );
   }
 
   let roleRecordCache: AIRoleRecord | null = null;

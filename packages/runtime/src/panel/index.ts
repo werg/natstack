@@ -73,7 +73,7 @@ export const {
   getTheme,
   onThemeChange,
   onFocus,
-  expose,
+  exposeMethod,
   bootstrapPromise,
   contextId,
 } = runtime;

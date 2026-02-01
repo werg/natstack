@@ -33,6 +33,8 @@ import { getPubSubServer, type PubSubServer } from "./pubsubServer.js";
 import { createVerdaccioServer, type VerdaccioServer } from "./verdaccioServer.js";
 import { createGitWatcher, type GitWatcher } from "./workspace/gitWatcher.js";
 import { initAgentDiscovery, shutdownAgentDiscovery } from "./agentDiscovery.js";
+import { initAgentHost, shutdownAgentHost } from "./agentHost.js";
+import { getTokenManager } from "./tokenManager.js";
 import { eventService } from "./services/eventsService.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
 import { shutdownPackageStore, scheduleGC } from "./package-store/index.js";
@@ -632,6 +634,17 @@ app.on("ready", async () => {
       const pubsubPort = await pubsubServer.start();
       log.info(`[PubSub] Server started on port ${pubsubPort}`);
 
+      // Initialize AgentHost for spawning agent processes
+      const agentHost = initAgentHost({
+        workspaceRoot: workspace.path,
+        pubsubUrl: `ws://127.0.0.1:${pubsubPort}`,
+        createToken: (instanceId) => getTokenManager().getOrCreateToken(instanceId),
+        revokeToken: (instanceId) => getTokenManager().revokeToken(instanceId),
+      });
+      await agentHost.initialize();
+      pubsubServer.setAgentHost(agentHost);
+      log.info("[AgentHost] Initialized");
+
       // Initialize RPC handler
       const { PanelRpcHandler } = await import("./ipc/rpcHandler.js");
       new PanelRpcHandler(panelManager);
@@ -728,6 +741,10 @@ app.on("will-quit", (event) => {
 
   // Stop agent discovery file watching
   shutdownAgentDiscovery();
+
+  // Shutdown AgentHost FIRST - gives agents time to close pubsub connections
+  // before we stop the pubsub server
+  shutdownAgentHost();
 
   const hasResourcesToClean = gitServer || gitWatcher || cdpServer || pubsubServer || verdaccioServer;
   if (hasResourcesToClean) {

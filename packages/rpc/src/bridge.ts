@@ -101,8 +101,12 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
   const bridge: RpcBridgeInternal = {
     selfId: config.selfId,
 
-    expose(methods: ExposedMethods) {
-      exposedMethods = { ...exposedMethods, ...methods };
+    exposeMethod<TArgs extends unknown[], TReturn>(
+      method: string,
+      handler: (...args: TArgs) => TReturn | Promise<TReturn>
+    ): void {
+      // Cast is safe: we're widening the type for storage, but runtime behavior is unchanged
+      exposedMethods[method] = handler as (...args: unknown[]) => unknown | Promise<unknown>;
     },
 
     async call<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T> {

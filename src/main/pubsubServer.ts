@@ -11,6 +11,7 @@ import { getTokenManager } from "./tokenManager.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
 import { findAvailablePortForService } from "./portUtils.js";
 import { createDevLogger } from "./devLog.js";
+import type { AgentHost } from "./agentHost.js";
 
 const log = createDevLogger("PubSubServer");
 
@@ -1277,6 +1278,9 @@ export class PubSubServer {
     const state = this.channels.get(channel);
     if (!state) return;
 
+    // Mark channel activity for agent inactivity tracking
+    this.agentHost?.markChannelActivity(channel);
+
     // Message without ref for non-senders
     const dataForOthers = JSON.stringify(msg);
     // Message with ref for sender (if they provided one)
@@ -1309,6 +1313,9 @@ export class PubSubServer {
   ): void {
     const state = this.channels.get(channel);
     if (!state) return;
+
+    // Mark channel activity for agent inactivity tracking
+    this.agentHost?.markChannelActivity(channel);
 
     // Config update message format
     const msg = {
@@ -1381,6 +1388,9 @@ export class PubSubServer {
   ): void {
     const state = this.channels.get(channel);
     if (!state) return;
+
+    // Mark channel activity for agent inactivity tracking
+    this.agentHost?.markChannelActivity(channel);
 
     const attachments = msg.attachments!;
     const attachmentMeta = attachments.map((a) => ({
@@ -1504,6 +1514,27 @@ export class PubSubServer {
 
   getPort(): number | null {
     return this.port;
+  }
+
+  // ===========================================================================
+  // AgentHost Integration (Phase 4)
+  // ===========================================================================
+
+  private agentHost: AgentHost | null = null;
+
+  /**
+   * Set the AgentHost reference for agent lifecycle management.
+   * The full pubsub protocol (invite-agent, list-agents, etc.) is Phase 5.
+   */
+  setAgentHost(host: AgentHost): void {
+    this.agentHost = host;
+  }
+
+  /**
+   * Get the AgentHost reference.
+   */
+  getAgentHost(): AgentHost | null {
+    return this.agentHost;
   }
 
   async stop(): Promise<void> {

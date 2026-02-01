@@ -1,0 +1,10 @@
+{
+  "name": "@workspace-agents/test-echo",
+  "version": "0.1.0",
+  "type": "module",
+  "natstack": {
+    "type": "agent",
+    "title": "Test Echo Agent",
+    "description": "Simple echo agent for testing AgentHost functionality"
+  }
+}

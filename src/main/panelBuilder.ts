@@ -2083,12 +2083,12 @@ import ${JSON.stringify(relativeUserEntry)};
       const relativeUserEntry = path.relative(buildWorkspace.buildDir, entryPath);
 
       // Worker wrapper - imports runtime to set up console/globals,
-      // then imports the user module which should call rpc.expose()
+      // then imports the user module which should call rpc.exposeMethod()
       const wrapperCode = `
 // Import worker runtime to set up console and globals
 import "@natstack/runtime";
 
-// Import user module - it should call rpc.expose() to register methods
+// Import user module - it should call rpc.exposeMethod() to register methods
 import ${JSON.stringify(relativeUserEntry)};
 `;
       fs.writeFileSync(tempEntryPath, wrapperCode);

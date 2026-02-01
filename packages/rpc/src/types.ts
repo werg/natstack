@@ -55,7 +55,8 @@ export interface RpcEvent {
 export type RpcMessage = RpcRequest | RpcResponse | RpcEvent;
 
 /**
- * Methods that can be exposed by an RPC endpoint.
+ * Internal type for method storage.
+ * Use exposeMethod() for type-safe method registration.
  */
 export type ExposedMethods = Record<string, (...args: unknown[]) => unknown | Promise<unknown>>;
 
@@ -102,7 +103,20 @@ export interface RpcBridgeConfig {
  */
 export interface RpcBridge {
   readonly selfId: string;
-  expose(methods: ExposedMethods): void;
+
+  /**
+   * Expose a method with full type safety.
+   *
+   * @example
+   * bridge.exposeMethod("db.open", (name: string, readOnly?: boolean) => {
+   *   return dbManager.open(name, readOnly);
+   * });
+   */
+  exposeMethod<TArgs extends unknown[], TReturn>(
+    method: string,
+    handler: (...args: TArgs) => TReturn | Promise<TReturn>
+  ): void;
+
   call<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T>;
   emit(targetId: string, event: string, payload: unknown): Promise<void>;
   onEvent(event: string, listener: RpcEventListener): () => void;
@@ -115,76 +129,4 @@ export interface RpcBridgeInternal extends RpcBridge {
   _handleMessage(sourceId: string, message: RpcMessage): void;
 }
 
-/**
- * Parse an endpoint ID to determine its type.
- */
-export function parseEndpointId(id: string): { type: "panel" | "worker"; id: string } {
-  if (id.startsWith("panel:")) {
-    return { type: "panel", id: id.slice(6) };
-  }
-  if (id.startsWith("worker:")) {
-    return { type: "worker", id: id.slice(7) };
-  }
-  // Legacy: treat unprefixed IDs as panels for backwards compatibility
-  return { type: "panel", id };
-}
-
-export function panelId(id: string): string {
-  return `panel:${id}`;
-}
-
-export function workerId(id: string): string {
-  return `worker:${id}`;
-}
-
-// =============================================================================
-// Service RPC (Worker <-> Main Process)
-// =============================================================================
-
-export interface ServiceCallRequest {
-  type: "service:call";
-  requestId: string;
-  workerId: string;
-  service: string;
-  method: string;
-  args: unknown[];
-}
-
-export interface ServiceCallResponse {
-  type: "service:response";
-  requestId: string;
-  result?: unknown;
-  error?: string;
-}
-
-export interface ServicePushEvent {
-  type: "service:push";
-  workerId: string;
-  service: string;
-  event: string;
-  payload: unknown;
-}
-
-export interface ServiceInvokeRequest {
-  type: "service:invoke";
-  requestId: string;
-  workerId: string;
-  service: string;
-  method: string;
-  args: unknown[];
-}
-
-export interface ServiceInvokeResponse {
-  type: "service:invoke-response";
-  requestId: string;
-  workerId: string;
-  result?: unknown;
-  error?: string;
-}
-
-export type ServiceHandler = (
-  workerId: string,
-  method: string,
-  args: unknown[]
-) => Promise<unknown> | unknown;
 
