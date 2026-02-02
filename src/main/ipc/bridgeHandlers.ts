@@ -7,6 +7,7 @@ import { dialog } from "electron";
 import type { PanelManager } from "../panelManager.js";
 import type { CreateChildOptions } from "../../shared/ipc/types.js";
 import { handleTemplateComplete, type TemplateCompleteResult } from "../contextTemplate/partitionBuilder.js";
+import { getAgentDiscovery } from "../agentDiscovery.js";
 
 /**
  * Handle bridge service calls from panels.
@@ -226,6 +227,15 @@ export async function handleBridgeCall(
 
       const { createRepo } = await import("../contextTemplate/discovery.js");
       return createRepo(repoPath);
+    }
+    case "listAgents": {
+      // List available agents from AgentDiscovery (filesystem source of truth)
+      const discovery = getAgentDiscovery();
+      if (!discovery) {
+        return [];
+      }
+      // Return only valid agents with their manifests
+      return discovery.listValid().map((agent) => agent.manifest);
     }
     default:
       throw new Error(`Unknown bridge method: ${method}`);

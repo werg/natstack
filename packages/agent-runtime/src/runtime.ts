@@ -21,10 +21,10 @@ import {
   type AgentState,
 } from "@natstack/core";
 import { connect, setDbOpen } from "@natstack/agentic-messaging";
-import type { AgenticClient, EventStreamItem } from "@natstack/agentic-messaging";
+import type { AgenticClient, EventStreamItem, AgenticParticipantMetadata } from "@natstack/agentic-messaging";
 import { setRpc } from "@natstack/ai";
 
-import { Agent, deepMerge, type AgentContext, type AgentLogger } from "./agent.js";
+import { Agent, deepMerge, type AgentContext, type AgentLogger, type AgentRuntimeInjection } from "./agent.js";
 import { createParentPortTransport, type ParentPort } from "./transport.js";
 import { createLifecycleManager } from "./lifecycle.js";
 import { createStateStore, type StateStore } from "./state.js";
@@ -171,11 +171,10 @@ export async function runAgent<S extends AgentState>(
   // This allows getConnectOptions() to use lastCheckpoint for replay recovery
   const db = await dbClient.open("agent-state.db");
 
-  // Access protected migrateState via type cast
-  const agentInternal = agent as unknown as {
-    migrateState?: (oldState: AgentState, oldVersion: number) => S;
-    init?: () => void;
-  };
+  // Access protected/internal agent properties via the injection interface
+  // This provides type-safe access to methods the runtime needs to call/inject
+  type AgentInternal = AgentRuntimeInjection<S, AgenticParticipantMetadata>;
+  const agentInternal = agent as unknown as AgentInternal;
 
   const stateStore: StateStore<S> = createStateStore({
     db,
@@ -198,8 +197,8 @@ export async function runAgent<S extends AgentState>(
   const checkpoint = stateStore.getMetadata().lastPubsubId;
   log.debug(`State loaded: checkpoint=${checkpoint ?? "none"}`);
 
-  // Inject setState helper
-  (agent as unknown as { setState: (partial: Partial<S>) => void }).setState = (partial: Partial<S>) => {
+  // Inject setState helper (via the internal interface)
+  agentInternal.setState = (partial: Partial<S>) => {
     agent.state = deepMerge(agent.state, partial);
     stateStore.set(agent.state);
   };
@@ -212,11 +211,34 @@ export async function runAgent<S extends AgentState>(
 
   // Inject commitCheckpoint method for explicit checkpoint management
   // Agents should call this when they've actually finished processing an event
-  (agent as unknown as { commitCheckpoint: (pubsubId: number) => void }).commitCheckpoint = (pubsubId: number) => {
+  agentInternal.commitCheckpoint = (pubsubId: number) => {
     stateStore.setCheckpoint(pubsubId);
   };
 
-  // Step 6: Connect to pubsub (NOW getConnectOptions can use lastCheckpoint)
+  // Step 5b: Inject context BEFORE getConnectOptions (Issue #1 fix)
+  // This allows agents to use this.ctx consistently in all lifecycle methods.
+  // The client property starts as null and is populated after pubsub connects.
+  const ctx: AgentContext<AgenticParticipantMetadata> = {
+    agentId,
+    channel,
+    handle,
+    config: agentConfig,
+    log,
+    client: null, // Populated after pubsub connects
+  };
+
+  // Inject ctx first (unified context model) via the internal interface
+  agentInternal.ctx = ctx;
+
+  // Also inject initInfo for backward compatibility (deprecated, same values as ctx)
+  agentInternal.initInfo = {
+    agentId,
+    channel,
+    handle,
+    config: agentConfig,
+  };
+
+  // Step 6: Connect to pubsub (NOW getConnectOptions can use lastCheckpoint AND ctx)
   let client: AgenticClient;
   try {
     const customOptions = agent.getConnectOptions?.() ?? {};
@@ -250,20 +272,11 @@ export async function runAgent<S extends AgentState>(
 
   log.info(`Connected to pubsub channel: ${channel}`);
 
-  // Step 7: Create context and inject into agent
-  const ctx: AgentContext = {
-    agentId,
-    channel,
-    handle,
-    config: agentConfig,
-    client,
-    log,
-  };
+  // Step 7: Populate client in existing context (Issue #1 fix - unified context)
+  // ctx was created earlier with client: null, now we populate it
+  ctx.client = client;
 
-  // Inject context (accessing protected property)
-  (agent as unknown as { ctx: AgentContext }).ctx = ctx;
-
-  // Call optional init hook (after state loading, after context injection)
+  // Call optional init hook (after state loading, after client connection)
   agentInternal.init?.();
 
   // Step 8: Set up lifecycle management
@@ -371,8 +384,13 @@ export async function runAgent<S extends AgentState>(
     log.error("Pubsub error:", err.message);
   });
 
-  // Step 10: Call agent.onWake()
+  // Step 10: Load settings and call agent.onWake()
   try {
+    // Load settings before onWake (Issue #6 fix)
+    // Access loadSettings via type cast since it's protected
+    const agentWithSettings = agent as unknown as { loadSettings: () => Promise<void> };
+    await agentWithSettings.loadSettings();
+
     await agent.onWake();
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
@@ -400,6 +418,11 @@ export async function runAgent<S extends AgentState>(
 
   try {
     for await (const event of client.events(eventsOptions)) {
+      // Skip agent-debug events - they're UI-only and not for agent processing
+      if ("type" in event && event.type === "agent-debug") {
+        continue;
+      }
+
       lifecycle.markActive();
       parentPort.ref?.(); // Re-ref IPC while processing
 

@@ -638,6 +638,7 @@ app.on("ready", async () => {
       const agentHost = initAgentHost({
         workspaceRoot: workspace.path,
         pubsubUrl: `ws://127.0.0.1:${pubsubPort}`,
+        messageStore: pubsubServer.getMessageStore(),
         createToken: (instanceId) => getTokenManager().getOrCreateToken(instanceId),
         revokeToken: (instanceId) => getTokenManager().revokeToken(instanceId),
       });

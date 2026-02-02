@@ -8,7 +8,39 @@
  * Therefore, the controller provides:
  * - Queue-level pause/resume (affects the message queue)
  * - Per-operation abort signals (new signal per AI call)
+ * - Optional pubsub monitoring for pause RPC events
  */
+
+import type { AgenticClient, AgenticParticipantMetadata, EventStreamItem } from "@natstack/agentic-messaging";
+
+/**
+ * Options for creating an interrupt controller with pubsub monitoring.
+ */
+export interface InterruptControllerOptions<T extends AgenticParticipantMetadata = AgenticParticipantMetadata> {
+  /**
+   * Pubsub client for monitoring pause events.
+   * If provided, the controller will automatically listen for pause RPC calls
+   * and publish execution-pause events to the UI.
+   */
+  client?: AgenticClient<T>;
+
+  /**
+   * Message ID being processed.
+   * Required when client is provided, used for publishing pause status.
+   */
+  messageId?: string;
+
+  /**
+   * Optional callback when pause is triggered via pubsub.
+   * Called after internal pause() but before publishing to UI.
+   */
+  onPubsubPause?: (reason: string) => void | Promise<void>;
+
+  /**
+   * Optional logger function.
+   */
+  log?: (message: string) => void;
+}
 
 /**
  * Interrupt controller interface.
@@ -73,12 +105,29 @@ export interface InterruptController {
   isAborted(): boolean;
 
   // ==================
+  // Pubsub Monitoring
+  // ==================
+
+  /**
+   * Start monitoring pubsub for pause events.
+   * Only available when client was provided in options.
+   * Call this at the start of message processing.
+   * Returns a promise that resolves when monitoring stops (on pause or cleanup).
+   */
+  startMonitoring(): Promise<void>;
+
+  /**
+   * Check if pubsub monitoring is active.
+   */
+  isMonitoring(): boolean;
+
+  // ==================
   // Lifecycle
   // ==================
 
   /**
    * Cleanup and reset state.
-   * Aborts any current operation and resets pause state.
+   * Aborts any current operation, stops monitoring, and resets pause state.
    */
   cleanup(): void;
 }
@@ -150,15 +199,47 @@ export interface InterruptController {
  *   interrupt.abortCurrent(); // Cancel current AI call
  * }
  * ```
+ *
+ * @example With pubsub monitoring (unified pattern)
+ * ```typescript
+ * const interrupt = createInterruptController({
+ *   client: ctx.client,
+ *   messageId: incoming.id,
+ *   onPubsubPause: async (reason) => {
+ *     // Optional: additional pause handling (e.g., SDK interrupt)
+ *     await queryInstance?.interrupt();
+ *   },
+ * });
+ *
+ * // Wire to queue
+ * interrupt.onPause(() => queue.pause());
+ * interrupt.onResume(() => queue.resume());
+ *
+ * // Start monitoring in background (fire and forget)
+ * void interrupt.startMonitoring();
+ *
+ * // Process message...
+ * const signal = interrupt.createAbortSignal();
+ * // ... AI call with signal ...
+ *
+ * // Cleanup stops monitoring
+ * interrupt.cleanup();
+ * ```
  */
-export function createInterruptController(): InterruptController {
+export function createInterruptController<T extends AgenticParticipantMetadata = AgenticParticipantMetadata>(
+  options?: InterruptControllerOptions<T>
+): InterruptController {
+  const { client, messageId, onPubsubPause, log } = options ?? {};
+
   let paused = false;
   let currentAbortController: AbortController | null = null;
+  let monitoringActive = false;
+  let eventIterator: AsyncIterableIterator<EventStreamItem> | null = null;
 
   const pauseHandlers = new Set<() => void>();
   const resumeHandlers = new Set<() => void>();
 
-  return {
+  const controller: InterruptController = {
     // Queue control
     isPaused(): boolean {
       return paused;
@@ -218,8 +299,88 @@ export function createInterruptController(): InterruptController {
       return currentAbortController?.signal.aborted ?? false;
     },
 
+    // Pubsub monitoring
+    async startMonitoring(): Promise<void> {
+      if (!client) {
+        log?.("[InterruptController] No client provided, monitoring not available");
+        return;
+      }
+
+      if (monitoringActive) {
+        log?.("[InterruptController] Monitoring already active");
+        return;
+      }
+
+      monitoringActive = true;
+      log?.("[InterruptController] Starting pause event monitoring");
+
+      try {
+        const iterator = client.events();
+        eventIterator = iterator;
+
+        for await (const event of iterator) {
+          if (!monitoringActive) break;
+
+          // Check if this is a pause method call targeted at us (not another agent in the channel)
+          const isTargetedPause = event.type === "method-call" &&
+            event.methodName === "pause" &&
+            !paused &&
+            // Only respond to pause calls targeted at our client ID
+            (event.targetId === client.clientId || !event.targetId);
+
+          if (isTargetedPause) {
+            const args = event.args as Record<string, unknown> | undefined;
+            const reason = (args?.["reason"] as string | undefined) || "Execution interrupted";
+            log?.(`[InterruptController] Pause RPC received: ${reason}`);
+
+            // Trigger internal pause
+            controller.pause();
+
+            // Abort current operation
+            controller.abortCurrent();
+
+            // Call user's pause handler
+            await onPubsubPause?.(reason);
+
+            // Publish pause event to UI
+            if (messageId) {
+              await client.publish(
+                "execution-pause",
+                {
+                  messageId,
+                  status: "paused",
+                  reason,
+                },
+                { persist: true }
+              );
+            }
+
+            // Stop listening after pause is handled
+            break;
+          }
+        }
+      } catch (err) {
+        // Only log unexpected errors (not stream closed errors)
+        if (!(err instanceof Error && err.message.includes("closed"))) {
+          console.error("[InterruptController] Monitoring error:", err);
+        }
+      } finally {
+        eventIterator = null;
+        monitoringActive = false;
+      }
+    },
+
+    isMonitoring(): boolean {
+      return monitoringActive;
+    },
+
     // Lifecycle
     cleanup(): void {
+      // Stop monitoring
+      monitoringActive = false;
+      eventIterator?.return?.();
+      eventIterator = null;
+
       // Abort any current operation
       if (currentAbortController) {
         currentAbortController.abort();
@@ -234,4 +395,6 @@ export function createInterruptController(): InterruptController {
       resumeHandlers.clear();
     },
   };
+
+  return controller;
 }

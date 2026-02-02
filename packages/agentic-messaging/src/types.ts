@@ -5,11 +5,32 @@
  * results between distributed participants over pubsub.
  */
 
-import type { Participant, ParticipantMetadata, RosterUpdate, Attachment, AttachmentInput, ChannelConfig } from "@natstack/pubsub";
+import type {
+  Participant,
+  ParticipantMetadata,
+  RosterUpdate,
+  Attachment,
+  AttachmentInput,
+  ChannelConfig,
+  AgentInstanceSummary,
+  InviteAgentOptions,
+  InviteAgentResult,
+  RemoveAgentResult,
+} from "@natstack/pubsub";
+import type { AgentManifest } from "@natstack/core";
 import type { z } from "zod";
 
-// Re-export attachment types from pubsub for convenience
-export type { Attachment, AttachmentInput, ChannelConfig };
+// Re-export types from pubsub for convenience
+export type {
+  Attachment,
+  AttachmentInput,
+  ChannelConfig,
+  AgentInstanceSummary,
+  InviteAgentOptions,
+  InviteAgentResult,
+  RemoveAgentResult,
+};
+export type { AgentManifest } from "@natstack/core";
 
 /** JSON Schema representation for method parameters/returns. */
 export type JsonSchema = Record<string, unknown>;
@@ -197,7 +218,8 @@ export type IncomingEvent =
   | IncomingExecutionPauseEvent
   | IncomingToolRoleRequestEvent
   | IncomingToolRoleResponseEvent
-  | IncomingToolRoleHandoffEvent;
+  | IncomingToolRoleHandoffEvent
+  | IncomingAgentDebugEvent;
 
 /**
  * Method call event with discriminant type field.
@@ -284,6 +306,34 @@ export interface IncomingToolRoleHandoffEvent {
   from: string;
   /** New provider ID */
   to: string;
+}
+
+/**
+ * Agent debug event payload - discriminated by debugType.
+ */
+export type AgentDebugPayload =
+  | {
+      debugType: "output";
+      agentId: string;
+      handle: string;
+      stream: "stdout" | "stderr";
+      content: string;
+    }
+  | {
+      debugType: "lifecycle";
+      agentId: string;
+      handle: string;
+      event: "started" | "stopped" | "woken";
+      reason?: "timeout" | "explicit" | "crash" | "idle";
+    };
+
+/**
+ * An incoming agent debug event (ephemeral, not persisted).
+ * Uses the message type system for filtering (like "error", "message", etc.)
+ */
+export interface IncomingAgentDebugEvent extends IncomingBase {
+  type: "agent-debug";
+  payload: AgentDebugPayload;
 }
 
 /**
@@ -909,6 +959,16 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
       contentType?: string;
     }
   ): Promise<void>;
+
+  // === Agent Management ===
+  /** List all available agents in the workspace */
+  listAgents(timeoutMs?: number): Promise<AgentManifest[]>;
+  /** Invite an agent to join this channel */
+  inviteAgent(agentId: string, options?: InviteAgentOptions): Promise<InviteAgentResult>;
+  /** List agents currently on this channel */
+  channelAgents(timeoutMs?: number): Promise<AgentInstanceSummary[]>;
+  /** Remove an agent from this channel */
+  removeAgent(instanceId: string, timeoutMs?: number): Promise<RemoveAgentResult>;
 }
 
 /**

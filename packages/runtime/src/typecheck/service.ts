@@ -127,8 +127,8 @@ export interface TypeCheckServiceConfig {
   nodeModulesPaths?: string[];
   /**
    * Path to the user's workspace root.
-   * If provided, enables resolution of @workspace-panels/* and @workspace-workers/*
-   * from workspace/panels/ and workspace/workers/ directories.
+   * If provided, enables resolution of @workspace-panels/* and @workspace-agents/*
+   * from workspace/panels/ and workspace/agents/ directories.
    */
   userWorkspacePath?: string;
 }
@@ -999,9 +999,9 @@ export class TypeCheckService {
   }
 
   /**
-   * Resolve workspace panel/worker module imports.
-   * Handles @workspace-panels/*, @workspace-workers/*, and @workspace/* packages
-   * from workspace/panels/, workspace/workers/, and workspace/packages/ respectively.
+   * Resolve workspace panel/agent module imports.
+   * Handles @workspace-panels/*, @workspace-agents/*, and @workspace/* packages
+   * from workspace/panels/, workspace/agents/, and workspace/packages/ respectively.
    */
   private resolveWorkspaceModule(
     moduleName: string
@@ -1015,9 +1015,9 @@ export class TypeCheckService {
     if (moduleName.startsWith("@workspace-panels/")) {
       baseDir = path.join(userWorkspace, "panels");
       scope = "@workspace-panels/";
-    } else if (moduleName.startsWith("@workspace-workers/")) {
-      baseDir = path.join(userWorkspace, "workers");
-      scope = "@workspace-workers/";
+    } else if (moduleName.startsWith("@workspace-agents/")) {
+      baseDir = path.join(userWorkspace, "agents");
+      scope = "@workspace-agents/";
     } else if (moduleName.startsWith("@workspace/")) {
       // Shared workspace packages in workspace/packages/
       baseDir = path.join(userWorkspace, "packages");
@@ -1116,10 +1116,10 @@ export class TypeCheckService {
     const userWorkspace = this.config.userWorkspacePath;
     if (!userWorkspace) return false;
 
-    // Allow access to files within workspace/panels/, workspace/workers/, workspace/packages/
+    // Allow access to files within workspace/panels/, workspace/agents/, workspace/packages/
     const workspaceDirs = [
       path.join(userWorkspace, "panels"),
-      path.join(userWorkspace, "workers"),
+      path.join(userWorkspace, "agents"),
       path.join(userWorkspace, "packages"),
     ];
 

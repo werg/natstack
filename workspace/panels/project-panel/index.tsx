@@ -7,10 +7,16 @@
 import { useState, useEffect, useCallback } from "react";
 import { Theme, Box, Flex, Separator, Card } from "@radix-ui/themes";
 import { usePanelTheme } from "@natstack/react";
-import { rpc, createChild, setStateArgs, useStateArgs, buildFocusLink } from "@natstack/runtime";
+import { pubsubConfig, rpc, createChild, setStateArgs, useStateArgs, buildFocusLink, db, id as panelClientId } from "@natstack/runtime";
+import { setDbOpen, connect, type AgenticClient } from "@natstack/agentic-messaging";
+import type { AgentManifest } from "@natstack/core";
+
+// Configure agentic-messaging to use runtime's db
+setDbOpen(db.open);
 
 import { useChildSessions } from "./hooks/useChildSessions";
-import { getAgentById, getAgentWorkerSource, getAgentHandle } from "./utils/agents";
+import { getAgentById, getAgentHandle } from "./utils/agents";
+import type { AgentInfo } from "@workspace/agentic-components/types";
 import { ProjectHeader } from "./components/ProjectHeader";
 import { ConfigSection } from "./components/ConfigSection";
 import { TemplateSection } from "./components/TemplateSection";
@@ -49,8 +55,30 @@ export default function ProjectPanel() {
   const [isLaunching, setIsLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [agentName, setAgentName] = useState<string | undefined>();
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [agentsLoading, setAgentsLoading] = useState(true);
 
   const { sessions, loadSessions, loading: sessionsLoading } = useChildSessions();
+
+  // Load agents on mount
+  useEffect(() => {
+    let mounted = true;
+    async function loadAgents() {
+      try {
+        const manifests = await rpc.call<AgentManifest[]>("main", "bridge.listAgents");
+        if (mounted) {
+          // Map to AgentInfo (minimal interface for selector)
+          setAgents(manifests.map((m) => ({ id: m.id, name: m.name, description: m.description })));
+        }
+      } catch (err) {
+        console.error("Failed to load agents:", err);
+      } finally {
+        if (mounted) setAgentsLoading(false);
+      }
+    }
+    void loadAgents();
+    return () => { mounted = false; };
+  }, []);
 
   // Load child panels on mount and when panel becomes visible
   useEffect(() => {
@@ -110,8 +138,15 @@ export default function ProjectPanel() {
       return;
     }
 
+    if (!pubsubConfig) {
+      setError("Pubsub not configured");
+      return;
+    }
+
     setIsLaunching(true);
     setError(null);
+
+    let client: AgenticClient | null = null;
 
     try {
       // Generate channel ID
@@ -136,33 +171,55 @@ export default function ProjectPanel() {
         ? (projectConfig.browserWorkingDirectory ?? PROJECT_DEFAULTS.browserWorkingDirectory)
         : projectConfig.workingDirectory;
 
+      const channelConfig = {
+        workingDirectory: effectiveWorkingDirectory,
+        restrictedMode: isManaged,
+      };
+
       // Create chat panel as child
       const chatHandle = await createChild("panels/chat", { name: `chat-${channelId.slice(0, 8)}` }, {
         channelName: channelId,
-        channelConfig: {
-          workingDirectory: effectiveWorkingDirectory,
-          restrictedMode: isManaged,
-        },
+        channelConfig,
         contextId: sessionContextId,
       });
 
-      // Spawn default agent with autonomy setting applied
+      // Invite default agent via pubsub API (new agent system)
       if (projectConfig.defaultAgentId) {
         const agentDef = await getAgentById(projectConfig.defaultAgentId);
         if (agentDef) {
-          await createChild(
-            getAgentWorkerSource(agentDef),
-            { name: `agent-${channelId.slice(0, 8)}` },
-            {
-              channel: channelId,
-              handle: getAgentHandle(agentDef),
+          // Connect to pubsub to invite the agent
+          client = await connect({
+            serverUrl: pubsubConfig.serverUrl,
+            token: pubsubConfig.token,
+            channel: channelId,
+            contextId: sessionContextId,
+            channelConfig,
+            handle: `project-launcher-${panelClientId}`,
+            name: "Project Panel",
+            type: "panel",
+            replayMode: "skip",
+          });
+
+          // Invite the agent via AgentHost
+          const result = await client.inviteAgent(agentDef.id, {
+            handle: getAgentHandle(agentDef),
+            config: {
               workingDirectory: effectiveWorkingDirectory,
               restrictedMode: isManaged,
               contextId: sessionContextId,
               autonomyLevel: projectConfig.defaultAutonomy ?? PROJECT_DEFAULTS.defaultAutonomy,
               ...projectConfig.defaultAgentConfig,
-            }
-          );
+            },
+          });
+
+          if (!result.success) {
+            console.warn(`[ProjectPanel] Failed to invite agent: ${result.error}`);
+            // Don't fail the whole operation - the chat panel is already created
+          }
+
+          // Close pubsub connection
+          await client.close();
+          client = null;
         }
       }
 
@@ -174,6 +231,14 @@ export default function ProjectPanel() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to launch chat");
     } finally {
+      // Ensure pubsub connection is closed on error
+      if (client) {
+        try {
+          await client.close();
+        } catch {
+          // Ignore close errors
+        }
+      }
       setIsLaunching(false);
     }
   }, [projectConfig, contextId, loadSessions, navigateToSession]);
@@ -225,6 +290,8 @@ export default function ProjectPanel() {
 
           <ConfigSection
             config={projectConfig}
+            agents={agents}
+            agentsLoading={agentsLoading}
             expanded={configExpanded}
             onToggle={() => setConfigExpanded(!configExpanded)}
             onUpdate={handleConfigUpdate}

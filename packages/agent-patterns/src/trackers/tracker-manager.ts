@@ -59,6 +59,15 @@ export interface TrackerManager {
   action: ActionTracker;
 
   /**
+   * Set the replyTo message ID for all trackers.
+   * Call this at the start of each message handling to associate
+   * tracker messages with the incoming message.
+   *
+   * @param id - Message ID to reply to
+   */
+  setReplyTo(id: string | undefined): void;
+
+  /**
    * Cleanup all trackers at once.
    * Call this in error handlers or when processing completes.
    *
@@ -136,6 +145,12 @@ export function createTrackerManager(options: TrackerManagerOptions): TrackerMan
     typing,
     thinking,
     action,
+
+    setReplyTo(id: string | undefined): void {
+      typing.setReplyTo(id);
+      thinking.setReplyTo(id);
+      action.setReplyTo(id);
+    },
 
     async cleanupAll(): Promise<boolean> {
       const results = await Promise.all([

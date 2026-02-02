@@ -5,6 +5,23 @@
  * Provides the Agent base class, state management, lifecycle handling,
  * and the runAgent() entry point.
  *
+ * ## Key Improvements (Phase 7 Refactoring)
+ *
+ * 1. **Unified Context** - `this.ctx` is available from getConnectOptions() onward.
+ *    Identity properties (agentId, channel, handle, config, log) are always available;
+ *    `client` becomes available after pubsub connects.
+ *
+ * 2. **Type-Safe Accessors** - Use `this.client`, `this.log`, `this.config` instead
+ *    of reaching into ctx. These throw helpful errors if accessed too early.
+ *
+ * 3. **Clearer State Management** - Use `saveCheckpoint(state, pubsubId)` to
+ *    combine state updates and checkpoint commits.
+ *
+ * 4. **First-Class Settings** - Override `defaultSettings` getter and use
+ *    `this.settings` and `this.updateSettings()` for user preferences.
+ *
+ * 5. **Tracker Helpers** - Use `this.createTrackers(replyTo)` for UI indicators.
+ *
  * @example
  * ```typescript
  * import { Agent, runAgent } from '@natstack/agent-runtime';
@@ -17,19 +34,30 @@
  * class MyAgent extends Agent<MyState> {
  *   state: MyState = { messageCount: 0 };
  *
+ *   // Settings with defaults (auto-loaded from pubsub session)
+ *   protected get defaultSettings() {
+ *     return { temperature: 0.7 };
+ *   }
+ *
  *   async onWake() {
- *     this.ctx.log.info('Agent starting with state:', this.state);
+ *     // Use canonical accessors
+ *     this.log.info('Agent starting with state:', this.state);
+ *     this.log.info('Settings:', this.settings);
  *   }
  *
  *   async onEvent(event: EventStreamItem) {
  *     if (event.type === 'message' && event.kind !== 'replay') {
- *       this.state.messageCount++;
- *       await this.ctx.client.send(`Echo #${this.state.messageCount}`);
+ *       // Use saveCheckpoint for combined state + checkpoint update
+ *       this.saveCheckpoint(
+ *         { messageCount: this.state.messageCount + 1 },
+ *         event.pubsubId
+ *       );
+ *       await this.client.send(`Echo #${this.state.messageCount}`);
  *     }
  *   }
  *
  *   async onSleep() {
- *     this.ctx.log.info('Agent shutting down');
+ *     this.log.info('Agent shutting down');
  *   }
  * }
  *
@@ -44,6 +72,8 @@ export type {
   AgentContext,
   AgentLogger,
   AgentConnectOptions,
+  AgentInitInfo,
+  AgentRuntimeInjection,
 } from "./agent.js";
 
 // Runtime entry point

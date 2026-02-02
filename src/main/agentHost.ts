@@ -12,7 +12,9 @@
 
 import { utilityProcess, type UtilityProcess } from "electron";
 import { randomUUID } from "crypto";
+import { EventEmitter } from "events";
 import type { AgentInitConfig, AgentInstanceInfo } from "@natstack/core";
+import type { MessageStore } from "./pubsubServer.js";
 import {
   createRpcBridge,
   type RpcBridge,
@@ -59,6 +61,8 @@ interface LifecycleMessage {
 interface AgentInstance extends AgentInstanceInfo {
   process: UtilityProcess;
   rpcBridge: RpcBridge;
+  /** Set when stop event has been emitted, prevents duplicate events from exit handler */
+  stopEventEmitted?: boolean;
 }
 
 interface SpawnOptions {
@@ -70,15 +74,55 @@ interface SpawnOptions {
 interface AgentHostOptions {
   workspaceRoot: string;
   pubsubUrl: string;
+  messageStore: MessageStore;
   createToken: (instanceId: string) => string;
   revokeToken: (instanceId: string) => boolean;
+  /**
+   * Timeout in milliseconds for agent startup (waiting for 'ready' message).
+   * Complex agents may need longer to initialize.
+   * @default 30000 (30 seconds)
+   */
+  startupTimeoutMs?: number;
+}
+
+/**
+ * Agent output event emitted when stdout/stderr is captured.
+ */
+export interface AgentOutputEvent {
+  channel: string;
+  handle: string;
+  agentId: string;
+  stream: "stdout" | "stderr";
+  content: string;
+  timestamp: number;
+}
+
+/**
+ * Agent lifecycle event emitted on state changes.
+ */
+export interface AgentLifecycleEvent {
+  channel: string;
+  handle: string;
+  agentId: string;
+  event: "started" | "stopped" | "woken";
+  reason?: "timeout" | "explicit" | "crash" | "idle";
+  timestamp: number;
+}
+
+/**
+ * Spawn configuration stored for auto-wake.
+ */
+export interface StoredSpawnConfig {
+  channel: string;
+  handle: string;
+  config: Record<string, unknown>;
 }
 
 // ===========================================================================
 // Constants
 // ===========================================================================
 
-const STARTUP_TIMEOUT_MS = 30_000; // 30s to become ready
+const DEFAULT_STARTUP_TIMEOUT_MS = 30_000; // 30s to become ready
 const SHUTDOWN_TIMEOUT_MS = 5_000; // 5s for graceful shutdown
 const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const ACTIVITY_CHECK_INTERVAL_MS = 60_000; // Check every minute
@@ -154,13 +198,17 @@ function createHostTransport(
 // AgentHost Class
 // ===========================================================================
 
-export class AgentHost {
+export class AgentHost extends EventEmitter {
   private instances = new Map<string, AgentInstance>();
   private channelActivity = new Map<string, number>();
   private activityCheckInterval: NodeJS.Timeout | null = null;
   private isShuttingDown = false;
+  private messageStore: MessageStore;
 
-  constructor(private options: AgentHostOptions) {}
+  constructor(private options: AgentHostOptions) {
+    super();
+    this.messageStore = options.messageStore;
+  }
 
   async initialize(): Promise<void> {
     this.startActivityMonitoring();
@@ -230,9 +278,10 @@ export class AgentHost {
       readyReject = reject;
     });
 
+    const startupTimeoutMs = this.options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
     const startupTimeout = setTimeout(() => {
-      readyReject(new Error("Agent startup timeout"));
-    }, STARTUP_TIMEOUT_MS);
+      readyReject(new Error(`Agent startup timeout after ${startupTimeoutMs}ms`));
+    }, startupTimeoutMs);
 
     const onLifecycleMessage = (msg: LifecycleMessage) => {
       if (msg.type === "ready") {
@@ -270,9 +319,45 @@ export class AgentHost {
     this.instances.set(instanceId, instance);
     this.markChannelActivity(options.channel);
 
-    // Handle process exit
+    // Capture stdout/stderr for debug events
+    proc.stdout?.on("data", (data: Buffer) => {
+      this.emit("agentOutput", {
+        channel: options.channel,
+        handle: options.handle,
+        agentId,
+        stream: "stdout",
+        content: data.toString(),
+        timestamp: Date.now(),
+      } satisfies AgentOutputEvent);
+    });
+
+    proc.stderr?.on("data", (data: Buffer) => {
+      this.emit("agentOutput", {
+        channel: options.channel,
+        handle: options.handle,
+        agentId,
+        stream: "stderr",
+        content: data.toString(),
+        timestamp: Date.now(),
+      } satisfies AgentOutputEvent);
+    });
+
+    // Handle process exit - emit lifecycle event only if not already emitted
     proc.on("exit", (code) => {
       log.verbose(`Agent ${agentId} (${instanceId}) exited with code ${code}`);
+      const instance = this.instances.get(instanceId);
+      // Only emit if we haven't already emitted a stop event (e.g., from explicit kill or timeout)
+      if (instance && !instance.stopEventEmitted) {
+        const reason = code === 0 ? "idle" : "crash";
+        this.emit("agentLifecycle", {
+          channel: options.channel,
+          handle: options.handle,
+          agentId,
+          event: "stopped",
+          reason,
+          timestamp: Date.now(),
+        } satisfies AgentLifecycleEvent);
+      }
       this.cleanupInstance(instanceId);
     });
 
@@ -292,6 +377,15 @@ export class AgentHost {
     try {
       await readyPromise;
       log.verbose(`Agent ${agentId} ready on channel ${options.channel}`);
+
+      // Emit started lifecycle event
+      this.emit("agentLifecycle", {
+        channel: options.channel,
+        handle: options.handle,
+        agentId,
+        event: "started",
+        timestamp: Date.now(),
+      } satisfies AgentLifecycleEvent);
     } catch (err) {
       // Cleanup on failure
       this.cleanupInstance(instanceId);
@@ -310,8 +404,34 @@ export class AgentHost {
 
   /**
    * Kill an agent instance gracefully with fallback to force kill.
+   * Emits "stopped (explicit)" lifecycle event.
    */
   async kill(instanceId: string): Promise<boolean> {
+    const instance = this.instances.get(instanceId);
+    if (!instance) {
+      return false;
+    }
+
+    // Mark that we've emitted the stop event to prevent duplicate from exit handler
+    instance.stopEventEmitted = true;
+
+    // Emit explicit stop lifecycle event
+    this.emit("agentLifecycle", {
+      channel: instance.channel,
+      handle: instance.handle,
+      agentId: instance.agentId,
+      event: "stopped",
+      reason: "explicit",
+      timestamp: Date.now(),
+    } satisfies AgentLifecycleEvent);
+
+    return this.killInternal(instanceId);
+  }
+
+  /**
+   * Internal kill without lifecycle event (used by timeout handler).
+   */
+  private async killInternal(instanceId: string): Promise<boolean> {
     const instance = this.instances.get(instanceId);
     if (!instance) {
       return false;
@@ -371,6 +491,25 @@ export class AgentHost {
   }
 
   /**
+   * Get an existing instance by channel, agentId, AND handle.
+   * Used for auto-wake to allow multiple handles of the same agent.
+   */
+  getInstanceByHandle(channel: string, agentId: string, handle: string): AgentInstanceInfo | null {
+    for (const instance of this.instances.values()) {
+      if (instance.channel === channel && instance.agentId === agentId && instance.handle === handle) {
+        return {
+          id: instance.id,
+          agentId: instance.agentId,
+          channel: instance.channel,
+          handle: instance.handle,
+          startedAt: instance.startedAt,
+        };
+      }
+    }
+    return null;
+  }
+
+  /**
    * Get all agents running on a channel.
    */
   getChannelAgents(channel: string): AgentInstanceInfo[] {
@@ -403,6 +542,57 @@ export class AgentHost {
    */
   markChannelActivity(channel: string): void {
     this.channelActivity.set(channel, Date.now());
+  }
+
+  /**
+   * Wake registered agents for a channel that aren't currently running.
+   * Called when there's activity on a channel with registered agents.
+   */
+  async wakeChannelAgents(channel: string): Promise<void> {
+    if (this.isShuttingDown) return;
+
+    const registeredAgents = this.messageStore.getChannelAgents(channel);
+    if (registeredAgents.length === 0) return;
+
+    for (const registration of registeredAgents) {
+      // Skip if already running - check specific (channel, agentId, handle) to allow multiple handles
+      const existing = this.getInstanceByHandle(channel, registration.agentId, registration.handle);
+      if (existing) {
+        continue;
+      }
+
+      // Parse the stored spawn config for the agent-specific config values
+      let spawnConfig: StoredSpawnConfig;
+      try {
+        spawnConfig = JSON.parse(registration.config) as StoredSpawnConfig;
+      } catch (err) {
+        log.warn(`Failed to parse stored config for agent ${registration.agentId}: ${err}`);
+        continue;
+      }
+
+      log.verbose(`Waking agent ${registration.agentId} (@${registration.handle}) on channel ${channel}`);
+
+      try {
+        // Use authoritative channel/handle from DB record, config from stored JSON
+        await this.spawn(registration.agentId, {
+          channel: registration.channel,
+          handle: registration.handle,
+          config: spawnConfig.config,
+        });
+
+        // Emit woken lifecycle event
+        this.emit("agentLifecycle", {
+          channel: registration.channel,
+          handle: registration.handle,
+          agentId: registration.agentId,
+          event: "woken",
+          timestamp: Date.now(),
+        } satisfies AgentLifecycleEvent);
+      } catch (err) {
+        log.error(`Failed to wake agent ${registration.agentId}: ${err}`);
+        // Don't throw - try to wake other agents
+      }
+    }
   }
 
   /**
@@ -541,11 +731,23 @@ export class AgentHost {
       }
 
       for (const channel of channelsToCleanup) {
-        log.verbose(`Channel ${channel} inactive for 5 minutes, killing agents`);
+        log.verbose(`Channel ${channel} inactive for 5 minutes, killing agents (they can auto-wake)`);
 
         for (const instance of this.instances.values()) {
           if (instance.channel === channel) {
-            void this.kill(instance.id);
+            // Mark that we've emitted the stop event to prevent duplicate from exit handler
+            instance.stopEventEmitted = true;
+
+            // Emit timeout lifecycle event before killing
+            this.emit("agentLifecycle", {
+              channel: instance.channel,
+              handle: instance.handle,
+              agentId: instance.agentId,
+              event: "stopped",
+              reason: "timeout",
+              timestamp: Date.now(),
+            } satisfies AgentLifecycleEvent);
+            void this.killInternal(instance.id);
           }
         }
 

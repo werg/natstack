@@ -8,9 +8,12 @@
  * Patterns included:
  * - **queue**: Message queue with backpressure and flow control
  * - **settings**: Settings persistence with 3-way merge
- * - **trackers**: Typing/thinking/action indicator helpers
+ * - **trackers**: Typing/thinking/action indicator helpers (with lazy replyTo binding)
  * - **context**: Missed context accumulation for reconnect scenarios
+ * - **context-usage**: Token/context window tracking across sessions
  * - **interrupt**: Pause/resume/abort controller for agent operations
+ * - **tools**: Standard tool definitions (set_title, TodoWrite)
+ * - **response**: Lazy message creation and checkpoint management
  *
  * @example
  * ```typescript
@@ -19,7 +22,10 @@
  *   createSettingsManager,
  *   createTrackerManager,
  *   createMissedContextManager,
+ *   createContextTracker,
  *   createInterruptController,
+ *   createStandardTools,
+ *   createResponseManager,
  * } from "@natstack/agent-patterns";
  *
  * // Use patterns in your agent
@@ -71,8 +77,38 @@ export {
   type MissedContextManager,
 } from "./context/index.js";
 
+// Context usage pattern - token/context window tracking
+export {
+  createContextTracker,
+  getModelContextLimit,
+  MODEL_CONTEXT_LIMITS,
+  type ContextTracker,
+  type ContextTrackerOptions,
+  type ContextTrackerState,
+  type ContextWindowUsage,
+  type NormalizedUsage,
+  type TokenUsage,
+} from "./context-usage/index.js";
+
 // Interrupt pattern - pause/resume/abort control
 export {
   createInterruptController,
   type InterruptController,
+  type InterruptControllerOptions,
 } from "./interrupt/index.js";
+
+// Tools pattern - standard tool definitions
+export {
+  createStandardTools,
+  createStandardMcpTools,
+  executeStandardMcpTool,
+  type StandardToolDefinition,
+  type StandardToolsOptions,
+} from "./tools/index.js";
+
+// Response pattern - lazy message creation and checkpoints
+export {
+  createResponseManager,
+  type ResponseManagerOptions,
+  type ResponseManager,
+} from "./response/index.js";

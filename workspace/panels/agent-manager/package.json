@@ -12,7 +12,6 @@
   "dependencies": {
     "@natstack/runtime": "workspace:*",
     "@natstack/react": "workspace:*",
-    "@natstack/agentic-messaging": "workspace:*",
     "@natstack/core": "workspace:*",
     "@radix-ui/themes": "^3.2.1"
   }

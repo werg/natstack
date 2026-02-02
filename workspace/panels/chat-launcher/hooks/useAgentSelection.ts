@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { db } from "@natstack/runtime";
-import type { FieldDefinition, FieldValue } from "@natstack/core";
+import { db, rpc } from "@natstack/runtime";
+import type { FieldDefinition, FieldValue, AgentManifest } from "@natstack/core";
 import type { ChannelConfig } from "@natstack/pubsub";
-import { getAgentRegistry, type AgentDefinition } from "@natstack/agentic-messaging/registry";
 
 const PREFERENCES_DB_NAME = "agent-preferences";
 
@@ -88,7 +87,7 @@ export const DEFAULT_SESSION_CONFIG: SessionConfig = {
 
 /** Agent selection state */
 export interface AgentSelection {
-  agent: AgentDefinition;
+  agent: AgentManifest;
   selected: boolean;
   /** Parameter values configured by user (per-agent params only) */
   config: Record<string, FieldValue>;
@@ -151,20 +150,19 @@ export function useAgentSelection({ workspaceRoot, sessionConfig = DEFAULT_SESSI
 
     async function loadAgents() {
       try {
-        const registry = getAgentRegistry();
-        await registry.initialize();
-        const enabledAgents = await registry.listEnabled();
+        // Get agents from AgentDiscovery via bridge (single source of truth)
+        const manifests = await rpc.call<AgentManifest[]>("main", "bridge.listAgents");
         const persistedSettings = await loadPersistedSettings();
 
         if (!mounted) return;
 
         const agents: AgentSelection[] = [];
 
-        for (const agentDef of enabledAgents) {
+        for (const manifest of manifests) {
           // Build config for per-agent params only (not channelLevel - those come from channel config)
           const config: Record<string, FieldValue> = {};
-          const persisted = persistedSettings[agentDef.id] ?? {};
-          const perAgentParams = getPerAgentParams(agentDef.parameters);
+          const persisted = persistedSettings[manifest.id] ?? {};
+          const perAgentParams = getPerAgentParams(manifest.parameters);
 
           for (const param of perAgentParams) {
             // Check persisted settings first
@@ -177,14 +175,14 @@ export function useAgentSelection({ workspaceRoot, sessionConfig = DEFAULT_SESSI
           }
 
           agents.push({
-            agent: agentDef,
+            agent: manifest,
             selected: false,
             config,
           });
         }
 
         setAvailableAgents(agents);
-        setSelectionStatus(agents.length > 0 ? "Ready" : "No agents registered");
+        setSelectionStatus(agents.length > 0 ? "Ready" : "No agents found");
       } catch (err) {
         if (mounted) {
           setSelectionStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);

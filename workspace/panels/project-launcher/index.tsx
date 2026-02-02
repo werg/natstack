@@ -5,11 +5,12 @@
  * After configuration, navigates to project-panel with the project config.
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { rpc, buildNsLink } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
 import { Theme, Box, Flex, Heading, Text, TextField, Button, Separator, Card } from "@radix-ui/themes";
 import { RocketIcon } from "@radix-ui/react-icons";
+import type { AgentManifest } from "@natstack/core";
 
 import { useProjectConfig } from "./hooks/useProjectConfig";
 import { LocationSettings } from "./components/LocationSettings";
@@ -36,6 +37,31 @@ export default function ProjectLauncher() {
 
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [agents, setAgents] = useState<AgentManifest[]>([]);
+  const [agentsLoading, setAgentsLoading] = useState(true);
+
+  // Load agents on mount
+  useEffect(() => {
+    let mounted = true;
+    async function loadAgents() {
+      try {
+        const manifests = await rpc.call<AgentManifest[]>("main", "bridge.listAgents");
+        if (mounted) {
+          setAgents(manifests);
+          // Auto-select first agent if none selected
+          if (!projectConfig.defaultAgentId && manifests.length > 0) {
+            setDefaultAgent(manifests[0]!.id);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load agents:", err);
+      } finally {
+        if (mounted) setAgentsLoading(false);
+      }
+    }
+    void loadAgents();
+    return () => { mounted = false; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleCreateProject = useCallback(async () => {
     // Validate config
@@ -127,6 +153,8 @@ export default function ProjectLauncher() {
 
               {/* Default Agent */}
               <AgentSelector
+                agents={agents}
+                loading={agentsLoading}
                 defaultAgentId={projectConfig.defaultAgentId}
                 onDefaultAgentChange={(id) => setDefaultAgent(id)}
               />

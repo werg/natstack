@@ -187,6 +187,13 @@ export interface ThinkingTracker {
   readonly state: ThinkingTrackerState;
 
   /**
+   * Set the replyTo message ID for subsequent operations.
+   * Call this at the start of each message handling.
+   * @param id - Message ID to reply to
+   */
+  setReplyTo(id: string | undefined): void;
+
+  /**
    * Start a new thinking message.
    * @param itemId - Optional item ID for tracking (used by Codex SDK)
    * @returns The message ID of the created thinking message
@@ -234,7 +241,8 @@ export interface ThinkingTracker {
  * Create a ThinkingTracker for managing thinking/reasoning message state.
  */
 export function createThinkingTracker(options: ThinkingTrackerOptions): ThinkingTracker {
-  const { client, log = () => {}, replyTo } = options;
+  const { client, log = () => {} } = options;
+  let currentReplyTo = options.replyTo;
 
   const state: ThinkingTrackerState = {
     currentContentType: null,
@@ -247,6 +255,10 @@ export function createThinkingTracker(options: ThinkingTrackerOptions): Thinking
       return state;
     },
 
+    setReplyTo(id: string | undefined): void {
+      currentReplyTo = id;
+    },
+
     async startThinking(itemId?: string): Promise<string> {
       // End any existing thinking message first
       if (state.thinkingMessageId) {
@@ -254,7 +266,7 @@ export function createThinkingTracker(options: ThinkingTrackerOptions): Thinking
       }
 
       const { messageId } = await client.send("", {
-        replyTo,
+        replyTo: currentReplyTo,
         contentType: CONTENT_TYPE_THINKING,
       });
 
@@ -371,6 +383,13 @@ export interface ActionTracker {
   readonly state: ActionTrackerState;
 
   /**
+   * Set the replyTo message ID for subsequent operations.
+   * Call this at the start of each message handling.
+   * @param id - Message ID to reply to
+   */
+  setReplyTo(id: string | undefined): void;
+
+  /**
    * Start a new action message.
    * @param action - The action data (type, description, optional toolUseId)
    * @returns The message ID of the created action message
@@ -407,7 +426,8 @@ export interface ActionTracker {
  * Create an ActionTracker for managing action message state.
  */
 export function createActionTracker(options: ActionTrackerOptions): ActionTracker {
-  const { client, log = () => {}, replyTo } = options;
+  const { client, log = () => {} } = options;
+  let currentReplyTo = options.replyTo;
 
   const state: ActionTrackerState = {
     actionMessageId: null,
@@ -419,6 +439,10 @@ export function createActionTracker(options: ActionTrackerOptions): ActionTracke
       return state;
     },
 
+    setReplyTo(id: string | undefined): void {
+      currentReplyTo = id;
+    },
+
     async startAction(action: Omit<ActionData, "status">): Promise<string> {
       // Complete any existing action first
       if (state.actionMessageId) {
@@ -427,7 +451,7 @@ export function createActionTracker(options: ActionTrackerOptions): ActionTracke
 
       const actionData: ActionData = { ...action, status: "pending" };
       const { messageId } = await client.send(JSON.stringify(actionData), {
-        replyTo,
+        replyTo: currentReplyTo,
         contentType: CONTENT_TYPE_ACTION,
       });
 
@@ -471,7 +495,7 @@ export function createActionTracker(options: ActionTrackerOptions): ActionTracke
 
         // Start a new message with the updated description
         const { messageId } = await client.send(JSON.stringify(updatedAction), {
-          replyTo,
+          replyTo: currentReplyTo,
           contentType: CONTENT_TYPE_ACTION,
         });
 
@@ -752,6 +776,13 @@ export interface TypingTracker {
   readonly state: TypingTrackerState;
 
   /**
+   * Set the replyTo message ID for subsequent operations.
+   * Call this at the start of each message handling.
+   * @param id - Message ID to reply to
+   */
+  setReplyTo(id: string | undefined): void;
+
+  /**
    * Start showing a typing indicator (ephemeral, not persisted).
    * @param context - Optional context to show (e.g., "preparing response")
    * @returns The message ID of the created typing indicator
@@ -781,7 +812,8 @@ export interface TypingTracker {
  * Create a TypingTracker for managing ephemeral typing indicator messages.
  */
 export function createTypingTracker(options: TypingTrackerOptions): TypingTracker {
-  const { client, log = () => {}, replyTo, senderInfo } = options;
+  const { client, log = () => {}, senderInfo } = options;
+  let currentReplyTo = options.replyTo;
 
   const state: TypingTrackerState = {
     typingMessageId: null,
@@ -791,6 +823,10 @@ export function createTypingTracker(options: TypingTrackerOptions): TypingTracke
   return {
     get state() {
       return state;
+    },
+
+    setReplyTo(id: string | undefined): void {
+      currentReplyTo = id;
     },
 
     async startTyping(context?: string): Promise<string> {
@@ -807,7 +843,7 @@ export function createTypingTracker(options: TypingTrackerOptions): TypingTracke
       };
 
       const { messageId } = await client.send(JSON.stringify(typingData), {
-        replyTo,
+        replyTo: currentReplyTo,
         contentType: CONTENT_TYPE_TYPING,
         persist: false, // EPHEMERAL - key difference from other trackers
       });

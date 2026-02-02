@@ -3,14 +3,31 @@
  *
  * Abstract base class that all agents must extend. Provides:
  * - Automatic state management (loaded before onWake, flushed after onSleep)
- * - Context injection (client, logger, config)
- * - Lifecycle hooks (init, onWake, onEvent, onSleep)
+ * - Unified context with consistent access patterns
+ * - First-class settings support with automatic persistence
+ * - Lifecycle hooks (onWake, onEvent, onSleep)
  * - Checkpoint tracking for replay recovery
+ *
+ * ## Context Availability (Issue #1 fix)
+ *
+ * The agent has a single unified context (`this.ctx`) that is populated in stages:
+ *
+ * | Lifecycle Phase      | Available Properties                                    |
+ * |----------------------|---------------------------------------------------------|
+ * | constructor          | None (don't use ctx)                                    |
+ * | getConnectOptions()  | agentId, channel, handle, config, log                   |
+ * | onWake()             | All of above + client                                   |
+ * | onEvent()            | All (full context)                                      |
+ * | onSleep()            | All (full context)                                      |
+ *
+ * The `client` property is null in getConnectOptions() and populated after connect.
+ * Use the type-safe accessor `this.client` which throws if accessed too early.
  */
 
 import type { AgentState } from "@natstack/core";
 import type {
   AgenticClient,
+  AgenticParticipantMetadata,
   EventStreamItem,
   EventStreamOptions,
   ConnectOptions,
@@ -71,10 +88,64 @@ export interface AgentLogger {
 }
 
 /**
- * Context provided to agents by the runtime.
- * Contains identity info, configuration, pubsub client, and logging.
+ * Unified agent context.
+ *
+ * All identity properties (agentId, channel, handle, config, log) are available
+ * from getConnectOptions() onward. The `client` property becomes available
+ * after pubsub connects (in onWake and later).
+ *
+ * Use the type-safe `this.client` accessor instead of `this.ctx.client` to get
+ * proper typing and early-access detection.
+ *
+ * @template M - Participant metadata type (defaults to AgenticParticipantMetadata)
  */
-export interface AgentContext {
+export interface AgentContext<M extends AgenticParticipantMetadata = AgenticParticipantMetadata> {
+  /** Agent type ID (from manifest) */
+  readonly agentId: string;
+  /** Channel this agent is bound to */
+  readonly channel: string;
+  /** Agent handle in the channel */
+  readonly handle: string;
+  /** Agent configuration passed at spawn */
+  readonly config: Record<string, unknown>;
+  /** Logger with levels - always available */
+  readonly log: AgentLogger;
+  /**
+   * Pubsub client for messaging.
+   * NULL in getConnectOptions(), populated after pubsub connects.
+   * Use `this.client` accessor for type-safe access.
+   */
+  client: AgenticClient<M> | null;
+}
+
+/**
+ * Options returned by getConnectOptions() that agents can customize.
+ *
+ * ## Runtime-controlled fields (cannot be overridden):
+ * - `serverUrl` - Set by runtime from pubsub config
+ * - `token` - Set by runtime from pubsub config
+ * - `channel` - Set by runtime from spawn config
+ * - `handle` - Set by runtime from spawn config (Issue #2 fix)
+ *
+ * ## Agent-customizable fields:
+ * - `name` - Display name in roster (default: class name)
+ * - `type` - Participant type (default: "agent")
+ * - `contextId` - For session persistence
+ * - `extraMetadata` - Additional participant metadata
+ * - `methods` - RPC methods to register
+ * - `reconnect` - Auto-reconnect on disconnect
+ * - `replaySinceId` - Checkpoint for replay recovery (use `this.lastCheckpoint`)
+ */
+export type AgentConnectOptions = Omit<
+  Partial<ConnectOptions>,
+  "serverUrl" | "token" | "channel" | "handle"
+>;
+
+/**
+ * @deprecated Use `this.ctx` instead. initInfo is kept for backward compatibility
+ * but ctx now provides the same information consistently.
+ */
+export interface AgentInitInfo {
   /** Agent type ID (from manifest) */
   agentId: string;
   /** Channel this agent is bound to */
@@ -83,20 +154,31 @@ export interface AgentContext {
   handle: string;
   /** Agent configuration passed at spawn */
   config: Record<string, unknown>;
-  /** Pubsub client for messaging */
-  client: AgenticClient;
-  /** Logger with levels */
-  log: AgentLogger;
 }
 
 /**
- * Options returned by getConnectOptions() that agents can customize.
- * Some fields are always overridden by the runtime (serverUrl, token, channel, handle).
+ * Internal interface for runtime-injected agent properties.
+ * Used by the runtime to inject functionality that requires runtime context.
+ * NOT part of the public API - agents should use the public accessors.
+ *
+ * @internal
  */
-export type AgentConnectOptions = Omit<
-  Partial<ConnectOptions>,
-  "serverUrl" | "token" | "channel" | "handle"
->;
+export interface AgentRuntimeInjection<S extends AgentState, M extends AgenticParticipantMetadata> {
+  /** Injected by runtime - updates state and triggers persistence */
+  setState: (partial: Partial<S>) => void;
+  /** Injected by runtime - commits a pubsub checkpoint */
+  commitCheckpoint: (pubsubId: number) => void;
+  /** Injected by runtime - unified agent context */
+  ctx: AgentContext<M>;
+  /** Injected by runtime - deprecated init info */
+  initInfo: AgentInitInfo;
+  /** Optional migration function for state upgrades */
+  migrateState?: (oldState: AgentState, oldVersion: number) => S;
+  /** Optional initialization hook */
+  init?: () => void;
+  /** Settings loader (called by runtime before onWake) */
+  loadSettings: () => Promise<void>;
+}
 
 /**
  * Abstract base class for agents.
@@ -107,12 +189,21 @@ export type AgentConnectOptions = Omit<
  * 3. Implement `onEvent()` to handle incoming pubsub events
  *
  * Optionally, agents can:
- * - Override `init()` for custom initialization after context is set
  * - Override `onWake()` to perform initialization (after state is loaded)
  * - Override `onSleep()` to perform cleanup before shutdown
  * - Override `migrateState()` to handle state version migrations
  * - Override `getConnectOptions()` to customize pubsub connection
  * - Override `getEventsOptions()` to filter the event stream
+ *
+ * ## Access Patterns (Issue #3 fix)
+ *
+ * Use these canonical accessors instead of reaching into ctx:
+ * - `this.client` - Type-safe client accessor (throws if called before connect)
+ * - `this.log` - Logger accessor (always available after getConnectOptions)
+ * - `this.config` - Config accessor (always available after getConnectOptions)
+ * - `this.agentId` - Agent type ID
+ * - `this.channel` - Channel name
+ * - `this.handle` - Agent handle
  *
  * The runtime automatically:
  * 1. Loads persisted state before onWake()
@@ -133,13 +224,16 @@ export type AgentConnectOptions = Omit<
  *   async onEvent(event: EventStreamItem) {
  *     if (event.type === 'message' && event.kind !== 'replay') {
  *       this.setState({ messageCount: this.state.messageCount + 1 });
- *       await this.ctx.client.send(`Received message #${this.state.messageCount}`);
+ *       await this.client.send(`Received message #${this.state.messageCount}`);
  *     }
  *   }
  * }
  * ```
  */
-export abstract class Agent<S extends AgentState = AgentState> {
+export abstract class Agent<
+  S extends AgentState = AgentState,
+  M extends AgenticParticipantMetadata = AgenticParticipantMetadata
+> {
   /**
    * Agent state property.
    *
@@ -170,12 +264,118 @@ export abstract class Agent<S extends AgentState = AgentState> {
   readonly stateVersion: number = 1;
 
   /**
-   * Agent context - set by runtime before init() and onWake().
-   * Contains identity, config, pubsub client, and logger.
+   * @deprecated Use `this.ctx` directly - it's now available from getConnectOptions() onward.
+   * Kept for backward compatibility. Both initInfo and ctx.{agentId,channel,handle,config}
+   * will have the same values.
+   */
+  protected initInfo!: AgentInitInfo;
+
+  /**
+   * Unified agent context - available from getConnectOptions() onward.
+   *
+   * Identity properties (agentId, channel, handle, config, log) are set before
+   * getConnectOptions(). The `client` property is set after pubsub connects.
+   *
+   * Prefer using the type-safe accessors (`this.client`, `this.log`, etc.)
+   * instead of accessing ctx properties directly.
    *
    * @protected Available to subclasses
    */
-  protected ctx!: AgentContext;
+  protected ctx!: AgentContext<M>;
+
+  // =========================================================================
+  // Canonical Accessors (Issue #3 fix)
+  // =========================================================================
+
+  /**
+   * Type-safe client accessor.
+   * Throws if accessed before pubsub connects (i.e., in getConnectOptions).
+   *
+   * @throws Error if called before onWake()
+   */
+  protected get client(): AgenticClient<M> {
+    if (!this.ctx?.client) {
+      throw new Error(
+        "client accessed before pubsub connect. " +
+        "Use this.client in onWake() or later, not in getConnectOptions()."
+      );
+    }
+    return this.ctx.client;
+  }
+
+  /**
+   * Logger accessor. Available from getConnectOptions() onward.
+   * @throws Error if accessed before context injection (in constructor)
+   */
+  protected get log(): AgentLogger {
+    if (!this.ctx?.log) {
+      throw new Error(
+        "log accessed before context injection. " +
+        "Use this.log in getConnectOptions() or later, not in constructor."
+      );
+    }
+    return this.ctx.log;
+  }
+
+  /**
+   * Config accessor. Available from getConnectOptions() onward.
+   * @throws Error if accessed before context injection (in constructor)
+   */
+  protected get config(): Record<string, unknown> {
+    if (!this.ctx) {
+      throw new Error(
+        "config accessed before context injection. " +
+        "Use this.config in getConnectOptions() or later, not in constructor."
+      );
+    }
+    return this.ctx.config;
+  }
+
+  /**
+   * Agent type ID. Available from getConnectOptions() onward.
+   * @throws Error if accessed before context injection (in constructor)
+   */
+  protected get agentId(): string {
+    if (!this.ctx) {
+      throw new Error(
+        "agentId accessed before context injection. " +
+        "Use this.agentId in getConnectOptions() or later, not in constructor."
+      );
+    }
+    return this.ctx.agentId;
+  }
+
+  /**
+   * Channel name. Available from getConnectOptions() onward.
+   * @throws Error if accessed before context injection (in constructor)
+   */
+  protected get channel(): string {
+    if (!this.ctx) {
+      throw new Error(
+        "channel accessed before context injection. " +
+        "Use this.channel in getConnectOptions() or later, not in constructor."
+      );
+    }
+    return this.ctx.channel;
+  }
+
+  /**
+   * Agent handle. Available from getConnectOptions() onward.
+   * @throws Error if accessed before context injection (in constructor)
+   */
+  protected get handle(): string {
+    if (!this.ctx) {
+      throw new Error(
+        "handle accessed before context injection. " +
+        "Use this.handle in getConnectOptions() or later, not in constructor."
+      );
+    }
+    return this.ctx.handle;
+  }
+
+  // =========================================================================
+  // State Management (Issue #4 fix - clearer ceremony)
+  // =========================================================================
 
   /**
    * Update state with partial values.
@@ -232,6 +432,215 @@ export abstract class Agent<S extends AgentState = AgentState> {
   protected commitCheckpoint(_pubsubId: number): void {
     // Injected by runtime - throws if called before injection
     throw new Error("commitCheckpoint called before runtime initialization");
+  }
+
+  /**
+   * Combined state update and checkpoint commit.
+   * Use this when you want to save state AND mark a pubsub event as processed.
+   *
+   * This is the preferred method for most use cases as it ensures state
+   * and checkpoint are kept in sync.
+   *
+   * @param partial - Partial state to merge (optional, can be empty object)
+   * @param pubsubId - The pubsub ID of the processed event (optional)
+   *
+   * @example
+   * ```typescript
+   * private async handleMessage(event: IncomingNewMessage) {
+   *   // Process the message...
+   *   const result = await this.processMessage(event);
+   *
+   *   // Save state and checkpoint in one call
+   *   this.saveCheckpoint(
+   *     { lastResult: result },
+   *     event.pubsubId
+   *   );
+   * }
+   * ```
+   */
+  protected saveCheckpoint(partial: Partial<S>, pubsubId?: number): void {
+    if (Object.keys(partial).length > 0) {
+      this.setState(partial);
+    }
+    if (pubsubId !== undefined) {
+      this.commitCheckpoint(pubsubId);
+    }
+  }
+
+  // =========================================================================
+  // Settings Management (Issue #6 fix - first-class settings)
+  // =========================================================================
+
+  /**
+   * Default settings for this agent. Override this getter to provide defaults.
+   * Settings are loaded from pubsub session storage and merged with defaults.
+   *
+   * Unlike state (which is agent-local and persists across restarts),
+   * settings are user preferences stored via pubsub session (shared context).
+   *
+   * @example
+   * ```typescript
+   * protected get defaultSettings() {
+   *   return {
+   *     modelRole: 'fast',
+   *     temperature: 0.7,
+   *     maxTokens: 1024,
+   *   };
+   * }
+   * ```
+   */
+  protected get defaultSettings(): Record<string, unknown> {
+    return {};
+  }
+
+  /**
+   * Current settings. Populated after onWake() by loading from pubsub session
+   * and merging with defaultSettings and config.
+   *
+   * Access pattern: `this.settings.modelRole`
+   *
+   * @protected Injected by runtime
+   */
+  protected settings: Record<string, unknown> = {};
+
+  /**
+   * Update settings and persist to pubsub session.
+   * Deep merges with current settings.
+   *
+   * @param partial - Partial settings to merge
+   *
+   * @example
+   * ```typescript
+   * await this.updateSettings({ temperature: 0.9 });
+   * ```
+   */
+  protected async updateSettings(partial: Record<string, unknown>): Promise<void> {
+    // Deep merge
+    this.settings = deepMerge(this.settings, partial);
+
+    // Persist to pubsub session if available
+    if (this.ctx?.client?.sessionKey) {
+      await this.client.updateSettings(this.settings);
+    }
+  }
+
+  /**
+   * Load settings from pubsub session.
+   * Called automatically by runtime during onWake().
+   * Can be called manually to reload settings.
+   *
+   * Merge order: defaultSettings → saved settings → config
+   */
+  protected async loadSettings(): Promise<void> {
+    // Start with defaults
+    let merged = { ...this.defaultSettings };
+
+    // Apply saved settings from pubsub session
+    if (this.ctx?.client?.sessionKey) {
+      try {
+        const saved = await this.client.getSettings<Record<string, unknown>>();
+        if (saved) {
+          merged = deepMerge(merged, saved);
+        }
+      } catch {
+        // Ignore errors, use defaults
+      }
+    }
+
+    // Apply config (highest priority) - filter to keys that exist in defaults
+    const configKeys = Object.keys(this.defaultSettings);
+    const configOverrides: Record<string, unknown> = {};
+    for (const key of configKeys) {
+      if (this.config[key] !== undefined) {
+        configOverrides[key] = this.config[key];
+      }
+    }
+    if (Object.keys(configOverrides).length > 0) {
+      merged = deepMerge(merged, configOverrides);
+    }
+
+    this.settings = merged;
+  }
+
+  // =========================================================================
+  // Tracker Helpers (Issue #5 fix - reduce duplication)
+  // =========================================================================
+
+  /** @internal Flag to prevent repeated warnings about missing tracker implementation */
+  private _trackerWarningShown = false;
+
+  /**
+   * Create a tracker manager for handling a message.
+   * Provides unified access to typing, thinking, and action trackers
+   * with automatic cleanup.
+   *
+   * Import createTrackerManager from @natstack/agent-patterns for the
+   * actual implementation - this is a convenience wrapper.
+   *
+   * @param replyTo - Message ID to use as replyTo for tracker messages
+   * @returns Object with typing, thinking, action trackers and cleanupAll()
+   *
+   * @example
+   * ```typescript
+   * async handleMessage(event: IncomingNewMessage) {
+   *   const trackers = this.createTrackers(event.id);
+   *
+   *   try {
+   *     await trackers.typing.startTyping('thinking...');
+   *     // ... process message ...
+   *     await trackers.typing.stopTyping();
+   *   } catch (err) {
+   *     await trackers.cleanupAll();
+   *     throw err;
+   *   }
+   * }
+   * ```
+   */
+  protected createTrackers(replyTo?: string): {
+    typing: { startTyping: (text?: string) => Promise<void>; stopTyping: () => Promise<void>; isTyping: () => boolean; cleanup: () => Promise<boolean> };
+    thinking: { startThinking: (itemId?: string) => Promise<void>; updateThinking: (delta: string) => Promise<void>; endThinking: () => Promise<void>; isThinking: () => boolean; isThinkingItem: (id: string) => boolean; setTextMode: () => void; cleanup: () => Promise<boolean>; state: { currentContentType: string | null } };
+    action: { startAction: (data: { type: string; description?: string; toolUseId?: string }) => Promise<void>; completeAction: () => Promise<void>; cleanup: () => Promise<boolean> };
+    cleanupAll: () => Promise<boolean>;
+  } {
+    // This is a stub that should be overridden by agents using @natstack/agent-patterns
+    // The default implementation provides no-op trackers
+    const noopTracker = {
+      startTyping: async () => {},
+      stopTyping: async () => {},
+      isTyping: () => false,
+      cleanup: async () => true,
+    };
+    const noopThinking = {
+      startThinking: async () => {},
+      updateThinking: async () => {},
+      endThinking: async () => {},
+      isThinking: () => false,
+      isThinkingItem: () => false,
+      setTextMode: () => {},
+      cleanup: async () => true,
+      state: { currentContentType: null as string | null },
+    };
+    const noopAction = {
+      startAction: async () => {},
+      completeAction: async () => {},
+      cleanup: async () => true,
+    };
+
+    // Log warning once if createTrackerManager hasn't been imported
+    if (replyTo && !this._trackerWarningShown) {
+      this._trackerWarningShown = true;
+      this.log.warn?.(
+        "createTrackers() called but no tracker implementation available. " +
+        "Import createTrackerManager from @natstack/agent-patterns and override this method."
+      );
+    }
+
+    return {
+      typing: noopTracker,
+      thinking: noopThinking,
+      action: noopAction,
+      cleanupAll: async () => true,
+    };
   }
 
   /**

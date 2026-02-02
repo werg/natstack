@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, type ComponentType } from "re
 import { Badge, Box, Button, Callout, Card, Flex, IconButton, ScrollArea, Text, TextArea, Theme } from "@radix-ui/themes";
 import { PaperPlaneIcon, ImageIcon, CopyIcon, CheckIcon } from "@radix-ui/react-icons";
 import type { Participant, AttachmentInput } from "@natstack/pubsub";
-import { CONTENT_TYPE_INLINE_UI, prettifyToolName } from "@natstack/agentic-messaging";
+import { CONTENT_TYPE_INLINE_UI, prettifyToolName, type AgentDebugPayload } from "@natstack/agentic-messaging";
 import {
   FeedbackContainer,
   FeedbackFormRenderer,
@@ -24,6 +24,7 @@ import { InlineUiMessage, parseInlineUiData } from "./InlineUiMessage";
 import { type PendingImage, getImagesFromClipboard, createPendingImage, validateImageFiles } from "../utils/imageUtils";
 import type { ChatMessage, ChatParticipantMetadata } from "../types";
 import { AgentDisconnectedMessage } from "./AgentDisconnectedMessage";
+import { AgentDebugConsole } from "./AgentDebugConsole";
 import "../styles.css";
 
 // Re-export for backwards compatibility
@@ -54,6 +55,12 @@ interface ChatPhaseProps {
     cacheKey: string;
     error?: string;
   }>;
+  /** Debug events for agents (ephemeral, in-memory) */
+  debugEvents?: Array<AgentDebugPayload & { ts: number }>;
+  /** Currently open debug console agent handle */
+  debugConsoleAgent?: string | null;
+  /** Callback to open/close debug console */
+  onDebugConsoleChange?: (agentHandle: string | null) => void;
   /** Callback to load earlier messages */
   onLoadEarlierMessages?: () => void;
   onInputChange: (value: string) => void;
@@ -89,6 +96,9 @@ export function ChatPhase({
   hasMoreHistory,
   loadingMore,
   inlineUiComponents,
+  debugEvents,
+  debugConsoleAgent,
+  onDebugConsoleChange,
   onLoadEarlierMessages,
   onInputChange,
   onSendMessage,
@@ -370,6 +380,7 @@ export function ChatPhase({
                 onCallMethod={onCallMethod ?? (() => {})}
                 isGranted={toolApproval ? p.id in toolApproval.settings.agentGrants : false}
                 onRevokeAgent={toolApproval?.onRevokeAgent}
+                onOpenDebugConsole={onDebugConsoleChange ? (handle) => onDebugConsoleChange(handle) : undefined}
               />
             );
           })}
@@ -786,6 +797,16 @@ export function ChatPhase({
       </Card>
       </Box>
       </Flex>
+
+      {/* Agent Debug Console Modal */}
+      {onDebugConsoleChange && (
+        <AgentDebugConsole
+          open={!!debugConsoleAgent}
+          onOpenChange={(open) => !open && onDebugConsoleChange(null)}
+          agentHandle={debugConsoleAgent ?? ""}
+          debugEvents={debugEvents ?? []}
+        />
+      )}
     </Theme>
   );
 }

@@ -50,6 +50,19 @@ export interface ChannelInfo {
 }
 
 /**
+ * A registered agent for a channel (persisted for auto-wake).
+ */
+export interface ChannelAgentRow {
+  id: number;
+  channel: string;
+  agentId: string;
+  handle: string;
+  config: string; // JSON spawn config
+  registeredAt: number;
+  registeredBy: string | null;
+}
+
+/**
  * Message persistence interface.
  */
 export interface MessageStore {
@@ -67,6 +80,12 @@ export interface MessageStore {
   updateChannelConfig(channel: string, config: Partial<ChannelConfig>): ChannelConfig | null;
   /** Get the maximum attachment ID number for a channel (for counter initialization after restart) */
   getMaxAttachmentIdNumber(channel: string): number;
+  /** Register an agent for a channel (UPSERT - updates config if already exists) */
+  registerChannelAgent(channel: string, agentId: string, handle: string, config: string, registeredBy?: string): void;
+  /** Unregister an agent from a channel */
+  unregisterChannelAgent(channel: string, agentId: string, handle: string): boolean;
+  /** Get all registered agents for a channel */
+  getChannelAgents(channel: string): ChannelAgentRow[];
   close(): void;
 }
 
@@ -437,6 +456,21 @@ abstract class BaseMessageStore implements MessageStore {
    * Get total count of messages in a channel.
    */
   abstract getMessageCount(channel: string): number;
+
+  /**
+   * Register an agent for a channel (UPSERT - updates config if already exists).
+   */
+  abstract registerChannelAgent(channel: string, agentId: string, handle: string, config: string, registeredBy?: string): void;
+
+  /**
+   * Unregister an agent from a channel.
+   */
+  abstract unregisterChannelAgent(channel: string, agentId: string, handle: string): boolean;
+
+  /**
+   * Get all registered agents for a channel.
+   */
+  abstract getChannelAgents(channel: string): ChannelAgentRow[];
 }
 
 // =============================================================================
@@ -475,6 +509,18 @@ class SqliteMessageStore extends BaseMessageStore {
         created_by TEXT NOT NULL,
         config TEXT
       );
+
+      CREATE TABLE IF NOT EXISTS channel_agents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        handle TEXT NOT NULL,
+        config TEXT NOT NULL,
+        registered_at INTEGER NOT NULL,
+        registered_by TEXT,
+        UNIQUE (channel, agent_id, handle)
+      );
+      CREATE INDEX IF NOT EXISTS idx_channel_agents_channel ON channel_agents(channel);
     `
     );
 
@@ -642,6 +688,61 @@ class SqliteMessageStore extends BaseMessageStore {
     return result[0]?.count ?? 0;
   }
 
+  registerChannelAgent(channel: string, agentId: string, handle: string, config: string, registeredBy?: string): void {
+    if (!this.dbHandle) throw new Error("Store not initialized");
+    const db = getDatabaseManager();
+    const now = Date.now();
+    // UPSERT: insert or update if already exists
+    db.run(
+      this.dbHandle,
+      `INSERT INTO channel_agents (channel, agent_id, handle, config, registered_at, registered_by)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (channel, agent_id, handle) DO UPDATE SET
+         config = excluded.config,
+         registered_at = excluded.registered_at,
+         registered_by = excluded.registered_by`,
+      [channel, agentId, handle, config, now, registeredBy ?? null]
+    );
+  }
+
+  unregisterChannelAgent(channel: string, agentId: string, handle: string): boolean {
+    if (!this.dbHandle) return false;
+    const db = getDatabaseManager();
+    const result = db.run(
+      this.dbHandle,
+      "DELETE FROM channel_agents WHERE channel = ? AND agent_id = ? AND handle = ?",
+      [channel, agentId, handle]
+    );
+    return result.changes > 0;
+  }
+
+  getChannelAgents(channel: string): ChannelAgentRow[] {
+    if (!this.dbHandle) return [];
+    const db = getDatabaseManager();
+    const rows = db.query<{
+      id: number;
+      channel: string;
+      agent_id: string;
+      handle: string;
+      config: string;
+      registered_at: number;
+      registered_by: string | null;
+    }>(
+      this.dbHandle,
+      "SELECT id, channel, agent_id, handle, config, registered_at, registered_by FROM channel_agents WHERE channel = ?",
+      [channel]
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      channel: row.channel,
+      agentId: row.agent_id,
+      handle: row.handle,
+      config: row.config,
+      registeredAt: row.registered_at,
+      registeredBy: row.registered_by,
+    }));
+  }
+
   close(): void {
     if (this.dbHandle) {
       const dbManager = getDatabaseManager();
@@ -667,7 +768,9 @@ class SqliteMessageStore extends BaseMessageStore {
 export class InMemoryMessageStore extends BaseMessageStore {
   private messages: MessageRow[] = [];
   private channels = new Map<string, ChannelInfo>();
+  private channelAgents: ChannelAgentRow[] = [];
   private nextId = 1;
+  private nextAgentId = 1;
 
   init(): void {
     // No-op for in-memory store
@@ -755,6 +858,46 @@ export class InMemoryMessageStore extends BaseMessageStore {
     return this.messages.filter((m) => m.channel === channel).length;
   }
 
+  registerChannelAgent(channel: string, agentId: string, handle: string, config: string, registeredBy?: string): void {
+    const now = Date.now();
+    // UPSERT: find existing or create new
+    const existing = this.channelAgents.find(
+      (a) => a.channel === channel && a.agentId === agentId && a.handle === handle
+    );
+    if (existing) {
+      // Update existing
+      existing.config = config;
+      existing.registeredAt = now;
+      existing.registeredBy = registeredBy ?? null;
+    } else {
+      // Insert new
+      this.channelAgents.push({
+        id: this.nextAgentId++,
+        channel,
+        agentId,
+        handle,
+        config,
+        registeredAt: now,
+        registeredBy: registeredBy ?? null,
+      });
+    }
+  }
+
+  unregisterChannelAgent(channel: string, agentId: string, handle: string): boolean {
+    const index = this.channelAgents.findIndex(
+      (a) => a.channel === channel && a.agentId === agentId && a.handle === handle
+    );
+    if (index !== -1) {
+      this.channelAgents.splice(index, 1);
+      return true;
+    }
+    return false;
+  }
+
+  getChannelAgents(channel: string): ChannelAgentRow[] {
+    return this.channelAgents.filter((a) => a.channel === channel);
+  }
+
   close(): void {
     this.reset();
   }
@@ -773,7 +916,9 @@ export class InMemoryMessageStore extends BaseMessageStore {
   private reset(): void {
     this.messages = [];
     this.channels.clear();
+    this.channelAgents = [];
     this.nextId = 1;
+    this.nextAgentId = 1;
   }
 }
 
@@ -801,6 +946,7 @@ export class PubSubServer {
   private httpServer: HttpServer | null = null;
   private port: number | null = null;
   private channels = new Map<string, ChannelState>();
+  private wakeDebounceTimers = new Map<string, NodeJS.Timeout>();
 
   private tokenValidator: TokenValidator;
   private messageStore: MessageStore;
@@ -1354,6 +1500,11 @@ export class PubSubServer {
     // Mark channel activity for agent inactivity tracking
     this.agentHost?.markChannelActivity(channel);
 
+    // Schedule wake only for persisted messages (ephemeral messages can't be replayed)
+    if (msg.kind === "persisted") {
+      this.scheduleWake(channel);
+    }
+
     // Message without ref for non-senders
     const dataForOthers = JSON.stringify(msg);
     // Message with ref for sender (if they provided one)
@@ -1372,6 +1523,22 @@ export class PubSubServer {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(msg));
     }
+  }
+
+  /**
+   * Schedule a debounced wake for registered agents on a channel.
+   * This is called after messages are persisted to ensure checkpoint availability.
+   */
+  private scheduleWake(channel: string): void {
+    // Skip if already scheduled
+    if (this.wakeDebounceTimers.has(channel)) return;
+
+    const timer = setTimeout(() => {
+      this.wakeDebounceTimers.delete(channel);
+      void this.agentHost?.wakeChannelAgents(channel);
+    }, 100);
+
+    this.wakeDebounceTimers.set(channel, timer);
   }
 
   // ===========================================================================
@@ -1427,12 +1594,29 @@ export class PubSubServer {
     // This is intentional to allow flexibility during development. Agents can
     // validate their own config on startup and reject invalid configurations.
     // Future: Consider adding optional manifest constraint enforcement.
+    const handle = msg.handle ?? msg.agentId;
+    const config = msg.config ?? {};
+
     try {
       const instance = await this.agentHost.spawn(msg.agentId, {
         channel: client.channel,
-        handle: msg.handle ?? msg.agentId,
-        config: msg.config ?? {},
+        handle,
+        config,
       });
+
+      // Register agent for auto-wake (UPSERT - updates config on re-invite)
+      const spawnConfig = JSON.stringify({
+        channel: client.channel,
+        handle,
+        config,
+      });
+      this.messageStore.registerChannelAgent(
+        client.channel,
+        msg.agentId,
+        handle,
+        spawnConfig,
+        client.clientId
+      );
 
       this.send(client.ws, {
         kind: "invite-agent-response",
@@ -1504,8 +1688,8 @@ export class PubSubServer {
     // Security: Verify the instance belongs to the client's channel
     // This prevents cross-channel agent termination attacks
     const channelAgents = this.agentHost.getChannelAgents(client.channel);
-    const instanceBelongsToChannel = channelAgents.some((a) => a.id === msg.instanceId);
-    if (!instanceBelongsToChannel) {
+    const agentInstance = channelAgents.find((a) => a.id === msg.instanceId);
+    if (!agentInstance) {
       this.send(client.ws, {
         kind: "remove-agent-response",
         ref,
@@ -1516,12 +1700,29 @@ export class PubSubServer {
     }
 
     try {
-      const success = await this.agentHost.kill(msg.instanceId);
+      // Kill first - if this fails, agent stays registered for auto-wake
+      const killed = await this.agentHost.kill(msg.instanceId);
+      if (!killed) {
+        this.send(client.ws, {
+          kind: "remove-agent-response",
+          ref,
+          success: false,
+          error: "Agent instance not found",
+        });
+        return;
+      }
+
+      // Only unregister after successful kill (prevents auto-wake)
+      this.messageStore.unregisterChannelAgent(
+        client.channel,
+        agentInstance.agentId,
+        agentInstance.handle
+      );
+
       this.send(client.ws, {
         kind: "remove-agent-response",
         ref,
-        success,
-        error: success ? undefined : "Agent instance not found",
+        success: true,
       });
     } catch (err) {
       this.send(client.ws, {
@@ -1548,6 +1749,9 @@ export class PubSubServer {
 
     // Mark channel activity for agent inactivity tracking
     this.agentHost?.markChannelActivity(channel);
+
+    // Schedule wake for registered agents
+    this.scheduleWake(channel);
 
     // Config update message format
     const msg = {
@@ -1623,6 +1827,11 @@ export class PubSubServer {
 
     // Mark channel activity for agent inactivity tracking
     this.agentHost?.markChannelActivity(channel);
+
+    // Schedule wake only for persisted messages (binary messages with attachments are always persisted)
+    if (msg.kind === "persisted") {
+      this.scheduleWake(channel);
+    }
 
     const attachments = msg.attachments!;
     const attachmentMeta = attachments.map((a) => ({
@@ -1760,6 +1969,41 @@ export class PubSubServer {
    */
   setAgentHost(host: AgentHost): void {
     this.agentHost = host;
+
+    // Listen for agent events and broadcast as ephemeral debug messages
+    host.on("agentOutput", (data: {
+      channel: string;
+      handle: string;
+      agentId: string;
+      stream: "stdout" | "stderr";
+      content: string;
+      timestamp: number;
+    }) => {
+      this.broadcastEphemeralDebug(data.channel, {
+        debugType: "output",
+        agentId: data.agentId,
+        handle: data.handle,
+        stream: data.stream,
+        content: data.content,
+      });
+    });
+
+    host.on("agentLifecycle", (data: {
+      channel: string;
+      handle: string;
+      agentId: string;
+      event: "started" | "stopped" | "woken";
+      reason?: "timeout" | "explicit" | "crash" | "idle";
+      timestamp: number;
+    }) => {
+      this.broadcastEphemeralDebug(data.channel, {
+        debugType: "lifecycle",
+        agentId: data.agentId,
+        handle: data.handle,
+        event: data.event,
+        reason: data.reason,
+      });
+    });
   }
 
   /**
@@ -1769,7 +2013,51 @@ export class PubSubServer {
     return this.agentHost;
   }
 
+  /**
+   * Get the MessageStore reference.
+   */
+  getMessageStore(): MessageStore {
+    return this.messageStore;
+  }
+
+  /**
+   * Broadcast an ephemeral debug event to a channel (not persisted).
+   */
+  private broadcastEphemeralDebug(channel: string, payload: {
+    debugType: "output" | "lifecycle";
+    agentId: string;
+    handle: string;
+    stream?: "stdout" | "stderr";
+    content?: string;
+    event?: "started" | "stopped" | "woken";
+    reason?: "timeout" | "explicit" | "crash" | "idle";
+  }): void {
+    const state = this.channels.get(channel);
+    if (!state) return;
+
+    const msg = {
+      kind: "ephemeral" as const,
+      type: "agent-debug" as const,
+      payload,
+      senderId: "system",
+      ts: Date.now(),
+    };
+
+    const data = JSON.stringify(msg);
+    for (const client of state.clients) {
+      if (client.ws.readyState === WebSocket.OPEN) {
+        client.ws.send(data);
+      }
+    }
+  }
+
   async stop(): Promise<void> {
+    // Clear all wake debounce timers
+    for (const timer of this.wakeDebounceTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.wakeDebounceTimers.clear();
+
     // Terminate WebSocket clients BEFORE closing the message store
     // This allows presence "leave" events to be persisted during graceful shutdown
     if (this.wss) {

@@ -36,15 +36,15 @@
       "@natstack/agentic-messaging": ["packages/agentic-messaging/src/index.ts"],
       "@natstack/agentic-messaging/config": ["packages/agentic-messaging/src/config-entry.ts"],
       "@natstack/agentic-messaging/session": ["packages/agentic-messaging/src/session-entry.ts"],
-      "@natstack/agentic-messaging/registry": ["packages/agentic-messaging/src/agent-registry.ts"],
       "@natstack/react": ["packages/react/src/index.ts"],
       "@natstack/rpc": ["packages/rpc/src/index.ts"],
       "@natstack/runtime": ["packages/runtime/src/index.ts"],
       "@natstack/runtime/typecheck": ["packages/runtime/src/typecheck/index.ts"],
       "@natstack/eval": ["packages/eval/src/index.ts"],
-      "@natstack/agent-runtime": ["packages/agent-runtime/src/index.ts"]
+      "@natstack/agent-runtime": ["packages/agent-runtime/src/index.ts"],
+      "@natstack/agent-patterns": ["packages/agent-patterns/src/index.ts"]
     }
   },
-  "include": ["src/**/*", "packages/**/*"],
+  "include": ["src/**/*", "packages/**/*", "workspace/agents/**/*"],
   "exclude": ["node_modules", "dist", "**/dist", "packages/playwright-*"]
 }

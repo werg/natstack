@@ -1750,6 +1750,12 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     getMessagesBefore: async (beforeId: number, limit?: number) => {
       return pubsub.getMessagesBefore(beforeId, limit);
     },
+    // === Agent Management ===
+    listAgents: (timeoutMs?: number) => pubsub.listAgents(timeoutMs),
+    inviteAgent: (agentId: string, options?: { handle?: string; config?: Record<string, unknown>; timeoutMs?: number }) =>
+      pubsub.inviteAgent(agentId, options),
+    channelAgents: (timeoutMs?: number) => pubsub.channelAgents(timeoutMs),
+    removeAgent: (instanceId: string, timeoutMs?: number) => pubsub.removeAgent(instanceId, timeoutMs),
   };
 }
 

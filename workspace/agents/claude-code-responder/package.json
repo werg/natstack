@@ -1,0 +1,70 @@
+{
+  "name": "@workspace-agents/claude-code-responder",
+  "version": "0.1.0",
+  "type": "module",
+  "natstack": {
+    "type": "agent",
+    "title": "Claude Code Responder",
+    "description": "AI-powered code assistant using the Claude Agent SDK with full tool support",
+    "channels": ["chat:*"],
+    "parameters": [
+      {
+        "key": "model",
+        "label": "Model",
+        "type": "select",
+        "default": "claude-sonnet-4-5-20250929",
+        "options": [
+          { "value": "claude-sonnet-4-5-20250929", "label": "Claude 4.5 Sonnet" },
+          { "value": "claude-opus-4-5-20251101", "label": "Claude 4.5 Opus" }
+        ]
+      },
+      {
+        "key": "maxThinkingTokens",
+        "label": "Thinking Budget",
+        "type": "number",
+        "default": 10240,
+        "min": 0,
+        "max": 32000
+      },
+      {
+        "key": "executionMode",
+        "label": "Execution Mode",
+        "type": "select",
+        "default": "edit",
+        "options": [
+          { "value": "edit", "label": "Edit" },
+          { "value": "plan", "label": "Plan" }
+        ]
+      },
+      {
+        "key": "autonomyLevel",
+        "label": "Autonomy Level",
+        "type": "slider",
+        "default": 0,
+        "min": 0,
+        "max": 2
+      },
+      {
+        "key": "restrictedMode",
+        "label": "Restricted Mode",
+        "type": "boolean",
+        "default": true,
+        "channelLevel": true
+      },
+      {
+        "key": "workingDirectory",
+        "label": "Working Directory",
+        "type": "string",
+        "channelLevel": true
+      }
+    ]
+  },
+  "dependencies": {
+    "@natstack/agent-runtime": "workspace:*",
+    "@natstack/agent-patterns": "workspace:*",
+    "@natstack/agentic-messaging": "workspace:*",
+    "@natstack/pubsub": "workspace:*",
+    "@anthropic-ai/claude-agent-sdk": "*",
+    "zod": "*"
+  }
+}

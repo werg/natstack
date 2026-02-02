@@ -112,6 +112,7 @@ export interface AgentBuildResult {
  */
 const defaultAgentDependencies: Record<string, string> = {
   "@natstack/agent-runtime": "workspace:*",
+  "@natstack/agent-patterns": "workspace:*",
   "@natstack/agentic-messaging": "workspace:*",
   "@natstack/ai": "workspace:*",
   "@natstack/core": "workspace:*",
