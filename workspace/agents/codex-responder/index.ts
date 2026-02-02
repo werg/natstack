@@ -357,6 +357,8 @@ class CodexResponderAgent extends Agent<CodexAgentState, ChatParticipantMetadata
       name: "Codex",
       type: "codex" as const,
       reconnect: true,
+      // Resume from last checkpoint to avoid replaying already-seen events
+      replaySinceId: this.lastCheckpoint,
       methods: {
         pause: createPauseMethodDefinition(async () => {
           this.interrupt.pause();
@@ -752,7 +754,6 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       // Track text length per item to compute deltas correctly
       const itemTextLengths = new Map<string, number>();
       let currentAgentMessageId: string | null = null;
-      let checkpointCommitted = false;
 
       for await (const event of events) {
         // Check for abort
@@ -824,11 +825,6 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
                 const msgId = await ensureResponseMessage();
                 await client.update(msgId, delta);
                 itemTextLengths.set(item.id, item.text.length);
-
-                if (!checkpointCommitted) {
-                  if (incoming.pubsubId !== undefined) this.commitCheckpoint(incoming.pubsubId);
-                  checkpointCommitted = true;
-                }
               }
             }
             break;
@@ -864,22 +860,12 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
                 const msgId = await ensureResponseMessage();
                 await client.update(msgId, delta);
                 itemTextLengths.set(item.id, item.text.length);
-
-                if (!checkpointCommitted) {
-                  if (incoming.pubsubId !== undefined) this.commitCheckpoint(incoming.pubsubId);
-                  checkpointCommitted = true;
-                }
               }
             }
             break;
           }
 
           case "turn.completed": {
-            if (!checkpointCommitted) {
-              if (incoming.pubsubId !== undefined) this.commitCheckpoint(incoming.pubsubId);
-              checkpointCommitted = true;
-            }
-
             if (responseId) {
               await client.complete(responseId);
               this.logFn(`Completed response for ${incoming.id}`);

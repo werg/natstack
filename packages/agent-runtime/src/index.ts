@@ -5,7 +5,13 @@
  * Provides the Agent base class, state management, lifecycle handling,
  * and the runAgent() entry point.
  *
- * ## Key Improvements (Phase 7 Refactoring)
+ * ## Architecture
+ *
+ * The runtime is designed to be portable between deployment targets:
+ * - **Electron**: Uses RPC-based adapters (current implementation)
+ * - **Cloudflare DOs**: Uses direct HTTP/SQLite adapters (future)
+ *
+ * ## Key Features
  *
  * 1. **Unified Context** - `this.ctx` is available from getConnectOptions() onward.
  *    Identity properties (agentId, channel, handle, config, log) are always available;
@@ -14,8 +20,8 @@
  * 2. **Type-Safe Accessors** - Use `this.client`, `this.log`, `this.config` instead
  *    of reaching into ctx. These throw helpful errors if accessed too early.
  *
- * 3. **Clearer State Management** - Use `saveCheckpoint(state, pubsubId)` to
- *    combine state updates and checkpoint commits.
+ * 3. **Auto-Checkpoint** - Runtime automatically advances checkpoint for all
+ *    persisted events delivered to onEvent(). No manual checkpoint management needed.
  *
  * 4. **First-Class Settings** - Override `defaultSettings` getter and use
  *    `this.settings` and `this.updateSettings()` for user preferences.
@@ -40,18 +46,14 @@
  *   }
  *
  *   async onWake() {
- *     // Use canonical accessors
  *     this.log.info('Agent starting with state:', this.state);
  *     this.log.info('Settings:', this.settings);
  *   }
  *
  *   async onEvent(event: EventStreamItem) {
  *     if (event.type === 'message' && event.kind !== 'replay') {
- *       // Use saveCheckpoint for combined state + checkpoint update
- *       this.saveCheckpoint(
- *         { messageCount: this.state.messageCount + 1 },
- *         event.pubsubId
- *       );
+ *       // Auto-checkpoint handles replay recovery - just update state
+ *       this.setState({ messageCount: this.state.messageCount + 1 });
  *       await this.client.send(`Echo #${this.state.messageCount}`);
  *     }
  *   }
@@ -101,3 +103,46 @@ export type { ParentPort, ParentPortEnvelope } from "./transport.js";
 // Re-export database client from core for convenience
 export { createDbClient } from "@natstack/core";
 export type { DbClient, DatabaseInterface, RpcCaller } from "@natstack/core";
+
+// ============================================================================
+// Abstractions - Portable interfaces for runtime adapters
+// ============================================================================
+
+// Storage API - unified database interface
+export type { StorageApi, RunResult } from "./abstractions/storage.js";
+
+// Event Bus - outgoing messaging interface
+export type { EventBus } from "./abstractions/event-bus.js";
+
+// AI Provider - LLM streaming interface
+export type {
+  AiProvider,
+  AIRoleRecord,
+  StreamTextOptions,
+  StreamEvent,
+  StreamHandle,
+  StreamResult,
+  GenerateResult,
+} from "./abstractions/ai-provider.js";
+
+// Runtime Context - unified service container
+export { createRuntimeContext } from "./abstractions/runtime-context.js";
+export type {
+  RuntimeContext,
+  RuntimeContextConfig,
+} from "./abstractions/runtime-context.js";
+
+// Event filtering - shared between Electron and DO
+export { shouldYieldEvent, isAgentDebugEvent } from "./abstractions/event-filter.js";
+export type { EventFilterContext } from "./abstractions/event-filter.js";
+
+// ============================================================================
+// Electron Runtime Adapters
+// ============================================================================
+
+export { createElectronStorage } from "./electron/electron-storage.js";
+export { createWsEventBus } from "./electron/ws-event-bus.js";
+export { createRpcAiProvider } from "./electron/rpc-ai-provider.js";
+export { createElectronRuntime } from "./electron/create-runtime.js";
+export type { ElectronRuntimeConfig } from "./electron/create-runtime.js";
+

@@ -742,7 +742,6 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
 
     let responseId: string | null = null;
     let capturedSessionId: string | undefined;
-    let checkpointCommitted = false;
 
     const ensureResponseMessage = async (sdkUuid?: string, sdkSessionId?: string): Promise<string> => {
       if (typing.isTyping()) {
@@ -1051,11 +1050,6 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
               const msgId = await ensureResponseMessage(currentSdkMessageUuid, currentSdkSessionId);
               await client.update(msgId, streamEvent.delta.text);
               sawStreamedText = true;
-
-              if (!checkpointCommitted && incoming.pubsubId !== undefined) {
-                this.commitCheckpoint(incoming.pubsubId);
-                checkpointCommitted = true;
-              }
             }
           }
 
@@ -1162,10 +1156,6 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
         await this.subagents.cleanupAll();
       }
 
-      if (!checkpointCommitted && incoming.pubsubId !== undefined) {
-        this.commitCheckpoint(incoming.pubsubId);
-      }
-
       // Store session ID
       if (capturedSessionId) {
         this.setState({ sdkSessionId: capturedSessionId });
@@ -1191,10 +1181,6 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
             this.log.error("Failed to persist session ID on error", e);
           });
         }
-      }
-
-      if (!checkpointCommitted && incoming.pubsubId !== undefined) {
-        this.commitCheckpoint(incoming.pubsubId);
       }
 
       await typing.cleanup();

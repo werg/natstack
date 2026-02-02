@@ -28,6 +28,8 @@ import { Agent, deepMerge, type AgentContext, type AgentLogger, type AgentRuntim
 import { createParentPortTransport, type ParentPort } from "./transport.js";
 import { createLifecycleManager } from "./lifecycle.js";
 import { createStateStore, type StateStore } from "./state.js";
+import { createElectronStorage } from "./electron/electron-storage.js";
+import { isAgentDebugEvent } from "./abstractions/event-filter.js";
 
 // Shutdown timeouts
 const SHUTDOWN_TIMEOUT_MS = 5000;
@@ -170,6 +172,7 @@ export async function runAgent<S extends AgentState>(
   // Step 5: Set up state management BEFORE pubsub connect
   // This allows getConnectOptions() to use lastCheckpoint for replay recovery
   const db = await dbClient.open("agent-state.db");
+  const storage = createElectronStorage(db);
 
   // Access protected/internal agent properties via the injection interface
   // This provides type-safe access to methods the runtime needs to call/inject
@@ -177,7 +180,7 @@ export async function runAgent<S extends AgentState>(
   const agentInternal = agent as unknown as AgentInternal;
 
   const stateStore: StateStore<S> = createStateStore({
-    db,
+    storage,
     key: { agentId, channel, handle },
     initial: defaultState,
     version: agent.stateVersion,
@@ -208,12 +211,6 @@ export async function runAgent<S extends AgentState>(
     get: () => stateStore.getMetadata().lastPubsubId,
     configurable: true,
   });
-
-  // Inject commitCheckpoint method for explicit checkpoint management
-  // Agents should call this when they've actually finished processing an event
-  agentInternal.commitCheckpoint = (pubsubId: number) => {
-    stateStore.setCheckpoint(pubsubId);
-  };
 
   // Step 5b: Inject context BEFORE getConnectOptions (Issue #1 fix)
   // This allows agents to use this.ctx consistently in all lifecycle methods.
@@ -411,15 +408,27 @@ export async function runAgent<S extends AgentState>(
   lifecycle.startIdleMonitoring();
 
   // Step 13: Enter message loop (fire-and-forget pattern)
-  // NOTE: Checkpoints are NOT automatically updated. Agents should call
-  // this.commitCheckpoint(event.pubsubId) when they've finished processing
-  // an event (e.g., after queue.drain() in onSleep).
-  const eventsOptions = agent.getEventsOptions?.() ?? {};
+  // Auto-checkpoint: Runtime advances checkpoint after delivering each persisted event.
+  // This means "highest event ID we've seen" - agents don't manage checkpoints directly.
+  //
+  // IMPORTANT: We also checkpoint events filtered by client.events() (e.g., targetedOnly)
+  // via the onFiltered callback. Without this, filtered events would replay forever.
+  const baseEventsOptions = agent.getEventsOptions?.() ?? {};
+  const eventsOptions = {
+    ...baseEventsOptions,
+    onFiltered: (event: { pubsubId?: number }) => {
+      // Checkpoint filtered events so they don't replay forever
+      // Same semantics as delivered events: "I've seen it"
+      if (event.pubsubId !== undefined) {
+        stateStore.setCheckpoint(event.pubsubId);
+      }
+    },
+  };
 
   try {
     for await (const event of client.events(eventsOptions)) {
       // Skip agent-debug events - they're UI-only and not for agent processing
-      if ("type" in event && event.type === "agent-debug") {
+      if (isAgentDebugEvent(event)) {
         continue;
       }
 
@@ -431,6 +440,13 @@ export async function runAgent<S extends AgentState>(
         const error = err instanceof Error ? err : new Error(String(err));
         log.error("Error in onEvent:", error.message);
       });
+
+      // Auto-checkpoint: advance for all events we've received
+      // Semantics: "I've seen this event" (at-most-once delivery)
+      // Checkpoint both persisted and replay events - the distinction is informational only
+      if (event.pubsubId !== undefined) {
+        stateStore.setCheckpoint(event.pubsubId);
+      }
     }
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));

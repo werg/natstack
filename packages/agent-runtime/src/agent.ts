@@ -6,9 +6,15 @@
  * - Unified context with consistent access patterns
  * - First-class settings support with automatic persistence
  * - Lifecycle hooks (onWake, onEvent, onSleep)
- * - Checkpoint tracking for replay recovery
+ * - Automatic checkpoint tracking for replay recovery
  *
- * ## Context Availability (Issue #1 fix)
+ * ## Auto-Checkpoint
+ *
+ * The runtime automatically advances checkpoints after delivering events
+ * to onEvent(), whether the agent processed them or filtered them.
+ * Agents don't need to manage checkpoints - it's handled by the runtime.
+ *
+ * ## Context Availability
  *
  * The agent has a single unified context (`this.ctx`) that is populated in stages:
  *
@@ -22,6 +28,15 @@
  *
  * The `client` property is null in getConnectOptions() and populated after connect.
  * Use the type-safe accessor `this.client` which throws if accessed too early.
+ *
+ * ## Portability
+ *
+ * Agents written using this base class are portable between:
+ * - Electron's utilityProcess (current deployment)
+ * - Cloudflare Durable Objects (future deployment)
+ *
+ * The runtime abstractions (storage, event bus, AI) ensure agents work
+ * identically regardless of deployment target.
  */
 
 import type { AgentState } from "@natstack/core";
@@ -166,8 +181,6 @@ export interface AgentInitInfo {
 export interface AgentRuntimeInjection<S extends AgentState, M extends AgenticParticipantMetadata> {
   /** Injected by runtime - updates state and triggers persistence */
   setState: (partial: Partial<S>) => void;
-  /** Injected by runtime - commits a pubsub checkpoint */
-  commitCheckpoint: (pubsubId: number) => void;
   /** Injected by runtime - unified agent context */
   ctx: AgentContext<M>;
   /** Injected by runtime - deprecated init info */
@@ -209,7 +222,7 @@ export interface AgentRuntimeInjection<S extends AgentState, M extends AgenticPa
  * 1. Loads persisted state before onWake()
  * 2. Deep-merges with declared defaults
  * 3. Flushes state after onSleep() completes
- * 4. Tracks lastCheckpoint for replay recovery
+ * 4. Auto-advances checkpoint after each persisted event delivery
  *
  * @example
  * ```typescript
@@ -226,6 +239,7 @@ export interface AgentRuntimeInjection<S extends AgentState, M extends AgenticPa
  *       this.setState({ messageCount: this.state.messageCount + 1 });
  *       await this.client.send(`Received message #${this.state.messageCount}`);
  *     }
+ *     // No need to call commitCheckpoint() - runtime handles it automatically
  *   }
  * }
  * ```
@@ -397,74 +411,23 @@ export abstract class Agent<
 
   /**
    * Get the last processed checkpoint (pubsub ID).
-   * Use this with getConnectOptions().replaySinceId for replay recovery.
-   * The runtime injects this getter during bootstrap.
+   *
+   * This is READ-ONLY. The runtime automatically advances the checkpoint
+   * after delivering each persisted event to onEvent(), whether the agent
+   * processed it or filtered it.
+   *
+   * Use this in getConnectOptions().replaySinceId for replay recovery:
+   * ```typescript
+   * getConnectOptions() {
+   *   return { replaySinceId: this.lastCheckpoint };
+   * }
+   * ```
    *
    * @returns The last persisted pubsub ID, or undefined if none
    */
   protected get lastCheckpoint(): number | undefined {
     // Injected by runtime - returns undefined before injection
     return undefined;
-  }
-
-  /**
-   * Commit a checkpoint after successfully processing an event.
-   * Call this after you've finished processing an event to mark it as handled.
-   * On restart, replay will resume from the last committed checkpoint.
-   *
-   * IMPORTANT: Only call this after the event is fully processed.
-   * For queued processing, call after the queue drains, not when enqueuing.
-   *
-   * @param pubsubId - The pubsub ID of the processed event
-   *
-   * @example
-   * ```typescript
-   * private async handleEvent(event: EventStreamItem) {
-   *   await this.processMessage(event);
-   *
-   *   // Commit checkpoint after successful processing
-   *   if (event.pubsubId !== undefined) {
-   *     this.commitCheckpoint(event.pubsubId);
-   *   }
-   * }
-   * ```
-   */
-  protected commitCheckpoint(_pubsubId: number): void {
-    // Injected by runtime - throws if called before injection
-    throw new Error("commitCheckpoint called before runtime initialization");
-  }
-
-  /**
-   * Combined state update and checkpoint commit.
-   * Use this when you want to save state AND mark a pubsub event as processed.
-   *
-   * This is the preferred method for most use cases as it ensures state
-   * and checkpoint are kept in sync.
-   *
-   * @param partial - Partial state to merge (optional, can be empty object)
-   * @param pubsubId - The pubsub ID of the processed event (optional)
-   *
-   * @example
-   * ```typescript
-   * private async handleMessage(event: IncomingNewMessage) {
-   *   // Process the message...
-   *   const result = await this.processMessage(event);
-   *
-   *   // Save state and checkpoint in one call
-   *   this.saveCheckpoint(
-   *     { lastResult: result },
-   *     event.pubsubId
-   *   );
-   * }
-   * ```
-   */
-  protected saveCheckpoint(partial: Partial<S>, pubsubId?: number): void {
-    if (Object.keys(partial).length > 0) {
-      this.setState(partial);
-    }
-    if (pubsubId !== undefined) {
-      this.commitCheckpoint(pubsubId);
-    }
   }
 
   // =========================================================================
@@ -788,7 +751,7 @@ export abstract class Agent<
    *   return {
    *     replayMode: 'collect',
    *     // Resume from persisted checkpoint (avoids full replay on restart)
-   *     replaySinceId: this.state.lastPubsubId || undefined,
+   *     replaySinceId: this.lastCheckpoint,
    *   };
    * }
    * ```

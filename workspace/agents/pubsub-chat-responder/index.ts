@@ -497,7 +497,6 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       // Agentic loop with approval handling
       let step = 0;
       const maxSteps = settings.maxSteps;
-      let checkpointCommitted = false;
 
       while (step < maxSteps) {
         // Check for interruption before each step
@@ -553,11 +552,6 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
             case "text-delta": {
               const msgId = await ensureResponseMessage();
               await this.client.update(msgId, event.text);
-
-              if (!checkpointCommitted && incoming.pubsubId !== undefined) {
-                this.commitCheckpoint(incoming.pubsubId);
-                checkpointCommitted = true;
-              }
               break;
             }
 
@@ -701,11 +695,6 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         this.log.debug(`Started new message for step ${step + 1}: ${responseId}`);
 
         step++;
-      }
-
-      // Commit checkpoint if not already done
-      if (!checkpointCommitted && incoming.pubsubId !== undefined) {
-        this.commitCheckpoint(incoming.pubsubId);
       }
 
       // Mark message as complete

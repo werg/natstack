@@ -11,7 +11,8 @@
  * - Checkpoint tracking for pubsub replay
  */
 
-import type { DatabaseInterface, AgentState } from "@natstack/core";
+import type { AgentState } from "@natstack/core";
+import type { StorageApi } from "./abstractions/storage.js";
 
 /**
  * State metadata stored alongside the state.
@@ -91,8 +92,8 @@ export interface StateStore<S extends AgentState> {
  * Options for creating a state store.
  */
 export interface StateStoreOptions<S extends AgentState> {
-  /** Database interface for persistence */
-  db: DatabaseInterface;
+  /** Storage API for persistence */
+  storage: StorageApi;
 
   /** Key identifying this agent's state */
   key: {
@@ -223,7 +224,7 @@ export function createStateStore<S extends AgentState>(
   options: StateStoreOptions<S>
 ): StateStore<S> {
   const {
-    db,
+    storage,
     key,
     initial,
     version = 1,
@@ -259,23 +260,23 @@ export function createStateStore<S extends AgentState>(
   const ensureTable = async () => {
     if (initialized) return;
 
-    await db.exec(CREATE_TABLE_SQL);
+    await storage.exec(CREATE_TABLE_SQL);
 
     // Try to add new columns (will fail silently if they exist)
     try {
-      await db.exec("ALTER TABLE agent_state ADD COLUMN version INTEGER NOT NULL DEFAULT 1");
+      await storage.exec("ALTER TABLE agent_state ADD COLUMN version INTEGER NOT NULL DEFAULT 1");
     } catch { /* Column exists */ }
 
     try {
-      await db.exec("ALTER TABLE agent_state ADD COLUMN last_pubsub_id INTEGER");
+      await storage.exec("ALTER TABLE agent_state ADD COLUMN last_pubsub_id INTEGER");
     } catch { /* Column exists */ }
 
     try {
-      await db.exec("ALTER TABLE agent_state ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0");
+      await storage.exec("ALTER TABLE agent_state ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0");
     } catch { /* Column exists */ }
 
     try {
-      await db.exec("ALTER TABLE agent_state ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0");
+      await storage.exec("ALTER TABLE agent_state ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0");
     } catch { /* Column exists */ }
 
     initialized = true;
@@ -308,7 +309,7 @@ export function createStateStore<S extends AgentState>(
     const stateJson = JSON.stringify(currentState);
     const now = Date.now();
 
-    await db.run(
+    await storage.run(
       `INSERT INTO agent_state (agent_id, channel, handle, state, version, last_pubsub_id, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (agent_id, channel, handle)
@@ -415,7 +416,7 @@ export function createStateStore<S extends AgentState>(
     async load(): Promise<S> {
       await ensureTable();
 
-      const row = await db.get<{
+      const row = await storage.get<{
         state: string;
         version: number | null;
         last_pubsub_id: number | null;

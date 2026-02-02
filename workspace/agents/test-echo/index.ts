@@ -14,6 +14,15 @@ interface TestEchoState {
 class TestEchoAgent extends Agent<TestEchoState> {
   state: TestEchoState = { messageCount: 0 };
 
+  getConnectOptions() {
+    return {
+      name: "Test Echo",
+      type: "agent" as const,
+      // Resume from last checkpoint to avoid replaying already-seen events
+      replaySinceId: this.lastCheckpoint,
+    };
+  }
+
   async onWake(): Promise<void> {
     this.log.info("Test Echo Agent started", {
       channel: this.channel,
