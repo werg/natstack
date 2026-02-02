@@ -22,6 +22,7 @@ import type {
   InviteAgentOptions,
   InviteAgentResult,
   RemoveAgentResult,
+  AgentBuildError,
 } from "./types.js";
 
 /**
@@ -63,6 +64,8 @@ interface ServerMessage {
   success?: boolean;
   /** Instance ID of spawned agent (invite-agent-response) */
   instanceId?: string;
+  /** Structured build error with full diagnostics (invite-agent-response on failure) */
+  buildError?: AgentBuildError;
 }
 
 type PresenceAction = "join" | "leave" | "update";
@@ -470,6 +473,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
               success: msg.success ?? false,
               instanceId: msg.instanceId,
               error: msg.error,
+              buildError: msg.buildError,
             });
             pendingInviteAgent.delete(msg.ref);
           }

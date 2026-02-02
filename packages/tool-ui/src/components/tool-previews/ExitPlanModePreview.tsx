@@ -94,7 +94,7 @@ export function ExitPlanModePreview({ plan, allowedPrompts, planFilePath }: Exit
       {/* Plan content (Markdown) */}
       {plan && (
         <Card size="1" mb="3">
-          <ScrollArea style={{ maxHeight: 300 }}>
+          <ScrollArea style={{ maxHeight: 600, minHeight: 400, resize: "vertical", overflow: "auto" }}>
             <Box p="2">
               <Markdown components={markdownComponents}>
                 {plan}

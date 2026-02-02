@@ -1,12 +1,14 @@
 {
   "name": "@workspace-agents/pubsub-chat-responder",
-  "version": "0.1.0",
+  "version": "0.1.0-git.02f9c65",
   "type": "module",
   "natstack": {
     "type": "agent",
     "title": "AI Chat Responder",
     "description": "AI-powered chat responder with tool support and agentic capabilities",
-    "channels": ["chat:*"],
+    "channels": [
+      "chat:*"
+    ],
     "parameters": [
       {
         "key": "modelRole",
@@ -14,9 +16,18 @@
         "type": "select",
         "default": "fast",
         "options": [
-          { "value": "smart", "label": "Smart" },
-          { "value": "fast", "label": "Fast" },
-          { "value": "coding", "label": "Coding" }
+          {
+            "value": "smart",
+            "label": "Smart"
+          },
+          {
+            "value": "fast",
+            "label": "Fast"
+          },
+          {
+            "value": "coding",
+            "label": "Coding"
+          }
         ]
       },
       {
@@ -63,10 +74,10 @@
     ]
   },
   "dependencies": {
-    "@natstack/agent-runtime": "workspace:*",
-    "@natstack/agent-patterns": "workspace:*",
-    "@natstack/agentic-messaging": "workspace:*",
-    "@natstack/ai": "workspace:*",
-    "@natstack/pubsub": "workspace:*"
+    "@natstack/agent-runtime": "*",
+    "@natstack/agent-patterns": "*",
+    "@natstack/agentic-messaging": "*",
+    "@natstack/ai": "*",
+    "@natstack/pubsub": "*"
   }
 }

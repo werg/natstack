@@ -1,6 +1,5 @@
 {
   "name": "@workspace-panels/agent-manager",
-  "version": "0.1.0-4eac81deadfd",
   "private": false,
   "type": "module",
   "natstack": {
@@ -10,9 +9,9 @@
     "runtime": "panel"
   },
   "dependencies": {
-    "@natstack/runtime": "workspace:*",
-    "@natstack/react": "workspace:*",
-    "@natstack/core": "workspace:*",
+    "@natstack/runtime": "*",
+    "@natstack/react": "*",
+    "@natstack/core": "*",
     "@radix-ui/themes": "^3.2.1"
   }
 }

@@ -119,6 +119,7 @@ interface ClaudeCodeSettings {
   executionMode?: "plan" | "edit";
   autonomyLevel?: number;
   hasShownApprovalPrompt?: boolean;
+  [key: string]: string | number | boolean | undefined;
 }
 
 const DEFAULT_SETTINGS: ClaudeCodeSettings = {
@@ -135,6 +136,7 @@ const DEFAULT_SETTINGS: ClaudeCodeSettings = {
  */
 interface ClaudeCodeState {
   sdkSessionId?: string;
+  [key: string]: unknown;
 }
 
 /** Type for SDK's AskUserQuestion question structure */
@@ -309,7 +311,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
   // Pattern helpers
   private queue!: MessageQueue;
   private interrupt!: InterruptController;
-  private settings!: SettingsManager<ClaudeCodeSettings>;
+  private settingsMgr!: SettingsManager<ClaudeCodeSettings>;
   private missedContext!: MissedContextManager;
   private contextTracker!: ReturnType<typeof createContextTracker>;
 
@@ -322,7 +324,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
 
   getConnectOptions() {
     // Note: this.ctx is NOT available here - use this.initInfo instead
-    const config = this.initInfo.config as AgentConfig;
+    const config = this.initInfo.config as unknown as AgentConfig;
 
     return {
       name: "Claude Code",
@@ -350,7 +352,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
           parameters: z.object({
             title: z.string().max(200).describe("Brief title for this conversation"),
           }),
-          execute: async ({ title }) => {
+          execute: async ({ title }: { title: string }) => {
             await this.client.setChannelTitle(title);
             this.log.info(`Set channel title to: ${title}`);
             return { success: true, title };
@@ -368,7 +370,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
   }
 
   async onWake(): Promise<void> {
-    const config = this.config as AgentConfig;
+    const config = this.config as unknown as AgentConfig;
 
     // Find claude executable
     const claudeExecutable = findExecutable("claude");
@@ -379,7 +381,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     this.log.info(`Claude executable: ${claudeExecutable}`);
 
     // Initialize settings manager
-    this.settings = createSettingsManager<ClaudeCodeSettings>({
+    this.settingsMgr = createSettingsManager<ClaudeCodeSettings>({
       client: this.client as AgenticClient<ChatParticipantMetadata>,
       defaults: DEFAULT_SETTINGS,
       initConfig: {
@@ -389,7 +391,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
         autonomyLevel: config.autonomyLevel,
       },
     });
-    await this.settings.load();
+    await this.settingsMgr.load();
 
     // Initialize interrupt controller
     this.interrupt = createInterruptController();
@@ -417,7 +419,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     });
 
     // Initialize context tracker
-    const currentSettings = this.settings.get();
+    const currentSettings = this.settingsMgr.get();
     this.contextTracker = createContextTracker({
       model: currentSettings.model,
       log: (msg) => this.log.debug(msg),
@@ -428,12 +430,12 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
 
         const metadata: ChatParticipantMetadata = {
           name: "Claude Code",
-          type: "claude-code",
+          type: "claude-code" as const,
           handle: this.handle,
           agentTypeId: this.agentId,
           ...currentMetadata,
           contextUsage: usage,
-          executionMode: this.settings.get().executionMode,
+          executionMode: this.settingsMgr.get().executionMode,
         };
 
         try {
@@ -445,14 +447,9 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     });
 
     // Initialize subagent manager
-    const pubsubConfig = {
-      serverUrl: (this.client as AgenticClient<ChatParticipantMetadata>).serverUrl,
-      token: (this.client as AgenticClient<ChatParticipantMetadata>).token,
-    };
-
     this.subagents = new SubagentManager({
-      serverUrl: pubsubConfig.serverUrl,
-      token: pubsubConfig.token,
+      serverUrl: this.ctx.pubsubUrl,
+      token: this.ctx.pubsubToken,
       channel: this.channel,
       parentClient: this.client as AgenticClient<ChatParticipantMetadata>,
       log: (msg) => this.log.debug(msg),
@@ -468,7 +465,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
       handle: this.handle,
       restrictedMode: config.restrictedMode,
       workingDirectory: config.workingDirectory,
-      settings: this.settings.get(),
+      settings: this.settingsMgr.get(),
     });
   }
 
@@ -603,7 +600,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     const callHandle = client.callMethod(panel.id, "feedback_form", {
       title: "Claude Code Settings",
       fields,
-      values: this.settings.get(),
+      values: this.settingsMgr.get(),
     });
 
     const result = await callHandle.result;
@@ -618,7 +615,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     }
 
     const newSettings = feedbackResult.value as Partial<ClaudeCodeSettings>;
-    await this.settings.update(newSettings);
+    await this.settingsMgr.update(newSettings);
 
     if (newSettings.model) {
       this.contextTracker.setModel(newSettings.model);
@@ -633,7 +630,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
       type: "claude-code",
       handle: this.handle,
       ...currentMetadata,
-      executionMode: this.settings.get().executionMode,
+      executionMode: this.settingsMgr.get().executionMode,
     };
     try {
       await client.updateMetadata(metadata);
@@ -641,13 +638,13 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
       this.log.warn("Failed to update metadata after settings change", err);
     }
 
-    return { success: true, settings: this.settings.get() };
+    return { success: true, settings: this.settingsMgr.get() };
   }
 
   private async handleUserMessage(incoming: IncomingNewMessage): Promise<void> {
-    const config = this.config as AgentConfig;
+    const config = this.config as unknown as AgentConfig;
     const client = this.client as AgenticClient<ChatParticipantMetadata>;
-    const settings = this.settings.get();
+    const settings = this.settingsMgr.get();
 
     this.log.info(`Received message: ${incoming.content}`);
 
@@ -915,7 +912,9 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
 
       // Create permission handler
       const canUseTool: CanUseTool = async (toolName, input, options) => {
-        return this.handleToolPermission(toolName, input, options, client, panel, settings, interruptHandler);
+        const result = await this.handleToolPermission(toolName, input, options, client, panel, settings, interruptHandler);
+        // Type assertion needed due to discriminated union narrowing
+        return result as Awaited<ReturnType<CanUseTool>>;
       };
 
       // Resume session
@@ -1324,7 +1323,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
           }
         }
 
-        return { behavior: "allow", updatedInput: { ...input, answers }, toolUseID: options.toolUseID };
+        return { behavior: "allow", updatedInput: { ...(input as Record<string, unknown>), answers }, toolUseID: options.toolUseID };
       } catch (err) {
         if (err instanceof AgenticError && ["cancelled", "timeout", "provider-offline", "provider-not-found"].includes(err.code)) {
           return { behavior: "deny", message: err.message, toolUseID: options.toolUseID };
@@ -1348,7 +1347,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
           // Ignore
         }
       }
-      input = { ...input, plan, planFilePath };
+      input = { ...(input as Record<string, unknown>), plan, planFilePath };
     }
 
     // Check autonomy level
@@ -1370,7 +1369,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
         client,
         panel.id,
         toolName,
-        input,
+        input as Record<string, unknown>,
         {
           decisionReason: options.decisionReason,
           isFirstTimeGrant,
@@ -1379,12 +1378,12 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
       );
 
       if (!settings.hasShownApprovalPrompt) {
-        await this.settings.update({ hasShownApprovalPrompt: true });
+        await this.settingsMgr.update({ hasShownApprovalPrompt: true });
       }
 
       if (allow) {
         if (alwaysAllow) {
-          await this.settings.update({ autonomyLevel: 2 });
+          await this.settingsMgr.update({ autonomyLevel: 2 });
         }
         return { behavior: "allow", updatedInput: input, toolUseID: options.toolUseID };
       } else {

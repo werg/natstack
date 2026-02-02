@@ -1,6 +1,6 @@
 {
   "name": "@workspace-panels/project-panel",
-  "version": "0.1.0-33a416c004e7",
+  "version": "0.1.0-git.2e39949",
   "type": "module",
   "exports": {
     ".": "./index.tsx",
@@ -35,9 +35,9 @@
     ]
   },
   "dependencies": {
-    "@natstack/runtime": "workspace:*",
-    "@natstack/react": "workspace:*",
-    "@natstack/agentic-messaging": "workspace:*",
+    "@natstack/runtime": "*",
+    "@natstack/react": "*",
+    "@natstack/agentic-messaging": "*",
     "@workspace/context-template-editor": "*",
     "@workspace/agentic-components": "*",
     "@radix-ui/themes": "^3.2.1",

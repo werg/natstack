@@ -93,6 +93,8 @@ export default function ProjectLauncher() {
 
       const projectPanelUrl = buildNsLink("panels/project-panel", {
         action: "navigate",
+        // contextId in options sets storage partition (OPFS/IndexedDB sharing)
+        contextId,
         stateArgs: stateArgs as unknown as Record<string, unknown>,
       });
       window.location.href = projectPanelUrl;
@@ -156,7 +158,7 @@ export default function ProjectLauncher() {
                 agents={agents}
                 loading={agentsLoading}
                 defaultAgentId={projectConfig.defaultAgentId}
-                onDefaultAgentChange={(id) => setDefaultAgent(id)}
+                onDefaultAgentChange={(id: string | undefined) => setDefaultAgent(id)}
               />
 
               <Separator size="4" />

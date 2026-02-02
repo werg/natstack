@@ -55,8 +55,8 @@ export async function fileRead(args: FileReadArgs, workspaceRoot?: string): Prom
   try {
     // Read file as buffer to check for binary
     const data = await fs.promises.readFile(resolvedPath);
-    // Convert to Uint8Array if string (shouldn't happen without encoding, but be safe)
-    const buffer = typeof data === "string" ? new TextEncoder().encode(data) : data;
+    // Convert to Uint8Array (Buffer extends Uint8Array but TS needs explicit conversion)
+    const buffer: Uint8Array = typeof data === "string" ? new TextEncoder().encode(data) : new Uint8Array(data);
 
     if (isBinaryFile(buffer)) {
       // Check if it's an image

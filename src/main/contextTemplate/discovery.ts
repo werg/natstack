@@ -140,17 +140,18 @@ export async function initContextTemplate(repoPath: string): Promise<void> {
     throw new Error(`Context template already exists in ${repoPath}`);
   }
 
-  // Create a basic context-template.yml
+  // Create a basic context-template.yml that extends the default template
   const repoName = repoPath.split("/").pop() ?? "project";
   const templateContent = `# Context Template for ${repoName}
-# See documentation for full configuration options
+# Clone skills/paneldev for documentation
 
 name: ${repoName}
 description: Context template for ${repoName}
+extends: contexts/default
 
-# Mount points define the filesystem structure
+# Mount points define the filesystem structure (mirrors workspace paths)
 # structure:
-#   /deps/some-lib: panels/some-lib
+#   /workspace/panels/some-lib: panels/some-lib
 `;
 
   const templatePath = join(absolutePath, "context-template.yml");

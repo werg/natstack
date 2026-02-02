@@ -133,9 +133,37 @@ const editor = await createChildWithContract(editorContract, { name: "editor" })
 | `gitRef` | string | Git branch/tag/commit for source |
 | `repoArgs` | Record<string, RepoArgSpec> | Repo arguments for bootstrap |
 | `templateSpec` | string | Context template path |
+| `contextId` | string | Explicit context ID for storage partition sharing |
 | `unsafe` | boolean \| string | Node.js mode (workers only) |
 | `sourcemap` | boolean | Emit sourcemaps (default: true) |
 | `focus` | boolean | Focus after creation |
+
+### Context ID for Storage Sharing
+
+When multiple panels need to share the same OPFS/IndexedDB storage partition, pass the same `contextId` in options:
+
+```typescript
+// Generate or receive a shared context ID
+const sharedContextId = crypto.randomUUID();
+
+// Create chat panel with shared context
+const chat = await createChild("panels/chat", {
+  name: "chat",
+  contextId: sharedContextId,  // Sets storage partition
+}, {
+  contextId: sharedContextId,  // Also pass in stateArgs for app logic
+});
+
+// Create worker with same context - shares storage with chat
+const worker = await createChild("workers/agent", {
+  name: "agent",
+  contextId: sharedContextId,
+}, {
+  contextId: sharedContextId,
+});
+```
+
+Note: `contextId` must be passed in both `options` (for storage partition) and `stateArgs` (for application logic) if your panel needs to know its context ID at runtime.
 
 ## ChildHandle Methods
 

@@ -222,6 +222,8 @@ export async function runAgent<S extends AgentState>(
     config: agentConfig,
     log,
     client: null, // Populated after pubsub connects
+    pubsubUrl,
+    pubsubToken,
   };
 
   // Inject ctx first (unified context model) via the internal interface

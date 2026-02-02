@@ -12,6 +12,7 @@ import type { PendingConflict } from "../hooks/useToolRole";
 const GROUP_LABELS: Record<string, string> = {
   "file-ops": "File Operations",
   "git-ops": "Git Operations",
+  "workspace-ops": "Workspace Operations",
 };
 
 interface ToolRoleConflictModalProps {

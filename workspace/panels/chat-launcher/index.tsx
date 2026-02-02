@@ -9,7 +9,7 @@
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import { pubsubConfig, buildNsLink, closeSelf, getStateArgs, rpc, db, id } from "@natstack/runtime";
-import { setDbOpen, connect, type AgenticClient } from "@natstack/agentic-messaging";
+import { setDbOpen, connect, type AgenticClient, type AgentBuildError } from "@natstack/agentic-messaging";
 
 // Configure agentic-messaging to use runtime's db
 setDbOpen(db.open);
@@ -187,21 +187,26 @@ export default function ChatLauncher() {
               // Channel config values passed directly to avoid timing issues
               workingDirectory: channelConfig.workingDirectory,
               restrictedMode: channelConfig.restrictedMode,
-              // contextId passed separately (not part of channelConfig)
+              // contextId tells the agent which channel context it belongs to
               contextId,
               ...config,
             },
           });
 
           if (!result.success) {
-            return { agent, error: result.error ?? "Unknown error", instanceId: null };
+            return {
+              agent,
+              error: result.error ?? "Unknown error",
+              buildError: result.buildError,
+              instanceId: null,
+            };
           }
 
-          return { agent, error: null, instanceId: result.instanceId };
+          return { agent, error: null, buildError: undefined, instanceId: result.instanceId };
         } catch (err) {
           // Capture invite errors per-agent
           const errorMsg = err instanceof Error ? err.message : String(err);
-          return { agent, error: errorMsg, instanceId: null };
+          return { agent, error: errorMsg, buildError: undefined, instanceId: null };
         }
       });
 
@@ -210,6 +215,15 @@ export default function ChatLauncher() {
       // Separate successful and failed invites
       const succeeded = results.filter((r) => r.error === null);
       const failed = results.filter((r) => r.error !== null);
+
+      // Collect build errors to pass to chat panel
+      const buildErrors: Record<string, AgentBuildError> = {};
+      for (const result of failed) {
+        if (result.buildError) {
+          buildErrors[result.agent.agent.name] = result.buildError;
+        }
+      }
+      const hasBuildErrors = Object.keys(buildErrors).length > 0;
 
       // Check if all invites failed - still navigate to chat panel
       // Auto-wake will handle recovery when agents crash/timeout
@@ -247,9 +261,11 @@ export default function ChatLauncher() {
         // Fallback: navigate back to the chat panel
         const chatUrl = buildNsLink("panels/chat", {
           action: "navigate",
+          contextId,
           stateArgs: {
             channelName: targetChannelId,
             contextId,
+            ...(hasBuildErrors ? { buildErrors } : {}),
           },
         });
         window.location.href = chatUrl;
@@ -257,10 +273,12 @@ export default function ChatLauncher() {
         // New chat mode: navigate to the chat panel with channel ID, config, and contextId
         const chatUrl = buildNsLink("panels/chat", {
           action: "navigate",
+          contextId,
           stateArgs: {
             channelName: targetChannelId,
             channelConfig,
             contextId,
+            ...(hasBuildErrors ? { buildErrors } : {}),
           },
         });
         window.location.href = chatUrl;

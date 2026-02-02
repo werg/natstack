@@ -72,6 +72,7 @@ export function useToolRole(
   const [groupStates, setGroupStates] = useState<Record<ToolGroup, ToolGroupState>>({
     "file-ops": { ...DEFAULT_GROUP_STATE },
     "git-ops": { ...DEFAULT_GROUP_STATE },
+    "workspace-ops": { ...DEFAULT_GROUP_STATE },
   });
 
   // Pending conflicts awaiting user decision
@@ -136,6 +137,7 @@ export function useToolRole(
       setGroupStates({
         "file-ops": { ...DEFAULT_GROUP_STATE },
         "git-ops": { ...DEFAULT_GROUP_STATE },
+        "workspace-ops": { ...DEFAULT_GROUP_STATE },
       });
       setPendingConflicts([]);
       return;

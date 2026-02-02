@@ -131,6 +131,16 @@ export interface AgentContext<M extends AgenticParticipantMetadata = AgenticPart
    * Use `this.client` accessor for type-safe access.
    */
   client: AgenticClient<M> | null;
+  /**
+   * Pubsub server URL for subagent connections.
+   * Use this when creating SubagentManager.
+   */
+  readonly pubsubUrl: string;
+  /**
+   * Pubsub authentication token for subagent connections.
+   * Use this when creating SubagentManager.
+   */
+  readonly pubsubToken: string;
 }
 
 /**

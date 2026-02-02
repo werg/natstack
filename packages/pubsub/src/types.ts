@@ -223,6 +223,30 @@ export interface InviteAgentOptions {
 }
 
 /**
+ * Structured agent build error with full diagnostics.
+ * Returned when an agent fails to spawn due to build errors.
+ */
+export interface AgentBuildError {
+  /** Primary error message */
+  message: string;
+  /** Build log with all steps (may be long) */
+  buildLog?: string;
+  /** TypeScript errors if type-check failed */
+  typeErrors?: Array<{
+    file: string;
+    line: number;
+    column: number;
+    message: string;
+  }>;
+  /** Git dirty state info if repo has uncommitted changes */
+  dirtyRepo?: {
+    modified: string[];
+    untracked: string[];
+    staged: string[];
+  };
+}
+
+/**
  * Result of inviting an agent.
  */
 export interface InviteAgentResult {
@@ -232,6 +256,8 @@ export interface InviteAgentResult {
   instanceId?: string;
   /** Error message (on failure) */
   error?: string;
+  /** Structured build error with full diagnostics (on failure) */
+  buildError?: AgentBuildError;
 }
 
 /**
@@ -262,6 +288,8 @@ export interface InviteAgentResponse {
   success: boolean;
   instanceId?: string;
   error?: string;
+  /** Structured build error with full diagnostics (on failure) */
+  buildError?: AgentBuildError;
 }
 
 /**

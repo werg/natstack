@@ -14,6 +14,7 @@
 import * as esbuild from "esbuild";
 import * as fs from "fs";
 import * as path from "path";
+import * as git from "isomorphic-git";
 
 import { createBuildWorkspace, type BuildArtifactKey } from "./build/artifacts.js";
 import {
@@ -84,6 +85,15 @@ export interface AgentBuildOptions {
 }
 
 /**
+ * Dirty repository state information.
+ */
+export interface DirtyRepoState {
+  modified: string[];
+  untracked: string[];
+  staged: string[];
+}
+
+/**
  * Result of building an agent.
  */
 export interface AgentBuildResult {
@@ -100,6 +110,8 @@ export interface AgentBuildResult {
   buildLog?: string;
   /** TypeScript type errors found during build */
   typeErrors?: TypeCheckDiagnostic[];
+  /** Git dirty state if repo has uncommitted changes (null if clean) */
+  dirtyRepo?: DirtyRepoState;
 }
 
 // ===========================================================================
@@ -131,6 +143,75 @@ const KNOWN_OPTIONAL_NATIVE_DEPS = [
   "cpu-features",     // ssh2 optional
   "@parcel/watcher",  // File watching optional
 ];
+
+// ===========================================================================
+// Git Dirty State Detection
+// ===========================================================================
+
+/**
+ * Check if the agent directory has uncommitted changes.
+ * Returns null if the directory is clean, otherwise returns the dirty state.
+ */
+async function checkDirtyRepo(agentPath: string): Promise<DirtyRepoState | null> {
+  try {
+    // Find the git root by walking up from the agent path
+    const gitRoot = await git.findRoot({ fs, filepath: agentPath });
+
+    const statusMatrix = await git.statusMatrix({ fs, dir: gitRoot });
+
+    const modified: string[] = [];
+    const untracked: string[] = [];
+    const staged: string[] = [];
+
+    // Only check files within the agent path
+    const relativePath = path.relative(gitRoot, agentPath);
+    const prefix = relativePath ? relativePath + "/" : "";
+
+    for (const [filepath, headStatus, workdirStatus, stageStatus] of statusMatrix) {
+      // Only consider files within the agent directory
+      if (prefix && !filepath.startsWith(prefix)) {
+        continue;
+      }
+
+      // Modified but not staged (HEAD=1, workdir=2, stage=1)
+      if (headStatus === 1 && workdirStatus === 2 && stageStatus === 1) {
+        modified.push(filepath);
+      }
+      // Deleted but not staged (HEAD=1, workdir=0, stage=1)
+      else if (headStatus === 1 && workdirStatus === 0 && stageStatus === 1) {
+        modified.push(filepath);
+      }
+      // Untracked (HEAD=0, workdir=2, stage=0)
+      else if (headStatus === 0 && workdirStatus === 2 && stageStatus === 0) {
+        untracked.push(filepath);
+      }
+      // Staged - new file (HEAD=0, stage=2)
+      else if (headStatus === 0 && stageStatus === 2) {
+        staged.push(filepath);
+      }
+      // Staged - modified (HEAD=1, stage=2)
+      else if (headStatus === 1 && stageStatus === 2) {
+        staged.push(filepath);
+      }
+      // Staged - deleted (HEAD=1, stage=0, workdir=0)
+      else if (headStatus === 1 && stageStatus === 0 && workdirStatus === 0) {
+        staged.push(filepath);
+      }
+    }
+
+    const isDirty = modified.length > 0 || untracked.length > 0 || staged.length > 0;
+
+    if (!isDirty) {
+      return null;
+    }
+
+    return { modified, untracked, staged };
+  } catch (err) {
+    // Not a git repo or other error - assume clean
+    devLog.verbose(`[checkDirtyRepo] Could not check git status: ${err}`);
+    return null;
+  }
+}
 
 // ===========================================================================
 // Agent Builder
@@ -243,6 +324,13 @@ export class AgentBuilder {
       const sourceCommit = provision.commit;
 
       log(`Source provisioned at ${sourcePath} (commit: ${sourceCommit.slice(0, 8)})`);
+
+      // Check for uncommitted changes in the agent directory
+      const dirtyRepo = await checkDirtyRepo(sourcePath);
+      if (dirtyRepo) {
+        const totalChanges = dirtyRepo.modified.length + dirtyRepo.untracked.length + dirtyRepo.staged.length;
+        log(`Warning: Agent has ${totalChanges} uncommitted change(s)`);
+      }
 
       // Cache key for storing the result (includes sourcemap option)
       const cacheKey = `agent:${canonicalAgentPath}:${sourceCommit}:${versionsHash}:sm${sourcemap ? 1 : 0}`;
@@ -373,6 +461,7 @@ export class AgentBuilder {
           error: `TypeScript errors:\n${errorSummary}${moreMsg}`,
           typeErrors,
           buildLog,
+          dirtyRepo: dirtyRepo ?? undefined,
         };
       }
 
@@ -385,6 +474,7 @@ export class AgentBuilder {
         manifest,
         nodeModulesDir: workspace.nodeModulesDir,
         buildLog,
+        dirtyRepo: dirtyRepo ?? undefined,
       };
 
       // Cache the result (excluding bundlePath which is local, we store it relative)

@@ -192,7 +192,7 @@ export const markdownComponents: Components = {
   em: ({ children }) => <Text style={{ fontStyle: "italic" }}>{children}</Text>,
 };
 
-export const mdxComponents: Record<string, ComponentType | unknown> = {
+export const mdxComponents = {
   ...markdownComponents,
   Badge,
   Blockquote,

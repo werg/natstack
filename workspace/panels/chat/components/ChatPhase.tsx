@@ -1,8 +1,8 @@
-import { useState, useRef, useEffect, useCallback, type ComponentType } from "react";
+import { useState, useRef, useEffect, useCallback, useLayoutEffect, type ComponentType } from "react";
 import { Badge, Box, Button, Callout, Card, Flex, IconButton, ScrollArea, Text, TextArea, Theme } from "@radix-ui/themes";
 import { PaperPlaneIcon, ImageIcon, CopyIcon, CheckIcon } from "@radix-ui/react-icons";
 import type { Participant, AttachmentInput } from "@natstack/pubsub";
-import { CONTENT_TYPE_INLINE_UI, prettifyToolName, type AgentDebugPayload } from "@natstack/agentic-messaging";
+import { CONTENT_TYPE_INLINE_UI, prettifyToolName, type AgentDebugPayload, type AgentBuildError } from "@natstack/agentic-messaging";
 import {
   FeedbackContainer,
   FeedbackFormRenderer,
@@ -25,12 +25,15 @@ import { type PendingImage, getImagesFromClipboard, createPendingImage, validate
 import type { ChatMessage, ChatParticipantMetadata } from "../types";
 import { AgentDisconnectedMessage } from "./AgentDisconnectedMessage";
 import { AgentDebugConsole } from "./AgentDebugConsole";
+import { BuildErrorCard } from "./BuildErrorCard";
+import { DirtyRepoWarning } from "./DirtyRepoWarning";
 import "../styles.css";
 
 // Re-export for backwards compatibility
 export type { ChatMessage };
 
 const MAX_IMAGE_COUNT = 10;
+const BOTTOM_THRESHOLD_PX = 2;
 
 interface ChatPhaseProps {
   channelId: string | null;
@@ -59,6 +62,10 @@ interface ChatPhaseProps {
   debugEvents?: Array<AgentDebugPayload & { ts: number }>;
   /** Currently open debug console agent handle */
   debugConsoleAgent?: string | null;
+  /** Build errors from failed agent invites */
+  buildErrors?: Map<string, AgentBuildError>;
+  /** Dirty repo warnings for agents spawned with uncommitted changes */
+  dirtyRepoWarnings?: Map<string, { modified: string[]; untracked: string[]; staged: string[] }>;
   /** Callback to open/close debug console */
   onDebugConsoleChange?: (agentHandle: string | null) => void;
   /** Callback to load earlier messages */
@@ -78,6 +85,10 @@ interface ChatPhaseProps {
   onFocusPanel?: (panelId: string) => void;
   /** Reload a disconnected agent's panel */
   onReloadPanel?: (panelId: string) => void;
+  /** Dismiss a build error */
+  onDismissBuildError?: (agentName: string) => void;
+  /** Dismiss a dirty repo warning */
+  onDismissDirtyWarning?: (agentName: string) => void;
   /** Tool approval configuration - optional, when provided enables approval UI */
   toolApproval?: ToolApprovalProps;
 }
@@ -98,6 +109,8 @@ export function ChatPhase({
   inlineUiComponents,
   debugEvents,
   debugConsoleAgent,
+  buildErrors,
+  dirtyRepoWarnings,
   onDebugConsoleChange,
   onLoadEarlierMessages,
   onInputChange,
@@ -111,6 +124,8 @@ export function ChatPhase({
   onCallMethod,
   onFocusPanel,
   onReloadPanel,
+  onDismissBuildError,
+  onDismissDirtyWarning,
   toolApproval,
 }: ChatPhaseProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -121,111 +136,100 @@ export function ChatPhase({
   const [showImageInput, setShowImageInput] = useState(false);
   const [showNewContent, setShowNewContent] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null);
 
   // Refs for scroll position tracking
   const lastMessageCountRef = useRef(0);
-  const userScrolledAwayRef = useRef(false);
-  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastFirstMessageIdRef = useRef<string | null>(null);
+  const lastScrollTopRef = useRef(0);
+  const lastScrollHeightRef = useRef(0);
+  const isAtBottomRef = useRef(true);
 
   const getViewport = useCallback(() => {
     return scrollAreaRef.current?.querySelector<HTMLElement>('[data-radix-scroll-area-viewport]') ?? null;
   }, []);
 
-  // Check if user is near the bottom of the scroll area
-  // Returns null if viewport not found (unknown state - don't make assumptions)
-  const checkIfNearBottom = useCallback((): boolean | null => {
-    const viewport = getViewport();
-    if (!viewport) return null;
-    const { scrollTop, scrollHeight, clientHeight } = viewport;
-    // Consider "near bottom" if within 20px of the bottom (tight threshold to avoid
-    // false positives when user has scrolled up even slightly)
-    return scrollHeight - scrollTop - clientHeight < 20;
-  }, [getViewport]);
+  // Track the actual viewport element so scroll listeners attach reliably.
+  useLayoutEffect(() => {
+    const nextViewport = getViewport();
+    if (nextViewport !== viewportEl) {
+      setViewportEl(nextViewport);
+    }
+  }, [getViewport, viewportEl]);
 
   // Handle scroll events - keep track of whether the user left the bottom
   const handleScroll = useCallback(() => {
-    const isNearBottom = checkIfNearBottom();
-    // If we can't determine scroll position, don't change state
-    if (isNearBottom === null) return;
-
+    const viewport = viewportEl ?? getViewport();
+    if (!viewport) return;
+    lastScrollTopRef.current = viewport.scrollTop;
+    lastScrollHeightRef.current = viewport.scrollHeight;
+    const isNearBottom =
+      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= BOTTOM_THRESHOLD_PX;
+    isAtBottomRef.current = isNearBottom;
     if (isNearBottom) {
-      // User scrolled back to bottom
-      userScrolledAwayRef.current = false;
       setShowNewContent(false);
-    } else {
-      // User scrolled away from bottom
-      userScrolledAwayRef.current = true;
     }
-  }, [checkIfNearBottom]);
+  }, [getViewport, viewportEl]);
 
   // Attach scroll listener directly to viewport (Radix ScrollArea doesn't bubble scroll events)
   useEffect(() => {
-    const viewport = getViewport();
-    if (!viewport) return;
-    viewport.addEventListener('scroll', handleScroll);
-    return () => viewport.removeEventListener('scroll', handleScroll);
-  }, [getViewport, handleScroll]);
+    if (!viewportEl) return;
+    viewportEl.addEventListener("scroll", handleScroll, { passive: true });
+    handleScroll();
+    return () => viewportEl.removeEventListener("scroll", handleScroll);
+  }, [handleScroll, viewportEl]);
 
-  // Cleanup scroll timeout on unmount
-  useEffect(() => {
-    return () => {
-      if (scrollTimeoutRef.current) {
-        clearTimeout(scrollTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  // Auto-scroll helper (throttled for streaming updates)
+  // Auto-scroll helper
   const autoScrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
-    // Cancel any pending timeout from a previous scroll
-    if (scrollTimeoutRef.current) {
-      clearTimeout(scrollTimeoutRef.current);
-    }
-
-    userScrolledAwayRef.current = false;
-    const viewport = getViewport();
+    const viewport = viewportEl ?? getViewport();
     if (viewport) {
       viewport.scrollTo({ top: viewport.scrollHeight, behavior });
     } else {
       scrollRef.current?.scrollIntoView({ behavior });
     }
+  }, [getViewport, viewportEl]);
 
-    // Clear throttle after the scroll settles
-    scrollTimeoutRef.current = setTimeout(() => {
-      scrollTimeoutRef.current = null;
-    }, behavior === "smooth" ? 500 : 100);
-  }, [getViewport]);
-
-  // Handle new content: stick to bottom only if the user hasn't scrolled away
-  useEffect(() => {
+  // Handle new content: keep position unless the user was at the bottom
+  useLayoutEffect(() => {
+    const viewport = getViewport();
     const prevCount = lastMessageCountRef.current;
-    const newCount = messages.length;
+    const nextCount = messages.length;
+    const prevFirstId = lastFirstMessageIdRef.current;
+    const nextFirstId = messages[0]?.id ?? null;
 
-    // Only auto-scroll when the user hasn't scrolled away from the bottom
-    const shouldAutoScroll = !userScrolledAwayRef.current;
+    if (!viewport) {
+      lastMessageCountRef.current = nextCount;
+      lastFirstMessageIdRef.current = nextFirstId;
+      return;
+    }
 
-    if (newCount > prevCount && prevCount > 0) {
-      // New message(s) added
-      if (shouldAutoScroll) {
-        // User is at bottom - auto-scroll
+    const countDelta = nextCount - prevCount;
+    const prevScrollHeight = lastScrollHeightRef.current || viewport.scrollHeight;
+    const prevScrollTop = lastScrollTopRef.current || viewport.scrollTop;
+    const scrollHeightDelta = viewport.scrollHeight - prevScrollHeight;
+    const isPrepend =
+      countDelta > 0 && prevCount > 0 && prevFirstId !== null && nextFirstId !== prevFirstId;
+
+    if (prevCount > 0) {
+      if (isAtBottomRef.current) {
         autoScrollToBottom();
         setShowNewContent(false);
       } else {
-        // User scrolled up - show notification
-        setShowNewContent(true);
-      }
-    } else if (newCount === prevCount && newCount > 0 && shouldAutoScroll) {
-      // Content update (streaming) while user is at bottom - keep them there
-      // Only trigger a new scroll if we're not already in the middle of one
-      // This naturally throttles rapid streaming updates
-      if (!scrollTimeoutRef.current) {
-        autoScrollToBottom();
+        if (isPrepend && scrollHeightDelta !== 0) {
+          viewport.scrollTop = prevScrollTop + scrollHeightDelta;
+        } else if (countDelta > 0 && !isPrepend) {
+          setShowNewContent(true);
+        }
       }
     }
-    // Note: if streaming while scrolled up, we do nothing (user is reading history)
 
-    lastMessageCountRef.current = newCount;
-  }, [messages, autoScrollToBottom]);
+    lastScrollTopRef.current = viewport.scrollTop;
+    lastScrollHeightRef.current = viewport.scrollHeight;
+    isAtBottomRef.current =
+      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= BOTTOM_THRESHOLD_PX;
+    lastMessageCountRef.current = nextCount;
+    lastFirstMessageIdRef.current = nextFirstId;
+  }, [messages, autoScrollToBottom, getViewport, viewportEl]);
 
   // Handler to scroll to new content when notification is clicked
   const handleScrollToNewContent = useCallback(() => {
@@ -404,6 +408,34 @@ export function ChatPhase({
           </Button>
         </Flex>
       </Flex>
+
+      {/* Build errors */}
+      {buildErrors && buildErrors.size > 0 && (
+        <Box px="1" flexShrink="0">
+          {Array.from(buildErrors.entries()).map(([name, error]) => (
+            <BuildErrorCard
+              key={name}
+              agentName={name}
+              error={error}
+              onDismiss={() => onDismissBuildError?.(name)}
+            />
+          ))}
+        </Box>
+      )}
+
+      {/* Dirty repo warnings */}
+      {dirtyRepoWarnings && dirtyRepoWarnings.size > 0 && (
+        <Box px="1" flexShrink="0">
+          {Array.from(dirtyRepoWarnings.entries()).map(([name, state]) => (
+            <DirtyRepoWarning
+              key={name}
+              agentName={name}
+              dirtyRepo={state}
+              onDismiss={() => onDismissDirtyWarning?.(name)}
+            />
+          ))}
+        </Box>
+      )}
 
       {/* Messages */}
       <Box flexGrow="1" overflow="hidden" style={{ minHeight: 0, position: "relative" }} asChild>

@@ -81,6 +81,12 @@ export interface CreateChildOptions {
    * If not provided, defaults to "contexts/default".
    */
   templateSpec?: string;
+  /**
+   * Explicit context ID for storage partition sharing.
+   * If provided, the panel will use this context ID instead of generating a new one.
+   * This enables multiple panels to share the same OPFS/IndexedDB partition.
+   */
+  contextId?: string;
 }
 
 export interface ChildCreationResult {
@@ -577,6 +583,21 @@ export interface WorkspaceNode {
     title: string;
     repoArgs?: string[];
     envArgs?: EnvArgSchema[];
+  };
+  /**
+   * Package metadata if this repo has a package.json with a name.
+   */
+  packageInfo?: {
+    name: string;
+    version?: string;
+  };
+  /**
+   * Skill metadata if this repo has a SKILL.md file with YAML frontmatter.
+   * Skills are repos that provide instructions/context for agents.
+   */
+  skillInfo?: {
+    name: string;
+    description: string;
   };
   /** Child nodes (empty for git repos since they're leaves) */
   children: WorkspaceNode[];

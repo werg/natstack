@@ -39,6 +39,22 @@ const log = createDevLogger("AgentHost");
 let _aiHandler: AIHandler | null = null;
 
 /**
+ * Custom error class for agent spawn failures with full build diagnostics.
+ * Includes build log, type errors, and dirty repo state when available.
+ */
+export class AgentSpawnError extends Error {
+  constructor(
+    message: string,
+    public readonly buildLog?: string,
+    public readonly typeErrors?: Array<{ file: string; line: number; column: number; message: string }>,
+    public readonly dirtyRepo?: { modified: string[]; untracked: string[]; staged: string[] }
+  ) {
+    super(message);
+    this.name = "AgentSpawnError";
+  }
+}
+
+/**
  * Set the AI handler instance for agents (called during initialization).
  */
 export function setAgentHostAiHandler(handler: AIHandler | null): void {
@@ -104,8 +120,10 @@ export interface AgentLifecycleEvent {
   channel: string;
   handle: string;
   agentId: string;
-  event: "started" | "stopped" | "woken";
-  reason?: "timeout" | "explicit" | "crash" | "idle";
+  event: "started" | "stopped" | "woken" | "warning";
+  reason?: "timeout" | "explicit" | "crash" | "idle" | "dirty-repo";
+  /** Additional details for warning events */
+  details?: unknown;
   timestamp: number;
 }
 
@@ -223,18 +241,25 @@ export class AgentHost extends EventEmitter {
     agentId: string,
     options: SpawnOptions
   ): Promise<AgentInstanceInfo> {
+    log.verbose(`[spawn] Starting spawn for agent=${agentId}, channel=${options.channel}, handle=${options.handle}`);
+
     // 1. Validate agent exists
     const discovery = getAgentDiscovery();
     if (!discovery) {
+      log.verbose(`[spawn] Error: AgentDiscovery not initialized`);
       throw new Error("AgentDiscovery not initialized");
     }
     const agent = discovery.get(agentId);
     if (!agent) {
+      log.verbose(`[spawn] Error: Agent not found: ${agentId}`);
       throw new Error(`Agent not found: ${agentId}`);
     }
     if (!agent.valid) {
+      log.verbose(`[spawn] Error: Agent manifest invalid: ${agent.error}`);
       throw new Error(`Agent manifest invalid: ${agent.error}`);
     }
+
+    log.verbose(`[spawn] Agent manifest valid: ${agent.manifest.name}`);
 
     // 2. Check for existing instance on this channel
     const existing = this.getInstance(options.channel, agentId);
@@ -244,6 +269,7 @@ export class AgentHost extends EventEmitter {
     }
 
     // 3. Build agent
+    log.verbose(`[spawn] Building agent ${agentId}...`);
     const builder = getAgentBuilder();
     const buildResult = await builder.build({
       workspaceRoot: this.options.workspaceRoot,
@@ -251,12 +277,39 @@ export class AgentHost extends EventEmitter {
     });
 
     if (!buildResult.success || !buildResult.bundlePath) {
-      throw new Error(`Failed to build agent: ${buildResult.error}`);
+      log.verbose(`[spawn] Build failed: ${buildResult.error}`);
+      if (buildResult.buildLog) {
+        log.verbose(`[spawn] Build log:\n${buildResult.buildLog}`);
+      }
+      throw new AgentSpawnError(
+        buildResult.error || "Unknown build error",
+        buildResult.buildLog,
+        buildResult.typeErrors,
+        buildResult.dirtyRepo
+      );
+    }
+
+    log.verbose(`[spawn] Build successful: ${buildResult.bundlePath}`);
+
+    // Emit warning if repo has uncommitted changes (but build succeeded)
+    if (buildResult.dirtyRepo) {
+      log.verbose(`[spawn] Agent ${agentId} has uncommitted changes`);
+      this.emit("agentLifecycle", {
+        channel: options.channel,
+        handle: options.handle,
+        agentId,
+        event: "warning",
+        reason: "dirty-repo",
+        details: buildResult.dirtyRepo,
+        timestamp: Date.now(),
+      } satisfies AgentLifecycleEvent);
     }
 
     // 4. Generate instance ID and token
     const instanceId = randomUUID();
     const token = this.options.createToken(instanceId);
+
+    log.verbose(`[spawn] Forking utilityProcess for ${agentId} (instanceId=${instanceId.slice(0, 8)})`);
 
     // 5. Fork utilityProcess
     const proc = utilityProcess.fork(buildResult.bundlePath, [], {
@@ -284,14 +337,19 @@ export class AgentHost extends EventEmitter {
     }, startupTimeoutMs);
 
     const onLifecycleMessage = (msg: LifecycleMessage) => {
+      log.verbose(`[spawn] Lifecycle message from ${agentId}: ${msg.type}`);
       if (msg.type === "ready") {
         clearTimeout(startupTimeout);
+        log.verbose(`[spawn] Agent ${agentId} sent ready signal`);
         readyResolve();
       } else if (msg.type === "error") {
         clearTimeout(startupTimeout);
-        readyReject(
-          new Error((msg["error"] as string) || "Agent initialization error")
-        );
+        const errorMsg = (msg["error"] as string) || "Agent initialization error";
+        log.verbose(`[spawn] Agent ${agentId} sent error: ${errorMsg}`);
+        if (msg["stack"]) {
+          log.verbose(`[spawn] Stack: ${msg["stack"]}`);
+        }
+        readyReject(new Error(errorMsg));
       }
     };
 
@@ -319,25 +377,31 @@ export class AgentHost extends EventEmitter {
     this.instances.set(instanceId, instance);
     this.markChannelActivity(options.channel);
 
-    // Capture stdout/stderr for debug events
+    // Capture stdout/stderr for debug events AND devLog
     proc.stdout?.on("data", (data: Buffer) => {
+      const content = data.toString().trimEnd();
+      // Log to devLog for verbose mode visibility
+      log.verbose(`[Agent:${agentId}:stdout] ${content}`);
       this.emit("agentOutput", {
         channel: options.channel,
         handle: options.handle,
         agentId,
         stream: "stdout",
-        content: data.toString(),
+        content,
         timestamp: Date.now(),
       } satisfies AgentOutputEvent);
     });
 
     proc.stderr?.on("data", (data: Buffer) => {
+      const content = data.toString().trimEnd();
+      // Log to devLog for verbose mode visibility
+      log.verbose(`[Agent:${agentId}:stderr] ${content}`);
       this.emit("agentOutput", {
         channel: options.channel,
         handle: options.handle,
         agentId,
         stream: "stderr",
-        content: data.toString(),
+        content,
         timestamp: Date.now(),
       } satisfies AgentOutputEvent);
     });
@@ -371,12 +435,14 @@ export class AgentHost extends EventEmitter {
       pubsubToken: token,
     };
 
+    log.verbose(`[spawn] Sending init config to ${agentId}: channel=${options.channel}, pubsubUrl=${this.options.pubsubUrl}`);
     proc.postMessage({ type: "init", config: initConfig });
 
     // 9. Await ready
+    log.verbose(`[spawn] Waiting for ready signal from ${agentId} (timeout: ${startupTimeoutMs}ms)...`);
     try {
       await readyPromise;
-      log.verbose(`Agent ${agentId} ready on channel ${options.channel}`);
+      log.verbose(`[spawn] Agent ${agentId} ready on channel ${options.channel}`);
 
       // Emit started lifecycle event
       this.emit("agentLifecycle", {
@@ -388,6 +454,8 @@ export class AgentHost extends EventEmitter {
       } satisfies AgentLifecycleEvent);
     } catch (err) {
       // Cleanup on failure
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      log.verbose(`[spawn] Failed to start agent ${agentId}: ${errorMsg}`);
       this.cleanupInstance(instanceId);
       proc.kill();
       throw err;

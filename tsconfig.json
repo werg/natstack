@@ -45,6 +45,6 @@
       "@natstack/agent-patterns": ["packages/agent-patterns/src/index.ts"]
     }
   },
-  "include": ["src/**/*", "packages/**/*", "workspace/agents/**/*"],
+  "include": ["src/**/*", "packages/**/*"],
   "exclude": ["node_modules", "dist", "**/dist", "packages/playwright-*"]
 }

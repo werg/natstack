@@ -1,6 +1,6 @@
 {
   "name": "@workspace/agentic-components",
-  "version": "0.1.0",
+  "version": "0.1.0-git.723f0d0",
   "type": "module",
   "exports": {
     ".": "./index.ts",

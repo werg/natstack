@@ -12,7 +12,9 @@ import { getDatabaseManager } from "./db/databaseManager.js";
 import { findAvailablePortForService } from "./portUtils.js";
 import { createDevLogger } from "./devLog.js";
 import type { AgentHost } from "./agentHost.js";
+import { AgentSpawnError } from "./agentHost.js";
 import type { AgentManifest } from "@natstack/core";
+import type { AgentBuildError } from "@natstack/agentic-messaging";
 
 const log = createDevLogger("PubSubServer");
 
@@ -192,6 +194,8 @@ interface ServerMessage {
   success?: boolean;
   /** Instance ID of spawned agent (invite-agent-response) */
   instanceId?: string;
+  /** Structured build error with full diagnostics (invite-agent-response on failure) */
+  buildError?: AgentBuildError;
 }
 
 /** Presence event types for join/leave tracking */
@@ -1574,13 +1578,17 @@ export class PubSubServer {
     msg: InviteAgentClientMessage,
     ref: number | undefined
   ): Promise<void> {
+    log.verbose(`[invite-agent] Received request: agentId=${msg.agentId}, handle=${msg.handle}, channel=${client.channel}`);
+
     // Validate ref is present
     if (ref === undefined) {
+      log.verbose(`[invite-agent] Error: ref required`);
       this.send(client.ws, { kind: "error", error: "ref required for invite-agent" });
       return;
     }
 
     if (!this.agentHost) {
+      log.verbose(`[invite-agent] Error: Agent host not initialized`);
       this.send(client.ws, {
         kind: "invite-agent-response",
         ref,
@@ -1597,12 +1605,16 @@ export class PubSubServer {
     const handle = msg.handle ?? msg.agentId;
     const config = msg.config ?? {};
 
+    log.verbose(`[invite-agent] Spawning agent ${msg.agentId} with handle=${handle} on channel=${client.channel}`);
+
     try {
       const instance = await this.agentHost.spawn(msg.agentId, {
         channel: client.channel,
         handle,
         config,
       });
+
+      log.verbose(`[invite-agent] Agent spawned successfully: instanceId=${instance.id}`);
 
       // Register agent for auto-wake (UPSERT - updates config on re-invite)
       const spawnConfig = JSON.stringify({
@@ -1618,6 +1630,8 @@ export class PubSubServer {
         client.clientId
       );
 
+      log.verbose(`[invite-agent] Agent registered for auto-wake`);
+
       this.send(client.ws, {
         kind: "invite-agent-response",
         ref,
@@ -1625,11 +1639,29 @@ export class PubSubServer {
         instanceId: instance.id,
       });
     } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      log.verbose(`[invite-agent] Error spawning agent: ${errorMsg}`);
+      if (err instanceof Error && err.stack) {
+        log.verbose(`[invite-agent] Stack: ${err.stack}`);
+      }
+
+      // Extract structured build error if available
+      let buildError: AgentBuildError | undefined;
+      if (err instanceof AgentSpawnError) {
+        buildError = {
+          message: err.message,
+          buildLog: err.buildLog,
+          typeErrors: err.typeErrors,
+          dirtyRepo: err.dirtyRepo,
+        };
+      }
+
       this.send(client.ws, {
         kind: "invite-agent-response",
         ref,
         success: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: errorMsg,
+        buildError,
       });
     }
   }

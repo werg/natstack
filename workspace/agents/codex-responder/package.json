@@ -1,12 +1,14 @@
 {
   "name": "@workspace-agents/codex-responder",
-  "version": "0.1.0",
+  "version": "0.1.0-git.d572985",
   "type": "module",
   "natstack": {
     "type": "agent",
     "title": "Codex Responder",
     "description": "AI-powered code assistant using the OpenAI Codex SDK with MCP tool bridge",
-    "channels": ["chat:*"],
+    "channels": [
+      "chat:*"
+    ],
     "parameters": [
       {
         "key": "model",
@@ -14,9 +16,18 @@
         "type": "select",
         "default": "o3-mini",
         "options": [
-          { "value": "o3-mini", "label": "o3 Mini" },
-          { "value": "o4-mini", "label": "o4 Mini" },
-          { "value": "codex-1", "label": "Codex 1" }
+          {
+            "value": "o3-mini",
+            "label": "o3 Mini"
+          },
+          {
+            "value": "o4-mini",
+            "label": "o4 Mini"
+          },
+          {
+            "value": "codex-1",
+            "label": "Codex 1"
+          }
         ]
       },
       {
@@ -57,10 +68,10 @@
     ]
   },
   "dependencies": {
-    "@natstack/agent-runtime": "workspace:*",
-    "@natstack/agent-patterns": "workspace:*",
-    "@natstack/agentic-messaging": "workspace:*",
-    "@natstack/pubsub": "workspace:*",
+    "@natstack/agent-runtime": "*",
+    "@natstack/agent-patterns": "*",
+    "@natstack/agentic-messaging": "*",
+    "@natstack/pubsub": "*",
     "@openai/codex-sdk": "*",
     "@modelcontextprotocol/sdk": "*",
     "zod": "*"

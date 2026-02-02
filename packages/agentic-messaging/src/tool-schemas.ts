@@ -180,6 +180,50 @@ export const GitCheckoutArgsSchema = z.object({
 export type GitCheckoutArgs = z.infer<typeof GitCheckoutArgsSchema>;
 
 // ============================================================================
+// Workspace Discovery Tools
+// ============================================================================
+
+/**
+ * workspace_list - List available repos in the workspace
+ */
+export const WorkspaceListArgsSchema = z.object({
+  category: z.enum(["panels", "workers", "contexts", "packages", "skills", "all"])
+    .optional()
+    .default("all")
+    .describe("Filter by workspace category (skills are repos with SKILL.md providing agent instructions)"),
+});
+export type WorkspaceListArgs = z.infer<typeof WorkspaceListArgsSchema>;
+
+/**
+ * workspace_clone - Clone a repo into the current context's OPFS
+ */
+export const WorkspaceCloneArgsSchema = z.object({
+  repo_spec: z.string().describe("Repo spec like 'panels/editor', 'panels/editor#main', or 'panels/editor@v1.0.0'"),
+  mount_path: z.string().optional().describe("Mount path in context (default: /workspace/<repo_path>)"),
+});
+export type WorkspaceCloneArgs = z.infer<typeof WorkspaceCloneArgsSchema>;
+
+/**
+ * context_info - Show what repos are mounted in the current context
+ */
+export const ContextInfoArgsSchema = z.object({});
+export type ContextInfoArgs = z.infer<typeof ContextInfoArgsSchema>;
+
+/**
+ * context_template_list - List available context templates in the workspace
+ */
+export const ContextTemplateListArgsSchema = z.object({});
+export type ContextTemplateListArgs = z.infer<typeof ContextTemplateListArgsSchema>;
+
+/**
+ * context_template_read - Read a context template's YAML
+ */
+export const ContextTemplateReadArgsSchema = z.object({
+  template_spec: z.string().describe("Template spec to read (e.g., 'contexts/default')"),
+});
+export type ContextTemplateReadArgs = z.infer<typeof ContextTemplateReadArgsSchema>;
+
+// ============================================================================
 // Plan Mode Tools
 // ============================================================================
 
@@ -336,6 +380,12 @@ export const CANONICAL_TOOL_MAPPINGS: Record<string, string> = {
   git_add: "GitAdd",
   git_commit: "GitCommit",
   git_checkout: "GitCheckout",
+  // Workspace tools
+  workspace_list: "WorkspaceList",
+  workspace_clone: "WorkspaceClone",
+  context_info: "ContextInfo",
+  context_template_list: "ContextTemplateList",
+  context_template_read: "ContextTemplateRead",
   // Plan mode
   enter_plan_mode: "EnterPlanMode",
   exit_plan_mode: "ExitPlanMode",
@@ -429,7 +479,8 @@ export function prettifyToolName(toolName: string): string {
 
 /**
  * Required methods for restricted mode (no bash access).
- * These are the minimum set of methods needed for file operations without shell.
+ * These are the minimum set of methods needed for file operations,
+ * workspace discovery, and context management without shell.
  */
 export const RESTRICTED_MODE_REQUIRED_METHODS = [
   "file_read",
@@ -442,6 +493,11 @@ export const RESTRICTED_MODE_REQUIRED_METHODS = [
   "git_status",
   "git_diff",
   "git_log",
+  "workspace_list",
+  "workspace_clone",
+  "context_info",
+  "context_template_list",
+  "context_template_read",
 ] as const;
 
 /**
@@ -455,7 +511,7 @@ export const RESTRICTED_MODE_OPTIONAL_METHODS = [
 ] as const;
 
 /**
- * All file/search/git tools that can be exposed via pubsub RPC.
+ * All restricted-mode tools that can be exposed via pubsub RPC.
  * These are the canonical tool names used across all workers in restricted mode.
  */
 export const CANONICAL_PUBSUB_TOOL_NAMES = [
@@ -479,6 +535,13 @@ import type { ToolGroup } from "./types.js";
 export const TOOL_GROUPS: Record<ToolGroup, readonly string[]> = {
   "file-ops": ["file_read", "file_write", "file_edit", "rm", "glob", "grep", "tree", "list_directory"],
   "git-ops": ["git_status", "git_diff", "git_log", "git_add", "git_commit", "git_checkout"],
+  "workspace-ops": [
+    "workspace_list",
+    "workspace_clone",
+    "context_info",
+    "context_template_list",
+    "context_template_read",
+  ],
 } as const;
 
 /** List of all tool group names for iteration */

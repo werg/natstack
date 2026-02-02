@@ -15,7 +15,7 @@ function createMockClient(savedSettings: Record<string, unknown> | null = null):
   } as unknown as AgenticClient<AgenticParticipantMetadata>;
 }
 
-interface TestSettings {
+interface TestSettings extends Record<string, unknown> {
   modelRole: string;
   temperature: number;
   nested: {

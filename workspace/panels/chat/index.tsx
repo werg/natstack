@@ -21,6 +21,7 @@ import {
   type AgentDebugPayload,
   type MethodDefinition,
   type MethodExecutionContext,
+  type AgentBuildError,
   CONTENT_TYPE_TYPING,
   CONTENT_TYPE_INLINE_UI,
   type TypingData,
@@ -106,6 +107,7 @@ function dispatchAgenticEvent(
     addMethodHistoryEntry: (entry: MethodHistoryEntry) => void;
     handleMethodResult: (result: IncomingMethodResult) => void;
     setDebugEvents?: (updater: (prev: Array<AgentDebugPayload & { ts: number }>) => Array<AgentDebugPayload & { ts: number }>) => void;
+    setDirtyRepoWarnings?: (updater: (prev: Map<string, { modified: string[]; untracked: string[]; staged: string[] }>) => Map<string, { modified: string[]; untracked: string[]; staged: string[] }>) => void;
   },
   selfId: string | null,
   participants: Record<string, Participant<ChatParticipantMetadata>>
@@ -227,6 +229,24 @@ function dispatchAgenticEvent(
           const updated = [...prev.slice(-499), { ...debugPayload, ts: event.ts }];
           return updated;
         });
+
+        // Check for dirty-repo warning lifecycle events
+        if (
+          debugPayload.debugType === "lifecycle" &&
+          (debugPayload as { event?: string }).event === "warning" &&
+          (debugPayload as { reason?: string }).reason === "dirty-repo" &&
+          handlers.setDirtyRepoWarnings
+        ) {
+          const details = (debugPayload as { details?: { modified: string[]; untracked: string[]; staged: string[] } }).details;
+          if (details) {
+            const handle = debugPayload.handle;
+            handlers.setDirtyRepoWarnings((prev) => {
+              const next = new Map(prev);
+              next.set(handle, details);
+              return next;
+            });
+          }
+        }
       }
       break;
     }
@@ -242,11 +262,14 @@ interface ChatStateArgs {
   };
   /** Context ID for channel authorization (passed separately from channelConfig) */
   contextId?: string;
+  /** Build errors from failed agent invites (passed from chat-launcher) */
+  buildErrors?: Record<string, AgentBuildError>;
 }
 
 export default function AgenticChat() {
   const theme = usePanelTheme();
-  const { channelName, channelConfig, contextId } = useStateArgs<ChatStateArgs>();
+  const stateArgs = useStateArgs<ChatStateArgs>();
+  const { channelName, channelConfig, contextId } = stateArgs;
 
   // Derive workspace root with proper priority:
   // 1. channelConfig.workingDirectory (passed from chat-launcher)
@@ -281,6 +304,16 @@ export default function AgenticChat() {
   const [debugEvents, setDebugEvents] = useState<Array<AgentDebugPayload & { ts: number }>>([]);
   // Currently open debug console agent handle
   const [debugConsoleAgent, setDebugConsoleAgent] = useState<string | null>(null);
+
+  // Build errors from failed agent invites (initialized from stateArgs)
+  const [buildErrors, setBuildErrors] = useState<Map<string, AgentBuildError>>(() => {
+    if (stateArgs.buildErrors) {
+      return new Map(Object.entries(stateArgs.buildErrors));
+    }
+    return new Map();
+  });
+  // Dirty repo warnings for agents that spawned with uncommitted changes
+  const [dirtyRepoWarnings, setDirtyRepoWarnings] = useState<Map<string, { modified: string[]; untracked: string[]; staged: string[] }>>(new Map());
 
   // Track compiled inline UI components by ID
   // Key: inline UI id, Value: { Component, cacheKey, error? }
@@ -436,6 +469,23 @@ export default function AgenticChat() {
   // Keep participantsRef up to date for memoized callbacks
   participantsRef.current = allParticipants;
 
+  // Handlers for dismissing build errors and dirty repo warnings
+  const handleDismissBuildError = useCallback((agentName: string) => {
+    setBuildErrors((prev) => {
+      const next = new Map(prev);
+      next.delete(agentName);
+      return next;
+    });
+  }, []);
+
+  const handleDismissDirtyWarning = useCallback((agentName: string) => {
+    setDirtyRepoWarnings((prev) => {
+      const next = new Map(prev);
+      next.delete(agentName);
+      return next;
+    });
+  }, []);
+
   // Use feedback manager hook for UI feedback lifecycle
   const {
     activeFeedbacks,
@@ -469,6 +519,7 @@ export default function AgenticChat() {
     toolRoles: {
       "file-ops": { providing: true },
       "git-ops": { providing: true },
+      "workspace-ops": { providing: true },
     },
     onEvent: useCallback(
       (event: IncomingEvent) => {
@@ -482,6 +533,7 @@ export default function AgenticChat() {
               addMethodHistoryEntry,
               handleMethodResult,
               setDebugEvents,
+              setDirtyRepoWarnings,
             },
             selfId,
             participantsRef.current
@@ -1133,14 +1185,16 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
     if (!channelName) return;
     // Pass contextId so new agents join with the correct channel context
     // Note: Use client.contextId (top-level field), NOT channelConfig.contextId
-    const contextId = clientRef.current?.contextId;
+    const launcherContextId = clientRef.current?.contextId;
     await createChild(
       "panels/chat-launcher",
       {
         name: "add-agent",
         focus: true,
+        // contextId in options ensures chat-launcher can access channel storage if needed
+        contextId: launcherContextId,
       },
-      { channelName, contextId }  // Pass via stateArgs
+      { channelName, contextId: launcherContextId }  // Also in stateArgs for app logic
     );
   }, [channelName, clientRef]);
 
@@ -1301,6 +1355,8 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
         inlineUiComponents={inlineUiComponents}
         debugEvents={debugEvents}
         debugConsoleAgent={debugConsoleAgent}
+        buildErrors={buildErrors}
+        dirtyRepoWarnings={dirtyRepoWarnings}
         onDebugConsoleChange={setDebugConsoleAgent}
         onLoadEarlierMessages={loadEarlierMessages}
         onInputChange={handleInputChange}
@@ -1314,6 +1370,8 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
         onCallMethod={handleCallMethod}
         onFocusPanel={handleFocusPanel}
         onReloadPanel={handleReloadPanel}
+        onDismissBuildError={handleDismissBuildError}
+        onDismissDirtyWarning={handleDismissDirtyWarning}
         toolApproval={{
           settings: approval.settings,
           onSetFloor: approval.setGlobalFloor,

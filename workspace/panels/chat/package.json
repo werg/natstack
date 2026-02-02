@@ -22,7 +22,8 @@
       "react/jsx-runtime",
       "react/jsx-dev-runtime",
       "@radix-ui/themes",
-      "@radix-ui/react-icons"
+      "@radix-ui/react-icons",
+      "isomorphic-git"
     ]
   },
   "dependencies": {
@@ -32,6 +33,7 @@
     "@natstack/pubsub": "workspace:*",
     "@natstack/tool-ui": "workspace:*",
     "@natstack/eval": "workspace:*",
+    "@natstack/git": "workspace:*",
     "@mdx-js/mdx": "^3.1.0",
     "@radix-ui/themes": "^3.2.1",
     "@radix-ui/react-icons": "^1.3.2",

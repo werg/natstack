@@ -87,7 +87,7 @@ export function validateTargetPath(targetPath: string, baseDir: string): string 
   }
 
   // Normalize the path: treat leading / as root-relative within the context scope
-  // This allows YAML paths like "/deps/foo" to match OPFS paths "/deps/foo"
+  // This allows YAML paths like "/workspace/panels/foo" to match OPFS paths
   const normalizedPath = targetPath.startsWith("/") ? targetPath.slice(1) : targetPath;
 
   // Resolve against base and check it stays within base
@@ -107,9 +107,9 @@ export function validateTargetPath(targetPath: string, baseDir: string): string 
  * Recursively flatten a structure object into path -> gitSpec mappings.
  *
  * Supports both flat and nested formats:
- * - Flat: { "/deps/code-editor": "panels/code-editor" }
- * - Nested: { deps: { "code-editor": "panels/code-editor" } }
- * - Mixed: { "/deps/foo": "repo/foo", other: { bar: "repo/bar" } }
+ * - Flat: { "/workspace/panels/code-editor": "panels/code-editor" }
+ * - Nested: { workspace: { panels: { "code-editor": "panels/code-editor" } } }
+ * - Mixed: { "/workspace/panels/foo": "panels/foo", other: { bar: "other/bar" } }
  *
  * Nested keys are joined with "/" to form the full path.
  *

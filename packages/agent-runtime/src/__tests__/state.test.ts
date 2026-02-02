@@ -1,20 +1,21 @@
 /**
  * State management unit tests.
  *
- * These tests verify StateStore behavior with a mock database.
+ * These tests verify StateStore behavior with a mock storage.
  */
 
 import { describe, it, expect } from "vitest";
 import { createStateStore, type StateChangeEvent } from "../state.js";
-import type { DatabaseInterface, AgentState } from "@natstack/core";
+import type { StorageApi } from "../abstractions/storage.js";
+import type { AgentState } from "@natstack/core";
 
 interface TestState extends AgentState {
   count: number;
   name: string;
 }
 
-// Mock database implementation
-function createMockDb(): DatabaseInterface & { data: Map<string, string>; metadata: Map<string, unknown> } {
+// Mock storage implementation
+function createMockStorage(): StorageApi & { data: Map<string, string>; metadata: Map<string, unknown> } {
   const data = new Map<string, string>();
   const metadata = new Map<string, unknown>();
 
@@ -22,11 +23,11 @@ function createMockDb(): DatabaseInterface & { data: Map<string, string>; metada
     data,
     metadata,
 
-    async exec(_sql: string): Promise<void> {
+    exec(_sql: string): void {
       // Table creation / migrations - no-op for mock
     },
 
-    async run(sql: string, params?: unknown[]): Promise<{ changes: number; lastInsertRowid: number | bigint }> {
+    run(sql: string, params?: unknown[]): { changes: number; lastInsertRowid: number | bigint } {
       if (sql.includes("INSERT INTO agent_state")) {
         const [agentId, channel, handle, state, version, lastPubsubId, createdAt, updatedAt] = params as [
           string, string, string, string, number, number | null, number, number
@@ -42,7 +43,7 @@ function createMockDb(): DatabaseInterface & { data: Map<string, string>; metada
       return { changes: 0, lastInsertRowid: 0 };
     },
 
-    async get<T = unknown>(sql: string, params?: unknown[]): Promise<T | null | undefined> {
+    get<T = unknown>(sql: string, params?: unknown[]): T | null {
       if (sql.includes("SELECT")) {
         const [agentId, channel, handle] = params as string[];
         const key = `${agentId}:${channel}:${handle}`;
@@ -60,11 +61,11 @@ function createMockDb(): DatabaseInterface & { data: Map<string, string>; metada
       return null;
     },
 
-    async query<T = unknown>(_sql: string, _params?: unknown[]): Promise<T[]> {
+    query<T = unknown>(_sql: string, _params?: unknown[]): T[] {
       return [];
     },
 
-    async close(): Promise<void> {
+    flush(): void {
       // No-op for mock
     },
   };
@@ -72,9 +73,9 @@ function createMockDb(): DatabaseInterface & { data: Map<string, string>; metada
 
 describe("createStateStore", () => {
   it("should return initial state when no persisted state exists", async () => {
-    const db = createMockDb();
+    const storage = createMockStorage();
     const store = createStateStore<TestState>({
-      db,
+      storage,
       key: { agentId: "test", channel: "ch", handle: "h" },
       initial: { count: 0, name: "initial" },
       autoSaveDelayMs: 0,
@@ -87,9 +88,9 @@ describe("createStateStore", () => {
   });
 
   it("should persist state to database on set", async () => {
-    const db = createMockDb();
+    const storage = createMockStorage();
     const store = createStateStore<TestState>({
-      db,
+      storage,
       key: { agentId: "test", channel: "ch", handle: "h" },
       initial: { count: 0, name: "initial" },
       autoSaveDelayMs: 0,
@@ -100,7 +101,7 @@ describe("createStateStore", () => {
     await store.flush();
 
     const key = "test:ch:h";
-    const persisted = db.data.get(key);
+    const persisted = storage.data.get(key);
     expect(persisted).toBeDefined();
 
     const parsed = JSON.parse(persisted!) as TestState;
@@ -108,14 +109,14 @@ describe("createStateStore", () => {
   });
 
   it("should return persisted state on load", async () => {
-    const db = createMockDb();
-    db.data.set("test:ch:h", JSON.stringify({ count: 100, name: "persisted" }));
-    db.metadata.set("test:ch:h:version", 1);
-    db.metadata.set("test:ch:h:createdAt", Date.now());
-    db.metadata.set("test:ch:h:updatedAt", Date.now());
+    const storage = createMockStorage();
+    storage.data.set("test:ch:h", JSON.stringify({ count: 100, name: "persisted" }));
+    storage.metadata.set("test:ch:h:version", 1);
+    storage.metadata.set("test:ch:h:createdAt", Date.now());
+    storage.metadata.set("test:ch:h:updatedAt", Date.now());
 
     const store = createStateStore<TestState>({
-      db,
+      storage,
       key: { agentId: "test", channel: "ch", handle: "h" },
       initial: { count: 0, name: "initial" },
     });
@@ -127,9 +128,9 @@ describe("createStateStore", () => {
   });
 
   it("should return current state synchronously via get()", async () => {
-    const db = createMockDb();
+    const storage = createMockStorage();
     const store = createStateStore<TestState>({
-      db,
+      storage,
       key: { agentId: "test", channel: "ch", handle: "h" },
       initial: { count: 0, name: "initial" },
       autoSaveDelayMs: 0,
@@ -146,9 +147,9 @@ describe("createStateStore", () => {
   });
 
   it("should merge partial state on update()", async () => {
-    const db = createMockDb();
+    const storage = createMockStorage();
     const store = createStateStore<TestState>({
-      db,
+      storage,
       key: { agentId: "test", channel: "ch", handle: "h" },
       initial: { count: 0, name: "initial" },
       autoSaveDelayMs: 0,
@@ -163,9 +164,9 @@ describe("createStateStore", () => {
   });
 
   it("should track dirty state", async () => {
-    const db = createMockDb();
+    const storage = createMockStorage();
     const store = createStateStore<TestState>({
-      db,
+      storage,
       key: { agentId: "test", channel: "ch", handle: "h" },
       initial: { count: 0, name: "initial" },
       autoSaveDelayMs: 1000,
@@ -184,9 +185,9 @@ describe("createStateStore", () => {
   });
 
   it("should notify subscribers on state changes", async () => {
-    const db = createMockDb();
+    const storage = createMockStorage();
     const store = createStateStore<TestState>({
-      db,
+      storage,
       key: { agentId: "test", channel: "ch", handle: "h" },
       initial: { count: 0, name: "initial" },
       autoSaveDelayMs: 0,
@@ -211,9 +212,9 @@ describe("createStateStore", () => {
   });
 
   it("should persist checkpoint (pubsub ID)", async () => {
-    const db = createMockDb();
+    const storage = createMockStorage();
     const store = createStateStore<TestState>({
-      db,
+      storage,
       key: { agentId: "test", channel: "ch", handle: "h" },
       initial: { count: 0, name: "initial" },
       autoSaveDelayMs: 0,
@@ -226,21 +227,21 @@ describe("createStateStore", () => {
     const meta = store.getMetadata();
     expect(meta.lastPubsubId).toBe(12345);
 
-    const persistedId = db.metadata.get("test:ch:h:lastPubsubId");
+    const persistedId = storage.metadata.get("test:ch:h:lastPubsubId");
     expect(persistedId).toBe(12345);
   });
 
   it("should migrate old state versions", async () => {
-    const db = createMockDb();
+    const storage = createMockStorage();
 
     // Pre-populate with v1 state (missing 'name' field)
-    db.data.set("test:ch:h", JSON.stringify({ count: 50 }));
-    db.metadata.set("test:ch:h:version", 1);
-    db.metadata.set("test:ch:h:createdAt", Date.now());
-    db.metadata.set("test:ch:h:updatedAt", Date.now());
+    storage.data.set("test:ch:h", JSON.stringify({ count: 50 }));
+    storage.metadata.set("test:ch:h:version", 1);
+    storage.metadata.set("test:ch:h:createdAt", Date.now());
+    storage.metadata.set("test:ch:h:updatedAt", Date.now());
 
     const store = createStateStore<TestState>({
-      db,
+      storage,
       key: { agentId: "test", channel: "ch", handle: "h" },
       initial: { count: 0, name: "default" },
       version: 2,

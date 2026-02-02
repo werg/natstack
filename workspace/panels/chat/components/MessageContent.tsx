@@ -35,7 +35,7 @@ async function compileMdx(content: string, rehypeHighlight: RehypeHighlightPlugi
   const { default: Component } = await evaluate(content, {
     ...runtime,
     development: false,
-    useMDXComponents: () => mdxComponents,
+    useMDXComponents: (() => mdxComponents) as never,
     remarkPlugins,
     rehypePlugins,
   });

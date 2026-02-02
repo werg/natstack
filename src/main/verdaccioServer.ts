@@ -533,6 +533,9 @@ export class VerdaccioServer {
           try {
             // Use this.buildQueue to get the current build queue (may be updated by setUserWorkspacePath)
             await this.buildQueue.ensureBuilt(pkgName);
+            // Note: If ensureBuilt returned early (build in progress), we don't poll here.
+            // This avoids deadlocks where npm publish's own GET requests would wait for itself.
+            // The GET request will go to Verdaccio which returns 404 - that's fine for npm publish.
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             console.error(`[LazyBuild] Failed to build ${pkgName}:`, message);
@@ -870,6 +873,38 @@ export class VerdaccioServer {
   }
 
   /**
+   * Restore package.json files that were modified during a failed publish.
+   * Uses git to detect and restore dirty package.json files.
+   */
+  private async restoreDirtyPackageJsonFiles(packagesDir: string): Promise<void> {
+    try {
+      // Use git status to find modified package.json files
+      const { stdout } = await execAsync(
+        `git status --porcelain "${packagesDir}"`,
+        { cwd: this.workspaceRoot }
+      );
+
+      const dirtyFiles = stdout.split("\n")
+        .filter(line => line.includes("package.json") && line.trim().startsWith("M"))
+        .map(line => line.slice(3).trim());
+
+      if (dirtyFiles.length > 0) {
+        console.warn(`[VerdaccioServer] Found ${dirtyFiles.length} dirty package.json files from failed publish, restoring...`);
+        for (const file of dirtyFiles) {
+          try {
+            await execAsync(`git checkout "${file}"`, { cwd: this.workspaceRoot });
+            log.verbose(` Restored ${file}`);
+          } catch (err) {
+            console.error(`[VerdaccioServer] Failed to restore ${file}:`, err);
+          }
+        }
+      }
+    } catch {
+      // Ignore errors (not a git repo, git not available, etc.)
+    }
+  }
+
+  /**
    * Clean up orphaned .npmrc files from package directories.
    * These can be left behind if the process crashes during npm publish.
    */
@@ -907,7 +942,8 @@ export class VerdaccioServer {
       return result;
     }
 
-    // Clean up any orphaned .npmrc files from previous crashes
+    // Clean up any orphaned files from previous crashes
+    await this.restoreDirtyPackageJsonFiles(packagesDir);
     this.cleanupOrphanedNpmrc(packagesDir);
 
     // Collect all packages to publish (supports scoped packages)
@@ -1122,25 +1158,24 @@ export class VerdaccioServer {
 
   /**
    * Compute git-based version for a package.
-   * Format: {baseVersion}-git.{shortHash}
-   * Falls back to content hash if not in a git repo or no commits.
+   * Format: {baseVersion}-git.{shortHash}.{contentHash}
+   * The content hash ensures rebuilds without commits get new versions.
+   * Falls back to content hash only if not in a git repo or no commits.
    */
   private async getPackageGitVersion(pkgPath: string): Promise<string> {
-    const hash = await this.getPackageCommitHash(pkgPath);
-
-    if (!hash) {
-      // Fall back to content hash for non-git packages
-      const contentHash = this.calculatePackageHash(pkgPath);
-      const pkgJson = JSON.parse(fs.readFileSync(path.join(pkgPath, "package.json"), "utf-8")) as { version: string };
-      const baseVersion = (pkgJson.version || "0.0.0").split("-")[0];
-      return `${baseVersion}-${contentHash}`;
-    }
-
+    const gitHash = await this.getPackageCommitHash(pkgPath);
+    const contentHash = this.calculatePackageHash(pkgPath);
     const pkgJsonPath = path.join(pkgPath, "package.json");
     const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { version: string };
     const baseVersion = (pkgJson.version || "0.0.0").split("-")[0];
 
-    return `${baseVersion}-git.${hash}`;
+    if (!gitHash) {
+      // Non-git packages: use content hash only
+      return `${baseVersion}-${contentHash}`;
+    }
+
+    // Git packages: use both git hash (for traceability) and content hash (for rebuild detection)
+    return `${baseVersion}-git.${gitHash}.${contentHash}`;
   }
 
   /**
@@ -1512,27 +1547,86 @@ export class VerdaccioServer {
       }
     }
 
-    // Save existing .npmrc if present (before we modify anything)
-    const existingNpmrc = fs.existsSync(npmrcPath) ? fs.readFileSync(npmrcPath, "utf-8") : null;
-
     // Prepare .npmrc content
     const registryHost = new URL(registryUrl).host;
     const npmrcContent = `//${registryHost}/:_authToken="natstack-local-publish"\nregistry=${registryUrl}\n`;
 
     log.verbose(` Publishing ${pkgName}@${gitVersion} to ${registryUrl} (tag: ${publishTag})`);
 
-    // All file modifications inside try block to ensure cleanup
+    // Create temp directory for tarball output
+    const tempPublishDir = path.join(this.storagePath, ".publish-temp", pkgName.replace("/", "-") + "-" + Date.now());
+    fs.mkdirSync(tempPublishDir, { recursive: true });
+
+    // Save existing .npmrc if present
+    const existingNpmrc = fs.existsSync(npmrcPath) ? fs.readFileSync(npmrcPath, "utf-8") : null;
+
+    // Use npm pack to create tarball with modified package.json
+    // This is a brief window where package.json is modified
+    let tarballPath: string;
     try {
       fs.writeFileSync(pkgJsonPath, JSON.stringify(modifiedPkgJson, null, 2));
       fs.writeFileSync(npmrcPath, npmrcContent);
+
+      const packResult = await new Promise<string>((resolve, reject) => {
+        const proc = spawn("npm", ["pack", "--pack-destination", tempPublishDir], {
+          cwd: pkgPath,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+
+        let stdout = "";
+        let stderr = "";
+
+        proc.stdout?.on("data", (data) => { stdout += data.toString(); });
+        proc.stderr?.on("data", (data) => { stderr += data.toString(); });
+
+        proc.on("close", (code) => {
+          if (code === 0) {
+            resolve(stdout.trim());
+          } else {
+            reject(new Error(`npm pack failed: ${stderr || stdout}`));
+          }
+        });
+
+        proc.on("error", reject);
+      });
+
+      // Get the tarball filename from pack output (last line)
+      const tarballName = packResult.split("\n").pop()?.trim();
+      if (!tarballName) {
+        throw new Error("npm pack did not output a tarball name");
+      }
+      tarballPath = path.join(tempPublishDir, tarballName);
+    } finally {
+      // Immediately restore original package.json after pack
+      fs.writeFileSync(pkgJsonPath, originalContent);
+      if (existingNpmrc !== null) {
+        fs.writeFileSync(npmrcPath, existingNpmrc);
+      } else {
+        fs.rmSync(npmrcPath, { force: true });
+      }
+    }
+
+    // Now publish the tarball (source repo is clean again)
+    // Create .npmrc in temp directory for auth
+    const tempNpmrcPath = path.join(tempPublishDir, ".npmrc");
+    fs.writeFileSync(tempNpmrcPath, npmrcContent);
+
+    try {
       const PUBLISH_TIMEOUT_MS = 60000; // 60 second timeout for npm publish
 
+      log.verbose(` Publishing tarball: ${tarballPath}`);
       const result = await new Promise<"published" | "skipped">((resolve, reject) => {
         const proc = spawn(
           "npm",
-          ["publish", "--registry", registryUrl, "--access", "public", "--tag", publishTag],
+          [
+            "publish", tarballPath,
+            "--registry", registryUrl,
+            "--userconfig", tempNpmrcPath,
+            "--access", "public",
+            "--tag", publishTag,
+          ],
           {
-            cwd: pkgPath,
+            cwd: tempPublishDir,
             stdio: ["ignore", "pipe", "pipe"],
           }
         );
@@ -1597,16 +1691,50 @@ export class VerdaccioServer {
 
       return result;
     } finally {
-      // Always restore original package.json
-      fs.writeFileSync(pkgJsonPath, originalContent);
-
-      // Restore or remove .npmrc
-      if (existingNpmrc !== null) {
-        fs.writeFileSync(npmrcPath, existingNpmrc);
-      } else {
-        fs.rmSync(npmrcPath, { force: true });
-      }
+      // Clean up temp directory
+      fs.rmSync(tempPublishDir, { recursive: true, force: true });
     }
+  }
+
+  /**
+   * Copy package files to a temp directory for publishing.
+   * Excludes node_modules, .git, and other non-publishable files.
+   * Follows symlinks to copy real content.
+   */
+  private copyPackageForPublish(srcDir: string, destDir: string): void {
+    const excludeDirs = new Set(["node_modules", ".git", ".turbo", ".cache", "coverage"]);
+    const excludeFiles = new Set([".npmrc", ".env", ".env.local"]);
+
+    const copyRecursive = (src: string, dest: string): void => {
+      const entries = fs.readdirSync(src, { withFileTypes: true });
+
+      for (const entry of entries) {
+        const srcPath = path.join(src, entry.name);
+        const destPath = path.join(dest, entry.name);
+
+        // Handle symlinks by following them
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(srcPath); // follows symlinks
+        } catch {
+          continue; // Skip broken symlinks
+        }
+
+        if (stat.isDirectory()) {
+          if (!excludeDirs.has(entry.name)) {
+            fs.mkdirSync(destPath, { recursive: true });
+            copyRecursive(srcPath, destPath);
+          }
+        } else if (stat.isFile()) {
+          if (!excludeFiles.has(entry.name)) {
+            fs.copyFileSync(srcPath, destPath);
+          }
+        }
+      }
+    };
+
+    copyRecursive(srcDir, destDir);
+    log.verbose(` Copied package to temp dir: ${destDir}`);
   }
 
   /**

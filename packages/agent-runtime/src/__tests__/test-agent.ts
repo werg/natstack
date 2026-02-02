@@ -68,8 +68,8 @@ class TestAgent extends Agent<TestState> {
     this.state.messageCount++;
     this.state.lastMessageId = event.id;
 
-    // Test: Use client to send messages
-    await this.ctx.client.send(`Echo: ${event.content} (message #${this.state.messageCount})`, {
+    // Test: Use client to send messages (client is always available after connection)
+    await this.ctx.client!.send(`Echo: ${event.content} (message #${this.state.messageCount})`, {
       replyTo: event.id,
     });
 
@@ -130,6 +130,8 @@ export function validateTypes() {
     config: {},
     client: {} as AgentContext["client"],
     log: {} as AgentContext["log"],
+    pubsubUrl: "http://localhost:8787",
+    pubsubToken: "test-token",
   };
 
   // AgentState is an index signature type

@@ -177,7 +177,11 @@ export default function ProjectPanel() {
       };
 
       // Create chat panel as child
-      const chatHandle = await createChild("panels/chat", { name: `chat-${channelId.slice(0, 8)}` }, {
+      // contextId in options sets storage partition, in stateArgs tells app which context
+      const chatHandle = await createChild("panels/chat", {
+        name: `chat-${channelId.slice(0, 8)}`,
+        contextId: sessionContextId,
+      }, {
         channelName: channelId,
         channelConfig,
         contextId: sessionContextId,

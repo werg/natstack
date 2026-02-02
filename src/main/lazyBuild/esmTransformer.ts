@@ -356,7 +356,23 @@ export class EsmTransformer {
 
       entryPath = path.join(pkgRoot, entryPoint);
       if (!fs.existsSync(entryPath)) {
-        throw new Error(`Entry point not found: ${entryPath}`);
+        // Try with .js extension if entry point doesn't have one
+        if (!entryPoint.endsWith(".js") && !entryPoint.endsWith(".mjs") && !entryPoint.endsWith(".cjs")) {
+          const withExt = entryPath + ".js";
+          if (fs.existsSync(withExt)) {
+            entryPath = withExt;
+          } else {
+            // Also try index.js in the directory
+            const indexPath = path.join(entryPath, "index.js");
+            if (fs.existsSync(indexPath)) {
+              entryPath = indexPath;
+            } else {
+              throw new Error(`Entry point not found: ${entryPath}`);
+            }
+          }
+        } else {
+          throw new Error(`Entry point not found: ${entryPath}`);
+        }
       }
     }
 

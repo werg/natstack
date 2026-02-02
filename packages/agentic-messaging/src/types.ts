@@ -16,6 +16,7 @@ import type {
   InviteAgentOptions,
   InviteAgentResult,
   RemoveAgentResult,
+  AgentBuildError,
 } from "@natstack/pubsub";
 import type { AgentManifest } from "@natstack/core";
 import type { z } from "zod";
@@ -29,6 +30,8 @@ export type {
   InviteAgentOptions,
   InviteAgentResult,
   RemoveAgentResult,
+  RosterUpdate,
+  AgentBuildError,
 };
 export type { AgentManifest } from "@natstack/core";
 
@@ -53,7 +56,7 @@ export type ParticipantType = typeof PARTICIPANT_TYPES[keyof typeof PARTICIPANT_
  * Tool groups for conflict detection.
  * Each group is atomic - providers claim entire groups, not individual tools.
  */
-export type ToolGroup = "file-ops" | "git-ops";
+export type ToolGroup = "file-ops" | "git-ops" | "workspace-ops";
 
 /**
  * Tool role declaration for a participant.
@@ -323,8 +326,10 @@ export type AgentDebugPayload =
       debugType: "lifecycle";
       agentId: string;
       handle: string;
-      event: "started" | "stopped" | "woken";
-      reason?: "timeout" | "explicit" | "crash" | "idle";
+      event: "started" | "stopped" | "woken" | "warning";
+      reason?: "timeout" | "explicit" | "crash" | "idle" | "dirty-repo";
+      /** Additional details for warning events (e.g., dirty repo state) */
+      details?: unknown;
     };
 
 /**

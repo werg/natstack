@@ -33,8 +33,8 @@ describe("deepMerge", () => {
       nested: { x: 1, y: 2 },
       other: "value",
     };
-    const persisted = {
-      nested: { x: 10 },
+    const persisted: Partial<typeof defaults> = {
+      nested: { x: 10 } as typeof defaults.nested,
     };
 
     const result = deepMerge(defaults, persisted);
@@ -54,7 +54,7 @@ describe("deepMerge", () => {
 
   it("should handle null persisted values", () => {
     const defaults = { a: 1, b: { x: 2 } };
-    const persisted = { a: null, b: null } as Partial<typeof defaults>;
+    const persisted = { a: null, b: null } as unknown as Partial<typeof defaults>;
 
     const result = deepMerge(defaults, persisted);
 
@@ -90,12 +90,12 @@ describe("deepMerge", () => {
         },
       },
     };
-    const persisted = {
+    const persisted: Partial<typeof defaults> = {
       level1: {
         level2: {
-          level3: { a: 10 },
+          level3: { a: 10 } as typeof defaults.level1.level2.level3,
         },
-      },
+      } as typeof defaults.level1,
     };
 
     const result = deepMerge(defaults, persisted);

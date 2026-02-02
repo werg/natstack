@@ -18,7 +18,7 @@ export interface ContextTemplateYaml {
 export interface MountPoint {
   /** Unique ID for React keys */
   id: string;
-  /** Mount path in the context (e.g., "/deps/code-editor") */
+  /** Mount path in the context (e.g., "/workspace/panels/code-editor") */
   path: string;
   /** Git repo spec (e.g., "panels/code-editor") */
   repoSpec: string;
@@ -74,6 +74,8 @@ export interface WorkspaceNode {
   path: string;
   isGitRepo: boolean;
   launchable?: { type: string; title: string };
+  packageInfo?: { name: string; version?: string };
+  skillInfo?: { name: string; description: string };
   children: WorkspaceNode[];
 }
 
@@ -211,10 +213,11 @@ export function generateMountId(): string {
  * Generate default mount path for a repo.
  */
 export function defaultMountPath(repoSpec: string): string {
-  // Extract repo name from spec (e.g., "panels/code-editor" -> "code-editor")
-  const parts = repoSpec.split("/");
-  const repoName = parts[parts.length - 1];
-  return `/deps/${repoName}`;
+  // Mirror workspace structure under /workspace/ prefix
+  // e.g., "panels/code-editor" -> "/workspace/panels/code-editor"
+  // e.g., "panels/code-editor#main" -> "/workspace/panels/code-editor"
+  const specWithoutRef = repoSpec.split("#")[0];
+  return `/workspace/${specWithoutRef}`;
 }
 
 /**

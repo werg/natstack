@@ -35,6 +35,12 @@ export interface ParsedNsUrl {
    * If not provided, uses workspace default template.
    */
   templateSpec?: string;
+  /**
+   * Explicit context ID for storage partition sharing.
+   * If provided, the panel will use this context ID instead of generating a new one.
+   * This enables multiple panels to share the same OPFS/IndexedDB partition.
+   */
+  contextId?: string;
   repoArgs?: Record<string, RepoArgSpec>;
   env?: Record<string, string>;
   /** State arguments for the panel (validated against manifest schema in panelManager) */
@@ -78,6 +84,9 @@ export function parseNsUrl(url: string): ParsedNsUrl {
 
   // Parse templateSpec: git spec for context template
   const templateSpec = parsed.searchParams.get("templateSpec") ?? undefined;
+
+  // Parse contextId: explicit context ID for partition sharing
+  const contextId = parsed.searchParams.get("contextId") ?? undefined;
 
   // Parse unsafe parameter: "true" -> true, "false" -> false, other string -> path
   const unsafeParam = parsed.searchParams.get("unsafe");
@@ -142,7 +151,7 @@ export function parseNsUrl(url: string): ParsedNsUrl {
     }
   }
 
-  return { source, action, gitRef, templateSpec, repoArgs, env, stateArgs, name, focus, unsafe };
+  return { source, action, gitRef, templateSpec, contextId, repoArgs, env, stateArgs, name, focus, unsafe };
 }
 
 export interface BuildNsUrlOptions {
@@ -152,6 +161,11 @@ export interface BuildNsUrlOptions {
    * Git spec for context template (e.g., "contexts/default").
    */
   templateSpec?: string;
+  /**
+   * Explicit context ID for storage partition sharing.
+   * If provided, the panel will use this context ID instead of generating a new one.
+   */
+  contextId?: string;
   repoArgs?: Record<string, RepoArgSpec>;
   env?: Record<string, string>;
   /** State arguments for the panel (validated against manifest schema in panelManager) */
@@ -175,6 +189,9 @@ export function buildNsUrl(source: string, options?: BuildNsUrlOptions): string 
   }
   if (options?.templateSpec) {
     searchParams.set("templateSpec", options.templateSpec);
+  }
+  if (options?.contextId) {
+    searchParams.set("contextId", options.contextId);
   }
   if (options?.gitRef) {
     searchParams.set("gitRef", options.gitRef);

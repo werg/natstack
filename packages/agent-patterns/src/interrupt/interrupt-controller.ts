@@ -325,8 +325,8 @@ export function createInterruptController<T extends AgenticParticipantMetadata =
           const isTargetedPause = event.type === "method-call" &&
             event.methodName === "pause" &&
             !paused &&
-            // Only respond to pause calls targeted at our client ID
-            (event.targetId === client.clientId || !event.targetId);
+            // Only respond to pause calls targeted at our client (providerId is the target)
+            (event.providerId === client.clientId || !event.providerId);
 
           if (isTargetedPause) {
             const args = event.args as Record<string, unknown> | undefined;
