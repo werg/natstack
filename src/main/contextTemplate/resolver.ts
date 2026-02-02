@@ -108,15 +108,17 @@ async function resolveTemplateInternal(
   const templateYaml = await loadTemplateAtCommit(repoPath, resolvedCommit);
 
   // Recursively resolve parent template if extends is specified
+  // If no extends is specified and this isn't the default template, auto-extend from default
   let resolvedExtends: ResolvedTemplate["extends"] | undefined;
+  const extendsSpec = templateYaml.extends ?? (repo !== "contexts/default" ? "contexts/default" : undefined);
 
-  if (templateYaml.extends) {
-    const parentResolved = await resolveTemplateInternal(templateYaml.extends, ctx);
-    const { repo: parentRepo, ref: parentRef } = parseGitSpec(templateYaml.extends);
+  if (extendsSpec) {
+    const parentResolved = await resolveTemplateInternal(extendsSpec, ctx);
+    const { repo: parentRepo, ref: parentRef } = parseGitSpec(extendsSpec);
     const parentCommit = await resolveRefToCommit(parentRepo, parentRef, ctx.workspacePath);
 
     resolvedExtends = {
-      spec: templateYaml.extends,
+      spec: extendsSpec,
       resolvedCommit: parentCommit,
       resolvedTemplate: parentResolved,
     };

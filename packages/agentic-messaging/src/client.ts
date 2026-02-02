@@ -80,7 +80,7 @@ const ToolRoleDeclarationSchema = z.object({
 });
 
 const ToolRolesSchema = z.record(
-  z.enum(["file-ops", "git-ops"]),
+  z.enum(["file-ops", "git-ops", "workspace-ops"]),
   ToolRoleDeclarationSchema
 ).optional();
 

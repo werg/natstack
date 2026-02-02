@@ -50,12 +50,23 @@ export {
   type DiagnosticsPublisher,
 } from "./typecheck-tools";
 
+// Workspace tools
+export {
+  workspaceList,
+  workspaceClone,
+  contextInfo,
+  contextTemplateList,
+  contextTemplateRead,
+  createWorkspaceToolMethodDefinitions,
+} from "./workspace-tools";
+
 import type { MethodDefinition } from "@natstack/agentic-messaging";
 import { createFileToolMethodDefinitions } from "./file-tools";
 import { createSearchToolMethodDefinitions } from "./search-tools";
 import { createDirectoryToolMethodDefinitions } from "./directory-tools";
 import { createGitToolMethodDefinitions } from "./git-tools";
 import { createTypeCheckToolMethodDefinitions, type DiagnosticsPublisher } from "./typecheck-tools";
+import { createWorkspaceToolMethodDefinitions } from "./workspace-tools";
 
 export interface CreateAllToolsOptions {
   /** The workspace root path for resolving relative paths */
@@ -85,5 +96,6 @@ export function createAllToolMethodDefinitions(
     ...createDirectoryToolMethodDefinitions(workspaceRoot),
     ...createGitToolMethodDefinitions(workspaceRoot),
     ...createTypeCheckToolMethodDefinitions(diagnosticsPublisher),
+    ...createWorkspaceToolMethodDefinitions(workspaceRoot),
   };
 }

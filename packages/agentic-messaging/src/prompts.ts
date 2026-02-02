@@ -45,39 +45,46 @@ export function createRichTextChatSystemPrompt(
  */
 export const RESTRICTED_MODE_ENVIRONMENT_GUIDE = `## Environment Constraints
 
-You are running in a restricted environment without shell access. You MUST use only the tools listed below.
+You are running in a restricted environment without shell access. You MUST use only the tools provided in this environment.
+Tool names are PascalCase and arguments are snake_case. Clone the \`skills/paneldev\` skill for detailed tool documentation.
 
 ### Always Available Tools
 
 These tools are always available in restricted mode:
 
-| Tool | Purpose | Use Instead Of |
-|------|---------|----------------|
-| \`Read\` | Read file contents | \`cat\`, \`head\`, \`tail\`, \`less\` |
-| \`Write\` | Create/overwrite files | \`echo >\`, \`cat <<EOF\` |
-| \`Edit\` | String replacement editing | \`sed\`, \`awk\`, manual editing |
-| \`Glob\` | Find files by pattern | \`find\`, \`ls\` |
-| \`Grep\` | Search file contents | \`grep\`, \`rg\`, \`ag\` |
-| \`Tree\` | Show directory structure | \`tree\`, \`find\` |
-| \`ListDirectory\` | List directory contents | \`ls\`, \`dir\` |
-| \`GitStatus\` | Repository status | \`git status\` |
-| \`GitDiff\` | Show file changes | \`git diff\` |
-| \`GitLog\` | Commit history | \`git log\` |
-| \`WebSearch\` | Search the web | browser search |
-| \`WebFetch\` | Fetch web page content | \`curl\`, \`wget\` |
+| Tool | Purpose |
+|------|---------|
+| \`Read\` | Read file contents |
+| \`Write\` | Create/overwrite files |
+| \`Edit\` | String replacement editing |
+| \`Glob\` | Find files by pattern |
+| \`Grep\` | Search file contents |
+| \`Tree\` | Show directory structure |
+| \`ListDirectory\` | List directory contents |
+| \`GitStatus\` | Repository status |
+| \`GitDiff\` | Show file changes |
+| \`GitLog\` | Commit history |
+| \`WebSearch\` | Search the web |
+| \`WebFetch\` | Fetch web page content |
+
+Workspace tools: \`WorkspaceList\`, \`WorkspaceClone\`, \`ContextInfo\`.
 
 ### Conditionally Available Tools
 
 These tools MAY be available depending on your environment. Check if they work before relying on them:
 
-| Tool | Purpose | Use Instead Of |
-|------|---------|----------------|
-| \`Remove\` | Delete files/directories | \`rm\`, \`rmdir\` |
-| \`GitAdd\` | Stage files | \`git add\` |
-| \`GitCommit\` | Create commits | \`git commit\` |
-| \`GitCheckout\` | Switch branches/restore | \`git checkout\`, \`git switch\` |
+| Tool | Purpose |
+|------|---------|
+| \`Remove\` | Delete files/directories |
+| \`GitAdd\` | Stage files |
+| \`GitCommit\` | Create commits |
+| \`GitCheckout\` | Switch branches/restore |
 
 If a conditionally available tool is unavailable, explain to the user what manual steps they can take instead.
+
+### Additional Tools
+
+Some environments also expose tools like \`CheckTypes\`, \`GetTypeInfo\`, \`GetCompletions\`, and \`Eval\`.
 
 ### DISABLED Tools - Do NOT attempt to use these
 
@@ -96,13 +103,29 @@ The following tools/commands are NOT available in this environment. Do not try t
 ### Workflow Adaptations
 
 1. **For git operations:** Use \`GitStatus\`, \`GitDiff\`, \`GitLog\` (always available) and \`GitAdd\`, \`GitCommit\`, \`GitCheckout\` (if available)
-2. **For file search:** Use \`Glob\` and \`Grep\` tools, not \`find\` or \`rg\`
-3. **For file editing:** Use \`Edit\` for replacements, not sed/awk
+2. **For file search:** Use \`Glob\` and \`Grep\` tools
+3. **For file editing:** Use \`Edit\` for replacements
 4. **For web lookups:** Use \`WebSearch\` and \`WebFetch\` for documentation, APIs, etc.
 5. **For build/test commands:** Inform the user they must run these manually
-   - Example: "Please run \`npm test\` to verify the changes"
-6. **For installations:** Inform the user to install dependencies manually
-   - Example: "Please run \`npm install lodash\` to add this dependency"`;
+6. **For installations:** Inform the user to install dependencies manually`;
+
+// ============================================================================
+// Workspace & Context Guide
+// ============================================================================
+
+/**
+ * System prompt guidance for workspace discovery and skills.
+ */
+export const WORKSPACE_CONTEXT_GUIDE = `## Workspace & Skills
+
+You have an isolated filesystem under /workspace/.
+
+**Skills** are repos with \`SKILL.md\` containing agent instructions.
+- Discover: \`WorkspaceList({ category: "skills" })\`
+- Clone: \`WorkspaceClone({ repo_spec: "skills/paneldev" })\`
+- Read: \`Read({ file_path: "/workspace/skills/paneldev/SKILL.md" })\`
+
+The \`skills/paneldev\` skill (included by default) has panel development docs.`;
 
 /**
  * Create a system prompt for restricted mode (no bash access).
@@ -114,5 +137,5 @@ The following tools/commands are NOT available in this environment. Do not try t
 export function createRestrictedModeSystemPrompt(
   persona: string = DEFAULT_CHAT_ASSISTANT_PERSONA
 ): string {
-  return `${persona}\n\n${COMPONENT_ENHANCED_RICH_TEXT_GUIDE}\n\n${RESTRICTED_MODE_ENVIRONMENT_GUIDE}`;
+  return `${persona}\n\n${COMPONENT_ENHANCED_RICH_TEXT_GUIDE}\n\n${RESTRICTED_MODE_ENVIRONMENT_GUIDE}\n\n${WORKSPACE_CONTEXT_GUIDE}`;
 }

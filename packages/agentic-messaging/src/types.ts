@@ -32,7 +32,7 @@ export type ParticipantType = typeof PARTICIPANT_TYPES[keyof typeof PARTICIPANT_
  * Tool groups for conflict detection.
  * Each group is atomic - providers claim entire groups, not individual tools.
  */
-export type ToolGroup = "file-ops" | "git-ops";
+export type ToolGroup = "file-ops" | "git-ops" | "workspace-ops";
 
 /**
  * Tool role declaration for a participant.

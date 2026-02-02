@@ -70,7 +70,7 @@ export function MountPointItem({
             size="1"
             value={mount.path}
             onChange={(e) => onPathChange(e.target.value)}
-            placeholder="/deps/..."
+            placeholder="/workspace/..."
             style={{ fontFamily: "monospace" }}
           />
         )}

@@ -51,7 +51,7 @@ export const ExecutionPauseSchema = z.object({
 });
 
 // Tool Role Negotiation Schemas
-const ToolGroupSchema = z.enum(["file-ops", "git-ops"]);
+const ToolGroupSchema = z.enum(["file-ops", "git-ops", "workspace-ops"]);
 
 export const ToolRoleRequestSchema = z.object({
   group: ToolGroupSchema,
@@ -81,4 +81,3 @@ export type ExecutionPause = z.infer<typeof ExecutionPauseSchema>;
 export type ToolRoleRequest = z.infer<typeof ToolRoleRequestSchema>;
 export type ToolRoleResponse = z.infer<typeof ToolRoleResponseSchema>;
 export type ToolRoleHandoff = z.infer<typeof ToolRoleHandoffSchema>;
-

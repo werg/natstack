@@ -8,8 +8,7 @@ description: Demo context extending default
 extends: contexts/default
 
 # Structure defines git repos to clone into the context's OPFS filesystem.
-# Supports both flat paths ("/deps/foo": repo) and nested format.
+# Paths mirror workspace structure under /workspace/ prefix.
 # Example:
 # structure:
-#   deps:
-#     my-tool: workers/my-worker
+#   /workspace/workers/my-worker: workers/my-worker

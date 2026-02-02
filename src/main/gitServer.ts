@@ -539,10 +539,11 @@ export class GitServer {
         if (isGitRepo) {
           // Track discovered repo (already uses forward slashes)
           this.discoveredRepoPaths.add(childRelPath);
-          // Extract metadata (launchable info and package info)
+          // Extract metadata (launchable info, package info, skill info)
           const metadata = await this.extractMetadata(childAbsPath);
           node.launchable = metadata.launchable;
           node.packageInfo = metadata.packageInfo;
+          node.skillInfo = metadata.skillInfo;
           // Git repos are leaves - don't recurse into them
         } else {
           // Recurse into non-git directories
@@ -567,44 +568,99 @@ export class GitServer {
   }
 
   /**
-   * Extract metadata from a directory's package.json.
-   * Returns both launchable info (natstack config) and package info (npm package).
+   * Parse YAML frontmatter from a markdown file.
+   * Returns the parsed frontmatter object or undefined if not present/invalid.
+   */
+  private parseYamlFrontmatter(content: string): Record<string, string> | undefined {
+    if (!content.startsWith("---\n")) {
+      return undefined;
+    }
+    const endIndex = content.indexOf("\n---", 4);
+    if (endIndex === -1) {
+      return undefined;
+    }
+    const yamlContent = content.slice(4, endIndex);
+
+    // Simple YAML parser for key: value pairs
+    const result: Record<string, string> = {};
+    for (const line of yamlContent.split("\n")) {
+      const colonIndex = line.indexOf(":");
+      if (colonIndex === -1) continue;
+      const key = line.slice(0, colonIndex).trim();
+      let value = line.slice(colonIndex + 1).trim();
+      // Remove quotes if present
+      if ((value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      if (key && value) {
+        result[key] = value;
+      }
+    }
+    return Object.keys(result).length > 0 ? result : undefined;
+  }
+
+  /**
+   * Extract metadata from a directory's package.json and SKILL.md.
+   * Returns launchable info (natstack config), package info (npm package), and skill info.
    * Intentionally permissive - returns info even with missing fields so the
    * UI can show the entry and panelBuilder can report proper errors later.
    */
   private async extractMetadata(absolutePath: string): Promise<{
     launchable?: WorkspaceNode["launchable"];
     packageInfo?: WorkspaceNode["packageInfo"];
+    skillInfo?: WorkspaceNode["skillInfo"];
   }> {
+    const result: {
+      launchable?: WorkspaceNode["launchable"];
+      packageInfo?: WorkspaceNode["packageInfo"];
+      skillInfo?: WorkspaceNode["skillInfo"];
+    } = {};
+
+    // Extract package.json metadata
     const packageJsonPath = path.join(absolutePath, "package.json");
     try {
       const content = await fsPromises.readFile(packageJsonPath, "utf-8");
       const packageJson = JSON.parse(content);
 
       // Extract package info (if it has a name, it's a publishable package)
-      const packageInfo = packageJson.name
-        ? {
-            name: packageJson.name as string,
-            version: packageJson.version as string | undefined,
-          }
-        : undefined;
+      if (packageJson.name) {
+        result.packageInfo = {
+          name: packageJson.name as string,
+          version: packageJson.version as string | undefined,
+        };
+      }
 
       // Extract natstack launchable info
-      let launchable: WorkspaceNode["launchable"] | undefined;
       if (packageJson.natstack) {
         const ns = packageJson.natstack;
-        launchable = {
+        result.launchable = {
           type: ns.type || (ns.runtime === "worker" ? "worker" : "app"),
           title: ns.title || packageJson.name || path.basename(absolutePath),
           repoArgs: ns.repoArgs,
           envArgs: ns.envArgs,
         };
       }
-
-      return { launchable, packageInfo };
     } catch {
-      return {};
+      // No package.json or invalid JSON
     }
+
+    // Extract SKILL.md metadata (skill info) - only repos with SKILL.md are skills
+    const skillMdPath = path.join(absolutePath, "SKILL.md");
+    try {
+      const content = await fsPromises.readFile(skillMdPath, "utf-8");
+      const frontmatter = this.parseYamlFrontmatter(content);
+      if (frontmatter && frontmatter["name"] && frontmatter["description"]) {
+        result.skillInfo = {
+          name: frontmatter["name"],
+          description: frontmatter["description"],
+        };
+      }
+    } catch {
+      // No SKILL.md - not a skill (intentionally no fallback)
+    }
+
+    return result;
   }
 
   /**

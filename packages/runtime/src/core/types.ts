@@ -591,6 +591,21 @@ export interface WorkspaceNode {
     repoArgs?: string[];
     envArgs?: EnvArgSchema[];
   };
+  /**
+   * Package metadata if this repo has a package.json with a name.
+   */
+  packageInfo?: {
+    name: string;
+    version?: string;
+  };
+  /**
+   * Skill metadata if this repo has a SKILL.md file with YAML frontmatter.
+   * Skills are repos that provide instructions/context for agents.
+   */
+  skillInfo?: {
+    name: string;
+    description: string;
+  };
   /** Child nodes (empty for git repos since they're leaves) */
   children: WorkspaceNode[];
 }

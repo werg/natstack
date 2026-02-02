@@ -43,6 +43,7 @@ export type ApprovalLevel = typeof APPROVAL_LEVELS[keyof typeof APPROVAL_LEVELS]
 const READ_ONLY_BASE_TOOLS = [
   "file_read", "glob", "grep", "tree", "list_directory",
   "git_status", "git_diff", "git_log",
+  "workspace_list", "context_info", "context_template_list", "context_template_read",
 ] as const;
 
 /**

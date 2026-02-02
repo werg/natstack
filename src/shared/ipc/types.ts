@@ -608,6 +608,14 @@ export interface WorkspaceNode {
     name: string;
     version?: string;
   };
+  /**
+   * Skill metadata if this repo has a SKILL.md file with YAML frontmatter.
+   * Skills are repos that provide instructions/context for agents.
+   */
+  skillInfo?: {
+    name: string;
+    description: string;
+  };
   /** Child nodes (empty for git repos since they're leaves) */
   children: WorkspaceNode[];
 }

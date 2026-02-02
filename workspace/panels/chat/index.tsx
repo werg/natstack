@@ -463,6 +463,7 @@ export default function AgenticChat() {
     toolRoles: {
       "file-ops": { providing: true },
       "git-ops": { providing: true },
+      "workspace-ops": { providing: true },
     },
     onEvent: useCallback(
       (event: IncomingEvent) => {

@@ -99,9 +99,9 @@ export function TemplateInfoCard({
   };
 
   const handleAddRepo = (repoSpec: string) => {
-    // Generate a default mount path based on repo name
-    const repoName = repoSpec.split("/").pop() ?? repoSpec;
-    const mountPath = `/deps/${repoName}`;
+    // Generate a default mount path mirroring workspace structure
+    const specWithoutRef = repoSpec.split("#")[0];
+    const mountPath = `/workspace/${specWithoutRef}`;
 
     setEditedInfo({
       ...editedInfo,
