@@ -1,6 +1,6 @@
 {
   "name": "@natstack/git-ui",
-  "version": "0.1.0-2f60fde87ea0",
+  "version": "0.1.0-git.67fa4b3",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -26,8 +26,8 @@
     "dev": "tsc --project tsconfig.build.json --watch"
   },
   "dependencies": {
-    "@natstack/git": "workspace:*",
-    "@natstack/runtime": "workspace:*",
+    "@natstack/git": "workspace*",
+    "@natstack/runtime": "workspace*",
     "@radix-ui/react-accordion": "^1.2.0",
     "@radix-ui/react-alert-dialog": "^1.1.0",
     "@radix-ui/react-collapsible": "^1.1.0",

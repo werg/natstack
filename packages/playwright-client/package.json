@@ -1,6 +1,6 @@
 {
   "name": "@natstack/playwright-client",
-  "version": "0.1.0-41ae7e46b385",
+  "version": "0.1.0-git.67fa4b3-dirty.41ae7e46b385",
   "type": "module",
   "description": "Browser-compatible CDP client library - thin wrapper",
   "license": "Apache-2.0",
@@ -20,6 +20,6 @@
     "dev": "tsc --project tsconfig.build.json --watch"
   },
   "dependencies": {
-    "@natstack/playwright-core": "workspace:*"
+    "@natstack/playwright-core": "workspace*"
   }
 }

@@ -38,10 +38,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@natstack/agentic-messaging": "workspace:*",
     "@natstack/core": "workspace:*"
-  },
-  "peerDependencies": {
-    "@natstack/agentic-messaging": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

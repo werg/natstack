@@ -1,6 +1,6 @@
 {
   "name": "@natstack/react",
-  "version": "0.1.0-6f86d7420ac2",
+  "version": "0.1.0-git.0160181-dirty.c548658fcb41",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -18,8 +18,8 @@
     "dev": "tsc --project tsconfig.build.json --watch"
   },
   "dependencies": {
-    "@natstack/core": "workspace:*",
-    "@natstack/runtime": "workspace:*",
+    "@natstack/core": "workspace*",
+    "@natstack/runtime": "workspace*",
     "@radix-ui/react-icons": "^1.3.2",
     "@radix-ui/themes": "^3.2.1"
   },

@@ -1,6 +1,6 @@
 {
   "name": "@natstack/pubsub",
-  "version": "0.1.0-cb2e1f6573b3",
+  "version": "0.1.0-git.dfc926d",
   "description": "WebSocket pub/sub client for NatStack",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,7 +17,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@natstack/core": "workspace:*"
+    "@natstack/core": "workspace*"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
