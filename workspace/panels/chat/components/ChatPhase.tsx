@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useLayoutEffect, type Compone
 import { Badge, Box, Button, Callout, Card, Flex, IconButton, ScrollArea, Text, TextArea, Theme } from "@radix-ui/themes";
 import { PaperPlaneIcon, ImageIcon, CopyIcon, CheckIcon } from "@radix-ui/react-icons";
 import type { Participant, AttachmentInput } from "@natstack/pubsub";
-import { CONTENT_TYPE_INLINE_UI, prettifyToolName, type AgentDebugPayload, type AgentBuildError } from "@natstack/agentic-messaging";
+import { CONTENT_TYPE_INLINE_UI, prettifyToolName, type AgentDebugPayload } from "@natstack/agentic-messaging";
 import {
   FeedbackContainer,
   FeedbackFormRenderer,
@@ -22,11 +22,11 @@ import { ImageGallery } from "./ImageGallery";
 import { NewContentIndicator } from "./NewContentIndicator";
 import { InlineUiMessage, parseInlineUiData } from "./InlineUiMessage";
 import { type PendingImage, getImagesFromClipboard, createPendingImage, validateImageFiles } from "../utils/imageUtils";
-import type { ChatMessage, ChatParticipantMetadata } from "../types";
+import type { ChatMessage, ChatParticipantMetadata, PendingAgent } from "../types";
 import { AgentDisconnectedMessage } from "./AgentDisconnectedMessage";
 import { AgentDebugConsole } from "./AgentDebugConsole";
-import { BuildErrorCard } from "./BuildErrorCard";
 import { DirtyRepoWarning } from "./DirtyRepoWarning";
+import { PendingAgentBadge } from "./PendingAgentBadge";
 import "../styles.css";
 
 // Re-export for backwards compatibility
@@ -62,10 +62,10 @@ interface ChatPhaseProps {
   debugEvents?: Array<AgentDebugPayload & { ts: number }>;
   /** Currently open debug console agent handle */
   debugConsoleAgent?: string | null;
-  /** Build errors from failed agent invites */
-  buildErrors?: Map<string, AgentBuildError>;
   /** Dirty repo warnings for agents spawned with uncommitted changes */
   dirtyRepoWarnings?: Map<string, { modified: string[]; untracked: string[]; staged: string[] }>;
+  /** Pending agents (starting or failed) - managed by parent, not computed from events */
+  pendingAgents?: Map<string, PendingAgent>;
   /** Callback to open/close debug console */
   onDebugConsoleChange?: (agentHandle: string | null) => void;
   /** Callback to load earlier messages */
@@ -85,8 +85,6 @@ interface ChatPhaseProps {
   onFocusPanel?: (panelId: string) => void;
   /** Reload a disconnected agent's panel */
   onReloadPanel?: (panelId: string) => void;
-  /** Dismiss a build error */
-  onDismissBuildError?: (agentName: string) => void;
   /** Dismiss a dirty repo warning */
   onDismissDirtyWarning?: (agentName: string) => void;
   /** Tool approval configuration - optional, when provided enables approval UI */
@@ -109,8 +107,8 @@ export function ChatPhase({
   inlineUiComponents,
   debugEvents,
   debugConsoleAgent,
-  buildErrors,
   dirtyRepoWarnings,
+  pendingAgents,
   onDebugConsoleChange,
   onLoadEarlierMessages,
   onInputChange,
@@ -124,7 +122,6 @@ export function ChatPhase({
   onCallMethod,
   onFocusPanel,
   onReloadPanel,
-  onDismissBuildError,
   onDismissDirtyWarning,
   toolApproval,
 }: ChatPhaseProps) {
@@ -355,6 +352,9 @@ export function ChatPhase({
     return participant?.metadata ?? { name: "Unknown", type: "panel" as const, handle: "unknown" };
   };
 
+  // pendingAgents is now passed as a prop (managed by parent component)
+  // This is cleaner than computing from ephemeral debug events
+
   return (
     <Theme appearance={theme}>
       <Flex direction="column" height="100vh" p="2" gap="2">
@@ -388,6 +388,20 @@ export function ChatPhase({
               />
             );
           })}
+          {/* Pending/failed agents not yet in roster */}
+          {pendingAgents && Array.from(pendingAgents.entries()).map(([handle, info]) => (
+            <PendingAgentBadge
+              key={`pending-${handle}`}
+              handle={handle}
+              agentId={info.agentId}
+              status={info.status}
+              error={info.error}
+              onOpenDebugConsole={onDebugConsoleChange ? (h) => {
+                console.log("[ChatPhase] Opening debug console for:", h);
+                onDebugConsoleChange(h);
+              } : undefined}
+            />
+          ))}
           {onAddAgent && (
             <Button variant="soft" size="1" onClick={onAddAgent}>
               Add Agent
@@ -408,20 +422,6 @@ export function ChatPhase({
           </Button>
         </Flex>
       </Flex>
-
-      {/* Build errors */}
-      {buildErrors && buildErrors.size > 0 && (
-        <Box px="1" flexShrink="0">
-          {Array.from(buildErrors.entries()).map(([name, error]) => (
-            <BuildErrorCard
-              key={name}
-              agentName={name}
-              error={error}
-              onDismiss={() => onDismissBuildError?.(name)}
-            />
-          ))}
-        </Box>
-      )}
 
       {/* Dirty repo warnings */}
       {dirtyRepoWarnings && dirtyRepoWarnings.size > 0 && (

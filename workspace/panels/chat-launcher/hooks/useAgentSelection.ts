@@ -1,54 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { db, rpc } from "@natstack/runtime";
-import type { FieldDefinition, FieldValue, AgentManifest } from "@natstack/core";
+import { rpc } from "@natstack/runtime";
+import type { FieldDefinition, FieldValue, AgentManifest, AgentSettings } from "@natstack/core";
 import type { ChannelConfig } from "@natstack/pubsub";
-
-const PREFERENCES_DB_NAME = "agent-preferences";
-
-/** Persisted settings structure - keyed by agent type ID */
-type PersistedSettings = Record<string, Record<string, string | number | boolean>>;
-
-/** Preferences database singleton */
-let preferencesDbPromise: Promise<Awaited<ReturnType<typeof db.open>>> | null = null;
-
-async function getPreferencesDb() {
-  if (!preferencesDbPromise) {
-    preferencesDbPromise = (async () => {
-      const database = await db.open(PREFERENCES_DB_NAME);
-      await database.exec(`
-        CREATE TABLE IF NOT EXISTS agent_preferences (
-          agent_type_id TEXT PRIMARY KEY,
-          settings TEXT NOT NULL,
-          updated_at INTEGER NOT NULL
-        )
-      `);
-      return database;
-    })();
-  }
-  return preferencesDbPromise;
-}
-
-/** Load persisted settings from SQLite */
-async function loadPersistedSettings(): Promise<PersistedSettings> {
-  try {
-    const database = await getPreferencesDb();
-    const rows = await database.query<{ agent_type_id: string; settings: string }>(
-      "SELECT agent_type_id, settings FROM agent_preferences"
-    );
-    const result: PersistedSettings = {};
-    for (const row of rows) {
-      try {
-        result[row.agent_type_id] = JSON.parse(row.settings);
-      } catch {
-        // Skip malformed entries
-      }
-    }
-    return result;
-  } catch (err) {
-    console.warn("[useAgentSelection] Failed to load persisted settings:", err);
-    return {};
-  }
-}
 
 /**
  * Session configuration - what chat-launcher tracks locally.
@@ -150,9 +103,11 @@ export function useAgentSelection({ workspaceRoot, sessionConfig = DEFAULT_SESSI
 
     async function loadAgents() {
       try {
-        // Get agents from AgentDiscovery via bridge (single source of truth)
-        const manifests = await rpc.call<AgentManifest[]>("main", "bridge.listAgents");
-        const persistedSettings = await loadPersistedSettings();
+        // Get agents from AgentDiscovery via bridge and settings via agentSettings service
+        const [manifests, allSettings] = await Promise.all([
+          rpc.call<AgentManifest[]>("main", "bridge.listAgents"),
+          rpc.call<Record<string, AgentSettings>>("main", "agentSettings.getAllAgentSettings"),
+        ]);
 
         if (!mounted) return;
 
@@ -161,13 +116,13 @@ export function useAgentSelection({ workspaceRoot, sessionConfig = DEFAULT_SESSI
         for (const manifest of manifests) {
           // Build config for per-agent params only (not channelLevel - those come from channel config)
           const config: Record<string, FieldValue> = {};
-          const persisted = persistedSettings[manifest.id] ?? {};
+          const persisted = allSettings[manifest.id] ?? {};
           const perAgentParams = getPerAgentParams(manifest.parameters);
 
           for (const param of perAgentParams) {
             // Check persisted settings first
             if (param.key in persisted) {
-              config[param.key] = persisted[param.key]!;
+              config[param.key] = persisted[param.key] as FieldValue;
             } else if (param.default !== undefined) {
               // Fall back to parameter default (convert to the expected type)
               config[param.key] = param.default as string | number | boolean;
@@ -209,7 +164,7 @@ export function useAgentSelection({ workspaceRoot, sessionConfig = DEFAULT_SESSI
 
   const updateAgentConfig = useCallback(
     (agentId: string, key: string, value: FieldValue) => {
-      // Update local state only - defaults are managed by Agent Manager
+      // Update local state only - defaults are managed via ns-about://agents
       setAvailableAgents((prev) =>
         prev.map((agent) =>
           agent.agent.id === agentId

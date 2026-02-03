@@ -7,9 +7,9 @@
  * In channel mode (channelName set): After spawning agents, closes self or navigates back.
  */
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { pubsubConfig, buildNsLink, closeSelf, getStateArgs, rpc, db, id } from "@natstack/runtime";
-import { setDbOpen, connect, type AgenticClient, type AgentBuildError } from "@natstack/agentic-messaging";
+import { setDbOpen, connect, type AgenticClient } from "@natstack/agentic-messaging";
 
 // Configure agentic-messaging to use runtime's db
 setDbOpen(db.open);
@@ -23,10 +23,7 @@ import {
   type SessionConfig,
 } from "./hooks/useAgentSelection";
 import { AgentSetupPhase } from "./components/AgentSetupPhase";
-import {
-  loadGlobalSettings,
-  type GlobalAgentSettings,
-} from "@workspace-panels/agent-manager";
+import type { GlobalAgentSettings } from "@natstack/core";
 
 const generateChannelId = () => `chat-${crypto.randomUUID().slice(0, 8)}`;
 
@@ -67,7 +64,7 @@ export default function ChatLauncher() {
 
     async function applyGlobalSettings() {
       try {
-        const global = await loadGlobalSettings();
+        const global = await rpc.call<GlobalAgentSettings>("main", "agentSettings.getGlobalSettings");
         setSessionConfig((prev) => ({
           ...prev,
           projectLocation: global.defaultProjectLocation,
@@ -175,70 +172,26 @@ export default function ChatLauncher() {
         replayMode: "skip", // Don't need message replay
       });
 
-      // Invite all selected agents via pubsub API
-      const invitePromises = selectedAgents.map(async (agent) => {
+      // Fire agent invites without waiting - agents will join the channel asynchronously
+      // The chat panel will see them appear via presence events
+      for (const agent of selectedAgents) {
         const config = buildSpawnConfig(agent);
 
-        try {
-          // Invite agent via pubsub - AgentHost will spawn the agent
-          const result = await client!.inviteAgent(agent.agent.id, {
-            handle: agent.agent.proposedHandle,
-            config: {
-              // Channel config values passed directly to avoid timing issues
-              workingDirectory: channelConfig.workingDirectory,
-              restrictedMode: channelConfig.restrictedMode,
-              // contextId tells the agent which channel context it belongs to
-              contextId,
-              ...config,
-            },
-          });
-
-          if (!result.success) {
-            return {
-              agent,
-              error: result.error ?? "Unknown error",
-              buildError: result.buildError,
-              instanceId: null,
-            };
-          }
-
-          return { agent, error: null, buildError: undefined, instanceId: result.instanceId };
-        } catch (err) {
-          // Capture invite errors per-agent
-          const errorMsg = err instanceof Error ? err.message : String(err);
-          return { agent, error: errorMsg, buildError: undefined, instanceId: null };
-        }
-      });
-
-      const results = await Promise.all(invitePromises);
-
-      // Separate successful and failed invites
-      const succeeded = results.filter((r) => r.error === null);
-      const failed = results.filter((r) => r.error !== null);
-
-      // Collect build errors to pass to chat panel
-      const buildErrors: Record<string, AgentBuildError> = {};
-      for (const result of failed) {
-        if (result.buildError) {
-          buildErrors[result.agent.agent.name] = result.buildError;
-        }
-      }
-      const hasBuildErrors = Object.keys(buildErrors).length > 0;
-
-      // Check if all invites failed - still navigate to chat panel
-      // Auto-wake will handle recovery when agents crash/timeout
-      if (succeeded.length === 0) {
-        const errorDetails = failed
-          .map((r) => `${r.agent.agent.name}: ${r.error}`)
-          .join("\n");
-        console.warn(`[Chat Launcher] All agent invites failed, proceeding to chat anyway:\n${errorDetails}`);
-        // Don't return - fall through to navigate to chat panel
-      }
-
-      // Log partial failures but continue if at least one succeeded
-      if (failed.length > 0) {
-        const failedNames = failed.map((r) => r.agent.agent.name).join(", ");
-        console.warn(`[Chat Launcher] Some agents failed to invite: ${failedNames}`);
+        // Fire and forget - don't await the result
+        // Errors will be logged but we navigate to chat immediately
+        client.inviteAgent(agent.agent.id, {
+          handle: agent.agent.proposedHandle ?? agent.agent.id,
+          config: {
+            // Channel config values passed directly to avoid timing issues
+            workingDirectory: channelConfig.workingDirectory,
+            restrictedMode: channelConfig.restrictedMode,
+            // contextId tells the agent which channel context it belongs to
+            contextId,
+            ...config,
+          },
+        }).catch((err) => {
+          console.warn(`[Chat Launcher] Failed to invite agent ${agent.agent.name}:`, err);
+        });
       }
 
       // Close the launcher's pubsub connection before navigating
@@ -265,12 +218,12 @@ export default function ChatLauncher() {
           stateArgs: {
             channelName: targetChannelId,
             contextId,
-            ...(hasBuildErrors ? { buildErrors } : {}),
           },
         });
         window.location.href = chatUrl;
       } else {
         // New chat mode: navigate to the chat panel with channel ID, config, and contextId
+        // Pass pendingAgents so chat panel knows which agents were invited
         const chatUrl = buildNsLink("panels/chat", {
           action: "navigate",
           contextId,
@@ -278,7 +231,10 @@ export default function ChatLauncher() {
             channelName: targetChannelId,
             channelConfig,
             contextId,
-            ...(hasBuildErrors ? { buildErrors } : {}),
+            pendingAgents: selectedAgents.map((a) => ({
+              agentId: a.agent.id,
+              handle: a.agent.proposedHandle ?? a.agent.id,
+            })),
           },
         });
         window.location.href = chatUrl;

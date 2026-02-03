@@ -30,7 +30,6 @@
     "@natstack/agentic-messaging": "workspace:*",
     "@natstack/core": "workspace:*",
     "@natstack/pubsub": "workspace:*",
-    "@workspace-panels/agent-manager": "workspace:*",
     "@radix-ui/themes": "^3.2.1",
     "@radix-ui/react-icons": "^1.3.2"
   }

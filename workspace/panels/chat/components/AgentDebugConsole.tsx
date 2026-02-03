@@ -33,16 +33,60 @@ function DebugEventLine({ event }: { event: AgentDebugPayload & { ts: number } }
     );
   }
 
-  // Output event
-  const color = event.stream === "stderr" ? "red" : "gray";
+  if (event.debugType === "spawn-error") {
+    const errorText = event.error ?? event.buildError?.message ?? "Unknown error";
+    return (
+      <Text as="div" size="1" color="red" style={{ fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+        [{time}] SPAWN ERROR: {errorText}
+      </Text>
+    );
+  }
+
+  if (event.debugType === "log") {
+    const levelColors: Record<string, "gray" | "blue" | "orange" | "red"> = {
+      debug: "gray",
+      info: "blue",
+      warn: "orange",
+      error: "red",
+    };
+    const color = levelColors[event.level] ?? "gray";
+    const levelLabel = event.level.toUpperCase().padEnd(5);
+    return (
+      <Text
+        as="div"
+        size="1"
+        color={color}
+        style={{ fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+      >
+        [{time}] [{levelLabel}] {event.message}
+        {event.stack && (
+          <Text as="div" size="1" color="gray" style={{ marginLeft: "1em", opacity: 0.7 }}>
+            {event.stack}
+          </Text>
+        )}
+      </Text>
+    );
+  }
+
+  // Output event (stdout/stderr)
+  if (event.debugType === "output") {
+    const color = event.stream === "stderr" ? "red" : "gray";
+    return (
+      <Text
+        as="div"
+        size="1"
+        color={color}
+        style={{ fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+      >
+        [{time}] {event.content}
+      </Text>
+    );
+  }
+
+  // Unknown event type - render as JSON for debugging
   return (
-    <Text
-      as="div"
-      size="1"
-      color={color}
-      style={{ fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
-    >
-      [{time}] {event.content}
+    <Text as="div" size="1" color="gray" style={{ fontFamily: "monospace" }}>
+      [{time}] {JSON.stringify(event)}
     </Text>
   );
 }
@@ -68,7 +112,7 @@ export function AgentDebugConsole({
       <Dialog.Content style={{ maxWidth: 700, maxHeight: "80vh" }}>
         <Dialog.Title>Debug Console: @{agentHandle}</Dialog.Title>
         <Dialog.Description size="2" color="gray" mb="3">
-          Agent stdout/stderr output and lifecycle events
+          Agent logs, stdout/stderr output, and lifecycle events
         </Dialog.Description>
 
         <ScrollArea

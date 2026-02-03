@@ -59,7 +59,7 @@ import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 import { ToolRoleConflictModal } from "./components/ToolRoleConflictModal";
 import { ChatPhase } from "./components/ChatPhase";
 import { cleanupPendingImages, type PendingImage } from "./utils/imageUtils";
-import type { ChatParticipantMetadata, DisconnectedAgentInfo } from "./types";
+import type { ChatParticipantMetadata, DisconnectedAgentInfo, PendingAgent, PendingAgentStatus } from "./types";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { parseInlineUiData } from "./components/InlineUiMessage";
 
@@ -108,6 +108,7 @@ function dispatchAgenticEvent(
     handleMethodResult: (result: IncomingMethodResult) => void;
     setDebugEvents?: (updater: (prev: Array<AgentDebugPayload & { ts: number }>) => Array<AgentDebugPayload & { ts: number }>) => void;
     setDirtyRepoWarnings?: (updater: (prev: Map<string, { modified: string[]; untracked: string[]; staged: string[] }>) => Map<string, { modified: string[]; untracked: string[]; staged: string[] }>) => void;
+    setPendingAgents?: (updater: (prev: Map<string, PendingAgent>) => Map<string, PendingAgent>) => void;
   },
   selfId: string | null,
   participants: Record<string, Participant<ChatParticipantMetadata>>
@@ -247,10 +248,72 @@ function dispatchAgenticEvent(
             });
           }
         }
+
+        // Check for "spawning" lifecycle events - add to pendingAgents
+        // This handles agents added via "Add Agent" flow (channel mode) where stateArgs doesn't have pendingAgents
+        // Note: We don't check roster here because it could be stale. The onRoster callback
+        // will clean up pendingAgents when agents join the roster.
+        if (
+          debugPayload.debugType === "lifecycle" &&
+          (debugPayload as { event?: string }).event === "spawning" &&
+          handlers.setPendingAgents
+        ) {
+          const lifecyclePayload = debugPayload as { agentId: string; handle: string };
+          handlers.setPendingAgents((prev) => {
+            // Don't overwrite existing entry (could be error state)
+            if (prev.has(lifecyclePayload.handle)) return prev;
+            const next = new Map(prev);
+            next.set(lifecyclePayload.handle, {
+              agentId: lifecyclePayload.agentId,
+              status: "starting",
+            });
+            return next;
+          });
+        }
+
+        // Check for spawn-error events and update pendingAgents to error status
+        if (debugPayload.debugType === "spawn-error" && handlers.setPendingAgents) {
+          const errorPayload = debugPayload as {
+            agentId: string;
+            handle: string;
+            error?: string;
+            buildError?: AgentBuildError;
+          };
+          const buildError: AgentBuildError = errorPayload.buildError ?? {
+            message: errorPayload.error ?? "Unknown spawn error",
+          };
+
+          handlers.setPendingAgents((prev) => {
+            const next = new Map(prev);
+            // Find by handle first, then by agentId if handle is missing
+            let targetHandle = errorPayload.handle;
+            if (!targetHandle) {
+              for (const [h, info] of prev) {
+                if (info.agentId === errorPayload.agentId) {
+                  targetHandle = h;
+                  break;
+                }
+              }
+            }
+            if (!targetHandle) return prev; // Can't find matching entry
+            next.set(targetHandle, {
+              agentId: errorPayload.agentId,
+              status: "error",
+              error: buildError,
+            });
+            return next;
+          });
+        }
       }
       break;
     }
   }
+}
+
+/** Pending agent info passed from chat-launcher */
+interface PendingAgentInfo {
+  agentId: string;
+  handle: string;
 }
 
 /** Type for chat panel state args */
@@ -262,8 +325,8 @@ interface ChatStateArgs {
   };
   /** Context ID for channel authorization (passed separately from channelConfig) */
   contextId?: string;
-  /** Build errors from failed agent invites (passed from chat-launcher) */
-  buildErrors?: Record<string, AgentBuildError>;
+  /** Agents that are being spawned (passed from chat-launcher) */
+  pendingAgents?: PendingAgentInfo[];
 }
 
 export default function AgenticChat() {
@@ -305,15 +368,26 @@ export default function AgenticChat() {
   // Currently open debug console agent handle
   const [debugConsoleAgent, setDebugConsoleAgent] = useState<string | null>(null);
 
-  // Build errors from failed agent invites (initialized from stateArgs)
-  const [buildErrors, setBuildErrors] = useState<Map<string, AgentBuildError>>(() => {
-    if (stateArgs.buildErrors) {
-      return new Map(Object.entries(stateArgs.buildErrors));
-    }
-    return new Map();
-  });
   // Dirty repo warnings for agents that spawned with uncommitted changes
   const [dirtyRepoWarnings, setDirtyRepoWarnings] = useState<Map<string, { modified: string[]; untracked: string[]; staged: string[] }>>(new Map());
+
+  // Pending agents state (initialized from stateArgs, managed locally)
+  // key: handle, value: PendingAgent { agentId, status, error? }
+  const [pendingAgents, setPendingAgents] = useState<Map<string, PendingAgent>>(() => {
+    const initial = new Map<string, PendingAgent>();
+    if (stateArgs.pendingAgents) {
+      for (const agent of stateArgs.pendingAgents) {
+        initial.set(agent.handle, { agentId: agent.agentId, status: "starting" });
+      }
+    }
+    return initial;
+  });
+
+  // Log pendingAgents state for debugging
+  useEffect(() => {
+    const entries = Array.from(pendingAgents.entries());
+    console.log("[Chat] pendingAgents state:", entries.length, "agents:", entries.map(([h, a]) => `${h}:${a.status}`));
+  }, [pendingAgents]);
 
   // Track compiled inline UI components by ID
   // Key: inline UI id, Value: { Component, cacheKey, error? }
@@ -469,15 +543,7 @@ export default function AgenticChat() {
   // Keep participantsRef up to date for memoized callbacks
   participantsRef.current = allParticipants;
 
-  // Handlers for dismissing build errors and dirty repo warnings
-  const handleDismissBuildError = useCallback((agentName: string) => {
-    setBuildErrors((prev) => {
-      const next = new Map(prev);
-      next.delete(agentName);
-      return next;
-    });
-  }, []);
-
+  // Handler for dismissing dirty repo warnings
   const handleDismissDirtyWarning = useCallback((agentName: string) => {
     setDirtyRepoWarnings((prev) => {
       const next = new Map(prev);
@@ -523,6 +589,13 @@ export default function AgenticChat() {
     },
     onEvent: useCallback(
       (event: IncomingEvent) => {
+        // Log all incoming events for debugging
+        if (event.type === "agent-debug") {
+          const debugEvent = event as IncomingAgentDebugEvent;
+          console.log("[Chat] agent-debug event:", debugEvent.payload.debugType, debugEvent.payload);
+        } else {
+          console.log("[Chat] event:", event.type, event);
+        }
         try {
           const selfId = selfIdRef.current ?? panelClientId;
           dispatchAgenticEvent(
@@ -534,6 +607,7 @@ export default function AgenticChat() {
               handleMethodResult,
               setDebugEvents,
               setDirtyRepoWarnings,
+              setPendingAgents,
             },
             selfId,
             participantsRef.current
@@ -577,6 +651,10 @@ export default function AgenticChat() {
       const newParticipants = roster.participants;
       const prevParticipants = prevParticipantsRef.current;
 
+      // Log roster updates for debugging
+      const handles = Object.values(newParticipants).map(p => p.metadata.handle);
+      console.log("[Chat] roster update:", handles.length, "participants:", handles);
+
       // Detect disconnected participants (were in prev roster but not in new)
       const prevIds = new Set(Object.keys(prevParticipants));
       const newIds = new Set(Object.keys(newParticipants));
@@ -612,6 +690,21 @@ export default function AgenticChat() {
           }
         }
       }
+
+      // Remove newly joined agents from pendingAgents
+      // Check by handle since that's how we track pending agents
+      const newHandles = new Set(Object.values(newParticipants).map((p) => p.metadata.handle));
+      setPendingAgents((prev) => {
+        let changed = false;
+        const next = new Map(prev);
+        for (const handle of prev.keys()) {
+          if (newHandles.has(handle)) {
+            next.delete(handle);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
 
       // Update refs and state
       prevParticipantsRef.current = newParticipants;
@@ -1355,9 +1448,12 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
         inlineUiComponents={inlineUiComponents}
         debugEvents={debugEvents}
         debugConsoleAgent={debugConsoleAgent}
-        buildErrors={buildErrors}
         dirtyRepoWarnings={dirtyRepoWarnings}
-        onDebugConsoleChange={setDebugConsoleAgent}
+        pendingAgents={pendingAgents}
+        onDebugConsoleChange={(handle) => {
+          console.log("[Chat] onDebugConsoleChange called with:", handle);
+          setDebugConsoleAgent(handle);
+        }}
         onLoadEarlierMessages={loadEarlierMessages}
         onInputChange={handleInputChange}
         onSendMessage={sendMessage}
@@ -1370,7 +1466,6 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
         onCallMethod={handleCallMethod}
         onFocusPanel={handleFocusPanel}
         onReloadPanel={handleReloadPanel}
-        onDismissBuildError={handleDismissBuildError}
         onDismissDirtyWarning={handleDismissDirtyWarning}
         toolApproval={{
           settings: approval.settings,
