@@ -57,28 +57,27 @@ NatStack uses an embedded [Verdaccio](https://verdaccio.org/) npm registry to se
 - **Native npm semantics** - No need for `workspace:*` protocol translation
 - **Shared package cache** - All panel builds share the same installed packages
 - **Proper transitive dependencies** - npm resolver handles dependency trees correctly
-- **Content-addressed versioning** - Package versions include content hashes
+- **Git-based versioning** - Package versions include the git commit hash
 
 ### Package Version Format
 
 ```
-@natstack/runtime@0.1.0-a1b2c3d4e5f6
-                  ^^^^^  ^^^^^^^^^^^^
-                  base   content hash (12 chars)
+@natstack/runtime@0.1.0-git.abc1234
+                  ^^^^^     ^^^^^^^
+                  base      git hash (last commit touching package)
 ```
 
-The content hash is computed from:
-1. `package.json` (excluding version field)
-2. `dist/` directory contents
-3. `src/` directory contents
+For git-tracked packages, the version uses the short hash of the last commit that modified the package directory. This is fast (git tracks changes efficiently) and sufficient for development.
+
+For non-git packages (e.g., user workspace packages outside a git repo), the version falls back to a content hash computed from package files.
 
 ### Change Detection
 
-On startup, `checkWorkspaceChanges()` compares each package's expected version (computed from content hash) against the actual version published to Verdaccio:
+On startup, `checkWorkspaceChanges()` compares each package's expected version (computed from git hash) against the actual version published to Verdaccio:
 
 ```typescript
 // For each workspace package:
-const expectedVersion = `${baseVersion}-${contentHash}`;
+const expectedVersion = `${baseVersion}-git.${gitHash}`;
 const actualVersion = await getPackageVersion(pkgName);  // Query Verdaccio
 const changed = actualVersion !== expectedVersion;
 ```

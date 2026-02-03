@@ -24,6 +24,7 @@ import { getMainCacheManager } from "../cacheManager.js";
 import { isDev } from "../utils.js";
 import { isVerdaccioServerInitialized, getVerdaccioServer } from "../verdaccioServer.js";
 import { getPackagesDir, getActiveWorkspace } from "../paths.js";
+import { getDependencyGraph } from "../dependencyGraph.js";
 import {
   getPackageStore,
   createPackageFetcher,
@@ -37,6 +38,7 @@ import {
   loadSourceFiles,
   type TypeCheckDiagnostic,
 } from "@natstack/runtime/typecheck";
+import { ESM_SAFE_PACKAGES } from "../lazyBuild/esmTransformer.js";
 // Re-export TypeCheckDiagnostic for consumers
 export type { TypeCheckDiagnostic };
 
@@ -343,6 +345,8 @@ export interface DependencyInstallOptions {
   log?: (message: string) => void;
   /** User workspace path for @workspace-* package resolution (overrides getActiveWorkspace) */
   userWorkspacePath?: string;
+  /** Consumer key for dependency graph registration (e.g., "panel:/path/to/panel") */
+  consumerKey?: string;
 }
 
 export interface DependencyInstallResult {
@@ -350,20 +354,21 @@ export interface DependencyInstallResult {
   hash: string;
   /** Path to node_modules */
   nodeModulesDir: string;
+  /** Resolved versions for ESM-safe packages (for version pinning in externals) */
+  esmVersions?: Map<string, string>;
 }
-
-// Cache for Verdaccio versions (shared across builds)
-let lastVerdaccioVersions: Record<string, string> | null = null;
-const relevantVersionsCache = new Map<string, Record<string, string>>();
 
 /**
  * Install dependencies into a directory.
  * Uses Verdaccio for package resolution and content-addressable store for efficiency.
+ *
+ * Cache invalidation is now handled at publish-time via the dependency graph,
+ * so we no longer need to walk the dependency tree or track versions here.
  */
 export async function installDependencies(
   options: DependencyInstallOptions
 ): Promise<DependencyInstallResult | undefined> {
-  const { depsDir, dependencies, previousHash, canonicalPath, log = console.log.bind(console), userWorkspacePath } = options;
+  const { depsDir, dependencies, previousHash, log = console.log.bind(console), userWorkspacePath, consumerKey } = options;
 
   if (!dependencies || Object.keys(dependencies).length === 0) {
     return undefined;
@@ -393,21 +398,58 @@ export async function installDependencies(
   const activeWorkspace = getActiveWorkspace();
   const effectiveWorkspacePath = userWorkspacePath ?? activeWorkspace?.path;
   if (effectiveWorkspacePath) {
-    verdaccio.setUserWorkspacePath(effectiveWorkspacePath);
+    await verdaccio.setUserWorkspacePath(effectiveWorkspacePath);
   }
 
-  // Create a workspace-like object for the rest of the function
-  const userWorkspace = effectiveWorkspacePath ? { path: effectiveWorkspacePath } : null;
+  // Helper to check if a package is a local/workspace package
+  const isLocalPackage = (name: string): boolean =>
+    name.startsWith("@natstack/") ||
+    name.startsWith("@workspace/") ||
+    name.startsWith("@workspace-panels/") ||
+    name.startsWith("@workspace-workers/") ||
+    name.startsWith("@workspace-agents/");
 
   // Translate workspace:* to * (Verdaccio serves local packages)
+  // Also warn about bare "*" usage for local packages (Option 2)
   const resolvedDependencies: Record<string, string> = {};
+  const bareStarPackages: string[] = [];
   for (const [name, version] of Object.entries(dependencies)) {
+    if (version === "*" && isLocalPackage(name)) {
+      bareStarPackages.push(name);
+    }
     resolvedDependencies[name] = version.startsWith("workspace:") ? "*" : version;
+  }
+
+  // Warn about bare "*" usage - developers should use "workspace:*" for clarity
+  if (bareStarPackages.length > 0) {
+    log(`[sharedBuild] Warning: Using bare "*" for local packages: ${bareStarPackages.join(", ")}`);
+    log(`[sharedBuild] Consider using "workspace:*" instead for clarity and pnpm compatibility`);
   }
 
   // Write .npmrc to point to local Verdaccio registry
   const verdaccioUrl = verdaccio.getBaseUrl();
   fs.writeFileSync(npmrcPath, `registry=${verdaccioUrl}\n`);
+
+  // Resolve actual versions for local packages with "*" to include in cache hash (Option 1)
+  // This ensures cache invalidation when a local package is updated
+  const localVersions: Record<string, string> = {};
+  const localPackagesWithStar = Object.entries(resolvedDependencies)
+    .filter(([name, version]) => version === "*" && isLocalPackage(name))
+    .map(([name]) => name);
+
+  if (localPackagesWithStar.length > 0) {
+    // Query Verdaccio for current versions of local packages
+    const versionQueries = localPackagesWithStar.map(async (name) => {
+      const version = await verdaccio.getPackageVersion(name);
+      return { name, version };
+    });
+    const results = await Promise.all(versionQueries);
+    for (const { name, version } of results) {
+      if (version) {
+        localVersions[name] = version;
+      }
+    }
+  }
 
   const desiredPackageJson = {
     name: "natstack-build-runtime",
@@ -417,97 +459,19 @@ export async function installDependencies(
   };
   const serialized = JSON.stringify(desiredPackageJson, null, 2);
 
-  // Get Verdaccio versions for cache invalidation
-  const natstackVersions = await verdaccio.getVerdaccioVersions();
-  const userWorkspaceVersions = userWorkspace
-    ? await verdaccio.getUserWorkspaceVersions(userWorkspace.path)
-    : {};
-  const verdaccioVersions = { ...natstackVersions, ...userWorkspaceVersions };
-
-  // Check if versions changed
-  const allKeys = [...new Set([
-    ...Object.keys(verdaccioVersions),
-    ...Object.keys(lastVerdaccioVersions ?? {})
-  ])].sort();
-  const versionsChanged = !lastVerdaccioVersions ||
-    JSON.stringify(verdaccioVersions, allKeys) !== JSON.stringify(lastVerdaccioVersions, allKeys);
-
-  if (versionsChanged) {
-    relevantVersionsCache.clear();
-  }
-
-  let relevantVersions: Record<string, string>;
-
-  if (!versionsChanged && canonicalPath) {
-    relevantVersions = relevantVersionsCache.get(canonicalPath) ?? {};
-  } else {
-    relevantVersions = {};
-    const packagesDir = getPackagesDir();
-
-    if (!packagesDir) {
-      relevantVersions = { ...verdaccioVersions };
-    } else {
-      const visited = new Set<string>();
-
-      const walkDeps = (pkgName: string) => {
-        if (visited.has(pkgName)) return;
-
-        let pkgJsonPath: string | null = null;
-
-        if (pkgName.startsWith("@natstack/")) {
-          const pkgDir = pkgName.replace("@natstack/", "");
-          pkgJsonPath = path.join(packagesDir, pkgDir, "package.json");
-        } else if (userWorkspace) {
-          if (pkgName.startsWith("@workspace-panels/")) {
-            const pkgDir = pkgName.replace("@workspace-panels/", "");
-            pkgJsonPath = path.join(userWorkspace.path, "panels", pkgDir, "package.json");
-          } else if (pkgName.startsWith("@workspace-workers/")) {
-            const pkgDir = pkgName.replace("@workspace-workers/", "");
-            pkgJsonPath = path.join(userWorkspace.path, "workers", pkgDir, "package.json");
-          } else if (pkgName.startsWith("@workspace-agents/")) {
-            const pkgDir = pkgName.replace("@workspace-agents/", "");
-            pkgJsonPath = path.join(userWorkspace.path, "agents", pkgDir, "package.json");
-          } else if (pkgName.startsWith("@workspace/")) {
-            const pkgDir = pkgName.replace("@workspace/", "");
-            pkgJsonPath = path.join(userWorkspace.path, "packages", pkgDir, "package.json");
-          }
-        }
-
-        if (!pkgJsonPath) return;
-
-        visited.add(pkgName);
-        if (verdaccioVersions[pkgName]) {
-          relevantVersions[pkgName] = verdaccioVersions[pkgName];
-        }
-
-        if (fs.existsSync(pkgJsonPath)) {
-          try {
-            const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8"));
-            for (const dep of Object.keys(pkgJson.dependencies ?? {})) {
-              walkDeps(dep);
-            }
-          } catch {
-            // Skip malformed package.json
-          }
-        }
-      };
-
-      for (const dep of Object.keys(resolvedDependencies)) {
-        walkDeps(dep);
-      }
-    }
-
-    if (canonicalPath) {
-      relevantVersionsCache.set(canonicalPath, relevantVersions);
-    }
-    lastVerdaccioVersions = verdaccioVersions;
-  }
-
-  const hashInput = serialized + JSON.stringify(relevantVersions, Object.keys(relevantVersions).sort());
+  // Compute hash including resolved local package versions
+  // This ensures cache is invalidated when local packages are updated
+  // Sort keys for deterministic hashing
+  const sortedLocalVersions = Object.keys(localVersions).sort().reduce(
+    (acc, key) => { acc[key] = localVersions[key]!; return acc; },
+    {} as Record<string, string>
+  );
+  const hashInput = localPackagesWithStar.length > 0
+    ? serialized + "\n" + JSON.stringify(sortedLocalVersions)
+    : serialized;
   const desiredHash = crypto.createHash("sha256").update(hashInput).digest("hex");
 
   const nodeModulesPath = path.join(depsDir, "node_modules");
-  const packageLockPath = path.join(depsDir, "package-lock.json");
 
   if (previousHash === desiredHash && fs.existsSync(nodeModulesPath)) {
     const existingContent = fs.existsSync(packageJsonPath)
@@ -516,14 +480,45 @@ export async function installDependencies(
     if (existingContent !== serialized) {
       fs.writeFileSync(packageJsonPath, serialized);
     }
-    return { hash: desiredHash, nodeModulesDir: nodeModulesPath };
+    // Extract ESM versions from cached resolution for version pinning
+    const store = await getPackageStore();
+    const cachedResolution = store.getResolutionCache(desiredHash);
+    const esmVersions = new Map<string, string>();
+    if (cachedResolution) {
+      try {
+        const cachedTree = JSON.parse(cachedResolution.treeJson) as SerializedTree;
+        for (const pkg of cachedTree.packages) {
+          if (ESM_SAFE_PACKAGES.has(pkg.name)) {
+            esmVersions.set(pkg.name, pkg.version);
+          }
+        }
+        // Register consumer even on cache hit to ensure publish-time invalidation works after app restart
+        if (consumerKey) {
+          const graph = await getDependencyGraph();
+          const resolvedPackages = cachedTree.packages
+            .map((p) => p.name)
+            .filter(
+              (name) =>
+                name.startsWith("@natstack/") ||
+                name.startsWith("@workspace/") ||
+                name.startsWith("@workspace-panels/") ||
+                name.startsWith("@workspace-workers/") ||
+                name.startsWith("@workspace-agents/")
+            );
+          graph.registerConsumer(consumerKey, resolvedPackages);
+        }
+      } catch {
+        // Ignore parse errors, externals will use unversioned URLs
+      }
+    }
+    return { hash: desiredHash, nodeModulesDir: nodeModulesPath, esmVersions };
   }
 
   fs.writeFileSync(packageJsonPath, serialized);
 
-  if (fs.existsSync(packageLockPath)) {
-    fs.rmSync(packageLockPath, { recursive: true, force: true });
-  }
+  // Resolution is cached by our content-addressable store using the dep hash.
+  // We don't use package-lock.json since any dep change produces a new hash
+  // and triggers fresh resolution anyway.
 
   const store = await getPackageStore();
   const cachedResolution = store.getResolutionCache(desiredHash);
@@ -554,7 +549,37 @@ export async function installDependencies(
   const linker = await createPackageLinker(fetcher);
   await linker.linkFromCache(depsDir, tree);
 
-  return { hash: desiredHash, nodeModulesDir: nodeModulesPath };
+  // Register this consumer with the dependency graph for targeted cache invalidation
+  if (consumerKey) {
+    try {
+      const graph = await getDependencyGraph();
+      // Extract internal packages (only @natstack/* and @workspace*) from resolved tree
+      const resolvedPackages = tree.packages
+        .map((p) => p.name)
+        .filter(
+          (name) =>
+            name.startsWith("@natstack/") ||
+            name.startsWith("@workspace/") ||
+            name.startsWith("@workspace-panels/") ||
+            name.startsWith("@workspace-workers/") ||
+            name.startsWith("@workspace-agents/")
+        );
+      graph.registerConsumer(consumerKey, resolvedPackages);
+    } catch (err) {
+      // Don't fail the build if graph registration fails
+      console.warn(`[sharedBuild] Failed to register consumer ${consumerKey}:`, err);
+    }
+  }
+
+  // Extract ESM versions for version pinning in externals
+  const esmVersions = new Map<string, string>();
+  for (const pkg of tree.packages) {
+    if (ESM_SAFE_PACKAGES.has(pkg.name)) {
+      esmVersions.set(pkg.name, pkg.version);
+    }
+  }
+
+  return { hash: desiredHash, nodeModulesDir: nodeModulesPath, esmVersions };
 }
 
 /**
@@ -571,50 +596,6 @@ export function getNodeResolutionPaths(
     paths.push(appNodeModules);
   }
   return paths;
-}
-
-/**
- * Get a hash of all current Verdaccio package versions.
- */
-export async function getVerdaccioVersionsHash(): Promise<string> {
-  if (!isVerdaccioServerInitialized()) {
-    return "";
-  }
-
-  try {
-    const verdaccio = getVerdaccioServer();
-    const natstackVersions = await verdaccio.getVerdaccioVersions();
-    const userWorkspace = getActiveWorkspace();
-    const userWorkspaceVersions = userWorkspace
-      ? await verdaccio.getUserWorkspaceVersions(userWorkspace.path)
-      : {};
-
-    const allVersions = { ...natstackVersions, ...userWorkspaceVersions };
-
-    if (Object.keys(allVersions).length === 0) {
-      return "";
-    }
-
-    const sorted = Object.keys(allVersions).sort();
-    return crypto.createHash("sha256").update(JSON.stringify(allVersions, sorted)).digest("hex").slice(0, 12);
-  } catch {
-    return "";
-  }
-}
-
-/**
- * Compute a dependency hash from dependencies and Verdaccio versions.
- */
-export function computeDependencyHash(
-  deps: Record<string, string>,
-  verdaccioVersions: Record<string, string>,
-  canonicalPath?: string
-): string {
-  const input = JSON.stringify(deps) + JSON.stringify(verdaccioVersions, Object.keys(verdaccioVersions).sort());
-  if (canonicalPath) {
-    return crypto.createHash("sha256").update(input + canonicalPath).digest("hex");
-  }
-  return crypto.createHash("sha256").update(input).digest("hex");
 }
 
 // ===========================================================================
