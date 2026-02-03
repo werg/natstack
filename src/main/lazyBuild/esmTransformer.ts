@@ -34,6 +34,13 @@ export const ESM_SAFE_PACKAGES = new Set([
 ]);
 
 /**
+ * Cache schema version. Increment when bundling algorithm changes
+ * to auto-invalidate old cache entries.
+ * v1: Initial implementation
+ */
+const ESM_CACHE_SCHEMA_VERSION = 1;
+
+/**
  * Node.js built-ins that should be marked as external during bundling.
  * These won't work in browsers without polyfills.
  */
@@ -61,10 +68,16 @@ export class EsmTransformer {
   private readonly verdaccioUrl: string;
   /** In-memory cache of transforms in progress (promise coalescing) */
   private transformLocks = new Map<string, Promise<string>>();
-  /** Cache of resolved package versions: pkgName -> version */
-  private versionCache = new Map<string, string>();
+  /** Cache of resolved package versions with TTL: pkgName -> { version, timestamp } */
+  private versionCache = new Map<string, { version: string; timestamp: number }>();
+  /** TTL for version cache entries (30 seconds) */
+  private readonly VERSION_CACHE_TTL_MS = 30_000;
   /** Cache of extracted package paths: pkgName@version -> extractedPath */
   private extractedPathCache = new Map<string, string>();
+  /** Timestamp of last eviction check */
+  private lastEvictionCheck = 0;
+  /** Minimum interval between eviction checks (60 seconds) */
+  private readonly EVICTION_CHECK_INTERVAL_MS = 60_000;
 
   constructor(options: EsmTransformerOptions) {
     this.cacheDir = options.cacheDir;
@@ -74,6 +87,45 @@ export class EsmTransformer {
     // Ensure cache directory exists
     if (!fs.existsSync(this.cacheDir)) {
       fs.mkdirSync(this.cacheDir, { recursive: true });
+    }
+
+    // Clean up old schema versions on startup
+    this.cleanupOldSchemaVersions();
+  }
+
+  /**
+   * Clean up old cache schema versions on startup.
+   * Removes directories that don't match the current schema version.
+   */
+  private cleanupOldSchemaVersions(): void {
+    if (!fs.existsSync(this.cacheDir)) return;
+
+    try {
+      const entries = fs.readdirSync(this.cacheDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+
+        const match = entry.name.match(/^v(\d+)$/);
+        if (match && match[1]) {
+          const version = parseInt(match[1], 10);
+          if (version < ESM_CACHE_SCHEMA_VERSION) {
+            // Old schema version - remove it
+            try {
+              fs.rmSync(path.join(this.cacheDir, entry.name), { recursive: true, force: true });
+              log.verbose(` Cleaned up old ESM cache schema v${version}`);
+            } catch { /* ignore cleanup errors */ }
+          }
+        } else if (!entry.name.startsWith("v") && !entry.name.startsWith("_")) {
+          // Legacy entry without version prefix (not a special dir like _extracted)
+          try {
+            fs.rmSync(path.join(this.cacheDir, entry.name), { recursive: true, force: true });
+            log.verbose(` Cleaned up legacy ESM cache entry: ${entry.name}`);
+          } catch { /* ignore cleanup errors */ }
+        }
+      }
+    } catch (error) {
+      // Ignore errors during cleanup - not critical
+      log.verbose(` ESM cache cleanup error: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -131,12 +183,13 @@ export class EsmTransformer {
   /**
    * Resolve the latest version of a package by querying Verdaccio's registry API.
    * This triggers uplinks to npm if the package isn't cached locally.
+   * Results are cached with TTL to prevent stale "latest" resolutions.
    */
   private async resolveLatestVersion(pkgName: string): Promise<string | null> {
-    // Check cache first
+    // Check cache first (with TTL)
     const cached = this.versionCache.get(pkgName);
-    if (cached) {
-      return cached;
+    if (cached && Date.now() - cached.timestamp < this.VERSION_CACHE_TTL_MS) {
+      return cached.version;
     }
 
     // Query Verdaccio's registry API - this will uplink to npm if needed
@@ -154,7 +207,7 @@ export class EsmTransformer {
       // Try dist-tags first
       if (packument["dist-tags"]?.latest) {
         const version = packument["dist-tags"].latest;
-        this.versionCache.set(pkgName, version);
+        this.versionCache.set(pkgName, { version, timestamp: Date.now() });
         return version;
       }
 
@@ -164,7 +217,7 @@ export class EsmTransformer {
         if (versions.length > 0) {
           const lastVersion = versions[versions.length - 1];
           if (lastVersion) {
-            this.versionCache.set(pkgName, lastVersion);
+            this.versionCache.set(pkgName, { version: lastVersion, timestamp: Date.now() });
             return lastVersion;
           }
         }
@@ -290,16 +343,20 @@ export class EsmTransformer {
 
   /**
    * Get the cache path for a package version (and optional subpath).
+   * Includes schema version for auto-invalidation when bundling algorithm changes.
    */
   private getCachePath(pkgName: string, version: string, subpath?: string): string {
-    // Handle scoped packages: @scope/name → @scope/name/version.js
-    // For subpaths: @scope/name/subpath → @scope/name/_subpaths/version/subpath.js
+    // Include schema version for auto-invalidation
+    const versionedBase = path.join(this.cacheDir, `v${ESM_CACHE_SCHEMA_VERSION}`);
+
+    // Handle scoped packages: @scope/name → v1/@scope/name/version.js
+    // For subpaths: @scope/name/subpath → v1/@scope/name/_subpaths/version/subpath.js
     if (subpath) {
       // Sanitize subpath for filesystem (replace slashes in subpath with __)
       const sanitizedSubpath = subpath.replace(/\//g, "__");
-      return path.join(this.cacheDir, pkgName, "_subpaths", version, `${sanitizedSubpath}.js`);
+      return path.join(versionedBase, pkgName, "_subpaths", version, `${sanitizedSubpath}.js`);
     }
-    return path.join(this.cacheDir, pkgName, `${version}.js`);
+    return path.join(versionedBase, pkgName, `${version}.js`);
   }
 
   /**
@@ -711,8 +768,8 @@ export class EsmTransformer {
     }
     fs.writeFileSync(cachePath, bundle);
 
-    // Cleanup old cache entries if needed (simple LRU based on mtime)
-    this.evictCacheIfNeeded();
+    // Cleanup old cache entries if needed (throttled, async, LRU based on mtime)
+    void this.maybeEvictCacheAsync();
 
     const transformedName = subpath ? `${pkgName}@${version}/${subpath}` : `${pkgName}@${version}`;
     log.verbose(` Transformed ${transformedName} (${bundle.length} bytes)`);
@@ -743,7 +800,82 @@ export class EsmTransformer {
   }
 
   /**
-   * Evict old cache entries if total size exceeds max.
+   * Throttled async cache eviction.
+   * Only runs if enough time has passed since last check to avoid blocking I/O on every transform.
+   */
+  private async maybeEvictCacheAsync(): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastEvictionCheck < this.EVICTION_CHECK_INTERVAL_MS) {
+      return;
+    }
+    this.lastEvictionCheck = now;
+
+    // Run async to not block transform response
+    try {
+      const files = await this.getAllCacheFilesAsync();
+      let totalSize = files.reduce((sum, f) => sum + f.size, 0);
+
+      if (totalSize <= this.maxCacheSize) {
+        return;
+      }
+
+      // Sort by mtime (oldest first) and delete until under 80% of limit
+      const targetSize = this.maxCacheSize * 0.8;
+      files.sort((a, b) => a.mtime - b.mtime);
+
+      for (const file of files) {
+        if (totalSize <= targetSize) {
+          break;
+        }
+        try {
+          await fs.promises.rm(file.path);
+          totalSize -= file.size;
+          log.verbose(` Evicted from cache: ${file.path}`);
+        } catch {
+          // Ignore errors during eviction
+        }
+      }
+    } catch {
+      // Ignore cache eviction errors
+    }
+  }
+
+  /**
+   * Get all cache files with metadata (async version for non-blocking I/O).
+   */
+  private async getAllCacheFilesAsync(): Promise<Array<{ path: string; size: number; mtime: number }>> {
+    const files: Array<{ path: string; size: number; mtime: number }> = [];
+
+    const walk = async (dir: string): Promise<void> => {
+      if (!fs.existsSync(dir)) return;
+
+      const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await walk(fullPath);
+        } else if (entry.isFile() && entry.name.endsWith(".js")) {
+          try {
+            const stat = await fs.promises.stat(fullPath);
+            files.push({
+              path: fullPath,
+              size: stat.size,
+              mtime: stat.mtimeMs,
+            });
+          } catch {
+            // Skip files we can't stat
+          }
+        }
+      }
+    };
+
+    await walk(this.cacheDir);
+    return files;
+  }
+
+  /**
+   * Evict old cache entries if total size exceeds max (sync version for legacy/fallback).
+   * @deprecated Use maybeEvictCacheAsync instead
    */
   private evictCacheIfNeeded(): void {
     try {
@@ -810,5 +942,15 @@ export class EsmTransformer {
 
     walk(this.cacheDir);
     return files;
+  }
+
+  /**
+   * Clear in-memory caches (version resolution, extracted paths).
+   * Call this when Verdaccio storage is cleared to avoid stale references.
+   */
+  clearInMemoryCaches(): void {
+    this.versionCache.clear();
+    this.extractedPathCache.clear();
+    this.transformLocks.clear();
   }
 }

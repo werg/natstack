@@ -1656,6 +1656,15 @@ export class PubSubServer {
         };
       }
 
+      // Broadcast spawn error to the channel so all participants can see it
+      this.broadcastEphemeralDebug(client.channel, {
+        debugType: "spawn-error",
+        agentId: msg.agentId,
+        handle,
+        error: errorMsg,
+        buildError,
+      });
+
       this.send(client.ws, {
         kind: "invite-agent-response",
         ref,
@@ -2024,7 +2033,7 @@ export class PubSubServer {
       channel: string;
       handle: string;
       agentId: string;
-      event: "started" | "stopped" | "woken";
+      event: "spawning" | "started" | "stopped" | "woken";
       reason?: "timeout" | "explicit" | "crash" | "idle";
       timestamp: number;
     }) => {
@@ -2034,6 +2043,25 @@ export class PubSubServer {
         handle: data.handle,
         event: data.event,
         reason: data.reason,
+      });
+    });
+
+    host.on("agentLog", (data: {
+      channel: string;
+      handle: string;
+      agentId: string;
+      level: "debug" | "info" | "warn" | "error";
+      message: string;
+      stack?: string;
+      timestamp: number;
+    }) => {
+      this.broadcastEphemeralDebug(data.channel, {
+        debugType: "log",
+        agentId: data.agentId,
+        handle: data.handle,
+        level: data.level,
+        message: data.message,
+        stack: data.stack,
       });
     });
   }
@@ -2056,13 +2084,19 @@ export class PubSubServer {
    * Broadcast an ephemeral debug event to a channel (not persisted).
    */
   private broadcastEphemeralDebug(channel: string, payload: {
-    debugType: "output" | "lifecycle";
+    debugType: "output" | "lifecycle" | "spawn-error" | "log";
     agentId: string;
     handle: string;
     stream?: "stdout" | "stderr";
     content?: string;
-    event?: "started" | "stopped" | "woken";
-    reason?: "timeout" | "explicit" | "crash" | "idle";
+    event?: "spawning" | "started" | "stopped" | "woken" | "warning";
+    reason?: "timeout" | "explicit" | "crash" | "idle" | "dirty-repo";
+    details?: unknown;
+    error?: string;
+    buildError?: AgentBuildError;
+    level?: "debug" | "info" | "warn" | "error";
+    message?: string;
+    stack?: string;
   }): void {
     const state = this.channels.get(channel);
     if (!state) return;

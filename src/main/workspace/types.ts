@@ -144,7 +144,7 @@ export interface WorkspaceConfig {
    * Panels to create on first initialization (when panel tree is empty).
    * These panels are created as root panels before the launcher.
    * Useful for panels that need to run once to seed data or perform setup.
-   * Example: ["panels/agent-manager"]
+   * Example: ["panels/setup-wizard"]
    */
   initPanels?: string[];
 }
