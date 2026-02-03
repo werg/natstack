@@ -117,6 +117,8 @@ export class ViewManager {
   private protectedViewIds = new Set<string>();
   private crashCallback: ((viewId: string, reason: string) => void) | null = null;
   private windowVisible = true;
+  /** Timer for periodic compositor keepalive to prevent stalls */
+  private compositorKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: {
     window: BaseWindow;
@@ -199,6 +201,9 @@ export class ViewManager {
     this.window.on("show", () => this.handleWindowVisibility(true));
     this.window.on("minimize", () => this.handleWindowVisibility(false));
     this.window.on("restore", () => this.handleWindowVisibility(true));
+
+    // Start compositor keepalive to prevent layer painting stalls
+    this.startCompositorKeepalive();
   }
 
   private handleWindowVisibility(visible: boolean): void {
@@ -271,9 +276,10 @@ export class ViewManager {
       sandbox: !isUnsafe,
       session: ses,
       webviewTag: false,
-      // Disable background throttling so views respond immediately when re-shown.
-      // Without this, Chromium throttles hidden views causing input delay on refocus.
-      backgroundThrottling: false,
+      // Allow Chromium to throttle hidden views (saves CPU/battery).
+      // Compositor stalls on *visible* panels are handled by app-level command line
+      // flags and the keepalive timer, not this setting.
+      backgroundThrottling: true,
     };
 
     // Set preload: use provided preload, fall back to safe/unsafe preload, or omit if null
@@ -908,6 +914,8 @@ export class ViewManager {
    * Clean up all views.
    */
   destroy(): void {
+    this.stopCompositorKeepalive();
+
     for (const id of this.views.keys()) {
       if (id !== "shell") {
         this.destroyView(id);
@@ -916,6 +924,38 @@ export class ViewManager {
 
     // Shell is destroyed with window
     this.views.clear();
+  }
+
+  // =========================================================================
+  // Compositor Keepalive
+  // =========================================================================
+
+  /**
+   * Start periodic compositor keepalive to prevent layer painting stalls.
+   * Calls invalidate() on the visible panel every few seconds to ensure
+   * the compositor doesn't go idle and stop painting the layer.
+   */
+  private startCompositorKeepalive(intervalMs = 3000): void {
+    this.stopCompositorKeepalive();
+    this.compositorKeepaliveTimer = setInterval(() => {
+      if (!this.visiblePanelId || !this.windowVisible) {
+        return;
+      }
+      const managed = this.views.get(this.visiblePanelId);
+      if (managed && !managed.view.webContents.isDestroyed()) {
+        managed.view.webContents.invalidate();
+      }
+    }, intervalMs);
+  }
+
+  /**
+   * Stop the compositor keepalive timer.
+   */
+  private stopCompositorKeepalive(): void {
+    if (this.compositorKeepaliveTimer) {
+      clearInterval(this.compositorKeepaliveTimer);
+      this.compositorKeepaliveTimer = null;
+    }
   }
 
   // =========================================================================

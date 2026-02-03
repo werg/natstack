@@ -88,6 +88,16 @@ if (process.env["NATSTACK_DEBUG_PATHS"] === "1") {
 }
 
 // =============================================================================
+// GPU/Compositor Flags (optional, must happen before app ready)
+// =============================================================================
+
+// If WebContentsViews become transparent after extended idle periods (compositor stalls),
+// try enabling these flags. The 3-second keepalive in ViewManager should handle this,
+// but these are a more aggressive fallback if needed.
+// app.commandLine.appendSwitch("disable-renderer-backgrounding");
+// app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+
+// =============================================================================
 // Protocol Registration (must happen before app ready)
 // =============================================================================
 
