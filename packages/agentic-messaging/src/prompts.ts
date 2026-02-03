@@ -16,8 +16,7 @@ Links (NatStack):
 - \`https://...\` links opened from app panels create a browser child panel.
 
 Examples:
-- \`[Open Agent Manager](ns:///panels/agent-manager)\`
-- \`[Open Agent Manager as child](ns:///panels/agent-manager?action=child)\`
+- \`[Open Agent Settings](ns-about://agents)\`
 - \`[Open Root @ HEAD](ns:///panels/root?action=child&gitRef=HEAD)\`
 - \`[Open Settings](ns-about://model-provider-config)\`
 

@@ -1,6 +1,6 @@
 {
   "name": "@natstack/agentic-messaging",
-  "version": "0.1.0-7b24c78153e0",
+  "version": "0.1.0-git.dfc926d",
   "description": "Agentic messaging protocol + SDK over @natstack/pubsub",
   "type": "module",
   "main": "./dist/index.js",
@@ -29,8 +29,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@natstack/core": "workspace:*",
-    "@natstack/pubsub": "workspace:*",
+    "@natstack/core": "workspace*",
+    "@natstack/pubsub": "workspace*",
     "ignore": "^5.3.2",
     "picomatch": "^4.0.0",
     "zod": "^3.24.1",

@@ -326,10 +326,25 @@ export type AgentDebugPayload =
       debugType: "lifecycle";
       agentId: string;
       handle: string;
-      event: "started" | "stopped" | "woken" | "warning";
+      event: "spawning" | "started" | "stopped" | "woken" | "warning";
       reason?: "timeout" | "explicit" | "crash" | "idle" | "dirty-repo";
       /** Additional details for warning events (e.g., dirty repo state) */
       details?: unknown;
+    }
+  | {
+      debugType: "spawn-error";
+      agentId: string;
+      handle: string;
+      error?: string;
+      buildError?: AgentBuildError;
+    }
+  | {
+      debugType: "log";
+      agentId: string;
+      handle: string;
+      level: "debug" | "info" | "warn" | "error";
+      message: string;
+      stack?: string;
     };
 
 /**
@@ -536,8 +551,11 @@ export interface IncomingMethodResult {
 
 /**
  * Aggregated replay event base.
+ * Aggregated events are always replays (historical messages collected during connect).
  */
 export interface AggregatedEventBase {
+  /** Aggregated events are always replays */
+  kind: "replay";
   pubsubId: number;
   senderId: string;
   senderName?: string;

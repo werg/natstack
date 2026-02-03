@@ -80,6 +80,7 @@ function aggregateMessage(
 
   return {
     type: "message",
+    kind: "replay",
     pubsubId: initial.pubsubId,
     senderId: initial.senderId,
     senderName: sender.senderName,
@@ -101,6 +102,7 @@ function aggregateMethodCall(call: IncomingMethodCallEvent): AggregatedMethodCal
   const sender = extractSenderFields(call);
   return {
     type: "method-call",
+    kind: "replay",
     pubsubId: call.pubsubId,
     senderId: call.senderId,
     senderName: sender.senderName,
@@ -141,6 +143,7 @@ function aggregateMethodResult(
 
   return {
     type: "method-result",
+    kind: "replay",
     pubsubId,
     senderId: firstChunk.senderId,
     senderName: sender.senderName,
