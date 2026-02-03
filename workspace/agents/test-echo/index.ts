@@ -9,6 +9,7 @@ import type { EventStreamItem } from "@natstack/agentic-messaging";
 
 interface TestEchoState {
   messageCount: number;
+  [key: string]: unknown;
 }
 
 class TestEchoAgent extends Agent<TestEchoState> {

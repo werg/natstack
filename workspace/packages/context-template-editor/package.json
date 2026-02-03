@@ -7,8 +7,8 @@
     "./types": "./types.ts"
   },
   "dependencies": {
-    "@natstack/runtime": "*",
-    "@natstack/react": "*",
+    "@natstack/runtime": "workspace*",
+    "@natstack/react": "workspace*",
     "@radix-ui/themes": "^3.2.1",
     "@radix-ui/react-icons": "^1.3.2"
   }

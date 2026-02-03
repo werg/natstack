@@ -204,8 +204,9 @@ export default function ProjectPanel() {
             replayMode: "skip",
           });
 
-          // Invite the agent via AgentHost
-          const result = await client.inviteAgent(agentDef.id, {
+          // Invite the agent via AgentHost - fire and forget
+          // Agent will join the channel asynchronously via presence events
+          client.inviteAgent(agentDef.id, {
             handle: getAgentHandle(agentDef),
             config: {
               workingDirectory: effectiveWorkingDirectory,
@@ -214,12 +215,9 @@ export default function ProjectPanel() {
               autonomyLevel: projectConfig.defaultAutonomy ?? PROJECT_DEFAULTS.defaultAutonomy,
               ...projectConfig.defaultAgentConfig,
             },
+          }).catch((err) => {
+            console.warn(`[ProjectPanel] Failed to invite agent:`, err);
           });
-
-          if (!result.success) {
-            console.warn(`[ProjectPanel] Failed to invite agent: ${result.error}`);
-            // Don't fail the whole operation - the chat panel is already created
-          }
 
           // Close pubsub connection
           await client.close();

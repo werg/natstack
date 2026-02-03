@@ -74,10 +74,10 @@
     ]
   },
   "dependencies": {
-    "@natstack/agent-runtime": "*",
-    "@natstack/agent-patterns": "*",
-    "@natstack/agentic-messaging": "*",
-    "@natstack/pubsub": "*",
+    "@natstack/agent-runtime": "workspace*",
+    "@natstack/agent-patterns": "workspace*",
+    "@natstack/agentic-messaging": "workspace*",
+    "@natstack/pubsub": "workspace*",
     "@anthropic-ai/claude-agent-sdk": "*",
     "zod": "*"
   }

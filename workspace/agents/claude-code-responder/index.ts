@@ -430,10 +430,10 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
 
         const metadata: ChatParticipantMetadata = {
           name: "Claude Code",
-          type: "claude-code" as const,
           handle: this.handle,
           agentTypeId: this.agentId,
           ...currentMetadata,
+          type: "claude-code" as const,
           contextUsage: usage,
           executionMode: this.settingsMgr.get().executionMode,
         };
