@@ -93,12 +93,6 @@ interface AgentHostOptions {
   messageStore: MessageStore;
   createToken: (instanceId: string) => string;
   revokeToken: (instanceId: string) => boolean;
-  /**
-   * Timeout in milliseconds for agent startup (waiting for 'ready' message).
-   * Complex agents may need longer to initialize.
-   * @default 30000 (30 seconds)
-   */
-  startupTimeoutMs?: number;
 }
 
 /**
@@ -120,10 +114,23 @@ export interface AgentLifecycleEvent {
   channel: string;
   handle: string;
   agentId: string;
-  event: "started" | "stopped" | "woken" | "warning";
+  event: "spawning" | "started" | "stopped" | "woken" | "warning";
   reason?: "timeout" | "explicit" | "crash" | "idle" | "dirty-repo";
   /** Additional details for warning events */
   details?: unknown;
+  timestamp: number;
+}
+
+/**
+ * Agent log event emitted when agent sends structured log messages.
+ */
+export interface AgentLogEvent {
+  channel: string;
+  handle: string;
+  agentId: string;
+  level: "debug" | "info" | "warn" | "error";
+  message: string;
+  stack?: string;
   timestamp: number;
 }
 
@@ -140,7 +147,6 @@ export interface StoredSpawnConfig {
 // Constants
 // ===========================================================================
 
-const DEFAULT_STARTUP_TIMEOUT_MS = 30_000; // 30s to become ready
 const SHUTDOWN_TIMEOUT_MS = 5_000; // 5s for graceful shutdown
 const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const ACTIVITY_CHECK_INTERVAL_MS = 60_000; // Check every minute
@@ -312,8 +318,10 @@ export class AgentHost extends EventEmitter {
     log.verbose(`[spawn] Forking utilityProcess for ${agentId} (instanceId=${instanceId.slice(0, 8)})`);
 
     // 5. Fork utilityProcess
+    // stdio: 'pipe' is required to capture stdout/stderr - without it the streams are null
     const proc = utilityProcess.fork(buildResult.bundlePath, [], {
       serviceName: `agent-${agentId}-${instanceId.slice(0, 8)}`,
+      stdio: "pipe",
       env: {
         ...process.env,
         NODE_ENV: process.env["NODE_ENV"],
@@ -321,6 +329,15 @@ export class AgentHost extends EventEmitter {
         NODE_PATH: buildResult.nodeModulesDir,
       },
     });
+
+    // Emit spawning lifecycle event immediately so UI can show pending state
+    this.emit("agentLifecycle", {
+      channel: options.channel,
+      handle: options.handle,
+      agentId,
+      event: "spawning",
+      timestamp: Date.now(),
+    } satisfies AgentLifecycleEvent);
 
     // 6. Set up lifecycle promise and RPC bridge BEFORE creating instance
     // This avoids the deferred assignment code smell
@@ -331,25 +348,39 @@ export class AgentHost extends EventEmitter {
       readyReject = reject;
     });
 
-    const startupTimeoutMs = this.options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
-    const startupTimeout = setTimeout(() => {
-      readyReject(new Error(`Agent startup timeout after ${startupTimeoutMs}ms`));
-    }, startupTimeoutMs);
+    // Track whether agent is ready (for logging level decisions)
+    let agentReady = false;
 
     const onLifecycleMessage = (msg: LifecycleMessage) => {
       log.verbose(`[spawn] Lifecycle message from ${agentId}: ${msg.type}`);
       if (msg.type === "ready") {
-        clearTimeout(startupTimeout);
         log.verbose(`[spawn] Agent ${agentId} sent ready signal`);
+        agentReady = true;
         readyResolve();
       } else if (msg.type === "error") {
-        clearTimeout(startupTimeout);
         const errorMsg = (msg["error"] as string) || "Agent initialization error";
+        // Log at both verbose and error level so it's visible without verbose mode
         log.verbose(`[spawn] Agent ${agentId} sent error: ${errorMsg}`);
+        console.error(`[AgentHost] Agent ${agentId} initialization error: ${errorMsg}`);
         if (msg["stack"]) {
           log.verbose(`[spawn] Stack: ${msg["stack"]}`);
+          console.error(`[AgentHost] Stack:\n${msg["stack"]}`);
         }
         readyReject(new Error(errorMsg));
+      } else if (msg.type === "log") {
+        // Forward structured log messages to pubsub channel
+        const level = (msg["level"] as "debug" | "info" | "warn" | "error") || "info";
+        const message = (msg["message"] as string) || "";
+        const stack = msg["stack"] as string | undefined;
+        this.emit("agentLog", {
+          channel: options.channel,
+          handle: options.handle,
+          agentId,
+          level,
+          message,
+          stack,
+          timestamp: Date.now(),
+        } satisfies AgentLogEvent);
       }
     };
 
@@ -377,11 +408,15 @@ export class AgentHost extends EventEmitter {
     this.instances.set(instanceId, instance);
     this.markChannelActivity(options.channel);
 
-    // Capture stdout/stderr for debug events AND devLog
+    // Capture stdout/stderr for debug events AND terminal logging
     proc.stdout?.on("data", (data: Buffer) => {
       const content = data.toString().trimEnd();
-      // Log to devLog for verbose mode visibility
-      log.verbose(`[Agent:${agentId}:stdout] ${content}`);
+      // Log at info level during startup to help debug issues, verbose after ready
+      if (agentReady) {
+        log.verbose(`[Agent:${agentId}:stdout] ${content}`);
+      } else {
+        console.log(`[Agent:${agentId}:stdout] ${content}`);
+      }
       this.emit("agentOutput", {
         channel: options.channel,
         handle: options.handle,
@@ -394,8 +429,12 @@ export class AgentHost extends EventEmitter {
 
     proc.stderr?.on("data", (data: Buffer) => {
       const content = data.toString().trimEnd();
-      // Log to devLog for verbose mode visibility
-      log.verbose(`[Agent:${agentId}:stderr] ${content}`);
+      // Log at error level during startup to help debug issues, verbose after ready
+      if (agentReady) {
+        log.verbose(`[Agent:${agentId}:stderr] ${content}`);
+      } else {
+        console.error(`[Agent:${agentId}:stderr] ${content}`);
+      }
       this.emit("agentOutput", {
         channel: options.channel,
         handle: options.handle,
@@ -407,6 +446,7 @@ export class AgentHost extends EventEmitter {
     });
 
     // Handle process exit - emit lifecycle event only if not already emitted
+    // Also reject readyPromise if process exits before sending ready signal
     proc.on("exit", (code) => {
       log.verbose(`Agent ${agentId} (${instanceId}) exited with code ${code}`);
       const instance = this.instances.get(instanceId);
@@ -423,9 +463,29 @@ export class AgentHost extends EventEmitter {
         } satisfies AgentLifecycleEvent);
       }
       this.cleanupInstance(instanceId);
+      // Reject readyPromise if we haven't received ready yet (process crashed during init)
+      readyReject(new Error(`Agent process exited with code ${code} before sending ready signal`));
     });
 
-    // 8. Send init config
+    // 8. Wait for spawn event before sending init config
+    // utilityProcess emits 'spawn' when the process is ready to receive messages
+    await new Promise<void>((resolve, reject) => {
+      const onSpawn = () => {
+        proc.removeListener("spawn", onSpawn);
+        proc.removeListener("exit", onExit);
+        resolve();
+      };
+      const onExit = (code: number | null) => {
+        proc.removeListener("spawn", onSpawn);
+        proc.removeListener("exit", onExit);
+        reject(new Error(`Agent process exited with code ${code} before spawning`));
+      };
+      proc.on("spawn", onSpawn);
+      proc.on("exit", onExit);
+    });
+    log.verbose(`[spawn] Process spawned for ${agentId}`);
+
+    // 9. Send init config
     const initConfig: AgentInitConfig = {
       agentId,
       channel: options.channel,
@@ -438,8 +498,8 @@ export class AgentHost extends EventEmitter {
     log.verbose(`[spawn] Sending init config to ${agentId}: channel=${options.channel}, pubsubUrl=${this.options.pubsubUrl}`);
     proc.postMessage({ type: "init", config: initConfig });
 
-    // 9. Await ready
-    log.verbose(`[spawn] Waiting for ready signal from ${agentId} (timeout: ${startupTimeoutMs}ms)...`);
+    // 10. Await ready
+    log.verbose(`[spawn] Waiting for ready signal from ${agentId}...`);
     try {
       await readyPromise;
       log.verbose(`[spawn] Agent ${agentId} ready on channel ${options.channel}`);

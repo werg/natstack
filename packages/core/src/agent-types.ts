@@ -123,3 +123,25 @@ export interface AgentInstanceInfo {
   /** Unix timestamp when started */
   startedAt: number;
 }
+
+// =============================================================================
+// Agent Settings Types (for centralized settings management)
+// =============================================================================
+
+/** JSON-serializable value for SQLite storage */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+/** Global settings that apply across all agent sessions */
+export interface GlobalAgentSettings {
+  defaultProjectLocation: "external" | "browser";
+  defaultAutonomy: 0 | 1 | 2;
+}
+
+/** Per-agent default parameter values (JSON-serializable) */
+export type AgentSettings = Record<string, JsonValue>;

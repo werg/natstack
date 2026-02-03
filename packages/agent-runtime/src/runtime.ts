@@ -49,6 +49,7 @@ function createHostMessenger(parentPort: ParentPort) {
 
 /**
  * Create a logger that forwards to the host and also logs locally.
+ * All log levels are forwarded to the host as structured log messages.
  */
 function createAgentLogger(
   agentId: string,
@@ -56,26 +57,34 @@ function createAgentLogger(
 ): AgentLogger {
   const prefix = `[Agent:${agentId}]`;
 
+  const formatMessage = (args: unknown[]): { message: string; stack?: string } => {
+    const message = args.map((a) => (a instanceof Error ? a.message : String(a))).join(" ");
+    const stack = args.find((a) => a instanceof Error)?.stack;
+    return { message, stack };
+  };
+
   return {
     debug: (...args: unknown[]) => {
       console.debug(prefix, ...args);
+      const { message } = formatMessage(args);
+      sendToHost({ type: "log", level: "debug", message });
     },
     info: (...args: unknown[]) => {
       console.info(prefix, ...args);
+      const { message } = formatMessage(args);
+      sendToHost({ type: "log", level: "info", message });
     },
     warn: (...args: unknown[]) => {
       console.warn(prefix, ...args);
+      const { message, stack } = formatMessage(args);
+      sendToHost({ type: "log", level: "warn", message, stack });
     },
     error: (...args: unknown[]) => {
       console.error(prefix, ...args);
-      // Also send errors to host
-      const message = args.map((a) => (a instanceof Error ? a.message : String(a))).join(" ");
-      const stack = args.find((a) => a instanceof Error)?.stack;
-      sendToHost({
-        type: "error",
-        error: message,
-        stack,
-      });
+      const { message, stack } = formatMessage(args);
+      sendToHost({ type: "log", level: "error", message, stack });
+      // Also send legacy error message for backward compatibility during spawn
+      sendToHost({ type: "error", error: message, stack });
     },
   };
 }
@@ -238,6 +247,7 @@ export async function runAgent<S extends AgentState>(
   };
 
   // Step 6: Connect to pubsub (NOW getConnectOptions can use lastCheckpoint AND ctx)
+  log.debug(`Connecting to pubsub at ${pubsubUrl}...`);
   let client: AgenticClient;
   try {
     const customOptions = agent.getConnectOptions?.() ?? {};
@@ -387,13 +397,20 @@ export async function runAgent<S extends AgentState>(
   try {
     // Load settings before onWake (Issue #6 fix)
     // Access loadSettings via type cast since it's protected
+    log.debug("Loading settings...");
     const agentWithSettings = agent as unknown as { loadSettings: () => Promise<void> };
     await agentWithSettings.loadSettings();
+    log.debug("Settings loaded");
 
+    log.debug("Calling onWake...");
     await agent.onWake();
+    log.debug("onWake completed");
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     log.error("onWake failed:", error.message);
+    if (error.stack) {
+      log.error("Stack trace:", error.stack);
+    }
     sendToHost({
       type: "error",
       error: error.message,

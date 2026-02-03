@@ -40,7 +40,8 @@ export type AgentToHostMessage =
   | { type: "state-update"; state: unknown }
   | { type: "state-save"; state: unknown }
   | { type: "shutdown-complete" }
-  | { type: "error"; error: string; stack?: string };
+  | { type: "error"; error: string; stack?: string }
+  | { type: "log"; level: "debug" | "info" | "warn" | "error"; message: string; stack?: string };
 
 /**
  * Type guard for HostToAgentMessage.
@@ -61,7 +62,7 @@ export function isAgentToHostMessage(msg: unknown): msg is AgentToHostMessage {
   const type = (msg as { type: unknown }).type;
   return (
     typeof type === "string" &&
-    ["ready", "state-request", "state-update", "state-save", "shutdown-complete", "error"].includes(
+    ["ready", "state-request", "state-update", "state-save", "shutdown-complete", "error", "log"].includes(
       type
     )
   );

@@ -1,41 +1,23 @@
 /**
  * Agent Builder for utilityProcess agents.
  *
+ * Thin facade over BuildOrchestrator with agent-specific pre-checks:
+ * - Agent discovery validation
+ * - Git dirty state detection
+ *
  * Agents are Node.js processes that run in Electron's utilityProcess.
  * They use the same build infrastructure as panels/workers but with
- * Node.js-specific configuration:
- * - platform: "node" (no browser shims)
- * - target: "node20" (matches Electron's bundled Node.js)
- * - format: "esm" (.mjs output for Node.js ESM loader)
- * - No fs/path shims (full Node.js API access)
- * - Native addon externalization
+ * Node.js-specific configuration (see AgentBuildStrategy).
  */
 
-import * as esbuild from "esbuild";
 import * as fs from "fs";
 import * as path from "path";
 import * as git from "isomorphic-git";
 
-import { createBuildWorkspace, type BuildArtifactKey } from "./build/artifacts.js";
-import {
-  provisionSource,
-  resolveTargetCommit,
-  installDependencies,
-  getNodeResolutionPaths,
-  getVerdaccioVersionsHash,
-  writeBuildTsconfig,
-  runTypeCheck,
-  resolveEntryPoint,
-  loadPackageJson,
-  getDependencyHashFromCache,
-  saveDependencyHashToCache,
-  type VersionSpec,
-  type ProvisionProgress,
-  type TypeCheckDiagnostic,
-} from "./build/sharedBuild.js";
-import { getMainCacheManager } from "./cacheManager.js";
-import { isDev } from "./utils.js";
-import { getActiveWorkspace, getAppNodeModules } from "./paths.js";
+import { getBuildOrchestrator } from "./build/orchestrator.js";
+import { AgentBuildStrategy, type AgentManifest } from "./build/strategies/agentStrategy.js";
+import type { AgentBuildOptions as StrategyOptions, BuildOutput, AgentArtifacts, OnBuildProgress } from "./build/types.js";
+import type { TypeCheckDiagnostic } from "./build/sharedBuild.js";
 import { createDevLogger } from "./devLog.js";
 import { getAgentDiscovery } from "./agentDiscovery.js";
 
@@ -45,19 +27,8 @@ const devLog = createDevLogger("AgentBuilder");
 // Types
 // ===========================================================================
 
-/**
- * Agent manifest from package.json natstack field.
- */
-export interface AgentManifest {
-  /** Type must be "agent" */
-  type: "agent";
-  /** Agent title for display */
-  title: string;
-  /** Optional explicit entry point */
-  entry?: string;
-  /** Dependencies to install */
-  dependencies?: Record<string, string>;
-}
+// Re-export AgentManifest from strategy
+export type { AgentManifest };
 
 /**
  * Build progress callback.
@@ -77,7 +48,7 @@ export interface AgentBuildOptions {
   /** Name of the agent (directory name under agents/) */
   agentName: string;
   /** Optional version specifier (branch, commit, or tag) */
-  version?: VersionSpec;
+  version?: { gitRef?: string };
   /** Progress callback */
   onProgress?: (progress: AgentBuildProgress) => void;
   /** Whether to emit inline sourcemaps (default: true) */
@@ -115,36 +86,6 @@ export interface AgentBuildResult {
 }
 
 // ===========================================================================
-// Default Dependencies
-// ===========================================================================
-
-/**
- * Default dependencies for all agents.
- * Note: @types/node is NOT included - type checking service handles it.
- */
-const defaultAgentDependencies: Record<string, string> = {
-  "@natstack/agent-runtime": "workspace:*",
-  "@natstack/agent-patterns": "workspace:*",
-  "@natstack/agentic-messaging": "workspace:*",
-  "@natstack/ai": "workspace:*",
-  "@natstack/core": "workspace:*",
-  "@natstack/rpc": "workspace:*",
-};
-
-/**
- * Known optional native dependencies that should always be externalized.
- * These may not be declared in package.json but break builds if bundled.
- */
-const KNOWN_OPTIONAL_NATIVE_DEPS = [
-  "fsevents",         // macOS file watching
-  "bufferutil",       // WebSocket optional
-  "utf-8-validate",   // WebSocket optional
-  "node-pty",         // Terminal emulation
-  "cpu-features",     // ssh2 optional
-  "@parcel/watcher",  // File watching optional
-];
-
-// ===========================================================================
 // Git Dirty State Detection
 // ===========================================================================
 
@@ -154,60 +95,50 @@ const KNOWN_OPTIONAL_NATIVE_DEPS = [
  */
 async function checkDirtyRepo(agentPath: string): Promise<DirtyRepoState | null> {
   try {
-    // Find the git root by walking up from the agent path
     const gitRoot = await git.findRoot({ fs, filepath: agentPath });
-
     const statusMatrix = await git.statusMatrix({ fs, dir: gitRoot });
 
     const modified: string[] = [];
     const untracked: string[] = [];
     const staged: string[] = [];
 
-    // Only check files within the agent path
     const relativePath = path.relative(gitRoot, agentPath);
     const prefix = relativePath ? relativePath + "/" : "";
 
     for (const [filepath, headStatus, workdirStatus, stageStatus] of statusMatrix) {
-      // Only consider files within the agent directory
       if (prefix && !filepath.startsWith(prefix)) {
         continue;
       }
 
-      // Modified but not staged (HEAD=1, workdir=2, stage=1)
+      // Modified but not staged
       if (headStatus === 1 && workdirStatus === 2 && stageStatus === 1) {
         modified.push(filepath);
       }
-      // Deleted but not staged (HEAD=1, workdir=0, stage=1)
+      // Deleted but not staged
       else if (headStatus === 1 && workdirStatus === 0 && stageStatus === 1) {
         modified.push(filepath);
       }
-      // Untracked (HEAD=0, workdir=2, stage=0)
+      // Untracked
       else if (headStatus === 0 && workdirStatus === 2 && stageStatus === 0) {
         untracked.push(filepath);
       }
-      // Staged - new file (HEAD=0, stage=2)
+      // Staged - new file
       else if (headStatus === 0 && stageStatus === 2) {
         staged.push(filepath);
       }
-      // Staged - modified (HEAD=1, stage=2)
+      // Staged - modified
       else if (headStatus === 1 && stageStatus === 2) {
         staged.push(filepath);
       }
-      // Staged - deleted (HEAD=1, stage=0, workdir=0)
+      // Staged - deleted
       else if (headStatus === 1 && stageStatus === 0 && workdirStatus === 0) {
         staged.push(filepath);
       }
     }
 
     const isDirty = modified.length > 0 || untracked.length > 0 || staged.length > 0;
-
-    if (!isDirty) {
-      return null;
-    }
-
-    return { modified, untracked, staged };
+    return isDirty ? { modified, untracked, staged } : null;
   } catch (err) {
-    // Not a git repo or other error - assume clean
     devLog.verbose(`[checkDirtyRepo] Could not check git status: ${err}`);
     return null;
   }
@@ -218,10 +149,7 @@ async function checkDirtyRepo(agentPath: string): Promise<DirtyRepoState | null>
 // ===========================================================================
 
 export class AgentBuilder {
-  private cacheManager = getMainCacheManager();
-
-  /** Per-agent build locks for coalescing concurrent builds */
-  private buildLocks = new Map<string, Promise<AgentBuildResult>>();
+  private strategy = new AgentBuildStrategy();
 
   /**
    * Build an agent from source.
@@ -232,48 +160,21 @@ export class AgentBuilder {
    */
   async build(options: AgentBuildOptions): Promise<AgentBuildResult> {
     const { workspaceRoot, agentName, version, onProgress, sourcemap = true } = options;
-
-    // Build coalescing: if already building this agent, return the existing promise
-    const lockKey = `${workspaceRoot}:${agentName}:${JSON.stringify(version ?? {})}`;
-    const existingBuild = this.buildLocks.get(lockKey);
-    if (existingBuild) {
-      devLog.verbose(`Build already in progress for ${agentName}, coalescing`);
-      return existingBuild;
-    }
-
-    const buildPromise = this.doBuild(workspaceRoot, agentName, version, onProgress, sourcemap);
-    this.buildLocks.set(lockKey, buildPromise);
-
-    try {
-      return await buildPromise;
-    } finally {
-      this.buildLocks.delete(lockKey);
-    }
-  }
-
-  private async doBuild(
-    workspaceRoot: string,
-    agentName: string,
-    version: VersionSpec | undefined,
-    onProgress: ((progress: AgentBuildProgress) => void) | undefined,
-    sourcemap: boolean
-  ): Promise<AgentBuildResult> {
-    let cleanup: (() => Promise<void>) | null = null;
-    let buildLog = "";
     const agentPath = `agents/${agentName}`;
     const canonicalAgentPath = path.resolve(workspaceRoot, agentPath);
 
+    let buildLog = "";
     const log = (message: string) => {
       buildLog += message + "\n";
       devLog.verbose(message);
     };
 
-    // Verify agent exists in discovery
+    // Pre-check: Verify agent exists in discovery
     const discovery = getAgentDiscovery();
     if (!discovery) {
       return { success: false, error: "Agent discovery not initialized", buildLog };
     }
-    const agent = discovery.get(agentName); // agentName = directory name = manifest.id
+    const agent = discovery.get(agentName);
     if (!agent) {
       return { success: false, error: `Agent not found: ${agentName}`, buildLog };
     }
@@ -281,331 +182,61 @@ export class AgentBuilder {
       return { success: false, error: `Agent manifest invalid: ${agent.error}`, buildLog };
     }
 
+    // Check for uncommitted changes (for reporting purposes, doesn't block build)
+    let dirtyRepo: DirtyRepoState | null = null;
     try {
-      // Step 1: Get verdaccio versions hash for cache key
-      const versionsHash = await getVerdaccioVersionsHash();
-
-      // Step 2: Early cache check (fast - no git checkout needed)
-      onProgress?.({ state: "provisioning", message: "Checking cache...", log: buildLog });
-
-      const earlyCommit = await resolveTargetCommit(workspaceRoot, agentPath, version);
-
-      if (earlyCommit) {
-        const cacheKey = `agent:${canonicalAgentPath}:${earlyCommit}:${versionsHash}:sm${sourcemap ? 1 : 0}`;
-        const cached = this.cacheManager.get(cacheKey, isDev());
-
-        if (cached) {
-          log(`Cache hit for ${cacheKey}`);
-          onProgress?.({ state: "ready", message: "Loaded from cache", log: buildLog });
-
-          try {
-            return JSON.parse(cached) as AgentBuildResult;
-          } catch {
-            log(`Cache parse failed, will rebuild`);
-          }
-        }
-      }
-
-      // Step 3: Provision source at the right version
-      onProgress?.({ state: "provisioning", message: "Provisioning source...", log: buildLog });
-      log(`Provisioning ${agentPath}${version ? ` at ${JSON.stringify(version)}` : ""}`);
-
-      const provision = await provisionSource({
-        sourceRoot: workspaceRoot,
-        sourcePath: agentPath,
-        version,
-        onProgress: (progress: ProvisionProgress) => {
-          log(`Git: ${progress.message}`);
-        },
-      });
-
-      cleanup = provision.cleanup;
-      const sourcePath = provision.sourcePath;
-      const sourceCommit = provision.commit;
-
-      log(`Source provisioned at ${sourcePath} (commit: ${sourceCommit.slice(0, 8)})`);
-
-      // Check for uncommitted changes in the agent directory
-      const dirtyRepo = await checkDirtyRepo(sourcePath);
+      dirtyRepo = await checkDirtyRepo(canonicalAgentPath);
       if (dirtyRepo) {
-        const totalChanges = dirtyRepo.modified.length + dirtyRepo.untracked.length + dirtyRepo.staged.length;
+        const totalChanges =
+          dirtyRepo.modified.length + dirtyRepo.untracked.length + dirtyRepo.staged.length;
         log(`Warning: Agent has ${totalChanges} uncommitted change(s)`);
       }
+    } catch {
+      // Ignore dirty check errors
+    }
 
-      // Cache key for storing the result (includes sourcemap option)
-      const cacheKey = `agent:${canonicalAgentPath}:${sourceCommit}:${versionsHash}:sm${sourcemap ? 1 : 0}`;
+    // Convert to orchestrator options
+    const orchestratorOptions: StrategyOptions = {
+      workspaceRoot,
+      sourcePath: agentPath,
+      gitRef: version?.gitRef,
+      sourcemap,
+    };
 
-      // Step 4: Load and validate manifest
-      log(`Loading manifest...`);
-      const manifest = this.loadManifest(sourcePath);
-      log(`Manifest loaded: ${manifest.title}`);
-
-      // Step 5: Create build workspace
-      const artifactKey: BuildArtifactKey = {
-        kind: "agent",
-        canonicalPath: canonicalAgentPath,
-        commit: sourceCommit,
-      };
-      const workspace = createBuildWorkspace(artifactKey);
-
-      // Step 6: Install dependencies
-      onProgress?.({ state: "installing", message: "Installing dependencies...", log: buildLog });
-      log(`Installing dependencies...`);
-
-      const runtimeDependencies = this.mergeRuntimeDependencies(manifest.dependencies);
-      const dependencyCacheKey = `deps:agent:${canonicalAgentPath}:${sourceCommit}`;
-      const previousDependencyHash = getDependencyHashFromCache(dependencyCacheKey);
-
-      const installResult = await installDependencies({
-        depsDir: workspace.depsDir,
-        dependencies: runtimeDependencies,
-        previousHash: previousDependencyHash,
-        canonicalPath: canonicalAgentPath,
-        log,
-        userWorkspacePath: workspaceRoot,
-      });
-
-      if (installResult) {
-        await saveDependencyHashToCache(dependencyCacheKey, installResult.hash);
-      }
-      log(`Dependencies installed`);
-
-      // Step 7: Resolve entry point
-      const entry = resolveEntryPoint({
-        sourcePath,
-        manifestEntry: manifest.entry,
-      });
-      const entryPath = path.join(sourcePath, entry);
-      log(`Entry point: ${entry}`);
-
-      // Step 8: Get node module resolution paths
-      const nodePaths = getNodeResolutionPaths(sourcePath, workspace.nodeModulesDir, getAppNodeModules());
-
-      // Step 9: Write build tsconfig
-      const tsconfigPath = writeBuildTsconfig(workspace.buildDir, sourcePath, "agent", {
-        target: "ES2022",
-        module: "ESNext",
-        moduleResolution: "bundler",
-        useDefineForClassFields: true,
-      });
-
-      // Step 10: Build with esbuild AND run type checking in parallel
-      onProgress?.({ state: "building", message: "Building agent...", log: buildLog });
-      log(`Building agent...`);
-
-      // Start type checking (runs in parallel with bundling)
-      const typeCheckPromise = runTypeCheck({
-        sourcePath,
-        nodeModulesDir: workspace.nodeModulesDir,
-        fsShimEnabled: false, // Agents have full Node.js fs access
-        log,
-      });
-
-      // Get externals for esbuild
-      const externals = this.getExternals(sourcePath);
-      log(`Externals: ${externals.join(", ")}`);
-
-      // Bundle path uses .mjs extension to signal ESM to Node.js
-      const bundlePath = path.join(workspace.buildDir, "bundle.mjs");
-
-      // Run esbuild
-      const buildResult = await esbuild.build({
-        entryPoints: [entryPath],
-        bundle: true,
-        platform: "node",
-        target: "node20",
-        format: "esm",
-        outfile: bundlePath,
-        sourcemap: sourcemap ? "inline" : false,
-        keepNames: true,
-        metafile: true,
-        nodePaths,
-        external: externals,
-        tsconfig: tsconfigPath,
-        // No custom conditions - agents use default Node.js resolution
-      });
-
-      // Log bundle size
-      const bundleStats = fs.statSync(bundlePath);
-      const bundleSizeMB = (bundleStats.size / 1024 / 1024).toFixed(2);
-      log(`Bundle size: ${bundleSizeMB}MB`);
-
-      // Warn for large bundles
-      if (bundleStats.size > 10 * 1024 * 1024) {
-        log(`Warning: Bundle size exceeds 10MB. Consider reviewing dependencies.`);
-        if (buildResult.metafile) {
-          this.logLargestInputs(buildResult.metafile, log);
+    // Wrap progress callback
+    const orchestratorProgress: OnBuildProgress | undefined = onProgress
+      ? (progress) => {
+          onProgress({
+            state: progress.state as AgentBuildProgress["state"],
+            message: progress.message,
+            log: progress.log,
+          });
         }
-      }
+      : undefined;
 
-      // Wait for type checking to complete
-      onProgress?.({ state: "type-checking", message: "Type checking...", log: buildLog });
-      const typeErrors = await typeCheckPromise;
+    // Delegate to orchestrator
+    const orchestrator = getBuildOrchestrator();
+    const result = await orchestrator.build(this.strategy, orchestratorOptions, orchestratorProgress);
 
-      // If there are type errors, fail the build
-      if (typeErrors.length > 0) {
-        const errorSummary = typeErrors
-          .slice(0, 40)
-          .map((e) => `${e.file}:${e.line}:${e.column}: ${e.message}`)
-          .join("\n");
-        const moreMsg = typeErrors.length > 40 ? `\n... and ${typeErrors.length - 40} more errors` : "";
-
-        log(`Build failed with ${typeErrors.length} type error(s)`);
-
-        if (cleanup) {
-          await cleanup();
-        }
-
-        return {
-          success: false,
-          error: `TypeScript errors:\n${errorSummary}${moreMsg}`,
-          typeErrors,
-          buildLog,
-          dirtyRepo: dirtyRepo ?? undefined,
-        };
-      }
-
-      log(`Build complete`);
-
-      // Step 11: Cache result and return
-      const result: AgentBuildResult = {
+    // Convert result to AgentBuildResult
+    if (result.success) {
+      const successResult = result as BuildOutput<AgentManifest, AgentArtifacts> & { success: true };
+      return {
         success: true,
-        bundlePath,
-        manifest,
-        nodeModulesDir: workspace.nodeModulesDir,
-        buildLog,
+        bundlePath: successResult.artifacts.bundlePath,
+        manifest: successResult.manifest,
+        nodeModulesDir: successResult.artifacts.nodeModulesDir,
+        buildLog: successResult.buildLog ?? buildLog,
         dirtyRepo: dirtyRepo ?? undefined,
       };
-
-      // Cache the result (excluding bundlePath which is local, we store it relative)
-      const cacheableResult: AgentBuildResult = {
-        ...result,
-        bundlePath, // Keep absolute path for this session
-      };
-      await this.cacheManager.set(cacheKey, JSON.stringify(cacheableResult));
-      log(`Cached build result`);
-
-      // Cleanup temp directory if we used one
-      if (cleanup) {
-        await cleanup();
-        log(`Cleaned up temp directory`);
-      }
-
-      onProgress?.({ state: "ready", message: "Build complete", log: buildLog });
-
-      return result;
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      log(`Build failed: ${errorMsg}`);
-
-      if (cleanup) {
-        try {
-          await cleanup();
-        } catch {
-          // Ignore cleanup errors
-        }
-      }
-
-      onProgress?.({ state: "error", message: errorMsg, log: buildLog });
-
+    } else {
       return {
         success: false,
-        error: errorMsg,
-        buildLog,
+        error: result.error,
+        buildLog: result.buildLog ?? buildLog,
+        typeErrors: result.typeErrors,
+        dirtyRepo: dirtyRepo ?? undefined,
       };
-    }
-  }
-
-  /**
-   * Load and validate agent manifest from package.json.
-   */
-  private loadManifest(sourcePath: string): AgentManifest {
-    const pkgJson = loadPackageJson(sourcePath);
-
-    if (!pkgJson.natstack) {
-      throw new Error(`package.json must include a 'natstack' field for agents`);
-    }
-
-    const natstack = pkgJson.natstack as {
-      type?: string;
-      title?: string;
-      entry?: string;
-      dependencies?: Record<string, string>;
-    };
-
-    if (natstack.type !== "agent") {
-      throw new Error(`natstack.type must be "agent" (got "${natstack.type}")`);
-    }
-
-    if (!natstack.title) {
-      throw new Error("natstack.title must be specified in package.json");
-    }
-
-    // Merge package.json dependencies with natstack.dependencies
-    const manifest: AgentManifest = {
-      type: "agent",
-      title: natstack.title,
-      entry: natstack.entry,
-      dependencies: {
-        ...natstack.dependencies,
-        ...pkgJson.dependencies,
-      },
-    };
-
-    return manifest;
-  }
-
-  /**
-   * Merge agent dependencies with default dependencies.
-   */
-  private mergeRuntimeDependencies(
-    agentDependencies: Record<string, string> | undefined
-  ): Record<string, string> {
-    return {
-      ...defaultAgentDependencies,
-      ...agentDependencies,
-    };
-  }
-
-  /**
-   * Get externals for esbuild.
-   * Externalizes native addons and known optional native dependencies.
-   *
-   * NOTE: We do NOT externalize user's optionalDependencies because:
-   * 1. If externalized, they must be installed to be available at runtime
-   * 2. Native modules are already caught by the "*.node" pattern
-   * 3. Non-native optional deps can be safely bundled
-   *
-   * The KNOWN_OPTIONAL_NATIVE_DEPS are safe to externalize because libraries
-   * that use them have proper try/catch fallbacks (e.g., fsevents on non-macOS).
-   */
-  private getExternals(_sourcePath: string): string[] {
-    const externals = new Set<string>();
-
-    // Pattern-based: all native addon files
-    externals.add("*.node");
-
-    // Known optional native deps that have proper fallbacks in consuming libraries
-    for (const dep of KNOWN_OPTIONAL_NATIVE_DEPS) {
-      externals.add(dep);
-    }
-
-    return Array.from(externals);
-  }
-
-  /**
-   * Log the largest inputs from the metafile for debugging large bundles.
-   */
-  private logLargestInputs(metafile: esbuild.Metafile, log: (message: string) => void): void {
-    const inputs = Object.entries(metafile.inputs)
-      .map(([name, data]) => ({ name, bytes: data.bytes }))
-      .sort((a, b) => b.bytes - a.bytes)
-      .slice(0, 10);
-
-    log(`Largest inputs:`);
-    for (const input of inputs) {
-      const sizeMB = (input.bytes / 1024 / 1024).toFixed(2);
-      log(`  ${sizeMB}MB: ${input.name}`);
     }
   }
 }

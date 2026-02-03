@@ -17,6 +17,9 @@ export type {
   AgentManifest,
   AgentState,
   AgentInstanceInfo,
+  JsonValue,
+  GlobalAgentSettings,
+  AgentSettings,
 } from "./agent-types.js";
 
 // IPC protocol
