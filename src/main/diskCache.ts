@@ -23,7 +23,7 @@ export interface DiskCacheData {
   entries: Record<string, DiskCacheEntry>;
 }
 
-const CACHE_VERSION = "6"; // Bumped: use __VERDACCIO_ESM__ placeholder for port-independent caching
+const CACHE_VERSION = "8"; // Bumped: dirty packages now use content hash instead of mtime
 const CACHE_FILENAME = "build-cache.json";
 
 /**

@@ -24,7 +24,7 @@ const log = createDevLogger("CacheUtils");
 import { promisify } from "util";
 import { getMainCacheManager } from "./cacheManager.js";
 import { clearDiskCache, getDiskCacheSize } from "./diskCache.js";
-import { getBuildArtifactsDirectory, getCentralConfigDirectory } from "./paths.js";
+import { getBuildArtifactsDirectory, getCentralConfigDirectory, getTemplateBuildDirectory } from "./paths.js";
 
 const execAsync = promisify(exec);
 
@@ -37,6 +37,8 @@ export interface CacheClearOptions {
   buildArtifacts?: boolean;
   /** Clear TypeScript type definitions cache (default: true) */
   typesCache?: boolean;
+  /** Clear template builds cache (default: true) */
+  templateBuilds?: boolean;
   /** Clear npm's fetch cache (default: false - can be slow) */
   npmCache?: boolean;
   /** Prune pnpm global store (default: false - can be slow) */
@@ -50,6 +52,7 @@ export interface CacheClearResult {
     verdaccioStorage: boolean;
     buildArtifacts: boolean;
     typesCache: boolean;
+    templateBuilds: boolean;
     npmCache: boolean;
     pnpmStore: boolean;
   };
@@ -137,6 +140,7 @@ export async function clearAllCaches(options?: CacheClearOptions): Promise<Cache
     verdaccioStorage: options?.verdaccioStorage ?? true,
     buildArtifacts: options?.buildArtifacts ?? true,
     typesCache: options?.typesCache ?? true,
+    templateBuilds: options?.templateBuilds ?? true,
     npmCache: options?.npmCache ?? false,
     pnpmStore: options?.pnpmStore ?? false,
   };
@@ -148,6 +152,7 @@ export async function clearAllCaches(options?: CacheClearOptions): Promise<Cache
       verdaccioStorage: false,
       buildArtifacts: false,
       typesCache: false,
+      templateBuilds: false,
       npmCache: false,
       pnpmStore: false,
     },
@@ -161,15 +166,17 @@ export async function clearAllCaches(options?: CacheClearOptions): Promise<Cache
     verdaccioStorage: 0,
     buildArtifacts: 0,
     typesCache: 0,
+    templateBuilds: 0,
   };
 
   try {
     // Get sizes before clearing (in parallel)
-    const [diskCacheSize, verdaccioSize, buildArtifactsSize, typesCacheSize] = await Promise.all([
+    const [diskCacheSize, verdaccioSize, buildArtifactsSize, typesCacheSize, templateBuildsSize] = await Promise.all([
       getDiskCacheSize(),
       getDirectorySize(getVerdaccioStoragePath()),
       getDirectorySize(getBuildArtifactsDirectory()),
       getDirectorySize(getTypesCachePath()),
+      getDirectorySize(getTemplateBuildDirectory()),
     ]);
 
     sizesBefore = {
@@ -177,6 +184,7 @@ export async function clearAllCaches(options?: CacheClearOptions): Promise<Cache
       verdaccioStorage: verdaccioSize,
       buildArtifacts: buildArtifactsSize,
       typesCache: typesCacheSize,
+      templateBuilds: templateBuildsSize,
     };
   } catch (error) {
     console.warn("[CacheUtils] Failed to measure cache sizes:", error);
@@ -252,6 +260,23 @@ export async function clearAllCaches(options?: CacheClearOptions): Promise<Cache
       }
     } catch (error) {
       result.errors.push(`typesCache: ${String(error)}`);
+      result.success = false;
+    }
+  }
+
+  // Clear template builds cache
+  if (opts.templateBuilds) {
+    try {
+      const templateBuildsPath = getTemplateBuildDirectory();
+      if (await removeDirectory(templateBuildsPath)) {
+        result.cleared.templateBuilds = true;
+        result.bytesFreed += sizesBefore.templateBuilds;
+        console.log("[CacheUtils] Cleared template builds cache");
+      } else {
+        throw new Error("Failed to remove directory");
+      }
+    } catch (error) {
+      result.errors.push(`templateBuilds: ${String(error)}`);
       result.success = false;
     }
   }
