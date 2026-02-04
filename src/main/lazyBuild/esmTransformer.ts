@@ -74,6 +74,8 @@ export class EsmTransformer {
   private readonly VERSION_CACHE_TTL_MS = 30_000;
   /** Cache of extracted package paths: pkgName@version -> extractedPath */
   private extractedPathCache = new Map<string, string>();
+  /** Locks for in-progress extractions (promise coalescing) */
+  private extractionLocks = new Map<string, Promise<string>>();
   /** Timestamp of last eviction check */
   private lastEvictionCheck = 0;
   /** Minimum interval between eviction checks (60 seconds) */
@@ -439,6 +441,8 @@ export class EsmTransformer {
   /**
    * Ensure a package is extracted and return its root path.
    * Fetches from Verdaccio if not already extracted.
+   * Uses promise coalescing to prevent race conditions when multiple
+   * concurrent requests try to extract the same package.
    */
   private async ensurePackageExtracted(pkgName: string, version: string): Promise<string> {
     const cacheKey = `${pkgName}@${version}`;
@@ -465,6 +469,28 @@ export class EsmTransformer {
       return extractedDir;
     }
 
+    // Promise coalescing - concurrent requests share the same extraction
+    const existing = this.extractionLocks.get(cacheKey);
+    if (existing) {
+      return existing;
+    }
+
+    const extractionPromise = this.doExtraction(pkgName, version, extractedDir, cacheKey)
+      .finally(() => this.extractionLocks.delete(cacheKey));
+
+    this.extractionLocks.set(cacheKey, extractionPromise);
+    return extractionPromise;
+  }
+
+  /**
+   * Perform the actual extraction of a package.
+   */
+  private async doExtraction(
+    pkgName: string,
+    version: string,
+    extractedDir: string,
+    cacheKey: string
+  ): Promise<string> {
     // Invalid or missing extraction - clean up and re-fetch
     if (fs.existsSync(extractedDir)) {
       log.verbose(` Cleaning up invalid extraction: ${extractedDir}`);
@@ -952,5 +978,6 @@ export class EsmTransformer {
     this.versionCache.clear();
     this.extractedPathCache.clear();
     this.transformLocks.clear();
+    this.extractionLocks.clear();
   }
 }
