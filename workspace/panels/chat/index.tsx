@@ -141,6 +141,53 @@ export default function AgenticChat() {
     console.log("[Chat] pendingAgents state:", entries.length, "agents:", entries.map(([h, a]) => `${h}:${a.status}`));
   }, [pendingAgents]);
 
+  // Pending agent timeout handling with refs to prevent reset on re-renders
+  const PENDING_TIMEOUT_MS = 45_000;
+  const pendingTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  useEffect(() => {
+    const timeouts = pendingTimeoutsRef.current;
+
+    // Add timeouts for new "starting" agents
+    for (const [handle, agent] of pendingAgents) {
+      if (agent.status === "starting" && !timeouts.has(handle)) {
+        const timeout = setTimeout(() => {
+          setPendingAgents(prev => {
+            const next = new Map(prev);
+            const existing = next.get(handle);
+            if (existing?.status === "starting") {
+              next.set(handle, {
+                ...existing,
+                status: "error",
+                error: { message: "Agent failed to start (timeout)" },
+              });
+            }
+            return next;
+          });
+          timeouts.delete(handle);
+        }, PENDING_TIMEOUT_MS);
+        timeouts.set(handle, timeout);
+      }
+    }
+
+    // Clear timeouts for agents no longer pending
+    for (const [handle, timeout] of timeouts) {
+      if (!pendingAgents.has(handle)) {
+        clearTimeout(timeout);
+        timeouts.delete(handle);
+      }
+    }
+  }, [pendingAgents]);
+
+  // Cleanup pending timeouts on unmount
+  useEffect(() => {
+    return () => {
+      for (const timeout of pendingTimeoutsRef.current.values()) {
+        clearTimeout(timeout);
+      }
+    };
+  }, []);
+
   // Track compiled inline UI components by ID
   // Key: inline UI id, Value: { Component, cacheKey, error? }
   const [inlineUiComponents, setInlineUiComponents] = useState<Map<string, {
@@ -456,6 +503,22 @@ export default function AgenticChat() {
           }
         }
         return changed ? next : prev;
+      });
+
+      // Remove stale disconnect messages for agents that rejoined by handle
+      const agentHandles = new Set(
+        Object.values(newParticipants)
+          .filter(p => p.metadata.type !== "panel")
+          .map(p => p.metadata.handle)
+      );
+      setMessages((prev) => {
+        const filtered = prev.filter(msg => {
+          // Keep non-system messages
+          if (msg.kind !== "system" || !msg.disconnectedAgent) return true;
+          // Remove disconnect message if agent with same handle is now present
+          return !agentHandles.has(msg.disconnectedAgent.handle);
+        });
+        return filtered.length === prev.length ? prev : filtered;
       });
 
       // Update refs and state
@@ -1096,12 +1159,29 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
   }, [input, panelClientId, clientRef, stopTyping]);
 
   const handleInterruptAgent = useCallback(
-    async (agentId: string, _messageId?: string) => {
+    async (agentId: string, _messageId?: string, agentHandle?: string) => {
       // Note: messageId is optional and unused - we interrupt the agent, not a specific message
       if (!clientRef.current) return;
+
+      const roster = participantsRef.current;
+      let targetId = agentId;
+
+      // Validate agent exists, fall back to handle lookup if agentId is stale
+      if (!roster[agentId] && agentHandle) {
+        const byHandle = Object.values(roster).find(
+          p => p.metadata.handle === agentHandle && p.metadata.type !== "panel"
+        );
+        if (byHandle) {
+          targetId = byHandle.id;
+        } else {
+          console.warn(`Cannot interrupt: agent ${agentHandle} not in roster`);
+          return;
+        }
+      }
+
       try {
         // Call pause method via RPC - this interrupts the agent
-        await clientRef.current.callMethod(agentId, "pause", {
+        await clientRef.current.callMethod(targetId, "pause", {
           reason: "User interrupted execution",
         }).result;
       } catch (error) {

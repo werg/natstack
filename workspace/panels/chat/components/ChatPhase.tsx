@@ -79,7 +79,7 @@ interface ChatPhaseProps {
   onReset: () => void;
   onFeedbackDismiss: (callId: string) => void;
   onFeedbackError: (callId: string, error: Error) => void;
-  onInterrupt?: (agentId: string, messageId?: string) => void;
+  onInterrupt?: (agentId: string, messageId?: string, agentHandle?: string) => void;
   onCallMethod?: (providerId: string, methodName: string, args: unknown) => void;
   /** Focus a disconnected agent's panel */
   onFocusPanel?: (panelId: string) => void;
@@ -335,9 +335,11 @@ export function ChatPhase({
 
   const handleInterruptMessage = useCallback(
     (msgId: string, senderId: string) => {
-      onInterrupt?.(senderId, msgId);
+      // Pass handle from participants roster for fallback lookup if agentId is stale
+      const handle = participants[senderId]?.metadata?.handle;
+      onInterrupt?.(senderId, msgId, handle);
     },
-    [onInterrupt]
+    [onInterrupt, participants]
   );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -573,8 +575,9 @@ export function ChatPhase({
 
                     // Handler for interrupting typing indicators
                     const handleTypingInterrupt = (senderId: string) => {
-                      // Interrupt the agent - no messageId needed for typing indicators
-                      onInterrupt?.(senderId);
+                      // Interrupt the agent - pass handle for fallback lookup
+                      const handle = participants[senderId]?.metadata?.handle;
+                      onInterrupt?.(senderId, undefined, handle);
                     };
 
                     return <InlineGroup key={item.key} items={deduplicatedItems} onInterrupt={handleTypingInterrupt} />;

@@ -44,6 +44,24 @@ export interface MessageQueueOptions {
    * If not provided, errors are logged to console.
    */
   onError?: (error: Error, event: EventStreamItem) => void;
+
+  /**
+   * Callback invoked before processing each event (for UI updates like queue position).
+   * Receives the event and current queue position (0 = first in queue).
+   */
+  onDequeue?: (event: EventStreamItem, queuePosition: number) => void | Promise<void>;
+
+  /**
+   * Callback invoked periodically during long processing operations.
+   * Used to emit heartbeat messages to prevent inactivity timeout.
+   */
+  onHeartbeat?: () => void | Promise<void>;
+
+  /**
+   * Interval in milliseconds for heartbeat callbacks during processing.
+   * @default 60000 (1 minute)
+   */
+  heartbeatIntervalMs?: number;
 }
 
 /**
@@ -91,6 +109,17 @@ export interface MessageQueue {
    * Check if the queue is currently paused.
    */
   isPaused(): boolean;
+
+  /**
+   * Get the number of pending events in the queue.
+   * Useful for queue position tracking in typing indicators.
+   */
+  getPendingCount(): number;
+
+  /**
+   * Check if any event is currently being processed.
+   */
+  isProcessing(): boolean;
 }
 
 /**
@@ -132,6 +161,9 @@ export function createMessageQueue(options: MessageQueueOptions): MessageQueue {
     onProcess,
     concurrency = 1,
     onError = (err) => console.error("[MessageQueue] Processing error:", err),
+    onDequeue,
+    onHeartbeat,
+    heartbeatIntervalMs = 60_000,
   } = options;
 
   const pending: EventStreamItem[] = [];
@@ -164,9 +196,34 @@ export function createMessageQueue(options: MessageQueueOptions): MessageQueue {
     if (activeCount >= concurrency) return;
     if (pending.length === 0) return;
 
-    // Get next event
+    // Get next event - position 0 means first in queue
+    const queuePosition = 0;
     const event = pending.shift()!;
     activeCount++;
+
+    // Call onDequeue before processing (for UI updates like queue position)
+    if (onDequeue) {
+      try {
+        await onDequeue(event, queuePosition);
+      } catch (err) {
+        // Log but don't fail processing if onDequeue fails
+        console.error("[MessageQueue] onDequeue error:", err);
+      }
+    }
+
+    // Start heartbeat if configured
+    let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+    if (onHeartbeat) {
+      heartbeatInterval = setInterval(() => {
+        void (async () => {
+          try {
+            await onHeartbeat();
+          } catch (err) {
+            console.error("[MessageQueue] onHeartbeat error:", err);
+          }
+        })();
+      }, heartbeatIntervalMs);
+    }
 
     try {
       await onProcess(event);
@@ -174,6 +231,11 @@ export function createMessageQueue(options: MessageQueueOptions): MessageQueue {
       const error = err instanceof Error ? err : new Error(String(err));
       onError(error, event);
     } finally {
+      // Clear heartbeat interval
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+      }
+
       activeCount--;
       checkDrain();
 
@@ -197,12 +259,17 @@ export function createMessageQueue(options: MessageQueueOptions): MessageQueue {
     },
 
     async drain(): Promise<void> {
+      // If paused, auto-resume to allow processing to complete
+      if (paused) {
+        this.resume();
+      }
+
       // If nothing pending or processing, resolve immediately
       if (pending.length === 0 && activeCount === 0) {
         return;
       }
 
-      // Wait for all processing to complete
+      // Wait for all processing to complete (including active work)
       return new Promise((resolve) => {
         drainResolvers.push(resolve);
       });
@@ -239,6 +306,14 @@ export function createMessageQueue(options: MessageQueueOptions): MessageQueue {
 
     isPaused(): boolean {
       return paused;
+    },
+
+    getPendingCount(): number {
+      return pending.length;
+    },
+
+    isProcessing(): boolean {
+      return activeCount > 0;
     },
   };
 }

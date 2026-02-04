@@ -50,6 +50,7 @@ import {
   uint8ArrayToBase64,
   SubagentManager,
   AgenticError,
+  createQueuePositionText,
   type InlineUiData,
   type ContextWindowUsage,
   type SDKStreamEvent,
@@ -305,6 +306,12 @@ function extractToolResultIds(message: unknown): string[] {
 // Claude Code Responder Agent
 // =============================================================================
 
+/** Queued message with per-message typing tracker */
+interface ClaudeCodeQueuedMessage {
+  event: IncomingNewMessage;
+  typingTracker: ReturnType<typeof createTypingTracker>;
+}
+
 class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
   state: ClaudeCodeState = {};
 
@@ -314,6 +321,9 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
   private settingsMgr!: SettingsManager<ClaudeCodeSettings>;
   private missedContext!: MissedContextManager;
   private contextTracker!: ReturnType<typeof createContextTracker>;
+
+  // Per-message typing trackers for queue position display
+  private queuedMessages = new Map<string, ClaudeCodeQueuedMessage>();
 
   // Agent-specific state
   private claudeExecutable!: string;
@@ -396,11 +406,37 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     // Initialize interrupt controller
     this.interrupt = createInterruptController();
 
-    // Initialize message queue
+    // Initialize message queue with queue position tracking
     this.queue = createMessageQueue({
       onProcess: (event) => this.handleUserMessage(event as IncomingNewMessage),
       onError: (err, event) => {
         this.log.error("Event processing failed", err, { eventId: (event as IncomingNewMessage).id });
+      },
+      onDequeue: async (event) => {
+        // Update queue positions for all waiting messages
+        const msgEvent = event as IncomingNewMessage;
+
+        // Remove the dequeued message from our tracking map
+        this.queuedMessages.delete(msgEvent.id);
+
+        // Update remaining messages' positions (0 = next in line)
+        let position = 0;
+        for (const [_id, info] of this.queuedMessages) {
+          const positionText = createQueuePositionText({
+            queueLength: position,
+            isProcessing: true,
+          });
+          await info.typingTracker.startTyping(positionText);
+          position++;
+        }
+      },
+      // Heartbeat to prevent inactivity timeout during long operations
+      onHeartbeat: async () => {
+        try {
+          await this.client.publish("agent-heartbeat", { agentId: this.agentId }, { persist: false });
+        } catch (err) {
+          this.log.warn("Heartbeat failed", err);
+        }
       },
     });
 
@@ -472,6 +508,8 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
   async onEvent(event: EventStreamItem): Promise<void> {
     if (event.type !== "message") return;
 
+    const msgEvent = event as IncomingNewMessage;
+
     // Skip replay messages
     if ("kind" in event && event.kind === "replay") return;
 
@@ -483,8 +521,34 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     if (sender?.metadata.type !== "panel") return;
     if (event.senderId === this.client.clientId) return;
 
-    // Enqueue for ordered processing
-    this.queue.enqueue(event);
+    // Create per-message typing tracker for queue position display
+    const typingTracker = createTypingTracker({
+      client: this.client as AgenticClient<ChatParticipantMetadata>,
+      replyTo: msgEvent.id,
+      senderInfo: {
+        senderId: this.client.clientId ?? "",
+        senderName: "Claude Code",
+        senderType: "claude-code",
+      },
+      log: (msg) => this.log.debug(msg),
+    });
+
+    // Show queue position in typing indicator
+    const positionText = createQueuePositionText({
+      queueLength: this.queuedMessages.size,
+      isProcessing: this.queue.isProcessing(),
+    });
+    await typingTracker.startTyping(positionText);
+
+    // Store the queued message with its typing tracker
+    this.queuedMessages.set(msgEvent.id, { event: msgEvent, typingTracker });
+
+    // Enqueue for ordered processing - cleanup if queue is stopped
+    const enqueued = this.queue.enqueue(event);
+    if (!enqueued) {
+      await typingTracker.cleanup();
+      this.queuedMessages.delete(msgEvent.id);
+    }
   }
 
   async onSleep(): Promise<void> {
@@ -647,6 +711,13 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     const settings = this.settingsMgr.get();
 
     this.log.info(`Received message: ${incoming.content}`);
+
+    // Stop the per-message queue position typing indicator (it's no longer in queue)
+    const queuedInfo = this.queuedMessages.get(incoming.id);
+    if (queuedInfo) {
+      await queuedInfo.typingTracker.cleanup();
+      this.queuedMessages.delete(incoming.id);
+    }
 
     // Validate restricted mode on first message
     if (config.restrictedMode && !this.restrictedModeValidated) {

@@ -21,24 +21,39 @@ import {
   createSettingsManager,
   createMissedContextManager,
   createTrackerManager,
+  createContextTracker,
   createStandardMcpTools,
   executeStandardMcpTool,
 } from "@natstack/agent-patterns";
 import {
   createToolsForAgentSDK,
   jsonSchemaToZodRawShape,
-  createLogger,
   formatArgsForLog,
   createPauseMethodDefinition,
   createRichTextChatSystemPrompt,
   createRestrictedModeSystemPrompt,
   validateRestrictedMode,
   getCanonicalToolName,
+  prettifyToolName,
   getDetailedActionDescription,
   CONTENT_TYPE_TYPING,
+  CONTENT_TYPE_INLINE_UI,
   buildOpenAIContents,
   filterImageAttachments,
   validateAttachments,
+  // Tool approval utilities
+  needsApprovalForTool,
+  showPermissionPrompt,
+  APPROVAL_LEVELS,
+  // TODO list utilities
+  getCachedTodoListCode,
+  // Queue position utilities
+  createQueuePositionText,
+  createTypingTracker,
+  // Interrupt handler for per-message pause events
+  createInterruptHandler,
+  type TodoItem,
+  type InlineUiData,
   type ContextWindowUsage,
   type AgenticClient,
   type ChatParticipantMetadata,
@@ -75,6 +90,8 @@ interface CodexSettings {
   reasoningEffort?: number; // 0=minimal, 1=low, 2=medium, 3=high
   autonomyLevel?: number; // 0=restricted/read-only, 1=standard/workspace, 2=autonomous/full-access
   webSearchEnabled?: boolean;
+  /** Whether we've shown at least one approval prompt (for first-time grant UI) */
+  hasShownApprovalPrompt?: boolean;
   [key: string]: string | number | boolean | undefined;
 }
 
@@ -133,6 +150,85 @@ function getSandboxModeFromAutonomy(
     default:
       return "workspace-write";
   }
+}
+
+/**
+ * Get the NatStack config directory (without Electron app module).
+ * Platform-specific paths:
+ * - Linux: ~/.config/natstack
+ * - macOS: ~/Library/Application Support/natstack
+ * - Windows: %APPDATA%/natstack
+ */
+function getNatStackConfigDir(): string {
+  const home = os.homedir();
+
+  switch (process.platform) {
+    case "win32": {
+      const appData = process.env["APPDATA"] ?? path.join(home, "AppData", "Roaming");
+      return path.join(appData, "natstack");
+    }
+    case "darwin":
+      return path.join(home, "Library", "Application Support", "natstack");
+    default: {
+      const xdgConfig = process.env["XDG_CONFIG_HOME"] ?? path.join(home, ".config");
+      return path.join(xdgConfig, "natstack");
+    }
+  }
+}
+
+/**
+ * Get or create a persistent Codex home directory for a session.
+ * Sessions are stored in <natstack-config>/codex-sessions/<sessionKey>/
+ * This allows session recovery across agent wake/sleep cycles.
+ *
+ * @param sessionKey - Unique session identifier (from pubsub client.sessionKey or contextId)
+ * @param log - Logger function
+ */
+function getCodexHomeForSession(sessionKey: string, log: (msg: string) => void): string {
+  // Sanitize session key for filesystem use
+  const safeKey = sessionKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const codexSessionsDir = path.join(getNatStackConfigDir(), "codex-sessions");
+  const codexHome = path.join(codexSessionsDir, safeKey);
+
+  // Create directory if it doesn't exist
+  fs.mkdirSync(codexHome, { recursive: true });
+
+  // Copy auth.json from default Codex home if not already present
+  const defaultCodexHome = path.join(os.homedir(), ".codex");
+  const defaultAuthPath = path.join(defaultCodexHome, "auth.json");
+  const targetAuthPath = path.join(codexHome, "auth.json");
+
+  if (!fs.existsSync(targetAuthPath) && fs.existsSync(defaultAuthPath)) {
+    try {
+      fs.copyFileSync(defaultAuthPath, targetAuthPath);
+      log(`Copied auth.json from ${defaultCodexHome}`);
+    } catch (err) {
+      log(`Warning: Failed to copy auth.json: ${err}`);
+    }
+  } else if (!fs.existsSync(defaultAuthPath)) {
+    log(`Warning: No auth.json found at ${defaultAuthPath} - run 'codex login' to authenticate`);
+  }
+
+  return codexHome;
+}
+
+/**
+ * Update Codex config.toml with MCP server URL.
+ * Called each time we start an MCP server (which may be on a different port).
+ */
+function updateCodexConfig(codexHome: string, mcpServerUrl: string, log: (msg: string) => void): void {
+  const configPath = path.join(codexHome, "config.toml");
+
+  const config = `
+# Auto-generated Codex config for pubsub tool bridge
+[mcp_servers.pubsub]
+url = "${mcpServerUrl}"
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+`;
+
+  fs.writeFileSync(configPath, config);
+  log(`Updated Codex config at ${configPath}`);
 }
 
 /**
@@ -291,42 +387,16 @@ async function createMcpHttpServer(
   };
 }
 
-/**
- * Create temporary Codex config directory with MCP server configuration.
- */
-function createCodexConfig(mcpServerUrl: string, log: (msg: string) => void): string {
-  const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-"));
-  const configPath = path.join(codexHome, "config.toml");
-
-  const config = `
-# Auto-generated Codex config for pubsub tool bridge
-[mcp_servers.pubsub]
-url = "${mcpServerUrl}"
-startup_timeout_sec = 30
-tool_timeout_sec = 120
-`;
-
-  fs.writeFileSync(configPath, config);
-  log(`Created Codex config at ${configPath}`);
-
-  return codexHome;
-}
-
-/**
- * Clean up temporary Codex config.
- */
-function cleanupCodexConfig(codexHome: string, log: (msg: string) => void): void {
-  try {
-    fs.rmSync(codexHome, { recursive: true, force: true });
-    log(`Cleaned up Codex config at ${codexHome}`);
-  } catch {
-    // Ignore cleanup errors
-  }
-}
 
 // =============================================================================
 // Codex Agent
 // =============================================================================
+
+/** Queued message with per-message typing tracker */
+interface QueuedMessageInfo {
+  event: IncomingNewMessage;
+  typingTracker: ReturnType<typeof createTypingTracker>;
+}
 
 class CodexResponderAgent extends Agent<CodexAgentState, ChatParticipantMetadata> {
   // Pattern helpers from @natstack/agent-patterns
@@ -335,11 +405,20 @@ class CodexResponderAgent extends Agent<CodexAgentState, ChatParticipantMetadata
   private settingsMgr!: ReturnType<typeof createSettingsManager<CodexSettings>>;
   private missedContext!: ReturnType<typeof createMissedContextManager>;
   private trackers!: ReturnType<typeof createTrackerManager>;
-  private logFn!: (msg: string) => void;
+  private contextTracker!: ReturnType<typeof createContextTracker>;
+
+  // Per-message typing trackers for queue position display
+  private queuedMessages = new Map<string, QueuedMessageInfo>();
 
   // Channel configuration
   private workingDirectory?: string;
   private isRestrictedMode = false;
+
+  /**
+   * Persistent Codex home directory for session storage.
+   * Created once in onWake and reused across messages.
+   */
+  private codexHome?: string;
 
   /**
    * Worker-local fallback for SDK session ID.
@@ -353,17 +432,28 @@ class CodexResponderAgent extends Agent<CodexAgentState, ChatParticipantMetadata
   getConnectOptions() {
     // Note: handle is set by the runtime from initInfo, we just set name/type
     // Closures capture `this` - ctx will be populated when methods execute
+    const contextId = this.ctx.config["contextId"] as string | undefined;
+
+    if (!contextId) {
+      this.log.warn("contextId not provided - session persistence may fail");
+    }
+
     return {
       name: "Codex",
       type: "codex" as const,
       reconnect: true,
       // Resume from last checkpoint to avoid replaying already-seen events
       replaySinceId: this.lastCheckpoint,
+      // Add metadata for session tracking
+      ...(contextId && { contextId }),
+      extraMetadata: {
+        agentTypeId: this.agentId,
+      },
       methods: {
         pause: createPauseMethodDefinition(async () => {
           this.interrupt.pause();
           this.interrupt.abortCurrent();
-          this.logFn("Pause RPC received");
+          this.log.info("Pause RPC received");
         }),
         settings: {
           description: "Configure Codex settings",
@@ -385,7 +475,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
           }),
           execute: async ({ title }: { title: string }) => {
             await this.client.setChannelTitle(title);
-            this.logFn(`Set channel title to: ${title}`);
+            this.log.info(`Set channel title to: ${title}`);
             return { success: true, title };
           },
         },
@@ -398,13 +488,37 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
   }
 
   async onWake(): Promise<void> {
-    // Create a simple logger wrapper for patterns that need (msg: string) => void
-    this.logFn = createLogger("Codex Agent", this.ctx.agentId);
-
     // Initialize message queue with correct API
+    const client = this.ctx.client as AgenticClient<ChatParticipantMetadata>;
     this.queue = createMessageQueue({
       onProcess: (event) => this.handleUserMessage(event as IncomingNewMessage),
-      onError: (err, event) => this.logFn(`Error processing message ${(event as IncomingNewMessage).id}: ${err}`),
+      onError: (err, event) => this.log.error(`Error processing message ${(event as IncomingNewMessage).id}`, err),
+      onDequeue: async (event) => {
+        // Update queue positions for all waiting messages
+        const msgEvent = event as IncomingNewMessage;
+
+        // Remove the dequeued message from our tracking map
+        this.queuedMessages.delete(msgEvent.id);
+
+        // Update remaining messages' positions (0 = next in line)
+        let position = 0;
+        for (const [_id, info] of this.queuedMessages) {
+          const positionText = createQueuePositionText({
+            queueLength: position,
+            isProcessing: true,
+          });
+          await info.typingTracker.startTyping(positionText);
+          position++;
+        }
+      },
+      // Heartbeat to prevent inactivity timeout during long operations
+      onHeartbeat: async () => {
+        try {
+          await client.publish("agent-heartbeat", { agentId: this.agentId }, { persist: false });
+        } catch (err) {
+          this.log.warn(`Heartbeat failed: ${err}`);
+        }
+      },
     });
 
     // Initialize interrupt controller (no arguments, or options object)
@@ -424,7 +538,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         senderName: "Codex",
         senderType: "codex",
       },
-      log: (msg) => this.logFn(msg),
+      log: (msg) => this.log.debug(msg),
     });
 
     // Initialize settings with 3-way merge (correct API)
@@ -441,7 +555,6 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     await this.settingsMgr.load();
 
     // Get channel config
-    const client = this.ctx.client as AgenticClient<ChatParticipantMetadata>;
     const channelConfigWorkingDirectory = client.channelConfig?.workingDirectory;
     const channelConfigRestrictedMode = client.channelConfig?.restrictedMode;
     this.workingDirectory =
@@ -452,24 +565,24 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       (this.ctx.config["restrictedMode"] as boolean | undefined) ?? channelConfigRestrictedMode ?? false;
 
     if (this.workingDirectory) {
-      this.logFn(`Working directory: ${this.workingDirectory}`);
+      this.log.info(`Working directory: ${this.workingDirectory}`);
     }
     if (this.isRestrictedMode) {
-      this.logFn(`Restricted mode: enabled`);
+      this.log.info(`Restricted mode: enabled`);
     }
 
     // Validate restricted mode requirements
     if (this.isRestrictedMode) {
-      await validateRestrictedMode(client, this.logFn);
+      await validateRestrictedMode(client, this.log.info);
     }
 
     // Initialize local SDK session fallback from persisted state or client
     if (client.sdkSessionId) {
       this.localSdkSessionId = client.sdkSessionId;
-      this.logFn(`Initialized local SDK session from client: ${this.localSdkSessionId}`);
+      this.log.info(`Initialized local SDK session from client: ${this.localSdkSessionId}`);
     } else if (this.state.sdkSessionId) {
       this.localSdkSessionId = this.state.sdkSessionId;
-      this.logFn(`Initialized local SDK session from state: ${this.localSdkSessionId}`);
+      this.log.info(`Initialized local SDK session from state: ${this.localSdkSessionId}`);
     }
 
     // Handle roster changes (for auto-sleep logic when no panels remain)
@@ -477,7 +590,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       const names = Object.values(roster.participants).map(
         (p) => `${p.metadata.name} (${p.metadata.type})`
       );
-      this.logFn(`Roster updated: ${names.join(", ")}`);
+      this.log.info(`Roster updated: ${names.join(", ")}`);
     });
 
     // Handle reconnection for missed context
@@ -485,7 +598,43 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       this.missedContext.rebuild();
     });
 
-    this.logFn("Codex agent woke up");
+    // Initialize context tracker for token usage monitoring
+    const currentSettings = this.settingsMgr.get();
+    this.contextTracker = createContextTracker({
+      model: currentSettings.model,
+      log: (msg) => this.log.debug(msg),
+      onUpdate: async (usage: ContextWindowUsage) => {
+        // Update participant metadata with context usage
+        const currentMetadata = client.clientId
+          ? client.roster[client.clientId]?.metadata
+          : undefined;
+
+        const metadata: ChatParticipantMetadata = {
+          name: "Codex",
+          type: "codex",
+          handle: this.handle,
+          agentTypeId: this.agentId,
+          ...currentMetadata,
+          contextUsage: usage,
+        };
+
+        try {
+          await client.updateMetadata(metadata);
+        } catch (err) {
+          this.log.info(`Failed to update context usage metadata: ${err}`);
+        }
+      },
+    });
+
+    // Create persistent Codex home directory for session storage
+    // Use contextId from config for persistent storage (allows session recovery across restarts)
+    const contextId = this.ctx.config["contextId"] as string | undefined;
+    if (contextId) {
+      this.codexHome = getCodexHomeForSession(contextId, this.log.info);
+      this.log.info(`Codex home: ${this.codexHome} (persistent)`);
+    }
+
+    this.log.info("Codex agent woke up");
   }
 
   async onEvent(event: { type: string }): Promise<void> {
@@ -505,7 +654,34 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
 
     // Only respond to messages from panels
     if (sender?.metadata.type === "panel" && msgEvent.senderId !== client.clientId) {
-      this.queue.enqueue(msgEvent);
+      // Create per-message typing tracker for queue position display
+      const typingTracker = createTypingTracker({
+        client,
+        replyTo: msgEvent.id,
+        senderInfo: {
+          senderId: client.clientId ?? "",
+          senderName: "Codex",
+          senderType: "codex",
+        },
+        log: (msg) => this.log.debug(msg),
+      });
+
+      // Show queue position in typing indicator
+      const positionText = createQueuePositionText({
+        queueLength: this.queuedMessages.size,
+        isProcessing: this.queue.isProcessing(),
+      });
+      await typingTracker.startTyping(positionText);
+
+      // Store the queued message with its typing tracker
+      this.queuedMessages.set(msgEvent.id, { event: msgEvent, typingTracker });
+
+      // Enqueue - cleanup if queue is stopped
+      const enqueued = this.queue.enqueue(msgEvent);
+      if (!enqueued) {
+        await typingTracker.cleanup();
+        this.queuedMessages.delete(msgEvent.id);
+      }
     }
   }
 
@@ -518,7 +694,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     // NOTE: Settings are persisted by SettingsManager via pubsub session storage.
     // We don't need to store them in agent state.
 
-    this.logFn("Codex agent going to sleep");
+    this.log.info("Codex agent going to sleep");
   }
 
   private async handleSettingsMenu(): Promise<{
@@ -548,18 +724,18 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     };
 
     if (feedbackResult.type === "cancel") {
-      this.logFn("Settings cancelled");
+      this.log.info("Settings cancelled");
       return { success: false, cancelled: true };
     }
 
     if (feedbackResult.type === "error") {
-      this.logFn(`Settings error: ${feedbackResult.message}`);
+      this.log.info(`Settings error: ${feedbackResult.message}`);
       return { success: false, error: feedbackResult.message };
     }
 
     const newSettings = feedbackResult.value as CodexSettings;
     await this.settingsMgr.update(newSettings);
-    this.logFn(`Settings updated: ${JSON.stringify(this.settingsMgr.get())}`);
+    this.log.info(`Settings updated: ${JSON.stringify(this.settingsMgr.get())}`);
 
     // Settings are automatically persisted by SettingsManager via pubsub session storage
 
@@ -567,8 +743,30 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
   }
 
   private async handleUserMessage(incoming: IncomingNewMessage): Promise<void> {
-    this.logFn(`Received message: ${incoming.content}`);
+    this.log.info(`Received message: ${incoming.content}`);
     const client = this.ctx.client as AgenticClient<ChatParticipantMetadata>;
+
+    // Stop the per-message queue position typing indicator (it's no longer in queue)
+    const queuedInfo = this.queuedMessages.get(incoming.id);
+    if (queuedInfo) {
+      await queuedInfo.typingTracker.cleanup();
+      this.queuedMessages.delete(incoming.id);
+    }
+
+    // Create per-message interrupt handler for UI pause events
+    const interruptHandler = createInterruptHandler({
+      client,
+      messageId: incoming.id,
+      onPause: async (reason) => {
+        this.log.info(`Pause received: ${reason}`);
+        // Pause the queue and abort current operation
+        this.queue.pause();
+        this.interrupt.abortCurrent();
+      },
+    });
+
+    // Start monitoring for pause RPCs in background
+    void interruptHandler.monitor();
 
     // Get abort signal for this operation
     const signal = this.interrupt.createAbortSignal();
@@ -586,9 +784,9 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     if (imageAttachments.length > 0) {
       const validation = validateAttachments(imageAttachments);
       if (!validation.valid) {
-        this.logFn(`Attachment validation failed: ${validation.error}`);
+        this.log.info(`Attachment validation failed: ${validation.error}`);
       }
-      this.logFn(`Processing ${imageAttachments.length} image attachment(s)`);
+      this.log.info(`Processing ${imageAttachments.length} image attachment(s)`);
     }
 
     // Build multimodal prompt content if images are present
@@ -600,7 +798,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       namePrefix: "pubsub",
     });
 
-    this.logFn(
+    this.log.info(
       `Discovered ${toolDefs.length} tools from pubsub participants${this.isRestrictedMode ? " (restricted mode)" : ""}`
     );
 
@@ -619,7 +817,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       if (!responseId) {
         const { messageId } = await client.send("", { replyTo: incoming.id });
         responseId = messageId;
-        this.logFn(`Created response message: ${responseId}`);
+        this.log.info(`Created response message: ${responseId}`);
       }
       return responseId;
     };
@@ -635,11 +833,61 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       }
     }
 
-    // Wrap executeTool with action tracking
+    // Get current settings for approval checks
+    const currentSettings = this.settingsMgr.get();
+
+    // Wrap executeTool with action tracking and approval prompts
     const executeToolWithActions = async (name: string, args: unknown): Promise<unknown> => {
       const toolUseId = randomUUID();
       const displayName = originalToDisplayName.get(name) ?? name;
       const argsRecord = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+
+      // Check if approval needed based on autonomy level
+      const autonomyLevel = currentSettings.autonomyLevel ?? APPROVAL_LEVELS.AUTO_SAFE;
+
+      // Skip approval for internal tools (set_title, TodoWrite)
+      const isInternalTool = name === "__set_title__" || name === "__todo_write__";
+
+      if (!isInternalTool && needsApprovalForTool(displayName, autonomyLevel)) {
+        // Find the chat panel participant to show approval prompt
+        const panel = Object.values(client.roster).find(
+          (p) => p.metadata.type === "panel"
+        );
+
+        if (!panel) {
+          this.log.info(`No panel available for approval prompt, denying tool: ${displayName}`);
+          throw new Error(`Permission denied: No panel available to approve ${displayName}`);
+        }
+
+        const { allow, alwaysAllow } = await showPermissionPrompt(
+          client,
+          panel.id,
+          displayName,
+          argsRecord,
+          {
+            isFirstTimeGrant: !currentSettings.hasShownApprovalPrompt,
+            floorLevel: autonomyLevel,
+          }
+        );
+
+        // Mark that we've shown at least one approval prompt
+        if (!currentSettings.hasShownApprovalPrompt) {
+          currentSettings.hasShownApprovalPrompt = true;
+          await this.settingsMgr.update({ hasShownApprovalPrompt: true });
+        }
+
+        if (!allow) {
+          this.log.info(`Permission denied for tool: ${displayName}`);
+          throw new Error(`Permission denied: User denied access to ${displayName}`);
+        }
+
+        // If user selected "Always Allow", upgrade to full auto
+        if (alwaysAllow) {
+          this.log.info(`User granted "Always Allow" - upgrading to full auto`);
+          currentSettings.autonomyLevel = APPROVAL_LEVELS.FULL_AUTO;
+          await this.settingsMgr.update({ autonomyLevel: APPROVAL_LEVELS.FULL_AUTO });
+        }
+      }
 
       await this.trackers.action.startAction({
         type: displayName,
@@ -651,7 +899,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         // Handle standard tools (set_title, TodoWrite)
         const standardResult = await executeStandardMcpTool(name, argsRecord, {
           client,
-          log: (msg) => this.logFn(msg),
+          log: (msg) => this.log.debug(msg),
         });
         if (standardResult.handled) {
           await this.trackers.action.completeAction();
@@ -668,14 +916,16 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     };
 
     let mcpServer: McpHttpServer | null = null;
-    let codexHome: string | null = null;
 
     try {
       // Start MCP HTTP server if we have tools
       if (mcpTools.length > 0) {
-        mcpServer = await createMcpHttpServer(mcpTools, executeToolWithActions, this.logFn);
+        mcpServer = await createMcpHttpServer(mcpTools, executeToolWithActions, this.log.info);
         const mcpServerUrl = `http://127.0.0.1:${mcpServer.port}/mcp`;
-        codexHome = createCodexConfig(mcpServerUrl, this.logFn);
+        // Update config in persistent Codex home directory (if available)
+        if (this.codexHome) {
+          updateCodexConfig(this.codexHome, mcpServerUrl, this.log.info);
+        }
       }
 
       // Initialize Codex SDK
@@ -684,7 +934,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       if (process.env["HOME"]) baseEnv["HOME"] = process.env["HOME"];
       if (process.env["OPENAI_API_KEY"]) baseEnv["OPENAI_API_KEY"] = process.env["OPENAI_API_KEY"];
       if (process.env["CODEX_API_KEY"]) baseEnv["CODEX_API_KEY"] = process.env["CODEX_API_KEY"];
-      if (codexHome) baseEnv["CODEX_HOME"] = codexHome;
+      if (this.codexHome) baseEnv["CODEX_HOME"] = this.codexHome;
 
       // Only set workspace env vars in unrestricted mode
       if (!this.isRestrictedMode) {
@@ -726,10 +976,10 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       const resumeSessionId = this.state.sdkSessionId || client.sdkSessionId || this.localSdkSessionId;
       if (resumeSessionId) {
         const source = this.state.sdkSessionId ? "state" : client.sdkSessionId ? "client" : "local fallback";
-        this.logFn(`Resuming Codex thread: ${resumeSessionId} (${source})`);
+        this.log.info(`Resuming Codex thread: ${resumeSessionId} (${source})`);
         thread = codex.resumeThread(resumeSessionId, threadOptions);
       } else {
-        this.logFn("Starting new Codex thread");
+        this.log.info("Starting new Codex thread");
         thread = codex.startThread(threadOptions);
       }
 
@@ -756,9 +1006,9 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       let currentAgentMessageId: string | null = null;
 
       for await (const event of events) {
-        // Check for abort
-        if (signal.aborted) {
-          this.logFn(`Execution aborted, stopping event processing`);
+        // Check for abort or pause
+        if (signal.aborted || interruptHandler.isPaused()) {
+          this.log.info(`Execution ${interruptHandler.isPaused() ? "paused" : "aborted"}, stopping event processing`);
           break;
         }
 
@@ -774,17 +1024,27 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
               // Also persist to server if possible (for cross-agent resumption)
               if (client.sessionKey) {
                 void client.updateSdkSession(threadId).catch((err) => {
-                  this.logFn(`Failed to persist SDK session to server: ${err}`);
+                  this.log.info(`Failed to persist SDK session to server: ${err}`);
                 });
               }
-              this.logFn(`Thread ID stored: ${threadId}${client.sessionKey ? "" : " (local only)"}`);
+              this.log.info(`Thread ID stored: ${threadId}${client.sessionKey ? "" : " (local only)"}`);
             }
             break;
           }
 
           case "item.started":
           case "item.updated": {
-            const item = event.item as { id?: string; type?: string; text?: string };
+            // Codex has many item types: agent_message, reasoning, command_execution, file_change, mcp_tool_call, web_search, todo_list, error
+            const item = event.item as {
+              id?: string;
+              type?: string;
+              text?: string;
+              command?: string;
+              changes?: Array<{ path: string; kind: string }>;
+              tool?: string;
+              arguments?: unknown;
+              query?: string;
+            };
 
             // Handle reasoning items (thinking content)
             if (item && item.type === "reasoning" && typeof item.text === "string" && item.id) {
@@ -827,14 +1087,97 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
                 itemTextLengths.set(item.id, item.text.length);
               }
             }
+
+            // Handle command_execution items (show commands being run)
+            if (item && item.type === "command_execution" && item.id && item.command) {
+              if (this.trackers.typing.isTyping()) {
+                await this.trackers.typing.stopTyping();
+              }
+              // Format command nicely - truncate long commands
+              const shortCmd = item.command.length > 60 ? item.command.slice(0, 60) + "..." : item.command;
+              await this.trackers.action.startAction({
+                type: "command",
+                description: `Running: ${shortCmd}`,
+                toolUseId: item.id,
+              });
+            }
+
+            // Handle file_change items (show files being edited)
+            if (item && item.type === "file_change" && item.id && item.changes) {
+              if (this.trackers.typing.isTyping()) {
+                await this.trackers.typing.stopTyping();
+              }
+              // Format file changes nicely - show first file or count
+              const changes = item.changes;
+              const description =
+                changes.length === 1
+                  ? `Editing: ${changes[0]?.path ?? "file"}`
+                  : `Editing ${changes.length} files`;
+              await this.trackers.action.startAction({
+                type: "file_edit",
+                description,
+                toolUseId: item.id,
+              });
+            }
+
+            // Handle mcp_tool_call items (show MCP tool calls - our pubsub tools)
+            if (item && item.type === "mcp_tool_call" && item.id && item.tool) {
+              if (this.trackers.typing.isTyping()) {
+                await this.trackers.typing.stopTyping();
+              }
+              // Prettify the tool name and get a detailed description
+              const prettyName = prettifyToolName(item.tool);
+              const args = item.arguments && typeof item.arguments === "object" ? item.arguments as Record<string, unknown> : {};
+              const description = getDetailedActionDescription(prettyName, args);
+              await this.trackers.action.startAction({
+                type: prettyName,
+                description,
+                toolUseId: item.id,
+              });
+            }
+
+            // Handle web_search items
+            if (item && item.type === "web_search" && item.id) {
+              if (this.trackers.typing.isTyping()) {
+                await this.trackers.typing.stopTyping();
+              }
+              const query = item.query ?? "searching...";
+              const shortQuery = query.length > 50 ? query.slice(0, 50) + "..." : query;
+              await this.trackers.action.startAction({
+                type: "web_search",
+                description: `Searching: ${shortQuery}`,
+                toolUseId: item.id,
+              });
+            }
             break;
           }
 
           case "item.completed": {
-            const item =
-              "item" in event
-                ? (event.item as { id?: string; type?: string; text?: string })
-                : null;
+            // Codex item types: agent_message, reasoning, command_execution, file_change, mcp_tool_call, web_search, todo_list, error
+            const item = "item" in event ? (event.item as {
+              id?: string;
+              type?: string;
+              text?: string;
+              // command_execution fields
+              command?: string;
+              aggregated_output?: string;
+              status?: string;
+              exit_code?: number;
+              // file_change fields
+              changes?: Array<{ path: string; kind: string }>;
+              // mcp_tool_call fields
+              server?: string;
+              tool?: string;
+              arguments?: unknown;
+              result?: unknown;
+              // web_search fields
+              query?: string;
+              // todo_list fields
+              items?: Array<{ text: string; completed: boolean }>;
+              // error fields
+              message?: string;
+              error?: { message?: string };
+            }) : null;
 
             if (item && item.type === "reasoning" && item.id && this.trackers.thinking.isThinkingItem(item.id)) {
               const prevLength = itemTextLengths.get(item.id) ?? 0;
@@ -862,17 +1205,78 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
                 itemTextLengths.set(item.id, item.text.length);
               }
             }
+
+            // Handle completed command_execution items - complete the action
+            if (item && item.type === "command_execution" && item.id) {
+              await this.trackers.action.completeAction();
+            }
+
+            // Handle completed file_change items - complete the action
+            if (item && item.type === "file_change" && item.id) {
+              await this.trackers.action.completeAction();
+            }
+
+            // Handle completed mcp_tool_call items - complete the action
+            if (item && item.type === "mcp_tool_call" && item.id) {
+              await this.trackers.action.completeAction();
+            }
+
+            // Handle completed web_search items - complete the action
+            if (item && item.type === "web_search" && item.id) {
+              await this.trackers.action.completeAction();
+            }
+
+            // Handle completed todo_list items - send inline UI
+            if (item && item.type === "todo_list" && item.id) {
+              const todoItems = item.items;
+              if (todoItems && todoItems.length > 0) {
+                try {
+                  // Convert Codex todo format to our format
+                  const todos: TodoItem[] = todoItems.map((t, i) => ({
+                    id: `todo-${i}`,
+                    text: t.text,
+                    completed: t.completed,
+                  }));
+
+                  const inlineUiData: InlineUiData = {
+                    kind: "todolist",
+                    label: "Tasks",
+                    todos,
+                    code: getCachedTodoListCode() ?? "",
+                  };
+
+                  // Send as inline UI message
+                  const msgId = await ensureResponseMessage();
+                  await client.update(msgId, JSON.stringify(inlineUiData), CONTENT_TYPE_INLINE_UI);
+                  this.log.info(`Sent todo list with ${todos.length} items`);
+                } catch (err) {
+                  this.log.info(`Failed to send todo list: ${err}`);
+                }
+              }
+            }
             break;
           }
 
           case "turn.completed": {
+            // Record token usage for context window tracking
+            const turnCompletedEvent = event as { type: "turn.completed"; usage?: { input_tokens?: number; output_tokens?: number } };
+            if (turnCompletedEvent.usage) {
+              await this.contextTracker.recordUsage({
+                inputTokens: turnCompletedEvent.usage.input_tokens ?? 0,
+                outputTokens: turnCompletedEvent.usage.output_tokens ?? 0,
+              });
+            }
+
             if (responseId) {
               await client.complete(responseId);
-              this.logFn(`Completed response for ${incoming.id}`);
+              this.log.info(`Completed response for ${incoming.id}`);
             } else {
               await this.trackers.typing.cleanup();
-              this.logFn(`No response message was created for ${incoming.id}`);
+              this.log.info(`No response message was created for ${incoming.id}`);
             }
+
+            // Mark end of turn for context tracking
+            await this.contextTracker.endTurn();
             break;
           }
 
@@ -887,12 +1291,27 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
               const { messageId: errorMsgId } = await client.send("", { replyTo: incoming.id });
               await client.error(errorMsgId, errorMsg);
             }
-            this.logFn(`Turn failed: ${errorMsg}`);
+            this.log.info(`Turn failed: ${errorMsg}`);
+            break;
+          }
+
+          case "error": {
+            // Handle ThreadErrorEvent - fatal stream error
+            const errorEvent = event as { type: "error"; error?: { message?: string } };
+            const errorMsg = errorEvent.error?.message ?? "Unknown stream error";
+            this.log.info(`Stream error: ${errorMsg}`);
+            // Create a message for the error if none exists
+            if (responseId) {
+              await client.error(responseId, errorMsg);
+            } else {
+              const { messageId: errorMsgId } = await client.send("", { replyTo: incoming.id });
+              await client.error(errorMsgId, errorMsg);
+            }
             break;
           }
 
           default:
-            this.logFn(`Unhandled event type: ${(event as { type: string }).type}`);
+            this.log.info(`Unhandled event type: ${(event as { type: string }).type}`);
             break;
         }
       }
@@ -909,12 +1328,17 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         await client.error(errorMsgId, err instanceof Error ? err.message : String(err));
       }
     } finally {
+      // Cleanup interrupt handler
+      interruptHandler.cleanup();
+
+      // Resume queue and interrupt state for next message (in case we were paused)
+      this.queue.resume();
+      this.interrupt.resume();
+
       if (mcpServer) {
         await mcpServer.close();
       }
-      if (codexHome) {
-        cleanupCodexConfig(codexHome, this.logFn);
-      }
+      // Note: We don't cleanup codexHome because it's persistent across messages
     }
   }
 
