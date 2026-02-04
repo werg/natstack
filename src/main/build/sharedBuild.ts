@@ -45,6 +45,47 @@ export type { TypeCheckDiagnostic };
 const execFileAsync = promisify(execFile);
 
 // ===========================================================================
+// Package Scope Constants
+// ===========================================================================
+
+/**
+ * Package scopes that are considered "internal" (built locally via Verdaccio).
+ * Used for dependency tracking, cache invalidation, and version resolution.
+ */
+export const INTERNAL_PACKAGE_PREFIXES = [
+  "@natstack/",
+  "@workspace/",
+  "@workspace-panels/",
+  "@workspace-workers/",
+  "@workspace-agents/",
+] as const;
+
+/**
+ * Check if a package name is an internal/local package.
+ */
+export function isInternalPackage(name: string): boolean {
+  return INTERNAL_PACKAGE_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
+
+/**
+ * Package scopes from user workspaces (excludes @natstack/).
+ * Used for determining repo source (user workspace vs natstack).
+ */
+export const USER_WORKSPACE_PREFIXES = [
+  "@workspace/",
+  "@workspace-panels/",
+  "@workspace-workers/",
+  "@workspace-agents/",
+] as const;
+
+/**
+ * Check if a package name is from a user workspace.
+ */
+export function isUserWorkspacePackage(name: string): boolean {
+  return USER_WORKSPACE_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
+
+// ===========================================================================
 // Git Provisioning
 // ===========================================================================
 
@@ -402,12 +443,7 @@ export async function installDependencies(
   }
 
   // Helper to check if a package is a local/workspace package
-  const isLocalPackage = (name: string): boolean =>
-    name.startsWith("@natstack/") ||
-    name.startsWith("@workspace/") ||
-    name.startsWith("@workspace-panels/") ||
-    name.startsWith("@workspace-workers/") ||
-    name.startsWith("@workspace-agents/");
+  const isLocalPackage = isInternalPackage;
 
   // Translate workspace:* to * (Verdaccio serves local packages)
   // Also warn about bare "*" usage for local packages (Option 2)
@@ -497,14 +533,7 @@ export async function installDependencies(
           const graph = await getDependencyGraph();
           const resolvedPackages = cachedTree.packages
             .map((p) => p.name)
-            .filter(
-              (name) =>
-                name.startsWith("@natstack/") ||
-                name.startsWith("@workspace/") ||
-                name.startsWith("@workspace-panels/") ||
-                name.startsWith("@workspace-workers/") ||
-                name.startsWith("@workspace-agents/")
-            );
+            .filter(isInternalPackage);
           graph.registerConsumer(consumerKey, resolvedPackages);
         }
       } catch {
@@ -556,14 +585,7 @@ export async function installDependencies(
       // Extract internal packages (only @natstack/* and @workspace*) from resolved tree
       const resolvedPackages = tree.packages
         .map((p) => p.name)
-        .filter(
-          (name) =>
-            name.startsWith("@natstack/") ||
-            name.startsWith("@workspace/") ||
-            name.startsWith("@workspace-panels/") ||
-            name.startsWith("@workspace-workers/") ||
-            name.startsWith("@workspace-agents/")
-        );
+        .filter(isInternalPackage);
       graph.registerConsumer(consumerKey, resolvedPackages);
     } catch (err) {
       // Don't fail the build if graph registration fails
