@@ -613,6 +613,12 @@ app.on("ready", async () => {
         });
         // Wire up types cache invalidation hook (avoids circular imports in verdaccioServer)
         verdaccioServer.setNatstackPublishHook(() => getTypeDefinitionService().invalidateNatstackTypes());
+
+        // Build all workspace packages before starting the server
+        // This handles the "blank slate" case (fresh clone with no dist/ folders)
+        // and prevents the cascading lazy-build issue at startup
+        await verdaccioServer.buildAllWorkspacePackages();
+
         const verdaccioPort = await verdaccioServer.start();
         log.info(`[Verdaccio] Registry started on port ${verdaccioPort}`);
         log.info("[Verdaccio] Lazy publishing enabled - packages published on demand during panel builds");
