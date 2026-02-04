@@ -40,6 +40,7 @@ import { getTokenManager } from "./tokenManager.js";
 import { eventService } from "./services/eventsService.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
 import { shutdownPackageStore, scheduleGC } from "./package-store/index.js";
+import { getDependencyGraph } from "./dependencyGraph.js";
 import { handleDbCall } from "./ipc/dbHandlers.js";
 import { handleBridgeCall } from "./ipc/bridgeHandlers.js";
 import { handleBrowserCall } from "./ipc/browserHandlers.js";
@@ -847,6 +848,16 @@ app.on("will-quit", (event) => {
           })
       );
     }
+
+    // Flush dependency graph consumer registrations to disk
+    stopPromises.push(
+      getDependencyGraph()
+        .then((graph) => graph.flush())
+        .then(() => console.log("[App] Dependency graph flushed"))
+        .catch((error) => {
+          console.error("[App] Error flushing dependency graph:", error);
+        })
+    );
 
     // Shutdown package store (closes SQLite connection)
     try {
