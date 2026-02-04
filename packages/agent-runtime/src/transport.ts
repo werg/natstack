@@ -62,10 +62,15 @@ export function createParentPortTransport(
 
   // Set up global message listener
   const globalListener = (msg: unknown) => {
-    if (!isParentPortEnvelope(msg)) return;
+    // Electron utilityProcess wraps messages in { data: ... } envelope
+    const unwrapped = (msg && typeof msg === "object" && "data" in msg)
+      ? (msg as { data: unknown }).data
+      : msg;
+
+    if (!isParentPortEnvelope(unwrapped)) return;
 
     // Only process messages targeted at us or broadcasts
-    const envelope = msg;
+    const envelope = unwrapped;
     if (envelope.targetId !== selfId && envelope.targetId !== "*") return;
 
     const sourceId = envelope.sourceId ?? "main";

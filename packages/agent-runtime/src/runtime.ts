@@ -96,13 +96,17 @@ function waitForInit(parentPort: ParentPort): Promise<AgentInitConfig> {
   console.log("[agent-runtime] waitForInit: registering message handler");
   return new Promise((resolve) => {
     const handler = (msg: unknown) => {
-      console.log("[agent-runtime] waitForInit: received message:", JSON.stringify(msg).slice(0, 200));
-      if (isHostToAgentMessage(msg) && msg.type === "init") {
+      // Electron utilityProcess wraps messages in { data: ... } envelope
+      const unwrapped = (msg && typeof msg === "object" && "data" in msg)
+        ? (msg as { data: unknown }).data
+        : msg;
+      console.log("[agent-runtime] waitForInit: received message:", JSON.stringify(unwrapped).slice(0, 200));
+      if (isHostToAgentMessage(unwrapped) && unwrapped.type === "init") {
         console.log("[agent-runtime] waitForInit: got init message, resolving");
         parentPort.removeListener("message", handler);
-        resolve(msg.config);
+        resolve(unwrapped.config);
       } else {
-        console.log("[agent-runtime] waitForInit: not an init message, isHostToAgentMessage:", isHostToAgentMessage(msg));
+        console.log("[agent-runtime] waitForInit: not an init message, isHostToAgentMessage:", isHostToAgentMessage(unwrapped));
       }
     };
     parentPort.on("message", handler);
@@ -370,7 +374,11 @@ export async function runAgent<S extends AgentState>(
 
   // Listen for host shutdown message
   parentPort.on("message", async (msg) => {
-    if (isHostToAgentMessage(msg) && msg.type === "shutdown") {
+    // Electron utilityProcess wraps messages in { data: ... } envelope
+    const unwrapped = (msg && typeof msg === "object" && "data" in msg)
+      ? (msg as { data: unknown }).data
+      : msg;
+    if (isHostToAgentMessage(unwrapped) && unwrapped.type === "shutdown") {
       await shutdown("host requested shutdown");
     }
   });
