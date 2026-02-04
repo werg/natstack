@@ -13,7 +13,6 @@ import { z } from "zod";
 import type { ComponentType } from "react";
 import {
   type IncomingEvent,
-  type IncomingMethodResult,
   type IncomingToolRoleRequestEvent,
   type IncomingToolRoleResponseEvent,
   type IncomingToolRoleHandoffEvent,
@@ -21,7 +20,6 @@ import {
   type AgentDebugPayload,
   type MethodDefinition,
   type MethodExecutionContext,
-  type AgentBuildError,
   CONTENT_TYPE_TYPING,
   CONTENT_TYPE_INLINE_UI,
   type TypingData,
@@ -55,6 +53,7 @@ import { createAllToolMethodDefinitions } from "./tools";
 import { useChannelConnection } from "./hooks/useChannelConnection";
 import { useMethodHistory, type ChatMessage } from "./hooks/useMethodHistory";
 import { useToolRole } from "./hooks/useToolRole";
+import { dispatchAgenticEvent, isChatParticipantMetadata, type DirtyRepoDetails } from "./hooks/useAgentEvents";
 import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 import { ToolRoleConflictModal } from "./components/ToolRoleConflictModal";
 import { ChatPhase } from "./components/ChatPhase";
@@ -62,253 +61,6 @@ import { cleanupPendingImages, type PendingImage } from "./utils/imageUtils";
 import type { ChatParticipantMetadata, DisconnectedAgentInfo, PendingAgent, PendingAgentStatus } from "./types";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { parseInlineUiData } from "./components/InlineUiMessage";
-
-/** Utility to check if a value looks like ChatParticipantMetadata */
-function isChatParticipantMetadata(value: unknown): value is ChatParticipantMetadata {
-  if (!value || typeof value !== "object") return false;
-  const obj = value as Record<string, unknown>;
-  return typeof obj.name === "string" && typeof obj.type === "string" && typeof obj.handle === "string";
-}
-
-/**
- * Handles incoming agentic events and updates appropriate state.
- * Pure function to keep event logic separate from component.
- */
-/** Extract contentType from event (typed loosely in the SDK) */
-function getEventContentType(event: IncomingEvent): string | undefined {
-  return (event as { contentType?: string }).contentType;
-}
-
-/** Extract attachments from event */
-function getEventAttachments(event: IncomingEvent): Attachment[] | undefined {
-  return (event as { attachments?: Attachment[] }).attachments;
-}
-
-/**
- * Look up a method description from a provider's method advertisements.
- */
-function getMethodDescription(
-  providerId: string | undefined,
-  methodName: string,
-  participants: Record<string, Participant<ChatParticipantMetadata>>
-): string | undefined {
-  if (!providerId) return undefined;
-  const provider = participants[providerId];
-  if (!provider?.metadata?.methods) return undefined;
-  const method = provider.metadata.methods.find((m) => m.name === methodName);
-  return method?.description;
-}
-
-function dispatchAgenticEvent(
-  event: IncomingEvent,
-  handlers: {
-    setMessages: (updater: (prev: ChatMessage[]) => ChatMessage[]) => void;
-    setHistoricalParticipants: (updater: (prev: Record<string, Participant<ChatParticipantMetadata>>) => Record<string, Participant<ChatParticipantMetadata>>) => void;
-    addMethodHistoryEntry: (entry: MethodHistoryEntry) => void;
-    handleMethodResult: (result: IncomingMethodResult) => void;
-    setDebugEvents?: (updater: (prev: Array<AgentDebugPayload & { ts: number }>) => Array<AgentDebugPayload & { ts: number }>) => void;
-    setDirtyRepoWarnings?: (updater: (prev: Map<string, { modified: string[]; untracked: string[]; staged: string[] }>) => Map<string, { modified: string[]; untracked: string[]; staged: string[] }>) => void;
-    setPendingAgents?: (updater: (prev: Map<string, PendingAgent>) => Map<string, PendingAgent>) => void;
-  },
-  selfId: string | null,
-  participants: Record<string, Participant<ChatParticipantMetadata>>
-): void {
-  const isSelf = !!selfId && event.senderId === selfId;
-  const isPanelSender = event.senderMetadata?.type === "panel" || isSelf;
-  switch (event.type) {
-    case "message": {
-      handlers.setMessages((prev) => {
-        const existingIndex = prev.findIndex((m) => m.id === event.id);
-        if (existingIndex !== -1) {
-          if (prev[existingIndex].pending) {
-            const updated = {
-              ...prev[existingIndex],
-              pending: false,
-              // Merge attachments from server (in case local didn't have them)
-              attachments: getEventAttachments(event) ?? prev[existingIndex].attachments,
-            };
-            if (isPanelSender) {
-              updated.complete = true;
-            }
-            return prev.map((m, i) => (i === existingIndex ? updated : m));
-          }
-          return prev;
-        }
-        return [
-          ...prev,
-          {
-            id: event.id,
-            pubsubId: event.pubsubId,
-            senderId: event.senderId,
-            content: event.content,
-            contentType: getEventContentType(event),
-            replyTo: event.replyTo,
-            kind: "message",
-            complete: event.kind === "replay" || isPanelSender,
-            attachments: getEventAttachments(event),
-          },
-        ];
-      });
-      break;
-    }
-
-    case "update-message": {
-      handlers.setMessages((prev) =>
-        prev.map((m) =>
-          m.id === event.id
-            ? {
-                ...m,
-                content: event.content !== undefined ? m.content + event.content : m.content,
-                contentType: getEventContentType(event) ?? m.contentType,
-                complete: event.complete ?? m.complete,
-              }
-            : m
-        )
-      );
-      break;
-    }
-
-    case "error": {
-      handlers.setMessages((prev) => prev.map((m) => (m.id === event.id ? { ...m, complete: true, error: event.error } : m)));
-      break;
-    }
-
-    case "method-call": {
-      if (event.kind !== "replay" && event.providerId === selfId) {
-        return;
-      }
-      handlers.addMethodHistoryEntry({
-        callId: event.callId,
-        methodName: event.methodName,
-        description: getMethodDescription(event.providerId, event.methodName, participants),
-        args: event.args,
-        status: "pending",
-        startedAt: event.ts ?? Date.now(),
-        providerId: event.providerId,
-        callerId: event.senderId,
-        handledLocally: false,
-      });
-      break;
-    }
-
-    case "method-result": {
-      // Pass the full event - it has all IncomingMethodResult properties
-      handlers.handleMethodResult(event as IncomingMethodResult);
-      break;
-    }
-
-    case "presence": {
-      if (event.action === "join" && isChatParticipantMetadata(event.metadata)) {
-        handlers.setHistoricalParticipants((prev) => ({
-          ...prev,
-          [event.senderId]: {
-            id: event.senderId,
-            metadata: event.metadata as ChatParticipantMetadata,
-          },
-        }));
-      }
-      break;
-    }
-
-    case "execution-pause": {
-      handlers.setMessages((prev) =>
-        prev.map((m) =>
-          m.id === event.messageId
-            ? { ...m, complete: true }
-            : m
-        )
-      );
-      break;
-    }
-
-    case "agent-debug": {
-      // Route debug events to debug console state (not chat messages)
-      if (handlers.setDebugEvents) {
-        const debugPayload = (event as IncomingAgentDebugEvent).payload;
-        handlers.setDebugEvents((prev) => {
-          // Keep last 500 events to prevent memory bloat
-          const updated = [...prev.slice(-499), { ...debugPayload, ts: event.ts }];
-          return updated;
-        });
-
-        // Check for dirty-repo warning lifecycle events
-        if (
-          debugPayload.debugType === "lifecycle" &&
-          (debugPayload as { event?: string }).event === "warning" &&
-          (debugPayload as { reason?: string }).reason === "dirty-repo" &&
-          handlers.setDirtyRepoWarnings
-        ) {
-          const details = (debugPayload as { details?: { modified: string[]; untracked: string[]; staged: string[] } }).details;
-          if (details) {
-            const handle = debugPayload.handle;
-            handlers.setDirtyRepoWarnings((prev) => {
-              const next = new Map(prev);
-              next.set(handle, details);
-              return next;
-            });
-          }
-        }
-
-        // Check for "spawning" lifecycle events - add to pendingAgents
-        // This handles agents added via "Add Agent" flow (channel mode) where stateArgs doesn't have pendingAgents
-        // Note: We don't check roster here because it could be stale. The onRoster callback
-        // will clean up pendingAgents when agents join the roster.
-        if (
-          debugPayload.debugType === "lifecycle" &&
-          (debugPayload as { event?: string }).event === "spawning" &&
-          handlers.setPendingAgents
-        ) {
-          const lifecyclePayload = debugPayload as { agentId: string; handle: string };
-          handlers.setPendingAgents((prev) => {
-            // Don't overwrite existing entry (could be error state)
-            if (prev.has(lifecyclePayload.handle)) return prev;
-            const next = new Map(prev);
-            next.set(lifecyclePayload.handle, {
-              agentId: lifecyclePayload.agentId,
-              status: "starting",
-            });
-            return next;
-          });
-        }
-
-        // Check for spawn-error events and update pendingAgents to error status
-        if (debugPayload.debugType === "spawn-error" && handlers.setPendingAgents) {
-          const errorPayload = debugPayload as {
-            agentId: string;
-            handle: string;
-            error?: string;
-            buildError?: AgentBuildError;
-          };
-          const buildError: AgentBuildError = errorPayload.buildError ?? {
-            message: errorPayload.error ?? "Unknown spawn error",
-          };
-
-          handlers.setPendingAgents((prev) => {
-            const next = new Map(prev);
-            // Find by handle first, then by agentId if handle is missing
-            let targetHandle = errorPayload.handle;
-            if (!targetHandle) {
-              for (const [h, info] of prev) {
-                if (info.agentId === errorPayload.agentId) {
-                  targetHandle = h;
-                  break;
-                }
-              }
-            }
-            if (!targetHandle) return prev; // Can't find matching entry
-            next.set(targetHandle, {
-              agentId: errorPayload.agentId,
-              status: "error",
-              error: buildError,
-            });
-            return next;
-          });
-        }
-      }
-      break;
-    }
-  }
-}
 
 /** Pending agent info passed from chat-launcher */
 interface PendingAgentInfo {
