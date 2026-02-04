@@ -20,6 +20,6 @@
     "dev": "tsc --project tsconfig.build.json --watch"
   },
   "dependencies": {
-    "@natstack/playwright-core": "workspace*"
+    "@natstack/playwright-core": "workspace:*"
   }
 }

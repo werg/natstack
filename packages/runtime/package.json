@@ -21,11 +21,11 @@
     "dev": "tsc --project tsconfig.build.json --watch"
   },
   "dependencies": {
-    "@natstack/agentic-messaging": "workspace*",
-    "@natstack/ai": "workspace*",
-    "@natstack/core": "workspace*",
-    "@natstack/git": "workspace*",
-    "@natstack/rpc": "workspace*",
+    "@natstack/agentic-messaging": "workspace:*",
+    "@natstack/ai": "workspace:*",
+    "@natstack/core": "workspace:*",
+    "@natstack/git": "workspace:*",
+    "@natstack/rpc": "workspace:*",
     "@zenfs/core": "^2.4.4",
     "@zenfs/dom": "^1.2.5",
     "buffer": "^6.0.3",
