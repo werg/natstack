@@ -106,6 +106,9 @@ export async function saveDiskCache(entries: Record<string, DiskCacheEntry>): Pr
       console.warn("[DiskCache] Unable to check disk space:", statfsError);
     }
 
+    // Ensure directory exists
+    await fsPromises.mkdir(path.dirname(cacheFilePath), { recursive: true });
+
     // Write to temporary file first (atomic write pattern)
     await fsPromises.writeFile(tempPath, content, "utf-8");
 
