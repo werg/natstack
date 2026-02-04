@@ -93,14 +93,20 @@ function createAgentLogger(
  * Wait for an init message from the host.
  */
 function waitForInit(parentPort: ParentPort): Promise<AgentInitConfig> {
+  console.log("[agent-runtime] waitForInit: registering message handler");
   return new Promise((resolve) => {
     const handler = (msg: unknown) => {
+      console.log("[agent-runtime] waitForInit: received message:", JSON.stringify(msg).slice(0, 200));
       if (isHostToAgentMessage(msg) && msg.type === "init") {
+        console.log("[agent-runtime] waitForInit: got init message, resolving");
         parentPort.removeListener("message", handler);
         resolve(msg.config);
+      } else {
+        console.log("[agent-runtime] waitForInit: not an init message, isHostToAgentMessage:", isHostToAgentMessage(msg));
       }
     };
     parentPort.on("message", handler);
+    console.log("[agent-runtime] waitForInit: message handler registered");
   });
 }
 
@@ -144,8 +150,12 @@ export async function runAgent<S extends AgentState>(
   AgentClass: new () => Agent<S>,
   config?: AgentInitConfig
 ): Promise<void> {
+  // DEBUG: Trace agent startup
+  console.log("[agent-runtime] runAgent called");
+
   // Step 1: Validate parentPort
   const parentPort = (process as unknown as { parentPort?: ParentPort }).parentPort;
+  console.log("[agent-runtime] parentPort:", parentPort ? "available" : "null");
   if (!parentPort) {
     console.error("agent-runtime must run in utilityProcess (no parentPort available)");
     process.exit(1);
@@ -153,11 +163,13 @@ export async function runAgent<S extends AgentState>(
 
   // Keep process alive while setting up
   parentPort.ref?.();
+  console.log("[agent-runtime] parentPort.ref() called, waiting for init...");
 
   const sendToHost = createHostMessenger(parentPort);
 
   // Step 2: Resolve init config
   const initConfig = config ?? (await waitForInit(parentPort));
+  console.log("[agent-runtime] received init config:", initConfig?.agentId);
   const { agentId, channel, handle, config: agentConfig, pubsubUrl, pubsubToken } = initConfig;
 
   // Create logger
