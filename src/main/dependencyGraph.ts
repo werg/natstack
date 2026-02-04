@@ -1,28 +1,30 @@
 /**
- * Dependency Graph for Build System Cache Invalidation
+ * Consumer Registry for Build System Cache Invalidation
  *
- * Tracks package dependencies for efficient cache invalidation.
- * Instead of walking the dependency graph at build time to compute
- * cache keys, we maintain a reverse dependency index and invalidate
- * caches when packages are published.
+ * Tracks which panels/workers/agents use which packages for targeted cache
+ * invalidation. When a package is published, we invalidate caches for all
+ * consumers that depend on it.
+ *
+ * Note: We don't need to track transitive dependencies because consumers
+ * register with ALL their resolved packages from Arborist (which already
+ * includes transitives). When an intermediate package changes, the consumer
+ * is invalidated directly, rebuilds, and re-registers with updated deps.
  *
  * Benefits:
- * - O(1) cache lookups instead of O(n) graph walks
- * - Targeted invalidation via consumer tracking
- * - Simpler cache keys (no version hashes needed)
- * - Single source of truth for dependencies
+ * - O(1) cache lookups
+ * - O(consumers) invalidation checks (no graph traversal)
+ * - Simple, predictable behavior
  */
 
 import * as fs from "fs";
 import { promises as fsPromises } from "fs";
 import * as path from "path";
 import { app } from "electron";
-import { getPackagesDir } from "./paths.js";
 import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("DependencyGraph");
 
-const CONSUMERS_CACHE_VERSION = "1";
+const CONSUMERS_CACHE_VERSION = "2"; // Bumped: removed transitive tracking
 const CONSUMERS_CACHE_FILENAME = "dependency-consumers.json";
 
 interface ConsumersCacheData {
@@ -31,10 +33,6 @@ interface ConsumersCacheData {
 }
 
 export class DependencyGraph {
-  // Forward: package → packages it depends on
-  private forward = new Map<string, Set<string>>();
-  // Reverse (transitive): package → all packages that depend on it
-  private reverse = new Map<string, Set<string>>();
   // Track which panels/workers use which packages (consumer key → packages)
   private consumers = new Map<string, Set<string>>();
 
@@ -44,51 +42,20 @@ export class DependencyGraph {
   private readonly SAVE_DEBOUNCE_MS = 2000; // 2 seconds
 
   /**
-   * Initialize graph from natstack packages directory.
+   * Initialize the graph. No package discovery needed since consumers
+   * register their resolved packages directly from Arborist.
    */
-  async initialize(natstackPackagesDir: string): Promise<void> {
-    const packages = await this.discoverPackages(natstackPackagesDir);
-
-    for (const pkg of packages) {
-      const deps = this.extractInternalDeps(pkg.packageJson);
-      this.forward.set(pkg.name, new Set(deps));
-    }
-
-    this.computeTransitiveReverse();
-    log.verbose(` Initialized with ${this.forward.size} packages`);
+  async initialize(_natstackPackagesDir: string): Promise<void> {
+    // No-op: consumers are loaded from disk separately
+    log.verbose(` Initialized (consumer-only mode)`);
   }
 
   /**
    * Add workspace packages to the graph.
+   * No-op since we only track consumers, not package relationships.
    */
-  async addWorkspace(workspacePath: string): Promise<void> {
-    const scopes = ["packages", "panels", "workers", "agents"];
-    let addedCount = 0;
-
-    for (const scope of scopes) {
-      const scopePath = path.join(workspacePath, scope);
-      if (!fs.existsSync(scopePath)) continue;
-
-      const packages = await this.discoverPackages(scopePath);
-      for (const pkg of packages) {
-        const deps = this.extractInternalDeps(pkg.packageJson);
-        this.forward.set(pkg.name, new Set(deps));
-        addedCount++;
-      }
-    }
-
-    if (addedCount > 0) {
-      this.computeTransitiveReverse();
-      log.verbose(` Added ${addedCount} workspace packages`);
-    }
-  }
-
-  /**
-   * Get all packages that would be affected by a change to pkgName.
-   * Includes transitive dependents.
-   */
-  getDependents(pkgName: string): Set<string> {
-    return this.reverse.get(pkgName) ?? new Set();
+  async addWorkspace(_workspacePath: string): Promise<void> {
+    // No-op: consumers register their own packages via registerConsumer
   }
 
   /**
@@ -120,24 +87,17 @@ export class DependencyGraph {
 
   /**
    * Get all consumer cache keys affected by a package change.
-   * Returns consumers that directly use the package or transitively depend on it.
+   * Returns consumers that directly use the package.
+   *
+   * Note: We don't need transitive lookup because consumers register with
+   * ALL their resolved packages from Arborist (including transitives).
    */
   getAffectedConsumers(pkgName: string): Set<string> {
     const affected = new Set<string>();
 
-    // Get all packages that could be affected (the changed package + its dependents)
-    const affectedPackages = new Set<string>([pkgName]);
-    for (const dependent of this.getDependents(pkgName)) {
-      affectedPackages.add(dependent);
-    }
-
-    // Find all consumers that use any of the affected packages
     for (const [consumerKey, consumerPackages] of this.consumers) {
-      for (const pkg of affectedPackages) {
-        if (consumerPackages.has(pkg)) {
-          affected.add(consumerKey);
-          break; // No need to check more packages for this consumer
-        }
+      if (consumerPackages.has(pkgName)) {
+        affected.add(consumerKey);
       }
     }
 
@@ -145,49 +105,21 @@ export class DependencyGraph {
   }
 
   /**
-   * Incrementally update when a package's dependencies change.
+   * Update when a package's dependencies change.
+   * No-op since we don't track package relationships anymore.
+   * Consumers will re-register with updated deps when they rebuild.
    */
-  updatePackage(pkgName: string, newDeps: string[]): void {
-    this.forward.set(pkgName, new Set(newDeps));
-    this.computeTransitiveReverse();
-    log.verbose(` Updated ${pkgName} with ${newDeps.length} dependencies`);
+  updatePackage(pkgName: string, _newDeps: string[]): void {
+    log.verbose(` Package ${pkgName} updated (consumers will re-register on rebuild)`);
   }
 
   /**
    * Remove workspace packages when workspace closes.
-   *
-   * NOTE: We intentionally do NOT delete consumers here. Consumer keys use
-   * canonical paths that remain valid across workspace switches. Deleting
-   * consumers on workspace switch would break cache invalidation when the
-   * user returns to the workspace.
-   *
-   * Instead, stale consumers are pruned on app startup via pruneStaleConsumers(),
-   * which checks if the consumer paths still exist on disk.
+   * No-op for package tracking, but consumers are preserved.
    */
-  removeWorkspace(workspacePath: string): void {
-    const prefixes = [
-      "@workspace/",
-      "@workspace-panels/",
-      "@workspace-workers/",
-      "@workspace-agents/",
-    ];
-
-    let removedCount = 0;
-    for (const [pkg] of this.forward) {
-      if (prefixes.some((p) => pkg.startsWith(p))) {
-        this.forward.delete(pkg);
-        this.reverse.delete(pkg);
-        removedCount++;
-      }
-    }
-
-    // DO NOT delete consumers here - they use canonical paths that remain
-    // valid across workspace switches. See pruneStaleConsumers() for cleanup.
-
-    if (removedCount > 0) {
-      this.computeTransitiveReverse();
-      log.verbose(` Removed ${removedCount} workspace packages`);
-    }
+  removeWorkspace(_workspacePath: string): void {
+    // No-op: we don't track package relationships
+    // Consumers are preserved (they use canonical paths)
   }
 
   /**
@@ -219,131 +151,10 @@ export class DependencyGraph {
   }
 
   /**
-   * Get the number of packages in the graph.
-   */
-  getPackageCount(): number {
-    return this.forward.size;
-  }
-
-  /**
    * Get the number of registered consumers.
    */
   getConsumerCount(): number {
     return this.consumers.size;
-  }
-
-  private extractInternalDeps(packageJson: {
-    dependencies?: Record<string, string>;
-    peerDependencies?: Record<string, string>;
-    optionalDependencies?: Record<string, string>;
-  }): string[] {
-    // Include all dependency types that could affect builds
-    const allDeps = {
-      ...(packageJson.dependencies ?? {}),
-      ...(packageJson.peerDependencies ?? {}),
-      ...(packageJson.optionalDependencies ?? {}),
-    };
-
-    return Object.keys(allDeps).filter(
-      (d) =>
-        d.startsWith("@natstack/") ||
-        d.startsWith("@workspace/") ||
-        d.startsWith("@workspace-panels/") ||
-        d.startsWith("@workspace-workers/") ||
-        d.startsWith("@workspace-agents/")
-    );
-  }
-
-  private computeTransitiveReverse(): void {
-    this.reverse.clear();
-
-    // Initialize reverse with direct dependents
-    for (const [pkg, deps] of this.forward) {
-      for (const dep of deps) {
-        if (!this.reverse.has(dep)) {
-          this.reverse.set(dep, new Set());
-        }
-        this.reverse.get(dep)!.add(pkg);
-      }
-    }
-
-    // Compute transitive closure (fixed-point iteration)
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const [pkg, dependents] of this.reverse) {
-        for (const dependent of [...dependents]) {
-          const transitive = this.reverse.get(dependent);
-          if (transitive) {
-            for (const t of transitive) {
-              if (!dependents.has(t)) {
-                dependents.add(t);
-                changed = true;
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  private async discoverPackages(
-    dir: string
-  ): Promise<Array<{ name: string; packageJson: Record<string, unknown> }>> {
-    const results: Array<{ name: string; packageJson: Record<string, unknown> }> = [];
-
-    if (!fs.existsSync(dir)) return results;
-
-    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-
-      if (entry.name.startsWith("@")) {
-        // Scoped package directory
-        const scopePath = path.join(dir, entry.name);
-        const scopedEntries = await fs.promises.readdir(scopePath, {
-          withFileTypes: true,
-        });
-        for (const scoped of scopedEntries) {
-          if (!scoped.isDirectory()) continue;
-          const pkgJsonPath = path.join(scopePath, scoped.name, "package.json");
-          if (fs.existsSync(pkgJsonPath)) {
-            try {
-              const content = JSON.parse(
-                await fs.promises.readFile(pkgJsonPath, "utf-8")
-              ) as { name?: string; private?: boolean };
-              if (!content.private && content.name) {
-                results.push({
-                  name: content.name,
-                  packageJson: content as Record<string, unknown>,
-                });
-              }
-            } catch {
-              // Skip malformed package.json
-            }
-          }
-        }
-      } else {
-        const pkgJsonPath = path.join(dir, entry.name, "package.json");
-        if (fs.existsSync(pkgJsonPath)) {
-          try {
-            const content = JSON.parse(
-              await fs.promises.readFile(pkgJsonPath, "utf-8")
-            ) as { name?: string; private?: boolean };
-            if (!content.private && content.name) {
-              results.push({
-                name: content.name,
-                packageJson: content as Record<string, unknown>,
-              });
-            }
-          } catch {
-            // Skip malformed package.json
-          }
-        }
-      }
-    }
-
-    return results;
   }
 
   // =========================================================================
@@ -421,6 +232,9 @@ export class DependencyGraph {
 
       const content = JSON.stringify(data);
 
+      // Ensure directory exists
+      await fsPromises.mkdir(path.dirname(cachePath), { recursive: true });
+
       // Atomic write: write to temp file, then rename
       await fsPromises.writeFile(tempPath, content, "utf-8");
       await fsPromises.rename(tempPath, cachePath);
@@ -468,10 +282,6 @@ let dependencyGraph: DependencyGraph | null = null;
 export async function getDependencyGraph(): Promise<DependencyGraph> {
   if (!dependencyGraph) {
     dependencyGraph = new DependencyGraph();
-    const packagesDir = getPackagesDir();
-    if (packagesDir) {
-      await dependencyGraph.initialize(packagesDir);
-    }
     // Load persisted consumer registrations
     await dependencyGraph.loadConsumersFromDisk();
     // Prune stale consumers (deleted panels/workers/agents)
