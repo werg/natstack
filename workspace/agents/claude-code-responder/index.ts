@@ -24,7 +24,6 @@ import { join } from "path";
 import { Agent, runAgent } from "@natstack/agent-runtime";
 import type { EventStreamItem } from "@natstack/agentic-messaging";
 import {
-  createToolsForAgentSDK,
   jsonSchemaToZodRawShape,
   formatArgsForLog,
   createInterruptHandler,
@@ -32,16 +31,13 @@ import {
   createRichTextChatSystemPrompt,
   createRestrictedModeSystemPrompt,
   DEFAULT_MISSED_CONTEXT_MAX_CHARS,
-  formatMissedContext,
   showPermissionPrompt,
   validateRestrictedMode,
-  getCanonicalToolName,
   prettifyToolName,
   createThinkingTracker,
   createActionTracker,
   createTypingTracker,
   getDetailedActionDescription,
-  needsApprovalForTool,
   CONTENT_TYPE_TYPING,
   CONTENT_TYPE_INLINE_UI,
   getCachedTodoListCode,
@@ -55,7 +51,6 @@ import {
   type ContextWindowUsage,
   type SDKStreamEvent,
   type AgenticClient,
-  type AgentSDKToolDefinition,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
 } from "@natstack/agentic-messaging";
@@ -84,6 +79,10 @@ import {
   createSettingsManager,
   createMissedContextManager,
   createContextTracker,
+  findPanelParticipant,
+  discoverPubsubToolsForMode,
+  toClaudeMcpTools,
+  createCanUseToolGate,
   type MessageQueue,
   type InterruptController,
   type SettingsManager,
@@ -591,9 +590,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
         this.log.info(`Session recovery complete: ${recoveryResult.messagesPostedToPubsub} messages posted, ${recoveryResult.contextForSdk.length} messages for SDK context`);
 
         if (recoveryResult.contextForSdk.length > 1) {
-          const panel = Object.values(client.roster).find(
-            (p) => p.metadata.type === "panel"
-          );
+          const panel = findPanelParticipant(client);
 
           if (panel) {
             const uiCode = generateRecoveryReviewUI(
@@ -630,9 +627,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
 
   private async handleSettingsMenu(): Promise<{ success: boolean; settings?: ClaudeCodeSettings; cancelled?: boolean; error?: string }> {
     const client = this.client as AgenticClient<ChatParticipantMetadata>;
-    const panel = Object.values(client.roster).find(
-      (p) => p.metadata.type === "panel"
-    );
+    const panel = findPanelParticipant(client);
 
     if (!panel) {
       return { success: false, error: "No panel found" };
@@ -761,9 +756,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     }
 
     // Find panel for tool approval
-    const panel = Object.values(client.roster).find(
-      (p) => p.metadata.type === "panel"
-    );
+    const panel = findPanelParticipant(client);
 
     // Create trackers
     const typing = createTypingTracker({
@@ -836,62 +829,6 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
       // Build MCP servers
       let pubsubServer: ReturnType<typeof createSdkMcpServer> | undefined;
       let allowedTools: string[] = [];
-
-      if (config.restrictedMode) {
-        const { definitions: toolDefs, execute: executeTool } = createToolsForAgentSDK(client, {
-          namePrefix: "pubsub",
-        });
-
-        const toolDefsWithExecute: ToolDefinitionWithExecute[] = toolDefs.map((toolDef: AgentSDKToolDefinition) => ({
-          name: toolDef.name,
-          description: toolDef.description,
-          inputSchema: toolDef.parameters,
-          execute: async (args: unknown) => executeTool(toolDef.name, args),
-        }));
-
-        const restrictedTaskTool = createRestrictedTaskTool({
-          parentClient: client,
-          availableTools: toolDefsWithExecute,
-          claudeExecutable: this.claudeExecutable,
-          connectionOptions: this.subagents.getConnectionOptionsForExternalUse(),
-          parentSettings: { maxThinkingTokens: settings.maxThinkingTokens },
-        });
-
-        const mcpTools = toolDefs.map((toolDef: AgentSDKToolDefinition) => {
-          const displayName = getCanonicalToolName(toolDef.originalMethodName);
-          return tool(
-            displayName,
-            toolDef.description ?? "",
-            jsonSchemaToZodRawShape(toolDef.parameters),
-            async (args: unknown) => {
-              const result = await executeTool(toolDef.name, args);
-              return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
-            }
-          );
-        });
-
-        const taskMcpTool = tool(
-          "Task",
-          restrictedTaskTool.description,
-          restrictedTaskTool.inputSchema.shape,
-          async (args: unknown) => {
-            const result = await restrictedTaskTool.execute(args as Parameters<typeof restrictedTaskTool.execute>[0]);
-            return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
-          }
-        );
-        mcpTools.push(taskMcpTool);
-
-        pubsubServer = createSdkMcpServer({
-          name: "workspace",
-          version: "1.0.0",
-          tools: mcpTools,
-        });
-
-        allowedTools = [
-          ...mcpTools.map((t) => `mcp__workspace__${t.name}`),
-          "TodoWrite",
-        ];
-      }
 
       // Channel tools server
       const setTitleTool = tool(
@@ -981,12 +918,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
           ? `${prompt}\n\n[${allImageAttachments.size} historical image(s) available. Call list_images to see them.]`
           : prompt;
 
-      // Create permission handler
-      const canUseTool: CanUseTool = async (toolName, input, options) => {
-        const result = await this.handleToolPermission(toolName, input, options, client, panel, settings, interruptHandler);
-        // Type assertion needed due to discriminated union narrowing
-        return result as Awaited<ReturnType<CanUseTool>>;
-      };
+      let pubsubRegistry: Awaited<ReturnType<typeof discoverPubsubToolsForMode>> | undefined;
 
       // Resume session
       const resumeSessionId = client.sdkSessionId || this.state.sdkSessionId;
@@ -994,10 +926,142 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
         this.log.debug(`Resuming session: ${resumeSessionId}`);
       }
 
+      if (config.restrictedMode) {
+        // Wait for tools and build registry
+        const registry = await discoverPubsubToolsForMode(client, {
+          mode: "restricted",
+          log: (msg) => this.log.debug(msg),
+        });
+        pubsubRegistry = registry;
+        this.log.info(`Discovered ${registry.tools.length} tools for restricted mode`);
+        if (registry.tools.length > 0) {
+          const toolNames = registry.tools.map((t) => `${t.providerId}:${t.methodName}`);
+          this.log.info(`Restricted mode tools: ${toolNames.join(", ")}`);
+        }
+
+        // Build Claude SDK MCP tools via adapter
+        const { toolDefs: claudeToolDefs, allowedTools: registryAllowedTools, execute: registryExecute } = toClaudeMcpTools(registry, client);
+
+        // Build ToolDefinitionWithExecute[] for the Task tool (needs wire names)
+        const toolDefsWithExecute: ToolDefinitionWithExecute[] = registry.tools.map((t) => ({
+          name: t.wireName,
+          description: t.description,
+          inputSchema: t.parameters,
+          execute: async (args: unknown) => registryExecute(t.canonicalName, args),
+        }));
+
+        const restrictedTaskTool = createRestrictedTaskTool({
+          parentClient: client,
+          availableTools: toolDefsWithExecute,
+          claudeExecutable: this.claudeExecutable,
+          connectionOptions: this.subagents.getConnectionOptionsForExternalUse(),
+          parentSettings: { maxThinkingTokens: settings.maxThinkingTokens },
+        });
+
+        // Create MCP tools from registry adapter output
+        const mcpTools = claudeToolDefs.map((t) =>
+          tool(
+            t.name,
+            t.description,
+            jsonSchemaToZodRawShape(t.parameters),
+            t.execute
+          )
+        );
+
+        // Add Task tool
+        const taskMcpTool = tool(
+          "Task",
+          restrictedTaskTool.description,
+          restrictedTaskTool.inputSchema.shape,
+          async (args: unknown) => {
+            const result = await restrictedTaskTool.execute(args as Parameters<typeof restrictedTaskTool.execute>[0]);
+            return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+          }
+        );
+        mcpTools.push(taskMcpTool);
+
+        pubsubServer = createSdkMcpServer({
+          name: "workspace",
+          version: "1.0.0",
+          tools: mcpTools,
+        });
+
+        allowedTools = [
+          ...registryAllowedTools,
+          "mcp__workspace__Task",
+          "TodoWrite",
+        ];
+      } else {
+        pubsubRegistry = await discoverPubsubToolsForMode(client, {
+          mode: "unrestricted",
+          timeoutMs: 1500,
+          log: (msg) => this.log.debug(msg),
+        });
+
+        if (pubsubRegistry.tools.length > 0) {
+          this.log.info(`Discovered ${pubsubRegistry.tools.length} unrestricted pubsub tools`);
+          const toolNames = pubsubRegistry.tools.map((t) => `${t.providerId}:${t.methodName}`);
+          this.log.info(`Unrestricted pubsub tools: ${toolNames.join(", ")}`);
+
+          const { toolDefs: claudeToolDefs } = toClaudeMcpTools(pubsubRegistry, client);
+          const mcpTools = claudeToolDefs.map((t) =>
+            tool(
+              t.name,
+              t.description,
+              jsonSchemaToZodRawShape(t.parameters),
+              t.execute
+            )
+          );
+
+          pubsubServer = createSdkMcpServer({
+            name: "workspace",
+            version: "1.0.0",
+            tools: mcpTools,
+          });
+        } else {
+          this.log.info("No unrestricted pubsub tools available");
+        }
+      }
+
+      // Create approval gate for pubsub tools
+      // Uses getters so approval level changes propagate immediately
+      const approvalGate = createCanUseToolGate({
+        byCanonical: pubsubRegistry?.byCanonical ?? new Map(),
+        getApprovalLevel: () => this.settingsMgr.get().autonomyLevel ?? 0,
+        hasShownApprovalPrompt: !!settings.hasShownApprovalPrompt,
+        showPermissionPrompt: async (_tool, input) => {
+          if (!panel) return { allow: false };
+          const currentSettings = this.settingsMgr.get();
+          return showPermissionPrompt(
+            client,
+            panel.id,
+            _tool.canonicalName,
+            input as Record<string, unknown>,
+            {
+              isFirstTimeGrant: !currentSettings.hasShownApprovalPrompt,
+              floorLevel: currentSettings.autonomyLevel ?? 0,
+            }
+          );
+        },
+        onAlwaysAllow: () => {
+          void this.settingsMgr.update({ autonomyLevel: 2 });
+        },
+        onFirstPrompt: () => {
+          void this.settingsMgr.update({ hasShownApprovalPrompt: true });
+        },
+      });
+
+      // Create permission handler
+      const canUseTool: CanUseTool = async (toolName, input, options) => {
+        const result = await this.handleToolPermission(toolName, input, options, client, panel, settings, interruptHandler, approvalGate);
+        // Type assertion needed due to discriminated union narrowing
+        return result as Awaited<ReturnType<CanUseTool>>;
+      };
+
       const queryOptions: Parameters<typeof query>[0]["options"] = {
         ...(() => {
           const servers: Record<string, ReturnType<typeof createSdkMcpServer>> = {};
-          if (config.restrictedMode && pubsubServer) {
+          if (pubsubServer) {
             servers.workspace = pubsubServer;
           }
           servers.channel = channelToolsServer;
@@ -1282,7 +1346,8 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     client: AgenticClient<ChatParticipantMetadata>,
     panel: Participant<ChatParticipantMetadata> | undefined,
     settings: ClaudeCodeSettings,
-    interruptHandler: ReturnType<typeof createInterruptHandler>
+    interruptHandler: ReturnType<typeof createInterruptHandler>,
+    approvalGate: ReturnType<typeof createCanUseToolGate>
   ): Promise<{
     behavior: "allow" | "deny";
     message?: string;
@@ -1421,18 +1486,32 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
       input = { ...(input as Record<string, unknown>), plan, planFilePath };
     }
 
-    // Check autonomy level
+    // Interactive tools (ExitPlanMode, EnterPlanMode) always need user interaction
     const isInteractiveTool = ["AskUserQuestion", "ExitPlanMode", "EnterPlanMode"].includes(toolName);
-    const autonomyLevel = settings.autonomyLevel ?? 0;
 
-    if (!isInteractiveTool && !needsApprovalForTool(toolName, autonomyLevel)) {
-      return { behavior: "allow", updatedInput: input, toolUseID: options.toolUseID };
+    // For non-interactive tools, delegate to the approval gate
+    if (!isInteractiveTool) {
+      try {
+        const gateResult = await approvalGate.canUseTool(toolName, input);
+        if (gateResult.allow) {
+          return { behavior: "allow", updatedInput: gateResult.updatedInput ?? input, toolUseID: options.toolUseID };
+        } else {
+          return { behavior: "deny", message: "User denied permission", toolUseID: options.toolUseID };
+        }
+      } catch (err) {
+        if (err instanceof AgenticError && ["cancelled", "timeout", "provider-offline", "provider-not-found"].includes(err.code)) {
+          return { behavior: "deny", message: err.message, toolUseID: options.toolUseID };
+        }
+        throw err;
+      }
     }
 
+    // Interactive tools: show permission prompt directly
     if (!panel) {
       return { behavior: "deny", message: "No panel available", toolUseID: options.toolUseID };
     }
 
+    const autonomyLevel = settings.autonomyLevel ?? 0;
     const isFirstTimeGrant = !settings.hasShownApprovalPrompt;
 
     try {

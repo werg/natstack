@@ -1042,16 +1042,23 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
           () => ({ shouldProvideGroup: toolRoleShouldProvideGroupRef.current! })
         );
 
+        const methods: Record<string, MethodDefinition> = {
+          eval: evalMethodDefRef.current!,
+          feedback_form: feedbackFormMethodDef,
+          feedback_custom: feedbackCustomMethodDef,
+          ...approvedTools,
+        };
+
+        const methodNames = Object.keys(methods);
+        console.log(
+          `[Chat] Preparing to advertise ${methodNames.length} methods: ${methodNames.join(", ")}`
+        );
+
         // Connect using the hook with all methods
         // Use ref for evalMethodDef to get latest version
         await connectToChannel({
           channelId: channelName,
-          methods: {
-            eval: evalMethodDefRef.current!,
-            feedback_form: feedbackFormMethodDef,
-            feedback_custom: feedbackCustomMethodDef,
-            ...approvedTools,
-          },
+          methods,
           // Pass channel config (set when creating channel, read by joiners from server)
           channelConfig,
           // Pass contextId for channel authorization (separate from channelConfig)

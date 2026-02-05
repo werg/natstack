@@ -97,14 +97,55 @@ export {
   type InterruptControllerOptions,
 } from "./interrupt/index.js";
 
-// Tools pattern - standard tool definitions
+// Tools pattern - standard tool definitions, registry, adapters
 export {
   createStandardTools,
   createStandardMcpTools,
   executeStandardMcpTool,
   type StandardToolDefinition,
   type StandardToolsOptions,
+  // PubsubToolRegistry
+  buildPubsubToolRegistry,
+  discoverPubsubTools,
+  discoverPubsubToolsForMode,
+  waitForTools,
+  createToolExecutor,
+  type PubsubTool,
+  type PubsubToolRegistry,
+  type BuildRegistryOptions,
+  type DiscoverPubsubToolsOptions,
+  type DiscoverPubsubToolsForModeOptions,
+  DEFAULT_UNRESTRICTED_PUBSUB_METHODS,
+  // Tracking hooks
+  createActionTrackingHooks,
+  wrapWithTracking,
+  type ToolTrackingHooks,
+  // Approval handlers
+  createCanUseToolGate,
+  wrapWithApproval,
+  type CanUseToolGateOptions,
+  type WrapWithApprovalOptions,
+  // SDK adapters
+  toAiSdkTools,
+  toCodexMcpTools,
+  toClaudeMcpTools,
+  type AiSdkToolDefinition,
+  type ToAiSdkToolsOptions,
+  type CodexToolDefinition,
+  type ToCodexMcpToolsOptions,
+  type ClaudeMcpToolsResult,
+  type ClaudeMcpToolDef,
+  type ToClaudeMcpToolsOptions,
 } from "./tools/index.js";
+
+// Panel helpers - panel lookup + method calls
+export {
+  findPanelParticipant,
+  requirePanelParticipant,
+  callPanelMethod,
+  type PanelLookupOptions,
+  type PanelMethodCallOptions,
+} from "./panel/index.js";
 
 // Response pattern - lazy message creation and checkpoints
 export {

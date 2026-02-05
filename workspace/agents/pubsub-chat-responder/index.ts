@@ -20,12 +20,8 @@ import type {
 import {
   createInterruptHandler,
   createPauseMethodDefinition,
-  formatMissedContext,
   createRestrictedModeSystemPrompt,
-  createToolsForAgentSDK,
-  requestToolApproval,
-  needsApprovalForTool,
-  getCanonicalToolName,
+  showPermissionPrompt,
   getDetailedActionDescription,
   CONTENT_TYPE_TYPING,
   filterImageAttachments,
@@ -39,7 +35,7 @@ import {
   AI_ROLE_FALLBACKS,
 } from "@natstack/agentic-messaging/config";
 import type { Attachment } from "@natstack/pubsub";
-import type { Message, ToolResultPart, ToolDefinition } from "@natstack/ai";
+import type { Message, ToolResultPart } from "@natstack/ai";
 import {
   createMessageQueue,
   createInterruptController,
@@ -48,6 +44,10 @@ import {
   createMissedContextManager,
   createStandardTools,
   createContextTracker,
+  findPanelParticipant,
+  discoverPubsubToolsForMode,
+  toAiSdkTools,
+  createCanUseToolGate,
   type MessageQueue,
   type InterruptController,
   type SettingsManager,
@@ -81,6 +81,7 @@ interface PubsubChatSettings {
   autonomyLevel: number;
   maxSteps: number;
   thinkingBudget: number;
+  hasShownApprovalPrompt: boolean;
 }
 
 const DEFAULT_SETTINGS: PubsubChatSettings = {
@@ -90,6 +91,7 @@ const DEFAULT_SETTINGS: PubsubChatSettings = {
   autonomyLevel: 0,
   maxSteps: 5,
   thinkingBudget: 0,
+  hasShownApprovalPrompt: false,
 };
 
 /**
@@ -364,9 +366,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
    */
   private async handleSettingsMenu(): Promise<{ success: boolean; settings?: PubsubChatSettings; cancelled?: boolean; error?: string }> {
     // Find the chat panel participant
-    const panel = Object.values(this.client.roster).find(
-      (p) => p.metadata.type === "panel"
-    );
+    const panel = findPanelParticipant(this.client as AgenticClient<ChatParticipantMetadata>);
 
     if (!panel) {
       return { success: false, error: "No panel found" };
@@ -455,9 +455,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     }
 
     // Find panel for tool approval UI
-    const panel = Object.values(this.client.roster).find(
-      (p) => p.metadata.type === "panel"
-    );
+    const panel = findPanelParticipant(this.client as AgenticClient<ChatParticipantMetadata>);
 
     // Create trackers for this message
     const trackers = createTrackerManager({
@@ -508,44 +506,6 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         this.log.debug(`Loaded ${conversationHistory.length} previous messages from replay`);
       }
 
-      // Discover tools from channel participants
-      const { definitions: toolDefs, execute: executeTool } = createToolsForAgentSDK(
-        this.client as AgenticClient<ChatParticipantMetadata>,
-        {
-          namePrefix: "pubsub",
-          filter: (method) => method.providerId !== this.client.clientId && !method.menu,
-        }
-      );
-
-      // Build tools object for AI SDK
-      const tools: Record<string, ToolDefinition> = {};
-      const toolNameToOriginal: Record<string, string> = {};
-
-      for (const def of toolDefs) {
-        const originalMethodName = (def as { originalMethodName?: string }).originalMethodName ?? def.name;
-        const canonicalName = getCanonicalToolName(originalMethodName);
-        const requiresApproval = needsApprovalForTool(def.name, settings.autonomyLevel);
-
-        toolNameToOriginal[canonicalName] = def.name;
-
-        tools[canonicalName] = {
-          description: def.description,
-          parameters: def.parameters,
-          execute: requiresApproval ? undefined : (args) => executeTool(def.name, args),
-        };
-      }
-
-      // Add standard tools (set_title, TodoWrite)
-      const standardTools = createStandardTools({
-        client: this.client as AgenticClient<ChatParticipantMetadata>,
-        log: (msg) => this.log.debug(msg),
-      });
-      for (const [name, tool] of Object.entries(standardTools)) {
-        tools[name] = tool;
-      }
-
-      this.log.debug(`Discovered ${Object.keys(tools).length} tools`);
-
       // Build initial messages array
       const userContent = imageAttachments.length > 0
         ? [
@@ -565,6 +525,54 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         })),
         { role: "user" as const, content: userContent },
       ];
+
+      // Discover tools from channel participants via registry
+      const registry = await discoverPubsubToolsForMode(
+        this.client as AgenticClient<ChatParticipantMetadata>,
+        { mode: "restricted", timeoutMs: 1500, log: (msg) => this.log.debug(msg) },
+      );
+
+      // Build tools object for AI SDK using adapter
+      const standardTools = createStandardTools({
+        client: this.client as AgenticClient<ChatParticipantMetadata>,
+        log: (msg) => this.log.debug(msg),
+      });
+      const { tools, execute: executeTool } = toAiSdkTools(registry, this.client as AgenticClient<ChatParticipantMetadata>, standardTools, {
+        approvalLevel: settings.autonomyLevel,
+      });
+
+      // Create approval gate for deferred tool execution
+      const approvalGate = createCanUseToolGate({
+        byCanonical: registry.byCanonical,
+        getApprovalLevel: () => this.settings.get().autonomyLevel ?? 0,
+        hasShownApprovalPrompt: !!this.settings.get().hasShownApprovalPrompt,
+        showPermissionPrompt: async (_tool, input) => {
+          if (!panel) return { allow: false };
+          const currentSettings = this.settings.get();
+          return showPermissionPrompt(
+            this.client as AgenticClient<ChatParticipantMetadata>,
+            panel.id,
+            _tool.canonicalName,
+            input as Record<string, unknown>,
+            {
+              isFirstTimeGrant: !currentSettings.hasShownApprovalPrompt,
+              floorLevel: currentSettings.autonomyLevel ?? 0,
+            }
+          );
+        },
+        onAlwaysAllow: () => {
+          void this.settings.update({ autonomyLevel: 2 });
+        },
+        onFirstPrompt: () => {
+          void this.settings.update({ hasShownApprovalPrompt: true });
+        },
+      });
+
+      const toolNames = Object.keys(tools);
+      this.log.debug(`Discovered ${toolNames.length} tools`);
+      if (toolNames.length > 0) {
+        this.log.debug(`Tools: ${toolNames.join(", ")}`);
+      }
 
       // Agentic loop with approval handling
       let step = 0;
@@ -682,28 +690,18 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
           });
         }
 
-        // Process pending approvals
+        // Process pending approvals via gate
         const approvalResults: ToolResultPart[] = [];
         if (pendingApprovals.length > 0) {
           for (const approval of pendingApprovals) {
-            let approved = false;
+            const { allow } = await approvalGate.canUseTool(
+              approval.toolName,
+              approval.args,
+            );
 
-            if (panel) {
-              approved = await requestToolApproval(
-                this.client as AgenticClient<ChatParticipantMetadata>,
-                panel.id,
-                approval.toolName,
-                approval.args as Record<string, unknown>,
-                { signal: interruptHandler.isPaused() ? AbortSignal.abort() : undefined }
-              );
-            } else {
-              this.log.warn(`No panel found for tool approval, denying ${approval.toolName}`);
-            }
-
-            if (approved) {
+            if (allow) {
               try {
-                const originalName = toolNameToOriginal[approval.toolName] ?? approval.toolName;
-                const result = await executeTool(originalName, approval.args);
+                const result = await executeTool(approval.toolName, approval.args);
                 approvalResults.push({
                   type: "tool-result",
                   toolCallId: approval.toolCallId,
@@ -726,10 +724,10 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
                 type: "tool-result",
                 toolCallId: approval.toolCallId,
                 toolName: approval.toolName,
-                result: panel ? "User denied permission to execute this tool" : "No approval UI available",
+                result: "User denied permission to execute this tool",
                 isError: true,
               });
-              this.log.debug(`Tool ${approval.toolName} denied${panel ? " by user" : " (no panel)"}`);
+              this.log.debug(`Tool ${approval.toolName} denied`);
             }
           }
         }

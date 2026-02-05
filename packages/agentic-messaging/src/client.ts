@@ -1588,13 +1588,20 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
 
   // After connection is established, advertise methods via metadata update
   // The pubsub layer sends basic metadata on connect; we update with full method schemas here
-  if (Object.keys(methods).length > 0) {
+  const methodNames = Object.keys(methods);
+  if (methodNames.length > 0) {
+    console.log(
+      `[AgenticClient] Advertising ${methodNames.length} methods for ${handle}: ${methodNames.join(", ")}`
+    );
     try {
       await pubsub.updateMetadata(buildMetadataWithMethods() as T);
+      console.log(`[AgenticClient] Methods advertised for ${handle}`);
     } catch (err) {
       // Log but don't fail - methods can be updated later if needed
       console.warn("[AgenticClient] Failed to advertise methods:", err);
     }
+  } else {
+    console.log(`[AgenticClient] No methods to advertise for ${handle}`);
   }
 
   return {

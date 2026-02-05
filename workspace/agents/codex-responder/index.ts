@@ -24,16 +24,18 @@ import {
   createContextTracker,
   createStandardMcpTools,
   executeStandardMcpTool,
+  findPanelParticipant,
+  discoverPubsubToolsForMode,
+  toCodexMcpTools,
+  createCanUseToolGate,
 } from "@natstack/agent-patterns";
 import {
-  createToolsForAgentSDK,
   jsonSchemaToZodRawShape,
   formatArgsForLog,
   createPauseMethodDefinition,
   createRichTextChatSystemPrompt,
   createRestrictedModeSystemPrompt,
   validateRestrictedMode,
-  getCanonicalToolName,
   prettifyToolName,
   getDetailedActionDescription,
   CONTENT_TYPE_TYPING,
@@ -42,9 +44,7 @@ import {
   filterImageAttachments,
   validateAttachments,
   // Tool approval utilities
-  needsApprovalForTool,
   showPermissionPrompt,
-  APPROVAL_LEVELS,
   // TODO list utilities
   getCachedTodoListCode,
   // Queue position utilities
@@ -704,9 +704,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     settings?: CodexSettings;
   }> {
     const client = this.client as AgenticClient<ChatParticipantMetadata>;
-    const panel = Object.values(client.roster).find(
-      (p) => p.metadata.type === "panel"
-    );
+    const panel = findPanelParticipant(client);
     if (!panel) throw new Error("No panel found");
 
     const fields = CODEX_PARAMETERS.filter((p) => !p.channelLevel);
@@ -793,15 +791,6 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     const promptContent =
       imageAttachments.length > 0 ? buildOpenAIContents(prompt, imageAttachments) : prompt;
 
-    // Create tools from other pubsub participants
-    const { definitions: toolDefs, execute: executeTool } = createToolsForAgentSDK(client, {
-      namePrefix: "pubsub",
-    });
-
-    this.log.info(
-      `Discovered ${toolDefs.length} tools from pubsub participants${this.isRestrictedMode ? " (restricted mode)" : ""}`
-    );
-
     // Set replyTo for trackers (trackers created once at agent level)
     this.trackers.setReplyTo(incoming.id);
 
@@ -822,70 +811,71 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       return responseId;
     };
 
-    // Build MCP tool definitions
-    const mcpTools: ToolDefinition[] = this.buildMcpTools(toolDefs);
-
-    // Create a map from originalName -> displayName for action tracking
-    const originalToDisplayName = new Map<string, string>();
-    for (const tool of mcpTools) {
-      if (tool.originalName) {
-        originalToDisplayName.set(tool.originalName, tool.name);
-      }
+    // Discover tools via registry
+    const registry = await discoverPubsubToolsForMode(client, {
+      mode: this.isRestrictedMode ? "restricted" : "unrestricted",
+      namePrefix: "pubsub",
+      ...(!this.isRestrictedMode && { timeoutMs: 1500 }),
+    });
+    this.log.info(
+      `Discovered ${registry.tools.length} tools from pubsub participants${this.isRestrictedMode ? " (restricted mode)" : ""}`
+    );
+    if (registry.tools.length > 0) {
+      const toolNames = registry.tools.map((t) => `${t.providerId}:${t.methodName}`);
+      this.log.info(`Pubsub tools: ${toolNames.join(", ")}`);
     }
 
-    // Get current settings for approval checks
-    const currentSettings = this.settingsMgr.get();
+    // Build MCP tool definitions via adapter
+    const standardMcpTools = createStandardMcpTools();
+    const { definitions: mcpTools, originalToDisplay, execute: registryExecute } = toCodexMcpTools(
+      registry,
+      client,
+      standardMcpTools,
+      { useCanonicalNames: this.isRestrictedMode },
+    );
 
-    // Wrap executeTool with action tracking and approval prompts
-    const executeToolWithActions = async (name: string, args: unknown): Promise<unknown> => {
-      const toolUseId = randomUUID();
-      const displayName = originalToDisplayName.get(name) ?? name;
-      const argsRecord = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
-
-      // Check if approval needed based on autonomy level
-      const autonomyLevel = currentSettings.autonomyLevel ?? APPROVAL_LEVELS.AUTO_SAFE;
-
-      // Skip approval for internal tools (set_title, TodoWrite)
-      const isInternalTool = name === "__set_title__" || name === "__todo_write__";
-
-      if (!isInternalTool && needsApprovalForTool(displayName, autonomyLevel)) {
-        // Find the chat panel participant to show approval prompt
-        const panel = Object.values(client.roster).find(
-          (p) => p.metadata.type === "panel"
-        );
-
-        if (!panel) {
-          this.log.info(`No panel available for approval prompt, denying tool: ${displayName}`);
-          throw new Error(`Permission denied: No panel available to approve ${displayName}`);
-        }
-
-        const { allow, alwaysAllow } = await showPermissionPrompt(
+    // Create approval gate using the same pattern as other agents
+    const approvalGate = createCanUseToolGate({
+      byCanonical: registry.byCanonical,
+      getApprovalLevel: () => this.settingsMgr.get().autonomyLevel ?? 0,
+      hasShownApprovalPrompt: !!this.settingsMgr.get().hasShownApprovalPrompt,
+      showPermissionPrompt: async (_tool, input) => {
+        const panel = findPanelParticipant(client);
+        if (!panel) return { allow: false };
+        const currentSettings = this.settingsMgr.get();
+        return showPermissionPrompt(
           client,
           panel.id,
-          displayName,
-          argsRecord,
+          _tool.canonicalName,
+          input as Record<string, unknown>,
           {
             isFirstTimeGrant: !currentSettings.hasShownApprovalPrompt,
-            floorLevel: autonomyLevel,
+            floorLevel: currentSettings.autonomyLevel ?? 0,
           }
         );
+      },
+      onAlwaysAllow: () => {
+        void this.settingsMgr.update({ autonomyLevel: 2 });
+      },
+      onFirstPrompt: () => {
+        void this.settingsMgr.update({ hasShownApprovalPrompt: true });
+      },
+    });
 
-        // Mark that we've shown at least one approval prompt
-        if (!currentSettings.hasShownApprovalPrompt) {
-          currentSettings.hasShownApprovalPrompt = true;
-          await this.settingsMgr.update({ hasShownApprovalPrompt: true });
-        }
+    // Wrap execute with action tracking and approval prompts
+    const executeToolWithActions = async (name: string, args: unknown): Promise<unknown> => {
+      const toolUseId = randomUUID();
+      const displayName = originalToDisplay.get(name) ?? name;
+      const argsRecord = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
 
+      // Check approval via gate (skips internal tools like set_title, TodoWrite)
+      const isInternalTool = name === "__set_title__" || name === "__todo_write__";
+
+      if (!isInternalTool) {
+        const { allow } = await approvalGate.canUseTool(displayName, argsRecord);
         if (!allow) {
           this.log.info(`Permission denied for tool: ${displayName}`);
           throw new Error(`Permission denied: User denied access to ${displayName}`);
-        }
-
-        // If user selected "Always Allow", upgrade to full auto
-        if (alwaysAllow) {
-          this.log.info(`User granted "Always Allow" - upgrading to full auto`);
-          currentSettings.autonomyLevel = APPROVAL_LEVELS.FULL_AUTO;
-          await this.settingsMgr.update({ autonomyLevel: APPROVAL_LEVELS.FULL_AUTO });
         }
       }
 
@@ -906,7 +896,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
           return standardResult.result;
         }
 
-        const result = await executeTool(name, args);
+        const result = await registryExecute(name, args);
         await this.trackers.action.completeAction();
         return result;
       } catch (err) {
@@ -962,6 +952,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       const threadOptions = {
         skipGitRepoCheck: true,
         ...(!this.isRestrictedMode && this.workingDirectory && { cwd: this.workingDirectory }),
+        ...(this.isRestrictedMode && this.codexHome && { cwd: this.codexHome }),
         ...(settings.model && { model: settings.model }),
         ...(reasoningEffort && { modelReasoningEffort: reasoningEffort }),
         sandboxMode,
@@ -1342,35 +1333,6 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     }
   }
 
-  private buildMcpTools(
-    toolDefs: Array<{
-      name: string;
-      description?: string;
-      parameters: unknown;
-      originalMethodName?: string;
-    }>
-  ): ToolDefinition[] {
-    const mcpTools: ToolDefinition[] = toolDefs.map((t) => {
-      const displayName = this.isRestrictedMode
-        ? getCanonicalToolName((t as { originalMethodName?: string }).originalMethodName ?? t.name)
-        : t.name;
-
-      return {
-        name: displayName,
-        description: t.description,
-        parameters: t.parameters as Record<string, unknown>,
-        originalName: t.name,
-      };
-    });
-
-    // Add standard tools (set_title, TodoWrite)
-    const standardMcpTools = createStandardMcpTools();
-    for (const tool of standardMcpTools) {
-      mcpTools.push(tool);
-    }
-
-    return mcpTools;
-  }
 }
 
 // =============================================================================
