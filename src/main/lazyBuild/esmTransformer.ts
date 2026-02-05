@@ -26,7 +26,7 @@ export const ESM_SAFE_PACKAGES = new Set([
   "typescript",           // Pure JS, no Node deps
   "highlight.js",         // Browser-compatible
   "sucrase",              // Pure JS transform
-  "ts-interface-checker", // Dependency of sucrase
+  "ts-interface-checker", // Dependency of sucrase (inlined by dep resolver; listed as fallback)
   "@babel/parser",        // Pure JS parser
   "@babel/types",         // Pure JS types
   "acorn",                // Pure JS parser
@@ -37,8 +37,9 @@ export const ESM_SAFE_PACKAGES = new Set([
  * Cache schema version. Increment when bundling algorithm changes
  * to auto-invalidate old cache entries.
  * v1: Initial implementation
+ * v2: Fixed entry point resolution (extension fallback) in dependency resolver
  */
-const ESM_CACHE_SCHEMA_VERSION = 1;
+const ESM_CACHE_SCHEMA_VERSION = 2;
 
 /**
  * Node.js built-ins that should be marked as external during bundling.
@@ -373,66 +374,18 @@ export class EsmTransformer {
 
     if (subpath) {
       // Subpath import - resolve the specific file
-      entryPath = path.join(pkgRoot, subpath);
-
-      // Try adding extensions if the exact path doesn't exist
-      if (!fs.existsSync(entryPath)) {
-        for (const ext of [".js", ".mjs", ".cjs", ".json", "/index.js"]) {
-          if (fs.existsSync(entryPath + ext)) {
-            entryPath = entryPath + ext;
-            break;
-          }
-        }
+      const resolved = this.resolveFilePath(path.join(pkgRoot, subpath));
+      if (!resolved) {
+        throw new Error(`Subpath not found: ${pkgName}/${subpath}`);
       }
-
-      if (!fs.existsSync(entryPath)) {
-        throw new Error(`Subpath not found: ${pkgName}/${subpath} (tried ${entryPath})`);
-      }
+      entryPath = resolved;
     } else {
       // Main entry point - read package.json to find it
-      const pkgJsonPath = path.join(pkgRoot, "package.json");
-      if (!fs.existsSync(pkgJsonPath)) {
-        throw new Error(`package.json not found for ${pkgName}`);
+      const resolved = this.resolvePackageEntry(pkgRoot);
+      if (!resolved) {
+        throw new Error(`Entry point not found for ${pkgName} in ${pkgRoot}`);
       }
-
-      const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
-        main?: string;
-        module?: string;
-        browser?: string | Record<string, string>;
-      };
-
-      // Determine entry point (prefer ESM if available)
-      let entryPoint: string;
-      if (typeof pkgJson.module === "string") {
-        entryPoint = pkgJson.module;
-      } else if (typeof pkgJson.browser === "string") {
-        entryPoint = pkgJson.browser;
-      } else if (pkgJson.main) {
-        entryPoint = pkgJson.main;
-      } else {
-        entryPoint = "index.js";
-      }
-
-      entryPath = path.join(pkgRoot, entryPoint);
-      if (!fs.existsSync(entryPath)) {
-        // Try with .js extension if entry point doesn't have one
-        if (!entryPoint.endsWith(".js") && !entryPoint.endsWith(".mjs") && !entryPoint.endsWith(".cjs")) {
-          const withExt = entryPath + ".js";
-          if (fs.existsSync(withExt)) {
-            entryPath = withExt;
-          } else {
-            // Also try index.js in the directory
-            const indexPath = path.join(entryPath, "index.js");
-            if (fs.existsSync(indexPath)) {
-              entryPath = indexPath;
-            } else {
-              throw new Error(`Entry point not found: ${entryPath}`);
-            }
-          }
-        } else {
-          throw new Error(`Entry point not found: ${entryPath}`);
-        }
-      }
+      entryPath = resolved;
     }
 
     return this.bundlePackage(pkgName, version, entryPath, subpath);
@@ -606,9 +559,153 @@ export class EsmTransformer {
   }
 
   /**
-   * Create an esbuild plugin that resolves npm dependencies by fetching them on-demand.
+   * Resolve a file path with extension fallback.
+   * Tries the path as-is, then with common extensions (.js, .mjs, .cjs, .json),
+   * then as a directory with index.js.
+   * Returns the resolved path or null if not found.
    */
-  private createDependencyResolverPlugin(): esbuild.Plugin {
+  private resolveFilePath(filePath: string): string | null {
+    if (fs.existsSync(filePath)) {
+      // If it's a directory, try index.js inside it
+      try {
+        if (fs.statSync(filePath).isDirectory()) {
+          const indexPath = path.join(filePath, "index.js");
+          return fs.existsSync(indexPath) ? indexPath : null;
+        }
+      } catch { /* ignore stat errors */ }
+      return filePath;
+    }
+
+    // Try adding extensions
+    for (const ext of [".js", ".mjs", ".cjs", ".json"]) {
+      const withExt = filePath + ext;
+      if (fs.existsSync(withExt)) {
+        return withExt;
+      }
+    }
+
+    // Try as directory with index.js
+    const indexPath = path.join(filePath, "index.js");
+    if (fs.existsSync(indexPath)) {
+      return indexPath;
+    }
+
+    return null;
+  }
+
+  /**
+   * Resolve the main entry point for a package given its root directory.
+   * Resolution order:
+   *   1. exports["."] field (browser + import conditions)
+   *   2. module field (ESM entry)
+   *   3. browser field (browser-compatible entry)
+   *   4. main field (CJS entry)
+   *   5. index.js fallback
+   * All paths go through resolveFilePath for extension fallback.
+   */
+  private resolvePackageEntry(pkgRoot: string): string | null {
+    const pkgJsonPath = path.join(pkgRoot, "package.json");
+    if (!fs.existsSync(pkgJsonPath)) {
+      return null;
+    }
+
+    const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
+      main?: string;
+      module?: string;
+      browser?: string | Record<string, string>;
+      exports?: Record<string, unknown>;
+    };
+
+    // Try exports["."] first (modern packages)
+    if (pkgJson.exports) {
+      const resolved = this.resolveExportsEntry(pkgJson.exports, pkgRoot);
+      if (resolved) return resolved;
+    }
+
+    // Fall back to legacy fields: module > browser > main > index.js
+    let entryPoint: string;
+    if (typeof pkgJson.module === "string") {
+      entryPoint = pkgJson.module;
+    } else if (typeof pkgJson.browser === "string") {
+      entryPoint = pkgJson.browser;
+    } else if (pkgJson.main) {
+      entryPoint = pkgJson.main;
+    } else {
+      entryPoint = "index.js";
+    }
+
+    return this.resolveFilePath(path.join(pkgRoot, entryPoint));
+  }
+
+  /**
+   * Resolve the "." entry from a package's exports field for browser ESM.
+   * Handles object conditions, arrays, and direct string paths.
+   *
+   * Condition priority: browser.import > browser.default > import > default
+   */
+  private resolveExportsEntry(
+    exports: Record<string, unknown>,
+    pkgRoot: string
+  ): string | null {
+    const dotEntry = exports["."];
+    if (!dotEntry) return null;
+
+    const resolved = this.resolveExportsCondition(dotEntry);
+    if (!resolved) return null;
+
+    return this.resolveFilePath(path.join(pkgRoot, resolved));
+  }
+
+  /**
+   * Walk an exports condition value to find the best match for browser ESM.
+   * Returns the resolved path string or null.
+   */
+  private resolveExportsCondition(value: unknown): string | null {
+    // Direct string path
+    if (typeof value === "string") {
+      return value;
+    }
+
+    // Array — try each element in order
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const resolved = this.resolveExportsCondition(item);
+        if (resolved) return resolved;
+      }
+      return null;
+    }
+
+    // Condition object — check conditions in priority order
+    if (typeof value === "object" && value !== null) {
+      const obj = value as Record<string, unknown>;
+
+      // browser.import > browser.default (browser-specific ESM)
+      if (typeof obj.browser === "object" && obj.browser !== null) {
+        const browser = obj.browser as Record<string, unknown>;
+        if (typeof browser.import === "string") return browser.import;
+        if (typeof browser.default === "string") return browser.default;
+      }
+      // browser as string (e.g. exports["."].browser = "./file.js")
+      if (typeof obj.browser === "string") return obj.browser;
+
+      // import (generic ESM)
+      if (typeof obj.import === "string") return obj.import;
+
+      // default (generic fallback)
+      if (typeof obj.default === "string") return obj.default;
+    }
+
+    return null;
+  }
+
+  /**
+   * Create an esbuild plugin that resolves npm dependencies by fetching them on-demand.
+   * Tracks which deps were inlined vs left external for diagnostic logging.
+   */
+  private createDependencyResolverPlugin(tracker: {
+    inlined: Set<string>;
+    external: Map<string, string>;
+  }): esbuild.Plugin {
     // Track packages being resolved to prevent infinite loops
     const resolving = new Set<string>();
 
@@ -623,6 +720,7 @@ export class EsmTransformer {
             : args.path;
 
           if (NODE_BUILTINS.has(moduleName)) {
+            tracker.external.set(args.path, "node built-in");
             return { path: args.path, external: true };
           }
 
@@ -645,6 +743,7 @@ export class EsmTransformer {
           // Prevent circular resolution
           const resolveKey = `${pkgName}:${args.importer}`;
           if (resolving.has(resolveKey)) {
+            tracker.external.set(args.path, "circular resolution");
             return { path: args.path, external: true };
           }
 
@@ -692,7 +791,7 @@ export class EsmTransformer {
             }
 
             if (!version) {
-              console.warn(`[ESM] Could not resolve version for ${pkgName}`);
+              tracker.external.set(args.path, "version not resolved");
               return { path: args.path, external: true };
             }
 
@@ -700,52 +799,24 @@ export class EsmTransformer {
             const pkgRoot = await this.ensurePackageExtracted(pkgName, version);
 
             // Resolve the actual file path
-            let resolvedPath: string;
+            let resolvedPath: string | null;
 
             if (subpath) {
-              // Direct subpath import
-              resolvedPath = path.join(pkgRoot, subpath);
-
-              // Try adding extensions if needed
-              if (!fs.existsSync(resolvedPath)) {
-                for (const ext of [".js", ".mjs", ".cjs", ".json", "/index.js"]) {
-                  if (fs.existsSync(resolvedPath + ext)) {
-                    resolvedPath = resolvedPath + ext;
-                    break;
-                  }
-                }
-              }
+              resolvedPath = this.resolveFilePath(path.join(pkgRoot, subpath));
             } else {
-              // Main entry point
-              const pkgJsonPath = path.join(pkgRoot, "package.json");
-              const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
-                main?: string;
-                module?: string;
-                browser?: string | Record<string, string>;
-                exports?: Record<string, unknown>;
-              };
-
-              // Prefer module > browser > main > index.js
-              if (pkgJson.module) {
-                resolvedPath = path.join(pkgRoot, pkgJson.module);
-              } else if (typeof pkgJson.browser === "string") {
-                resolvedPath = path.join(pkgRoot, pkgJson.browser);
-              } else if (pkgJson.main) {
-                resolvedPath = path.join(pkgRoot, pkgJson.main);
-              } else {
-                resolvedPath = path.join(pkgRoot, "index.js");
-              }
+              resolvedPath = this.resolvePackageEntry(pkgRoot);
             }
 
-            // Ensure the resolved path exists
-            if (!fs.existsSync(resolvedPath)) {
-              console.warn(`[ESM] Resolved path not found: ${resolvedPath} for ${args.path}`);
+            if (!resolvedPath) {
+              tracker.external.set(args.path, `entry not found in ${pkgRoot}`);
               return { path: args.path, external: true };
             }
 
+            tracker.inlined.add(args.path);
             return { path: resolvedPath };
           } catch (error) {
-            console.warn(`[ESM] Failed to resolve ${pkgName}:`, error instanceof Error ? error.message : error);
+            const reason = error instanceof Error ? error.message : String(error);
+            tracker.external.set(args.path, reason);
             return { path: args.path, external: true };
           } finally {
             resolving.delete(resolveKey);
@@ -759,6 +830,14 @@ export class EsmTransformer {
    * Bundle a package entry point to ESM format.
    */
   private async bundlePackage(pkgName: string, version: string, entryPath: string, subpath?: string): Promise<string> {
+    const transformedName = subpath ? `${pkgName}@${version}/${subpath}` : `${pkgName}@${version}`;
+
+    // Track dependency resolution outcomes
+    const depTracker = {
+      inlined: new Set<string>(),
+      external: new Map<string, string>(),
+    };
+
     // Bundle with esbuild using our dependency resolver plugin
     const result = await esbuild.build({
       entryPoints: [entryPath],
@@ -769,7 +848,7 @@ export class EsmTransformer {
       write: false,
       minify: true,
       sourcemap: false,
-      plugins: [this.createDependencyResolverPlugin()],
+      plugins: [this.createDependencyResolverPlugin(depTracker)],
       // Handle any remaining node: imports
       define: {
         "process.env.NODE_ENV": '"production"',
@@ -777,13 +856,25 @@ export class EsmTransformer {
       logLevel: "error",
     });
 
+    // Log dependency resolution summary
+    if (depTracker.inlined.size > 0) {
+      log.verbose(` ${transformedName}: inlined ${depTracker.inlined.size} deps: ${Array.from(depTracker.inlined).join(", ")}`);
+    }
+    const nonBuiltinExternals = Array.from(depTracker.external.entries())
+      .filter(([, reason]) => reason !== "node built-in");
+    if (nonBuiltinExternals.length > 0) {
+      for (const entry of nonBuiltinExternals) {
+        log.verbose(` ${transformedName}: left external: ${entry[0]} (${entry[1]})`);
+      }
+    }
+
     if (result.errors.length > 0) {
       throw new Error(`ESBuild errors: ${result.errors.map(e => e.text).join(", ")}`);
     }
 
     const bundle = result.outputFiles[0]?.text;
     if (!bundle) {
-      throw new Error(`ESBuild produced no output for ${pkgName}@${version}${subpath ? `/${subpath}` : ""}`);
+      throw new Error(`ESBuild produced no output for ${transformedName}`);
     }
 
     // Cache the result
@@ -797,7 +888,6 @@ export class EsmTransformer {
     // Cleanup old cache entries if needed (throttled, async, LRU based on mtime)
     void this.maybeEvictCacheAsync();
 
-    const transformedName = subpath ? `${pkgName}@${version}/${subpath}` : `${pkgName}@${version}`;
     log.verbose(` Transformed ${transformedName} (${bundle.length} bytes)`);
     return bundle;
   }
