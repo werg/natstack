@@ -5,7 +5,7 @@
 import { useCallback, useRef, useState, useEffect } from "react";
 import { Box, Button, Flex, IconButton, Text, Tooltip } from "@radix-ui/themes";
 import { ImageIcon, Cross2Icon, PlusIcon } from "@radix-ui/react-icons";
-import type { AttachmentInput } from "@natstack/agentic-messaging";
+import type { AttachmentInput } from "@natstack/pubsub";
 import {
   type PendingImage,
   createPendingImage,

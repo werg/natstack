@@ -800,39 +800,74 @@ export class GitClient {
 
   /**
    * Clone a repository
+   *
+   * Handles both branch refs and commit hashes:
+   * - Branch refs: Uses shallow clone (depth: 1) for efficiency
+   * - Commit hashes: Must use full clone since git servers can't serve
+   *   arbitrary commits via shallow clone (only branch tips are accessible)
    */
   async clone(options: CloneOptions): Promise<void> {
     const url = this.resolveUrl(options.url);
 
-    await git.clone({
-      fs: this.fs,
-      http: this.http,
-      dir: options.dir,
-      url,
-      ref: options.ref,
-      singleBranch: options.singleBranch ?? true,
-      depth: options.depth ?? 1,
-      // Don't fail if ref doesn't exist - we'll checkout after
-      noCheckout: !!options.ref,
-    });
+    // Detect if ref is a commit hash (40 hex chars)
+    // Shallow clones don't work with commit hashes - git servers can only
+    // serve branch tips, not arbitrary commits, via shallow fetch
+    const isCommitHash = options.ref && isFullOid(options.ref);
 
-    // If a specific ref was requested, checkout to it
-    if (options.ref) {
-      try {
-        await git.checkout({
-          fs: this.fs,
-          dir: options.dir,
-          ref: options.ref,
-        });
-      } catch {
-        // If checkout fails, the ref might be a commit hash
-        // Try to checkout by commit directly
-        await git.checkout({
-          fs: this.fs,
-          dir: options.dir,
-          ref: options.ref,
-          force: true,
-        });
+    if (isCommitHash) {
+      // For commit hashes: do a full clone (no depth limit), then checkout
+      // We clone without ref to get the default branch, then checkout the commit
+      await git.clone({
+        fs: this.fs,
+        http: this.http,
+        dir: options.dir,
+        url,
+        // Don't pass commit hash as ref - it's not a branch
+        ref: undefined,
+        singleBranch: false, // Need all refs to ensure commit is reachable
+        // No depth limit - need full history to find the commit
+        depth: undefined,
+        noCheckout: true,
+      });
+
+      // Checkout the specific commit
+      await git.checkout({
+        fs: this.fs,
+        dir: options.dir,
+        ref: options.ref,
+        force: true,
+      });
+    } else {
+      // For branch refs: use shallow clone for efficiency
+      await git.clone({
+        fs: this.fs,
+        http: this.http,
+        dir: options.dir,
+        url,
+        ref: options.ref,
+        singleBranch: options.singleBranch ?? true,
+        depth: options.depth ?? 1,
+        // Don't fail if ref doesn't exist - we'll checkout after
+        noCheckout: !!options.ref,
+      });
+
+      // If a specific ref was requested, checkout to it
+      if (options.ref) {
+        try {
+          await git.checkout({
+            fs: this.fs,
+            dir: options.dir,
+            ref: options.ref,
+          });
+        } catch {
+          // If checkout fails, try with force
+          await git.checkout({
+            fs: this.fs,
+            dir: options.dir,
+            ref: options.ref,
+            force: true,
+          });
+        }
       }
     }
   }

@@ -23,7 +23,7 @@ export interface DiskCacheData {
   entries: Record<string, DiskCacheEntry>;
 }
 
-const CACHE_VERSION = "6"; // Bumped: use __VERDACCIO_ESM__ placeholder for port-independent caching
+const CACHE_VERSION = "8"; // Bumped: dirty packages now use content hash instead of mtime
 const CACHE_FILENAME = "build-cache.json";
 
 /**
@@ -74,7 +74,8 @@ export async function loadDiskCache(): Promise<Record<string, DiskCacheEntry>> {
  */
 export async function saveDiskCache(entries: Record<string, DiskCacheEntry>): Promise<void> {
   const cacheFilePath = getCacheFilePath();
-  const tempPath = `${cacheFilePath}.tmp`;
+  // Use unique temp filename to prevent race conditions between concurrent saves
+  const tempPath = `${cacheFilePath}.tmp.${process.pid}.${Date.now()}`;
 
   try {
     const data: DiskCacheData = {
@@ -87,10 +88,13 @@ export async function saveDiskCache(entries: Record<string, DiskCacheEntry>): Pr
     const contentSizeBytes = Buffer.byteLength(content, "utf-8");
     const contentSizeMB = (contentSizeBytes / 1024 / 1024).toFixed(2);
 
+    // Ensure directory exists first (before any other operations)
+    const cacheDir = path.dirname(cacheFilePath);
+    await fsPromises.mkdir(cacheDir, { recursive: true });
+
     // Check available disk space (require 2x content size for safety)
-    const userDataPath = app.getPath("userData");
     try {
-      const stats = await fsPromises.statfs(userDataPath);
+      const stats = await fsPromises.statfs(cacheDir);
       const availableBytes = stats.bavail * stats.bsize;
       const requiredBytes = contentSizeBytes * 2;
 
@@ -102,8 +106,11 @@ export async function saveDiskCache(entries: Record<string, DiskCacheEntry>): Pr
         );
       }
     } catch (statfsError) {
-      // statfs may not be available on all platforms, log warning but continue
-      console.warn("[DiskCache] Unable to check disk space:", statfsError);
+      // statfs may not be available on all platforms, or directory might not exist yet
+      // Log at verbose level and continue (directory was just created above)
+      if ((statfsError as NodeJS.ErrnoException).code !== "ENOENT") {
+        log.verbose(` Unable to check disk space: ${statfsError}`);
+      }
     }
 
     // Write to temporary file first (atomic write pattern)

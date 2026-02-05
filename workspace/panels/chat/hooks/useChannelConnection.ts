@@ -124,7 +124,8 @@ export function useChannelConnection({
         const unsubs: Array<() => void> = [];
 
         // Set up unified event handling - single loop for all event types
-        const eventIterator = newClient.events({ includeReplay: true });
+        // includeEphemeral: true is required to receive agent-debug events (logs, lifecycle)
+        const eventIterator = newClient.events({ includeReplay: true, includeEphemeral: true });
         let eventLoopRunning = true;
         // Store iterator ref for explicit cleanup - cast to any to avoid EventStreamItem vs IncomingEvent type mismatch
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -175,6 +175,11 @@ export async function handleAppService(
         npmCache: false,
         pnpmStore: false,
       });
+      // Clear Verdaccio's in-memory caches (version cache, package discovery, ESM transformer)
+      const { isVerdaccioServerInitialized, getVerdaccioServer } = await import("../verdaccioServer.js");
+      if (isVerdaccioServerInitialized()) {
+        getVerdaccioServer().clearAllInMemoryCaches();
+      }
       // Invalidate ready panels: reset state AND unload WebContents
       try {
         const pm = requirePanelManager();
@@ -465,6 +470,18 @@ export async function handleMenuService(
           npmCache: false,
           pnpmStore: false,
         });
+        // Clear Verdaccio's in-memory caches (version cache, package discovery, ESM transformer)
+        const { isVerdaccioServerInitialized, getVerdaccioServer } = await import("../verdaccioServer.js");
+        if (isVerdaccioServerInitialized()) {
+          getVerdaccioServer().clearAllInMemoryCaches();
+        }
+        // Invalidate ready panels: reset state AND unload WebContents
+        try {
+          const pm = requirePanelManager();
+          pm.invalidateReadyPanels();
+        } catch (error) {
+          console.warn("[App] Failed to invalidate panel states:", error);
+        }
         console.log("[App] Build cache cleared via hamburger menu");
       };
 

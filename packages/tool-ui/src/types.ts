@@ -6,7 +6,7 @@
  */
 
 import type { ComponentType } from "react";
-import type { FieldDefinition, FieldValue } from "@natstack/runtime";
+import type { FieldDefinition, FieldValue } from "@natstack/core";
 
 // ============================================================================
 // Feedback Result Types

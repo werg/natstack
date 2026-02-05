@@ -32,9 +32,15 @@ import { getCdpServer, type CdpServer } from "./cdpServer.js";
 import { getPubSubServer, type PubSubServer } from "./pubsubServer.js";
 import { createVerdaccioServer, type VerdaccioServer } from "./verdaccioServer.js";
 import { createGitWatcher, type GitWatcher } from "./workspace/gitWatcher.js";
+import { getNatstackPackageWatcher, shutdownNatstackWatcher, type NatstackPackageWatcher } from "./natstackPackageWatcher.js";
+import { initAgentDiscovery, shutdownAgentDiscovery } from "./agentDiscovery.js";
+import { initAgentSettingsService, shutdownAgentSettingsService } from "./agentSettings.js";
+import { initAgentHost, shutdownAgentHost, setAgentHostAiHandler } from "./agentHost.js";
+import { getTokenManager } from "./tokenManager.js";
 import { eventService } from "./services/eventsService.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
 import { shutdownPackageStore, scheduleGC } from "./package-store/index.js";
+import { getDependencyGraph } from "./dependencyGraph.js";
 import { handleDbCall } from "./ipc/dbHandlers.js";
 import { handleBridgeCall } from "./ipc/bridgeHandlers.js";
 import { handleBrowserCall } from "./ipc/browserHandlers.js";
@@ -61,10 +67,11 @@ import {
   setShellServicesAiHandler,
 } from "./ipc/shellServices.js";
 import { handleEventsService } from "./services/eventsService.js";
-import { typeCheckRpcMethods } from "./typecheck/service.js";
+import { typeCheckRpcMethods, getTypeDefinitionService } from "./typecheck/service.js";
 import { setupTestApi } from "./testApi.js";
 import { getAdBlockManager } from "./adblock/index.js";
 import { handleAdBlockServiceCall } from "./ipc/adblockHandlers.js";
+import { handleAgentSettingsCall } from "./ipc/agentSettingsHandlers.js";
 import { preloadNatstackTypesAsync } from "@natstack/runtime/typecheck";
 import { startMemoryMonitor } from "./memoryMonitor.js";
 
@@ -134,6 +141,7 @@ let gitWatcher: GitWatcher | null = null;
 let cdpServer: CdpServer | null = null;
 let pubsubServer: PubSubServer | null = null;
 let verdaccioServer: VerdaccioServer | null = null;
+let natstackWatcher: NatstackPackageWatcher | null = null;
 let panelManager: PanelManager | null = null;
 let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
@@ -219,7 +227,7 @@ function createWindow(): void {
     shellPreload: path.join(__dirname, "preload.cjs"),
     safePreload: path.join(__dirname, "safePreload.cjs"),
     shellHtmlPath: path.join(__dirname, "index.html"),
-    devTools: isDev(),
+    devTools: false,
   });
 
   mainWindow.on("closed", () => {
@@ -594,6 +602,19 @@ app.on("ready", async () => {
       dispatcher.register("panel", handlePanelService);
       setShellServicesPanelManager(panelManager);
 
+      // Initialize agent discovery (scans agents/ directory and starts file watching)
+      await initAgentDiscovery(workspace.path);
+      log.info("[AgentDiscovery] Initialized");
+
+      // Initialize agent settings service (syncs with discovery)
+      await initAgentSettingsService();
+      log.info("[AgentSettingsService] Initialized");
+
+      // Register agentSettings service
+      dispatcher.register("agentSettings", async (_ctx, serviceMethod, serviceArgs) => {
+        return handleAgentSettingsCall(serviceMethod, serviceArgs as unknown[]);
+      });
+
       // Start Verdaccio server FIRST (other services may need to install packages)
       try {
         // Use app root for finding packages/ (not workspace parent)
@@ -601,9 +622,34 @@ app.on("ready", async () => {
           workspaceRoot: getAppRoot(),
           storagePath: path.join(app.getPath("userData"), "verdaccio-storage"),
         });
+        // Wire up types cache invalidation hook (avoids circular imports in verdaccioServer)
+        verdaccioServer.setNatstackPublishHook(() => getTypeDefinitionService().invalidateNatstackTypes());
+
+        // Build all workspace packages before starting the server
+        // This handles the "blank slate" case (fresh clone with no dist/ folders)
+        // and prevents the cascading lazy-build issue at startup
+        await verdaccioServer.buildAllWorkspacePackages();
+
         const verdaccioPort = await verdaccioServer.start();
         log.info(`[Verdaccio] Registry started on port ${verdaccioPort}`);
-        log.info("[Verdaccio] Lazy publishing enabled - packages published on demand during panel builds");
+
+        // Sync all workspace packages with Verdaccio on startup
+        // This compares expected versions (from git) with actual versions in Verdaccio
+        // and republishes any packages that are stale or missing
+        const publishResult = await verdaccioServer.publishChangedPackages();
+        if (publishResult.changesDetected.changed.length > 0) {
+          log.info(`[Verdaccio] Synced ${publishResult.changesDetected.changed.length} packages: ${publishResult.changesDetected.changed.join(", ")}`);
+        } else {
+          log.info("[Verdaccio] All packages up-to-date");
+        }
+
+        // Start NatstackPackageWatcher to watch packages/ for file changes
+        // This enables instant iteration on @natstack/* packages without git commits
+        natstackWatcher = getNatstackPackageWatcher(getAppRoot());
+        await natstackWatcher.initialize((pkgPath, pkgName) =>
+          verdaccioServer!.republishPackage(pkgPath, pkgName)
+        );
+        log.info("[NatstackWatcher] Watching packages/ for file changes");
       } catch (verdaccioError) {
         // Verdaccio is required - log error but continue (panel builds will fail gracefully)
         console.error("[Verdaccio] Failed to start. Panel builds will fail until Verdaccio is running:", verdaccioError);
@@ -623,7 +669,7 @@ app.on("ready", async () => {
       if (verdaccioServer) {
         // Pass workspace path so Verdaccio can resolve workspace-relative paths
         // (distinct from workspaceRoot which is for built-in @natstack/* packages)
-        verdaccioServer.subscribeToGitWatcher(gitWatcher, workspace.path);
+        await verdaccioServer.subscribeToGitWatcher(gitWatcher, workspace.path);
         // Note: User workspace packages are now published on-demand during panel builds
       }
 
@@ -636,6 +682,18 @@ app.on("ready", async () => {
       pubsubServer = getPubSubServer();
       const pubsubPort = await pubsubServer.start();
       log.info(`[PubSub] Server started on port ${pubsubPort}`);
+
+      // Initialize AgentHost for spawning agent processes
+      const agentHost = initAgentHost({
+        workspaceRoot: workspace.path,
+        pubsubUrl: `ws://127.0.0.1:${pubsubPort}`,
+        messageStore: pubsubServer.getMessageStore(),
+        createToken: (instanceId) => getTokenManager().getOrCreateToken(instanceId),
+        revokeToken: (instanceId) => getTokenManager().revokeToken(instanceId),
+      });
+      await agentHost.initialize();
+      pubsubServer.setAgentHost(agentHost);
+      log.info("[AgentHost] Initialized");
 
       // Initialize RPC handler
       const { PanelRpcHandler } = await import("./ipc/rpcHandler.js");
@@ -666,6 +724,7 @@ app.on("ready", async () => {
       aiHandler = new AIHandler();
       await aiHandler.initialize();
       setShellServicesAiHandler(aiHandler);
+      setAgentHostAiHandler(aiHandler);
 
       dispatcher.register("ai", async (ctx, serviceMethod, serviceArgs) => {
         return handleAiServiceCall(aiHandler, serviceMethod, serviceArgs, (handler, options, streamId) => {
@@ -731,6 +790,19 @@ app.on("will-quit", (event) => {
     }
   }
 
+  // Shutdown agent settings service (closes database)
+  shutdownAgentSettingsService();
+
+  // Stop agent discovery file watching
+  shutdownAgentDiscovery();
+
+  // Shutdown AgentHost FIRST - gives agents time to close pubsub connections
+  // before we stop the pubsub server
+  shutdownAgentHost();
+
+  // Shutdown NatstackWatcher (saves dirty package state for next startup)
+  void shutdownNatstackWatcher();
+
   const hasResourcesToClean = gitServer || gitWatcher || cdpServer || pubsubServer || verdaccioServer;
   if (hasResourcesToClean) {
     isCleaningUp = true;
@@ -795,6 +867,16 @@ app.on("will-quit", (event) => {
           })
       );
     }
+
+    // Flush dependency graph consumer registrations to disk
+    stopPromises.push(
+      getDependencyGraph()
+        .then((graph) => graph.flush())
+        .then(() => console.log("[App] Dependency graph flushed"))
+        .catch((error) => {
+          console.error("[App] Error flushing dependency graph:", error);
+        })
+    );
 
     // Shutdown package store (closes SQLite connection)
     try {

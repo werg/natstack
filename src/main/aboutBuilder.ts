@@ -69,6 +69,10 @@ const SHELL_PAGE_META: Record<ShellPage, Omit<ShellPageMeta, "page">> = {
     title: "Ad Blocking",
     description: "Configure ad blocking for browser panels",
   },
+  agents: {
+    title: "Agents",
+    description: "Configure agent defaults and settings",
+  },
 };
 
 /**

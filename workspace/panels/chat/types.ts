@@ -1,5 +1,16 @@
-import type { MethodAdvertisement, Attachment, ContextWindowUsage } from "@natstack/agentic-messaging";
+import type { MethodAdvertisement, ContextWindowUsage, AgentBuildError } from "@natstack/agentic-messaging";
+import type { Attachment } from "@natstack/pubsub";
 import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
+
+/** Status of a pending agent */
+export type PendingAgentStatus = "starting" | "error";
+
+/** A pending agent that is starting or failed to start */
+export interface PendingAgent {
+  agentId: string;
+  status: PendingAgentStatus;
+  error?: AgentBuildError;
+}
 
 /** Metadata for participants in this channel */
 export interface ChatParticipantMetadata {

@@ -13,17 +13,13 @@ import { z } from "zod";
 import type { ComponentType } from "react";
 import {
   type IncomingEvent,
-  type IncomingPresenceEvent,
-  type IncomingMethodResult,
   type IncomingToolRoleRequestEvent,
   type IncomingToolRoleResponseEvent,
   type IncomingToolRoleHandoffEvent,
-  type Participant,
-  type RosterUpdate,
+  type IncomingAgentDebugEvent,
+  type AgentDebugPayload,
   type MethodDefinition,
   type MethodExecutionContext,
-  type Attachment,
-  type AttachmentInput,
   CONTENT_TYPE_TYPING,
   CONTENT_TYPE_INLINE_UI,
   type TypingData,
@@ -33,6 +29,7 @@ import {
   FeedbackFormArgsSchema,
   FeedbackCustomArgsSchema,
 } from "@natstack/agentic-messaging";
+import type { Participant, RosterUpdate, Attachment, AttachmentInput } from "@natstack/pubsub";
 import {
   useFeedbackManager,
   useToolApproval,
@@ -56,174 +53,19 @@ import { createAllToolMethodDefinitions } from "./tools";
 import { useChannelConnection } from "./hooks/useChannelConnection";
 import { useMethodHistory, type ChatMessage } from "./hooks/useMethodHistory";
 import { useToolRole } from "./hooks/useToolRole";
-import { useAgentRecovery } from "./hooks/useAgentRecovery";
-import { useExpectedWorkerMonitor } from "./hooks/useExpectedWorkerMonitor";
+import { dispatchAgenticEvent, isChatParticipantMetadata, type DirtyRepoDetails } from "./hooks/useAgentEvents";
 import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 import { ToolRoleConflictModal } from "./components/ToolRoleConflictModal";
 import { ChatPhase } from "./components/ChatPhase";
 import { cleanupPendingImages, type PendingImage } from "./utils/imageUtils";
-import type { ChatParticipantMetadata, DisconnectedAgentInfo } from "./types";
+import type { ChatParticipantMetadata, DisconnectedAgentInfo, PendingAgent, PendingAgentStatus } from "./types";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { parseInlineUiData } from "./components/InlineUiMessage";
 
-/** Utility to check if a value looks like ChatParticipantMetadata */
-function isChatParticipantMetadata(value: unknown): value is ChatParticipantMetadata {
-  if (!value || typeof value !== "object") return false;
-  const obj = value as Record<string, unknown>;
-  return typeof obj.name === "string" && typeof obj.type === "string" && typeof obj.handle === "string";
-}
-
-/**
- * Handles incoming agentic events and updates appropriate state.
- * Pure function to keep event logic separate from component.
- */
-/** Extract contentType from event (typed loosely in the SDK) */
-function getEventContentType(event: IncomingEvent): string | undefined {
-  return (event as { contentType?: string }).contentType;
-}
-
-/** Extract attachments from event */
-function getEventAttachments(event: IncomingEvent): Attachment[] | undefined {
-  return (event as { attachments?: Attachment[] }).attachments;
-}
-
-/**
- * Look up a method description from a provider's method advertisements.
- */
-function getMethodDescription(
-  providerId: string | undefined,
-  methodName: string,
-  participants: Record<string, Participant<ChatParticipantMetadata>>
-): string | undefined {
-  if (!providerId) return undefined;
-  const provider = participants[providerId];
-  if (!provider?.metadata?.methods) return undefined;
-  const method = provider.metadata.methods.find((m) => m.name === methodName);
-  return method?.description;
-}
-
-function dispatchAgenticEvent(
-  event: IncomingEvent,
-  handlers: {
-    setMessages: (updater: (prev: ChatMessage[]) => ChatMessage[]) => void;
-    setHistoricalParticipants: (updater: (prev: Record<string, Participant<ChatParticipantMetadata>>) => Record<string, Participant<ChatParticipantMetadata>>) => void;
-    setPresenceEvents: (updater: (prev: IncomingPresenceEvent[]) => IncomingPresenceEvent[]) => void;
-    addMethodHistoryEntry: (entry: MethodHistoryEntry) => void;
-    handleMethodResult: (result: IncomingMethodResult) => void;
-  },
-  selfId: string | null,
-  participants: Record<string, Participant<ChatParticipantMetadata>>
-): void {
-  const isSelf = !!selfId && event.senderId === selfId;
-  const isPanelSender = event.senderMetadata?.type === "panel" || isSelf;
-  switch (event.type) {
-    case "message": {
-      handlers.setMessages((prev) => {
-        const existingIndex = prev.findIndex((m) => m.id === event.id);
-        if (existingIndex !== -1) {
-          if (prev[existingIndex].pending) {
-            const updated = {
-              ...prev[existingIndex],
-              pending: false,
-              // Merge attachments from server (in case local didn't have them)
-              attachments: getEventAttachments(event) ?? prev[existingIndex].attachments,
-            };
-            if (isPanelSender) {
-              updated.complete = true;
-            }
-            return prev.map((m, i) => (i === existingIndex ? updated : m));
-          }
-          return prev;
-        }
-        return [
-          ...prev,
-          {
-            id: event.id,
-            pubsubId: event.pubsubId,
-            senderId: event.senderId,
-            content: event.content,
-            contentType: getEventContentType(event),
-            replyTo: event.replyTo,
-            kind: "message",
-            complete: event.kind === "replay" || isPanelSender,
-            attachments: getEventAttachments(event),
-          },
-        ];
-      });
-      break;
-    }
-
-    case "update-message": {
-      handlers.setMessages((prev) =>
-        prev.map((m) =>
-          m.id === event.id
-            ? {
-                ...m,
-                content: event.content !== undefined ? m.content + event.content : m.content,
-                contentType: getEventContentType(event) ?? m.contentType,
-                complete: event.complete ?? m.complete,
-              }
-            : m
-        )
-      );
-      break;
-    }
-
-    case "error": {
-      handlers.setMessages((prev) => prev.map((m) => (m.id === event.id ? { ...m, complete: true, error: event.error } : m)));
-      break;
-    }
-
-    case "method-call": {
-      if (event.kind !== "replay" && event.providerId === selfId) {
-        return;
-      }
-      handlers.addMethodHistoryEntry({
-        callId: event.callId,
-        methodName: event.methodName,
-        description: getMethodDescription(event.providerId, event.methodName, participants),
-        args: event.args,
-        status: "pending",
-        startedAt: event.ts ?? Date.now(),
-        providerId: event.providerId,
-        callerId: event.senderId,
-        handledLocally: false,
-      });
-      break;
-    }
-
-    case "method-result": {
-      // Pass the full event - it has all IncomingMethodResult properties
-      handlers.handleMethodResult(event as IncomingMethodResult);
-      break;
-    }
-
-    case "presence": {
-      // Collect presence events for agent recovery
-      handlers.setPresenceEvents((prev) => [...prev, event as IncomingPresenceEvent]);
-      if (event.action === "join" && isChatParticipantMetadata(event.metadata)) {
-        handlers.setHistoricalParticipants((prev) => ({
-          ...prev,
-          [event.senderId]: {
-            id: event.senderId,
-            metadata: event.metadata as ChatParticipantMetadata,
-          },
-        }));
-      }
-      break;
-    }
-
-    case "execution-pause": {
-      handlers.setMessages((prev) =>
-        prev.map((m) =>
-          m.id === event.messageId
-            ? { ...m, complete: true }
-            : m
-        )
-      );
-      break;
-    }
-  }
+/** Pending agent info passed from chat-launcher */
+interface PendingAgentInfo {
+  agentId: string;
+  handle: string;
 }
 
 /** Type for chat panel state args */
@@ -235,13 +77,14 @@ interface ChatStateArgs {
   };
   /** Context ID for channel authorization (passed separately from channelConfig) */
   contextId?: string;
-  /** Expected worker panel IDs spawned by chat-launcher, for monitoring build failures */
-  expectedWorkerPanelIds?: string[];
+  /** Agents that are being spawned (passed from chat-launcher) */
+  pendingAgents?: PendingAgentInfo[];
 }
 
 export default function AgenticChat() {
   const theme = usePanelTheme();
-  const { channelName, channelConfig, contextId, expectedWorkerPanelIds } = useStateArgs<ChatStateArgs>();
+  const stateArgs = useStateArgs<ChatStateArgs>();
+  const { channelName, channelConfig, contextId } = stateArgs;
 
   // Derive workspace root with proper priority:
   // 1. channelConfig.workingDirectory (passed from chat-launcher)
@@ -271,10 +114,79 @@ export default function AgenticChat() {
   const [participants, setParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
   // Historical participants reconstructed from presence events during replay
   const [historicalParticipants, setHistoricalParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
-  // Presence events collected for agent recovery
-  const [presenceEvents, setPresenceEvents] = useState<IncomingPresenceEvent[]>([]);
-  // Agent load errors from recovery attempts
-  const [agentErrors, setAgentErrors] = useState<Array<{ handle: string; workerPanelId: string; buildState: string; error: string }>>([]);
+
+  // Debug events for agents (ephemeral, in-memory only)
+  const [debugEvents, setDebugEvents] = useState<Array<AgentDebugPayload & { ts: number }>>([]);
+  // Currently open debug console agent handle
+  const [debugConsoleAgent, setDebugConsoleAgent] = useState<string | null>(null);
+
+  // Dirty repo warnings for agents that spawned with uncommitted changes
+  const [dirtyRepoWarnings, setDirtyRepoWarnings] = useState<Map<string, { modified: string[]; untracked: string[]; staged: string[] }>>(new Map());
+
+  // Pending agents state (initialized from stateArgs, managed locally)
+  // key: handle, value: PendingAgent { agentId, status, error? }
+  const [pendingAgents, setPendingAgents] = useState<Map<string, PendingAgent>>(() => {
+    const initial = new Map<string, PendingAgent>();
+    if (stateArgs.pendingAgents) {
+      for (const agent of stateArgs.pendingAgents) {
+        initial.set(agent.handle, { agentId: agent.agentId, status: "starting" });
+      }
+    }
+    return initial;
+  });
+
+  // Log pendingAgents state for debugging
+  useEffect(() => {
+    const entries = Array.from(pendingAgents.entries());
+    console.log("[Chat] pendingAgents state:", entries.length, "agents:", entries.map(([h, a]) => `${h}:${a.status}`));
+  }, [pendingAgents]);
+
+  // Pending agent timeout handling with refs to prevent reset on re-renders
+  const PENDING_TIMEOUT_MS = 45_000;
+  const pendingTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  useEffect(() => {
+    const timeouts = pendingTimeoutsRef.current;
+
+    // Add timeouts for new "starting" agents
+    for (const [handle, agent] of pendingAgents) {
+      if (agent.status === "starting" && !timeouts.has(handle)) {
+        const timeout = setTimeout(() => {
+          setPendingAgents(prev => {
+            const next = new Map(prev);
+            const existing = next.get(handle);
+            if (existing?.status === "starting") {
+              next.set(handle, {
+                ...existing,
+                status: "error",
+                error: { message: "Agent failed to start (timeout)" },
+              });
+            }
+            return next;
+          });
+          timeouts.delete(handle);
+        }, PENDING_TIMEOUT_MS);
+        timeouts.set(handle, timeout);
+      }
+    }
+
+    // Clear timeouts for agents no longer pending
+    for (const [handle, timeout] of timeouts) {
+      if (!pendingAgents.has(handle)) {
+        clearTimeout(timeout);
+        timeouts.delete(handle);
+      }
+    }
+  }, [pendingAgents]);
+
+  // Cleanup pending timeouts on unmount
+  useEffect(() => {
+    return () => {
+      for (const timeout of pendingTimeoutsRef.current.values()) {
+        clearTimeout(timeout);
+      }
+    };
+  }, []);
 
   // Track compiled inline UI components by ID
   // Key: inline UI id, Value: { Component, cacheKey, error? }
@@ -430,6 +342,15 @@ export default function AgenticChat() {
   // Keep participantsRef up to date for memoized callbacks
   participantsRef.current = allParticipants;
 
+  // Handler for dismissing dirty repo warnings
+  const handleDismissDirtyWarning = useCallback((agentName: string) => {
+    setDirtyRepoWarnings((prev) => {
+      const next = new Map(prev);
+      next.delete(agentName);
+      return next;
+    });
+  }, []);
+
   // Use feedback manager hook for UI feedback lifecycle
   const {
     activeFeedbacks,
@@ -467,6 +388,13 @@ export default function AgenticChat() {
     },
     onEvent: useCallback(
       (event: IncomingEvent) => {
+        // Log all incoming events for debugging
+        if (event.type === "agent-debug") {
+          const debugEvent = event as IncomingAgentDebugEvent;
+          console.log("[Chat] agent-debug event:", debugEvent.payload.debugType, debugEvent.payload);
+        } else {
+          console.log("[Chat] event:", event.type, event);
+        }
         try {
           const selfId = selfIdRef.current ?? panelClientId;
           dispatchAgenticEvent(
@@ -474,9 +402,11 @@ export default function AgenticChat() {
             {
               setMessages,
               setHistoricalParticipants,
-              setPresenceEvents,
               addMethodHistoryEntry,
               handleMethodResult,
+              setDebugEvents,
+              setDirtyRepoWarnings,
+              setPendingAgents,
             },
             selfId,
             participantsRef.current
@@ -510,7 +440,6 @@ export default function AgenticChat() {
       [
         setMessages,
         setHistoricalParticipants,
-        setPresenceEvents,
         addMethodHistoryEntry,
         handleMethodResult,
         panelClientId,
@@ -520,6 +449,10 @@ export default function AgenticChat() {
     onRoster: useCallback((roster: RosterUpdate<ChatParticipantMetadata>) => {
       const newParticipants = roster.participants;
       const prevParticipants = prevParticipantsRef.current;
+
+      // Log roster updates for debugging
+      const handles = Object.values(newParticipants).map(p => p.metadata.handle);
+      console.log("[Chat] roster update:", handles.length, "participants:", handles);
 
       // Detect disconnected participants (were in prev roster but not in new)
       const prevIds = new Set(Object.keys(prevParticipants));
@@ -556,6 +489,37 @@ export default function AgenticChat() {
           }
         }
       }
+
+      // Remove newly joined agents from pendingAgents
+      // Check by handle since that's how we track pending agents
+      const newHandles = new Set(Object.values(newParticipants).map((p) => p.metadata.handle));
+      setPendingAgents((prev) => {
+        let changed = false;
+        const next = new Map(prev);
+        for (const handle of prev.keys()) {
+          if (newHandles.has(handle)) {
+            next.delete(handle);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+
+      // Remove stale disconnect messages for agents that rejoined by handle
+      const agentHandles = new Set(
+        Object.values(newParticipants)
+          .filter(p => p.metadata.type !== "panel")
+          .map(p => p.metadata.handle)
+      );
+      setMessages((prev) => {
+        const filtered = prev.filter(msg => {
+          // Keep non-system messages
+          if (msg.kind !== "system" || !msg.disconnectedAgent) return true;
+          // Remove disconnect message if agent with same handle is now present
+          return !agentHandles.has(msg.disconnectedAgent.handle);
+        });
+        return filtered.length === prev.length ? prev : filtered;
+      });
 
       // Update refs and state
       prevParticipantsRef.current = newParticipants;
@@ -744,113 +708,6 @@ export default function AgenticChat() {
 
   // Tool role hook - handles conflict detection and negotiation
   const toolRole = useToolRole(clientRef.current, clientId);
-
-  // Agent recovery hook - automatically reloads disconnected agent workers
-  // Callback for agent recovery errors - memoized to prevent unnecessary rerenders
-  const MAX_AGENT_ERRORS = 20;
-  const handleAgentLoadError = useCallback((error: { handle: string; workerPanelId: string; buildState: string; error: string }) => {
-    setAgentErrors((prev) => {
-      const updated = [...prev, error];
-      // Limit array size to prevent memory growth
-      return updated.length > MAX_AGENT_ERRORS
-        ? updated.slice(-MAX_AGENT_ERRORS)
-        : updated;
-    });
-  }, []);
-
-  // Callback for expected worker build errors - similar to handleAgentLoadError but with panelId
-  const handleWorkerBuildError = useCallback((error: { panelId: string; buildState: string; error: string; handle?: string }) => {
-    setAgentErrors((prev) => {
-      // Avoid duplicates - check if we already have an error for this panel
-      if (prev.some((e) => e.workerPanelId === error.panelId)) {
-        return prev;
-      }
-      const updated = [...prev, {
-        handle: error.handle ?? "unknown",
-        workerPanelId: error.panelId,
-        buildState: error.buildState,
-        error: error.error,
-      }];
-      // Limit array size to prevent memory growth
-      return updated.length > MAX_AGENT_ERRORS
-        ? updated.slice(-MAX_AGENT_ERRORS)
-        : updated;
-    });
-  }, []);
-
-  useAgentRecovery(presenceEvents, {
-    enabled: connected,
-    participants: allParticipants,
-    onAgentLoadError: handleAgentLoadError,
-  });
-
-  // Monitor expected worker panels for build failures
-  // This catches workers that never joined because they're stuck on build
-  // Combine panel IDs from stateArgs AND localStorage (for channel mode where launcher closes)
-  const [allExpectedWorkerPanelIds, setAllExpectedWorkerPanelIds] = useState<string[]>(
-    expectedWorkerPanelIds ?? []
-  );
-
-  // Check localStorage for expected workers (used when adding agents to existing chat)
-  useEffect(() => {
-    if (!channelName) return;
-
-    const storageKey = `expectedWorkers:${channelName}`;
-
-    // Function to read and clear localStorage
-    const checkStorage = () => {
-      const stored = localStorage.getItem(storageKey);
-      if (stored) {
-        try {
-          const panelIds = JSON.parse(stored) as string[];
-          if (panelIds.length > 0) {
-            console.log(`[Chat] Found ${panelIds.length} expected worker panel IDs in localStorage:`, panelIds);
-            setAllExpectedWorkerPanelIds((prev) => [...new Set([...prev, ...panelIds])]);
-            // Clear after reading
-            localStorage.removeItem(storageKey);
-          }
-        } catch (err) {
-          console.error("[Chat] Failed to parse expected workers from localStorage:", err);
-          localStorage.removeItem(storageKey);
-        }
-      }
-    };
-
-    // Check immediately
-    checkStorage();
-
-    // Also listen for storage events (in case another tab/window updates it)
-    const handleStorageChange = (event: StorageEvent) => {
-      if (event.key === storageKey && event.newValue) {
-        checkStorage();
-      }
-    };
-    window.addEventListener("storage", handleStorageChange);
-
-    // Poll periodically in case the launcher writes while we're open
-    // (storage events don't fire for same-origin same-window writes)
-    const pollInterval = setInterval(checkStorage, 2000);
-
-    return () => {
-      window.removeEventListener("storage", handleStorageChange);
-      clearInterval(pollInterval);
-    };
-  }, [channelName]);
-
-  // Debug: log when we have expected workers
-  useEffect(() => {
-    if (allExpectedWorkerPanelIds.length > 0) {
-      console.log("[Chat] Monitoring expectedWorkerPanelIds:", allExpectedWorkerPanelIds);
-    }
-  }, [allExpectedWorkerPanelIds]);
-
-  useExpectedWorkerMonitor({
-    expectedWorkerPanelIds: allExpectedWorkerPanelIds,
-    participants: allParticipants,
-    enabled: connected,
-    onWorkerBuildError: handleWorkerBuildError,
-    checkDelayMs: 5000, // 5 seconds for faster feedback
-  });
 
   // Keep the tool role handler refs updated so onEvent can call them
   useEffect(() => {
@@ -1185,16 +1042,23 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
           () => ({ shouldProvideGroup: toolRoleShouldProvideGroupRef.current! })
         );
 
+        const methods: Record<string, MethodDefinition> = {
+          eval: evalMethodDefRef.current!,
+          feedback_form: feedbackFormMethodDef,
+          feedback_custom: feedbackCustomMethodDef,
+          ...approvedTools,
+        };
+
+        const methodNames = Object.keys(methods);
+        console.log(
+          `[Chat] Preparing to advertise ${methodNames.length} methods: ${methodNames.join(", ")}`
+        );
+
         // Connect using the hook with all methods
         // Use ref for evalMethodDef to get latest version
         await connectToChannel({
           channelId: channelName,
-          methods: {
-            eval: evalMethodDefRef.current!,
-            feedback_form: feedbackFormMethodDef,
-            feedback_custom: feedbackCustomMethodDef,
-            ...approvedTools,
-          },
+          methods,
           // Pass channel config (set when creating channel, read by joiners from server)
           channelConfig,
           // Pass contextId for channel authorization (separate from channelConfig)
@@ -1302,12 +1166,29 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
   }, [input, panelClientId, clientRef, stopTyping]);
 
   const handleInterruptAgent = useCallback(
-    async (agentId: string, _messageId?: string) => {
+    async (agentId: string, _messageId?: string, agentHandle?: string) => {
       // Note: messageId is optional and unused - we interrupt the agent, not a specific message
       if (!clientRef.current) return;
+
+      const roster = participantsRef.current;
+      let targetId = agentId;
+
+      // Validate agent exists, fall back to handle lookup if agentId is stale
+      if (!roster[agentId] && agentHandle) {
+        const byHandle = Object.values(roster).find(
+          p => p.metadata.handle === agentHandle && p.metadata.type !== "panel"
+        );
+        if (byHandle) {
+          targetId = byHandle.id;
+        } else {
+          console.warn(`Cannot interrupt: agent ${agentHandle} not in roster`);
+          return;
+        }
+      }
+
       try {
         // Call pause method via RPC - this interrupts the agent
-        await clientRef.current.callMethod(agentId, "pause", {
+        await clientRef.current.callMethod(targetId, "pause", {
           reason: "User interrupted execution",
         }).result;
       } catch (error) {
@@ -1390,48 +1271,6 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
           isNegotiating={toolRole.groupStates[conflict.group]?.negotiating ?? false}
         />
       ))}
-      {/* Agent recovery errors */}
-      {agentErrors.length > 0 && (
-        <Card style={{ margin: "8px", backgroundColor: "var(--red-3)" }}>
-          <Flex direction="column" gap="2">
-            <Text weight="bold" color="red">Some agents failed to load:</Text>
-            {agentErrors.map((err, idx) => (
-              <Flex key={`${err.workerPanelId}-${idx}`} direction="column" gap="1">
-                <Flex align="center" gap="2">
-                  <Text weight="medium">@{err.handle}</Text>
-                  <Text size="1" color={err.buildState === "dirty" ? "orange" : "red"}>
-                    [{err.buildState}]
-                  </Text>
-                </Flex>
-                <Text size="2" color="gray">
-                  {err.buildState === "dirty"
-                    ? "Worker has uncommitted changes. Focus the worker panel to commit or discard."
-                    : err.buildState === "not-git-repo"
-                    ? "Worker source is not in a git repository."
-                    : err.error}
-                </Text>
-                <Button
-                  size="1"
-                  variant="soft"
-                  onClick={() => {
-                    // Focus the worker panel using ns: protocol
-                    window.location.href = buildFocusLink(err.workerPanelId);
-                  }}
-                >
-                  {err.buildState === "dirty" ? "Resolve Changes" : "View Worker"}
-                </Button>
-              </Flex>
-            ))}
-            <Button
-              size="1"
-              variant="ghost"
-              onClick={() => setAgentErrors([])}
-            >
-              Dismiss
-            </Button>
-          </Flex>
-        </Card>
-      )}
       <ChatPhase
         channelId={channelName}
         connected={connected}
@@ -1446,6 +1285,14 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
         hasMoreHistory={hasMoreHistory}
         loadingMore={loadingMore}
         inlineUiComponents={inlineUiComponents}
+        debugEvents={debugEvents}
+        debugConsoleAgent={debugConsoleAgent}
+        dirtyRepoWarnings={dirtyRepoWarnings}
+        pendingAgents={pendingAgents}
+        onDebugConsoleChange={(handle) => {
+          console.log("[Chat] onDebugConsoleChange called with:", handle);
+          setDebugConsoleAgent(handle);
+        }}
         onLoadEarlierMessages={loadEarlierMessages}
         onInputChange={handleInputChange}
         onSendMessage={sendMessage}
@@ -1458,6 +1305,7 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
         onCallMethod={handleCallMethod}
         onFocusPanel={handleFocusPanel}
         onReloadPanel={handleReloadPanel}
+        onDismissDirtyWarning={handleDismissDirtyWarning}
         toolApproval={{
           settings: approval.settings,
           onSetFloor: approval.setGlobalFloor,

@@ -1,0 +1,83 @@
+{
+  "name": "@workspace-agents/pubsub-chat-responder",
+  "version": "0.1.0-git.02f9c65",
+  "type": "module",
+  "natstack": {
+    "type": "agent",
+    "title": "AI Chat Responder",
+    "description": "AI-powered chat responder with tool support and agentic capabilities",
+    "channels": [
+      "chat:*"
+    ],
+    "parameters": [
+      {
+        "key": "modelRole",
+        "label": "Model",
+        "type": "select",
+        "default": "fast",
+        "options": [
+          {
+            "value": "smart",
+            "label": "Smart"
+          },
+          {
+            "value": "fast",
+            "label": "Fast"
+          },
+          {
+            "value": "coding",
+            "label": "Coding"
+          }
+        ]
+      },
+      {
+        "key": "temperature",
+        "label": "Temperature",
+        "type": "slider",
+        "default": 0.7,
+        "min": 0,
+        "max": 2,
+        "step": 0.1
+      },
+      {
+        "key": "maxOutputTokens",
+        "label": "Max Output Tokens",
+        "type": "number",
+        "default": 1024,
+        "min": 256,
+        "max": 4096
+      },
+      {
+        "key": "autonomyLevel",
+        "label": "Autonomy Level",
+        "type": "slider",
+        "default": 0,
+        "min": 0,
+        "max": 2
+      },
+      {
+        "key": "maxSteps",
+        "label": "Max Steps",
+        "type": "number",
+        "default": 5,
+        "min": 1,
+        "max": 20
+      },
+      {
+        "key": "thinkingBudget",
+        "label": "Thinking Budget",
+        "type": "number",
+        "default": 0,
+        "min": 0,
+        "max": 32000
+      }
+    ]
+  },
+  "dependencies": {
+    "@natstack/agent-runtime": "workspace:*",
+    "@natstack/agent-patterns": "workspace:*",
+    "@natstack/agentic-messaging": "workspace:*",
+    "@natstack/ai": "workspace:*",
+    "@natstack/pubsub": "workspace:*"
+  }
+}

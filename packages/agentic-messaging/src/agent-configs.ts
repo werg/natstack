@@ -8,7 +8,7 @@
  * - Settings UI generator to create runtime settings forms
  */
 
-import type { FieldDefinition, FieldValue } from "@natstack/runtime";
+import type { FieldDefinition, FieldValue } from "@natstack/core";
 
 /**
  * Fallback model lists for when SDK is unavailable.

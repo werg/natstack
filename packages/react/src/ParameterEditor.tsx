@@ -2,13 +2,13 @@
  * ParameterEditor Component
  *
  * Thin wrapper around FormRenderer for backwards compatibility.
- * Used by agent-manager (preferences) and chat-launcher (agent setup).
+ * Used by ns-about://agents (agent settings) and chat-launcher (agent setup).
  *
  * @deprecated Use FormRenderer directly for new code
  */
 
-import type { FieldDefinition, FieldValue } from "@natstack/runtime";
-import { groupFields } from "@natstack/runtime";
+import type { FieldDefinition, FieldValue } from "@natstack/core";
+import { groupFields } from "@natstack/core";
 import { FormRenderer } from "./FormRenderer.js";
 
 /**

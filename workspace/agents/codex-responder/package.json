@@ -1,0 +1,79 @@
+{
+  "name": "@workspace-agents/codex-responder",
+  "version": "0.1.0-git.d572985",
+  "type": "module",
+  "natstack": {
+    "type": "agent",
+    "title": "Codex Responder",
+    "description": "AI-powered code assistant using the OpenAI Codex SDK with MCP tool bridge",
+    "channels": [
+      "chat:*"
+    ],
+    "parameters": [
+      {
+        "key": "model",
+        "label": "Model",
+        "type": "select",
+        "default": "o3-mini",
+        "options": [
+          {
+            "value": "o3-mini",
+            "label": "o3 Mini"
+          },
+          {
+            "value": "o4-mini",
+            "label": "o4 Mini"
+          },
+          {
+            "value": "codex-1",
+            "label": "Codex 1"
+          }
+        ]
+      },
+      {
+        "key": "reasoningEffort",
+        "label": "Reasoning Effort",
+        "type": "slider",
+        "default": 2,
+        "min": 0,
+        "max": 3
+      },
+      {
+        "key": "autonomyLevel",
+        "label": "Autonomy Level",
+        "type": "slider",
+        "default": 1,
+        "min": 0,
+        "max": 2
+      },
+      {
+        "key": "webSearchEnabled",
+        "label": "Web Search",
+        "type": "boolean",
+        "default": false
+      },
+      {
+        "key": "restrictedMode",
+        "label": "Restricted Mode",
+        "type": "boolean",
+        "default": true,
+        "channelLevel": true
+      },
+      {
+        "key": "workingDirectory",
+        "label": "Working Directory",
+        "type": "string",
+        "channelLevel": true
+      }
+    ]
+  },
+  "dependencies": {
+    "@natstack/agent-runtime": "workspace:*",
+    "@natstack/agent-patterns": "workspace:*",
+    "@natstack/agentic-messaging": "workspace:*",
+    "@natstack/pubsub": "workspace:*",
+    "@openai/codex-sdk": "*",
+    "@modelcontextprotocol/sdk": "*",
+    "zod": "*"
+  }
+}

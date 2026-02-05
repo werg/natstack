@@ -3,6 +3,9 @@ export * from "./types.js";
 export * from "./protocol.js";
 export { connect, createToolsForAgentSDK, type AgentSDKToolDefinition } from "./client.js";
 
+// Database injection (for runtime configuration)
+export { setDbOpen, getDbOpen, openDb, type Database, type DbOpener } from "./db-inject.js";
+
 // Async utilities
 export { AsyncQueue, createFanout } from "./async-queue.js";
 
@@ -21,9 +24,6 @@ export {
   createRichTextChatSystemPrompt,
   createRestrictedModeSystemPrompt,
 } from "./prompts.js";
-
-// Re-export commonly needed types from pubsub so consumers don't need a direct dependency
-export type { Participant, RosterUpdate, ParticipantMetadata, Attachment, AttachmentInput } from "@natstack/pubsub";
 
 // JSON Schema utilities
 export { jsonSchemaToZod, jsonSchemaToZodRawShape, isRecord } from "./json-schema-to-zod.js";
@@ -62,17 +62,11 @@ export {
   type TrackerClient,
 } from "./responder-utils.js";
 
-// Context window usage tracking
-export {
-  createContextTracker,
-  getModelContextLimit,
-  MODEL_CONTEXT_LIMITS,
-  type ContextTracker,
-  type ContextTrackerOptions,
-  type ContextTrackerState,
-  type ContextWindowUsage,
-  type TokenUsage,
-  type NormalizedUsage,
+// Context window usage data types (implementation in @natstack/agent-patterns)
+export type {
+  ContextWindowUsage,
+  TokenUsage,
+  NormalizedUsage,
 } from "./context-tracker.js";
 
 // Execution pause/resume utilities
@@ -178,5 +172,4 @@ export {
 
 // For agent configs, use: import { ... } from "@natstack/agentic-messaging/config"
 // For session persistence, use: import { ... } from "@natstack/agentic-messaging/session"
-// For agent registry, use: import { ... } from "@natstack/agentic-messaging/registry"
 

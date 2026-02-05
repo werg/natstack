@@ -1,5 +1,5 @@
 import { createRpcBridge, type RpcTransport } from "@natstack/rpc";
-import { createDbClient } from "../shared/db.js";
+import { createDbClient } from "@natstack/core";
 import { createChildManager } from "../shared/children.js";
 import {
   noopParent,
@@ -220,7 +220,7 @@ export function createRuntime(deps: RuntimeDeps) {
 
     onFocus,
 
-    expose: rpc.expose.bind(rpc),
+    exposeMethod: rpc.exposeMethod.bind(rpc),
 
     gitConfig: deps.gitConfig ?? null,
     pubsubConfig: deps.pubsubConfig ?? null,

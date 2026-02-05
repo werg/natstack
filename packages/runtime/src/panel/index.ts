@@ -8,27 +8,7 @@ if (typeof globalThis.Buffer === "undefined") {
 import { createPanelTransport } from "./transport.js";
 import { fs, fsReady } from "./fs.js"; // Conditional fs: Node.js for unsafe, ZenFS for safe
 import { initRuntime } from "../setup/initRuntime.js";
-export { decodeBase64, encodeBase64 } from "../shared/base64.js";
 export type { BootstrapResult } from "../shared/bootstrap.js";
-export {
-  evaluateCondition,
-  isFieldVisible,
-  isFieldEnabled,
-  getFieldWarning,
-  groupFields,
-  getFieldDefaults,
-} from "../shared/form-schema.js";
-export type {
-  FieldValue,
-  FieldType,
-  ConditionOperator,
-  FieldCondition,
-  FieldOption,
-  SliderNotch,
-  FieldWarning,
-  FieldDefinition,
-  FormSchema,
-} from "../shared/form-schema.js";
 
 // Initialize runtime with panel-specific providers
 const { runtime, config } = initRuntime({
@@ -36,6 +16,17 @@ const { runtime, config } = initRuntime({
   fs,
   fsReady,
 });
+
+// Configure dependency injection for shared packages
+// These packages use injection to avoid circular dependencies with runtime
+import { setDbOpen } from "@natstack/agentic-messaging";
+import { setRpc } from "@natstack/ai";
+
+// Inject db opener for agentic-messaging (session persistence, etc.)
+setDbOpen(runtime.db.open);
+
+// Inject RPC bridge for AI package (streaming, tool execution, etc.)
+setRpc(runtime.rpc);
 
 export * as Rpc from "../core/rpc.js";
 export { z } from "../core/zod.js";
@@ -82,7 +73,7 @@ export const {
   getTheme,
   onThemeChange,
   onFocus,
-  expose,
+  exposeMethod,
   bootstrapPromise,
   contextId,
 } = runtime;

@@ -1,41 +1,19 @@
 /**
  * Default agent selection for projects.
- * Reuses agent selection patterns from chat-launcher.
+ * Controlled component - parent panel handles agent loading.
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useCallback } from "react";
 import { Box, Text, Card, Flex, RadioGroup, Badge } from "@radix-ui/themes";
 import { PersonIcon } from "@radix-ui/react-icons";
-import { getAgentRegistry, type AgentDefinition } from "@natstack/agentic-messaging/registry";
 import type { AgentSelectorProps } from "../types";
 
 export function AgentSelector({
+  agents,
   defaultAgentId,
   onDefaultAgentChange,
+  loading = false,
 }: AgentSelectorProps) {
-  const [agents, setAgents] = useState<AgentDefinition[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    async function loadAgents() {
-      try {
-        const registry = getAgentRegistry();
-        await registry.initialize();
-        const enabledAgents = await registry.listEnabled();
-        setAgents(enabledAgents);
-        // Auto-select first agent if none selected and agents available
-        if (!defaultAgentId && enabledAgents.length > 0) {
-          onDefaultAgentChange(enabledAgents[0].id);
-        }
-      } catch (err) {
-        console.error("Failed to load agents:", err);
-      } finally {
-        setLoading(false);
-      }
-    }
-    void loadAgents();
-  }, []);  // eslint-disable-line react-hooks/exhaustive-deps -- only run on mount
-
   const handleAgentChange = useCallback(
     (value: string) => {
       onDefaultAgentChange(value === "none" ? undefined : value);

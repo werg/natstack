@@ -8,7 +8,12 @@
  */
 
 import { useState, useCallback, useEffect } from "react";
-import { pubsubConfig, buildNsLink, closeSelf, getStateArgs, createChild, rpc } from "@natstack/runtime";
+import { pubsubConfig, buildNsLink, closeSelf, getStateArgs, rpc, db, id } from "@natstack/runtime";
+import { setDbOpen, connect, type AgenticClient } from "@natstack/agentic-messaging";
+
+// Configure agentic-messaging to use runtime's db
+setDbOpen(db.open);
+
 import { usePanelTheme } from "@natstack/react";
 import { Theme } from "@radix-ui/themes";
 import {
@@ -18,10 +23,7 @@ import {
   type SessionConfig,
 } from "./hooks/useAgentSelection";
 import { AgentSetupPhase } from "./components/AgentSetupPhase";
-import {
-  loadGlobalSettings,
-  type GlobalAgentSettings,
-} from "@workspace-panels/agent-manager";
+import type { GlobalAgentSettings } from "@natstack/core";
 
 const generateChannelId = () => `chat-${crypto.randomUUID().slice(0, 8)}`;
 
@@ -62,7 +64,7 @@ export default function ChatLauncher() {
 
     async function applyGlobalSettings() {
       try {
-        const global = await loadGlobalSettings();
+        const global = await rpc.call<GlobalAgentSettings>("main", "agentSettings.getGlobalSettings");
         setSessionConfig((prev) => ({
           ...prev,
           projectLocation: global.defaultProjectLocation,
@@ -130,6 +132,8 @@ export default function ChatLauncher() {
     // Use the channel ID from state (user may have edited it)
     const targetChannelId = channelId.trim() || generateChannelId();
 
+    let client: AgenticClient | null = null;
+
     try {
       // Determine context ID:
       // 1. Channel mode with existing contextId: use it (adding agents to existing channel)
@@ -154,80 +158,50 @@ export default function ChatLauncher() {
       // Derive channel config from session config (note: contextId is NOT part of channelConfig)
       const channelConfig = toChannelConfig(sessionConfig);
 
-      // Spawn all selected agents directly via createChild
-      const spawnPromises = selectedAgents.map(async (agent) => {
-        const config = buildSpawnConfig(agent);
-
-        try {
-          // Spawn worker directly
-          // Pass channelConfig values via stateArgs to avoid race condition where workers
-          // connect before chat panel and create the channel without config
-          // Note: contextId is passed separately, NOT as part of channelConfig
-          const childHandle = await createChild(
-            agent.agent.workerSource,
-            {
-              name: `${agent.agent.id}-${targetChannelId.slice(0, 8)}`,
-              // contextId in options sets the storage partition (OPFS/IndexedDB sharing)
-              contextId,
-            },
-            {
-              channel: targetChannelId,
-              handle: agent.agent.proposedHandle,
-              // Channel config values passed directly to avoid timing issues
-              workingDirectory: channelConfig.workingDirectory,
-              restrictedMode: channelConfig.restrictedMode,
-              // contextId in stateArgs tells the worker which channel context it belongs to
-              contextId,
-              ...config,
-            }
-          );
-          return { agent, error: null, panelId: childHandle.id };
-        } catch (err) {
-          // Capture spawn errors per-agent
-          const errorMsg = err instanceof Error ? err.message : String(err);
-          return { agent, error: errorMsg, panelId: null };
-        }
+      // Connect to pubsub to invite agents
+      setStatus("Connecting to channel...");
+      client = await connect({
+        serverUrl: pubsubConfig.serverUrl,
+        token: pubsubConfig.token,
+        channel: targetChannelId,
+        contextId,
+        channelConfig,
+        handle: `launcher-${id}`,
+        name: "Chat Launcher",
+        type: "panel",
+        replayMode: "skip", // Don't need message replay
       });
 
-      const results = await Promise.all(spawnPromises);
+      // Fire agent invites without waiting - agents will join the channel asynchronously
+      // The chat panel will see them appear via presence events
+      for (const agent of selectedAgents) {
+        const config = buildSpawnConfig(agent);
 
-      // Separate successful and failed spawns
-      const succeeded = results.filter((r) => r.error === null);
-      const failed = results.filter((r) => r.error !== null);
-
-      // Collect panel IDs from all spawn attempts (both succeeded and failed)
-      // This allows the chat panel to monitor them and detect build failures
-      const spawnedPanelIds = results
-        .map((r) => r.panelId)
-        .filter((id): id is string => id !== null);
-
-      // Check if all spawns failed - still navigate to chat panel
-      // The agent recovery system in chat will show build errors and allow retry
-      if (succeeded.length === 0) {
-        const errorDetails = failed
-          .map((r) => `${r.agent.agent.name}: ${r.error}`)
-          .join("\n");
-        console.warn(`[Chat Launcher] All agent spawns failed, proceeding to chat anyway:\n${errorDetails}`);
-        // Don't return - fall through to navigate to chat panel
+        // Fire and forget - don't await the result
+        // Errors will be logged but we navigate to chat immediately
+        client.inviteAgent(agent.agent.id, {
+          handle: agent.agent.proposedHandle ?? agent.agent.id,
+          config: {
+            // Channel config values passed directly to avoid timing issues
+            workingDirectory: channelConfig.workingDirectory,
+            restrictedMode: channelConfig.restrictedMode,
+            // contextId tells the agent which channel context it belongs to
+            contextId,
+            ...config,
+          },
+        }).catch((err) => {
+          console.warn(`[Chat Launcher] Failed to invite agent ${agent.agent.name}:`, err);
+        });
       }
 
-      // Log partial failures but continue if at least one succeeded
-      if (failed.length > 0) {
-        const failedNames = failed.map((r) => r.agent.agent.name).join(", ");
-        console.warn(`[Chat Launcher] Some agents failed to spawn: ${failedNames}`);
-      }
+      // Close the launcher's pubsub connection before navigating
+      await client.close();
+      client = null;
 
       // Post-spawn behavior depends on mode
       if (isChannelMode) {
-        // Channel modification mode: store panel IDs in localStorage for the chat panel to pick up
-        // This is needed because the chat panel is already open and we can't pass stateArgs to it
-        if (spawnedPanelIds.length > 0) {
-          const storageKey = `expectedWorkers:${targetChannelId}`;
-          const existing = JSON.parse(localStorage.getItem(storageKey) ?? "[]") as string[];
-          const combined = [...new Set([...existing, ...spawnedPanelIds])];
-          localStorage.setItem(storageKey, JSON.stringify(combined));
-          console.log(`[Chat Launcher] Stored ${spawnedPanelIds.length} expected worker panel IDs for channel ${targetChannelId}`);
-        }
+        // Channel modification mode: agents were invited, now close self or navigate back
+        // Note: Auto-wake system handles agent recovery, no need to track instance IDs
 
         // Try to close self, otherwise navigate back
         try {
@@ -238,22 +212,18 @@ export default function ChatLauncher() {
           // Fall through to navigation
         }
         // Fallback: navigate back to the chat panel
-        // Include expectedWorkerPanelIds so chat panel can monitor them
-        // contextId in options sets storage partition, in stateArgs tells app which channel context
         const chatUrl = buildNsLink("panels/chat", {
           action: "navigate",
           contextId,
           stateArgs: {
             channelName: targetChannelId,
             contextId,
-            expectedWorkerPanelIds: spawnedPanelIds.length > 0 ? spawnedPanelIds : undefined,
           },
         });
         window.location.href = chatUrl;
       } else {
         // New chat mode: navigate to the chat panel with channel ID, config, and contextId
-        // Include expectedWorkerPanelIds so chat panel can monitor them for build failures
-        // contextId in options sets storage partition, in stateArgs tells app which channel context
+        // Pass pendingAgents so chat panel knows which agents were invited
         const chatUrl = buildNsLink("panels/chat", {
           action: "navigate",
           contextId,
@@ -261,7 +231,10 @@ export default function ChatLauncher() {
             channelName: targetChannelId,
             channelConfig,
             contextId,
-            expectedWorkerPanelIds: spawnedPanelIds.length > 0 ? spawnedPanelIds : undefined,
+            pendingAgents: selectedAgents.map((a) => ({
+              agentId: a.agent.id,
+              handle: a.agent.proposedHandle ?? a.agent.id,
+            })),
           },
         });
         window.location.href = chatUrl;
@@ -269,6 +242,14 @@ export default function ChatLauncher() {
     } catch (err) {
       setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
       setIsStarting(false);
+      // Cleanup on error
+      if (client) {
+        try {
+          await client.close();
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
     }
   }, [agentsWithRequirements, buildSpawnConfig, channelId, isChannelMode, sessionConfig]);
 

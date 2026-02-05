@@ -2,6 +2,8 @@
  * Types for the PubSub client.
  */
 
+import type { AgentManifest } from "@natstack/core";
+
 /**
  * Channel configuration persisted with the channel.
  * Set when the channel is created, readable by all participants.
@@ -188,3 +190,126 @@ export interface ConnectOptions<T extends ParticipantMetadata = ParticipantMetad
   /** Skip messages sent by this client (echo suppression). Requires clientId to be set. Default: false */
   skipOwnMessages?: boolean;
 }
+
+// =============================================================================
+// Agent Protocol Types
+// =============================================================================
+
+/**
+ * Agent instance info (running agent on a channel).
+ * Used in channel-agents responses.
+ */
+export interface AgentInstanceSummary {
+  /** Unique instance ID (UUID) */
+  instanceId: string;
+  /** Agent type ID (matches AgentManifest.id) */
+  agentId: string;
+  /** Handle used in channel */
+  handle: string;
+  /** Unix timestamp when started */
+  startedAt: number;
+}
+
+/**
+ * Options for inviting an agent to a channel.
+ */
+export interface InviteAgentOptions {
+  /** Handle to use in channel (defaults to agentId) */
+  handle?: string;
+  /** Agent configuration parameters */
+  config?: Record<string, unknown>;
+  /** Timeout in milliseconds (default: 30000) */
+  timeoutMs?: number;
+}
+
+/**
+ * Structured agent build error with full diagnostics.
+ * Returned when an agent fails to spawn due to build errors.
+ */
+export interface AgentBuildError {
+  /** Primary error message */
+  message: string;
+  /** Build log with all steps (may be long) */
+  buildLog?: string;
+  /** TypeScript errors if type-check failed */
+  typeErrors?: Array<{
+    file: string;
+    line: number;
+    column: number;
+    message: string;
+  }>;
+  /** Git dirty state info if repo has uncommitted changes */
+  dirtyRepo?: {
+    modified: string[];
+    untracked: string[];
+    staged: string[];
+  };
+}
+
+/**
+ * Result of inviting an agent.
+ */
+export interface InviteAgentResult {
+  /** Whether the invite succeeded */
+  success: boolean;
+  /** Instance ID of the spawned agent (on success) */
+  instanceId?: string;
+  /** Error message (on failure) */
+  error?: string;
+  /** Structured build error with full diagnostics (on failure) */
+  buildError?: AgentBuildError;
+}
+
+/**
+ * Result of removing an agent.
+ */
+export interface RemoveAgentResult {
+  /** Whether the removal succeeded */
+  success: boolean;
+  /** Error message (on failure) */
+  error?: string;
+}
+
+/**
+ * Response to list-agents request.
+ */
+export interface ListAgentsResponse {
+  kind: "list-agents-response";
+  ref: number;
+  agents: AgentManifest[];
+}
+
+/**
+ * Response to invite-agent request.
+ */
+export interface InviteAgentResponse {
+  kind: "invite-agent-response";
+  ref: number;
+  success: boolean;
+  instanceId?: string;
+  error?: string;
+  /** Structured build error with full diagnostics (on failure) */
+  buildError?: AgentBuildError;
+}
+
+/**
+ * Response to channel-agents request.
+ */
+export interface ChannelAgentsResponse {
+  kind: "channel-agents-response";
+  ref: number;
+  agents: AgentInstanceSummary[];
+}
+
+/**
+ * Response to remove-agent request.
+ */
+export interface RemoveAgentResponse {
+  kind: "remove-agent-response";
+  ref: number;
+  success: boolean;
+  error?: string;
+}
+
+// Re-export AgentManifest for convenience
+export type { AgentManifest } from "@natstack/core";

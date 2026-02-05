@@ -144,7 +144,7 @@ export interface WorkspaceConfig {
    * Panels to create on first initialization (when panel tree is empty).
    * These panels are created as root panels before the launcher.
    * Useful for panels that need to run once to seed data or perform setup.
-   * Example: ["panels/agent-manager"]
+   * Example: ["panels/setup-wizard"]
    */
   initPanels?: string[];
 }
@@ -159,8 +159,6 @@ export interface Workspace {
   config: WorkspaceConfig;
   /** Absolute path to panels directory (workspace/panels) */
   panelsPath: string;
-  /** Absolute path to workers directory (workspace/workers) */
-  workersPath: string;
   /** Absolute path to packages directory (workspace/packages) */
   packagesPath: string;
   /** Absolute path to contexts directory (workspace/contexts) */
@@ -169,6 +167,8 @@ export interface Workspace {
   gitReposPath: string;
   /** Absolute path to cache directory (workspace/.cache) */
   cachePath: string;
+  /** Absolute path to agents directory (workspace/agents) */
+  agentsPath: string;
 }
 
 /**

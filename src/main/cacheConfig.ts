@@ -39,10 +39,3 @@ export function getCacheConfig(): Required<CacheConfig> {
 
   return cachedConfig;
 }
-
-/**
- * Clear cached config (for testing or hot reload)
- */
-export function clearCachedConfig(): void {
-  cachedConfig = null;
-}

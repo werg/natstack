@@ -1,6 +1,6 @@
 {
   "name": "@natstack/playwright-injected",
-  "version": "0.1.0-bbdb807f0925",
+  "version": "0.1.0-git.0fec5b5-dirty.e6b7b0267710",
   "type": "module",
   "description": "Playwright browser-injected scripts",
   "license": "Apache-2.0",

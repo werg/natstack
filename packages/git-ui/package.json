@@ -1,6 +1,6 @@
 {
   "name": "@natstack/git-ui",
-  "version": "0.1.0-2f60fde87ea0",
+  "version": "0.1.0-git.67fa4b3",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

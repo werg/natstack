@@ -341,6 +341,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     channelConfig: providedChannelConfig,
     reconnect,
     replayMode = "collect",
+    replaySinceId,
     methods: initialMethods,
     clientId,
     skipOwnMessages,
@@ -368,10 +369,15 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
 
   // Determine replay starting point:
   // - undefined: No replay (skip mode) - server sends no historical messages
-  // - 0: Replay everything from beginning
-  // Note: Checkpoint-based resumption happens on RECONNECTION (handled by pubsub layer),
-  // not on initial connection. Initial connection always replays from beginning.
-  const sinceId = replayMode === "skip" ? undefined : 0;
+  // - 0: Replay everything from beginning (default for collect/stream modes)
+  // - number: Resume from checkpoint (replaySinceId) - server sends messages with id > replaySinceId
+  //
+  // This enables agents to persist their last processed pubsub ID and resume without
+  // full replay on restart. The pubsub layer handles reconnection replay automatically
+  // using lastSeenId, but initial connection now also supports checkpoint-based resumption.
+  const sinceId = replayMode === "skip"
+    ? undefined
+    : (replaySinceId ?? 0);
 
   const instanceId = randomId();
 
@@ -1582,13 +1588,20 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
 
   // After connection is established, advertise methods via metadata update
   // The pubsub layer sends basic metadata on connect; we update with full method schemas here
-  if (Object.keys(methods).length > 0) {
+  const methodNames = Object.keys(methods);
+  if (methodNames.length > 0) {
+    console.log(
+      `[AgenticClient] Advertising ${methodNames.length} methods for ${handle}: ${methodNames.join(", ")}`
+    );
     try {
       await pubsub.updateMetadata(buildMetadataWithMethods() as T);
+      console.log(`[AgenticClient] Methods advertised for ${handle}`);
     } catch (err) {
       // Log but don't fail - methods can be updated later if needed
       console.warn("[AgenticClient] Failed to advertise methods:", err);
     }
+  } else {
+    console.log(`[AgenticClient] No methods to advertise for ${handle}`);
   }
 
   return {
@@ -1744,6 +1757,12 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     getMessagesBefore: async (beforeId: number, limit?: number) => {
       return pubsub.getMessagesBefore(beforeId, limit);
     },
+    // === Agent Management ===
+    listAgents: (timeoutMs?: number) => pubsub.listAgents(timeoutMs),
+    inviteAgent: (agentId: string, options?: { handle?: string; config?: Record<string, unknown>; timeoutMs?: number }) =>
+      pubsub.inviteAgent(agentId, options),
+    channelAgents: (timeoutMs?: number) => pubsub.channelAgents(timeoutMs),
+    removeAgent: (instanceId: string, timeoutMs?: number) => pubsub.removeAgent(instanceId, timeoutMs),
   };
 }
 

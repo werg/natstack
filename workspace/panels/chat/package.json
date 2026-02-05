@@ -30,6 +30,7 @@
     "@natstack/runtime": "workspace:*",
     "@natstack/react": "workspace:*",
     "@natstack/agentic-messaging": "workspace:*",
+    "@natstack/pubsub": "workspace:*",
     "@natstack/tool-ui": "workspace:*",
     "@natstack/eval": "workspace:*",
     "@natstack/git": "workspace:*",

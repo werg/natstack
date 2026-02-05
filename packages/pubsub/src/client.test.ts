@@ -1104,6 +1104,298 @@ describe("PubSubClient", () => {
     });
   });
 
+  describe("agent API", () => {
+    it("listAgents sends request and returns manifests", async () => {
+      let onmessage: ((event: { data: string }) => void) | null = null;
+      const mockSend = vi.fn();
+
+      MockWebSocket.mockImplementation(() => {
+        const ws = {
+          readyState: 1,
+          onopen: null,
+          _onmessage: null as ((event: { data: string }) => void) | null,
+          onerror: null,
+          onclose: null,
+          close: vi.fn(),
+          send: mockSend,
+        };
+        Object.defineProperty(ws, "onmessage", {
+          get: () => ws._onmessage,
+          set: (handler: (event: { data: string }) => void) => {
+            ws._onmessage = handler;
+            onmessage = handler;
+          },
+        });
+        return ws;
+      });
+
+      const client = connect(`ws://127.0.0.1:${port}`, "token", {
+        channel: "test",
+      });
+
+      // Send ready first
+      setTimeout(() => {
+        onmessage!({ data: JSON.stringify({ kind: "ready" }) });
+      }, 5);
+      await client.ready();
+
+      // Start listAgents
+      const listPromise = client.listAgents();
+
+      // Verify send was called
+      const calls = mockSend.mock.calls;
+      const sentMsg = JSON.parse(calls[calls.length - 1]![0] as string);
+      expect(sentMsg.action).toBe("list-agents");
+      expect(sentMsg.ref).toBeDefined();
+
+      // Simulate response
+      onmessage!({
+        data: JSON.stringify({
+          kind: "list-agents-response",
+          ref: sentMsg.ref,
+          agents: [
+            { id: "test-agent", name: "Test Agent", version: "1.0.0" },
+          ],
+        }),
+      });
+
+      const agents = await listPromise;
+      expect(agents).toHaveLength(1);
+      expect(agents[0]?.id).toBe("test-agent");
+    });
+
+    it("inviteAgent sends request and returns result", async () => {
+      let onmessage: ((event: { data: string }) => void) | null = null;
+      const mockSend = vi.fn();
+
+      MockWebSocket.mockImplementation(() => {
+        const ws = {
+          readyState: 1,
+          onopen: null,
+          _onmessage: null as ((event: { data: string }) => void) | null,
+          onerror: null,
+          onclose: null,
+          close: vi.fn(),
+          send: mockSend,
+        };
+        Object.defineProperty(ws, "onmessage", {
+          get: () => ws._onmessage,
+          set: (handler: (event: { data: string }) => void) => {
+            ws._onmessage = handler;
+            onmessage = handler;
+          },
+        });
+        return ws;
+      });
+
+      const client = connect(`ws://127.0.0.1:${port}`, "token", {
+        channel: "test",
+      });
+
+      setTimeout(() => {
+        onmessage!({ data: JSON.stringify({ kind: "ready" }) });
+      }, 5);
+      await client.ready();
+
+      const invitePromise = client.inviteAgent("claude", { handle: "ai" });
+
+      const calls = mockSend.mock.calls;
+      const sentMsg = JSON.parse(calls[calls.length - 1]![0] as string);
+      expect(sentMsg.action).toBe("invite-agent");
+      expect(sentMsg.agentId).toBe("claude");
+      expect(sentMsg.handle).toBe("ai");
+
+      onmessage!({
+        data: JSON.stringify({
+          kind: "invite-agent-response",
+          ref: sentMsg.ref,
+          success: true,
+          instanceId: "inst-123",
+        }),
+      });
+
+      const result = await invitePromise;
+      expect(result.success).toBe(true);
+      expect(result.instanceId).toBe("inst-123");
+    });
+
+    it("channelAgents returns active agents", async () => {
+      let onmessage: ((event: { data: string }) => void) | null = null;
+      const mockSend = vi.fn();
+
+      MockWebSocket.mockImplementation(() => {
+        const ws = {
+          readyState: 1,
+          onopen: null,
+          _onmessage: null as ((event: { data: string }) => void) | null,
+          onerror: null,
+          onclose: null,
+          close: vi.fn(),
+          send: mockSend,
+        };
+        Object.defineProperty(ws, "onmessage", {
+          get: () => ws._onmessage,
+          set: (handler: (event: { data: string }) => void) => {
+            ws._onmessage = handler;
+            onmessage = handler;
+          },
+        });
+        return ws;
+      });
+
+      const client = connect(`ws://127.0.0.1:${port}`, "token", {
+        channel: "test",
+      });
+
+      setTimeout(() => {
+        onmessage!({ data: JSON.stringify({ kind: "ready" }) });
+      }, 5);
+      await client.ready();
+
+      const channelPromise = client.channelAgents();
+
+      const calls = mockSend.mock.calls;
+      const sentMsg = JSON.parse(calls[calls.length - 1]![0] as string);
+      expect(sentMsg.action).toBe("channel-agents");
+
+      onmessage!({
+        data: JSON.stringify({
+          kind: "channel-agents-response",
+          ref: sentMsg.ref,
+          agents: [
+            { instanceId: "i1", agentId: "claude", handle: "claude", startedAt: 1000 },
+          ],
+        }),
+      });
+
+      const agents = await channelPromise;
+      expect(agents).toHaveLength(1);
+      expect(agents[0]?.agentId).toBe("claude");
+    });
+
+    it("removeAgent returns success/failure", async () => {
+      let onmessage: ((event: { data: string }) => void) | null = null;
+      const mockSend = vi.fn();
+
+      MockWebSocket.mockImplementation(() => {
+        const ws = {
+          readyState: 1,
+          onopen: null,
+          _onmessage: null as ((event: { data: string }) => void) | null,
+          onerror: null,
+          onclose: null,
+          close: vi.fn(),
+          send: mockSend,
+        };
+        Object.defineProperty(ws, "onmessage", {
+          get: () => ws._onmessage,
+          set: (handler: (event: { data: string }) => void) => {
+            ws._onmessage = handler;
+            onmessage = handler;
+          },
+        });
+        return ws;
+      });
+
+      const client = connect(`ws://127.0.0.1:${port}`, "token", {
+        channel: "test",
+      });
+
+      setTimeout(() => {
+        onmessage!({ data: JSON.stringify({ kind: "ready" }) });
+      }, 5);
+      await client.ready();
+
+      const removePromise = client.removeAgent("inst-123");
+
+      const calls = mockSend.mock.calls;
+      const sentMsg = JSON.parse(calls[calls.length - 1]![0] as string);
+      expect(sentMsg.action).toBe("remove-agent");
+      expect(sentMsg.instanceId).toBe("inst-123");
+
+      onmessage!({
+        data: JSON.stringify({
+          kind: "remove-agent-response",
+          ref: sentMsg.ref,
+          success: true,
+        }),
+      });
+
+      const result = await removePromise;
+      expect(result.success).toBe(true);
+    });
+
+    it("listAgents rejects on timeout", async () => {
+      MockWebSocket.mockImplementation(() => ({
+        readyState: 1,
+        onopen: null,
+        onmessage: null,
+        onerror: null,
+        onclose: null,
+        close: vi.fn(),
+        send: vi.fn(),
+      }));
+
+      const client = connect(`ws://127.0.0.1:${port}`, "token", {
+        channel: "test",
+      });
+
+      await expect(client.listAgents(50)).rejects.toThrow("timeout");
+    });
+
+    it("inviteAgent handles error response", async () => {
+      let onmessage: ((event: { data: string }) => void) | null = null;
+      const mockSend = vi.fn();
+
+      MockWebSocket.mockImplementation(() => {
+        const ws = {
+          readyState: 1,
+          onopen: null,
+          _onmessage: null as ((event: { data: string }) => void) | null,
+          onerror: null,
+          onclose: null,
+          close: vi.fn(),
+          send: mockSend,
+        };
+        Object.defineProperty(ws, "onmessage", {
+          get: () => ws._onmessage,
+          set: (handler: (event: { data: string }) => void) => {
+            ws._onmessage = handler;
+            onmessage = handler;
+          },
+        });
+        return ws;
+      });
+
+      const client = connect(`ws://127.0.0.1:${port}`, "token", {
+        channel: "test",
+      });
+
+      setTimeout(() => {
+        onmessage!({ data: JSON.stringify({ kind: "ready" }) });
+      }, 5);
+      await client.ready();
+
+      const invitePromise = client.inviteAgent("invalid-agent");
+
+      const calls = mockSend.mock.calls;
+      const sentMsg = JSON.parse(calls[calls.length - 1]![0] as string);
+
+      onmessage!({
+        data: JSON.stringify({
+          kind: "invite-agent-response",
+          ref: sentMsg.ref,
+          success: false,
+          error: "Agent not found",
+        }),
+      });
+
+      const result = await invitePromise;
+      expect(result.success).toBe(false);
+      expect(result.error).toBe("Agent not found");
+    });
+  });
+
   describe("attachment support", () => {
     it("sends message with attachment as binary frame", async () => {
       const mockSend = vi.fn();

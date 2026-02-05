@@ -317,6 +317,7 @@ export class PanelManager {
     this.pendingAuthTokens.clear();
     this.browserStateCleanup.clear();
     this.linkInterceptionHandlers.clear();
+    this.contentLoadHandlers.clear();
 
     // Close any lingering template builder workers
     for (const workerId of this.templateBuilderWorkers) {
@@ -473,20 +474,24 @@ export class PanelManager {
         injectHostThemeVariables: false,
       });
 
-      // Register with CDP server when dom-ready
+      // Register with CDP server when dom-ready (use named handler for cleanup)
+      const handlers: { domReady?: () => void; didFinishLoad?: () => void } = {};
       if (parentId) {
-        view.webContents.on("dom-ready", () => {
+        handlers.domReady = () => {
           getCdpServer().registerBrowser(panelId, view.webContents.id, parentId);
-        });
+        };
+        view.webContents.on("dom-ready", handlers.domReady);
       }
 
       // Track browser state changes
       this.setupBrowserStateTracking(panelId, view.webContents);
 
-      // Extract and index page content for search
-      view.webContents.on("did-finish-load", () => {
+      // Extract and index page content for search (use named handler for cleanup)
+      handlers.didFinishLoad = () => {
         extractAndIndexPageContent(panelId, view.webContents);
-      });
+      };
+      view.webContents.on("did-finish-load", handlers.didFinishLoad);
+      this.contentLoadHandlers.set(panelId, handlers);
 
       // Intercept ns:// and new-window navigations for child creation
       this.setupLinkInterception(panelId, view.webContents, "browser");
@@ -622,10 +627,13 @@ export class PanelManager {
       });
 
       // Register app panels with CDP server for automation/testing (like browsers)
+      // Use named handler for cleanup
       if (parentId) {
-        view.webContents.on("dom-ready", () => {
+        const domReadyHandler = () => {
           getCdpServer().registerBrowser(panelId, view.webContents.id, parentId);
-        });
+        };
+        view.webContents.on("dom-ready", domReadyHandler);
+        this.contentLoadHandlers.set(panelId, { domReady: domReadyHandler });
       }
 
       // Intercept ns:// and http(s) link clicks to create children
@@ -757,6 +765,18 @@ export class PanelManager {
       }
       entry.cleanup();
     }
+
+    // Clean up content load handlers (dom-ready, did-finish-load)
+    const loadHandlers = this.contentLoadHandlers.get(panelId);
+    if (loadHandlers && contents && !contents.isDestroyed()) {
+      if (loadHandlers.domReady) {
+        contents.off("dom-ready", loadHandlers.domReady);
+      }
+      if (loadHandlers.didFinishLoad) {
+        contents.off("did-finish-load", loadHandlers.didFinishLoad);
+      }
+    }
+    this.contentLoadHandlers.delete(panelId);
   }
 
   private handleChildCreationError(parentId: string, error: unknown, url: string): void {
@@ -4200,6 +4220,8 @@ export class PanelManager {
   private browserStateCleanup = new Map<string, { cleanup: () => void; destroyedHandler: () => void }>();
   // Map panelId -> link interception handler for will-navigate
   private linkInterceptionHandlers = new Map<string, (event: Electron.Event, url: string) => void>();
+  // Map panelId -> content load handlers (dom-ready, did-finish-load) for cleanup
+  private contentLoadHandlers = new Map<string, { domReady?: () => void; didFinishLoad?: () => void }>();
 
   getPanelIdForWebContents(contents: Electron.WebContents): string | undefined {
     return this.guestInstanceMap.get(contents.id);

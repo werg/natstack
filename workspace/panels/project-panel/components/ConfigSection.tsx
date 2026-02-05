@@ -5,17 +5,19 @@
 import { useState } from "react";
 import { Box, Text, Card, Flex, Button, TextField, Separator } from "@radix-ui/themes";
 import { ChevronDownIcon, ChevronRightIcon, GearIcon } from "@radix-ui/react-icons";
-import { AgentSelector } from "@workspace/agentic-components";
+import { AgentSelector, type AgentInfo } from "@workspace/agentic-components";
 import type { ProjectConfig } from "../types";
 
 interface ConfigSectionProps {
   config: ProjectConfig;
+  agents: AgentInfo[];
+  agentsLoading?: boolean;
   expanded: boolean;
   onToggle: () => void;
   onUpdate: (updates: Partial<ProjectConfig>) => void;
 }
 
-export function ConfigSection({ config, expanded, onToggle, onUpdate }: ConfigSectionProps) {
+export function ConfigSection({ config, agents, agentsLoading, expanded, onToggle, onUpdate }: ConfigSectionProps) {
   const [editName, setEditName] = useState(config.name);
 
   const handleSaveName = () => {
@@ -82,6 +84,8 @@ export function ConfigSection({ config, expanded, onToggle, onUpdate }: ConfigSe
             {/* Default Agent */}
             <Box>
               <AgentSelector
+                agents={agents}
+                loading={agentsLoading}
                 defaultAgentId={config.defaultAgentId}
                 onDefaultAgentChange={(agentId: string | undefined) => {
                   void onUpdate({ defaultAgentId: agentId });

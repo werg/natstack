@@ -18,7 +18,7 @@ interface CacheEntry {
   size: number;
 }
 
-class MainCacheManager {
+export class MainCacheManager {
   private cache = new Map<string, CacheEntry>();
   private totalSize = 0; // Running counter for efficient size checks
   private saveTimer: NodeJS.Timeout | null = null;
@@ -120,6 +120,32 @@ class MainCacheManager {
     this.isDirty = false;
 
     log.verbose(` Cleared ${size} entries`);
+  }
+
+  /**
+   * Invalidate all cache entries whose keys start with the given prefix.
+   * Used for targeted cache invalidation when packages are published.
+   *
+   * @param prefix - Key prefix to match (e.g., "panel:/path/to/panel:")
+   * @returns Number of entries invalidated
+   */
+  invalidateByPrefix(prefix: string): number {
+    let count = 0;
+
+    for (const [key, entry] of this.cache) {
+      if (key.startsWith(prefix)) {
+        this.totalSize -= entry.size;
+        this.cache.delete(key);
+        count++;
+      }
+    }
+
+    if (count > 0) {
+      this.queueSave();
+      log.verbose(` Invalidated ${count} entries with prefix: ${prefix}`);
+    }
+
+    return count;
   }
 
   /**

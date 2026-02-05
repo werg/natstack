@@ -37,7 +37,6 @@ const NODE_MODULES_DIR = path.join(__dirname, "node_modules");
 
 // Panels that ship with the app
 const SHIPPED_PANELS = [
-  "agent-manager",
   "chat",
   "chat-launcher",
   "code-editor",
@@ -49,6 +48,7 @@ const SHIPPED_PANELS = [
 const ABOUT_PAGES = [
   "about",
   "adblock",
+  "agents",
   "help",
   "keyboard-shortcuts",
   "model-provider-config",

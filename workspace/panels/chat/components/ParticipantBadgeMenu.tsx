@@ -1,7 +1,8 @@
 import { useState, useCallback, useMemo } from "react";
 import { Badge, DropdownMenu, Text } from "@radix-ui/themes";
 import { DotFilledIcon, TriangleDownIcon } from "@radix-ui/react-icons";
-import type { Participant, MethodAdvertisement, ContextWindowUsage } from "@natstack/agentic-messaging";
+import type { Participant } from "@natstack/pubsub";
+import type { MethodAdvertisement, ContextWindowUsage } from "@natstack/agentic-messaging";
 import type { ChatParticipantMetadata } from "../types";
 import { MethodArgumentsModal } from "./MethodArgumentsModal";
 import { schemaHasRequiredParams } from "./JsonSchemaForm";
@@ -15,6 +16,8 @@ export interface ParticipantBadgeMenuProps {
   isGranted?: boolean;
   /** Callback to revoke agent's tool access */
   onRevokeAgent?: (agentId: string) => void;
+  /** Callback to open debug console for this agent */
+  onOpenDebugConsole?: (agentHandle: string) => void;
 }
 
 /**
@@ -46,6 +49,7 @@ export function ParticipantBadgeMenu({
   onCallMethod,
   isGranted,
   onRevokeAgent,
+  onOpenDebugConsole,
 }: ParticipantBadgeMenuProps) {
   const [modalOpen, setModalOpen] = useState(false);
   const [selectedMethod, setSelectedMethod] = useState<MethodAdvertisement | null>(null);
@@ -124,8 +128,9 @@ export function ParticipantBadgeMenu({
     </Badge>
   ) : null;
 
-  // Simple badge without dropdown when no menu items and no grant status to show
-  if (!hasMenuItems && !showGrantStatus) {
+  // Simple badge without dropdown when no menu items, no grant status, and no debug console
+  const showDebugConsole = isAgent && onOpenDebugConsole;
+  if (!hasMenuItems && !showGrantStatus && !showDebugConsole) {
     return (
       <Badge color={color}>
         @{participant.metadata.handle}
@@ -190,6 +195,15 @@ export function ParticipantBadgeMenu({
               )}
             </DropdownMenu.Item>
           ))}
+          {/* Debug Console for agents */}
+          {showDebugConsole && (
+            <>
+              {(menuMethods.length > 0 || showGrantStatus) && <DropdownMenu.Separator />}
+              <DropdownMenu.Item onSelect={() => onOpenDebugConsole(participant.metadata.handle)}>
+                Debug Console
+              </DropdownMenu.Item>
+            </>
+          )}
         </DropdownMenu.Content>
       </DropdownMenu.Root>
 

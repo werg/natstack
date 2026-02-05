@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, useCallback, useLayoutEffect, type ComponentType } from "react";
 import { Badge, Box, Button, Callout, Card, Flex, IconButton, ScrollArea, Text, TextArea, Theme } from "@radix-ui/themes";
 import { PaperPlaneIcon, ImageIcon, CopyIcon, CheckIcon } from "@radix-ui/react-icons";
-import type { Participant, AttachmentInput } from "@natstack/agentic-messaging";
-import { CONTENT_TYPE_INLINE_UI, prettifyToolName } from "@natstack/agentic-messaging";
+import type { Participant, AttachmentInput } from "@natstack/pubsub";
+import { CONTENT_TYPE_INLINE_UI, prettifyToolName, type AgentDebugPayload } from "@natstack/agentic-messaging";
 import {
   FeedbackContainer,
   FeedbackFormRenderer,
@@ -22,8 +22,11 @@ import { ImageGallery } from "./ImageGallery";
 import { NewContentIndicator } from "./NewContentIndicator";
 import { InlineUiMessage, parseInlineUiData } from "./InlineUiMessage";
 import { type PendingImage, getImagesFromClipboard, createPendingImage, validateImageFiles } from "../utils/imageUtils";
-import type { ChatMessage, ChatParticipantMetadata } from "../types";
+import type { ChatMessage, ChatParticipantMetadata, PendingAgent } from "../types";
 import { AgentDisconnectedMessage } from "./AgentDisconnectedMessage";
+import { AgentDebugConsole } from "./AgentDebugConsole";
+import { DirtyRepoWarning } from "./DirtyRepoWarning";
+import { PendingAgentBadge } from "./PendingAgentBadge";
 import "../styles.css";
 
 // Re-export for backwards compatibility
@@ -55,6 +58,16 @@ interface ChatPhaseProps {
     cacheKey: string;
     error?: string;
   }>;
+  /** Debug events for agents (ephemeral, in-memory) */
+  debugEvents?: Array<AgentDebugPayload & { ts: number }>;
+  /** Currently open debug console agent handle */
+  debugConsoleAgent?: string | null;
+  /** Dirty repo warnings for agents spawned with uncommitted changes */
+  dirtyRepoWarnings?: Map<string, { modified: string[]; untracked: string[]; staged: string[] }>;
+  /** Pending agents (starting or failed) - managed by parent, not computed from events */
+  pendingAgents?: Map<string, PendingAgent>;
+  /** Callback to open/close debug console */
+  onDebugConsoleChange?: (agentHandle: string | null) => void;
   /** Callback to load earlier messages */
   onLoadEarlierMessages?: () => void;
   onInputChange: (value: string) => void;
@@ -66,12 +79,14 @@ interface ChatPhaseProps {
   onReset: () => void;
   onFeedbackDismiss: (callId: string) => void;
   onFeedbackError: (callId: string, error: Error) => void;
-  onInterrupt?: (agentId: string, messageId?: string) => void;
+  onInterrupt?: (agentId: string, messageId?: string, agentHandle?: string) => void;
   onCallMethod?: (providerId: string, methodName: string, args: unknown) => void;
   /** Focus a disconnected agent's panel */
   onFocusPanel?: (panelId: string) => void;
   /** Reload a disconnected agent's panel */
   onReloadPanel?: (panelId: string) => void;
+  /** Dismiss a dirty repo warning */
+  onDismissDirtyWarning?: (agentName: string) => void;
   /** Tool approval configuration - optional, when provided enables approval UI */
   toolApproval?: ToolApprovalProps;
 }
@@ -90,6 +105,11 @@ export function ChatPhase({
   hasMoreHistory,
   loadingMore,
   inlineUiComponents,
+  debugEvents,
+  debugConsoleAgent,
+  dirtyRepoWarnings,
+  pendingAgents,
+  onDebugConsoleChange,
   onLoadEarlierMessages,
   onInputChange,
   onSendMessage,
@@ -102,6 +122,7 @@ export function ChatPhase({
   onCallMethod,
   onFocusPanel,
   onReloadPanel,
+  onDismissDirtyWarning,
   toolApproval,
 }: ChatPhaseProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -314,9 +335,11 @@ export function ChatPhase({
 
   const handleInterruptMessage = useCallback(
     (msgId: string, senderId: string) => {
-      onInterrupt?.(senderId, msgId);
+      // Pass handle from participants roster for fallback lookup if agentId is stale
+      const handle = participants[senderId]?.metadata?.handle;
+      onInterrupt?.(senderId, msgId, handle);
     },
-    [onInterrupt]
+    [onInterrupt, participants]
   );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -330,6 +353,9 @@ export function ChatPhase({
     const participant = participants[senderId];
     return participant?.metadata ?? { name: "Unknown", type: "panel" as const, handle: "unknown" };
   };
+
+  // pendingAgents is now passed as a prop (managed by parent component)
+  // This is cleaner than computing from ephemeral debug events
 
   return (
     <Theme appearance={theme}>
@@ -360,9 +386,24 @@ export function ChatPhase({
                 onCallMethod={onCallMethod ?? (() => {})}
                 isGranted={toolApproval ? p.id in toolApproval.settings.agentGrants : false}
                 onRevokeAgent={toolApproval?.onRevokeAgent}
+                onOpenDebugConsole={onDebugConsoleChange ? (handle) => onDebugConsoleChange(handle) : undefined}
               />
             );
           })}
+          {/* Pending/failed agents not yet in roster */}
+          {pendingAgents && Array.from(pendingAgents.entries()).map(([handle, info]) => (
+            <PendingAgentBadge
+              key={`pending-${handle}`}
+              handle={handle}
+              agentId={info.agentId}
+              status={info.status}
+              error={info.error}
+              onOpenDebugConsole={onDebugConsoleChange ? (h) => {
+                console.log("[ChatPhase] Opening debug console for:", h);
+                onDebugConsoleChange(h);
+              } : undefined}
+            />
+          ))}
           {onAddAgent && (
             <Button variant="soft" size="1" onClick={onAddAgent}>
               Add Agent
@@ -383,6 +424,20 @@ export function ChatPhase({
           </Button>
         </Flex>
       </Flex>
+
+      {/* Dirty repo warnings */}
+      {dirtyRepoWarnings && dirtyRepoWarnings.size > 0 && (
+        <Box px="1" flexShrink="0">
+          {Array.from(dirtyRepoWarnings.entries()).map(([name, state]) => (
+            <DirtyRepoWarning
+              key={name}
+              agentName={name}
+              dirtyRepo={state}
+              onDismiss={() => onDismissDirtyWarning?.(name)}
+            />
+          ))}
+        </Box>
+      )}
 
       {/* Messages */}
       <Box flexGrow="1" overflow="hidden" style={{ minHeight: 0, position: "relative" }} asChild>
@@ -520,8 +575,9 @@ export function ChatPhase({
 
                     // Handler for interrupting typing indicators
                     const handleTypingInterrupt = (senderId: string) => {
-                      // Interrupt the agent - no messageId needed for typing indicators
-                      onInterrupt?.(senderId);
+                      // Interrupt the agent - pass handle for fallback lookup
+                      const handle = participants[senderId]?.metadata?.handle;
+                      onInterrupt?.(senderId, undefined, handle);
                     };
 
                     return <InlineGroup key={item.key} items={deduplicatedItems} onInterrupt={handleTypingInterrupt} />;
@@ -776,6 +832,16 @@ export function ChatPhase({
       </Card>
       </Box>
       </Flex>
+
+      {/* Agent Debug Console Modal */}
+      {onDebugConsoleChange && (
+        <AgentDebugConsole
+          open={!!debugConsoleAgent}
+          onOpenChange={(open) => !open && onDebugConsoleChange(null)}
+          agentHandle={debugConsoleAgent ?? ""}
+          debugEvents={debugEvents ?? []}
+        />
+      )}
     </Theme>
   );
 }

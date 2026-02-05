@@ -17,7 +17,7 @@ import {
   createApprovalSchema,
   type AgenticClient,
 } from "@natstack/agentic-messaging";
-import type { FieldValue } from "@natstack/runtime";
+import type { FieldValue } from "@natstack/core";
 import type {
   ApprovalLevel,
   ToolApprovalSettings,

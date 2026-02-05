@@ -33,6 +33,9 @@ import { findAndBindPort, PORT_RANGES } from "./portUtils.js";
 import type { GitWatcher } from "./workspace/gitWatcher.js";
 import { EsmTransformer, ESM_SAFE_PACKAGES } from "./lazyBuild/esmTransformer.js";
 import { createDevLogger } from "./devLog.js";
+import { getDependencyGraph } from "./dependencyGraph.js";
+import { getMainCacheManager } from "./cacheManager.js";
+import { isInternalPackage, isUserWorkspacePackage } from "./build/sharedBuild.js";
 
 const log = createDevLogger("Verdaccio");
 
@@ -135,15 +138,9 @@ function extractPackageName(url: string): string | null {
 
 /**
  * Check if a package name is a workspace package that should be lazily built.
+ * Alias for isInternalPackage from sharedBuild.
  */
-function isWorkspacePackage(pkgName: string): boolean {
-  return (
-    pkgName.startsWith("@natstack/") ||
-    pkgName.startsWith("@workspace/") ||
-    pkgName.startsWith("@workspace-panels/") ||
-    pkgName.startsWith("@workspace-workers/")
-  );
-}
+const isWorkspacePackage = isInternalPackage;
 
 /**
  * Build queue for managing on-demand package builds with promise coalescing.
@@ -171,19 +168,32 @@ class BuildQueue {
   /**
    * Ensure a package is built and published.
    * Uses promise coalescing so concurrent requests share the same build.
+   *
+   * @param pkgName - Package name to build
+   * @param skipWait - If true, don't wait for in-progress builds (used for npm publish's internal requests)
    */
-  async ensureBuilt(pkgName: string): Promise<void> {
-    // Check if already exists in storage
-    if (this.checkPackageInStorage(pkgName)) {
+  async ensureBuilt(pkgName: string, skipWait = false): Promise<void> {
+    // For @natstack/* packages, always validate version (supports dirty working tree iteration)
+    // For user workspace packages, use storage check (faster, commit-based workflow)
+    if (!pkgName.startsWith("@natstack/") && this.checkPackageInStorage(pkgName)) {
       return;
     }
 
-    // If already building, DON'T wait - just return immediately.
-    // This prevents deadlocks where npm publish makes GET requests during publish.
-    // Those GET requests should go through to Verdaccio (which will 404) rather than waiting.
+    // If already building, decide whether to wait based on context
     const existing = this.locks.get(pkgName);
     if (existing) {
-      return; // Don't wait - let the request go to Verdaccio
+      // Don't wait in these cases to prevent deadlocks:
+      // 1. Explicit skipWait flag (caller knows it shouldn't wait)
+      // 2. Self-referential requests during npm publish (detected via building set)
+      if (skipWait || this.building.has(pkgName)) {
+        return; // Don't wait - let the request go to Verdaccio (may 404, that's ok for npm publish)
+      }
+
+      // For external requests (e.g., from Arborist), wait for the build to complete
+      // This prevents 404s that would fail the npm install
+      // If the build fails (e.g., missing dependencies), propagate the error - don't retry
+      await existing;
+      return;
     }
 
     const promise = this.doBuild(pkgName)
@@ -213,6 +223,19 @@ class BuildQueue {
         throw new Error(`Package not found: ${pkgName} (expected at ${pkgPath})`);
       }
 
+      // Validate workspace dependencies exist before building
+      const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8"));
+      const allDeps = { ...pkgJson.dependencies, ...pkgJson.devDependencies };
+      for (const dep of Object.keys(allDeps)) {
+        // Only check workspace dependencies (those we might need to build)
+        if (dep.startsWith("@natstack/") || allDeps[dep]?.startsWith("workspace:")) {
+          const depPath = this.resolvePackagePath(dep, this.userWorkspacePath);
+          if (!depPath || !fs.existsSync(path.join(depPath, "package.json"))) {
+            throw new Error(`Dependency '${dep}' of '${pkgName}' does not exist`);
+          }
+        }
+      }
+
       log.verbose(`[LazyBuild] Building ${pkgName} on-demand...`);
       await this.publishPackage(pkgPath, pkgName);
       log.verbose(`[LazyBuild] Built ${pkgName}`);
@@ -238,8 +261,8 @@ export class VerdaccioServer {
   private restartDelayMs: number;
   /** Current restart attempt count (reset on successful start) */
   private restartAttempts = 0;
-  /** Cached Verdaccio versions with TTL */
-  private verdaccioVersionsCache: { versions: Record<string, string>; timestamp: number } | null = null;
+  /** Cached Verdaccio versions with TTL (keyed by branch for branch-aware resolution) */
+  private verdaccioVersionsCache: { versions: Record<string, string>; timestamp: number; branch: string | null } | null = null;
   /** TTL for Verdaccio versions cache (30 seconds) */
   private readonly VERDACCIO_VERSIONS_TTL_MS = 30_000;
   /** Build queue for lazy building */
@@ -250,10 +273,14 @@ export class VerdaccioServer {
   private esmTransformer: EsmTransformer | null = null;
   /** Cache for discovered packages by directory path */
   private packageDiscoveryCache = new Map<string, Array<{ path: string; name: string }>>();
+  /** Cache for package content hashes (cleared on workspace change or publish) */
+  private packageHashCache = new Map<string, string>();
   /** Tracks which directories have already been logged (persists across cache invalidations) */
   private discoveryLoggedDirs = new Set<string>();
   /** HTTP agent for connection pooling to internal Verdaccio */
   private proxyAgent: http.Agent | null = null;
+  /** Callback invoked when @natstack/* package is published (for types cache invalidation) */
+  private onNatstackPublish?: () => Promise<void>;
 
   constructor(config?: VerdaccioServerConfig) {
     this.configuredPort = config?.port ?? PORT_RANGES.verdaccio.start;
@@ -267,10 +294,19 @@ export class VerdaccioServer {
    * Set the user workspace path for lazy building of @workspace/* packages.
    * Call this when a workspace is opened/changed.
    */
-  setUserWorkspacePath(workspacePath: string | undefined): void {
+  async setUserWorkspacePath(workspacePath: string | undefined): Promise<void> {
+    const previousWorkspacePath = this.userWorkspacePath;
     this.userWorkspacePath = workspacePath;
+
     // Clear package discovery cache since workspace changed
     this.invalidatePackageDiscoveryCache();
+
+    // Clear ESM caches to avoid serving stale bundles from previous workspace
+    if (this.esmTransformer) {
+      this.esmTransformer.clearInMemoryCaches();
+      log.verbose(" Cleared ESM caches for workspace change");
+    }
+
     // Recreate build queue with new workspace path
     this.buildQueue = new BuildQueue(
       this.publishPackage.bind(this),
@@ -278,6 +314,34 @@ export class VerdaccioServer {
       this.checkPackageInStorage.bind(this),
       workspacePath
     );
+
+    // Update dependency graph with workspace changes
+    try {
+      const graph = await getDependencyGraph();
+
+      // Remove old workspace from graph
+      if (previousWorkspacePath) {
+        graph.removeWorkspace(previousWorkspacePath);
+        log.verbose(` Removed workspace from dependency graph: ${previousWorkspacePath}`);
+      }
+
+      // Add new workspace to graph
+      if (workspacePath) {
+        await graph.addWorkspace(workspacePath);
+        log.verbose(` Added workspace to dependency graph: ${workspacePath}`);
+      }
+    } catch (err) {
+      // Don't fail workspace switch if graph update fails
+      console.warn(`[Verdaccio] Failed to update dependency graph for workspace change:`, err);
+    }
+  }
+
+  /**
+   * Set a callback to be invoked when @natstack/* packages are published.
+   * Used for invalidating type definition caches without circular imports.
+   */
+  setNatstackPublishHook(callback: () => Promise<void>): void {
+    this.onNatstackPublish = callback;
   }
 
   /**
@@ -381,6 +445,10 @@ export class VerdaccioServer {
         access: "$all",
         publish: "$all",
       })
+      .addPackageAccess("@workspace-agents/*", {
+        access: "$all",
+        publish: "$all",
+      })
       .addPackageAccess("@workspace/*", {
         access: "$all",
         publish: "$all",
@@ -480,6 +548,7 @@ export class VerdaccioServer {
   /**
    * Pre-warm ESM cache by transforming known safe packages at startup.
    * Runs in background so it doesn't block server startup.
+   * Uses Promise.all for parallel execution (~8x faster than sequential).
    */
   private async preWarmEsmCache(): Promise<void> {
     if (!this.esmTransformer) {
@@ -487,15 +556,16 @@ export class VerdaccioServer {
     }
 
     const packagesToWarm = Array.from(ESM_SAFE_PACKAGES);
-    log.verbose(`[ESM] Pre-warming ${packagesToWarm.length} packages...`);
+    log.verbose(`[ESM] Pre-warming ${packagesToWarm.length} packages in parallel...`);
 
-    for (const pkg of packagesToWarm) {
+    const esmTransformer = this.esmTransformer;
+    await Promise.all(packagesToWarm.map(async (pkg) => {
       try {
-        await this.esmTransformer.getEsmBundle(pkg, "latest");
+        await esmTransformer.getEsmBundle(pkg, "latest");
       } catch (error) {
         console.warn(`[ESM] Failed to pre-warm ${pkg}:`, error instanceof Error ? error.message : error);
       }
-    }
+    }));
     log.verbose(`[ESM] Pre-warming complete`);
   }
 
@@ -527,7 +597,11 @@ export class VerdaccioServer {
         if (!inStorage) {
           try {
             // Use this.buildQueue to get the current build queue (may be updated by setUserWorkspacePath)
-            await this.buildQueue.ensureBuilt(pkgName);
+            // If this package is already being built, this might be an internal npm publish request
+            // (npm publish makes GET requests to verify the package after uploading)
+            // In that case, we skip waiting to avoid deadlocks
+            const isInternalPublishRequest = this.buildQueue.isBuilding(pkgName);
+            await this.buildQueue.ensureBuilt(pkgName, isInternalPublishRequest);
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             console.error(`[LazyBuild] Failed to build ${pkgName}:`, message);
@@ -865,6 +939,38 @@ export class VerdaccioServer {
   }
 
   /**
+   * Restore package.json files that were modified during a failed publish.
+   * Uses git to detect and restore dirty package.json files.
+   */
+  private async restoreDirtyPackageJsonFiles(packagesDir: string): Promise<void> {
+    try {
+      // Use git status to find modified package.json files
+      const { stdout } = await execAsync(
+        `git status --porcelain "${packagesDir}"`,
+        { cwd: this.workspaceRoot }
+      );
+
+      const dirtyFiles = stdout.split("\n")
+        .filter(line => line.includes("package.json") && line.trim().startsWith("M"))
+        .map(line => line.slice(3).trim());
+
+      if (dirtyFiles.length > 0) {
+        console.warn(`[VerdaccioServer] Found ${dirtyFiles.length} dirty package.json files from failed publish, restoring...`);
+        for (const file of dirtyFiles) {
+          try {
+            await execAsync(`git checkout "${file}"`, { cwd: this.workspaceRoot });
+            log.verbose(` Restored ${file}`);
+          } catch (err) {
+            console.error(`[VerdaccioServer] Failed to restore ${file}:`, err);
+          }
+        }
+      }
+    } catch {
+      // Ignore errors (not a git repo, git not available, etc.)
+    }
+  }
+
+  /**
    * Clean up orphaned .npmrc files from package directories.
    * These can be left behind if the process crashes during npm publish.
    */
@@ -902,7 +1008,8 @@ export class VerdaccioServer {
       return result;
     }
 
-    // Clean up any orphaned .npmrc files from previous crashes
+    // Clean up any orphaned files from previous crashes
+    await this.restoreDirtyPackageJsonFiles(packagesDir);
     this.cleanupOrphanedNpmrc(packagesDir);
 
     // Collect all packages to publish (supports scoped packages)
@@ -953,9 +1060,197 @@ export class VerdaccioServer {
   }
 
   /**
+   * Build all @natstack/* packages in topological order.
+   * Called once at startup to ensure all dist/ folders exist before serving.
+   * Uses pnpm which handles dependency ordering automatically.
+   *
+   * This solves the "blank slate" problem where a fresh clone has no dist/ folders,
+   * causing npm pack to create empty tarballs.
+   */
+  async buildAllWorkspacePackages(): Promise<void> {
+    const packagesDir = path.join(this.workspaceRoot, "packages");
+
+    if (!fs.existsSync(packagesDir)) {
+      return;
+    }
+
+    // Check if ANY package needs building (fast check)
+    const packages = this.discoverPackagesInDir(packagesDir);
+    const packagesNeedingBuild = packages.filter((pkg) => {
+      const distPath = path.join(pkg.path, "dist");
+      const pkgJsonPath = path.join(pkg.path, "package.json");
+      try {
+        const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as {
+          scripts?: Record<string, string>;
+        };
+        // Package needs build if it has a build script and no dist/ folder
+        return pkgJson.scripts?.["build"] && !fs.existsSync(distPath);
+      } catch {
+        return false;
+      }
+    });
+
+    if (packagesNeedingBuild.length === 0) {
+      log.verbose(` All ${packages.length} packages already built`);
+      return;
+    }
+
+    log.info(
+      ` Building ${packagesNeedingBuild.length} workspace packages (first run after clone)...`
+    );
+    log.verbose(
+      ` Packages needing build: ${packagesNeedingBuild.map((p) => p.name).join(", ")}`
+    );
+
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn("pnpm", ["--filter", "@natstack/*", "build"], {
+        cwd: this.workspaceRoot,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, FORCE_COLOR: "0" }, // Disable color for cleaner logs
+      });
+
+      let stderr = "";
+      let lastLogTime = Date.now();
+
+      proc.stdout?.on("data", (data: Buffer) => {
+        // Log progress periodically (not every line)
+        const now = Date.now();
+        if (now - lastLogTime > 2000) {
+          const lines = data.toString().trim().split("\n");
+          const lastLine = lines[lines.length - 1];
+          if (lastLine) {
+            log.verbose(` ${lastLine}`);
+          }
+          lastLogTime = now;
+        }
+      });
+      proc.stderr?.on("data", (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      proc.on("close", (code) => {
+        if (code === 0) {
+          log.info(` Workspace packages built successfully`);
+          resolve();
+        } else {
+          reject(new Error(`pnpm build failed (exit code ${code}): ${stderr}`));
+        }
+      });
+
+      proc.on("error", reject);
+    });
+  }
+
+  /**
+   * Get the newest modification time of any file in a directory (recursive).
+   * Returns 0 if directory doesn't exist or is empty.
+   */
+  private async getNewestMtime(dirPath: string): Promise<number> {
+    if (!fs.existsSync(dirPath)) return 0;
+
+    const processDir = async (dir: string): Promise<number> => {
+      const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      const mtimes = await Promise.all(
+        entries.map(async (entry): Promise<number> => {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            if (entry.name !== "node_modules" && !entry.name.startsWith(".")) {
+              return processDir(fullPath);
+            }
+            return 0;
+          }
+          const stat = await fs.promises.stat(fullPath);
+          return stat.mtimeMs;
+        })
+      );
+      return Math.max(0, ...mtimes);
+    };
+
+    return processDir(dirPath);
+  }
+
+  /**
+   * Ensure a single package is built (dist/ folder exists and is up-to-date).
+   * Runs `npm run build` if dist/ is missing or stale (src newer than dist).
+   * This is a fallback for when buildAllWorkspacePackages() wasn't run or a single package needs rebuilding.
+   */
+  private async ensurePackageBuilt(pkgPath: string, pkgName: string): Promise<void> {
+    const distPath = path.join(pkgPath, "dist");
+    const srcPath = path.join(pkgPath, "src");
+    const pkgJsonPath = path.join(pkgPath, "package.json");
+
+    // Check if build script exists
+    let pkgJson: { scripts?: Record<string, string> };
+    try {
+      pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8"));
+    } catch {
+      return; // Can't read package.json, skip
+    }
+
+    if (!pkgJson.scripts?.["build"]) {
+      // No build script - package may export source directly
+      return;
+    }
+
+    const distExists = fs.existsSync(distPath);
+
+    if (distExists) {
+      // dist/ exists — compare mtimes to see if rebuild needed.
+      // We always check because dist/ is gitignored and may be stale after
+      // branch switches even when the working tree is "clean".
+      if (fs.existsSync(srcPath)) {
+        const [srcMtime, pkgJsonMtime, distMtime] = await Promise.all([
+          this.getNewestMtime(srcPath),
+          fs.promises.stat(pkgJsonPath).then((s) => s.mtimeMs).catch(() => 0),
+          this.getNewestMtime(distPath),
+        ]);
+
+        const newestInput = Math.max(srcMtime, pkgJsonMtime);
+        if (newestInput <= distMtime) {
+          return; // dist is newer than all inputs, no rebuild needed
+        }
+
+        log.verbose(`[LazyBuild] Rebuilding ${pkgName} (source newer than dist)...`);
+      } else {
+        return; // No src folder, can't determine staleness
+      }
+    } else {
+      log.verbose(`[LazyBuild] Building ${pkgName} (dist/ missing)...`);
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn("npm", ["run", "build"], {
+        cwd: pkgPath,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      let stderr = "";
+
+      proc.stderr?.on("data", (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      proc.on("close", (code) => {
+        if (code === 0) {
+          log.verbose(`[LazyBuild] Built ${pkgName}`);
+          resolve();
+        } else {
+          reject(new Error(`Build failed for ${pkgName}: ${stderr}`));
+        }
+      });
+
+      proc.on("error", reject);
+    });
+  }
+
+  /**
    * Calculate a content hash for a package based on its publishable files.
+   * Results are cached to avoid redundant computation within a publish cycle.
    */
   private calculatePackageHash(pkgPath: string): string {
+    const cached = this.packageHashCache.get(pkgPath);
+    if (cached) return cached;
+
     const hash = crypto.createHash("sha256");
     const pkgJsonPath = path.join(pkgPath, "package.json");
 
@@ -990,7 +1285,9 @@ export class VerdaccioServer {
       this.hashSourceFiles(pkgPath, hash);
     }
 
-    return hash.digest("hex").slice(0, 12);
+    const result = hash.digest("hex").slice(0, 12);
+    this.packageHashCache.set(pkgPath, result);
+    return result;
   }
 
   /**
@@ -998,7 +1295,8 @@ export class VerdaccioServer {
    * Used for workspace packages that don't have a dist/ or src/ folder.
    */
   private hashSourceFiles(dirPath: string, hash: crypto.Hash): void {
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true })
+      .sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
       // Skip node_modules, .git, and other common non-source directories
       if (entry.name === "node_modules" || entry.name.startsWith(".")) {
@@ -1024,7 +1322,8 @@ export class VerdaccioServer {
    * Recursively hash all files in a directory.
    */
   private hashDirectory(dirPath: string, hash: crypto.Hash): void {
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true })
+      .sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
       const fullPath = path.join(dirPath, entry.name);
       if (entry.isDirectory()) {
@@ -1116,26 +1415,55 @@ export class VerdaccioServer {
   }
 
   /**
+   * Check if the working tree has uncommitted changes for this package.
+   * Uses git diff which is fast (git tracks this efficiently).
+   */
+  private async isWorkingTreeDirty(pkgPath: string): Promise<boolean> {
+    try {
+      // Check both staged and unstaged changes
+      await execAsync(
+        "git diff --quiet -- . && git diff --cached --quiet -- .",
+        { cwd: pkgPath }
+      );
+      // If command succeeds (exit 0), working tree is clean
+      return false;
+    } catch {
+      // Non-zero exit means there are changes (or not a git repo)
+      return true;
+    }
+  }
+
+  /**
    * Compute git-based version for a package.
-   * Format: {baseVersion}-git.{shortHash}
-   * Falls back to content hash if not in a git repo or no commits.
+   * Format: {baseVersion}-git.{shortHash} for clean git-tracked packages.
+   * Format: {baseVersion}-git.{shortHash}-dirty.{contentHash} for dirty working tree.
+   * Falls back to {baseVersion}-{contentHash} only for non-git packages.
+   *
+   * The dirty-aware versioning allows iterating on @natstack/* packages without
+   * committing - the content hash changes when files are modified, triggering
+   * republish on next build.
    */
   private async getPackageGitVersion(pkgPath: string): Promise<string> {
-    const hash = await this.getPackageCommitHash(pkgPath);
-
-    if (!hash) {
-      // Fall back to content hash for non-git packages
-      const contentHash = this.calculatePackageHash(pkgPath);
-      const pkgJson = JSON.parse(fs.readFileSync(path.join(pkgPath, "package.json"), "utf-8")) as { version: string };
-      const baseVersion = (pkgJson.version || "0.0.0").split("-")[0];
-      return `${baseVersion}-${contentHash}`;
-    }
-
     const pkgJsonPath = path.join(pkgPath, "package.json");
     const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { version: string };
     const baseVersion = (pkgJson.version || "0.0.0").split("-")[0];
 
-    return `${baseVersion}-git.${hash}`;
+    const gitHash = await this.getPackageCommitHash(pkgPath);
+    if (gitHash) {
+      // Check if working tree has uncommitted changes
+      const isDirty = await this.isWorkingTreeDirty(pkgPath);
+      if (isDirty) {
+        // Dirty: include content hash so changes are detected without committing
+        const contentHash = this.calculatePackageHash(pkgPath);
+        return `${baseVersion}-git.${gitHash}-dirty.${contentHash}`;
+      }
+      // Clean: use git hash only (stable, fast)
+      return `${baseVersion}-git.${gitHash}`;
+    }
+
+    // Non-git packages: fall back to content hash (slower, but necessary)
+    const contentHash = this.calculatePackageHash(pkgPath);
+    return `${baseVersion}-${contentHash}`;
   }
 
   /**
@@ -1156,10 +1484,10 @@ export class VerdaccioServer {
   }
 
   /**
-   * Get the latest version of a package from Verdaccio (the "latest" tagged version).
-   * Returns null if package doesn't exist or on error.
+   * Get a package version by dist-tag from Verdaccio.
+   * Returns null if package or tag doesn't exist.
    */
-  async getPackageVersion(pkgName: string): Promise<string | null> {
+  async getPackageVersionByTag(pkgName: string, tag: string): Promise<string | null> {
     const registryUrl = this.getBaseUrl();
     const encodedName = pkgName.replace("/", "%2f");
 
@@ -1169,11 +1497,52 @@ export class VerdaccioServer {
       });
       if (!response.ok) return null;
 
-      const data = await response.json() as { "dist-tags"?: { latest?: string } };
-      return data["dist-tags"]?.latest ?? null;
+      const data = await response.json() as { "dist-tags"?: Record<string, string> };
+      return data["dist-tags"]?.[tag] ?? null;
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Get the version of a package for the current branch context.
+   * Tries the current branch tag first, falls back to "latest".
+   * This enables feature branch development where workspace packages
+   * are tagged with branch names.
+   *
+   * Automatically determines the appropriate repo for branch detection:
+   * - @workspace* packages use userWorkspacePath
+   * - @natstack/* packages use workspaceRoot
+   *
+   * @param pkgName - Package name to look up
+   * @param repoPath - Optional repo path override (auto-detected if not provided)
+   */
+  async getPackageVersion(pkgName: string, repoPath?: string): Promise<string | null> {
+    // Determine the appropriate repo for branch detection based on package scope
+    let branchSource: string;
+    if (repoPath) {
+      branchSource = repoPath;
+    } else if (isUserWorkspacePackage(pkgName)) {
+      // User workspace packages - use user workspace repo for branch detection
+      branchSource = this.userWorkspacePath ?? this.workspaceRoot;
+    } else {
+      // @natstack/* and external packages - use natstack repo
+      branchSource = this.workspaceRoot;
+    }
+    const branch = await this.getCurrentBranch(branchSource);
+
+    // Try branch tag first (if on a feature branch)
+    if (branch && !VerdaccioServer.DEFAULT_BRANCHES.includes(branch)) {
+      const branchVersion = await this.getPackageVersionByTag(pkgName, branch);
+      if (branchVersion) {
+        return branchVersion;
+      }
+      // Branch tag not found - fall through to latest
+      // This happens when the package hasn't been modified on this branch
+    }
+
+    // Fall back to latest
+    return this.getPackageVersionByTag(pkgName, "latest");
   }
 
   /**
@@ -1227,12 +1596,16 @@ export class VerdaccioServer {
 
   /**
    * Get the actual versions served by Verdaccio for all workspace packages.
-   * Used to include in deps hash to detect when Verdaccio state changes.
-   * Results are cached for 30 seconds to avoid repeated HTTP queries during rapid builds.
+   * Uses branch-aware resolution: tries current branch tag first, falls back to latest.
+   * Results are cached for 30 seconds, keyed by branch to avoid cross-branch cache hits.
    */
   async getVerdaccioVersions(): Promise<Record<string, string>> {
-    // Return cached if fresh
+    // Get current branch for cache keying and resolution
+    const currentBranch = await this.getCurrentBranch(this.workspaceRoot);
+
+    // Return cached if fresh AND for the same branch
     if (this.verdaccioVersionsCache &&
+        this.verdaccioVersionsCache.branch === currentBranch &&
         Date.now() - this.verdaccioVersionsCache.timestamp < this.VERDACCIO_VERSIONS_TTL_MS) {
       return this.verdaccioVersionsCache.versions;
     }
@@ -1247,7 +1620,7 @@ export class VerdaccioServer {
     // Discover all packages (supports scoped packages)
     const packages = this.discoverPackagesInDir(packagesDir);
 
-    // Query versions in parallel
+    // Query versions in parallel (getPackageVersion is now branch-aware)
     const queries = packages.map(async (pkg) => {
       try {
         const version = await this.getPackageVersion(pkg.name);
@@ -1264,14 +1637,14 @@ export class VerdaccioServer {
       }
     }
 
-    // Cache the results
-    this.verdaccioVersionsCache = { versions, timestamp: Date.now() };
+    // Cache the results with branch context
+    this.verdaccioVersionsCache = { versions, timestamp: Date.now(), branch: currentBranch };
     return versions;
   }
 
   /**
    * Get the actual versions served by Verdaccio for user workspace packages.
-   * Includes @workspace/*, @workspace-panels/*, and @workspace-workers/* packages.
+   * Includes @workspace/*, @workspace-panels/*, @workspace-workers/*, and @workspace-agents/* packages.
    * Used to include in deps hash to detect when user workspace packages change.
    */
   async getUserWorkspaceVersions(userWorkspacePath: string): Promise<Record<string, string>> {
@@ -1295,14 +1668,19 @@ export class VerdaccioServer {
       allPackages.push(...this.discoverPackagesInDir(workersDir));
     }
 
+    const agentsDir = path.join(userWorkspacePath, "agents");
+    if (fs.existsSync(agentsDir)) {
+      allPackages.push(...this.discoverPackagesInDir(agentsDir));
+    }
+
     if (allPackages.length === 0) {
       return versions;
     }
 
-    // Query versions in parallel
+    // Query versions in parallel (use user workspace path for branch detection)
     const queries = allPackages.map(async (pkg) => {
       try {
-        const version = await this.getPackageVersion(pkg.name);
+        const version = await this.getPackageVersion(pkg.name, userWorkspacePath);
         return version ? { name: pkg.name, version } : null;
       } catch {
         return null;
@@ -1339,6 +1717,20 @@ export class VerdaccioServer {
     }
   }
 
+  /**
+   * Clear all in-memory caches.
+   * Call this when Verdaccio storage is cleared to avoid stale references.
+   */
+  clearAllInMemoryCaches(): void {
+    this.verdaccioVersionsCache = null;
+    this.packageDiscoveryCache.clear();
+    this.packageHashCache.clear();
+    if (this.esmTransformer) {
+      this.esmTransformer.clearInMemoryCaches();
+    }
+    log.verbose(" Cleared all in-memory caches");
+  }
+
   // ===========================================================================
   // Lazy/On-Demand Publishing
   // ===========================================================================
@@ -1373,6 +1765,11 @@ export class VerdaccioServer {
     if (pkgName.startsWith("@workspace-workers/")) {
       const name = pkgName.replace("@workspace-workers/", "");
       return path.join(workspacePath, "workers", name);
+    }
+
+    if (pkgName.startsWith("@workspace-agents/")) {
+      const name = pkgName.replace("@workspace-agents/", "");
+      return path.join(workspacePath, "agents", name);
     }
 
     if (pkgName.startsWith("@workspace/")) {
@@ -1444,6 +1841,10 @@ export class VerdaccioServer {
     const pkgJsonPath = path.join(pkgPath, "package.json");
     const npmrcPath = path.join(pkgPath, ".npmrc");
 
+    // Ensure package is built (dist/ exists and up-to-date) before we try to pack it
+    // This handles the case where buildAllWorkspacePackages() wasn't run or a single package needs rebuilding
+    await this.ensurePackageBuilt(pkgPath, pkgName);
+
     // Use git-based version instead of content hash
     const gitVersion = await this.getPackageGitVersion(pkgPath);
 
@@ -1470,6 +1871,8 @@ export class VerdaccioServer {
       if (branch) {
         await this.updateDistTag(pkgName, gitVersion, branch);
       }
+      this.invalidateVerdaccioVersionsCache();
+      log.verbose(` Invalidated versions cache after tag update for ${pkgName}@${gitVersion}`);
       return "published";
     }
 
@@ -1497,27 +1900,91 @@ export class VerdaccioServer {
       }
     }
 
-    // Save existing .npmrc if present (before we modify anything)
-    const existingNpmrc = fs.existsSync(npmrcPath) ? fs.readFileSync(npmrcPath, "utf-8") : null;
-
     // Prepare .npmrc content
     const registryHost = new URL(registryUrl).host;
     const npmrcContent = `//${registryHost}/:_authToken="natstack-local-publish"\nregistry=${registryUrl}\n`;
 
     log.verbose(` Publishing ${pkgName}@${gitVersion} to ${registryUrl} (tag: ${publishTag})`);
 
-    // All file modifications inside try block to ensure cleanup
+    // Create temp directory for packing - copy package there so we never modify source
+    const tempPublishDir = path.join(this.storagePath, ".publish-temp", pkgName.replace("/", "-") + "-" + Date.now());
+    const tempPackageDir = path.join(tempPublishDir, "package");
+    fs.mkdirSync(tempPackageDir, { recursive: true });
+
+    // Copy package files to temp directory
+    // Use the `files` field from package.json, defaulting to common patterns
+    const filesToInclude = (modifiedPkgJson["files"] as string[] | undefined) ?? ["dist"];
+    for (const filePattern of filesToInclude) {
+      const srcPath = path.join(pkgPath, filePattern);
+      const destPath = path.join(tempPackageDir, filePattern);
+      if (fs.existsSync(srcPath)) {
+        const stat = fs.statSync(srcPath);
+        if (stat.isDirectory()) {
+          fs.cpSync(srcPath, destPath, { recursive: true });
+        } else {
+          fs.mkdirSync(path.dirname(destPath), { recursive: true });
+          fs.copyFileSync(srcPath, destPath);
+        }
+      }
+    }
+
+    // Write modified package.json to temp directory (never touch source)
+    fs.writeFileSync(path.join(tempPackageDir, "package.json"), JSON.stringify(modifiedPkgJson, null, 2));
+    fs.writeFileSync(path.join(tempPackageDir, ".npmrc"), npmrcContent);
+
+    // Run npm pack in temp directory
+    let tarballPath: string;
+    const packResult = await new Promise<string>((resolve, reject) => {
+      const proc = spawn("npm", ["pack", "--pack-destination", tempPublishDir], {
+        cwd: tempPackageDir,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      let stdout = "";
+      let stderr = "";
+
+      proc.stdout?.on("data", (data) => { stdout += data.toString(); });
+      proc.stderr?.on("data", (data) => { stderr += data.toString(); });
+
+      proc.on("close", (code) => {
+        if (code === 0) {
+          resolve(stdout.trim());
+        } else {
+          reject(new Error(`npm pack failed: ${stderr || stdout}`));
+        }
+      });
+
+      proc.on("error", reject);
+    });
+
+    // Get the tarball filename from pack output (last line)
+    const tarballName = packResult.split("\n").pop()?.trim();
+    if (!tarballName) {
+      throw new Error("npm pack did not output a tarball name");
+    }
+    tarballPath = path.join(tempPublishDir, tarballName);
+
+    // Now publish the tarball (source repo is clean again)
+    // Create .npmrc in temp directory for auth
+    const tempNpmrcPath = path.join(tempPublishDir, ".npmrc");
+    fs.writeFileSync(tempNpmrcPath, npmrcContent);
+
     try {
-      fs.writeFileSync(pkgJsonPath, JSON.stringify(modifiedPkgJson, null, 2));
-      fs.writeFileSync(npmrcPath, npmrcContent);
       const PUBLISH_TIMEOUT_MS = 60000; // 60 second timeout for npm publish
 
+      log.verbose(` Publishing tarball: ${tarballPath}`);
       const result = await new Promise<"published" | "skipped">((resolve, reject) => {
         const proc = spawn(
           "npm",
-          ["publish", "--registry", registryUrl, "--access", "public", "--tag", publishTag],
+          [
+            "publish", tarballPath,
+            "--registry", registryUrl,
+            "--userconfig", tempNpmrcPath,
+            "--access", "public",
+            "--tag", publishTag,
+          ],
           {
-            cwd: pkgPath,
+            cwd: tempPublishDir,
             stdio: ["ignore", "pipe", "pipe"],
           }
         );
@@ -1580,18 +2047,117 @@ export class VerdaccioServer {
         await this.updateDistTag(pkgName, gitVersion, branch);
       }
 
+      if (result === "published" || result === "skipped") {
+        // "skipped" here means E409 race (another publish won); versions are now stale.
+        this.invalidateVerdaccioVersionsCache();
+        // Clear hash cache for this package since contents may change
+        this.packageHashCache.delete(pkgPath);
+        log.verbose(` Invalidated versions cache after publish for ${pkgName}@${gitVersion} (${result})`);
+
+        // Update dependency graph with new package dependencies
+        try {
+          const graph = await getDependencyGraph();
+          const pkgJsonPath = path.join(pkgPath, "package.json");
+          if (fs.existsSync(pkgJsonPath)) {
+            const pkgJson = JSON.parse(await fs.promises.readFile(pkgJsonPath, "utf-8")) as {
+              dependencies?: Record<string, string>;
+              peerDependencies?: Record<string, string>;
+              optionalDependencies?: Record<string, string>;
+            };
+            const deps = [
+              ...Object.keys(pkgJson.dependencies ?? {}),
+              ...Object.keys(pkgJson.peerDependencies ?? {}),
+              ...Object.keys(pkgJson.optionalDependencies ?? {}),
+            ].filter(isInternalPackage);
+            graph.updatePackage(pkgName, deps);
+          }
+
+          // Invalidate all consumers of this package (and packages that depend on it)
+          const affectedConsumerKeys = graph.getAffectedConsumers(pkgName);
+          if (affectedConsumerKeys.size > 0) {
+            const cacheManager = getMainCacheManager();
+            for (const consumerKey of affectedConsumerKeys) {
+              // Consumer keys are "panel:{path}", "worker:{path}", or "agent:{path}"
+              // Invalidate all cache entries for this consumer (any commit, any options)
+              const match = consumerKey.match(/^(panel|worker|agent):(.+)$/);
+              if (match) {
+                const [, type, canonicalPath] = match;
+                cacheManager.invalidateByPrefix(`${type}:${canonicalPath}:`);
+                // Also invalidate deps cache entries
+                cacheManager.invalidateByPrefix(`deps:${canonicalPath}:`);
+              }
+            }
+            log.verbose(` Invalidated ${affectedConsumerKeys.size} consumer cache(s) for ${pkgName}`);
+          }
+        } catch (err) {
+          // Don't fail the publish if graph update fails
+          console.warn(`[Verdaccio] Failed to update dependency graph:`, err);
+        }
+
+        // Invalidate @natstack/* types cache so editor/typecheck pick up new types
+        if (result === "published" && pkgName.startsWith("@natstack/") && this.onNatstackPublish) {
+          try {
+            await this.onNatstackPublish();
+            log.verbose(` Invalidated @natstack types cache after publish`);
+          } catch {
+            // Ignore errors - types service may not be initialized yet
+          }
+        }
+
+        // Clear ESM version cache to avoid serving stale bundles
+        // This is especially important for ESM_SAFE_PACKAGES like typescript
+        if (this.esmTransformer) {
+          this.esmTransformer.clearInMemoryCaches();
+          log.verbose(` Cleared ESM caches after publish of ${pkgName}`);
+        }
+      }
+
       return result;
     } finally {
-      // Always restore original package.json
-      fs.writeFileSync(pkgJsonPath, originalContent);
-
-      // Restore or remove .npmrc
-      if (existingNpmrc !== null) {
-        fs.writeFileSync(npmrcPath, existingNpmrc);
-      } else {
-        fs.rmSync(npmrcPath, { force: true });
-      }
+      // Clean up temp directory
+      fs.rmSync(tempPublishDir, { recursive: true, force: true });
     }
+  }
+
+  /**
+   * Copy package files to a temp directory for publishing.
+   * Excludes node_modules, .git, and other non-publishable files.
+   * Follows symlinks to copy real content.
+   */
+  private copyPackageForPublish(srcDir: string, destDir: string): void {
+    const excludeDirs = new Set(["node_modules", ".git", ".turbo", ".cache", "coverage"]);
+    const excludeFiles = new Set([".npmrc", ".env", ".env.local"]);
+
+    const copyRecursive = (src: string, dest: string): void => {
+      const entries = fs.readdirSync(src, { withFileTypes: true });
+
+      for (const entry of entries) {
+        const srcPath = path.join(src, entry.name);
+        const destPath = path.join(dest, entry.name);
+
+        // Handle symlinks by following them
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(srcPath); // follows symlinks
+        } catch {
+          continue; // Skip broken symlinks
+        }
+
+        if (stat.isDirectory()) {
+          if (!excludeDirs.has(entry.name)) {
+            fs.mkdirSync(destPath, { recursive: true });
+            copyRecursive(srcPath, destPath);
+          }
+        } else if (stat.isFile()) {
+          if (!excludeFiles.has(entry.name)) {
+            fs.copyFileSync(srcPath, destPath);
+          }
+        }
+      }
+    };
+
+    copyRecursive(srcDir, destDir);
+    log.verbose(` Copied package to temp dir: ${destDir}`);
   }
 
   /**
@@ -1796,12 +2362,12 @@ export class VerdaccioServer {
    *   GitWatcher emits paths relative to this directory, which may be different
    *   from this.workspaceRoot (which is used for built-in @natstack/* packages).
    */
-  subscribeToGitWatcher(watcher: GitWatcher, userWorkspacePath: string): void {
+  async subscribeToGitWatcher(watcher: GitWatcher, userWorkspacePath: string): Promise<void> {
     // Convert workspace-relative repo path to absolute path
     const toAbsolutePath = (repoPath: string) => path.join(userWorkspacePath, repoPath);
 
     // Update user workspace path for lazy building
-    this.setUserWorkspacePath(userWorkspacePath);
+    await this.setUserWorkspacePath(userWorkspacePath);
 
     watcher.on("repoAdded", async (repoPath) => {
       if (!this.isInPublishableDir(repoPath)) return;
@@ -1873,6 +2439,23 @@ export class VerdaccioServer {
   }
 
   /**
+   * Republish a package from an external caller (e.g., NatstackPackageWatcher).
+   * This is a public wrapper around publishPackage that handles running state.
+   *
+   * @param pkgPath - Absolute path to the package directory
+   * @param pkgName - Package name (e.g., "@natstack/agent-runtime")
+   * @returns "published" if newly published, "skipped" if unchanged
+   */
+  async republishPackage(pkgPath: string, pkgName: string): Promise<"published" | "skipped"> {
+    if (!this.isRunning()) {
+      log.verbose(` Skipping republish for ${pkgName} - server not running`);
+      return "skipped";
+    }
+
+    return this.publishPackage(pkgPath, pkgName);
+  }
+
+  /**
    * Publish all existing packages from a user workspace on startup.
    * This handles packages that existed before the app started (GitWatcher uses ignoreInitial).
    * Also publishes panels and workers so they can be dependencies of other panels/workers.
@@ -1884,7 +2467,7 @@ export class VerdaccioServer {
    */
   async publishUserWorkspacePackages(userWorkspacePath: string): Promise<void> {
     // Update user workspace path for lazy building
-    this.setUserWorkspacePath(userWorkspacePath);
+    await this.setUserWorkspacePath(userWorkspacePath);
 
     const packagesDir = path.join(userWorkspacePath, "packages");
     const panelsDir = path.join(userWorkspacePath, "panels");
@@ -1958,7 +2541,7 @@ export class VerdaccioServer {
     // Query all in parallel
     const checks = packages.map(async (pkg) => {
       try {
-        const expectedVersion = await this.getExpectedVersion(pkg.path);  // Now async
+        const expectedVersion = await this.getPackageGitVersion(pkg.path);
         const actualVersion = await this.getPackageVersion(pkg.name);
 
         return {
@@ -1981,14 +2564,6 @@ export class VerdaccioServer {
     // Fresh start = no packages in Verdaccio yet (all changed, none unchanged)
     const freshStart = unchanged.length === 0 && changed.length > 0;
     return { changed, unchanged, freshStart };
-  }
-
-  /**
-   * Get the expected version string for a package based on its current git commit.
-   * Falls back to content hash for non-git packages.
-   */
-  private async getExpectedVersion(pkgPath: string): Promise<string> {
-    return this.getPackageGitVersion(pkgPath);
   }
 
   /**

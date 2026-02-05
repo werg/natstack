@@ -38,11 +38,18 @@ export function buildCommonMenuItems(
         eventService.emit("open-workspace-chooser");
       },
     },
+    { type: "separator" },
     {
       label: "Model Provider Config...",
       accelerator: "CmdOrCtrl+Shift+M",
       click: () => {
         eventService.emit("navigate-about", { page: "model-provider-config" });
+      },
+    },
+    {
+      label: "Agent Settings...",
+      click: () => {
+        eventService.emit("navigate-about", { page: "agents" });
       },
     },
   ];
@@ -228,6 +235,12 @@ export function setupMenu(
           accelerator: "CmdOrCtrl+Shift+M",
           click: () => {
             eventService.emit("navigate-about", { page: "model-provider-config" });
+          },
+        },
+        {
+          label: "Agent Settings...",
+          click: () => {
+            eventService.emit("navigate-about", { page: "agents" });
           },
         },
         { type: "separator" },

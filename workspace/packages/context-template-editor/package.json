@@ -1,6 +1,6 @@
 {
   "name": "@workspace/context-template-editor",
-  "version": "0.1.0-cbf41353b9a2",
+  "version": "0.1.0-git.54ecfaf",
   "type": "module",
   "exports": {
     ".": "./index.ts",

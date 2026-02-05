@@ -14,7 +14,7 @@ import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { Box, Button, Flex, Heading } from "@radix-ui/themes";
 import { InfoCircledIcon, ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import { FormRenderer, type CustomFieldRendererProps } from "@natstack/react";
-import type { FieldDefinition, FieldValue } from "@natstack/runtime";
+import type { FieldDefinition, FieldValue } from "@natstack/core";
 import type { FeedbackComponentProps } from "../types";
 import { ToolPreviewField } from "./ToolPreviewField";
 import { ApprovalHeaderField } from "./ApprovalHeaderField";

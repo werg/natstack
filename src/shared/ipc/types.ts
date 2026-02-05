@@ -336,7 +336,7 @@ export type PanelType = "app" | "worker" | "browser" | "shell";
 /**
  * Shell panel page types.
  */
-export type ShellPage = "model-provider-config" | "about" | "keyboard-shortcuts" | "help" | "new" | "adblock";
+export type ShellPage = "model-provider-config" | "about" | "keyboard-shortcuts" | "help" | "new" | "adblock" | "agents";
 
 /**
  * Browser panel navigation state (for browser webview internal state).

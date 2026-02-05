@@ -1,6 +1,6 @@
 {
   "name": "@natstack/eval",
-  "version": "0.1.0-f099cacb08d9",
+  "version": "0.1.0-git.0fec5b5",
   "description": "TypeScript/JSX code transformation and execution for NatStack",
   "type": "module",
   "main": "./dist/index.js",

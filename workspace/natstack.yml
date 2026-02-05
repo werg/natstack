@@ -6,8 +6,3 @@ id: natstack-dev
 # Git server configuration
 git:
   port: 63524
-
-# Panels to create on first initialization (when panel tree is empty)
-# These panels run once to seed data or perform setup tasks
-initPanels:
-  - panels/agent-manager
