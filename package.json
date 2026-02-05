@@ -10,7 +10,7 @@
     "prebuild": "node scripts/generate-channels.mjs && node scripts/generate-injected.mjs",
     "build": "NODE_ENV=production node build.mjs",
     "build:dist": "NODE_ENV=production node build-dist.mjs",
-    "dev": "export NODE_ENV=development && node build.mjs && (pnpm type-check & node scripts/run-electron.mjs --workspace=workspace)",
+    "dev": "export NODE_ENV=development && node build.mjs && bash commit-workspace.sh && (pnpm type-check & node scripts/run-electron.mjs --workspace=workspace)",
     "start": "node scripts/run-electron.mjs",
     "pack": "pnpm build:dist && electron-builder --dir",
     "dist": "pnpm build:dist && electron-builder",

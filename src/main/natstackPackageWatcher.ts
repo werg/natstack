@@ -8,35 +8,19 @@
  * When a package is republished, Verdaccio's existing transitive invalidation
  * logic (via DependencyGraph.getAffectedConsumers) invalidates all consumers.
  *
- * Persistence:
- * - Stores the last known git commit for packages/
- * - On startup, compares with current commit to detect changes made while app was closed
- * - Also stores per-package "dirty" state for uncommitted changes
+ * NOTE: Startup synchronization is handled by VerdaccioServer.publishChangedPackages(),
+ * which compares expected vs actual versions. This watcher only handles runtime
+ * file change detection.
  */
 
 import * as path from "path";
 import * as fs from "fs";
-import { promisify } from "util";
-import { exec } from "child_process";
-import { app } from "electron";
 import chokidar, { type FSWatcher } from "chokidar";
 import { createDevLogger } from "./devLog.js";
 
-const execAsync = promisify(exec);
 const log = createDevLogger("NatstackWatcher");
 
-const PERSISTENCE_FILENAME = "natstack-package-state.json";
 const DEBOUNCE_MS = 300; // Debounce file changes before republishing
-
-interface PersistedState {
-  version: string;
-  /** Last known git commit hash for packages/ */
-  lastCommitHash: string | null;
-  /** Packages that had uncommitted changes when app last closed */
-  dirtyPackages: string[];
-}
-
-const STATE_VERSION = "1";
 
 /**
  * Callback to republish a package.
@@ -57,7 +41,10 @@ export class NatstackPackageWatcher {
 
   /**
    * Initialize the watcher with a republish callback.
-   * This should be called after VerdaccioServer is ready.
+   * This should be called after VerdaccioServer is ready and has synced packages.
+   *
+   * NOTE: Startup synchronization is handled by VerdaccioServer.publishChangedPackages()
+   * before this is called. This watcher only handles runtime file changes.
    */
   async initialize(republishCallback: RepublishCallback): Promise<void> {
     if (this.isInitialized) return;
@@ -65,54 +52,10 @@ export class NatstackPackageWatcher {
     this.republishCallback = republishCallback;
     this.isInitialized = true;
 
-    // Check for changes since last app run
-    await this.checkStartupChanges();
-
-    // Start watching for live changes
+    // Start watching for live changes (startup sync is done by VerdaccioServer)
     this.startWatching();
 
     log.info(`Watching ${this.packagesDir} for changes`);
-  }
-
-  /**
-   * Check for changes that occurred while the app was closed.
-   * Compares current git state with persisted state and republishes changed packages.
-   */
-  private async checkStartupChanges(): Promise<void> {
-    const state = this.loadState();
-    const currentCommit = await this.getCurrentCommit();
-    const packagesToRepublish = new Set<string>();
-
-    // 1. If git commit changed (and we have previous state), republish packages with commits
-    if (state?.lastCommitHash && state.lastCommitHash !== currentCommit) {
-      const changedPackages = await this.getChangedPackagesSinceCommit(state.lastCommitHash);
-      for (const pkgName of changedPackages) {
-        packagesToRepublish.add(pkgName);
-      }
-    }
-
-    // 2. ALWAYS check for currently dirty packages (even on first run / missing state)
-    // This handles: fresh install with dirty files, state file deleted, edited while closed
-    const currentlyDirty = await this.getDirtyPackages();
-    for (const pkgName of currentlyDirty) {
-      packagesToRepublish.add(pkgName);
-    }
-
-    // 3. Republish all packages that need it
-    if (packagesToRepublish.size > 0) {
-      log.info(`Republishing ${packagesToRepublish.size} packages changed while app was closed`);
-      for (const pkgName of packagesToRepublish) {
-        const pkgPath = await this.findPackagePath(pkgName);
-        if (pkgPath) {
-          await this.triggerRepublish(pkgPath, pkgName);
-        }
-      }
-    } else if (!state) {
-      log.verbose(" No previous state, starting fresh");
-    }
-
-    // 4. Save current state
-    await this.saveState(currentCommit, currentlyDirty);
   }
 
   /**
@@ -232,142 +175,7 @@ export class NatstackPackageWatcher {
   }
 
   /**
-   * Get the current git commit hash for packages/.
-   */
-  private async getCurrentCommit(): Promise<string | null> {
-    try {
-      const { stdout } = await execAsync("git rev-parse HEAD", { cwd: this.packagesDir });
-      return stdout.trim();
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Get packages that changed between a commit and HEAD.
-   */
-  private async getChangedPackagesSinceCommit(fromCommit: string): Promise<string[]> {
-    try {
-      const { stdout } = await execAsync(
-        `git diff --name-only ${fromCommit} HEAD -- .`,
-        { cwd: this.packagesDir }
-      );
-
-      const changedFiles = stdout.trim().split("\n").filter(Boolean);
-      const changedPackages = new Set<string>();
-
-      for (const file of changedFiles) {
-        const fullPath = path.join(this.packagesDir, file);
-        const pkgInfo = this.getPackageForFile(fullPath);
-        if (pkgInfo) {
-          changedPackages.add(pkgInfo.pkgName);
-        }
-      }
-
-      return Array.from(changedPackages);
-    } catch {
-      return [];
-    }
-  }
-
-  /**
-   * Find the path for a package by name.
-   */
-  private async findPackagePath(pkgName: string): Promise<string | null> {
-    // Parse scoped package name
-    const match = pkgName.match(/^(@[^/]+)\/(.+)$/);
-    if (match) {
-      const scope = match[1];
-      const name = match[2];
-      if (scope && name) {
-        const pkgPath = path.join(this.packagesDir, scope, name);
-        if (fs.existsSync(path.join(pkgPath, "package.json"))) {
-          return pkgPath;
-        }
-      }
-    } else {
-      const pkgPath = path.join(this.packagesDir, pkgName);
-      if (fs.existsSync(path.join(pkgPath, "package.json"))) {
-        return pkgPath;
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Load persisted state from disk.
-   */
-  private loadState(): PersistedState | null {
-    const statePath = this.getStatePath();
-    try {
-      if (!fs.existsSync(statePath)) return null;
-      const content = fs.readFileSync(statePath, "utf-8");
-      const state = JSON.parse(content) as PersistedState;
-      if (state.version !== STATE_VERSION) return null;
-      return state;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Save state to disk.
-   */
-  private async saveState(commitHash: string | null, dirtyPackages: string[]): Promise<void> {
-    const statePath = this.getStatePath();
-    const state: PersistedState = {
-      version: STATE_VERSION,
-      lastCommitHash: commitHash,
-      dirtyPackages,
-    };
-
-    try {
-      const dir = path.dirname(statePath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
-    } catch (err) {
-      console.error("[NatstackWatcher] Failed to save state:", err);
-    }
-  }
-
-  private getStatePath(): string {
-    return path.join(app.getPath("userData"), PERSISTENCE_FILENAME);
-  }
-
-  /**
-   * Get currently dirty packages (for persistence on shutdown).
-   */
-  async getDirtyPackages(): Promise<string[]> {
-    const dirty: string[] = [];
-
-    if (!fs.existsSync(this.packagesDir)) return dirty;
-
-    // Check git status for each package
-    try {
-      const { stdout } = await execAsync("git status --porcelain -- .", { cwd: this.packagesDir });
-      const changedFiles = stdout.trim().split("\n").filter(Boolean);
-
-      const dirtyPackages = new Set<string>();
-      for (const line of changedFiles) {
-        // Git status format: "XY filename" where XY is the status
-        const file = line.substring(3);
-        const fullPath = path.join(this.packagesDir, file);
-        const pkgInfo = this.getPackageForFile(fullPath);
-        if (pkgInfo) {
-          dirtyPackages.add(pkgInfo.pkgName);
-        }
-      }
-
-      return Array.from(dirtyPackages);
-    } catch {
-      return [];
-    }
-  }
-
-  /**
-   * Flush pending republishes and save state before shutdown.
+   * Stop watching and clean up.
    */
   async shutdown(): Promise<void> {
     // Cancel pending debounced republishes
@@ -381,11 +189,6 @@ export class NatstackPackageWatcher {
       await this.watcher.close();
       this.watcher = null;
     }
-
-    // Save current state
-    const currentCommit = await this.getCurrentCommit();
-    const dirtyPackages = await this.getDirtyPackages();
-    await this.saveState(currentCommit, dirtyPackages);
 
     log.info("Shutdown complete");
   }

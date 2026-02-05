@@ -1142,12 +1142,41 @@ export class VerdaccioServer {
   }
 
   /**
-   * Ensure a single package is built (dist/ folder exists).
-   * Runs `npm run build` if dist/ is missing.
+   * Get the newest modification time of any file in a directory (recursive).
+   * Returns 0 if directory doesn't exist or is empty.
+   */
+  private async getNewestMtime(dirPath: string): Promise<number> {
+    if (!fs.existsSync(dirPath)) return 0;
+
+    const processDir = async (dir: string): Promise<number> => {
+      const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      const mtimes = await Promise.all(
+        entries.map(async (entry): Promise<number> => {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            if (entry.name !== "node_modules" && !entry.name.startsWith(".")) {
+              return processDir(fullPath);
+            }
+            return 0;
+          }
+          const stat = await fs.promises.stat(fullPath);
+          return stat.mtimeMs;
+        })
+      );
+      return Math.max(0, ...mtimes);
+    };
+
+    return processDir(dirPath);
+  }
+
+  /**
+   * Ensure a single package is built (dist/ folder exists and is up-to-date).
+   * Runs `npm run build` if dist/ is missing or stale (src newer than dist).
    * This is a fallback for when buildAllWorkspacePackages() wasn't run or a single package needs rebuilding.
    */
   private async ensurePackageBuilt(pkgPath: string, pkgName: string): Promise<void> {
     const distPath = path.join(pkgPath, "dist");
+    const srcPath = path.join(pkgPath, "src");
     const pkgJsonPath = path.join(pkgPath, "package.json");
 
     // Check if build script exists
@@ -1163,12 +1192,31 @@ export class VerdaccioServer {
       return;
     }
 
-    // Check if dist/ exists
-    if (fs.existsSync(distPath)) {
-      return; // Already built
-    }
+    const distExists = fs.existsSync(distPath);
 
-    log.verbose(`[LazyBuild] Building ${pkgName} (dist/ missing)...`);
+    if (distExists) {
+      // dist/ exists — compare mtimes to see if rebuild needed.
+      // We always check because dist/ is gitignored and may be stale after
+      // branch switches even when the working tree is "clean".
+      if (fs.existsSync(srcPath)) {
+        const [srcMtime, pkgJsonMtime, distMtime] = await Promise.all([
+          this.getNewestMtime(srcPath),
+          fs.promises.stat(pkgJsonPath).then((s) => s.mtimeMs).catch(() => 0),
+          this.getNewestMtime(distPath),
+        ]);
+
+        const newestInput = Math.max(srcMtime, pkgJsonMtime);
+        if (newestInput <= distMtime) {
+          return; // dist is newer than all inputs, no rebuild needed
+        }
+
+        log.verbose(`[LazyBuild] Rebuilding ${pkgName} (source newer than dist)...`);
+      } else {
+        return; // No src folder, can't determine staleness
+      }
+    } else {
+      log.verbose(`[LazyBuild] Building ${pkgName} (dist/ missing)...`);
+    }
 
     await new Promise<void>((resolve, reject) => {
       const proc = spawn("npm", ["run", "build"], {
@@ -1793,7 +1841,7 @@ export class VerdaccioServer {
     const pkgJsonPath = path.join(pkgPath, "package.json");
     const npmrcPath = path.join(pkgPath, ".npmrc");
 
-    // Ensure package is built (dist/ exists) before we try to pack it
+    // Ensure package is built (dist/ exists and up-to-date) before we try to pack it
     // This handles the case where buildAllWorkspacePackages() wasn't run or a single package needs rebuilding
     await this.ensurePackageBuilt(pkgPath, pkgName);
 

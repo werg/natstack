@@ -217,7 +217,7 @@ function createWindow(): void {
     shellPreload: path.join(__dirname, "preload.cjs"),
     safePreload: path.join(__dirname, "safePreload.cjs"),
     shellHtmlPath: path.join(__dirname, "index.html"),
-    devTools: isDev(),
+    devTools: false,
   });
 
   mainWindow.on("closed", () => {
@@ -622,7 +622,16 @@ app.on("ready", async () => {
 
         const verdaccioPort = await verdaccioServer.start();
         log.info(`[Verdaccio] Registry started on port ${verdaccioPort}`);
-        log.info("[Verdaccio] Lazy publishing enabled - packages published on demand during panel builds");
+
+        // Sync all workspace packages with Verdaccio on startup
+        // This compares expected versions (from git) with actual versions in Verdaccio
+        // and republishes any packages that are stale or missing
+        const publishResult = await verdaccioServer.publishChangedPackages();
+        if (publishResult.changesDetected.changed.length > 0) {
+          log.info(`[Verdaccio] Synced ${publishResult.changesDetected.changed.length} packages: ${publishResult.changesDetected.changed.join(", ")}`);
+        } else {
+          log.info("[Verdaccio] All packages up-to-date");
+        }
 
         // Start NatstackPackageWatcher to watch packages/ for file changes
         // This enables instant iteration on @natstack/* packages without git commits

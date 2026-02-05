@@ -466,15 +466,16 @@ export async function installDependencies(
   const verdaccioUrl = verdaccio.getBaseUrl();
   fs.writeFileSync(npmrcPath, `registry=${verdaccioUrl}\n`);
 
-  // Resolve actual versions for local packages with "*" to include in cache hash (Option 1)
-  // This ensures cache invalidation when a local package is updated
+  // Resolve actual versions for local packages with "*" using branch-aware lookup.
+  // This ensures Arborist installs the correct branch-tagged version instead of
+  // resolving "*" to the "latest" tag (which may point to a different branch).
   const localVersions: Record<string, string> = {};
   const localPackagesWithStar = Object.entries(resolvedDependencies)
     .filter(([name, version]) => version === "*" && isLocalPackage(name))
     .map(([name]) => name);
 
   if (localPackagesWithStar.length > 0) {
-    // Query Verdaccio for current versions of local packages
+    // Query Verdaccio for current versions of local packages (branch-aware)
     const versionQueries = localPackagesWithStar.map(async (name) => {
       const version = await verdaccio.getPackageVersion(name);
       return { name, version };
@@ -483,6 +484,9 @@ export async function installDependencies(
     for (const { name, version } of results) {
       if (version) {
         localVersions[name] = version;
+        // Use exact versions in dependencies so Arborist installs the correct
+        // branch-tagged version instead of resolving "*" to "latest"
+        resolvedDependencies[name] = version;
       }
     }
   }
