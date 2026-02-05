@@ -251,7 +251,6 @@ export function useToolRole(
 
       // Only respond if we're currently providing this group
       if (!state.providing) {
-        console.log(`[useToolRole] Rejecting ${group} request from ${requesterId} - not providing`);
         // Send explicit rejection so requester knows
         void client.respondToolRole(group, false);
         return;
@@ -259,7 +258,6 @@ export function useToolRole(
 
       // Auto-accept from other panels
       if (requesterType === "panel") {
-        console.log(`[useToolRole] Auto-accepting ${group} handoff to panel ${requesterId}`);
 
         // Stop providing this group
         setGroupStates((prev) => ({
@@ -296,7 +294,6 @@ export function useToolRole(
       if (handoffTo !== selfId) return;
 
       if (accepted) {
-        console.log(`[useToolRole] Takeover accepted for ${group}`);
         setGroupStates((prev) => ({
           ...prev,
           [group]: {
@@ -309,7 +306,6 @@ export function useToolRole(
         // Remove pending conflict since we now own this group
         setPendingConflicts((prev) => prev.filter((p) => p.group !== group));
       } else {
-        console.log(`[useToolRole] Takeover rejected for ${group}`);
         setGroupStates((prev) => ({
           ...prev,
           [group]: { ...prev[group], negotiating: false },

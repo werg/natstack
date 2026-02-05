@@ -397,6 +397,9 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
   let status: "active" | "interrupted" | undefined = sessionRow?.status;
 
   const callStates = new Map<string, MethodCallState>();
+  /** Tombstone set for canceled call IDs — prevents late method-result from propagating upstream */
+  const canceledCallIds = new Set<string>();
+  const MAX_CANCELED_CALL_IDS = 200;
   const providerAbortControllers = new Map<string, AbortController>();
   /** Method calls waiting for selfId to be resolved (for auto-execution) */
   const pendingMethodCalls: IncomingMethodCall[] = [];
@@ -902,8 +905,17 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     if (type === "method-cancel") {
       const parsed = validateReceive(MethodCancelSchema, payload, "MethodCancel");
       if (!parsed) return null;
+      // Add tombstone immediately so any late method-result for this call is dropped,
+      // even if it arrives between cancel processing and state cleanup.
+      canceledCallIds.add(parsed.callId);
+      if (canceledCallIds.size > MAX_CANCELED_CALL_IDS) {
+        // FIFO eviction — remove oldest entry
+        const first = canceledCallIds.values().next().value;
+        if (first !== undefined) canceledCallIds.delete(first);
+      }
       const controller = providerAbortControllers.get(parsed.callId);
       controller?.abort();
+      providerAbortControllers.delete(parsed.callId);
       const state = callStates.get(parsed.callId);
       if (state && !state.complete) {
         state.complete = true;
@@ -916,6 +928,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
         });
         state.stream.close();
         state.reject(error);
+        callStates.delete(parsed.callId);
       }
       return null;
     }
@@ -941,7 +954,11 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       };
 
       const state = callStates.get(parsed.callId);
-      if (!state) return { ...incomingResult, type: "method-result" };
+      if (!state) {
+        // Drop late results for canceled calls — the caller's promise was already rejected
+        if (canceledCallIds.has(parsed.callId)) return null;
+        return { ...incomingResult, type: "method-result" };
+      }
 
       const chunk: MethodResultChunk = {
         content: parsed.content,
@@ -1704,6 +1721,23 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       return pubsub.reconnecting;
     },
     close: async () => {
+      // Cancel all pending method calls and clean up state
+      for (const [callId, state] of callStates) {
+        if (!state.complete) {
+          state.complete = true;
+          state.isError = true;
+          state.stream.close();
+          state.reject(new AgenticError("Connection closed", "connection-error"));
+        }
+      }
+      callStates.clear();
+
+      // Abort all pending provider operations
+      for (const controller of providerAbortControllers.values()) {
+        controller.abort();
+      }
+      providerAbortControllers.clear();
+
       // Send graceful close message to server before disconnecting
       // This allows the server to record a "graceful" leave reason instead of "disconnect"
       try {

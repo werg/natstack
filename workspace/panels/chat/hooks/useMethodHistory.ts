@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { IncomingMethodResult } from "@natstack/agentic-messaging";
 import type { MethodHistoryEntry } from "../components/MethodHistoryItem";
 import type { ChatMessage } from "../types";
@@ -20,6 +20,8 @@ interface UseMethodHistoryOptions {
 
 export function useMethodHistory({ setMessages, clientId }: UseMethodHistoryOptions) {
   const methodHistoryRef = useRef(new Map<string, MethodHistoryEntry>());
+  /** Live method data — components read from this Map instead of msg.method */
+  const [methodEntries, setMethodEntries] = useState<Map<string, MethodHistoryEntry>>(new Map());
 
   /**
    * Prune oldest completed entries if we exceed the threshold.
@@ -43,10 +45,17 @@ export function useMethodHistory({ setMessages, clientId }: UseMethodHistoryOpti
       map.delete(id);
     }
 
-    // Also remove corresponding messages
+    // Also remove corresponding messages and methodEntries
     if (idsToRemove.length > 0) {
       const removeSet = new Set(idsToRemove);
       setMessages((prev) => prev.filter((msg) => !(msg.kind === "method" && msg.method && removeSet.has(msg.method.callId))));
+      setMethodEntries((prev) => {
+        const next = new Map(prev);
+        for (const id of idsToRemove) {
+          next.delete(id);
+        }
+        return next;
+      });
     }
   }, [setMessages]);
 
@@ -56,14 +65,22 @@ export function useMethodHistory({ setMessages, clientId }: UseMethodHistoryOpti
       if (existing) {
         const merged = { ...existing, ...entry };
         methodHistoryRef.current.set(entry.callId, merged);
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.kind === "method" && msg.method?.callId === entry.callId ? { ...msg, method: merged } : msg
-          )
-        );
+        // Update the live Map
+        setMethodEntries((prev) => {
+          const next = new Map(prev);
+          next.set(entry.callId, merged);
+          return next;
+        });
         return;
       }
       methodHistoryRef.current.set(entry.callId, entry);
+      // Add to live Map
+      setMethodEntries((prev) => {
+        const next = new Map(prev);
+        next.set(entry.callId, entry);
+        return next;
+      });
+      // Add a placeholder message for timeline position
       setMessages((prev) => [
         ...prev,
         {
@@ -82,21 +99,25 @@ export function useMethodHistory({ setMessages, clientId }: UseMethodHistoryOpti
     [setMessages, clientId, pruneIfNeeded]
   );
 
+  // Empty deps: methodHistoryRef is a ref (stable) and setMethodEntries is a
+  // React state setter (stable). This callback intentionally does NOT touch
+  // setMessages — that's the key perf win of the decoupled approach.
   const updateMethodHistoryEntry = useCallback(
     (callId: string, updates: Partial<MethodHistoryEntry>) => {
       const current = methodHistoryRef.current.get(callId);
       if (current) {
         methodHistoryRef.current.set(callId, { ...current, ...updates });
       }
-      setMessages((prev) =>
-        prev.map((msg) =>
-          msg.kind === "method" && msg.method?.callId === callId
-            ? { ...msg, method: { ...msg.method, ...updates } }
-            : msg
-        )
-      );
+      // Only update the live Map — no messages array scan needed
+      setMethodEntries((prev) => {
+        const existing = prev.get(callId);
+        if (!existing) return prev;
+        const next = new Map(prev);
+        next.set(callId, { ...existing, ...updates });
+        return next;
+      });
     },
-    [setMessages]
+    []
   );
 
   const appendMethodConsoleOutput = useCallback(
@@ -157,10 +178,12 @@ export function useMethodHistory({ setMessages, clientId }: UseMethodHistoryOpti
 
   const clearMethodHistory = useCallback(() => {
     methodHistoryRef.current.clear();
+    setMethodEntries(new Map());
   }, []);
 
   return {
     methodHistoryRef,
+    methodEntries,
     addMethodHistoryEntry,
     updateMethodHistoryEntry,
     appendMethodConsoleOutput,

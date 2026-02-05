@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import React, { useState, useMemo } from "react";
 import { Badge, Box, Code, Flex, Text } from "@radix-ui/themes";
 import { ExpandableChevron } from "./shared/Chevron";
 import { prettifyToolName } from "@natstack/agentic-messaging";
@@ -311,16 +311,15 @@ function PlainTextDisplay({ content }: { content: string }) {
   );
 }
 
-// Export sub-components for use in InlineGroup
-export { CompactMethodPill, ExpandedMethodDetail };
-
 // Compact inline pill for collapsed method calls
-function CompactMethodPill({
+const CompactMethodPill = React.memo(function CompactMethodPill({
+  id,
   entry,
-  onClick
+  onExpand,
 }: {
+  id: string;
   entry: MethodHistoryEntry;
-  onClick: () => void;
+  onExpand: (id: string) => void;
 }) {
   const argsSummary = useMemo(() => formatArgsSummary(entry.args, 50), [entry.args]);
 
@@ -328,7 +327,7 @@ function CompactMethodPill({
     <Flex
       align="center"
       gap="1"
-      onClick={onClick}
+      onClick={() => onExpand(id)}
       style={{
         cursor: "pointer",
         userSelect: "none",
@@ -368,10 +367,10 @@ function CompactMethodPill({
       )}
     </Flex>
   );
-}
+});
 
 // Expanded detail view for a single method call (used within group)
-function ExpandedMethodDetail({
+const ExpandedMethodDetail = React.memo(function ExpandedMethodDetail({
   entry,
   onCollapse
 }: {
@@ -510,5 +509,7 @@ function ExpandedMethodDetail({
       </Flex>
     </Box>
   );
-}
+});
 
+// Export sub-components for use in InlineGroup
+export { CompactMethodPill, ExpandedMethodDetail };

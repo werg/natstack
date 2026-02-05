@@ -1,4 +1,4 @@
-import { type ComponentType, useEffect, useRef, useState } from "react";
+import React, { type ComponentType, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { evaluate } from "@mdx-js/mdx";
@@ -42,7 +42,7 @@ async function compileMdx(content: string, rehypeHighlight: RehypeHighlightPlugi
   return Component as ComponentType;
 }
 
-export function MessageContent({ content, isStreaming }: MessageContentProps) {
+export const MessageContent = React.memo(function MessageContent({ content, isStreaming }: MessageContentProps) {
   const [MdxComponent, setMdxComponent] = useState<ComponentType | null>(null);
   const [highlightLoaded, setHighlightLoaded] = useState<RehypeHighlightPlugin | null>(rehypeHighlightPlugin);
   const contentRef = useRef(content);
@@ -50,10 +50,10 @@ export function MessageContent({ content, isStreaming }: MessageContentProps) {
 
   // Lazy-load highlight.js on first render
   useEffect(() => {
-    if (!highlightLoaded) {
+    if (!rehypeHighlightPlugin) {
       void getRehypeHighlight().then(setHighlightLoaded);
     }
-  }, [highlightLoaded]);
+  }, []);
 
   useEffect(() => {
     if (isStreaming) {
@@ -71,34 +71,31 @@ export function MessageContent({ content, isStreaming }: MessageContentProps) {
     if (!highlightLoaded) return;
 
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
-    // Try immediately
+    // Try compilation
     compileMdx(content, highlightLoaded)
       .then((Component) => {
         if (!cancelled) setMdxComponent(() => Component);
       })
-      .catch(() => {
-        // Immediate attempt failed, will retry with delay
+      .catch((err) => {
+        // Retry once after delay if compilation fails (content may still be settling)
+        retryTimer = setTimeout(() => {
+          if (cancelled || contentRef.current !== content) return;
+
+          compileMdx(content, highlightLoaded)
+            .then((Component) => {
+              if (!cancelled) setMdxComponent(() => Component);
+            })
+            .catch((retryErr) => {
+              console.debug("MDX compilation failed after retry, using markdown fallback:", retryErr);
+            });
+        }, 150);
       });
-
-    // Retry after delay (in case content settles)
-    const timer = setTimeout(() => {
-      if (cancelled) return;
-      // Only retry if content hasn't changed
-      if (contentRef.current !== content) return;
-
-      compileMdx(content, highlightLoaded)
-        .then((Component) => {
-          if (!cancelled) setMdxComponent(() => Component);
-        })
-        .catch((err) => {
-          console.debug("MDX compilation failed, using markdown fallback:", err);
-        });
-    }, 150);
 
     return () => {
       cancelled = true;
-      clearTimeout(timer);
+      if (retryTimer) clearTimeout(retryTimer);
     };
   }, [content, isStreaming, highlightLoaded]);
 
@@ -116,4 +113,4 @@ export function MessageContent({ content, isStreaming }: MessageContentProps) {
       {content}
     </ReactMarkdown>
   );
-}
+});

@@ -751,6 +751,19 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
           });
         }
 
+        // If every tool call in this step was denied, stop the loop.
+        // Feeding rejections back as error results would just artificially
+        // prompt the model to generate a new turn apologising for the denial,
+        // which is not the expected agentic behavior.
+        const allDenied =
+          allToolCalls.length > 0 &&
+          autoToolResults.length === 0 &&
+          approvalResults.every((r) => r.isError);
+        if (allDenied) {
+          this.log.info("All tool calls denied by user, ending agentic loop");
+          break;
+        }
+
         // Check if we should continue the loop
         if (finishReason === "stop" || finishReason === "interrupted" || finishReason === "length") {
           break;

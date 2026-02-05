@@ -1,23 +1,26 @@
+import React from "react";
 import { Box, Code, Flex, Spinner, Text } from "@radix-ui/themes";
 import { ExpandableChevron } from "./shared/Chevron";
 
 // Collapsed state - small inline pill matching method calls
-function ThinkingPill({
+const ThinkingPill = React.memo(function ThinkingPill({
+  id,
   preview,
   isTruncated,
   isStreaming,
-  onClick,
+  onExpand,
 }: {
+  id: string;
   preview: string;
   isTruncated: boolean;
   isStreaming: boolean;
-  onClick: () => void;
+  onExpand: (id: string) => void;
 }) {
   return (
     <Flex
       align="center"
       gap="1"
-      onClick={onClick}
+      onClick={() => onExpand(id)}
       style={{
         cursor: "pointer",
         userSelect: "none",
@@ -39,10 +42,10 @@ function ThinkingPill({
       )}
     </Flex>
   );
-}
+});
 
 // Expanded state - shows full thinking content
-function ExpandedThinking({
+const ExpandedThinking = React.memo(function ExpandedThinking({
   content,
   onCollapse,
 }: {
@@ -87,7 +90,7 @@ function ExpandedThinking({
       </Box>
     </Box>
   );
-}
+});
 
 export const PREVIEW_MAX_LENGTH = 50;
 

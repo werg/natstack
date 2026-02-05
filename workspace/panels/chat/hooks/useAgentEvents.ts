@@ -250,8 +250,8 @@ function handleAgentDebugEvent(
   // Store all debug events for the debug console
   if (handlers.setDebugEvents) {
     handlers.setDebugEvents((prev) => {
-      // Keep last 500 events to prevent memory bloat
-      const updated = [...prev.slice(-499), { ...debugPayload, ts: event.ts }];
+      // Keep last 300 events (~300KB) to keep the debug console useful
+      const updated = [...prev.slice(-299), { ...debugPayload, ts: event.ts }];
       return updated;
     });
   }

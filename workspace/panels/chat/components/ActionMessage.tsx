@@ -1,15 +1,18 @@
+import React from "react";
 import { Box, Code, Flex, Spinner, Text } from "@radix-ui/themes";
 import type { ActionData } from "@natstack/agentic-messaging";
 import { prettifyToolName } from "@natstack/agentic-messaging";
 import { ExpandableChevron } from "./shared/Chevron";
 
 // Collapsed state - compact pill (blue background to distinguish from thinking)
-export function ActionPill({
+export const ActionPill = React.memo(function ActionPill({
+  id,
   data,
-  onClick,
+  onExpand,
 }: {
+  id: string;
   data: ActionData;
-  onClick: () => void;
+  onExpand: (id: string) => void;
 }) {
   const isStreaming = data.status === "pending";
 
@@ -17,7 +20,7 @@ export function ActionPill({
     <Flex
       align="center"
       gap="1"
-      onClick={onClick}
+      onClick={() => onExpand(id)}
       tabIndex={0}
       style={{
         cursor: "pointer",
@@ -37,10 +40,10 @@ export function ActionPill({
       </Text>
     </Flex>
   );
-}
+});
 
 // Expanded state - shows full action details
-export function ExpandedAction({
+export const ExpandedAction = React.memo(function ExpandedAction({
   data,
   onCollapse,
 }: {
@@ -82,7 +85,7 @@ export function ExpandedAction({
       )}
     </Box>
   );
-}
+});
 
 /**
  * Parse action data from message content, with fallback for malformed content.

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useCallback, useState } from "react";
 import { Box, Flex } from "@radix-ui/themes";
 import type { ActionData, TypingData } from "@natstack/agentic-messaging";
 import type { MethodHistoryEntry } from "./MethodHistoryItem";
@@ -26,8 +26,10 @@ interface InlineGroupProps {
  * as compact pills in a wrapping flex row. Only one item can be expanded at a time.
  * Typing indicators are ephemeral and don't expand - they just show interrupt button.
  */
-export function InlineGroup({ items, onInterrupt }: InlineGroupProps) {
+export const InlineGroup = React.memo(function InlineGroup({ items, onInterrupt }: InlineGroupProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const handleExpand = useCallback((id: string) => setExpandedId(id), []);
+  const handleCollapse = useCallback(() => setExpandedId(null), []);
 
   if (items.length === 0) return null;
 
@@ -57,10 +59,11 @@ export function InlineGroup({ items, onInterrupt }: InlineGroupProps) {
                 return (
                   <ThinkingPill
                     key={itemId}
+                    id={itemId}
                     preview={preview}
                     isTruncated={isTruncated}
                     isStreaming={!item.complete}
-                    onClick={() => setExpandedId(itemId)}
+                    onExpand={handleExpand}
                   />
                 );
               }
@@ -68,16 +71,18 @@ export function InlineGroup({ items, onInterrupt }: InlineGroupProps) {
                 return (
                   <ActionPill
                     key={itemId}
+                    id={itemId}
                     data={item.data}
-                    onClick={() => setExpandedId(itemId)}
+                    onExpand={handleExpand}
                   />
                 );
               case "method":
                 return (
                   <CompactMethodPill
                     key={itemId}
+                    id={itemId}
                     entry={item.entry}
-                    onClick={() => setExpandedId(itemId)}
+                    onExpand={handleExpand}
                   />
                 );
               case "typing":
@@ -99,19 +104,19 @@ export function InlineGroup({ items, onInterrupt }: InlineGroupProps) {
             {expandedItem.type === "thinking" && (
               <ExpandedThinking
                 content={expandedItem.content}
-                onCollapse={() => setExpandedId(null)}
+                onCollapse={handleCollapse}
               />
             )}
             {expandedItem.type === "action" && (
               <ExpandedAction
                 data={expandedItem.data}
-                onCollapse={() => setExpandedId(null)}
+                onCollapse={handleCollapse}
               />
             )}
             {expandedItem.type === "method" && (
               <ExpandedMethodDetail
                 entry={expandedItem.entry}
-                onCollapse={() => setExpandedId(null)}
+                onCollapse={handleCollapse}
               />
             )}
           </>
@@ -119,4 +124,4 @@ export function InlineGroup({ items, onInterrupt }: InlineGroupProps) {
       </Flex>
     </Box>
   );
-}
+});

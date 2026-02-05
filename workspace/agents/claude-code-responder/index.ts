@@ -1496,11 +1496,11 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
         if (gateResult.allow) {
           return { behavior: "allow", updatedInput: gateResult.updatedInput ?? input, toolUseID: options.toolUseID };
         } else {
-          return { behavior: "deny", message: "User denied permission", toolUseID: options.toolUseID };
+          return { behavior: "deny", message: "User denied permission", interrupt: true, toolUseID: options.toolUseID };
         }
       } catch (err) {
         if (err instanceof AgenticError && ["cancelled", "timeout", "provider-offline", "provider-not-found"].includes(err.code)) {
-          return { behavior: "deny", message: err.message, toolUseID: options.toolUseID };
+          return { behavior: "deny", message: err.message, interrupt: true, toolUseID: options.toolUseID };
         }
         throw err;
       }
@@ -1508,7 +1508,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
 
     // Interactive tools: show permission prompt directly
     if (!panel) {
-      return { behavior: "deny", message: "No panel available", toolUseID: options.toolUseID };
+      return { behavior: "deny", message: "No panel available", interrupt: true, toolUseID: options.toolUseID };
     }
 
     const autonomyLevel = settings.autonomyLevel ?? 0;
@@ -1537,11 +1537,11 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
         }
         return { behavior: "allow", updatedInput: input, toolUseID: options.toolUseID };
       } else {
-        return { behavior: "deny", message: "User denied permission", toolUseID: options.toolUseID };
+        return { behavior: "deny", message: "User denied permission", interrupt: true, toolUseID: options.toolUseID };
       }
     } catch (err) {
       if (err instanceof AgenticError && ["cancelled", "timeout", "provider-offline", "provider-not-found"].includes(err.code)) {
-        return { behavior: "deny", message: err.message, toolUseID: options.toolUseID };
+        return { behavior: "deny", message: err.message, interrupt: true, toolUseID: options.toolUseID };
       }
       throw err;
     }

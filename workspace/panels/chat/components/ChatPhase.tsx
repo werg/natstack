@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useLayoutEffect, type ComponentType } from "react";
+import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, type ComponentType } from "react";
 import { Badge, Box, Button, Callout, Card, Flex, IconButton, ScrollArea, Text, TextArea, Theme } from "@radix-ui/themes";
 import { PaperPlaneIcon, ImageIcon, CopyIcon, CheckIcon } from "@radix-ui/react-icons";
 import type { Participant, AttachmentInput } from "@natstack/pubsub";
@@ -52,6 +52,8 @@ interface ChatPhaseProps {
   hasMoreHistory?: boolean;
   /** Whether currently loading more messages */
   loadingMore?: boolean;
+  /** Live method entry data — keyed by callId, updated independently of messages */
+  methodEntries?: Map<string, MethodHistoryEntry>;
   /** Compiled inline UI components by ID */
   inlineUiComponents?: Map<string, {
     Component?: ComponentType<{ props: Record<string, unknown> }>;
@@ -105,6 +107,7 @@ export function ChatPhase({
   hasMoreHistory,
   loadingMore,
   inlineUiComponents,
+  methodEntries,
   debugEvents,
   debugConsoleAgent,
   dirtyRepoWarnings,
@@ -349,10 +352,130 @@ export function ChatPhase({
     }
   };
 
-  const getSenderInfo = (senderId: string) => {
+  const getSenderInfo = useCallback((senderId: string) => {
     const participant = participants[senderId];
     return participant?.metadata ?? { name: "Unknown", type: "panel" as const, handle: "unknown" };
-  };
+  }, [participants]);
+
+  // Memoize message grouping AND inline item transformation to prevent expensive recalculation on every render
+  const groupedItems = useMemo(() => {
+    // Helper to determine if a message is an inline item (thinking, action, method, or typing)
+    type InlineItemType = "thinking" | "action" | "method" | "typing";
+    function getInlineItemType(msg: ChatMessage): InlineItemType | null {
+      if (msg.kind === "method" && msg.method) return "method";
+      if (msg.contentType === "thinking") return "thinking";
+      if (msg.contentType === "action") return "action";
+      // Typing indicators are ephemeral - hide completed ones
+      if (msg.contentType === "typing" && !msg.complete) return "typing";
+      return null;
+    }
+
+    /** Transform an inline group's messages into InlineItem[] with deduplication */
+    function buildInlineItems(items: Array<{ msg: ChatMessage; index: number }>): InlineItem[] {
+      const inlineItems: InlineItem[] = items.map(({ msg }) => {
+        if (msg.kind === "method" && msg.method) {
+          // Use live data from methodEntries Map if available, fall back to snapshot
+          const liveEntry = methodEntries?.get(msg.method.callId);
+          return { type: "method" as const, entry: liveEntry ?? msg.method };
+        }
+        if (msg.contentType === "thinking") {
+          return {
+            type: "thinking" as const,
+            id: msg.id,
+            content: msg.content,
+            complete: msg.complete ?? false,
+          };
+        }
+        if (msg.contentType === "action") {
+          const data = parseActionData(msg.content, msg.complete);
+          return {
+            type: "action" as const,
+            id: msg.id,
+            data,
+            complete: msg.complete ?? false,
+          };
+        }
+        if (msg.contentType === "typing") {
+          const data = parseTypingData(msg.content);
+          return {
+            type: "typing" as const,
+            id: msg.id,
+            data,
+            senderId: msg.senderId,
+          };
+        }
+        // Fallback — shouldn't happen
+        return {
+          type: "thinking" as const,
+          id: msg.id,
+          content: msg.content || "Unknown",
+          complete: msg.complete ?? false,
+        };
+      });
+
+      // Deduplicate: prefer action over method when both exist for the same tool
+      const actionToolNames = new Set<string>();
+      for (const item of inlineItems) {
+        if (item.type === "action") {
+          actionToolNames.add(prettifyToolName(item.data.type));
+        }
+      }
+      return inlineItems.filter((item) => {
+        if (item.type === "method") {
+          const methodToolName = prettifyToolName(item.entry.methodName);
+          if (actionToolNames.has(methodToolName)) return false;
+        }
+        return true;
+      });
+    }
+
+    // Group consecutive inline items (thinking, action, method)
+    const result: Array<
+      | { type: "inline-group"; items: Array<{ msg: ChatMessage; index: number }>; inlineItems: InlineItem[]; key: string }
+      | { type: "message"; msg: ChatMessage; index: number }
+    > = [];
+
+    let currentInlineGroup: Array<{ msg: ChatMessage; index: number }> = [];
+
+    messages.forEach((msg, index) => {
+      const inlineType = getInlineItemType(msg);
+
+      if (inlineType !== null) {
+        // This is an inline item (thinking, action, or method)
+        currentInlineGroup.push({ msg, index });
+      } else {
+        // Regular message - flush any pending inline group
+        if (currentInlineGroup.length > 0) {
+          result.push({
+            type: "inline-group",
+            items: currentInlineGroup,
+            inlineItems: buildInlineItems(currentInlineGroup),
+            key: `inline-group-${currentInlineGroup[0].msg.id || currentInlineGroup[0].index}`,
+          });
+          currentInlineGroup = [];
+        }
+        result.push({ type: "message", msg, index });
+      }
+    });
+
+    // Flush final inline group
+    if (currentInlineGroup.length > 0) {
+      result.push({
+        type: "inline-group",
+        items: currentInlineGroup,
+        inlineItems: buildInlineItems(currentInlineGroup),
+        key: `inline-group-${currentInlineGroup[0].msg.id || currentInlineGroup[0].index}`,
+      });
+    }
+
+    return result;
+  }, [messages, methodEntries]);
+
+  // Stable callback for interrupting typing indicators (avoids new closure per render)
+  const handleTypingInterrupt = useCallback((senderId: string) => {
+    const handle = participants[senderId]?.metadata?.handle;
+    onInterrupt?.(senderId, undefined, handle);
+  }, [participants, onInterrupt]);
 
   // pendingAgents is now passed as a prop (managed by parent component)
   // This is cleaner than computing from ephemeral debug events
@@ -398,10 +521,7 @@ export function ChatPhase({
               agentId={info.agentId}
               status={info.status}
               error={info.error}
-              onOpenDebugConsole={onDebugConsoleChange ? (h) => {
-                console.log("[ChatPhase] Opening debug console for:", h);
-                onDebugConsoleChange(h);
-              } : undefined}
+              onOpenDebugConsole={onDebugConsoleChange}
             />
           ))}
           {onAddAgent && (
@@ -462,125 +582,9 @@ export function ChatPhase({
                 Send a message to start chatting
               </Text>
             ) : (
-              (() => {
-                // Helper to determine if a message is an inline item (thinking, action, method, or typing)
-                type InlineItemType = "thinking" | "action" | "method" | "typing";
-                function getInlineItemType(msg: ChatMessage): InlineItemType | null {
-                  if (msg.kind === "method" && msg.method) return "method";
-                  if (msg.contentType === "thinking") return "thinking";
-                  if (msg.contentType === "action") return "action";
-                  // Typing indicators are ephemeral - hide completed ones
-                  if (msg.contentType === "typing" && !msg.complete) return "typing";
-                  return null;
-                }
-
-                // Group consecutive inline items (thinking, action, method)
-                const groupedItems: Array<
-                  | { type: "inline-group"; items: Array<{ msg: ChatMessage; index: number }>; key: string }
-                  | { type: "message"; msg: ChatMessage; index: number }
-                > = [];
-
-                let currentInlineGroup: Array<{ msg: ChatMessage; index: number }> = [];
-
-                messages.forEach((msg, index) => {
-                  const inlineType = getInlineItemType(msg);
-
-                  if (inlineType !== null) {
-                    // This is an inline item (thinking, action, or method)
-                    currentInlineGroup.push({ msg, index });
-                  } else {
-                    // Regular message - flush any pending inline group
-                    if (currentInlineGroup.length > 0) {
-                      groupedItems.push({
-                        type: "inline-group",
-                        items: currentInlineGroup,
-                        key: `inline-group-${currentInlineGroup[0].msg.id || currentInlineGroup[0].index}`,
-                      });
-                      currentInlineGroup = [];
-                    }
-                    groupedItems.push({ type: "message", msg, index });
-                  }
-                });
-
-                // Flush final inline group
-                if (currentInlineGroup.length > 0) {
-                  groupedItems.push({
-                    type: "inline-group",
-                    items: currentInlineGroup,
-                    key: `inline-group-${currentInlineGroup[0].msg.id || currentInlineGroup[0].index}`,
-                  });
-                }
-
-                return groupedItems.map((item) => {
+              groupedItems.map((item) => {
                   if (item.type === "inline-group") {
-                    // Convert to InlineItem format
-                    const inlineItems: InlineItem[] = item.items.map(({ msg }) => {
-                      if (msg.kind === "method" && msg.method) {
-                        return { type: "method" as const, entry: msg.method };
-                      }
-                      if (msg.contentType === "thinking") {
-                        return {
-                          type: "thinking" as const,
-                          id: msg.id,
-                          content: msg.content,
-                          complete: msg.complete ?? false,
-                        };
-                      }
-                      if (msg.contentType === "action") {
-                        const data = parseActionData(msg.content, msg.complete);
-                        return {
-                          type: "action" as const,
-                          id: msg.id,
-                          data,
-                          complete: msg.complete ?? false,
-                        };
-                      }
-                      if (msg.contentType === "typing") {
-                        const data = parseTypingData(msg.content);
-                        return {
-                          type: "typing" as const,
-                          id: msg.id,
-                          data,
-                          senderId: msg.senderId,
-                        };
-                      }
-                      // This shouldn't happen but handle gracefully
-                      return {
-                        type: "thinking" as const,
-                        id: msg.id,
-                        content: msg.content || "Unknown",
-                        complete: msg.complete ?? false,
-                      };
-                    });
-
-                    // Deduplicate action/method items: prefer action over method when both exist for the same tool
-                    // This handles the case where an action message and a method-call event are both created
-                    // for the same conceptual tool call (e.g., when MCP tools delegate to pubsub methods)
-                    const actionToolNames = new Set<string>();
-                    for (const item of inlineItems) {
-                      if (item.type === "action") {
-                        actionToolNames.add(prettifyToolName(item.data.type));
-                      }
-                    }
-                    const deduplicatedItems = inlineItems.filter((item) => {
-                      if (item.type === "method") {
-                        const methodToolName = prettifyToolName(item.entry.methodName);
-                        // Skip method items that have a corresponding action with the same tool name
-                        if (actionToolNames.has(methodToolName)) {
-                          return false;
-                        }
-                      }
-                      return true;
-                    });
-
-                    // Handler for interrupting typing indicators
-                    const handleTypingInterrupt = (senderId: string) => {
-                      // Interrupt the agent - pass handle for fallback lookup
-                      const handle = participants[senderId]?.metadata?.handle;
-                      onInterrupt?.(senderId, undefined, handle);
-                    };
-
-                    return <InlineGroup key={item.key} items={deduplicatedItems} onInterrupt={handleTypingInterrupt} />;
+                    return <InlineGroup key={item.key} items={item.inlineItems} onInterrupt={handleTypingInterrupt} />;
                   }
 
                   const { msg, index } = item;
@@ -700,8 +704,7 @@ export function ChatPhase({
                       </Card>
                     </Box>
                   );
-                });
-              })()
+              })
             )}
             <div ref={scrollRef} />
           </Flex>

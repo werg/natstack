@@ -37,6 +37,7 @@ import {
   compileFeedbackComponent,
   cleanupFeedbackComponent,
   compileInlineUiComponent,
+  cleanupInlineUiComponent,
   type FeedbackResult,
   type FeedbackUiToolArgs,
   type ActiveFeedback,
@@ -135,11 +136,7 @@ export default function AgenticChat() {
     return initial;
   });
 
-  // Log pendingAgents state for debugging
-  useEffect(() => {
-    const entries = Array.from(pendingAgents.entries());
-    console.log("[Chat] pendingAgents state:", entries.length, "agents:", entries.map(([h, a]) => `${h}:${a.status}`));
-  }, [pendingAgents]);
+  // Removed production console logging
 
   // Pending agent timeout handling with refs to prevent reset on re-renders
   const PENDING_TIMEOUT_MS = 45_000;
@@ -256,13 +253,26 @@ export default function AgenticChat() {
   const [oldestLoadedId, setOldestLoadedId] = useState<number | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
 
-  // Trim messages when they exceed threshold to prevent memory leaks
+  // Trim messages when they exceed threshold to prevent memory leaks.
+  // Uses the updater form of setMessages to avoid stale closure over `messages`.
+  // Captures referencedUiIds via a closure variable so setInlineUiComponents
+  // can run as a separate call (not nested inside the updater).
   useEffect(() => {
     if (messages.length > TRIM_THRESHOLD) {
+      let referencedUiIds: Set<string> | undefined;
+
       setMessages((prev) => {
-        // Keep only the most recent messages
         const trimmed = prev.slice(-MAX_VISIBLE_MESSAGES);
-        console.log(`[Chat] Trimmed messages from ${prev.length} to ${trimmed.length}`);
+
+        // Build a set of inline UI IDs still referenced by surviving messages
+        referencedUiIds = new Set<string>();
+        for (const msg of trimmed) {
+          if (msg.contentType === CONTENT_TYPE_INLINE_UI) {
+            const data = parseInlineUiData(msg.content);
+            if (data) referencedUiIds.add(data.id);
+          }
+        }
+
         // Track oldest loaded message for pagination
         const firstMsg = trimmed[0];
         if (firstMsg?.pubsubId) {
@@ -271,6 +281,29 @@ export default function AgenticChat() {
         }
         return trimmed;
       });
+
+      // Clean up inline UI components for trimmed messages only.
+      // referencedUiIds is populated synchronously by the updater above.
+      if (referencedUiIds) {
+        const ids = referencedUiIds;
+        setInlineUiComponents(prevComponents => {
+          const next = new Map(prevComponents);
+          let removedCount = 0;
+
+          for (const [id, component] of prevComponents) {
+            if (!ids.has(id)) {
+              // Clean up the compiled component
+              if (component.Component && component.cacheKey) {
+                cleanupInlineUiComponent(component.cacheKey);
+              }
+              next.delete(id);
+              removedCount++;
+            }
+          }
+
+          return removedCount > 0 ? next : prevComponents;
+        });
+      }
     }
   }, [messages.length]);
 
@@ -314,22 +347,11 @@ export default function AgenticChat() {
     window.addEventListener("unhandledrejection", rejectionHandler);
     document.addEventListener("visibilitychange", visibilityHandler);
 
-    // Heartbeat interval for debugging
-    let heartbeatCount = 0;
-    const heartbeatInterval = setInterval(() => {
-      heartbeatCount++;
-      // Log every 60 seconds (60 intervals at 1s each)
-      if (heartbeatCount % 60 === 0) {
-        console.log(`[Chat] Heartbeat: ${heartbeatCount}s uptime, ${messageCountRef.current} messages`);
-      }
-    }, 1000);
-
     // Cleanup on unmount
     return () => {
       window.removeEventListener("error", errorHandler);
       window.removeEventListener("unhandledrejection", rejectionHandler);
       document.removeEventListener("visibilitychange", visibilityHandler);
-      clearInterval(heartbeatInterval);
     };
   }, []); // Only run once on mount
 
@@ -361,6 +383,7 @@ export default function AgenticChat() {
   } = useFeedbackManager();
 
   const {
+    methodEntries,
     addMethodHistoryEntry,
     updateMethodHistoryEntry,
     handleMethodResult,
@@ -388,13 +411,6 @@ export default function AgenticChat() {
     },
     onEvent: useCallback(
       (event: IncomingEvent) => {
-        // Log all incoming events for debugging
-        if (event.type === "agent-debug") {
-          const debugEvent = event as IncomingAgentDebugEvent;
-          console.log("[Chat] agent-debug event:", debugEvent.payload.debugType, debugEvent.payload);
-        } else {
-          console.log("[Chat] event:", event.type, event);
-        }
         try {
           const selfId = selfIdRef.current ?? panelClientId;
           dispatchAgenticEvent(
@@ -449,10 +465,6 @@ export default function AgenticChat() {
     onRoster: useCallback((roster: RosterUpdate<ChatParticipantMetadata>) => {
       const newParticipants = roster.participants;
       const prevParticipants = prevParticipantsRef.current;
-
-      // Log roster updates for debugging
-      const handles = Object.values(newParticipants).map(p => p.metadata.handle);
-      console.log("[Chat] roster update:", handles.length, "participants:", handles);
 
       // Detect disconnected participants (were in prev roster but not in new)
       const prevIds = new Set(Object.keys(prevParticipants));
@@ -1049,11 +1061,6 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
           ...approvedTools,
         };
 
-        const methodNames = Object.keys(methods);
-        console.log(
-          `[Chat] Preparing to advertise ${methodNames.length} methods: ${methodNames.join(", ")}`
-        );
-
         // Connect using the hook with all methods
         // Use ref for evalMethodDef to get latest version
         await connectToChannel({
@@ -1285,14 +1292,12 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
         hasMoreHistory={hasMoreHistory}
         loadingMore={loadingMore}
         inlineUiComponents={inlineUiComponents}
+        methodEntries={methodEntries}
         debugEvents={debugEvents}
         debugConsoleAgent={debugConsoleAgent}
         dirtyRepoWarnings={dirtyRepoWarnings}
         pendingAgents={pendingAgents}
-        onDebugConsoleChange={(handle) => {
-          console.log("[Chat] onDebugConsoleChange called with:", handle);
-          setDebugConsoleAgent(handle);
-        }}
+        onDebugConsoleChange={setDebugConsoleAgent}
         onLoadEarlierMessages={loadEarlierMessages}
         onInputChange={handleInputChange}
         onSendMessage={sendMessage}

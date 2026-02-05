@@ -282,6 +282,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   // Current roster state
   let currentRoster: Record<string, Participant<T>> = {};
   const rosterOpIds = new Set<number>();
+  const MAX_ROSTER_OP_IDS = 1000; // Limit to prevent unbounded growth
 
   // Ready promise management
   let readyResolve: (() => void) | null = null;
@@ -586,6 +587,17 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
               return;
             }
             rosterOpIds.add(msg.id);
+
+            // Simple cleanup to prevent unbounded growth
+            if (rosterOpIds.size > MAX_ROSTER_OP_IDS) {
+              // Remove oldest entries to bring the set back to ~800
+              const toRemove = rosterOpIds.size - (MAX_ROSTER_OP_IDS - 200);
+              const iter = rosterOpIds.values();
+              for (let i = 0; i < toRemove; i++) {
+                const { value } = iter.next();
+                if (value !== undefined) rosterOpIds.delete(value);
+              }
+            }
           }
 
           if (presenceAction === "join" || presenceAction === "update") {
