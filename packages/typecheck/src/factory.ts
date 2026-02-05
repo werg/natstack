@@ -37,7 +37,7 @@ export interface PanelTypeCheckServiceConfig {
  * import {
  *   createPanelTypeCheckService,
  *   createDiskFileSource,
- * } from "@natstack/runtime/typecheck";
+ * } from "@natstack/typecheck";
  * import { rpc } from "@natstack/runtime";
  *
  * const service = await createPanelTypeCheckService({

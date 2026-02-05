@@ -42,7 +42,7 @@ import {
   generateFsShimCode,
   isPathModule,
   generatePathShimCode,
-} from "@natstack/runtime/typecheck";
+} from "@natstack/typecheck";
 import { createDevLogger } from "./devLog.js";
 
 // Re-export banner generators for backwards compatibility

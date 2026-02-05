@@ -8,7 +8,13 @@
  * - Virtual: For testing or synthetic sources
  */
 
-import type { RuntimeFs } from "../types.js";
+/** Minimal filesystem interface for OPFS-based file sources. */
+export interface ReadableFs {
+  readFile(path: string, encoding?: BufferEncoding): Promise<string | Uint8Array>;
+  readdir(path: string): Promise<string[]>;
+  stat(path: string): Promise<{ isFile(): boolean; isDirectory(): boolean; size?: number; mtime?: number }>;
+  exists(path: string): Promise<boolean>;
+}
 
 /**
  * File statistics for source files.
@@ -112,7 +118,7 @@ export function createDiskFileSource(basePath: string): FileSource {
 /**
  * Create a file source from OPFS/ZenFS (for in-app dev in panels).
  */
-export function createOpfsFileSource(fs: RuntimeFs, basePath: string): FileSource {
+export function createOpfsFileSource(fs: ReadableFs, basePath: string): FileSource {
   const resolvePath = (filePath: string): string => {
     // Simple path resolution for OPFS
     if (filePath.startsWith("/")) {

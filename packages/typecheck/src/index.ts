@@ -1,12 +1,12 @@
 /**
- * @natstack/runtime/typecheck - TypeScript type checking for panels and workers.
+ * @natstack/typecheck - TypeScript type checking for panels and workers.
  *
  * This module provides type checking with module resolution that matches
  * the panel build system, ensuring developers get accurate feedback.
  *
  * @example
  * ```typescript
- * import { createTypeCheckService } from "@natstack/runtime/typecheck";
+ * import { createTypeCheckService } from "@natstack/typecheck";
  *
  * const service = createTypeCheckService({
  *   panelPath: "/workspace/panels/my-panel",
@@ -88,6 +88,7 @@ export {
   loadSourceFiles,
   type FileSource,
   type FileSourceStats,
+  type ReadableFs,
 } from "./sources.js";
 
 // Watch mode

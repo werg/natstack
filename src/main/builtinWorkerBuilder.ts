@@ -25,7 +25,7 @@ import {
   generateFsShimCode,
   isPathModule,
   generatePathShimCode,
-} from "@natstack/runtime/typecheck";
+} from "@natstack/typecheck";
 
 const BUILTIN_WORKERS = ["template-builder"] as const;
 type BuiltinWorker = (typeof BUILTIN_WORKERS)[number];

@@ -37,7 +37,7 @@ import {
   createDiskFileSource,
   loadSourceFiles,
   type TypeCheckDiagnostic,
-} from "@natstack/runtime/typecheck";
+} from "@natstack/typecheck";
 import { ESM_SAFE_PACKAGES } from "../lazyBuild/esmTransformer.js";
 // Re-export TypeCheckDiagnostic for consumers
 export type { TypeCheckDiagnostic };

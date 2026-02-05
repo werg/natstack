@@ -27,7 +27,7 @@ import {
   getCentralConfigDirectory,
   getPrebuiltAboutPagesDir,
 } from "./paths.js";
-import { DEFAULT_DEDUPE_PACKAGES, packageToRegex } from "@natstack/runtime/typecheck";
+import { DEFAULT_DEDUPE_PACKAGES, packageToRegex } from "@natstack/typecheck";
 
 /**
  * Shell page metadata for display.

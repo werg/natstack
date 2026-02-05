@@ -28,6 +28,7 @@
   "dependencies": {
     "@natstack/git": "workspace:*",
     "@natstack/runtime": "workspace:*",
+    "@natstack/typecheck": "workspace:*",
     "@radix-ui/react-accordion": "^1.2.0",
     "@radix-ui/react-alert-dialog": "^1.1.0",
     "@radix-ui/react-collapsible": "^1.1.0",

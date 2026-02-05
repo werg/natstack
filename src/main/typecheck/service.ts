@@ -9,7 +9,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 import Arborist from "@npmcli/arborist";
-import { createTypeDefinitionLoader, loadNatstackPackageTypes, clearNatstackTypesCache, preloadNatstackTypesAsync, type NatstackPackageTypes } from "@natstack/runtime/typecheck";
+import { createTypeDefinitionLoader, loadNatstackPackageTypes, clearNatstackTypesCache, preloadNatstackTypesAsync, type NatstackPackageTypes } from "@natstack/typecheck";
 import { getPackagesDir } from "../paths.js";
 import { isVerdaccioServerInitialized, getVerdaccioServer } from "../verdaccioServer.js";
 import { getBuildKeyDirectories } from "../build/artifacts.js";

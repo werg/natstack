@@ -142,7 +142,7 @@ function main(): void {
   outputLines.push("};");
   outputLines.push("");
 
-  const outputPath = path.resolve(__dirname, "../src/typecheck/lib/typescript-libs.ts");
+  const outputPath = path.resolve(__dirname, "../src/lib/typescript-libs.ts");
   fs.writeFileSync(outputPath, outputLines.join("\n"));
 
   console.log(`\nGenerated ${outputPath}`);

@@ -72,7 +72,7 @@ import { setupTestApi } from "./testApi.js";
 import { getAdBlockManager } from "./adblock/index.js";
 import { handleAdBlockServiceCall } from "./ipc/adblockHandlers.js";
 import { handleAgentSettingsCall } from "./ipc/agentSettingsHandlers.js";
-import { preloadNatstackTypesAsync } from "@natstack/runtime/typecheck";
+import { preloadNatstackTypesAsync } from "@natstack/typecheck";
 import { startMemoryMonitor } from "./memoryMonitor.js";
 
 // =============================================================================

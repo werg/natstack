@@ -7,7 +7,7 @@ import type {
   TypeCheckDiagnostic,
   TypeCheckResult,
   TypeCheckDiagnosticsEvent,
-} from "@natstack/runtime/typecheck";
+} from "@natstack/typecheck";
 
 /**
  * Diagnostic entry from type checking.

@@ -11,7 +11,7 @@ import { connect, type AgenticClient } from "@natstack/agentic-messaging";
 import {
   TYPECHECK_EVENTS,
   type TypeCheckDiagnosticsEvent,
-} from "@natstack/runtime/typecheck";
+} from "@natstack/typecheck";
 import {
   eventToDiagnostics,
   toTypeCheckDiagnostics,

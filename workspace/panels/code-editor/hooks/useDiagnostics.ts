@@ -11,7 +11,7 @@ import {
   TypeCheckWatcher,
   createOpfsFileSource,
   createTypeDefinitionClient,
-} from "@natstack/runtime/typecheck";
+} from "@natstack/typecheck";
 import { fs, rpc, normalizePath } from "@natstack/runtime";
 import { resultToDiagnostics, type Diagnostic } from "../types";
 import { useDiagnosticsChannel } from "./useDiagnosticsChannel";

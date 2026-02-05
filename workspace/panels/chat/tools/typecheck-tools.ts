@@ -19,14 +19,14 @@ import {
   type GetCompletionsArgs,
 } from "@natstack/agentic-messaging";
 import { rpc } from "@natstack/runtime";
-import type { TypeCheckService, TypeCheckDiagnostic, TypeCheckDiagnosticsEvent } from "@natstack/runtime/typecheck";
+import type { TypeCheckService, TypeCheckDiagnostic, TypeCheckDiagnosticsEvent } from "@natstack/typecheck";
 
 // Lazy-loaded typecheck module (defers ~17MB TypeScript load until first use)
-let typecheckModule: typeof import("@natstack/runtime/typecheck") | null = null;
+let typecheckModule: typeof import("@natstack/typecheck") | null = null;
 
 async function getTypecheckModule() {
   if (!typecheckModule) {
-    typecheckModule = await import("@natstack/runtime/typecheck");
+    typecheckModule = await import("@natstack/typecheck");
   }
   return typecheckModule;
 }

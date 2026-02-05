@@ -12,7 +12,7 @@ import {
   PATH_TYPE_DEFINITIONS,
   GLOBAL_TYPE_DEFINITIONS,
   TS_LIB_FILES,
-} from "@natstack/runtime/typecheck";
+} from "@natstack/typecheck";
 
 // Monaco's typescript namespace types
 interface MonacoTypescriptDefaults {

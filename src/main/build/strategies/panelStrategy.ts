@@ -36,7 +36,7 @@ import {
   isBareSpecifier,
   packageToRegex,
   DEFAULT_DEDUPE_PACKAGES,
-} from "@natstack/runtime/typecheck";
+} from "@natstack/typecheck";
 import { isDev } from "../../utils.js";
 import { ESM_SAFE_PACKAGES } from "../../lazyBuild/esmTransformer.js";
 import { isVerdaccioServerInitialized } from "../../verdaccioServer.js";
