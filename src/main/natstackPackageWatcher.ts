@@ -20,7 +20,7 @@ import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("NatstackWatcher");
 
-const DEBOUNCE_MS = 300; // Debounce file changes before republishing
+const DEBOUNCE_MS = 500; // Debounce file changes before republishing
 
 /**
  * Callback to republish a package.
