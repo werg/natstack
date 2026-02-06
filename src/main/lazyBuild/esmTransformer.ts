@@ -680,19 +680,19 @@ export class EsmTransformer {
       const obj = value as Record<string, unknown>;
 
       // browser.import > browser.default (browser-specific ESM)
-      if (typeof obj.browser === "object" && obj.browser !== null) {
-        const browser = obj.browser as Record<string, unknown>;
-        if (typeof browser.import === "string") return browser.import;
-        if (typeof browser.default === "string") return browser.default;
+      if (typeof obj["browser"] === "object" && obj["browser"] !== null) {
+        const browser = obj["browser"] as Record<string, unknown>;
+        if (typeof browser["import"] === "string") return browser["import"];
+        if (typeof browser["default"] === "string") return browser["default"];
       }
       // browser as string (e.g. exports["."].browser = "./file.js")
-      if (typeof obj.browser === "string") return obj.browser;
+      if (typeof obj["browser"] === "string") return obj["browser"];
 
       // import (generic ESM)
-      if (typeof obj.import === "string") return obj.import;
+      if (typeof obj["import"] === "string") return obj["import"];
 
       // default (generic fallback)
-      if (typeof obj.default === "string") return obj.default;
+      if (typeof obj["default"] === "string") return obj["default"];
     }
 
     return null;
