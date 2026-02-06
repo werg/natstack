@@ -484,7 +484,7 @@ describe("ViewManager", () => {
       vi.useRealTimers();
     });
 
-    it("keepalive re-attaches view and cycles visibility periodically", () => {
+    it("keepalive invalidates and re-applies bounds without stealing focus", () => {
       const view = vm.createView({
         id: "keepalive-panel",
         type: "panel",
@@ -498,16 +498,11 @@ describe("ViewManager", () => {
       // Advance past the keepalive interval (5s)
       vi.advanceTimersByTime(5000);
 
-      // Should have refreshed bounds
+      // Should have refreshed bounds and invalidated
       expect(view.setBounds).toHaveBeenCalled();
-      // Should have invalidated
       expect(view.webContents.invalidate).toHaveBeenCalled();
-      // Should have cycled visibility (first call passes cooldown)
-      const calls = (view.setVisible as Mock).mock.calls;
-      const falseIdx = calls.findIndex((c: unknown[]) => c[0] === false);
-      const trueIdx = calls.findIndex((c: unknown[], i: number) => i > falseIdx && c[0] === true);
-      expect(falseIdx).toBeGreaterThanOrEqual(0);
-      expect(trueIdx).toBeGreaterThan(falseIdx);
+      // Should NOT have cycled visibility (would steal focus)
+      expect(view.setVisible).not.toHaveBeenCalled();
     });
 
     it("keepalive skips when no panel is visible", () => {
@@ -591,6 +586,90 @@ describe("ViewManager", () => {
 
     it("forceRepaintVisiblePanel returns false when no panel is visible", () => {
       expect(vm.forceRepaintVisiblePanel()).toBe(false);
+    });
+  });
+
+  describe("compositor stall detection", () => {
+    let vm: ViewManager;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vm = new ViewManager({
+        window: mockWindow,
+        shellPreload: "/path/to/preload.js",
+        safePreload: "/path/to/safePreload.js",
+        shellHtmlPath: "/path/to/index.html",
+      });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("recovers aggressively when capturePage returns empty image (stall detected)", async () => {
+      const view = vm.createView({
+        id: "stall-panel",
+        type: "panel",
+      });
+
+      // capturePage returns empty image (compositor stalled)
+      (view.webContents.capturePage as Mock).mockResolvedValue({ isEmpty: () => true });
+
+      vm.setViewVisible("stall-panel", true);
+      (view.setVisible as Mock).mockClear();
+      (view.webContents.invalidate as Mock).mockClear();
+
+      // Advance past the stall detector interval (10s)
+      await vi.advanceTimersByTimeAsync(10000);
+
+      // Should have done aggressive recovery: invalidate + visibility cycle
+      expect(view.webContents.invalidate).toHaveBeenCalled();
+      const calls = (view.setVisible as Mock).mock.calls;
+      const falseIdx = calls.findIndex((c: unknown[]) => c[0] === false);
+      const trueIdx = calls.findIndex((c: unknown[], i: number) => i > falseIdx && c[0] === true);
+      expect(falseIdx).toBeGreaterThanOrEqual(0);
+      expect(trueIdx).toBeGreaterThan(falseIdx);
+    });
+
+    it("does not recover when capturePage returns non-empty image (healthy)", async () => {
+      const view = vm.createView({
+        id: "healthy-panel",
+        type: "panel",
+      });
+
+      // capturePage returns non-empty image (compositor healthy)
+      (view.webContents.capturePage as Mock).mockResolvedValue({ isEmpty: () => false });
+
+      vm.setViewVisible("healthy-panel", true);
+      (view.setVisible as Mock).mockClear();
+      (view.webContents.invalidate as Mock).mockClear();
+
+      // Advance past the stall detector interval (10s)
+      await vi.advanceTimersByTimeAsync(10000);
+
+      // Should NOT have cycled visibility
+      expect(view.setVisible).not.toHaveBeenCalled();
+    });
+
+    it("skips recovery when capturePage rejects", async () => {
+      const view = vm.createView({
+        id: "error-panel",
+        type: "panel",
+      });
+
+      // capturePage rejects (page navigating, etc.)
+      (view.webContents.capturePage as Mock).mockRejectedValue(
+        new Error("WebContents is destroyed")
+      );
+
+      vm.setViewVisible("error-panel", true);
+      (view.setVisible as Mock).mockClear();
+
+      // Advance past the stall detector interval (10s)
+      await vi.advanceTimersByTimeAsync(10000);
+
+      // Should NOT have cycled visibility
+      expect(view.setVisible).not.toHaveBeenCalled();
     });
   });
 

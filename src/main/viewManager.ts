@@ -117,8 +117,10 @@ export class ViewManager {
   private protectedViewIds = new Set<string>();
   private crashCallback: ((viewId: string, reason: string) => void) | null = null;
   private windowVisible = true;
-  /** Timer for periodic compositor keepalive to prevent stalls */
+  /** Timer for periodic gentle compositor keepalive */
   private compositorKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
+  /** Timer for periodic compositor stall detection via capturePage */
+  private compositorStallDetectorTimer: ReturnType<typeof setInterval> | null = null;
   /** Timestamp of last visibility cycle, for cooldown to prevent feedback loops */
   private lastVisibilityCycleTime = 0;
 
@@ -206,6 +208,8 @@ export class ViewManager {
 
     // Start compositor keepalive to prevent layer painting stalls
     this.startCompositorKeepalive();
+    // Start stall detector — capturePage probe for aggressive recovery
+    this.startCompositorStallDetector();
   }
 
   private handleWindowVisibility(visible: boolean): void {
@@ -943,6 +947,7 @@ export class ViewManager {
    */
   destroy(): void {
     this.stopCompositorKeepalive();
+    this.stopCompositorStallDetector();
 
     for (const id of this.views.keys()) {
       if (id !== "shell") {
@@ -960,11 +965,11 @@ export class ViewManager {
 
   /**
    * Start periodic compositor keepalive.
-   * Unconditionally re-establishes the visible panel's compositor layer to
-   * prevent and recover from Chromium painting stalls. rAF-based detection
-   * proved unreliable (rAF fires even when the compositor thread isn't
-   * painting), so we just run the recovery periodically — the operations
-   * (removeChildView/addChildView + invalidate + visibility cycle) are cheap.
+   * Nudges the visible panel's compositor with invalidate() + a bounds
+   * re-apply every few seconds. This is a gentle keepalive that doesn't
+   * steal focus from input elements (unlike bringToFront or visibility
+   * cycling). For full compositor recovery from an active stall, the user
+   * can use the "Refresh Panel Display" menu item or forceRepaint().
    */
   private startCompositorKeepalive(intervalMs = 5000): void {
     this.stopCompositorKeepalive();
@@ -974,9 +979,9 @@ export class ViewManager {
   }
 
   /**
-   * Unconditional compositor keepalive. Mirrors what the "Refresh Panel
-   * Display" menu item does: re-attach the view (forces Chromium to rebuild
-   * the compositor layer), refresh bounds, invalidate, and cycle visibility.
+   * Gentle compositor keepalive — invalidate + re-apply bounds.
+   * Avoids bringToFront (removeChildView/addChildView steals focus) and
+   * visibility cycling (setVisible toggle may steal focus).
    */
   private keepCompositorAlive(): void {
     const panelId = this.visiblePanelId;
@@ -985,15 +990,11 @@ export class ViewManager {
     if (!managed || !managed.visible || managed.view.webContents.isDestroyed())
       return;
 
-    // Re-attach view to force compositor layer rebuild
-    this.bringToFront(panelId);
+    // Re-apply bounds to nudge the compositor without stealing focus
     const bounds = this.calculatePanelBounds();
     managed.bounds = bounds;
     managed.view.setBounds(bounds);
-
-    // Invalidate + visibility cycle for belt-and-suspenders
     managed.view.webContents.invalidate();
-    this.cycleCompositorVisibility(managed);
   }
 
   /**
@@ -1003,6 +1004,62 @@ export class ViewManager {
     if (this.compositorKeepaliveTimer) {
       clearInterval(this.compositorKeepaliveTimer);
       this.compositorKeepaliveTimer = null;
+    }
+  }
+
+  /**
+   * Start periodic compositor stall detection using capturePage().
+   * Unlike rAF probes (which fire in the renderer thread even when the
+   * compositor isn't painting), capturePage() goes through the actual
+   * compositing pipeline. An empty capture on a visible panel means the
+   * compositor surface is gone → stall confirmed → aggressive recovery.
+   * Aggressive recovery (bringToFront + visibility cycle) is acceptable
+   * here because a blank panel has no focused input to steal focus from.
+   */
+  private startCompositorStallDetector(intervalMs = 10000): void {
+    this.stopCompositorStallDetector();
+    this.compositorStallDetectorTimer = setInterval(() => {
+      void this.detectAndRecoverStall();
+    }, intervalMs);
+  }
+
+  private stopCompositorStallDetector(): void {
+    if (this.compositorStallDetectorTimer) {
+      clearInterval(this.compositorStallDetectorTimer);
+      this.compositorStallDetectorTimer = null;
+    }
+  }
+
+  /**
+   * Detect compositor stall via capturePage and recover aggressively.
+   * Only triggers when the capture is empty (panel is already blank),
+   * so the aggressive recovery won't disrupt user interaction.
+   */
+  private async detectAndRecoverStall(): Promise<void> {
+    const panelId = this.visiblePanelId;
+    if (!panelId || !this.windowVisible) return;
+    const managed = this.views.get(panelId);
+    if (!managed || !managed.visible || managed.view.webContents.isDestroyed())
+      return;
+
+    try {
+      const image = await managed.view.webContents.capturePage();
+
+      // Re-check panel is still the visible one after async capture
+      if (this.visiblePanelId !== panelId || !managed.visible) return;
+
+      if (image.isEmpty()) {
+        log.verbose(` Compositor stall detected on ${panelId} (empty capture) — recovering`);
+        // Aggressive recovery: re-attach view + refresh bounds + visibility cycle
+        this.bringToFront(panelId);
+        const bounds = this.calculatePanelBounds();
+        managed.bounds = bounds;
+        managed.view.setBounds(bounds);
+        managed.view.webContents.invalidate();
+        this.cycleCompositorVisibility(managed);
+      }
+    } catch {
+      // capturePage failed (webContents navigating, destroyed, etc.) — skip
     }
   }
 
