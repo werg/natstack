@@ -177,6 +177,8 @@ interface ServerMessage {
   channelConfig?: ChannelConfig;
   /** Total message count for pagination (sent in ready message) */
   totalCount?: number;
+  /** Count of type="message" events only, for accurate chat pagination */
+  chatMessageCount?: number;
   /** Messages returned for get-messages-before (sent in messages-before response) */
   messages?: Array<{
     id: number;
