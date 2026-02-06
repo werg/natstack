@@ -9,7 +9,8 @@ import { useState, useEffect } from "react";
 import { Card, Flex, Text, Select } from "@radix-ui/themes";
 import { ParameterEditor } from "@natstack/react";
 import { rpc } from "@natstack/runtime";
-import type { FieldDefinition, FieldValue } from "@natstack/core";
+import type { FieldValue } from "@natstack/core";
+import { SESSION_PARAMETERS } from "@natstack/agentic-messaging/config";
 import type { SessionConfig } from "../hooks/useAgentSelection";
 
 /** Template info returned from the bridge */
@@ -18,44 +19,6 @@ interface AvailableTemplate {
   name: string;
   description?: string;
 }
-
-/** Field definitions for session settings */
-const SESSION_FIELDS: FieldDefinition[] = [
-  {
-    key: "projectLocation",
-    label: "Project Location",
-    description: "Where the project files are stored",
-    type: "segmented",
-    options: [
-      { value: "external", label: "External Filesystem", description: "Access files on your local machine" },
-      { value: "browser", label: "Browser Storage", description: "Sandboxed browser storage (restricted mode)" },
-    ],
-  },
-  {
-    key: "workingDirectory",
-    label: "Working Directory",
-    description: "Path to the project directory",
-    type: "string",
-    placeholder: "/path/to/project",
-    visibleWhen: { field: "projectLocation", operator: "eq", value: "external" },
-  },
-  {
-    key: "defaultAutonomy",
-    label: "Default Autonomy",
-    description: "Default autonomy level for agents (can be overridden per-agent)",
-    type: "slider",
-    default: 0,
-    min: 0,
-    max: 2,
-    step: 1,
-    notches: [
-      { value: 0, label: "Restricted", description: "Read-only access, requires approval" },
-      { value: 1, label: "Standard", description: "Can modify workspace" },
-      { value: 2, label: "Autonomous", description: "Full access, minimal restrictions" },
-    ],
-    warnings: [{ when: 2, message: "Allows unrestricted tool execution", severity: "danger" }],
-  },
-];
 
 interface SessionSettingsProps {
   config: SessionConfig;
@@ -99,7 +62,7 @@ export function SessionSettings({ config, onChange }: SessionSettingsProps) {
         </Flex>
 
         <ParameterEditor
-          parameters={SESSION_FIELDS}
+          parameters={SESSION_PARAMETERS}
           values={config as unknown as Record<string, FieldValue>}
           onChange={(key, value) => onChange({ ...config, [key]: value } as SessionConfig)}
           size="1"

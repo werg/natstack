@@ -23,6 +23,7 @@ import {
 } from "@radix-ui/themes";
 import { rpc } from "@natstack/runtime";
 import { usePanelTheme, ParameterEditor } from "@natstack/react";
+import { filterPerAgentParameters } from "@natstack/agentic-messaging/config";
 import type { AgentManifest, GlobalAgentSettings, AgentSettings, FieldValue } from "@natstack/core";
 
 /** Default global settings (fallback if service fails) */
@@ -236,15 +237,15 @@ function AgentsConfigPage() {
                       </Flex>
                     )}
 
-                    {/* Parameters */}
-                    {agent.parameters && agent.parameters.length > 0 && (
+                    {/* Parameters (excluding channelLevel which are set in session settings) */}
+                    {agent.parameters && filterPerAgentParameters(agent.parameters).length > 0 && (
                       <>
                         <Separator size="4" />
                         <Text size="2" weight="medium" color="gray">
                           Default Parameters
                         </Text>
                         <ParameterEditor
-                          parameters={agent.parameters}
+                          parameters={filterPerAgentParameters(agent.parameters)}
                           values={settings as Record<string, FieldValue>}
                           onChange={(key: string, value: FieldValue) =>
                             updateAgentSetting(agent.id, key, value)

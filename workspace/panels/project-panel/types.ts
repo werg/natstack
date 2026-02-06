@@ -2,6 +2,11 @@
  * Project configuration types for project-panel.
  */
 
+import { AUTONOMY_NOTCHES } from "@natstack/agentic-messaging/config";
+
+// Re-export for convenience
+export { AUTONOMY_NOTCHES };
+
 /**
  * Project configuration stored in panel stateArgs.
  */

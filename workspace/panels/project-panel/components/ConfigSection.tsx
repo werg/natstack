@@ -7,6 +7,7 @@ import { Box, Text, Card, Flex, Button, TextField, Separator } from "@radix-ui/t
 import { ChevronDownIcon, ChevronRightIcon, GearIcon } from "@radix-ui/react-icons";
 import { AgentSelector, type AgentInfo } from "@workspace/agentic-components";
 import type { ProjectConfig } from "../types";
+import { AUTONOMY_NOTCHES } from "@natstack/agentic-messaging/config";
 
 interface ConfigSectionProps {
   config: ProjectConfig;
@@ -99,11 +100,7 @@ export function ConfigSection({ config, agents, agentsLoading, expanded, onToggl
                 Autonomy Level
               </Text>
               <Text size="2">
-                {config.defaultAutonomy === 0
-                  ? "Manual"
-                  : config.defaultAutonomy === 1
-                  ? "Semi-Auto"
-                  : "Full Auto"}
+                {AUTONOMY_NOTCHES.find((n) => n.value === config.defaultAutonomy)?.label ?? "Unknown"}
               </Text>
             </Box>
           </Flex>

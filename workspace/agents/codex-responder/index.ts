@@ -60,7 +60,7 @@ import {
   type IncomingNewMessage,
 } from "@natstack/agentic-messaging";
 import type { Attachment } from "@natstack/pubsub";
-import { CODEX_PARAMETERS } from "@natstack/agentic-messaging/config";
+import { CODEX_PARAMETERS, findNewestInFamily, getRecommendedDefault } from "@natstack/agentic-messaging/config";
 import { z } from "zod";
 import { Codex } from "@openai/codex-sdk";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -541,10 +541,15 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       log: (msg) => this.log.debug(msg),
     });
 
+    // Get model options from CODEX_PARAMETERS and find the newest codex model
+    const modelParam = CODEX_PARAMETERS.find((p) => p.key === "model");
+    const modelOptions = modelParam?.options ?? [];
+    const defaultModel = findNewestInFamily(modelOptions, "codex") ?? getRecommendedDefault(modelOptions) ?? "gpt-5.3-codex";
+
     // Initialize settings with 3-way merge (correct API)
     this.settingsMgr = createSettingsManager<CodexSettings>({
       client: this.ctx.client as AgenticClient<ChatParticipantMetadata>,
-      defaults: { reasoningEffort: 2, autonomyLevel: 1 },
+      defaults: { model: defaultModel, reasoningEffort: 2, autonomyLevel: 1 },
       initConfig: {
         model: this.ctx.config["model"] as string | undefined,
         reasoningEffort: this.ctx.config["reasoningEffort"] as number | undefined,
@@ -707,7 +712,17 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     const panel = findPanelParticipant(client);
     if (!panel) throw new Error("No panel found");
 
-    const fields = CODEX_PARAMETERS.filter((p) => !p.channelLevel);
+    // Get model options and determine recommended default dynamically
+    const modelParam = CODEX_PARAMETERS.find((p) => p.key === "model");
+    const modelOptions = modelParam?.options ?? [];
+    const recommendedModel = findNewestInFamily(modelOptions, "codex") ?? getRecommendedDefault(modelOptions);
+
+    const fields = CODEX_PARAMETERS.filter((p) => !p.channelLevel).map((f) => {
+      if (f.key === "model" && recommendedModel) {
+        return { ...f, default: recommendedModel };
+      }
+      return f;
+    });
     const handle = client.callMethod(panel.id, "feedback_form", {
       title: "Codex Settings",
       fields,

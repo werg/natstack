@@ -211,14 +211,14 @@ const PERPLEXITY_MODELS: FetchedModel[] = [
  */
 const CLI_PROVIDER_MODELS: Record<string, FetchedModel[]> = {
   "claude-code": [
-    { id: "sonnet", displayName: "Claude Code (Sonnet)", description: "Optimized for coding tasks" },
     { id: "opus", displayName: "Claude Code (Opus)", description: "Most capable for complex coding" },
+    { id: "sonnet", displayName: "Claude Code (Sonnet)", description: "Balanced coding performance" },
     { id: "haiku", displayName: "Claude Code (Haiku)", description: "Fast and efficient" },
   ],
   "codex-cli": [
-    { id: "gpt-5.1-codex", displayName: "Codex CLI (GPT-5.1 Codex)", description: "Optimized for coding" },
-    { id: "gpt-5.1-codex-max", displayName: "Codex CLI (GPT-5.1 Codex Max)", description: "Flagship model" },
-    { id: "gpt-5.1-codex-mini", displayName: "Codex CLI (GPT-5.1 Codex Mini)", description: "Lightweight" },
+    { id: "gpt-5.3-codex", displayName: "Codex CLI (GPT-5.3 Codex)", description: "Most advanced agentic coding" },
+    { id: "gpt-5.2-codex", displayName: "Codex CLI (GPT-5.2 Codex)", description: "Previous generation" },
+    { id: "gpt-5.2-codex-mini", displayName: "Codex CLI (GPT-5.2 Codex Mini)", description: "Lightweight" },
   ],
 };
 

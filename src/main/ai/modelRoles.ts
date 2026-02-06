@@ -43,22 +43,23 @@ export interface ResolvedModelSpec {
 
 /**
  * Default model assignments for each role
+ * Updated to use latest models as of Feb 2026
  */
 const DEFAULT_MODELS: Record<StandardModelRole, ResolvedModelSpec> = {
   smart: {
-    modelId: "anthropic:claude-sonnet-4-20250514",
+    modelId: "anthropic:claude-opus-4-6",
     provider: "anthropic",
-    model: "claude-sonnet-4-20250514",
+    model: "claude-opus-4-6",
   },
   coding: {
-    modelId: "anthropic:claude-sonnet-4-20250514",
+    modelId: "anthropic:claude-sonnet-4-5-20250929",
     provider: "anthropic",
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-4-5-20250929",
   },
   fast: {
-    modelId: "groq:llama-3.1-8b-instant",
+    modelId: "groq:llama-3.3-70b-versatile",
     provider: "groq",
-    model: "llama-3.1-8b-instant",
+    model: "llama-3.3-70b-versatile",
   },
   cheap: {
     modelId: "groq:llama-3.1-8b-instant",

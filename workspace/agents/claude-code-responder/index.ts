@@ -63,6 +63,8 @@ import {
 import {
   CLAUDE_CODE_PARAMETERS,
   CLAUDE_MODEL_FALLBACKS,
+  getRecommendedDefault,
+  findNewestInFamily,
 } from "@natstack/agentic-messaging/config";
 import { z } from "zod";
 import {
@@ -123,7 +125,8 @@ interface ClaudeCodeSettings {
 }
 
 const DEFAULT_SETTINGS: ClaudeCodeSettings = {
-  model: "claude-sonnet-4-5-20250929",
+  // Use the newest opus model from fallbacks, or fall back to first in list
+  model: findNewestInFamily(CLAUDE_MODEL_FALLBACKS, "opus") ?? CLAUDE_MODEL_FALLBACKS[0]?.value,
   maxThinkingTokens: 10240,
   executionMode: "edit",
   autonomyLevel: 0,
@@ -647,11 +650,19 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
       modelOptions = CLAUDE_MODEL_FALLBACKS;
     }
 
+    // Determine the recommended default from available models
+    const recommendedModel = findNewestInFamily(modelOptions, "opus") ?? getRecommendedDefault(modelOptions);
+
     const fields = CLAUDE_CODE_PARAMETERS
       .filter((p) => !p.channelLevel)
       .map((f) => {
         if (f.key === "model" && modelOptions.length > 0) {
-          return { ...f, options: modelOptions };
+          // Update both options and default to use dynamically fetched models
+          return {
+            ...f,
+            options: modelOptions,
+            default: recommendedModel ?? f.default,
+          };
         }
         return f;
       });
