@@ -7,6 +7,9 @@ export {
   AI_RESPONDER_PARAMETERS,
   CODEX_PARAMETERS,
   getParameterDefaults,
+  // Agent parameter registry & enrichment
+  AGENT_PARAMETER_REGISTRY,
+  enrichManifestParameters,
   // Model fallback lists
   CLAUDE_MODEL_FALLBACKS,
   AI_ROLE_FALLBACKS,

@@ -589,3 +589,33 @@ export function getParameterDefaults(
   }
   return defaults;
 }
+
+// ============================================================================
+// Agent Parameter Registry
+// ============================================================================
+
+/**
+ * Maps agent IDs to their authoritative parameter definitions.
+ * package.json parameters are merged in at runtime only for keys
+ * not already covered here.
+ */
+export const AGENT_PARAMETER_REGISTRY: Record<string, FieldDefinition[]> = {
+  "claude-code-responder": CLAUDE_CODE_PARAMETERS,
+  "codex-responder": CODEX_PARAMETERS,
+  "pubsub-chat-responder": AI_RESPONDER_PARAMETERS,
+};
+
+/**
+ * Enrich a manifest's parameters using the central registry.
+ * Central params take precedence; any extra keys from the manifest
+ * (e.g. agent-specific params not yet in the registry) are appended.
+ */
+export function enrichManifestParameters(
+  manifest: { id: string; parameters?: FieldDefinition[] }
+): FieldDefinition[] {
+  const centralParams = AGENT_PARAMETER_REGISTRY[manifest.id];
+  if (!centralParams) return manifest.parameters ?? [];
+  const centralKeys = new Set(centralParams.map((p) => p.key));
+  const extraParams = (manifest.parameters ?? []).filter((p) => !centralKeys.has(p.key));
+  return [...centralParams, ...extraParams];
+}

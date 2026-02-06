@@ -17,6 +17,7 @@ import * as path from "path";
 import chokidar from "chokidar";
 import { EventEmitter } from "events";
 import type { AgentManifest as CoreAgentManifest } from "@natstack/core";
+import { enrichManifestParameters } from "@natstack/agentic-messaging/config";
 import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("AgentDiscovery");
@@ -137,6 +138,9 @@ export function createAgentDiscovery(workspacePath: string): AgentDiscovery {
         capabilities: natstack.capabilities,
         permissions: natstack.permissions,
       };
+
+      // Enrich with central parameter definitions (agent-configs.ts is authoritative)
+      manifest.parameters = enrichManifestParameters(manifest);
 
       return {
         manifest,
