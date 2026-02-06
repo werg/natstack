@@ -54,7 +54,7 @@ import { createAllToolMethodDefinitions } from "./tools";
 import { useChannelConnection } from "./hooks/useChannelConnection";
 import { useMethodHistory, type ChatMessage } from "./hooks/useMethodHistory";
 import { useToolRole } from "./hooks/useToolRole";
-import { dispatchAgenticEvent, isChatParticipantMetadata, type DirtyRepoDetails } from "./hooks/useAgentEvents";
+import { dispatchAgenticEvent, type DirtyRepoDetails } from "./hooks/useAgentEvents";
 import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 import { ToolRoleConflictModal } from "./components/ToolRoleConflictModal";
 import { ChatPhase } from "./components/ChatPhase";
@@ -417,7 +417,6 @@ export default function AgenticChat() {
             event,
             {
               setMessages,
-              setHistoricalParticipants,
               addMethodHistoryEntry,
               handleMethodResult,
               setDebugEvents,
@@ -455,7 +454,6 @@ export default function AgenticChat() {
       },
       [
         setMessages,
-        setHistoricalParticipants,
         addMethodHistoryEntry,
         handleMethodResult,
         panelClientId,
@@ -465,6 +463,20 @@ export default function AgenticChat() {
     onRoster: useCallback((roster: RosterUpdate<ChatParticipantMetadata>) => {
       const newParticipants = roster.participants;
       const prevParticipants = prevParticipantsRef.current;
+
+      // Accumulate all participants ever seen into historicalParticipants.
+      // This covers replay (presence events no longer flow through the event stream).
+      setHistoricalParticipants((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const [id, participant] of Object.entries(newParticipants)) {
+          if (!(id in next)) {
+            next[id] = participant;
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
 
       // Detect disconnected participants (were in prev roster but not in new)
       const prevIds = new Set(Object.keys(prevParticipants));

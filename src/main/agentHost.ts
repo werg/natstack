@@ -228,6 +228,8 @@ export class AgentHost extends EventEmitter {
   private activityCheckInterval: NodeJS.Timeout | null = null;
   private isShuttingDown = false;
   private messageStore: MessageStore;
+  /** Tracks consecutive wake failures per (channel, agentId) to implement exponential backoff. */
+  private wakeFailures = new Map<string, { count: number; backoffUntil: number }>();
 
   constructor(private options: AgentHostOptions) {
     super();
@@ -682,10 +684,19 @@ export class AgentHost extends EventEmitter {
     const registeredAgents = this.messageStore.getChannelAgents(channel);
     if (registeredAgents.length === 0) return;
 
+    const now = Date.now();
+
     for (const registration of registeredAgents) {
       // Skip if already running - check specific (channel, agentId, handle) to allow multiple handles
       const existing = this.getInstanceByHandle(channel, registration.agentId, registration.handle);
       if (existing) {
+        continue;
+      }
+
+      // Skip if in backoff period from a previous failed wake attempt
+      const backoffKey = `${channel}:${registration.agentId}`;
+      const failure = this.wakeFailures.get(backoffKey);
+      if (failure && now < failure.backoffUntil) {
         continue;
       }
 
@@ -708,6 +719,9 @@ export class AgentHost extends EventEmitter {
           config: spawnConfig.config,
         });
 
+        // Success — clear any previous failure tracking
+        this.wakeFailures.delete(backoffKey);
+
         // Emit woken lifecycle event
         this.emit("agentLifecycle", {
           channel: registration.channel,
@@ -717,7 +731,11 @@ export class AgentHost extends EventEmitter {
           timestamp: Date.now(),
         } satisfies AgentLifecycleEvent);
       } catch (err) {
-        log.error(`Failed to wake agent ${registration.agentId}: ${err}`);
+        // Exponential backoff: 5s, 10s, 20s, 40s, capped at 60s
+        const count = (failure?.count ?? 0) + 1;
+        const delayMs = Math.min(5_000 * Math.pow(2, count - 1), 60_000);
+        this.wakeFailures.set(backoffKey, { count, backoffUntil: now + delayMs });
+        log.error(`Failed to wake agent ${registration.agentId} (attempt ${count}, next retry in ${delayMs / 1000}s): ${err}`);
         // Don't throw - try to wake other agents
       }
     }
@@ -920,6 +938,7 @@ export class AgentHost extends EventEmitter {
 
     this.instances.clear();
     this.channelActivity.clear();
+    this.wakeFailures.clear();
 
     log.verbose("AgentHost shutdown complete");
   }

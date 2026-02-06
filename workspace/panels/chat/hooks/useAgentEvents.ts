@@ -30,11 +30,6 @@ export interface DirtyRepoDetails {
 /** Handler functions passed to dispatchAgenticEvent */
 export interface AgentEventHandlers {
   setMessages: (updater: (prev: ChatMessage[]) => ChatMessage[]) => void;
-  setHistoricalParticipants: (
-    updater: (
-      prev: Record<string, Participant<ChatParticipantMetadata>>
-    ) => Record<string, Participant<ChatParticipantMetadata>>
-  ) => void;
   addMethodHistoryEntry: (entry: MethodHistoryEntry) => void;
   handleMethodResult: (result: IncomingMethodResult) => void;
   setDebugEvents?: (
@@ -49,13 +44,6 @@ export interface AgentEventHandlers {
 // ===========================================================================
 // Helper Functions
 // ===========================================================================
-
-/** Utility to check if a value looks like ChatParticipantMetadata */
-export function isChatParticipantMetadata(value: unknown): value is ChatParticipantMetadata {
-  if (!value || typeof value !== "object") return false;
-  const obj = value as Record<string, unknown>;
-  return typeof obj.name === "string" && typeof obj.type === "string" && typeof obj.handle === "string";
-}
 
 /** Extract contentType from event (typed loosely in the SDK) */
 function getEventContentType(event: IncomingEvent): string | undefined {
@@ -208,19 +196,6 @@ export function dispatchAgenticEvent(
 
     case "method-result": {
       handlers.handleMethodResult(event as IncomingMethodResult);
-      break;
-    }
-
-    case "presence": {
-      if (event.action === "join" && isChatParticipantMetadata(event.metadata)) {
-        handlers.setHistoricalParticipants((prev) => ({
-          ...prev,
-          [event.senderId]: {
-            id: event.senderId,
-            metadata: event.metadata as ChatParticipantMetadata,
-          },
-        }));
-      }
       break;
     }
 

@@ -961,6 +961,8 @@ export class PubSubServer {
   private port: number | null = null;
   private channels = new Map<string, ChannelState>();
   private wakeDebounceTimers = new Map<string, NodeJS.Timeout>();
+  /** Tracks channels where ghost participants have already been cleaned up (once per server session). */
+  private ghostsCleanedChannels = new Set<string>();
 
   private tokenValidator: TokenValidator;
   private messageStore: MessageStore;
@@ -1115,6 +1117,9 @@ export class PubSubServer {
       });
     }
 
+    // Clean up ghost participants from previous server sessions (runs once per channel)
+    this.cleanupGhostParticipants(channel);
+
     // Send roster-op history before any normal replay
     this.replayRosterOps(ws, channel);
 
@@ -1197,6 +1202,11 @@ export class PubSubServer {
     const rows = this.messageStore.query(channel, sinceId);
 
     for (const row of rows) {
+      // Skip presence events — they're already fully covered by replayRosterOps()
+      // which replays ALL presence from the beginning. Including them here would
+      // send duplicates that the client has to dedup via rosterOpIds.
+      if (row.type === "presence") continue;
+
       const payload = JSON.parse(row.payload);
       const senderMetadata = row.sender_metadata ? JSON.parse(row.sender_metadata) : undefined;
       const attachments = deserializeAttachments(row.attachment);
@@ -1940,6 +1950,68 @@ export class PubSubServer {
     }
   }
 
+  /**
+   * Clean up ghost participants on first connection to a channel after server restart.
+   *
+   * When the server shuts down (or crashes), leave events for connected participants
+   * may not be persisted. This leaves "ghost" entries in the DB that appear as active
+   * participants on restart. This method detects ghosts by comparing the DB-reconstructed
+   * roster against the server's live in-memory participants, and persists synthetic
+   * "leave" events for any participant that is in the DB but not currently connected.
+   *
+   * Runs once per channel per server session (tracked by ghostsCleanedChannels).
+   */
+  private cleanupGhostParticipants(channel: string): void {
+    if (this.ghostsCleanedChannels.has(channel)) return;
+    this.ghostsCleanedChannels.add(channel);
+
+    // Reconstruct roster state from DB presence events
+    const rows = this.messageStore.queryByType(channel, ["presence"], 0);
+    const rosterFromDb = new Map<string, Record<string, unknown>>();
+    for (const row of rows) {
+      const payload = JSON.parse(row.payload) as PresencePayload;
+      if (payload.action === "join" || payload.action === "update") {
+        rosterFromDb.set(row.sender_id, payload.metadata ?? {});
+      } else if (payload.action === "leave") {
+        rosterFromDb.delete(row.sender_id);
+      }
+    }
+
+    // Compare against live participants — anyone in the DB but not connected is a ghost
+    const channelState = this.channels.get(channel);
+    const liveParticipants = channelState?.participants ?? new Map();
+    let cleanedCount = 0;
+
+    for (const [senderId, metadata] of rosterFromDb) {
+      if (!liveParticipants.has(senderId)) {
+        // Ghost participant — persist a synthetic leave event
+        const ts = Date.now();
+        const payload: PresencePayload = {
+          action: "leave",
+          metadata,
+          leaveReason: "disconnect",
+        };
+        try {
+          this.messageStore.insert(
+            channel,
+            "presence",
+            JSON.stringify(payload),
+            senderId,
+            ts,
+            metadata
+          );
+          cleanedCount++;
+        } catch {
+          // Ignore — best effort cleanup
+        }
+      }
+    }
+
+    if (cleanedCount > 0) {
+      log.verbose(`Cleaned up ${cleanedCount} ghost participant(s) on channel ${channel}`);
+    }
+  }
+
   private replayRosterOps(ws: WebSocket, channel: string): void {
     const rows = this.messageStore.queryByType(channel, ["presence"], 0);
 
@@ -2137,15 +2209,35 @@ export class PubSubServer {
     }
     this.wakeDebounceTimers.clear();
 
-    // Terminate WebSocket clients BEFORE closing the message store
-    // This allows presence "leave" events to be persisted during graceful shutdown
+    // Persist "leave" events for all participants while the message store is still
+    // open. We do this synchronously from the server's own in-memory state rather
+    // than relying on async WebSocket close handlers (which race with store closure).
+    const ts = Date.now();
+    for (const [channel, state] of this.channels) {
+      for (const [clientId, participant] of state.participants) {
+        const leaveReason: LeaveReason = participant.pendingGracefulClose ? "graceful" : "disconnect";
+        const payload: PresencePayload = {
+          action: "leave",
+          metadata: participant.metadata,
+          leaveReason,
+        };
+        try {
+          this.messageStore.insert(
+            channel, "presence", JSON.stringify(payload), clientId, ts, participant.metadata
+          );
+        } catch {
+          // Best-effort — don't block shutdown
+        }
+      }
+      state.participants.clear();
+    }
+
+    // Now terminate connections and close the store
     if (this.wss) {
       for (const client of this.wss.clients) {
         client.terminate();
       }
     }
-
-    // Now close the message store after clients have disconnected
     this.messageStore.close();
 
     return new Promise((resolve) => {

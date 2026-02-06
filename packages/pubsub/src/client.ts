@@ -659,6 +659,13 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
           break;
         }
 
+        // Don't leak presence events into the consumer message stream — they're
+        // fully handled by the roster handlers above. Enqueueing them is redundant
+        // and forces consumers to filter/re-parse events already processed here.
+        if (isPresence) {
+          break;
+        }
+
         const message: PubSubMessage = {
           kind: msg.kind,
           id: msg.id,
@@ -834,6 +841,12 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
 
     // Reset ready promise for new connection
     resetReadyPromise();
+
+    // Clear roster state so it's rebuilt cleanly from the server's full
+    // presence replay. Without this, stale entries accumulate and the
+    // rosterOpIds dedup set can mask events that should be reprocessed.
+    currentRoster = {};
+    rosterOpIds.clear();
 
     // Create new WebSocket with lastSeenId for replay
     ws = new WebSocket(buildWsUrl(lastSeenId));
@@ -1077,6 +1090,17 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     if (reconnectTimeoutId) {
       clearTimeout(reconnectTimeoutId);
       reconnectTimeoutId = null;
+    }
+    // Send a graceful close action before closing the WebSocket. TCP ordering
+    // guarantees the server processes this before the close frame, so it can
+    // record a "graceful" leave reason instead of "disconnect". Fire-and-forget:
+    // we don't need the ack since we're closing immediately after.
+    if (ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify({ action: "close" }));
+      } catch {
+        // Best effort — connection may already be degraded
+      }
     }
     ws.close();
   }

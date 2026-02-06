@@ -543,12 +543,13 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
   }
 
   const unsubRoster = pubsub.onRoster((roster: RosterUpdate<T>) => {
-    const now = Date.now();
-
-    // Track first-seen time for all participants
+    // Track first-seen time for all participants using the server's event
+    // timestamp (roster.ts) rather than Date.now(). This makes conflict
+    // resolution deterministic across all clients — every client observes
+    // the same server-authoritative join timestamps from presence events.
     for (const id of Object.keys(roster.participants)) {
       if (!participantFirstSeen.has(id)) {
-        participantFirstSeen.set(id, now);
+        participantFirstSeen.set(id, roster.ts);
       }
     }
 
@@ -1101,6 +1102,11 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     if (replayMode === "skip") return;
     bufferingReplay = true;
     pendingReplay = [];
+    // The pubsub layer clears and rebuilds the roster from scratch on reconnect.
+    // Reset all derived state so it's rediscovered from the fresh roster replay:
+    participantFirstSeen.clear();  // Stale observation timestamps
+    selfId = null;                 // Will be re-found by matching instanceId
+    handleConflictError = null;    // Allow conflict detection to re-evaluate
   });
 
   const unsubDisconnect = pubsub.onDisconnect(() => {
@@ -1738,13 +1744,8 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       }
       providerAbortControllers.clear();
 
-      // Send graceful close message to server before disconnecting
-      // This allows the server to record a "graceful" leave reason instead of "disconnect"
-      try {
-        await pubsub.sendRaw({ action: "close" });
-      } catch {
-        // Ignore errors - connection may already be closed
-      }
+      // Graceful close is handled at the pubsub layer — pubsub.close() sends
+      // the protocol-level "close" action before closing the WebSocket.
       pubsub.close();
       if (sessionDb) {
         await sessionDb.close();
