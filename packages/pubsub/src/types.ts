@@ -87,6 +87,8 @@ export interface ReadyMessage {
   kind: "ready";
   /** Total message count for pagination */
   totalCount?: number;
+  /** Count of type="message" events only, for accurate chat pagination */
+  chatMessageCount?: number;
 }
 
 /**

@@ -74,8 +74,8 @@ export interface MessageStore {
   queryByType(channel: string, types: string[], sinceId?: number): MessageRow[];
   /** Query messages before a given ID (for pagination). Returns messages in chronological order. */
   queryBefore(channel: string, beforeId: number, limit?: number): MessageRow[];
-  /** Get total count of messages in a channel. */
-  getMessageCount(channel: string): number;
+  /** Get total count of messages in a channel, optionally filtered by event type. */
+  getMessageCount(channel: string, type?: string): number;
   createChannel(channel: string, contextId: string, createdBy: string, config?: ChannelConfig): void;
   getChannel(channel: string): ChannelInfo | null;
   /** Update channel config (merges with existing config) */
@@ -457,9 +457,9 @@ abstract class BaseMessageStore implements MessageStore {
   abstract queryBefore(channel: string, beforeId: number, limit?: number): MessageRow[];
 
   /**
-   * Get total count of messages in a channel.
+   * Get total count of messages in a channel, optionally filtered by event type.
    */
-  abstract getMessageCount(channel: string): number;
+  abstract getMessageCount(channel: string, type?: string): number;
 
   /**
    * Register an agent for a channel (UPSERT - updates config if already exists).
@@ -681,9 +681,17 @@ class SqliteMessageStore extends BaseMessageStore {
     return rows.reverse(); // Return in chronological order (oldest first)
   }
 
-  getMessageCount(channel: string): number {
+  getMessageCount(channel: string, type?: string): number {
     if (!this.dbHandle) return 0;
     const db = getDatabaseManager();
+    if (type) {
+      const result = db.query<{ count: number }>(
+        this.dbHandle,
+        "SELECT COUNT(*) as count FROM messages WHERE channel = ? AND type = ?",
+        [channel, type]
+      );
+      return result[0]?.count ?? 0;
+    }
     const result = db.query<{ count: number }>(
       this.dbHandle,
       "SELECT COUNT(*) as count FROM messages WHERE channel = ?",
@@ -858,8 +866,8 @@ export class InMemoryMessageStore extends BaseMessageStore {
       .reverse();
   }
 
-  getMessageCount(channel: string): number {
-    return this.messages.filter((m) => m.channel === channel).length;
+  getMessageCount(channel: string, type?: string): number {
+    return this.messages.filter((m) => m.channel === channel && (!type || m.type === type)).length;
   }
 
   registerChannelAgent(channel: string, agentId: string, handle: string, config: string, registeredBy?: string): void {
@@ -1115,9 +1123,12 @@ export class PubSubServer {
 
     // Get total message count for pagination support
     const totalCount = this.messageStore.getMessageCount(channel);
+    // Count only user-visible "message" type events (excludes protocol chatter
+    // like method-call, presence, tool-role-*, agent-debug, etc.)
+    const chatMessageCount = this.messageStore.getMessageCount(channel, "message");
 
     // Signal ready (end of replay) with contextId, channelConfig, and totalCount
-    this.send(ws, { kind: "ready", contextId: channelContextId, channelConfig, totalCount });
+    this.send(ws, { kind: "ready", contextId: channelContextId, channelConfig, totalCount, chatMessageCount });
 
     // Persist and broadcast join or update presence event
     if (!existingParticipant) {

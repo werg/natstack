@@ -47,6 +47,8 @@ interface ServerMessage {
   channelConfig?: ChannelConfig;
   /** Total message count for pagination (sent in ready message) */
   totalCount?: number;
+  /** Count of type="message" events only, for accurate chat pagination */
+  chatMessageCount?: number;
   /** Messages returned for get-messages-before (sent in messages-before response) */
   messages?: Array<{
     id: number;
@@ -133,6 +135,9 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
   /** Total message count (from server ready message, for pagination) */
   readonly totalMessageCount: number | undefined;
 
+  /** Count of type="message" events only (excludes protocol chatter), for accurate chat pagination */
+  readonly chatMessageCount: number | undefined;
+
   /** Get older messages before a given ID (for pagination UI) */
   getMessagesBefore(beforeId: number, limit?: number): Promise<{
     messages: Array<{
@@ -211,6 +216,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   let serverContextId: string | undefined;
   let serverChannelConfig: ChannelConfig | undefined;
   let serverTotalCount: number | undefined;
+  let serverChatMessageCount: number | undefined;
 
   // Message queue for the async iterator
   const messageQueue: Message[] = [];
@@ -407,10 +413,13 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         if (typeof msg.totalCount === "number") {
           serverTotalCount = msg.totalCount;
         }
+        if (typeof msg.chatMessageCount === "number") {
+          serverChatMessageCount = msg.chatMessageCount;
+        }
         readyResolve?.();
         readyResolve = null;
         readyReject = null;
-        enqueueMessage({ kind: "ready", totalCount: serverTotalCount });
+        enqueueMessage({ kind: "ready", totalCount: serverTotalCount, chatMessageCount: serverChatMessageCount });
         break;
 
       case "messages-before": {
@@ -1160,6 +1169,9 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     },
     get totalMessageCount() {
       return serverTotalCount;
+    },
+    get chatMessageCount() {
+      return serverChatMessageCount;
     },
     async getMessagesBefore(beforeId: number, limit = 100) {
       const ref = ++refCounter;

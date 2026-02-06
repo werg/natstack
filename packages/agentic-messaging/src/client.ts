@@ -1788,6 +1788,9 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     get totalMessageCount() {
       return pubsub.totalMessageCount;
     },
+    get chatMessageCount() {
+      return pubsub.chatMessageCount;
+    },
     getMessagesBefore: async (beforeId: number, limit?: number) => {
       return pubsub.getMessagesBefore(beforeId, limit);
     },

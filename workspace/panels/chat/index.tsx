@@ -550,37 +550,53 @@ export default function AgenticChat() {
 
     setLoadingMore(true);
     try {
-      const result = await client.getMessagesBefore(oldestLoadedId, 100);
-      if (result.messages.length > 0) {
-        // Convert server messages to ChatMessage format
-        const olderMessages: ChatMessage[] = result.messages.map((msg) => {
-          let content = "";
-          let kind: ChatMessage["kind"] = "message";
+      let currentBeforeId = oldestLoadedId;
+      let olderMessages: ChatMessage[] = [];
+      let hasMore = true;
 
-          // Parse the payload based on message type
-          if (msg.type === "message" && typeof msg.payload === "object" && msg.payload !== null) {
-            const payload = msg.payload as { content?: string; id?: string };
-            content = payload.content ?? "";
-          }
+      // Loop to skip batches that contain only non-message types
+      // (method-call, method-result, presence, tool-role-*, agent-debug, etc.)
+      // which are not displayed in the chat UI.
+      while (hasMore && olderMessages.length === 0) {
+        const result = await client.getMessagesBefore(currentBeforeId, 100);
 
+        if (result.messages.length === 0) {
+          hasMore = false;
+          break;
+        }
+
+        // Update pagination cursor from raw (unfiltered) result
+        currentBeforeId = result.messages[0]?.id ?? currentBeforeId;
+        hasMore = result.hasMore;
+
+        // Only include user-visible "message" type events — other types
+        // (method-call, presence, etc.) are handled via separate state and
+        // would show up as empty bubbles if converted to ChatMessages.
+        const chatMessages = result.messages.filter((m) => m.type === "message");
+
+        olderMessages = chatMessages.map((msg) => {
+          const payload = typeof msg.payload === "object" && msg.payload !== null
+            ? (msg.payload as { content?: string; contentType?: string })
+            : {};
           return {
             id: String(msg.id),
             pubsubId: msg.id,
             senderId: msg.senderId,
-            content,
-            kind,
+            content: payload.content ?? "",
+            contentType: payload.contentType,
+            kind: "message" as const,
             complete: true,
             senderMetadata: msg.senderMetadata as { name?: string; type?: string; handle?: string } | undefined,
             attachments: msg.attachments,
           };
         });
-
-        setMessages((prev) => [...olderMessages, ...prev]);
-        setOldestLoadedId(result.messages[0]?.id ?? null);
-        setHasMoreHistory(result.hasMore);
-      } else {
-        setHasMoreHistory(false);
       }
+
+      if (olderMessages.length > 0) {
+        setMessages((prev) => [...olderMessages, ...prev]);
+      }
+      setOldestLoadedId(currentBeforeId);
+      setHasMoreHistory(hasMore);
     } catch (err) {
       console.error("[Chat] Failed to load earlier messages:", err);
     } finally {
@@ -615,7 +631,7 @@ export default function AgenticChat() {
   }, [connected, clientRef]);
 
   // Initialize pagination state when connected and messages are loaded
-  // This seeds hasMoreHistory from totalMessageCount so users can load history
+  // This seeds hasMoreHistory from chatMessageCount so users can load history
   // even before trimming occurs
   useEffect(() => {
     const client = clientRef.current;
@@ -629,11 +645,12 @@ export default function AgenticChat() {
     if (firstMsgWithId?.pubsubId !== undefined) {
       setOldestLoadedId(firstMsgWithId.pubsubId);
 
-      // Check if there are more messages on the server than we have loaded
-      // Compare totalCount to messages WITH pubsubIds (those from the DB), not all UI messages
-      const totalCount = client.totalMessageCount;
+      // Check if there are more chat messages on the server than we have loaded.
+      // Use chatMessageCount (type="message" only) instead of totalMessageCount
+      // to avoid false positives from protocol chatter (method-call, presence, etc.)
+      const serverChatCount = client.chatMessageCount;
       const dbMessageCount = messages.filter((m) => m.pubsubId !== undefined).length;
-      if (totalCount !== undefined && totalCount > dbMessageCount) {
+      if (serverChatCount !== undefined && serverChatCount > dbMessageCount) {
         setHasMoreHistory(true);
       }
     }

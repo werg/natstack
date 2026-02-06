@@ -937,6 +937,8 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   // === Pagination ===
   /** Total message count (from server ready message, for pagination) */
   readonly totalMessageCount: number | undefined;
+  /** Count of type="message" events only (excludes protocol chatter), for accurate chat pagination */
+  readonly chatMessageCount: number | undefined;
   /** Get older messages before a given ID (for pagination UI) */
   getMessagesBefore(beforeId: number, limit?: number): Promise<{
     messages: Array<{
