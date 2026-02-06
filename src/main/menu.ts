@@ -89,7 +89,9 @@ export function buildCommonMenuItems(
       label: "Refresh Panel Display",
       click: () => {
         if (isViewManagerInitialized()) {
-          getViewManager().refreshVisiblePanel();
+          const vm = getViewManager();
+          vm.refreshVisiblePanel();
+          vm.forceRepaintVisiblePanel();
         }
       },
     }
@@ -283,7 +285,9 @@ export function setupMenu(
           label: "Refresh Panel Display",
           click: () => {
             if (isViewManagerInitialized()) {
-              getViewManager().refreshVisiblePanel();
+              const vm = getViewManager();
+              vm.refreshVisiblePanel();
+              vm.forceRepaintVisiblePanel();
             }
           },
         },

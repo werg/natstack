@@ -7,7 +7,7 @@
  * Run with: npx vitest run src/main/viewManager.test.ts
  */
 
-import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 
 // Mock Electron modules before importing ViewManager
 vi.mock("electron", () => {
@@ -28,10 +28,14 @@ vi.mock("electron", () => {
     close: vi.fn(),
     send: vi.fn(),
     on: vi.fn(),
+    off: vi.fn(),
     once: vi.fn(),
     insertCSS: vi.fn().mockResolvedValue("css-key"),
     removeInsertedCSS: vi.fn().mockResolvedValue(undefined),
     capturePage: vi.fn().mockResolvedValue({ isEmpty: () => false }),
+    invalidate: vi.fn(),
+    executeJavaScript: vi.fn().mockResolvedValue(undefined),
+    setBackgroundThrottling: vi.fn(),
   });
 
   const createMockWebContentsView = () => ({
@@ -396,6 +400,212 @@ describe("ViewManager", () => {
 
       // Theme will be applied on dom-ready event
       expect(vm.hasView("test-view")).toBe(true);
+    });
+  });
+
+  describe("compositor visibility cycling", () => {
+    let vm: ViewManager;
+
+    beforeEach(() => {
+      vm = new ViewManager({
+        window: mockWindow,
+        shellPreload: "/path/to/preload.js",
+        safePreload: "/path/to/safePreload.js",
+        shellHtmlPath: "/path/to/index.html",
+      });
+    });
+
+    it("refreshVisiblePanel does NOT cycle visibility (only refreshes bounds and z-order)", () => {
+      const view = vm.createView({
+        id: "panel-1",
+        type: "panel",
+      });
+
+      // Make it the visible panel
+      vm.setViewVisible("panel-1", true);
+      (view.setVisible as Mock).mockClear();
+
+      vm.refreshVisiblePanel();
+
+      // setVisible should NOT have been called (no visibility cycling)
+      expect(view.setVisible).not.toHaveBeenCalled();
+      // But bounds should have been refreshed
+      expect(view.setBounds).toHaveBeenCalled();
+    });
+
+    it("forceRepaint cycles visibility for visible views", () => {
+      const view = vm.createView({
+        id: "panel-2",
+        type: "panel",
+      });
+
+      vm.setViewVisible("panel-2", true);
+      (view.setVisible as Mock).mockClear();
+      (view.setBounds as Mock).mockClear();
+
+      vm.forceRepaint("panel-2");
+
+      // Should cycle visibility (first call passes cooldown)
+      const visibleCalls = (view.setVisible as Mock).mock.calls;
+      const falseIdx = visibleCalls.findIndex((c: unknown[]) => c[0] === false);
+      const trueIdx = visibleCalls.findIndex((c: unknown[], i: number) => i > falseIdx && c[0] === true);
+      expect(falseIdx).toBeGreaterThanOrEqual(0);
+      expect(trueIdx).toBeGreaterThan(falseIdx);
+    });
+
+    it("visibility cycle does not change tracked isViewVisible() state", () => {
+      vm.createView({
+        id: "panel-3",
+        type: "panel",
+      });
+
+      vm.setViewVisible("panel-3", true);
+      expect(vm.isViewVisible("panel-3")).toBe(true);
+
+      vm.forceRepaint("panel-3");
+      expect(vm.isViewVisible("panel-3")).toBe(true);
+    });
+  });
+
+  describe("compositor health probe", () => {
+    let vm: ViewManager;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vm = new ViewManager({
+        window: mockWindow,
+        shellPreload: "/path/to/preload.js",
+        safePreload: "/path/to/safePreload.js",
+        shellHtmlPath: "/path/to/index.html",
+      });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("probeCompositorHealth returns true when rAF resolves", async () => {
+      const view = vm.createView({
+        id: "probe-panel",
+        type: "panel",
+      });
+
+      // executeJavaScript resolves immediately (rAF fires)
+      (view.webContents.executeJavaScript as Mock).mockResolvedValue(undefined);
+
+      vm.setViewVisible("probe-panel", true);
+      (view.setVisible as Mock).mockClear();
+
+      // Trigger the health check and let the probe resolve
+      await vi.advanceTimersByTimeAsync(10000);
+
+      // Should not have cycled visibility (panel is healthy)
+      const calls = (view.setVisible as Mock).mock.calls;
+      const falseIdx = calls.findIndex((c: unknown[]) => c[0] === false);
+      expect(falseIdx).toBe(-1);
+    });
+
+    it("checkCompositorHealth cycles visibility when probe times out", async () => {
+      const view = vm.createView({
+        id: "stall-panel",
+        type: "panel",
+      });
+
+      // executeJavaScript never resolves (compositor stalled)
+      (view.webContents.executeJavaScript as Mock).mockReturnValue(new Promise(() => {}));
+
+      vm.setViewVisible("stall-panel", true);
+      (view.setVisible as Mock).mockClear();
+
+      // Trigger the health check
+      vi.advanceTimersByTime(10000);
+
+      // Advance past the 3s probe timeout
+      await vi.advanceTimersByTimeAsync(3000);
+
+      // Should have cycled visibility (stall detected)
+      const calls = (view.setVisible as Mock).mock.calls;
+      const falseIdx = calls.findIndex((c: unknown[]) => c[0] === false);
+      const trueIdx = calls.findIndex((c: unknown[], i: number) => i > falseIdx && c[0] === true);
+      expect(falseIdx).toBeGreaterThanOrEqual(0);
+      expect(trueIdx).toBeGreaterThan(falseIdx);
+    });
+
+    it("probeCompositorHealth returns true (not stalled) when executeJavaScript rejects", async () => {
+      const view = vm.createView({
+        id: "loading-panel",
+        type: "panel",
+      });
+
+      // executeJavaScript rejects (page loading/navigating)
+      (view.webContents.executeJavaScript as Mock).mockRejectedValue(
+        new Error("Execution context was destroyed")
+      );
+
+      vm.setViewVisible("loading-panel", true);
+      (view.setVisible as Mock).mockClear();
+
+      // Trigger the health check and let the probe resolve
+      await vi.advanceTimersByTimeAsync(10000);
+
+      // Should NOT have cycled visibility (rejection = not a stall)
+      const calls = (view.setVisible as Mock).mock.calls;
+      const falseIdx = calls.findIndex((c: unknown[]) => c[0] === false);
+      expect(falseIdx).toBe(-1);
+    });
+
+    it("cooldown prevents rapid successive visibility cycles", () => {
+      const view = vm.createView({
+        id: "cooldown-panel",
+        type: "panel",
+      });
+
+      vm.setViewVisible("cooldown-panel", true);
+      (view.setVisible as Mock).mockClear();
+
+      // First forceRepaint should cycle
+      vm.forceRepaint("cooldown-panel");
+      expect(view.setVisible).toHaveBeenCalledTimes(2); // false + true
+
+      (view.setVisible as Mock).mockClear();
+
+      // Second call within 1s should be suppressed by cooldown
+      vm.forceRepaint("cooldown-panel");
+      const calls = (view.setVisible as Mock).mock.calls;
+      const falseIdx = calls.findIndex((c: unknown[]) => c[0] === false);
+      expect(falseIdx).toBe(-1); // no visibility cycle
+
+      // Advance past cooldown
+      vi.advanceTimersByTime(1000);
+      (view.setVisible as Mock).mockClear();
+
+      // Third call after cooldown should cycle again
+      vm.forceRepaint("cooldown-panel");
+      expect(view.setVisible).toHaveBeenCalledTimes(2); // false + true
+    });
+
+    it("forceRepaintVisiblePanel delegates to forceRepaint with visible panel ID", () => {
+      const view = vm.createView({
+        id: "visible-panel",
+        type: "panel",
+      });
+
+      vm.setViewVisible("visible-panel", true);
+      (view.setVisible as Mock).mockClear();
+
+      const result = vm.forceRepaintVisiblePanel();
+
+      expect(result).toBe(true);
+      // Should have cycled visibility via forceRepaint
+      const calls = (view.setVisible as Mock).mock.calls;
+      const falseIdx = calls.findIndex((c: unknown[]) => c[0] === false);
+      const trueIdx = calls.findIndex((c: unknown[], i: number) => i > falseIdx && c[0] === true);
+      expect(falseIdx).toBeGreaterThanOrEqual(0);
+      expect(trueIdx).toBeGreaterThan(falseIdx);
+    });
+
+    it("forceRepaintVisiblePanel returns false when no panel is visible", () => {
+      expect(vm.forceRepaintVisiblePanel()).toBe(false);
     });
   });
 

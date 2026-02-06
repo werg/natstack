@@ -119,6 +119,8 @@ export class ViewManager {
   private windowVisible = true;
   /** Timer for periodic compositor keepalive to prevent stalls */
   private compositorKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
+  /** Timestamp of last visibility cycle, for cooldown to prevent feedback loops */
+  private lastVisibilityCycleTime = 0;
 
   constructor(options: {
     window: BaseWindow;
@@ -277,8 +279,8 @@ export class ViewManager {
       session: ses,
       webviewTag: false,
       // Allow Chromium to throttle hidden views (saves CPU/battery).
-      // Compositor stalls on *visible* panels are handled by app-level command line
-      // flags and the keepalive timer, not this setting.
+      // Compositor stalls on *visible* panels are handled by the health probe
+      // and forceRepaint, not this setting.
       backgroundThrottling: true,
     };
 
@@ -546,6 +548,51 @@ export class ViewManager {
     managed.view.setBounds(bounds);
   }
 
+  private static readonly PROBE_TIMEOUT = Symbol("timeout");
+
+  /**
+   * Probe whether the compositor is alive by executing a requestAnimationFrame
+   * in the renderer and racing it against a 3s timeout.
+   * Returns true if healthy (rAF fired or executeJavaScript failed — not a stall).
+   * Returns false if the timeout wins (compositor is stalled).
+   */
+  private async probeCompositorHealth(managed: ManagedView): Promise<boolean> {
+    const contents = managed.view.webContents;
+    if (contents.isDestroyed()) return true;
+    try {
+      const result = await Promise.race([
+        contents
+          .executeJavaScript("new Promise(r => requestAnimationFrame(r))")
+          .then(() => true as const),
+        new Promise<typeof ViewManager.PROBE_TIMEOUT>((resolve) =>
+          setTimeout(() => resolve(ViewManager.PROBE_TIMEOUT), 3000)
+        ),
+      ]);
+      return result !== ViewManager.PROBE_TIMEOUT;
+    } catch {
+      // executeJavaScript failure (page loading, navigating, context destroyed)
+      // — not a compositor stall, skip recovery
+      return true;
+    }
+  }
+
+  /**
+   * Cycle a view's visibility off and on via Electron's raw API to wake a
+   * suspended compositor. Both calls happen synchronously in the same tick,
+   * so no frame renders between them (no visible flicker). We bypass the
+   * managed.visible state tracker intentionally — only the compositor cares.
+   */
+  private cycleCompositorVisibility(managed: ManagedView): void {
+    if (managed.view.webContents.isDestroyed()) return;
+    // Cooldown: skip if called within the last 1000ms.
+    // Breaks forceRepaint() → visibilitychange → forceRepaint() oscillation.
+    const now = Date.now();
+    if (now - this.lastVisibilityCycleTime < 1000) return;
+    this.lastVisibilityCycleTime = now;
+    managed.view.setVisible(false);
+    managed.view.setVisible(true);
+  }
+
   /**
    * Bring a view to the front (above other views but below shell).
    */
@@ -566,8 +613,8 @@ export class ViewManager {
 
   /**
    * Refresh the currently visible panel by re-establishing its z-order and bounds.
-   * This helps recover from compositor stalls where the view exists but isn't painting.
    * Called when a panel receives focus (even if it was already visible).
+   * For compositor recovery, use forceRepaint() or forceRepaintVisiblePanel().
    */
   refreshVisiblePanel(): void {
     if (!this.visiblePanelId) {
@@ -579,12 +626,21 @@ export class ViewManager {
       return;
     }
 
-    // Refresh bounds and z-order - the remove/add cycle can help recover
-    // from compositor stalls by forcing Chromium to re-establish the view
+    // Refresh bounds and z-order (compositor recovery handled by stall detector
+    // and forceRepaint — not here, to avoid operating on the wrong panel during switches)
     const bounds = this.calculatePanelBounds();
     managed.bounds = bounds;
     managed.view.setBounds(bounds);
     this.bringToFront(this.visiblePanelId);
+  }
+
+  /**
+   * Force a repaint of the currently visible panel.
+   * Convenience method for menu items that don't know the panel ID.
+   */
+  forceRepaintVisiblePanel(): boolean {
+    if (!this.visiblePanelId) return false;
+    return this.forceRepaint(this.visiblePanelId);
   }
 
   /**
@@ -931,21 +987,35 @@ export class ViewManager {
   // =========================================================================
 
   /**
-   * Start periodic compositor keepalive to prevent layer painting stalls.
-   * Calls invalidate() on the visible panel every few seconds to ensure
-   * the compositor doesn't go idle and stop painting the layer.
+   * Start periodic compositor health probe.
+   * Every intervalMs, runs a requestAnimationFrame probe on the visible panel.
+   * If the compositor is stalled (rAF doesn't fire within 3s), cycles visibility
+   * to wake it up.
    */
-  private startCompositorKeepalive(intervalMs = 3000): void {
+  private startCompositorKeepalive(intervalMs = 10000): void {
     this.stopCompositorKeepalive();
     this.compositorKeepaliveTimer = setInterval(() => {
-      if (!this.visiblePanelId || !this.windowVisible) {
-        return;
-      }
-      const managed = this.views.get(this.visiblePanelId);
-      if (managed && !managed.view.webContents.isDestroyed()) {
-        managed.view.webContents.invalidate();
-      }
+      void this.checkCompositorHealth();
     }, intervalMs);
+  }
+
+  /**
+   * Check whether the visible panel's compositor is healthy.
+   * If the rAF probe times out, cycle visibility to recover.
+   */
+  private async checkCompositorHealth(): Promise<void> {
+    const panelId = this.visiblePanelId;
+    if (!panelId || !this.windowVisible) return;
+    const managed = this.views.get(panelId);
+    if (!managed || !managed.visible || managed.view.webContents.isDestroyed())
+      return;
+
+    const healthy = await this.probeCompositorHealth(managed);
+
+    // Re-check panel is still visible after async probe
+    if (!healthy && this.visiblePanelId === panelId && managed.visible) {
+      this.cycleCompositorVisibility(managed);
+    }
   }
 
   /**
@@ -1053,24 +1123,12 @@ export class ViewManager {
     log.verbose(` Forcing repaint for view: ${viewId}`);
 
     try {
-      // Method 1: Invalidate the frame to trigger a repaint
+      // Invalidate the frame to trigger a repaint (belt-and-suspenders for non-stalled cases)
       contents.invalidate();
 
-      // Method 2: Toggle visibility to force compositor refresh
-      // Only do this for visible views to avoid flicker
+      // Cycle visibility to wake a suspended compositor
       if (managed.visible) {
-        const currentBounds = { ...managed.bounds };
-        // Nudge the bounds slightly then restore
-        managed.view.setBounds({
-          ...currentBounds,
-          width: currentBounds.width - 1,
-        });
-        // Restore on next frame
-        setImmediate(() => {
-          if (!contents.isDestroyed()) {
-            managed.view.setBounds(currentBounds);
-          }
-        });
+        this.cycleCompositorVisibility(managed);
       }
 
       return true;
