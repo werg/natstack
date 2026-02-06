@@ -279,8 +279,8 @@ export class ViewManager {
       session: ses,
       webviewTag: false,
       // Allow Chromium to throttle hidden views (saves CPU/battery).
-      // Compositor stalls on *visible* panels are handled by the health probe
-      // and forceRepaint, not this setting.
+      // Compositor stalls on *visible* panels are handled by the periodic
+      // keepalive and forceRepaint, not this setting.
       backgroundThrottling: true,
     };
 
@@ -546,34 +546,6 @@ export class ViewManager {
     const bounds = this.calculatePanelBounds();
     managed.bounds = bounds;
     managed.view.setBounds(bounds);
-  }
-
-  private static readonly PROBE_TIMEOUT = Symbol("timeout");
-
-  /**
-   * Probe whether the compositor is alive by executing a requestAnimationFrame
-   * in the renderer and racing it against a 3s timeout.
-   * Returns true if healthy (rAF fired or executeJavaScript failed — not a stall).
-   * Returns false if the timeout wins (compositor is stalled).
-   */
-  private async probeCompositorHealth(managed: ManagedView): Promise<boolean> {
-    const contents = managed.view.webContents;
-    if (contents.isDestroyed()) return true;
-    try {
-      const result = await Promise.race([
-        contents
-          .executeJavaScript("new Promise(r => requestAnimationFrame(r))")
-          .then(() => true as const),
-        new Promise<typeof ViewManager.PROBE_TIMEOUT>((resolve) =>
-          setTimeout(() => resolve(ViewManager.PROBE_TIMEOUT), 3000)
-        ),
-      ]);
-      return result !== ViewManager.PROBE_TIMEOUT;
-    } catch {
-      // executeJavaScript failure (page loading, navigating, context destroyed)
-      // — not a compositor stall, skip recovery
-      return true;
-    }
   }
 
   /**
@@ -987,35 +959,41 @@ export class ViewManager {
   // =========================================================================
 
   /**
-   * Start periodic compositor health probe.
-   * Every intervalMs, runs a requestAnimationFrame probe on the visible panel.
-   * If the compositor is stalled (rAF doesn't fire within 3s), cycles visibility
-   * to wake it up.
+   * Start periodic compositor keepalive.
+   * Unconditionally re-establishes the visible panel's compositor layer to
+   * prevent and recover from Chromium painting stalls. rAF-based detection
+   * proved unreliable (rAF fires even when the compositor thread isn't
+   * painting), so we just run the recovery periodically — the operations
+   * (removeChildView/addChildView + invalidate + visibility cycle) are cheap.
    */
-  private startCompositorKeepalive(intervalMs = 10000): void {
+  private startCompositorKeepalive(intervalMs = 5000): void {
     this.stopCompositorKeepalive();
     this.compositorKeepaliveTimer = setInterval(() => {
-      void this.checkCompositorHealth();
+      this.keepCompositorAlive();
     }, intervalMs);
   }
 
   /**
-   * Check whether the visible panel's compositor is healthy.
-   * If the rAF probe times out, cycle visibility to recover.
+   * Unconditional compositor keepalive. Mirrors what the "Refresh Panel
+   * Display" menu item does: re-attach the view (forces Chromium to rebuild
+   * the compositor layer), refresh bounds, invalidate, and cycle visibility.
    */
-  private async checkCompositorHealth(): Promise<void> {
+  private keepCompositorAlive(): void {
     const panelId = this.visiblePanelId;
     if (!panelId || !this.windowVisible) return;
     const managed = this.views.get(panelId);
     if (!managed || !managed.visible || managed.view.webContents.isDestroyed())
       return;
 
-    const healthy = await this.probeCompositorHealth(managed);
+    // Re-attach view to force compositor layer rebuild
+    this.bringToFront(panelId);
+    const bounds = this.calculatePanelBounds();
+    managed.bounds = bounds;
+    managed.view.setBounds(bounds);
 
-    // Re-check panel is still visible after async probe
-    if (!healthy && this.visiblePanelId === panelId && managed.visible) {
-      this.cycleCompositorVisibility(managed);
-    }
+    // Invalidate + visibility cycle for belt-and-suspenders
+    managed.view.webContents.invalidate();
+    this.cycleCompositorVisibility(managed);
   }
 
   /**

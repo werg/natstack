@@ -467,7 +467,7 @@ describe("ViewManager", () => {
     });
   });
 
-  describe("compositor health probe", () => {
+  describe("compositor keepalive", () => {
     let vm: ViewManager;
 
     beforeEach(() => {
@@ -484,46 +484,25 @@ describe("ViewManager", () => {
       vi.useRealTimers();
     });
 
-    it("probeCompositorHealth returns true when rAF resolves", async () => {
+    it("keepalive re-attaches view and cycles visibility periodically", () => {
       const view = vm.createView({
-        id: "probe-panel",
+        id: "keepalive-panel",
         type: "panel",
       });
 
-      // executeJavaScript resolves immediately (rAF fires)
-      (view.webContents.executeJavaScript as Mock).mockResolvedValue(undefined);
-
-      vm.setViewVisible("probe-panel", true);
+      vm.setViewVisible("keepalive-panel", true);
       (view.setVisible as Mock).mockClear();
+      (view.setBounds as Mock).mockClear();
+      (view.webContents.invalidate as Mock).mockClear();
 
-      // Trigger the health check and let the probe resolve
-      await vi.advanceTimersByTimeAsync(10000);
+      // Advance past the keepalive interval (5s)
+      vi.advanceTimersByTime(5000);
 
-      // Should not have cycled visibility (panel is healthy)
-      const calls = (view.setVisible as Mock).mock.calls;
-      const falseIdx = calls.findIndex((c: unknown[]) => c[0] === false);
-      expect(falseIdx).toBe(-1);
-    });
-
-    it("checkCompositorHealth cycles visibility when probe times out", async () => {
-      const view = vm.createView({
-        id: "stall-panel",
-        type: "panel",
-      });
-
-      // executeJavaScript never resolves (compositor stalled)
-      (view.webContents.executeJavaScript as Mock).mockReturnValue(new Promise(() => {}));
-
-      vm.setViewVisible("stall-panel", true);
-      (view.setVisible as Mock).mockClear();
-
-      // Trigger the health check
-      vi.advanceTimersByTime(10000);
-
-      // Advance past the 3s probe timeout
-      await vi.advanceTimersByTimeAsync(3000);
-
-      // Should have cycled visibility (stall detected)
+      // Should have refreshed bounds
+      expect(view.setBounds).toHaveBeenCalled();
+      // Should have invalidated
+      expect(view.webContents.invalidate).toHaveBeenCalled();
+      // Should have cycled visibility (first call passes cooldown)
       const calls = (view.setVisible as Mock).mock.calls;
       const falseIdx = calls.findIndex((c: unknown[]) => c[0] === false);
       const trueIdx = calls.findIndex((c: unknown[], i: number) => i > falseIdx && c[0] === true);
@@ -531,27 +510,33 @@ describe("ViewManager", () => {
       expect(trueIdx).toBeGreaterThan(falseIdx);
     });
 
-    it("probeCompositorHealth returns true (not stalled) when executeJavaScript rejects", async () => {
+    it("keepalive skips when no panel is visible", () => {
+      // No panel made visible — keepalive should be a no-op
+      vi.advanceTimersByTime(5000);
+      // No errors thrown = pass
+    });
+
+    it("keepalive skips when window is hidden", () => {
       const view = vm.createView({
-        id: "loading-panel",
+        id: "hidden-window-panel",
         type: "panel",
       });
 
-      // executeJavaScript rejects (page loading/navigating)
-      (view.webContents.executeJavaScript as Mock).mockRejectedValue(
-        new Error("Execution context was destroyed")
-      );
+      vm.setViewVisible("hidden-window-panel", true);
 
-      vm.setViewVisible("loading-panel", true);
+      // Simulate window hide via the event handler
+      const hideHandler = (mockWindow.on as Mock).mock.calls.find(
+        (c: unknown[]) => c[0] === "hide"
+      )?.[1] as (() => void) | undefined;
+      hideHandler?.();
+
       (view.setVisible as Mock).mockClear();
+      (view.webContents.invalidate as Mock).mockClear();
 
-      // Trigger the health check and let the probe resolve
-      await vi.advanceTimersByTimeAsync(10000);
+      vi.advanceTimersByTime(5000);
 
-      // Should NOT have cycled visibility (rejection = not a stall)
-      const calls = (view.setVisible as Mock).mock.calls;
-      const falseIdx = calls.findIndex((c: unknown[]) => c[0] === false);
-      expect(falseIdx).toBe(-1);
+      // Should not have done anything (window hidden)
+      expect(view.webContents.invalidate).not.toHaveBeenCalled();
     });
 
     it("cooldown prevents rapid successive visibility cycles", () => {
