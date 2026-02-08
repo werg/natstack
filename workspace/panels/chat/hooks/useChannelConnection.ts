@@ -27,6 +27,8 @@ export interface UseChannelConnectionOptions {
   onRoster?: (roster: RosterUpdate<ChatParticipantMetadata>) => void;
   /** Called on connection errors */
   onError?: (error: Error) => void;
+  /** Called when the client reconnects after a disconnect */
+  onReconnect?: () => void;
 }
 
 export interface ConnectOptions {
@@ -57,6 +59,7 @@ export function useChannelConnection({
   onEvent,
   onRoster,
   onError,
+  onReconnect,
 }: UseChannelConnectionOptions): UseChannelConnectionResult {
   const [client, setClient] = useState<AgenticClient<ChatParticipantMetadata> | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");
@@ -64,10 +67,10 @@ export function useChannelConnection({
   const unsubscribersRef = useRef<Array<() => void>>([]);
 
   // Keep callbacks in refs to avoid dependency issues
-  const callbacksRef = useRef({ onEvent, onRoster, onError });
+  const callbacksRef = useRef({ onEvent, onRoster, onError, onReconnect });
   useEffect(() => {
-    callbacksRef.current = { onEvent, onRoster, onError };
-  }, [onEvent, onRoster, onError]);
+    callbacksRef.current = { onEvent, onRoster, onError, onReconnect };
+  }, [onEvent, onRoster, onError, onReconnect]);
 
   const disconnect = useCallback(() => {
     // Clean up all subscriptions
@@ -164,6 +167,17 @@ export function useChannelConnection({
               callbacksRef.current.onRoster?.(roster);
             } catch (rosterError) {
               console.error("[useChannelConnection] Roster callback error:", rosterError);
+            }
+          })
+        );
+
+        // Set up reconnect handler
+        unsubs.push(
+          newClient.onReconnect(() => {
+            try {
+              callbacksRef.current.onReconnect?.();
+            } catch (reconnectError) {
+              console.error("[useChannelConnection] Reconnect callback error:", reconnectError);
             }
           })
         );

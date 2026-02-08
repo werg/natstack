@@ -41,7 +41,10 @@ interface ChatPhaseProps {
   status: string;
   messages: ChatMessage[];
   input: string;
+  /** Currently connected participants — used for the roster bar */
   participants: Record<string, Participant<ChatParticipantMetadata>>;
+  /** All participants ever seen (current + historical) — used for message sender lookups */
+  allParticipants?: Record<string, Participant<ChatParticipantMetadata>>;
   activeFeedbacks: Map<string, ActiveFeedback>;
   theme: "light" | "dark";
   /** Whether session persistence is enabled (true = restricted/persistent session) */
@@ -100,6 +103,7 @@ export function ChatPhase({
   messages,
   input,
   participants,
+  allParticipants: allParticipantsProp,
   activeFeedbacks,
   theme,
   sessionEnabled,
@@ -128,6 +132,9 @@ export function ChatPhase({
   onDismissDirtyWarning,
   toolApproval,
 }: ChatPhaseProps) {
+  // Fall back to current participants for sender lookups if allParticipants not provided
+  const allParticipants = allParticipantsProp ?? participants;
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
@@ -338,11 +345,11 @@ export function ChatPhase({
 
   const handleInterruptMessage = useCallback(
     (msgId: string, senderId: string) => {
-      // Pass handle from participants roster for fallback lookup if agentId is stale
-      const handle = participants[senderId]?.metadata?.handle;
+      // Pass handle from allParticipants for fallback lookup if agentId is stale
+      const handle = allParticipants[senderId]?.metadata?.handle;
       onInterrupt?.(senderId, msgId, handle);
     },
-    [onInterrupt, participants]
+    [onInterrupt, allParticipants]
   );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -353,9 +360,9 @@ export function ChatPhase({
   };
 
   const getSenderInfo = useCallback((senderId: string) => {
-    const participant = participants[senderId];
+    const participant = allParticipants[senderId];
     return participant?.metadata ?? { name: "Unknown", type: "panel" as const, handle: "unknown" };
-  }, [participants]);
+  }, [allParticipants]);
 
   // Memoize message grouping AND inline item transformation to prevent expensive recalculation on every render
   const groupedItems = useMemo(() => {
@@ -420,6 +427,7 @@ export function ChatPhase({
           actionToolNames.add(prettifyToolName(item.data.type));
         }
       }
+
       return inlineItems.filter((item) => {
         if (item.type === "method") {
           const methodToolName = prettifyToolName(item.entry.methodName);
@@ -473,9 +481,9 @@ export function ChatPhase({
 
   // Stable callback for interrupting typing indicators (avoids new closure per render)
   const handleTypingInterrupt = useCallback((senderId: string) => {
-    const handle = participants[senderId]?.metadata?.handle;
+    const handle = allParticipants[senderId]?.metadata?.handle;
     onInterrupt?.(senderId, undefined, handle);
-  }, [participants, onInterrupt]);
+  }, [allParticipants, onInterrupt]);
 
   // pendingAgents is now passed as a prop (managed by parent component)
   // This is cleaner than computing from ephemeral debug events

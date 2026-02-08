@@ -102,6 +102,9 @@ export default function AgenticChat() {
   const participantsRef = useRef<Record<string, Participant<ChatParticipantMetadata>>>({});
   // Ref to track previous participants for detecting disconnections
   const prevParticipantsRef = useRef<Record<string, Participant<ChatParticipantMetadata>>>({});
+  // Suppress disconnect detection during replay (initial connect + reconnects).
+  // Cleared when we see our own panelClientId in the roster (replay is complete).
+  const suppressDisconnectRef = useRef(true);
   // Refs for tool role handlers - set after toolRole hook is created
   const toolRoleHandlerRef = useRef<((event: IncomingToolRoleRequestEvent) => void) | null>(null);
   const toolRoleResponseHandlerRef = useRef<((event: IncomingToolRoleResponseEvent) => void) | null>(null);
@@ -464,6 +467,12 @@ export default function AgenticChat() {
       const newParticipants = roster.participants;
       const prevParticipants = prevParticipantsRef.current;
 
+      // Once we see our own panelClientId in the roster, replay is complete.
+      // Re-enable disconnect detection for live events.
+      if (suppressDisconnectRef.current && panelClientId in newParticipants) {
+        suppressDisconnectRef.current = false;
+      }
+
       // Accumulate all participants ever seen into historicalParticipants.
       // This covers replay (presence events no longer flow through the event stream).
       setHistoricalParticipants((prev) => {
@@ -478,38 +487,42 @@ export default function AgenticChat() {
         return changed ? next : prev;
       });
 
-      // Detect disconnected participants (were in prev roster but not in new)
-      const prevIds = new Set(Object.keys(prevParticipants));
-      const newIds = new Set(Object.keys(newParticipants));
+      // Detect disconnected participants (were in prev roster but not in new).
+      // Skip during replay to avoid false "disconnected unexpectedly" warnings
+      // for historical leave events (e.g., subagents from previous sessions).
+      if (!suppressDisconnectRef.current) {
+        const prevIds = new Set(Object.keys(prevParticipants));
+        const newIds = new Set(Object.keys(newParticipants));
 
-      for (const prevId of prevIds) {
-        if (!newIds.has(prevId)) {
-          // This participant disconnected
-          const disconnected = prevParticipants[prevId];
-          const metadata = disconnected?.metadata;
+        for (const prevId of prevIds) {
+          if (!newIds.has(prevId)) {
+            // This participant disconnected
+            const disconnected = prevParticipants[prevId];
+            const metadata = disconnected?.metadata;
 
-          // Only create notification for non-panel participants (agents/workers)
-          if (metadata && metadata.type !== "panel") {
-            const agentInfo: DisconnectedAgentInfo = {
-              name: metadata.name,
-              handle: metadata.handle,
-              panelId: metadata.panelId,
-              agentTypeId: metadata.agentTypeId,
-              type: metadata.type,
-            };
+            // Only create notification for non-panel participants (agents/workers)
+            if (metadata && metadata.type !== "panel") {
+              const agentInfo: DisconnectedAgentInfo = {
+                name: metadata.name,
+                handle: metadata.handle,
+                panelId: metadata.panelId,
+                agentTypeId: metadata.agentTypeId,
+                type: metadata.type,
+              };
 
-            // Add system message for the disconnection
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: `system-disconnect-${prevId}-${Date.now()}`,
-                senderId: "system",
-                content: "",
-                kind: "system",
-                complete: true,
-                disconnectedAgent: agentInfo,
-              },
-            ]);
+              // Add system message for the disconnection
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: `system-disconnect-${prevId}-${Date.now()}`,
+                  senderId: "system",
+                  content: "",
+                  kind: "system",
+                  complete: true,
+                  disconnectedAgent: agentInfo,
+                },
+              ]);
+            }
           }
         }
       }
@@ -548,6 +561,18 @@ export default function AgenticChat() {
       // Update refs and state
       prevParticipantsRef.current = newParticipants;
       setParticipants(newParticipants);
+    }, []),
+    onReconnect: useCallback(() => {
+      // During reconnect, the pubsub layer replays all presence events from scratch.
+      // Suppress disconnect detection until replay is complete to avoid false
+      // "disconnected unexpectedly" warnings for historical leave events.
+      suppressDisconnectRef.current = true;
+      prevParticipantsRef.current = {};
+      // Clear any existing disconnect messages — they'll be stale after reconnect
+      setMessages((prev) => {
+        const filtered = prev.filter(msg => msg.kind !== "system" || !msg.disconnectedAgent);
+        return filtered.length === prev.length ? prev : filtered;
+      });
     }, []),
     onError: useCallback((error: Error) => {
       console.error("[Chat Panel] Connection error:", error);
@@ -1314,7 +1339,8 @@ Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
         messages={messages}
         input={input}
         pendingImages={pendingImages}
-        participants={allParticipants}
+        participants={participants}
+        allParticipants={allParticipants}
         activeFeedbacks={activeFeedbacks}
         theme={theme}
         sessionEnabled={clientRef.current?.sessionEnabled}
