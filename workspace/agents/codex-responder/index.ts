@@ -30,13 +30,14 @@ import {
   createCanUseToolGate,
 } from "@natstack/agent-patterns";
 import {
+  createRichTextChatSystemPrompt,
+  createRestrictedModeSystemPrompt,
+} from "@natstack/agent-patterns/prompts";
+import {
   jsonSchemaToZodRawShape,
   formatArgsForLog,
   createPauseMethodDefinition,
-  createRichTextChatSystemPrompt,
-  createRestrictedModeSystemPrompt,
   validateRestrictedMode,
-  prettifyToolName,
   getDetailedActionDescription,
   CONTENT_TYPE_TYPING,
   CONTENT_TYPE_INLINE_UI,
@@ -49,6 +50,7 @@ import {
   getCachedTodoListCode,
   // Queue position utilities
   createQueuePositionText,
+  cleanupQueuedTypingTrackers,
   createTypingTracker,
   // Interrupt handler for per-message pause events
   createInterruptHandler,
@@ -59,6 +61,7 @@ import {
   type ChatParticipantMetadata,
   type IncomingNewMessage,
 } from "@natstack/agentic-messaging";
+import { prettifyToolName } from "@natstack/agentic-messaging/utils";
 import type { Attachment } from "@natstack/pubsub";
 import { CODEX_PARAMETERS, findNewestInFamily, getRecommendedDefault } from "@natstack/agentic-messaging/config";
 import { z } from "zod";
@@ -696,6 +699,8 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     await this.queue.drain();
     this.interrupt.cleanup();
 
+    await cleanupQueuedTypingTrackers(this.queuedMessages, (msg) => this.log.warn(msg));
+
     // NOTE: Settings are persisted by SettingsManager via pubsub session storage.
     // We don't need to store them in agent state.
 
@@ -1099,11 +1104,9 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
               if (this.trackers.typing.isTyping()) {
                 await this.trackers.typing.stopTyping();
               }
-              // Format command nicely - truncate long commands
-              const shortCmd = item.command.length > 60 ? item.command.slice(0, 60) + "..." : item.command;
               await this.trackers.action.startAction({
-                type: "command",
-                description: `Running: ${shortCmd}`,
+                type: "Bash",
+                description: getDetailedActionDescription("Bash", { command: item.command }),
                 toolUseId: item.id,
               });
             }
@@ -1113,14 +1116,14 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
               if (this.trackers.typing.isTyping()) {
                 await this.trackers.typing.stopTyping();
               }
-              // Format file changes nicely - show first file or count
+              // file_change has a changes array — build a contextual description
               const changes = item.changes;
               const description =
                 changes.length === 1
-                  ? `Editing: ${changes[0]?.path ?? "file"}`
+                  ? getDetailedActionDescription("Edit", { file_path: changes[0]?.path })
                   : `Editing ${changes.length} files`;
               await this.trackers.action.startAction({
-                type: "file_edit",
+                type: "Edit",
                 description,
                 toolUseId: item.id,
               });
@@ -1131,13 +1134,11 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
               if (this.trackers.typing.isTyping()) {
                 await this.trackers.typing.stopTyping();
               }
-              // Prettify the tool name and get a detailed description
               const prettyName = prettifyToolName(item.tool);
               const args = item.arguments && typeof item.arguments === "object" ? item.arguments as Record<string, unknown> : {};
-              const description = getDetailedActionDescription(prettyName, args);
               await this.trackers.action.startAction({
                 type: prettyName,
-                description,
+                description: getDetailedActionDescription(prettyName, args),
                 toolUseId: item.id,
               });
             }
@@ -1147,11 +1148,9 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
               if (this.trackers.typing.isTyping()) {
                 await this.trackers.typing.stopTyping();
               }
-              const query = item.query ?? "searching...";
-              const shortQuery = query.length > 50 ? query.slice(0, 50) + "..." : query;
               await this.trackers.action.startAction({
-                type: "web_search",
-                description: `Searching: ${shortQuery}`,
+                type: "WebSearch",
+                description: getDetailedActionDescription("WebSearch", { query: item.query }),
                 toolUseId: item.id,
               });
             }

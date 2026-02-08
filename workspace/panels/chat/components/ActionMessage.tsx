@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Code, Flex, Spinner, Text } from "@radix-ui/themes";
 import type { ActionData } from "@natstack/agentic-messaging";
-import { prettifyToolName } from "@natstack/agentic-messaging";
+import { prettifyToolName } from "@natstack/agentic-messaging/utils";
 import { ExpandableChevron } from "./shared/Chevron";
 
 // Collapsed state - compact pill (blue background to distinguish from thinking)

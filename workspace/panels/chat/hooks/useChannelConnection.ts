@@ -1,14 +1,14 @@
 import { useState, useRef, useCallback, useEffect, type RefObject } from "react";
 import { pubsubConfig, id as panelClientId } from "@natstack/runtime";
-import {
-  connect,
-  type AgenticClient,
-  type RosterUpdate,
-  type IncomingEvent,
-  type MethodDefinition,
-  type ToolGroup,
-  type ToolRoleDeclaration,
-  type ChannelConfig,
+import { connect } from "@natstack/agentic-messaging/client";
+import type {
+  AgenticClient,
+  RosterUpdate,
+  IncomingEvent,
+  MethodDefinition,
+  ToolGroup,
+  ToolRoleDeclaration,
+  ChannelConfig,
 } from "@natstack/agentic-messaging";
 import type { ChatParticipantMetadata } from "../types";
 

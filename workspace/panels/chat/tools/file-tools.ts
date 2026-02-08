@@ -18,7 +18,7 @@ import {
   type FileWriteArgs,
   type FileEditArgs,
   type RmArgs,
-} from "@natstack/agentic-messaging";
+} from "@natstack/agentic-messaging/tool-schemas";
 
 const MAX_LINE_LENGTH = 2000;
 const DEFAULT_LIMIT = 2000;

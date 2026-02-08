@@ -20,7 +20,7 @@ import {
   GitAddArgsSchema,
   GitCommitArgsSchema,
   GitCheckoutArgsSchema,
-} from "@natstack/agentic-messaging";
+} from "@natstack/agentic-messaging/tool-schemas";
 
 
 /**

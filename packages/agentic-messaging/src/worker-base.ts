@@ -11,10 +11,9 @@ import {
   validateRequiredMethods,
   RESTRICTED_MODE_REQUIRED_METHODS,
   CANONICAL_PUBSUB_TOOL_NAMES,
-  normalizeToolName,
-  getCanonicalToolName,
   hasRichPreview,
 } from "./tool-schemas.js";
+import { normalizeToolName, getCanonicalToolName } from "./tool-name-utils.js";
 import type { FieldDefinition } from "@natstack/core";
 
 // ============================================================================

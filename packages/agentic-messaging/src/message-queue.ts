@@ -7,6 +7,7 @@
  */
 
 import { AsyncQueue } from "./async-queue.js";
+import type { TypingTracker } from "./responder-utils.js";
 
 /**
  * Base interface for queued messages.
@@ -159,4 +160,36 @@ export function createQueuePositionText(options: QueuePositionTextOptions): stri
 
   // Position is queue length + 1 (accounting for the currently processing message)
   return `queued (position ${queueLength + 1})`;
+}
+
+/**
+ * Clean up typing indicators for all queued messages that were never processed.
+ *
+ * Call this in `onSleep()` to ensure no orphaned typing indicators remain
+ * when the agent shuts down with messages still in the queue.
+ *
+ * @param queuedMessages - Map of message ID → entry with a `typingTracker` field
+ * @param log - Optional warning logger for cleanup failures
+ *
+ * @example
+ * ```typescript
+ * async onSleep() {
+ *   this.queue.stop();
+ *   await this.queue.drain();
+ *   await cleanupQueuedTypingTrackers(this.queuedMessages, (msg) => this.log.warn(msg));
+ * }
+ * ```
+ */
+export async function cleanupQueuedTypingTrackers(
+  queuedMessages: Map<string, { typingTracker: TypingTracker }>,
+  log?: (message: string) => void,
+): Promise<void> {
+  for (const [msgId, entry] of queuedMessages) {
+    try {
+      await entry.typingTracker.cleanup();
+    } catch (err) {
+      log?.(`Failed to cleanup typing tracker for queued message ${msgId}: ${err}`);
+    }
+  }
+  queuedMessages.clear();
 }

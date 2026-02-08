@@ -9,7 +9,7 @@ import {
   MAX_TOTAL_BYTES,
   isImageMimeType,
   formatBytes,
-} from "@natstack/agentic-messaging";
+} from "@natstack/agentic-messaging/image-utils";
 
 // Re-export constants and utilities from agentic-messaging
 export { SUPPORTED_IMAGE_TYPES, MAX_IMAGE_BYTES, MAX_TOTAL_BYTES, isImageMimeType, formatBytes };

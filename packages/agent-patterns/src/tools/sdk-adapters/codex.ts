@@ -6,7 +6,7 @@
  */
 
 import type { AgenticClient } from "@natstack/agentic-messaging";
-import { getCanonicalToolName } from "@natstack/agentic-messaging";
+import { getCanonicalToolName } from "@natstack/agentic-messaging/utils";
 import type { PubsubToolRegistry } from "../pubsub-tool-registry.js";
 import { createToolExecutor } from "../pubsub-tool-registry.js";
 

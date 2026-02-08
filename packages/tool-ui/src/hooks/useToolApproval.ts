@@ -13,10 +13,10 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import {
   needsApprovalForTool,
-  extractMethodName,
   createApprovalSchema,
   type AgenticClient,
 } from "@natstack/agentic-messaging";
+import { extractMethodName } from "@natstack/agentic-messaging/utils";
 import type { FieldValue } from "@natstack/core";
 import type {
   ApprovalLevel,
