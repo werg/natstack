@@ -118,12 +118,6 @@ export interface SubagentConnection {
   reportAction(toolName: string, args: unknown): Promise<void>;
 
   /**
-   * Update action arguments (for streaming tool input).
-   * @param partialJson - Partial JSON string being accumulated
-   */
-  updateActionArgs(partialJson: string): Promise<void>;
-
-  /**
    * Complete the current content block.
    */
   completeCurrentBlock(): Promise<void>;
@@ -196,7 +190,6 @@ export async function createSubagentConnection(
   let currentBlockType: "thinking" | "text" | "action" | null = null;
   let textBuffer = "";
   let currentToolName: string | null = null;
-  let currentToolArgs: string[] = [];
 
   // Tracker client adapter (uses the subagent's client)
   const trackerClient: TrackerClient = {
@@ -310,7 +303,6 @@ export async function createSubagentConnection(
 
       currentBlockType = "action";
       currentToolName = toolName;
-      currentToolArgs = [];
 
       // Generate initial description (may be updated as args stream in)
       const description = getDetailedActionDescription(
@@ -322,25 +314,6 @@ export async function createSubagentConnection(
         type: toolName,
         description,
       });
-    },
-
-    async updateActionArgs(partialJson: string): Promise<void> {
-      if (currentBlockType === "action" && partialJson) {
-        currentToolArgs.push(partialJson);
-
-        // Try to parse accumulated JSON and update description
-        try {
-          const fullJson = currentToolArgs.join("");
-          const args = JSON.parse(fullJson);
-          const description = getDetailedActionDescription(
-            currentToolName ?? "Unknown",
-            args as Record<string, unknown>
-          );
-          await actionTracker.updateAction(description);
-        } catch {
-          // JSON not complete yet, ignore
-        }
-      }
     },
 
     async completeCurrentBlock(): Promise<void> {
@@ -356,7 +329,6 @@ export async function createSubagentConnection(
       }
       currentBlockType = null;
       currentToolName = null;
-      currentToolArgs = [];
     },
 
     async complete(): Promise<void> {
@@ -429,8 +401,6 @@ export async function forwardStreamEventToSubagent(
       await subagent.updateText(streamEvent.delta.text);
     } else if (streamEvent.delta.type === "thinking_delta" && streamEvent.delta.thinking) {
       await subagent.updateThinking(streamEvent.delta.thinking);
-    } else if (streamEvent.delta.type === "input_json_delta") {
-      await subagent.updateActionArgs(streamEvent.delta.partial_json ?? "");
     }
     return;
   }

@@ -260,27 +260,6 @@ async function findMostRecentPlanFile(): Promise<string | null> {
   }
 }
 
-function getActionDescription(toolName: string): string {
-  const descriptions: Record<string, string> = {
-    Read: "Reading file",
-    Write: "Writing file",
-    Edit: "Editing file",
-    Bash: "Running command",
-    Glob: "Searching for files",
-    Grep: "Searching file contents",
-    WebSearch: "Searching the web",
-    WebFetch: "Fetching web content",
-    Task: "Delegating to subagent",
-    TodoWrite: "Updating task list",
-    AskUserQuestion: "Asking user",
-    SetTitle: "Setting conversation title",
-    ListImages: "Listing available images",
-    GetImage: "Viewing image",
-    GetCurrentImages: "Getting current images",
-  };
-  return descriptions[toolName] ?? `Using ${toolName}`;
-}
-
 function extractToolResultIds(message: unknown): string[] {
   const ids: string[] = [];
   if (!message || typeof message !== "object") return ids;
@@ -1107,6 +1086,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
       let currentSdkMessageUuid: string | undefined;
       let currentSdkSessionId: string | undefined;
       let sawStreamedText = false;
+      let currentStreamingToolId: string | null = null;
 
       const toolInputAccumulators = new Map<string, {
         toolName: string;
@@ -1169,13 +1149,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
 
               const toolBlock = streamEvent.content_block as { type: "tool_use"; id: string; name: string };
               toolInputAccumulators.set(toolBlock.id, { toolName: toolBlock.name, inputChunks: [] });
-
-              const prettifiedToolName = prettifyToolName(toolBlock.name);
-              await action.startAction({
-                type: prettifiedToolName,
-                description: getActionDescription(prettifiedToolName),
-                toolUseId: toolBlock.id,
-              });
+              currentStreamingToolId = toolBlock.id;
             } else if (blockType === "text") {
               await stopTypingIfNeeded();
               if (thinking.isThinking()) await thinking.endThinking();
@@ -1199,28 +1173,29 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
           }
 
           if (streamEvent.type === "content_block_delta" && streamEvent.delta?.type === "input_json_delta") {
-            if (streamEvent.delta.partial_json && action.isActive()) {
-              const currentAction = action.state.currentAction;
-              if (currentAction?.toolUseId) {
-                const acc = toolInputAccumulators.get(currentAction.toolUseId);
-                if (acc) acc.inputChunks.push(streamEvent.delta.partial_json);
-              }
+            if (streamEvent.delta.partial_json && currentStreamingToolId) {
+              const acc = toolInputAccumulators.get(currentStreamingToolId);
+              if (acc) acc.inputChunks.push(streamEvent.delta.partial_json);
             }
           }
 
           if (streamEvent.type === "content_block_stop") {
             if (thinking.isThinking()) await thinking.endThinking();
 
-            if (action.isActive()) {
-              const currentAction = action.state.currentAction;
-              if (currentAction?.toolUseId) {
-                const acc = toolInputAccumulators.get(currentAction.toolUseId);
-                if (acc && acc.inputChunks.length > 0) {
+            if (currentStreamingToolId) {
+              const toolId = currentStreamingToolId;
+              const acc = toolInputAccumulators.get(toolId);
+              currentStreamingToolId = null;
+
+              if (acc) {
+                const prettifiedToolName = prettifyToolName(acc.toolName);
+                let description = getDetailedActionDescription(acc.toolName, {});
+
+                if (acc.inputChunks.length > 0) {
                   try {
                     const fullInput = acc.inputChunks.join("");
                     const parsedInput = JSON.parse(fullInput) as Record<string, unknown>;
-                    const detailedDescription = getDetailedActionDescription(acc.toolName, parsedInput);
-                    await action.updateAction(detailedDescription);
+                    description = getDetailedActionDescription(acc.toolName, parsedInput);
 
                     // TodoWrite handling
                     if (acc.toolName === "TodoWrite") {
@@ -1241,17 +1216,23 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
                     // Subagent creation for unrestricted mode
                     if (acc.toolName === "Task" && !config.restrictedMode) {
                       const taskArgs = parsedInput as { description?: string; subagent_type?: string };
-                      await this.subagents.create(currentAction.toolUseId, {
+                      await this.subagents.create(toolId, {
                         taskDescription: taskArgs.description ?? "Subagent task",
                         subagentType: taskArgs.subagent_type,
-                        parentToolUseId: currentAction.toolUseId,
+                        parentToolUseId: toolId,
                       });
                     }
                   } catch {
-                    // JSON parse failed
+                    // JSON parse failed — use fallback description
                   }
                 }
-                toolInputAccumulators.delete(currentAction.toolUseId);
+
+                await action.startAction({
+                  type: prettifiedToolName,
+                  description,
+                  toolUseId: toolId,
+                });
+                toolInputAccumulators.delete(toolId);
               }
 
               await action.completeAction();

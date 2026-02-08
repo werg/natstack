@@ -408,13 +408,6 @@ export interface ActionTracker {
   isActive(): boolean;
 
   /**
-   * Update the description of the current action.
-   * This completes the old action message and starts a new one with the updated description.
-   * @param description - New description for the action
-   */
-  updateAction(description: string): Promise<void>;
-
-  /**
    * Cleanup any pending action message.
    * Call this in error handlers to ensure action messages are completed.
    * @returns true if cleanup succeeded or no cleanup was needed, false if cleanup failed
@@ -476,33 +469,6 @@ export function createActionTracker(options: ActionTrackerOptions): ActionTracke
 
     isActive(): boolean {
       return state.actionMessageId !== null;
-    },
-
-    async updateAction(description: string): Promise<void> {
-      if (state.actionMessageId && state.currentAction) {
-        const oldMessageId = state.actionMessageId;
-
-        // Update the action data with the new description
-        const updatedAction: ActionData = {
-          ...state.currentAction,
-          description,
-          status: "pending",
-        };
-
-        // Complete the old message
-        await client.complete(oldMessageId);
-        log(`Completed old action message for update: ${oldMessageId}`);
-
-        // Start a new message with the updated description
-        const { messageId } = await client.send(JSON.stringify(updatedAction), {
-          replyTo: currentReplyTo,
-          contentType: CONTENT_TYPE_ACTION,
-        });
-
-        state.actionMessageId = messageId;
-        state.currentAction = updatedAction;
-        log(`Updated action: ${updatedAction.type} - ${description}`);
-      }
     },
 
     async cleanup(): Promise<boolean> {
