@@ -306,6 +306,7 @@ export async function runAgent<S extends AgentState>(
 
   // Step 8: Set up lifecycle management
   let isShuttingDown = false;
+  const inflight = new Set<Promise<void>>();
 
   const lifecycle = createLifecycleManager({
     onIdle: () => {
@@ -332,6 +333,12 @@ export async function runAgent<S extends AgentState>(
     try {
       // Stop idle monitoring
       lifecycle.stopIdleMonitoring();
+
+      // Wait for in-flight event handlers to finish
+      if (inflight.size > 0) {
+        log.debug(`Draining ${inflight.size} in-flight event handler(s)...`);
+        await Promise.allSettled([...inflight]);
+      }
 
       // Run onSleep with timeout
       try {
@@ -475,10 +482,11 @@ export async function runAgent<S extends AgentState>(
       parentPort.ref?.(); // Re-ref IPC while processing
 
       // Fire and forget - let agent control queueing/serialization
-      void Promise.resolve(agent.onEvent(event)).catch((err) => {
+      const p = Promise.resolve(agent.onEvent(event)).catch((err) => {
         const error = err instanceof Error ? err : new Error(String(err));
         log.error("Error in onEvent:", error.message);
-      });
+      }).finally(() => inflight.delete(p));
+      inflight.add(p);
 
       // Auto-checkpoint: advance for all events we've received
       // Semantics: "I've seen this event" (at-most-once delivery)

@@ -2,7 +2,8 @@ import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, typ
 import { Badge, Box, Button, Callout, Card, Flex, IconButton, ScrollArea, Text, TextArea, Theme } from "@radix-ui/themes";
 import { PaperPlaneIcon, ImageIcon, CopyIcon, CheckIcon } from "@radix-ui/react-icons";
 import type { Participant, AttachmentInput } from "@natstack/pubsub";
-import { CONTENT_TYPE_INLINE_UI, prettifyToolName, type AgentDebugPayload } from "@natstack/agentic-messaging";
+import { CONTENT_TYPE_INLINE_UI, prettifyToolName } from "@natstack/agentic-messaging/utils";
+import type { AgentDebugPayload } from "@natstack/agentic-messaging";
 import {
   FeedbackContainer,
   FeedbackFormRenderer,
@@ -33,7 +34,7 @@ import "../styles.css";
 export type { ChatMessage };
 
 const MAX_IMAGE_COUNT = 10;
-const BOTTOM_THRESHOLD_PX = 2;
+const BOTTOM_THRESHOLD_PX = 48;
 
 interface ChatPhaseProps {
   channelId: string | null;
@@ -130,6 +131,7 @@ export function ChatPhase({
 }: ChatPhaseProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const scrollContentRef = useRef<HTMLDivElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -179,6 +181,23 @@ export function ChatPhase({
     return () => viewportEl.removeEventListener("scroll", handleScroll);
   }, [handleScroll, viewportEl]);
 
+  // Observe content height changes that happen outside React renders (e.g. images
+  // loading, lazy components expanding) and autoscroll when the user was at the bottom.
+  useEffect(() => {
+    const content = scrollContentRef.current;
+    if (!content) return;
+    const ro = new ResizeObserver(() => {
+      if (isAtBottomRef.current) {
+        const viewport = viewportEl ?? getViewport();
+        if (viewport) {
+          viewport.scrollTo({ top: viewport.scrollHeight, behavior: "auto" });
+        }
+      }
+    });
+    ro.observe(content);
+    return () => ro.disconnect();
+  }, [getViewport, viewportEl]);
+
   // Auto-scroll helper
   const autoScrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     const viewport = viewportEl ?? getViewport();
@@ -214,6 +233,10 @@ export function ChatPhase({
       if (isAtBottomRef.current) {
         autoScrollToBottom();
         setShowNewContent(false);
+        // After an explicit scroll-to-bottom, keep the flag true.
+        // scrollTo({ behavior: "auto" }) may not synchronously update
+        // scrollTop, so a re-read here could incorrectly flip the flag.
+        isAtBottomRef.current = true;
       } else {
         if (isPrepend && scrollHeightDelta !== 0) {
           viewport.scrollTop = prevScrollTop + scrollHeightDelta;
@@ -225,8 +248,11 @@ export function ChatPhase({
 
     lastScrollTopRef.current = viewport.scrollTop;
     lastScrollHeightRef.current = viewport.scrollHeight;
-    isAtBottomRef.current =
-      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= BOTTOM_THRESHOLD_PX;
+    if (!isAtBottomRef.current) {
+      // Only re-evaluate from DOM when we didn't just autoscroll (handled above).
+      isAtBottomRef.current =
+        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= BOTTOM_THRESHOLD_PX;
+    }
     lastMessageCountRef.current = nextCount;
     lastFirstMessageIdRef.current = nextFirstId;
   }, [messages, autoScrollToBottom, getViewport, viewportEl]);
@@ -413,14 +439,30 @@ export function ChatPhase({
         };
       });
 
-      // Deduplicate: prefer action over method when both exist for the same tool
+      // Deduplicate actions: when updateAction() completes old message + creates new,
+      // both show up. Keep only the LAST action per toolUseId (has detailed description).
+      const lastActionIndexByToolUseId = new Map<string, number>();
+      inlineItems.forEach((item, i) => {
+        if (item.type === "action" && item.data.toolUseId) {
+          lastActionIndexByToolUseId.set(item.data.toolUseId, i);
+        }
+      });
+
+      // Also collect action tool names for method deduplication
       const actionToolNames = new Set<string>();
       for (const item of inlineItems) {
         if (item.type === "action") {
           actionToolNames.add(prettifyToolName(item.data.type));
         }
       }
-      return inlineItems.filter((item) => {
+
+      return inlineItems.filter((item, i) => {
+        // Remove superseded action messages (earlier actions with same toolUseId)
+        if (item.type === "action" && item.data.toolUseId) {
+          const lastIndex = lastActionIndexByToolUseId.get(item.data.toolUseId);
+          if (lastIndex !== undefined && i !== lastIndex) return false;
+        }
+        // Remove method when a matching action exists (by tool name)
         if (item.type === "method") {
           const methodToolName = prettifyToolName(item.entry.methodName);
           if (actionToolNames.has(methodToolName)) return false;
@@ -428,6 +470,23 @@ export function ChatPhase({
         return true;
       });
     }
+
+    // Pre-filter: keep only the LAST active typing indicator per sender.
+    // An agent should only have one active typing indicator at a time, but if a
+    // stopTyping update is lost (race condition, pubsub edge case), older indicators
+    // can get stuck. Treating earlier ones as implicitly completed prevents duplicates
+    // that span across different inline groups.
+    const lastTypingIndexBySender = new Map<string, number>();
+    messages.forEach((msg, index) => {
+      if (msg.contentType === "typing" && !msg.complete) {
+        lastTypingIndexBySender.set(msg.senderId, index);
+      }
+    });
+    const isSupersededTyping = (msg: ChatMessage, index: number): boolean => {
+      if (msg.contentType !== "typing" || msg.complete) return false;
+      const lastIndex = lastTypingIndexBySender.get(msg.senderId);
+      return lastIndex !== undefined && index !== lastIndex;
+    };
 
     // Group consecutive inline items (thinking, action, method)
     const result: Array<
@@ -438,10 +497,13 @@ export function ChatPhase({
     let currentInlineGroup: Array<{ msg: ChatMessage; index: number }> = [];
 
     messages.forEach((msg, index) => {
+      // Skip superseded typing indicators (older ones from same sender)
+      if (isSupersededTyping(msg, index)) return;
+
       const inlineType = getInlineItemType(msg);
 
       if (inlineType !== null) {
-        // This is an inline item (thinking, action, or method)
+        // This is an inline item (thinking, action, method, or typing)
         currentInlineGroup.push({ msg, index });
       } else {
         // Regular message - flush any pending inline group
@@ -563,7 +625,7 @@ export function ChatPhase({
       <Box flexGrow="1" overflow="hidden" style={{ minHeight: 0, position: "relative" }} asChild>
         <Card>
         <ScrollArea ref={scrollAreaRef} style={{ height: "100%" }}>
-          <Flex direction="column" gap="1" p="1" style={{ overflowAnchor: "none" }}>
+          <Flex ref={scrollContentRef} direction="column" gap="1" p="1" style={{ overflowAnchor: "none" }}>
             {/* Load earlier messages button */}
             {hasMoreHistory && onLoadEarlierMessages && (
               <Flex justify="center" py="2">

@@ -11,24 +11,25 @@ import { pubsubConfig, id as panelClientId, buildNsLink, buildFocusLink, createC
 import { usePanelTheme } from "@natstack/react";
 import { z } from "zod";
 import type { ComponentType } from "react";
+import { CONTENT_TYPE_TYPING, CONTENT_TYPE_INLINE_UI } from "@natstack/agentic-messaging/utils";
+import type {
+  IncomingEvent,
+  IncomingToolRoleRequestEvent,
+  IncomingToolRoleResponseEvent,
+  IncomingToolRoleHandoffEvent,
+  IncomingAgentDebugEvent,
+  AgentDebugPayload,
+  MethodDefinition,
+  MethodExecutionContext,
+  TypingData,
+  InlineUiData,
+  FeedbackFormArgs,
+  FeedbackCustomArgs,
+} from "@natstack/agentic-messaging";
 import {
-  type IncomingEvent,
-  type IncomingToolRoleRequestEvent,
-  type IncomingToolRoleResponseEvent,
-  type IncomingToolRoleHandoffEvent,
-  type IncomingAgentDebugEvent,
-  type AgentDebugPayload,
-  type MethodDefinition,
-  type MethodExecutionContext,
-  CONTENT_TYPE_TYPING,
-  CONTENT_TYPE_INLINE_UI,
-  type TypingData,
-  type InlineUiData,
-  type FeedbackFormArgs,
-  type FeedbackCustomArgs,
   FeedbackFormArgsSchema,
   FeedbackCustomArgsSchema,
-} from "@natstack/agentic-messaging";
+} from "@natstack/agentic-messaging/protocol-schemas";
 import type { Participant, RosterUpdate, Attachment, AttachmentInput } from "@natstack/pubsub";
 import {
   useFeedbackManager,
@@ -482,8 +483,10 @@ export default function AgenticChat() {
       const prevIds = new Set(Object.keys(prevParticipants));
       const newIds = new Set(Object.keys(newParticipants));
 
+      const disconnectedIds: string[] = [];
       for (const prevId of prevIds) {
         if (!newIds.has(prevId)) {
+          disconnectedIds.push(prevId);
           // This participant disconnected
           const disconnected = prevParticipants[prevId];
           const metadata = disconnected?.metadata;
@@ -514,6 +517,23 @@ export default function AgenticChat() {
         }
       }
 
+      // Clean up typing indicators from disconnected participants
+      // (typing messages only hide when complete=true, but agents may crash before marking them)
+      if (disconnectedIds.length > 0) {
+        const disconnectedSet = new Set(disconnectedIds);
+        setMessages((prev) => {
+          let changed = false;
+          const next = prev.map((msg) => {
+            if (msg.contentType === "typing" && !msg.complete && disconnectedSet.has(msg.senderId)) {
+              changed = true;
+              return { ...msg, complete: true };
+            }
+            return msg;
+          });
+          return changed ? next : prev;
+        });
+      }
+
       // Remove newly joined agents from pendingAgents
       // Check by handle since that's how we track pending agents
       const newHandles = new Set(Object.values(newParticipants).map((p) => p.metadata.handle));
@@ -528,6 +548,46 @@ export default function AgenticChat() {
         }
         return changed ? next : prev;
       });
+
+      // Detect agents that are reconnecting (new to roster, non-panel).
+      // An agent may get a new clientId (senderId) each wake cycle, so we
+      // match by handle to find ALL previous senderIds for that agent and
+      // clear their stale typing indicators.
+      const reconnectingHandles = new Set<string>();
+      for (const newId of newIds) {
+        if (!prevIds.has(newId) && newParticipants[newId]?.metadata?.type !== "panel") {
+          reconnectingHandles.add(newParticipants[newId].metadata.handle);
+        }
+      }
+
+      // Build set of OLD senderIds belonging to reconnecting agents.
+      // Use prevParticipants (ref, always current) to find old clientIds
+      // for agents that are now reconnecting with a new clientId.
+      // When an agent sleeps and wakes, it gets a new clientId — old typing
+      // indicators under the previous clientId may not have been cleaned up
+      // (race condition between cleanup message and disconnect).
+      if (reconnectingHandles.size > 0) {
+        const staleSenderIds = new Set<string>();
+        for (const [id, p] of Object.entries(prevParticipants)) {
+          if (reconnectingHandles.has(p.metadata.handle) && !newIds.has(id)) {
+            staleSenderIds.add(id);
+          }
+        }
+
+        if (staleSenderIds.size > 0) {
+          setMessages((prev) => {
+            let changed = false;
+            const next = prev.map((msg) => {
+              if (msg.contentType === "typing" && !msg.complete && staleSenderIds.has(msg.senderId)) {
+                changed = true;
+                return { ...msg, complete: true };
+              }
+              return msg;
+            });
+            return changed ? next : prev;
+          });
+        }
+      }
 
       // Remove stale disconnect messages for agents that rejoined by handle
       const agentHandles = new Set(
