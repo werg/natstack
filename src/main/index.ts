@@ -749,6 +749,28 @@ app.on("ready", async () => {
               args[0] as string,
               args[1] as string[]
             );
+          case "check":
+            return typeCheckRpcMethods["typecheck.check"](
+              args[0] as string,
+              args[1] as string | undefined,
+              args[2] as string | undefined
+            );
+          case "getTypeInfo":
+            return typeCheckRpcMethods["typecheck.getTypeInfo"](
+              args[0] as string,
+              args[1] as string,
+              args[2] as number,
+              args[3] as number,
+              args[4] as string | undefined
+            );
+          case "getCompletions":
+            return typeCheckRpcMethods["typecheck.getCompletions"](
+              args[0] as string,
+              args[1] as string,
+              args[2] as number,
+              args[3] as number,
+              args[4] as string | undefined
+            );
           default:
             throw new Error(`Unknown typecheck method: ${serviceMethod}`);
         }

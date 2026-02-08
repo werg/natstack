@@ -4,7 +4,8 @@
  * Implements: check_types, get_type_info, get_completions
  * These tools provide TypeScript language service features for panel/worker development.
  *
- * NOTE: TypeScript (~17MB) is lazy-loaded on first tool invocation to reduce initial bundle size.
+ * Type checking runs in the main process via RPC, keeping the ~17MB TypeScript
+ * compiler out of the chat panel bundle.
  */
 
 import * as fs from "fs";
@@ -17,58 +18,37 @@ import {
   type CheckTypesArgs,
   type GetTypeInfoArgs,
   type GetCompletionsArgs,
-} from "@natstack/agentic-messaging";
+} from "@natstack/agentic-messaging/tool-schemas";
 import { rpc } from "@natstack/runtime";
-import type { TypeCheckService, TypeCheckDiagnostic, TypeCheckDiagnosticsEvent } from "@natstack/typecheck";
 
-// Lazy-loaded typecheck module (defers ~17MB TypeScript load until first use)
-let typecheckModule: typeof import("@natstack/typecheck") | null = null;
-
-async function getTypecheckModule() {
-  if (!typecheckModule) {
-    typecheckModule = await import("@natstack/typecheck");
-  }
-  return typecheckModule;
+/** Diagnostic shape returned by the main process RPC */
+interface RpcDiagnostic {
+  file: string;
+  line: number;
+  column: number;
+  endLine?: number;
+  endColumn?: number;
+  message: string;
+  severity: "error" | "warning" | "info";
+  code: number;
 }
 
-// Cache of TypeCheckService instances per panel path
-const serviceCache = new Map<string, TypeCheckService>();
-
-/**
- * Get or create a TypeCheckService for a panel path.
- * Uses the factory to create a service with external type loading support.
- */
-async function getOrCreateService(panelPath: string): Promise<TypeCheckService> {
-  const resolved = path.resolve(panelPath);
-
-  if (serviceCache.has(resolved)) {
-    return serviceCache.get(resolved)!;
-  }
-
-  // Lazy load the typecheck module
-  const { createPanelTypeCheckService, createDiskFileSource } = await getTypecheckModule();
-
-  // Use the factory to create a properly configured service with RPC support
-  const service = await createPanelTypeCheckService({
-    panelPath: resolved,
-    fileSource: createDiskFileSource(resolved),
-    rpcCall: <T>(targetId: string, method: string, ...args: unknown[]) =>
-      rpc.call<T>(targetId, method, ...args),
-  });
-
-  serviceCache.set(resolved, service);
-  return service;
+/** Quick info shape returned by the main process RPC */
+interface RpcQuickInfo {
+  displayParts: string;
+  documentation?: string;
+  tags?: { name: string; text?: string }[];
 }
 
 /**
  * Format diagnostics for display.
  */
-function formatDiagnostics(diagnostics: TypeCheckDiagnostic[]): string {
+function formatDiagnostics(diagnostics: RpcDiagnostic[]): string {
   if (diagnostics.length === 0) {
     return "No type errors found.";
   }
 
-  const grouped = new Map<string, TypeCheckDiagnostic[]>();
+  const grouped = new Map<string, RpcDiagnostic[]>();
   for (const d of diagnostics) {
     const key = d.file || "(unknown)";
     if (!grouped.has(key)) {
@@ -98,47 +78,34 @@ function formatDiagnostics(diagnostics: TypeCheckDiagnostic[]): string {
 }
 
 /**
- * check_types - Run TypeScript type checking with external type resolution
+ * check_types - Run TypeScript type checking via main process RPC
  */
 export async function checkTypes(args: CheckTypesArgs): Promise<string> {
-  const service = await getOrCreateService(args.panel_path);
+  let fileContent: string | undefined;
 
-  // If a specific file is provided, ensure it's loaded/updated
+  // Read file content to send with the RPC call
   if (args.file_path) {
     const resolvedFile = path.resolve(args.panel_path, args.file_path);
     try {
-      const content = await fs.promises.readFile(resolvedFile, "utf-8");
-      service.updateFile(resolvedFile, content);
+      fileContent = await fs.promises.readFile(resolvedFile, "utf-8");
     } catch (err) {
       return `Error reading file: ${err instanceof Error ? err.message : String(err)}`;
     }
   }
 
-  // Use checkWithExternalTypes for automatic external package type loading
-  const result = await service.checkWithExternalTypes(
-    args.file_path ? path.resolve(args.panel_path, args.file_path) : undefined
+  const result = await rpc.call<{ diagnostics: RpcDiagnostic[]; checkedFiles: string[] }>(
+    "main", "typecheck.check", args.panel_path, args.file_path, fileContent
   );
   return formatDiagnostics(result.diagnostics);
 }
 
 /**
- * get_type_info - Get type information at a position
+ * get_type_info - Get type information at a position via main process RPC
  */
 export async function getTypeInfo(args: GetTypeInfoArgs): Promise<string> {
-  const service = await getOrCreateService(args.panel_path);
-  const resolvedFile = path.resolve(args.panel_path, args.file_path);
-
-  // Ensure file is loaded
-  if (!service.hasFile(resolvedFile)) {
-    try {
-      const content = await fs.promises.readFile(resolvedFile, "utf-8");
-      service.updateFile(resolvedFile, content);
-    } catch (err) {
-      return `Error reading file: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  }
-
-  const info = service.getQuickInfo(resolvedFile, args.line, args.column);
+  const info = await rpc.call<RpcQuickInfo | null>(
+    "main", "typecheck.getTypeInfo", args.panel_path, args.file_path, args.line, args.column
+  );
 
   if (!info) {
     return `No type information available at ${args.file_path}:${args.line}:${args.column}`;
@@ -161,23 +128,12 @@ export async function getTypeInfo(args: GetTypeInfoArgs): Promise<string> {
 }
 
 /**
- * get_completions - Get code completions at a position
+ * get_completions - Get code completions at a position via main process RPC
  */
 export async function getCompletions(args: GetCompletionsArgs): Promise<string> {
-  const service = await getOrCreateService(args.panel_path);
-  const resolvedFile = path.resolve(args.panel_path, args.file_path);
-
-  // Ensure file is loaded
-  if (!service.hasFile(resolvedFile)) {
-    try {
-      const content = await fs.promises.readFile(resolvedFile, "utf-8");
-      service.updateFile(resolvedFile, content);
-    } catch (err) {
-      return `Error reading file: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  }
-
-  const completions = service.getCompletions(resolvedFile, args.line, args.column);
+  const completions = await rpc.call<{ entries: { name: string; kind: string }[] } | null>(
+    "main", "typecheck.getCompletions", args.panel_path, args.file_path, args.line, args.column
+  );
 
   if (!completions || completions.entries.length === 0) {
     return `No completions available at ${args.file_path}:${args.line}:${args.column}`;
@@ -222,35 +178,32 @@ export function createTypeCheckToolMethodDefinitions(
       description: "Run TypeScript type checking on panel/worker files. Returns diagnostics (errors, warnings, suggestions) from the TypeScript compiler with custom resolution matching the NatStack build system. Automatically resolves external package types.",
       parameters: CheckTypesArgsSchema,
       execute: async (args: CheckTypesArgs) => {
-        const service = await getOrCreateService(args.panel_path);
-        const filePath = args.file_path ? path.resolve(args.panel_path, args.file_path) : undefined;
+        let fileContent: string | undefined;
 
-        // If a specific file is provided, ensure it's loaded/updated
-        if (args.file_path && filePath) {
+        if (args.file_path) {
+          const filePath = path.resolve(args.panel_path, args.file_path);
           try {
-            const content = await fs.promises.readFile(filePath, "utf-8");
-            service.updateFile(filePath, content);
+            fileContent = await fs.promises.readFile(filePath, "utf-8");
           } catch (err) {
             return `Error reading file: ${err instanceof Error ? err.message : String(err)}`;
           }
         }
 
-        // Single check with external type loading
-        const checkResult = await service.checkWithExternalTypes(filePath);
+        const result = await rpc.call<{ diagnostics: RpcDiagnostic[]; checkedFiles: string[] }>(
+          "main", "typecheck.check", args.panel_path, args.file_path, fileContent
+        );
 
         // Broadcast diagnostics if publisher available
         if (publish) {
-          const { TYPECHECK_EVENTS } = await getTypecheckModule();
-          const event: TypeCheckDiagnosticsEvent = {
+          publish("typecheck:diagnostics", {
             panelPath: args.panel_path,
-            diagnostics: checkResult.diagnostics,
+            diagnostics: result.diagnostics,
             timestamp: Date.now(),
-            checkedFiles: checkResult.checkedFiles,
-          };
-          publish(TYPECHECK_EVENTS.DIAGNOSTICS, event);
+            checkedFiles: result.checkedFiles,
+          });
         }
 
-        return formatDiagnostics(checkResult.diagnostics);
+        return formatDiagnostics(result.diagnostics);
       },
     },
     get_type_info: {

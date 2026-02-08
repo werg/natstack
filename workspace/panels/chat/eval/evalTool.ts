@@ -1,14 +1,14 @@
 import type { MethodExecutionContext } from "@natstack/agentic-messaging";
-import {
-  transformCode,
-  execute,
-  createConsoleCapture,
-  formatConsoleEntry,
-  formatConsoleOutput,
-  getAsyncTracking,
-  getDefaultRequire,
-  validateRequires,
-} from "@natstack/eval";
+
+// Lazy-loaded @natstack/eval (~460KB sucrase deferred until first eval tool invocation)
+let evalModule: typeof import("@natstack/eval") | null = null;
+async function getEvalModule() {
+  if (!evalModule) {
+    try { evalModule = await import("@natstack/eval"); }
+    catch (e) { throw new Error(`Failed to load eval module: ${e instanceof Error ? e.message : e}`); }
+  }
+  return evalModule;
+}
 
 function wrapForTopLevelAwait(code: string): string {
   return `return (async () => {\n${code}\n})()`;
@@ -200,6 +200,18 @@ export async function executeEvalTool(
   // Clamp timeout to [0, EVAL_MAX_TIMEOUT_MS]
   const requestedTimeout = args.timeout ?? EVAL_DEFAULT_TIMEOUT_MS;
   const timeout = Math.max(0, Math.min(requestedTimeout, EVAL_MAX_TIMEOUT_MS));
+
+  // Lazy-load the eval module
+  const {
+    transformCode,
+    execute,
+    createConsoleCapture,
+    formatConsoleEntry,
+    formatConsoleOutput,
+    getAsyncTracking,
+    getDefaultRequire,
+    validateRequires,
+  } = await getEvalModule();
 
   // Use unified async tracking API from @natstack/eval
   const tracking = getAsyncTracking();
