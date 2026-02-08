@@ -28,6 +28,10 @@
     "./interrupt": {
       "types": "./dist/interrupt/index.d.ts",
       "default": "./dist/interrupt/index.js"
+    },
+    "./prompts": {
+      "types": "./dist/prompts/index.d.ts",
+      "default": "./dist/prompts/index.js"
     }
   },
   "files": ["dist"],

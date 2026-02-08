@@ -7,6 +7,7 @@
 
 import type { AgenticParticipantMetadata, IncomingNewMessage } from "./types.js";
 import type { ContextWindowUsage } from "./context-tracker.js";
+import { prettifyToolName } from "./tool-name-utils.js";
 
 /**
  * Standard participant metadata for chat-style channels.
@@ -526,35 +527,23 @@ export function getDetailedActionDescription(
   toolName: string,
   input: Record<string, unknown>
 ): string {
-  // Extract base name (remove prefixes like "pubsub_providerId_")
-  let baseName = toolName;
-  if (toolName.startsWith("pubsub_")) {
-    // pubsub_providerId_methodName -> methodName
-    const parts = toolName.split("_");
-    if (parts.length >= 3) {
-      baseName = parts.slice(2).join("_");
-    }
-  }
+  // Normalize tool name to canonical PascalCase form.
+  // Handles raw SDK names ("Read"), MCP names ("mcp__workspace__file_read"),
+  // and pubsub names ("pubsub_abc123_file_read") uniformly.
+  const canonical = prettifyToolName(toolName);
 
-  // Normalize to handle both PascalCase (SDK) and snake_case (pubsub) names
-  // "Read" stays "Read", "file_read" becomes "file_read"
-  switch (baseName) {
-    // SDK tool names (PascalCase)
+  switch (canonical) {
     case "Read":
-    // Pubsub tool names (snake_case)
-    case "file_read":
       return input["file_path"]
         ? `Reading ${truncatePathForAction(input["file_path"] as string)}`
         : "Reading file";
 
     case "Write":
-    case "file_write":
       return input["file_path"]
         ? `Writing to ${truncatePathForAction(input["file_path"] as string)}`
         : "Writing file";
 
     case "Edit":
-    case "file_edit":
       return input["file_path"]
         ? `Editing ${truncatePathForAction(input["file_path"] as string)}`
         : "Editing file";
@@ -565,13 +554,11 @@ export function getDetailedActionDescription(
         : "Running command";
 
     case "Glob":
-    case "glob":
       return input["pattern"]
         ? `Finding files: ${truncateStrForAction(input["pattern"] as string, 40)}`
         : "Searching for files";
 
-    case "Grep":
-    case "grep": {
+    case "Grep": {
       const grepPath = input["path"] ? ` in ${truncatePathForAction(input["path"] as string, 20)}` : "";
       return input["pattern"]
         ? `Searching for '${truncateStrForAction(input["pattern"] as string, 25)}'${grepPath}`
@@ -596,8 +583,7 @@ export function getDetailedActionDescription(
     case "TodoWrite":
       return "Updating task list";
 
-    case "AskUserQuestion":
-    case "ask_user_question": {
+    case "AskUserQuestion": {
       const questions = input["questions"];
       if (questions && Array.isArray(questions) && questions.length > 0) {
         const firstQuestion = questions[0] as { question?: string };
@@ -618,40 +604,85 @@ export function getDetailedActionDescription(
         ? `Killing shell: ${input["shell_id"]}`
         : "Killing shell";
 
-    // Git tools (pubsub names)
-    case "git_status":
+    // MCP channel/attachment tools
+    case "SetTitle":
+      return input["title"]
+        ? `Setting title: ${truncateStrForAction(input["title"] as string, 40)}`
+        : "Setting conversation title";
+
+    case "ListImages":
+      return "Listing available images";
+
+    case "GetImage":
+      return "Viewing image";
+
+    case "GetCurrentImages":
+      return "Getting current images";
+
+    // Plan mode tools
+    case "EnterPlanMode":
+      return "Entering plan mode";
+
+    case "ExitPlanMode":
+      return "Exiting plan mode";
+
+    // Skill invocation
+    case "Skill":
+      return input["skill"]
+        ? `Running skill: ${truncateStrForAction(input["skill"] as string, 30)}`
+        : "Running skill";
+
+    // Git tools (canonical names from CANONICAL_TOOL_MAPPINGS)
+    case "GitStatus":
       return "Checking git status";
-    case "git_diff":
+    case "GitDiff":
       return "Getting git diff";
-    case "git_log":
+    case "GitLog":
       return "Viewing git log";
-    case "git_add":
+    case "GitAdd":
       return input["files"]
         ? `Staging: ${truncateStrForAction(String(input["files"]), 40)}`
         : "Staging files";
-    case "git_commit":
+    case "GitCommit":
       return input["message"]
         ? `Committing: ${truncateStrForAction(input["message"] as string, 40)}`
         : "Creating commit";
-    case "git_checkout":
+    case "GitCheckout":
       return input["branch"]
         ? `Checking out: ${input["branch"]}`
         : "Checking out";
 
-    // Directory tools (pubsub names)
-    case "tree":
-    case "list_directory":
+    // Directory tools
+    case "Tree":
+    case "ListDirectory":
       return input["path"]
         ? `Listing ${truncatePathForAction(input["path"] as string)}`
         : "Listing directory";
 
+    // Type checking tools
+    case "CheckTypes":
+      return "Checking types";
+    case "GetTypeInfo":
+      return "Getting type info";
+    case "GetCompletions":
+      return "Getting completions";
+
+    // Remove tool
+    case "Remove":
+      return input["path"]
+        ? `Removing ${truncatePathForAction(input["path"] as string)}`
+        : "Removing file";
+
+    // Panel eval/feedback (operational — no tool use)
+    case "Eval":
+      return "Evaluating code";
+    case "FeedbackForm":
+      return "Showing form";
+    case "FeedbackCustom":
+      return "Showing custom UI";
+
     default:
-      // For pubsub tools, show the method name cleanly
-      if (toolName.startsWith("pubsub_")) {
-        const methodName = toolName.replace("pubsub_", "").replace(/_/g, ".");
-        return `Calling ${methodName}`;
-      }
-      return `Using ${toolName}`;
+      return `Using ${canonical}`;
   }
 }
 

@@ -20,7 +20,6 @@ import type {
 import {
   createInterruptHandler,
   createPauseMethodDefinition,
-  createRestrictedModeSystemPrompt,
   showPermissionPrompt,
   getDetailedActionDescription,
   CONTENT_TYPE_TYPING,
@@ -29,6 +28,7 @@ import {
   uint8ArrayToBase64,
   createTypingTracker,
   createQueuePositionText,
+  cleanupQueuedTypingTrackers,
 } from "@natstack/agentic-messaging";
 import {
   AI_RESPONDER_PARAMETERS,
@@ -53,6 +53,9 @@ import {
   type SettingsManager,
   type MissedContextManager,
 } from "@natstack/agent-patterns";
+import {
+  createRestrictedModeSystemPrompt,
+} from "@natstack/agent-patterns/prompts";
 import { ai } from "@natstack/ai";
 import { z } from "zod";
 
@@ -820,6 +823,8 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     this.queue.stop();
     await this.queue.drain();
     this.interrupt.cleanup();
+
+    await cleanupQueuedTypingTrackers(this.queuedMessages, (msg) => this.log.warn(msg));
 
     this.log.info("PubsubChatResponder shutting down");
   }

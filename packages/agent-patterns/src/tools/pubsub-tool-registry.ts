@@ -10,11 +10,11 @@
 
 import type { AgenticClient, DiscoveredMethod } from "@natstack/agentic-messaging";
 import {
-  getCanonicalToolName,
   getGroupsForTool,
   validateRequiredMethods,
   RESTRICTED_MODE_REQUIRED_METHODS,
 } from "@natstack/agentic-messaging";
+import { getCanonicalToolName } from "@natstack/agentic-messaging/utils";
 import type { ToolGroup } from "@natstack/agentic-messaging";
 
 /**

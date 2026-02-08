@@ -21,7 +21,7 @@ import {
   type ContextInfoArgs,
   type ContextTemplateListArgs,
   type ContextTemplateReadArgs,
-} from "@natstack/agentic-messaging";
+} from "@natstack/agentic-messaging/tool-schemas";
 import {
   getWorkspaceTree,
   gitConfig,

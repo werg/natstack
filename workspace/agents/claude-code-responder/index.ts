@@ -28,12 +28,9 @@ import {
   formatArgsForLog,
   createInterruptHandler,
   createPauseMethodDefinition,
-  createRichTextChatSystemPrompt,
-  createRestrictedModeSystemPrompt,
   DEFAULT_MISSED_CONTEXT_MAX_CHARS,
   showPermissionPrompt,
   validateRestrictedMode,
-  prettifyToolName,
   createThinkingTracker,
   createActionTracker,
   createTypingTracker,
@@ -47,6 +44,7 @@ import {
   SubagentManager,
   AgenticError,
   createQueuePositionText,
+  cleanupQueuedTypingTrackers,
   type InlineUiData,
   type ContextWindowUsage,
   type SDKStreamEvent,
@@ -54,6 +52,7 @@ import {
   type ChatParticipantMetadata,
   type IncomingNewMessage,
 } from "@natstack/agentic-messaging";
+import { prettifyToolName } from "@natstack/agentic-messaging/utils";
 import type { Attachment, Participant } from "@natstack/pubsub";
 import {
   recoverSession,
@@ -90,6 +89,10 @@ import {
   type SettingsManager,
   type MissedContextManager,
 } from "@natstack/agent-patterns";
+import {
+  createRichTextChatSystemPrompt,
+  createRestrictedModeSystemPrompt,
+} from "@natstack/agent-patterns/prompts";
 import {
   createRestrictedTaskTool,
   type ToolDefinitionWithExecute,
@@ -537,6 +540,8 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     await this.queue.drain();
     this.interrupt.cleanup();
     await this.subagents?.cleanupAll();
+
+    await cleanupQueuedTypingTrackers(this.queuedMessages, (msg) => this.log.warn(msg));
 
     this.log.info("ClaudeCodeResponder shutting down");
   }

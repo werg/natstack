@@ -25,6 +25,34 @@
     "./recovery": {
       "types": "./dist/recovery-entry.d.ts",
       "default": "./dist/recovery-entry.js"
+    },
+    "./tool-schemas": {
+      "types": "./dist/tool-schemas-entry.d.ts",
+      "default": "./dist/tool-schemas-entry.js"
+    },
+    "./utils": {
+      "types": "./dist/utils-entry.d.ts",
+      "default": "./dist/utils-entry.js"
+    },
+    "./client": {
+      "types": "./dist/client-entry.d.ts",
+      "default": "./dist/client-entry.js"
+    },
+    "./image-utils": {
+      "types": "./dist/image-utils-entry.d.ts",
+      "default": "./dist/image-utils-entry.js"
+    },
+    "./protocol-schemas": {
+      "types": "./dist/protocol-schemas-entry.d.ts",
+      "default": "./dist/protocol-schemas-entry.js"
+    },
+    "./async": {
+      "types": "./dist/async-entry.d.ts",
+      "default": "./dist/async-entry.js"
+    },
+    "./json-schema": {
+      "types": "./dist/json-schema-entry.d.ts",
+      "default": "./dist/json-schema-entry.js"
     }
   },
   "scripts": {

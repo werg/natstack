@@ -19,7 +19,7 @@ import {
   FILE_TYPE_MAPPINGS,
   type GlobArgs,
   type GrepArgs,
-} from "@natstack/agentic-messaging";
+} from "@natstack/agentic-messaging/tool-schemas";
 
 const MAX_RESULTS = 1000;
 

@@ -9,6 +9,7 @@
  */
 
 import { z } from "zod";
+import { normalizeToolName } from "./tool-name-utils.js";
 
 // ============================================================================
 // File Operations
@@ -334,149 +335,6 @@ export const FILE_TYPE_MAPPINGS: Record<string, string[]> = {
   shell: ["*.sh", "*.bash", "*.zsh"],
 };
 
-// ============================================================================
-// TOOL NAMING CONVENTIONS - READ THIS BEFORE MODIFYING TOOL CODE
-// ============================================================================
-//
-// This codebase uses THREE naming conventions for tools:
-//
-// | Convention | Example | Where Used |
-// |------------|---------|------------|
-// | snake_case | file_read | Wire protocol, method registration, execution |
-// | PascalCase | Read | LLM system prompts, tool descriptions |
-// | Prefixed | pubsub_abc_file_read | createToolsForAgentSDK() internal |
-//
-// KEY FUNCTIONS:
-// - getCanonicalToolName(snake) → PascalCase (for LLM display)
-// - getPubsubMethodName(Pascal) → snake_case (for execution)
-// - createToolsForAgentSDK() generates prefixed names internally
-//
-// When adding new tools:
-// 1. Define schema with snake_case name
-// 2. Add mapping in CANONICAL_TOOL_MAPPINGS
-// 3. Use getCanonicalToolName() when showing to LLM
-// ============================================================================
-
-/**
- * Mapping from pubsub tool names to Claude Code canonical tool names.
- * Used to provide familiar tool names to the LLM while using pubsub RPC underneath.
- */
-export const CANONICAL_TOOL_MAPPINGS: Record<string, string> = {
-  // File operations
-  file_read: "Read",
-  file_write: "Write",
-  file_edit: "Edit",
-  rm: "Remove",
-  // Search tools
-  glob: "Glob",
-  grep: "Grep",
-  // Directory tools
-  tree: "Tree",
-  list_directory: "ListDirectory",
-  // Git tools - map to Bash-like names for LLM familiarity
-  git_status: "GitStatus",
-  git_diff: "GitDiff",
-  git_log: "GitLog",
-  git_add: "GitAdd",
-  git_commit: "GitCommit",
-  git_checkout: "GitCheckout",
-  // Workspace tools
-  workspace_list: "WorkspaceList",
-  workspace_clone: "WorkspaceClone",
-  context_info: "ContextInfo",
-  context_template_list: "ContextTemplateList",
-  context_template_read: "ContextTemplateRead",
-  // Plan mode
-  enter_plan_mode: "EnterPlanMode",
-  exit_plan_mode: "ExitPlanMode",
-  // Type checking tools
-  check_types: "CheckTypes",
-  get_type_info: "GetTypeInfo",
-  get_completions: "GetCompletions",
-};
-
-/**
- * Reverse mapping from canonical names to pubsub tool names.
- */
-export const REVERSE_CANONICAL_MAPPINGS: Record<string, string> = Object.fromEntries(
-  Object.entries(CANONICAL_TOOL_MAPPINGS).map(([pubsub, canonical]) => [canonical, pubsub])
-);
-
-/**
- * Extract the actual method name from a prefixed tool name.
- *
- * Handles known prefix formats:
- * - pubsub_providerId_methodName → methodName (e.g., "pubsub_abc123_file_read" → "file_read")
- * - mcp__server__methodName → methodName (e.g., "mcp__workspace__ListDirectory" → "ListDirectory")
- *
- * Does NOT strip parts from regular snake_case names like "exit_plan_mode".
- *
- * This function is defined here (not in tool-approval.ts) to avoid
- * circular dependencies, since tool-approval imports from tool-schemas.
- */
-export function extractMethodName(toolName: string): string {
-  // Handle MCP prefix format: mcp__server__methodName
-  if (toolName.startsWith("mcp__")) {
-    const parts = toolName.split("__");
-    if (parts.length >= 3) {
-      return parts.slice(2).join("__");
-    }
-  }
-
-  // Handle pubsub prefix format: pubsub_providerId_methodName
-  if (toolName.startsWith("pubsub_")) {
-    const parts = toolName.split("_");
-    if (parts.length >= 3) {
-      return parts.slice(2).join("_");
-    }
-  }
-
-  // No known prefix - return as-is
-  return toolName;
-}
-
-/**
- * Extract the display name from a tool name, stripping MCP/pubsub prefixes
- * and applying canonical name mappings.
- *
- * Examples:
- * - "mcp__workspace__ListDirectory" → "ListDirectory"
- * - "mcp__proxy-uuid__Read" → "Read"
- * - "pubsub_abc123_file_read" → "Read"
- * - "file_read" → "Read"
- * - "list_directory" → "ListDirectory"
- */
-export function prettifyToolName(toolName: string): string {
-  let name = toolName;
-
-  // Strip MCP prefix: mcp__<server>__<name> → <name>
-  const mcpMatch = name.match(/^mcp__[^_]+__(.+)$/);
-  if (mcpMatch) {
-    name = mcpMatch[1]!;
-  }
-  // Strip pubsub prefix: pubsub_<providerId>_<methodName> → <methodName>
-  else if (name.startsWith("pubsub_")) {
-    name = extractMethodName(name);
-  }
-
-  // Apply canonical mapping if available
-  const canonical = CANONICAL_TOOL_MAPPINGS[name];
-  if (canonical) {
-    return canonical;
-  }
-
-  // If name is already PascalCase (canonical), return as-is
-  if (/^[A-Z][a-zA-Z]+$/.test(name)) {
-    return name;
-  }
-
-  // Convert snake_case to TitleCase as fallback
-  return name
-    .split("_")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join("");
-}
-
 /**
  * Required methods for restricted mode (no bash access).
  * These are the minimum set of methods needed for file operations,
@@ -646,44 +504,6 @@ export function validateRequiredMethods(
     available,
     providers,
   };
-}
-
-/**
- * Get the canonical tool name for a pubsub method name.
- * Returns the original name if no mapping exists.
- */
-export function getCanonicalToolName(pubsubName: string): string {
-  return CANONICAL_TOOL_MAPPINGS[pubsubName] ?? pubsubName;
-}
-
-/**
- * Get the pubsub method name for a canonical tool name.
- * Returns the original name if no mapping exists.
- */
-export function getPubsubMethodName(canonicalName: string): string {
-  return REVERSE_CANONICAL_MAPPINGS[canonicalName] ?? canonicalName;
-}
-
-// ============================================================================
-// Tool Name Normalization
-// ============================================================================
-
-/**
- * Normalize any tool name format to pubsub snake_case format.
- *
- * Handles:
- * - Prefixed names: "pubsub_abc123_file_edit" → "file_edit"
- * - PascalCase: "Edit" → "file_edit"
- * - Already normalized: "file_edit" → "file_edit"
- *
- * @param toolName - Tool name in any format
- * @returns Normalized snake_case pubsub method name
- */
-export function normalizeToolName(toolName: string): string {
-  // First strip prefix if present
-  const stripped = extractMethodName(toolName);
-  // Then try to map from PascalCase to snake_case
-  return getPubsubMethodName(stripped);
 }
 
 // ============================================================================

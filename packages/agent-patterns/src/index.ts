@@ -85,9 +85,6 @@ export {
   type ContextTracker,
   type ContextTrackerOptions,
   type ContextTrackerState,
-  type ContextWindowUsage,
-  type NormalizedUsage,
-  type TokenUsage,
 } from "./context-usage/index.js";
 
 // Interrupt pattern - pause/resume/abort control
@@ -153,3 +150,12 @@ export {
   type ResponseManagerOptions,
   type ResponseManager,
 } from "./response/index.js";
+
+// System prompts
+export {
+  DEFAULT_CHAT_ASSISTANT_PERSONA,
+  COMPONENT_ENHANCED_RICH_TEXT_GUIDE,
+  RESTRICTED_MODE_ENVIRONMENT_GUIDE,
+  createRichTextChatSystemPrompt,
+  createRestrictedModeSystemPrompt,
+} from "./prompts/index.js";

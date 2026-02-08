@@ -6,7 +6,6 @@
  * for complete context management.
  */
 
-// Implementation lives here in agent-patterns
 export {
   createContextTracker,
   getModelContextLimit,
@@ -15,10 +14,3 @@ export {
   type ContextTrackerOptions,
   type ContextTrackerState,
 } from "./context-tracker.js";
-
-// Data types come from agentic-messaging (used in metadata)
-export type {
-  ContextWindowUsage,
-  NormalizedUsage,
-  TokenUsage,
-} from "@natstack/agentic-messaging";

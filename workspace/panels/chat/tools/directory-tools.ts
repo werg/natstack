@@ -14,7 +14,7 @@ import {
   ListDirectoryArgsSchema,
   type TreeArgs,
   type ListDirectoryArgs,
-} from "@natstack/agentic-messaging";
+} from "@natstack/agentic-messaging/tool-schemas";
 
 /**
  * Default ignore patterns for tree

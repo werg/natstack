@@ -13,17 +13,11 @@ export { AsyncQueue, createFanout } from "./async-queue.js";
 export {
   MessageQueue,
   createQueuePositionText,
+  cleanupQueuedTypingTrackers,
   type QueuedMessageBase,
   type QueuePositionTextOptions,
 } from "./message-queue.js";
 export type { AgenticClient } from "./types.js";
-export {
-  DEFAULT_CHAT_ASSISTANT_PERSONA,
-  COMPONENT_ENHANCED_RICH_TEXT_GUIDE,
-  RESTRICTED_MODE_ENVIRONMENT_GUIDE,
-  createRichTextChatSystemPrompt,
-  createRestrictedModeSystemPrompt,
-} from "./prompts.js";
 
 // JSON Schema utilities
 export { jsonSchemaToZod, jsonSchemaToZodRawShape, isRecord } from "./json-schema-to-zod.js";
@@ -89,7 +83,7 @@ export {
 } from "./missed-context.js";
 
 // Tool approval utilities
-export { requestToolApproval, needsApprovalForTool, extractMethodName, isReadOnlyTool, READ_ONLY_TOOLS, APPROVAL_LEVELS } from "./tool-approval.js";
+export { requestToolApproval, needsApprovalForTool, isReadOnlyTool, READ_ONLY_TOOLS, APPROVAL_LEVELS } from "./tool-approval.js";
 export type { ApprovalOptions, ApprovalLevel } from "./tool-approval.js";
 
 // Tool schemas for pubsub RPC tools

@@ -11,11 +11,7 @@ import {
   REVERSE_CANONICAL_MAPPINGS,
   extractMethodName,
   normalizeToolName,
-} from "./tool-schemas.js";
-
-// Re-export extractMethodName for backwards compatibility
-// (it's now defined in tool-schemas.ts to avoid circular dependencies)
-export { extractMethodName };
+} from "./tool-name-utils.js";
 
 /**
  * Approval level constants for tool execution.

@@ -10,13 +10,12 @@ import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk"
 import {
   createSubagentConnection,
   forwardStreamEventToSubagent,
-  extractMethodName,
-  getCanonicalToolName,
   jsonSchemaToZodRawShape,
   type AgenticClient,
   type SubagentConnectionOptions,
   type SDKStreamEvent,
 } from "@natstack/agentic-messaging";
+import { extractMethodName, getCanonicalToolName } from "@natstack/agentic-messaging/utils";
 
 /**
  * Schema for the restricted mode Task tool.
