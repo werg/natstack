@@ -393,6 +393,78 @@ export function getTypeDefinitionService(): TypeDefinitionService {
   return serviceInstance;
 }
 
+// =============================================================================
+// Type Checking Service (runs TypeScript compiler in main process)
+// =============================================================================
+
+import type { TypeCheckService, TypeCheckDiagnostic } from "@natstack/typecheck";
+
+/** Per-panel TypeCheckService cache */
+const typeCheckServiceCache = new Map<string, TypeCheckService>();
+
+/**
+ * Get or create a TypeCheckService for a panel path.
+ * Uses the factory with direct access to TypeDefinitionService (no RPC needed
+ * since we're already in the main process).
+ */
+async function getOrCreateTypeCheckService(panelPath: string): Promise<TypeCheckService> {
+  const resolved = path.resolve(panelPath);
+  const cached = typeCheckServiceCache.get(resolved);
+  if (cached) return cached;
+
+  const { createPanelTypeCheckService, createDiskFileSource } = await import("@natstack/typecheck");
+
+  const service = await createPanelTypeCheckService({
+    panelPath: resolved,
+    fileSource: createDiskFileSource(resolved),
+    // In the main process, external types are resolved directly via TypeDefinitionService
+    rpcCall: async <T>(targetId: string, method: string, ...args: unknown[]) => {
+      // Route typecheck.getPackageTypes directly to the local service
+      if (method === "typecheck.getPackageTypes") {
+        return typeCheckRpcMethods["typecheck.getPackageTypes"](
+          args[0] as string,
+          args[1] as string
+        ) as T;
+      }
+      if (method === "typecheck.getPackageTypesBatch") {
+        return typeCheckRpcMethods["typecheck.getPackageTypesBatch"](
+          args[0] as string,
+          args[1] as string[]
+        ) as T;
+      }
+      throw new Error(`Unknown RPC method in main process typecheck: ${method}`);
+    },
+  });
+
+  typeCheckServiceCache.set(resolved, service);
+  return service;
+}
+
+/** Serializable diagnostic (without ts.DiagnosticCategory enum reference) */
+interface SerializedDiagnostic {
+  file: string;
+  line: number;
+  column: number;
+  endLine?: number;
+  endColumn?: number;
+  message: string;
+  severity: "error" | "warning" | "info";
+  code: number;
+}
+
+function serializeDiagnostics(diagnostics: TypeCheckDiagnostic[]): SerializedDiagnostic[] {
+  return diagnostics.map(d => ({
+    file: d.file,
+    line: d.line,
+    column: d.column,
+    endLine: d.endLine,
+    endColumn: d.endColumn,
+    message: d.message,
+    severity: d.severity,
+    code: d.code,
+  }));
+}
+
 /**
  * RPC methods for the code-editor.
  */
@@ -417,6 +489,89 @@ export const typeCheckRpcMethods = {
     const results = await getTypeDefinitionService().getPackageTypes(panelPath, packageNames);
     return Object.fromEntries(results);
   },
+
+  "typecheck.check": async (
+    panelPath: string,
+    filePath?: string,
+    fileContent?: string
+  ): Promise<{ diagnostics: SerializedDiagnostic[]; checkedFiles: string[] }> => {
+    const service = await getOrCreateTypeCheckService(panelPath);
+
+    // Update file content if provided
+    if (filePath && fileContent !== undefined) {
+      const resolvedFile = path.resolve(panelPath, filePath);
+      service.updateFile(resolvedFile, fileContent);
+    }
+
+    const result = await service.checkWithExternalTypes(
+      filePath ? path.resolve(panelPath, filePath) : undefined
+    );
+    return {
+      diagnostics: serializeDiagnostics(result.diagnostics),
+      checkedFiles: result.checkedFiles,
+    };
+  },
+
+  "typecheck.getTypeInfo": async (
+    panelPath: string,
+    filePath: string,
+    line: number,
+    column: number,
+    fileContent?: string
+  ): Promise<{ displayParts: string; documentation?: string; tags?: { name: string; text?: string }[] } | null> => {
+    const service = await getOrCreateTypeCheckService(panelPath);
+    const resolvedFile = path.resolve(panelPath, filePath);
+
+    // Ensure file is loaded/updated
+    if (fileContent !== undefined) {
+      service.updateFile(resolvedFile, fileContent);
+    } else if (!service.hasFile(resolvedFile)) {
+      try {
+        const content = await fs.readFile(resolvedFile, "utf-8");
+        service.updateFile(resolvedFile, content);
+      } catch (err) {
+        return null;
+      }
+    }
+
+    const info = service.getQuickInfo(resolvedFile, line, column);
+    if (!info) return null;
+    return {
+      displayParts: info.displayParts,
+      documentation: info.documentation,
+      tags: info.tags?.map(t => ({ name: t.name, text: t.text })),
+    };
+  },
+
+  "typecheck.getCompletions": async (
+    panelPath: string,
+    filePath: string,
+    line: number,
+    column: number,
+    fileContent?: string
+  ): Promise<{ entries: { name: string; kind: string }[] } | null> => {
+    const service = await getOrCreateTypeCheckService(panelPath);
+    const resolvedFile = path.resolve(panelPath, filePath);
+
+    // Ensure file is loaded/updated
+    if (fileContent !== undefined) {
+      service.updateFile(resolvedFile, fileContent);
+    } else if (!service.hasFile(resolvedFile)) {
+      try {
+        const content = await fs.readFile(resolvedFile, "utf-8");
+        service.updateFile(resolvedFile, content);
+      } catch (err) {
+        return null;
+      }
+    }
+
+    const completions = service.getCompletions(resolvedFile, line, column);
+    if (!completions || completions.entries.length === 0) return null;
+
+    return {
+      entries: completions.entries.map(e => ({ name: e.name, kind: e.kind })),
+    };
+  },
 };
 
 export function shutdownTypeDefinitionService(): void {
@@ -424,4 +579,5 @@ export function shutdownTypeDefinitionService(): void {
     serviceInstance.shutdown();
     serviceInstance = null;
   }
+  typeCheckServiceCache.clear();
 }

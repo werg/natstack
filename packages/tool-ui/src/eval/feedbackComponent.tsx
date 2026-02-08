@@ -7,15 +7,25 @@
 
 import { useCallback, useMemo, useRef } from "react";
 import type { ComponentType } from "react";
-import { transformCode, executeDefault, preloadRequires } from "@natstack/eval";
 import type { FeedbackComponentProps, FeedbackUiToolArgs, FeedbackUiToolResult } from "../types";
+
+// Lazy-loaded @natstack/eval (~460KB sucrase deferred until first feedback component compile)
+let evalModule: typeof import("@natstack/eval") | null = null;
+async function getEvalModule() {
+  if (!evalModule) {
+    try { evalModule = await import("@natstack/eval"); }
+    catch (e) { throw new Error(`Failed to load eval module: ${e instanceof Error ? e.message : e}`); }
+  }
+  return evalModule;
+}
 
 /**
  * Execute and extract the default export as a React component.
  * This is a thin wrapper around executeDefault with React typing.
  */
 function executeComponent(code: string): ComponentType<FeedbackComponentProps> {
-  return executeDefault<ComponentType<FeedbackComponentProps>>(code);
+  if (!evalModule) throw new Error("Eval module not loaded - compileFeedbackComponent must be called first");
+  return evalModule.executeDefault<ComponentType<FeedbackComponentProps>>(code);
 }
 
 /**
@@ -41,6 +51,7 @@ export async function compileFeedbackComponent(args: FeedbackUiToolArgs): Promis
   const { code } = args;
 
   try {
+    const { transformCode, preloadRequires } = await getEvalModule();
     const transformed = await transformCode(code, { syntax: "tsx" });
 
     // Preload all required modules (async - may load from CDN if not pre-bundled)
@@ -149,7 +160,8 @@ const inlineUiCache = new Map<string, ComponentType<InlineUiComponentProps>>();
  * Execute and extract the default export as an inline UI component.
  */
 function executeInlineUiComponent(code: string): ComponentType<InlineUiComponentProps> {
-  return executeDefault<ComponentType<InlineUiComponentProps>>(code);
+  if (!evalModule) throw new Error("Eval module not loaded - compileInlineUiComponent must be called first");
+  return evalModule.executeDefault<ComponentType<InlineUiComponentProps>>(code);
 }
 
 /**
@@ -160,6 +172,7 @@ export async function compileInlineUiComponent(args: { code: string }): Promise<
   const { code } = args;
 
   try {
+    const { transformCode, preloadRequires } = await getEvalModule();
     const transformed = await transformCode(code, { syntax: "tsx" });
 
     // Preload all required modules (async - may load from CDN if not pre-bundled)

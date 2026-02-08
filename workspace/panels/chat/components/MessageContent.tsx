@@ -1,8 +1,17 @@
 import React, { type ComponentType, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { evaluate } from "@mdx-js/mdx";
 import * as runtime from "react/jsx-runtime";
+
+// Lazy-loaded MDX module (~200-500KB deferred until first JSX message)
+let mdxModule: typeof import("@mdx-js/mdx") | null = null;
+async function getMdx() {
+  if (!mdxModule) {
+    try { mdxModule = await import("@mdx-js/mdx"); }
+    catch (e) { throw new Error(`Failed to load MDX: ${e instanceof Error ? e.message : e}`); }
+  }
+  return mdxModule;
+}
 import { markdownComponents, mdxComponents } from "./markdownComponents";
 
 interface MessageContentProps {
@@ -32,6 +41,7 @@ function getRehypeHighlight(): Promise<RehypeHighlightPlugin> {
 
 async function compileMdx(content: string, rehypeHighlight: RehypeHighlightPlugin): Promise<ComponentType | null> {
   const rehypePlugins: [RehypeHighlightPlugin, { ignoreMissing: boolean }][] = [[rehypeHighlight, { ignoreMissing: true }]];
+  const { evaluate } = await getMdx();
   const { default: Component } = await evaluate(content, {
     ...runtime,
     development: false,
