@@ -395,6 +395,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
   let checkpoint = sessionRow?.checkpointPubsubId;
   let sdkSessionId = sessionRow?.sdkSessionId;
   let status: "active" | "interrupted" | undefined = sessionRow?.status;
+  let closing = false;
 
   const callStates = new Map<string, MethodCallState>();
   /** Tombstone set for canceled call IDs — prevents late method-result from propagating upstream */
@@ -1110,9 +1111,9 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
   });
 
   const unsubDisconnect = pubsub.onDisconnect(() => {
-    if (sessionDb) {
+    if (sessionDb && !closing) {
       status = "interrupted";
-      void sessionDb.markInterrupted();
+      void sessionDb.markInterrupted().catch(() => {});
     }
     if (!initialReplayComplete) {
       readyReject(new AgenticError("connection closed", "connection-error"));
@@ -1727,6 +1728,8 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       return pubsub.reconnecting;
     },
     close: async () => {
+      closing = true;
+
       // Cancel all pending method calls and clean up state
       for (const [callId, state] of callStates) {
         if (!state.complete) {
