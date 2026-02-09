@@ -6,6 +6,7 @@
  */
 
 export { RmPreview, type RmPreviewProps } from "./RmPreview.js";
+export { BashPreview, type BashPreviewProps } from "./BashPreview.js";
 export { GitCommitPreview, type GitCommitPreviewProps } from "./GitCommitPreview.js";
 export { GitCheckoutPreview, type GitCheckoutPreviewProps } from "./GitCheckoutPreview.js";
 export { GitAddPreview, type GitAddPreviewProps } from "./GitAddPreview.js";
@@ -22,6 +23,7 @@ export {
   isFileEditArgs,
   isFileWriteArgs,
   isRmArgs,
+  isBashArgs,
   isGitCommitArgs,
   isGitCheckoutArgs,
   isGitAddArgs,
@@ -34,6 +36,7 @@ export {
   type FileEditArgs,
   type FileWriteArgs,
   type RmArgs,
+  type BashArgs,
   type GitCommitArgs,
   type GitCheckoutArgs,
   type GitAddArgs,

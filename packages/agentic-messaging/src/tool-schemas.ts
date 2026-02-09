@@ -225,6 +225,22 @@ export const ContextTemplateReadArgsSchema = z.object({
 export type ContextTemplateReadArgs = z.infer<typeof ContextTemplateReadArgsSchema>;
 
 // ============================================================================
+// Shell Operations
+// ============================================================================
+
+/**
+ * bash - Execute a shell command
+ * Matches Claude Code `Bash` tool behavior
+ */
+export const BashArgsSchema = z.object({
+  command: z.string().describe("The bash command to execute"),
+  description: z.string().optional().describe("Description of what the command does"),
+  timeout: z.number().optional().describe("Optional timeout in milliseconds"),
+  run_in_background: z.boolean().optional().describe("Run command in background"),
+}).passthrough();
+export type BashArgs = z.infer<typeof BashArgsSchema>;
+
+// ============================================================================
 // Plan Mode Tools
 // ============================================================================
 
@@ -518,6 +534,7 @@ export const RICH_PREVIEW_TOOLS = [
   "file_edit",
   "file_write",
   "rm",
+  "bash",
   "git_commit",
   "git_checkout",
   "git_add",
@@ -581,4 +598,8 @@ export function isExitPlanModeArgs(args: unknown): args is ExitPlanModeArgs {
 
 export function isEnterPlanModeArgs(args: unknown): args is EnterPlanModeArgs {
   return EnterPlanModeArgsSchema.safeParse(args).success;
+}
+
+export function isBashArgs(args: unknown): args is BashArgs {
+  return BashArgsSchema.safeParse(args).success;
 }

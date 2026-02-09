@@ -8,6 +8,7 @@
 export { FileEditPreview, type FileEditPreviewProps } from "./FileEditPreview";
 export { FileWritePreview, type FileWritePreviewProps } from "./FileWritePreview";
 export { RmPreview, type RmPreviewProps } from "./RmPreview";
+export { BashPreview, type BashPreviewProps } from "./BashPreview";
 export { GitCommitPreview, type GitCommitPreviewProps } from "./GitCommitPreview";
 export { GitCheckoutPreview, type GitCheckoutPreviewProps } from "./GitCheckoutPreview";
 export { GitAddPreview, type GitAddPreviewProps } from "./GitAddPreview";
@@ -22,6 +23,7 @@ export {
   isFileEditArgs,
   isFileWriteArgs,
   isRmArgs,
+  isBashArgs,
   isGitCommitArgs,
   isGitCheckoutArgs,
   isGitAddArgs,
@@ -32,6 +34,7 @@ export {
   type FileEditArgs,
   type FileWriteArgs,
   type RmArgs,
+  type BashArgs,
   type GitCommitArgs,
   type GitCheckoutArgs,
   type GitAddArgs,

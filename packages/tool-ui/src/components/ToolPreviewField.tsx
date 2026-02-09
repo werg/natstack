@@ -15,6 +15,7 @@ import { lazy, Suspense, type ReactNode } from "react";
 import { Box, Text, Spinner } from "@radix-ui/themes";
 import {
   RmPreview,
+  BashPreview,
   GitCommitPreview,
   GitCheckoutPreview,
   GitAddPreview,
@@ -23,6 +24,7 @@ import {
   isFileEditArgs,
   isFileWriteArgs,
   isRmArgs,
+  isBashArgs,
   isGitCommitArgs,
   isGitCheckoutArgs,
   isGitAddArgs,
@@ -120,6 +122,11 @@ export function ToolPreviewField({
   // rm - Danger warning card
   if (toolName === "rm" && isRmArgs(args)) {
     return <RmPreview path={args.path} recursive={args.recursive} />;
+  }
+
+  // bash - Pretty command display
+  if (toolName === "bash" && isBashArgs(args)) {
+    return <BashPreview command={args.command} description={args.description} />;
   }
 
   // git_commit - Styled commit message

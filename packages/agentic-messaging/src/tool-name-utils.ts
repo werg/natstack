@@ -46,6 +46,8 @@ export const CANONICAL_TOOL_MAPPINGS: Record<string, string> = {
   // Plan mode
   enter_plan_mode: "EnterPlanMode",
   exit_plan_mode: "ExitPlanMode",
+  // Shell
+  bash: "Bash",
   // Type checking tools
   check_types: "CheckTypes",
   get_type_info: "GetTypeInfo",
