@@ -357,18 +357,19 @@ export async function runAgent<S extends AgentState>(
       await stateStore.flush();
       log.debug("State flushed");
 
-      // Close database
-      try {
-        await db.close();
-      } catch (err) {
-        log.warn("Error closing database:", err);
-      }
-
-      // Close pubsub connection
+      // Close pubsub connection first so the disconnect handler sees closing=true
+      // and skips markInterrupted() — avoids "Database connection is closed" race
       try {
         await client.close();
       } catch (err) {
         log.warn("Error closing pubsub:", err);
+      }
+
+      // Close database after pubsub is torn down
+      try {
+        await db.close();
+      } catch (err) {
+        log.warn("Error closing database:", err);
       }
 
       // Notify host
