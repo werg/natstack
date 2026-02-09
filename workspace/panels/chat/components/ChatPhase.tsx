@@ -1,8 +1,7 @@
-import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, type ComponentType } from "react";
-import { Badge, Box, Button, Callout, Card, Flex, IconButton, ScrollArea, Text, TextArea, Theme } from "@radix-ui/themes";
-import { PaperPlaneIcon, ImageIcon, CopyIcon, CheckIcon } from "@radix-ui/react-icons";
+import { useState, useRef, useEffect, useCallback, useMemo, type ComponentType } from "react";
+import { Badge, Box, Button, Callout, Card, Flex, IconButton, Text, TextArea, Theme } from "@radix-ui/themes";
+import { PaperPlaneIcon, ImageIcon } from "@radix-ui/react-icons";
 import type { Participant, AttachmentInput } from "@natstack/pubsub";
-import { CONTENT_TYPE_INLINE_UI, prettifyToolName } from "@natstack/agentic-messaging/utils";
 import type { AgentDebugPayload } from "@natstack/agentic-messaging";
 import {
   FeedbackContainer,
@@ -11,30 +10,20 @@ import {
   type ToolApprovalProps,
 } from "@natstack/tool-ui";
 import type { MethodHistoryEntry } from "./MethodHistoryItem";
-import { TypingIndicator } from "./TypingIndicator";
-import { MessageContent } from "./MessageContent";
 import { ParticipantBadgeMenu } from "./ParticipantBadgeMenu";
 import { ToolPermissionsDropdown } from "./ToolPermissionsDropdown";
-import { InlineGroup, type InlineItem } from "./InlineGroup";
-import { parseActionData } from "./ActionMessage";
-import { parseTypingData } from "./TypingMessage";
 import { ImageInput, getAttachmentInputsFromPendingImages } from "./ImageInput";
-import { ImageGallery } from "./ImageGallery";
-import { NewContentIndicator } from "./NewContentIndicator";
-import { InlineUiMessage, parseInlineUiData } from "./InlineUiMessage";
+import { MessageList } from "./MessageList";
 import { type PendingImage, getImagesFromClipboard, createPendingImage, validateImageFiles } from "../utils/imageUtils";
 import type { ChatMessage, ChatParticipantMetadata, PendingAgent } from "../types";
-import { AgentDisconnectedMessage } from "./AgentDisconnectedMessage";
 import { AgentDebugConsole } from "./AgentDebugConsole";
 import { DirtyRepoWarning } from "./DirtyRepoWarning";
 import { PendingAgentBadge } from "./PendingAgentBadge";
 import "../styles.css";
 
-// Re-export for backwards compatibility
-export type { ChatMessage };
-
 const MAX_IMAGE_COUNT = 10;
-const BOTTOM_THRESHOLD_PX = 48;
+// Stable no-op function to avoid creating new arrow functions on every render
+const NOOP = () => {};
 
 interface ChatPhaseProps {
   channelId: string | null;
@@ -136,150 +125,9 @@ export function ChatPhase({
   // Fall back to current participants for sender lookups if allParticipants not provided
   const allParticipants = allParticipantsProp ?? participants;
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const scrollContentRef = useRef<HTMLDivElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [showImageInput, setShowImageInput] = useState(false);
-  const [showNewContent, setShowNewContent] = useState(false);
-  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
-  const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null);
-
-  // Refs for scroll position tracking
-  const lastMessageCountRef = useRef(0);
-  const lastFirstMessageIdRef = useRef<string | null>(null);
-  const lastScrollTopRef = useRef(0);
-  const lastScrollHeightRef = useRef(0);
-  const isAtBottomRef = useRef(true);
-
-  const getViewport = useCallback(() => {
-    return scrollAreaRef.current?.querySelector<HTMLElement>('[data-radix-scroll-area-viewport]') ?? null;
-  }, []);
-
-  // Track the actual viewport element so scroll listeners attach reliably.
-  useLayoutEffect(() => {
-    const nextViewport = getViewport();
-    if (nextViewport !== viewportEl) {
-      setViewportEl(nextViewport);
-    }
-  }, [getViewport, viewportEl]);
-
-  // Handle scroll events - keep track of whether the user left the bottom
-  const handleScroll = useCallback(() => {
-    const viewport = viewportEl ?? getViewport();
-    if (!viewport) return;
-    lastScrollTopRef.current = viewport.scrollTop;
-    lastScrollHeightRef.current = viewport.scrollHeight;
-    const isNearBottom =
-      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= BOTTOM_THRESHOLD_PX;
-    isAtBottomRef.current = isNearBottom;
-    if (isNearBottom) {
-      setShowNewContent(false);
-    }
-  }, [getViewport, viewportEl]);
-
-  // Attach scroll listener directly to viewport (Radix ScrollArea doesn't bubble scroll events)
-  useEffect(() => {
-    if (!viewportEl) return;
-    viewportEl.addEventListener("scroll", handleScroll, { passive: true });
-    handleScroll();
-    return () => viewportEl.removeEventListener("scroll", handleScroll);
-  }, [handleScroll, viewportEl]);
-
-  // Observe content height changes that happen outside React renders (e.g. images
-  // loading, lazy components expanding) and autoscroll when the user was at the bottom.
-  useEffect(() => {
-    const content = scrollContentRef.current;
-    if (!content) return;
-    const ro = new ResizeObserver(() => {
-      if (isAtBottomRef.current) {
-        const viewport = viewportEl ?? getViewport();
-        if (viewport) {
-          viewport.scrollTo({ top: viewport.scrollHeight, behavior: "auto" });
-        }
-      }
-    });
-    ro.observe(content);
-    return () => ro.disconnect();
-  }, [getViewport, viewportEl]);
-
-  // Auto-scroll helper
-  const autoScrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
-    const viewport = viewportEl ?? getViewport();
-    if (viewport) {
-      viewport.scrollTo({ top: viewport.scrollHeight, behavior });
-    } else {
-      scrollRef.current?.scrollIntoView({ behavior });
-    }
-  }, [getViewport, viewportEl]);
-
-  // Handle new content: keep position unless the user was at the bottom
-  useLayoutEffect(() => {
-    const viewport = getViewport();
-    const prevCount = lastMessageCountRef.current;
-    const nextCount = messages.length;
-    const prevFirstId = lastFirstMessageIdRef.current;
-    const nextFirstId = messages[0]?.id ?? null;
-
-    if (!viewport) {
-      lastMessageCountRef.current = nextCount;
-      lastFirstMessageIdRef.current = nextFirstId;
-      return;
-    }
-
-    const countDelta = nextCount - prevCount;
-    const prevScrollHeight = lastScrollHeightRef.current || viewport.scrollHeight;
-    const prevScrollTop = lastScrollTopRef.current || viewport.scrollTop;
-    const scrollHeightDelta = viewport.scrollHeight - prevScrollHeight;
-    const isPrepend =
-      countDelta > 0 && prevCount > 0 && prevFirstId !== null && nextFirstId !== prevFirstId;
-
-    if (prevCount > 0) {
-      if (isAtBottomRef.current) {
-        autoScrollToBottom();
-        setShowNewContent(false);
-        // After an explicit scroll-to-bottom, keep the flag true.
-        // scrollTo({ behavior: "auto" }) may not synchronously update
-        // scrollTop, so a re-read here could incorrectly flip the flag.
-        isAtBottomRef.current = true;
-      } else {
-        if (isPrepend && scrollHeightDelta !== 0) {
-          viewport.scrollTop = prevScrollTop + scrollHeightDelta;
-        } else if (countDelta > 0 && !isPrepend) {
-          setShowNewContent(true);
-        }
-      }
-    }
-
-    lastScrollTopRef.current = viewport.scrollTop;
-    lastScrollHeightRef.current = viewport.scrollHeight;
-    if (!isAtBottomRef.current) {
-      // Only re-evaluate from DOM when we didn't just autoscroll (handled above).
-      isAtBottomRef.current =
-        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= BOTTOM_THRESHOLD_PX;
-    }
-    lastMessageCountRef.current = nextCount;
-    lastFirstMessageIdRef.current = nextFirstId;
-  }, [messages, autoScrollToBottom, getViewport, viewportEl]);
-
-  // Handler to scroll to new content when notification is clicked
-  const handleScrollToNewContent = useCallback(() => {
-    autoScrollToBottom("smooth");
-    setShowNewContent(false);
-  }, [autoScrollToBottom]);
-
-  // Handler to copy message content to clipboard
-  const handleCopyMessage = useCallback(async (messageId: string, content: string) => {
-    try {
-      await navigator.clipboard.writeText(content);
-      setCopiedMessageId(messageId);
-      setTimeout(() => setCopiedMessageId(null), 1500);
-    } catch (err) {
-      console.error("Failed to copy message:", err);
-    }
-  }, []);
 
   // Auto-dismiss error after 5 seconds
   useEffect(() => {
@@ -289,14 +137,22 @@ export function ChatPhase({
     }
   }, [sendError]);
 
-  // Auto-resize textarea based on content
-  useEffect(() => {
+  // Auto-resize textarea: use rAF-coalesced onInput handler instead of useEffect
+  // to avoid synchronous layout thrashing on every keystroke.
+  const resizeRafRef = useRef(0);
+  const handleTextAreaInput = useCallback(() => {
     const textArea = textAreaRef.current;
-    if (textArea) {
+    if (!textArea) return;
+    cancelAnimationFrame(resizeRafRef.current);
+    resizeRafRef.current = requestAnimationFrame(() => {
       textArea.style.height = "auto";
       textArea.style.height = `${textArea.scrollHeight}px`;
-    }
-  }, [input]);
+    });
+  }, []);
+  // Cleanup rAF on unmount
+  useEffect(() => {
+    return () => cancelAnimationFrame(resizeRafRef.current);
+  }, []);
 
   // Handle paste for images (works even when ImageInput is not visible)
   useEffect(() => {
@@ -350,15 +206,12 @@ export function ChatPhase({
   const handleSendMessage = useCallback(async () => {
     try {
       setSendError(null);
-      // Get attachment inputs from pending images (server assigns IDs)
       const attachments = pendingImages.length > 0
         ? getAttachmentInputsFromPendingImages(pendingImages)
         : undefined;
       await onSendMessage(attachments);
-      // Clear images after sending
       onImagesChange([]);
       setShowImageInput(false);
-      // Reset textarea height after sending
       if (textAreaRef.current) {
         textAreaRef.current.style.height = "auto";
       }
@@ -369,185 +222,34 @@ export function ChatPhase({
     }
   }, [onSendMessage, pendingImages, onImagesChange]);
 
-  const handleInterruptMessage = useCallback(
-    (msgId: string, senderId: string) => {
-      // Pass handle from allParticipants for fallback lookup if agentId is stale
-      const handle = allParticipants[senderId]?.metadata?.handle;
-      onInterrupt?.(senderId, msgId, handle);
-    },
-    [onInterrupt, allParticipants]
-  );
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void handleSendMessage();
     }
-  };
+  }, [handleSendMessage]);
 
-  const getSenderInfo = useCallback((senderId: string) => {
-    const participant = allParticipants[senderId];
-    return participant?.metadata ?? { name: "Unknown", type: "panel" as const, handle: "unknown" };
-  }, [allParticipants]);
+  const toggleImageInput = useCallback(() => {
+    setShowImageInput((prev) => !prev);
+  }, []);
 
-  // Memoize message grouping AND inline item transformation to prevent expensive recalculation on every render
-  const groupedItems = useMemo(() => {
-    // Helper to determine if a message is an inline item (thinking, action, method, or typing)
-    type InlineItemType = "thinking" | "action" | "method" | "typing";
-    function getInlineItemType(msg: ChatMessage): InlineItemType | null {
-      if (msg.kind === "method" && msg.method) return "method";
-      if (msg.contentType === "thinking") return "thinking";
-      if (msg.contentType === "action") return "action";
-      // Typing indicators are ephemeral - hide completed ones
-      if (msg.contentType === "typing" && !msg.complete) return "typing";
-      return null;
+  const handleSendClick = useCallback(() => {
+    void handleSendMessage();
+  }, [handleSendMessage]);
+
+  // Memoize participant active status: single reverse scan instead of O(P*M) filter per render
+  const participantActiveStatus = useMemo(() => {
+    const status = new Map<string, boolean>();
+    const pIds = new Set(Object.keys(participants));
+    const found = new Set<string>();
+    for (let i = messages.length - 1; i >= 0 && found.size < pIds.size; i--) {
+      const msg = messages[i];
+      if (msg.kind !== "message" || !pIds.has(msg.senderId) || found.has(msg.senderId)) continue;
+      status.set(msg.senderId, !msg.complete && !msg.error);
+      found.add(msg.senderId);
     }
-
-    /** Transform an inline group's messages into InlineItem[] with deduplication */
-    function buildInlineItems(items: Array<{ msg: ChatMessage; index: number }>): InlineItem[] {
-      const inlineItems: InlineItem[] = items.map(({ msg }) => {
-        if (msg.kind === "method" && msg.method) {
-          // Use live data from methodEntries Map if available, fall back to snapshot
-          const liveEntry = methodEntries?.get(msg.method.callId);
-          return { type: "method" as const, entry: liveEntry ?? msg.method };
-        }
-        if (msg.contentType === "thinking") {
-          return {
-            type: "thinking" as const,
-            id: msg.id,
-            content: msg.content,
-            complete: msg.complete ?? false,
-          };
-        }
-        if (msg.contentType === "action") {
-          const data = parseActionData(msg.content, msg.complete);
-          return {
-            type: "action" as const,
-            id: msg.id,
-            data,
-            complete: msg.complete ?? false,
-          };
-        }
-        if (msg.contentType === "typing") {
-          const data = parseTypingData(msg.content);
-          return {
-            type: "typing" as const,
-            id: msg.id,
-            data,
-            senderId: msg.senderId,
-          };
-        }
-        // Fallback — shouldn't happen
-        return {
-          type: "thinking" as const,
-          id: msg.id,
-          content: msg.content || "Unknown",
-          complete: msg.complete ?? false,
-        };
-      });
-
-      // Deduplicate actions: when updateAction() completes old message + creates new,
-      // both show up. Keep only the LAST action per toolUseId (has detailed description).
-      const lastActionIndexByToolUseId = new Map<string, number>();
-      inlineItems.forEach((item, i) => {
-        if (item.type === "action" && item.data.toolUseId) {
-          lastActionIndexByToolUseId.set(item.data.toolUseId, i);
-        }
-      });
-
-      // Also collect action tool names for method deduplication
-      const actionToolNames = new Set<string>();
-      for (const item of inlineItems) {
-        if (item.type === "action") {
-          actionToolNames.add(prettifyToolName(item.data.type));
-        }
-      }
-
-      return inlineItems.filter((item, i) => {
-        // Remove superseded action messages (earlier actions with same toolUseId)
-        if (item.type === "action" && item.data.toolUseId) {
-          const lastIndex = lastActionIndexByToolUseId.get(item.data.toolUseId);
-          if (lastIndex !== undefined && i !== lastIndex) return false;
-        }
-        // Remove method when a matching action exists (by tool name)
-        if (item.type === "method") {
-          const methodToolName = prettifyToolName(item.entry.methodName);
-          if (actionToolNames.has(methodToolName)) return false;
-        }
-        return true;
-      });
-    }
-
-    // Pre-filter: keep only the LAST active typing indicator per sender.
-    // An agent should only have one active typing indicator at a time, but if a
-    // stopTyping update is lost (race condition, pubsub edge case), older indicators
-    // can get stuck. Treating earlier ones as implicitly completed prevents duplicates
-    // that span across different inline groups.
-    const lastTypingIndexBySender = new Map<string, number>();
-    messages.forEach((msg, index) => {
-      if (msg.contentType === "typing" && !msg.complete) {
-        lastTypingIndexBySender.set(msg.senderId, index);
-      }
-    });
-    const isSupersededTyping = (msg: ChatMessage, index: number): boolean => {
-      if (msg.contentType !== "typing" || msg.complete) return false;
-      const lastIndex = lastTypingIndexBySender.get(msg.senderId);
-      return lastIndex !== undefined && index !== lastIndex;
-    };
-
-    // Group consecutive inline items (thinking, action, method)
-    const result: Array<
-      | { type: "inline-group"; items: Array<{ msg: ChatMessage; index: number }>; inlineItems: InlineItem[]; key: string }
-      | { type: "message"; msg: ChatMessage; index: number }
-    > = [];
-
-    let currentInlineGroup: Array<{ msg: ChatMessage; index: number }> = [];
-
-    messages.forEach((msg, index) => {
-      // Skip superseded typing indicators (older ones from same sender)
-      if (isSupersededTyping(msg, index)) return;
-
-      const inlineType = getInlineItemType(msg);
-
-      if (inlineType !== null) {
-        // This is an inline item (thinking, action, method, or typing)
-        currentInlineGroup.push({ msg, index });
-      } else {
-        // Regular message - flush any pending inline group
-        if (currentInlineGroup.length > 0) {
-          result.push({
-            type: "inline-group",
-            items: currentInlineGroup,
-            inlineItems: buildInlineItems(currentInlineGroup),
-            key: `inline-group-${currentInlineGroup[0].msg.id || currentInlineGroup[0].index}`,
-          });
-          currentInlineGroup = [];
-        }
-        result.push({ type: "message", msg, index });
-      }
-    });
-
-    // Flush final inline group
-    if (currentInlineGroup.length > 0) {
-      result.push({
-        type: "inline-group",
-        items: currentInlineGroup,
-        inlineItems: buildInlineItems(currentInlineGroup),
-        key: `inline-group-${currentInlineGroup[0].msg.id || currentInlineGroup[0].index}`,
-      });
-    }
-
-    return result;
-  }, [messages, methodEntries]);
-
-  // Stable callback for interrupting typing indicators (avoids new closure per render)
-  const handleTypingInterrupt = useCallback((senderId: string) => {
-    const handle = allParticipants[senderId]?.metadata?.handle;
-    onInterrupt?.(senderId, undefined, handle);
-  }, [allParticipants, onInterrupt]);
-
-  // pendingAgents is now passed as a prop (managed by parent component)
-  // This is cleaner than computing from ephemeral debug events
+    return status;
+  }, [messages, participants]);
 
   return (
     <Theme appearance={theme}>
@@ -566,16 +268,14 @@ export function ChatPhase({
         <Flex gap="2" align="center">
           <Badge color={connected ? "green" : "gray"}>{connected ? "Connected" : status}</Badge>
           {Object.values(participants).map((p) => {
-            // Check if this agent has an active message
-            const agentMessages = messages.filter((m) => m.senderId === p.id && m.kind === "message");
-            const hasActive = agentMessages.some((m) => !m.complete && !m.error);
+            const hasActive = participantActiveStatus.get(p.id) ?? false;
 
             return (
               <ParticipantBadgeMenu
                 key={p.id}
                 participant={p}
                 hasActiveMessage={hasActive}
-                onCallMethod={onCallMethod ?? (() => {})}
+                onCallMethod={onCallMethod ?? NOOP}
                 isGranted={toolApproval ? p.id in toolApproval.settings.agentGrants : false}
                 onRevokeAgent={toolApproval?.onRevokeAgent}
                 onOpenDebugConsole={onDebugConsoleChange ? (handle) => onDebugConsoleChange(handle) : undefined}
@@ -628,161 +328,19 @@ export function ChatPhase({
         </Box>
       )}
 
-      {/* Messages */}
-      <Box flexGrow="1" overflow="hidden" style={{ minHeight: 0, position: "relative" }} asChild>
-        <Card>
-        <ScrollArea ref={scrollAreaRef} style={{ height: "100%" }}>
-          <Flex ref={scrollContentRef} direction="column" gap="1" p="1" style={{ overflowAnchor: "none" }}>
-            {/* Load earlier messages button */}
-            {hasMoreHistory && onLoadEarlierMessages && (
-              <Flex justify="center" py="2">
-                <Button
-                  size="1"
-                  variant="soft"
-                  onClick={onLoadEarlierMessages}
-                  disabled={loadingMore}
-                >
-                  {loadingMore ? "Loading..." : "Load earlier messages"}
-                </Button>
-              </Flex>
-            )}
-            {messages.length === 0 ? (
-              <Text color="gray" size="2">
-                Send a message to start chatting
-              </Text>
-            ) : (
-              groupedItems.map((item) => {
-                  if (item.type === "inline-group") {
-                    return <InlineGroup key={item.key} items={item.inlineItems} onInterrupt={handleTypingInterrupt} />;
-                  }
-
-                  const { msg, index } = item;
-                  // Debug log to track key issues
-                  if (!msg.id) {
-                    console.warn(`[ChatPhase] Message at index ${index} has no id:`, msg);
-                  }
-
-                  // Skip completed typing indicators - they're ephemeral and shouldn't persist
-                  if (msg.contentType === "typing" && msg.complete) {
-                    return null;
-                  }
-
-                  // Handle inline_ui messages - render compiled MDX inline
-                  if (msg.contentType === CONTENT_TYPE_INLINE_UI) {
-                    const data = parseInlineUiData(msg.content);
-                    if (data) {
-                      const compiled = inlineUiComponents?.get(data.id);
-                      return (
-                        <Box
-                          key={msg.id || `fallback-msg-${index}`}
-                          style={{ maxWidth: "96%", alignSelf: "flex-start" }}
-                        >
-                          <InlineUiMessage
-                            data={data}
-                            compiledComponent={compiled?.Component}
-                            compilationError={compiled?.error}
-                          />
-                        </Box>
-                      );
-                    }
-                  }
-
-                  // Handle system messages (e.g., agent disconnection notifications)
-                  if (msg.kind === "system" && msg.disconnectedAgent) {
-                    return (
-                      <Box
-                        key={msg.id || `fallback-msg-${index}`}
-                        style={{ maxWidth: "96%", alignSelf: "center" }}
-                      >
-                        <AgentDisconnectedMessage
-                          agent={msg.disconnectedAgent}
-                          onFocusPanel={onFocusPanel}
-                          onReloadPanel={onReloadPanel}
-                        />
-                      </Box>
-                    );
-                  }
-
-                  const sender = getSenderInfo(msg.senderId);
-                  const isPanel = sender.type === "panel";
-                  // Only show streaming for messages that are actively being streamed (not pending local messages)
-                  const isStreaming = msg.kind === "message" && !msg.complete && !msg.pending;
-                  const hasError = Boolean(msg.error);
-                  const hasContent = msg.content.length > 0;
-                  const hasAttachments = msg.attachments && msg.attachments.length > 0;
-
-                  return (
-                    <Box
-                      key={msg.id || `fallback-msg-${index}`}
-                      style={{
-                        maxWidth: "96%",
-                        alignSelf: isPanel ? "flex-end" : "flex-start",
-                      }}
-                    >
-                      <Card
-                        className="message-card"
-                        style={{
-                          position: "relative",
-                          backgroundColor: isPanel
-                            ? "var(--gray-5)"
-                            : msg.error
-                              ? "var(--red-3)"
-                              : "var(--gray-3)",
-                          opacity: msg.pending ? 0.7 : 1,
-                        }}
-                      >
-                        <Flex direction="column" gap="2">
-                          {hasContent && (
-                            <Box style={{ color: isPanel ? "white" : "inherit" }}>
-                              <MessageContent content={msg.content} isStreaming={isStreaming} />
-                            </Box>
-                          )}
-                          {hasAttachments && (
-                            <ImageGallery attachments={msg.attachments!} />
-                          )}
-                          {hasError && (
-                            <Text size="2" color="red" style={{ whiteSpace: "pre-wrap" }}>
-                              Error: {msg.error}
-                            </Text>
-                          )}
-                          {isStreaming && (
-                            <TypingIndicator
-                              isPaused={false}
-                              showInterruptButton={true}
-                              onInterrupt={() => handleInterruptMessage(msg.id, msg.senderId)}
-                            />
-                          )}
-                          {hasContent && !isStreaming && (
-                            <IconButton
-                              className="copy-button"
-                              size="1"
-                              variant="ghost"
-                              color="gray"
-                              style={{
-                                position: "absolute",
-                                bottom: 4,
-                                right: 4,
-                              }}
-                              onClick={() => void handleCopyMessage(msg.id, msg.content)}
-                              title="Copy message"
-                            >
-                              {copiedMessageId === msg.id ? <CheckIcon /> : <CopyIcon />}
-                            </IconButton>
-                          )}
-                        </Flex>
-                      </Card>
-                    </Box>
-                  );
-              })
-            )}
-            <div ref={scrollRef} />
-          </Flex>
-        </ScrollArea>
-        {showNewContent && (
-          <NewContentIndicator onClick={handleScrollToNewContent} />
-        )}
-        </Card>
-      </Box>
+      {/* Messages — isolated in React.memo'd MessageList; input changes don't reach here */}
+      <MessageList
+        messages={messages}
+        methodEntries={methodEntries}
+        allParticipants={allParticipants}
+        inlineUiComponents={inlineUiComponents}
+        hasMoreHistory={hasMoreHistory}
+        loadingMore={loadingMore}
+        onLoadEarlierMessages={onLoadEarlierMessages}
+        onInterrupt={onInterrupt}
+        onFocusPanel={onFocusPanel}
+        onReloadPanel={onReloadPanel}
+      />
 
       {activeFeedbacks.size > 0 && (
         <Flex direction="column" gap="2" flexShrink="0">
@@ -817,7 +375,6 @@ export function ChatPhase({
             // Render TSX-based feedbacks (type === "tsx")
             const FeedbackComponent = feedback.Component;
             if (!FeedbackComponent || typeof FeedbackComponent !== "function") {
-              // Report the error and skip rendering
               onFeedbackError(feedback.callId, new Error("Invalid feedback component"));
               return null;
             }
@@ -877,6 +434,7 @@ export function ChatPhase({
             placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
             value={input}
             onChange={(e) => onInputChange(e.target.value)}
+            onInput={handleTextAreaInput}
             onKeyDown={handleKeyDown}
             disabled={!connected}
           />
@@ -884,7 +442,7 @@ export function ChatPhase({
             <IconButton
               variant="ghost"
               size="2"
-              onClick={() => setShowImageInput(!showImageInput)}
+              onClick={toggleImageInput}
               disabled={!connected}
               color={pendingImages.length > 0 ? "blue" : "gray"}
               title="Attach images"
@@ -892,7 +450,7 @@ export function ChatPhase({
               <ImageIcon />
             </IconButton>
             <IconButton
-              onClick={() => void handleSendMessage()}
+              onClick={handleSendClick}
               disabled={!connected || (!input.trim() && pendingImages.length === 0)}
               size="2"
               variant="soft"
