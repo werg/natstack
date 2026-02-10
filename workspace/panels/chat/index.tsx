@@ -10,7 +10,7 @@ import { usePanelTheme } from "@natstack/react";
 import { useCallback } from "react";
 import { Flex, Text, Button, Card } from "@radix-ui/themes";
 import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
-import type { ConnectionConfig, AgenticChatActions, ToolProvider } from "@workspace/agentic-chat";
+import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps } from "@workspace/agentic-chat";
 import { createAllToolMethodDefinitions, executeEvalTool, EVAL_DEFAULT_TIMEOUT_MS, EVAL_MAX_TIMEOUT_MS, EVAL_FRAMEWORK_TIMEOUT_MS } from "@workspace/agentic-tools";
 import { z } from "zod";
 import type { MethodDefinition } from "@natstack/agentic-messaging";
@@ -83,7 +83,7 @@ export default function ChatPanel() {
   };
 
   // Tool provider: creates all tool method definitions + eval
-  const toolProvider: ToolProvider = useCallback(({ clientRef, workspaceRoot: wsRoot }) => {
+  const toolProvider: ToolProvider = useCallback(({ clientRef, workspaceRoot: wsRoot }: ToolProviderDeps) => {
     const diagnosticsPublisher = (eventType: string, payload: unknown) => {
       void clientRef.current?.publish(eventType, payload);
     };
@@ -121,7 +121,7 @@ Use standard ESM imports - they're transformed to require() automatically:
 
         try {
           const result = await executeEvalTool(args as { code: string; syntax?: "typescript" | "jsx" | "tsx"; timeout?: number }, ctx, {
-            onConsoleEntry: (formatted) => {
+            onConsoleEntry: (formatted: string) => {
               consoleBuffer = consoleBuffer ? `${consoleBuffer}\n${formatted}` : formatted;
               flushConsole();
             },
