@@ -300,22 +300,21 @@ export const MessageList = React.memo(function MessageList({
 
     const scrollToEnd = () => {
       const v = virtualizerRef.current;
-      if (v && v.options.count > 0) {
+      // Use the virtualizer's API only when it has actually computed visible
+      // items (i.e. it has observed the scroll element via ResizeObserver).
+      // Before that, scrollToIndex silently fails, so fall back to direct
+      // DOM scrolling which always works.
+      if (v && v.getVirtualItems().length > 0) {
         v.scrollToIndex(v.options.count - 1, { align: "end" });
-        // Re-scroll after the virtualizer measures the new item — the first
-        // scrollToIndex uses estimateSize which can undershoot.  One rAF is
-        // enough because measureElement fires during the same paint cycle.
-        // Cancel previous rAF to avoid piling up during fast streaming.
         cancelAnimationFrame(scrollRafRef.current);
         scrollRafRef.current = requestAnimationFrame(() => {
-          if (virtualizerRef.current && virtualizerRef.current.options.count > 0) {
+          if (virtualizerRef.current && virtualizerRef.current.getVirtualItems().length > 0) {
             virtualizerRef.current.scrollToIndex(
               virtualizerRef.current.options.count - 1, { align: "end" },
             );
           }
         });
       } else {
-        // Fallback before virtualizer is ready
         viewport.scrollTo({ top: viewport.scrollHeight, behavior: "auto" });
       }
     };
@@ -371,19 +370,25 @@ export const MessageList = React.memo(function MessageList({
   // retry. Instant scroll is corrected by the setTimeout(0) retry loop.
   const handleScrollToNewContent = useCallback(() => {
     const v = virtualizerRef.current;
-    if (v && v.options.count > 0) {
+    if (v && v.getVirtualItems().length > 0) {
       v.scrollToIndex(v.options.count - 1, { align: "end" });
-      requestAnimationFrame(() => {
-        if (virtualizerRef.current && virtualizerRef.current.options.count > 0) {
+      cancelAnimationFrame(scrollRafRef.current);
+      scrollRafRef.current = requestAnimationFrame(() => {
+        if (virtualizerRef.current && virtualizerRef.current.getVirtualItems().length > 0) {
           virtualizerRef.current.scrollToIndex(
             virtualizerRef.current.options.count - 1, { align: "end" },
           );
         }
       });
+    } else {
+      const viewport = viewportEl ?? getViewport();
+      if (viewport) {
+        viewport.scrollTo({ top: viewport.scrollHeight, behavior: "auto" });
+      }
     }
     isAtBottomRef.current = true;
     setShowNewContent(false);
-  }, []);
+  }, [getViewport, viewportEl]);
 
   // --- Copy handler (local to MessageList) ---
   const handleCopyMessage = useCallback(async (messageId: string, content: string) => {
@@ -617,6 +622,8 @@ export const MessageList = React.memo(function MessageList({
       handleInterruptMessage, handleCopyMessage, handleTypingInterrupt, onFocusPanel, onReloadPanel]);
 
   // --- Render ---
+  const virtualItems = virtualizer.getVirtualItems();
+
   return (
     <Box flexGrow="1" overflow="hidden" style={{ minHeight: 0, position: "relative" }} asChild>
       <Card>
@@ -639,22 +646,15 @@ export const MessageList = React.memo(function MessageList({
             <Text color="gray" size="2">
               Send a message to start chatting
             </Text>
-          ) : (
+          ) : virtualItems.length > 0 ? (
             <div
               style={{
-                // Use the virtualizer's total size only once it has computed
-                // visible items (needs a scroll element + ResizeObserver
-                // measurement). Before that, getTotalSize() is based on
-                // estimates with no items rendered, creating a phantom
-                // scrollbar.
-                height: virtualizer.getVirtualItems().length > 0
-                  ? `${virtualizer.getTotalSize()}px`
-                  : "auto",
+                height: `${virtualizer.getTotalSize()}px`,
                 width: "100%",
                 position: "relative",
               }}
             >
-              {virtualizer.getVirtualItems().map((virtualItem) => (
+              {virtualItems.map((virtualItem) => (
                 <div
                   key={virtualItem.key}
                   data-index={virtualItem.index}
@@ -666,14 +666,26 @@ export const MessageList = React.memo(function MessageList({
                     width: "100%",
                     transform: `translateY(${virtualItem.start}px)`,
                     paddingBottom: "var(--space-1)",
+                    display: "flex",
+                    flexDirection: "column",
                   }}
                 >
                   {renderItem(virtualItem.index)}
                 </div>
               ))}
             </div>
+          ) : (
+            /* Fallback: render items in normal flow until the virtualizer
+               has measured the scroll element (needs async ResizeObserver).
+               This avoids the empty container + phantom scrollbar. */
+            <Flex direction="column" gap="1">
+              {groupedItems.map((item, i) => (
+                <Flex direction="column" key={item.type === "inline-group" ? item.key : (item.msg.id || `fb-${i}`)}>
+                  {renderItem(i)}
+                </Flex>
+              ))}
+            </Flex>
           )}
-          {/* Sentinel div removed — virtualizer.scrollToIndex handles autoscroll */}
         </div>
       </ScrollArea>
       {showNewContent && (
