@@ -53,8 +53,10 @@ async function compileMdx(content: string, rehypeHighlight: RehypeHighlightPlugi
   return Component as ComponentType;
 }
 
-// Regex to detect markdown syntax that benefits from ReactMarkdown rendering
-const MARKDOWN_SYNTAX_RE = /[#*+\-_`\[!\|>~]|```|\d+\./;
+// Regex to detect markdown syntax that benefits from ReactMarkdown rendering.
+// Must match actual syntax in context — not bare punctuation like `-`, `!`, `_`
+// which appear in normal English and would defeat the plain-text fast path.
+const MARKDOWN_SYNTAX_RE = /^[ \t]*#{1,6} |`[^`]|```|\*\*|__|\*[^\s*]|_[^\s_]|^[ \t]*[-*+] |^[ \t]*\d+\. |^[ \t]*>|~~|\[[^\]]*\]\(|!\[|.*\|.*\|/m;
 
 // Debounce interval for streaming content updates (ms)
 const STREAMING_DEBOUNCE_MS = 100;

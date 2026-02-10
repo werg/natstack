@@ -3,9 +3,6 @@ import type { IncomingMethodResult } from "@natstack/agentic-messaging";
 import type { MethodHistoryEntry } from "../components/MethodHistoryItem";
 import type { ChatMessage } from "../types";
 
-// Re-export for backwards compatibility
-export type { ChatMessage };
-
 /** Maximum number of method history entries to retain (reduced from 10K for memory efficiency) */
 const MAX_METHOD_HISTORY_SIZE = 2000;
 /** Prune threshold - start pruning at 80% capacity */

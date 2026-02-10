@@ -100,19 +100,48 @@ function isSpawnErrorEvent(payload: AgentDebugPayload): payload is SpawnErrorPay
 }
 
 // ===========================================================================
+// Event Middleware
+// ===========================================================================
+
+/** Middleware function for event processing pipeline */
+export type EventMiddleware = (event: IncomingEvent, next: () => void) => void;
+
+// ===========================================================================
 // Main Dispatcher
 // ===========================================================================
 
 /**
  * Handles incoming agentic events and updates appropriate state.
  * Pure function to keep event logic separate from component.
+ *
+ * @param middleware - Optional array of middleware functions that run before default handling.
+ *   Each middleware receives the event and a `next` callback. Call `next()` to continue
+ *   to the next middleware or default handling. Skip `next()` to swallow the event.
  */
 export function dispatchAgenticEvent(
   event: IncomingEvent,
   handlers: AgentEventHandlers,
   selfId: string | null,
-  participants: Record<string, Participant<ChatParticipantMetadata>>
+  participants: Record<string, Participant<ChatParticipantMetadata>>,
+  middleware?: EventMiddleware[],
 ): void {
+  // Run middleware chain if provided
+  if (middleware && middleware.length > 0) {
+    let index = 0;
+    let continued = false;
+    const runNext = () => {
+      continued = true;
+      index++;
+      if (index < middleware.length) {
+        continued = false;
+        middleware[index](event, runNext);
+      }
+    };
+    middleware[0](event, runNext);
+    // If any middleware did not call next(), stop processing
+    if (!continued && index < middleware.length) return;
+  }
+
   const isSelf = !!selfId && event.senderId === selfId;
   const isPanelSender = event.senderMetadata?.type === "panel" || isSelf;
 
@@ -147,6 +176,9 @@ export function dispatchAgenticEvent(
             kind: "message",
             complete: event.kind === "replay" || isPanelSender,
             attachments: getEventAttachments(event),
+            // Snapshot sender metadata so historical messages render correctly
+            // even when the original participant is no longer in the roster.
+            senderMetadata: event.senderMetadata as ChatMessage["senderMetadata"],
           },
         ];
       });

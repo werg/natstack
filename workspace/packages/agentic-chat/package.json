@@ -1,0 +1,23 @@
+{
+  "name": "@workspace/agentic-chat",
+  "version": "0.1.0-git.7429c90",
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./types": "./types.ts",
+    "./styles.css": "./styles.css"
+  },
+  "dependencies": {
+    "@natstack/agentic-messaging": "workspace:*",
+    "@natstack/pubsub": "workspace:*",
+    "@natstack/tool-ui": "workspace:*",
+    "@mdx-js/mdx": "^3.1.0",
+    "@radix-ui/themes": "^3.2.1",
+    "@radix-ui/react-icons": "^1.3.2",
+    "@tanstack/react-virtual": "^3.13.0",
+    "highlight.js": "^11.11.1",
+    "react-markdown": "^9.0.1",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.0"
+  }
+}

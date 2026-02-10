@@ -1,5 +1,4 @@
 import { useState, useRef, useCallback, useEffect, type RefObject } from "react";
-import { pubsubConfig, id as panelClientId } from "@natstack/runtime";
 import { connect } from "@natstack/agentic-messaging/client";
 import type {
   AgenticClient,
@@ -10,7 +9,7 @@ import type {
   ToolRoleDeclaration,
   ChannelConfig,
 } from "@natstack/agentic-messaging";
-import type { ChatParticipantMetadata } from "../types";
+import type { ChatParticipantMetadata, ConnectionConfig } from "../types";
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
 
@@ -18,6 +17,8 @@ export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "er
 export type ToolRolesConfig = Partial<Record<ToolGroup, ToolRoleDeclaration>>;
 
 export interface UseChannelConnectionOptions {
+  /** Connection configuration (server URL, token, client ID) */
+  config: ConnectionConfig;
   metadata: ChatParticipantMetadata;
   /** Tool roles this panel provides (for conflict detection) */
   toolRoles?: ToolRolesConfig;
@@ -47,13 +48,14 @@ export interface UseChannelConnectionResult {
   connected: boolean;
   /** The client's ID on the channel (available after connection) */
   clientId: string | null;
-  /** The panel's static ID from runtime */
+  /** The static client ID from the connection config */
   panelClientId: string;
   connect: (options: ConnectOptions) => Promise<AgenticClient<ChatParticipantMetadata>>;
   disconnect: () => void;
 }
 
 export function useChannelConnection({
+  config,
   metadata,
   toolRoles,
   onEvent,
@@ -91,7 +93,7 @@ export function useChannelConnection({
     async (options: ConnectOptions): Promise<AgenticClient<ChatParticipantMetadata>> => {
       const { channelId, methods, channelConfig, contextId } = options;
 
-      if (!pubsubConfig) {
+      if (!config.serverUrl || !config.token) {
         const error = new Error("PubSub configuration not available");
         callbacksRef.current.onError?.(error);
         setStatus("error");
@@ -105,8 +107,8 @@ export function useChannelConnection({
 
       try {
         const newClient = await connect<ChatParticipantMetadata>({
-          serverUrl: pubsubConfig.serverUrl,
-          token: pubsubConfig.token,
+          serverUrl: config.serverUrl,
+          token: config.token,
           channel: channelId,
           // Pass contextId for channel authorization (passed separately from channelConfig)
           contextId,
@@ -116,7 +118,7 @@ export function useChannelConnection({
           name: metadata.name,
           type: metadata.type,
           reconnect: true,
-          clientId: panelClientId,
+          clientId: config.clientId,
           methods,
           replayMode: "stream",
           extraMetadata: toolRoles ? { toolRoles } : undefined,
@@ -194,7 +196,7 @@ export function useChannelConnection({
         throw error;
       }
     },
-    [metadata, toolRoles, disconnect]
+    [config, metadata, toolRoles, disconnect]
   );
 
   // Clean up on unmount
@@ -210,7 +212,7 @@ export function useChannelConnection({
     status,
     connected: status === "connected",
     clientId: client?.clientId ?? null,
-    panelClientId,
+    panelClientId: config.clientId,
     connect: connectToChannel,
     disconnect,
   };

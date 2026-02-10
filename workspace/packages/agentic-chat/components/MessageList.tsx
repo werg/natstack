@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, type ComponentType } from "react";
 import { Box, Button, Card, Flex, ScrollArea, Text } from "@radix-ui/themes";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
 import { prettifyToolName } from "@natstack/agentic-messaging/utils";
 import type { Participant } from "@natstack/pubsub";
 import type { MethodHistoryEntry } from "./MethodHistoryItem";
@@ -123,6 +123,10 @@ function fullGroupComputation(
 
   messages.forEach((msg, index) => {
     if (isSupersededTyping(msg, index)) return;
+    // Skip completed typing indicators — they're ephemeral and render as
+    // null in MessageCard.  Excluding them here keeps the virtualizer's
+    // count accurate (no phantom height for invisible items).
+    if (msg.contentType === "typing" && msg.complete) return;
 
     const inlineType = getInlineItemType(msg);
 
@@ -154,7 +158,14 @@ function fullGroupComputation(
   return result;
 }
 
-interface MessageListProps {
+/** Sender info returned by getSenderInfo */
+export interface SenderInfo {
+  name: string;
+  type: "panel" | "ai-responder" | "claude-code" | "codex" | "subagent";
+  handle: string;
+}
+
+export interface MessageListProps {
   messages: ChatMessage[];
   methodEntries?: Map<string, MethodHistoryEntry>;
   allParticipants: Record<string, Participant<ChatParticipantMetadata>>;
@@ -169,6 +180,10 @@ interface MessageListProps {
   onInterrupt?: (agentId: string, messageId?: string, agentHandle?: string) => void;
   onFocusPanel?: (panelId: string) => void;
   onReloadPanel?: (panelId: string) => void;
+  /** Override default message card rendering */
+  renderMessage?: (msg: ChatMessage, senderInfo: SenderInfo) => React.ReactNode;
+  /** Override default inline group rendering */
+  renderInlineGroup?: (items: InlineItem[]) => React.ReactNode;
 }
 
 /**
@@ -195,6 +210,8 @@ export const MessageList = React.memo(function MessageList({
   onInterrupt,
   onFocusPanel,
   onReloadPanel,
+  renderMessage: customRenderMessage,
+  renderInlineGroup: customRenderInlineGroup,
 }: MessageListProps) {
   // --- Scroll refs and state ---
   const scrollAreaRef = useRef<HTMLDivElement>(null);
@@ -216,7 +233,7 @@ export const MessageList = React.memo(function MessageList({
 
   // Ref to access the virtualizer from layout effects (set during render,
   // available by the time layout effects fire).
-  const virtualizerRef = useRef<ReturnType<typeof useVirtualizer> | null>(null);
+  const virtualizerRef = useRef<Virtualizer<HTMLElement, Element> | null>(null);
 
   const getViewport = useCallback((): HTMLElement | null => {
     const content = scrollContentRef.current;
@@ -268,11 +285,6 @@ export const MessageList = React.memo(function MessageList({
     return () => viewportEl.removeEventListener("scroll", handleScroll);
   }, [handleScroll, viewportEl]);
 
-  // NOTE: No standalone ResizeObserver here — the virtualizer owns item
-  // measurement via measureElement refs.  Instead, the virtualizer's onChange
-  // callback (see below) detects when items resize (e.g. images loading) and
-  // auto-scrolls when the user was at the bottom.
-
   // Handle new content: keep position unless the user was near the bottom.
   // Uses virtualizerRef (set during render) to scroll via the virtualizer's
   // own API, keeping its internal state consistent.
@@ -295,25 +307,17 @@ export const MessageList = React.memo(function MessageList({
     }
 
     const scrollToEnd = () => {
-      const v = virtualizerRef.current;
-      if (v && v.options.count > 0) {
-        v.scrollToIndex(v.options.count - 1, { align: "end" });
-        // Re-scroll after the virtualizer measures the new item — the first
-        // scrollToIndex uses estimateSize which can undershoot.  One rAF is
-        // enough because measureElement fires during the same paint cycle.
-        // Cancel previous rAF to avoid piling up during fast streaming.
-        cancelAnimationFrame(scrollRafRef.current);
-        scrollRafRef.current = requestAnimationFrame(() => {
-          if (virtualizerRef.current && virtualizerRef.current.options.count > 0) {
-            virtualizerRef.current.scrollToIndex(
-              virtualizerRef.current.options.count - 1, { align: "end" },
-            );
-          }
-        });
-      } else {
-        // Fallback before virtualizer is ready
-        viewport.scrollTo({ top: viewport.scrollHeight, behavior: "auto" });
-      }
+      // Direct DOM scroll — always lands at the true bottom.
+      // scrollToIndex uses estimated offsets and often undershoots,
+      // causing handleScroll to incorrectly clear isAtBottomRef.
+      viewport.scrollTo({ top: viewport.scrollHeight, behavior: "auto" });
+      // Retry next frame: the virtualizer may re-measure items between
+      // now and the next paint, changing scrollHeight.
+      cancelAnimationFrame(scrollRafRef.current);
+      scrollRafRef.current = requestAnimationFrame(() => {
+        const vp = viewportEl ?? getViewport();
+        if (vp) vp.scrollTo({ top: vp.scrollHeight, behavior: "auto" });
+      });
     };
 
     if (prevCount === 0) {
@@ -332,8 +336,8 @@ export const MessageList = React.memo(function MessageList({
       if (isAtBottomRef.current) {
         scrollToEnd();
         setShowNewContent(false);
-        // Keep the flag true — scrollToIndex is async (uses estimated offset)
-        // so viewport.scrollTop may not yet reflect the new position.
+        // Keep the flag true — the rAF retry fires asynchronously, and
+        // scroll events from the first scrollTo may arrive before the retry.
         isAtBottomRef.current = true;
       } else {
         if (isPrepend && scrollHeightDelta !== 0) {
@@ -354,32 +358,34 @@ export const MessageList = React.memo(function MessageList({
       }
     }
 
+    // Re-evaluate isAtBottomRef from the DOM — catches cases where the
+    // flag was cleared by an intermediate scroll event (e.g. during the
+    // virtualizer's fallback-to-virtual transition) but we're actually
+    // at the bottom.
+    if (!isAtBottomRef.current) {
+      isAtBottomRef.current =
+        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= BOTTOM_THRESHOLD_PX;
+    }
+
     lastScrollTopRef.current = viewport.scrollTop;
     lastScrollHeightRef.current = viewport.scrollHeight;
     lastMessageCountRef.current = nextCount;
     lastFirstMessageIdRef.current = nextFirstId;
   }, [messages, getViewport, viewportEl]);
 
-  // Scroll to the latest content when the indicator is clicked.
-  // NOTE: We use instant (not smooth) scrolling because TanStack Virtual
-  // disables its correction loop for smooth scrolls with dynamic sizing,
-  // so the animation would land at an estimated (wrong) offset with no
-  // retry. Instant scroll is corrected by the setTimeout(0) retry loop.
   const handleScrollToNewContent = useCallback(() => {
-    const v = virtualizerRef.current;
-    if (v && v.options.count > 0) {
-      v.scrollToIndex(v.options.count - 1, { align: "end" });
-      requestAnimationFrame(() => {
-        if (virtualizerRef.current && virtualizerRef.current.options.count > 0) {
-          virtualizerRef.current.scrollToIndex(
-            virtualizerRef.current.options.count - 1, { align: "end" },
-          );
-        }
+    const viewport = viewportEl ?? getViewport();
+    if (viewport) {
+      viewport.scrollTo({ top: viewport.scrollHeight, behavior: "auto" });
+      cancelAnimationFrame(scrollRafRef.current);
+      scrollRafRef.current = requestAnimationFrame(() => {
+        const vp = viewportEl ?? getViewport();
+        if (vp) vp.scrollTo({ top: vp.scrollHeight, behavior: "auto" });
       });
     }
     isAtBottomRef.current = true;
     setShowNewContent(false);
-  }, []);
+  }, [getViewport, viewportEl]);
 
   // --- Copy handler (local to MessageList) ---
   const handleCopyMessage = useCallback(async (messageId: string, content: string) => {
@@ -393,9 +399,19 @@ export const MessageList = React.memo(function MessageList({
   }, []);
 
   // --- Sender info lookup ---
-  const getSenderInfo = useCallback((senderId: string) => {
+  // Falls back to the message's senderMetadata snapshot (populated from events
+  // and history) before defaulting, so historical messages from agents align
+  // correctly on reload even when the original participant left the roster.
+  const getSenderInfo = useCallback((senderId: string, msg?: ChatMessage) => {
     const participant = allParticipants[senderId];
-    return participant?.metadata ?? { name: "Unknown", type: "panel" as const, handle: "unknown" };
+    if (participant?.metadata) return participant.metadata;
+    if (msg?.senderMetadata?.type) {
+      return { name: msg.senderMetadata.name ?? "Unknown", type: msg.senderMetadata.type, handle: msg.senderMetadata.handle ?? "unknown" };
+    }
+    // Default to "unknown" rather than "panel" — the local panel's own messages
+    // are always in allParticipants, so reaching this fallback means it's an
+    // unrecognised sender (likely an agent from a previous session).
+    return { name: "Unknown", type: "unknown" as const, handle: "unknown" };
   }, [allParticipants]);
 
   // --- Interrupt handler ---
@@ -435,16 +451,18 @@ export const MessageList = React.memo(function MessageList({
       if (onlyLastChanged) {
         const lastMsg = messages[messages.length - 1];
         const lastItem = cache.result[cache.result.length - 1];
-        // If the last grouped item is a regular message with the same id, swap it in-place
-        if (lastItem?.type === "message" && lastItem.msg.id === lastMsg.id) {
+        const lastMsgInlineType = getInlineItemType(lastMsg);
+        // If the last grouped item is a regular message with the same id, swap it in-place.
+        // Also verify the message hasn't transitioned to an inline type.
+        if (lastItem?.type === "message" && lastItem.msg.id === lastMsg.id && lastMsgInlineType === null) {
           const result = cache.result.slice(); // shallow copy
           result[result.length - 1] = { type: "message", msg: lastMsg, index: messages.length - 1 };
           prevGroupCacheRef.current = { messages, methodEntries, result };
           return result;
         }
         // If it's an inline group whose last source message changed (e.g., thinking/action streaming),
-        // rebuild only that inline group
-        if (lastItem?.type === "inline-group") {
+        // rebuild only that inline group. Verify the message is still an inline type.
+        if (lastItem?.type === "inline-group" && lastMsgInlineType !== null) {
           const lastSrcMsg = lastItem.items[lastItem.items.length - 1]?.msg;
           if (lastSrcMsg?.id === lastMsg.id) {
             const result = cache.result.slice();
@@ -492,6 +510,8 @@ export const MessageList = React.memo(function MessageList({
 
         for (let i = cache.messages.length; i < messages.length; i++) {
           const msg = messages[i];
+          // Skip completed typing indicators (same filter as fullGroupComputation)
+          if (msg.contentType === "typing" && msg.complete) continue;
           // Skip superseded typing
           if (msg.contentType === "typing" && !msg.complete) {
             const last = lastTypingBySender.get(msg.senderId);
@@ -553,7 +573,7 @@ export const MessageList = React.memo(function MessageList({
     count: groupedItems.length,
     getScrollElement: () => viewportEl,
     estimateSize: (index) => {
-      const item = groupedItems[index];
+      const item = groupedItemsRef.current[index];
       if (!item) return 100;
       if (item.type === "inline-group") return 36;
       const len = item.msg.content.length;
@@ -564,10 +584,16 @@ export const MessageList = React.memo(function MessageList({
     overscan: 8,
     onChange: (instance) => {
       const totalSize = instance.getTotalSize();
-      if (totalSize > prevTotalSizeRef.current && isAtBottomRef.current) {
+      if (totalSize > prevTotalSizeRef.current
+          && isAtBottomRef.current
+          && instance.options.count > 0) {
         // Item resized (image loaded, lazy component expanded) while user
         // was at bottom — keep them pinned there.
         instance.scrollToIndex(instance.options.count - 1, { align: "end" });
+        // Keep the flag true — scrollToIndex is async (uses estimated
+        // offsets) and may undershoot, causing scroll events that would
+        // incorrectly clear isAtBottomRef.
+        isAtBottomRef.current = true;
       }
       prevTotalSizeRef.current = totalSize;
     },
@@ -583,11 +609,19 @@ export const MessageList = React.memo(function MessageList({
     if (!item) return null;
 
     if (item.type === "inline-group") {
+      if (customRenderInlineGroup) {
+        return customRenderInlineGroup(item.inlineItems);
+      }
       return <InlineGroup key={item.key} items={item.inlineItems} onInterrupt={handleTypingInterrupt} />;
     }
 
     const { msg, index: msgIndex } = item;
-    const sender = getSenderInfo(msg.senderId);
+    const sender = getSenderInfo(msg.senderId, msg);
+
+    if (customRenderMessage) {
+      return customRenderMessage(msg, sender as SenderInfo);
+    }
+
     const isStreaming = msg.kind === "message" && !msg.complete && !msg.pending;
 
     return (
@@ -606,9 +640,12 @@ export const MessageList = React.memo(function MessageList({
       />
     );
   }, [getSenderInfo, inlineUiComponents,
-      handleInterruptMessage, handleCopyMessage, handleTypingInterrupt, onFocusPanel, onReloadPanel]);
+      handleInterruptMessage, handleCopyMessage, handleTypingInterrupt, onFocusPanel, onReloadPanel,
+      customRenderMessage, customRenderInlineGroup]);
 
   // --- Render ---
+  const virtualItems = virtualizer.getVirtualItems();
+
   return (
     <Box flexGrow="1" overflow="hidden" style={{ minHeight: 0, position: "relative" }} asChild>
       <Card>
@@ -631,7 +668,7 @@ export const MessageList = React.memo(function MessageList({
             <Text color="gray" size="2">
               Send a message to start chatting
             </Text>
-          ) : (
+          ) : virtualItems.length > 0 ? (
             <div
               style={{
                 height: `${virtualizer.getTotalSize()}px`,
@@ -639,7 +676,7 @@ export const MessageList = React.memo(function MessageList({
                 position: "relative",
               }}
             >
-              {virtualizer.getVirtualItems().map((virtualItem) => (
+              {virtualItems.map((virtualItem) => (
                 <div
                   key={virtualItem.key}
                   data-index={virtualItem.index}
@@ -651,14 +688,33 @@ export const MessageList = React.memo(function MessageList({
                     width: "100%",
                     transform: `translateY(${virtualItem.start}px)`,
                     paddingBottom: "var(--space-1)",
+                    display: "flex",
+                    flexDirection: "column",
                   }}
                 >
                   {renderItem(virtualItem.index)}
                 </div>
               ))}
             </div>
+          ) : (
+            /* Fallback: render last N items in normal flow until the virtualizer
+               has measured the scroll element (needs async ResizeObserver).
+               Capped to avoid rendering hundreds of items on reconnect. */
+            <Flex direction="column" gap="1">
+              {(() => {
+                const FALLBACK_CAP = 20;
+                const start = Math.max(0, groupedItems.length - FALLBACK_CAP);
+                return groupedItems.slice(start).map((item, sliceIdx) => {
+                  const i = start + sliceIdx;
+                  return (
+                    <Flex direction="column" key={item.type === "inline-group" ? item.key : (item.msg.id || `fb-${i}`)}>
+                      {renderItem(i)}
+                    </Flex>
+                  );
+                });
+              })()}
+            </Flex>
           )}
-          {/* Sentinel div removed — virtualizer.scrollToIndex handles autoscroll */}
         </div>
       </ScrollArea>
       {showNewContent && (
