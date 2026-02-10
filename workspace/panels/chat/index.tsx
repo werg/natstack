@@ -974,6 +974,7 @@ export default function AgenticChat() {
             Component: result.Component!,
             createdAt: Date.now(),
             cacheKey,
+            title: args.title,
             complete: (feedbackResult: FeedbackResult) => {
               try {
                 removeFeedback(callId);
@@ -1133,12 +1134,38 @@ Use standard ESM imports - they're transformed to require() automatically:
         };
 
         const feedbackCustomMethodDef: MethodDefinition = {
-          description: `Show a custom React UI. For advanced cases only - prefer feedback_form for standard forms.
+          description: `[Chat Panel] Show a custom React UI. For advanced cases only - prefer feedback_form for standard forms.
 
 **Result:** \`{ type: "submit", value: ... }\` or \`{ type: "cancel" }\`
 
 Component receives \`onSubmit(value)\`, \`onCancel()\`, \`onError(msg)\` props.
-Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\``,
+Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\`
+
+**Requirements:**
+- Component MUST use \`export default\` (named exports alone won't work)
+- Syntax: TSX (TypeScript + JSX)
+
+**Rendering context:** Your component is rendered inside a container Card with a header, scroll area, and resize handle. Do NOT wrap your component in a top-level Card — use \`<Flex direction="column" gap="3" p="2">\` or similar as root.
+
+**Example:**
+\`\`\`tsx
+import { useState } from "react";
+import { Button, Flex, Text, TextField } from "@radix-ui/themes";
+
+export default function App({ onSubmit, onCancel }) {
+  const [name, setName] = useState("");
+  return (
+    <Flex direction="column" gap="3" p="2">
+      <Text size="2" weight="bold">What is your name?</Text>
+      <TextField.Root value={name} onChange={e => setName(e.target.value)} />
+      <Flex gap="2" justify="end">
+        <Button variant="soft" onClick={onCancel}>Cancel</Button>
+        <Button onClick={() => onSubmit({ name })}>Submit</Button>
+      </Flex>
+    </Flex>
+  );
+}
+\`\`\``,
           parameters: FeedbackCustomArgsSchema,
           // Use ref to get latest callback version
           execute: async (args, ctx) => handleFeedbackCustomCallRef.current!(ctx.callId, args as FeedbackCustomArgs, ctx),

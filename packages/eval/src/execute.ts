@@ -233,6 +233,7 @@ export function executeDefault<T = unknown>(code: string, options: ExecuteOption
   }
 
   throw new Error(
-    "No default export found. Use `export default ...` or `module.exports = ...`."
+    "No default export found. Use `export default function MyComponent(...)` or `export default (props) => ...`. " +
+    "Named exports like `export function App(...)` are not sufficient — add the `default` keyword."
   );
 }

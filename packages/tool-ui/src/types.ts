@@ -58,6 +58,8 @@ export interface ActiveFeedbackTsx extends ActiveFeedbackBase {
   Component: ComponentType<FeedbackComponentProps>;
   /** Cache key for cleanup after feedback completion */
   cacheKey: string;
+  /** Optional title for the feedback container header */
+  title?: string;
 }
 
 /**

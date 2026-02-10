@@ -381,6 +381,7 @@ export function ChatPhase({
             return (
               <FeedbackContainer
                 key={feedback.callId}
+                title={feedback.title}
                 onDismiss={() => onFeedbackDismiss(feedback.callId)}
                 onError={(error) => onFeedbackError(feedback.callId, error)}
               >
