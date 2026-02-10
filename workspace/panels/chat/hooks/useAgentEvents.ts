@@ -147,6 +147,9 @@ export function dispatchAgenticEvent(
             kind: "message",
             complete: event.kind === "replay" || isPanelSender,
             attachments: getEventAttachments(event),
+            // Snapshot sender metadata so historical messages render correctly
+            // even when the original participant is no longer in the roster.
+            senderMetadata: event.senderMetadata as ChatMessage["senderMetadata"],
           },
         ];
       });
