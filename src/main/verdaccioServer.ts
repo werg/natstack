@@ -1912,20 +1912,36 @@ export class VerdaccioServer {
     fs.mkdirSync(tempPackageDir, { recursive: true });
 
     // Copy package files to temp directory
-    // Use the `files` field from package.json, defaulting to common patterns
-    const filesToInclude = (modifiedPkgJson["files"] as string[] | undefined) ?? ["dist"];
-    for (const filePattern of filesToInclude) {
-      const srcPath = path.join(pkgPath, filePattern);
-      const destPath = path.join(tempPackageDir, filePattern);
-      if (fs.existsSync(srcPath)) {
-        const stat = fs.statSync(srcPath);
-        if (stat.isDirectory()) {
-          fs.cpSync(srcPath, destPath, { recursive: true });
-        } else {
-          fs.mkdirSync(path.dirname(destPath), { recursive: true });
-          fs.copyFileSync(srcPath, destPath);
+    // If `files` is specified, copy only those entries (npm semantics).
+    // Otherwise copy the entire package directory minus node_modules,
+    // matching npm's default behavior for packages without a `files` field.
+    const filesToInclude = modifiedPkgJson["files"] as string[] | undefined;
+    if (filesToInclude) {
+      for (const filePattern of filesToInclude) {
+        const srcPath = path.join(pkgPath, filePattern);
+        const destPath = path.join(tempPackageDir, filePattern);
+        if (fs.existsSync(srcPath)) {
+          const stat = fs.statSync(srcPath);
+          if (stat.isDirectory()) {
+            fs.cpSync(srcPath, destPath, { recursive: true });
+          } else {
+            fs.mkdirSync(path.dirname(destPath), { recursive: true });
+            fs.copyFileSync(srcPath, destPath);
+          }
         }
       }
+    } else {
+      // No `files` field — copy everything except node_modules and .git
+      // Excluding .git prevents npm pack from using git-aware file selection
+      // and avoids bundling per-package git history into tarballs
+      const basename = (p: string) => p.slice(p.lastIndexOf("/") + 1);
+      fs.cpSync(pkgPath, tempPackageDir, {
+        recursive: true,
+        filter: (src) => {
+          const name = basename(src);
+          return name !== "node_modules" && name !== ".git";
+        },
+      });
     }
 
     // Write modified package.json to temp directory (never touch source)
