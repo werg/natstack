@@ -527,10 +527,14 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     // Initialize interrupt controller (no arguments, or options object)
     this.interrupt = createInterruptController();
 
-    // Initialize missed context manager with correct API
+    // Initialize missed context manager
+    // sinceId skips events already in the AI thread history (prevents regurgitation on reconnect)
+    // excludeSenderTypes filters out the agent's own responses (already in thread history)
     this.missedContext = createMissedContextManager({
       client: this.ctx.client as AgenticClient<ChatParticipantMetadata>,
       maxChars: 8000,
+      sinceId: this.lastCheckpoint,
+      excludeSenderTypes: ["codex"],
     });
 
     // Initialize trackers once at agent level (use setReplyTo per message)

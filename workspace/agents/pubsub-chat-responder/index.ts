@@ -267,9 +267,13 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     this.interrupt.onResume(() => this.queue.resume());
 
     // Initialize missed context manager for reconnection scenarios
+    // sinceId skips events already processed before this wake cycle (prevents regurgitation on reconnect)
+    // excludeSenderTypes filters out the agent's own responses (already in conversation history)
     this.missedContext = createMissedContextManager({
       client: this.client as AgenticClient<ChatParticipantMetadata>,
       maxChars: 8000,
+      sinceId: this.lastCheckpoint,
+      excludeSenderTypes: ["ai-responder"],
     });
 
     // Handle reconnection
