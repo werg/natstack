@@ -429,9 +429,13 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     this.interrupt.onResume(() => this.queue.resume());
 
     // Initialize missed context manager
+    // sinceId skips events already in the AI thread history (prevents regurgitation on reconnect)
+    // excludeSenderTypes filters out the agent's own responses (already in thread history)
     this.missedContext = createMissedContextManager({
       client: this.client as AgenticClient<ChatParticipantMetadata>,
       maxChars: DEFAULT_MISSED_CONTEXT_MAX_CHARS,
+      sinceId: this.lastCheckpoint,
+      excludeSenderTypes: ["claude-code"],
     });
 
     this.client.onReconnect(() => {

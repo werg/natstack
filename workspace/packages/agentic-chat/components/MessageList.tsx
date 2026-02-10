@@ -373,6 +373,7 @@ export const MessageList = React.memo(function MessageList({
     lastFirstMessageIdRef.current = nextFirstId;
   }, [messages, getViewport, viewportEl]);
 
+  // Scroll to the latest content when the indicator is clicked.
   const handleScrollToNewContent = useCallback(() => {
     const viewport = viewportEl ?? getViewport();
     if (viewport) {

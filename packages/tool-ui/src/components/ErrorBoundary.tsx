@@ -1,8 +1,8 @@
 /**
  * ErrorBoundary - Generic error boundary for feedback components.
  *
- * Catches rendering errors and notifies the parent via callback.
- * Renders nothing when an error is caught.
+ * Catches rendering errors, notifies the parent via callback,
+ * and displays a visible error message instead of silently rendering nothing.
  */
 
 import { Component, type ReactNode } from "react";
@@ -15,13 +15,14 @@ interface ErrorBoundaryProps {
 
 interface ErrorBoundaryState {
   hasError: boolean;
+  errorMessage: string | null;
 }
 
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  state: ErrorBoundaryState = { hasError: false };
+  state: ErrorBoundaryState = { hasError: false, errorMessage: null };
 
-  static getDerivedStateFromError(): ErrorBoundaryState {
-    return { hasError: true };
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, errorMessage: error.message };
   }
 
   componentDidCatch(error: Error): void {
@@ -30,7 +31,26 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   render() {
     if (this.state.hasError) {
-      return null;
+      return (
+        <div
+          style={{
+            padding: "12px 16px",
+            borderRadius: 6,
+            background: "var(--red-3, #fee)",
+            border: "1px solid var(--red-6, #e5c5c5)",
+            color: "var(--red-11, #c33)",
+            fontSize: 13,
+            lineHeight: 1.5,
+          }}
+        >
+          <strong>Component render error</strong>
+          {this.state.errorMessage && (
+            <div style={{ marginTop: 4, fontFamily: "monospace", fontSize: 12 }}>
+              {this.state.errorMessage}
+            </div>
+          )}
+        </div>
+      );
     }
     return this.props.children;
   }

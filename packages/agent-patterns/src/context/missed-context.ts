@@ -27,6 +27,24 @@ export interface MissedContextManagerOptions {
    * @default 8000
    */
   maxChars?: number;
+
+  /**
+   * Initial pubsub ID to skip events already processed.
+   * Events with pubsubId <= sinceId are excluded from missed context.
+   * Typically set to the agent's last checkpoint on wake to avoid
+   * including messages the agent already processed in a previous session.
+   */
+  sinceId?: number;
+
+  /**
+   * Sender types to exclude from missed context.
+   * Messages from these sender types are filtered out.
+   * Useful for excluding the agent's own responses (which are already
+   * in the AI thread history) to prevent duplication.
+   *
+   * @example ["codex", "agent"] — exclude agent-sent messages
+   */
+  excludeSenderTypes?: string[];
 }
 
 /**
@@ -107,18 +125,25 @@ export interface MissedContextManager {
 export function createMissedContextManager(
   options: MissedContextManagerOptions
 ): MissedContextManager {
-  const { client, maxChars = 8000 } = options;
+  const { client, maxChars = 8000, sinceId, excludeSenderTypes } = options;
 
-  let lastProcessedPubsubId = 0;
+  let lastProcessedPubsubId = sinceId ?? 0;
   let pendingContext: MissedContext | null = null;
+  let hasMissedFlag = false;
 
   /**
    * Build context from missed messages since last processed.
    */
   const buildContext = (): MissedContext | null => {
-    const missed = client.missedMessages.filter(
+    let missed = client.missedMessages.filter(
       (event) => event.pubsubId > lastProcessedPubsubId
     );
+
+    if (excludeSenderTypes && excludeSenderTypes.length > 0) {
+      missed = missed.filter(
+        (event) => !event.senderType || !excludeSenderTypes.includes(event.senderType)
+      );
+    }
 
     if (missed.length === 0) return null;
 
@@ -140,6 +165,7 @@ export function createMissedContextManager(
 
     rebuild(): void {
       pendingContext = buildContext();
+      hasMissedFlag = pendingContext !== null && pendingContext.count > 0;
     },
 
     consume(): string | null {
@@ -156,6 +182,7 @@ export function createMissedContextManager(
       lastProcessedPubsubId = pendingContext.lastPubsubId;
       const formatted = pendingContext.formatted;
       pendingContext = null;
+      hasMissedFlag = false;
 
       return formatted;
     },
@@ -164,11 +191,9 @@ export function createMissedContextManager(
       if (pendingContext) {
         return pendingContext.count > 0;
       }
-
-      // Check without building full context
-      return client.missedMessages.some(
-        (event) => event.pubsubId > lastProcessedPubsubId
-      );
+      // Use cached flag — missedMessages is only populated during reconnection
+      // replay, so it doesn't grow between consume() and rebuild() cycles.
+      return hasMissedFlag;
     },
   };
 }

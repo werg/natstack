@@ -175,6 +175,8 @@ export interface FeedbackFormArgs {
  */
 export interface FeedbackCustomArgs {
   code: string;
+  /** Optional title for the feedback container header (default: "Agent requires input") */
+  title?: string;
 }
 
 /**
@@ -199,4 +201,5 @@ export const FeedbackFormArgsSchema = z.object({
  */
 export const FeedbackCustomArgsSchema = z.object({
   code: z.string(),
+  title: z.string().optional(),
 });

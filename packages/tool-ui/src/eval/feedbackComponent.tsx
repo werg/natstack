@@ -50,6 +50,14 @@ export function cleanupFeedbackComponent(cacheKey: string): void {
 export async function compileFeedbackComponent(args: FeedbackUiToolArgs): Promise<FeedbackUiToolResult> {
   const { code } = args;
 
+  // Warn if the component doesn't reference onSubmit — it likely won't be able to return data
+  if (!code.includes("onSubmit")) {
+    console.warn(
+      "[feedback_custom] Component code does not reference 'onSubmit'. " +
+      "The user will not be able to submit a response. Did you forget to destructure { onSubmit } from props?"
+    );
+  }
+
   try {
     const { transformCode, preloadRequires } = await getEvalModule();
     const transformed = await transformCode(code, { syntax: "tsx" });

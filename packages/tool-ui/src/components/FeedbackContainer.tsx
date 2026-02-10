@@ -17,6 +17,8 @@ export interface FeedbackContainerProps {
   onDismiss: () => void;
   /** Called when the component throws during render */
   onError: (error: Error) => void;
+  /** Title displayed in the container header (default: "Agent requires input") */
+  title?: string;
   /** Initial/default height (default: 50% of available container height) */
   defaultHeight?: number;
   /** Minimum height when resizing (default: 150px) */
@@ -32,6 +34,7 @@ export function FeedbackContainer({
   children,
   onDismiss,
   onError,
+  title = "Agent requires input",
   defaultHeight: defaultHeightProp,
   minHeight = 150,
   maxHeight: maxHeightProp,
@@ -134,7 +137,7 @@ export function FeedbackContainer({
         style={{ borderBottom: "1px solid var(--gray-5)" }}
       >
         <Text size="2" weight="bold">
-          Agent requires input
+          {title}
         </Text>
         <Button
           variant="ghost"
