@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo, type ComponentType } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo, type ComponentType } from "react";
 import { Badge, Box, Button, Callout, Card, Flex, IconButton, Text, TextArea, Theme } from "@radix-ui/themes";
 import { PaperPlaneIcon, ImageIcon } from "@radix-ui/react-icons";
 import type { Participant, AttachmentInput } from "@natstack/pubsub";
@@ -24,6 +24,124 @@ import "../styles.css";
 const MAX_IMAGE_COUNT = 10;
 // Stable no-op function to avoid creating new arrow functions on every render
 const NOOP = () => {};
+
+interface ChatHeaderProps {
+  channelId: string | null;
+  connected: boolean;
+  status: string;
+  sessionEnabled?: boolean;
+  participants: Record<string, Participant<ChatParticipantMetadata>>;
+  participantActiveStatus: Map<string, boolean>;
+  pendingAgents?: Map<string, PendingAgent>;
+  onCallMethod?: (providerId: string, methodName: string, args: unknown) => void;
+  toolApproval?: ToolApprovalProps;
+  onAddAgent?: () => void;
+  onReset: () => void;
+  onDebugConsoleChange?: (agentHandle: string | null) => void;
+}
+
+/** Shallow-compare two Maps by entry value (used for small maps like activeStatus). */
+function mapsShallowEqual<K, V>(a: Map<K, V>, b: Map<K, V>): boolean {
+  if (a === b) return true;
+  if (a.size !== b.size) return false;
+  for (const [key, val] of a) {
+    if (b.get(key) !== val) return false;
+  }
+  return true;
+}
+
+function chatHeaderPropsEqual(prev: ChatHeaderProps, next: ChatHeaderProps): boolean {
+  return (
+    prev.channelId === next.channelId &&
+    prev.connected === next.connected &&
+    prev.status === next.status &&
+    prev.sessionEnabled === next.sessionEnabled &&
+    prev.participants === next.participants &&
+    prev.pendingAgents === next.pendingAgents &&
+    prev.onCallMethod === next.onCallMethod &&
+    prev.toolApproval === next.toolApproval &&
+    prev.onAddAgent === next.onAddAgent &&
+    prev.onReset === next.onReset &&
+    prev.onDebugConsoleChange === next.onDebugConsoleChange &&
+    mapsShallowEqual(prev.participantActiveStatus, next.participantActiveStatus)
+  );
+}
+
+const ChatHeader = React.memo(function ChatHeader({
+  channelId,
+  connected,
+  status,
+  sessionEnabled,
+  participants,
+  participantActiveStatus,
+  pendingAgents,
+  onCallMethod,
+  toolApproval,
+  onAddAgent,
+  onReset,
+  onDebugConsoleChange,
+}: ChatHeaderProps) {
+  return (
+    <Flex justify="between" align="center" flexShrink="0">
+      <Flex gap="2" align="center">
+        <Text size="5" weight="bold">
+          Agentic Chat
+        </Text>
+        <Badge color="gray">{channelId}</Badge>
+        <Badge color={sessionEnabled ? "blue" : "orange"} title={sessionEnabled ? "Session persistence enabled - messages are saved and can be replayed" : "Ephemeral session - messages are not persisted"}>
+          {sessionEnabled ? "Session" : "Ephemeral"}
+        </Badge>
+      </Flex>
+      <Flex gap="2" align="center">
+        <Badge color={connected ? "green" : "gray"}>{connected ? "Connected" : status}</Badge>
+        {Object.values(participants).map((p) => {
+          const hasActive = participantActiveStatus.get(p.id) ?? false;
+
+          return (
+            <ParticipantBadgeMenu
+              key={p.id}
+              participant={p}
+              hasActiveMessage={hasActive}
+              onCallMethod={onCallMethod ?? NOOP}
+              isGranted={toolApproval ? p.id in toolApproval.settings.agentGrants : false}
+              onRevokeAgent={toolApproval?.onRevokeAgent}
+              onOpenDebugConsole={onDebugConsoleChange ?? undefined}
+            />
+          );
+        })}
+        {/* Pending/failed agents not yet in roster */}
+        {pendingAgents && Array.from(pendingAgents.entries()).map(([handle, info]) => (
+          <PendingAgentBadge
+            key={`pending-${handle}`}
+            handle={handle}
+            agentId={info.agentId}
+            status={info.status}
+            error={info.error}
+            onOpenDebugConsole={onDebugConsoleChange}
+          />
+        ))}
+        {onAddAgent && (
+          <Button variant="soft" size="1" onClick={onAddAgent}>
+            Add Agent
+          </Button>
+        )}
+        {toolApproval && (
+          <ToolPermissionsDropdown
+            settings={toolApproval.settings}
+            participants={participants}
+            onSetFloor={toolApproval.onSetFloor}
+            onGrantAgent={toolApproval.onGrantAgent}
+            onRevokeAgent={toolApproval.onRevokeAgent}
+            onRevokeAll={toolApproval.onRevokeAll}
+          />
+        )}
+        <Button variant="soft" onClick={onReset}>
+          Reset
+        </Button>
+      </Flex>
+    </Flex>
+  );
+}, chatHeaderPropsEqual);
 
 interface ChatPhaseProps {
   channelId: string | null;
@@ -237,7 +355,11 @@ export function ChatPhase({
     void handleSendMessage();
   }, [handleSendMessage]);
 
-  // Memoize participant active status: single reverse scan instead of O(P*M) filter per render
+  // Memoize participant active status: single reverse scan instead of O(P*M) filter per render.
+  // Stabilised with a ref — return the previous Map reference when the values haven't
+  // changed so that ChatHeader's React.memo boundary isn't defeated during streaming
+  // (messages changes every frame but active-status rarely flips).
+  const prevActiveStatusRef = useRef<Map<string, boolean>>(new Map());
   const participantActiveStatus = useMemo(() => {
     const status = new Map<string, boolean>();
     const pIds = new Set(Object.keys(participants));
@@ -248,71 +370,38 @@ export function ChatPhase({
       status.set(msg.senderId, !msg.complete && !msg.error);
       found.add(msg.senderId);
     }
+
+    // Return previous reference if values are identical (avoids breaking memo)
+    const prev = prevActiveStatusRef.current;
+    if (prev.size === status.size) {
+      let same = true;
+      for (const [key, val] of status) {
+        if (prev.get(key) !== val) { same = false; break; }
+      }
+      if (same) return prev;
+    }
+    prevActiveStatusRef.current = status;
     return status;
   }, [messages, participants]);
 
   return (
     <Theme appearance={theme}>
       <Flex direction="column" height="100vh" p="2" gap="2">
-      {/* Header */}
-      <Flex justify="between" align="center" flexShrink="0">
-        <Flex gap="2" align="center">
-          <Text size="5" weight="bold">
-            Agentic Chat
-          </Text>
-          <Badge color="gray">{channelId}</Badge>
-          <Badge color={sessionEnabled ? "blue" : "orange"} title={sessionEnabled ? "Session persistence enabled - messages are saved and can be replayed" : "Ephemeral session - messages are not persisted"}>
-            {sessionEnabled ? "Session" : "Ephemeral"}
-          </Badge>
-        </Flex>
-        <Flex gap="2" align="center">
-          <Badge color={connected ? "green" : "gray"}>{connected ? "Connected" : status}</Badge>
-          {Object.values(participants).map((p) => {
-            const hasActive = participantActiveStatus.get(p.id) ?? false;
-
-            return (
-              <ParticipantBadgeMenu
-                key={p.id}
-                participant={p}
-                hasActiveMessage={hasActive}
-                onCallMethod={onCallMethod ?? NOOP}
-                isGranted={toolApproval ? p.id in toolApproval.settings.agentGrants : false}
-                onRevokeAgent={toolApproval?.onRevokeAgent}
-                onOpenDebugConsole={onDebugConsoleChange ? (handle) => onDebugConsoleChange(handle) : undefined}
-              />
-            );
-          })}
-          {/* Pending/failed agents not yet in roster */}
-          {pendingAgents && Array.from(pendingAgents.entries()).map(([handle, info]) => (
-            <PendingAgentBadge
-              key={`pending-${handle}`}
-              handle={handle}
-              agentId={info.agentId}
-              status={info.status}
-              error={info.error}
-              onOpenDebugConsole={onDebugConsoleChange}
-            />
-          ))}
-          {onAddAgent && (
-            <Button variant="soft" size="1" onClick={onAddAgent}>
-              Add Agent
-            </Button>
-          )}
-          {toolApproval && (
-            <ToolPermissionsDropdown
-              settings={toolApproval.settings}
-              participants={participants}
-              onSetFloor={toolApproval.onSetFloor}
-              onGrantAgent={toolApproval.onGrantAgent}
-              onRevokeAgent={toolApproval.onRevokeAgent}
-              onRevokeAll={toolApproval.onRevokeAll}
-            />
-          )}
-          <Button variant="soft" onClick={onReset}>
-            Reset
-          </Button>
-        </Flex>
-      </Flex>
+      {/* Header — memoized to skip re-renders on input keystrokes */}
+      <ChatHeader
+        channelId={channelId}
+        connected={connected}
+        status={status}
+        sessionEnabled={sessionEnabled}
+        participants={participants}
+        participantActiveStatus={participantActiveStatus}
+        pendingAgents={pendingAgents}
+        onCallMethod={onCallMethod}
+        toolApproval={toolApproval}
+        onAddAgent={onAddAgent}
+        onReset={onReset}
+        onDebugConsoleChange={onDebugConsoleChange}
+      />
 
       {/* Dirty repo warnings */}
       {dirtyRepoWarnings && dirtyRepoWarnings.size > 0 && (
