@@ -129,6 +129,7 @@ export function createMissedContextManager(
 
   let lastProcessedPubsubId = sinceId ?? 0;
   let pendingContext: MissedContext | null = null;
+  let hasMissedFlag = false;
 
   /**
    * Build context from missed messages since last processed.
@@ -164,6 +165,7 @@ export function createMissedContextManager(
 
     rebuild(): void {
       pendingContext = buildContext();
+      hasMissedFlag = pendingContext !== null && pendingContext.count > 0;
     },
 
     consume(): string | null {
@@ -180,6 +182,7 @@ export function createMissedContextManager(
       lastProcessedPubsubId = pendingContext.lastPubsubId;
       const formatted = pendingContext.formatted;
       pendingContext = null;
+      hasMissedFlag = false;
 
       return formatted;
     },
@@ -188,16 +191,9 @@ export function createMissedContextManager(
       if (pendingContext) {
         return pendingContext.count > 0;
       }
-
-      // Check without building full context
-      return client.missedMessages.some(
-        (event) =>
-          event.pubsubId > lastProcessedPubsubId &&
-          (!excludeSenderTypes ||
-            excludeSenderTypes.length === 0 ||
-            !event.senderType ||
-            !excludeSenderTypes.includes(event.senderType))
-      );
+      // Use cached flag — missedMessages is only populated during reconnection
+      // replay, so it doesn't grow between consume() and rebuild() cycles.
+      return hasMissedFlag;
     },
   };
 }
