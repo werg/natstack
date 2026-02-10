@@ -35,7 +35,13 @@ import {
   saveDependencyHashToCache,
   type VersionSpec,
 } from "./build/sharedBuild.js";
-import { createBuildWorkspace, type BuildArtifactKey } from "./build/artifacts.js";
+import {
+  createBuildWorkspace,
+  promoteToStable,
+  stableBuildExists,
+  getStableArtifactsDir,
+  type BuildArtifactKey,
+} from "./build/artifacts.js";
 import {
   isFsModule,
   isFsPromisesModule,
@@ -265,13 +271,29 @@ export class PanelBuilder {
         const cached = this.cacheManager.get(cacheKey, isDev());
 
         if (cached) {
-          log(`Early cache hit for ${cacheKey}`);
-          onProgress?.({ state: "ready", message: "Loaded from cache", log: buildLog });
+          const earlyArtifactKey: BuildArtifactKey = {
+            kind: "worker",
+            canonicalPath: canonicalWorkerPath,
+            commit: earlyCommit,
+          };
+          const workerStableDir = getStableArtifactsDir(earlyArtifactKey);
+          if (fs.existsSync(path.join(workerStableDir, "worker-bundle.js"))) {
+            log(`Early cache hit for ${cacheKey}`);
+            onProgress?.({ state: "ready", message: "Loaded from cache", log: buildLog });
 
-          try {
-            return JSON.parse(cached) as WorkerBuildResult;
-          } catch {
-            log(`Cache parse failed, will rebuild`);
+            try {
+              const parsed = JSON.parse(cached) as WorkerBuildResult;
+              // Read bundle from stable dir
+              const bundlePath = path.join(workerStableDir, "worker-bundle.js");
+              if (fs.existsSync(bundlePath)) {
+                parsed.bundle = fs.readFileSync(bundlePath, "utf-8");
+              }
+              return parsed;
+            } catch {
+              log(`Cache parse failed, will rebuild`);
+            }
+          } else {
+            log(`Cache hit but stable build missing, will rebuild`);
           }
         }
       }
@@ -437,7 +459,11 @@ import ${JSON.stringify(relativeUserEntry)};
         };
       }
 
-      // Cache result
+      // Promote workspace to stable instead of cleaning up
+      log(`Promoting worker build to stable location...`);
+      const stableDir = await promoteToStable(workspace.buildDir, workerArtifactKey);
+      log(`Worker build promoted to ${stableDir}`);
+
       const result: WorkerBuildResult = {
         success: true,
         bundle,
@@ -445,10 +471,14 @@ import ${JSON.stringify(relativeUserEntry)};
         buildLog,
       };
 
-      await this.cacheManager.set(cacheKey, JSON.stringify(result));
-      log(`Cached build result`);
-
-      try { await workspace.cleanupBuildDir(); } catch {}
+      // Cache only metadata (no bundle string)
+      const cacheResult: WorkerBuildResult = {
+        success: true,
+        manifest,
+        buildLog,
+      };
+      await this.cacheManager.set(cacheKey, JSON.stringify(cacheResult));
+      log(`Cached worker build metadata`);
 
       if (cleanup) {
         await cleanup();

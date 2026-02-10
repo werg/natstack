@@ -138,6 +138,55 @@ export async function promoteToStable(
 }
 
 /**
+ * Write index.html and assets.json to a build directory so they survive promotion to stable.
+ */
+export function writeStableMetadata(
+  buildDir: string,
+  html: string,
+  assets: Record<string, { content: string; encoding?: string }> | undefined
+): void {
+  fs.writeFileSync(path.join(buildDir, "index.html"), html);
+  if (assets) {
+    fs.writeFileSync(path.join(buildDir, "assets.json"), JSON.stringify(assets));
+  }
+}
+
+/**
+ * Read artifacts from a stable build directory (index.html, bundle.js, bundle.css, assets.json).
+ */
+export function readStableArtifacts(stableDir: string): {
+  html: string;
+  bundle: string;
+  css?: string;
+  assets?: Record<string, { content: string; encoding?: string }>;
+} | null {
+  const htmlPath = path.join(stableDir, "index.html");
+  const bundlePath = path.join(stableDir, "bundle.js");
+
+  if (!fs.existsSync(htmlPath) || !fs.existsSync(bundlePath)) {
+    return null;
+  }
+
+  const html = fs.readFileSync(htmlPath, "utf-8");
+  const bundle = fs.readFileSync(bundlePath, "utf-8");
+
+  const cssPath = path.join(stableDir, "bundle.css");
+  const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, "utf-8") : undefined;
+
+  let assets: Record<string, { content: string; encoding?: string }> | undefined;
+  const assetsPath = path.join(stableDir, "assets.json");
+  if (fs.existsSync(assetsPath)) {
+    try {
+      assets = JSON.parse(fs.readFileSync(assetsPath, "utf-8"));
+    } catch {
+      // Ignore parse errors
+    }
+  }
+
+  return { html, bundle, css, assets };
+}
+
+/**
  * Recursively copy a directory.
  */
 async function copyDir(src: string, dest: string): Promise<void> {

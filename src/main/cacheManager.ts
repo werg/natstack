@@ -85,16 +85,18 @@ export class MainCacheManager {
       size,
     };
 
-    // Remove old entry if updating (to maintain accurate size counter)
+    // Remove old entry if updating (adjusts size counter AND resets
+    // insertion order so eviction always removes the oldest entry first)
     const oldEntry = this.cache.get(key);
     if (oldEntry) {
       this.totalSize -= oldEntry.size;
+      this.cache.delete(key);
     }
 
     // Evict if necessary
     await this.evictIfNeeded(size);
 
-    // Add to cache
+    // Add to cache (appended at end of iteration order)
     this.cache.set(key, entry);
     this.totalSize += size;
 
@@ -216,28 +218,17 @@ export class MainCacheManager {
   }
 
   private async evictIfNeeded(newEntrySize: number): Promise<void> {
-    // Helper to find and remove oldest entry by timestamp
+    // Map is insertion-ordered; set() always delete+reinserts (see above),
+    // so the first entry is always the oldest.
     const evictOldest = (reason: string): boolean => {
-      let oldestKey: string | null = null;
-      let oldestTimestamp = Infinity;
+      const first = this.cache.entries().next();
+      if (first.done) return false;
 
-      for (const [key, entry] of this.cache.entries()) {
-        if (entry.timestamp < oldestTimestamp) {
-          oldestTimestamp = entry.timestamp;
-          oldestKey = key;
-        }
-      }
-
-      if (oldestKey) {
-        const entry = this.cache.get(oldestKey);
-        if (entry) {
-          this.totalSize -= entry.size;
-          this.cache.delete(oldestKey);
-          log.verbose(` Evicted ${oldestKey} (${reason})`);
-          return true;
-        }
-      }
-      return false;
+      const [key, entry] = first.value;
+      this.totalSize -= entry.size;
+      this.cache.delete(key);
+      log.verbose(` Evicted ${key} (${reason})`);
+      return true;
     };
 
     // Check entry count limit

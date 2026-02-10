@@ -30,6 +30,9 @@ import {
   createBuildWorkspace,
   stableBuildExists,
   promoteToStable,
+  writeStableMetadata,
+  readStableArtifacts,
+  getStableArtifactsDir,
   type BuildArtifactKey,
 } from "./artifacts.js";
 import { getMainCacheManager } from "../cacheManager.js";
@@ -48,6 +51,36 @@ import type {
 const devLog = createDevLogger("BuildOrchestrator");
 
 // ===========================================================================
+// Build Concurrency Limiter
+// ===========================================================================
+
+const MAX_CONCURRENT_BUILDS = 4;
+
+class BuildSemaphore {
+  private running = 0;
+  private queue: Array<() => void> = [];
+
+  async acquire(): Promise<void> {
+    if (this.running < MAX_CONCURRENT_BUILDS) {
+      this.running++;
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      this.queue.push(() => {
+        this.running++;
+        resolve();
+      });
+    });
+  }
+
+  release(): void {
+    this.running--;
+    const next = this.queue.shift();
+    if (next) next();
+  }
+}
+
+// ===========================================================================
 // Build Orchestrator
 // ===========================================================================
 
@@ -56,6 +89,9 @@ export class BuildOrchestrator {
 
   /** Per-build locks for coalescing concurrent builds */
   private buildLocks = new Map<string, Promise<BuildOutput>>();
+
+  /** Limits how many builds run in parallel */
+  private semaphore = new BuildSemaphore();
 
   /**
    * Execute a build using the given strategy.
@@ -73,12 +109,15 @@ export class BuildOrchestrator {
     const { workspaceRoot, sourcePath, gitRef } = options;
 
     // Build coalescing: if already building this exact config, return the existing promise
-    const lockKey = this.computeLockKey(strategy.kind, options);
+    const lockKey = this.computeLockKey(strategy, options);
     const existingBuild = this.buildLocks.get(lockKey);
     if (existingBuild) {
       devLog.verbose(`Build already in progress for ${sourcePath}, coalescing`);
       return existingBuild as Promise<BuildOutput<TManifest, TArtifacts>>;
     }
+
+    // Acquire semaphore AFTER coalescing check (coalescing is free)
+    await this.semaphore.acquire();
 
     const buildPromise = this.doBuild(strategy, options, onProgress);
     this.buildLocks.set(lockKey, buildPromise as Promise<BuildOutput>);
@@ -87,14 +126,15 @@ export class BuildOrchestrator {
       return await buildPromise;
     } finally {
       this.buildLocks.delete(lockKey);
+      this.semaphore.release();
     }
   }
 
-  private computeLockKey<TOptions extends BaseBuildOptions>(
-    kind: string,
+  private computeLockKey<TManifest, TArtifacts, TOptions extends BaseBuildOptions>(
+    strategy: BuildStrategy<TManifest, TArtifacts, TOptions>,
     options: TOptions
   ): string {
-    return `${kind}:${options.workspaceRoot}:${options.sourcePath}:${JSON.stringify(options)}`;
+    return `${strategy.kind}:${options.workspaceRoot}:${options.sourcePath}:${options.gitRef ?? ""}:${strategy.computeOptionsSuffix(options)}`;
   }
 
   /**
@@ -168,7 +208,26 @@ export class BuildOrchestrator {
 
             try {
               const parsed = JSON.parse(cached) as BuildOutput<TManifest, TArtifacts>;
-              return parsed;
+              // Read artifacts from stable dir instead of storing them in cache
+              if (parsed.success) {
+                const stableDir = getStableArtifactsDir(earlyArtifactKey);
+                const diskArtifacts = readStableArtifacts(stableDir);
+                if (!diskArtifacts) {
+                  log(`Cache hit but stable artifacts unreadable, will rebuild`);
+                  this.cacheManager.invalidateByPrefix(cacheKey);
+                } else {
+                  const artifacts = parsed.artifacts as Record<string, unknown>;
+                  artifacts["bundle"] = diskArtifacts.bundle;
+                  artifacts["html"] = diskArtifacts.html;
+                  if (diskArtifacts.css !== undefined) artifacts["css"] = diskArtifacts.css;
+                  if (diskArtifacts.assets !== undefined) artifacts["assets"] = diskArtifacts.assets;
+                  artifacts["stableDir"] = stableDir;
+                  artifacts["bundlePath"] = path.join(stableDir, "bundle.js");
+                  return parsed;
+                }
+              } else {
+                return parsed;
+              }
             } catch {
               log(`Cache parse failed, will rebuild`);
             }
@@ -186,6 +245,7 @@ export class BuildOrchestrator {
         sourceRoot: workspaceRoot,
         sourcePath,
         version,
+        preResolved: earlyCommit ? { commit: earlyCommit } : undefined,
         onProgress: (progress) => {
           log(`Git: ${progress.message}`);
         },
@@ -461,7 +521,17 @@ export class BuildOrchestrator {
 
       log(`Build complete`);
 
-      // Step 11: Promote build to stable location (unified infrastructure)
+      // Step 11: Write index.html and assets.json to the build dir before promotion
+      const artObj = artifacts as Record<string, unknown>;
+      if (typeof artObj["html"] === "string") {
+        writeStableMetadata(
+          workspace.buildDir,
+          artObj["html"] as string,
+          artObj["assets"] as Record<string, { content: string; encoding?: string }> | undefined
+        );
+      }
+
+      // Step 12: Promote build to stable location (unified infrastructure)
       // This moves the temp build dir to a deterministic path based on commit hash
       log(`Promoting build to stable location...`);
       const stableDir = await promoteToStable(workspace.buildDir, artifactKey);
@@ -471,7 +541,7 @@ export class BuildOrchestrator {
       // The artifacts already contain the correct relative structure, just update base path
       const stableArtifacts = this.updateArtifactPaths(artifacts, workspace.buildDir, stableDir);
 
-      // Step 12: Cache result and return
+      // Step 13: Cache metadata only (no bundle/html/css/assets strings) and return
       const result: BuildOutput<TManifest, TArtifacts> = {
         success: true,
         manifest,
@@ -480,8 +550,13 @@ export class BuildOrchestrator {
         buildLog,
       };
 
-      await this.cacheManager.set(cacheKey, JSON.stringify(result));
-      log(`Cached build result`);
+      // Store only metadata in cache - strip large artifact strings that live on disk
+      const cacheResult = {
+        ...result,
+        artifacts: stripLargeArtifacts(stableArtifacts),
+      };
+      await this.cacheManager.set(cacheKey, JSON.stringify(cacheResult));
+      log(`Cached build metadata`);
 
       // Cleanup git provision temp directory if any
       if (cleanup) {
@@ -518,6 +593,21 @@ export class BuildOrchestrator {
 // ===========================================================================
 // Helper Functions
 // ===========================================================================
+
+/** Fields that are stored on disk (stable dir) rather than in the cache. */
+const DISK_ARTIFACT_KEYS = ["bundle", "html", "css", "assets"] as const;
+
+/**
+ * Strip large artifact fields that are persisted to the stable directory.
+ * Returns a shallow copy safe for JSON serialization into the cache.
+ */
+function stripLargeArtifacts<T>(artifacts: T): Partial<T> {
+  const stripped = { ...artifacts } as Record<string, unknown>;
+  for (const key of DISK_ARTIFACT_KEYS) {
+    delete stripped[key];
+  }
+  return stripped as Partial<T>;
+}
 
 /**
  * Deep merge artifacts, preserving both main and auxiliary assets.

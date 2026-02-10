@@ -642,6 +642,19 @@ function arraysEqual(a: string[], b: string[]): boolean {
 }
 
 // ===========================================================================
+// HTML Escaping
+// ===========================================================================
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// ===========================================================================
 // Panel Build Strategy
 // ===========================================================================
 
@@ -762,6 +775,9 @@ export class PanelBuildStrategy
       }
     }
 
+    // Store full externals map for reuse in processResult
+    ctx.passState.set("externalsMap", externals);
+
     return Object.keys(externals);
   }
 
@@ -831,19 +847,9 @@ export class PanelBuildStrategy
       log
     );
 
-    // Generate HTML
-    const externals: Record<string, string> = { ...(manifest.externals ?? {}) };
-    // Add auto-externalized ESM packages to externals for import map
-    if (isVerdaccioServerInitialized()) {
-      for (const pkgName of ESM_SAFE_PACKAGES) {
-        if (!(pkgName in externals)) {
-          const version = ctx.esmVersions?.get(pkgName);
-          const versionedPkg = version ? `${pkgName}@${version}` : pkgName;
-          externals[pkgName] = `__VERDACCIO_ESM__/${versionedPkg}`;
-          externals[`${pkgName}/`] = `__VERDACCIO_ESM__/${versionedPkg}/`;
-        }
-      }
-    }
+    // Generate HTML - reuse externals map computed in getExternals
+    const externals = (ctx.passState.get("externalsMap") as Record<string, string> | undefined)
+      ?? { ...(manifest.externals ?? {}) };
 
     const html = this.resolveHtml(sourcePath, manifest.title, externals, {
       includeCss: Boolean(css),
@@ -1048,31 +1054,43 @@ import ${JSON.stringify(relativeEntry)};
 
     const assets: PanelAssetMap = {};
 
-    for (const entry of workerEntries) {
-      const entryPath = resolveWithPaths(entry.specifier);
-      if (!entryPath || !fs.existsSync(entryPath)) {
-        log(`Warning: Could not resolve worker: ${entry.specifier}`);
-        continue;
-      }
+    // Resolve all entry paths first, then build in parallel
+    const resolvedEntries = workerEntries
+      .map((entry) => {
+        const entryPath = resolveWithPaths(entry.specifier);
+        if (!entryPath || !fs.existsSync(entryPath)) {
+          log(`Warning: Could not resolve worker: ${entry.specifier}`);
+          return null;
+        }
+        return { ...entry, entryPath };
+      })
+      .filter((e): e is NonNullable<typeof e> => e !== null);
 
+    // Create output directories (must happen before parallel builds)
+    for (const entry of resolvedEntries) {
       const outfile = path.join(workspace.buildDir, entry.name);
       fs.mkdirSync(path.dirname(outfile), { recursive: true });
-
-      await esbuild.build({
-        entryPoints: [entryPath],
-        bundle: true,
-        platform: "browser",
-        target: "es2022",
-        format: "esm",
-        outfile,
-        sourcemap: false,
-        logLevel: "silent",
-        nodePaths,
-        conditions: ["natstack-panel"],
-      });
-
-      assets[`/${entry.name}`] = { content: fs.readFileSync(outfile, "utf-8") };
     }
+
+    // Build all workers in parallel
+    await Promise.all(
+      resolvedEntries.map(async (entry) => {
+        const outfile = path.join(workspace.buildDir, entry.name);
+        await esbuild.build({
+          entryPoints: [entry.entryPath],
+          bundle: true,
+          platform: "browser",
+          target: "es2022",
+          format: "esm",
+          outfile,
+          sourcemap: false,
+          logLevel: "silent",
+          nodePaths,
+          conditions: ["natstack-panel"],
+        });
+        assets[`/${entry.name}`] = { content: fs.readFileSync(outfile, "utf-8") };
+      })
+    );
 
     if (Object.keys(assets).length === 0) return undefined;
 
@@ -1094,7 +1112,20 @@ import ${JSON.stringify(relativeEntry)};
   ): string {
     const sourceHtmlPath = path.join(sourcePath, "index.html");
     if (fs.existsSync(sourceHtmlPath)) {
-      return fs.readFileSync(sourceHtmlPath, "utf-8");
+      let customHtml = fs.readFileSync(sourceHtmlPath, "utf-8");
+      // Inject CSP meta tag if not already present
+      if (!/<meta[^>]+http-equiv\s*=\s*["']Content-Security-Policy["']/i.test(customHtml)) {
+        if (/<head\b[^>]*>/i.test(customHtml)) {
+          customHtml = customHtml.replace(/(<head\b[^>]*>)/i, `$1\n  ${PANEL_CSP_META}`);
+        } else if (/<\/head>/i.test(customHtml)) {
+          customHtml = customHtml.replace(/<\/head>/i, `  ${PANEL_CSP_META}\n</head>`);
+        } else if (/<body\b/i.test(customHtml)) {
+          customHtml = customHtml.replace(/(<body\b)/i, `<head>${PANEL_CSP_META}</head>\n$1`);
+        } else {
+          customHtml = `<head>${PANEL_CSP_META}</head>\n` + customHtml;
+        }
+      }
+      return customHtml;
     }
 
     const importMap = { imports: externals ?? {} };
@@ -1114,7 +1145,7 @@ import ${JSON.stringify(relativeEntry)};
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   ${PANEL_CSP_META}
-  <title>${title}</title>
+  <title>${escapeHtml(title)}</title>
   ${importMapScript}<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/themes@3.2.1/styles.css">
   ${cssLink}
   <style>

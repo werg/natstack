@@ -103,6 +103,8 @@ export interface ProvisionOptions {
   version?: VersionSpec;
   /** Optional progress callback */
   onProgress?: (progress: ProvisionProgress) => void;
+  /** Pre-resolved commit from resolveTargetCommit — skips redundant git ops when no gitRef */
+  preResolved?: { commit: string };
 }
 
 export interface ProvisionResult {
@@ -126,7 +128,7 @@ export interface ProvisionProgress {
  * For versioned sources, creates a temporary worktree or checkout.
  */
 export async function provisionSource(options: ProvisionOptions): Promise<ProvisionResult> {
-  const { sourceRoot, sourcePath, version, onProgress } = options;
+  const { sourceRoot, sourcePath, version, onProgress, preResolved } = options;
   const absoluteSourcePath = path.resolve(sourceRoot, sourcePath);
 
   // Validate source exists
@@ -138,6 +140,17 @@ export async function provisionSource(options: ProvisionOptions): Promise<Provis
   const gitDir = path.join(absoluteSourcePath, ".git");
   if (!fs.existsSync(gitDir)) {
     throw new Error(`Source must be a git repository (or submodule): ${absoluteSourcePath}`);
+  }
+
+  // Fast path: if commit was pre-resolved by resolveTargetCommit and no gitRef,
+  // skip redundant assertCleanWorktree + getGitCommit calls
+  if (preResolved && !version?.gitRef) {
+    onProgress?.({ stage: "ready", message: "Using current working directory" });
+    return {
+      sourcePath: absoluteSourcePath,
+      commit: preResolved.commit,
+      cleanup: null,
+    };
   }
 
   // Ensure we only use committed state; reject dirty worktrees
