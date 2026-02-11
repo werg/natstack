@@ -153,7 +153,6 @@ class BuildQueue {
   constructor(
     private readonly publishPackage: (pkgPath: string, pkgName: string) => Promise<"published" | "skipped">,
     private readonly resolvePackagePath: (pkgName: string, userWorkspacePath?: string) => string | null,
-    private readonly checkPackageInStorage: (pkgName: string) => boolean,
     private readonly userWorkspacePath?: string
   ) {}
 
@@ -173,11 +172,11 @@ class BuildQueue {
    * @param skipWait - If true, don't wait for in-progress builds (used for npm publish's internal requests)
    */
   async ensureBuilt(pkgName: string, skipWait = false): Promise<void> {
-    // For @natstack/* packages, always validate version (supports dirty working tree iteration)
-    // For user workspace packages, use storage check (faster, commit-based workflow)
-    if (!pkgName.startsWith("@natstack/") && this.checkPackageInStorage(pkgName)) {
-      return;
-    }
+    // Always validate version for all internal packages.
+    // The storage check was previously used as a fast path for @workspace/* packages,
+    // but it caused stale content: once any version existed in storage, the package
+    // was never republished even after new commits. publishPackage() already has
+    // efficient skip logic via checkVersionExists().
 
     // If already building, decide whether to wait based on context
     const existing = this.locks.get(pkgName);
@@ -311,7 +310,6 @@ export class VerdaccioServer {
     this.buildQueue = new BuildQueue(
       this.publishPackage.bind(this),
       this.resolvePackagePath.bind(this),
-      this.checkPackageInStorage.bind(this),
       workspacePath
     );
 
@@ -504,7 +502,6 @@ export class VerdaccioServer {
     this.buildQueue = new BuildQueue(
       this.publishPackage.bind(this),
       this.resolvePackagePath.bind(this),
-      this.checkPackageInStorage.bind(this),
       this.userWorkspacePath
     );
 
@@ -574,10 +571,6 @@ export class VerdaccioServer {
    * then proxies to the internal Verdaccio server.
    */
   private createProxyServer(verdaccioPort: number): http.Server {
-    // Don't capture buildQueue in a closure - always use this.buildQueue
-    // so that setUserWorkspacePath() updates are visible
-    const checkStorage = this.checkPackageInStorage.bind(this);
-
     return http.createServer(async (req, res) => {
       const url = req.url ?? "/";
       const requestId = Math.random().toString(36).slice(2, 8);
@@ -593,26 +586,22 @@ export class VerdaccioServer {
       // PUT requests are npm publish - don't intercept those or we get infinite loops
       const pkgName = extractPackageName(url);
       if (req.method === "GET" && pkgName && isWorkspacePackage(pkgName) && this.buildQueue) {
-        const inStorage = checkStorage(pkgName);
-        if (!inStorage) {
-          try {
-            // Use this.buildQueue to get the current build queue (may be updated by setUserWorkspacePath)
-            // If this package is already being built, this might be an internal npm publish request
-            // (npm publish makes GET requests to verify the package after uploading)
-            // In that case, we skip waiting to avoid deadlocks
-            const isInternalPublishRequest = this.buildQueue.isBuilding(pkgName);
-            await this.buildQueue.ensureBuilt(pkgName, isInternalPublishRequest);
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            console.error(`[LazyBuild] Failed to build ${pkgName}:`, message);
-            res.statusCode = 404;
-            res.setHeader("Content-Type", "application/json");
-            res.end(JSON.stringify({
-              error: "not_found",
-              reason: `Build failed: ${message}`,
-            }));
-            return;
-          }
+        try {
+          // Always validate version — even if a previous version exists in storage,
+          // the package may have been updated (new commit). ensureBuilt checks the
+          // current git version and publishes if needed.
+          const isInternalPublishRequest = this.buildQueue.isBuilding(pkgName);
+          await this.buildQueue.ensureBuilt(pkgName, isInternalPublishRequest);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`[LazyBuild] Failed to build ${pkgName}:`, message);
+          res.statusCode = 404;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({
+            error: "not_found",
+            reason: `Build failed: ${message}`,
+          }));
+          return;
         }
       }
 
@@ -781,23 +770,6 @@ export class VerdaccioServer {
     });
 
     req.pipe(proxyReq);
-  }
-
-  /**
-   * Check if a package exists in Verdaccio's storage directory.
-   */
-  private checkPackageInStorage(pkgName: string): boolean {
-    // Handle scoped packages: @scope/name → @scope/name or @scope%2fname
-    const storageBase = path.join(this.storagePath, "packages");
-    const directPath = path.join(storageBase, pkgName);
-    if (fs.existsSync(directPath)) {
-      return true;
-    }
-    if (pkgName.startsWith("@")) {
-      const encodedPath = path.join(storageBase, pkgName.replace("/", "%2F"));
-      return fs.existsSync(encodedPath);
-    }
-    return false;
   }
 
   /**
