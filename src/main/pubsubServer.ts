@@ -28,7 +28,7 @@ const DB_NAME = "pubsub-messages";
  * Token validation interface.
  */
 export interface TokenValidator {
-  validateToken(token: string): string | null;
+  validateToken(token: string): { callerId: string; callerKind: string } | null;
 }
 
 /**
@@ -940,13 +940,13 @@ export class InMemoryMessageStore extends BaseMessageStore {
  * Simple token validator for testing.
  */
 export class TestTokenValidator implements TokenValidator {
-  private tokens = new Map<string, string>();
+  private tokens = new Map<string, { callerId: string; callerKind: string }>();
 
-  addToken(token: string, clientId: string): void {
-    this.tokens.set(token, clientId);
+  addToken(token: string, clientId: string, callerKind: string = "panel"): void {
+    this.tokens.set(token, { callerId: clientId, callerKind });
   }
 
-  validateToken(token: string): string | null {
+  validateToken(token: string): { callerId: string; callerKind: string } | null {
     return this.tokens.get(token) ?? null;
   }
 }
@@ -1045,7 +1045,8 @@ export class PubSubServer {
     const metadata: Record<string, unknown> = {};
 
     // Validate token
-    const clientId = this.tokenValidator.validateToken(token);
+    const entry = this.tokenValidator.validateToken(token);
+    const clientId = entry?.callerId ?? null;
     if (!clientId) {
       console.warn(`[PubSubServer] Rejected connection - invalid token`);
       ws.close(4001, "unauthorized");

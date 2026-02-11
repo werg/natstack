@@ -31,7 +31,7 @@ import {
   END_DROP_ZONE_ID,
   type FlattenedPanel,
 } from "../shell/hooks/index.js";
-import type { PanelContextMenuAction } from "../../shared/ipc/types.js";
+import type { PanelContextMenuAction } from "../../shared/types.js";
 import { menu, panel } from "../shell/client.js";
 
 // ============================================================================

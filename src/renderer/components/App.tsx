@@ -10,7 +10,7 @@ import {
 import { effectiveThemeAtom, loadThemePreferenceAtom } from "../state/themeAtoms";
 import { useShellEvent } from "../shell/useShellEvent";
 import { panel } from "../shell/client";
-import type { ShellPage } from "../../shared/ipc/types";
+import type { ShellPage } from "../../shared/types";
 import { PanelApp } from "./PanelApp";
 import { WorkspaceChooser } from "./WorkspaceChooser";
 import { WorkspaceWizard } from "./WorkspaceWizard";

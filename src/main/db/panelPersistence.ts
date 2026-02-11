@@ -30,7 +30,7 @@ import type {
   PanelSnapshot,
   PanelSummary,
   PanelType,
-} from "../../shared/ipc/types.js";
+} from "../../shared/types.js";
 
 // Re-export PanelSummary from shared types
 export type { PanelSummary };

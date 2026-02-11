@@ -9,7 +9,7 @@
 import * as esbuild from "esbuild";
 import * as fs from "fs";
 import * as path from "path";
-import type { ShellPage, ProtocolBuildArtifacts } from "../shared/ipc/types.js";
+import type { ShellPage, ProtocolBuildArtifacts } from "../shared/types.js";
 import { storeAboutPage, hasAboutPage } from "./aboutProtocol.js";
 import { PANEL_CSP_META } from "../shared/constants.js";
 import { createDevLogger } from "./devLog.js";

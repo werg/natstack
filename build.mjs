@@ -22,6 +22,18 @@ const nodeBuiltinsExternalPlugin = {
   },
 };
 
+const smokeTestConfig = {
+  entryPoints: ["src/server/smoke-test.ts"],
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "cjs",
+  outfile: "dist/smoke-test.cjs",
+  external: ["electron", "esbuild", "@npmcli/arborist", "better-sqlite3",
+             "verdaccio", "node-git-server"],
+  logOverride,
+};
+
 const mainConfig = {
   entryPoints: ["src/main/index.ts"],
   bundle: true,
@@ -274,6 +286,7 @@ async function build() {
     await esbuild.build(unsafePreloadConfig);
     await esbuild.build(adblockPreloadConfig);
     await esbuild.build(rendererConfig);
+    await esbuild.build(smokeTestConfig);
     await buildDependencyWorkers();
 
     // ========================================================================

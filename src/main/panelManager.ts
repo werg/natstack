@@ -29,7 +29,7 @@ import type { StateArgsValue } from "../shared/stateArgs.js";
 import { getActiveWorkspace, getContextScopePath } from "./paths.js";
 import type { GitServer } from "./gitServer.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
-import * as SharedPanel from "../shared/ipc/types.js";
+import * as SharedPanel from "../shared/types.js";
 import { getClaudeCodeConversationManager } from "./ai/claudeCodeConversationManager.js";
 import {
   storeProtocolPanel,
@@ -120,6 +120,8 @@ export class PanelManager {
   private panelsRoot: string;
   private gitServer: GitServer;
   private pendingBrowserNavigations: Map<string, { url: string; index: number }> = new Map();
+  private rpcServer: import("../server/rpcServer.js").RpcServer | null = null;
+  private rpcPort: number | null = null;
 
   // Debounce state for panel tree updates
   private treeUpdatePending = false;
@@ -138,6 +140,16 @@ export class PanelManager {
     this.builder = new PanelBuilder();
   }
 
+  /** Set the RPC server for WS-based communication */
+  setRpcServer(server: import("../server/rpcServer.js").RpcServer): void {
+    this.rpcServer = server;
+  }
+
+  /** Set the RPC server port for passing to panel preloads */
+  setRpcPort(port: number): void {
+    this.rpcPort = port;
+  }
+
   /**
    * Set the ViewManager for creating and managing panel views.
    * Must be called after window creation. This triggers panel tree initialization.
@@ -153,13 +165,10 @@ export class PanelManager {
     // Try to load existing panel tree from database first
     this.initializePanelTree().catch((error) => {
       console.error("[PanelManager] Failed to initialize panel tree:", error);
-      const shellContents = vm.getShellWebContents();
-      if (!shellContents.isDestroyed()) {
-        shellContents.send("panel:initialization-error", {
-          path: "",
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+      eventService.emit("panel-initialization-error", {
+        path: "",
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
   }
 
@@ -314,7 +323,6 @@ export class PanelManager {
     // Clear accumulated maps to prevent memory leaks
     this.crashHistory.clear();
     this.pendingBrowserNavigations.clear();
-    this.pendingAuthTokens.clear();
     this.browserStateCleanup.clear();
     this.linkInterceptionHandlers.clear();
     this.contentLoadHandlers.clear();
@@ -497,9 +505,8 @@ export class PanelManager {
       this.setupLinkInterception(panelId, view.webContents, "browser");
     } else if (type === "worker") {
       // Worker panels: isolated partition, worker preload with auth token and env
-      const authToken = randomBytes(32).toString("hex");
-      this.pendingAuthTokens.set(panelId, { token: authToken, createdAt: Date.now() });
-      this.cleanupExpiredAuthTokens();
+      // ensureToken handles rebuild paths where token may have been revoked by unloadPanelResources
+      const authToken = getTokenManager().ensureToken(panelId, "worker");
 
       // Build additional arguments for preload
       const additionalArgs: string[] = [
@@ -508,6 +515,7 @@ export class PanelManager {
         `--natstack-theme=${this.currentTheme}`,
         `--natstack-kind=worker`,
         `--natstack-context-id=${contextId ?? ""}`,
+        ...(this.rpcPort ? [`--natstack-ws-port=${this.rpcPort}`] : []),
       ];
 
       // Add worker env if available
@@ -562,11 +570,8 @@ export class PanelManager {
       });
     } else {
       // App panels: isolated partition, panel preload with auth token and env
-      const authToken = randomBytes(32).toString("hex");
-      this.pendingAuthTokens.set(panelId, { token: authToken, createdAt: Date.now() });
-
-      // Periodic cleanup of expired tokens (runs lazily on each panel creation)
-      this.cleanupExpiredAuthTokens();
+      // ensureToken handles rebuild paths where token may have been revoked by unloadPanelResources
+      const authToken = getTokenManager().ensureToken(panelId, "panel");
 
       // Build additional arguments for preload
       const additionalArgs: string[] = [
@@ -575,6 +580,7 @@ export class PanelManager {
         `--natstack-theme=${this.currentTheme}`,
         `--natstack-kind=panel`,
         `--natstack-context-id=${contextId ?? ""}`,
+        ...(this.rpcPort ? [`--natstack-ws-port=${this.rpcPort}`] : []),
       ];
 
       // Add panel env if available
@@ -1173,8 +1179,8 @@ export class PanelManager {
   ): Record<string, string> | undefined {
     if (!env) return undefined;
 
-    // Create a fresh token for this panel
-    const freshToken = getTokenManager().getOrCreateToken(panelId);
+    // Get or recreate token for this panel (may have been revoked by unloadPanelResources)
+    const freshToken = getTokenManager().ensureToken(panelId, "panel");
     log.verbose(` Refreshing env tokens for ${panelId}`);
 
     // Create a mutable copy
@@ -1243,7 +1249,7 @@ export class PanelManager {
     const pubsubConfig = pubsubPort
       ? JSON.stringify({
           serverUrl: `ws://127.0.0.1:${pubsubPort}`,
-          token: getTokenManager().getOrCreateToken(panelId),
+          token: getTokenManager().getToken(panelId),
         })
       : "";
     const workspacePath = getActiveWorkspace()?.path;
@@ -1359,17 +1365,21 @@ export class PanelManager {
       isRoot,
     });
 
-    // Resolve context ID: use provided contextId if available, otherwise generate from template
-    const isUnsafe = Boolean(unsafeFlag);
-    const contextId = options.contextId ?? await this.resolveContext(panelId, options.templateSpec, isUnsafe);
-
     if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
       throw new Error(`A panel with id "${panelId}" is already running`);
     }
 
     this.reservedPanelIds.add(panelId);
 
+    // Create auth token before resolveContext — it needs a git token via getTokenForPanel
+    const isUnsafe = Boolean(unsafeFlag);
+    const callerKind = isWorker ? "worker" as const : "panel" as const;
+    getTokenManager().createToken(panelId, callerKind);
+
     try {
+      // Resolve context ID: use provided contextId if available, otherwise generate from template
+      const contextId = options.contextId ?? await this.resolveContext(panelId, options.templateSpec, isUnsafe);
+
       const panelEnv = this.buildPanelEnv(panelId, options?.env, {
         sourceRepo: relativePath,
         gitRef: options?.gitRef,
@@ -1488,6 +1498,10 @@ export class PanelManager {
       }
 
       return { id: panel.id, type: panelType, title: panel.title };
+    } catch (err) {
+      // If panel creation fails after token was created, revoke it
+      getTokenManager().revokeToken(panelId);
+      throw err;
     } finally {
       this.reservedPanelIds.delete(panelId);
     }
@@ -1765,6 +1779,9 @@ export class PanelManager {
     for (const child of childrenToClose) {
       await this.closePanel(child.id);
     }
+
+    // Clean up resources (tokens, CDP, git, etc.) before removing from tree
+    this.unloadPanelResources(panelId);
 
     // Find the parent
     const parent = this.findParentPanel(panelId);
@@ -2283,28 +2300,23 @@ export class PanelManager {
     panelId: string,
     pushState: SharedPanel.PanelSnapshot["pushState"]
   ): boolean {
-    const contents = this.viewManager?.getWebContents(panelId);
-    if (!contents || contents.isDestroyed() || !pushState) {
-      return false;
-    }
+    if (!pushState) return false;
 
     const payload = {
       state: pushState.state,
       path: pushState.path,
     };
 
-    const send = () => {
-      if (contents.isDestroyed()) return;
-      contents.send("panel:history-popstate", payload);
-    };
-
-    if (contents.isLoading()) {
-      contents.once("did-finish-load", send);
-    } else {
-      send();
+    if (this.rpcServer) {
+      this.rpcServer.sendToClient(panelId, {
+        type: "ws:event",
+        event: "panel:history-popstate",
+        payload,
+      });
+      return true;
     }
 
-    return true;
+    return false;
   }
 
   /**
@@ -2779,9 +2791,8 @@ export class PanelManager {
     }
 
     const contextId = getPanelContextId(panel);
-    const authToken = randomBytes(32).toString("hex");
-    this.pendingAuthTokens.set(panel.id, { token: authToken, createdAt: Date.now() });
-    this.cleanupExpiredAuthTokens();
+    // ensureToken handles crash/recreate paths where old token may still exist
+    const authToken = getTokenManager().ensureToken(panel.id, "shell");
 
     const additionalArgs: string[] = [
       `--natstack-panel-id=${panel.id}`,
@@ -2789,6 +2800,7 @@ export class PanelManager {
       `--natstack-theme=${this.currentTheme}`,
       `--natstack-kind=panel`, // Shell panels use panel runtime for focus/theme events
       `--natstack-context-id=${contextId}`,
+      ...(this.rpcPort ? [`--natstack-ws-port=${this.rpcPort}`] : []),
     ];
 
     // Shell panels get full filesystem access
@@ -3470,9 +3482,12 @@ export class PanelManager {
     this.persistHistory(panel);
 
     // Broadcast to panel for reactive update (no reload)
-    const contents = this.viewManager?.getViewContents(panelId);
-    if (contents) {
-      contents.send("stateArgs:updated", validation.data);
+    if (this.rpcServer) {
+      this.rpcServer.sendToClient(panelId, {
+        type: "ws:event",
+        event: "stateArgs:updated",
+        payload: validation.data,
+      });
     }
 
     return validation.data!;
@@ -3626,22 +3641,12 @@ export class PanelManager {
     const panel = this.panels.get(panelId);
     if (!panel) return;
 
-    // Use ViewManager to get webContents for all panels (app, browser, worker).
-    if (!this.viewManager) return;
-
-    const contents = this.viewManager.getWebContents(panelId);
-    if (contents && !contents.isDestroyed()) {
-      try {
-        contents.send("panel:event", { panelId, ...payload });
-      } catch (error) {
-        // Handle race condition where render frame is disposed but webContents
-        // is not yet marked as destroyed. This can happen when panels are idle
-        // for extended periods and Electron garbage collects the render frame.
-        console.warn(
-          `[PanelManager] Failed to send event to panel ${panelId} (render frame may be disposed):`,
-          error instanceof Error ? error.message : error
-        );
-      }
+    if (this.rpcServer) {
+      this.rpcServer.sendToClient(panelId, {
+        type: "ws:event",
+        event: "panel:event",
+        payload: { panelId, ...payload },
+      });
     }
   }
 
@@ -3664,6 +3669,9 @@ export class PanelManager {
   private unloadPanelResources(panelId: string): void {
     const panel = this.panels.get(panelId);
     if (!panel) return;
+
+    // Revoke auth token (disconnects WS connections via onRevoke listener)
+    getTokenManager().revokeToken(panelId);
 
     // Clean up crash history for this panel
     this.crashHistory.delete(panelId);
@@ -3745,7 +3753,6 @@ export class PanelManager {
 
     // Clean up other ID-keyed structures not covered by unloadPanelResources
     this.pendingBrowserNavigations.delete(panel.id);
-    this.pendingAuthTokens.delete(panel.id); // TTL-based but clean up immediately
 
     // Remove from panels map
     this.panels.delete(panel.id);
@@ -4210,22 +4217,12 @@ export class PanelManager {
     return this.gitServer.listCommits(repoPath, ref, limit);
   }
 
-  // Map guestInstanceId (from webContents) to panelId
-  private guestInstanceMap: Map<number, string> = new Map();
-  // Map panelId -> pending auth token with timestamp for TTL cleanup
-  private pendingAuthTokens: Map<string, { token: string; createdAt: number }> = new Map();
-  // TTL for pending auth tokens (30 seconds should be plenty for webview init)
-  private readonly AUTH_TOKEN_TTL_MS = 30_000;
   // Map panelId -> browser state tracking cleanup info
   private browserStateCleanup = new Map<string, { cleanup: () => void; destroyedHandler: () => void }>();
   // Map panelId -> link interception handler for will-navigate
   private linkInterceptionHandlers = new Map<string, (event: Electron.Event, url: string) => void>();
   // Map panelId -> content load handlers (dom-ready, did-finish-load) for cleanup
   private contentLoadHandlers = new Map<string, { domReady?: () => void; didFinishLoad?: () => void }>();
-
-  getPanelIdForWebContents(contents: Electron.WebContents): string | undefined {
-    return this.guestInstanceMap.get(contents.id);
-  }
 
   /**
    * Get WebContents for a panel.
@@ -4236,63 +4233,6 @@ export class PanelManager {
       return undefined;
     }
     return this.viewManager.getWebContents(panelId) ?? undefined;
-  }
-
-  verifyAndRegister(panelId: string, token: string, senderId: number): void {
-    // Check if this is a reload - same webContentsId already registered for this panel.
-    // This is safe because:
-    // 1. The senderId (webContentsId) is assigned by Electron and cannot be spoofed
-    // 2. We only skip token validation if BOTH the senderId AND panelId match existing registration
-    // 3. A malicious panel with a different senderId cannot re-register as another panel
-    const existingPanelId = this.guestInstanceMap.get(senderId);
-    if (existingPanelId === panelId) {
-      // Re-registration after reload - panel is re-initializing with same webContents.
-      // Re-send theme to ensure panel has current theme after reload.
-      this.sendPanelEvent(panelId, { type: "theme", theme: this.currentTheme });
-      return;
-    }
-
-    const pending = this.pendingAuthTokens.get(panelId);
-    if (!pending || pending.token !== token) {
-      throw new Error(`Invalid auth token for panel ${panelId}`);
-    }
-
-    // Check if token has expired
-    if (Date.now() - pending.createdAt > this.AUTH_TOKEN_TTL_MS) {
-      this.pendingAuthTokens.delete(panelId);
-      throw new Error(`Auth token for panel ${panelId} has expired`);
-    }
-
-    // Token is valid and used
-    this.pendingAuthTokens.delete(panelId);
-
-    this.guestInstanceMap.set(senderId, panelId);
-    this.registerPanelView(panelId, senderId);
-  }
-
-  /**
-   * Clean up expired auth tokens to prevent memory leaks.
-   * Called lazily when new panels are created.
-   */
-  private cleanupExpiredAuthTokens(): void {
-    const now = Date.now();
-    for (const [panelId, pending] of this.pendingAuthTokens) {
-      if (now - pending.createdAt > this.AUTH_TOKEN_TTL_MS) {
-        this.pendingAuthTokens.delete(panelId);
-      }
-    }
-  }
-
-  private registerPanelView(panelId: string, senderId: number): void {
-    // ViewManager now tracks the webContents, we just need to set up cleanup for guestInstanceMap
-    const contents = this.viewManager?.getWebContents(panelId);
-    if (contents && !contents.isDestroyed()) {
-      contents.once("destroyed", () => {
-        this.guestInstanceMap.delete(senderId);
-      });
-    }
-
-    this.sendPanelEvent(panelId, { type: "theme", theme: this.currentTheme });
   }
 
   // =====================================================================
@@ -4328,10 +4268,8 @@ export class PanelManager {
 
     log.verbose(` Creating template builder worker: ${workerId}`);
 
-    // Generate auth token for the worker
-    const { randomBytes } = await import("crypto");
-    const authToken = randomBytes(32).toString("hex");
-    this.pendingAuthTokens.set(workerId, { token: authToken, createdAt: Date.now() });
+    // Create auth token for the worker via TokenManager
+    const authToken = getTokenManager().createToken(workerId, "worker");
 
     // Build additional arguments for preload
     const additionalArgs: string[] = [
@@ -4340,6 +4278,7 @@ export class PanelManager {
       `--natstack-theme=${this.currentTheme}`,
       `--natstack-kind=worker`,
       `--natstack-context-id=${workerId}`,
+      ...(this.rpcPort ? [`--natstack-ws-port=${this.rpcPort}`] : []),
     ];
 
     // Encode template config as env (preload exposes this via process.env)
@@ -4394,8 +4333,8 @@ export class PanelManager {
     // Remove from tracking
     this.templateBuilderWorkers.delete(workerId);
 
-    // Clean up auth token
-    this.pendingAuthTokens.delete(workerId);
+    // Revoke auth token (disconnects WS connections via onRevoke listener)
+    getTokenManager().revokeToken(workerId);
 
     // Remove protocol panel content
     if (isProtocolPanel(workerId)) {

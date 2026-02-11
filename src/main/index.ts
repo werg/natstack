@@ -12,9 +12,6 @@ import { createDevLogger } from "./devLog.js";
 const log = createDevLogger("App");
 import { PanelManager, setGlobalPanelManager } from "./panelManager.js";
 import { GitServer } from "./gitServer.js";
-import { handle } from "./ipc/handlers.js";
-import type * as SharedPanel from "../shared/ipc/types.js";
-import { getPanelType } from "../shared/panel/accessors.js";
 import { setupMenu } from "./menu.js";
 import { setActiveWorkspace, getAppRoot } from "./paths.js";
 import {
@@ -50,10 +47,8 @@ import {
   getViewManager,
   type ViewManager,
 } from "./viewManager.js";
-import type { RpcMessage, RpcResponse } from "@natstack/rpc";
-import { generateRequestId } from "../shared/logging.js";
-import { getServiceDispatcher, parseServiceMethod, SHELL_CALLER_ID } from "./serviceDispatcher.js";
-import { checkServiceAccess } from "./servicePolicy.js";
+import { getServiceDispatcher } from "./serviceDispatcher.js";
+import type { RpcServer } from "../server/rpcServer.js";
 import {
   handleAppService,
   handlePanelService,
@@ -143,6 +138,7 @@ let pubsubServer: PubSubServer | null = null;
 let verdaccioServer: VerdaccioServer | null = null;
 let natstackWatcher: NatstackPackageWatcher | null = null;
 let panelManager: PanelManager | null = null;
+let rpcServer: RpcServer | null = null;
 let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
 let isCleaningUp = false; // Prevent re-entry in will-quit handler
@@ -206,7 +202,7 @@ log.info(` Starting in ${appMode} mode`);
 // Window Creation
 // =============================================================================
 
-function createWindow(): void {
+function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
   // Create BaseWindow (no webContents of its own)
   // Start hidden to avoid layout flash - shown after shell content loads
   mainWindow = new BaseWindow({
@@ -221,12 +217,16 @@ function createWindow(): void {
       : {}),
   });
 
-  // Initialize ViewManager with shell view
+  // Initialize ViewManager with shell view (pass WS connection args to shell preload)
   viewManager = initViewManager({
     window: mainWindow,
     shellPreload: path.join(__dirname, "preload.cjs"),
     safePreload: path.join(__dirname, "safePreload.cjs"),
     shellHtmlPath: path.join(__dirname, "index.html"),
+    shellAdditionalArguments: [
+      `--natstack-ws-port=${wsArgs.rpcPort}`,
+      `--natstack-shell-token=${wsArgs.shellToken}`,
+    ],
     devTools: false,
   });
 
@@ -264,10 +264,6 @@ function createWindow(): void {
   });
 }
 
-// =============================================================================
-// Panel IPC Handlers (renderer <-> main) - Only in main mode
-// =============================================================================
-
 // Helper to ensure we're in main mode with panel manager
 function requirePanelManager(): PanelManager {
   if (!panelManager) {
@@ -275,229 +271,6 @@ function requirePanelManager(): PanelManager {
   }
   return panelManager;
 }
-
-// Helper to get sender ID and validate authorization
-function assertAuthorized(event: Electron.IpcMainInvokeEvent, panelId: string): void {
-  const pm = requirePanelManager();
-  const senderPanelId = pm.getPanelIdForWebContents(event.sender);
-  if (senderPanelId !== panelId) {
-    throw new Error(`Unauthorized: Sender ${senderPanelId} cannot act as ${panelId}`);
-  }
-}
-
-// =============================================================================
-// Unified RPC Handler (panel <-> main) - Only in main mode
-// =============================================================================
-
-handle("rpc:call", async (event, panelId: string, message: RpcMessage): Promise<RpcResponse> => {
-  assertAuthorized(event, panelId);
-
-  if (message.type !== "request") {
-    return {
-      type: "response",
-      requestId: "unknown",
-      error: "Invalid RPC message type (expected request)",
-    };
-  }
-
-  const { requestId, method, args } = message;
-  const parsedMethod = parseServiceMethod(method);
-  if (!parsedMethod) {
-    return {
-      type: "response",
-      requestId,
-      error: `Invalid method format: "${method}". Expected "service.method"`,
-    };
-  }
-
-  const { service, method: serviceMethod } = parsedMethod;
-
-  // Determine caller kind based on panel type
-  // Shell panels (type: "shell") get shell-level access to services
-  const pm = requirePanelManager();
-  const panel = pm.getPanel(panelId);
-  const panelType = panel ? getPanelType(panel) : undefined;
-  const callerKind = (panelType === "shell" ? "shell" : "panel") as import("./serviceDispatcher.js").CallerKind;
-
-  // Check service access policy
-  try {
-    checkServiceAccess(service, callerKind);
-  } catch (error) {
-    return {
-      type: "response",
-      requestId,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-
-  const dispatcher = getServiceDispatcher();
-  const ctx = { callerId: panelId, callerKind, webContents: event.sender };
-
-  try {
-    const result = await dispatcher.dispatch(ctx, service, serviceMethod, args);
-    return { type: "response", requestId, result };
-  } catch (error) {
-    return {
-      type: "response",
-      requestId,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-});
-
-// =============================================================================
-// Panel Bridge IPC Handlers (panel webview <-> main) - Only in main mode
-// =============================================================================
-
-handle("panel-bridge:register", async (event, panelId: string, authToken: string) => {
-  // This is the initial handshake, so we don't use assertAuthorized yet.
-  // Instead, we verify the token which proves identity.
-  requirePanelManager().verifyAndRegister(panelId, authToken, event.sender.id);
-});
-
-// Register a browser webview with the CDP server (called from renderer when webview is ready)
-handle("panel:register-browser-webview", async (_event, browserId: string, webContentsId: number) => {
-  const pm = requirePanelManager();
-
-  // Find the parent panel for this browser
-  const panel = pm.getPanel(browserId);
-  if (!panel || getPanelType(panel) !== "browser") {
-    throw new Error(`Browser panel not found: ${browserId}`);
-  }
-
-  // Find the parent panel ID
-  const parentId = pm.findParentId(browserId);
-  if (!parentId) {
-    throw new Error(`Parent panel not found for browser: ${browserId}`);
-  }
-
-  log.verbose(`[CDP] registerBrowser: browserId=${browserId}, parentId=${parentId}, webContentsId=${webContentsId}`);
-  // Register with CDP server (idempotent - may be called multiple times on dom-ready)
-  getCdpServer().registerBrowser(browserId, webContentsId, parentId);
-});
-
-// Update browser panel state (called from renderer when webview events fire)
-handle(
-  "panel:update-browser-state",
-  async (
-    _event,
-    browserId: string,
-    state: { url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean }
-  ) => {
-    const pm = requirePanelManager();
-    pm.updateBrowserState(browserId, state);
-  }
-);
-
-// Unified history integration for app panels (pushState/replaceState/back/forward/go)
-handle("panel:history-push", async (event, panelId: string, payload: { state: unknown; path: string }) => {
-  assertAuthorized(event, panelId);
-  const pm = requirePanelManager();
-  pm.handleHistoryPushState(panelId, payload.state, payload.path);
-});
-
-handle("panel:history-replace", async (event, panelId: string, payload: { state: unknown; path: string }) => {
-  assertAuthorized(event, panelId);
-  const pm = requirePanelManager();
-  pm.handleHistoryReplaceState(panelId, payload.state, payload.path);
-});
-
-handle("panel:history-back", async (event, panelId: string) => {
-  assertAuthorized(event, panelId);
-  const pm = requirePanelManager();
-  await pm.goBack(panelId);
-});
-
-handle("panel:history-forward", async (event, panelId: string) => {
-  assertAuthorized(event, panelId);
-  const pm = requirePanelManager();
-  await pm.goForward(panelId);
-});
-
-handle("panel:history-go", async (event, panelId: string, offset: number) => {
-  assertAuthorized(event, panelId);
-  const pm = requirePanelManager();
-  await pm.goToHistoryOffset(panelId, offset);
-});
-
-handle("panel:history-reload", async (event, panelId: string) => {
-  assertAuthorized(event, panelId);
-  const pm = requirePanelManager();
-  await pm.reloadPanel(panelId);
-});
-
-// Open devtools for a panel (called from panel preload keyboard shortcut)
-handle("panel:open-devtools", async (event, panelId: string) => {
-  assertAuthorized(event, panelId);
-  const vm = getViewManager();
-  vm.openDevTools(panelId);
-});
-
-// =============================================================================
-// Shell RPC Handler (unified RPC transport for shell)
-// =============================================================================
-
-handle("shell-rpc:call", async (event, message: RpcMessage): Promise<RpcResponse> => {
-  // Verify caller is the shell WebContents (security check)
-  const vm = getViewManager();
-  const shellContents = vm.getShellWebContents();
-  if (event.sender !== shellContents) {
-    return {
-      type: "response",
-      requestId: (message as { requestId?: string }).requestId ?? "unknown",
-      error: "Unauthorized: only shell can call shell-rpc:call",
-    };
-  }
-
-  if (message.type !== "request") {
-    return {
-      type: "response",
-      requestId: (message as { requestId?: string }).requestId ?? "unknown",
-      error: "Invalid RPC message type (expected request)",
-    };
-  }
-
-  const { requestId, method, args } = message;
-  const parsedMethod = parseServiceMethod(method);
-  if (!parsedMethod) {
-    return {
-      type: "response",
-      requestId,
-      error: `Invalid method format: "${method}". Expected "service.method"`,
-    };
-  }
-
-  const { service, method: serviceMethod } = parsedMethod;
-
-  // Check service access policy
-  try {
-    checkServiceAccess(service, "shell");
-  } catch (error) {
-    return {
-      type: "response",
-      requestId,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-
-  const dispatcher = getServiceDispatcher();
-  const ctx = {
-    callerId: SHELL_CALLER_ID,
-    callerKind: "shell" as const,
-    webContents: event.sender,
-  };
-
-  try {
-    const result = await dispatcher.dispatch(ctx, service, serviceMethod, args);
-    return { type: "response", requestId, result };
-  } catch (error) {
-    return {
-      type: "response",
-      requestId,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-});
 
 // =============================================================================
 // App Lifecycle
@@ -688,19 +461,15 @@ app.on("ready", async () => {
         workspaceRoot: workspace.path,
         pubsubUrl: `ws://127.0.0.1:${pubsubPort}`,
         messageStore: pubsubServer.getMessageStore(),
-        createToken: (instanceId) => getTokenManager().getOrCreateToken(instanceId),
+        createToken: (instanceId) => getTokenManager().createToken(instanceId, "worker"),
         revokeToken: (instanceId) => getTokenManager().revokeToken(instanceId),
       });
       await agentHost.initialize();
       pubsubServer.setAgentHost(agentHost);
       log.info("[AgentHost] Initialized");
 
-      // Initialize RPC handler
-      const { PanelRpcHandler } = await import("./ipc/rpcHandler.js");
-      new PanelRpcHandler(panelManager);
-
       dispatcher.register("bridge", async (ctx, serviceMethod, serviceArgs) => {
-        return handleBridgeCall(panelManager, ctx.callerId, serviceMethod, serviceArgs);
+        return handleBridgeCall(panelManager, getCdpServer(), ctx.callerId, serviceMethod, serviceArgs);
       });
 
       dispatcher.register("db", async (ctx, serviceMethod, serviceArgs) => {
@@ -728,10 +497,11 @@ app.on("ready", async () => {
 
       dispatcher.register("ai", async (ctx, serviceMethod, serviceArgs) => {
         return handleAiServiceCall(aiHandler, serviceMethod, serviceArgs, (handler, options, streamId) => {
-          if (!ctx.webContents) {
-            throw new Error("Missing webContents for AI stream");
+          if (!ctx.wsClient) {
+            throw new Error("AI streaming requires a WS connection");
           }
-          handler.startPanelStream(ctx.webContents, ctx.callerId, options, streamId);
+          const target = rpcServer!.createWsStreamTarget(ctx.wsClient, streamId);
+          handler.startTargetStream(target, options, streamId);
         });
       });
 
@@ -787,7 +557,26 @@ app.on("ready", async () => {
     dispatcher.markInitialized();
   }
 
-  void createWindow();
+  // Start RPC server (both modes — shell always connects over WS)
+  const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
+  rpcServer = new RpcServerClass({
+    tokenManager: getTokenManager(),
+    panelManager: panelManager ?? undefined,
+  });
+  const rpcPort = await rpcServer.start();
+  log.info(`[RPC] Server started on port ${rpcPort}`);
+
+  // Generate shell token
+  const shellToken = getTokenManager().getOrCreateShellToken();
+
+  // Wire RPC server into panel manager (if in main mode)
+  if (panelManager) {
+    panelManager.setRpcServer(rpcServer);
+    panelManager.setRpcPort(rpcPort);
+  }
+
+  // Create window (shell preload receives WS port + shell token)
+  void createWindow({ rpcPort, shellToken });
 });
 
 app.on("window-all-closed", () => {
@@ -825,7 +614,7 @@ app.on("will-quit", (event) => {
   // Shutdown NatstackWatcher (saves dirty package state for next startup)
   void shutdownNatstackWatcher();
 
-  const hasResourcesToClean = gitServer || gitWatcher || cdpServer || pubsubServer || verdaccioServer;
+  const hasResourcesToClean = gitServer || gitWatcher || cdpServer || pubsubServer || verdaccioServer || rpcServer;
   if (hasResourcesToClean) {
     isCleaningUp = true;
     event.preventDefault();
@@ -834,6 +623,17 @@ app.on("will-quit", (event) => {
 
     // Stop all servers in parallel
     const stopPromises: Promise<void>[] = [];
+
+    if (rpcServer) {
+      stopPromises.push(
+        rpcServer
+          .stop()
+          .then(() => console.log("[App] RPC server stopped"))
+          .catch((error) => {
+            console.error("Error stopping RPC server:", error);
+          })
+      );
+    }
 
     if (cdpServer) {
       stopPromises.push(
@@ -923,8 +723,12 @@ app.on("will-quit", (event) => {
 });
 
 app.on("activate", () => {
-  if (mainWindow === null) {
-    void createWindow();
+  if (mainWindow === null && rpcServer) {
+    const shellToken = getTokenManager().getOrCreateShellToken();
+    const rpcPort = rpcServer.getPort();
+    if (rpcPort) {
+      void createWindow({ rpcPort, shellToken });
+    }
   }
 });
 

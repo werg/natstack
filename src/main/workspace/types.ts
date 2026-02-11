@@ -197,10 +197,10 @@ export type {
   WorkspaceValidation,
   SettingsData,
   AppMode,
-} from "../../shared/ipc/types.js";
+} from "../../shared/types.js";
 
 // Import for use in CentralData
-import type { RecentWorkspace } from "../../shared/ipc/types.js";
+import type { RecentWorkspace } from "../../shared/types.js";
 
 /**
  * Central data persisted in ~/.config/natstack/data.json

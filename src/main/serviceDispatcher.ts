@@ -12,7 +12,7 @@
  * - No code duplication between panel, worker, and shell paths
  */
 
-export type CallerKind = "panel" | "worker" | "shell";
+export type CallerKind = "panel" | "worker" | "shell" | "server";
 
 /** Fixed caller ID for the shell renderer */
 export const SHELL_CALLER_ID = "shell-renderer";
@@ -20,10 +20,10 @@ export const SHELL_CALLER_ID = "shell-renderer";
 export type ServiceContext = {
   /** The caller ID (panel/worker tree node ID, or SHELL_CALLER_ID for shell) */
   callerId: string;
-  /** Whether the caller is a panel, worker, or shell */
+  /** Whether the caller is a panel, worker, shell, or external server */
   callerKind: CallerKind;
-  /** Optional: Electron WebContents for streaming features */
-  webContents?: Electron.WebContents;
+  /** WS client state when caller connected via WebSocket */
+  wsClient?: import("../server/rpcServer.js").WsClientState;
 };
 
 export type ServiceHandler = (

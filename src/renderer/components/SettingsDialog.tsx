@@ -28,7 +28,7 @@ import {
   enableProviderAtom,
   disableProviderAtom,
 } from "../state/appModeAtoms";
-import type { ProviderInfo } from "../../shared/ipc/types";
+import type { ProviderInfo } from "../../shared/types";
 
 const MODEL_ROLES = ["smart", "coding", "fast", "cheap"] as const;
 

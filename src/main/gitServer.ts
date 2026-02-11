@@ -8,7 +8,7 @@ import { spawn, spawnSync } from "child_process";
 import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("GitServer");
-import type { WorkspaceNode, WorkspaceTree, BranchInfo, CommitInfo } from "../shared/ipc/types.js";
+import type { WorkspaceNode, WorkspaceTree, BranchInfo, CommitInfo } from "../shared/types.js";
 import { GitAuthManager, getTokenManager } from "./tokenManager.js";
 import { tryBindPort } from "./portUtils.js";
 import type { GitWatcher } from "./workspace/gitWatcher.js";
@@ -249,7 +249,7 @@ export class GitServer {
    * Get or create a bearer token for a panel ID
    */
   getTokenForPanel(panelId: string): string {
-    return this.authManager.getOrCreateToken(panelId);
+    return this.authManager.getToken(panelId);
   }
 
   /**

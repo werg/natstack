@@ -129,6 +129,7 @@ export class ViewManager {
     shellPreload: string;
     safePreload: string;
     shellHtmlPath: string;
+    shellAdditionalArguments?: string[];
     devTools?: boolean;
   }) {
     this.window = options.window;
@@ -152,6 +153,7 @@ export class ViewManager {
         nodeIntegration: true,
         contextIsolation: false,
         sandbox: false,
+        additionalArguments: options.shellAdditionalArguments,
       },
     });
 
@@ -1189,6 +1191,7 @@ export function initViewManager(options: {
   shellPreload: string;
   safePreload: string;
   shellHtmlPath: string;
+  shellAdditionalArguments?: string[];
   devTools?: boolean;
 }): ViewManager {
   if (viewManager) {

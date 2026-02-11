@@ -7,7 +7,7 @@
 
 import Database from "better-sqlite3";
 import { initializePanelSchema, type DbPanelRow } from "../../src/main/db/panelSchema.js";
-import type { PanelSnapshot, PanelType } from "../../src/shared/ipc/types.js";
+import type { PanelSnapshot, PanelType } from "../../src/shared/types.js";
 
 /**
  * Create an in-memory test database with the panel schema.

@@ -3,7 +3,7 @@
  */
 
 import type { AIHandler } from "../ai/aiHandler.js";
-import type { StreamTextOptions } from "../../shared/ipc/types.js";
+import type { StreamTextOptions } from "../../shared/types.js";
 
 export async function handleAiServiceCall(
   aiHandler: AIHandler | null,

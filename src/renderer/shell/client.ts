@@ -23,7 +23,7 @@ import type {
   GetChildrenPaginatedRequest,
   PaginatedChildren,
   PaginatedRootPanels,
-} from "../../shared/ipc/types.js";
+} from "../../shared/types.js";
 
 // =============================================================================
 // App Service
@@ -169,8 +169,8 @@ export const settings = {
 // =============================================================================
 
 // Re-export event types from shared module
-export type { EventName, EventPayloads } from "../../shared/ipc/events.js";
-import type { EventName } from "../../shared/ipc/events.js";
+export type { EventName, EventPayloads } from "../../shared/events.js";
+import type { EventName } from "../../shared/events.js";
 
 export const events = {
   subscribe: (event: EventName) => rpc.call<void>("main", "events.subscribe", event),

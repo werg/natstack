@@ -3,8 +3,8 @@
  *
  * Replaces direct IPC event sending with a subscription model:
  * - Callers subscribe to events they care about
- * - Events are only sent to subscribers
- * - Automatic cleanup when WebContents is destroyed
+ * - Events are only sent to subscribers via WS
+ * - Automatic cleanup when subscriber disconnects
  *
  * Usage:
  *   // Subscribe (from shell/panel/worker)
@@ -14,62 +14,103 @@
  *   rpc.on("event:panel-tree-updated", (data) => { ... });
  */
 
-import type { WebContents } from "electron";
-import type { ServiceContext } from "../serviceDispatcher.js";
-import { isValidEventName, type EventName, type EventPayloads } from "../../shared/ipc/events.js";
+import type { WebSocket } from "ws";
+import type { ServiceContext, CallerKind } from "../serviceDispatcher.js";
+import { isValidEventName, type EventName, type EventPayloads } from "../../shared/events.js";
 
 // Re-export for consumers
-export type { EventName, EventPayloads } from "../../shared/ipc/events.js";
+export type { EventName, EventPayloads } from "../../shared/events.js";
+
+// =============================================================================
+// Subscriber interface
+// =============================================================================
+
+export interface Subscriber {
+  send(channel: string, payload: unknown): void;
+  readonly isAlive: boolean;
+  /** Check if this subscriber is bound to the given WebSocket */
+  isBoundTo(ws: WebSocket): boolean;
+  onDestroyed(handler: () => void): void;
+  callerKind: CallerKind;
+}
+
+/**
+ * WsSubscriber — delivers events over WebSocket as ws:event messages.
+ */
+export class WsSubscriber implements Subscriber {
+  private destroyed = false;
+  private destroyHandlers: (() => void)[] = [];
+
+  constructor(private ws: WebSocket, public callerKind: CallerKind) {
+    ws.on("close", () => {
+      this.destroyed = true;
+      for (const handler of this.destroyHandlers) handler();
+    });
+  }
+
+  get isAlive(): boolean {
+    return !this.destroyed && this.ws.readyState === 1; // WebSocket.OPEN
+  }
+
+  send(channel: string, payload: unknown): void {
+    if (this.isAlive) {
+      this.ws.send(JSON.stringify({ type: "ws:event", event: channel, payload }));
+    }
+  }
+
+  isBoundTo(ws: WebSocket): boolean {
+    return this.ws === ws;
+  }
+
+  onDestroyed(handler: () => void): void {
+    this.destroyHandlers.push(handler);
+  }
+}
+
+// =============================================================================
+// Event service
+// =============================================================================
 
 /**
  * Event service for managing subscriptions and emitting events.
  */
 class EventService {
-  private subscribers = new Map<EventName, Set<WebContents>>();
+  private subscribers = new Map<EventName, Map<string, Subscriber>>();
+  private subscribersByCallerId = new Map<string, Subscriber>();
 
   /**
-   * Subscribe a WebContents to an event.
-   * Automatically cleans up when the WebContents is destroyed.
+   * Subscribe a caller to an event.
+   * Uses callerId-keyed maps for stable identity across calls.
    */
-  subscribe(event: EventName, webContents: WebContents): void {
+  subscribe(event: EventName, callerId: string, subscriber: Subscriber): void {
     if (!this.subscribers.has(event)) {
-      this.subscribers.set(event, new Set());
+      this.subscribers.set(event, new Map());
     }
 
     const subs = this.subscribers.get(event)!;
-    if (subs.has(webContents)) {
-      return; // Already subscribed
-    }
-
-    subs.add(webContents);
-
-    // Clean up when WebContents is destroyed
-    const cleanup = () => {
-      this.subscribers.get(event)?.delete(webContents);
-    };
-    webContents.once("destroyed", cleanup);
+    subs.set(callerId, subscriber);
   }
 
   /**
-   * Unsubscribe a WebContents from an event.
+   * Unsubscribe a caller from an event.
    */
-  unsubscribe(event: EventName, webContents: WebContents): void {
-    this.subscribers.get(event)?.delete(webContents);
+  unsubscribe(event: EventName, callerId: string): void {
+    this.subscribers.get(event)?.delete(callerId);
   }
 
   /**
-   * Unsubscribe a WebContents from all events.
+   * Unsubscribe a caller from all events.
    */
-  unsubscribeAll(webContents: WebContents): void {
+  unsubscribeAll(callerId: string): void {
     for (const subs of this.subscribers.values()) {
-      subs.delete(webContents);
+      subs.delete(callerId);
     }
+    this.subscribersByCallerId.delete(callerId);
   }
 
   /**
    * Emit an event to all subscribers.
-   * For shell (identified by callerKind), sends via shell-rpc:event channel in RPC format.
-   * For panels/workers, sends via event:{eventName} channel directly.
+   * All subscribers get the same ws:event message format.
    */
   emit<E extends EventName>(event: E, data?: EventPayloads[E]): void {
     const subs = this.subscribers.get(event);
@@ -78,50 +119,13 @@ class EventService {
     }
 
     const channel = `event:${event}`;
-    for (const wc of subs) {
-      if (!wc.isDestroyed()) {
-        // Check if this is the shell WebContents (it has the __natstackKind global set to "shell")
-        // We use a simple heuristic: shell subscribes via shell-rpc transport
-        const callerKind = this.callerKinds.get(wc);
-        if (callerKind === "shell") {
-          // Shell expects RPC-formatted messages on shell-rpc:event channel
-          wc.send("shell-rpc:event", {
-            type: "event",
-            fromId: "main",
-            event: channel,
-            payload: data,
-          });
-        } else {
-          // Panels/workers get direct channel sends
-          wc.send(channel, data);
-        }
+    for (const [callerId, subscriber] of subs) {
+      if (subscriber.isAlive) {
+        subscriber.send(channel, data);
+      } else {
+        // Cleanup dead subscriber
+        subs.delete(callerId);
       }
-    }
-  }
-
-  /**
-   * Track caller kind for proper event formatting.
-   */
-  private callerKinds = new Map<WebContents, "shell" | "panel" | "worker">();
-
-  /**
-   * Set the caller kind for a WebContents.
-   * Called during subscription to know how to format events.
-   */
-  setCallerKind(webContents: WebContents, kind: "shell" | "panel" | "worker"): void {
-    this.callerKinds.set(webContents, kind);
-    webContents.once("destroyed", () => {
-      this.callerKinds.delete(webContents);
-    });
-  }
-
-  /**
-   * Emit an event to a specific WebContents (if subscribed).
-   * Falls back to direct send if not using subscription model.
-   */
-  emitTo(webContents: WebContents, event: EventName, data?: unknown): void {
-    if (!webContents.isDestroyed()) {
-      webContents.send(`event:${event}`, data);
     }
   }
 
@@ -133,10 +137,37 @@ class EventService {
   }
 
   /**
-   * Check if a WebContents is subscribed to an event.
+   * Get or create a subscriber for a callerId from a WS client.
    */
-  isSubscribed(event: EventName, webContents: WebContents): boolean {
-    return this.subscribers.get(event)?.has(webContents) ?? false;
+  getOrCreateSubscriber(ctx: ServiceContext): Subscriber {
+    if (!ctx.wsClient) {
+      throw new Error("Event subscriptions require a WS connection");
+    }
+
+    const existing = this.subscribersByCallerId.get(ctx.callerId);
+    // Reuse only if alive AND bound to the same WS (connection replacement gives a new WS)
+    if (existing && existing.isAlive && existing.isBoundTo(ctx.wsClient.ws)) return existing;
+
+    // Remove stale subscriber's event entries if it was replaced
+    if (existing) {
+      for (const eventSubs of this.subscribers.values()) {
+        eventSubs.delete(ctx.callerId);
+      }
+      this.subscribersByCallerId.delete(ctx.callerId);
+    }
+
+    const subscriber = new WsSubscriber(ctx.wsClient.ws, ctx.callerKind);
+    this.subscribersByCallerId.set(ctx.callerId, subscriber);
+    subscriber.onDestroyed(() => {
+      // Only clean up if this is still the current subscriber (not replaced)
+      if (this.subscribersByCallerId.get(ctx.callerId) === subscriber) {
+        this.subscribersByCallerId.delete(ctx.callerId);
+        for (const eventSubs of this.subscribers.values()) {
+          eventSubs.delete(ctx.callerId);
+        }
+      }
+    });
+    return subscriber;
   }
 }
 
@@ -152,20 +183,14 @@ export async function handleEventsService(
   method: string,
   args: unknown[]
 ): Promise<unknown> {
-  // WebContents is required for event subscriptions
-  if (!ctx.webContents) {
-    throw new Error("Event subscriptions require webContents context");
-  }
-
   switch (method) {
     case "subscribe": {
       const eventName = args[0] as EventName;
       if (!isValidEventName(eventName)) {
         throw new Error(`Unknown event: ${eventName}`);
       }
-      eventService.subscribe(eventName, ctx.webContents);
-      // Track caller kind for proper event formatting
-      eventService.setCallerKind(ctx.webContents, ctx.callerKind);
+      const subscriber = eventService.getOrCreateSubscriber(ctx);
+      eventService.subscribe(eventName, ctx.callerId, subscriber);
       return;
     }
 
@@ -174,12 +199,12 @@ export async function handleEventsService(
       if (!isValidEventName(eventName)) {
         throw new Error(`Unknown event: ${eventName}`);
       }
-      eventService.unsubscribe(eventName, ctx.webContents);
+      eventService.unsubscribe(eventName, ctx.callerId);
       return;
     }
 
     case "unsubscribeAll": {
-      eventService.unsubscribeAll(ctx.webContents);
+      eventService.unsubscribeAll(ctx.callerId);
       return;
     }
 

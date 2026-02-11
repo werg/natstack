@@ -30,7 +30,7 @@ import { getAgentDiscovery } from "./agentDiscovery.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
 import { createDevLogger } from "./devLog.js";
 import type { AIHandler, StreamTarget } from "./ai/aiHandler.js";
-import type { StreamTextOptions, StreamTextEvent } from "../shared/ipc/types.js";
+import type { StreamTextOptions, StreamTextEvent } from "../shared/types.js";
 import type { ToolExecutionResult } from "./ai/claudeCodeToolProxy.js";
 
 const log = createDevLogger("AgentHost");

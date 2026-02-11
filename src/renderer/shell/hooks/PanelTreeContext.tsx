@@ -27,7 +27,7 @@ import type {
   PanelSummary,
   PanelAncestor,
   DescendantSiblingGroup,
-} from "../../../shared/ipc/types.js";
+} from "../../../shared/types.js";
 import {
   getPanelType,
   getPanelContextId,

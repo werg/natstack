@@ -11,7 +11,7 @@
  *   ns-about://model-provider-config
  */
 
-import type { ShellPage } from "../shared/ipc/types.js";
+import type { ShellPage } from "../shared/types.js";
 
 /**
  * Valid shell page names for ns-about:// protocol.

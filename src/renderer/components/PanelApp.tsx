@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
-import { Flex } from "@radix-ui/themes";
+import { Callout, Flex } from "@radix-ui/themes";
 
 import { effectiveThemeAtom, loadThemePreferenceAtom } from "../state/themeAtoms";
 import { NavigationProvider, useNavigation } from "./NavigationContext";
@@ -9,7 +9,7 @@ import { useShellEvent } from "../shell/useShellEvent";
 import { app } from "../shell/client";
 import { PanelStack } from "./PanelStack";
 import { TitleBar } from "./TitleBar";
-import type { PanelContextMenuAction } from "../../shared/ipc/types";
+import type { PanelContextMenuAction } from "../../shared/types";
 
 export function PanelApp() {
   return (
@@ -26,6 +26,13 @@ export function PanelApp() {
 function PanelAppContent() {
   const effectiveTheme = useThemeSynchronizer();
   const [currentTitle, setCurrentTitle] = useState("NatStack");
+  const [initError, setInitError] = useState<string | null>(null);
+
+  // Show panel tree initialization errors
+  const handleInitError = useCallback((payload: { path: string; error: string }) => {
+    setInitError(payload.error);
+  }, []);
+  useShellEvent("panel-initialization-error", handleInitError);
 
   // Use refs for callback handlers to avoid complex state patterns
   const openPanelDevToolsRef = useRef<() => void>(() => {});
@@ -86,6 +93,11 @@ function PanelAppContent() {
   return (
     <Flex direction="column" height="100vh" style={{ overflow: "hidden" }}>
       <TitleBar title={currentTitle} onNavigateToId={navigateToId} onPanelAction={handlePanelAction} onArchive={handleArchive} />
+      {initError && (
+        <Callout.Root color="red" size="1" style={{ margin: "0 8px 4px", cursor: "pointer" }} onClick={() => setInitError(null)}>
+          <Callout.Text>Failed to initialize panels: {initError}</Callout.Text>
+        </Callout.Root>
+      )}
       <PanelStack
         onTitleChange={setCurrentTitle}
         hostTheme={effectiveTheme}

@@ -32,7 +32,7 @@ import type {
   AvailableProvider,
   ModelRoleConfig,
   ShellPage,
-} from "../../shared/ipc/types.js";
+} from "../../shared/types.js";
 import { getPanelPersistence } from "../db/panelPersistence.js";
 import { getPanelSearchIndex } from "../db/panelSearchIndex.js";
 import type { SupportedProvider } from "../workspace/types.js";

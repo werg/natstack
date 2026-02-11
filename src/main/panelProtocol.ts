@@ -1,6 +1,6 @@
 import { protocol, session } from "electron";
 import * as path from "path";
-import type { ProtocolBuildArtifacts } from "../shared/ipc/types.js";
+import type { ProtocolBuildArtifacts } from "../shared/types.js";
 import { randomBytes } from "crypto";
 import { createDevLogger } from "./devLog.js";
 import { getVerdaccioServer, isVerdaccioServerInitialized } from "./verdaccioServer.js";

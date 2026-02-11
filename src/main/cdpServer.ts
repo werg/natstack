@@ -161,7 +161,7 @@ export class CdpServer {
     }
 
     // Get or create token via global token manager
-    const token = this.tokenManager.getOrCreateToken(requestingPanelId);
+    const token = this.tokenManager.getToken(requestingPanelId);
     return `ws://localhost:${this.getPort()}/${browserId}?token=${token}`;
   }
 
@@ -220,7 +220,8 @@ export class CdpServer {
     }
 
     // Validate token and get panel ID
-    const panelId = this.tokenManager.validateToken(token);
+    const entry = this.tokenManager.validateToken(token);
+    const panelId = entry?.callerId ?? null;
     if (!panelId) {
       ws.close(4001, "Invalid token");
       return;

@@ -5,14 +5,17 @@
 
 import { dialog } from "electron";
 import type { PanelManager } from "../panelManager.js";
-import type { CreateChildOptions } from "../../shared/ipc/types.js";
+import type { CdpServer } from "../cdpServer.js";
+import type { CreateChildOptions } from "../../shared/types.js";
 import { handleTemplateComplete, type TemplateCompleteResult } from "../contextTemplate/partitionBuilder.js";
 import { getAgentDiscovery } from "../agentDiscovery.js";
+import { getViewManager } from "../viewManager.js";
 
 /**
  * Handle bridge service calls from panels.
  *
  * @param pm - PanelManager instance
+ * @param cdpServer - CdpServer instance for browser ownership checks
  * @param callerId - The calling panel/worker ID
  * @param method - The method name (e.g., "createChild", "closeSelf")
  * @param args - The method arguments
@@ -20,6 +23,7 @@ import { getAgentDiscovery } from "../agentDiscovery.js";
  */
 export async function handleBridgeCall(
   pm: PanelManager,
+  cdpServer: CdpServer,
   callerId: string,
   method: string,
   args: unknown[]
@@ -81,7 +85,7 @@ export async function handleBridgeCall(
       if (parentId !== callerId) {
         throw new Error(`Panel "${callerId}" is not the parent of "${targetId}"`);
       }
-      return pm.navigatePanel(targetId, source, targetType as import("../../shared/ipc/types.js").PanelType);
+      return pm.navigatePanel(targetId, source, targetType as import("../../shared/types.js").PanelType);
     }
     case "getWorkspaceTree": {
       return pm.getWorkspaceTree();
@@ -237,6 +241,60 @@ export async function handleBridgeCall(
       // Return only valid agents with their manifests
       return discovery.listValid().map((agent) => agent.manifest);
     }
+    // =========================================================================
+    // History integration (replaces IPC panel:history-* handlers)
+    // =========================================================================
+    case "historyPush": {
+      const [payload] = args as [{ state: unknown; path: string }];
+      pm.handleHistoryPushState(callerId, payload.state, payload.path);
+      return;
+    }
+    case "historyReplace": {
+      const [payload] = args as [{ state: unknown; path: string }];
+      pm.handleHistoryReplaceState(callerId, payload.state, payload.path);
+      return;
+    }
+    case "historyBack": {
+      await pm.goBack(callerId);
+      return;
+    }
+    case "historyForward": {
+      await pm.goForward(callerId);
+      return;
+    }
+    case "historyGo": {
+      const [offset] = args as [number];
+      await pm.goToHistoryOffset(callerId, offset);
+      return;
+    }
+    case "historyReload": {
+      await pm.reloadPanel(callerId);
+      return;
+    }
+
+    // =========================================================================
+    // DevTools (replaces IPC panel:open-devtools handler)
+    // =========================================================================
+    case "openDevtools": {
+      const vm = getViewManager();
+      vm.openDevTools(callerId);
+      return;
+    }
+
+    // =========================================================================
+    // Browser state (replaces IPC panel:update-browser-state handler)
+    // =========================================================================
+    case "updateBrowserState": {
+      const [browserId, state] = args as [string, { url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean }];
+      // Verify caller owns or is an ancestor of this browser panel
+      if (!cdpServer.panelOwnsBrowser(callerId, browserId) &&
+          !pm.isDescendantOf(browserId, callerId)) {
+        throw new Error(`Panel ${callerId} cannot update browser ${browserId}`);
+      }
+      pm.updateBrowserState(browserId, state);
+      return;
+    }
+
     default:
       throw new Error(`Unknown bridge method: ${method}`);
   }

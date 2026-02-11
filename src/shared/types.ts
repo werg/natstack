@@ -1,4 +1,4 @@
-// Shared types for typed IPC communication
+// Shared types used across main, renderer, server, and preload
 
 import type {
   CreateChildOptions,
@@ -9,8 +9,7 @@ import type {
   BrowserChildSpec,
 } from "@natstack/runtime";
 import type { RepoArgSpec } from "@natstack/git";
-import type { RpcMessage, RpcResponse } from "@natstack/rpc";
-import type { StateArgsSchema, StateArgsValue } from "../stateArgs.js";
+import type { StateArgsSchema, StateArgsValue } from "./stateArgs.js";
 
 // Re-export types for consumers of this module
 export type {
@@ -143,100 +142,6 @@ export interface ProtocolBuildArtifacts {
 // See: AppPanel, WorkerPanel, BrowserPanel, Panel
 
 // =============================================================================
-// IPC Channel Definitions
-// =============================================================================
-
-// Panel-related IPC channels (renderer <-> main)
-// Note: Most panel operations now use RPC via shell-rpc:call or rpc:call.
-// These are the remaining direct IPC channels.
-export interface PanelIpcApi {
-  /**
-   * Register a browser panel's webview with the CDP server.
-   * Called by renderer when a browser webview's dom-ready fires.
-   * @param browserId - The browser panel's ID
-   * @param webContentsId - The webContents ID from the webview
-   */
-  "panel:register-browser-webview": (browserId: string, webContentsId: number) => void;
-  /**
-   * Update browser panel state (URL, loading, navigation).
-   * Called by renderer when webview events fire.
-   */
-  "panel:update-browser-state": (
-    browserId: string,
-    state: Partial<BrowserState> & { url?: string }
-  ) => void;
-  /**
-   * Open devtools for a panel.
-   * Called by panel preload keyboard shortcut (Cmd/Ctrl+Shift+I).
-   */
-  "panel:open-devtools": (panelId: string) => void;
-  /**
-   * Push a history entry from an app panel (history.pushState).
-   */
-  "panel:history-push": (panelId: string, payload: { state: unknown; path: string }) => void;
-  /**
-   * Replace the current history entry from an app panel (history.replaceState).
-   */
-  "panel:history-replace": (panelId: string, payload: { state: unknown; path: string }) => void;
-  /**
-   * Navigate back in unified panel history (history.back).
-   */
-  "panel:history-back": (panelId: string) => void;
-  /**
-   * Navigate forward in unified panel history (history.forward).
-   */
-  "panel:history-forward": (panelId: string) => void;
-  /**
-   * Navigate by offset in unified panel history (history.go).
-   */
-  "panel:history-go": (panelId: string, offset: number) => void;
-  /**
-   * Reload the current history entry (history.go(0)).
-   */
-  "panel:history-reload": (panelId: string) => void;
-}
-
-// Panel bridge IPC channels (panel webview <-> main)
-export interface PanelBridgeIpcApi {
-  /**
-   * Initial panel <-> main handshake.
-   * After this, panel calls should use `rpc:call` (service.method).
-   */
-  "panel-bridge:register": (panelId: string, authToken: string) => void;
-
-  /**
-   * Request an RPC connection to another panel or worker.
-   * Unified endpoint for panel-to-panel, panel-to-worker, and worker-to-panel RPC.
-   * The type (panel vs worker) is determined by looking up the ID in the tree.
-   * @param fromId - Source endpoint ID
-   * @param toId - Target endpoint ID
-   */
-  "panel-rpc:connect": (fromId: string, toId: string) => void;
-
-  /**
-   * Unified RPC entrypoint for panel -> main service calls.
-   * Accepts a standard RpcRequest and returns a matching RpcResponse.
-   *
-   * Method format: "service.method" (e.g., "db.open", "bridge.createChild", "ai.listRoles").
-   *
-   * Note: panel registration/handshake remains on "panel-bridge:register".
-   */
-  "rpc:call": (panelId: string, message: RpcMessage) => RpcResponse;
-}
-
-// Main-to-panel IPC channels (main -> panel webview via invoke)
-export interface MainToPanelIpcApi {
-  /**
-   * Execute a tool in the panel (called by main process).
-   * This is a bidirectional RPC where main invokes the panel.
-   */
-  "panel:execute-tool": (
-    toolName: string,
-    args: Record<string, unknown>
-  ) => ToolExecutionResult;
-}
-
-// =============================================================================
 // StreamText Types (Unified AI API)
 // =============================================================================
 
@@ -283,20 +188,6 @@ export interface StreamTextEvent {
   error?: string;
 }
 
-/** Tool execution request sent from main to panel (via IPC event) */
-export interface ToolExecuteRequest {
-  /** Panel ID for security validation */
-  panelId: string;
-  /** Stream ID this tool execution belongs to */
-  streamId: string;
-  /** Unique ID for this execution (for matching result) */
-  executionId: string;
-  /** Name of the tool to execute */
-  toolName: string;
-  /** Arguments for the tool */
-  args: Record<string, unknown>;
-}
-
 /** Tool execution result sent from panel to main */
 export interface ToolExecutionResult {
   /** Text content of the result */
@@ -305,19 +196,6 @@ export interface ToolExecutionResult {
   isError?: boolean;
   /** Optional structured data (e.g., for code execution results with components) */
   data?: unknown;
-}
-
-/** Event sent from main to panel with stream chunks */
-export interface StreamTextChunkEvent {
-  panelId: string;
-  streamId: string;
-  chunk: StreamTextEvent;
-}
-
-/** Event sent from main to panel when stream ends */
-export interface StreamTextEndEvent {
-  panelId: string;
-  streamId: string;
 }
 
 // =============================================================================
@@ -647,26 +525,3 @@ export interface CommitInfo {
 }
 
 // Shell IPC channels (shell renderer -> main for service calls)
-// Note: Most shell operations now use RPC via shell-rpc:call.
-export interface ShellIpcApi {
-  /**
-   * RPC call from shell renderer (unified RPC transport).
-   * Allows shell to use @natstack/runtime packages directly.
-   */
-  "shell-rpc:call": (message: RpcMessage) => RpcResponse;
-}
-
-// Combined API for type utilities (remaining IPC channels)
-export type AllIpcApi = PanelIpcApi & PanelBridgeIpcApi & ShellIpcApi;
-
-// =============================================================================
-// Type utilities for extracting channel info
-// =============================================================================
-
-export type IpcChannel = keyof AllIpcApi;
-
-export type IpcHandler<C extends IpcChannel> = AllIpcApi[C];
-
-export type IpcParams<C extends IpcChannel> = Parameters<AllIpcApi[C]>;
-
-export type IpcReturn<C extends IpcChannel> = ReturnType<AllIpcApi[C]>;

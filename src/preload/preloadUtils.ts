@@ -5,9 +5,8 @@
  * extracting common parsing, registration, and global setup logic.
  */
 
-import { ipcRenderer } from "electron";
 import { PANEL_ENV_ARG_PREFIX } from "../common/panelEnv.js";
-import { createTransportBridge } from "./transport.js";
+import { createWsTransport, type TransportBridge } from "./wsTransport.js";
 
 // =============================================================================
 // Global type declarations for NatStack runtime
@@ -48,6 +47,12 @@ export const ARG_CONTEXT_ID = "--natstack-context-id=";
 
 /** Argument prefix for state args (base64 encoded JSON) */
 export const ARG_STATE_ARGS = "--natstack-state-args=";
+
+/** Argument prefix for WS port */
+export const ARG_WS_PORT = "--natstack-ws-port=";
+
+/** Argument prefix for shell token */
+export const ARG_SHELL_TOKEN = "--natstack-shell-token=";
 
 // =============================================================================
 // Environment variable keys
@@ -148,6 +153,18 @@ export function parseStateArgs(): Record<string, unknown> {
   }
 }
 
+export function parseWsPort(): number | null {
+  const arg = process.argv.find((value) => value.startsWith(ARG_WS_PORT));
+  if (!arg) return null;
+  const port = parseInt(arg.slice(ARG_WS_PORT.length), 10);
+  return isNaN(port) ? null : port;
+}
+
+export function parseShellToken(): string | null {
+  const arg = process.argv.find((value) => value.startsWith(ARG_SHELL_TOKEN));
+  return arg ? (arg.slice(ARG_SHELL_TOKEN.length) || null) : null;
+}
+
 export function parseEnvArg(): Record<string, string> {
   const arg = process.argv.find((value) => value.startsWith(PANEL_ENV_ARG_PREFIX));
   if (!arg) return {};
@@ -224,32 +241,36 @@ export function parsePreloadConfig(): ParsedPreloadConfig {
 
 /**
  * Register the panel/worker view with the main process.
+ * Registration now happens during WS auth handshake — nothing to do here.
  */
-export function registerView(config: ParsedPreloadConfig): void {
-  if (config.authToken) {
-    void ipcRenderer.invoke("panel-bridge:register", config.panelId, config.authToken).catch((error: unknown) => {
-      console.error(`Failed to register ${config.kind} view`, error);
-    });
-  } else {
-    console.error(`No auth token found for ${config.kind}`, config.panelId);
-  }
+export function registerView(_config: ParsedPreloadConfig): void {
+  // No-op: WS auth handshake replaces IPC registration
 }
 
 /**
- * Create the transport bridge for RPC communication.
+ * Create the transport bridge for RPC communication via WebSocket.
  */
-export function createTransport(viewId: string) {
-  return createTransportBridge(viewId);
+export function createTransport(viewId: string, config: ParsedPreloadConfig): TransportBridge {
+  const wsPort = parseWsPort();
+  if (!wsPort) throw new Error("WS port not provided (--natstack-ws-port)");
+  if (!config.authToken) throw new Error("Auth token not provided");
+  return createWsTransport({ viewId, wsPort, authToken: config.authToken, callerKind: config.kind });
 }
 
 /**
  * Set up DevTools keyboard shortcut (Cmd/Ctrl+Shift+I).
  */
-export function setupDevToolsShortcut(config: ParsedPreloadConfig): void {
+export function setupDevToolsShortcut(config: ParsedPreloadConfig, transport: TransportBridge): void {
   window.addEventListener("keydown", (event) => {
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "i") {
       event.preventDefault();
-      void ipcRenderer.invoke("panel:open-devtools", config.panelId).catch((error) => {
+      void transport.send("main", {
+        type: "request",
+        requestId: crypto.randomUUID(),
+        fromId: config.panelId,
+        method: "bridge.openDevtools",
+        args: [],
+      }).catch((error) => {
         console.error(`Failed to open ${config.kind} devtools`, error);
       });
     }
@@ -260,14 +281,14 @@ export function setupDevToolsShortcut(config: ParsedPreloadConfig): void {
  * Integrate browser-like history with the main process for app panels.
  *
  * This patches the global `history` object to forward pushState/replaceState/back/forward/go
- * calls to the main process, enabling unified navigation history across panel types.
+ * calls to the main process via WS RPC, enabling unified navigation history across panel types.
  *
  * IMPORTANT: The `config.panelId` is captured at setup time. Each panel gets its own
  * preload execution context in Electron, so this binding is safe. Even if two panels
  * share the same context (storage partition), they have separate WebContentsView
  * instances with separate preload scripts, so history calls route to the correct panel.
  */
-export function setupHistoryIntegration(config: ParsedPreloadConfig): void {
+export function setupHistoryIntegration(config: ParsedPreloadConfig, transport: TransportBridge): void {
   if (config.kind !== "panel") return;
 
   const resolvePath = (url: string | URL | null | undefined): string => {
@@ -279,56 +300,58 @@ export function setupHistoryIntegration(config: ParsedPreloadConfig): void {
     }
   };
 
+  const sendRpc = (method: string, args: unknown[]) => {
+    void transport.send("main", {
+      type: "request",
+      requestId: crypto.randomUUID(),
+      fromId: config.panelId,
+      method,
+      args,
+    }).catch((error) => {
+      console.error(`Failed to call ${method}`, error);
+    });
+  };
+
   const originalPushState = history.pushState.bind(history);
   const originalReplaceState = history.replaceState.bind(history);
-  const originalBack = history.back.bind(history);
-  const originalForward = history.forward.bind(history);
   const originalGo = history.go.bind(history);
 
   history.pushState = (state: unknown, title: string, url?: string | URL | null): void => {
     originalPushState(state, title, url);
     const path = resolvePath(url);
-    void ipcRenderer.invoke("panel:history-push", config.panelId, { state, path }).catch((error) => {
-      console.error("Failed to push history state", error);
-    });
+    sendRpc("bridge.historyPush", [{ state, path }]);
   };
 
   history.replaceState = (state: unknown, title: string, url?: string | URL | null): void => {
     originalReplaceState(state, title, url);
     const path = resolvePath(url);
-    void ipcRenderer.invoke("panel:history-replace", config.panelId, { state, path }).catch((error) => {
-      console.error("Failed to replace history state", error);
-    });
+    sendRpc("bridge.historyReplace", [{ state, path }]);
   };
 
   history.back = (): void => {
-    void ipcRenderer.invoke("panel:history-back", config.panelId).catch((error) => {
-      console.error("Failed to navigate back", error);
-    });
+    sendRpc("bridge.historyBack", []);
   };
 
   history.forward = (): void => {
-    void ipcRenderer.invoke("panel:history-forward", config.panelId).catch((error) => {
-      console.error("Failed to navigate forward", error);
-    });
+    sendRpc("bridge.historyForward", []);
   };
 
   history.go = (delta?: number): void => {
     if (!delta) {
-      void ipcRenderer.invoke("panel:history-reload", config.panelId).catch((error) => {
-        console.error("Failed to reload history", error);
-        originalGo(0);
-      });
+      sendRpc("bridge.historyReload", []);
       return;
     }
-    void ipcRenderer.invoke("panel:history-go", config.panelId, delta).catch((error) => {
-      console.error("Failed to navigate history", error);
-    });
+    sendRpc("bridge.historyGo", [delta]);
   };
 
-  ipcRenderer.on("panel:history-popstate", (_event, payload: { state: unknown; path: string }) => {
-    originalReplaceState(payload.state, document.title, payload.path);
-    window.dispatchEvent(new PopStateEvent("popstate", { state: payload.state }));
+  // Listen for popstate events from main via WS transport
+  transport.onMessage((_fromId, message) => {
+    const msg = message as { type?: string; event?: string; payload?: unknown };
+    if (msg.type === "event" && msg.event === "panel:history-popstate") {
+      const payload = msg.payload as { state: unknown; path: string };
+      originalReplaceState(payload.state, document.title, payload.path);
+      window.dispatchEvent(new PopStateEvent("popstate", { state: payload.state }));
+    }
   });
 }
 
@@ -412,15 +435,17 @@ export function setUnsafeGlobals(
 }
 
 /**
- * Set up IPC listener for stateArgs updates from main process.
+ * Set up listener for stateArgs updates from main process via WS transport.
  * Called by setStateArgs() in runtime, broadcasts to all listeners.
  */
-export function setupStateArgsListener(): void {
-  ipcRenderer.on("stateArgs:updated", (_event, newArgs: Record<string, unknown>) => {
-    // Update the global
-    globalThis.__natstackStateArgs = newArgs;
-    // Dispatch custom event for reactive listeners (useStateArgs hook)
-    window.dispatchEvent(new CustomEvent("natstack:stateArgsChanged", { detail: newArgs }));
+export function setupStateArgsListener(transport: TransportBridge): void {
+  transport.onMessage((_fromId, message) => {
+    const msg = message as { type?: string; event?: string; payload?: unknown };
+    if (msg.type === "event" && msg.event === "stateArgs:updated") {
+      const newArgs = msg.payload as Record<string, unknown>;
+      globalThis.__natstackStateArgs = newArgs;
+      window.dispatchEvent(new CustomEvent("natstack:stateArgsChanged", { detail: newArgs }));
+    }
   });
 }
 
@@ -430,29 +455,27 @@ export function setupStateArgsListener(): void {
 
 /**
  * Initialize a safe preload (contextIsolation: true).
- * Parses config, registers with main, creates transport, exposes globals via contextBridge.
+ * Parses config, creates WS transport, exposes globals via contextBridge.
  */
 export function initSafePreload(contextBridge: Electron.ContextBridge): void {
   const config = parsePreloadConfig();
-  registerView(config);
-  const transport = createTransport(config.panelId);
+  const transport = createTransport(config.panelId, config);
   exposeGlobalsViaContextBridge(contextBridge, config, transport);
   setPreloadGlobals(config, transport);
-  setupDevToolsShortcut(config);
-  setupHistoryIntegration(config);
-  setupStateArgsListener();
+  setupDevToolsShortcut(config, transport);
+  setupHistoryIntegration(config, transport);
+  setupStateArgsListener(transport);
 }
 
 /**
  * Initialize an unsafe preload (contextIsolation: false, nodeIntegration: true).
- * Parses config, registers with main, creates transport, sets globals directly.
+ * Parses config, creates WS transport, sets globals directly.
  */
 export function initUnsafePreload(): void {
   const config = parsePreloadConfig();
-  registerView(config);
-  const transport = createTransport(config.panelId);
+  const transport = createTransport(config.panelId, config);
   setUnsafeGlobals(config, transport);
-  setupDevToolsShortcut(config);
-  setupHistoryIntegration(config);
-  setupStateArgsListener();
+  setupDevToolsShortcut(config, transport);
+  setupHistoryIntegration(config, transport);
+  setupStateArgsListener(transport);
 }
