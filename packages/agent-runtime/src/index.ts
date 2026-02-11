@@ -96,9 +96,16 @@ export type {
 export { createLifecycleManager } from "./lifecycle.js";
 export type { LifecycleManager, LifecycleManagerOptions } from "./lifecycle.js";
 
-// Transport utilities (exported for testing/advanced use)
-export { createParentPortTransport, isParentPortEnvelope } from "./transport.js";
-export type { ParentPort, ParentPortEnvelope } from "./transport.js";
+// IPC Channel abstraction (Electron parentPort / Node.js fork)
+export { getAgentIpcChannel } from "./ipc-channel.js";
+export type { AgentIpcChannel } from "./ipc-channel.js";
+
+// IPC Transport (RPC over AgentIpcChannel)
+export { createIpcTransport } from "./ipc-transport.js";
+
+// Transport envelope types (shared between agent and host)
+export { isParentPortEnvelope } from "./transport.js";
+export type { ParentPortEnvelope } from "./transport.js";
 
 // Re-export database client from core for convenience
 export { createDbClient } from "@natstack/core";

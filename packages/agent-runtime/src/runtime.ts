@@ -25,7 +25,8 @@ import type { AgenticClient, EventStreamItem, AgenticParticipantMetadata } from 
 import { setRpc } from "@natstack/ai";
 
 import { Agent, deepMerge, type AgentContext, type AgentLogger, type AgentRuntimeInjection } from "./agent.js";
-import { createParentPortTransport, type ParentPort } from "./transport.js";
+import { getAgentIpcChannel, type AgentIpcChannel } from "./ipc-channel.js";
+import { createIpcTransport } from "./ipc-transport.js";
 import { createLifecycleManager } from "./lifecycle.js";
 import { createStateStore, type StateStore } from "./state.js";
 import { createElectronStorage } from "./electron/electron-storage.js";
@@ -41,9 +42,9 @@ const STATE_PERSIST_DEBOUNCE_MS = 100;
 /**
  * Send a message to the host process.
  */
-function createHostMessenger(parentPort: ParentPort) {
+function createHostMessenger(ipc: AgentIpcChannel) {
   return (message: AgentToHostMessage) => {
-    parentPort.postMessage(message);
+    ipc.postMessage(message);
   };
 }
 
@@ -92,24 +93,21 @@ function createAgentLogger(
 /**
  * Wait for an init message from the host.
  */
-function waitForInit(parentPort: ParentPort): Promise<AgentInitConfig> {
+function waitForInit(ipc: AgentIpcChannel): Promise<AgentInitConfig> {
   console.log("[agent-runtime] waitForInit: registering message handler");
   return new Promise((resolve) => {
     const handler = (msg: unknown) => {
-      // Electron utilityProcess wraps messages in { data: ... } envelope
-      const unwrapped = (msg && typeof msg === "object" && "data" in msg)
-        ? (msg as { data: unknown }).data
-        : msg;
-      console.log("[agent-runtime] waitForInit: received message:", JSON.stringify(unwrapped).slice(0, 200));
-      if (isHostToAgentMessage(unwrapped) && unwrapped.type === "init") {
+      // No {data:...} unwrapping — handled by AgentIpcChannel
+      console.log("[agent-runtime] waitForInit: received message:", JSON.stringify(msg).slice(0, 200));
+      if (isHostToAgentMessage(msg) && msg.type === "init") {
         console.log("[agent-runtime] waitForInit: got init message, resolving");
-        parentPort.removeListener("message", handler);
-        resolve(unwrapped.config);
+        ipc.removeListener("message", handler);
+        resolve(msg.config);
       } else {
-        console.log("[agent-runtime] waitForInit: not an init message, isHostToAgentMessage:", isHostToAgentMessage(unwrapped));
+        console.log("[agent-runtime] waitForInit: not an init message, isHostToAgentMessage:", isHostToAgentMessage(msg));
       }
     };
-    parentPort.on("message", handler);
+    ipc.on("message", handler);
     console.log("[agent-runtime] waitForInit: message handler registered");
   });
 }
@@ -157,22 +155,24 @@ export async function runAgent<S extends AgentState>(
   // DEBUG: Trace agent startup
   console.log("[agent-runtime] runAgent called");
 
-  // Step 1: Validate parentPort
-  const parentPort = (process as unknown as { parentPort?: ParentPort }).parentPort;
-  console.log("[agent-runtime] parentPort:", parentPort ? "available" : "null");
-  if (!parentPort) {
-    console.error("agent-runtime must run in utilityProcess (no parentPort available)");
+  // Step 1: Acquire IPC channel (Electron parentPort or Node.js fork)
+  let ipc: AgentIpcChannel;
+  try {
+    ipc = getAgentIpcChannel();
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : err);
     process.exit(1);
   }
+  console.log("[agent-runtime] IPC channel acquired");
 
   // Keep process alive while setting up
-  parentPort.ref?.();
-  console.log("[agent-runtime] parentPort.ref() called, waiting for init...");
+  ipc.ref?.();
+  console.log("[agent-runtime] ipc.ref() called, waiting for init...");
 
-  const sendToHost = createHostMessenger(parentPort);
+  const sendToHost = createHostMessenger(ipc);
 
   // Step 2: Resolve init config
-  const initConfig = config ?? (await waitForInit(parentPort));
+  const initConfig = config ?? (await waitForInit(ipc));
   console.log("[agent-runtime] received init config:", initConfig?.agentId);
   const { agentId, channel, handle, config: agentConfig, pubsubUrl, pubsubToken } = initConfig;
 
@@ -186,7 +186,7 @@ export async function runAgent<S extends AgentState>(
 
   // Step 4: Initialize RPC + DB client
   const selfId = `agent:${agentId}:${handle}`;
-  const transport = createParentPortTransport(parentPort, selfId);
+  const transport = createIpcTransport(ipc, selfId);
   const rpc = createRpcBridge({ selfId, transport });
 
   // Create DB client and inject for shared packages
@@ -311,7 +311,7 @@ export async function runAgent<S extends AgentState>(
   const lifecycle = createLifecycleManager({
     onIdle: () => {
       log.debug("Agent idle, allowing process to exit");
-      parentPort.unref?.();
+      ipc.unref?.();
     },
     eluThreshold: 0.01,
     idleDebounceMs: 1000,
@@ -381,12 +381,9 @@ export async function runAgent<S extends AgentState>(
   };
 
   // Listen for host shutdown message
-  parentPort.on("message", async (msg) => {
-    // Electron utilityProcess wraps messages in { data: ... } envelope
-    const unwrapped = (msg && typeof msg === "object" && "data" in msg)
-      ? (msg as { data: unknown }).data
-      : msg;
-    if (isHostToAgentMessage(unwrapped) && unwrapped.type === "shutdown") {
+  ipc.on("message", async (msg) => {
+    // No {data:...} unwrapping — handled by AgentIpcChannel
+    if (isHostToAgentMessage(msg) && msg.type === "shutdown") {
       await shutdown("host requested shutdown");
     }
   });
@@ -480,7 +477,7 @@ export async function runAgent<S extends AgentState>(
       }
 
       lifecycle.markActive();
-      parentPort.ref?.(); // Re-ref IPC while processing
+      ipc.ref?.(); // Re-ref IPC while processing
 
       // Fire and forget - let agent control queueing/serialization
       const p = Promise.resolve(agent.onEvent(event)).catch((err) => {
