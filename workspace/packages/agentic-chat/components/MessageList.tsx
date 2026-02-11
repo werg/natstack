@@ -225,6 +225,14 @@ export const MessageList = React.memo(function MessageList({
   const lastFirstMessageIdRef = useRef<string | null>(null);
   const lastScrollTopRef = useRef(0);
   const lastScrollHeightRef = useRef(0);
+
+  // Refs for auto-load on scroll to top (keeps handleScroll stable)
+  const hasMoreHistoryRef = useRef(hasMoreHistory);
+  const loadingMoreRef = useRef(loadingMore);
+  const onLoadEarlierMessagesRef = useRef(onLoadEarlierMessages);
+  hasMoreHistoryRef.current = hasMoreHistory;
+  loadingMoreRef.current = loadingMore;
+  onLoadEarlierMessagesRef.current = onLoadEarlierMessages;
   // Explicit "at bottom" flag — scrollToIndex is async (estimated offset may
   // undershoot), so reading viewport.scrollTop right after may not reflect the
   // true position. Setting this flag after auto-scrolling ensures consecutive
@@ -274,6 +282,10 @@ export const MessageList = React.memo(function MessageList({
     isAtBottomRef.current = nearBottom;
     if (nearBottom) {
       setShowNewContent(false);
+    }
+    // Auto-load earlier messages when scrolling near the top
+    if (viewport.scrollTop < 200 && hasMoreHistoryRef.current && !loadingMoreRef.current) {
+      onLoadEarlierMessagesRef.current?.();
     }
   }, [getViewport, viewportEl]);
 

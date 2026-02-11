@@ -103,6 +103,8 @@ export function useAgenticChat({
   const participantsRef = useRef<Record<string, Participant<ChatParticipantMetadata>>>({});
   const prevParticipantsRef = useRef<Record<string, Participant<ChatParticipantMetadata>>>({});
   const suppressDisconnectRef = useRef(true);
+  /** Agent handles that stopped due to idle timeout — used to suppress disconnect messages */
+  const expectedStopsRef = useRef(new Set<string>());
   const toolRoleHandlerRef = useRef<((event: IncomingToolRoleRequestEvent) => void) | null>(null);
   const toolRoleResponseHandlerRef = useRef<((event: IncomingToolRoleResponseEvent) => void) | null>(null);
   const toolRoleHandoffHandlerRef = useRef<((event: IncomingToolRoleHandoffEvent) => void) | null>(null);
@@ -214,9 +216,11 @@ export function useAgenticChat({
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [oldestLoadedId, setOldestLoadedId] = useState<number | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const paginationInitializedRef = useRef(false);
 
   useEffect(() => {
     if (messages.length > TRIM_THRESHOLD) {
+      paginationInitializedRef.current = true;
       let referencedUiIds: Set<string> | undefined;
       setMessages((prev) => {
         const trimmed = prev.slice(-MAX_VISIBLE_MESSAGES);
@@ -296,7 +300,7 @@ export function useAgenticChat({
           const selfId = selfIdRef.current ?? config.clientId;
           dispatchAgenticEvent(
             event,
-            { setMessages, addMethodHistoryEntry, handleMethodResult, setDebugEvents, setDirtyRepoWarnings, setPendingAgents },
+            { setMessages, addMethodHistoryEntry, handleMethodResult, setDebugEvents, setDirtyRepoWarnings, setPendingAgents, expectedStops: expectedStopsRef.current },
             selfId,
             participantsRef.current,
             eventMiddleware,
@@ -338,18 +342,33 @@ export function useAgenticChat({
       const disconnectedIds: string[] = [];
 
       if (!suppressDisconnectRef.current) {
+        // Check if this roster update carries a graceful leave reason
+        const changeIsGraceful = roster.change?.type === "leave" && roster.change.leaveReason === "graceful";
+
         for (const prevId of prevIds) {
           if (!newIds.has(prevId)) {
             disconnectedIds.push(prevId);
             const disconnected = prevParts[prevId];
             const meta = disconnected?.metadata;
             if (meta && meta.type !== "panel") {
-              const agentInfo: DisconnectedAgentInfo = {
-                name: meta.name, handle: meta.handle, panelId: meta.panelId, agentTypeId: meta.agentTypeId, type: meta.type,
-              };
-              setMessages((prev) => [...prev, {
-                id: `system-disconnect-${prevId}-${Date.now()}`, senderId: "system", content: "", kind: "system", complete: true, disconnectedAgent: agentInfo,
-              }]);
+              // Determine if this is an expected stop (idle timeout / hibernation).
+              // Two signals: (1) lifecycle event with reason "timeout"/"idle" arrived
+              // before the roster leave, (2) the leaveReason from the server is "graceful".
+              const isExpectedStop = expectedStopsRef.current.has(meta.handle) || changeIsGraceful;
+
+              // Clean up the expected-stop tracking
+              expectedStopsRef.current.delete(meta.handle);
+
+              // Don't show a scary disconnect message for expected stops —
+              // the agent will auto-wake when the user sends the next message.
+              if (!isExpectedStop) {
+                const agentInfo: DisconnectedAgentInfo = {
+                  name: meta.name, handle: meta.handle, panelId: meta.panelId, agentTypeId: meta.agentTypeId, type: meta.type,
+                };
+                setMessages((prev) => [...prev, {
+                  id: `system-disconnect-${prevId}-${Date.now()}`, senderId: "system", content: "", kind: "system", complete: true, disconnectedAgent: agentInfo,
+                }]);
+              }
             }
           }
         }
@@ -427,10 +446,14 @@ export function useAgenticChat({
     }, []),
   });
 
+  // Synchronous guard to prevent duplicate concurrent calls from scroll bursts
+  const loadingMoreRef = useRef(false);
+
   // Load earlier messages
   const loadEarlierMessages = useCallback(async () => {
     const client = clientRef.current;
-    if (!client || loadingMore || !hasMoreHistory || !oldestLoadedId) return;
+    if (!client || loadingMoreRef.current || !hasMoreHistory || !oldestLoadedId) return;
+    loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
       let currentBeforeId = oldestLoadedId;
@@ -459,9 +482,10 @@ export function useAgenticChat({
     } catch (err) {
       console.error("[Chat] Failed to load earlier messages:", err);
     } finally {
+      loadingMoreRef.current = false;
       setLoadingMore(false);
     }
-  }, [clientRef, oldestLoadedId, hasMoreHistory, loadingMore]);
+  }, [clientRef, oldestLoadedId, hasMoreHistory]);
 
   useEffect(() => { selfIdRef.current = clientId; }, [clientId]);
 
@@ -475,13 +499,15 @@ export function useAgenticChat({
     return () => { unsubscribe(); };
   }, [connected, clientRef]);
 
-  // Initialize pagination
+  // Initialize pagination (skipped if the trim effect already initialized it)
   useEffect(() => {
+    if (paginationInitializedRef.current) return;
     const client = clientRef.current;
     if (!client || !connected || messages.length === 0) return;
     if (oldestLoadedId !== null) return;
     const firstMsgWithId = messages.find((m) => m.pubsubId !== undefined);
     if (firstMsgWithId?.pubsubId !== undefined) {
+      paginationInitializedRef.current = true;
       setOldestLoadedId(firstMsgWithId.pubsubId);
       const serverChatCount = client.chatMessageCount;
       const dbMessageCount = messages.filter((m) => m.pubsubId !== undefined).length;
@@ -723,6 +749,12 @@ export default function App({ onSubmit, onCancel }) {
     setHistoricalParticipants({});
     clearMethodHistory();
     for (const callId of activeFeedbacks.keys()) { dismissFeedback(callId); }
+    // Reset pagination state
+    loadingMoreRef.current = false;
+    paginationInitializedRef.current = false;
+    setHasMoreHistory(false);
+    setOldestLoadedId(null);
+    setLoadingMore(false);
     actions?.onNewConversation?.();
   }, [clearMethodHistory, activeFeedbacks, dismissFeedback, pendingImages, actions]);
 

@@ -128,6 +128,28 @@ export interface Participant<T extends ParticipantMetadata = ParticipantMetadata
 }
 
 /**
+ * Reason a participant left the channel.
+ * - "graceful": Clean shutdown (e.g., idle timeout, explicit stop)
+ * - "disconnect": Unexpected disconnection (crash, network loss)
+ */
+export type LeaveReason = "graceful" | "disconnect";
+
+/**
+ * Describes what triggered a roster update.
+ * Present on roster updates caused by a single presence event.
+ */
+export interface RosterChange {
+  /** The type of change */
+  type: "join" | "leave" | "update";
+  /** The participant ID that changed */
+  participantId: string;
+  /** Participant metadata at the time of the change */
+  metadata?: Record<string, unknown>;
+  /** Why the participant left (only present for leave events) */
+  leaveReason?: LeaveReason;
+}
+
+/**
  * Roster update from the server.
  * Sent whenever a client joins or leaves the channel.
  * This is idempotent - it contains the complete current state.
@@ -137,6 +159,8 @@ export interface RosterUpdate<T extends ParticipantMetadata = ParticipantMetadat
   participants: Record<string, Participant<T>>;
   /** Timestamp of the update */
   ts: number;
+  /** What triggered this update (absent during initial catch-up emit on handler registration) */
+  change?: RosterChange;
 }
 
 /**
@@ -183,6 +207,8 @@ export interface ConnectOptions<T extends ParticipantMetadata = ParticipantMetad
   channelConfig?: ChannelConfig;
   /** Replay messages with id > sinceId */
   sinceId?: number;
+  /** Limit initial replay to the N most recent chat messages (server computes anchor). sinceId takes precedence when both are set. */
+  replayMessageLimit?: number;
   /** Enable auto-reconnection. Pass true for defaults, or a config object. Default: false */
   reconnect?: boolean | ReconnectConfig;
   /** Metadata to associate with this participant. Sent to all other participants in roster updates. */

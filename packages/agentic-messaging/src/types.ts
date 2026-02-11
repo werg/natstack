@@ -9,6 +9,8 @@ import type {
   Participant,
   ParticipantMetadata,
   RosterUpdate,
+  RosterChange,
+  LeaveReason,
   Attachment,
   AttachmentInput,
   ChannelConfig,
@@ -31,6 +33,8 @@ export type {
   InviteAgentResult,
   RemoveAgentResult,
   RosterUpdate,
+  RosterChange,
+  LeaveReason,
   AgentBuildError,
 };
 export type { AgentManifest } from "@natstack/core";
@@ -453,12 +457,7 @@ export interface IncomingErrorMessage extends IncomingBase {
  */
 export type PresenceAction = "join" | "leave" | "update";
 
-/**
- * Reason for a participant leaving the channel.
- * - "graceful": Intentional close() - participant chose to leave
- * - "disconnect": Connection lost/crash - participant may want to rejoin
- */
-export type LeaveReason = "graceful" | "disconnect";
+// LeaveReason is re-exported from @natstack/pubsub above
 
 /**
  * An incoming presence event (join/leave/update).
@@ -800,6 +799,9 @@ export interface ConnectOptions<T extends AgenticParticipantMetadata = AgenticPa
    * ```
    */
   replaySinceId?: number;
+
+  /** Limit initial replay to the N most recent chat messages (server computes anchor). Only applies when replayMode is not "skip". */
+  replayMessageLimit?: number;
 
   /** This client's ID (for skipOwnMessages filtering) */
   clientId?: string;

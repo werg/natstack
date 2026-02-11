@@ -121,6 +121,7 @@ export function useChannelConnection({
           clientId: config.clientId,
           methods,
           replayMode: "stream",
+          replayMessageLimit: 200,
           extraMetadata: toolRoles ? { toolRoles } : undefined,
         });
 

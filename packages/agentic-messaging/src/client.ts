@@ -342,6 +342,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     reconnect,
     replayMode = "collect",
     replaySinceId,
+    replayMessageLimit,
     methods: initialMethods,
     clientId,
     skipOwnMessages,
@@ -375,9 +376,12 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
   // This enables agents to persist their last processed pubsub ID and resume without
   // full replay on restart. The pubsub layer handles reconnection replay automatically
   // using lastSeenId, but initial connection now also supports checkpoint-based resumption.
+  // When replayMessageLimit is set and no explicit replaySinceId, pass sinceId as undefined
+  // so the server uses replayMessageLimit to compute the anchor. On reconnect, the PubSub
+  // client already passes lastSeenId as sinceId, which takes priority server-side.
   const sinceId = replayMode === "skip"
     ? undefined
-    : (replaySinceId ?? 0);
+    : (replaySinceId ?? (replayMessageLimit !== undefined ? undefined : 0));
 
   const instanceId = randomId();
 
@@ -480,6 +484,9 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     contextId,
     channelConfig: providedChannelConfig,
     sinceId,
+    // Only pass replayMessageLimit when not skipping replay — prevents skip mode
+    // from accidentally triggering server-side replay via the limit parameter
+    replayMessageLimit: replayMode !== "skip" ? replayMessageLimit : undefined,
     reconnect,
     metadata: buildInitialMetadata() as T,
     clientId,

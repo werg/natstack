@@ -39,6 +39,12 @@ export interface AgentEventHandlers {
     updater: (prev: Map<string, DirtyRepoDetails>) => Map<string, DirtyRepoDetails>
   ) => void;
   setPendingAgents?: (updater: (prev: Map<string, PendingAgent>) => Map<string, PendingAgent>) => void;
+  /**
+   * Mutable set of agent handles that recently stopped due to idle timeout.
+   * Populated by lifecycle events, consumed by roster handler to suppress
+   * spurious "disconnected unexpectedly" messages for hibernating agents.
+   */
+  expectedStops?: Set<string>;
 }
 
 // ===========================================================================
@@ -274,6 +280,13 @@ function handleAgentDebugEvent(
           return next;
         });
       }
+    }
+
+    // Agent stopped due to idle timeout — record so roster handler can suppress
+    // the "disconnected unexpectedly" message. The lifecycle event arrives before
+    // the roster leave because agentHost emits it before killing the process.
+    if (debugPayload.event === "stopped" && (debugPayload.reason === "timeout" || debugPayload.reason === "idle")) {
+      handlers.expectedStops?.add(debugPayload.handle);
     }
 
     // Agent spawning - add to pending agents

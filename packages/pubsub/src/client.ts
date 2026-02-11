@@ -75,6 +75,7 @@ type PresenceAction = "join" | "leave" | "update";
 interface PresencePayload {
   action?: PresenceAction;
   metadata?: Record<string, unknown>;
+  leaveReason?: "graceful" | "disconnect";
 }
 
 /**
@@ -197,7 +198,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   token: string,
   options: ConnectOptions<T>
 ): PubSubClient<T> {
-  const { channel, contextId, channelConfig, sinceId: initialSinceId, reconnect, metadata, clientId, skipOwnMessages } = options;
+  const { channel, contextId, channelConfig, sinceId: initialSinceId, replayMessageLimit, reconnect, metadata, clientId, skipOwnMessages } = options;
 
   // Parse reconnection config
   const reconnectEnabled = reconnect !== undefined && reconnect !== false;
@@ -314,6 +315,9 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     }
     if (withSinceId !== undefined) {
       url.searchParams.set("sinceId", String(withSinceId));
+    }
+    if (replayMessageLimit !== undefined) {
+      url.searchParams.set("replayMessageLimit", String(replayMessageLimit));
     }
     // Note: metadata is always sent via updateMetadata after connection.
     // This avoids URL length limits (~2KB-8KB depending on browser/server).
@@ -570,6 +574,12 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
             pendingRemove.reject(error);
             pendingRemoveAgent.delete(msg.ref);
           }
+          const pendingMsgBefore = pendingMessagesBeforeRequests.get(msg.ref);
+          if (pendingMsgBefore) {
+            clearTimeout(pendingMsgBefore.timeoutId);
+            pendingMsgBefore.reject(error);
+            pendingMessagesBeforeRequests.delete(msg.ref);
+          }
         }
 
         handleError(error);
@@ -628,6 +638,12 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
             const rosterUpdate: RosterUpdate<T> = {
               participants: currentRoster,
               ts: msg.ts ?? Date.now(),
+              change: {
+                type: presenceAction,
+                participantId: msg.senderId!,
+                metadata: payload?.metadata,
+                ...(presenceAction === "leave" && payload?.leaveReason && { leaveReason: payload.leaveReason }),
+              },
             };
             for (const handler of rosterHandlers) {
               handler(rosterUpdate);

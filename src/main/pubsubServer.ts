@@ -76,6 +76,8 @@ export interface MessageStore {
   queryBefore(channel: string, beforeId: number, limit?: number): MessageRow[];
   /** Get total count of messages in a channel, optionally filtered by event type. */
   getMessageCount(channel: string, type?: string): number;
+  /** Get the ID of the Nth-from-last message of a given type (for anchored replay). OFFSET 0 = last row. */
+  getAnchorId(channel: string, type: string, offset: number): number | null;
   createChannel(channel: string, contextId: string, createdBy: string, config?: ChannelConfig): void;
   getChannel(channel: string): ChannelInfo | null;
   /** Update channel config (merges with existing config) */
@@ -464,6 +466,12 @@ abstract class BaseMessageStore implements MessageStore {
   abstract getMessageCount(channel: string, type?: string): number;
 
   /**
+   * Get the ID of the Nth-from-last message of a given type (for anchored replay).
+   * OFFSET 0 = last row, OFFSET 1 = second-to-last, etc.
+   */
+  abstract getAnchorId(channel: string, type: string, offset: number): number | null;
+
+  /**
    * Register an agent for a channel (UPSERT - updates config if already exists).
    */
   abstract registerChannelAgent(channel: string, agentId: string, handle: string, config: string, registeredBy?: string): void;
@@ -702,6 +710,17 @@ class SqliteMessageStore extends BaseMessageStore {
     return result[0]?.count ?? 0;
   }
 
+  getAnchorId(channel: string, type: string, offset: number): number | null {
+    if (!this.dbHandle) return null;
+    const db = getDatabaseManager();
+    const result = db.query<{ id: number }>(
+      this.dbHandle,
+      "SELECT id FROM messages WHERE channel = ? AND type = ? ORDER BY id DESC LIMIT 1 OFFSET ?",
+      [channel, type, offset]
+    );
+    return result[0]?.id ?? null;
+  }
+
   registerChannelAgent(channel: string, agentId: string, handle: string, config: string, registeredBy?: string): void {
     if (!this.dbHandle) throw new Error("Store not initialized");
     const db = getDatabaseManager();
@@ -872,6 +891,13 @@ export class InMemoryMessageStore extends BaseMessageStore {
     return this.messages.filter((m) => m.channel === channel && (!type || m.type === type)).length;
   }
 
+  getAnchorId(channel: string, type: string, offset: number): number | null {
+    const matching = this.messages
+      .filter((m) => m.channel === channel && m.type === type)
+      .reverse(); // newest first
+    return matching[offset]?.id ?? null;
+  }
+
   registerChannelAgent(channel: string, agentId: string, handle: string, config: string, registeredBy?: string): void {
     const now = Date.now();
     // UPSERT: find existing or create new
@@ -1037,6 +1063,8 @@ export class PubSubServer {
     const channel = url.searchParams.get("channel") ?? "";
     const sinceIdParam = url.searchParams.get("sinceId");
     const sinceId = sinceIdParam ? parseInt(sinceIdParam, 10) : null;
+    const replayMessageLimitParam = url.searchParams.get("replayMessageLimit");
+    const replayMessageLimit = replayMessageLimitParam ? parseInt(replayMessageLimitParam, 10) : null;
     const contextIdParam = url.searchParams.get("contextId");
     const channelConfigParam = url.searchParams.get("channelConfig");
     const channelConfigFromClient = channelConfigParam ? JSON.parse(channelConfigParam) as ChannelConfig : undefined;
@@ -1125,7 +1153,18 @@ export class PubSubServer {
 
     // Replay if requested
     if (sinceId !== null) {
+      // Client-provided sinceId wins (reconnect scenario)
       this.replayMessages(ws, channel, sinceId);
+    } else if (replayMessageLimit !== null && replayMessageLimit > 0) {
+      // Anchored replay: find the Nth-from-last "message" type row
+      const anchorId = this.messageStore.getAnchorId(channel, "message", replayMessageLimit - 1);
+      if (anchorId !== null) {
+        // Replay from just before the anchor (replayMessages uses id > sinceId)
+        this.replayMessages(ws, channel, anchorId - 1);
+      } else {
+        // Fewer than N chat messages exist — full replay
+        this.replayMessages(ws, channel, 0);
+      }
     }
 
     // Get total message count for pagination support
