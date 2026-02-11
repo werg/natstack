@@ -1,6 +1,18 @@
 import { app, Menu, MenuItemConstructorOptions, type WebContents } from "electron";
 import { eventService } from "./services/eventsService.js";
 import { getViewManager, isViewManagerInitialized } from "./viewManager.js";
+import { getPanelManager } from "./panelManager.js";
+
+/** Archive the currently focused panel (Cmd+W / Ctrl+W). Falls back to window close if no panel is focused. */
+async function archiveFocusedPanel(mainWindow: Electron.BaseWindow): Promise<void> {
+  const pm = getPanelManager();
+  const focusedId = pm?.getFocusedPanelId();
+  if (focusedId) {
+    await pm!.closePanel(focusedId);
+  } else {
+    mainWindow.close();
+  }
+}
 
 /**
  * Build common menu items that are shared between the app menu and hamburger popup.
@@ -246,7 +258,13 @@ export function setupMenu(
           },
         },
         { type: "separator" },
-        isMac ? { role: "close" } : { role: "quit" },
+        isMac
+          ? {
+              label: "Archive Panel",
+              accelerator: "CmdOrCtrl+W",
+              click: () => archiveFocusedPanel(mainWindow),
+            }
+          : { role: "quit" },
       ] as MenuItemConstructorOptions[],
     },
     // { role: 'editMenu' }
@@ -317,7 +335,13 @@ export function setupMenu(
         { role: "zoom" },
         ...(isMac
           ? [{ type: "separator" }, { role: "front" }, { type: "separator" }, { role: "window" }]
-          : [{ role: "close" }]),
+          : [
+              {
+                label: "Archive Panel",
+                accelerator: "Ctrl+W",
+                click: () => archiveFocusedPanel(mainWindow),
+              },
+            ]),
       ] as MenuItemConstructorOptions[],
     },
     {
