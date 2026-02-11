@@ -19,7 +19,7 @@
 import * as fs from "fs";
 import { promises as fsPromises } from "fs";
 import * as path from "path";
-import { app } from "electron";
+import { getUserDataPath } from "./envPaths.js";
 import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("DependencyGraph");
@@ -267,7 +267,7 @@ export class DependencyGraph {
   }
 
   private getConsumersCachePath(): string {
-    const userDataPath = app.getPath("userData");
+    const userDataPath = getUserDataPath();
     return path.join(userDataPath, CONSUMERS_CACHE_FILENAME);
   }
 }

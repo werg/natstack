@@ -1,4 +1,3 @@
-import { app } from "electron";
 import { getViewManager, isViewManagerInitialized } from "./viewManager.js";
 import { createDevLogger } from "./devLog.js";
 
@@ -36,7 +35,13 @@ export async function logMemorySnapshot(options: MemorySnapshotOptions = {}): Pr
   const viewIds = vm.getViewIds();
   if (viewIds.length === 0) return;
 
-  const metrics = app.getAppMetrics();
+  let metrics: Electron.ProcessMetric[];
+  try {
+    const { app } = require("electron");
+    metrics = app.getAppMetrics();
+  } catch {
+    return; // No metrics available outside Electron
+  }
   const metricsByPid = new Map(metrics.map((metric) => [metric.pid, metric]));
 
   const entries = await Promise.all(

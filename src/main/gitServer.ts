@@ -1,5 +1,5 @@
 import { Git } from "node-git-server";
-import { app } from "electron";
+import { getUserDataPath } from "./envPaths.js";
 import * as path from "path";
 import * as fs from "fs";
 import * as fsPromises from "fs/promises";
@@ -82,7 +82,7 @@ export class GitServer {
 
   private ensureReposPath(): string {
     if (!this.resolvedReposPath) {
-      this.resolvedReposPath = this.configuredReposPath ?? app.getPath("userData");
+      this.resolvedReposPath = this.configuredReposPath ?? getUserDataPath();
     }
     return this.resolvedReposPath;
   }

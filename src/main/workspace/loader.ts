@@ -14,8 +14,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
-import { app } from "electron";
+import { getUserDataPath } from "../envPaths.js";
 import YAML from "yaml";
 import dotenv from "dotenv";
 import { createDevLogger } from "../devLog.js";
@@ -40,24 +39,7 @@ const ENV_FILE = ".env";
  * - Windows: %APPDATA%/natstack
  */
 export function getCentralConfigDir(): string {
-  try {
-    return app.getPath("userData");
-  } catch {
-    // Fallback if app not ready
-    const home = os.homedir();
-    switch (process.platform) {
-      case "win32": {
-        const appData = process.env["APPDATA"] ?? path.join(home, "AppData", "Roaming");
-        return path.join(appData, "natstack");
-      }
-      case "darwin":
-        return path.join(home, "Library", "Application Support", "natstack");
-      default: {
-        const xdgConfig = process.env["XDG_CONFIG_HOME"] ?? path.join(home, ".config");
-        return path.join(xdgConfig, "natstack");
-      }
-    }
-  }
+  return getUserDataPath();
 }
 
 const DATA_FILE = "data.json";
@@ -247,7 +229,7 @@ function findWorkspaceByWalkUp(startDir: string): string | null {
  */
 function getDefaultWorkspacePath(): string {
   try {
-    return path.join(app.getPath("userData"), "default-workspace");
+    return path.join(getUserDataPath(), "default-workspace");
   } catch {
     // Fallback if app not ready
     return path.join(process.cwd(), ".natstack-workspace");
