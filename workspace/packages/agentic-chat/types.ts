@@ -111,10 +111,23 @@ export interface InlineUiComponentEntry {
 }
 
 // ===========================================================================
+// ChatInputContext Value (keystroke-frequency updates, consumed only by ChatInput)
+// ===========================================================================
+
+/** Value provided by ChatInputContext — changes on every keystroke */
+export interface ChatInputContextValue {
+  input: string;
+  pendingImages: PendingImage[];
+  onInputChange: (value: string) => void;
+  onSendMessage: (attachments?: AttachmentInput[]) => Promise<void>;
+  onImagesChange: (images: PendingImage[]) => void;
+}
+
+// ===========================================================================
 // ChatContext Value
 // ===========================================================================
 
-/** Full value provided by ChatContext */
+/** Full value provided by ChatContext — changes on messages, connection, etc. */
 export interface ChatContextValue {
   // Connection
   connected: boolean;
@@ -133,10 +146,6 @@ export interface ChatContextValue {
   participants: Record<string, Participant<ChatParticipantMetadata>>;
   allParticipants: Record<string, Participant<ChatParticipantMetadata>>;
 
-  // Input
-  input: string;
-  pendingImages: PendingImage[];
-
   // Agent state
   debugEvents: Array<AgentDebugPayload & { ts: number }>;
   debugConsoleAgent: string | null;
@@ -150,9 +159,6 @@ export interface ChatContextValue {
   theme: "light" | "dark";
 
   // Handlers
-  onInputChange: (value: string) => void;
-  onSendMessage: (attachments?: AttachmentInput[]) => Promise<void>;
-  onImagesChange: (images: PendingImage[]) => void;
   onLoadEarlierMessages: () => void;
   onInterrupt: (agentId: string, messageId?: string, agentHandle?: string) => void;
   onCallMethod: (providerId: string, methodName: string, args: unknown) => void;

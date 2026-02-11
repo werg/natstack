@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { Box, Callout, Card, Flex, IconButton, TextArea } from "@radix-ui/themes";
 import { PaperPlaneIcon, ImageIcon } from "@radix-ui/react-icons";
 import { useChatContext } from "../context/ChatContext";
+import { useChatInputContext } from "../context/ChatInputContext";
 import { ImageInput, getAttachmentInputsFromPendingImages } from "./ImageInput";
 import { getImagesFromClipboard, createPendingImage, validateImageFiles, type PendingImage } from "../utils/imageUtils";
 
@@ -12,14 +13,8 @@ const MAX_IMAGE_COUNT = 10;
  * Reads from ChatContext.
  */
 export function ChatInput() {
-  const {
-    input,
-    pendingImages,
-    connected,
-    onInputChange,
-    onSendMessage,
-    onImagesChange,
-  } = useChatContext();
+  const { connected } = useChatContext();
+  const { input, pendingImages, onInputChange, onSendMessage, onImagesChange } = useChatInputContext();
 
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);

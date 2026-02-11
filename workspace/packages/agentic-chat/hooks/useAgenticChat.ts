@@ -54,6 +54,7 @@ import type {
   AgenticChatActions,
   ToolProvider,
   ChatContextValue,
+  ChatInputContextValue,
   InlineUiComponentEntry,
 } from "../types";
 
@@ -97,7 +98,7 @@ export function useAgenticChat({
   theme = "dark",
   pendingAgentInfos,
   eventMiddleware,
-}: UseAgenticChatOptions): ChatContextValue & { toolRole: ReturnType<typeof useToolRole> } {
+}: UseAgenticChatOptions): { contextValue: ChatContextValue; inputContextValue: ChatInputContextValue; toolRole: ReturnType<typeof useToolRole> } {
   const selfIdRef = useRef<string | null>(null);
   const hasConnectedRef = useRef(false);
   const participantsRef = useRef<Record<string, Participant<ChatParticipantMetadata>>>({});
@@ -108,6 +109,11 @@ export function useAgenticChat({
   const toolRoleHandlerRef = useRef<((event: IncomingToolRoleRequestEvent) => void) | null>(null);
   const toolRoleResponseHandlerRef = useRef<((event: IncomingToolRoleResponseEvent) => void) | null>(null);
   const toolRoleHandoffHandlerRef = useRef<((event: IncomingToolRoleHandoffEvent) => void) | null>(null);
+
+  // Refs for stable callback deps — avoids recreating onEvent/sendMessage on every keystroke
+  const eventMiddlewareRef = useRef(eventMiddleware);
+  eventMiddlewareRef.current = eventMiddleware;
+  const inputRef = useRef("");
 
   // Chat state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -281,6 +287,8 @@ export function useAgenticChat({
 
   // Feedback manager
   const { activeFeedbacks, addFeedback, removeFeedback, dismissFeedback, handleFeedbackError } = useFeedbackManager();
+  const activeFeedbacksRef = useRef(activeFeedbacks);
+  activeFeedbacksRef.current = activeFeedbacks;
 
   const { methodEntries, addMethodHistoryEntry, updateMethodHistoryEntry, handleMethodResult, clearMethodHistory } =
     useMethodHistory({ setMessages, clientId: config.clientId });
@@ -303,7 +311,7 @@ export function useAgenticChat({
             { setMessages, addMethodHistoryEntry, handleMethodResult, setDebugEvents, setDirtyRepoWarnings, setPendingAgents, expectedStops: expectedStopsRef.current },
             selfId,
             participantsRef.current,
-            eventMiddleware,
+            eventMiddlewareRef.current,
           );
           if (event.type === "tool-role-request") {
             try { toolRoleHandlerRef.current?.(event); } catch (err) { console.error("[Chat] Tool role request error:", err); }
@@ -318,7 +326,7 @@ export function useAgenticChat({
           console.error("[Chat] Event dispatch error:", err);
         }
       },
-      [setMessages, addMethodHistoryEntry, handleMethodResult, config.clientId, eventMiddleware]
+      [setMessages, addMethodHistoryEntry, handleMethodResult, config.clientId]
     ),
     onRoster: useCallback((roster: RosterUpdate<ChatParticipantMetadata>) => {
       const newParticipants = roster.participants;
@@ -552,6 +560,7 @@ export function useAgenticChat({
 
   const handleInputChange = useCallback((value: string) => {
     setInput(value);
+    inputRef.current = value;
     if (value.trim()) {
       void startTyping().catch((err) => console.error("[Chat] Start typing error:", err));
     } else {
@@ -743,12 +752,13 @@ export default function App({ onSubmit, onCancel }) {
   const reset = useCallback(() => {
     setMessages([]);
     setInput("");
-    cleanupPendingImages(pendingImages);
+    inputRef.current = "";
+    cleanupPendingImages(pendingImagesRef.current);
     setPendingImages([]);
     setParticipants({});
     setHistoricalParticipants({});
     clearMethodHistory();
-    for (const callId of activeFeedbacks.keys()) { dismissFeedback(callId); }
+    for (const callId of activeFeedbacksRef.current.keys()) { dismissFeedback(callId); }
     // Reset pagination state
     loadingMoreRef.current = false;
     paginationInitializedRef.current = false;
@@ -756,23 +766,25 @@ export default function App({ onSubmit, onCancel }) {
     setOldestLoadedId(null);
     setLoadingMore(false);
     actions?.onNewConversation?.();
-  }, [clearMethodHistory, activeFeedbacks, dismissFeedback, pendingImages, actions]);
+  }, [clearMethodHistory, dismissFeedback, actions]);
 
-  // Send message
+  // Send message — uses inputRef for stable identity (no dep on `input` state)
   const sendMessage = useCallback(async (attachments?: AttachmentInput[]): Promise<void> => {
-    const hasText = input.trim().length > 0;
+    const currentInput = inputRef.current;
+    const hasText = currentInput.trim().length > 0;
     const hasAttachments = attachments && attachments.length > 0;
     if ((!hasText && !hasAttachments) || !clientRef.current?.connected) return;
     await stopTyping();
-    const text = input.trim();
+    const text = currentInput.trim();
     setInput("");
+    inputRef.current = "";
     const { messageId } = await clientRef.current.send(text || "", { attachments: hasAttachments ? attachments : undefined });
     const selfId = clientRef.current.clientId ?? config.clientId;
     setMessages((prev) => {
       if (prev.some((m) => m.id === messageId)) return prev;
       return [...prev, { id: messageId, senderId: selfId, content: text, complete: true, pending: true, kind: "message" }];
     });
-  }, [input, config.clientId, clientRef, stopTyping]);
+  }, [config.clientId, clientRef, stopTyping]);
 
   // Interrupt agent
   const handleInterruptAgent = useCallback(
@@ -800,52 +812,48 @@ export default function App({ onSubmit, onCancel }) {
     [clientRef]
   );
 
-  // Wrap platform actions
-  const handleAddAgent = actions?.onAddAgent
-    ? useCallback(async () => {
-        const launcherContextId = clientRef.current?.contextId;
-        await actions.onAddAgent!(channelName, launcherContextId);
-      }, [channelName, clientRef, actions])
-    : undefined;
+  // Memoize tool approval object to avoid creating a new reference every render
+  const toolApprovalValue = useMemo(() => ({
+    settings: approval.settings,
+    onSetFloor: approval.setGlobalFloor,
+    onGrantAgent: approval.grantAgent,
+    onRevokeAgent: approval.revokeAgent,
+    onRevokeAll: approval.revokeAll,
+  }), [approval.settings, approval.setGlobalFloor, approval.grantAgent, approval.revokeAgent, approval.revokeAll]);
 
-  return {
-    // Connection
+  // Wrap platform actions — useCallback must be called unconditionally
+  const handleAddAgent = useCallback(async () => {
+    if (!actions?.onAddAgent) return;
+    const launcherContextId = clientRef.current?.contextId;
+    await actions.onAddAgent(channelName, launcherContextId);
+  }, [channelName, clientRef, actions]);
+
+  // Memoize the two context values separately so consumers only re-render
+  // when their specific slice changes.
+
+  const sessionEnabled = clientRef.current?.sessionEnabled;
+  const onAddAgent = actions?.onAddAgent ? handleAddAgent : undefined;
+  const onFocusPanel = actions?.onFocusPanel;
+  const onReloadPanel = actions?.onReloadPanel;
+
+  const contextValue: ChatContextValue = useMemo(() => ({
     connected,
     status,
     channelId: channelName,
-    sessionEnabled: clientRef.current?.sessionEnabled,
-
-    // Messages
+    sessionEnabled,
     messages,
     methodEntries,
     inlineUiComponents,
     hasMoreHistory,
     loadingMore,
-
-    // Participants
     participants,
     allParticipants,
-
-    // Input
-    input,
-    pendingImages,
-
-    // Agent state
     debugEvents,
     debugConsoleAgent,
     dirtyRepoWarnings,
     pendingAgents,
-
-    // Feedback
     activeFeedbacks,
-
-    // Theme
     theme,
-
-    // Handlers
-    onInputChange: handleInputChange,
-    onSendMessage: sendMessage,
-    onImagesChange: setPendingImages,
     onLoadEarlierMessages: loadEarlierMessages,
     onInterrupt: handleInterruptAgent,
     onCallMethod: handleCallMethod,
@@ -854,22 +862,30 @@ export default function App({ onSubmit, onCancel }) {
     onDebugConsoleChange: setDebugConsoleAgent,
     onDismissDirtyWarning: handleDismissDirtyWarning,
     onReset: reset,
-
-    // Optional actions
-    onAddAgent: handleAddAgent,
-    onFocusPanel: actions?.onFocusPanel,
-    onReloadPanel: actions?.onReloadPanel,
-
-    // Tool approval
-    toolApproval: {
-      settings: approval.settings,
-      onSetFloor: approval.setGlobalFloor,
-      onGrantAgent: approval.grantAgent,
-      onRevokeAgent: approval.revokeAgent,
-      onRevokeAll: approval.revokeAll,
-    },
-
-    // Tool role
+    onAddAgent,
+    onFocusPanel,
+    onReloadPanel,
+    toolApproval: toolApprovalValue,
     toolRole,
-  };
+  }), [
+    connected, status, channelName, sessionEnabled,
+    messages, methodEntries, inlineUiComponents, hasMoreHistory, loadingMore,
+    participants, allParticipants,
+    debugEvents, debugConsoleAgent, dirtyRepoWarnings, pendingAgents,
+    activeFeedbacks, theme,
+    loadEarlierMessages, handleInterruptAgent, handleCallMethod,
+    handleFeedbackDismiss, handleFeedbackError, handleDismissDirtyWarning, reset,
+    onAddAgent, onFocusPanel, onReloadPanel,
+    toolApprovalValue, toolRole,
+  ]);
+
+  const inputContextValue: ChatInputContextValue = useMemo(() => ({
+    input,
+    pendingImages,
+    onInputChange: handleInputChange,
+    onSendMessage: sendMessage,
+    onImagesChange: setPendingImages,
+  }), [input, pendingImages, handleInputChange, sendMessage]);
+
+  return { contextValue, inputContextValue, toolRole };
 }

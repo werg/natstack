@@ -1,9 +1,10 @@
 import type { ChannelConfig } from "@natstack/agentic-messaging";
+import { Theme } from "@radix-ui/themes";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { ToolRoleConflictModal } from "./ToolRoleConflictModal";
 import { ChatLayout } from "./ChatLayout";
 import { ChatProvider } from "../context/ChatProvider";
-import { useAgenticChat, type UseAgenticChatOptions } from "../hooks/useAgenticChat";
+import { useAgenticChat } from "../hooks/useAgenticChat";
 import type { ChatParticipantMetadata, ConnectionConfig, AgenticChatActions, ToolProvider } from "../types";
 import type { EventMiddleware } from "../hooks/useAgentEvents";
 
@@ -49,7 +50,7 @@ export function AgenticChat({
   pendingAgents: pendingAgentInfos,
   eventMiddleware,
 }: AgenticChatProps) {
-  const chat = useAgenticChat({
+  const { contextValue, inputContextValue, toolRole } = useAgenticChat({
     config,
     channelName,
     channelConfig,
@@ -61,8 +62,6 @@ export function AgenticChat({
     pendingAgentInfos,
     eventMiddleware,
   });
-
-  const { toolRole, ...contextValue } = chat;
 
   return (
     <ErrorBoundary>
@@ -77,9 +76,15 @@ export function AgenticChat({
           isNegotiating={toolRole.groupStates[conflict.group]?.negotiating ?? false}
         />
       ))}
-      <ChatProvider value={{ ...contextValue, toolRole }}>
-        <ChatLayout />
-      </ChatProvider>
+      {/* Theme is applied here (above ChatProvider) rather than in ChatLayout
+          so that ChatLayout does NOT read from context. This prevents
+          keystroke-driven context updates from re-rendering ChatLayout and
+          causing layout shifts that break autoscroll. */}
+      <Theme appearance={contextValue.theme ?? "dark"}>
+        <ChatProvider value={contextValue} inputValue={inputContextValue}>
+          <ChatLayout />
+        </ChatProvider>
+      </Theme>
     </ErrorBoundary>
   );
 }

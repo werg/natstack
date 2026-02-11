@@ -161,7 +161,7 @@ function fullGroupComputation(
 /** Sender info returned by getSenderInfo */
 export interface SenderInfo {
   name: string;
-  type: "panel" | "ai-responder" | "claude-code" | "codex" | "subagent";
+  type: "panel" | "ai-responder" | "claude-code" | "codex" | "subagent" | "unknown";
   handle: string;
 }
 
@@ -271,18 +271,35 @@ export const MessageList = React.memo(function MessageList({
     }
   }, [getViewport, viewportEl]);
 
-  // Handle scroll events
+  // Handle scroll events.
+  // Only clear isAtBottomRef when the user explicitly scrolls UP (scrollTop
+  // decreased). Layout-induced scroll events (e.g. flex container resizing
+  // from sibling re-renders, viewport height changes) can shift scrollTop
+  // without user intent — clearing isAtBottom in those cases breaks autoscroll
+  // because the next streaming update sees the flag as false and skips
+  // scrollToEnd().
   const handleScroll = useCallback(() => {
     const viewport = viewportEl ?? getViewport();
     if (!viewport) return;
-    lastScrollTopRef.current = viewport.scrollTop;
-    lastScrollHeightRef.current = viewport.scrollHeight;
+    const { scrollTop, scrollHeight, clientHeight } = viewport;
+    const prevScrollTop = lastScrollTopRef.current;
+    lastScrollTopRef.current = scrollTop;
+    lastScrollHeightRef.current = scrollHeight;
+
     const nearBottom =
-      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= BOTTOM_THRESHOLD_PX;
-    isAtBottomRef.current = nearBottom;
+      scrollHeight - scrollTop - clientHeight <= BOTTOM_THRESHOLD_PX;
+
     if (nearBottom) {
+      isAtBottomRef.current = true;
       setShowNewContent(false);
+    } else if (scrollTop < prevScrollTop) {
+      // User scrolled up — clear the flag.
+      isAtBottomRef.current = false;
     }
+    // Otherwise (scrollTop >= prevScrollTop but not nearBottom) leave the flag
+    // unchanged. This handles content growth and layout-induced shifts that
+    // move the bottom further away without user action.
+
     // Auto-load earlier messages when scrolling near the top
     if (viewport.scrollTop < 200 && hasMoreHistoryRef.current && !loadingMoreRef.current) {
       onLoadEarlierMessagesRef.current?.();

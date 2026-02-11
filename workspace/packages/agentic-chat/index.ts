@@ -14,11 +14,13 @@ export type {
   ToolProvider,
   ToolProviderDeps,
   ChatContextValue,
+  ChatInputContextValue,
   InlineUiComponentEntry,
 } from "./types";
 
 // --- Context ---
 export { ChatContext, useChatContext } from "./context/ChatContext";
+export { ChatInputContext, useChatInputContext } from "./context/ChatInputContext";
 export { ChatProvider } from "./context/ChatProvider";
 export type { ChatProviderProps } from "./context/ChatProvider";
 

@@ -7,13 +7,16 @@
 
 import { pubsubConfig, id as panelClientId, buildNsLink, buildFocusLink, createChild, useStateArgs, forceRepaint, ensurePanelLoaded } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { Flex, Text, Button, Card } from "@radix-ui/themes";
 import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
 import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps } from "@workspace/agentic-chat";
 import { createAllToolMethodDefinitions, executeEvalTool, EVAL_DEFAULT_TIMEOUT_MS, EVAL_MAX_TIMEOUT_MS, EVAL_FRAMEWORK_TIMEOUT_MS } from "@workspace/agentic-tools";
 import { z } from "zod";
 import type { MethodDefinition } from "@natstack/agentic-messaging";
+
+/** Stable metadata object — avoids creating a new object every render */
+const PANEL_METADATA = { name: "Chat Panel", type: "panel" as const, handle: "user" };
 
 /** Type for chat panel state args */
 interface ChatStateArgs {
@@ -74,13 +77,13 @@ export default function ChatPanel() {
     }
   }, []);
 
-  const chatActions: AgenticChatActions = {
+  const chatActions: AgenticChatActions = useMemo(() => ({
     onNewConversation: handleNewConversation,
     onAddAgent: handleAddAgent,
     onFocusPanel: handleFocusPanel,
     onReloadPanel: handleReloadPanel,
     onBecomeVisible: forceRepaint,
-  };
+  }), [handleNewConversation, handleAddAgent, handleFocusPanel, handleReloadPanel]);
 
   // Tool provider: creates all tool method definitions + eval
   const toolProvider: ToolProvider = useCallback(({ clientRef, workspaceRoot: wsRoot }: ToolProviderDeps) => {
@@ -172,7 +175,7 @@ Use standard ESM imports - they're transformed to require() automatically:
       channelName={channelName}
       channelConfig={channelConfig}
       contextId={contextId}
-      metadata={{ name: "Chat Panel", type: "panel", handle: "user" }}
+      metadata={PANEL_METADATA}
       tools={toolProvider}
       actions={chatActions}
       theme={theme}
