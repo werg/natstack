@@ -51,18 +51,31 @@ const markdownComponents = {
   li: ({ children }: { children?: React.ReactNode }) => (
     <li style={{ fontSize: "0.875rem", lineHeight: 1.5 }}>{children}</li>
   ),
+  // Code handling mirrors agentic-chat/markdownComponents.tsx — keep in sync.
+  // Block code: `pre` does the wrapping; `code` decides raw <code> vs Radix <Code>.
   code: ({ children, className }: { children?: React.ReactNode; className?: string }) => {
-    const isBlock = className?.includes("language-");
-    if (isBlock) {
+    const hasLanguageClass = className?.includes("language-") ?? false;
+    const hasNewlines =
+      typeof children === "string"
+        ? children.includes("\n")
+        : Array.isArray(children)
+          ? children.some((c: unknown) => typeof c === "string" && (c as string).includes("\n"))
+          : false;
+    if (hasLanguageClass || hasNewlines) {
       return (
-        <Box my="2" style={{ background: "var(--gray-3)", borderRadius: 4, padding: 8, overflow: "auto" }}>
-          <code style={{ fontFamily: "monospace", fontSize: "0.85em" }}>{children}</code>
-        </Box>
+        <code className={className} style={{ display: "block", fontFamily: "var(--code-font-family, monospace)", fontSize: "0.85em" }}>
+          {children}
+        </code>
       );
     }
-    return <Code size="2">{children}</Code>;
+    const text = String(children ?? "").replace(/\n$/, "");
+    return <Code size="2">{text}</Code>;
   },
-  pre: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+  pre: ({ children }: { children?: React.ReactNode }) => (
+    <Box my="2" style={{ background: "var(--gray-3)", borderRadius: 4, padding: 8, overflow: "auto", whiteSpace: "pre" }}>
+      {children}
+    </Box>
+  ),
 };
 
 export function ExitPlanModePreview({ plan, allowedPrompts, planFilePath }: ExitPlanModePreviewProps) {

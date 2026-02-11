@@ -115,9 +115,23 @@
   line-height: var(--line-height-2);
 }
 
-[data-theme="dark"] .ns-codeblock {
+:is(.dark, .dark-theme) .ns-codeblock {
   background: var(--gray-3);
   border-color: var(--gray-6);
+}
+
+/* Reset Radix <Code> inside code blocks — handles single-line no-language fences
+   where the code handler renders <Code> (inline) but pre wraps it in .ns-codeblock */
+.ns-codeblock .rt-Code {
+  display: block;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  border-radius: 0;
+  letter-spacing: inherit;
+  white-space: inherit;
 }
 
 .ns-codeblock code.hljs {

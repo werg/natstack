@@ -150,28 +150,40 @@ export const markdownComponents: Components = {
     </Text>
   ),
   a: ({ href, children }) => <Link href={href ?? ""}>{children}</Link>,
-  code: ({ children, className, ...props }) => {
-    const inline =
-      typeof (props as { inline?: boolean }).inline === "boolean"
-        ? Boolean((props as { inline?: boolean }).inline)
-        : !(className?.includes("language-") ?? false);
+  code: ({ children, className }) => {
+    // In react-markdown v9 the `inline` prop was removed.
+    // Block code (fences/indented) is always wrapped in <pre> by react-markdown,
+    // so our `pre` handler takes care of the block wrapper (.ns-codeblock).
+    // Here we just decide raw <code> (block) vs Radix <Code> (inline).
+    const hasLanguageClass = className?.includes("language-") ?? false;
+    const hasNewlines =
+      typeof children === "string"
+        ? children.includes("\n")
+        : Array.isArray(children)
+          ? children.some((c) => typeof c === "string" && c.includes("\n"))
+          : false;
 
-    if (!inline) {
+    if (hasLanguageClass || hasNewlines) {
+      // Block code — rendered inside <pre> by the pre handler below
       return (
-        <Box my="2">
-          <pre className="ns-codeblock" style={{ margin: 0 }}>
-            <code className={className} style={{ display: "block" }}>
-              {children}
-            </code>
-          </pre>
-        </Box>
+        <code className={className} style={{ display: "block" }}>
+          {children}
+        </code>
       );
     }
 
+    // Inline code, OR single-line no-language fence (pre handler catches that case
+    // and .ns-codeblock CSS resets the Radix styling — see styles.css)
     const text = String(children ?? "").replace(/\n$/, "");
     return <Code size="2">{text}</Code>;
   },
-  pre: ({ children }) => <>{children}</>,
+  pre: ({ children }) => (
+    <Box my="2">
+      <pre className="ns-codeblock" style={{ margin: 0 }}>
+        {children}
+      </pre>
+    </Box>
+  ),
   blockquote: ({ children }) => <Blockquote>{children}</Blockquote>,
   ul: ({ children }) => (
     <ul style={{ paddingLeft: "var(--space-4)", marginBottom: "var(--space-2)" }}>
@@ -187,6 +199,48 @@ export const markdownComponents: Components = {
     <li style={{ fontSize: "var(--font-size-2)" }}>
       {children}
     </li>
+  ),
+  // GFM tables — remark-gfm generates table/thead/tbody/tr/th/td elements.
+  // Style them to match the Radix theme instead of relying on unstyled browser defaults.
+  table: ({ children }) => (
+    <Box my="2" style={{ overflowX: "auto" }}>
+      <table
+        style={{
+          width: "100%",
+          borderCollapse: "collapse",
+          fontSize: "var(--font-size-2)",
+          lineHeight: "var(--line-height-2)",
+        }}
+      >
+        {children}
+      </table>
+    </Box>
+  ),
+  thead: ({ children }) => (
+    <thead style={{ borderBottom: "2px solid var(--gray-6)" }}>{children}</thead>
+  ),
+  th: ({ children, style }) => (
+    <th
+      style={{
+        padding: "var(--space-2) var(--space-3)",
+        textAlign: "left",
+        fontWeight: 600,
+        ...style,
+      }}
+    >
+      {children}
+    </th>
+  ),
+  td: ({ children, style }) => (
+    <td
+      style={{
+        padding: "var(--space-2) var(--space-3)",
+        borderBottom: "1px solid var(--gray-4)",
+        ...style,
+      }}
+    >
+      {children}
+    </td>
   ),
   strong: ({ children }) => <Text weight="bold">{children}</Text>,
   em: ({ children }) => <Text style={{ fontStyle: "italic" }}>{children}</Text>,
