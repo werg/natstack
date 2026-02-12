@@ -11,7 +11,7 @@ import * as path from "path";
 import Arborist from "@npmcli/arborist";
 import { createTypeDefinitionLoader, loadNatstackPackageTypes, clearNatstackTypesCache, preloadNatstackTypesAsync, type NatstackPackageTypes } from "@natstack/typecheck";
 import { getPackagesDir } from "../paths.js";
-import { isVerdaccioServerInitialized, getVerdaccioServer } from "../verdaccioServer.js";
+import { isVerdaccioReady, getVerdaccioUrl } from "../verdaccioConfig.js";
 import { getBuildKeyDirectories } from "../build/artifacts.js";
 import {
   getPackageStore,
@@ -25,10 +25,15 @@ import {
  * Check if Verdaccio is running and can serve @natstack/* packages.
  */
 async function canUseVerdaccio(): Promise<boolean> {
-  if (!isVerdaccioServerInitialized()) {
+  if (!isVerdaccioReady()) {
     return false;
   }
-  return getVerdaccioServer().ensureRunning();
+  try {
+    await fetch(getVerdaccioUrl()! + "/-/ping");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -229,7 +234,7 @@ export class TypeDefinitionService {
 
     const canServeNatstack = await canUseVerdaccio();
     const registryUrl = canServeNatstack
-      ? getVerdaccioServer().getBaseUrl()
+      ? getVerdaccioUrl()!
       : "https://registry.npmjs.org";
 
     // Set up .npmrc for Verdaccio

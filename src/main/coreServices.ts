@@ -225,7 +225,8 @@ export async function startCoreServices({
                 streamId
               );
               handler.startTargetStream(target, options, streamId);
-            }
+            },
+            ctx.callerKind
           );
         });
       },

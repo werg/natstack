@@ -97,6 +97,23 @@ export const SERVICE_POLICIES: Record<string, ServicePolicy> = {
     description: "Event subscriptions",
   },
   // Note: fs is handled internally by panels/workers via ZenFS, not via service dispatch
+
+  // ==========================================================================
+  // Server-only services (admin operations proxied from Electron)
+  // ==========================================================================
+
+  tokens: {
+    allowed: ["server"],
+    description: "Token management (create/revoke panel tokens)",
+  },
+  verdaccio: {
+    allowed: ["server"],
+    description: "Verdaccio registry queries",
+  },
+  git: {
+    allowed: ["server"],
+    description: "Git server queries",
+  },
 };
 
 /**

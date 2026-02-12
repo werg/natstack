@@ -27,7 +27,7 @@ import {
 import { validateStateArgs } from "./stateArgsValidator.js";
 import type { StateArgsValue } from "../shared/stateArgs.js";
 import { getActiveWorkspace, getContextScopePath } from "./paths.js";
-import type { GitServer } from "./gitServer.js";
+import type { ServerInfo } from "./serverInfo.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
 import * as SharedPanel from "../shared/types.js";
 import { getClaudeCodeConversationManager } from "./ai/claudeCodeConversationManager.js";
@@ -37,7 +37,7 @@ import {
   isProtocolPanel,
 } from "./panelProtocol.js";
 import { getCdpServer } from "./cdpServer.js";
-import { getPubSubServer } from "./pubsubServer.js";
+// getPubSubServer no longer imported — pubsub config comes via ServerInfo
 import { getTokenManager } from "./tokenManager.js";
 import type { ViewManager } from "./viewManager.js";
 import { parseNsUrl, type NsAction } from "./nsProtocol.js";
@@ -118,7 +118,7 @@ export class PanelManager {
   private focusedPanelId: string | null = null;
   private currentTheme: "light" | "dark" = nativeTheme.shouldUseDarkColors ? "dark" : "light";
   private panelsRoot: string;
-  private gitServer: GitServer;
+  private serverInfo: ServerInfo;
   private pendingBrowserNavigations: Map<string, { url: string; index: number }> = new Map();
   private rpcServer: import("../server/rpcServer.js").RpcServer | null = null;
   private rpcPort: number | null = null;
@@ -133,8 +133,8 @@ export class PanelManager {
   private readonly MAX_CRASHES = 3;
   private readonly CRASH_WINDOW_MS = 60000; // 1 minute
 
-  constructor(gitServer: GitServer) {
-    this.gitServer = gitServer;
+  constructor(serverInfo: ServerInfo) {
+    this.serverInfo = serverInfo;
     const workspace = getActiveWorkspace();
     this.panelsRoot = workspace?.path ?? path.resolve(process.cwd());
     this.builder = new PanelBuilder();
@@ -352,7 +352,7 @@ export class PanelManager {
         } else if (panelType === "browser") {
           // Browser panel - can create view directly
           const browserUrl = getBrowserResolvedUrl(panel) ?? getPanelSource(panel);
-          this.createViewForPanel(panel.id, browserUrl, "browser", getPanelContextId(panel));
+          void this.createViewForPanel(panel.id, browserUrl, "browser", getPanelContextId(panel));
         } else if (panelType === "shell") {
           // Shell panel - can create view directly using about protocol
           void this.restoreShellPanel(panel);
@@ -453,7 +453,7 @@ export class PanelManager {
    * @param contextId - The context ID for partition (required for panel/worker, ignored for browser)
    * @throws Error if ViewManager is not set
    */
-  createViewForPanel(panelId: string, url: string, type: "panel" | "browser" | "worker", contextId?: string): void {
+  async createViewForPanel(panelId: string, url: string, type: "panel" | "browser" | "worker", contextId?: string): Promise<void> {
     if (!this.viewManager) {
       throw new Error(`[PanelManager] ViewManager not set, cannot create view for ${panelId}`);
     }
@@ -520,7 +520,7 @@ export class PanelManager {
 
       // Add worker env if available
       // Refresh system tokens (pubsub, git) in case they're stale from a previous session
-      const workerEnv = panel ? this.refreshEnvTokens(panelId, getPanelEnv(panel)) : undefined;
+      const workerEnv = panel ? await this.refreshEnvTokens(panelId, getPanelEnv(panel)) : undefined;
       if (workerEnv && Object.keys(workerEnv).length > 0) {
         try {
           const encodedEnv = Buffer.from(JSON.stringify(workerEnv), "utf-8").toString("base64");
@@ -585,7 +585,7 @@ export class PanelManager {
 
       // Add panel env if available
       // Refresh system tokens (pubsub, git) in case they're stale from a previous session
-      const panelEnvForArgs = panel ? this.refreshEnvTokens(panelId, getPanelEnv(panel)) : undefined;
+      const panelEnvForArgs = panel ? await this.refreshEnvTokens(panelId, getPanelEnv(panel)) : undefined;
       if (panelEnvForArgs && Object.keys(panelEnvForArgs).length > 0) {
         try {
           const encodedEnv = Buffer.from(JSON.stringify(panelEnvForArgs), "utf-8").toString("base64");
@@ -1153,8 +1153,8 @@ export class PanelManager {
     // Initialize context via OPFS partition copying
     log.verbose(` Initializing safe context: ${contextId}`);
     const gitConfig = {
-      serverUrl: this.gitServer.getBaseUrl(),
-      token: this.gitServer.getTokenForPanel(panelId),
+      serverUrl: this.serverInfo.gitBaseUrl,
+      token: await this.serverInfo.getGitTokenForPanel(panelId),
     };
     await ensureContextPartitionInitialized(
       contextId,
@@ -1173,40 +1173,42 @@ export class PanelManager {
    * Called when rehydrating panels after app restart to ensure tokens are valid.
    * Tokens are stored in-memory by TokenManager, so they're invalidated on restart.
    */
-  private refreshEnvTokens(
+  private async refreshEnvTokens(
     panelId: string,
     env: Record<string, string> | undefined
-  ): Record<string, string> | undefined {
+  ): Promise<Record<string, string> | undefined> {
     if (!env) return undefined;
 
-    // Get or recreate token for this panel (may have been revoked by unloadPanelResources)
-    const freshToken = getTokenManager().ensureToken(panelId, "panel");
+    // Get or recreate Electron WS auth token
+    const freshWsToken = getTokenManager().ensureToken(panelId, "panel");
+    // Get or recreate server-side token for git/pubsub
+    const serverToken = await this.serverInfo.getPanelToken(panelId);
     log.verbose(` Refreshing env tokens for ${panelId}`);
 
     // Create a mutable copy
     const refreshedEnv = { ...env };
 
-    // Refresh __GIT_TOKEN
-    if (refreshedEnv["__GIT_TOKEN"]) {
-      refreshedEnv["__GIT_TOKEN"] = freshToken;
+    // Refresh __GIT_TOKEN (server token for git access — never use Electron WS token)
+    if (refreshedEnv["__GIT_TOKEN"] && serverToken) {
+      refreshedEnv["__GIT_TOKEN"] = serverToken;
     }
 
-    // Refresh token in __GIT_CONFIG (JSON)
-    if (refreshedEnv["__GIT_CONFIG"]) {
+    // Refresh token in __GIT_CONFIG (JSON) — server token for git
+    if (refreshedEnv["__GIT_CONFIG"] && serverToken) {
       try {
         const gitConfig = JSON.parse(refreshedEnv["__GIT_CONFIG"]);
-        gitConfig.token = freshToken;
+        gitConfig.token = serverToken;
         refreshedEnv["__GIT_CONFIG"] = JSON.stringify(gitConfig);
       } catch {
         // Invalid JSON, leave as-is
       }
     }
 
-    // Refresh token in __PUBSUB_CONFIG (JSON)
-    if (refreshedEnv["__PUBSUB_CONFIG"]) {
+    // Refresh token in __PUBSUB_CONFIG (JSON) — server token for pubsub
+    if (refreshedEnv["__PUBSUB_CONFIG"] && serverToken) {
       try {
         const pubsubConfig = JSON.parse(refreshedEnv["__PUBSUB_CONFIG"]);
-        pubsubConfig.token = freshToken;
+        pubsubConfig.token = serverToken;
         refreshedEnv["__PUBSUB_CONFIG"] = JSON.stringify(pubsubConfig);
       } catch {
         // Invalid JSON, leave as-is
@@ -1220,7 +1222,7 @@ export class PanelManager {
    * Build env for a panel or worker, merging base env with system env.
    * @param baseEnv - Existing panel env to preserve, or null if creating fresh
    */
-  private buildPanelEnv(
+  private async buildPanelEnv(
     panelId: string,
     baseEnv: Record<string, string> | null | undefined,
     gitInfo?: {
@@ -1228,9 +1230,9 @@ export class PanelManager {
       gitRef?: string;
       resolvedRepoArgs?: Record<string, SharedPanel.RepoArgSpec>;
     }
-  ): Record<string, string> | undefined {
-    const gitToken = this.gitServer.getTokenForPanel(panelId);
-    const serverUrl = this.gitServer.getBaseUrl();
+  ): Promise<Record<string, string> | undefined> {
+    const gitToken = await this.serverInfo.getGitTokenForPanel(panelId);
+    const serverUrl = this.serverInfo.gitBaseUrl;
 
     // Build full git config for bootstrap (eliminates need for RPC during bootstrap)
     const gitConfig = gitInfo
@@ -1244,12 +1246,11 @@ export class PanelManager {
       : "";
 
     // Build pubsub config for real-time messaging
-    const pubsubServer = getPubSubServer();
-    const pubsubPort = pubsubServer.getPort();
-    const pubsubConfig = pubsubPort
+    const serverToken = await this.serverInfo.getPanelToken(panelId);
+    const pubsubConfig = this.serverInfo.pubsubUrl
       ? JSON.stringify({
-          serverUrl: `ws://127.0.0.1:${pubsubPort}`,
-          token: getTokenManager().getToken(panelId),
+          serverUrl: this.serverInfo.pubsubUrl,
+          token: serverToken,
         })
       : "";
     const workspacePath = getActiveWorkspace()?.path;
@@ -1371,16 +1372,17 @@ export class PanelManager {
 
     this.reservedPanelIds.add(panelId);
 
-    // Create auth token before resolveContext — it needs a git token via getTokenForPanel
+    // Create auth tokens before resolveContext — it needs a git token via getGitTokenForPanel
     const isUnsafe = Boolean(unsafeFlag);
     const callerKind = isWorker ? "worker" as const : "panel" as const;
-    getTokenManager().createToken(panelId, callerKind);
+    getTokenManager().createToken(panelId, callerKind);              // Electron WS auth
 
     try {
+      await this.serverInfo.createPanelToken(panelId, callerKind);     // Server git/pubsub auth
       // Resolve context ID: use provided contextId if available, otherwise generate from template
       const contextId = options.contextId ?? await this.resolveContext(panelId, options.templateSpec, isUnsafe);
 
-      const panelEnv = this.buildPanelEnv(panelId, options?.env, {
+      const panelEnv = await this.buildPanelEnv(panelId, options?.env, {
         sourceRepo: relativePath,
         gitRef: options?.gitRef,
         resolvedRepoArgs: options?.repoArgs,
@@ -1499,8 +1501,9 @@ export class PanelManager {
 
       return { id: panel.id, type: panelType, title: panel.title };
     } catch (err) {
-      // If panel creation fails after token was created, revoke it
+      // If panel creation fails after token was created, revoke both
       getTokenManager().revokeToken(panelId);
+      void this.serverInfo.revokePanelToken(panelId);
       throw err;
     } finally {
       this.reservedPanelIds.delete(panelId);
@@ -1755,7 +1758,7 @@ export class PanelManager {
     this.persistPanel(panel, parentId);
 
     // Create WebContentsView for the browser (browsers don't use session-based partitions)
-    this.createViewForPanel(panel.id, url, "browser", contextId);
+    await this.createViewForPanel(panel.id, url, "browser", contextId);
 
     this.notifyPanelTreeUpdate();
 
@@ -2014,7 +2017,7 @@ export class PanelManager {
 
       panel.artifacts = { buildState: "ready" };
       this.persistArtifacts(panelId, panel.artifacts);
-      this.createViewForPanel(panelId, targetUrl, "browser", contextId);
+      await this.createViewForPanel(panelId, targetUrl, "browser", contextId);
       return;
     }
 
@@ -2924,7 +2927,7 @@ export class PanelManager {
         // Create WebContentsView for this worker
         const srcUrl = new URL(htmlUrl);
         srcUrl.searchParams.set("panelId", worker.id);
-        this.createViewForPanel(worker.id, srcUrl.toString(), "worker", getPanelContextId(worker));
+        await this.createViewForPanel(worker.id, srcUrl.toString(), "worker", getPanelContextId(worker));
       } else {
         // Build failed
         worker.artifacts = {
@@ -3169,7 +3172,7 @@ export class PanelManager {
         // Create WebContentsView for this panel
         const srcUrl = new URL(htmlUrl);
         srcUrl.searchParams.set("panelId", panel.id);
-        this.createViewForPanel(panel.id, srcUrl.toString(), "panel", getPanelContextId(panel));
+        await this.createViewForPanel(panel.id, srcUrl.toString(), "panel", getPanelContextId(panel));
       } else {
         // Build failed
         panel.artifacts = {
@@ -3353,7 +3356,7 @@ export class PanelManager {
       // Browser panels can be recreated directly
       const snapshot = getCurrentSnapshot(panel);
       const url = snapshot.resolvedUrl ?? getPanelSource(panel);
-      this.createViewForPanel(panel.id, url, "browser", getPanelContextId(panel));
+      await this.createViewForPanel(panel.id, url, "browser", getPanelContextId(panel));
       panel.artifacts = { buildState: "ready" };
       this.persistArtifacts(panelId, panel.artifacts);
       this.notifyPanelTreeUpdate();
@@ -3698,8 +3701,9 @@ export class PanelManager {
 
       case "app":
         // App panel cleanup
-        // Revoke git token for this panel
-        this.gitServer.revokeTokenForPanel(panelId);
+        // Revoke server-side tokens for this panel (fire-and-forget)
+        void this.serverInfo.revokePanelToken(panelId);
+        void this.serverInfo.revokeGitToken(panelId);
 
         // Revoke CDP token for this panel (cleans up browser ownership)
         getCdpServer().revokeTokenForPanel(panelId);
@@ -4041,7 +4045,7 @@ export class PanelManager {
       if (panelType === "browser") {
         const snapshot = getCurrentSnapshot(panel);
         const url = snapshot.resolvedUrl ?? getPanelSource(panel);
-        this.createViewForPanel(panelId, url, "browser", contextId);
+        await this.createViewForPanel(panelId, url, "browser", contextId);
         log.verbose(` Recreated browser view for ${panelId}`);
       } else if (panelType === "shell") {
         await this.restoreShellPanel(panel);
@@ -4053,7 +4057,7 @@ export class PanelManager {
         if (builtUrl) {
           // Panel was built, recreate with the built URL
           const viewType = panelType === "worker" ? "worker" : "panel";
-          this.createViewForPanel(panelId, builtUrl, viewType, contextId);
+          await this.createViewForPanel(panelId, builtUrl, viewType, contextId);
           log.verbose(` Recreated ${panelType} view for ${panelId}`);
         } else {
           // Panel wasn't built yet or lost build state - trigger rebuild
@@ -4195,26 +4199,26 @@ export class PanelManager {
 
   /**
    * Get the workspace tree of all git repos.
-   * Delegates to gitServer.
+   * Delegates to server via ServerInfo.
    */
   async getWorkspaceTree(): Promise<SharedPanel.WorkspaceTree> {
-    return this.gitServer.getWorkspaceTree();
+    return this.serverInfo.getWorkspaceTree() as Promise<SharedPanel.WorkspaceTree>;
   }
 
   /**
    * List branches for a repo.
-   * Delegates to gitServer.
+   * Delegates to server via ServerInfo.
    */
   async listBranches(repoPath: string): Promise<SharedPanel.BranchInfo[]> {
-    return this.gitServer.listBranches(repoPath);
+    return this.serverInfo.listBranches(repoPath) as Promise<SharedPanel.BranchInfo[]>;
   }
 
   /**
    * List commits for a repo/ref.
-   * Delegates to gitServer.
+   * Delegates to server via ServerInfo.
    */
   async listCommits(repoPath: string, ref?: string, limit?: number): Promise<SharedPanel.CommitInfo[]> {
-    return this.gitServer.listCommits(repoPath, ref, limit);
+    return this.serverInfo.listCommits(repoPath, ref ?? "HEAD", limit ?? 50) as Promise<SharedPanel.CommitInfo[]>;
   }
 
   // Map panelId -> browser state tracking cleanup info
@@ -4268,8 +4272,9 @@ export class PanelManager {
 
     log.verbose(` Creating template builder worker: ${workerId}`);
 
-    // Create auth token for the worker via TokenManager
+    // Create auth tokens for the worker
     const authToken = getTokenManager().createToken(workerId, "worker");
+    await this.serverInfo.createPanelToken(workerId, "worker");
 
     // Build additional arguments for preload
     const additionalArgs: string[] = [
@@ -4333,8 +4338,9 @@ export class PanelManager {
     // Remove from tracking
     this.templateBuilderWorkers.delete(workerId);
 
-    // Revoke auth token (disconnects WS connections via onRevoke listener)
+    // Revoke auth tokens (disconnects WS connections via onRevoke listener)
     getTokenManager().revokeToken(workerId);
+    void this.serverInfo.revokePanelToken(workerId);
 
     // Remove protocol panel content
     if (isProtocolPanel(workerId)) {

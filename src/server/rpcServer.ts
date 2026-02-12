@@ -63,6 +63,8 @@ export class RpcServer {
     private deps: {
       tokenManager: TokenManager;
       panelManager?: PanelManagerLike;
+      /** Optional callback to intercept tool results (used by Electron to forward to server) */
+      onToolResult?: (callId: string, result: ToolExecutionResult) => void;
     }
   ) {}
 
@@ -206,7 +208,11 @@ export class RpcServer {
         void this.handleRpc(client, msg.message);
         break;
       case "ws:tool-result":
-        this.handleToolResult(msg.callId, msg.result as ToolExecutionResult);
+        if (this.deps.onToolResult) {
+          this.deps.onToolResult(msg.callId, msg.result as ToolExecutionResult);
+        } else {
+          this.handleToolResult(msg.callId, msg.result as ToolExecutionResult);
+        }
         break;
       case "ws:panel-rpc":
         this.handlePanelRpc(client, msg.targetId, msg.message);

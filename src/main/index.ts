@@ -1,4 +1,4 @@
-import { app, BaseWindow, nativeTheme, session } from "electron";
+import { app, dialog, BaseWindow, nativeTheme, session } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 // Silence Electron security warnings in dev; panels run in isolated webviews.
@@ -9,7 +9,6 @@ import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("App");
 import { PanelManager, setGlobalPanelManager } from "./panelManager.js";
-import { GitServer } from "./gitServer.js";
 import { setupMenu } from "./menu.js";
 import { setActiveWorkspace, getAppRoot } from "./paths.js";
 import {
@@ -26,8 +25,6 @@ import { getMainCacheManager } from "./cacheManager.js";
 import { getCdpServer, type CdpServer } from "./cdpServer.js";
 import { getTokenManager } from "./tokenManager.js";
 import { eventService } from "./services/eventsService.js";
-import { shutdownPackageStore, scheduleGC } from "./package-store/index.js";
-import { getDependencyGraph } from "./dependencyGraph.js";
 import { handleBridgeCall } from "./ipc/bridgeHandlers.js";
 import { handleBrowserCall } from "./ipc/browserHandlers.js";
 import {
@@ -47,15 +44,18 @@ import {
   handleSettingsService,
   setShellServicesPanelManager,
   setShellServicesAppMode,
-  setShellServicesAiHandler,
+  setShellServicesServerClient,
 } from "./ipc/shellServices.js";
 import { handleEventsService } from "./services/eventsService.js";
 import { setupTestApi } from "./testApi.js";
 import { getAdBlockManager } from "./adblock/index.js";
 import { handleAdBlockServiceCall } from "./ipc/adblockHandlers.js";
-import { preloadNatstackTypesAsync } from "@natstack/typecheck";
 import { startMemoryMonitor } from "./memoryMonitor.js";
-import type { CoreServicesHandle } from "./coreServices.js";
+import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
+import { createServerClient, type ServerClient } from "./serverClient.js";
+import { registerProxyServices } from "./serverProxy.js";
+import { setVerdaccioConfig } from "./verdaccioConfig.js";
+import type { ServerInfo } from "./serverInfo.js";
 
 // =============================================================================
 // Early Diagnostics (enabled via NATSTACK_DEBUG_PATHS=1)
@@ -118,24 +118,25 @@ if (cliWorkspacePath && !hasWorkspaceConfig) {
 
 let appMode: AppMode = hasWorkspaceConfig ? "main" : "chooser";
 let workspace: Workspace | null = null;
-let gitServer: GitServer | null = null;
 let cdpServer: CdpServer | null = null;
 let panelManager: PanelManager | null = null;
 let rpcServer: RpcServer | null = null;
-let coreHandle: CoreServicesHandle | null = null;
+let serverProcessManager: ServerProcessManager | null = null;
+let serverClient: ServerClient | null = null;
+let serverInfo: ServerInfo | null = null;
 let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
 let isCleaningUp = false; // Prevent re-entry in will-quit handler
 
-// Export AI handler for use by other modules (will be set during initialization)
-export let aiHandler: import("./ai/aiHandler.js").AIHandler | null = null;
+/** Guard — throws controlled error instead of raw TypeError */
+function requireServerClient(): ServerClient {
+  if (!serverClient) throw new Error("Server not available");
+  return serverClient;
+}
 
-/**
- * Get the GitServer instance.
- * Used by the context template resolver for GitHub ref resolution.
- */
-export function getGitServer(): GitServer | null {
-  return gitServer;
+/** Get the current ServerInfo (null in chooser mode or before server init) */
+export function getServerInfo(): ServerInfo | null {
+  return serverInfo;
 }
 
 // =============================================================================
@@ -151,25 +152,6 @@ if (appMode === "main" && hasWorkspaceConfig) {
     // Add to recent workspaces
     const centralData = getCentralData();
     centralData.addRecentWorkspace(workspace.path, workspace.config.id);
-
-    // Create git server with workspace configuration
-    // GitHub token can come from config or GITHUB_TOKEN env var (set from secrets.yml)
-    const githubConfig = workspace.config.git?.github;
-    gitServer = new GitServer({
-      port: workspace.config.git?.port,
-      reposPath: workspace.gitReposPath,
-      github: {
-        ...githubConfig,
-        token: githubConfig?.token ?? process.env["GITHUB_TOKEN"],
-      },
-    });
-
-    // Create panel manager
-    panelManager = new PanelManager(gitServer);
-    setGlobalPanelManager(panelManager);
-
-    // Set up test API for E2E testing (only when NATSTACK_TEST_MODE=1)
-    setupTestApi(panelManager);
   } catch (error) {
     console.error(
       "[Workspace] Failed to initialize workspace, falling back to chooser mode:",
@@ -181,6 +163,35 @@ if (appMode === "main" && hasWorkspaceConfig) {
 
 setShellServicesAppMode(appMode);
 log.info(` Starting in ${appMode} mode`);
+
+// =============================================================================
+// ServerInfo Builder
+// =============================================================================
+
+function buildServerInfo(ports: ServerPorts): ServerInfo {
+  return {
+    gitBaseUrl: `http://127.0.0.1:${ports.gitPort}`,
+    pubsubUrl: `ws://127.0.0.1:${ports.pubsubPort}`,
+    createPanelToken: (panelId, kind) =>
+      requireServerClient().call("tokens", "create", [panelId, kind]) as Promise<string>,
+    revokePanelToken: (panelId) =>
+      requireServerClient().call("tokens", "revoke", [panelId]) as Promise<void>,
+    getPanelToken: (panelId) =>
+      requireServerClient().call("tokens", "get", [panelId]) as Promise<string | null>,
+    getGitTokenForPanel: (panelId) =>
+      requireServerClient().call("git", "getTokenForPanel", [panelId]) as Promise<string>,
+    revokeGitToken: (panelId) =>
+      requireServerClient().call("git", "revokeTokenForPanel", [panelId]) as Promise<void>,
+    getWorkspaceTree: () =>
+      requireServerClient().call("git", "getWorkspaceTree", []),
+    listBranches: (repoPath) =>
+      requireServerClient().call("git", "listBranches", [repoPath]),
+    listCommits: (repoPath, ref, limit) =>
+      requireServerClient().call("git", "listCommits", [repoPath, ref, limit]),
+    resolveRef: (repoPath, ref) =>
+      requireServerClient().call("git", "resolveRef", [repoPath, ref]) as Promise<string>,
+  };
+}
 
 // =============================================================================
 // Window Creation
@@ -315,18 +326,6 @@ app.on("ready", async () => {
   const cacheManager = getMainCacheManager();
   await cacheManager.initialize();
 
-  // Schedule package store garbage collection (runs daily, removes packages unused for 30 days)
-  // This is non-blocking and runs in the background
-  const cancelGC = scheduleGC(24 * 60 * 60 * 1000); // Run daily
-  app.on("will-quit", () => cancelGC());
-
-  // Pre-warm @natstack/* type cache before any TypeCheckService is created.
-  // This avoids blocking sync I/O when TypeCheckService is first instantiated.
-  const packagesDir = path.join(getAppRoot(), "packages");
-  if (fs.existsSync(packagesDir)) {
-    await preloadNatstackTypesAsync(packagesDir);
-  }
-
   // Initialize ad blocking (shared across all browser panels)
   try {
     const adBlockManager = getAdBlockManager();
@@ -353,25 +352,59 @@ app.on("ready", async () => {
   setShellServicesAppMode(appMode);
 
   // Initialize services only in main mode
-  if (appMode === "main" && gitServer && panelManager && workspace) {
+  if (appMode === "main" && workspace) {
     try {
-      // Electron-only registrations (before core — survive core failure)
+      // Spawn server as child process
+      serverProcessManager = new ServerProcessManager({
+        workspacePath: workspace.path,
+        appRoot: getAppRoot(),
+        onCrash: (code) => {
+          console.error(`[App] Server process crashed with code ${code}`);
+          dialog.showErrorBox(
+            "Server Process Crashed",
+            "The NatStack server process exited unexpectedly. The app will now restart."
+          );
+          app.relaunch();
+          app.exit(1);
+        },
+      });
+
+      const ports = await serverProcessManager.start();
+      log.info(`[Server] Child process started (RPC: ${ports.rpcPort}, Verdaccio: ${ports.verdaccioPort}, Git: ${ports.gitPort}, PubSub: ${ports.pubsubPort})`);
+
+      // Connect to server as admin
+      serverClient = await createServerClient(ports.rpcPort, ports.adminToken);
+      log.info("[Server] Admin WS client connected");
+
+      // Configure verdaccio URL for build pipeline
+      setVerdaccioConfig({
+        url: `http://127.0.0.1:${ports.verdaccioPort}`,
+        getPackageVersion: (name) =>
+          requireServerClient().call("verdaccio", "getPackageVersion", [name]) as Promise<string | null>,
+      });
+
+      // Wire shell services
+      setShellServicesServerClient(serverClient);
+
+      // Create panel manager with server info
+      serverInfo = buildServerInfo(ports);
+      panelManager = new PanelManager(serverInfo);
+      setGlobalPanelManager(panelManager);
+
+      // Set up test API for E2E testing (only when NATSTACK_TEST_MODE=1)
+      setupTestApi(panelManager);
+
+      // Electron-only registrations
       dispatcher.register("panel", handlePanelService);
       setShellServicesPanelManager(panelManager);
 
-      // Core services
-      const { startCoreServices } = await import("./coreServices.js");
-      coreHandle = await startCoreServices({ workspace, gitServer });
-      aiHandler = coreHandle.aiHandler;
-      setShellServicesAiHandler(aiHandler);
-
-      // Electron-only services that depend on core
+      // CDP server (Electron-local)
       cdpServer = getCdpServer();
       const cdpPort = await cdpServer.start();
       log.info(`[CDP] Server started on port ${cdpPort}`);
 
       dispatcher.register("bridge", async (ctx, serviceMethod, serviceArgs) => {
-        return handleBridgeCall(panelManager, getCdpServer(), ctx.callerId, serviceMethod, serviceArgs);
+        return handleBridgeCall(panelManager!, getCdpServer(), ctx.callerId, serviceMethod, serviceArgs);
       });
 
       dispatcher.register("browser", async (ctx, serviceMethod, serviceArgs) => {
@@ -385,43 +418,75 @@ app.on("ready", async () => {
           serviceArgs
         );
       });
+
+      // Register proxy services for backend (ai, db, typecheck, agentSettings)
+      registerProxyServices(requireServerClient);
+
+      dispatcher.markInitialized();
+
+      // Start RPC server with tool result forwarding to server
+      const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
+      rpcServer = new RpcServerClass({
+        tokenManager: getTokenManager(),
+        panelManager: panelManager ?? undefined,
+        onToolResult: (callId, result) => {
+          requireServerClient().forwardToolResult(callId, result);
+        },
+      });
+      const rpcPort = await rpcServer.start();
+      log.info(`[RPC] Server started on port ${rpcPort}`);
+
+      // Wire RPC server into panel manager
+      panelManager.setRpcServer(rpcServer);
+      panelManager.setRpcPort(rpcPort);
+
+      // Generate shell token and create window
+      const shellToken = getTokenManager().getOrCreateShellToken();
+      void createWindow({ rpcPort, shellToken });
     } catch (error) {
       console.error("Failed to initialize services:", error);
-    }
 
-    // Always mark initialized in main mode so registered services work
-    // (even if some services failed to initialize)
-    dispatcher.markInitialized();
+      // Clean up partially-initialized server state
+      if (serverClient) {
+        serverClient.close().catch(() => {});
+        serverClient = null;
+      }
+      if (serverProcessManager) {
+        serverProcessManager.shutdown().catch(() => {});
+        serverProcessManager = null;
+      }
+      serverInfo = null;
+
+      // Reset shell services so they don't hold a closed client reference
+      setShellServicesServerClient(null);
+
+      // Mark initialized so shell services work even on failure
+      dispatcher.markInitialized();
+
+      // Start minimal RPC server for shell
+      const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
+      rpcServer = new RpcServerClass({
+        tokenManager: getTokenManager(),
+      });
+      const rpcPort = await rpcServer.start();
+      const shellToken = getTokenManager().getOrCreateShellToken();
+      void createWindow({ rpcPort, shellToken });
+    }
   } else {
     // In chooser mode, mark initialized so shell services work
     dispatcher.markInitialized();
+
+    // Start RPC server for shell
+    const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
+    rpcServer = new RpcServerClass({
+      tokenManager: getTokenManager(),
+    });
+    const rpcPort = await rpcServer.start();
+    log.info(`[RPC] Server started on port ${rpcPort}`);
+
+    const shellToken = getTokenManager().getOrCreateShellToken();
+    void createWindow({ rpcPort, shellToken });
   }
-
-  // Start RPC server (both modes — shell always connects over WS)
-  const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
-  rpcServer = new RpcServerClass({
-    tokenManager: getTokenManager(),
-    panelManager: panelManager ?? undefined,
-  });
-  const rpcPort = await rpcServer.start();
-  log.info(`[RPC] Server started on port ${rpcPort}`);
-
-  // Register AI service now that rpcServer exists
-  if (coreHandle) {
-    coreHandle.registerAiService(rpcServer);
-  }
-
-  // Generate shell token
-  const shellToken = getTokenManager().getOrCreateShellToken();
-
-  // Wire RPC server into panel manager (if in main mode)
-  if (panelManager) {
-    panelManager.setRpcServer(rpcServer);
-    panelManager.setRpcPort(rpcPort);
-  }
-
-  // Create window (shell preload receives WS port + shell token)
-  void createWindow({ rpcPort, shellToken });
 });
 
 app.on("window-all-closed", () => {
@@ -446,7 +511,7 @@ app.on("will-quit", (event) => {
     }
   }
 
-  const hasResourcesToClean = coreHandle || rpcServer || cdpServer;
+  const hasResourcesToClean = serverClient || serverProcessManager || rpcServer || cdpServer;
   if (hasResourcesToClean) {
     isCleaningUp = true;
     event.preventDefault();
@@ -455,14 +520,25 @@ app.on("will-quit", (event) => {
 
     const stopPromises: Promise<void>[] = [];
 
-    // Core services (only if initialized)
-    if (coreHandle) {
+    // Server client (WS admin connection)
+    if (serverClient) {
       stopPromises.push(
-        coreHandle.shutdown().catch((e) => console.error("[App] Core shutdown error:", e))
+        serverClient.close().catch((e) => console.error("[App] Server client close error:", e))
+      );
+      serverClient = null;
+    }
+
+    // Server process (sends shutdown IPC, waits for exit)
+    if (serverProcessManager) {
+      stopPromises.push(
+        serverProcessManager
+          .shutdown()
+          .then(() => console.log("[App] Server process stopped"))
+          .catch((e) => console.error("[App] Server process shutdown error:", e))
       );
     }
 
-    // Caller-managed servers (each .catch()-wrapped)
+    // Electron-local servers
     if (rpcServer) {
       stopPromises.push(
         rpcServer
@@ -481,20 +557,7 @@ app.on("will-quit", (event) => {
       );
     }
 
-    // Global singletons (always — runs in both main and chooser mode)
-    stopPromises.push(
-      getDependencyGraph()
-        .then((graph) => graph.flush())
-        .then(() => console.log("[App] Dependency graph flushed"))
-        .catch((e) => console.error("[App] Error flushing dependency graph:", e))
-    );
-
-    try {
-      shutdownPackageStore();
-      console.log("[App] Package store shutdown");
-    } catch (e) {
-      console.error("[App] Error shutting down package store:", e);
-    }
+    // No more: dependency graph flush, package store shutdown (server handles these)
 
     // Add a timeout to ensure we exit even if cleanup hangs
     const shutdownTimeout = setTimeout(() => {

@@ -52,6 +52,21 @@ const serverNativePlugin = {
 
 const serverNativeReady = fs.existsSync("server-native/node_modules/better-sqlite3");
 
+// CJS build for utilityProcess.fork() from Electron — uses Electron's built-in better-sqlite3
+const serverElectronConfig = {
+  entryPoints: ["src/server/index.ts"],
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "cjs",
+  outfile: "dist/server-electron.cjs",
+  external: ["electron", "esbuild", "@npmcli/arborist", "better-sqlite3",
+             "verdaccio", "node-git-server"],
+  sourcemap: isDev,
+  minify: !isDev,
+  logOverride,
+};
+
 const serverConfig = {
   entryPoints: ["src/server/index.ts"],
   bundle: true,
@@ -330,12 +345,13 @@ async function build() {
     await esbuild.build(adblockPreloadConfig);
     await esbuild.build(rendererConfig);
     await esbuild.build(smokeTestConfig);
+    await esbuild.build(serverElectronConfig);
     if (serverNativeReady) {
       await esbuild.build(serverConfig);
     } else {
       // Remove stale artifact so bin/script don't point at an outdated bundle
       try { fs.unlinkSync("dist/server.mjs"); } catch {}
-      console.warn("[build] Skipping server build — run 'pnpm server:install' first");
+      console.warn("[build] Skipping standalone server build — run 'pnpm server:install' first");
     }
     await buildDependencyWorkers();
 

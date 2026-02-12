@@ -144,7 +144,7 @@ export async function handleBridgeCall(
       const { computeImmutableSpec } = await import("../contextTemplate/specHash.js");
       const { createContextId, generateInstanceId } = await import("../contextTemplate/contextId.js");
       const { ensureContextPartitionInitialized } = await import("../contextTemplate/index.js");
-      const { getGitServer } = await import("../index.js");
+      const { getServerInfo } = await import("../index.js");
 
       // Resolve template and compute immutable spec
       const resolved = await resolveTemplate(templateSpec);
@@ -153,14 +153,14 @@ export async function handleBridgeCall(
       const contextId = createContextId("safe", immutableSpec.specHash, instanceId);
 
       // Get git config for partition initialization
-      const gitServer = getGitServer();
-      if (!gitServer) {
-        throw new Error("Git server not available - cannot initialize context");
+      const si = getServerInfo();
+      if (!si) {
+        throw new Error("Server not available - cannot initialize context");
       }
 
       const gitConfig = {
-        serverUrl: gitServer.getBaseUrl(),
-        token: gitServer.getTokenForPanel(callerId),
+        serverUrl: si.gitBaseUrl,
+        token: await si.getGitTokenForPanel(callerId),
       };
 
       // Initialize OPFS partition
