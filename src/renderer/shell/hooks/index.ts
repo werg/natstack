@@ -28,6 +28,8 @@ export {
 export {
   PanelDndProvider,
   usePanelDnd,
+  usePanelDndTree,
+  usePanelDndDrag,
   INDENTATION_WIDTH,
   END_DROP_ZONE_ID,
 } from "./PanelDndContext.js";

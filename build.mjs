@@ -165,14 +165,53 @@ const adblockPreloadConfig = {
   logOverride,
 };
 
+// Plugin to rewrite bare Node builtin imports to node: prefix and mark electron as external.
+// Required for ESM splitting: esbuild can't bundle builtins but the renderer runs with
+// nodeIntegration: true, so node:-prefixed imports work at runtime.
+const rendererExternalsPlugin = {
+  name: "renderer-externals",
+  setup(build) {
+    // Hardcoded set of Node builtin module names (covers all common ones)
+    const builtins = new Set([
+      "assert", "buffer", "child_process", "cluster", "console", "constants",
+      "crypto", "dgram", "dns", "domain", "events", "fs", "fs/promises",
+      "http", "http2", "https", "module", "net", "os", "path", "perf_hooks",
+      "process", "punycode", "querystring", "readline", "repl", "stream",
+      "string_decoder", "sys", "timers", "tls", "tty", "url", "util", "v8",
+      "vm", "worker_threads", "zlib",
+    ]);
+
+    // Mark electron as external
+    build.onResolve({ filter: /^electron$/ }, (args) => ({
+      path: args.path,
+      external: true,
+    }));
+
+    // Rewrite bare builtin imports to node: prefix
+    build.onResolve({ filter: /.*/ }, (args) => {
+      if (builtins.has(args.path)) {
+        return { path: `node:${args.path}`, external: true };
+      }
+      // Already node:-prefixed — pass through as external
+      if (args.path.startsWith("node:")) {
+        return { path: args.path, external: true };
+      }
+      return undefined;
+    });
+  },
+};
+
 const rendererConfig = {
   entryPoints: ["src/renderer/index.tsx"],
   bundle: true,
   // Shell has nodeIntegration enabled, so we can use Node.js platform
   platform: "node",
   target: "node20",
-  format: "cjs",
-  outfile: "dist/renderer.js",
+  format: "esm",
+  outdir: "dist/renderer",
+  entryNames: "[name]",
+  chunkNames: "chunks/[name]-[hash]",
+  splitting: true,
   sourcemap: isDev,
   minify: !isDev,
   logOverride,
@@ -190,8 +229,7 @@ const rendererConfig = {
   define: {
     "process.env.NODE_ENV": isDev ? '"development"' : '"production"',
   },
-  // Electron is external; fs modules are external since DirtyRepoView uses direct Node.js fs
-  external: ["electron", "fs", "fs/promises", "path"],
+  plugins: [rendererExternalsPlugin],
 };
 
 function copyAssets() {
@@ -343,6 +381,9 @@ async function build() {
     await esbuild.build(safePreloadConfig);
     await esbuild.build(unsafePreloadConfig);
     await esbuild.build(adblockPreloadConfig);
+    // Clean stale renderer artifacts before ESM build (prevents accidental loading of old CJS bundle)
+    try { fs.unlinkSync("dist/renderer.js"); } catch {}
+    try { fs.unlinkSync("dist/renderer.css"); } catch {}
     await esbuild.build(rendererConfig);
     await esbuild.build(smokeTestConfig);
     await esbuild.build(serverElectronConfig);

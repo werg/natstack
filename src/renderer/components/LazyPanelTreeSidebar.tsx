@@ -8,7 +8,7 @@
  * - Context menu for panel actions
  */
 
-import { useState, useCallback, useEffect, useMemo, useRef, type CSSProperties } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef, memo, type CSSProperties } from "react";
 import {
   CaretRightIcon,
   Cross2Icon,
@@ -24,9 +24,11 @@ import {
 } from "@radix-ui/themes";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { useVirtualizer } from "@tanstack/react-virtual";
 
 import {
-  usePanelDnd,
+  usePanelDndTree,
+  usePanelDndDrag,
   INDENTATION_WIDTH,
   END_DROP_ZONE_ID,
   type FlattenedPanel,
@@ -97,7 +99,7 @@ interface SortableTreeItemProps {
   onUnindent: (panelId: string) => void;
 }
 
-function SortableTreeItem({
+const SortableTreeItem = memo(function SortableTreeItem({
   item,
   isSelected,
   showIndicator,
@@ -114,7 +116,6 @@ function SortableTreeItem({
   const { panel, depth, collapsed } = item;
   const [isHovered, setIsHovered] = useState(false);
   const expandTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const itemRef = useRef<HTMLDivElement | null>(null);
 
   // Clear expand timeout on unmount
   useEffect(() => {
@@ -124,16 +125,6 @@ function SortableTreeItem({
       }
     };
   }, []);
-
-  // Scroll into view when selected
-  useEffect(() => {
-    if (isSelected && itemRef.current) {
-      itemRef.current.scrollIntoView({
-        behavior: "smooth",
-        block: "nearest",
-      });
-    }
-  }, [isSelected]);
 
   const {
     attributes,
@@ -238,10 +229,7 @@ function SortableTreeItem({
 
   return (
     <Box
-      ref={(node) => {
-        setNodeRef(node);
-        itemRef.current = node;
-      }}
+      ref={setNodeRef}
       style={{
         position: "relative",
         ...style,
@@ -375,7 +363,31 @@ function SortableTreeItem({
       </Flex>
     </Box>
   );
-}
+}, (prev, next) => {
+  // Custom comparator: compare specific fields that affect rendering,
+  // since flattenTree() creates fresh FlattenedPanel objects every call.
+  return (
+    prev.item.id === next.item.id &&
+    prev.item.depth === next.item.depth &&
+    prev.item.collapsed === next.item.collapsed &&
+    prev.item.parentId === next.item.parentId &&
+    prev.item.panel.title === next.item.panel.title &&
+    prev.item.panel.type === next.item.panel.type &&
+    prev.item.panel.childCount === next.item.panel.childCount &&
+    prev.item.panel.buildState === next.item.panel.buildState &&
+    prev.isSelected === next.isSelected &&
+    prev.showIndicator === next.showIndicator &&
+    prev.projectedDepth === next.projectedDepth &&
+    prev.isDraggingAny === next.isDraggingAny &&
+    prev.showIndicatorBelow === next.showIndicatorBelow &&
+    prev.onSelect === next.onSelect &&
+    prev.onToggleCollapse === next.onToggleCollapse &&
+    prev.onPanelAction === next.onPanelAction &&
+    prev.onArchive === next.onArchive &&
+    prev.onIndent === next.onIndent &&
+    prev.onUnindent === next.onUnindent
+  );
+});
 
 // ============================================================================
 // End Drop Zone Component
@@ -435,17 +447,20 @@ export function LazyPanelTreeSidebar({
 }: LazyPanelTreeSidebarProps) {
   const {
     flattenedItems,
-    activeId,
-    overId,
-    projectedDepth,
-    indicatorItemId,
-    showIndicatorBelow,
     collapsedIds,
     toggleCollapse,
     expandIds,
     indentPanel,
     unindentPanel,
-  } = usePanelDnd();
+  } = usePanelDndTree();
+
+  const {
+    activeId,
+    overId,
+    projectedDepth,
+    indicatorItemId,
+    showIndicatorBelow,
+  } = usePanelDndDrag();
 
   // Auto-expand ancestors of selected panel (batched for performance)
   useEffect(() => {
@@ -463,6 +478,31 @@ export function LazyPanelTreeSidebar({
       detail: { panelId: result.id }
     }));
   }, []);
+
+  // Get scroll element from Radix ScrollArea viewport
+  const scrollAreaRef = useRef<HTMLDivElement | null>(null);
+  const getScrollElement = useCallback(() => {
+    return scrollAreaRef.current?.querySelector<HTMLElement>("[data-radix-scroll-area-viewport]") ?? null;
+  }, []);
+
+  // Virtual list — only mount items in/near the viewport.
+  // +1 for the EndDropZone at the bottom.
+  const virtualizer = useVirtualizer({
+    count: flattenedItems.length + 1,
+    getScrollElement,
+    estimateSize: () => 32,
+    overscan: 10,
+  });
+
+  // Scroll selected item into view via virtualizer
+  useEffect(() => {
+    if (selectedId) {
+      const index = flattenedItems.findIndex((item) => item.id === selectedId);
+      if (index >= 0) {
+        virtualizer.scrollToIndex(index, { align: "auto", behavior: "smooth" });
+      }
+    }
+  }, [selectedId, flattenedItems, virtualizer]);
 
   if (flattenedItems.length === 0) {
     return (
@@ -486,34 +526,71 @@ export function LazyPanelTreeSidebar({
     );
   }
 
+  const virtualItems = virtualizer.getVirtualItems();
+
   return (
     <Flex direction="column" height="100%">
-      <ScrollArea type="auto" scrollbars="vertical" style={{ flex: 1 }}>
-        <Flex direction="column" gap="0" p="1">
-          {flattenedItems.map((item) => (
-            <SortableTreeItem
-              key={item.id}
-              item={item}
-              isSelected={item.id === selectedId}
-              showIndicator={item.id === indicatorItemId}
-              projectedDepth={item.id === indicatorItemId ? projectedDepth : null}
-              isDraggingAny={activeId !== null}
-              showIndicatorBelow={showIndicatorBelow}
-              onSelect={onSelect}
-              onToggleCollapse={toggleCollapse}
-              onPanelAction={onPanelAction}
-              onArchive={onArchive}
-              onIndent={indentPanel}
-              onUnindent={unindentPanel}
-            />
-          ))}
-          {/* End drop zone for dragging items to end of tree at various depths */}
-          <EndDropZone
-            isOver={overId === END_DROP_ZONE_ID && activeId !== null}
-            projectedDepth={overId === END_DROP_ZONE_ID ? projectedDepth : null}
-            isDragging={activeId !== null}
-          />
-        </Flex>
+      <ScrollArea ref={scrollAreaRef} type="auto" scrollbars="vertical" style={{ flex: 1 }}>
+        <Box
+          p="1"
+          style={{
+            position: "relative",
+            height: virtualizer.getTotalSize(),
+          }}
+        >
+          {virtualItems.map((virtualRow) => {
+            // Last virtual item is the EndDropZone
+            if (virtualRow.index === flattenedItems.length) {
+              return (
+                <Box
+                  key="__end_drop_zone__"
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    transform: `translateY(${virtualRow.start}px)`,
+                  }}
+                >
+                  <EndDropZone
+                    isOver={overId === END_DROP_ZONE_ID && activeId !== null}
+                    projectedDepth={overId === END_DROP_ZONE_ID ? projectedDepth : null}
+                    isDragging={activeId !== null}
+                  />
+                </Box>
+              );
+            }
+
+            const item = flattenedItems[virtualRow.index]!;
+            return (
+              <Box
+                key={item.id}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  transform: `translateY(${virtualRow.start}px)`,
+                }}
+              >
+                <SortableTreeItem
+                  item={item}
+                  isSelected={item.id === selectedId}
+                  showIndicator={item.id === indicatorItemId}
+                  projectedDepth={item.id === indicatorItemId ? projectedDepth : null}
+                  isDraggingAny={activeId !== null}
+                  showIndicatorBelow={showIndicatorBelow}
+                  onSelect={onSelect}
+                  onToggleCollapse={toggleCollapse}
+                  onPanelAction={onPanelAction}
+                  onArchive={onArchive}
+                  onIndent={indentPanel}
+                  onUnindent={unindentPanel}
+                />
+              </Box>
+            );
+          })}
+        </Box>
       </ScrollArea>
       <Box p="2" style={{ borderTop: "1px solid var(--gray-6)" }}>
         <IconButton

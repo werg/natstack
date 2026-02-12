@@ -241,20 +241,21 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
   startMemoryMonitor();
 
   // Setup application menu (uses shell webContents for menu events)
+  // Guard callbacks: panelManager is null in chooser mode — early return instead of throwing.
   setupMenu(mainWindow, viewManager.getShellWebContents(), {
     onHistoryBack: () => {
-      const pm = requirePanelManager();
-      const panelId = pm.getFocusedPanelId();
-      if (!panelId || !pm.getPanel(panelId)) return;
-      void pm.goBack(panelId).catch((error) => {
+      if (!panelManager) return;
+      const panelId = panelManager.getFocusedPanelId();
+      if (!panelId || !panelManager.getPanel(panelId)) return;
+      void panelManager.goBack(panelId).catch((error) => {
         console.error(`[Menu] Failed to navigate back for ${panelId}:`, error);
       });
     },
     onHistoryForward: () => {
-      const pm = requirePanelManager();
-      const panelId = pm.getFocusedPanelId();
-      if (!panelId || !pm.getPanel(panelId)) return;
-      void pm.goForward(panelId).catch((error) => {
+      if (!panelManager) return;
+      const panelId = panelManager.getFocusedPanelId();
+      if (!panelId || !panelManager.getPanel(panelId)) return;
+      void panelManager.goForward(panelId).catch((error) => {
         console.error(`[Menu] Failed to navigate forward for ${panelId}:`, error);
       });
     },
@@ -274,6 +275,8 @@ function requirePanelManager(): PanelManager {
 // =============================================================================
 
 app.on("ready", async () => {
+  performance.mark("startup:ready");
+
   // Set up panel protocol handler
   setupPanelProtocol();
   setupAboutProtocol();
@@ -324,20 +327,10 @@ app.on("ready", async () => {
     }
   }
 
-  // Initialize cache manager (shared across all panels)
+  // Start cache manager initialization in the background (non-blocking).
+  // get()/set() work immediately; disk entries merge when ready.
   const cacheManager = getMainCacheManager();
-  await cacheManager.initialize();
-
-  // Initialize ad blocking (shared across all browser panels)
-  try {
-    const adBlockManager = getAdBlockManager();
-    await adBlockManager.initialize();
-    // Enable for default session (browser panels use this session)
-    adBlockManager.enableForSession(session.defaultSession);
-    console.log("[AdBlock] Initialized and enabled for default session");
-  } catch (adBlockError) {
-    console.warn("[AdBlock] Failed to initialize (non-fatal):", adBlockError);
-  }
+  cacheManager.startInitialize();
 
   // Register shell services (available in both modes)
   const dispatcher = getServiceDispatcher();
@@ -353,9 +346,12 @@ app.on("ready", async () => {
   });
   setShellServicesAppMode(appMode);
 
+  performance.mark("startup:services-registered");
+
   // Initialize services only in main mode
   if (appMode === "main" && workspace) {
     try {
+      performance.mark("startup:server-spawn-begin");
       // Spawn server as child process
       serverProcessManager = new ServerProcessManager({
         workspacePath: workspace.path,
@@ -372,10 +368,12 @@ app.on("ready", async () => {
       });
 
       const ports = await serverProcessManager.start();
+      performance.mark("startup:server-spawned");
       log.info(`[Server] Child process started (RPC: ${ports.rpcPort}, Verdaccio: ${ports.verdaccioPort}, Git: ${ports.gitPort}, PubSub: ${ports.pubsubPort})`);
 
       // Connect to server as admin
       serverClient = await createServerClient(ports.rpcPort, ports.adminToken);
+      performance.mark("startup:server-connected");
       log.info("[Server] Admin WS client connected");
 
       // Configure verdaccio URL for build pipeline
@@ -438,49 +436,105 @@ app.on("ready", async () => {
       // Generate shell token and create window
       const shellToken = getTokenManager().ensureToken("shell", "shell");
       void createWindow({ rpcPort, shellToken });
-    } catch (error) {
-      console.error("Failed to initialize services:", error);
+      performance.mark("startup:window-created");
 
-      // Clean up partially-initialized server state
+      // Log startup timing in dev mode
+      if (isDev()) {
+        performance.measure("startup:total", "startup:ready", "startup:window-created");
+        performance.measure("startup:server-spawn", "startup:server-spawn-begin", "startup:server-spawned");
+        performance.measure("startup:server-connect", "startup:server-spawned", "startup:server-connected");
+        performance.measure("startup:post-connect", "startup:server-connected", "startup:window-created");
+        const entries = performance.getEntriesByType("measure").filter((e) => e.name.startsWith("startup:"));
+        for (const entry of entries) {
+          console.log(`[Perf] ${entry.name}: ${Math.round(entry.duration)}ms`);
+        }
+      }
+
+      // Defer ad-block initialization (non-critical, ~500-1000ms).
+      // The onBeforeRequest handler has a !this.engine fast path that passes requests through.
+      setTimeout(async () => {
+        try {
+          const adBlockManager = getAdBlockManager();
+          await adBlockManager.initialize();
+          adBlockManager.enableForSession(session.defaultSession);
+          console.log("[AdBlock] Initialized and enabled for default session");
+        } catch (error) {
+          console.warn("[AdBlock] Failed to initialize (non-fatal):", error);
+        }
+      }, 100);
+    } catch (error) {
+      console.error("[App] Startup failed:", error);
+
+      // Fail-fast: clean up all partial state, show error, and exit.
+      // Await each cleanup to avoid orphaned child processes or leaked ports.
+      const cleanupPromises: Promise<void>[] = [];
+
       if (serverClient) {
-        serverClient.close().catch(() => {});
+        cleanupPromises.push(
+          serverClient.close().catch((e) => console.error("[App] serverClient cleanup error:", e))
+        );
         serverClient = null;
       }
       if (serverProcessManager) {
-        serverProcessManager.shutdown().catch(() => {});
+        cleanupPromises.push(
+          serverProcessManager.shutdown().catch((e) => console.error("[App] serverProcess cleanup error:", e))
+        );
         serverProcessManager = null;
+      }
+      if (rpcServer) {
+        cleanupPromises.push(
+          rpcServer.stop().catch((e) => console.error("[App] rpcServer cleanup error:", e))
+        );
+        rpcServer = null;
+      }
+      if (cdpServer) {
+        cleanupPromises.push(
+          cdpServer.stop().catch((e) => console.error("[App] cdpServer cleanup error:", e))
+        );
+        cdpServer = null;
       }
       serverInfo = null;
 
-      // Reset shell services so they don't hold a closed client reference
+      // Reset shell service refs
       setShellServicesServerClient(null);
+      setShellServicesPanelManager(null);
 
-      // Mark initialized so shell services work even on failure
+      await Promise.all(cleanupPromises);
+
+      dialog.showErrorBox(
+        "Startup Failed",
+        error instanceof Error ? error.message : String(error)
+      );
+      app.exit(1);
+    }
+  } else {
+    // Chooser mode
+    try {
       dispatcher.markInitialized();
 
-      // Start minimal RPC server for shell
       const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
       rpcServer = new RpcServerClass({
         tokenManager: getTokenManager(),
       });
       const rpcPort = await rpcServer.start();
+      log.info(`[RPC] Server started on port ${rpcPort}`);
+
       const shellToken = getTokenManager().ensureToken("shell", "shell");
       void createWindow({ rpcPort, shellToken });
+    } catch (error) {
+      console.error("[App] Chooser startup failed:", error);
+
+      if (rpcServer) {
+        await rpcServer.stop().catch((e) => console.error("[App] rpcServer cleanup error:", e));
+        rpcServer = null;
+      }
+
+      dialog.showErrorBox(
+        "Startup Failed",
+        error instanceof Error ? error.message : String(error)
+      );
+      app.exit(1);
     }
-  } else {
-    // In chooser mode, mark initialized so shell services work
-    dispatcher.markInitialized();
-
-    // Start RPC server for shell
-    const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
-    rpcServer = new RpcServerClass({
-      tokenManager: getTokenManager(),
-    });
-    const rpcPort = await rpcServer.start();
-    log.info(`[RPC] Server started on port ${rpcPort}`);
-
-    const shellToken = getTokenManager().ensureToken("shell", "shell");
-    void createWindow({ rpcPort, shellToken });
   }
 });
 
