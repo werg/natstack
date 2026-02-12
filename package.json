@@ -5,6 +5,9 @@
   "private": true,
   "description": "A horizontally stacked panel app built with Electron and TypeScript",
   "main": "dist/main.cjs",
+  "bin": {
+    "natstack-server": "dist/server.mjs"
+  },
   "scripts": {
     "postinstall": "electron-rebuild -f && bash commit-workspace.sh",
     "prebuild": "node scripts/generate-channels.mjs && node scripts/generate-injected.mjs",
@@ -12,6 +15,8 @@
     "build:dist": "NODE_ENV=production node build-dist.mjs",
     "dev": "export NODE_ENV=development && node build.mjs && bash commit-workspace.sh && (pnpm type-check & node scripts/run-electron.mjs --workspace=workspace)",
     "start": "node scripts/run-electron.mjs",
+    "server": "node dist/server.mjs",
+    "server:install": "cd server-native && npm install",
     "pack": "pnpm build:dist && electron-builder --dir",
     "dist": "pnpm build:dist && electron-builder",
     "dist:mac": "pnpm build:dist && electron-builder --mac",

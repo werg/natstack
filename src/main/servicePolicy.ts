@@ -71,6 +71,10 @@ export const SERVICE_POLICIES: Record<string, ServicePolicy> = {
     allowed: ["panel", "worker", "server"],
     description: "Type definition fetching for panels and workers",
   },
+  agentSettings: {
+    allowed: ["shell", "panel", "worker", "server"],
+    description: "Agent preferences and configuration",
+  },
 
   // ==========================================================================
   // Shared services (accessible to all)

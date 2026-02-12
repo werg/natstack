@@ -34,6 +34,49 @@ const smokeTestConfig = {
   logOverride,
 };
 
+// Redirect better-sqlite3 to the server-native copy (compiled for system Node, not Electron).
+// Path is relative to outfile (dist/server.mjs) so the build artifact is portable.
+const serverNativeSqlitePath = path.relative(
+  path.dirname("dist/server.mjs"),
+  "server-native/node_modules/better-sqlite3/lib/index.js"
+);
+const serverNativePlugin = {
+  name: "server-native-redirect",
+  setup(build) {
+    build.onResolve({ filter: /^better-sqlite3$/ }, () => ({
+      path: serverNativeSqlitePath.startsWith(".") ? serverNativeSqlitePath : "./" + serverNativeSqlitePath,
+      external: true,
+    }));
+  },
+};
+
+const serverNativeReady = fs.existsSync("server-native/node_modules/better-sqlite3");
+
+const serverConfig = {
+  entryPoints: ["src/server/index.ts"],
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "esm",
+  outfile: "dist/server.mjs",
+  external: ["electron", "esbuild", "@npmcli/arborist",
+             "verdaccio", "node-git-server"],
+  plugins: [serverNativePlugin],
+  sourcemap: isDev,
+  minify: !isDev,
+  logOverride,
+  banner: {
+    js: `#!/usr/bin/env node
+import { createRequire as __createRequire } from "module";
+import { fileURLToPath as __fileURLToPath } from "url";
+import { dirname as __pathDirname } from "path";
+const require = __createRequire(import.meta.url);
+const __filename = __fileURLToPath(import.meta.url);
+const __dirname = __pathDirname(__filename);
+`.trim(),
+  },
+};
+
 const mainConfig = {
   entryPoints: ["src/main/index.ts"],
   bundle: true,
@@ -287,6 +330,11 @@ async function build() {
     await esbuild.build(adblockPreloadConfig);
     await esbuild.build(rendererConfig);
     await esbuild.build(smokeTestConfig);
+    if (serverNativeReady) {
+      await esbuild.build(serverConfig);
+    } else {
+      console.warn("[build] Skipping server build — run 'pnpm server:install' first");
+    }
     await buildDependencyWorkers();
 
     // ========================================================================

@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "description": "Native modules compiled for system Node.js (not Electron)",
+  "dependencies": {
+    "better-sqlite3": "^12.5.0"
+  }
+}
