@@ -162,10 +162,6 @@ function SortableTreeItem({
         return "var(--red-9)";
       case "pending":
         return "var(--gray-8)";
-      case "dirty":
-        return "var(--orange-9)";
-      case "not-git-repo":
-        return "var(--violet-9)";
       default:
         return undefined;
     }

@@ -63,8 +63,6 @@ export interface FullPanel {
     buildState?: string;
     buildProgress?: string;
     buildLog?: string;
-    dirtyRepoPath?: string;
-    notGitRepoPath?: string;
   };
   // Type-specific fields
   path?: string;

@@ -73,6 +73,16 @@ const SHELL_PAGE_META: Record<ShellPage, Omit<ShellPageMeta, "page">> = {
     title: "Agents",
     description: "Configure agent defaults and settings",
   },
+  "dirty-repo": {
+    title: "Uncommitted Changes",
+    description: "Resolve uncommitted changes before building",
+    hiddenInLauncher: true,
+  },
+  "git-init": {
+    title: "Initialize Git Repository",
+    description: "Initialize a git repository for this panel",
+    hiddenInLauncher: true,
+  },
 };
 
 /**

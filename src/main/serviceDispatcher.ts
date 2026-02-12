@@ -14,11 +14,8 @@
 
 export type CallerKind = "panel" | "worker" | "shell" | "server";
 
-/** Fixed caller ID for the shell renderer */
-export const SHELL_CALLER_ID = "shell-renderer";
-
 export type ServiceContext = {
-  /** The caller ID (panel/worker tree node ID, or SHELL_CALLER_ID for shell) */
+  /** The caller ID (panel/worker tree node ID, or "shell" for the shell renderer) */
   callerId: string;
   /** Whether the caller is a panel, worker, shell, or external server */
   callerKind: CallerKind;

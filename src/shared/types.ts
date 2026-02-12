@@ -98,7 +98,7 @@ export interface PanelInfo {
  * Build state for panels built by main process.
  * Used to show placeholder UI during build.
  */
-export type PanelBuildState = "pending" | "cloning" | "building" | "ready" | "error" | "dirty" | "not-git-repo";
+export type PanelBuildState = "pending" | "cloning" | "building" | "ready" | "error";
 
 export interface PanelArtifacts {
   htmlPath?: string;
@@ -110,10 +110,6 @@ export interface PanelArtifacts {
   buildProgress?: string;
   /** Detailed build log (esbuild output, errors, etc.) */
   buildLog?: string;
-  /** Absolute path to dirty repo (when buildState === "dirty") */
-  dirtyRepoPath?: string;
-  /** Absolute path to non-git directory (when buildState === "not-git-repo") */
-  notGitRepoPath?: string;
 }
 
 /**
@@ -214,7 +210,7 @@ export type PanelType = "app" | "worker" | "browser" | "shell";
 /**
  * Shell panel page types.
  */
-export type ShellPage = "model-provider-config" | "about" | "keyboard-shortcuts" | "help" | "new" | "adblock" | "agents";
+export type ShellPage = "model-provider-config" | "about" | "keyboard-shortcuts" | "help" | "new" | "adblock" | "agents" | "dirty-repo" | "git-init";
 
 /**
  * Browser panel navigation state (for browser webview internal state).
@@ -288,7 +284,7 @@ export interface Panel {
 /**
  * Build state for workers (same as panels).
  */
-export type WorkerBuildState = "pending" | "cloning" | "building" | "ready" | "error" | "dirty";
+export type WorkerBuildState = "pending" | "cloning" | "building" | "ready" | "error";
 
 /**
  * Information about a created worker.

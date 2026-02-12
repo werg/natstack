@@ -12,19 +12,13 @@
  */
 
 import type { ShellPage } from "../shared/types.js";
+import { getShellPageKeys } from "./aboutBuilder.js";
 
 /**
  * Valid shell page names for ns-about:// protocol.
+ * Derived from the canonical SHELL_PAGE_META in aboutBuilder.ts.
  */
-export const VALID_ABOUT_PAGES: ShellPage[] = [
-  "model-provider-config",
-  "about",
-  "keyboard-shortcuts",
-  "help",
-  "new",
-  "adblock",
-  "agents",
-];
+export const VALID_ABOUT_PAGES: ShellPage[] = getShellPageKeys();
 
 export interface ParsedNsAboutUrl {
   page: ShellPage;

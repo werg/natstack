@@ -2,10 +2,36 @@
  * Shell Client - Typed wrappers for shell service calls via RPC.
  *
  * This module provides a typed API for shell to call main process services.
- * Uses the RPC bridge from @natstack/runtime which auto-initializes for shell.
+ * Uses a direct @natstack/rpc bridge from the shell transport global.
  */
 
-import { rpc } from "@natstack/runtime";
+import { createRpcBridge, type RpcBridge, type RpcTransport, type RpcMessage } from "@natstack/rpc";
+
+// Type for the shell transport bridge injected by the preload script
+type ShellTransportBridge = {
+  send: (targetId: string, message: unknown) => Promise<void>;
+  onMessage: (handler: (fromId: string, message: unknown) => void) => () => void;
+};
+
+const g = globalThis as unknown as { __natstackTransport?: ShellTransportBridge };
+if (!g.__natstackTransport) throw new Error("Shell transport not available");
+
+const transport: RpcTransport = {
+  send: g.__natstackTransport.send,
+  onMessage: (_sourceId, handler) =>
+    g.__natstackTransport!.onMessage((fromId, msg) => {
+      if (fromId === "main") handler(msg as RpcMessage);
+    }),
+  onAnyMessage: (handler) =>
+    g.__natstackTransport!.onMessage((fromId, msg) => handler(fromId, msg as RpcMessage)),
+};
+
+const rpc: RpcBridge = createRpcBridge({
+  selfId: "shell",
+  transport,
+  callTimeoutMs: 30000,
+  aiCallTimeoutMs: 300000,
+});
 import type {
   AppInfo,
   ThemeMode,

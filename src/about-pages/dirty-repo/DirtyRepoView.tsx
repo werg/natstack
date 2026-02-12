@@ -6,24 +6,24 @@
  */
 
 import { useMemo, useCallback, useState, useEffect, useRef } from "react";
-import { useAtomValue } from "jotai";
 import { Flex, Button, Tooltip, Callout } from "@radix-ui/themes";
 import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import { GitStatusView, useGitStatus, type GitNotification } from "@natstack/git-ui";
 import { GitClient } from "@natstack/git";
 import { ai } from "@natstack/ai";
 import * as fs from "fs/promises";
-import { effectiveThemeAtom } from "../state/themeAtoms";
+import type { ThemeAppearance } from "@natstack/runtime";
 
 export interface DirtyRepoViewProps {
   panelId: string;
   repoPath: string;
   onRetryBuild: () => void;
+  theme: ThemeAppearance;
   /** Optional notification handler - if not provided, notifications are silently ignored */
   onNotify?: (notification: GitNotification) => void;
 }
 
-export function DirtyRepoView({ repoPath, onRetryBuild, onNotify }: DirtyRepoViewProps) {
+export function DirtyRepoView({ repoPath, onRetryBuild, onNotify, theme }: DirtyRepoViewProps) {
   // Create GitClient with direct Node.js fs access.
   // Note: Empty serverUrl/token means remote operations (push/pull/fetch) are unavailable.
   // This is intentional - DirtyRepoView is for local operations only (stage, commit, discard).
@@ -34,7 +34,6 @@ export function DirtyRepoView({ repoPath, onRetryBuild, onNotify }: DirtyRepoVie
   );
   const [isRetrying, setIsRetrying] = useState(false);
   const hasAutoRetried = useRef(false);
-  const theme = useAtomValue(effectiveThemeAtom);
 
   // Use the git status hook to track if repo is clean
   // The hook includes `initialized` to handle the case where GitStatusView hasn't mounted yet

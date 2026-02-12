@@ -20,8 +20,6 @@ export class TokenManager {
   private revokeListeners: ((callerId: string) => void)[] = [];
   // admin token for privileged operations
   private adminToken: string | null = null;
-  // shell token (created on demand)
-  private shellToken: string | null = null;
 
   /**
    * Create a new token for a caller. Throws if a token already exists for this callerId.
@@ -131,22 +129,6 @@ export class TokenManager {
     return this.adminToken !== null && token === this.adminToken;
   }
 
-  /**
-   * Get or create the shell token. Creates on first call, returns same thereafter.
-   */
-  getOrCreateShellToken(): string {
-    if (!this.shellToken) {
-      this.shellToken = randomBytes(32).toString("hex");
-    }
-    return this.shellToken;
-  }
-
-  /**
-   * Check if a token is the shell token.
-   */
-  isShellToken(token: string): boolean {
-    return this.shellToken !== null && token === this.shellToken;
-  }
 }
 
 // =============================================================================

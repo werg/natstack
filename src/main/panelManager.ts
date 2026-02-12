@@ -298,8 +298,10 @@ export class PanelManager {
         panel.children = panel.children.filter((c) => !persistence.isArchived(c.id));
       }
 
-      // Archive childless shell panels
-      if (getPanelType(panel) === "shell" && panel.children.length === 0) {
+      // Archive childless shell panels (except blocking pages like dirty-repo/git-init
+      // which represent real panels navigated in-place for git resolution)
+      const shellPage = getPanelType(panel) === "shell" ? getShellPage(panel) : undefined;
+      if (shellPage && shellPage !== "dirty-repo" && shellPage !== "git-init" && panel.children.length === 0) {
         log.verbose(` Archiving childless shell panel: ${panel.id}`);
         try {
           persistence.archivePanel(panel.id);
@@ -375,11 +377,6 @@ export class PanelManager {
    */
   private markPanelUnloaded(panel: Panel): void {
     const buildState = panel.artifacts?.buildState;
-    // Keep dirty and not-git-repo states - these indicate repo state issues that need user action
-    // Error states should NOT be preserved - they should rebuild to pick up fixes
-    if (buildState === "dirty" || buildState === "not-git-repo") {
-      return;
-    }
 
     const hasBuildArtifacts = Boolean(panel.artifacts?.htmlPath || panel.artifacts?.bundlePath);
     if (buildState === "pending" && !hasBuildArtifacts) {
@@ -416,8 +413,8 @@ export class PanelManager {
       const partition = `persist:${getPanelContextId(panel)}`;
       await registerAboutProtocolForPartition(partition);
 
-      // Create the view
-      await this.createViewForShellPanel(panel, url);
+      // Create the view (unified code path)
+      await this.createViewForPanel(panel.id, url, "panel", getPanelContextId(panel));
 
       // Mark as ready and persist
       panel.artifacts = { buildState: "ready" };
@@ -589,7 +586,10 @@ export class PanelManager {
         unsafe: unsafeFlag,
       });
     } else {
-      const additionalArgs = await this.buildPreloadArgs(panelId, "panel", "panel", contextId ?? "");
+      // Derive callerKind from panel type: shell panels authenticate as "shell"
+      const panelType = panel ? getPanelType(panel) : undefined;
+      const callerKind = panelType === "shell" ? "shell" as const : "panel" as const;
+      const additionalArgs = await this.buildPreloadArgs(panelId, "panel", callerKind, contextId ?? "");
       await this.appendPanelEnvArgs(additionalArgs, panelId, panel, contextId);
       const unsafeFlag = panel ? getPanelUnsafe(panel) : undefined;
 
@@ -604,21 +604,27 @@ export class PanelManager {
         unsafe: unsafeFlag,
       });
 
-      // Register app panels with CDP server for automation/testing (like browsers)
-      // Use named handler for cleanup
-      if (parentId) {
-        const domReadyHandler = () => {
-          getCdpServer().registerBrowser(panelId, view.webContents.id, parentId);
-        };
-        view.webContents.on("dom-ready", domReadyHandler);
-        this.contentLoadHandlers.set(panelId, { domReady: domReadyHandler });
+      // CDP registration, state tracking, and content indexing are for app panels, not shell pages
+      if (panelType !== "shell") {
+        // Register app panels with CDP server for automation/testing (like browsers)
+        // Use named handler for cleanup
+        if (parentId) {
+          const domReadyHandler = () => {
+            getCdpServer().registerBrowser(panelId, view.webContents.id, parentId);
+          };
+          view.webContents.on("dom-ready", domReadyHandler);
+          this.contentLoadHandlers.set(panelId, { domReady: domReadyHandler });
+        }
+
+        // Intercept ns:// and http(s) link clicks to create children
+        this.setupLinkInterception(panelId, view.webContents, "panel");
+
+        // Track browser state (URL, loading, title) - same as browser panels
+        this.setupBrowserStateTracking(panelId, view.webContents);
+      } else {
+        // Shell pages still need link interception for ns:// and ns-about:// links
+        this.setupLinkInterception(panelId, view.webContents, "panel");
       }
-
-      // Intercept ns:// and http(s) link clicks to create children
-      this.setupLinkInterception(panelId, view.webContents, "panel");
-
-      // Track browser state (URL, loading, title) - same as browser panels
-      this.setupBrowserStateTracking(panelId, view.webContents);
     }
   }
 
@@ -1614,13 +1620,9 @@ export class PanelManager {
     if (shellMatch && shellMatch[1]) {
       const page = shellMatch[1];
       if (!isValidShellPage(page)) {
-        throw new Error(`Invalid shell page: ${page}. Valid pages: model-provider-config, about, keyboard-shortcuts, help`);
+        throw new Error(`Invalid shell page: ${page}`);
       }
-      // Shell panels don't support stateArgs
-      if (stateArgs && Object.keys(stateArgs).length > 0) {
-        throw new Error("stateArgs not supported for shell panels");
-      }
-      return this.createShellPanelInternal(parent, page as SharedPanel.ShellPage, options, replacePanel);
+      return this.createShellPanelInternal(parent, page as SharedPanel.ShellPage, options, replacePanel, stateArgs);
     }
 
     const { relativePath, absolutePath } = this.normalizePanelPath(source);
@@ -1846,8 +1848,11 @@ export class PanelManager {
         }
         validatedStateArgs = validation.data;
       }
+    } else if (targetType === "shell" && options?.stateArgs) {
+      // Shell panels accept stateArgs without schema validation
+      validatedStateArgs = options.stateArgs;
     } else if (options?.stateArgs) {
-      // Reject stateArgs for browser/shell panels
+      // Reject stateArgs for browser panels
       throw new Error(`stateArgs not supported for ${targetType} panels`);
     }
 
@@ -1855,11 +1860,15 @@ export class PanelManager {
     panel.history = panel.history.slice(0, panel.historyIndex + 1);
 
     // Create new snapshot with proper option inheritance
+    // Shell targets need unsafe: "/" to override any inherited unsafe value
     const newSnapshot = createNavigationSnapshot(
       panel,
       source,
       targetType,
-      { env: options?.env },
+      {
+        env: options?.env,
+        ...(targetType === "shell" ? { unsafe: "/" } : {}),
+      },
       validatedStateArgs
     );
     if (targetType === "browser") {
@@ -1970,9 +1979,10 @@ export class PanelManager {
     const currentSource = previousSource ?? getPanelSource(panel);
     const typeChanged = currentType !== snapshot.type;
 
-    // Tear down old view if type changed
+    // Tear down old view if type changed (pass previous type so cleanup targets
+    // the correct resource set, since the snapshot already reflects the new type)
     if (typeChanged) {
-      this.unloadPanelResources(panelId);
+      this.unloadPanelResources(panelId, currentType);
     }
 
     const contextId = getPanelContextId(panel);
@@ -2022,7 +2032,7 @@ export class PanelManager {
       if (contents && !contents.isDestroyed()) {
         await contents.loadURL(url);
       } else {
-        await this.createViewForShellPanel(panel, url);
+        await this.createViewForPanel(panelId, url, "panel", contextId);
       }
 
       panel.artifacts = { buildState: "ready" };
@@ -2413,7 +2423,8 @@ export class PanelManager {
     parent: Panel | null,
     page: SharedPanel.ShellPage,
     options?: PanelCreateOptions,
-    replacePanel?: Panel
+    replacePanel?: Panel,
+    stateArgs?: Record<string, unknown>
   ): Promise<{ id: string; type: SharedPanel.PanelType; title: string }> {
     // Build the about page if not already built
     let url: string;
@@ -2450,9 +2461,9 @@ export class PanelManager {
     // Create the initial snapshot for the shell panel
     const initialSnapshot = createSnapshot(`shell:${page}`, "shell", contextId, {
       env: options?.env,
-      unsafe: true, // Shell panels have full access
+      unsafe: "/", // Shell panels have full filesystem access
       templateSpec,
-    });
+    }, stateArgs);
     initialSnapshot.page = page;
 
     const panel: Panel = {
@@ -2520,8 +2531,8 @@ export class PanelManager {
     const partition = `persist:${getPanelContextId(panel)}`;
     await registerAboutProtocolForPartition(partition);
 
-    // Create WebContentsView for the shell panel
-    await this.createViewForShellPanel(panel, url);
+    // Create WebContentsView for the shell panel (unified code path)
+    await this.createViewForPanel(panel.id, url, "panel", getPanelContextId(panel));
 
     // Focus after replace (takes over from the one being used)
     // Note: focusPanel calls updateSelectedPath and notifyPanelTreeUpdate
@@ -2675,7 +2686,7 @@ export class PanelManager {
 
     // Create the initial snapshot for the shell panel
     const initialSnapshot = createSnapshot(`shell:${page}`, "shell", contextId, {
-      unsafe: true, // Shell panels have full access
+      unsafe: "/", // Shell panels have full filesystem access
       templateSpec: DEFAULT_TEMPLATE_SPEC,
     });
     initialSnapshot.page = page;
@@ -2704,8 +2715,8 @@ export class PanelManager {
     const partition = `persist:${getPanelContextId(panel)}`;
     await registerAboutProtocolForPartition(partition);
 
-    // Create WebContentsView for the shell panel
-    await this.createViewForShellPanel(panel, url);
+    // Create WebContentsView for the shell panel (unified code path)
+    await this.createViewForPanel(panel.id, url, "panel", getPanelContextId(panel));
 
     // Focus the newly created panel (this also notifies tree update)
     this.focusPanel(panel.id);
@@ -2753,42 +2764,6 @@ export class PanelManager {
   }
 
   /**
-   * Create a WebContentsView for a shell panel.
-   * Shell panels run with unsafe mode (nodeIntegration) for full service access.
-   */
-  private async createViewForShellPanel(panel: Panel, url: string): Promise<void> {
-    if (!this.viewManager) {
-      throw new Error(`[PanelManager] ViewManager not set, cannot create view for ${panel.id}`);
-    }
-
-    if (this.viewManager.hasView(panel.id)) {
-      return; // View already exists
-    }
-
-    const contextId = getPanelContextId(panel);
-    const additionalArgs = await this.buildPreloadArgs(panel.id, "panel", "shell", contextId);
-
-    // Shell panels get full filesystem access
-    const workspace = getActiveWorkspace();
-    if (workspace) {
-      additionalArgs.push(`--natstack-scope-path=/`);
-    }
-
-    const view = this.viewManager.createView({
-      id: panel.id,
-      type: "panel",
-      partition: `persist:${contextId}`,
-      url,
-      injectHostThemeVariables: true,
-      additionalArguments: additionalArgs,
-      unsafe: "/", // Full filesystem access
-    });
-
-    // Add link interception for shell panels to handle ns:// and ns-about:// links
-    this.setupLinkInterception(panel.id, view.webContents, "panel");
-  }
-
-  /**
    * Find a shell panel by its page type.
    * Note: Returns the unified Panel type, not the legacy ShellPanel.
    */
@@ -2818,13 +2793,9 @@ export class PanelManager {
         const { isRepo, path: repoPath } = await checkGitRepository(absolutePanelPath);
 
         if (!isRepo) {
-          worker.artifacts = {
-            buildState: "not-git-repo",
-            notGitRepoPath: repoPath,
-            buildProgress: "Worker folder must be the root of a git repository",
-          };
-          this.persistArtifacts(worker.id, worker.artifacts);
-          this.notifyPanelTreeUpdate();
+          await this.navigatePanel(worker.id, "shell:git-init", "shell", {
+            stateArgs: { repoPath },
+          });
           return;
         }
 
@@ -2832,13 +2803,9 @@ export class PanelManager {
         const { clean, path: cleanRepoPath } = await checkWorktreeClean(absolutePanelPath);
 
         if (!clean) {
-          worker.artifacts = {
-            buildState: "dirty",
-            dirtyRepoPath: cleanRepoPath,
-            buildProgress: "Uncommitted changes detected",
-          };
-          this.persistArtifacts(worker.id, worker.artifacts);
-          this.notifyPanelTreeUpdate();
+          await this.navigatePanel(worker.id, "shell:dirty-repo", "shell", {
+            stateArgs: { repoPath: cleanRepoPath },
+          });
           return;
         }
       }
@@ -3065,13 +3032,9 @@ export class PanelManager {
         const { isRepo, path: repoPath } = await checkGitRepository(absolutePanelPath);
 
         if (!isRepo) {
-          panel.artifacts = {
-            buildState: "not-git-repo",
-            notGitRepoPath: repoPath,
-            buildProgress: "Panel folder must be the root of a git repository",
-          };
-          this.persistArtifacts(panel.id, panel.artifacts);
-          this.notifyPanelTreeUpdate();
+          await this.navigatePanel(panel.id, "shell:git-init", "shell", {
+            stateArgs: { repoPath },
+          });
           return;
         }
 
@@ -3079,13 +3042,9 @@ export class PanelManager {
         const { clean, path: cleanRepoPath } = await checkWorktreeClean(absolutePanelPath);
 
         if (!clean) {
-          panel.artifacts = {
-            buildState: "dirty",
-            dirtyRepoPath: cleanRepoPath,
-            buildProgress: "Uncommitted changes detected",
-          };
-          this.persistArtifacts(panel.id, panel.artifacts);
-          this.notifyPanelTreeUpdate();
+          await this.navigatePanel(panel.id, "shell:dirty-repo", "shell", {
+            stateArgs: { repoPath: cleanRepoPath },
+          });
           return;
         }
       }
@@ -3243,16 +3202,9 @@ export class PanelManager {
     // Release resources for this panel
     this.unloadPanelResources(panelId);
 
-    // Keep dirty and not-git-repo states - these indicate repo state issues that need user action
-    // Error states should NOT be preserved - they should rebuild to pick up fixes
-    const buildState = panel.artifacts?.buildState;
-    if (buildState === "dirty" || buildState === "not-git-repo") {
-      return;
-    }
-
     // Don't reset if already pending without build artifacts
     const hasBuildArtifacts = Boolean(panel.artifacts?.htmlPath || panel.artifacts?.bundlePath);
-    if (buildState === "pending" && !hasBuildArtifacts) {
+    if (panel.artifacts?.buildState === "pending" && !hasBuildArtifacts) {
       return;
     }
 
@@ -3365,14 +3317,6 @@ export class PanelManager {
       };
     }
 
-    if (currentState === "dirty" || currentState === "not-git-repo") {
-      return {
-        success: false,
-        buildState: currentState,
-        error: panel.artifacts?.buildProgress ?? `Panel is ${currentState}`,
-      };
-    }
-
     // State is "pending" - trigger rebuild
     log.verbose(` ensurePanelLoaded: Rebuilding unloaded panel: ${panelId}`);
     await this.rebuildUnloadedPanel(panelId);
@@ -3397,7 +3341,7 @@ export class PanelManager {
       if (state === "ready") {
         return { success: true, buildState: "ready" };
       }
-      if (state === "error" || state === "dirty" || state === "not-git-repo") {
+      if (state === "error") {
         return {
           success: false,
           buildState: state,
@@ -3468,25 +3412,11 @@ export class PanelManager {
       throw new Error(`Panel not found: ${panelId}`);
     }
 
-    if (panel.artifacts.buildState !== "dirty") {
-      // Not in dirty state, nothing to retry
+    // Navigate back from dirty-repo shell page to trigger rebuild
+    const snapshot = getCurrentSnapshot(panel);
+    if (snapshot.type === "shell" && snapshot.source === "shell:dirty-repo") {
+      await this.goBack(panelId);
       return;
-    }
-
-    // Reset state and retry build
-    panel.artifacts = {
-      buildState: "building",
-      buildProgress: "Retrying build...",
-    };
-    this.notifyPanelTreeUpdate();
-
-    // Call appropriate build method based on panel type
-    const panelType = getPanelType(panel);
-    const options = getPanelOptions(panel);
-    if (panelType === "worker") {
-      await this.buildWorkerAsync(panel, { gitRef: options.gitRef });
-    } else if (panelType === "app") {
-      await this.buildPanelAsync(panel, { gitRef: options.gitRef });
     }
   }
 
@@ -3500,35 +3430,11 @@ export class PanelManager {
       throw new Error(`Panel not found: ${panelId}`);
     }
 
-    if (panel.artifacts.buildState !== "not-git-repo") {
-      // Not in not-git-repo state, nothing to initialize
+    // Navigate back from git-init shell page to trigger rebuild
+    const snapshot = getCurrentSnapshot(panel);
+    if (snapshot.type === "shell" && snapshot.source === "shell:git-init") {
+      await this.goBack(panelId);
       return;
-    }
-
-    // Reset state and re-run build
-    panel.artifacts = {
-      buildState: "building",
-      buildProgress: "Checking repository status...",
-    };
-    this.notifyPanelTreeUpdate();
-
-    try {
-      // Call appropriate build method based on panel type
-      const panelType = getPanelType(panel);
-      const options = getPanelOptions(panel);
-      if (panelType === "worker") {
-        await this.buildWorkerAsync(panel, { gitRef: options.gitRef });
-      } else if (panelType === "app") {
-        await this.buildPanelAsync(panel, { gitRef: options.gitRef });
-      }
-    } catch (error) {
-      // Build failed - set error state and notify
-      panel.artifacts = {
-        buildState: "error",
-        buildProgress: `Build failed: ${error instanceof Error ? error.message : String(error)}`,
-      };
-      this.notifyPanelTreeUpdate();
-      throw error; // Re-throw to notify caller
     }
   }
 
@@ -3631,7 +3537,7 @@ export class PanelManager {
    * Called by unloadPanelTree for each panel in the subtree.
    * Note: Does NOT recurse into children - caller handles recursion.
    */
-  private unloadPanelResources(panelId: string): void {
+  private unloadPanelResources(panelId: string, typeOverride?: SharedPanel.PanelType): void {
     const panel = this.panels.get(panelId);
     if (!panel) return;
 
@@ -3648,8 +3554,9 @@ export class PanelManager {
     this.cleanupBrowserStateTracking(panelId, contents);
     this.cleanupLinkInterception(panelId, contents);
 
-    // Cleanup based on panel type
-    const panelType = getPanelType(panel);
+    // Cleanup based on panel type (typeOverride used during type-change teardown
+    // when the snapshot already reflects the new type)
+    const panelType = typeOverride ?? getPanelType(panel);
     switch (panelType) {
       case "worker":
         // Worker panels are now WebContentsView-based, cleanup via ViewManager below

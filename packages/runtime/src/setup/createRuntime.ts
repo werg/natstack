@@ -248,7 +248,7 @@ export function createRuntime(deps: RuntimeDeps) {
     onThemeChange: (callback: (theme: ThemeAppearance) => void) => {
       callback(currentTheme);
       themeListeners.add(callback);
-      return () => themeListeners.delete(callback);
+      return () => { themeListeners.delete(callback); };
     },
 
     onFocus,

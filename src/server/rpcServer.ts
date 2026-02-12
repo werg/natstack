@@ -21,7 +21,6 @@ import { findAvailablePortForService } from "../main/portUtils.js";
 import {
   parseServiceMethod,
   getServiceDispatcher,
-  SHELL_CALLER_ID,
   type CallerKind,
   type ServiceContext,
 } from "../main/serviceDispatcher.js";
@@ -137,11 +136,8 @@ export class RpcServer {
     let callerId: string;
     let callerKind: CallerKind;
 
-    // Priority: shell token > admin token > regular token
-    if (this.deps.tokenManager.isShellToken(token)) {
-      callerId = SHELL_CALLER_ID;
-      callerKind = "shell";
-    } else if (this.deps.tokenManager.validateAdminToken(token)) {
+    // Priority: admin token > regular token (shell uses regular ensureToken path)
+    if (this.deps.tokenManager.validateAdminToken(token)) {
       callerId = `ws:${randomUUID()}`;
       callerKind = "server";
     } else {
