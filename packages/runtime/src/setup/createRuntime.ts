@@ -180,6 +180,17 @@ export function createRuntime(deps: RuntimeDeps) {
     });
   };
 
+  const onConnectionError = (
+    callback: (error: { code: number; reason: string }) => void
+  ): (() => void) => {
+    return rpc.onEvent("runtime:connection-error", (fromId, payload) => {
+      if (fromId !== "main") return;
+      const data = payload as { code?: unknown; reason?: unknown } | null;
+      if (!data || typeof data.code !== "number" || typeof data.reason !== "string") return;
+      callback({ code: data.code, reason: data.reason });
+    });
+  };
+
   return {
     id: deps.id,
     parentId: deps.parentId,
@@ -200,6 +211,7 @@ export function createRuntime(deps: RuntimeDeps) {
     onChildAdded: childManager.onChildAdded,
     onChildRemoved: childManager.onChildRemoved,
     onChildCreationError,
+    onConnectionError,
 
     getInfo: () => callMain<EndpointInfo>("bridge.getInfo"),
     closeSelf: () => callMain<void>("bridge.closeSelf"),

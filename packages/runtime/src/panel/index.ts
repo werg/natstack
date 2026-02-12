@@ -62,6 +62,7 @@ export const {
   onChildAdded,
   onChildRemoved,
   onChildCreationError,
+  onConnectionError,
   getInfo,
   closeSelf,
   unloadSelf,

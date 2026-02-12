@@ -2,13 +2,13 @@
  * AI Handler for managing LLM API calls.
  *
  * This handler:
- * - Routes AI SDK requests from panels through IPC to the main process
+ * - Routes AI SDK requests from panels/workers via WS RPC
  * - Manages provider registration and model discovery
  * - Handles streaming and error propagation
  * - Provides structured logging and error codes
  *
  * Security:
- * - Derives panel identity from Electron sender, not from request parameters
+ * - Caller identity derived from token-authenticated WS connections
  * - Validates all responses from AI SDK
  * - Implements stream resource limits and cleanup
  */

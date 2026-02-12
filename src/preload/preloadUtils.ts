@@ -240,14 +240,6 @@ export function parsePreloadConfig(): ParsedPreloadConfig {
 // =============================================================================
 
 /**
- * Register the panel/worker view with the main process.
- * Registration now happens during WS auth handshake — nothing to do here.
- */
-export function registerView(_config: ParsedPreloadConfig): void {
-  // No-op: WS auth handshake replaces IPC registration
-}
-
-/**
  * Create the transport bridge for RPC communication via WebSocket.
  */
 export function createTransport(viewId: string, config: ParsedPreloadConfig): TransportBridge {

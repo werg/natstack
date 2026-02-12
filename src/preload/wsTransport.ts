@@ -36,6 +36,7 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
   let flushScheduled = false;
   let ws: WebSocket | null = null;
   let authenticated = false;
+  let reconnectAttempt = 0;
 
   const deliver = (fromId: string, message: RpcMessage) => {
     if (!transportReady) {
@@ -96,6 +97,7 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
       case "ws:auth-result": {
         if (msg.success) {
           authenticated = true;
+          reconnectAttempt = 0;
           flushOutgoing();
         } else {
           console.error("[WsTransport] Auth failed:", msg.error);
@@ -182,12 +184,25 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
 
     ws.onclose = (event) => {
       authenticated = false;
-      // Reconnect with exponential backoff unless intentionally closed
-      if (event.code !== 4001) {
-        // 4001 = token revoked (panel closed), don't reconnect
-        const delay = Math.min(1000 * Math.pow(2, Math.random() * 3), 8000);
-        setTimeout(connect, delay);
+      // Terminal close codes — don't reconnect
+      // 4001 = token revoked (panel closing), 4005 = bad handshake, 4006 = invalid token
+      if (event.code === 4001 || event.code === 4005 || event.code === 4006) {
+        if (event.code !== 4001) {
+          // Auth failures on a live panel — surface to UI
+          console.error(`[WsTransport] Terminal auth failure (${event.code}): ${event.reason}`);
+          deliver("main", {
+            type: "event",
+            fromId: "main",
+            event: "runtime:connection-error",
+            payload: { code: event.code, reason: event.reason || "Authentication failed" },
+          } as RpcEvent);
+        }
+        return;
       }
+      const jitter = Math.random() * 500;
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempt) + jitter, 10000);
+      reconnectAttempt++;
+      setTimeout(connect, delay);
     };
 
     ws.onerror = () => {

@@ -1,6 +1,6 @@
 import type { ComponentType, ReactNode } from "react";
 import type { Root } from "react-dom/client";
-import { getTheme, onThemeChange } from "@natstack/runtime";
+import { getTheme, onThemeChange, onConnectionError } from "@natstack/runtime";
 
 export interface ReactPanelOptions {
   rootId?: string;
@@ -44,9 +44,37 @@ export function createReactPanelMount(
       })()
     : null;
 
+  function ConnectionErrorBarrier({ children }: { children: ReactNode }): ReactNode {
+    const [connError, setConnError] = ReactLib.useState<{ code: number; reason: string } | null>(null);
+
+    ReactLib.useEffect(() => {
+      return onConnectionError((err) => setConnError(err));
+    }, []);
+
+    if (connError) {
+      return ReactLib.createElement("div", {
+        style: {
+          position: "fixed", inset: 0,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          background: "var(--color-background, #fff)",
+          color: "var(--color-text, #111)",
+          fontFamily: "system-ui, sans-serif",
+          zIndex: 2147483647,
+        },
+      },
+        ReactLib.createElement("div", { style: { textAlign: "center", maxWidth: 400, padding: 24 } },
+          ReactLib.createElement("div", { style: { fontSize: 18, fontWeight: 600, marginBottom: 8 } }, "Connection lost"),
+          ReactLib.createElement("div", { style: { fontSize: 14, opacity: 0.7 } }, connError.reason),
+        ),
+      );
+    }
+
+    return ReactLib.createElement(ReactLib.Fragment, null, children);
+  }
+
   const Wrapper: ComponentType<{ children: ReactNode }> = ThemeProvider
-    ? ({ children }) => ReactLib.createElement(ThemeProvider, null, children)
-    : ({ children }) => ReactLib.createElement(ReactLib.Fragment, null, children);
+    ? ({ children }) => ReactLib.createElement(ConnectionErrorBarrier, null, ReactLib.createElement(ThemeProvider, null, children))
+    : ({ children }) => ReactLib.createElement(ConnectionErrorBarrier, null, children);
 
   return function mountReactPanel<Props>(
     Component: ComponentType<Props>,

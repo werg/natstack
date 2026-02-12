@@ -3744,7 +3744,7 @@ export class PanelManager {
     // Unload all resources (view, CDP, git tokens, Claude Code, protocol panels)
     // Note: unloadPanelResources handles:
     //   - browserStateCleanup and linkInterceptionHandlers cleanup
-    //   - viewManager.destroyView (which triggers guestInstanceMap cleanup via 'destroyed' event)
+    //   - viewManager.destroyView (which triggers cleanup via 'destroyed' event)
     //   - getCdpServer().revokeTokenForPanel / unregisterBrowser
     //   - gitServer.revokeTokenForPanel
     //   - getClaudeCodeConversationManager().endPanelConversations

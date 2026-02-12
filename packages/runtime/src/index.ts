@@ -300,6 +300,10 @@ export const onChildCreationError = notInShell("onChildCreationError") as (
   callback: (error: { url: string; error: string }) => void
 ) => () => void;
 
+export const onConnectionError = notInShell("onConnectionError") as (
+  callback: (error: { code: number; reason: string }) => void
+) => () => void;
+
 export const exposeMethod = shellRpc?.exposeMethod.bind(shellRpc) ?? notInShell("exposeMethod") as <
   TArgs extends unknown[],
   TReturn
