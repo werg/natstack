@@ -19,6 +19,12 @@ declare global {
         onMessage: (handler: (fromId: string, message: unknown) => void) => () => void;
       }
     | undefined;
+  var __natstackServerTransport:
+    | {
+        send: (targetId: string, message: unknown) => Promise<void>;
+        onMessage: (handler: (fromId: string, message: unknown) => void) => () => void;
+      }
+    | undefined;
   var __natstackContextId: string | undefined;
   var __natstackStateArgs: Record<string, unknown> | undefined;
 }
@@ -53,6 +59,12 @@ export const ARG_WS_PORT = "--natstack-ws-port=";
 
 /** Argument prefix for shell token */
 export const ARG_SHELL_TOKEN = "--natstack-shell-token=";
+
+/** Argument prefix for server RPC port (direct panel→server connections) */
+export const ARG_SERVER_PORT = "--natstack-server-port=";
+
+/** Argument prefix for server auth token (direct panel→server connections) */
+export const ARG_SERVER_TOKEN = "--natstack-server-token=";
 
 // =============================================================================
 // Environment variable keys
@@ -163,6 +175,18 @@ export function parseWsPort(): number | null {
 export function parseShellToken(): string | null {
   const arg = process.argv.find((value) => value.startsWith(ARG_SHELL_TOKEN));
   return arg ? (arg.slice(ARG_SHELL_TOKEN.length) || null) : null;
+}
+
+export function parseServerPort(): number | null {
+  const arg = process.argv.find((value) => value.startsWith(ARG_SERVER_PORT));
+  if (!arg) return null;
+  const port = parseInt(arg.slice(ARG_SERVER_PORT.length), 10);
+  return isNaN(port) ? null : port;
+}
+
+export function parseServerToken(): string | null {
+  const arg = process.argv.find((value) => value.startsWith(ARG_SERVER_TOKEN));
+  return arg ? (arg.slice(ARG_SERVER_TOKEN.length) || null) : null;
 }
 
 export function parseEnvArg(): Record<string, string> {
@@ -375,7 +399,8 @@ export function setPreloadGlobals(
 export function exposeGlobalsViaContextBridge(
   contextBridge: Electron.ContextBridge,
   config: ParsedPreloadConfig,
-  transport: ReturnType<typeof createTransport>
+  transport: ReturnType<typeof createTransport>,
+  serverTransport?: TransportBridge | null
 ): void {
   // Minimal Node-ish env for libraries that expect process.env
   contextBridge.exposeInMainWorld("process", { env: config.syntheticEnv });
@@ -391,6 +416,9 @@ export function exposeGlobalsViaContextBridge(
   contextBridge.exposeInMainWorld("__natstackEnv", config.syntheticEnv);
   contextBridge.exposeInMainWorld("__natstackStateArgs", config.stateArgs);
   contextBridge.exposeInMainWorld("__natstackTransport", transport);
+  if (serverTransport) {
+    contextBridge.exposeInMainWorld("__natstackServerTransport", serverTransport);
+  }
 }
 
 /**
@@ -452,8 +480,25 @@ export function setupStateArgsListener(transport: TransportBridge): void {
 export function initSafePreload(contextBridge: Electron.ContextBridge): void {
   const config = parsePreloadConfig();
   const transport = createTransport(config.panelId, config);
-  exposeGlobalsViaContextBridge(contextBridge, config, transport);
+
+  // Create server transport if server params are available (main mode)
+  const serverPort = parseServerPort();
+  const serverToken = parseServerToken();
+  let serverTransport: TransportBridge | null = null;
+  if (serverPort && serverToken) {
+    serverTransport = createWsTransport({
+      viewId: config.panelId,
+      wsPort: serverPort,
+      authToken: serverToken,
+      callerKind: config.kind,
+    });
+  }
+
+  exposeGlobalsViaContextBridge(contextBridge, config, transport, serverTransport);
   setPreloadGlobals(config, transport);
+  if (serverTransport) {
+    globalThis.__natstackServerTransport = serverTransport;
+  }
   setupDevToolsShortcut(config, transport);
   setupHistoryIntegration(config, transport);
   setupStateArgsListener(transport);
@@ -466,6 +511,19 @@ export function initSafePreload(contextBridge: Electron.ContextBridge): void {
 export function initUnsafePreload(): void {
   const config = parsePreloadConfig();
   const transport = createTransport(config.panelId, config);
+
+  // Create server transport if server params are available (main mode)
+  const serverPort = parseServerPort();
+  const serverToken = parseServerToken();
+  if (serverPort && serverToken) {
+    globalThis.__natstackServerTransport = createWsTransport({
+      viewId: config.panelId,
+      wsPort: serverPort,
+      authToken: serverToken,
+      callerKind: config.kind,
+    });
+  }
+
   setUnsafeGlobals(config, transport);
   setupDevToolsShortcut(config, transport);
   setupHistoryIntegration(config, transport);

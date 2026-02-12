@@ -219,6 +219,7 @@ async function main() {
     const a = serviceArgs as unknown[];
     switch (method) {
       case "create": return tm.createToken(a[0] as string, a[1] as import("../main/serviceDispatcher.js").CallerKind);
+      case "ensure": return tm.ensureToken(a[0] as string, a[1] as import("../main/serviceDispatcher.js").CallerKind);
       case "revoke": tm.revokeToken(a[0] as string); return;
       case "get": try { return tm.getToken(a[0] as string); } catch { return null; }
       default: throw new Error(`Unknown tokens method: ${method}`);

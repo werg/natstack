@@ -1,8 +1,9 @@
 /**
  * ServerClient — WebSocket admin client that connects Electron to the server.
  *
- * Handles RPC proxying, AI stream bridging, and tool result forwarding.
- * Electron's RPC server uses this to delegate backend calls to the server process.
+ * Handles RPC calls for Electron-internal operations (verdaccio, tokens, git,
+ * ai.reinitialize, etc.). Panels connect directly to the server for AI
+ * streaming, tool execution, and other backend services.
  */
 
 import { WebSocket } from "ws";
@@ -12,26 +13,15 @@ import type {
   WsClientMessage,
   WsServerMessage,
 } from "../shared/ws/protocol.js";
-import type { ToolExecutionResult } from "./ai/claudeCodeToolProxy.js";
 
 interface PendingCall {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
 }
 
-/** Active stream bridge: server stream → panel WS */
-interface StreamBridge {
-  panelWs: WebSocket;
-  streamId: string;
-}
-
 export interface ServerClient {
   /** Call a backend service via the server */
   call(service: string, method: string, args: unknown[]): Promise<unknown>;
-  /** Register a stream bridge: server stream chunks → panel WS */
-  bridgeStream(streamId: string, panelWs: WebSocket): void;
-  /** Forward a tool result from panel → server */
-  forwardToolResult(callId: string, result: ToolExecutionResult): void;
   /** Check if connected */
   isConnected(): boolean;
   /** Close connection, reject all pending calls */
@@ -43,7 +33,6 @@ export async function createServerClient(
   adminToken: string
 ): Promise<ServerClient> {
   const pendingCalls = new Map<string, PendingCall>();
-  const activeStreams = new Map<string, StreamBridge>();
 
   const ws = new WebSocket(`ws://127.0.0.1:${serverRpcPort}`);
 
@@ -88,61 +77,28 @@ export async function createServerClient(
       return;
     }
 
-    switch (msg.type) {
-      case "ws:rpc": {
-        const rpcMsg = msg.message as RpcResponse;
-        if (rpcMsg.type === "response") {
-          const pending = pendingCalls.get(rpcMsg.requestId);
-          if (pending) {
-            pendingCalls.delete(rpcMsg.requestId);
-            if ("error" in rpcMsg) {
-              pending.reject(new Error(rpcMsg.error));
-            } else {
-              pending.resolve(rpcMsg.result);
-            }
+    if (msg.type === "ws:rpc") {
+      const rpcMsg = msg.message as RpcResponse;
+      if (rpcMsg.type === "response") {
+        const pending = pendingCalls.get(rpcMsg.requestId);
+        if (pending) {
+          pendingCalls.delete(rpcMsg.requestId);
+          if ("error" in rpcMsg) {
+            pending.reject(new Error(rpcMsg.error));
+          } else {
+            pending.resolve(rpcMsg.result);
           }
         }
-        break;
-      }
-
-      // Stream bridging: forward from server → panel
-      case "ws:stream-chunk":
-      case "ws:stream-end": {
-        const bridge = activeStreams.get(msg.streamId);
-        if (bridge && bridge.panelWs.readyState === WebSocket.OPEN) {
-          bridge.panelWs.send(JSON.stringify(msg));
-        }
-        if (msg.type === "ws:stream-end") {
-          activeStreams.delete(msg.streamId);
-        }
-        break;
-      }
-
-      // Tool execution requests: forward from server → panel
-      case "ws:tool-exec": {
-        const bridge = activeStreams.get(msg.streamId);
-        if (bridge && bridge.panelWs.readyState === WebSocket.OPEN) {
-          bridge.panelWs.send(JSON.stringify(msg));
-        }
-        break;
       }
     }
   });
 
-  // On disconnect, reject all pending calls and clean up streams
+  // On disconnect, reject all pending calls
   ws.on("close", () => {
     for (const [, pending] of pendingCalls) {
       pending.reject(new Error("Server disconnected"));
     }
     pendingCalls.clear();
-
-    // Send stream-end errors to active stream panels
-    for (const [streamId, bridge] of activeStreams) {
-      if (bridge.panelWs.readyState === WebSocket.OPEN) {
-        bridge.panelWs.send(JSON.stringify({ type: "ws:stream-end", streamId }));
-      }
-    }
-    activeStreams.clear();
   });
 
   const client: ServerClient = {
@@ -165,16 +121,6 @@ export async function createServerClient(
         const envelope: WsClientMessage = { type: "ws:rpc", message: rpcMsg };
         ws.send(JSON.stringify(envelope));
       });
-    },
-
-    bridgeStream(streamId: string, panelWs: WebSocket): void {
-      activeStreams.set(streamId, { panelWs, streamId });
-    },
-
-    forwardToolResult(callId: string, result: ToolExecutionResult): void {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      const msg: WsClientMessage = { type: "ws:tool-result", callId, result };
-      ws.send(JSON.stringify(msg));
     },
 
     isConnected(): boolean {

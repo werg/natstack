@@ -53,7 +53,6 @@ import { handleAdBlockServiceCall } from "./ipc/adblockHandlers.js";
 import { startMemoryMonitor } from "./memoryMonitor.js";
 import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
 import { createServerClient, type ServerClient } from "./serverClient.js";
-import { registerProxyServices } from "./serverProxy.js";
 import { setVerdaccioConfig } from "./verdaccioConfig.js";
 import type { ServerInfo } from "./serverInfo.js";
 
@@ -170,10 +169,13 @@ log.info(` Starting in ${appMode} mode`);
 
 function buildServerInfo(ports: ServerPorts): ServerInfo {
   return {
+    rpcPort: ports.rpcPort,
     gitBaseUrl: `http://127.0.0.1:${ports.gitPort}`,
     pubsubUrl: `ws://127.0.0.1:${ports.pubsubPort}`,
     createPanelToken: (panelId, kind) =>
       requireServerClient().call("tokens", "create", [panelId, kind]) as Promise<string>,
+    ensurePanelToken: (panelId, kind) =>
+      requireServerClient().call("tokens", "ensure", [panelId, kind]) as Promise<string>,
     revokePanelToken: (panelId) =>
       requireServerClient().call("tokens", "revoke", [panelId]) as Promise<void>,
     getPanelToken: (panelId) =>
@@ -197,7 +199,7 @@ function buildServerInfo(ports: ServerPorts): ServerInfo {
 // Window Creation
 // =============================================================================
 
-function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
+function createWindow(wsArgs: { rpcPort: number; shellToken: string; serverRpcPort?: number; shellServerToken?: string }): void {
   // Create BaseWindow (no webContents of its own)
   // Start hidden to avoid layout flash - shown after shell content loads
   mainWindow = new BaseWindow({
@@ -221,6 +223,8 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
     shellAdditionalArguments: [
       `--natstack-ws-port=${wsArgs.rpcPort}`,
       `--natstack-shell-token=${wsArgs.shellToken}`,
+      ...(wsArgs.serverRpcPort ? [`--natstack-server-port=${wsArgs.serverRpcPort}`] : []),
+      ...(wsArgs.shellServerToken ? [`--natstack-server-token=${wsArgs.shellServerToken}`] : []),
     ],
     devTools: false,
   });
@@ -419,19 +423,12 @@ app.on("ready", async () => {
         );
       });
 
-      // Register proxy services for backend (ai, db, typecheck, agentSettings)
-      registerProxyServices(requireServerClient);
-
       dispatcher.markInitialized();
 
-      // Start RPC server with tool result forwarding to server
       const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
       rpcServer = new RpcServerClass({
         tokenManager: getTokenManager(),
         panelManager: panelManager ?? undefined,
-        onToolResult: (callId, result) => {
-          requireServerClient().forwardToolResult(callId, result);
-        },
       });
       const rpcPort = await rpcServer.start();
       log.info(`[RPC] Server started on port ${rpcPort}`);
@@ -442,7 +439,16 @@ app.on("ready", async () => {
 
       // Generate shell token and create window
       const shellToken = getTokenManager().getOrCreateShellToken();
-      void createWindow({ rpcPort, shellToken });
+      // Ensure shell server token for direct server connection (idempotent for macOS re-activate)
+      const shellServerToken = await requireServerClient().call(
+        "tokens", "ensure", ["shell", "shell"]
+      ) as string;
+      void createWindow({
+        rpcPort,
+        shellToken,
+        serverRpcPort: serverInfo.rpcPort,
+        shellServerToken,
+      });
     } catch (error) {
       console.error("Failed to initialize services:", error);
 
@@ -578,7 +584,22 @@ app.on("activate", () => {
     const shellToken = getTokenManager().getOrCreateShellToken();
     const rpcPort = rpcServer.getPort();
     if (rpcPort) {
-      void createWindow({ rpcPort, shellToken });
+      if (serverInfo) {
+        // Ensure shell server token (idempotent) and pass server params
+        requireServerClient().call("tokens", "ensure", ["shell", "shell"]).then((shellServerToken) => {
+          void createWindow({
+            rpcPort,
+            shellToken,
+            serverRpcPort: serverInfo!.rpcPort,
+            shellServerToken: shellServerToken as string,
+          });
+        }).catch((err) => {
+          console.error("[App] Failed to ensure shell server token on activate:", err);
+          void createWindow({ rpcPort, shellToken });
+        });
+      } else {
+        void createWindow({ rpcPort, shellToken });
+      }
     }
   }
 });

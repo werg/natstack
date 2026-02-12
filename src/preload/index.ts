@@ -4,7 +4,7 @@
  */
 
 import { createWsTransport, type TransportBridge } from "./wsTransport.js";
-import { parseWsPort, parseShellToken } from "./preloadUtils.js";
+import { parseWsPort, parseShellToken, parseServerPort, parseServerToken } from "./preloadUtils.js";
 
 // =============================================================================
 // Shell WS Transport
@@ -34,3 +34,15 @@ globalThis.__natstackTransport = shellTransport;
 globalThis.__natstackId = "shell";
 globalThis.__natstackContextId = "shell-context";
 globalThis.__natstackKind = "shell";
+
+// Create server transport if server params are available
+const serverPort = parseServerPort();
+const serverToken = parseServerToken();
+if (serverPort && serverToken) {
+  globalThis.__natstackServerTransport = createWsTransport({
+    viewId: "shell",
+    wsPort: serverPort,
+    authToken: serverToken,
+    callerKind: "shell",
+  });
+}

@@ -32,6 +32,8 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
   const listeners = new Set<AnyMessageHandler>();
   const bufferedMessages: Array<{ fromId: string; message: RpcMessage }> = [];
   const outgoingBuffer: string[] = [];
+  // Track pending tool call IDs so we only convert matching responses to ws:tool-result
+  const pendingToolCallIds = new Set<string>();
   let transportReady = false;
   let flushScheduled = false;
   let ws: WebSocket | null = null;
@@ -132,8 +134,9 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
       }
 
       case "ws:tool-exec": {
-        // Server requesting tool execution — deliver as a synthetic RPC request
-        // The callId IS the requestId so the response can be correlated
+        // Server requesting tool execution — deliver as a synthetic RPC request.
+        // Track the callId so we can identify the response as a tool result.
+        pendingToolCallIds.add(msg.callId);
         deliver("main", {
           type: "request",
           requestId: msg.callId,
@@ -228,37 +231,42 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
       }
 
       if (rpcMessage.type === "response") {
-        // Tool execution result — the requestId IS the callId
         const response = rpcMessage as RpcResponse;
-        if ("error" in response) {
-          // RPC-level error — send as error tool result
-          wsSend({
-            type: "ws:tool-result",
-            callId: response.requestId,
-            result: {
-              content: [{ type: "text", text: response.error }],
-              isError: true,
-            },
-          });
-        } else {
-          // Validate that we got a proper tool execution result
-          const result = response.result as { content?: unknown[]; isError?: boolean; data?: unknown } | null | undefined;
-          if (!result || !Array.isArray(result.content)) {
+
+        if (pendingToolCallIds.has(response.requestId)) {
+          // Tool execution result — convert to ws:tool-result protocol message
+          pendingToolCallIds.delete(response.requestId);
+          if ("error" in response) {
             wsSend({
               type: "ws:tool-result",
               callId: response.requestId,
               result: {
-                content: [{ type: "text", text: "Tool execution failed: no valid response from panel" }],
+                content: [{ type: "text", text: response.error }],
                 isError: true,
               },
             });
           } else {
-            wsSend({
-              type: "ws:tool-result",
-              callId: response.requestId,
-              result: result as { content: Array<{ type: "text"; text: string }>; isError?: boolean; data?: unknown },
-            });
+            const result = response.result as { content?: unknown[]; isError?: boolean; data?: unknown } | null | undefined;
+            if (!result || !Array.isArray(result.content)) {
+              wsSend({
+                type: "ws:tool-result",
+                callId: response.requestId,
+                result: {
+                  content: [{ type: "text", text: "Tool execution failed: no valid response from panel" }],
+                  isError: true,
+                },
+              });
+            } else {
+              wsSend({
+                type: "ws:tool-result",
+                callId: response.requestId,
+                result: result as { content: Array<{ type: "text"; text: string }>; isError?: boolean; data?: unknown },
+              });
+            }
           }
+        } else {
+          // Regular RPC response (not a tool result)
+          wsSend({ type: "ws:rpc", message: rpcMessage });
         }
         return;
       }

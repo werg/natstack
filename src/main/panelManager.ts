@@ -417,7 +417,7 @@ export class PanelManager {
       await registerAboutProtocolForPartition(partition);
 
       // Create the view
-      this.createViewForShellPanel(panel, url);
+      await this.createViewForShellPanel(panel, url);
 
       // Mark as ready and persist
       panel.artifacts = { buildState: "ready" };
@@ -442,6 +442,76 @@ export class PanelManager {
       throw new Error("ViewManager not set - call setViewManager first");
     }
     return this.viewManager;
+  }
+
+  /**
+   * Build the common preload arguments shared by all non-browser views
+   * (panels, workers, and shell panels).
+   */
+  private async buildPreloadArgs(
+    panelId: string,
+    kind: "panel" | "worker",
+    callerKind: "panel" | "worker" | "shell",
+    contextId: string,
+  ): Promise<string[]> {
+    const authToken = getTokenManager().ensureToken(panelId, callerKind);
+    const serverToken = await this.serverInfo.ensurePanelToken(panelId, callerKind);
+    return [
+      `--natstack-panel-id=${panelId}`,
+      `--natstack-auth-token=${authToken}`,
+      `--natstack-theme=${this.currentTheme}`,
+      `--natstack-kind=${kind}`,
+      `--natstack-context-id=${contextId}`,
+      ...(this.rpcPort ? [`--natstack-ws-port=${this.rpcPort}`] : []),
+      `--natstack-server-port=${this.serverInfo.rpcPort}`,
+      `--natstack-server-token=${serverToken}`,
+    ];
+  }
+
+  /**
+   * Append env, stateArgs, and scopePath arguments to a preload args array.
+   * Shared by the panel and worker code paths in createViewForPanel.
+   */
+  private async appendPanelEnvArgs(
+    additionalArgs: string[],
+    panelId: string,
+    panel: Panel | undefined,
+    contextId: string | undefined,
+  ): Promise<void> {
+    // Refresh system tokens (pubsub, git) in case they're stale from a previous session
+    const panelEnv = panel ? await this.refreshEnvTokens(panelId, getPanelEnv(panel)) : undefined;
+    if (panelEnv && Object.keys(panelEnv).length > 0) {
+      try {
+        const encodedEnv = Buffer.from(JSON.stringify(panelEnv), "utf-8").toString("base64");
+        additionalArgs.push(`--natstack-panel-env=${encodedEnv}`);
+      } catch (error) {
+        console.error(`[PanelManager] Failed to encode env for ${panelId}`, error);
+      }
+    }
+
+    // Add stateArgs if available (from current snapshot)
+    const stateArgs = panel ? getPanelStateArgs(panel) : undefined;
+    if (stateArgs && Object.keys(stateArgs).length > 0) {
+      try {
+        const encodedStateArgs = Buffer.from(JSON.stringify(stateArgs), "utf-8").toString("base64");
+        additionalArgs.push(`--natstack-state-args=${encodedStateArgs}`);
+      } catch (error) {
+        console.error(`[PanelManager] Failed to encode stateArgs for ${panelId}`, error);
+      }
+    }
+
+    // Calculate and add scope path for unsafe panels/workers
+    const unsafeFlag = panel ? getPanelUnsafe(panel) : undefined;
+    if (unsafeFlag) {
+      const workspace = getActiveWorkspace();
+      if (workspace) {
+        const scopePath =
+          typeof unsafeFlag === "string"
+            ? unsafeFlag
+            : getContextScopePath(workspace.config.id, contextId ?? panelId);
+        additionalArgs.push(`--natstack-scope-path=${scopePath}`);
+      }
+    }
   }
 
   /**
@@ -504,59 +574,9 @@ export class PanelManager {
       // Intercept ns:// and new-window navigations for child creation
       this.setupLinkInterception(panelId, view.webContents, "browser");
     } else if (type === "worker") {
-      // Worker panels: isolated partition, worker preload with auth token and env
-      // ensureToken handles rebuild paths where token may have been revoked by unloadPanelResources
-      const authToken = getTokenManager().ensureToken(panelId, "worker");
-
-      // Build additional arguments for preload
-      const additionalArgs: string[] = [
-        `--natstack-panel-id=${panelId}`,
-        `--natstack-auth-token=${authToken}`,
-        `--natstack-theme=${this.currentTheme}`,
-        `--natstack-kind=worker`,
-        `--natstack-context-id=${contextId ?? ""}`,
-        ...(this.rpcPort ? [`--natstack-ws-port=${this.rpcPort}`] : []),
-      ];
-
-      // Add worker env if available
-      // Refresh system tokens (pubsub, git) in case they're stale from a previous session
-      const workerEnv = panel ? await this.refreshEnvTokens(panelId, getPanelEnv(panel)) : undefined;
-      if (workerEnv && Object.keys(workerEnv).length > 0) {
-        try {
-          const encodedEnv = Buffer.from(JSON.stringify(workerEnv), "utf-8").toString("base64");
-          additionalArgs.push(`--natstack-panel-env=${encodedEnv}`);
-        } catch (error) {
-          console.error(`[PanelManager] Failed to encode env for worker ${panelId}`, error);
-        }
-      }
-
-      // Add stateArgs if available (from current snapshot)
-      const workerStateArgs = panel ? getPanelStateArgs(panel) : undefined;
-      if (workerStateArgs && Object.keys(workerStateArgs).length > 0) {
-        try {
-          const encodedStateArgs = Buffer.from(JSON.stringify(workerStateArgs), "utf-8").toString("base64");
-          additionalArgs.push(`--natstack-state-args=${encodedStateArgs}`);
-        } catch (error) {
-          console.error(`[PanelManager] Failed to encode stateArgs for worker ${panelId}`, error);
-        }
-      }
-
-      // Get unsafe flag for workers (undefined = safe worker using ZenFS)
+      const additionalArgs = await this.buildPreloadArgs(panelId, "worker", "worker", contextId ?? "");
+      await this.appendPanelEnvArgs(additionalArgs, panelId, panel, contextId);
       const unsafeFlag = panel ? getPanelUnsafe(panel) : undefined;
-
-      // Calculate and add scope path for unsafe workers.
-      // Safe workers (falsey unsafeFlag) use ZenFS and don't need a scope path.
-      // Unsafe workers get either a custom root (string) or the default scoped path (true).
-      if (unsafeFlag) {
-        const workspace = getActiveWorkspace();
-        if (workspace) {
-          const scopePath =
-            typeof unsafeFlag === "string"
-              ? unsafeFlag // Custom root (e.g., "/" for full access)
-              : getContextScopePath(workspace.config.id, contextId ?? panelId); // Context-based scope
-          additionalArgs.push(`--natstack-scope-path=${scopePath}`);
-        }
-      }
 
       this.viewManager.createView({
         id: panelId,
@@ -569,57 +589,9 @@ export class PanelManager {
         unsafe: unsafeFlag,
       });
     } else {
-      // App panels: isolated partition, panel preload with auth token and env
-      // ensureToken handles rebuild paths where token may have been revoked by unloadPanelResources
-      const authToken = getTokenManager().ensureToken(panelId, "panel");
-
-      // Build additional arguments for preload
-      const additionalArgs: string[] = [
-        `--natstack-panel-id=${panelId}`,
-        `--natstack-auth-token=${authToken}`,
-        `--natstack-theme=${this.currentTheme}`,
-        `--natstack-kind=panel`,
-        `--natstack-context-id=${contextId ?? ""}`,
-        ...(this.rpcPort ? [`--natstack-ws-port=${this.rpcPort}`] : []),
-      ];
-
-      // Add panel env if available
-      // Refresh system tokens (pubsub, git) in case they're stale from a previous session
-      const panelEnvForArgs = panel ? await this.refreshEnvTokens(panelId, getPanelEnv(panel)) : undefined;
-      if (panelEnvForArgs && Object.keys(panelEnvForArgs).length > 0) {
-        try {
-          const encodedEnv = Buffer.from(JSON.stringify(panelEnvForArgs), "utf-8").toString("base64");
-          additionalArgs.push(`--natstack-panel-env=${encodedEnv}`);
-        } catch (error) {
-          console.error(`[PanelManager] Failed to encode env for panel ${panelId}`, error);
-        }
-      }
-
-      // Add stateArgs if available (from current snapshot)
-      const panelStateArgs = panel ? getPanelStateArgs(panel) : undefined;
-      if (panelStateArgs && Object.keys(panelStateArgs).length > 0) {
-        try {
-          const encodedStateArgs = Buffer.from(JSON.stringify(panelStateArgs), "utf-8").toString("base64");
-          additionalArgs.push(`--natstack-state-args=${encodedStateArgs}`);
-        } catch (error) {
-          console.error(`[PanelManager] Failed to encode stateArgs for panel ${panelId}`, error);
-        }
-      }
-
-      // Get unsafe flag for app panels
+      const additionalArgs = await this.buildPreloadArgs(panelId, "panel", "panel", contextId ?? "");
+      await this.appendPanelEnvArgs(additionalArgs, panelId, panel, contextId);
       const unsafeFlag = panel ? getPanelUnsafe(panel) : undefined;
-
-      // Calculate and add scope path for unsafe panels
-      if (unsafeFlag) {
-        const workspace = getActiveWorkspace();
-        if (workspace) {
-          const scopePath =
-            typeof unsafeFlag === "string"
-              ? unsafeFlag // Custom root (e.g., "/" for full access)
-              : getContextScopePath(workspace.config.id, contextId ?? panelId); // Context-based scope
-          additionalArgs.push(`--natstack-scope-path=${scopePath}`);
-        }
-      }
 
       const view = this.viewManager.createView({
         id: panelId,
@@ -2050,7 +2022,7 @@ export class PanelManager {
       if (contents && !contents.isDestroyed()) {
         await contents.loadURL(url);
       } else {
-        this.createViewForShellPanel(panel, url);
+        await this.createViewForShellPanel(panel, url);
       }
 
       panel.artifacts = { buildState: "ready" };
@@ -2549,7 +2521,7 @@ export class PanelManager {
     await registerAboutProtocolForPartition(partition);
 
     // Create WebContentsView for the shell panel
-    this.createViewForShellPanel(panel, url);
+    await this.createViewForShellPanel(panel, url);
 
     // Focus after replace (takes over from the one being used)
     // Note: focusPanel calls updateSelectedPath and notifyPanelTreeUpdate
@@ -2733,7 +2705,7 @@ export class PanelManager {
     await registerAboutProtocolForPartition(partition);
 
     // Create WebContentsView for the shell panel
-    this.createViewForShellPanel(panel, url);
+    await this.createViewForShellPanel(panel, url);
 
     // Focus the newly created panel (this also notifies tree update)
     this.focusPanel(panel.id);
@@ -2784,7 +2756,7 @@ export class PanelManager {
    * Create a WebContentsView for a shell panel.
    * Shell panels run with unsafe mode (nodeIntegration) for full service access.
    */
-  private createViewForShellPanel(panel: Panel, url: string): void {
+  private async createViewForShellPanel(panel: Panel, url: string): Promise<void> {
     if (!this.viewManager) {
       throw new Error(`[PanelManager] ViewManager not set, cannot create view for ${panel.id}`);
     }
@@ -2794,17 +2766,7 @@ export class PanelManager {
     }
 
     const contextId = getPanelContextId(panel);
-    // ensureToken handles crash/recreate paths where old token may still exist
-    const authToken = getTokenManager().ensureToken(panel.id, "shell");
-
-    const additionalArgs: string[] = [
-      `--natstack-panel-id=${panel.id}`,
-      `--natstack-auth-token=${authToken}`,
-      `--natstack-theme=${this.currentTheme}`,
-      `--natstack-kind=panel`, // Shell panels use panel runtime for focus/theme events
-      `--natstack-context-id=${contextId}`,
-      ...(this.rpcPort ? [`--natstack-ws-port=${this.rpcPort}`] : []),
-    ];
+    const additionalArgs = await this.buildPreloadArgs(panel.id, "panel", "shell", contextId);
 
     // Shell panels get full filesystem access
     const workspace = getActiveWorkspace();

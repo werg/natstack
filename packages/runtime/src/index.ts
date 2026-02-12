@@ -10,6 +10,7 @@
  */
 
 import { createRpcBridge, type RpcBridge, type RpcTransport, type RpcMessage } from "@natstack/rpc";
+import { createRoutingBridge } from "./shared/routingBridge.js";
 import { createDbClient, type DatabaseInterface } from "@natstack/core";
 import * as contextUtils from "./core/context.js";
 import {
@@ -110,12 +111,41 @@ function createShellRpcBridge(): RpcBridge | null {
     },
   };
 
-  return createRpcBridge({
+  const electronBridge = createRpcBridge({
     selfId: g.__natstackId || "shell",
     transport,
     callTimeoutMs: 30000,
     aiCallTimeoutMs: 300000,
   });
+
+  // Create server bridge if server transport is available
+  const serverTransportBridge = (globalThis as unknown as { __natstackServerTransport?: ShellTransportBridge }).__natstackServerTransport;
+  if (serverTransportBridge?.send && serverTransportBridge?.onMessage) {
+    const serverTransport: RpcTransport = {
+      send: serverTransportBridge.send,
+      onMessage: (_sourceId: string, handler: (message: RpcMessage) => void) => {
+        return serverTransportBridge.onMessage((fromId, message) => {
+          if (fromId === "main") handler(message as RpcMessage);
+        });
+      },
+      onAnyMessage: (handler: (sourceId: string, message: RpcMessage) => void) => {
+        return serverTransportBridge.onMessage((fromId, message) => {
+          handler(fromId, message as RpcMessage);
+        });
+      },
+    };
+
+    const serverBridge = createRpcBridge({
+      selfId: g.__natstackId || "shell",
+      transport: serverTransport,
+      callTimeoutMs: 30000,
+      aiCallTimeoutMs: 300000,
+    });
+
+    return createRoutingBridge(electronBridge, serverBridge);
+  }
+
+  return electronBridge;
 }
 
 // Initialize RPC bridge for shell

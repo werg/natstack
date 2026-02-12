@@ -45,13 +45,26 @@ export function createReactPanelMount(
     : null;
 
   function ConnectionErrorBarrier({ children }: { children: ReactNode }): ReactNode {
-    const [connError, setConnError] = ReactLib.useState<{ code: number; reason: string } | null>(null);
+    const [connError, setConnError] = ReactLib.useState<{ code: number; reason: string; source?: "electron" | "server" } | null>(null);
 
     ReactLib.useEffect(() => {
       return onConnectionError((err) => setConnError(err));
     }, []);
 
     if (connError) {
+      if (connError.source === "server") {
+        // Non-blocking banner — panel is still functional for navigation/UI
+        return ReactLib.createElement(ReactLib.Fragment, null,
+          ReactLib.createElement("div", {
+            style: {
+              padding: "8px 16px", background: "#fef3cd", color: "#856404",
+              fontSize: 13, textAlign: "center", borderBottom: "1px solid #ffc107",
+            },
+          }, `Backend unavailable: ${connError.reason}`),
+          children,
+        );
+      }
+      // Full-screen overlay — panel is disconnected from the app
       return ReactLib.createElement("div", {
         style: {
           position: "fixed", inset: 0,

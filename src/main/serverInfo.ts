@@ -8,10 +8,14 @@
 import type { CallerKind } from "./serviceDispatcher.js";
 
 export interface ServerInfo {
+  /** Server's RPC port for direct client connections */
+  rpcPort: number;
   gitBaseUrl: string;
   pubsubUrl: string;
   /** Create a server-side token for panel git/pubsub auth */
   createPanelToken(panelId: string, kind: CallerKind): Promise<string>;
+  /** Ensure server-side token exists (idempotent — returns existing or creates new) */
+  ensurePanelToken(panelId: string, kind: CallerKind): Promise<string>;
   /** Revoke server-side token */
   revokePanelToken(panelId: string): Promise<void>;
   /** Get existing server-side token (for pubsub config) */
