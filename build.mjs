@@ -39,7 +39,7 @@ const smokeTestConfig = {
 const serverNativeSqlitePath = path.relative(
   path.dirname("dist/server.mjs"),
   "server-native/node_modules/better-sqlite3/lib/index.js"
-);
+).replace(/\\/g, "/");  // ESM import specifiers must use forward slashes
 const serverNativePlugin = {
   name: "server-native-redirect",
   setup(build) {
@@ -333,6 +333,8 @@ async function build() {
     if (serverNativeReady) {
       await esbuild.build(serverConfig);
     } else {
+      // Remove stale artifact so bin/script don't point at an outdated bundle
+      try { fs.unlinkSync("dist/server.mjs"); } catch {}
       console.warn("[build] Skipping server build — run 'pnpm server:install' first");
     }
     await buildDependencyWorkers();
