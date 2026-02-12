@@ -1,8 +1,6 @@
 import { app, BaseWindow, nativeTheme, session } from "electron";
 import * as path from "path";
 import * as fs from "fs";
-import * as os from "os";
-
 // Silence Electron security warnings in dev; panels run in isolated webviews.
 process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
 
@@ -26,22 +24,12 @@ import { registerPanelProtocol, setupPanelProtocol } from "./panelProtocol.js";
 import { setupAboutProtocol } from "./aboutProtocol.js";
 import { getMainCacheManager } from "./cacheManager.js";
 import { getCdpServer, type CdpServer } from "./cdpServer.js";
-import { getPubSubServer, type PubSubServer } from "./pubsubServer.js";
-import { createVerdaccioServer, type VerdaccioServer } from "./verdaccioServer.js";
-import { createGitWatcher, type GitWatcher } from "./workspace/gitWatcher.js";
-import { getNatstackPackageWatcher, shutdownNatstackWatcher, type NatstackPackageWatcher } from "./natstackPackageWatcher.js";
-import { initAgentDiscovery, shutdownAgentDiscovery } from "./agentDiscovery.js";
-import { initAgentSettingsService, shutdownAgentSettingsService } from "./agentSettings.js";
-import { initAgentHost, shutdownAgentHost, setAgentHostAiHandler } from "./agentHost.js";
 import { getTokenManager } from "./tokenManager.js";
 import { eventService } from "./services/eventsService.js";
-import { getDatabaseManager } from "./db/databaseManager.js";
 import { shutdownPackageStore, scheduleGC } from "./package-store/index.js";
 import { getDependencyGraph } from "./dependencyGraph.js";
-import { handleDbCall } from "./ipc/dbHandlers.js";
 import { handleBridgeCall } from "./ipc/bridgeHandlers.js";
 import { handleBrowserCall } from "./ipc/browserHandlers.js";
-import { handleAiServiceCall } from "./ipc/aiHandlers.js";
 import {
   initViewManager,
   getViewManager,
@@ -62,13 +50,12 @@ import {
   setShellServicesAiHandler,
 } from "./ipc/shellServices.js";
 import { handleEventsService } from "./services/eventsService.js";
-import { typeCheckRpcMethods, getTypeDefinitionService } from "./typecheck/service.js";
 import { setupTestApi } from "./testApi.js";
 import { getAdBlockManager } from "./adblock/index.js";
 import { handleAdBlockServiceCall } from "./ipc/adblockHandlers.js";
-import { handleAgentSettingsCall } from "./ipc/agentSettingsHandlers.js";
 import { preloadNatstackTypesAsync } from "@natstack/typecheck";
 import { startMemoryMonitor } from "./memoryMonitor.js";
+import type { CoreServicesHandle } from "./coreServices.js";
 
 // =============================================================================
 // Early Diagnostics (enabled via NATSTACK_DEBUG_PATHS=1)
@@ -132,13 +119,10 @@ if (cliWorkspacePath && !hasWorkspaceConfig) {
 let appMode: AppMode = hasWorkspaceConfig ? "main" : "chooser";
 let workspace: Workspace | null = null;
 let gitServer: GitServer | null = null;
-let gitWatcher: GitWatcher | null = null;
 let cdpServer: CdpServer | null = null;
-let pubsubServer: PubSubServer | null = null;
-let verdaccioServer: VerdaccioServer | null = null;
-let natstackWatcher: NatstackPackageWatcher | null = null;
 let panelManager: PanelManager | null = null;
 let rpcServer: RpcServer | null = null;
+let coreHandle: CoreServicesHandle | null = null;
 let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
 let isCleaningUp = false; // Prevent re-entry in will-quit handler
@@ -371,109 +355,23 @@ app.on("ready", async () => {
   // Initialize services only in main mode
   if (appMode === "main" && gitServer && panelManager && workspace) {
     try {
-      // Register panel service (requires panel manager)
+      // Electron-only registrations (before core — survive core failure)
       dispatcher.register("panel", handlePanelService);
       setShellServicesPanelManager(panelManager);
 
-      // Initialize agent discovery (scans agents/ directory and starts file watching)
-      await initAgentDiscovery(workspace.path);
-      log.info("[AgentDiscovery] Initialized");
+      // Core services
+      const { startCoreServices } = await import("./coreServices.js");
+      coreHandle = await startCoreServices({ workspace, gitServer });
+      aiHandler = coreHandle.aiHandler;
+      setShellServicesAiHandler(aiHandler);
 
-      // Initialize agent settings service (syncs with discovery)
-      await initAgentSettingsService();
-      log.info("[AgentSettingsService] Initialized");
-
-      // Register agentSettings service
-      dispatcher.register("agentSettings", async (_ctx, serviceMethod, serviceArgs) => {
-        return handleAgentSettingsCall(serviceMethod, serviceArgs as unknown[]);
-      });
-
-      // Start Verdaccio server FIRST (other services may need to install packages)
-      try {
-        // Use app root for finding packages/ (not workspace parent)
-        verdaccioServer = createVerdaccioServer({
-          workspaceRoot: getAppRoot(),
-          storagePath: path.join(app.getPath("userData"), "verdaccio-storage"),
-        });
-        // Wire up types cache invalidation hook (avoids circular imports in verdaccioServer)
-        verdaccioServer.setNatstackPublishHook(() => getTypeDefinitionService().invalidateNatstackTypes());
-
-        // Build all workspace packages before starting the server
-        // This handles the "blank slate" case (fresh clone with no dist/ folders)
-        // and prevents the cascading lazy-build issue at startup
-        await verdaccioServer.buildAllWorkspacePackages();
-
-        const verdaccioPort = await verdaccioServer.start();
-        log.info(`[Verdaccio] Registry started on port ${verdaccioPort}`);
-
-        // Sync all workspace packages with Verdaccio on startup
-        // This compares expected versions (from git) with actual versions in Verdaccio
-        // and republishes any packages that are stale or missing
-        const publishResult = await verdaccioServer.publishChangedPackages();
-        if (publishResult.changesDetected.changed.length > 0) {
-          log.info(`[Verdaccio] Synced ${publishResult.changesDetected.changed.length} packages: ${publishResult.changesDetected.changed.join(", ")}`);
-        } else {
-          log.info("[Verdaccio] All packages up-to-date");
-        }
-
-        // Start NatstackPackageWatcher to watch packages/ for file changes
-        // This enables instant iteration on @natstack/* packages without git commits
-        natstackWatcher = getNatstackPackageWatcher(getAppRoot());
-        await natstackWatcher.initialize((pkgPath, pkgName) =>
-          verdaccioServer!.republishPackage(pkgPath, pkgName)
-        );
-        log.info("[NatstackWatcher] Watching packages/ for file changes");
-      } catch (verdaccioError) {
-        // Verdaccio is required - log error but continue (panel builds will fail gracefully)
-        console.error("[Verdaccio] Failed to start. Panel builds will fail until Verdaccio is running:", verdaccioError);
-        verdaccioServer = null;
-      }
-
-      // Start git server
-      const port = await gitServer.start();
-      log.info(`[Git] Server started on port ${port}`);
-
-      // Create GitWatcher to monitor workspace for repo changes
-      gitWatcher = createGitWatcher(workspace);
-      log.info("[GitWatcher] Started watching workspace for git changes");
-
-      // Subscribe servers to GitWatcher events
-      gitServer.subscribeToGitWatcher(gitWatcher);
-      if (verdaccioServer) {
-        // Pass workspace path so Verdaccio can resolve workspace-relative paths
-        // (distinct from workspaceRoot which is for built-in @natstack/* packages)
-        await verdaccioServer.subscribeToGitWatcher(gitWatcher, workspace.path);
-        // Note: User workspace packages are now published on-demand during panel builds
-      }
-
-      // Start CDP server for browser automation
+      // Electron-only services that depend on core
       cdpServer = getCdpServer();
       const cdpPort = await cdpServer.start();
       log.info(`[CDP] Server started on port ${cdpPort}`);
 
-      // Start PubSub server for real-time messaging
-      pubsubServer = getPubSubServer();
-      const pubsubPort = await pubsubServer.start();
-      log.info(`[PubSub] Server started on port ${pubsubPort}`);
-
-      // Initialize AgentHost for spawning agent processes
-      const agentHost = initAgentHost({
-        workspaceRoot: workspace.path,
-        pubsubUrl: `ws://127.0.0.1:${pubsubPort}`,
-        messageStore: pubsubServer.getMessageStore(),
-        createToken: (instanceId) => getTokenManager().createToken(instanceId, "worker"),
-        revokeToken: (instanceId) => getTokenManager().revokeToken(instanceId),
-      });
-      await agentHost.initialize();
-      pubsubServer.setAgentHost(agentHost);
-      log.info("[AgentHost] Initialized");
-
       dispatcher.register("bridge", async (ctx, serviceMethod, serviceArgs) => {
         return handleBridgeCall(panelManager, getCdpServer(), ctx.callerId, serviceMethod, serviceArgs);
-      });
-
-      dispatcher.register("db", async (ctx, serviceMethod, serviceArgs) => {
-        return handleDbCall(getDatabaseManager(), ctx.callerId, serviceMethod, serviceArgs);
       });
 
       dispatcher.register("browser", async (ctx, serviceMethod, serviceArgs) => {
@@ -486,64 +384,6 @@ app.on("ready", async () => {
           serviceMethod,
           serviceArgs
         );
-      });
-
-      // Initialize AI handler
-      const { AIHandler } = await import("./ai/aiHandler.js");
-      aiHandler = new AIHandler();
-      await aiHandler.initialize();
-      setShellServicesAiHandler(aiHandler);
-      setAgentHostAiHandler(aiHandler);
-
-      dispatcher.register("ai", async (ctx, serviceMethod, serviceArgs) => {
-        return handleAiServiceCall(aiHandler, serviceMethod, serviceArgs, (handler, options, streamId) => {
-          if (!ctx.wsClient) {
-            throw new Error("AI streaming requires a WS connection");
-          }
-          const target = rpcServer!.createWsStreamTarget(ctx.wsClient, streamId);
-          handler.startTargetStream(target, options, streamId);
-        });
-      });
-
-      // Register typecheck service for type definition fetching
-      dispatcher.register("typecheck", async (_ctx, serviceMethod, serviceArgs) => {
-        const args = serviceArgs as unknown[];
-        switch (serviceMethod) {
-          case "getPackageTypes":
-            return typeCheckRpcMethods["typecheck.getPackageTypes"](
-              args[0] as string,
-              args[1] as string
-            );
-          case "getPackageTypesBatch":
-            return typeCheckRpcMethods["typecheck.getPackageTypesBatch"](
-              args[0] as string,
-              args[1] as string[]
-            );
-          case "check":
-            return typeCheckRpcMethods["typecheck.check"](
-              args[0] as string,
-              args[1] as string | undefined,
-              args[2] as string | undefined
-            );
-          case "getTypeInfo":
-            return typeCheckRpcMethods["typecheck.getTypeInfo"](
-              args[0] as string,
-              args[1] as string,
-              args[2] as number,
-              args[3] as number,
-              args[4] as string | undefined
-            );
-          case "getCompletions":
-            return typeCheckRpcMethods["typecheck.getCompletions"](
-              args[0] as string,
-              args[1] as string,
-              args[2] as number,
-              args[3] as number,
-              args[4] as string | undefined
-            );
-          default:
-            throw new Error(`Unknown typecheck method: ${serviceMethod}`);
-        }
       });
     } catch (error) {
       console.error("Failed to initialize services:", error);
@@ -565,6 +405,11 @@ app.on("ready", async () => {
   });
   const rpcPort = await rpcServer.start();
   log.info(`[RPC] Server started on port ${rpcPort}`);
+
+  // Register AI service now that rpcServer exists
+  if (coreHandle) {
+    coreHandle.registerAiService(rpcServer);
+  }
 
   // Generate shell token
   const shellToken = getTokenManager().getOrCreateShellToken();
@@ -601,37 +446,29 @@ app.on("will-quit", (event) => {
     }
   }
 
-  // Shutdown agent settings service (closes database)
-  shutdownAgentSettingsService();
-
-  // Stop agent discovery file watching
-  shutdownAgentDiscovery();
-
-  // Shutdown AgentHost FIRST - gives agents time to close pubsub connections
-  // before we stop the pubsub server
-  shutdownAgentHost();
-
-  // Shutdown NatstackWatcher (saves dirty package state for next startup)
-  void shutdownNatstackWatcher();
-
-  const hasResourcesToClean = gitServer || gitWatcher || cdpServer || pubsubServer || verdaccioServer || rpcServer;
+  const hasResourcesToClean = coreHandle || rpcServer || cdpServer;
   if (hasResourcesToClean) {
     isCleaningUp = true;
     event.preventDefault();
 
     console.log("[App] Shutting down...");
 
-    // Stop all servers in parallel
     const stopPromises: Promise<void>[] = [];
 
+    // Core services (only if initialized)
+    if (coreHandle) {
+      stopPromises.push(
+        coreHandle.shutdown().catch((e) => console.error("[App] Core shutdown error:", e))
+      );
+    }
+
+    // Caller-managed servers (each .catch()-wrapped)
     if (rpcServer) {
       stopPromises.push(
         rpcServer
           .stop()
           .then(() => console.log("[App] RPC server stopped"))
-          .catch((error) => {
-            console.error("Error stopping RPC server:", error);
-          })
+          .catch((e) => console.error("[App] Error stopping RPC server:", e))
       );
     }
 
@@ -640,72 +477,23 @@ app.on("will-quit", (event) => {
         cdpServer
           .stop()
           .then(() => console.log("[App] CDP server stopped"))
-          .catch((error) => {
-            console.error("Error stopping CDP server:", error);
-          })
+          .catch((e) => console.error("[App] Error stopping CDP server:", e))
       );
     }
 
-    if (gitServer) {
-      stopPromises.push(
-        gitServer
-          .stop()
-          .then(() => console.log("[App] Git server stopped"))
-          .catch((error) => {
-            console.error("Error stopping git server:", error);
-          })
-      );
-    }
-
-    if (gitWatcher) {
-      stopPromises.push(
-        gitWatcher
-          .close()
-          .then(() => console.log("[App] GitWatcher stopped"))
-          .catch((error) => {
-            console.error("Error stopping GitWatcher:", error);
-          })
-      );
-    }
-
-    if (pubsubServer) {
-      stopPromises.push(
-        pubsubServer
-          .stop()
-          .then(() => console.log("[App] PubSub server stopped"))
-          .catch((error) => {
-            console.error("Error stopping PubSub server:", error);
-          })
-      );
-    }
-
-    if (verdaccioServer) {
-      stopPromises.push(
-        verdaccioServer
-          .stop()
-          .then(() => console.log("[App] Verdaccio server stopped"))
-          .catch((error) => {
-            console.error("Error stopping Verdaccio server:", error);
-          })
-      );
-    }
-
-    // Flush dependency graph consumer registrations to disk
+    // Global singletons (always — runs in both main and chooser mode)
     stopPromises.push(
       getDependencyGraph()
         .then((graph) => graph.flush())
         .then(() => console.log("[App] Dependency graph flushed"))
-        .catch((error) => {
-          console.error("[App] Error flushing dependency graph:", error);
-        })
+        .catch((e) => console.error("[App] Error flushing dependency graph:", e))
     );
 
-    // Shutdown package store (closes SQLite connection)
     try {
       shutdownPackageStore();
       console.log("[App] Package store shutdown");
-    } catch (error) {
-      console.error("[App] Error shutting down package store:", error);
+    } catch (e) {
+      console.error("[App] Error shutting down package store:", e);
     }
 
     // Add a timeout to ensure we exit even if cleanup hangs
