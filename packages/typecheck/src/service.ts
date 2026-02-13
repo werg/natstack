@@ -18,6 +18,8 @@ import * as path from "path";
 import {
   type ModuleResolutionConfig,
   resolveModule,
+  resolveExportSubpath,
+  WORKSPACE_CONDITIONS,
   DEFAULT_DEDUPE_PACKAGES,
 } from "./resolution.js";
 import { FS_TYPE_DEFINITIONS, PATH_TYPE_DEFINITIONS, GLOBAL_TYPE_DEFINITIONS, NODE_BUILTIN_TYPE_STUBS, NODE_FS_TYPE_DEFINITIONS, loadNatstackPackageTypes, findPackagesDir, type NatstackPackageTypes } from "./lib/index.js";
@@ -1051,14 +1053,13 @@ export class TypeCheckService {
       // Resolve via package.json exports
       if (packageJson.exports) {
         const exportKey = subpath ? `./${subpath}` : ".";
-        const exportValue = packageJson.exports[exportKey];
-
-        if (typeof exportValue === "string") {
-          resolvedFile = path.join(packageDir, exportValue);
-        } else if (exportValue?.types) {
-          resolvedFile = path.join(packageDir, exportValue.types);
-        } else if (exportValue?.default) {
-          resolvedFile = path.join(packageDir, exportValue.default);
+        const target = resolveExportSubpath(
+          packageJson.exports as Record<string, unknown>,
+          exportKey,
+          WORKSPACE_CONDITIONS,
+        );
+        if (target) {
+          resolvedFile = path.join(packageDir, target);
         }
       }
 

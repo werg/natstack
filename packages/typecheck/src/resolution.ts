@@ -304,6 +304,15 @@ ${fsConstants}
 // @natstack/* Package Path Resolution
 // ===========================================================================
 
+/** Conditions for esbuild bundling (@natstack/* packages). */
+export const BUNDLE_CONDITIONS = ["natstack-panel", "default"] as const;
+
+/** Conditions for type definition resolution. */
+export const TYPES_CONDITIONS = ["types"] as const;
+
+/** Conditions for workspace package resolution in the TypeScript service. */
+export const WORKSPACE_CONDITIONS = ["types", "default"] as const;
+
 /**
  * Parsed result of a @natstack/* import specifier.
  */
@@ -336,29 +345,39 @@ export function parseNatstackImport(specifier: string): NatstackImportParts | nu
 }
 
 /**
+ * Recursively resolve a condition value from an exports entry.
+ * Handles nested condition objects like { "import": { "types": "...", "default": "..." } }.
+ */
+function resolveConditionValue(
+  value: unknown,
+  conditions: readonly string[],
+): string | null {
+  if (typeof value === "string") return value;
+  if (typeof value !== "object" || value === null) return null;
+  const obj = value as Record<string, unknown>;
+  for (const cond of conditions) {
+    if (obj[cond] === undefined) continue;
+    const resolved = resolveConditionValue(obj[cond], conditions);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
+/**
  * Resolve the file path for a subpath export from a package.json exports map.
  *
- * Checks conditions in order: the provided condition (if any), then "types", then "default".
+ * Checks conditions in the order specified by the `conditions` array.
+ * Supports nested condition objects (e.g., `{ "import": { "types": "..." } }`).
  * Returns the resolved path string (e.g., "./dist/config-entry.js") or null.
  */
 export function resolveExportSubpath(
-  exports: Record<string, string | Record<string, string>>,
+  exports: Record<string, unknown>,
   subpath: string,
-  condition?: string,
+  conditions: readonly string[],
 ): string | null {
   const exportValue = exports[subpath];
   if (exportValue === undefined) return null;
-
-  if (typeof exportValue === "string") return exportValue;
-
-  // Check conditions in priority order
-  const conditions = condition
-    ? [condition, "types", "default"]
-    : ["types", "default"];
-  for (const cond of conditions) {
-    if (typeof exportValue[cond] === "string") return exportValue[cond];
-  }
-  return null;
+  return resolveConditionValue(exportValue, conditions);
 }
 
 /**

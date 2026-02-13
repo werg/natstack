@@ -5,7 +5,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { resolveExportSubpath } from "../resolution.js";
+import { resolveExportSubpath, TYPES_CONDITIONS } from "../resolution.js";
 
 /**
  * Discover @natstack/* packages by scanning the packages directory.
@@ -150,8 +150,8 @@ async function loadPackageTypesAsync(
   if (pkgJson.exports) {
     for (const exportPath of Object.keys(pkgJson.exports)) {
       if (exportPath === ".") continue;
-      const typesPath = resolveExportSubpath(pkgJson.exports, exportPath, "types");
-      if (typesPath) {
+      const typesPath = resolveExportSubpath(pkgJson.exports as Record<string, unknown>, exportPath, TYPES_CONDITIONS);
+      if (typesPath && /\.d\.[cm]?ts$/.test(typesPath)) {
         subpaths[exportPath] = typesPath.replace(/^\.\/dist\//, "");
       }
     }
