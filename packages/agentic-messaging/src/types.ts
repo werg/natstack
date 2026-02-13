@@ -556,6 +556,8 @@ export interface IncomingMethodResult {
 export interface AggregatedEventBase {
   /** Aggregated events are always replays */
   kind: "replay";
+  /** Explicit discriminator — distinguishes aggregated replay from raw IncomingEvent */
+  aggregated: true;
   pubsubId: number;
   senderId: string;
   senderName?: string;
@@ -575,6 +577,8 @@ export interface AggregatedMessage extends AggregatedEventBase {
   contentType?: string;
   /** Arbitrary metadata (e.g., SDK session/message UUIDs for recovery) */
   metadata?: Record<string, unknown>;
+  /** Error state from IncomingErrorMessage (implies completion) */
+  error?: string;
 }
 
 export interface AggregatedMethodCall extends AggregatedEventBase {
@@ -596,6 +600,11 @@ export interface AggregatedMethodResult extends AggregatedEventBase {
 }
 
 export type AggregatedEvent = AggregatedMessage | AggregatedMethodCall | AggregatedMethodResult;
+
+/** Type guard to distinguish AggregatedEvent from raw IncomingEvent in EventStreamItem */
+export function isAggregatedEvent(event: EventStreamItem): event is AggregatedEvent {
+  return "aggregated" in event && (event as AggregatedEventBase).aggregated === true;
+}
 
 export interface FormatOptions {
   maxChars?: number;
@@ -951,6 +960,13 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
       attachments?: Attachment[];
     }>;
     hasMore: boolean;
+  }>;
+
+  /** Get older messages before a given ID, aggregated (for chat pagination) */
+  getAggregatedMessagesBefore(beforeId: number, limit?: number): Promise<{
+    messages: AggregatedMessage[];
+    hasMore: boolean;
+    nextBeforeId?: number;
   }>;
 
   // === Lifecycle ===

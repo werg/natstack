@@ -20,6 +20,9 @@ import type {
   EventStreamItem,
   EventStreamOptions,
   IncomingEvent,
+  IncomingNewMessage,
+  IncomingUpdateMessage,
+  IncomingErrorMessage,
   IncomingPresenceEvent,
   IncomingMethodCall,
   IncomingMethodResult,
@@ -226,6 +229,66 @@ function resolveToolRoleConflict(
     return a.id.localeCompare(b.id);
   });
   return sorted[0]!.id;
+}
+
+/** Row shape from getMessagesBefore pagination results */
+type MessagesBeforeRow = {
+  id: number;
+  type: string;
+  payload: unknown;
+  senderId: string;
+  ts: number;
+  senderMetadata?: Record<string, unknown>;
+  attachments?: Attachment[];
+};
+
+/** Convert a pagination row to IncomingEvent, returning null for malformed rows (like parseIncoming) */
+function rawRowToIncomingEvent(
+  row: MessagesBeforeRow,
+  normalizeMeta: (metadata: Record<string, unknown> | undefined) => { name?: string; type?: string; handle?: string } | undefined
+): IncomingEvent | null {
+  try {
+    const payload = typeof row.payload === "object" && row.payload !== null
+      ? row.payload as Record<string, unknown> : null;
+    if (!payload || typeof payload["id"] !== "string") return null;
+
+    const senderMetadata = normalizeMeta(row.senderMetadata);
+    const base = {
+      kind: "replay" as const,
+      senderId: row.senderId,
+      ts: row.ts,
+      pubsubId: row.id,
+      senderMetadata,
+      attachments: row.attachments,
+    };
+
+    if (row.type === "message") {
+      if (typeof payload["content"] !== "string") return null;
+      return { ...base, type: "message", id: payload["id"],
+        content: payload["content"],
+        contentType: typeof payload["contentType"] === "string" ? payload["contentType"] : undefined,
+        replyTo: typeof payload["replyTo"] === "string" ? payload["replyTo"] : undefined,
+        metadata: typeof payload["metadata"] === "object" ? payload["metadata"] as Record<string, unknown> : undefined,
+      } as IncomingNewMessage;
+    }
+    if (row.type === "update-message") {
+      return { ...base, type: "update-message", id: payload["id"],
+        content: typeof payload["content"] === "string" ? payload["content"] : undefined,
+        complete: typeof payload["complete"] === "boolean" ? payload["complete"] : undefined,
+        contentType: typeof payload["contentType"] === "string" ? payload["contentType"] : undefined,
+      } as IncomingUpdateMessage;
+    }
+    if (row.type === "error") {
+      if (typeof payload["error"] !== "string") return null;
+      return { ...base, type: "error", id: payload["id"],
+        error: payload["error"],
+        code: typeof payload["code"] === "string" ? payload["code"] : undefined,
+      } as IncomingErrorMessage;
+    }
+    return null;
+  } catch {
+    return null;  // Skip malformed rows
+  }
 }
 
 export interface AgenticClientImpl<T extends AgenticParticipantMetadata = AgenticParticipantMetadata>
@@ -1235,7 +1298,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
   }
 
   function isIncomingEvent(event: EventStreamItem): event is IncomingEvent {
-    return "kind" in event;
+    return !("aggregated" in event);
   }
 
   function events(options?: EventStreamOptions): AsyncIterableIterator<EventStreamItem> {
@@ -1797,6 +1860,35 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     },
     getMessagesBefore: async (beforeId: number, limit?: number) => {
       return pubsub.getMessagesBefore(beforeId, limit);
+    },
+    getAggregatedMessagesBefore: async (beforeId: number, limit?: number) => {
+      const effectiveLimit = limit ?? 100;
+      const result = await pubsub.getMessagesBefore(beforeId, effectiveLimit);
+
+      // Always advance cursor to prevent livelock when a page has no chat messages
+      const firstMsg = result.messages[0];
+      const nextBeforeId = firstMsg !== undefined
+        ? firstMsg.id             // lowest ID in the returned page
+        : undefined;              // no more messages at all
+
+      // Combine main page with trailing updates for complete boundary messages
+      const allRows = [...result.messages, ...(result.trailingUpdates ?? [])];
+
+      // Convert raw rows to IncomingEvent format (null-safe like parseIncoming)
+      const events = allRows
+        .filter(m => ["message", "update-message", "error"].includes(m.type))
+        .flatMap(m => {
+          const event = rawRowToIncomingEvent(m, normalizeSenderMetadata);
+          return event ? [event] : [];  // skip malformed rows
+        });
+
+      const aggregated = aggregateReplayEvents(events);
+
+      return {
+        messages: aggregated.filter((e): e is AggregatedMessage => e.type === "message"),
+        hasMore: result.hasMore,
+        nextBeforeId,
+      };
     },
     // === Agent Management ===
     listAgents: (timeoutMs?: number) => pubsub.listAgents(timeoutMs),

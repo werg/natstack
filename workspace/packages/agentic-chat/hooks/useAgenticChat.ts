@@ -9,9 +9,11 @@ import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { CONTENT_TYPE_TYPING, CONTENT_TYPE_INLINE_UI } from "@natstack/agentic-messaging/utils";
 import type {
   IncomingEvent,
+  IncomingMethodResult,
   IncomingToolRoleRequestEvent,
   IncomingToolRoleResponseEvent,
   IncomingToolRoleHandoffEvent,
+  AggregatedEvent,
   AgentDebugPayload,
   MethodDefinition,
   MethodExecutionContext,
@@ -41,7 +43,7 @@ import {
 import { useChannelConnection } from "./useChannelConnection";
 import { useMethodHistory } from "./useMethodHistory";
 import { useToolRole } from "./useToolRole";
-import { dispatchAgenticEvent, type DirtyRepoDetails, type EventMiddleware } from "./useAgentEvents";
+import { dispatchAgenticEvent, aggregatedToChatMessage, type DirtyRepoDetails, type EventMiddleware } from "./useAgentEvents";
 import { cleanupPendingImages, type PendingImage } from "../utils/imageUtils";
 import { parseInlineUiData } from "../components/InlineUiMessage";
 import type { MethodHistoryEntry } from "../components/MethodHistoryItem";
@@ -316,6 +318,54 @@ export function useAgenticChat({
       },
       [setMessages, addMethodHistoryEntry, handleMethodResult, config.clientId, eventMiddleware]
     ),
+    onAggregatedEvent: useCallback((event: AggregatedEvent) => {
+      switch (event.type) {
+        case "message": {
+          const chatMsg = aggregatedToChatMessage(event);
+          setMessages(prev => {
+            // Dedup by pubsubId
+            if (chatMsg.pubsubId && prev.some(m => m.pubsubId === chatMsg.pubsubId)) return prev;
+            // Dedup by UUID
+            if (prev.some(m => m.id === chatMsg.id)) return prev;
+            return [...prev, chatMsg];
+          });
+          break;
+        }
+        case "method-call": {
+          addMethodHistoryEntry({
+            callId: event.callId,
+            methodName: event.methodName,
+            description: undefined,
+            args: event.args,
+            status: "pending",
+            startedAt: event.ts,
+            providerId: event.providerId,
+            callerId: event.senderId,
+            handledLocally: false,
+          });
+          break;
+        }
+        case "method-result": {
+          const isError = event.status === "error";
+          handleMethodResult({
+            kind: "replay",
+            senderId: event.senderId,
+            ts: event.ts,
+            callId: event.callId,
+            content: event.content,
+            complete: event.status !== "incomplete",
+            isError,
+            pubsubId: event.pubsubId,
+            senderMetadata: {
+              name: event.senderName,
+              type: event.senderType,
+              handle: event.senderHandle,
+            },
+          } as IncomingMethodResult);
+          break;
+        }
+      }
+    }, [setMessages, addMethodHistoryEntry, handleMethodResult]),
     onRoster: useCallback((roster: RosterUpdate<ChatParticipantMetadata>) => {
       const newParticipants = roster.participants;
       const prevParts = prevParticipantsRef.current;
@@ -427,7 +477,7 @@ export function useAgenticChat({
     }, []),
   });
 
-  // Load earlier messages
+  // Load earlier messages (using aggregated pagination)
   const loadEarlierMessages = useCallback(async () => {
     const client = clientRef.current;
     if (!client || loadingMore || !hasMoreHistory || !oldestLoadedId) return;
@@ -436,24 +486,33 @@ export function useAgenticChat({
       let currentBeforeId = oldestLoadedId;
       let olderMessages: ChatMessage[] = [];
       let hasMore = true;
+
+      // Loop to skip pages with only non-message events (method calls, presence, etc.)
       while (hasMore && olderMessages.length === 0) {
-        const result = await client.getMessagesBefore(currentBeforeId, 100);
-        if (result.messages.length === 0) { hasMore = false; break; }
-        currentBeforeId = result.messages[0]?.id ?? currentBeforeId;
+        const result = await client.getAggregatedMessagesBefore(currentBeforeId, 50);
+        olderMessages = result.messages.map(aggregatedToChatMessage);
         hasMore = result.hasMore;
-        const chatMessages = result.messages.filter((m) => m.type === "message");
-        olderMessages = chatMessages.map((msg) => {
-          const payload = typeof msg.payload === "object" && msg.payload !== null
-            ? (msg.payload as { content?: string; contentType?: string }) : {};
-          return {
-            id: String(msg.id), pubsubId: msg.id, senderId: msg.senderId, content: payload.content ?? "",
-            contentType: payload.contentType, kind: "message" as const, complete: true,
-            senderMetadata: msg.senderMetadata as { name?: string; type?: string; handle?: string } | undefined,
-            attachments: msg.attachments,
-          };
+
+        // Always advance cursor via nextBeforeId (prevents livelock on empty pages)
+        if (result.nextBeforeId !== undefined) {
+          currentBeforeId = result.nextBeforeId;
+        } else {
+          hasMore = false;
+          break;
+        }
+      }
+
+      if (olderMessages.length > 0) {
+        setMessages(prev => {
+          const existingIds = new Set(
+            prev.filter(m => m.pubsubId != null).map(m => m.pubsubId)
+          );
+          const deduped = olderMessages.filter(
+            m => !m.pubsubId || !existingIds.has(m.pubsubId)
+          );
+          return [...deduped, ...prev];
         });
       }
-      if (olderMessages.length > 0) { setMessages((prev) => [...olderMessages, ...prev]); }
       setOldestLoadedId(currentBeforeId);
       setHasMoreHistory(hasMore);
     } catch (err) {

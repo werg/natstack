@@ -11,10 +11,35 @@ import type {
   IncomingAgentDebugEvent,
   AgentDebugPayload,
   AgentBuildError,
+  AggregatedMessage,
 } from "@natstack/agentic-messaging";
 import type { Participant, Attachment } from "@natstack/pubsub";
 import type { MethodHistoryEntry } from "../components/MethodHistoryItem";
 import type { ChatParticipantMetadata, ChatMessage, PendingAgent } from "../types";
+
+// ===========================================================================
+// Aggregated → ChatMessage Converter
+// ===========================================================================
+
+/** Convert an AggregatedMessage (from collect replay or aggregated pagination) to ChatMessage */
+export function aggregatedToChatMessage(event: AggregatedMessage): ChatMessage {
+  return {
+    id: event.id,
+    pubsubId: event.pubsubId,
+    senderId: event.senderId,
+    content: event.content,
+    contentType: event.contentType,
+    kind: "message",
+    complete: event.complete || !!event.error,
+    error: event.error,
+    replyTo: event.replyTo,
+    senderMetadata: {
+      name: event.senderName,
+      type: event.senderType,
+      handle: event.senderHandle,
+    },
+  };
+}
 
 // ===========================================================================
 // Types
@@ -162,6 +187,10 @@ export function dispatchAgenticEvent(
             }
             return prev.map((m, i) => (i === existingIndex ? updated : m));
           }
+          return prev;
+        }
+        // Dedup by pubsubId (catches replay/pagination overlap)
+        if (event.pubsubId !== undefined && prev.some(m => m.pubsubId === event.pubsubId)) {
           return prev;
         }
         return [
