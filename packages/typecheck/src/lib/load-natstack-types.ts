@@ -5,37 +5,43 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { resolveExportSubpath } from "../resolution.js";
 
-const PACKAGES_TO_LOAD = [
-  "runtime",
-  "ai",
-  "eval",
-  "git",
-  "git-ui",
-  "react",
-  "rpc",
-  "pubsub",
-  "agentic-messaging",
-  "playwright-client",
-  "playwright-core",
-  "playwright-protocol",
-  "tool-ui",
-] as const;
+/**
+ * Discover @natstack/* packages by scanning the packages directory.
+ * Returns directory names that contain a package.json.
+ */
+async function discoverPackages(packagesDir: string): Promise<string[]> {
+  try {
+    const entries = await fs.promises.readdir(packagesDir, { withFileTypes: true });
+    const checks = await Promise.all(
+      entries
+        .filter((e) => e.isDirectory())
+        .map(async (e) => {
+          try {
+            await fs.promises.access(path.join(packagesDir, e.name, "package.json"));
+            return e.name;
+          } catch {
+            return null;
+          }
+        })
+    );
+    return checks.filter((name): name is string => name !== null);
+  } catch {
+    return [];
+  }
+}
 
 export interface NatstackPackageTypes {
   files: Record<string, string>;
   subpaths: Record<string, string>;
 }
 
-interface PackageExports {
-  [subpath: string]: { types?: string; default?: string } | string;
-}
-
 interface PackageJson {
   name: string;
   types?: string;
   typings?: string;
-  exports?: PackageExports;
+  exports?: Record<string, string | Record<string, string>>;
 }
 
 /** Module-level cache for loadNatstackPackageTypes results, keyed by packagesDir */
@@ -89,9 +95,10 @@ export function loadSinglePackageTypes(packagesDir: string, packageName: string)
 export async function preloadNatstackTypesAsync(packagesDir: string): Promise<void> {
   if (natstackTypesCache.has(packagesDir)) return;
 
-  // Load all packages in parallel
+  // Discover and load all packages in parallel
+  const packageNames = await discoverPackages(packagesDir);
   const loadResults = await Promise.all(
-    PACKAGES_TO_LOAD.map(async (pkgName) => {
+    packageNames.map(async (pkgName) => {
       const types = await loadPackageTypesAsync(packagesDir, pkgName);
       return { pkgName, types };
     })
@@ -141,19 +148,11 @@ async function loadPackageTypesAsync(
   // Build subpaths from package.json exports
   const subpaths: Record<string, string> = {};
   if (pkgJson.exports) {
-    for (const [exportPath, exportConfig] of Object.entries(pkgJson.exports)) {
+    for (const exportPath of Object.keys(pkgJson.exports)) {
       if (exportPath === ".") continue;
-
-      let typesPath: string | undefined;
-      if (typeof exportConfig === "string") {
-        typesPath = exportConfig;
-      } else if (exportConfig.types) {
-        typesPath = exportConfig.types;
-      }
-
+      const typesPath = resolveExportSubpath(pkgJson.exports, exportPath, "types");
       if (typesPath) {
-        const relativePath = typesPath.replace(/^\.\/dist\//, "");
-        subpaths[exportPath] = relativePath;
+        subpaths[exportPath] = typesPath.replace(/^\.\/dist\//, "");
       }
     }
   }

@@ -8,7 +8,6 @@ import type { PanelManager } from "../panelManager.js";
 import type { CdpServer } from "../cdpServer.js";
 import type { CreateChildOptions } from "../../shared/types.js";
 import { handleTemplateComplete, type TemplateCompleteResult } from "../contextTemplate/partitionBuilder.js";
-import { getAgentDiscovery } from "../agentDiscovery.js";
 import { getViewManager } from "../viewManager.js";
 
 /**
@@ -233,13 +232,8 @@ export async function handleBridgeCall(
       return createRepo(repoPath);
     }
     case "listAgents": {
-      // List available agents from AgentDiscovery (filesystem source of truth)
-      const discovery = getAgentDiscovery();
-      if (!discovery) {
-        return [];
-      }
-      // Return only valid agents with their manifests
-      return discovery.listValid().map((agent) => agent.manifest);
+      // List available agents - delegates to server where AgentDiscovery runs
+      return pm.listAgents();
     }
     // =========================================================================
     // History integration (replaces IPC panel:history-* handlers)

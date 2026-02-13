@@ -143,6 +143,7 @@ async function main() {
   const { getMainCacheManager } = await import("../main/cacheManager.js");
   const { scheduleGC, shutdownPackageStore } = await import("../main/package-store/index.js");
   const { preloadNatstackTypesAsync } = await import("@natstack/typecheck");
+  const { setVerdaccioConfig } = await import("../main/verdaccioConfig.js");
   const { GitServer } = await import("../main/gitServer.js");
   const { getTokenManager } = await import("../main/tokenManager.js");
   const { getServiceDispatcher } = await import("../main/serviceDispatcher.js");
@@ -205,6 +206,12 @@ async function main() {
   });
 
   const handle = await startCoreServices({ workspace, gitServer });
+
+  // Configure Verdaccio for the build pipeline (used by sharedBuild.ts)
+  setVerdaccioConfig({
+    url: `http://127.0.0.1:${handle.verdaccioServer.getPort()}`,
+    getPackageVersion: (name) => handle.verdaccioServer.getPackageVersion(name),
+  });
 
   // ===========================================================================
   // Service registration + RPC server

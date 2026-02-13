@@ -30,4 +30,6 @@ export interface ServerInfo {
   listCommits(repoPath: string, ref: string, limit: number): Promise<unknown>;
   /** Resolve a git ref to a commit SHA (used for GitHub paths) */
   resolveRef(repoPath: string, ref: string): Promise<string>;
+  /** List discovered agents (delegated to server) */
+  listAgents(): Promise<unknown>;
 }

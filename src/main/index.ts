@@ -192,6 +192,8 @@ function buildServerInfo(ports: ServerPorts): ServerInfo {
       requireServerClient().call("git", "listCommits", [repoPath, ref, limit]),
     resolveRef: (repoPath, ref) =>
       requireServerClient().call("git", "resolveRef", [repoPath, ref]) as Promise<string>,
+    listAgents: () =>
+      requireServerClient().call("agentSettings", "listAgents", []),
   };
 }
 

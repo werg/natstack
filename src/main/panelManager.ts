@@ -4090,6 +4090,14 @@ export class PanelManager {
     return this.serverInfo.listCommits(repoPath, ref ?? "HEAD", limit ?? 50) as Promise<SharedPanel.CommitInfo[]>;
   }
 
+  /**
+   * List discovered agents.
+   * Delegates to server via ServerInfo.
+   */
+  async listAgents(): Promise<unknown> {
+    return this.serverInfo.listAgents();
+  }
+
   // Map panelId -> browser state tracking cleanup info
   private browserStateCleanup = new Map<string, { cleanup: () => void; destroyedHandler: () => void }>();
   // Map panelId -> link interception handler for will-navigate

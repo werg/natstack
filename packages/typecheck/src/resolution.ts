@@ -300,6 +300,67 @@ ${fsConstants}
   }
 }
 
+// ===========================================================================
+// @natstack/* Package Path Resolution
+// ===========================================================================
+
+/**
+ * Parsed result of a @natstack/* import specifier.
+ */
+export interface NatstackImportParts {
+  /** Package directory name (e.g., "agentic-messaging") */
+  packageName: string;
+  /** Subpath in exports-map format (e.g., "." or "./config") */
+  subpath: string;
+}
+
+/**
+ * Parse a @natstack/* import specifier into package name and subpath.
+ * Returns null if the specifier is not a @natstack/* import.
+ *
+ * Examples:
+ *   "@natstack/runtime"             → { packageName: "runtime", subpath: "." }
+ *   "@natstack/agentic-messaging/config" → { packageName: "agentic-messaging", subpath: "./config" }
+ */
+export function parseNatstackImport(specifier: string): NatstackImportParts | null {
+  if (!specifier.startsWith("@natstack/")) return null;
+  const withoutScope = specifier.slice("@natstack/".length);
+  const slashIndex = withoutScope.indexOf("/");
+  if (slashIndex === -1) {
+    return { packageName: withoutScope, subpath: "." };
+  }
+  return {
+    packageName: withoutScope.slice(0, slashIndex),
+    subpath: "./" + withoutScope.slice(slashIndex + 1),
+  };
+}
+
+/**
+ * Resolve the file path for a subpath export from a package.json exports map.
+ *
+ * Checks conditions in order: the provided condition (if any), then "types", then "default".
+ * Returns the resolved path string (e.g., "./dist/config-entry.js") or null.
+ */
+export function resolveExportSubpath(
+  exports: Record<string, string | Record<string, string>>,
+  subpath: string,
+  condition?: string,
+): string | null {
+  const exportValue = exports[subpath];
+  if (exportValue === undefined) return null;
+
+  if (typeof exportValue === "string") return exportValue;
+
+  // Check conditions in priority order
+  const conditions = condition
+    ? [condition, "types", "default"]
+    : ["types", "default"];
+  for (const cond of conditions) {
+    if (typeof exportValue[cond] === "string") return exportValue[cond];
+  }
+  return null;
+}
+
 /**
  * Check if a string is a bare specifier (npm package, not a path).
  */
