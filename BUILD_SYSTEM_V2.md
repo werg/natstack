@@ -10,7 +10,7 @@ The following preparatory work has been completed on the `claude/redesign-build-
 
 ### Unsafe mode removal (commit `7f3ab4a`)
 
-The `unsafe` option (nodeIntegration, no sandbox) has been fully eliminated. All panels and workers now run in safe browser sandbox mode. Changes:
+The `unsafe` option (nodeIntegration, no sandbox) has been partially removed. The primary unsafe code paths — preload, view creation, build strategies, and about-page Node.js usage — are eliminated. Remaining cleanup (ns:// URL parsing, `panelBuilder` option signatures, `ContextMode` type, `contextId` unsafe helpers) is tracked in Migration 6 and Migration 7 below. Changes so far:
 
 - **New:** `src/main/ipc/gitServiceHandler.ts` — Main process RPC handler for git operations + scoped filesystem access
 - **New:** `src/about-pages/shared/serviceAdapters.ts` — Client-side RPC adapters (`FsPromisesLike`, `GitClient`) that route through the service dispatcher
@@ -73,7 +73,7 @@ build_key = hash(ev, sourcemap)
 
 The store is keyed by build key, not EV alone. Two builds of the same source with different options produce different entries. The `sourcemap` flag is determined from the unit's `package.json` manifest at build time — it is not a caller-supplied knob.
 
-> **Note:** The `unsafe` option has been removed from the codebase entirely. All panels and workers now run in browser sandbox mode (safe preload, ESM, browser platform). The git-init and dirty-repo about pages that previously required Node.js access have been refactored to use RPC service calls via a new git service handler.
+> **Note:** The primary `unsafe` code paths have been removed — safe preload is now the only preload, all panels build with `platform: "browser"` / `format: "esm"`, and the about pages that previously required Node.js access use RPC service calls. Residual `unsafe` references remain in ns:// URL parsing (`nsProtocol.ts`), worker build options (`panelBuilder.ts`), context template types (`ContextMode`, `contextId.ts`), and `preloadUtils.ts` (`ARG_SCOPE_PATH`). These are cleaned up in Migrations 6 and 7.
 
 **gitRef support is intentionally removed.** V1 used gitRef for Verdaccio version-pinning. V2 computes EVs from the working tree. Building arbitrary commits is not a V2 use case.
 
@@ -657,7 +657,7 @@ Replace all hardcoded about-page knowledge with dynamic manifest discovery:
 
 V1 exposes `gitRef` and `sourcemap` as **caller-supplied options** flowing through ns:// URLs, `CreateChildOptions`, `PanelSnapshot.options`, and `panelManager.buildPanelAsync()`. V2 makes these **manifest-derived** (read from `package.json` at build time). The caller API surface must be updated to match.
 
-> **Already completed:** The `unsafe` option has been fully removed from the codebase — from `CreateChildOptions`, `PanelSnapshot.options`, `PanelManifest`, `PanelBuildOptions`, `WorkerBuildOptions`, panel/about build strategies, `viewManager`, `panelManager`, ns:// URL parsing, `preloadUtils`, `context.ts`, and the runtime `fs.ts`. The `unsafePreload.ts` file has been deleted. All panels now build with `platform: "browser"`, `format: "esm"`.
+> **Partially completed:** The `unsafe` option has been removed from the main execution paths — `PanelManifest`, `PanelBuildOptions`, `WorkerBuildOptions`, panel/about build strategies, `viewManager`, `panelManager` panel creation, and the runtime `fs.ts`. The `unsafePreload.ts` file has been deleted. All panels now build with `platform: "browser"`, `format: "esm"`. **Remaining:** `unsafe` parameter in `nsProtocol.ts` (URL parsing/building), `panelBuilder.ts` (option signatures and platform/format/shim conditionals), `preloadUtils.ts` (`ARG_SCOPE_PATH`), `contextTemplate/types.ts` (`ContextMode`), and `contextTemplate/contextId.ts` (`createUnsafeContextId`, `isUnsafeNoContextId`, unsafe regex/parser). These are removed as part of the rewrites below and in Migration 7.
 
 **What remains:**
 
@@ -678,21 +678,40 @@ V1 exposes `gitRef` and `sourcemap` as **caller-supplied options** flowing throu
 
 Migration 4 removes the template-builder worker and its build infrastructure. This migration completes the job by removing the **general worker concept** from shared types, runtime API, service dispatch, and access policies.
 
-**Why remove entirely:** Template-builder is the only worker that has ever existed. The worker infrastructure (hidden WebContentsView processes with IPC-based service access) is unused beyond this single case, which itself is being moved to a server RPC call. Keeping dead abstractions in the type system and policy table adds confusion and maintenance burden.
+**Why remove entirely:** Template-builder is the only worker that has ever been *shipped*. However, worker infrastructure is deeply integrated — `CallerKind` includes `"worker"`, service policies authorize it for 8+ services, token management issues worker tokens, `panelManager.ts` has ~137 worker references, and `workspace/loader.ts` scaffolds a `workers/` directory. This migration must therefore address all of these integration points, not just the template-builder removal.
+
+**Critical dependency: agent-host token replacement.** `src/main/coreServices.ts` (line 125) creates tokens with `callerKind: "worker"` for agent-host-issued operations. Before removing `"worker"` from `CallerKind`, this must be migrated to `"server"` (since the agent host runs in the server process). Verify no other code path creates worker tokens beyond template-builder and agent-host.
 
 **Specific rewrites:**
 
-1. `src/shared/types.ts`: Remove `"worker"` from `PanelType` union (line 208) → becomes `"app" | "browser" | "shell"`. Remove `runtime?: "panel" | "worker"` from `PanelManifest` (line 64). Remove `type: "app" | "worker"` → just `type: "app"` (line 50).
-2. `packages/runtime/src/core/types.ts`: Delete `WorkerChildSpec` interface entirely (line 169). Remove worker-related exports from the runtime API.
-3. `src/main/serviceDispatcher.ts`: Remove `"worker"` from `CallerKind` type (line 10) → becomes `"panel" | "shell" | "server"`.
-4. `src/main/servicePolicy.ts`: Remove `"worker"` from all `allowed` arrays in `SERVICE_POLICIES` (line 67+). Every service that lists `["panel", "worker", "shell", "server"]` becomes `["panel", "shell", "server"]`.
-5. `src/main/panelManager.ts`: Remove all worker-specific panel creation/lifecycle code beyond what Migration 4 already covers. Remove worker type checks in panel routing logic.
+1. `src/main/coreServices.ts`: Change `getTokenManager().createToken(instanceId, "worker")` → `getTokenManager().createToken(instanceId, "server")` for agent-host token creation. This must happen **before** step 3.
+2. `src/shared/types.ts`: Remove `"worker"` from `PanelType` union (line 208) → becomes `"app" | "browser" | "shell"`. Remove `runtime?: "panel" | "worker"` from `PanelManifest` (line 64). Remove `type: "app" | "worker"` → just `type: "app"` (line 50).
+3. `packages/runtime/src/core/types.ts`: Delete `WorkerChildSpec` interface entirely (line 169). Remove worker-related exports from the runtime API.
+4. `src/main/serviceDispatcher.ts`: Remove `"worker"` from `CallerKind` type (line 10) → becomes `"panel" | "shell" | "server"`.
+5. `src/main/servicePolicy.ts`: Remove `"worker"` from all `allowed` arrays in `SERVICE_POLICIES` (line 67+). Every service that lists `["panel", "worker", "shell", "server"]` becomes `["panel", "shell", "server"]`.
+6. `src/main/panelManager.ts`: Remove all worker-specific panel creation/lifecycle code beyond what Migration 4 already covers. Remove worker type checks in panel routing logic. Remove `buildWorkerAsync()`, `generateWorkerHostHtml()`, worker type detection from source path prefix.
+7. `src/main/workspace/loader.ts`: Remove `"workers"` from `mkdirSync` scaffold (line 264).
+8. `src/main/contextTemplate/types.ts`: Remove `ContextMode` type (`"safe" | "unsafe"` → only safe exists).
+9. `src/main/contextTemplate/contextId.ts`: Delete `createUnsafeContextId()`, `isUnsafeNoContextId()`, `UNSAFE_NOCTX_REGEX`, and unsafe parsing branch in `parseContextId()`.
+10. `src/preload/preloadUtils.ts`: Remove `ARG_SCOPE_PATH` constant (unsafe scope path argument).
+11. `src/main/nsProtocol.ts`: Remove `unsafe` field from parsed result and URL builder. Remove `unsafe` parameter parsing.
+12. `src/main/panelBuilder.ts`: Remove `unsafe` from `buildPanel()`/`buildWorker()` option signatures. Remove platform/format/shim conditionals. Remove `computeWorkerOptionsSuffix()`.
 
 ---
 
 ## Part 5: Dead Code Removal
 
 Everything listed below is deleted or gutted after V2 is operational and migrations are complete.
+
+> **Ordering constraint:** These deletions have hard prerequisites. Do NOT delete files until their V2 replacements are fully operational:
+>
+> - `cacheManager.ts` and `diskCache.ts` are imported in both `src/main/index.ts` (boot) and `src/server/index.ts` (boot + shutdown). Delete only after the V2 content-addressed store handles all cache operations and both entry points are updated.
+> - `verdaccioServer.ts` and `verdaccioConfig.ts` are created/configured in `coreServices.ts` and used during workspace package publishing. Delete only after the V2 workspace watcher + esbuild resolve plugin replace Verdaccio entirely.
+> - `natstackPackageWatcher.ts` is initialized in `coreServices.ts` and triggers Verdaccio republish on file changes. Delete only after V2 file watching is in place.
+> - `serverProcessManager.ts` defines `ServerPorts` (including `verdaccioPort`) used throughout startup. Remove `verdaccioPort` from the interface before deleting Verdaccio files, but do not delete the file itself (it's still needed for RPC/git/pubsub ports).
+> - `package-store/*` files are consumed by the V1 build pipeline. Delete only after no V1 build path remains.
+>
+> **Safe deletion order:** V2 builder operational → update entry points (`index.ts`, `coreServices.ts`) → delete V1 build pipeline (`src/main/build/`) → delete package store (`src/main/package-store/`) → delete Verdaccio (`verdaccioServer.ts`, `verdaccioConfig.ts`) → delete remaining V1 files (`cacheManager.ts`, `diskCache.ts`, `cacheUtils.ts`, `dependencyGraph.ts`, `natstackPackageWatcher.ts`, `aboutBuilder.ts`, `builtinWorkerBuilder.ts`, `natstackResolvePlugin.ts`).
 
 ### Files to Delete Entirely
 
