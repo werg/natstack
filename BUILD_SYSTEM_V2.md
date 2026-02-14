@@ -603,7 +603,7 @@ Mechanical find-and-replace across the entire codebase:
 
 1. **package.json `name` fields** (18 packages): `"@natstack/core"` → `"@workspace/core"`
 2. **package.json `dependencies`** (31 files): `"@natstack/runtime": "*"` → `"@workspace/runtime": "*"`
-3. **Source imports** (~335 statements, ~207 files): `from "@natstack/core"` → `from "@workspace/core"`
+3. **Source imports** (~335 of the ~682 total references, across ~207 of the ~274 files): `from "@natstack/core"` → `from "@workspace/core"`
 4. **Resolve plugin** (`src/main/natstackResolvePlugin.ts`): rename filter from `@natstack/` to `@workspace/`
 5. **Typecheck resolution** (`packages/typecheck/src/resolution.ts`): update `parseNatstackImport` → `parseWorkspaceImport`
 6. **Build config aliases** (vitest.config.ts, packages/*/build.mjs): update path mappings
@@ -668,11 +668,12 @@ V1 exposes `gitRef` and `sourcemap` as **caller-supplied options** flowing throu
 
 **Specific rewrites:**
 
-1. `packages/runtime/src/core/types.ts`: Remove `gitRef` from `CreateChildOptions` (line 67). Remove `sourcemap` from `CreateChildOptions` (line 73). Remove `WorkerChildSpec` interface entirely — workers eliminated.
-2. `src/main/nsProtocol.ts`: Remove `gitRef` parsing from `parseNsUrl()`. Simplify URL to carry only source identity.
-3. `src/shared/panel/accessors.ts`: Remove `"gitRef"` and `"sourcemap"` from `SOURCE_SCOPED_OPTIONS`. Delete `getPanelGitRef()` and `getPanelSourcemap()` accessors.
-4. `src/main/panelManager.ts`: Remove `gitRef` and `sourcemap` from `buildPanelAsync()` options. Build options come from manifest only.
-5. `src/shared/types.ts`: Remove `gitRef` and `sourcemap` from `PanelOptions` / snapshot option types.
+1. `packages/runtime/src/core/types.ts`: Remove `gitRef` from `CreateChildOptions` (line 67). Remove `sourcemap` from `CreateChildOptions` (line 73). Remove `WorkerChildSpec` interface entirely — workers eliminated (see Migration 7). Remove `sourcemap?: boolean` from `AppChildSpec` (line 147). Remove `gitRef?: string` from `GitConfig` (line 202).
+2. `packages/runtime/src/core/nsLinks.ts`: Remove `gitRef?: string` from `BuildNsLinkOptions` (line 23). Remove `gitRef` URL param emission in `buildNsLink()` (line 66-67). Remove gitRef from JSDoc example (line 51).
+3. `src/main/nsProtocol.ts`: Remove `gitRef` parsing from `parseNsUrl()`. Simplify URL to carry only source identity.
+4. `src/shared/panel/accessors.ts`: Remove `"gitRef"` and `"sourcemap"` from `SOURCE_SCOPED_OPTIONS`. Delete `getPanelGitRef()` and `getPanelSourcemap()` accessors.
+5. `src/main/panelManager.ts`: Remove `gitRef` and `sourcemap` from `buildPanelAsync()` options. Build options come from manifest only.
+6. `src/shared/types.ts`: Remove `gitRef` and `sourcemap` from `PanelOptions` / snapshot option types.
 
 ### Migration 7: Eliminate worker concept from type system and policies
 
@@ -693,9 +694,12 @@ Migration 4 removes the template-builder worker and its build infrastructure. Th
 7. `src/main/workspace/loader.ts`: Remove `"workers"` from `mkdirSync` scaffold (line 264).
 8. `src/main/contextTemplate/types.ts`: Remove `ContextMode` type (`"safe" | "unsafe"` → only safe exists).
 9. `src/main/contextTemplate/contextId.ts`: Delete `createUnsafeContextId()`, `isUnsafeNoContextId()`, `UNSAFE_NOCTX_REGEX`, and unsafe parsing branch in `parseContextId()`.
-10. `src/preload/preloadUtils.ts`: Remove `ARG_SCOPE_PATH` constant (unsafe scope path argument).
-11. `src/main/nsProtocol.ts`: Remove `unsafe` field from parsed result and URL builder. Remove `unsafe` parameter parsing.
-12. `src/main/panelBuilder.ts`: Remove `unsafe` from `buildPanel()`/`buildWorker()` option signatures. Remove platform/format/shim conditionals. Remove `computeWorkerOptionsSuffix()`.
+10. `src/preload/preloadUtils.ts`: Remove `ARG_SCOPE_PATH` constant (unsafe scope path argument). Change `NatstackKind` type (line 113) from `"panel" | "worker" | "shell"` to `"panel" | "shell"`. Remove `if (kind === "worker") return "worker"` branch in `parseKind()` (line 143).
+11. `packages/runtime/src/shared/globals.ts`: Change `__natstackKind` type (line 18) from `"panel" | "worker" | "shell"` to `"panel" | "shell"`. Change `kind` in `InjectedConfig` (line 34) likewise.
+12. `packages/runtime/src/core/nsLinks.ts`: Remove "workers" from comment on line 4 ("Navigate to app panels and workers" → "Navigate to app panels"). Remove `"workers/task"` from JSDoc example (line 39).
+13. `src/main/gitServer.ts`: Remove `"workers/*"` from default `initPatterns` array (line 70).
+14. `src/main/nsProtocol.ts`: Remove `unsafe` field from parsed result and URL builder. Remove `unsafe` parameter parsing.
+15. `src/main/panelBuilder.ts`: Remove `unsafe` from `buildPanel()`/`buildWorker()` option signatures. Remove platform/format/shim conditionals. Remove `computeWorkerOptionsSuffix()`.
 
 ---
 
