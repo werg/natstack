@@ -146,6 +146,8 @@ export interface RosterUpdate<T extends ParticipantMetadata = ParticipantMetadat
   participants: Record<string, Participant<T>>;
   /** Timestamp of the update */
   ts: number;
+  /** Participants that left in this update, with reason (only present on leave events) */
+  leaves?: Record<string, { leaveReason?: "graceful" | "disconnect" }>;
 }
 
 /**

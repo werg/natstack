@@ -84,6 +84,8 @@ type PresenceAction = "join" | "leave" | "update";
 interface PresencePayload {
   action?: PresenceAction;
   metadata?: Record<string, unknown>;
+  /** Reason for leave (only present when action === "leave") */
+  leaveReason?: "graceful" | "disconnect";
 }
 
 /**
@@ -656,6 +658,13 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
             const rosterUpdate: RosterUpdate<T> = {
               participants: currentRoster,
               ts: msg.ts ?? Date.now(),
+              ...(presenceAction === "leave" && msg.senderId && {
+                leaves: {
+                  [msg.senderId]: {
+                    leaveReason: (msg.payload as PresencePayload)?.leaveReason,
+                  },
+                },
+              }),
             };
             for (const handler of rosterHandlers) {
               handler(rosterUpdate);
