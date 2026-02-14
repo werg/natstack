@@ -14,6 +14,7 @@ export {
   MessageQueue,
   createQueuePositionText,
   cleanupQueuedTypingTrackers,
+  drainForInterleave,
   type QueuedMessageBase,
   type QueuePositionTextOptions,
 } from "./message-queue.js";

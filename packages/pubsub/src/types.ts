@@ -170,6 +170,8 @@ export interface RosterUpdate<T extends ParticipantMetadata = ParticipantMetadat
   ts: number;
   /** What triggered this update (absent during initial catch-up emit on handler registration) */
   change?: RosterChange;
+  /** Participants that left in this update, with reason (only present on leave events) */
+  leaves?: Record<string, { leaveReason?: "graceful" | "disconnect" }>;
 }
 
 /**

@@ -25,13 +25,13 @@ export interface MessageQueueStats {
 /**
  * Options for creating a message queue.
  */
-export interface MessageQueueOptions {
+export interface MessageQueueOptions<T extends EventStreamItem = EventStreamItem> {
   /**
    * Callback invoked for each event to process.
    * Events are processed sequentially (one at a time) unless
    * concurrency is increased.
    */
-  onProcess: (event: EventStreamItem) => Promise<void>;
+  onProcess: (event: T) => Promise<void>;
 
   /**
    * Maximum number of events to process concurrently.
@@ -43,13 +43,13 @@ export interface MessageQueueOptions {
    * Callback invoked when an error occurs during processing.
    * If not provided, errors are logged to console.
    */
-  onError?: (error: Error, event: EventStreamItem) => void;
+  onError?: (error: Error, event: T) => void;
 
   /**
    * Callback invoked before processing each event (for UI updates like queue position).
    * Receives the event and current queue position (0 = first in queue).
    */
-  onDequeue?: (event: EventStreamItem, queuePosition: number) => void | Promise<void>;
+  onDequeue?: (event: T, queuePosition: number) => void | Promise<void>;
 
   /**
    * Callback invoked periodically during long processing operations.
@@ -62,18 +62,24 @@ export interface MessageQueueOptions {
    * @default 60000 (1 minute)
    */
   heartbeatIntervalMs?: number;
+
+  /**
+   * Fires when an item is enqueued while processing is active.
+   * Useful for signaling that new messages arrived during an agentic loop.
+   */
+  onNewItem?: (event: T) => void;
 }
 
 /**
  * Message queue interface for agent event processing.
  */
-export interface MessageQueue {
+export interface MessageQueue<T extends EventStreamItem = EventStreamItem> {
   /**
    * Add an event to the queue for processing.
    * @param event - The event to enqueue
    * @returns false if the queue is stopped, true otherwise
    */
-  enqueue(event: EventStreamItem): boolean;
+  enqueue(event: T): boolean;
 
   /**
    * Wait for all pending events to complete processing.
@@ -120,6 +126,13 @@ export interface MessageQueue {
    * Check if any event is currently being processed.
    */
   isProcessing(): boolean;
+
+  /**
+   * Atomically drain and return all pending items.
+   * Items taken this way bypass onDequeue/onProcess — they're consumed
+   * directly by the active processor (e.g., for message interleaving).
+   */
+  takePending(): T[];
 }
 
 /**
@@ -156,7 +169,7 @@ export interface MessageQueue {
  * }
  * ```
  */
-export function createMessageQueue(options: MessageQueueOptions): MessageQueue {
+export function createMessageQueue<T extends EventStreamItem = EventStreamItem>(options: MessageQueueOptions<T>): MessageQueue<T> {
   const {
     onProcess,
     concurrency = 1,
@@ -164,9 +177,10 @@ export function createMessageQueue(options: MessageQueueOptions): MessageQueue {
     onDequeue,
     onHeartbeat,
     heartbeatIntervalMs = 60_000,
+    onNewItem,
   } = options;
 
-  const pending: EventStreamItem[] = [];
+  const pending: T[] = [];
   let activeCount = 0;
   let stopped = false;
   let paused = false;
@@ -245,10 +259,19 @@ export function createMessageQueue(options: MessageQueueOptions): MessageQueue {
   };
 
   return {
-    enqueue(event: EventStreamItem): boolean {
+    enqueue(event: T): boolean {
       if (stopped) return false;
 
       pending.push(event);
+
+      // Notify listener when a new item arrives while processing is active
+      if (onNewItem && activeCount > 0) {
+        try {
+          onNewItem(event);
+        } catch (err) {
+          console.error("[MessageQueue] onNewItem error:", err);
+        }
+      }
 
       // Start processing if not paused
       if (!paused) {
@@ -314,6 +337,11 @@ export function createMessageQueue(options: MessageQueueOptions): MessageQueue {
 
     isProcessing(): boolean {
       return activeCount > 0;
+    },
+
+    takePending(): T[] {
+      const taken = pending.splice(0, pending.length);
+      return taken;
     },
   };
 }
