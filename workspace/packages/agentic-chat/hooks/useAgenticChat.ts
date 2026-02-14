@@ -220,6 +220,7 @@ export function useAgenticChat({
   useEffect(() => {
     if (messages.length > TRIM_THRESHOLD) {
       let referencedUiIds: Set<string> | undefined;
+      let trimFirstPubsubId: number | undefined;
       setMessages((prev) => {
         const trimmed = prev.slice(-MAX_VISIBLE_MESSAGES);
         referencedUiIds = new Set<string>();
@@ -229,13 +230,15 @@ export function useAgenticChat({
             if (data) referencedUiIds!.add(data.id);
           }
         }
-        const firstMsg = trimmed[0];
-        if (firstMsg?.pubsubId) {
-          setOldestLoadedId(firstMsg.pubsubId);
-          setHasMoreHistory(true);
-        }
+        trimFirstPubsubId = trimmed[0]?.pubsubId;
         return trimmed;
       });
+      // Update pagination state outside the setMessages updater (avoids
+      // side-effects inside state updater functions).
+      if (trimFirstPubsubId !== undefined) {
+        setOldestLoadedId(trimFirstPubsubId);
+        setHasMoreHistory(true);
+      }
       if (referencedUiIds) {
         const ids = referencedUiIds;
         setInlineUiComponents(prevComponents => {
@@ -391,6 +394,10 @@ export function useAgenticChat({
         for (const prevId of prevIds) {
           if (!newIds.has(prevId)) {
             disconnectedIds.push(prevId);
+            // Skip disconnect message for graceful leaves (hibernation, normal shutdown)
+            if (roster.leaves?.[prevId]?.leaveReason === "graceful") {
+              continue;
+            }
             const disconnected = prevParts[prevId];
             const meta = disconnected?.metadata;
             if (meta && meta.type !== "panel") {
@@ -534,21 +541,43 @@ export function useAgenticChat({
     return () => { unsubscribe(); };
   }, [connected, clientRef]);
 
-  // Initialize pagination
+  // Initialize pagination cursor.
+  // Only sets oldestLoadedId (the pagination cursor), NOT hasMoreHistory.
+  // hasMoreHistory is set by the trim effect (when messages exceed the threshold)
+  // and by the debounced post-replay check below.
   useEffect(() => {
-    const client = clientRef.current;
-    if (!client || !connected || messages.length === 0) return;
+    if (!connected || messages.length === 0) return;
     if (oldestLoadedId !== null) return;
     const firstMsgWithId = messages.find((m) => m.pubsubId !== undefined);
     if (firstMsgWithId?.pubsubId !== undefined) {
       setOldestLoadedId(firstMsgWithId.pubsubId);
+    }
+  }, [connected, messages.length, oldestLoadedId]);
+
+  // Post-replay history detection.
+  // Debounced: resets a short timer on every messages.length change. Once
+  // messages stop arriving (replay complete), the timer fires and compares
+  // loaded count against the server's chatMessageCount. This avoids the
+  // race in the init effect above (which fires when only 1 message is
+  // loaded) while still detecting history for checkpoint-based connections
+  // (replaySinceId > 0) that don't replay everything.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  useEffect(() => {
+    if (!connected || hasMoreHistory) return;
+    const timer = setTimeout(() => {
+      const client = clientRef.current;
+      if (!client) return;
       const serverChatCount = client.chatMessageCount;
-      const dbMessageCount = messages.filter((m) => m.pubsubId !== undefined).length;
-      if (serverChatCount !== undefined && serverChatCount > dbMessageCount) {
+      if (serverChatCount === undefined) return;
+      const currentMessages = messagesRef.current;
+      const dbMessageCount = currentMessages.filter(m => m.pubsubId !== undefined).length;
+      if (serverChatCount > dbMessageCount) {
         setHasMoreHistory(true);
       }
-    }
-  }, [connected, messages.length, oldestLoadedId, clientRef]);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [connected, messages.length, hasMoreHistory, clientRef]);
 
   // Typing indicators
   const typingMessageIdRef = useRef<string | null>(null);
