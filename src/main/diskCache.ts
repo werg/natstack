@@ -6,7 +6,7 @@
 
 import { promises as fsPromises } from "fs";
 import * as path from "path";
-import { app } from "electron";
+import { getUserDataPath } from "./envPaths.js";
 import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("DiskCache");
@@ -30,7 +30,7 @@ const CACHE_FILENAME = "build-cache.json";
  * Get the cache file path
  */
 function getCacheFilePath(): string {
-  const userDataPath = app.getPath("userData");
+  const userDataPath = getUserDataPath();
   return path.join(userDataPath, CACHE_FILENAME);
 }
 

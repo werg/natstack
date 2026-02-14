@@ -29,7 +29,7 @@ import type { AgenticParticipantMetadata } from "@natstack/agentic-messaging";
  * Agents can check this to handle runtime-specific behavior if needed,
  * but ideally should be written to work identically in both modes.
  */
-export type RuntimeMode = "electron" | "durable-object";
+export type RuntimeMode = "electron" | "node" | "durable-object";
 
 /**
  * Unified runtime context for agents.

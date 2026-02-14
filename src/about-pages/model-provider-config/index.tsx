@@ -24,7 +24,7 @@ import {
 } from "@radix-ui/themes";
 import { rpc } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
-import type { SettingsData, ProviderInfo, AvailableProvider } from "../../shared/ipc/types.js";
+import type { SettingsData, ProviderInfo, AvailableProvider } from "../../shared/types.js";
 
 const MODEL_ROLES = ["smart", "coding", "fast", "cheap"] as const;
 

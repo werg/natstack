@@ -90,9 +90,9 @@ export function buildNsLink(source: string, options?: BuildNsLinkOptions): strin
 /**
  * Valid shell/about page names.
  */
-export type AboutPage = "model-provider-config" | "about" | "keyboard-shortcuts" | "help" | "new" | "adblock";
+export type AboutPage = "model-provider-config" | "about" | "keyboard-shortcuts" | "help" | "new" | "adblock" | "agents" | "dirty-repo" | "git-init";
 
-const VALID_ABOUT_PAGES: AboutPage[] = ["model-provider-config", "about", "keyboard-shortcuts", "help", "new", "adblock"];
+const VALID_ABOUT_PAGES: AboutPage[] = ["model-provider-config", "about", "keyboard-shortcuts", "help", "new", "adblock", "agents", "dirty-repo", "git-init"];
 
 /**
  * Build an ns-about:// URL for navigating to a shell/about page.

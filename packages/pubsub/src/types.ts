@@ -89,6 +89,8 @@ export interface ReadyMessage {
   totalCount?: number;
   /** Count of type="message" events only, for accurate chat pagination */
   chatMessageCount?: number;
+  /** ID of the first chat message in the channel (for pagination boundary) */
+  firstChatMessageId?: number;
 }
 
 /**
@@ -99,6 +101,15 @@ export interface ReadyMessage {
 export interface MessagesBeforeResponse {
   kind: "messages-before";
   messages: Array<{
+    id: number;
+    type: string;
+    payload: unknown;
+    senderId: string;
+    ts: number;
+    senderMetadata?: Record<string, unknown>;
+    attachments?: Attachment[];
+  }>;
+  trailingUpdates?: Array<{
     id: number;
     type: string;
     payload: unknown;

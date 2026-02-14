@@ -5,13 +5,15 @@
  * Returns a ChatContextValue-compatible object that can be passed to ChatProvider.
  */
 
-import { useState, useCallback, useMemo, useRef, useEffect } from "react";
+import { useState, useCallback, useMemo, useRef, useEffect, useReducer } from "react";
 import { CONTENT_TYPE_TYPING, CONTENT_TYPE_INLINE_UI } from "@natstack/agentic-messaging/utils";
 import type {
   IncomingEvent,
+  IncomingMethodResult,
   IncomingToolRoleRequestEvent,
   IncomingToolRoleResponseEvent,
   IncomingToolRoleHandoffEvent,
+  AggregatedEvent,
   AgentDebugPayload,
   MethodDefinition,
   MethodExecutionContext,
@@ -41,7 +43,7 @@ import {
 import { useChannelConnection } from "./useChannelConnection";
 import { useMethodHistory } from "./useMethodHistory";
 import { useToolRole } from "./useToolRole";
-import { dispatchAgenticEvent, type DirtyRepoDetails, type EventMiddleware } from "./useAgentEvents";
+import { dispatchAgenticEvent, aggregatedToChatMessage, type DirtyRepoDetails, type EventMiddleware } from "./useAgentEvents";
 import { cleanupPendingImages, type PendingImage } from "../utils/imageUtils";
 import { parseInlineUiData } from "../components/InlineUiMessage";
 import type { MethodHistoryEntry } from "../components/MethodHistoryItem";
@@ -57,6 +59,78 @@ import type {
   ChatInputContextValue,
   InlineUiComponentEntry,
 } from "../types";
+
+// =============================================================================
+// Message window reducer — single source of truth for messages + pagination
+// =============================================================================
+
+const MAX_VISIBLE_MESSAGES = 500;
+const TRIM_THRESHOLD = MAX_VISIBLE_MESSAGES * 2;
+
+interface MessageWindowState {
+  messages: ChatMessage[];
+  oldestLoadedId: number | null;
+  paginationExhausted: boolean;
+}
+
+type MessageWindowAction =
+  | { type: "replace"; updater: (prev: ChatMessage[]) => ChatMessage[] }
+  | { type: "prepend"; olderMessages: ChatMessage[]; newCursor: number; exhausted: boolean }
+  | { type: "reset" };
+
+const messageWindowInitialState: MessageWindowState = {
+  messages: [],
+  oldestLoadedId: null,
+  paginationExhausted: false,
+};
+
+function messageWindowReducer(state: MessageWindowState, action: MessageWindowAction): MessageWindowState {
+  switch (action.type) {
+    case "replace": {
+      const updated = action.updater(state.messages);
+      if (updated === state.messages) return state;
+
+      // Auto-trim if over threshold
+      if (updated.length > TRIM_THRESHOLD) {
+        const trimmed = updated.slice(-MAX_VISIBLE_MESSAGES);
+        const trimFirstPubsubId = trimmed[0]?.pubsubId;
+        return {
+          messages: trimmed,
+          oldestLoadedId: trimFirstPubsubId ?? state.oldestLoadedId,
+          paginationExhausted: false, // trimming means there's more history
+        };
+      }
+
+      // Initialize cursor if not yet set
+      let { oldestLoadedId } = state;
+      if (oldestLoadedId === null && updated.length > 0) {
+        const firstWithId = updated.find((m) => m.pubsubId !== undefined);
+        if (firstWithId?.pubsubId !== undefined) {
+          oldestLoadedId = firstWithId.pubsubId;
+        }
+      }
+
+      return { ...state, messages: updated, oldestLoadedId };
+    }
+    case "prepend": {
+      // Dedup by pubsubId
+      const existingIds = new Set(
+        state.messages.filter((m) => m.pubsubId != null).map((m) => m.pubsubId)
+      );
+      const deduped = action.olderMessages.filter(
+        (m) => !m.pubsubId || !existingIds.has(m.pubsubId)
+      );
+      const merged = deduped.length > 0 ? [...deduped, ...state.messages] : state.messages;
+      return {
+        messages: merged,
+        oldestLoadedId: action.newCursor,
+        paginationExhausted: action.exhausted,
+      };
+    }
+    case "reset":
+      return messageWindowInitialState;
+  }
+}
 
 /** Pending agent info passed from launcher */
 interface PendingAgentInfo {
@@ -115,8 +189,15 @@ export function useAgenticChat({
   eventMiddlewareRef.current = eventMiddleware;
   const inputRef = useRef("");
 
-  // Chat state
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // Chat state — reducer-based message window
+  const [messageWindow, dispatch] = useReducer(messageWindowReducer, messageWindowInitialState);
+  const { messages } = messageWindow;
+  const setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>> = useCallback(
+    (action: React.SetStateAction<ChatMessage[]>) => {
+      dispatch({ type: "replace", updater: typeof action === "function" ? action : () => action });
+    },
+    []
+  );
   const [input, setInput] = useState("");
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [status, setStatus] = useState("Connecting...");
@@ -216,53 +297,51 @@ export function useAgenticChat({
     void compileInlineUiMessages();
   }, [messages, inlineUiComponents]);
 
-  // Memory management
-  const MAX_VISIBLE_MESSAGES = 500;
-  const TRIM_THRESHOLD = MAX_VISIBLE_MESSAGES * 2;
-  const [hasMoreHistory, setHasMoreHistory] = useState(false);
-  const [oldestLoadedId, setOldestLoadedId] = useState<number | null>(null);
+  // Pagination state — firstChatMessageId from server, synced via onReady
+  const [firstChatMessageId, setFirstChatMessageId] = useState<number | undefined>();
   const [loadingMore, setLoadingMore] = useState(false);
-  const paginationInitializedRef = useRef(false);
 
+  // Derive hasMoreHistory from reducer state + server boundary
+  const hasMoreHistory = useMemo(() => {
+    if (messageWindow.paginationExhausted) return false;
+    if (messageWindow.oldestLoadedId === null) return false;
+    if (firstChatMessageId !== undefined) {
+      return messageWindow.oldestLoadedId > firstChatMessageId;
+    }
+    return true;
+  }, [messageWindow.paginationExhausted, messageWindow.oldestLoadedId, firstChatMessageId]);
+
+  // Inline UI cleanup when messages shrink (e.g. after trim in reducer)
+  const prevMsgCountRef = useRef(0);
   useEffect(() => {
-    if (messages.length > TRIM_THRESHOLD) {
-      paginationInitializedRef.current = true;
-      let referencedUiIds: Set<string> | undefined;
-      setMessages((prev) => {
-        const trimmed = prev.slice(-MAX_VISIBLE_MESSAGES);
-        referencedUiIds = new Set<string>();
-        for (const msg of trimmed) {
-          if (msg.contentType === CONTENT_TYPE_INLINE_UI) {
-            const data = parseInlineUiData(msg.content);
-            if (data) referencedUiIds!.add(data.id);
-          }
-        }
-        const firstMsg = trimmed[0];
-        if (firstMsg?.pubsubId) {
-          setOldestLoadedId(firstMsg.pubsubId);
-          setHasMoreHistory(true);
-        }
-        return trimmed;
-      });
-      if (referencedUiIds) {
-        const ids = referencedUiIds;
-        setInlineUiComponents(prevComponents => {
-          const next = new Map(prevComponents);
-          let removedCount = 0;
-          for (const [id, component] of prevComponents) {
-            if (!ids.has(id)) {
-              if (component.Component && component.cacheKey) {
-                cleanupInlineUiComponent(component.cacheKey);
-              }
-              next.delete(id);
-              removedCount++;
-            }
-          }
-          return removedCount > 0 ? next : prevComponents;
-        });
+    if (messages.length >= prevMsgCountRef.current) {
+      prevMsgCountRef.current = messages.length;
+      return;
+    }
+    prevMsgCountRef.current = messages.length;
+    // Collect referenced inline UI IDs from surviving messages
+    const referencedUiIds = new Set<string>();
+    for (const msg of messages) {
+      if (msg.contentType === CONTENT_TYPE_INLINE_UI) {
+        const data = parseInlineUiData(msg.content);
+        if (data) referencedUiIds.add(data.id);
       }
     }
-  }, [messages.length]);
+    setInlineUiComponents(prevComponents => {
+      const next = new Map(prevComponents);
+      let removedCount = 0;
+      for (const [id, component] of prevComponents) {
+        if (!referencedUiIds.has(id)) {
+          if (component.Component && component.cacheKey) {
+            cleanupInlineUiComponent(component.cacheKey);
+          }
+          next.delete(id);
+          removedCount++;
+        }
+      }
+      return removedCount > 0 ? next : prevComponents;
+    });
+  }, [messages]);
 
   // Cleanup pending images on unmount
   const pendingImagesRef = useRef(pendingImages);
@@ -328,6 +407,54 @@ export function useAgenticChat({
       },
       [setMessages, addMethodHistoryEntry, handleMethodResult, config.clientId]
     ),
+    onAggregatedEvent: useCallback((event: AggregatedEvent) => {
+      switch (event.type) {
+        case "message": {
+          const chatMsg = aggregatedToChatMessage(event);
+          setMessages(prev => {
+            // Dedup by pubsubId
+            if (chatMsg.pubsubId && prev.some(m => m.pubsubId === chatMsg.pubsubId)) return prev;
+            // Dedup by UUID
+            if (prev.some(m => m.id === chatMsg.id)) return prev;
+            return [...prev, chatMsg];
+          });
+          break;
+        }
+        case "method-call": {
+          addMethodHistoryEntry({
+            callId: event.callId,
+            methodName: event.methodName,
+            description: undefined,
+            args: event.args,
+            status: "pending",
+            startedAt: event.ts,
+            providerId: event.providerId,
+            callerId: event.senderId,
+            handledLocally: false,
+          });
+          break;
+        }
+        case "method-result": {
+          const isError = event.status === "error";
+          handleMethodResult({
+            kind: "replay",
+            senderId: event.senderId,
+            ts: event.ts,
+            callId: event.callId,
+            content: event.content,
+            complete: event.status !== "incomplete",
+            isError,
+            pubsubId: event.pubsubId,
+            senderMetadata: {
+              name: event.senderName,
+              type: event.senderType,
+              handle: event.senderHandle,
+            },
+          } as IncomingMethodResult);
+          break;
+        }
+      }
+    }, [setMessages, addMethodHistoryEntry, handleMethodResult]),
     onRoster: useCallback((roster: RosterUpdate<ChatParticipantMetadata>) => {
       const newParticipants = roster.participants;
       const prevParts = prevParticipantsRef.current;
@@ -356,6 +483,10 @@ export function useAgenticChat({
         for (const prevId of prevIds) {
           if (!newIds.has(prevId)) {
             disconnectedIds.push(prevId);
+            // Skip disconnect message for graceful leaves (hibernation, normal shutdown)
+            if (changeIsGraceful && roster.change?.participantId === prevId) {
+              continue;
+            }
             const disconnected = prevParts[prevId];
             const meta = disconnected?.metadata;
             if (meta && meta.type !== "panel") {
@@ -457,9 +588,19 @@ export function useAgenticChat({
   // Synchronous guard to prevent duplicate concurrent calls from scroll bursts
   const loadingMoreRef = useRef(false);
 
-  // Load earlier messages
+  // Sync firstChatMessageId on every ready (initial + reconnect)
+  useEffect(() => {
+    const client = clientRef.current;
+    if (!client || !connected) return;
+    return client.onReady(() => {
+      setFirstChatMessageId(client.firstChatMessageId);
+    });
+  }, [connected, clientRef]);
+
+  // Load earlier messages (using aggregated pagination)
   const loadEarlierMessages = useCallback(async () => {
     const client = clientRef.current;
+    const oldestLoadedId = messageWindow.oldestLoadedId;
     if (!client || loadingMoreRef.current || !hasMoreHistory || !oldestLoadedId) return;
     loadingMoreRef.current = true;
     setLoadingMore(true);
@@ -467,33 +608,30 @@ export function useAgenticChat({
       let currentBeforeId = oldestLoadedId;
       let olderMessages: ChatMessage[] = [];
       let hasMore = true;
+
+      // Loop to skip pages with only non-message events (method calls, presence, etc.)
       while (hasMore && olderMessages.length === 0) {
-        const result = await client.getMessagesBefore(currentBeforeId, 100);
-        if (result.messages.length === 0) { hasMore = false; break; }
-        currentBeforeId = result.messages[0]?.id ?? currentBeforeId;
+        const result = await client.getAggregatedMessagesBefore(currentBeforeId, 50);
+        olderMessages = result.messages.map(aggregatedToChatMessage);
         hasMore = result.hasMore;
-        const chatMessages = result.messages.filter((m) => m.type === "message");
-        olderMessages = chatMessages.map((msg) => {
-          const payload = typeof msg.payload === "object" && msg.payload !== null
-            ? (msg.payload as { content?: string; contentType?: string }) : {};
-          return {
-            id: String(msg.id), pubsubId: msg.id, senderId: msg.senderId, content: payload.content ?? "",
-            contentType: payload.contentType, kind: "message" as const, complete: true,
-            senderMetadata: msg.senderMetadata as { name?: string; type?: string; handle?: string } | undefined,
-            attachments: msg.attachments,
-          };
-        });
+
+        // Always advance cursor via nextBeforeId (prevents livelock on empty pages)
+        if (result.nextBeforeId !== undefined) {
+          currentBeforeId = result.nextBeforeId;
+        } else {
+          hasMore = false;
+          break;
+        }
       }
-      if (olderMessages.length > 0) { setMessages((prev) => [...olderMessages, ...prev]); }
-      setOldestLoadedId(currentBeforeId);
-      setHasMoreHistory(hasMore);
+
+      dispatch({ type: "prepend", olderMessages, newCursor: currentBeforeId, exhausted: !hasMore });
     } catch (err) {
       console.error("[Chat] Failed to load earlier messages:", err);
     } finally {
       loadingMoreRef.current = false;
       setLoadingMore(false);
     }
-  }, [clientRef, oldestLoadedId, hasMoreHistory]);
+  }, [clientRef, messageWindow.oldestLoadedId, hasMoreHistory]);
 
   useEffect(() => { selfIdRef.current = clientId; }, [clientId]);
 
@@ -506,24 +644,6 @@ export function useAgenticChat({
     const unsubscribe = client.onTitleChange((title) => { document.title = title; });
     return () => { unsubscribe(); };
   }, [connected, clientRef]);
-
-  // Initialize pagination (skipped if the trim effect already initialized it)
-  useEffect(() => {
-    if (paginationInitializedRef.current) return;
-    const client = clientRef.current;
-    if (!client || !connected || messages.length === 0) return;
-    if (oldestLoadedId !== null) return;
-    const firstMsgWithId = messages.find((m) => m.pubsubId !== undefined);
-    if (firstMsgWithId?.pubsubId !== undefined) {
-      paginationInitializedRef.current = true;
-      setOldestLoadedId(firstMsgWithId.pubsubId);
-      const serverChatCount = client.chatMessageCount;
-      const dbMessageCount = messages.filter((m) => m.pubsubId !== undefined).length;
-      if (serverChatCount !== undefined && serverChatCount > dbMessageCount) {
-        setHasMoreHistory(true);
-      }
-    }
-  }, [connected, messages.length, oldestLoadedId, clientRef]);
 
   // Typing indicators
   const typingMessageIdRef = useRef<string | null>(null);
@@ -737,6 +857,7 @@ export default function App({ onSubmit, onCancel }) {
         };
 
         await connectToChannel({ channelId: channelName, methods, channelConfig, contextId });
+        setFirstChatMessageId(clientRef.current?.firstChatMessageId);
         setStatus("Connected");
       } catch (err) {
         console.error("[Chat] Connection error:", err);
@@ -750,7 +871,8 @@ export default function App({ onSubmit, onCancel }) {
 
   // Reset handler
   const reset = useCallback(() => {
-    setMessages([]);
+    dispatch({ type: "reset" });
+    setFirstChatMessageId(undefined);
     setInput("");
     inputRef.current = "";
     cleanupPendingImages(pendingImagesRef.current);
@@ -761,9 +883,6 @@ export default function App({ onSubmit, onCancel }) {
     for (const callId of activeFeedbacksRef.current.keys()) { dismissFeedback(callId); }
     // Reset pagination state
     loadingMoreRef.current = false;
-    paginationInitializedRef.current = false;
-    setHasMoreHistory(false);
-    setOldestLoadedId(null);
     setLoadingMore(false);
     actions?.onNewConversation?.();
   }, [clearMethodHistory, dismissFeedback, actions]);

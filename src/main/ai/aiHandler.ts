@@ -2,28 +2,26 @@
  * AI Handler for managing LLM API calls.
  *
  * This handler:
- * - Routes AI SDK requests from panels through IPC to the main process
+ * - Routes AI SDK requests from panels/workers via WS RPC
  * - Manages provider registration and model discovery
  * - Handles streaming and error propagation
  * - Provides structured logging and error codes
  *
  * Security:
- * - Derives panel identity from Electron sender, not from request parameters
+ * - Caller identity derived from token-authenticated WS connections
  * - Validates all responses from AI SDK
  * - Implements stream resource limits and cleanup
  */
 
-import { MessageChannelMain } from "electron";
 import type { AIRoleRecord, AIModelInfo, AIToolDefinition } from "@natstack/ai";
 import type {
   StreamTextOptions,
   StreamTextEvent,
-  ToolExecutionResult as IPCToolExecutionResult,
-} from "../../shared/ipc/types.js";
+} from "../../shared/types.js";
 import { createAIError } from "../../shared/errors.js";
 import { Logger, generateRequestId } from "../../shared/logging.js";
 import { validateToolDefinitions } from "../../shared/validation.js";
-import { TOOL_EXECUTION_TIMEOUT_MS, MAX_STREAM_DURATION_MS } from "../../shared/constants.js";
+import { MAX_STREAM_DURATION_MS } from "../../shared/constants.js";
 import {
   getClaudeCodeConversationManager,
   type ClaudeCodeConversationManager,
@@ -417,25 +415,6 @@ export class AIHandler {
     return roles;
   }
 
-  startPanelStream(
-    sender: Electron.WebContents,
-    panelId: string,
-    options: StreamTextOptions,
-    streamId: string,
-    requestId: string = generateRequestId()
-  ): void {
-    this.logger.info(requestId, "[Main AI] stream-text-start received", {
-      model: options.model,
-      messageCount: options.messages?.length,
-      toolCount: options.tools?.length,
-      streamId,
-    });
-
-    const resolvedModelId = this.resolveModelId(options.model);
-
-    void this.streamTextToPanel(sender, requestId, panelId, resolvedModelId, options, streamId);
-  }
-
   /**
    * Start a stream to an arbitrary StreamTarget (for agents, workers, etc).
    * This is the public entry point for non-panel streaming.
@@ -462,80 +441,6 @@ export class AIHandler {
   // ===========================================================================
   // Unified streamText Implementation
   // ===========================================================================
-
-  private createPanelTarget(
-    sender: Electron.WebContents,
-    panelId: string,
-    streamId: string,
-    requestId: string
-  ): StreamTarget {
-    // Increase max listeners to avoid warnings when multiple streams target the same WebContents
-    const currentMax = sender.getMaxListeners();
-    if (currentMax < 50) {
-      sender.setMaxListeners(50);
-    }
-
-    const sendChunk = (event: StreamTextEvent): void => {
-      if (!sender.isDestroyed()) {
-        sender.send("ai:stream-text-chunk", { panelId, streamId, chunk: event });
-      }
-    };
-
-    const sendEnd = (): void => {
-      if (!sender.isDestroyed()) {
-        sender.send("ai:stream-text-end", { panelId, streamId });
-      }
-    };
-
-    const executeTool = async (
-      toolName: string,
-      args: Record<string, unknown>
-    ): Promise<ToolExecutionResult> => {
-      this.logger.debug(requestId, "Requesting tool execution from panel", {
-        toolName,
-        streamId,
-      });
-
-      if (sender.isDestroyed()) {
-        throw new Error("Panel is not available");
-      }
-
-      return new Promise((resolve, reject) => {
-        const timeoutId = setTimeout(() => {
-          reject(new Error(`Tool execution timed out: ${toolName}`));
-        }, TOOL_EXECUTION_TIMEOUT_MS);
-
-        const { port1, port2 } = new MessageChannelMain();
-
-        port1.on("message", (event) => {
-          clearTimeout(timeoutId);
-          port1.close();
-          const result = event.data as IPCToolExecutionResult;
-          resolve({
-            content: result.content,
-            isError: result.isError,
-            data: result.data,
-          });
-        });
-
-        port1.start();
-        sender.postMessage("panel:execute-tool", [streamId, toolName, args], [port2]);
-      });
-    };
-
-    return {
-      targetId: panelId,
-      isAvailable: () => !sender.isDestroyed(),
-      sendChunk,
-      sendEnd,
-      executeTool,
-      onUnavailable: (listener) => {
-        const onDestroyed = () => listener();
-        sender.on("destroyed", onDestroyed);
-        return () => sender.removeListener("destroyed", onDestroyed);
-      },
-    };
-  }
 
   private async streamTextToTarget(
     target: StreamTarget,
@@ -601,22 +506,6 @@ export class AIHandler {
       unsubscribe?.();
       this.streamManager.cleanup(streamId);
     }
-  }
-
-  /**
-   * Unified streamText implementation with server-side agent loop.
-   * Works for both regular models and Claude Code models.
-   */
-  private async streamTextToPanel(
-    sender: Electron.WebContents,
-    requestId: string,
-    panelId: string,
-    modelId: string,
-    options: StreamTextOptions,
-    streamId: string
-  ): Promise<void> {
-    const target = this.createPanelTarget(sender, panelId, streamId, requestId);
-    await this.streamTextToTarget(target, requestId, modelId, options, streamId);
   }
 
   /**

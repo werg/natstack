@@ -1,7 +1,7 @@
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
-import { app } from "electron";
+import { getUserDataPath } from "./envPaths.js";
 import type { Workspace } from "./workspace/types.js";
 import { isDev } from "./utils.js";
 
@@ -95,42 +95,11 @@ export function getCentralConfigDirectory(): string {
     return dir;
   };
 
-  const platformFallback = (): string => {
-    const home = os.homedir();
-
-    try {
-      switch (process.platform) {
-        case "win32": {
-          const appData = process.env["APPDATA"] ?? path.join(home, "AppData", "Roaming");
-          return path.join(appData, "natstack");
-        }
-        case "darwin":
-          return path.join(home, "Library", "Application Support", "natstack");
-        default: {
-          const xdgConfig = process.env["XDG_CONFIG_HOME"] ?? path.join(home, ".config");
-          return path.join(xdgConfig, "natstack");
-        }
-      }
-    } catch {
-      return path.join(os.tmpdir(), "natstack");
-    }
-  };
-
   try {
-    // Use Electron's app.getPath('userData') which handles platform differences
-    const userDataPath = app.getPath("userData");
-
-    // Create the directory if it doesn't exist
-    return ensureDir(userDataPath);
+    return ensureDir(getUserDataPath());
   } catch (error) {
-    console.warn("Failed to get Electron userData directory, using fallback:", error);
-
-    try {
-      return ensureDir(platformFallback());
-    } catch (fallbackError) {
-      console.warn("Failed to create fallback config directory, using temp dir:", fallbackError);
-      return ensureDir(path.join(os.tmpdir(), "natstack"));
-    }
+    console.warn("Failed to create config directory, using temp dir:", error);
+    return ensureDir(path.join(os.tmpdir(), "natstack"));
   }
 }
 
@@ -292,10 +261,22 @@ export function getAppRoot(): string {
 
     return root;
   }
-  // Production: use Electron's app path (asar root or extracted resources)
-  const appPath = app.getAppPath();
-  if (DEBUG) console.log("[paths] getAppRoot (production):", appPath);
-  return appPath;
+  // Production
+  try {
+    const { app } = require("electron");
+    const appPath = app.getAppPath();
+    if (DEBUG) console.log("[paths] getAppRoot (production/electron):", appPath);
+    return appPath;
+  } catch {
+    // Not in Electron — use env-var (required for headless production mode)
+    if (process.env["NATSTACK_APP_ROOT"]) {
+      if (DEBUG) console.log("[paths] getAppRoot (production/headless):", process.env["NATSTACK_APP_ROOT"]);
+      return process.env["NATSTACK_APP_ROOT"];
+    }
+    throw new Error(
+      "getAppRoot(): NATSTACK_APP_ROOT must be set when running without Electron in production mode"
+    );
+  }
 }
 
 /**
@@ -307,10 +288,11 @@ export function getResourcesPath(): string {
   if (isDev()) {
     return getAppRoot();
   }
-  // In production, resources are at app.getPath('exe')/../Resources on macOS
-  // or app.getAppPath()/.. on other platforms
-  // process.resourcesPath is the reliable way to get this in Electron
-  return process.resourcesPath;
+  if (process.resourcesPath) {
+    return process.resourcesPath;
+  }
+  // Headless: resources are at app root
+  return getAppRoot();
 }
 
 /**
@@ -326,9 +308,20 @@ export function getUnpackedPath(relativePath: string): string {
     return path.join(getAppRoot(), relativePath);
   }
   // In production, unpacked files are at app.asar.unpacked
-  const appPath = app.getAppPath();
-  const unpackedPath = appPath.replace(/\.asar$/, ".asar.unpacked");
-  return path.join(unpackedPath, relativePath);
+  try {
+    const { app } = require("electron");
+    const appPath = app.getAppPath();
+    const unpackedPath = appPath.replace(/\.asar$/, ".asar.unpacked");
+    return path.join(unpackedPath, relativePath);
+  } catch {
+    // Headless mode — no ASAR, everything is unpacked
+    if (process.env["NATSTACK_APP_ROOT"]) {
+      return path.join(process.env["NATSTACK_APP_ROOT"], relativePath);
+    }
+    throw new Error(
+      "getUnpackedPath(): NATSTACK_APP_ROOT must be set when running without Electron in production mode"
+    );
+  }
 }
 
 /**

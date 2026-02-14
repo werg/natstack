@@ -7,7 +7,7 @@
 
 import type { PanelManager } from "./panelManager.js";
 import type { Panel } from "./panelTypes.js";
-import type * as SharedPanel from "../shared/ipc/types.js";
+import type * as SharedPanel from "../shared/types.js";
 
 export interface TestApi {
   /** Get the full panel tree as a flat array */

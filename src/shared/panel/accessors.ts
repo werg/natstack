@@ -6,7 +6,7 @@
  */
 
 import type { CreateChildOptions, RepoArgSpec } from "@natstack/runtime";
-import type { Panel, PanelSnapshot, PanelType, ShellPage, PanelManifest, StateArgsValue } from "../ipc/types.js";
+import type { Panel, PanelSnapshot, PanelType, ShellPage, PanelManifest, StateArgsValue } from "../types.js";
 
 /**
  * Get the current snapshot for a panel.

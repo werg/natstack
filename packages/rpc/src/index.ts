@@ -1,6 +1,7 @@
 export type {
   RpcRequest,
   RpcResponse,
+  RpcEvent,
   RpcMessage,
   RpcTransport,
   RpcBridge,

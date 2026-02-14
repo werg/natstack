@@ -4,11 +4,13 @@ import type {
   AgenticClient,
   RosterUpdate,
   IncomingEvent,
+  AggregatedEvent,
   MethodDefinition,
   ToolGroup,
   ToolRoleDeclaration,
   ChannelConfig,
 } from "@natstack/agentic-messaging";
+import { isAggregatedEvent } from "@natstack/agentic-messaging";
 import type { ChatParticipantMetadata, ConnectionConfig } from "../types";
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
@@ -22,8 +24,10 @@ export interface UseChannelConnectionOptions {
   metadata: ChatParticipantMetadata;
   /** Tool roles this panel provides (for conflict detection) */
   toolRoles?: ToolRolesConfig;
-  /** Called for each event (messages, method calls, method results, presence) */
+  /** Called for each live event (messages, method calls, method results, presence) */
   onEvent?: (event: IncomingEvent) => void;
+  /** Called for each aggregated replay event (collect mode) */
+  onAggregatedEvent?: (event: AggregatedEvent) => void;
   /** Called when roster changes */
   onRoster?: (roster: RosterUpdate<ChatParticipantMetadata>) => void;
   /** Called on connection errors */
@@ -59,6 +63,7 @@ export function useChannelConnection({
   metadata,
   toolRoles,
   onEvent,
+  onAggregatedEvent,
   onRoster,
   onError,
   onReconnect,
@@ -69,10 +74,10 @@ export function useChannelConnection({
   const unsubscribersRef = useRef<Array<() => void>>([]);
 
   // Keep callbacks in refs to avoid dependency issues
-  const callbacksRef = useRef({ onEvent, onRoster, onError, onReconnect });
+  const callbacksRef = useRef({ onEvent, onAggregatedEvent, onRoster, onError, onReconnect });
   useEffect(() => {
-    callbacksRef.current = { onEvent, onRoster, onError, onReconnect };
-  }, [onEvent, onRoster, onError, onReconnect]);
+    callbacksRef.current = { onEvent, onAggregatedEvent, onRoster, onError, onReconnect };
+  }, [onEvent, onAggregatedEvent, onRoster, onError, onReconnect]);
 
   const disconnect = useCallback(() => {
     // Clean up all subscriptions
@@ -120,7 +125,7 @@ export function useChannelConnection({
           reconnect: true,
           clientId: config.clientId,
           methods,
-          replayMode: "stream",
+          replayMode: "collect",
           replayMessageLimit: 200,
           extraMetadata: toolRoles ? { toolRoles } : undefined,
         });
@@ -142,7 +147,11 @@ export function useChannelConnection({
             for await (const event of eventIterator) {
               if (!eventLoopRunning) break;
               try {
-                callbacksRef.current.onEvent?.(event as IncomingEvent);
+                if (isAggregatedEvent(event)) {
+                  callbacksRef.current.onAggregatedEvent?.(event);
+                } else {
+                  callbacksRef.current.onEvent?.(event as IncomingEvent);
+                }
               } catch (callbackError) {
                 console.error("[useChannelConnection] Event callback error:", callbackError);
               }

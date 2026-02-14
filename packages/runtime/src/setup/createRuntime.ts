@@ -1,4 +1,5 @@
-import { createRpcBridge, type RpcTransport } from "@natstack/rpc";
+import { createRpcBridge, type RpcBridge, type RpcTransport } from "@natstack/rpc";
+import { createRoutingBridge } from "../shared/routingBridge.js";
 import { createDbClient } from "@natstack/core";
 import { createChildManager } from "../shared/children.js";
 import {
@@ -23,6 +24,7 @@ import { _initStateArgsBridge } from "../panel/stateArgs.js";
 export interface RuntimeDeps {
   selfId: string;
   createTransport: () => RpcTransport;
+  createServerTransport?: () => RpcTransport | null;
   id: string;
   contextId: string;
   parentId: string | null;
@@ -38,8 +40,23 @@ export interface RuntimeDeps {
 export function createRuntime(deps: RuntimeDeps) {
   deps.setupGlobals?.();
 
-  const transport = deps.createTransport();
-  const rpc = createRpcBridge({ selfId: deps.selfId, transport });
+  const electronTransport = deps.createTransport();
+  const electronBridge = createRpcBridge({ selfId: deps.selfId, transport: electronTransport });
+
+  // Create server bridge if available (may not exist in chooser mode)
+  let rpc: RpcBridge = electronBridge;
+  if (deps.createServerTransport) {
+    const serverTransport = deps.createServerTransport();
+    if (serverTransport) {
+      const serverBridge = createRpcBridge({
+        selfId: deps.selfId,
+        transport: serverTransport,
+        callTimeoutMs: 30000,
+        aiCallTimeoutMs: 300000,
+      });
+      rpc = createRoutingBridge(electronBridge, serverBridge);
+    }
+  }
 
   const fs = deps.fs;
 
@@ -180,6 +197,21 @@ export function createRuntime(deps: RuntimeDeps) {
     });
   };
 
+  const onConnectionError = (
+    callback: (error: { code: number; reason: string; source?: "electron" | "server" }) => void
+  ): (() => void) => {
+    return rpc.onEvent("runtime:connection-error", (fromId, payload) => {
+      if (fromId !== "main") return;
+      const data = payload as { code?: unknown; reason?: unknown; source?: unknown } | null;
+      if (!data || typeof data.code !== "number" || typeof data.reason !== "string") return;
+      callback({
+        code: data.code,
+        reason: data.reason,
+        source: data.source === "electron" || data.source === "server" ? data.source : undefined,
+      });
+    });
+  };
+
   return {
     id: deps.id,
     parentId: deps.parentId,
@@ -200,6 +232,7 @@ export function createRuntime(deps: RuntimeDeps) {
     onChildAdded: childManager.onChildAdded,
     onChildRemoved: childManager.onChildRemoved,
     onChildCreationError,
+    onConnectionError,
 
     getInfo: () => callMain<EndpointInfo>("bridge.getInfo"),
     closeSelf: () => callMain<void>("bridge.closeSelf"),
@@ -215,7 +248,7 @@ export function createRuntime(deps: RuntimeDeps) {
     onThemeChange: (callback: (theme: ThemeAppearance) => void) => {
       callback(currentTheme);
       themeListeners.add(callback);
-      return () => themeListeners.delete(callback);
+      return () => { themeListeners.delete(callback); };
     },
 
     onFocus,

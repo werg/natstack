@@ -113,7 +113,7 @@ describe("PubSub Server", () => {
   it("sends ready message on valid connection", async () => {
     const client = await createClient("valid-token", "test-channel");
     const msg = await waitForMessage(client);
-    expect(msg).toEqual({ kind: "ready" });
+    expect(msg).toEqual(expect.objectContaining({ kind: "ready" }));
   });
 
   it("rejects connections with invalid token", async () => {
@@ -406,7 +406,7 @@ describe("PubSub Server", () => {
       const client = await createClient("valid-token", presenceChannel);
 
       const ready = await waitForMessage(client);
-      expect(ready).toEqual({ kind: "ready" });
+      expect(ready).toEqual(expect.objectContaining({ kind: "ready" }));
 
       const join = (await waitForMessage(client)) as {
         kind: string;

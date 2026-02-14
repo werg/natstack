@@ -47,3 +47,37 @@ export function createPanelTransport(): RpcTransport {
   };
 }
 
+function getServerTransportBridge(): NatstackTransportBridge | null {
+  const bridge = (globalThis as any).__natstackServerTransport as NatstackTransportBridge | undefined;
+  if (!bridge?.send || !bridge?.onMessage) return null;
+  return bridge;
+}
+
+export function createServerTransport(): RpcTransport | null {
+  const bridge = getServerTransportBridge();
+  if (!bridge) return null;
+
+  const registry = createHandlerRegistry({ context: "server" });
+
+  bridge.onMessage((fromId, message) => {
+    const sourceId = normalizeEndpointId(fromId);
+    const msg = message as RpcMessage;
+    if (!msg || typeof msg !== "object" || typeof (msg as { type?: unknown }).type !== "string") {
+      return;
+    }
+    registry.deliver(sourceId, msg);
+  });
+
+  return {
+    async send(targetId: string, message: RpcMessage): Promise<void> {
+      await bridge.send(normalizeEndpointId(targetId), message);
+    },
+    onMessage(sourceId: string, handler: (message: RpcMessage) => void): () => void {
+      return registry.onMessage(normalizeEndpointId(sourceId), handler);
+    },
+    onAnyMessage(handler: (sourceId: string, message: RpcMessage) => void): () => void {
+      return registry.onAnyMessage(handler);
+    },
+  };
+}
+

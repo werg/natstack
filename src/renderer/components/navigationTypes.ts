@@ -1,4 +1,4 @@
-import type { PanelSummary, PanelAncestor, DescendantSiblingGroup } from "../../shared/ipc/types.js";
+import type { PanelSummary, PanelAncestor, DescendantSiblingGroup } from "../../shared/types.js";
 
 export type NavigationMode = "stack" | "tree";
 

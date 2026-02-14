@@ -21,7 +21,7 @@ import { CircularExtendsError } from "./types.js";
 import { parseGitSpec, loadTemplateFromDir, parseTemplateYaml, TEMPLATE_FILE_NAME } from "./parser.js";
 import { getActiveWorkspace } from "../paths.js";
 import { isGitHubPath } from "../githubCloner.js";
-import { getGitServer } from "../index.js";
+import { getServerInfo } from "../index.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -183,13 +183,13 @@ async function resolveRefToCommit(
 ): Promise<string> {
   const targetRef = ref ?? "HEAD";
 
-  // For GitHub paths, use GitServer which handles auto-clone
+  // For GitHub paths, use server-side git service which handles auto-clone
   if (isGitHubPath(repoPath)) {
-    const gitServer = getGitServer();
-    if (!gitServer) {
-      throw new Error("GitServer not initialized - cannot resolve GitHub ref");
+    const si = getServerInfo();
+    if (!si) {
+      throw new Error("Server not initialized - cannot resolve GitHub ref");
     }
-    return gitServer.resolveRef(repoPath, targetRef);
+    return si.resolveRef(repoPath, targetRef);
   }
 
   // For local paths, use direct git command

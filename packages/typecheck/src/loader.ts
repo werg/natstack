@@ -189,6 +189,15 @@ export class TypeDefinitionLoader {
       // These are often not imported by the main entry but needed for subpath imports
       await this.loadRootSubpathEntries(packageDir, result, visitedFiles);
 
+      // Load subpath export entry files that weren't transitively imported from main entry.
+      // e.g., "./config" → "dist/config-entry.d.ts" may not be imported by index.d.ts
+      for (const [, subpathFile] of result.subpaths) {
+        const subpathPath = path.join(packageDir, subpathFile);
+        if (!visitedFiles.has(subpathPath)) {
+          await this.loadTypeFile(subpathPath, packageDir, result, visitedFiles);
+        }
+      }
+
       return result;
     } catch (error) {
       result.errors.push(`Error loading package at ${packageDir}: ${error}`);

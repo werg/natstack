@@ -24,6 +24,7 @@ export class MainCacheManager {
   private saveTimer: NodeJS.Timeout | null = null;
   private initialized = false;
   private isDirty = false;
+  private initPromise: Promise<void> | null = null;
 
   // Cache limits loaded from central config (with defaults)
   private readonly config = getCacheConfig();
@@ -31,18 +32,36 @@ export class MainCacheManager {
   private readonly MAX_SIZE = this.config.maxSize;
   private readonly SAVE_DEBOUNCE_MS = 5000; // 5 seconds
 
+  /**
+   * Start initialization in the background (fire-and-forget).
+   * Safe to call multiple times — only the first call starts the load.
+   */
+  startInitialize(): void {
+    if (!this.initPromise) {
+      this.initPromise = this.initialize();
+      this.initPromise.catch((err) => {
+        console.error("[MainCache] Background initialization failed:", err);
+      });
+    }
+  }
+
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
     const diskEntries = await loadDiskCache();
+    // Memory-wins merge: don't overwrite entries that were set() during init
+    let loadedCount = 0;
     for (const [key, entry] of Object.entries(diskEntries)) {
-      this.cache.set(key, entry);
-      this.totalSize += entry.size;
+      if (!this.cache.has(key)) {
+        this.cache.set(key, entry);
+        this.totalSize += entry.size;
+        loadedCount++;
+      }
     }
 
     this.initialized = true;
     console.log(
-      `[MainCache] Initialized with ${this.cache.size} entries from disk (${Math.round(this.totalSize / 1024 / 1024)}MB)`
+      `[MainCache] Initialized with ${loadedCount} entries from disk (${Math.round(this.totalSize / 1024 / 1024)}MB, ${this.cache.size} total)`
     );
   }
 

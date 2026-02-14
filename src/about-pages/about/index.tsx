@@ -8,7 +8,7 @@ import "@radix-ui/themes/styles.css";
 import { Theme, Card, Flex, Heading, Text, Box, Link } from "@radix-ui/themes";
 import { rpc } from "@natstack/runtime";
 import { usePanelTheme } from "@natstack/react";
-import type { AppInfo } from "../../shared/ipc/types.js";
+import type { AppInfo } from "../../shared/types.js";
 
 function AboutPage() {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);

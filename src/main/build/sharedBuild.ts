@@ -22,7 +22,7 @@ import Arborist from "@npmcli/arborist";
 import { getGitTempBuildsDirectory, type BuildKind } from "./artifacts.js";
 import { getMainCacheManager } from "../cacheManager.js";
 import { isDev } from "../utils.js";
-import { isVerdaccioServerInitialized, getVerdaccioServer } from "../verdaccioServer.js";
+import { isVerdaccioReady, getVerdaccioUrl, getPackageVersionResolver } from "../verdaccioConfig.js";
 import { getPackagesDir, getActiveWorkspace } from "../paths.js";
 import { getDependencyGraph } from "../dependencyGraph.js";
 import {
@@ -433,26 +433,19 @@ export async function installDependencies(
   const npmrcPath = path.join(depsDir, ".npmrc");
 
   // Verdaccio is required for dependency resolution
-  if (!isVerdaccioServerInitialized()) {
+  if (!isVerdaccioReady()) {
     throw new Error(
       "Verdaccio server not initialized. Cannot resolve dependencies without local npm registry."
     );
   }
 
-  const verdaccio = getVerdaccioServer();
-  const verdaccioRunning = await verdaccio.ensureRunning();
-  if (!verdaccioRunning) {
-    throw new Error(
-      "Verdaccio server failed to start. Cannot resolve dependencies. " +
-      `Last error: ${verdaccio.getExitError()?.message ?? "unknown"}`
-    );
-  }
+  const verdaccioUrl = getVerdaccioUrl()!;
 
-  // Use provided workspace path, falling back to active workspace
-  const activeWorkspace = getActiveWorkspace();
-  const effectiveWorkspacePath = userWorkspacePath ?? activeWorkspace?.path;
-  if (effectiveWorkspacePath) {
-    await verdaccio.setUserWorkspacePath(effectiveWorkspacePath);
+  // Verify Verdaccio is reachable
+  try {
+    await fetch(verdaccioUrl + "/-/ping");
+  } catch {
+    throw new Error("Verdaccio server is not reachable. Cannot resolve dependencies.");
   }
 
   // Helper to check if a package is a local/workspace package
@@ -476,7 +469,6 @@ export async function installDependencies(
   }
 
   // Write .npmrc to point to local Verdaccio registry
-  const verdaccioUrl = verdaccio.getBaseUrl();
   fs.writeFileSync(npmrcPath, `registry=${verdaccioUrl}\n`);
 
   // Resolve actual versions for local packages with "*" using branch-aware lookup.
@@ -490,7 +482,7 @@ export async function installDependencies(
   if (localPackagesWithStar.length > 0) {
     // Query Verdaccio for current versions of local packages (branch-aware)
     const versionQueries = localPackagesWithStar.map(async (name) => {
-      const version = await verdaccio.getPackageVersion(name);
+      const version = await getPackageVersionResolver()(name);
       return { name, version };
     });
     const results = await Promise.all(versionQueries);

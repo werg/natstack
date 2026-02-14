@@ -1,5 +1,5 @@
 import { atom } from "jotai";
-import type { AppMode, RecentWorkspace, SettingsData } from "../../shared/ipc/types.js";
+import type { AppMode, RecentWorkspace, SettingsData } from "../../shared/types.js";
 import { app, central, settings, workspace } from "../shell/client.js";
 
 // =============================================================================

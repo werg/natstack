@@ -16,7 +16,7 @@ import * as path from "path";
 import type { PanelManifest } from "./panelTypes.js";
 import { getMainCacheManager } from "./cacheManager.js";
 import { isDev } from "./utils.js";
-import type { PanelBuildState } from "../shared/ipc/types.js";
+import type { PanelBuildState } from "../shared/types.js";
 import { getShippedPanelsDir, getAppNodeModules, getAppRoot } from "./paths.js";
 import { getBuildOrchestrator } from "./build/orchestrator.js";
 import {

@@ -15,6 +15,8 @@ import type { RpcTransport } from "@natstack/rpc";
 export interface InitRuntimeOptions {
   /** Function to create the RPC transport */
   createTransport: () => RpcTransport;
+  /** Function to create the server RPC transport (direct panel→server) */
+  createServerTransport?: () => RpcTransport | null;
   /** Filesystem implementation (ZenFS for both panels and workers) */
   fs: RuntimeFs;
   /** Promise that resolves when fs is ready (async ZenFS initialization) */
@@ -57,6 +59,7 @@ export function initRuntime(options: InitRuntimeOptions): InitRuntimeResult {
   const runtime = createRuntime({
     selfId: `${config.kind}:${config.id}`,
     createTransport: options.createTransport,
+    createServerTransport: options.createServerTransport,
     id: config.id,
     contextId: config.contextId,
     parentId: config.parentId,

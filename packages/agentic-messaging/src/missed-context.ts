@@ -61,26 +61,36 @@ function extractSenderFields(event: IncomingEvent): {
 
 function aggregateMessage(
   initial: IncomingNewMessage,
-  updates: IncomingUpdateMessage[]
+  updates: IncomingUpdateMessage[],
+  error?: string
 ): AggregatedMessage | null {
   if (initial.pubsubId === undefined) return null;
   let content = initial.content;
-  let complete = false;
+  let hasCompletionUpdate = false;
 
   for (const update of updates) {
     if (update.content) {
       content += update.content;
     }
     if (update.complete) {
-      complete = true;
+      hasCompletionUpdate = true;
     }
   }
 
   const sender = extractSenderFields(initial);
 
+  // Completion logic:
+  // - Error implies completion (matches live-path: { complete: true, error })
+  // - Zero updates = one-shot message (user/panel), inherently complete
+  // - Has completion update = streaming finished normally
+  const hasError = !!error;
+  const isOneShot = updates.length === 0;
+  const complete = hasError || isOneShot || hasCompletionUpdate;
+
   return {
     type: "message",
     kind: "replay",
+    aggregated: true,
     pubsubId: initial.pubsubId,
     senderId: initial.senderId,
     senderName: sender.senderName,
@@ -94,6 +104,7 @@ function aggregateMessage(
     replyTo: initial.replyTo,
     contentType: initial.contentType,
     metadata: initial.metadata,
+    error,
   };
 }
 
@@ -103,6 +114,7 @@ function aggregateMethodCall(call: IncomingMethodCallEvent): AggregatedMethodCal
   return {
     type: "method-call",
     kind: "replay",
+    aggregated: true,
     pubsubId: call.pubsubId,
     senderId: call.senderId,
     senderName: sender.senderName,
@@ -144,6 +156,7 @@ function aggregateMethodResult(
   return {
     type: "method-result",
     kind: "replay",
+    aggregated: true,
     pubsubId,
     senderId: firstChunk.senderId,
     senderName: sender.senderName,
@@ -161,7 +174,7 @@ function aggregateMethodResult(
 export function aggregateReplayEvents(events: IncomingEvent[]): AggregatedEvent[] {
   const messageGroups = new Map<
     string,
-    { initial?: IncomingNewMessage; updates: IncomingUpdateMessage[] }
+    { initial?: IncomingNewMessage; updates: IncomingUpdateMessage[]; error?: string }
   >();
   const methodCalls = new Map<string, IncomingMethodCallEvent>();
   const methodResults = new Map<string, IncomingMethodResultEvent[]>();
@@ -177,6 +190,12 @@ export function aggregateReplayEvents(events: IncomingEvent[]): AggregatedEvent[
       case "update-message": {
         const group = messageGroups.get(event.id) ?? { updates: [] };
         group.updates.push(event);
+        messageGroups.set(event.id, group);
+        break;
+      }
+      case "error": {
+        const group = messageGroups.get(event.id) ?? { updates: [] };
+        group.error = event.error;
         messageGroups.set(event.id, group);
         break;
       }
@@ -198,7 +217,7 @@ export function aggregateReplayEvents(events: IncomingEvent[]): AggregatedEvent[
 
   for (const group of messageGroups.values()) {
     if (!group.initial) continue;
-    const result = aggregateMessage(group.initial, group.updates);
+    const result = aggregateMessage(group.initial, group.updates, group.error);
     if (result) aggregated.push(result);
   }
 

@@ -9,7 +9,7 @@
 import * as esbuild from "esbuild";
 import * as fs from "fs";
 import * as path from "path";
-import type { ShellPage, ProtocolBuildArtifacts } from "../shared/ipc/types.js";
+import type { ShellPage, ProtocolBuildArtifacts } from "../shared/types.js";
 import { storeAboutPage, hasAboutPage } from "./aboutProtocol.js";
 import { PANEL_CSP_META } from "../shared/constants.js";
 import { createDevLogger } from "./devLog.js";
@@ -28,6 +28,7 @@ import {
   getPrebuiltAboutPagesDir,
 } from "./paths.js";
 import { DEFAULT_DEDUPE_PACKAGES, packageToRegex } from "@natstack/typecheck";
+import { createNatstackResolvePlugin } from "./natstackResolvePlugin.js";
 
 /**
  * Shell page metadata for display.
@@ -72,6 +73,16 @@ const SHELL_PAGE_META: Record<ShellPage, Omit<ShellPageMeta, "page">> = {
   agents: {
     title: "Agents",
     description: "Configure agent defaults and settings",
+  },
+  "dirty-repo": {
+    title: "Uncommitted Changes",
+    description: "Resolve uncommitted changes before building",
+    hiddenInLauncher: true,
+  },
+  "git-init": {
+    title: "Initialize Git Repository",
+    description: "Initialize a git repository for this panel",
+    hiddenInLauncher: true,
   },
 };
 
@@ -232,7 +243,7 @@ export class AboutBuilder {
         keepNames: true,
         format: "cjs", // CJS for nodeIntegration
         absWorkingDir: pageDir,
-        nodePaths: [appNodeModules, packagesDir],
+        nodePaths: [appNodeModules],
         // Disable tsconfig paths - the root tsconfig maps @natstack/runtime to src/index.ts
         // which is the shell entry. We need package.json exports to resolve to the panel entry.
         tsconfigRaw: "{}",
@@ -251,8 +262,12 @@ export class AboutBuilder {
         // Compatibility banners for hybrid browser/Node.js environment
         banner: { js: bannerJs },
         metafile: true,
-        // Deduplicate React to prevent multiple React instances
-        plugins: [createDedupePlugin(appNodeModules)],
+        plugins: [
+          // Resolve @natstack/* from packages directory (handles scope-to-dir mapping + subpath exports)
+          createNatstackResolvePlugin(packagesDir),
+          // Deduplicate React to prevent multiple React instances
+          createDedupePlugin(appNodeModules),
+        ],
       });
 
       const bundle = fs.readFileSync(bundlePath, "utf-8");

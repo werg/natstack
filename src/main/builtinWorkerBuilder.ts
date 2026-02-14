@@ -26,6 +26,7 @@ import {
   isPathModule,
   generatePathShimCode,
 } from "@natstack/typecheck";
+import { createNatstackResolvePlugin } from "./natstackResolvePlugin.js";
 
 const BUILTIN_WORKERS = ["template-builder"] as const;
 type BuiltinWorker = (typeof BUILTIN_WORKERS)[number];
@@ -186,8 +187,9 @@ export async function buildBuiltinWorker(worker: BuiltinWorker): Promise<string>
     keepNames: true,
     format: "esm",
     absWorkingDir: workerDir,
-    nodePaths: [getAppNodeModules(), packagesDir],
+    nodePaths: [getAppNodeModules()],
     plugins: [
+      createNatstackResolvePlugin(packagesDir),
       createFsShimPlugin(packagesDir),
       // Path shim uses appRoot so it can resolve 'pathe' from node_modules
       createPathShimPlugin(getAppRoot()),

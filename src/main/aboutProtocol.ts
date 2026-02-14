@@ -8,7 +8,7 @@
 import { protocol, session } from "electron";
 import * as path from "path";
 import { randomBytes } from "crypto";
-import type { ProtocolBuildArtifacts, ShellPage } from "../shared/ipc/types.js";
+import type { ProtocolBuildArtifacts, ShellPage } from "../shared/types.js";
 import { getShellPageKeys } from "./aboutBuilder.js";
 import { createDevLogger } from "./devLog.js";
 

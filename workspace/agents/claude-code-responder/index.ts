@@ -45,6 +45,7 @@ import {
   AgenticError,
   createQueuePositionText,
   cleanupQueuedTypingTrackers,
+  drainForInterleave,
   type InlineUiData,
   type ContextWindowUsage,
   type SDKStreamEvent,
@@ -300,7 +301,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
   state: ClaudeCodeState = {};
 
   // Pattern helpers
-  private queue!: MessageQueue;
+  private queue!: MessageQueue<IncomingNewMessage>;
   private interrupt!: InterruptController;
   private settingsMgr!: SettingsManager<ClaudeCodeSettings>;
   private missedContext!: MissedContextManager;
@@ -391,14 +392,14 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     this.interrupt = createInterruptController();
 
     // Initialize message queue with queue position tracking
-    this.queue = createMessageQueue({
-      onProcess: (event) => this.handleUserMessage(event as IncomingNewMessage),
+    this.queue = createMessageQueue<IncomingNewMessage>({
+      onProcess: (event) => this.handleUserMessage(event),
       onError: (err, event) => {
-        this.log.error("Event processing failed", err, { eventId: (event as IncomingNewMessage).id });
+        this.log.error("Event processing failed", err, { eventId: event.id });
       },
       onDequeue: async (event) => {
         // Update queue positions for all waiting messages
-        const msgEvent = event as IncomingNewMessage;
+        const msgEvent = event;
 
         // Remove the dequeued message from our tracking map
         this.queuedMessages.delete(msgEvent.id);
@@ -532,7 +533,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     this.queuedMessages.set(msgEvent.id, { event: msgEvent, typingTracker });
 
     // Enqueue for ordered processing - cleanup if queue is stopped
-    const enqueued = this.queue.enqueue(event);
+    const enqueued = this.queue.enqueue(msgEvent);
     if (!enqueued) {
       await typingTracker.cleanup();
       this.queuedMessages.delete(msgEvent.id);
@@ -803,6 +804,10 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     let responseId: string | null = null;
     let capturedSessionId: string | undefined;
 
+    // Reply anchoring: tracks which message responses are anchored to.
+    // Updated on interleave to point to the last interleaved user message.
+    let replyToId = incoming.id;
+
     const ensureResponseMessage = async (sdkUuid?: string, sdkSessionId?: string): Promise<string> => {
       if (typing.isTyping()) {
         await typing.stopTyping();
@@ -810,7 +815,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
       if (!responseId) {
         const metadata: Record<string, unknown> | undefined =
           sdkUuid || sdkSessionId ? { sdkUuid, sdkSessionId } : undefined;
-        const { messageId } = await client.send("", { replyTo: incoming.id, metadata } as Parameters<typeof client.send>[1]);
+        const { messageId } = await client.send("", { replyTo: replyToId, metadata } as Parameters<typeof client.send>[1]);
         responseId = messageId;
       }
       return responseId;
@@ -1096,187 +1101,264 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
       let currentSdkSessionId: string | undefined;
       let sawStreamedText = false;
       let currentStreamingToolId: string | null = null;
+      let interleavePrompt: string | null = null;
+      let needsResume = false;
 
       const toolInputAccumulators = new Map<string, {
         toolName: string;
         inputChunks: string[];
       }>();
 
-      for await (const message of queryInstance) {
-        const sdkMsg = message as { uuid?: string; session_id?: string };
-        if (sdkMsg.uuid) currentSdkMessageUuid = sdkMsg.uuid;
-        if (sdkMsg.session_id) {
-          currentSdkSessionId = sdkMsg.session_id;
-          capturedSessionId = sdkMsg.session_id;
-        }
-
-        if (interruptHandler.isPaused()) {
-          this.log.info("Execution paused, breaking out of query loop");
-          break;
-        }
-
-        // Subagent event routing
-        const sdkMessage = message as { parent_tool_use_id?: string | null; type: string; event?: SDKStreamEvent };
-        if (sdkMessage.parent_tool_use_id && sdkMessage.type === "stream_event" && sdkMessage.event) {
-          await this.subagents.routeEvent(sdkMessage.parent_tool_use_id, sdkMessage.event);
-          continue;
-        }
-
-        if (sdkMessage.type === "user") {
-          const toolResultIds = extractToolResultIds(message);
-          for (const toolUseId of toolResultIds) {
-            if (this.subagents.has(toolUseId)) {
-              await this.subagents.cleanup(toolUseId, "complete");
-            }
-          }
-        }
-
-        if (message.type === "stream_event") {
-          const streamEvent = message.event as {
-            type: string;
-            delta?: { type: string; text?: string; thinking?: string; partial_json?: string };
-            content_block?: { type?: string; id?: string; name?: string };
-          };
-
-          if (streamEvent.type === "message_start") {
+      outer: while (true) {
+        if (interleavePrompt || needsResume) {
+          if (interleavePrompt) {
+            // Complete current response before starting new query
             if (responseId) {
               await client.complete(responseId);
               responseId = null;
             }
-            sawStreamedText = false;
+            // Update reply anchoring for trackers
+            typing.setReplyTo(replyToId);
+            thinking.setReplyTo(replyToId);
+            action.setReplyTo(replyToId);
+          }
+          // Resume query (with interleaved content, or empty to continue)
+          queryInstance = query({
+            prompt: interleavePrompt || "",
+            options: { ...queryOptions, resume: capturedSessionId },
+          });
+          this.activeQueryInstance = queryInstance;
+          // Reset per-query state
+          sawStreamedText = false;
+          toolInputAccumulators.clear();
+          currentStreamingToolId = null;
+          interleavePrompt = null;
+          needsResume = false;
+        }
+
+        for await (const message of queryInstance) {
+          const sdkMsg = message as { uuid?: string; session_id?: string };
+          if (sdkMsg.uuid) currentSdkMessageUuid = sdkMsg.uuid;
+          if (sdkMsg.session_id) {
+            currentSdkSessionId = sdkMsg.session_id;
+            capturedSessionId = sdkMsg.session_id;
           }
 
-          if (streamEvent.type === "content_block_start" && streamEvent.content_block) {
-            const blockType = streamEvent.content_block.type;
-            if (blockType === "thinking") {
-              await stopTypingIfNeeded();
-              if (action.isActive()) await action.completeAction();
-              await thinking.startThinking();
-            } else if (blockType === "tool_use") {
-              await stopTypingIfNeeded();
-              if (thinking.isThinking()) await thinking.endThinking();
+          if (interruptHandler.isPaused()) {
+            this.log.info("Execution paused, breaking out of query loop");
+            break;
+          }
 
-              const toolBlock = streamEvent.content_block as { type: "tool_use"; id: string; name: string };
-              toolInputAccumulators.set(toolBlock.id, { toolName: toolBlock.name, inputChunks: [] });
-              currentStreamingToolId = toolBlock.id;
-            } else if (blockType === "text") {
-              await stopTypingIfNeeded();
-              if (thinking.isThinking()) await thinking.endThinking();
-              if (action.isActive()) await action.completeAction();
-              thinking.setTextMode();
+          // Subagent event routing
+          const sdkMessage = message as { parent_tool_use_id?: string | null; type: string; event?: SDKStreamEvent };
+          if (sdkMessage.parent_tool_use_id && sdkMessage.type === "stream_event" && sdkMessage.event) {
+            await this.subagents.routeEvent(sdkMessage.parent_tool_use_id, sdkMessage.event);
+            continue;
+          }
+
+          if (sdkMessage.type === "user") {
+            const toolResultIds = extractToolResultIds(message);
+            for (const toolUseId of toolResultIds) {
+              if (this.subagents.has(toolUseId)) {
+                await this.subagents.cleanup(toolUseId, "complete");
+              }
             }
           }
 
-          if (streamEvent.type === "content_block_delta" && streamEvent.delta?.type === "thinking_delta") {
-            if (streamEvent.delta.thinking) {
-              await thinking.updateThinking(streamEvent.delta.thinking);
-            }
-          }
+          if (message.type === "stream_event") {
+            const streamEvent = message.event as {
+              type: string;
+              delta?: { type: string; text?: string; thinking?: string; partial_json?: string };
+              content_block?: { type?: string; id?: string; name?: string };
+            };
 
-          if (streamEvent.type === "content_block_delta" && streamEvent.delta?.type === "text_delta") {
-            if (streamEvent.delta.text) {
-              const msgId = await ensureResponseMessage(currentSdkMessageUuid, currentSdkSessionId);
-              await client.update(msgId, streamEvent.delta.text);
-              sawStreamedText = true;
-            }
-          }
-
-          if (streamEvent.type === "content_block_delta" && streamEvent.delta?.type === "input_json_delta") {
-            if (streamEvent.delta.partial_json && currentStreamingToolId) {
-              const acc = toolInputAccumulators.get(currentStreamingToolId);
-              if (acc) acc.inputChunks.push(streamEvent.delta.partial_json);
-            }
-          }
-
-          if (streamEvent.type === "content_block_stop") {
-            if (thinking.isThinking()) await thinking.endThinking();
-
-            if (currentStreamingToolId) {
-              const toolId = currentStreamingToolId;
-              const acc = toolInputAccumulators.get(toolId);
-              currentStreamingToolId = null;
-
-              if (acc) {
-                const prettifiedToolName = prettifyToolName(acc.toolName);
-                let description = getDetailedActionDescription(acc.toolName, {});
-
-                if (acc.inputChunks.length > 0) {
-                  try {
-                    const fullInput = acc.inputChunks.join("");
-                    const parsedInput = JSON.parse(fullInput) as Record<string, unknown>;
-                    description = getDetailedActionDescription(acc.toolName, parsedInput);
-
-                    // TodoWrite handling
-                    if (acc.toolName === "TodoWrite") {
-                      const todoArgs = parsedInput as { todos?: Array<{ content: string; activeForm: string; status: string }> };
-                      if (todoArgs.todos && todoArgs.todos.length > 0) {
-                        const inlineData: InlineUiData = {
-                          id: "agent-todos",
-                          code: getCachedTodoListCode(),
-                          props: { todos: todoArgs.todos },
-                        };
-                        await client.send(JSON.stringify(inlineData), {
-                          contentType: CONTENT_TYPE_INLINE_UI,
-                          persist: true,
-                        });
-                      }
-                    }
-
-                    // Subagent creation for unrestricted mode
-                    if (acc.toolName === "Task" && !config.restrictedMode) {
-                      const taskArgs = parsedInput as { description?: string; subagent_type?: string };
-                      await this.subagents.create(toolId, {
-                        taskDescription: taskArgs.description ?? "Subagent task",
-                        subagentType: taskArgs.subagent_type,
-                        parentToolUseId: toolId,
-                      });
-                    }
-                  } catch {
-                    // JSON parse failed — use fallback description
-                  }
+            if (streamEvent.type === "message_start") {
+              // Check for pending user messages at the start of a new model turn
+              if (!interruptHandler.isPaused() && this.queue.getPendingCount() > 0 && capturedSessionId) {
+                let interrupted = false;
+                try {
+                  await queryInstance.interrupt();
+                  interrupted = true;
+                } catch (err) {
+                  this.log.warn("Interrupt for interleave failed, continuing current query", err);
                 }
 
-                await action.startAction({
-                  type: prettifiedToolName,
-                  description,
-                  toolUseId: toolId,
-                });
-                toolInputAccumulators.delete(toolId);
+                if (interrupted) {
+                  const { pending, lastMessageId } = await drainForInterleave(
+                    this.queue.takePending(),
+                    this.queuedMessages,
+                  );
+                  if (pending.length === 0) {
+                    this.log.warn("Pending drained between check and take, resuming interrupted query");
+                    needsResume = true;
+                    break; // exits for-await, re-enters outer while
+                  } else {
+                    // Update replyTo to last interleaved message
+                    replyToId = lastMessageId!;
+                    // Collect attachments from ALL pending messages into shared image cache
+                    const prevImageCount = allImageAttachments.size;
+                    for (const p of pending) {
+                      for (const a of filterImageAttachments((p as { attachments?: Attachment[] }).attachments)) {
+                        allImageAttachments.set(a.id, a);
+                      }
+                    }
+                    // Build interleave prompt
+                    const texts = pending.map((p) => String(p.content));
+                    interleavePrompt = texts.join("\n\n");
+                    if (allImageAttachments.size > prevImageCount) {
+                      interleavePrompt += `\n\n[${allImageAttachments.size} image(s) available. Call list_images to see them.]`;
+                    }
+                    this.log.info(`Interleaved ${pending.length} user message(s) at message_start`);
+                    break; // exits for-await, re-enters outer while
+                  }
+                }
+                // If !interrupted, fall through to normal message_start handling
               }
-
-              await action.completeAction();
-              await typing.startTyping("processing tool result");
+              // Normal message_start handling
+              if (responseId) {
+                await client.complete(responseId);
+                responseId = null;
+              }
+              sawStreamedText = false;
             }
-          }
-        } else if (message.type === "assistant") {
-          if (!sawStreamedText) {
-            const textBlocks = (message.message.content as Array<{ type: string; text?: string }>).filter(
-              (block): block is { type: "text"; text: string } => block.type === "text"
-            );
-            if (textBlocks.length > 0) {
-              const msgId = await ensureResponseMessage(currentSdkMessageUuid, currentSdkSessionId);
-              for (const block of textBlocks) {
-                await client.update(msgId, block.text);
+
+            if (streamEvent.type === "content_block_start" && streamEvent.content_block) {
+              const blockType = streamEvent.content_block.type;
+              if (blockType === "thinking") {
+                await stopTypingIfNeeded();
+                if (action.isActive()) await action.completeAction();
+                await thinking.startThinking();
+              } else if (blockType === "tool_use") {
+                await stopTypingIfNeeded();
+                if (thinking.isThinking()) await thinking.endThinking();
+
+                const toolBlock = streamEvent.content_block as { type: "tool_use"; id: string; name: string };
+                toolInputAccumulators.set(toolBlock.id, { toolName: toolBlock.name, inputChunks: [] });
+                currentStreamingToolId = toolBlock.id;
+              } else if (blockType === "text") {
+                await stopTypingIfNeeded();
+                if (thinking.isThinking()) await thinking.endThinking();
+                if (action.isActive()) await action.completeAction();
+                thinking.setTextMode();
               }
             }
-          }
-          sawStreamedText = false;
-        } else if (message.type === "result") {
-          const resultMessage = message as SDKResultMessage;
-          if (resultMessage.subtype === "success" && resultMessage.session_id) {
-            capturedSessionId = resultMessage.session_id;
-          }
 
-          if (resultMessage.usage) {
-            await this.contextTracker.recordUsage({
-              inputTokens: resultMessage.usage.input_tokens ?? 0,
-              outputTokens: resultMessage.usage.output_tokens ?? 0,
-              costUsd: resultMessage.total_cost_usd,
-            });
-          }
+            if (streamEvent.type === "content_block_delta" && streamEvent.delta?.type === "thinking_delta") {
+              if (streamEvent.delta.thinking) {
+                await thinking.updateThinking(streamEvent.delta.thinking);
+              }
+            }
 
-          this.log.info(`Query completed. Cost: $${(message as { total_cost_usd?: number }).total_cost_usd?.toFixed(4) ?? "unknown"}`);
+            if (streamEvent.type === "content_block_delta" && streamEvent.delta?.type === "text_delta") {
+              if (streamEvent.delta.text) {
+                const msgId = await ensureResponseMessage(currentSdkMessageUuid, currentSdkSessionId);
+                await client.update(msgId, streamEvent.delta.text);
+                sawStreamedText = true;
+              }
+            }
+
+            if (streamEvent.type === "content_block_delta" && streamEvent.delta?.type === "input_json_delta") {
+              if (streamEvent.delta.partial_json && currentStreamingToolId) {
+                const acc = toolInputAccumulators.get(currentStreamingToolId);
+                if (acc) acc.inputChunks.push(streamEvent.delta.partial_json);
+              }
+            }
+
+            if (streamEvent.type === "content_block_stop") {
+              if (thinking.isThinking()) await thinking.endThinking();
+
+              if (currentStreamingToolId) {
+                const toolId = currentStreamingToolId;
+                const acc = toolInputAccumulators.get(toolId);
+                currentStreamingToolId = null;
+
+                if (acc) {
+                  const prettifiedToolName = prettifyToolName(acc.toolName);
+                  let description = getDetailedActionDescription(acc.toolName, {});
+
+                  if (acc.inputChunks.length > 0) {
+                    try {
+                      const fullInput = acc.inputChunks.join("");
+                      const parsedInput = JSON.parse(fullInput) as Record<string, unknown>;
+                      description = getDetailedActionDescription(acc.toolName, parsedInput);
+
+                      // TodoWrite handling
+                      if (acc.toolName === "TodoWrite") {
+                        const todoArgs = parsedInput as { todos?: Array<{ content: string; activeForm: string; status: string }> };
+                        if (todoArgs.todos && todoArgs.todos.length > 0) {
+                          const inlineData: InlineUiData = {
+                            id: "agent-todos",
+                            code: getCachedTodoListCode(),
+                            props: { todos: todoArgs.todos },
+                          };
+                          await client.send(JSON.stringify(inlineData), {
+                            contentType: CONTENT_TYPE_INLINE_UI,
+                            persist: true,
+                          });
+                        }
+                      }
+
+                      // Subagent creation for unrestricted mode
+                      if (acc.toolName === "Task" && !config.restrictedMode) {
+                        const taskArgs = parsedInput as { description?: string; subagent_type?: string };
+                        await this.subagents.create(toolId, {
+                          taskDescription: taskArgs.description ?? "Subagent task",
+                          subagentType: taskArgs.subagent_type,
+                          parentToolUseId: toolId,
+                        });
+                      }
+                    } catch {
+                      // JSON parse failed — use fallback description
+                    }
+                  }
+
+                  await action.startAction({
+                    type: prettifiedToolName,
+                    description,
+                    toolUseId: toolId,
+                  });
+                  toolInputAccumulators.delete(toolId);
+                }
+
+                await action.completeAction();
+                await typing.startTyping("processing tool result");
+              }
+            }
+          } else if (message.type === "assistant") {
+            if (!sawStreamedText) {
+              const textBlocks = (message.message.content as Array<{ type: string; text?: string }>).filter(
+                (block): block is { type: "text"; text: string } => block.type === "text"
+              );
+              if (textBlocks.length > 0) {
+                const msgId = await ensureResponseMessage(currentSdkMessageUuid, currentSdkSessionId);
+                for (const block of textBlocks) {
+                  await client.update(msgId, block.text);
+                }
+              }
+            }
+            sawStreamedText = false;
+          } else if (message.type === "result") {
+            const resultMessage = message as SDKResultMessage;
+            if (resultMessage.subtype === "success" && resultMessage.session_id) {
+              capturedSessionId = resultMessage.session_id;
+            }
+
+            if (resultMessage.usage) {
+              await this.contextTracker.recordUsage({
+                inputTokens: resultMessage.usage.input_tokens ?? 0,
+                outputTokens: resultMessage.usage.output_tokens ?? 0,
+                costUsd: resultMessage.total_cost_usd,
+              });
+            }
+
+            this.log.info(`Query completed. Cost: $${(message as { total_cost_usd?: number }).total_cost_usd?.toFixed(4) ?? "unknown"}`);
+            break outer; // normal completion, exit both loops
+          }
         }
+
+        // If we broke out of for-await without setting interleavePrompt or needsResume,
+        // it was a pause/interrupt — exit outer loop
+        if (!interleavePrompt && !needsResume) break;
       }
 
       // Cleanup
@@ -1332,7 +1414,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
       if (responseId) {
         await client.error(responseId, err instanceof Error ? err.message : String(err));
       } else {
-        const { messageId: errorMsgId } = await client.send("", { replyTo: incoming.id });
+        const { messageId: errorMsgId } = await client.send("", { replyTo: replyToId });
         await client.error(errorMsgId, err instanceof Error ? err.message : String(err));
       }
 

@@ -1,6 +1,6 @@
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useState, lazy, Suspense } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
-import { Theme, Dialog } from "@radix-ui/themes";
+import { Theme, Flex, Spinner } from "@radix-ui/themes";
 
 import {
   appModeAtom,
@@ -10,10 +10,23 @@ import {
 import { effectiveThemeAtom, loadThemePreferenceAtom } from "../state/themeAtoms";
 import { useShellEvent } from "../shell/useShellEvent";
 import { panel } from "../shell/client";
-import type { ShellPage } from "../../shared/ipc/types";
-import { PanelApp } from "./PanelApp";
+import type { ShellPage } from "../../shared/types";
 import { WorkspaceChooser } from "./WorkspaceChooser";
 import { WorkspaceWizard } from "./WorkspaceWizard";
+import { ChunkErrorBoundary } from "./ChunkErrorBoundary";
+
+// Lazy-load MainMode — this creates a separate chunk containing PanelApp,
+// PanelStack, TitleBar, LazyPanelTreeSidebar, @dnd-kit/*, and all transitive deps.
+// Mutable: reassigned on retry because React.lazy caches rejected promises permanently.
+let LazyMainMode = lazy(() => import("./MainMode"));
+
+function LoadingSpinner() {
+  return (
+    <Flex align="center" justify="center" style={{ height: "100vh" }}>
+      <Spinner size="3" />
+    </Flex>
+  );
+}
 
 /**
  * Root App component that routes between workspace chooser and main panel app.
@@ -24,6 +37,8 @@ export function App() {
   const loadAppMode = useSetAtom(loadAppModeAtom);
   const loadThemePreference = useSetAtom(loadThemePreferenceAtom);
   const setWorkspaceChooserOpen = useSetAtom(workspaceChooserDialogOpenAtom);
+  // Counter to force remount of lazy component after a chunk load failure.
+  const [lazyRetryKey, setLazyRetryKey] = useState(0);
 
   // Load app mode and theme preference on mount
   useEffect(() => {
@@ -56,7 +71,19 @@ export function App() {
 
   return (
     <Theme appearance={effectiveTheme} radius="none">
-      {appMode === "chooser" ? <ChooserMode /> : <MainMode />}
+      {appMode === "chooser" ? (
+        <ChooserMode />
+      ) : (
+        <ChunkErrorBoundary onRetry={() => {
+          // Reassign to create a fresh lazy() with a new import() promise
+          LazyMainMode = lazy(() => import("./MainMode"));
+          setLazyRetryKey((k) => k + 1);
+        }}>
+          <Suspense key={lazyRetryKey} fallback={<LoadingSpinner />}>
+            <LazyMainMode />
+          </Suspense>
+        </ChunkErrorBoundary>
+      )}
     </Theme>
   );
 }
@@ -69,28 +96,6 @@ function ChooserMode() {
     <>
       <WorkspaceChooser />
       <WorkspaceWizard />
-    </>
-  );
-}
-
-/**
- * Main mode: shows panel app with dialogs for workspace chooser and wizard.
- */
-function MainMode() {
-  const workspaceChooserOpen = useAtomValue(workspaceChooserDialogOpenAtom);
-  const setWorkspaceChooserOpen = useSetAtom(workspaceChooserDialogOpenAtom);
-
-  return (
-    <>
-      <PanelApp />
-      <WorkspaceWizard />
-
-      {/* Workspace Chooser Dialog (for switching workspaces in main mode) */}
-      <Dialog.Root open={workspaceChooserOpen} onOpenChange={setWorkspaceChooserOpen}>
-        <Dialog.Content maxWidth="600px">
-          <WorkspaceChooser />
-        </Dialog.Content>
-      </Dialog.Root>
     </>
   );
 }
