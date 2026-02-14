@@ -29,6 +29,7 @@ import {
   createTypingTracker,
   createQueuePositionText,
   cleanupQueuedTypingTrackers,
+  drainForInterleave,
 } from "@natstack/agentic-messaging";
 import {
   AI_RESPONDER_PARAMETERS,
@@ -122,7 +123,7 @@ class PubsubChatResponder extends Agent<PubsubChatState> {
   state: PubsubChatState = {};
 
   // Pattern helpers from @natstack/agent-patterns
-  private queue!: MessageQueue;
+  private queue!: MessageQueue<IncomingNewMessage>;
   private interrupt!: InterruptController;
   private settings!: SettingsManager<PubsubChatSettings>;
   private missedContext!: MissedContextManager;
@@ -229,14 +230,14 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     this.interrupt = createInterruptController();
 
     // Initialize message queue with interrupt wiring and queue position tracking
-    this.queue = createMessageQueue({
-      onProcess: (event) => this.handleUserMessage(event as IncomingNewMessage),
+    this.queue = createMessageQueue<IncomingNewMessage>({
+      onProcess: (event) => this.handleUserMessage(event),
       onError: (err, event) => {
-        this.log.error("Event processing failed", err, { eventId: (event as IncomingNewMessage).id });
+        this.log.error("Event processing failed", err, { eventId: event.id });
       },
       onDequeue: async (event) => {
         // Update queue positions for all waiting messages
-        const msgEvent = event as IncomingNewMessage;
+        const msgEvent = event;
 
         // Remove the dequeued message from our tracking map
         this.queuedMessages.delete(msgEvent.id);
@@ -361,7 +362,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     this.queuedMessages.set(msgEvent.id, { event: msgEvent, typingTracker });
 
     // Enqueue for ordered processing - cleanup if queue is stopped
-    const enqueued = this.queue.enqueue(event);
+    const enqueued = this.queue.enqueue(msgEvent);
     if (!enqueued) {
       await typingTracker.cleanup();
       this.queuedMessages.delete(msgEvent.id);
@@ -782,36 +783,37 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
 
         // Interleave pending user messages between agentic steps
         if (this.queue.getPendingCount() > 0 && !interruptHandler.isPaused() && step + 1 < maxSteps) {
-          const pending = this.queue.takePending() as IncomingNewMessage[];
-          // Merge all pending messages into a single user message to maintain
-          // role alternation (consecutive user messages are rejected by some providers)
-          const allParts: Array<{ type: "image"; image: string; mimeType: string } | { type: "text"; text: string }> = [];
-          for (const p of pending) {
-            // Clean up per-message typing tracker
-            const info = this.queuedMessages.get(p.id);
-            if (info) {
-              await info.typingTracker.cleanup();
-              this.queuedMessages.delete(p.id);
+          const { pending, lastMessageId } = await drainForInterleave(
+            this.queue.takePending(),
+            this.queuedMessages,
+          );
+          if (pending.length === 0) {
+            this.log.warn("Pending drained between check and take, skipping interleave");
+          } else {
+            // Merge all pending messages into a single user message to maintain
+            // role alternation (consecutive user messages are rejected by some providers)
+            const allParts: Array<{ type: "image"; image: string; mimeType: string } | { type: "text"; text: string }> = [];
+            for (const p of pending) {
+              const pAttachments = (p as { attachments?: Attachment[] }).attachments;
+              const pImages = filterImageAttachments(pAttachments);
+              for (const a of pImages) {
+                allParts.push({ type: "image" as const, image: uint8ArrayToBase64(a.data), mimeType: a.mimeType });
+              }
+              allParts.push({ type: "text" as const, text: String(p.content) });
             }
-            const pAttachments = (p as { attachments?: Attachment[] }).attachments;
-            const pImages = filterImageAttachments(pAttachments);
-            for (const a of pImages) {
-              allParts.push({ type: "image" as const, image: uint8ArrayToBase64(a.data), mimeType: a.mimeType });
+            const mergedContent = allParts.length === 1 && allParts[0]!.type === "text"
+              ? allParts[0]!.text  // single text-only message: use plain string
+              : allParts;           // multi-part or multi-message: use array
+            messages.push({ role: "user" as const, content: mergedContent });
+            // Complete current response and update reply anchoring
+            if (responseId) {
+              await this.client.complete(responseId);
+              responseId = null;
             }
-            allParts.push({ type: "text" as const, text: String(p.content) });
+            replyToId = lastMessageId!;
+            trackers.setReplyTo(replyToId);
+            this.log.info(`Interleaved ${pending.length} user message(s) between steps`);
           }
-          const mergedContent = allParts.length === 1 && allParts[0]!.type === "text"
-            ? allParts[0]!.text  // single text-only message: use plain string
-            : allParts;           // multi-part or multi-message: use array
-          messages.push({ role: "user" as const, content: mergedContent });
-          // Complete current response and update reply anchoring
-          if (responseId) {
-            await this.client.complete(responseId);
-            responseId = null;
-          }
-          replyToId = pending[pending.length - 1]!.id;
-          trackers.setReplyTo(replyToId);
-          this.log.info(`Interleaved ${pending.length} user message(s) between steps`);
         }
 
         // Continue to next step

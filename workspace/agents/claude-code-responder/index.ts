@@ -45,6 +45,7 @@ import {
   AgenticError,
   createQueuePositionText,
   cleanupQueuedTypingTrackers,
+  drainForInterleave,
   type InlineUiData,
   type ContextWindowUsage,
   type SDKStreamEvent,
@@ -300,7 +301,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
   state: ClaudeCodeState = {};
 
   // Pattern helpers
-  private queue!: MessageQueue;
+  private queue!: MessageQueue<IncomingNewMessage>;
   private interrupt!: InterruptController;
   private settingsMgr!: SettingsManager<ClaudeCodeSettings>;
   private missedContext!: MissedContextManager;
@@ -391,14 +392,14 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     this.interrupt = createInterruptController();
 
     // Initialize message queue with queue position tracking
-    this.queue = createMessageQueue({
-      onProcess: (event) => this.handleUserMessage(event as IncomingNewMessage),
+    this.queue = createMessageQueue<IncomingNewMessage>({
+      onProcess: (event) => this.handleUserMessage(event),
       onError: (err, event) => {
-        this.log.error("Event processing failed", err, { eventId: (event as IncomingNewMessage).id });
+        this.log.error("Event processing failed", err, { eventId: event.id });
       },
       onDequeue: async (event) => {
         // Update queue positions for all waiting messages
-        const msgEvent = event as IncomingNewMessage;
+        const msgEvent = event;
 
         // Remove the dequeued message from our tracking map
         this.queuedMessages.delete(msgEvent.id);
@@ -532,7 +533,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     this.queuedMessages.set(msgEvent.id, { event: msgEvent, typingTracker });
 
     // Enqueue for ordered processing - cleanup if queue is stopped
-    const enqueued = this.queue.enqueue(event);
+    const enqueued = this.queue.enqueue(msgEvent);
     if (!enqueued) {
       await typingTracker.cleanup();
       this.queuedMessages.delete(msgEvent.id);
@@ -1101,6 +1102,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
       let sawStreamedText = false;
       let currentStreamingToolId: string | null = null;
       let interleavePrompt: string | null = null;
+      let needsResume = false;
 
       const toolInputAccumulators = new Map<string, {
         toolName: string;
@@ -1108,19 +1110,21 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
       }>();
 
       outer: while (true) {
-        if (interleavePrompt) {
-          // Complete current response before starting new query
-          if (responseId) {
-            await client.complete(responseId);
-            responseId = null;
+        if (interleavePrompt || needsResume) {
+          if (interleavePrompt) {
+            // Complete current response before starting new query
+            if (responseId) {
+              await client.complete(responseId);
+              responseId = null;
+            }
+            // Update reply anchoring for trackers
+            typing.setReplyTo(replyToId);
+            thinking.setReplyTo(replyToId);
+            action.setReplyTo(replyToId);
           }
-          // Update reply anchoring for trackers
-          typing.setReplyTo(replyToId);
-          thinking.setReplyTo(replyToId);
-          action.setReplyTo(replyToId);
-          // New query with resume using interleaved user message as prompt
+          // Resume query (with interleaved content, or empty to continue)
           queryInstance = query({
-            prompt: interleavePrompt,
+            prompt: interleavePrompt || "",
             options: { ...queryOptions, resume: capturedSessionId },
           });
           this.activeQueryInstance = queryInstance;
@@ -1129,6 +1133,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
           toolInputAccumulators.clear();
           currentStreamingToolId = null;
           interleavePrompt = null;
+          needsResume = false;
         }
 
         for await (const message of queryInstance) {
@@ -1179,21 +1184,17 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
                 }
 
                 if (interrupted) {
-                  const pending = this.queue.takePending() as IncomingNewMessage[];
+                  const { pending, lastMessageId } = await drainForInterleave(
+                    this.queue.takePending(),
+                    this.queuedMessages,
+                  );
                   if (pending.length === 0) {
-                    this.log.warn("Pending drained between check and take, skipping interleave");
-                    // Fall through to normal message_start handling below
+                    this.log.warn("Pending drained between check and take, resuming interrupted query");
+                    needsResume = true;
+                    break; // exits for-await, re-enters outer while
                   } else {
-                    // Clean up typing trackers for interleaved messages
-                    for (const p of pending) {
-                      const info = this.queuedMessages.get(p.id);
-                      if (info) {
-                        await info.typingTracker.cleanup();
-                        this.queuedMessages.delete(p.id);
-                      }
-                    }
                     // Update replyTo to last interleaved message
-                    replyToId = pending[pending.length - 1]!.id;
+                    replyToId = lastMessageId!;
                     // Collect attachments from ALL pending messages into shared image cache
                     const prevImageCount = allImageAttachments.size;
                     for (const p of pending) {
@@ -1355,9 +1356,9 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
           }
         }
 
-        // If we broke out of for-await without setting interleavePrompt,
+        // If we broke out of for-await without setting interleavePrompt or needsResume,
         // it was a pause/interrupt — exit outer loop
-        if (!interleavePrompt) break;
+        if (!interleavePrompt && !needsResume) break;
       }
 
       // Cleanup

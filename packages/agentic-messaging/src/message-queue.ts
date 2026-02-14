@@ -163,6 +163,34 @@ export function createQueuePositionText(options: QueuePositionTextOptions): stri
 }
 
 /**
+ * Drain pending messages for interleaving, cleaning up their typing trackers.
+ *
+ * Handles the common pattern across all three responder agents:
+ * 1. Iterate pending items and clean up their per-message typing trackers
+ * 2. Remove them from the queuedMessages map
+ * 3. Return the pending items and the last message ID (for replyTo update)
+ *
+ * @param pending - Array of pending messages (from queue.takePending())
+ * @param queuedMessages - Map of message ID → entry with a `typingTracker` field
+ * @returns The pending items and the last message ID, or null if empty
+ */
+export async function drainForInterleave<T extends { id: string }>(
+  pending: T[],
+  queuedMessages: Map<string, { typingTracker: TypingTracker }>,
+): Promise<{ pending: T[]; lastMessageId: string | null }> {
+  let lastMessageId: string | null = null;
+  for (const p of pending) {
+    const info = queuedMessages.get(p.id);
+    if (info) {
+      await info.typingTracker.cleanup();
+      queuedMessages.delete(p.id);
+    }
+    lastMessageId = p.id;
+  }
+  return { pending, lastMessageId };
+}
+
+/**
  * Clean up typing indicators for all queued messages that were never processed.
  *
  * Call this in `onSleep()` to ensure no orphaned typing indicators remain

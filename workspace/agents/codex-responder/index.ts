@@ -28,6 +28,7 @@ import {
   discoverPubsubToolsForMode,
   toCodexMcpTools,
   createCanUseToolGate,
+  type MessageQueue,
 } from "@natstack/agent-patterns";
 import {
   createRichTextChatSystemPrompt,
@@ -50,6 +51,7 @@ import {
   // Queue position utilities
   createQueuePositionText,
   cleanupQueuedTypingTrackers,
+  drainForInterleave,
   createTypingTracker,
   // Interrupt handler for per-message pause events
   createInterruptHandler,
@@ -434,7 +436,7 @@ interface QueuedMessageInfo {
 
 class CodexResponderAgent extends Agent<CodexAgentState, ChatParticipantMetadata> {
   // Pattern helpers from @natstack/agent-patterns
-  private queue!: ReturnType<typeof createMessageQueue>;
+  private queue!: MessageQueue<IncomingNewMessage>;
   private interrupt!: ReturnType<typeof createInterruptController>;
   private settingsMgr!: ReturnType<typeof createSettingsManager<CodexSettings>>;
   private missedContext!: ReturnType<typeof createMissedContextManager>;
@@ -524,12 +526,12 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
   async onWake(): Promise<void> {
     // Initialize message queue with correct API
     const client = this.ctx.client as AgenticClient<ChatParticipantMetadata>;
-    this.queue = createMessageQueue({
-      onProcess: (event) => this.handleUserMessage(event as IncomingNewMessage),
-      onError: (err, event) => this.log.error(`Error processing message ${(event as IncomingNewMessage).id}`, err),
+    this.queue = createMessageQueue<IncomingNewMessage>({
+      onProcess: (event) => this.handleUserMessage(event),
+      onError: (err, event) => this.log.error(`Error processing message ${event.id}`, err),
       onDequeue: async (event) => {
         // Update queue positions for all waiting messages
-        const msgEvent = event as IncomingNewMessage;
+        const msgEvent = event;
 
         // Remove the dequeued message from our tracking map
         this.queuedMessages.delete(msgEvent.id);
@@ -1336,28 +1338,27 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
                 item.type === "web_search"
               );
               if (isToolItem && !interruptHandler.isPaused() && this.queue.getPendingCount() > 0 && sessionId) {
-                this.interrupt.abortCurrent(); // synchronous, cannot fail
-                const pending = this.queue.takePending() as IncomingNewMessage[];
-                // Clean up typing trackers for interleaved messages
-                for (const p of pending) {
-                  const info = this.queuedMessages.get(p.id);
-                  if (info) {
-                    await info.typingTracker.cleanup();
-                    this.queuedMessages.delete(p.id);
+                const { pending, lastMessageId } = await drainForInterleave(
+                  this.queue.takePending(),
+                  this.queuedMessages,
+                );
+                if (pending.length === 0) {
+                  this.log.warn("Pending drained between check and take, skipping interleave");
+                } else {
+                  this.interrupt.abortCurrent(); // synchronous, cannot fail
+                  // Update replyTo to last interleaved message
+                  replyToId = lastMessageId!;
+                  // Collect images from ALL pending messages
+                  const allInterleaveImages: Attachment[] = [];
+                  for (const p of pending) {
+                    allInterleaveImages.push(...filterImageAttachments((p as { attachments?: Attachment[] }).attachments));
                   }
+                  const combinedText = pending.map((p) => String(p.content)).join("\n\n");
+                  interleavePrompt = allInterleaveImages.length > 0
+                    ? await buildCodexInput(combinedText, allInterleaveImages)
+                    : combinedText;
+                  this.log.info(`Interleaved ${pending.length} user message(s) at item.completed`);
                 }
-                // Update replyTo to last interleaved message
-                replyToId = pending[pending.length - 1]!.id;
-                // Collect images from ALL pending messages
-                const allInterleaveImages: Attachment[] = [];
-                for (const p of pending) {
-                  allInterleaveImages.push(...filterImageAttachments((p as { attachments?: Attachment[] }).attachments));
-                }
-                const combinedText = pending.map((p) => String(p.content)).join("\n\n");
-                interleavePrompt = allInterleaveImages.length > 0
-                  ? await buildCodexInput(combinedText, allInterleaveImages)
-                  : combinedText;
-                this.log.info(`Interleaved ${pending.length} user message(s) at item.completed`);
               }
               break; // exits SWITCH (not for-await)
             }
