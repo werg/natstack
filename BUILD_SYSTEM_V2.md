@@ -672,8 +672,9 @@ V1 exposes `gitRef` and `sourcemap` as **caller-supplied options** flowing throu
 2. `packages/runtime/src/core/nsLinks.ts`: Remove `gitRef?: string` from `BuildNsLinkOptions` (line 23). Remove `gitRef` URL param emission in `buildNsLink()` (line 66-67). Remove gitRef from JSDoc example (line 51).
 3. `src/main/nsProtocol.ts`: Remove `gitRef` parsing from `parseNsUrl()`. Simplify URL to carry only source identity.
 4. `src/shared/panel/accessors.ts`: Remove `"gitRef"` and `"sourcemap"` from `SOURCE_SCOPED_OPTIONS`. Delete `getPanelGitRef()` and `getPanelSourcemap()` accessors.
-5. `src/main/panelManager.ts`: Remove `gitRef` and `sourcemap` from `buildPanelAsync()` options. Build options come from manifest only.
-6. `src/shared/types.ts`: Remove `gitRef` and `sourcemap` from `PanelOptions` / snapshot option types.
+5. `src/main/panelManager.ts`: Remove `gitRef` and `sourcemap` from `buildPanelAsync()` options. Build options come from manifest only. Remove `gitRef?` from `buildPanelEnv()` gitInfo parameter (line 1160) and the `gitRef: gitInfo.gitRef` assignment in the bootstrap GitConfig payload (line 1173). Remove `gitRef: options?.gitRef` from the `buildPanelEnv()` call site (line 1314).
+6. `src/preload/preloadUtils.ts`: Remove `gitRef?: string` from the preload-side `GitConfig` interface (line 90).
+7. `src/shared/types.ts`: Remove `gitRef` and `sourcemap` from `PanelOptions` / snapshot option types.
 
 ### Migration 7: Eliminate worker concept from type system and policies
 
@@ -693,7 +694,7 @@ Migration 4 removes the template-builder worker and its build infrastructure. Th
 6. `src/main/panelManager.ts`: Remove all worker-specific panel creation/lifecycle code beyond what Migration 4 already covers. Remove worker type checks in panel routing logic. Remove `buildWorkerAsync()`, `generateWorkerHostHtml()`, worker type detection from source path prefix.
 7. `src/main/workspace/loader.ts`: Remove `"workers"` from `mkdirSync` scaffold (line 264).
 8. `src/main/contextTemplate/types.ts`: Remove `ContextMode` type (`"safe" | "unsafe"` → only safe exists).
-9. `src/main/contextTemplate/contextId.ts`: Delete `createUnsafeContextId()`, `isUnsafeNoContextId()`, `UNSAFE_NOCTX_REGEX`, and unsafe parsing branch in `parseContextId()`.
+9. `src/main/contextTemplate/contextId.ts`: Delete `createUnsafeContextId()`, `isUnsafeNoContextId()`, `UNSAFE_NOCTX_REGEX`, and unsafe parsing branch in `parseContextId()`. Then update `src/main/contextTemplate/index.ts`: remove re-exports of `createUnsafeContextId` and `isUnsafeNoContextId` (lines 71-72), remove `ContextMode` from type re-exports (line 38), and update the module JSDoc (lines 8-9 reference unsafe panels). Update `src/main/contextTemplate/__tests__/contextId.test.ts`: remove import of `createUnsafeContextId` and `isUnsafeNoContextId` (lines 10-11) and delete the `createUnsafeContextId` and `isUnsafeNoContextId` test suites (lines 60-90).
 10. `src/preload/preloadUtils.ts`: Remove `ARG_SCOPE_PATH` constant (unsafe scope path argument). Change `NatstackKind` type (line 113) from `"panel" | "worker" | "shell"` to `"panel" | "shell"`. Remove `if (kind === "worker") return "worker"` branch in `parseKind()` (line 143).
 11. `packages/runtime/src/shared/globals.ts`: Change `__natstackKind` type (line 18) from `"panel" | "worker" | "shell"` to `"panel" | "shell"`. Change `kind` in `InjectedConfig` (line 34) likewise.
 12. `packages/runtime/src/core/nsLinks.ts`: Remove "workers" from comment on line 4 ("Navigate to app panels and workers" → "Navigate to app panels"). Remove `"workers/task"` from JSDoc example (line 39).
@@ -755,6 +756,11 @@ Everything listed below is deleted or gutted after V2 is operational and migrati
 | `src/main/package-store/gc.ts` | Package store garbage collection |
 | `src/main/package-store/schema.ts` | Store schema definitions |
 
+#### ESM Transformer (Verdaccio Integration)
+| File | Purpose (now dead) |
+|------|--------------------|
+| `src/main/lazyBuild/esmTransformer.ts` | On-demand CJS→ESM transformer served via Verdaccio `/-/esm/` route — only imported by `verdaccioServer.ts` (line 34), `build/sharedBuild.ts` (line 41), and `build/strategies/panelStrategy.ts` (line 41) |
+
 #### Build Scripts & Config
 | File | Purpose (now dead) |
 |------|--------------------|
@@ -769,6 +775,7 @@ Everything listed below is deleted or gutted after V2 is operational and migrati
 | `src/builtin-workers/` | 1 worker (template-builder) | Eliminated |
 | `src/main/build/` | Entire V1 build pipeline | Replaced by src/server/buildV2/ |
 | `src/main/package-store/` | Entire package store | Replaced by external-deps cache |
+| `src/main/lazyBuild/` | ESM transformer (1 file) | Only used by Verdaccio + V1 build pipeline |
 
 ### Files to Modify
 
