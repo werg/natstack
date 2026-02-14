@@ -1823,6 +1823,7 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     },
     onDisconnect: pubsub.onDisconnect,
     onReconnect: pubsub.onReconnect,
+    onReady: pubsub.onReady,
     // === Metadata ===
     updateMetadata: async (metadata: T) => {
       await pubsub.updateMetadata(metadata);
@@ -1857,6 +1858,9 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     },
     get chatMessageCount() {
       return pubsub.chatMessageCount;
+    },
+    get firstChatMessageId() {
+      return pubsub.firstChatMessageId;
     },
     getMessagesBefore: async (beforeId: number, limit?: number) => {
       return pubsub.getMessagesBefore(beforeId, limit);

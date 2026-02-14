@@ -5,7 +5,7 @@
  * Returns a ChatContextValue-compatible object that can be passed to ChatProvider.
  */
 
-import { useState, useCallback, useMemo, useRef, useEffect } from "react";
+import { useState, useCallback, useMemo, useRef, useEffect, useReducer } from "react";
 import { CONTENT_TYPE_TYPING, CONTENT_TYPE_INLINE_UI } from "@natstack/agentic-messaging/utils";
 import type {
   IncomingEvent,
@@ -59,6 +59,78 @@ import type {
   InlineUiComponentEntry,
 } from "../types";
 
+// =============================================================================
+// Message window reducer — single source of truth for messages + pagination
+// =============================================================================
+
+const MAX_VISIBLE_MESSAGES = 500;
+const TRIM_THRESHOLD = MAX_VISIBLE_MESSAGES * 2;
+
+interface MessageWindowState {
+  messages: ChatMessage[];
+  oldestLoadedId: number | null;
+  paginationExhausted: boolean;
+}
+
+type MessageWindowAction =
+  | { type: "replace"; updater: (prev: ChatMessage[]) => ChatMessage[] }
+  | { type: "prepend"; olderMessages: ChatMessage[]; newCursor: number; exhausted: boolean }
+  | { type: "reset" };
+
+const messageWindowInitialState: MessageWindowState = {
+  messages: [],
+  oldestLoadedId: null,
+  paginationExhausted: false,
+};
+
+function messageWindowReducer(state: MessageWindowState, action: MessageWindowAction): MessageWindowState {
+  switch (action.type) {
+    case "replace": {
+      const updated = action.updater(state.messages);
+      if (updated === state.messages) return state;
+
+      // Auto-trim if over threshold
+      if (updated.length > TRIM_THRESHOLD) {
+        const trimmed = updated.slice(-MAX_VISIBLE_MESSAGES);
+        const trimFirstPubsubId = trimmed[0]?.pubsubId;
+        return {
+          messages: trimmed,
+          oldestLoadedId: trimFirstPubsubId ?? state.oldestLoadedId,
+          paginationExhausted: false, // trimming means there's more history
+        };
+      }
+
+      // Initialize cursor if not yet set
+      let { oldestLoadedId } = state;
+      if (oldestLoadedId === null && updated.length > 0) {
+        const firstWithId = updated.find((m) => m.pubsubId !== undefined);
+        if (firstWithId?.pubsubId !== undefined) {
+          oldestLoadedId = firstWithId.pubsubId;
+        }
+      }
+
+      return { ...state, messages: updated, oldestLoadedId };
+    }
+    case "prepend": {
+      // Dedup by pubsubId
+      const existingIds = new Set(
+        state.messages.filter((m) => m.pubsubId != null).map((m) => m.pubsubId)
+      );
+      const deduped = action.olderMessages.filter(
+        (m) => !m.pubsubId || !existingIds.has(m.pubsubId)
+      );
+      const merged = deduped.length > 0 ? [...deduped, ...state.messages] : state.messages;
+      return {
+        messages: merged,
+        oldestLoadedId: action.newCursor,
+        paginationExhausted: action.exhausted,
+      };
+    }
+    case "reset":
+      return messageWindowInitialState;
+  }
+}
+
 /** Pending agent info passed from launcher */
 interface PendingAgentInfo {
   agentId: string;
@@ -109,8 +181,15 @@ export function useAgenticChat({
   const toolRoleResponseHandlerRef = useRef<((event: IncomingToolRoleResponseEvent) => void) | null>(null);
   const toolRoleHandoffHandlerRef = useRef<((event: IncomingToolRoleHandoffEvent) => void) | null>(null);
 
-  // Chat state
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // Chat state — reducer-based message window
+  const [messageWindow, dispatch] = useReducer(messageWindowReducer, messageWindowInitialState);
+  const { messages } = messageWindow;
+  const setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>> = useCallback(
+    (action: React.SetStateAction<ChatMessage[]>) => {
+      dispatch({ type: "replace", updater: typeof action === "function" ? action : () => action });
+    },
+    []
+  );
   const [input, setInput] = useState("");
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [status, setStatus] = useState("Connecting...");
@@ -210,54 +289,51 @@ export function useAgenticChat({
     void compileInlineUiMessages();
   }, [messages, inlineUiComponents]);
 
-  // Memory management
-  const MAX_VISIBLE_MESSAGES = 500;
-  const TRIM_THRESHOLD = MAX_VISIBLE_MESSAGES * 2;
-  const [hasMoreHistory, setHasMoreHistory] = useState(false);
-  const [oldestLoadedId, setOldestLoadedId] = useState<number | null>(null);
+  // Pagination state — firstChatMessageId from server, synced via onReady
+  const [firstChatMessageId, setFirstChatMessageId] = useState<number | undefined>();
   const [loadingMore, setLoadingMore] = useState(false);
 
+  // Derive hasMoreHistory from reducer state + server boundary
+  const hasMoreHistory = useMemo(() => {
+    if (messageWindow.paginationExhausted) return false;
+    if (messageWindow.oldestLoadedId === null) return false;
+    if (firstChatMessageId !== undefined) {
+      return messageWindow.oldestLoadedId > firstChatMessageId;
+    }
+    return true;
+  }, [messageWindow.paginationExhausted, messageWindow.oldestLoadedId, firstChatMessageId]);
+
+  // Inline UI cleanup when messages shrink (e.g. after trim in reducer)
+  const prevMsgCountRef = useRef(0);
   useEffect(() => {
-    if (messages.length > TRIM_THRESHOLD) {
-      let referencedUiIds: Set<string> | undefined;
-      let trimFirstPubsubId: number | undefined;
-      setMessages((prev) => {
-        const trimmed = prev.slice(-MAX_VISIBLE_MESSAGES);
-        referencedUiIds = new Set<string>();
-        for (const msg of trimmed) {
-          if (msg.contentType === CONTENT_TYPE_INLINE_UI) {
-            const data = parseInlineUiData(msg.content);
-            if (data) referencedUiIds!.add(data.id);
-          }
-        }
-        trimFirstPubsubId = trimmed[0]?.pubsubId;
-        return trimmed;
-      });
-      // Update pagination state outside the setMessages updater (avoids
-      // side-effects inside state updater functions).
-      if (trimFirstPubsubId !== undefined) {
-        setOldestLoadedId(trimFirstPubsubId);
-        setHasMoreHistory(true);
-      }
-      if (referencedUiIds) {
-        const ids = referencedUiIds;
-        setInlineUiComponents(prevComponents => {
-          const next = new Map(prevComponents);
-          let removedCount = 0;
-          for (const [id, component] of prevComponents) {
-            if (!ids.has(id)) {
-              if (component.Component && component.cacheKey) {
-                cleanupInlineUiComponent(component.cacheKey);
-              }
-              next.delete(id);
-              removedCount++;
-            }
-          }
-          return removedCount > 0 ? next : prevComponents;
-        });
+    if (messages.length >= prevMsgCountRef.current) {
+      prevMsgCountRef.current = messages.length;
+      return;
+    }
+    prevMsgCountRef.current = messages.length;
+    // Collect referenced inline UI IDs from surviving messages
+    const referencedUiIds = new Set<string>();
+    for (const msg of messages) {
+      if (msg.contentType === CONTENT_TYPE_INLINE_UI) {
+        const data = parseInlineUiData(msg.content);
+        if (data) referencedUiIds.add(data.id);
       }
     }
-  }, [messages.length]);
+    setInlineUiComponents(prevComponents => {
+      const next = new Map(prevComponents);
+      let removedCount = 0;
+      for (const [id, component] of prevComponents) {
+        if (!referencedUiIds.has(id)) {
+          if (component.Component && component.cacheKey) {
+            cleanupInlineUiComponent(component.cacheKey);
+          }
+          next.delete(id);
+          removedCount++;
+        }
+      }
+      return removedCount > 0 ? next : prevComponents;
+    });
+  }, [messages]);
 
   // Cleanup pending images on unmount
   const pendingImagesRef = useRef(pendingImages);
@@ -484,9 +560,19 @@ export function useAgenticChat({
     }, []),
   });
 
+  // Sync firstChatMessageId on every ready (initial + reconnect)
+  useEffect(() => {
+    const client = clientRef.current;
+    if (!client || !connected) return;
+    return client.onReady(() => {
+      setFirstChatMessageId(client.firstChatMessageId);
+    });
+  }, [connected, clientRef]);
+
   // Load earlier messages (using aggregated pagination)
   const loadEarlierMessages = useCallback(async () => {
     const client = clientRef.current;
+    const oldestLoadedId = messageWindow.oldestLoadedId;
     if (!client || loadingMore || !hasMoreHistory || !oldestLoadedId) return;
     setLoadingMore(true);
     try {
@@ -509,25 +595,13 @@ export function useAgenticChat({
         }
       }
 
-      if (olderMessages.length > 0) {
-        setMessages(prev => {
-          const existingIds = new Set(
-            prev.filter(m => m.pubsubId != null).map(m => m.pubsubId)
-          );
-          const deduped = olderMessages.filter(
-            m => !m.pubsubId || !existingIds.has(m.pubsubId)
-          );
-          return [...deduped, ...prev];
-        });
-      }
-      setOldestLoadedId(currentBeforeId);
-      setHasMoreHistory(hasMore);
+      dispatch({ type: "prepend", olderMessages, newCursor: currentBeforeId, exhausted: !hasMore });
     } catch (err) {
       console.error("[Chat] Failed to load earlier messages:", err);
     } finally {
       setLoadingMore(false);
     }
-  }, [clientRef, oldestLoadedId, hasMoreHistory, loadingMore]);
+  }, [clientRef, messageWindow.oldestLoadedId, hasMoreHistory, loadingMore]);
 
   useEffect(() => { selfIdRef.current = clientId; }, [clientId]);
 
@@ -540,44 +614,6 @@ export function useAgenticChat({
     const unsubscribe = client.onTitleChange((title) => { document.title = title; });
     return () => { unsubscribe(); };
   }, [connected, clientRef]);
-
-  // Initialize pagination cursor.
-  // Only sets oldestLoadedId (the pagination cursor), NOT hasMoreHistory.
-  // hasMoreHistory is set by the trim effect (when messages exceed the threshold)
-  // and by the debounced post-replay check below.
-  useEffect(() => {
-    if (!connected || messages.length === 0) return;
-    if (oldestLoadedId !== null) return;
-    const firstMsgWithId = messages.find((m) => m.pubsubId !== undefined);
-    if (firstMsgWithId?.pubsubId !== undefined) {
-      setOldestLoadedId(firstMsgWithId.pubsubId);
-    }
-  }, [connected, messages.length, oldestLoadedId]);
-
-  // Post-replay history detection.
-  // Debounced: resets a short timer on every messages.length change. Once
-  // messages stop arriving (replay complete), the timer fires and compares
-  // loaded count against the server's chatMessageCount. This avoids the
-  // race in the init effect above (which fires when only 1 message is
-  // loaded) while still detecting history for checkpoint-based connections
-  // (replaySinceId > 0) that don't replay everything.
-  const messagesRef = useRef(messages);
-  messagesRef.current = messages;
-  useEffect(() => {
-    if (!connected || hasMoreHistory) return;
-    const timer = setTimeout(() => {
-      const client = clientRef.current;
-      if (!client) return;
-      const serverChatCount = client.chatMessageCount;
-      if (serverChatCount === undefined) return;
-      const currentMessages = messagesRef.current;
-      const dbMessageCount = currentMessages.filter(m => m.pubsubId !== undefined).length;
-      if (serverChatCount > dbMessageCount) {
-        setHasMoreHistory(true);
-      }
-    }, 200);
-    return () => clearTimeout(timer);
-  }, [connected, messages.length, hasMoreHistory, clientRef]);
 
   // Typing indicators
   const typingMessageIdRef = useRef<string | null>(null);
@@ -790,6 +826,7 @@ export default function App({ onSubmit, onCancel }) {
         };
 
         await connectToChannel({ channelId: channelName, methods, channelConfig, contextId });
+        setFirstChatMessageId(clientRef.current?.firstChatMessageId);
         setStatus("Connected");
       } catch (err) {
         console.error("[Chat] Connection error:", err);
@@ -803,7 +840,8 @@ export default function App({ onSubmit, onCancel }) {
 
   // Reset handler
   const reset = useCallback(() => {
-    setMessages([]);
+    dispatch({ type: "reset" });
+    setFirstChatMessageId(undefined);
     setInput("");
     cleanupPendingImages(pendingImages);
     setPendingImages([]);

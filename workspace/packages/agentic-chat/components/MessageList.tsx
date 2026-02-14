@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, type ComponentType } from "react";
 import { Box, Button, Card, Flex, ScrollArea, Text } from "@radix-ui/themes";
-import { useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
 import { prettifyToolName } from "@natstack/agentic-messaging/utils";
 import type { Participant } from "@natstack/pubsub";
 import type { MethodHistoryEntry } from "./MethodHistoryItem";
@@ -124,8 +123,8 @@ function fullGroupComputation(
   messages.forEach((msg, index) => {
     if (isSupersededTyping(msg, index)) return;
     // Skip completed typing indicators — they're ephemeral and render as
-    // null in MessageCard.  Excluding them here keeps the virtualizer's
-    // count accurate (no phantom height for invisible items).
+    // null in MessageCard.  Excluding them avoids phantom height for
+    // invisible items.
     if (msg.contentType === "typing" && msg.complete) return;
 
     const inlineType = getInlineItemType(msg);
@@ -231,10 +230,6 @@ export const MessageList = React.memo(function MessageList({
   // streaming updates keep scrolling without waiting for the scroll event.
   const isAtBottomRef = useRef(true);
 
-  // Ref to access the virtualizer from layout effects (set during render,
-  // available by the time layout effects fire).
-  const virtualizerRef = useRef<Virtualizer<HTMLElement, Element> | null>(null);
-
   const getViewport = useCallback((): HTMLElement | null => {
     const content = scrollContentRef.current;
     const root = scrollAreaRef.current;
@@ -286,8 +281,6 @@ export const MessageList = React.memo(function MessageList({
   }, [handleScroll, viewportEl]);
 
   // Handle new content: keep position unless the user was near the bottom.
-  // Uses virtualizerRef (set during render) to scroll via the virtualizer's
-  // own API, keeping its internal state consistent.
   const scrollRafRef = useRef(0);
   useEffect(() => {
     return () => cancelAnimationFrame(scrollRafRef.current);
@@ -311,8 +304,7 @@ export const MessageList = React.memo(function MessageList({
       // scrollToIndex uses estimated offsets and often undershoots,
       // causing handleScroll to incorrectly clear isAtBottomRef.
       viewport.scrollTo({ top: viewport.scrollHeight, behavior: "auto" });
-      // Retry next frame: the virtualizer may re-measure items between
-      // now and the next paint, changing scrollHeight.
+      // Retry next frame: layout may shift between now and the next paint.
       cancelAnimationFrame(scrollRafRef.current);
       scrollRafRef.current = requestAnimationFrame(() => {
         const vp = viewportEl ?? getViewport();
@@ -341,17 +333,7 @@ export const MessageList = React.memo(function MessageList({
         isAtBottomRef.current = true;
       } else {
         if (isPrepend && scrollHeightDelta !== 0) {
-          // Use the virtualizer's API so its internal state stays consistent
-          // with the new scroll position (direct DOM mutation can jitter when
-          // the virtualizer recalculates against unmeasured prepended items).
-          const v = virtualizerRef.current;
-          const prevScrollTop = lastScrollTopRef.current;
-          const newOffset = prevScrollTop + scrollHeightDelta;
-          if (v) {
-            v.scrollToOffset(newOffset);
-          } else {
-            viewport.scrollTop = newOffset;
-          }
+          viewport.scrollTop = lastScrollTopRef.current + scrollHeightDelta;
         } else if (countDelta > 0 && !isPrepend) {
           setShowNewContent(true);
         }
@@ -359,8 +341,7 @@ export const MessageList = React.memo(function MessageList({
     }
 
     // Re-evaluate isAtBottomRef from the DOM — catches cases where the
-    // flag was cleared by an intermediate scroll event (e.g. during the
-    // virtualizer's fallback-to-virtual transition) but we're actually
+    // flag was cleared by an intermediate scroll event but we're actually
     // at the bottom.
     if (!isAtBottomRef.current) {
       isAtBottomRef.current =
@@ -404,15 +385,19 @@ export const MessageList = React.memo(function MessageList({
   // and history) before defaulting, so historical messages from agents align
   // correctly on reload even when the original participant left the roster.
   const getSenderInfo = useCallback((senderId: string, msg?: ChatMessage) => {
-    const participant = allParticipants[senderId];
-    if (participant?.metadata) return participant.metadata;
-    if (msg?.senderMetadata?.type) {
-      return { name: msg.senderMetadata.name ?? "Unknown", type: msg.senderMetadata.type, handle: msg.senderMetadata.handle ?? "unknown" };
-    }
-    // Default to "unknown" rather than "panel" — the local panel's own messages
-    // are always in allParticipants, so reaching this fallback means it's an
-    // unrecognised sender (likely an agent from a previous session).
-    return { name: "Unknown", type: "unknown" as const, handle: "unknown" };
+    const live = allParticipants[senderId]?.metadata;
+    const stored = msg?.senderMetadata;
+    // Merge stored snapshot (immutable, from DB — always has correct type)
+    // with live roster (may be fresher, but empty {} during join→metadata gap).
+    // Stored is absent for locally-created messages not yet persisted;
+    // live is {} during the connection setup window.
+    return {
+      name: "Unknown",
+      type: "unknown" as const,
+      handle: "unknown",
+      ...(stored?.type ? stored : {}),
+      ...(live?.type ? live : {}),
+    };
   }, [allParticipants]);
 
   // --- Interrupt handler ---
@@ -565,88 +550,51 @@ export const MessageList = React.memo(function MessageList({
   const copiedMessageIdRef = useRef(copiedMessageId);
   copiedMessageIdRef.current = copiedMessageId;
 
-  // Track total size so onChange can detect item-resize growth (e.g. images
-  // loading) and auto-scroll when the user was at the bottom.
-  const prevTotalSizeRef = useRef(0);
-
-  // --- Virtualizer ---
-  const virtualizer = useVirtualizer({
-    count: groupedItems.length,
-    getScrollElement: () => viewportEl,
-    estimateSize: (index) => {
-      const item = groupedItemsRef.current[index];
-      if (!item) return 100;
-      if (item.type === "inline-group") return 36;
-      const len = item.msg.content.length;
-      if (len < 100) return 72;
-      if (len < 500) return 150;
-      return 300;
-    },
-    overscan: 8,
-    onChange: (instance) => {
-      const totalSize = instance.getTotalSize();
-      if (totalSize > prevTotalSizeRef.current
-          && isAtBottomRef.current
-          && instance.options.count > 0) {
-        // Item resized (image loaded, lazy component expanded) while user
-        // was at bottom — keep them pinned there.
-        instance.scrollToIndex(instance.options.count - 1, { align: "end" });
-        // Keep the flag true — scrollToIndex is async (uses estimated
-        // offsets) and may undershoot, causing scroll events that would
-        // incorrectly clear isAtBottomRef.
-        isAtBottomRef.current = true;
-      }
-      prevTotalSizeRef.current = totalSize;
-    },
-  });
-  virtualizerRef.current = virtualizer;
-
-  // Render a single virtualized item.
-  // Reads groupedItems and copiedMessageId via refs so that the callback
-  // identity is stable across message updates. The virtualizer only calls
-  // this during its own render pass, so the refs are always current.
+  // Render a single grouped item by index.
+  // Each item is wrapped in its own flex column container so that
+  // MessageCard's alignSelf works regardless of the parent's display mode.
   const renderItem = useCallback((index: number) => {
     const item = groupedItemsRef.current[index];
     if (!item) return null;
 
     if (item.type === "inline-group") {
       if (customRenderInlineGroup) {
-        return customRenderInlineGroup(item.inlineItems);
+        return <Flex direction="column">{customRenderInlineGroup(item.inlineItems)}</Flex>;
       }
-      return <InlineGroup key={item.key} items={item.inlineItems} onInterrupt={handleTypingInterrupt} />;
+      return <Flex direction="column"><InlineGroup key={item.key} items={item.inlineItems} onInterrupt={handleTypingInterrupt} /></Flex>;
     }
 
     const { msg, index: msgIndex } = item;
     const sender = getSenderInfo(msg.senderId, msg);
 
     if (customRenderMessage) {
-      return customRenderMessage(msg, sender as SenderInfo);
+      return <Flex direction="column">{customRenderMessage(msg, sender as SenderInfo)}</Flex>;
     }
 
     const isStreaming = msg.kind === "message" && !msg.complete && !msg.pending;
 
     return (
-      <MessageCard
-        key={msg.id || `fallback-msg-${msgIndex}`}
-        msg={msg}
-        index={msgIndex}
-        senderType={sender.type}
-        isStreaming={isStreaming}
-        isCopied={copiedMessageIdRef.current === msg.id}
-        inlineUiComponents={inlineUiComponents}
-        onInterrupt={handleInterruptMessage}
-        onCopy={handleCopyMessage}
-        onFocusPanel={onFocusPanel}
-        onReloadPanel={onReloadPanel}
-      />
+      <Flex direction="column">
+        <MessageCard
+          key={msg.id || `fallback-msg-${msgIndex}`}
+          msg={msg}
+          index={msgIndex}
+          senderType={sender.type}
+          isStreaming={isStreaming}
+          isCopied={copiedMessageIdRef.current === msg.id}
+          inlineUiComponents={inlineUiComponents}
+          onInterrupt={handleInterruptMessage}
+          onCopy={handleCopyMessage}
+          onFocusPanel={onFocusPanel}
+          onReloadPanel={onReloadPanel}
+        />
+      </Flex>
     );
   }, [getSenderInfo, inlineUiComponents,
       handleInterruptMessage, handleCopyMessage, handleTypingInterrupt, onFocusPanel, onReloadPanel,
       customRenderMessage, customRenderInlineGroup]);
 
   // --- Render ---
-  const virtualItems = virtualizer.getVirtualItems();
-
   return (
     <Box flexGrow="1" overflow="hidden" style={{ minHeight: 0, position: "relative" }} asChild>
       <Card>
@@ -669,51 +617,19 @@ export const MessageList = React.memo(function MessageList({
             <Text color="gray" size="2">
               Send a message to start chatting
             </Text>
-          ) : virtualItems.length > 0 ? (
-            <div
-              style={{
-                height: `${virtualizer.getTotalSize()}px`,
-                width: "100%",
-                position: "relative",
-              }}
-            >
-              {virtualItems.map((virtualItem) => (
+          ) : (
+            <Flex direction="column" gap="1">
+              {groupedItems.map((item, index) => (
                 <div
-                  key={virtualItem.key}
-                  data-index={virtualItem.index}
-                  ref={virtualizer.measureElement}
+                  key={item.type === "inline-group" ? item.key : (item.msg.id || `msg-${index}`)}
                   style={{
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    width: "100%",
-                    transform: `translateY(${virtualItem.start}px)`,
-                    paddingBottom: "var(--space-1)",
-                    display: "flex",
-                    flexDirection: "column",
-                  }}
+                    contentVisibility: "auto",
+                    containIntrinsicSize: item.type === "inline-group" ? "auto 36px" : "auto 100px",
+                  } as React.CSSProperties}
                 >
-                  {renderItem(virtualItem.index)}
+                  {renderItem(index)}
                 </div>
               ))}
-            </div>
-          ) : (
-            /* Fallback: render last N items in normal flow until the virtualizer
-               has measured the scroll element (needs async ResizeObserver).
-               Capped to avoid rendering hundreds of items on reconnect. */
-            <Flex direction="column" gap="1">
-              {(() => {
-                const FALLBACK_CAP = 20;
-                const start = Math.max(0, groupedItems.length - FALLBACK_CAP);
-                return groupedItems.slice(start).map((item, sliceIdx) => {
-                  const i = start + sliceIdx;
-                  return (
-                    <Flex direction="column" key={item.type === "inline-group" ? item.key : (item.msg.id || `fb-${i}`)}>
-                      {renderItem(i)}
-                    </Flex>
-                  );
-                });
-              })()}
             </Flex>
           )}
         </div>

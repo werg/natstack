@@ -948,6 +948,8 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   readonly totalMessageCount: number | undefined;
   /** Count of type="message" events only (excludes protocol chatter), for accurate chat pagination */
   readonly chatMessageCount: number | undefined;
+  /** ID of the first chat message in the channel (for pagination boundary) */
+  readonly firstChatMessageId: number | undefined;
   /** Get older messages before a given ID (for pagination UI) */
   getMessagesBefore(beforeId: number, limit?: number): Promise<{
     messages: Array<{
@@ -976,6 +978,8 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
   onError(handler: (error: Error) => void): () => void;
   onDisconnect(handler: () => void): () => void;
   onReconnect(handler: () => void): () => void;
+  /** Register ready handler (called on every ready message, including reconnects). Returns unsubscribe function. */
+  onReady(handler: () => void): () => void;
 
   // === Metadata ===
   /** Update this participant's metadata */

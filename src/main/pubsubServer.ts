@@ -84,6 +84,8 @@ export interface MessageStore {
   updateChannelConfig(channel: string, config: Partial<ChannelConfig>): ChannelConfig | null;
   /** Get the maximum attachment ID number for a channel (for counter initialization after restart) */
   getMaxAttachmentIdNumber(channel: string): number;
+  /** Get the minimum message ID for a channel, optionally filtered by type. Returns undefined if no matching messages. */
+  getMinMessageId(channel: string, type?: string): number | undefined;
   /** Register an agent for a channel (UPSERT - updates config if already exists) */
   registerChannelAgent(channel: string, agentId: string, handle: string, config: string, registeredBy?: string): void;
   /** Unregister an agent from a channel */
@@ -181,6 +183,8 @@ interface ServerMessage {
   totalCount?: number;
   /** Count of type="message" events only, for accurate chat pagination */
   chatMessageCount?: number;
+  /** ID of the first chat message in the channel (for pagination boundary) */
+  firstChatMessageId?: number;
   /** Messages returned for get-messages-before (sent in messages-before response) */
   messages?: Array<{
     id: number;
@@ -475,6 +479,12 @@ abstract class BaseMessageStore implements MessageStore {
   abstract getMessageCount(channel: string, type?: string): number;
 
   /**
+   * Get the minimum message ID for a channel, optionally filtered by type.
+   * Returns undefined if no matching messages exist.
+   */
+  abstract getMinMessageId(channel: string, type?: string): number | undefined;
+
+  /**
    * Fetch trailing update-message and error events for specific message UUIDs.
    */
   abstract queryTrailingUpdates(channel: string, messageUuids: string[], atOrAfterId: number): MessageRow[];
@@ -734,6 +744,25 @@ class SqliteMessageStore extends BaseMessageStore {
     return result[0]?.count ?? 0;
   }
 
+  getMinMessageId(channel: string, type?: string): number | undefined {
+    if (!this.dbHandle) return undefined;
+    const db = getDatabaseManager();
+    if (type) {
+      const result = db.query<{ minId: number | null }>(
+        this.dbHandle,
+        "SELECT MIN(id) as minId FROM messages WHERE channel = ? AND type = ?",
+        [channel, type]
+      );
+      return result[0]?.minId ?? undefined;
+    }
+    const result = db.query<{ minId: number | null }>(
+      this.dbHandle,
+      "SELECT MIN(id) as minId FROM messages WHERE channel = ?",
+      [channel]
+    );
+    return result[0]?.minId ?? undefined;
+  }
+
   registerChannelAgent(channel: string, agentId: string, handle: string, config: string, registeredBy?: string): void {
     if (!this.dbHandle) throw new Error("Store not initialized");
     const db = getDatabaseManager();
@@ -914,6 +943,16 @@ export class InMemoryMessageStore extends BaseMessageStore {
 
   getMessageCount(channel: string, type?: string): number {
     return this.messages.filter((m) => m.channel === channel && (!type || m.type === type)).length;
+  }
+
+  getMinMessageId(channel: string, type?: string): number | undefined {
+    let minId: number | undefined;
+    for (const m of this.messages) {
+      if (m.channel !== channel) continue;
+      if (type && m.type !== type) continue;
+      if (minId === undefined || m.id < minId) minId = m.id;
+    }
+    return minId;
   }
 
   registerChannelAgent(channel: string, agentId: string, handle: string, config: string, registeredBy?: string): void {
@@ -1178,9 +1217,11 @@ export class PubSubServer {
     // Count only user-visible "message" type events (excludes protocol chatter
     // like method-call, presence, tool-role-*, agent-debug, etc.)
     const chatMessageCount = this.messageStore.getMessageCount(channel, "message");
+    // Get the first chat message ID for pagination boundary detection
+    const firstChatMessageId = this.messageStore.getMinMessageId(channel, "message");
 
     // Signal ready (end of replay) with contextId, channelConfig, and totalCount
-    this.send(ws, { kind: "ready", contextId: channelContextId, channelConfig, totalCount, chatMessageCount });
+    this.send(ws, { kind: "ready", contextId: channelContextId, channelConfig, totalCount, chatMessageCount, firstChatMessageId });
 
     // Persist and broadcast join or update presence event
     if (!existingParticipant) {

@@ -49,6 +49,8 @@ interface ServerMessage {
   totalCount?: number;
   /** Count of type="message" events only, for accurate chat pagination */
   chatMessageCount?: number;
+  /** ID of the first chat message in the channel (for pagination boundary) */
+  firstChatMessageId?: number;
   /** Messages returned for get-messages-before (sent in messages-before response) */
   messages?: Array<{
     id: number;
@@ -131,6 +133,9 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
   /** Register reconnect handler (called after successful reconnection). Returns unsubscribe function. */
   onReconnect(handler: () => void): () => void;
 
+  /** Register ready handler (called on every ready message, including reconnects). Returns unsubscribe function. */
+  onReady(handler: () => void): () => void;
+
   /** Register roster update handler. Returns unsubscribe function. */
   onRoster(handler: (roster: RosterUpdate<T>) => void): () => void;
 
@@ -148,6 +153,9 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
 
   /** Count of type="message" events only (excludes protocol chatter), for accurate chat pagination */
   readonly chatMessageCount: number | undefined;
+
+  /** ID of the first chat message in the channel (for pagination boundary) */
+  readonly firstChatMessageId: number | undefined;
 
   /** Get older messages before a given ID (for pagination UI) */
   getMessagesBefore(beforeId: number, limit?: number): Promise<{
@@ -237,6 +245,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   let serverChannelConfig: ChannelConfig | undefined;
   let serverTotalCount: number | undefined;
   let serverChatMessageCount: number | undefined;
+  let serverFirstChatMessageId: number | undefined;
 
   // Message queue for the async iterator
   const messageQueue: Message[] = [];
@@ -257,6 +266,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   const errorHandlers = new Set<(error: Error) => void>();
   const disconnectHandlers = new Set<() => void>();
   const reconnectHandlers = new Set<() => void>();
+  const readyHandlers = new Set<() => void>();
   const rosterHandlers = new Set<(roster: RosterUpdate<T>) => void>();
   const configChangeHandlers = new Set<(config: ChannelConfig) => void>();
 
@@ -445,10 +455,16 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         if (typeof msg.chatMessageCount === "number") {
           serverChatMessageCount = msg.chatMessageCount;
         }
+        if (typeof msg.firstChatMessageId === "number") {
+          serverFirstChatMessageId = msg.firstChatMessageId;
+        } else {
+          serverFirstChatMessageId = undefined;
+        }
         readyResolve?.();
         readyResolve = null;
         readyReject = null;
-        enqueueMessage({ kind: "ready", totalCount: serverTotalCount, chatMessageCount: serverChatMessageCount });
+        enqueueMessage({ kind: "ready", totalCount: serverTotalCount, chatMessageCount: serverChatMessageCount, firstChatMessageId: serverFirstChatMessageId });
+        for (const handler of readyHandlers) handler();
         break;
 
       case "messages-before": {
@@ -1207,6 +1223,10 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
       reconnectHandlers.add(handler);
       return () => reconnectHandlers.delete(handler);
     },
+    onReady: (handler: () => void) => {
+      readyHandlers.add(handler);
+      return () => readyHandlers.delete(handler);
+    },
     onRoster: (handler: (roster: RosterUpdate<T>) => void) => {
       rosterHandlers.add(handler);
       // Immediately call handler with current roster if it's not empty
@@ -1233,6 +1253,9 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     },
     get chatMessageCount() {
       return serverChatMessageCount;
+    },
+    get firstChatMessageId() {
+      return serverFirstChatMessageId;
     },
     async getMessagesBefore(beforeId: number, limit = 100) {
       const ref = ++refCounter;

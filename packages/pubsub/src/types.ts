@@ -89,6 +89,8 @@ export interface ReadyMessage {
   totalCount?: number;
   /** Count of type="message" events only, for accurate chat pagination */
   chatMessageCount?: number;
+  /** ID of the first chat message in the channel (for pagination boundary) */
+  firstChatMessageId?: number;
 }
 
 /**
