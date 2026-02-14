@@ -4,6 +4,23 @@
 > backend services (Verdaccio, Git, PubSub, AI, builds) run in a spawned
 > server process communicating via WebSocket RPC.
 
+## Completed Preliminaries
+
+The following preparatory work has been completed on the `claude/redesign-build-system-bbwn4` branch:
+
+### Unsafe mode removal (commit `7f3ab4a`)
+
+The `unsafe` option (nodeIntegration, no sandbox) has been fully eliminated. All panels and workers now run in safe browser sandbox mode. Changes:
+
+- **New:** `src/main/ipc/gitServiceHandler.ts` — Main process RPC handler for git operations + scoped filesystem access
+- **New:** `src/about-pages/shared/serviceAdapters.ts` — Client-side RPC adapters (`FsPromisesLike`, `GitClient`) that route through the service dispatcher
+- **Deleted:** `src/preload/unsafePreload.ts`
+- **Modified (21 files):** Removed `unsafe` from `PanelManifest`, `CreateChildOptions`, `WorkerChildSpec`, `PanelBuildOptions`, `WorkerBuildOptions`, `PanelSnapshot` options, `PANEL_SCOPED_OPTIONS`, `panelManager` (creation, navigation, build, worker HTML), `viewManager` (always safe webPreferences), `panelStrategy` (always browser/ESM/splitting), `aboutBuilder` (browser/ESM), `context.ts` (removed `ContextMode`, `isUnsafeContext`, unsafe no-context IDs), `preloadUtils` (removed `initUnsafePreload`, `setUnsafeGlobals`), `build.mjs` (removed unsafePreload config), runtime `fs.ts` (removed Node.js detection, always ZenFS)
+
+This simplifies the build system to a single target (browser/ESM) and eliminates the `unsafe` branching that previously existed in build strategies, HTML generation, preload selection, and WebContentsView configuration.
+
+---
+
 ## Guiding Principles
 
 1. **A build is a pure function of source + options.** Same content + same build options = same output. Always.
@@ -46,17 +63,17 @@ The effective version alone is not a sufficient cache key. The same source code 
 
 | Option | Effect on output |
 |--------|-----------------|
-| `unsafe: true` | Platform switches from `browser` → `node`, format from `esm` → `cjs`, code splitting disabled |
-| `unsafe: "/path"` | Custom filesystem root for unsafe context |
 | `sourcemap: false` | Strips inline source maps from bundle |
 
 The **build key** is the full cache identity:
 
 ```
-build_key = hash(ev, unsafe, sourcemap)
+build_key = hash(ev, sourcemap)
 ```
 
-The store is keyed by build key, not EV alone. Two builds of the same source with different options produce different entries. The `unsafe` and `sourcemap` flags are determined from the unit's `package.json` manifest at build time — they are not caller-supplied knobs.
+The store is keyed by build key, not EV alone. Two builds of the same source with different options produce different entries. The `sourcemap` flag is determined from the unit's `package.json` manifest at build time — it is not a caller-supplied knob.
+
+> **Note:** The `unsafe` option has been removed from the codebase entirely. All panels and workers now run in browser sandbox mode (safe preload, ESM, browser platform). The git-init and dirty-repo about pages that previously required Node.js access have been refactored to use RPC service calls via a new git service handler.
 
 **gitRef support is intentionally removed.** V1 used gitRef for Verdaccio version-pinning. V2 computes EVs from the working tree. Building arbitrary commits is not a V2 use case.
 
@@ -87,7 +104,7 @@ The store is keyed by build key, not EV alone. Two builds of the same source wit
 │    SERVER PROCESS          Build Orchestrator                 │
 │                                                              │
 │  For each changed unit:                                      │
-│    key = hash(ev, unsafe, sourcemap)                         │
+│    key = hash(ev, sourcemap)                                 │
 │    if store.has(key) → serve from store                      │
 │    else → build with esbuild, write to store                 │
 │                                                              │
@@ -290,7 +307,6 @@ V2 replaces all of this with **dynamic manifest discovery**. About pages get a `
   "natstack": {
     "type": "app",
     "title": "Model Provider Config",
-    "unsafe": true,
     "shell": true,
     "hiddenInLauncher": false
   },
@@ -301,7 +317,7 @@ V2 replaces all of this with **dynamic manifest discovery**. About pages get a `
 }
 ```
 
-The `unsafe: true` flag gives node integration. The `shell: true` flag grants shell service access and routes through `natstack-about://` protocol. The `hiddenInLauncher` flag replaces the hardcoded flag in `SHELL_PAGE_META`.
+The `shell: true` flag grants shell service access and routes through `natstack-about://` protocol. The `hiddenInLauncher` flag replaces the hardcoded flag in `SHELL_PAGE_META`. All about pages run in browser sandbox mode — those needing host-side operations (git, filesystem) use RPC service calls via the service dispatcher.
 
 **Migration steps for about-page routing:**
 1. Replace `ShellPage` union type in `src/shared/types.ts` with `string` (validated at runtime)
@@ -457,7 +473,6 @@ Build options are determined from the unit's `package.json` manifest, not from c
 
 ```typescript
 interface BuildOptions {
-  unsafe: boolean | string;  // from manifest natstack.unsafe
   sourcemap: boolean;        // from manifest natstack.sourcemap (default: true)
 }
 ```
@@ -465,11 +480,11 @@ interface BuildOptions {
 Two build strategies, selected by manifest type:
 
 **Panel/About build** (browser target):
-- Platform: `browser` (or `node` if `unsafe: true`)
-- Format: `esm` (or `cjs` if `unsafe: true`)
+- Platform: `browser`
+- Format: `esm`
 - Target: `es2022`
-- Code splitting: enabled (unless unsafe)
-- Plugins: resolve plugin (using `resolveExportSubpath()` + `BUNDLE_CONDITIONS` from `@workspace/typecheck`), fs/path shims (safe mode), React dedupe
+- Code splitting: enabled
+- Plugins: resolve plugin (using `resolveExportSubpath()` + `BUNDLE_CONDITIONS` from `@workspace/typecheck`), fs/path shims, React dedupe
 - Output: `bundle.js` + `bundle.css` + `index.html` + `assets/`
 
 **Agent build** (node target):
@@ -611,7 +626,7 @@ Mechanical find-and-replace across the entire codebase:
 | `src/about-pages/model-provider-config/` | `workspace/about/model-provider-config/` |
 | `src/about-pages/new/` | `workspace/about/new/` |
 
-Each gets a `package.json` with `@workspace-about/*` scope and metadata in the natstack manifest (title, description, unsafe, shell, hiddenInLauncher).
+Each gets a `package.json` with `@workspace-about/*` scope and metadata in the natstack manifest (title, description, shell, hiddenInLauncher).
 
 **After move:** Delete `src/about-pages/` directory entirely.
 
@@ -640,22 +655,23 @@ Replace all hardcoded about-page knowledge with dynamic manifest discovery:
 
 ### Migration 6: Build option API cleanup
 
-V1 exposes `gitRef`, `sourcemap`, and `unsafe` as **caller-supplied options** flowing through ns:// URLs, `CreateChildOptions`, `PanelSnapshot.options`, and `panelManager.buildPanelAsync()`. V2 makes these **manifest-derived** (read from `package.json` at build time). The caller API surface must be updated to match.
+V1 exposes `gitRef` and `sourcemap` as **caller-supplied options** flowing through ns:// URLs, `CreateChildOptions`, `PanelSnapshot.options`, and `panelManager.buildPanelAsync()`. V2 makes these **manifest-derived** (read from `package.json` at build time). The caller API surface must be updated to match.
 
-**What changes:**
+> **Already completed:** The `unsafe` option has been fully removed from the codebase — from `CreateChildOptions`, `PanelSnapshot.options`, `PanelManifest`, `PanelBuildOptions`, `WorkerBuildOptions`, panel/about build strategies, `viewManager`, `panelManager`, ns:// URL parsing, `preloadUtils`, `context.ts`, and the runtime `fs.ts`. The `unsafePreload.ts` file has been deleted. All panels now build with `platform: "browser"`, `format: "esm"`.
+
+**What remains:**
 
 | Option | V1 (caller-supplied) | V2 (manifest-derived) |
 |--------|---------------------|----------------------|
 | `gitRef` | Parsed from ns:// URL `?gitRef=`, stored in snapshot, passed to builder | **Removed entirely.** V2 builds from working tree only. |
 | `sourcemap` | Passed via `CreateChildOptions`, stored in snapshot, read during build | **Removed from caller API.** Read from `package.json` manifest `natstack.sourcemap` field. |
-| `unsafe` | Parsed from ns:// URL, stored in snapshot, read during build via `getPanelUnsafe()` | **Read-only from manifest.** Already partially manifest-derived in V1 (falls back to `manifest.unsafe`); V2 makes manifest the sole source. |
 
 **Specific rewrites:**
 
-1. `packages/runtime/src/core/types.ts`: Remove `gitRef` from `CreateChildOptions` (line 67). Remove `sourcemap` from `CreateChildOptions` (line 73). Remove `WorkerChildSpec` interface entirely (line 169) — workers eliminated.
-2. `src/main/nsProtocol.ts`: Remove `gitRef` parsing from `parseNsUrl()` (line 81). Remove `unsafe` serialization from `buildNsUrl()` (line 214) — unsafe is not a URL parameter, it's a manifest property. Simplify URL to carry only source identity.
-3. `src/shared/panel/accessors.ts`: Remove `"gitRef"` and `"sourcemap"` from `SOURCE_SCOPED_OPTIONS` (line 153). Delete `getPanelGitRef()` and `getPanelSourcemap()` accessors. Keep `getPanelUnsafe()` as a read-only accessor that queries the manifest.
-4. `src/main/panelManager.ts`: Remove `gitRef` and `sourcemap` from `buildPanelAsync()` options (line 3022). Build options come from manifest only. Remove `buildVersion` conditional on `options?.gitRef` (line 3052).
+1. `packages/runtime/src/core/types.ts`: Remove `gitRef` from `CreateChildOptions` (line 67). Remove `sourcemap` from `CreateChildOptions` (line 73). Remove `WorkerChildSpec` interface entirely — workers eliminated.
+2. `src/main/nsProtocol.ts`: Remove `gitRef` parsing from `parseNsUrl()`. Simplify URL to carry only source identity.
+3. `src/shared/panel/accessors.ts`: Remove `"gitRef"` and `"sourcemap"` from `SOURCE_SCOPED_OPTIONS`. Delete `getPanelGitRef()` and `getPanelSourcemap()` accessors.
+4. `src/main/panelManager.ts`: Remove `gitRef` and `sourcemap` from `buildPanelAsync()` options. Build options come from manifest only.
 5. `src/shared/types.ts`: Remove `gitRef` and `sourcemap` from `PanelOptions` / snapshot option types.
 
 ### Migration 7: Eliminate worker concept from type system and policies
@@ -1015,7 +1031,7 @@ The `separate-server` branch introduced `createNatstackResolvePlugin()` and the 
 
 ### Why include build options in the store key?
 
-Same source with `unsafe: true` produces CJS/node output; without it, ESM/browser. Sourcemaps change bundle content. The store key must capture everything that affects output: `build_key = hash(ev, unsafe, sourcemap)`. The V1 system already tracked this via `computeOptionsSuffix()` — V2 makes it explicit in the store key.
+Sourcemaps change bundle content. The store key must capture everything that affects output: `build_key = hash(ev, sourcemap)`. The V1 system already tracked this via `computeOptionsSuffix()` — V2 makes it explicit in the store key. (The `unsafe` option has been removed — all panels use browser/ESM.)
 
 ### Why collect transitive external deps?
 
