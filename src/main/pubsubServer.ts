@@ -1385,7 +1385,7 @@ export class PubSubServer {
       // Fetch trailing update-message/error events beyond the page boundary
       // for message UUIDs in the page (ensures boundary messages are complete)
       const messageUuids: string[] = [];
-      const highestRowId = rowsToReturn.length > 0 ? rowsToReturn[rowsToReturn.length - 1].id : 0;
+      const highestRowId = rowsToReturn.length > 0 ? rowsToReturn[rowsToReturn.length - 1]!.id : 0;
       for (const msg of messages) {
         if (msg.type === "message" && typeof msg.payload === "object" && msg.payload !== null) {
           const uuid = (msg.payload as { id?: string }).id;

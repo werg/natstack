@@ -41,7 +41,6 @@ import {
   getDetailedActionDescription,
   CONTENT_TYPE_TYPING,
   CONTENT_TYPE_INLINE_UI,
-  buildOpenAIContents,
   filterImageAttachments,
   validateAttachments,
   // Tool approval utilities
@@ -71,6 +70,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import * as http from "node:http";
 import * as fs from "node:fs";
+import { writeFile, mkdtemp } from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { randomUUID } from "node:crypto";
@@ -390,6 +390,37 @@ async function createMcpHttpServer(
   };
 }
 
+
+// =============================================================================
+// Codex SDK Input Helpers
+// =============================================================================
+
+type CodexUserInput = { type: "text"; text: string } | { type: "local_image"; path: string };
+
+/**
+ * Convert text + image attachments into Codex SDK UserInput[] format.
+ * Writes image data to temp files because the Codex CLI expects file paths.
+ */
+async function buildCodexInput(
+  text: string,
+  imageAttachments: Attachment[],
+): Promise<CodexUserInput[]> {
+  const parts: CodexUserInput[] = [];
+
+  if (imageAttachments.length > 0) {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "codex-images-"));
+    for (let i = 0; i < imageAttachments.length; i++) {
+      const a = imageAttachments[i]!;
+      const ext = a.mimeType?.split("/")[1] ?? "png";
+      const filePath = path.join(tempDir, `image-${i}.${ext}`);
+      await writeFile(filePath, a.data);
+      parts.push({ type: "local_image", path: filePath });
+    }
+  }
+
+  parts.push({ type: "text", text });
+  return parts;
+}
 
 // =============================================================================
 // Codex Agent
@@ -790,9 +821,6 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     // Start monitoring for pause RPCs in background
     void interruptHandler.monitor();
 
-    // Get abort signal for this operation
-    const signal = this.interrupt.createAbortSignal();
-
     // Build prompt with missed context (use consume() which gets and clears)
     let prompt = incoming.content;
     const missedCtx = this.missedContext.consume();
@@ -813,10 +841,14 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
 
     // Build multimodal prompt content if images are present
     const promptContent =
-      imageAttachments.length > 0 ? buildOpenAIContents(prompt, imageAttachments) : prompt;
+      imageAttachments.length > 0 ? await buildCodexInput(prompt, imageAttachments) : prompt;
+
+    // Reply anchoring: tracks which message responses are anchored to.
+    // Updated on interleave to point to the last interleaved user message.
+    let replyToId = incoming.id;
 
     // Set replyTo for trackers (trackers created once at agent level)
-    this.trackers.setReplyTo(incoming.id);
+    this.trackers.setReplyTo(replyToId);
 
     // Start typing indicator
     await this.trackers.typing.startTyping("preparing response");
@@ -828,7 +860,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         await this.trackers.typing.stopTyping();
       }
       if (!responseId) {
-        const { messageId } = await client.send("", { replyTo: incoming.id });
+        const { messageId } = await client.send("", { replyTo: replyToId });
         responseId = messageId;
         this.log.info(`Created response message: ${responseId}`);
       }
@@ -998,7 +1030,8 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         thread = codex.startThread(threadOptions);
       }
 
-      // Build system prompt
+      // Build system prompt — only prepend for new threads, not resumes
+      // (resumed threads already have the system prompt in conversation history)
       let promptWithSystem: string | typeof promptContent;
       if (typeof promptContent === "string") {
         promptWithSystem = this.isRestrictedMode
@@ -1010,319 +1043,389 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
           : createRichTextChatSystemPrompt();
         promptWithSystem = [
           { type: "text" as const, text: systemPrompt + "\n\n" },
-          ...promptContent,
+          ...(promptContent as CodexUserInput[]),
         ];
       }
 
-      const { events } = await thread.runStreamed(promptWithSystem as string);
+      // Only prepend system prompt for new threads. Resumed threads already have
+      // the system prompt in conversation history — the Codex CLI persists full
+      // session state in ~/.codex/sessions/<threadId>/ and restores it on resume.
+      // Prepending again would duplicate it and waste context.
+      const initialPrompt = resumeSessionId ? promptContent : promptWithSystem;
+      let interleavePrompt: string | CodexUserInput[] | null = null;
+      let { events } = await thread.runStreamed(initialPrompt);
 
       // Track text length per item to compute deltas correctly
       const itemTextLengths = new Map<string, number>();
       let currentAgentMessageId: string | null = null;
+      // Session ID for resume — captured from thread.started events
+      let sessionId: string | undefined = this.localSdkSessionId;
 
-      for await (const event of events) {
-        // Check for abort or pause
-        if (signal.aborted || interruptHandler.isPaused()) {
-          this.log.info(`Execution ${interruptHandler.isPaused() ? "paused" : "aborted"}, stopping event processing`);
-          break;
+      outer: while (true) {
+        // Fresh abort signal each iteration (MUST be inside outer loop —
+        // after abortCurrent(), the previous signal is permanently aborted)
+        const signal = this.interrupt.createAbortSignal();
+
+        if (interleavePrompt) {
+          // Complete current response before starting new stream
+          if (responseId) {
+            await client.complete(responseId);
+            responseId = null;
+          }
+          // Update reply anchoring for trackers
+          this.trackers.setReplyTo(replyToId);
+          // Resume with new prompt — no system prompt (already in conversation history)
+          thread = codex.resumeThread(sessionId!, threadOptions);
+          ({ events } = await thread.runStreamed(interleavePrompt!));
+          // Reset per-stream state
+          itemTextLengths.clear();
+          currentAgentMessageId = null;
+          interleavePrompt = null;
         }
 
-        switch (event.type) {
-          case "thread.started": {
-            const threadEvent = event as unknown as Record<string, unknown>;
-            if (threadEvent["thread_id"]) {
-              const threadId = String(threadEvent["thread_id"]);
-              // Always update local fallback (for resumption within same agent lifetime)
-              this.localSdkSessionId = threadId;
-              // Persist to state
-              this.setState({ sdkSessionId: threadId });
-              // Also persist to server if possible (for cross-agent resumption)
-              if (client.sessionKey) {
-                void client.updateSdkSession(threadId).catch((err) => {
-                  this.log.info(`Failed to persist SDK session to server: ${err}`);
-                });
-              }
-              this.log.info(`Thread ID stored: ${threadId}${client.sessionKey ? "" : " (local only)"}`);
-            }
+        for await (const event of events) {
+          // Check for abort or pause
+          if (signal.aborted || interruptHandler.isPaused()) {
+            this.log.info(`Execution ${interruptHandler.isPaused() ? "paused" : "aborted"}, stopping event processing`);
             break;
           }
 
-          case "item.started":
-          case "item.updated": {
-            // Codex has many item types: agent_message, reasoning, command_execution, file_change, mcp_tool_call, web_search, todo_list, error
-            const item = event.item as {
-              id?: string;
-              type?: string;
-              text?: string;
-              command?: string;
-              changes?: Array<{ path: string; kind: string }>;
-              tool?: string;
-              arguments?: unknown;
-              query?: string;
-            };
-
-            // Handle reasoning items (thinking content)
-            if (item && item.type === "reasoning" && typeof item.text === "string" && item.id) {
-              if (this.trackers.typing.isTyping()) {
-                await this.trackers.typing.stopTyping();
-              }
-              if (!this.trackers.thinking.isThinkingItem(item.id)) {
-                if (this.trackers.thinking.state.currentContentType === "text" && responseId) {
-                  await client.complete(responseId);
+          switch (event.type) {
+            case "thread.started": {
+              const threadEvent = event as unknown as Record<string, unknown>;
+              if (threadEvent["thread_id"]) {
+                const threadId = String(threadEvent["thread_id"]);
+                sessionId = threadId;
+                // Always update local fallback (for resumption within same agent lifetime)
+                this.localSdkSessionId = threadId;
+                // Persist to state
+                this.setState({ sdkSessionId: threadId });
+                // Also persist to server if possible (for cross-agent resumption)
+                if (client.sessionKey) {
+                  void client.updateSdkSession(threadId).catch((err) => {
+                    this.log.info(`Failed to persist SDK session to server: ${err}`);
+                  });
                 }
-                await this.trackers.thinking.startThinking(item.id);
+                this.log.info(`Thread ID stored: ${threadId}${client.sessionKey ? "" : " (local only)"}`);
               }
-
-              const prevLength = itemTextLengths.get(item.id) ?? 0;
-              if (item.text.length > prevLength) {
-                const delta = item.text.slice(prevLength);
-                await this.trackers.thinking.updateThinking(delta);
-                itemTextLengths.set(item.id, item.text.length);
-              }
+              break;
             }
 
-            // Handle agent_message items (text content)
-            if (item && item.type === "agent_message" && typeof item.text === "string" && item.id) {
-              if (this.trackers.thinking.isThinking()) {
+            case "item.started":
+            case "item.updated": {
+              // Codex has many item types: agent_message, reasoning, command_execution, file_change, mcp_tool_call, web_search, todo_list, error
+              const item = event.item as {
+                id?: string;
+                type?: string;
+                text?: string;
+                command?: string;
+                changes?: Array<{ path: string; kind: string }>;
+                tool?: string;
+                arguments?: unknown;
+                query?: string;
+              };
+
+              // Handle reasoning items (thinking content)
+              if (item && item.type === "reasoning" && typeof item.text === "string" && item.id) {
+                if (this.trackers.typing.isTyping()) {
+                  await this.trackers.typing.stopTyping();
+                }
+                if (!this.trackers.thinking.isThinkingItem(item.id)) {
+                  if (this.trackers.thinking.state.currentContentType === "text" && responseId) {
+                    await client.complete(responseId);
+                  }
+                  await this.trackers.thinking.startThinking(item.id);
+                }
+
+                const prevLength = itemTextLengths.get(item.id) ?? 0;
+                if (item.text.length > prevLength) {
+                  const delta = item.text.slice(prevLength);
+                  await this.trackers.thinking.updateThinking(delta);
+                  itemTextLengths.set(item.id, item.text.length);
+                }
+              }
+
+              // Handle agent_message items (text content)
+              if (item && item.type === "agent_message" && typeof item.text === "string" && item.id) {
+                if (this.trackers.thinking.isThinking()) {
+                  await this.trackers.thinking.endThinking();
+                }
+
+                if (currentAgentMessageId !== null && currentAgentMessageId !== item.id && responseId) {
+                  await client.complete(responseId);
+                  responseId = null;
+                }
+                currentAgentMessageId = item.id;
+                this.trackers.thinking.setTextMode();
+
+                const prevLength = itemTextLengths.get(item.id) ?? 0;
+                if (item.text.length > prevLength) {
+                  const delta = item.text.slice(prevLength);
+                  const msgId = await ensureResponseMessage();
+                  await client.update(msgId, delta);
+                  itemTextLengths.set(item.id, item.text.length);
+                }
+              }
+
+              // Handle command_execution items (show commands being run)
+              if (item && item.type === "command_execution" && item.id && item.command) {
+                if (this.trackers.typing.isTyping()) {
+                  await this.trackers.typing.stopTyping();
+                }
+                await this.trackers.action.startAction({
+                  type: "Bash",
+                  description: getDetailedActionDescription("Bash", { command: item.command }),
+                  toolUseId: item.id,
+                });
+              }
+
+              // Handle file_change items (show files being edited)
+              if (item && item.type === "file_change" && item.id && item.changes) {
+                if (this.trackers.typing.isTyping()) {
+                  await this.trackers.typing.stopTyping();
+                }
+                // file_change has a changes array — build a contextual description
+                const changes = item.changes;
+                const description =
+                  changes.length === 1
+                    ? getDetailedActionDescription("Edit", { file_path: changes[0]?.path })
+                    : `Editing ${changes.length} files`;
+                await this.trackers.action.startAction({
+                  type: "Edit",
+                  description,
+                  toolUseId: item.id,
+                });
+              }
+
+              // Handle mcp_tool_call items (show MCP tool calls - our pubsub tools)
+              if (item && item.type === "mcp_tool_call" && item.id && item.tool) {
+                if (this.trackers.typing.isTyping()) {
+                  await this.trackers.typing.stopTyping();
+                }
+                const prettyName = prettifyToolName(item.tool);
+                const args = item.arguments && typeof item.arguments === "object" ? item.arguments as Record<string, unknown> : {};
+                await this.trackers.action.startAction({
+                  type: prettyName,
+                  description: getDetailedActionDescription(prettyName, args),
+                  toolUseId: item.id,
+                });
+              }
+
+              // Handle web_search items
+              if (item && item.type === "web_search" && item.id) {
+                if (this.trackers.typing.isTyping()) {
+                  await this.trackers.typing.stopTyping();
+                }
+                await this.trackers.action.startAction({
+                  type: "WebSearch",
+                  description: getDetailedActionDescription("WebSearch", { query: item.query }),
+                  toolUseId: item.id,
+                });
+              }
+              break;
+            }
+
+            case "item.completed": {
+              // Codex item types: agent_message, reasoning, command_execution, file_change, mcp_tool_call, web_search, todo_list, error
+              const item = "item" in event ? (event.item as {
+                id?: string;
+                type?: string;
+                text?: string;
+                // command_execution fields
+                command?: string;
+                aggregated_output?: string;
+                status?: string;
+                exit_code?: number;
+                // file_change fields
+                changes?: Array<{ path: string; kind: string }>;
+                // mcp_tool_call fields
+                server?: string;
+                tool?: string;
+                arguments?: unknown;
+                result?: unknown;
+                // web_search fields
+                query?: string;
+                // todo_list fields
+                items?: Array<{ text: string; completed: boolean }>;
+                // error fields
+                message?: string;
+                error?: { message?: string };
+              }) : null;
+
+              if (item && item.type === "reasoning" && item.id && this.trackers.thinking.isThinkingItem(item.id)) {
+                const prevLength = itemTextLengths.get(item.id) ?? 0;
+                if (typeof item.text === "string" && item.text.length > prevLength) {
+                  const delta = item.text.slice(prevLength);
+                  await this.trackers.thinking.updateThinking(delta);
+                  itemTextLengths.set(item.id, item.text.length);
+                }
                 await this.trackers.thinking.endThinking();
               }
 
-              if (currentAgentMessageId !== null && currentAgentMessageId !== item.id && responseId) {
-                await client.complete(responseId);
-                responseId = null;
-              }
-              currentAgentMessageId = item.id;
-              this.trackers.thinking.setTextMode();
+              if (item && item.type === "agent_message" && typeof item.text === "string" && item.id) {
+                if (currentAgentMessageId !== null && currentAgentMessageId !== item.id && responseId) {
+                  await client.complete(responseId);
+                  responseId = null;
+                }
+                currentAgentMessageId = item.id;
+                this.trackers.thinking.setTextMode();
 
-              const prevLength = itemTextLengths.get(item.id) ?? 0;
-              if (item.text.length > prevLength) {
-                const delta = item.text.slice(prevLength);
-                const msgId = await ensureResponseMessage();
-                await client.update(msgId, delta);
-                itemTextLengths.set(item.id, item.text.length);
-              }
-            }
-
-            // Handle command_execution items (show commands being run)
-            if (item && item.type === "command_execution" && item.id && item.command) {
-              if (this.trackers.typing.isTyping()) {
-                await this.trackers.typing.stopTyping();
-              }
-              await this.trackers.action.startAction({
-                type: "Bash",
-                description: getDetailedActionDescription("Bash", { command: item.command }),
-                toolUseId: item.id,
-              });
-            }
-
-            // Handle file_change items (show files being edited)
-            if (item && item.type === "file_change" && item.id && item.changes) {
-              if (this.trackers.typing.isTyping()) {
-                await this.trackers.typing.stopTyping();
-              }
-              // file_change has a changes array — build a contextual description
-              const changes = item.changes;
-              const description =
-                changes.length === 1
-                  ? getDetailedActionDescription("Edit", { file_path: changes[0]?.path })
-                  : `Editing ${changes.length} files`;
-              await this.trackers.action.startAction({
-                type: "Edit",
-                description,
-                toolUseId: item.id,
-              });
-            }
-
-            // Handle mcp_tool_call items (show MCP tool calls - our pubsub tools)
-            if (item && item.type === "mcp_tool_call" && item.id && item.tool) {
-              if (this.trackers.typing.isTyping()) {
-                await this.trackers.typing.stopTyping();
-              }
-              const prettyName = prettifyToolName(item.tool);
-              const args = item.arguments && typeof item.arguments === "object" ? item.arguments as Record<string, unknown> : {};
-              await this.trackers.action.startAction({
-                type: prettyName,
-                description: getDetailedActionDescription(prettyName, args),
-                toolUseId: item.id,
-              });
-            }
-
-            // Handle web_search items
-            if (item && item.type === "web_search" && item.id) {
-              if (this.trackers.typing.isTyping()) {
-                await this.trackers.typing.stopTyping();
-              }
-              await this.trackers.action.startAction({
-                type: "WebSearch",
-                description: getDetailedActionDescription("WebSearch", { query: item.query }),
-                toolUseId: item.id,
-              });
-            }
-            break;
-          }
-
-          case "item.completed": {
-            // Codex item types: agent_message, reasoning, command_execution, file_change, mcp_tool_call, web_search, todo_list, error
-            const item = "item" in event ? (event.item as {
-              id?: string;
-              type?: string;
-              text?: string;
-              // command_execution fields
-              command?: string;
-              aggregated_output?: string;
-              status?: string;
-              exit_code?: number;
-              // file_change fields
-              changes?: Array<{ path: string; kind: string }>;
-              // mcp_tool_call fields
-              server?: string;
-              tool?: string;
-              arguments?: unknown;
-              result?: unknown;
-              // web_search fields
-              query?: string;
-              // todo_list fields
-              items?: Array<{ text: string; completed: boolean }>;
-              // error fields
-              message?: string;
-              error?: { message?: string };
-            }) : null;
-
-            if (item && item.type === "reasoning" && item.id && this.trackers.thinking.isThinkingItem(item.id)) {
-              const prevLength = itemTextLengths.get(item.id) ?? 0;
-              if (typeof item.text === "string" && item.text.length > prevLength) {
-                const delta = item.text.slice(prevLength);
-                await this.trackers.thinking.updateThinking(delta);
-                itemTextLengths.set(item.id, item.text.length);
-              }
-              await this.trackers.thinking.endThinking();
-            }
-
-            if (item && item.type === "agent_message" && typeof item.text === "string" && item.id) {
-              if (currentAgentMessageId !== null && currentAgentMessageId !== item.id && responseId) {
-                await client.complete(responseId);
-                responseId = null;
-              }
-              currentAgentMessageId = item.id;
-              this.trackers.thinking.setTextMode();
-
-              const prevLength = itemTextLengths.get(item.id) ?? 0;
-              if (item.text.length > prevLength) {
-                const delta = item.text.slice(prevLength);
-                const msgId = await ensureResponseMessage();
-                await client.update(msgId, delta);
-                itemTextLengths.set(item.id, item.text.length);
-              }
-            }
-
-            // Handle completed command_execution items - complete the action
-            if (item && item.type === "command_execution" && item.id) {
-              await this.trackers.action.completeAction();
-            }
-
-            // Handle completed file_change items - complete the action
-            if (item && item.type === "file_change" && item.id) {
-              await this.trackers.action.completeAction();
-            }
-
-            // Handle completed mcp_tool_call items - complete the action
-            if (item && item.type === "mcp_tool_call" && item.id) {
-              await this.trackers.action.completeAction();
-            }
-
-            // Handle completed web_search items - complete the action
-            if (item && item.type === "web_search" && item.id) {
-              await this.trackers.action.completeAction();
-            }
-
-            // Handle completed todo_list items - send inline UI
-            if (item && item.type === "todo_list" && item.id) {
-              const todoItems = item.items;
-              if (todoItems && todoItems.length > 0) {
-                try {
-                  // Convert Codex todo format to our format
-                  const todos: TodoItem[] = todoItems.map((t, i) => ({
-                    id: `todo-${i}`,
-                    text: t.text,
-                    completed: t.completed,
-                  }));
-
-                  const inlineUiData: InlineUiData = {
-                    kind: "todolist",
-                    label: "Tasks",
-                    todos,
-                    code: getCachedTodoListCode() ?? "",
-                  };
-
-                  // Send as inline UI message
+                const prevLength = itemTextLengths.get(item.id) ?? 0;
+                if (item.text.length > prevLength) {
+                  const delta = item.text.slice(prevLength);
                   const msgId = await ensureResponseMessage();
-                  await client.update(msgId, JSON.stringify(inlineUiData), CONTENT_TYPE_INLINE_UI);
-                  this.log.info(`Sent todo list with ${todos.length} items`);
-                } catch (err) {
-                  this.log.info(`Failed to send todo list: ${err}`);
+                  await client.update(msgId, delta);
+                  itemTextLengths.set(item.id, item.text.length);
                 }
               }
+
+              // Handle completed command_execution items - complete the action
+              if (item && item.type === "command_execution" && item.id) {
+                await this.trackers.action.completeAction();
+              }
+
+              // Handle completed file_change items - complete the action
+              if (item && item.type === "file_change" && item.id) {
+                await this.trackers.action.completeAction();
+              }
+
+              // Handle completed mcp_tool_call items - complete the action
+              if (item && item.type === "mcp_tool_call" && item.id) {
+                await this.trackers.action.completeAction();
+              }
+
+              // Handle completed web_search items - complete the action
+              if (item && item.type === "web_search" && item.id) {
+                await this.trackers.action.completeAction();
+              }
+
+              // Handle completed todo_list items - send inline UI
+              if (item && item.type === "todo_list" && item.id) {
+                const todoItems = item.items;
+                if (todoItems && todoItems.length > 0) {
+                  try {
+                    // Convert Codex todo format to our format
+                    const todos: TodoItem[] = todoItems.map((t, i) => ({
+                      id: `todo-${i}`,
+                      text: t.text,
+                      completed: t.completed,
+                    }));
+
+                    const inlineUiData: InlineUiData = {
+                      kind: "todolist",
+                      label: "Tasks",
+                      todos,
+                      code: getCachedTodoListCode() ?? "",
+                    };
+
+                    // Send as inline UI message
+                    const msgId = await ensureResponseMessage();
+                    await client.update(msgId, JSON.stringify(inlineUiData), CONTENT_TYPE_INLINE_UI);
+                    this.log.info(`Sent todo list with ${todos.length} items`);
+                  } catch (err) {
+                    this.log.info(`Failed to send todo list: ${err}`);
+                  }
+                }
+              }
+
+              // Check for interleave on completed tool items
+              const isToolItem = item && (
+                item.type === "command_execution" ||
+                item.type === "file_change" ||
+                item.type === "mcp_tool_call" ||
+                item.type === "web_search"
+              );
+              if (isToolItem && !interruptHandler.isPaused() && this.queue.getPendingCount() > 0 && sessionId) {
+                this.interrupt.abortCurrent(); // synchronous, cannot fail
+                const pending = this.queue.takePending() as IncomingNewMessage[];
+                // Clean up typing trackers for interleaved messages
+                for (const p of pending) {
+                  const info = this.queuedMessages.get(p.id);
+                  if (info) {
+                    await info.typingTracker.cleanup();
+                    this.queuedMessages.delete(p.id);
+                  }
+                }
+                // Update replyTo to last interleaved message
+                replyToId = pending[pending.length - 1]!.id;
+                // Collect images from ALL pending messages
+                const allInterleaveImages: Attachment[] = [];
+                for (const p of pending) {
+                  allInterleaveImages.push(...filterImageAttachments((p as { attachments?: Attachment[] }).attachments));
+                }
+                const combinedText = pending.map((p) => String(p.content)).join("\n\n");
+                interleavePrompt = allInterleaveImages.length > 0
+                  ? await buildCodexInput(combinedText, allInterleaveImages)
+                  : combinedText;
+                this.log.info(`Interleaved ${pending.length} user message(s) at item.completed`);
+              }
+              break; // exits SWITCH (not for-await)
             }
-            break;
+
+            case "turn.completed": {
+              // Record token usage for context window tracking
+              const turnCompletedEvent = event as { type: "turn.completed"; usage?: { input_tokens?: number; output_tokens?: number } };
+              if (turnCompletedEvent.usage) {
+                await this.contextTracker.recordUsage({
+                  inputTokens: turnCompletedEvent.usage.input_tokens ?? 0,
+                  outputTokens: turnCompletedEvent.usage.output_tokens ?? 0,
+                });
+              }
+
+              if (responseId) {
+                await client.complete(responseId);
+                this.log.info(`Completed response for ${replyToId}`);
+              } else {
+                await this.trackers.typing.cleanup();
+                this.log.info(`No response message was created for ${replyToId}`);
+              }
+
+              // Mark end of turn for context tracking
+              await this.contextTracker.endTurn();
+              break outer; // normal completion, exit both loops
+            }
+
+            case "turn.failed": {
+              const errorMsg =
+                "error" in event && event.error && typeof event.error === "object" && "message" in event.error
+                  ? String(event.error.message)
+                  : "Unknown error";
+              if (responseId) {
+                await client.error(responseId, errorMsg);
+              } else {
+                const { messageId: errorMsgId } = await client.send("", { replyTo: replyToId });
+                await client.error(errorMsgId, errorMsg);
+              }
+              this.log.info(`Turn failed: ${errorMsg}`);
+              break;
+            }
+
+            case "error": {
+              // Handle ThreadErrorEvent - fatal stream error
+              const errorEvent = event as { type: "error"; error?: { message?: string } };
+              const errorMsg = errorEvent.error?.message ?? "Unknown stream error";
+              this.log.info(`Stream error: ${errorMsg}`);
+              // Create a message for the error if none exists
+              if (responseId) {
+                await client.error(responseId, errorMsg);
+              } else {
+                const { messageId: errorMsgId } = await client.send("", { replyTo: replyToId });
+                await client.error(errorMsgId, errorMsg);
+              }
+              break;
+            }
+
+            default:
+              this.log.info(`Unhandled event type: ${(event as { type: string }).type}`);
+              break;
           }
 
-          case "turn.completed": {
-            // Record token usage for context window tracking
-            const turnCompletedEvent = event as { type: "turn.completed"; usage?: { input_tokens?: number; output_tokens?: number } };
-            if (turnCompletedEvent.usage) {
-              await this.contextTracker.recordUsage({
-                inputTokens: turnCompletedEvent.usage.input_tokens ?? 0,
-                outputTokens: turnCompletedEvent.usage.output_tokens ?? 0,
-              });
-            }
-
-            if (responseId) {
-              await client.complete(responseId);
-              this.log.info(`Completed response for ${incoming.id}`);
-            } else {
-              await this.trackers.typing.cleanup();
-              this.log.info(`No response message was created for ${incoming.id}`);
-            }
-
-            // Mark end of turn for context tracking
-            await this.contextTracker.endTurn();
-            break;
-          }
-
-          case "turn.failed": {
-            const errorMsg =
-              "error" in event && event.error && typeof event.error === "object" && "message" in event.error
-                ? String(event.error.message)
-                : "Unknown error";
-            if (responseId) {
-              await client.error(responseId, errorMsg);
-            } else {
-              const { messageId: errorMsgId } = await client.send("", { replyTo: incoming.id });
-              await client.error(errorMsgId, errorMsg);
-            }
-            this.log.info(`Turn failed: ${errorMsg}`);
-            break;
-          }
-
-          case "error": {
-            // Handle ThreadErrorEvent - fatal stream error
-            const errorEvent = event as { type: "error"; error?: { message?: string } };
-            const errorMsg = errorEvent.error?.message ?? "Unknown stream error";
-            this.log.info(`Stream error: ${errorMsg}`);
-            // Create a message for the error if none exists
-            if (responseId) {
-              await client.error(responseId, errorMsg);
-            } else {
-              const { messageId: errorMsgId } = await client.send("", { replyTo: incoming.id });
-              await client.error(errorMsgId, errorMsg);
-            }
-            break;
-          }
-
-          default:
-            this.log.info(`Unhandled event type: ${(event as { type: string }).type}`);
-            break;
+          // After switch: check interleave flag to break for-await
+          if (interleavePrompt) break;
         }
+
+        // If no interleave pending, exit outer loop (pause/abort/normal)
+        if (!interleavePrompt) break;
       }
     } catch (err) {
       // Cleanup trackers (use cleanupAll for simplicity)
@@ -1333,7 +1436,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       if (responseId) {
         await client.error(responseId, err instanceof Error ? err.message : String(err));
       } else {
-        const { messageId: errorMsgId } = await client.send("", { replyTo: incoming.id });
+        const { messageId: errorMsgId } = await client.send("", { replyTo: replyToId });
         await client.error(errorMsgId, err instanceof Error ? err.message : String(err));
       }
     } finally {

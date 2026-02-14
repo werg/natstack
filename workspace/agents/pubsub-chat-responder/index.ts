@@ -493,6 +493,10 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     // Start typing indicator
     await trackers.typing.startTyping("preparing response");
 
+    // Reply anchoring: tracks which message responses are anchored to.
+    // Updated on interleave to point to the last interleaved user message.
+    let replyToId = incoming.id;
+
     // Lazy message creation
     let responseId: string | null = null;
     const ensureResponseMessage = async (): Promise<string> => {
@@ -500,7 +504,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         await trackers.typing.stopTyping();
       }
       if (!responseId) {
-        const { messageId } = await this.client.send("", { replyTo: incoming.id });
+        const { messageId } = await this.client.send("", { replyTo: replyToId });
         responseId = messageId;
       }
       return responseId;
@@ -776,11 +780,45 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
           break;
         }
 
+        // Interleave pending user messages between agentic steps
+        if (this.queue.getPendingCount() > 0 && !interruptHandler.isPaused() && step + 1 < maxSteps) {
+          const pending = this.queue.takePending() as IncomingNewMessage[];
+          // Merge all pending messages into a single user message to maintain
+          // role alternation (consecutive user messages are rejected by some providers)
+          const allParts: Array<{ type: "image"; image: string; mimeType: string } | { type: "text"; text: string }> = [];
+          for (const p of pending) {
+            // Clean up per-message typing tracker
+            const info = this.queuedMessages.get(p.id);
+            if (info) {
+              await info.typingTracker.cleanup();
+              this.queuedMessages.delete(p.id);
+            }
+            const pAttachments = (p as { attachments?: Attachment[] }).attachments;
+            const pImages = filterImageAttachments(pAttachments);
+            for (const a of pImages) {
+              allParts.push({ type: "image" as const, image: uint8ArrayToBase64(a.data), mimeType: a.mimeType });
+            }
+            allParts.push({ type: "text" as const, text: String(p.content) });
+          }
+          const mergedContent = allParts.length === 1 && allParts[0]!.type === "text"
+            ? allParts[0]!.text  // single text-only message: use plain string
+            : allParts;           // multi-part or multi-message: use array
+          messages.push({ role: "user" as const, content: mergedContent });
+          // Complete current response and update reply anchoring
+          if (responseId) {
+            await this.client.complete(responseId);
+            responseId = null;
+          }
+          replyToId = pending[pending.length - 1]!.id;
+          trackers.setReplyTo(replyToId);
+          this.log.info(`Interleaved ${pending.length} user message(s) between steps`);
+        }
+
         // Continue to next step
         if (responseId) {
           await this.client.complete(responseId);
         }
-        const { messageId: newResponseId } = await this.client.send("");
+        const { messageId: newResponseId } = await this.client.send("", { replyTo: replyToId });
         responseId = newResponseId;
         this.log.debug(`Started new message for step ${step + 1}: ${responseId}`);
 
@@ -809,7 +847,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
 
       this.log.error("AI streaming failed", err);
 
-      const errorMsgId = responseId ?? (await this.client.send("", { replyTo: incoming.id })).messageId;
+      const errorMsgId = responseId ?? (await this.client.send("", { replyTo: replyToId })).messageId;
       await this.client.error(errorMsgId, err instanceof Error ? err.message : String(err));
     } finally {
       interruptHandler.cleanup();

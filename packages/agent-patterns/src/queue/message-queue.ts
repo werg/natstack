@@ -62,6 +62,12 @@ export interface MessageQueueOptions {
    * @default 60000 (1 minute)
    */
   heartbeatIntervalMs?: number;
+
+  /**
+   * Fires when an item is enqueued while processing is active.
+   * Useful for signaling that new messages arrived during an agentic loop.
+   */
+  onNewItem?: (event: EventStreamItem) => void;
 }
 
 /**
@@ -120,6 +126,13 @@ export interface MessageQueue {
    * Check if any event is currently being processed.
    */
   isProcessing(): boolean;
+
+  /**
+   * Atomically drain and return all pending items.
+   * Items taken this way bypass onDequeue/onProcess — they're consumed
+   * directly by the active processor (e.g., for message interleaving).
+   */
+  takePending(): EventStreamItem[];
 }
 
 /**
@@ -164,6 +177,7 @@ export function createMessageQueue(options: MessageQueueOptions): MessageQueue {
     onDequeue,
     onHeartbeat,
     heartbeatIntervalMs = 60_000,
+    onNewItem,
   } = options;
 
   const pending: EventStreamItem[] = [];
@@ -250,6 +264,15 @@ export function createMessageQueue(options: MessageQueueOptions): MessageQueue {
 
       pending.push(event);
 
+      // Notify listener when a new item arrives while processing is active
+      if (onNewItem && activeCount > 0) {
+        try {
+          onNewItem(event);
+        } catch (err) {
+          console.error("[MessageQueue] onNewItem error:", err);
+        }
+      }
+
       // Start processing if not paused
       if (!paused) {
         void processNext();
@@ -314,6 +337,11 @@ export function createMessageQueue(options: MessageQueueOptions): MessageQueue {
 
     isProcessing(): boolean {
       return activeCount > 0;
+    },
+
+    takePending(): EventStreamItem[] {
+      const taken = pending.splice(0, pending.length);
+      return taken;
     },
   };
 }

@@ -115,16 +115,10 @@ export class ServerProcessManager {
     return createNodeProcessAdapter(bundlePath, env);
   }
 
-  private waitForReady(proc: ProcessAdapter, timeout = 30_000): Promise<ServerPorts> {
+  private waitForReady(proc: ProcessAdapter): Promise<ServerPorts> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error("Server startup timeout (30s)"));
-        proc.kill();
-      }, timeout);
-
       proc.on("message", (msg: any) => {
         if (msg?.type === "ready") {
-          clearTimeout(timer);
           resolve({
             rpcPort: msg.rpcPort,
             verdaccioPort: msg.verdaccioPort,
@@ -133,13 +127,11 @@ export class ServerProcessManager {
             adminToken: msg.adminToken,
           });
         } else if (msg?.type === "error") {
-          clearTimeout(timer);
           reject(new Error(`Server startup failed: ${msg.message}`));
         }
       });
 
       proc.on("exit", (code) => {
-        clearTimeout(timer);
         reject(new Error(`Server exited during startup with code ${code}`));
       });
     });
