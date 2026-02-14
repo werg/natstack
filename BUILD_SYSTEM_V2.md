@@ -924,72 +924,61 @@ The production app ships only: compiled bundles (`dist/`), runtime dependencies 
 
 ## Part 6: Implementation Order
 
-Build the V2 system in parallel with V1. **No V1 code is modified until V2 is proven working end-to-end on the existing layout.**
+All work happens on a feature branch. V1 can break freely — it's always recoverable from git history.
 
-### Sprint 1: Foundation (no V1 changes)
+### Sprint 1: Build V2
+
+Build the new system end-to-end.
 
 1. **`packageGraph.ts`** — DAG discovery, topo sort, cycle detection
 2. **`effectiveVersion.ts`** — Content hashing, bottom-up EV computation
 3. **`buildStore.ts`** — Content-addressed store (put/get/has/gc), keyed by build key (ev + options)
-4. **Tests** for all three: unit tests with fixture packages
+4. **`externalDeps.ts`** — Transitive external dependency collection, cached installation with atomic writes
+5. **`builder.ts`** — esbuild orchestration with resolve plugin, both strategies
+6. **`watcher.ts`** — File watcher → EV recompute → build trigger → ws:event notification
+7. **`index.ts`** — Public API + RPC service registration
+8. **Tests** — unit tests with fixture packages, integration test building a panel end-to-end
 
-### Sprint 2: Building (no V1 changes)
+### Sprint 2: Restructure + Wire
 
-5. **`externalDeps.ts`** — Transitive external dependency collection, cached installation with atomic writes
-6. **`builder.ts`** — esbuild orchestration with resolve plugin, both strategies
-7. **`watcher.ts`** — File watcher → EV recompute → build trigger → ws:event notification
-8. **`index.ts`** — Public API + RPC service registration
-9. **Integration tests**: build a test panel end-to-end through V2
+Rip out V1, move everything to the new layout, wire V2 into the app, clean APIs. One big pass.
 
-### Sprint 3: V2 Validation (no V1 changes yet)
+9. **Move `packages/` → `workspace/packages/`** (git mv)
+10. **Rename `@natstack/*` → `@workspace/*`** (find-and-replace across ~682 references in ~274 files)
+11. **Move `src/about-pages/` → `workspace/about/`** (git mv + add package.json manifests)
+12. **Wire V2 into `coreServices.ts`** — replace Verdaccio/NatstackPackageWatcher with V2 build system init
+13. **Register `"build"` RPC service** on `rpcServer.ts`
+14. **Add `"build"` to `routingBridge.ts` SERVER_SERVICES** — route panel build requests to server
+15. **Add `"build"` entry to `servicePolicy.ts` SERVICE_POLICIES** — `allowed: ["panel", "shell", "server"]`
+16. **Wire Electron `panelBuilder.ts`** — replace direct builds with `serverClient.call("build", ...)`
+17. **Wire Electron `panelManager.ts`** — remove worker methods, update build calls
+18. **Wire `agentBuilder.ts`** — replace build logic with RPC calls
+19. **Wire `shellServices.ts`** — replace cache clearing with RPC gc call
+20. **Wire about protocol handlers** — replace hardcoded validation with build system queries
+21. **Dynamic about-page routing** (Migration 5: replace `ShellPage` type + `SHELL_PAGE_META` + nsLinks.ts + menu.ts)
+22. **Build option API cleanup** (Migration 6: remove gitRef/sourcemap from caller APIs, ns:// URLs, CreateChildOptions)
+23. **Eliminate template-builder worker** (Migration 4: rewrite `partitionBuilder.ts` to use server RPC)
+24. **Eliminate worker concept** (Migration 7: remove `"worker"` from PanelType, CallerKind, service policies, runtime types)
+25. **Workspace bootstrap** — update `workspace/loader.ts:createDefaultWorkspaceConfig()` (see Part 7: Bootstrap Strategy)
+26. **Update pnpm-workspace.yaml, tsconfig paths, vitest aliases**
 
-10. **Wire V2 into `coreServices.ts`** alongside V1 — dual-run both systems
-11. **Register "build" RPC service on `rpcServer.ts`**
-12. **End-to-end test on existing layout**: V2 builds all current panels/agents/about-pages correctly, file changes trigger rebuilds, headless server works
-13. **Verify build output parity**: V2 output matches V1 for the same source inputs
+### Sprint 3: Delete + Verify
 
-### Sprint 4: Switchover (V2 proven, now replace V1)
+Delete all V1 dead code. Verify everything works.
 
-**Critical ordering:** Switchover MUST happen before directory moves (Sprint 5). V1 hardcodes `packages/` and `src/about-pages/` paths in 14+ locations (`paths.ts:getPackagesDir()`, `paths.ts:getAboutPagesDir()`, `verdaccioServer.ts`, `server/index.ts`, `typecheck/service.ts`, `aboutBuilder.ts`, `natstackPackageWatcher.ts`, `build/sharedBuild.ts`, `build/strategies/panelStrategy.ts`, `builtinWorkerBuilder.ts`, `gitServer.ts`, `build-dist.mjs`, etc.). Moving directories while V1 is still active would break everything.
-
-14. **Wire Electron `panelBuilder.ts`** — replace direct builds with `serverClient.call("build", ...)`
-15. **Wire Electron `panelManager.ts`** — remove worker methods, update build calls
-16. **Wire `agentBuilder.ts`** — replace build logic with RPC calls
-17. **Wire `shellServices.ts`** — replace cache clearing with RPC gc call
-18. **Wire about protocol handlers** — replace hardcoded validation with build system queries
-19. **Add `"build"` to `routingBridge.ts` SERVER_SERVICES** — route panel build requests to server
-20. **Add `"build"` entry to `servicePolicy.ts` SERVICE_POLICIES** — `allowed: ["panel", "shell", "server"]`
-21. **Remove V1 from `coreServices.ts`** — stop starting Verdaccio/NatstackPackageWatcher
-22. **End-to-end test**: app starts, panels build, agents build, about pages discovered dynamically, file changes trigger rebuilds, headless server works
-
-### Sprint 5: Migrations (V1 dead, safe to restructure)
-
-V1 is no longer running. All 14+ hardcoded path references are in dead code. Directories can now be moved safely.
-
-23. **Move `packages/` → `workspace/packages/`** (git mv)
-24. **Rename `@natstack/*` → `@workspace/*`** (find-and-replace across ~682 references in ~274 files)
-25. **Move `src/about-pages/` → `workspace/about/`** (git mv + add package.json manifests)
-26. **Eliminate template-builder worker** (Migration 4: rewrite `partitionBuilder.ts` to use server RPC)
-27. **Dynamic about-page routing** (Migration 5: replace hardcoded `ShellPage` type + `SHELL_PAGE_META` + nsLinks.ts + menu.ts)
-28. **Build option API cleanup** (Migration 6: remove gitRef/sourcemap from caller APIs, ns:// URLs, CreateChildOptions)
-29. **Eliminate worker concept** (Migration 7: remove `"worker"` from PanelType, CallerKind, service policies, runtime types)
-30. **Update pnpm-workspace.yaml, tsconfig paths, vitest aliases**
-31. **Workspace bootstrap** — update `workspace/loader.ts:createDefaultWorkspaceConfig()` (see Part 7: Bootstrap Strategy)
-32. **Verify**: `pnpm install`, `pnpm type-check`, `pnpm test` all pass
-
-### Sprint 6: Dead Code Removal
-
-33. **Delete V1 build system** (all files listed in Part 5)
-34. **Delete `build-dist.mjs`**
-35. **Clean up `build.mjs`** — remove package compilation step
-36. **Clean up `electron-builder.yml`** — remove extraResources, remove `packages/**/*` from files/asarUnpack
-37. **Clean up `package.json`** — remove Verdaccio/pacote deps
-38. **Clean up `typecheck/service.ts`** — remove Verdaccio/package-store imports
-39. **Clean up `panelProtocol.ts`** — remove Verdaccio URL injection
-40. **Delete `packages/` directory** (already moved)
-41. **Delete `src/about-pages/`** (already moved)
-42. **Delete `src/builtin-workers/`** (already eliminated)
-43. **Replace `BUILD_SYSTEM.md`** with updated documentation
+27. **Delete V1 build system** (all files listed in Part 5)
+28. **Delete `build-dist.mjs`**
+29. **Clean up `build.mjs`** — remove package compilation step
+30. **Clean up `electron-builder.yml`** — remove extraResources, remove `packages/**/*` from files/asarUnpack
+31. **Clean up `package.json`** — remove Verdaccio/pacote deps
+32. **Clean up `typecheck/service.ts`** — remove Verdaccio/package-store imports
+33. **Clean up `panelProtocol.ts`** — remove Verdaccio URL injection
+34. **Delete `packages/` directory** (already moved)
+35. **Delete `src/about-pages/`** (already moved)
+36. **Delete `src/builtin-workers/`** (already eliminated)
+37. **Replace `BUILD_SYSTEM.md`** with updated documentation
+38. **Verify**: `pnpm install`, `pnpm type-check`, `pnpm test` all pass
+39. **End-to-end test**: app starts, panels build, agents build, about pages discovered dynamically, file changes trigger rebuilds, headless server works
 
 ---
 
