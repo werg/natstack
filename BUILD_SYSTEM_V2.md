@@ -264,7 +264,7 @@ workspace/
 
 Every import and package.json reference to `@natstack/*` becomes `@workspace/*`. This is a mechanical find-and-replace.
 
-**Scale:** ~335 import statements across ~207 source files, ~31 package.json files, ~6 build/config files, ~4 documentation files.
+**Scale:** ~682 references across ~274 files total, including: source imports, package.json name/dependency fields, build config aliases, string patterns, and documentation.
 
 The existing `createNatstackResolvePlugin()` in `src/main/natstackResolvePlugin.ts` and its consumer in `@natstack/typecheck` (`parseNatstackImport`, `resolveExportSubpath`) rename to `@workspace` equivalents.
 
@@ -344,7 +344,7 @@ src/server/buildV2/
 For each package/panel/agent, compute a content hash:
 - If git-tracked and clean: `git hash-object` on all source files (fast, uses git's own cache)
 - If dirty or untracked files: SHA256 of file contents
-- Hash includes: all source files (`.ts`, `.tsx`, `.js`, `.jsx`, `.json`, `.css`) + `package.json`
+- Hash includes: **all files in the unit directory** — code (`.ts`, `.tsx`, `.js`, `.jsx`), styles (`.css`), config (`.json`), and assets (`.png`, `.svg`, `.jpg`, `.ico`, `.woff`, `.woff2`, `.ttf`, `.mp3`, `.mp4`, etc.). esbuild's file loader processes binary assets into the output bundle, so asset changes must trigger rebuilds.
 - Excludes: `node_modules/`, `dist/`, `.git/`, dotfiles
 
 **Step 1.3: Effective version computation** (`effectiveVersion.ts`)
@@ -633,8 +633,44 @@ Replace all hardcoded about-page knowledge with dynamic manifest discovery:
 2. `src/main/aboutBuilder.ts`: **Delete entirely** (including `SHELL_PAGE_META`, `getShellPageKeys()`, `getShellPageTitle()`, `getShellPagesForLauncher()`)
 3. `src/main/nsAboutProtocol.ts`: Replace `isValidAboutPage()` with build system query
 4. `src/main/aboutProtocol.ts`: Replace `isValidShellPage()` with build system query
-5. `src/main/panelManager.ts`: Update shell panel creation to query workspace manifests
+5. `src/main/panelManager.ts`: Update shell panel creation to query workspace manifests; remove hardcoded `"dirty-repo"` and `"git-init"` page references in navigation logic (3 locations)
 6. `src/main/ipc/shellServices.ts`: Replace `getShellPagesForLauncher()` with `serverClient.call("build", "getAboutPages")`
+7. `packages/runtime/src/core/nsLinks.ts`: Delete `AboutPage` type alias and `VALID_ABOUT_PAGES` array (lines 93-95) — replace with runtime validation via build system query
+8. `src/main/menu.ts`: Replace hardcoded `"model-provider-config"` and `"keyboard-shortcuts"` in menu click handlers with references resolved from workspace manifests
+
+### Migration 6: Build option API cleanup
+
+V1 exposes `gitRef`, `sourcemap`, and `unsafe` as **caller-supplied options** flowing through ns:// URLs, `CreateChildOptions`, `PanelSnapshot.options`, and `panelManager.buildPanelAsync()`. V2 makes these **manifest-derived** (read from `package.json` at build time). The caller API surface must be updated to match.
+
+**What changes:**
+
+| Option | V1 (caller-supplied) | V2 (manifest-derived) |
+|--------|---------------------|----------------------|
+| `gitRef` | Parsed from ns:// URL `?gitRef=`, stored in snapshot, passed to builder | **Removed entirely.** V2 builds from working tree only. |
+| `sourcemap` | Passed via `CreateChildOptions`, stored in snapshot, read during build | **Removed from caller API.** Read from `package.json` manifest `natstack.sourcemap` field. |
+| `unsafe` | Parsed from ns:// URL, stored in snapshot, read during build via `getPanelUnsafe()` | **Read-only from manifest.** Already partially manifest-derived in V1 (falls back to `manifest.unsafe`); V2 makes manifest the sole source. |
+
+**Specific rewrites:**
+
+1. `packages/runtime/src/core/types.ts`: Remove `gitRef` from `CreateChildOptions` (line 67). Remove `sourcemap` from `CreateChildOptions` (line 73). Remove `WorkerChildSpec` interface entirely (line 169) — workers eliminated.
+2. `src/main/nsProtocol.ts`: Remove `gitRef` parsing from `parseNsUrl()` (line 81). Remove `unsafe` serialization from `buildNsUrl()` (line 214) — unsafe is not a URL parameter, it's a manifest property. Simplify URL to carry only source identity.
+3. `src/shared/panel/accessors.ts`: Remove `"gitRef"` and `"sourcemap"` from `SOURCE_SCOPED_OPTIONS` (line 153). Delete `getPanelGitRef()` and `getPanelSourcemap()` accessors. Keep `getPanelUnsafe()` as a read-only accessor that queries the manifest.
+4. `src/main/panelManager.ts`: Remove `gitRef` and `sourcemap` from `buildPanelAsync()` options (line 3022). Build options come from manifest only. Remove `buildVersion` conditional on `options?.gitRef` (line 3052).
+5. `src/shared/types.ts`: Remove `gitRef` and `sourcemap` from `PanelOptions` / snapshot option types.
+
+### Migration 7: Eliminate worker concept from type system and policies
+
+Migration 4 removes the template-builder worker and its build infrastructure. This migration completes the job by removing the **general worker concept** from shared types, runtime API, service dispatch, and access policies.
+
+**Why remove entirely:** Template-builder is the only worker that has ever existed. The worker infrastructure (hidden WebContentsView processes with IPC-based service access) is unused beyond this single case, which itself is being moved to a server RPC call. Keeping dead abstractions in the type system and policy table adds confusion and maintenance burden.
+
+**Specific rewrites:**
+
+1. `src/shared/types.ts`: Remove `"worker"` from `PanelType` union (line 208) → becomes `"app" | "browser" | "shell"`. Remove `runtime?: "panel" | "worker"` from `PanelManifest` (line 64). Remove `type: "app" | "worker"` → just `type: "app"` (line 50).
+2. `packages/runtime/src/core/types.ts`: Delete `WorkerChildSpec` interface entirely (line 169). Remove worker-related exports from the runtime API.
+3. `src/main/serviceDispatcher.ts`: Remove `"worker"` from `CallerKind` type (line 10) → becomes `"panel" | "shell" | "server"`.
+4. `src/main/servicePolicy.ts`: Remove `"worker"` from all `allowed` arrays in `SERVICE_POLICIES` (line 67+). Every service that lists `["panel", "worker", "shell", "server"]` becomes `["panel", "shell", "server"]`.
+5. `src/main/panelManager.ts`: Remove all worker-specific panel creation/lifecycle code beyond what Migration 4 already covers. Remove worker type checks in panel routing logic.
 
 ---
 
@@ -722,6 +758,21 @@ Everything listed below is deleted or gutted after V2 is operational and migrati
 
 **Add:**
 - `"build"` service dispatcher routing to buildV2 API
+
+#### Routing Bridge (`packages/runtime/src/shared/routingBridge.ts`)
+
+**Update:**
+- Add `"build"` to `SERVER_SERVICES` set (currently `["ai", "db", "typecheck", "agentSettings"]`). This ensures panels calling `bridge.call("build", ...)` route to the server process via WebSocket, not Electron IPC.
+
+#### Service Policy (`src/main/servicePolicy.ts`)
+
+**Add:**
+- `"build"` entry to `SERVICE_POLICIES` record: `{ allowed: ["panel", "shell", "server"], description: "Build system (getBuild, recompute, gc, getAboutPages)" }`. Without this, the "build" service bypasses the policy check entirely (unknown services fall through at line 130), which is a security/consistency gap.
+
+#### Workspace Loader (`src/main/workspace/loader.ts`)
+
+**Update:**
+- `createDefaultWorkspaceConfig()`: Remove assumption that shipped panels exist. Update `rootPanel` to reference `"panels/chat-launcher"` as a workspace-relative source path (built on demand by V2, not loaded from pre-built bundles). Remove `"workers"` from scaffold directories. See "Bootstrap Strategy" in Part 7 for the full first-run flow.
 
 #### Electron Startup (`src/main/index.ts`)
 
@@ -897,39 +948,48 @@ Build the V2 system in parallel with V1. **No V1 code is modified until V2 is pr
 12. **End-to-end test on existing layout**: V2 builds all current panels/agents/about-pages correctly, file changes trigger rebuilds, headless server works
 13. **Verify build output parity**: V2 output matches V1 for the same source inputs
 
-### Sprint 4: Migrations (V2 proven, now restructure)
+### Sprint 4: Switchover (V2 proven, now replace V1)
 
-14. **Move `packages/` → `workspace/packages/`** (git mv)
-15. **Rename `@natstack/*` → `@workspace/*`** (find-and-replace)
-16. **Move `src/about-pages/` → `workspace/about/`** (git mv + add package.json manifests)
-17. **Eliminate template-builder worker** (rewrite `partitionBuilder.ts` to use server RPC)
-18. **Dynamic about-page routing** (replace hardcoded `ShellPage` type + `SHELL_PAGE_META`)
-19. **Update pnpm-workspace.yaml, tsconfig paths, vitest aliases**
-20. **Verify**: `pnpm install`, `pnpm type-check`, `pnpm test` all pass
+**Critical ordering:** Switchover MUST happen before directory moves (Sprint 5). V1 hardcodes `packages/` and `src/about-pages/` paths in 14+ locations (`paths.ts:getPackagesDir()`, `paths.ts:getAboutPagesDir()`, `verdaccioServer.ts`, `server/index.ts`, `typecheck/service.ts`, `aboutBuilder.ts`, `natstackPackageWatcher.ts`, `build/sharedBuild.ts`, `build/strategies/panelStrategy.ts`, `builtinWorkerBuilder.ts`, `gitServer.ts`, `build-dist.mjs`, etc.). Moving directories while V1 is still active would break everything.
 
-### Sprint 5: Switchover
+14. **Wire Electron `panelBuilder.ts`** — replace direct builds with `serverClient.call("build", ...)`
+15. **Wire Electron `panelManager.ts`** — remove worker methods, update build calls
+16. **Wire `agentBuilder.ts`** — replace build logic with RPC calls
+17. **Wire `shellServices.ts`** — replace cache clearing with RPC gc call
+18. **Wire about protocol handlers** — replace hardcoded validation with build system queries
+19. **Add `"build"` to `routingBridge.ts` SERVER_SERVICES** — route panel build requests to server
+20. **Add `"build"` entry to `servicePolicy.ts` SERVICE_POLICIES** — `allowed: ["panel", "shell", "server"]`
+21. **Remove V1 from `coreServices.ts`** — stop starting Verdaccio/NatstackPackageWatcher
+22. **End-to-end test**: app starts, panels build, agents build, about pages discovered dynamically, file changes trigger rebuilds, headless server works
 
-21. **Wire Electron `panelBuilder.ts`** — replace direct builds with `serverClient.call("build", ...)`
-22. **Wire Electron `panelManager.ts`** — remove worker methods, update build calls
-23. **Wire `agentBuilder.ts`** — replace build logic with RPC calls
-24. **Wire `shellServices.ts`** — replace cache clearing with RPC gc call
-25. **Wire about protocol handlers** — replace hardcoded validation with build system queries
-26. **Remove V1 from `coreServices.ts`** — stop starting Verdaccio/NatstackPackageWatcher
-27. **End-to-end test**: app starts, panels build, agents build, about pages discovered dynamically, file changes trigger rebuilds, headless server works
+### Sprint 5: Migrations (V1 dead, safe to restructure)
+
+V1 is no longer running. All 14+ hardcoded path references are in dead code. Directories can now be moved safely.
+
+23. **Move `packages/` → `workspace/packages/`** (git mv)
+24. **Rename `@natstack/*` → `@workspace/*`** (find-and-replace across ~682 references in ~274 files)
+25. **Move `src/about-pages/` → `workspace/about/`** (git mv + add package.json manifests)
+26. **Eliminate template-builder worker** (Migration 4: rewrite `partitionBuilder.ts` to use server RPC)
+27. **Dynamic about-page routing** (Migration 5: replace hardcoded `ShellPage` type + `SHELL_PAGE_META` + nsLinks.ts + menu.ts)
+28. **Build option API cleanup** (Migration 6: remove gitRef/sourcemap from caller APIs, ns:// URLs, CreateChildOptions)
+29. **Eliminate worker concept** (Migration 7: remove `"worker"` from PanelType, CallerKind, service policies, runtime types)
+30. **Update pnpm-workspace.yaml, tsconfig paths, vitest aliases**
+31. **Workspace bootstrap** — update `workspace/loader.ts:createDefaultWorkspaceConfig()` (see Part 7: Bootstrap Strategy)
+32. **Verify**: `pnpm install`, `pnpm type-check`, `pnpm test` all pass
 
 ### Sprint 6: Dead Code Removal
 
-28. **Delete V1 build system** (all files listed in Part 5)
-29. **Delete `build-dist.mjs`**
-30. **Clean up `build.mjs`** — remove package compilation step
-31. **Clean up `electron-builder.yml`** — remove extraResources, remove `packages/**/*` from files/asarUnpack
-32. **Clean up `package.json`** — remove Verdaccio/pacote deps
-33. **Clean up `typecheck/service.ts`** — remove Verdaccio/package-store imports
-34. **Clean up `panelProtocol.ts`** — remove Verdaccio URL injection
-35. **Delete `packages/` directory** (already moved)
-36. **Delete `src/about-pages/`** (already moved)
-37. **Delete `src/builtin-workers/`** (already eliminated)
-38. **Replace `BUILD_SYSTEM.md`** with updated documentation
+33. **Delete V1 build system** (all files listed in Part 5)
+34. **Delete `build-dist.mjs`**
+35. **Clean up `build.mjs`** — remove package compilation step
+36. **Clean up `electron-builder.yml`** — remove extraResources, remove `packages/**/*` from files/asarUnpack
+37. **Clean up `package.json`** — remove Verdaccio/pacote deps
+38. **Clean up `typecheck/service.ts`** — remove Verdaccio/package-store imports
+39. **Clean up `panelProtocol.ts`** — remove Verdaccio URL injection
+40. **Delete `packages/` directory** (already moved)
+41. **Delete `src/about-pages/`** (already moved)
+42. **Delete `src/builtin-workers/`** (already eliminated)
+43. **Replace `BUILD_SYSTEM.md`** with updated documentation
 
 ---
 
@@ -1001,3 +1061,21 @@ V2 code lives in `src/server/buildV2/` and gets bundled into both. No special ha
 ### Why eliminate workers entirely?
 
 Worker panels exist to run untrusted code in a sandboxed WebContentsView. The only current worker is `template-builder`, which clones git repos to OPFS. This doesn't need sandboxing — the server process already has full git access. Moving the logic to a server RPC method is simpler, faster (no WebContentsView startup overhead), and eliminates the entire worker build/lifecycle infrastructure (builtinWorkerBuilder, buildWorkerAsync, rebuildWorkerPanel, templateBuilderWorkers Set, worker panel state tracking).
+
+The worker concept is deeply embedded: `PanelType` union, `PanelManifest.type`, `WorkerChildSpec` in the runtime API, `CallerKind` in service dispatch, and `"worker"` in every service policy `allowed` array. Since template-builder is the only worker that has ever existed, removing it means the entire abstraction is dead. Migration 7 removes `"worker"` from all type unions, policy tables, and runtime contracts. If background computation is needed in the future, it should use the server process (which already handles AI, Git, builds, etc.) rather than reinventing hidden WebContentsView workers.
+
+### Bootstrap strategy (first-run with zero shipped content)
+
+The workspace-agnostic principle means the production app ships no panels, no about pages, no workspace content. But the current `createDefaultWorkspaceConfig()` in `workspace/loader.ts` sets `rootPanel: "panels/chat-launcher"` and expects shipped panel bundles to exist.
+
+V2 resolves this cleanly:
+
+1. **The workspace IS the source.** The app opens a workspace directory path (configured at install time, stored in user preferences, or passed as CLI argument). That directory contains `workspace/panels/`, `workspace/about/`, etc. — all source code, not pre-built bundles.
+
+2. **First run builds from source.** When the app opens a workspace for the first time, V2 computes effective versions for all units, finds no cache entries, and builds everything. This is a one-time cost (~10-15 seconds for all panels + about pages). Subsequent launches are instant cache hits.
+
+3. **Default workspace scaffolding.** `createDefaultWorkspaceConfig()` creates the directory structure and writes `natstack.yml` with `rootPanel: "panels/chat-launcher"`. The chat-launcher source must exist in the workspace being opened — it's workspace content, not app content. For a fresh install with no workspace, the installer or first-run wizard clones/copies a template workspace (git repo or bundled archive).
+
+4. **Development vs. production.** In development, the workspace is `./workspace/` in the repo. In production, the workspace is a user-specified directory. Both are built identically by V2 — the app doesn't distinguish them.
+
+This eliminates the `build-dist.mjs` "pre-compile panels" step, the `dist/shipped-panels/` directory, the `tryLoadShippedPanel()` code path, and the coupling between app version and workspace content.
