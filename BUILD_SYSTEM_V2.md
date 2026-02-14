@@ -6,11 +6,12 @@
 
 ## Guiding Principles
 
-1. **A build is a pure function of git state.** Same git state = same output. Always.
-2. **No cache invalidation.** Content-addressed storage keyed by effective versions. Old entries aren't invalidated — they're just unreferenced.
+1. **A build is a pure function of source + options.** Same content + same build options = same output. Always.
+2. **No cache invalidation.** Content-addressed storage keyed by build keys. Old entries aren't invalidated — they're just unreferenced.
 3. **Simplicity over cleverness.** Two concepts replace five cache layers: effective versions + a content-addressed build store.
 4. **Speed through precision.** Only rebuild what actually changed. Never nuke everything.
 5. **Server-first.** The build system lives in the server process. Electron never touches builds directly.
+6. **Workspace-agnostic app.** The production app ships zero workspace content. It opens any workspace path and builds everything from source into its content-addressed store. First launch can be slow; subsequent launches are instant cache hits.
 
 ---
 
@@ -39,6 +40,26 @@ Computed bottom-up via topological sort on the package DAG. O(V+E), takes millis
 
 **The one invariant:** if `ev(X)` hasn't changed, X's build is still valid. If it has, X must rebuild. No exceptions, no edge cases, no heuristics.
 
+### Build Keys (EV + Options)
+
+The effective version alone is not a sufficient cache key. The same source code produces different output depending on build options:
+
+| Option | Effect on output |
+|--------|-----------------|
+| `unsafe: true` | Platform switches from `browser` → `node`, format from `esm` → `cjs`, code splitting disabled |
+| `unsafe: "/path"` | Custom filesystem root for unsafe context |
+| `sourcemap: false` | Strips inline source maps from bundle |
+
+The **build key** is the full cache identity:
+
+```
+build_key = hash(ev, unsafe, sourcemap)
+```
+
+The store is keyed by build key, not EV alone. Two builds of the same source with different options produce different entries. The `unsafe` and `sourcemap` flags are determined from the unit's `package.json` manifest at build time — they are not caller-supplied knobs.
+
+**gitRef support is intentionally removed.** V1 used gitRef for Verdaccio version-pinning. V2 computes EVs from the working tree. Building arbitrary commits is not a V2 use case.
+
 ### System Diagram
 
 ```
@@ -66,12 +87,12 @@ Computed bottom-up via topological sort on the package DAG. O(V+E), takes millis
 │    SERVER PROCESS          Build Orchestrator                 │
 │                                                              │
 │  For each changed unit:                                      │
-│    key = ev(unit)                                            │
+│    key = hash(ev, unsafe, sourcemap)                         │
 │    if store.has(key) → serve from store                      │
 │    else → build with esbuild, write to store                 │
 │                                                              │
 │  Concurrency: semaphore (4 parallel)                         │
-│  Coalescing: dedup concurrent builds of same EV              │
+│  Coalescing: dedup concurrent builds of same key             │
 │                                                              │
 │  Exposes: RPC service "build" for Electron/panel requests    │
 └────────────────────────────────┬─────────────────────────────┘
@@ -87,14 +108,14 @@ Computed bottom-up via topological sort on the package DAG. O(V+E), takes millis
 ┌──────────────────────────────────────────────────────────────┐
 │             Content-Addressed Build Store                     │
 │                                                              │
-│  {userData}/builds/{ev_hash}/                                │
+│  {userData}/builds/{build_key}/                              │
 │    ├── bundle.js                                             │
 │    ├── bundle.css  (if any)                                  │
 │    ├── index.html  (panels only)                             │
 │    ├── assets/     (images, fonts, etc.)                     │
 │    └── metadata.json                                         │
 │                                                              │
-│  Immutable. Same EV = same content. Forever.                 │
+│  Immutable. Same key = same content. Forever.                │
 │  GC: prune entries unreferenced by any active panel/agent.   │
 └──────────────────────────────────────────────────────────────┘
 
@@ -112,7 +133,18 @@ Computed bottom-up via topological sort on the package DAG. O(V+E), takes millis
 
 ### Internal Package Resolution (No Verdaccio)
 
-Internal packages (`@workspace/*`) resolve at build time via the existing `createNatstackResolvePlugin()` pattern — an esbuild plugin that reads each package's `package.json` exports field and resolves the correct entry point. V2 generalizes this across the whole workspace:
+Internal packages (`@workspace/*`) resolve at build time via the existing `createNatstackResolvePlugin()` pattern — an esbuild plugin that reads each package's `package.json` exports field and resolves the correct entry point. V2 generalizes this across the whole workspace.
+
+Exports fields use **condition objects**, not plain strings:
+
+```json
+{
+  ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+  "./config": { "types": "./dist/config-entry.d.ts", "default": "./dist/config-entry.js" }
+}
+```
+
+The resolve plugin uses `resolveExportSubpath()` from `@natstack/typecheck` which recursively walks condition objects against `BUNDLE_CONDITIONS`:
 
 ```typescript
 // Plugin resolves @workspace/* imports using package.json exports
@@ -120,6 +152,7 @@ build.onResolve({ filter: /^@workspace\// }, (args) => {
   const parsed = parseImport(args.path);
   const pkgDir = path.join(workspacePackagesDir, parsed.packageName);
   const pkgJson = readPackageJson(pkgDir);
+  // resolveExportSubpath handles nested condition objects recursively
   const target = resolveExportSubpath(pkgJson.exports, parsed.subpath, conditions);
   return { path: path.resolve(pkgDir, target) };
 });
@@ -129,14 +162,24 @@ No registry. No tarballs. No install step for internal packages. This replaces V
 
 ### External Package Resolution
 
-External npm dependencies (react, zod, radix-ui, etc.) are installed into a shared cache keyed by the hash of external deps:
+External npm dependencies (react, zod, radix-ui, etc.) are installed into a shared cache. **Critically, this must include transitive externals from all aliased internal packages**, not just the top-level panel's own `package.json`.
+
+Example: `workspace/panels/chat` depends on `@workspace/agentic-chat`, which brings `@mdx-js/mdx`, `highlight.js`, `react-markdown`, `@tanstack/react-virtual`, etc. — none of which appear in the chat panel's own package.json. Since internal packages are aliased (built from source, not pre-compiled), their external deps must be collected transitively.
 
 ```
-key = hash(sorted external dependencies from package.json)
+externals(panel) = panel.externalDeps ∪ ⋃ externals(internalDep) for each internalDep
+```
+
+The union of all transitive external deps is hashed and installed into:
+
+```
+key = hash(sorted transitive external dependencies)
 {userData}/external-deps/{key}/node_modules/
 ```
 
 External deps change rarely. This cache is extremely stable. Use Arborist or pnpm pointed at the real npm registry.
+
+**Crash safety:** installations are written to a temp directory first, then atomically renamed. A `.ready` sentinel file marks completion. Existence check looks for the sentinel, not the directory.
 
 ### Build Triggers
 
@@ -149,16 +192,16 @@ External deps change rarely. This cache is extremely stable. Use Arborist or pnp
 
 **On demand (panel/agent request via RPC):**
 1. Electron calls `serverClient.call("build", "getBuild", [unitPath])`
-2. Server looks up `ev(unit)` in build store
+2. Server looks up build key in build store
 3. Already built → return immediately
 4. Build in progress → await it
 5. Not started → trigger build (fallback; watcher should have caught it)
 
-**Cold start:**
+**Cold start (first launch or new workspace):**
 1. `coreServices.ts` calls `buildSystem.initialize()` during server startup
 2. Compute all effective versions
 3. Check store for each
-4. Build only what's missing
+4. Build everything that's missing (first launch builds all; subsequent launches hit cache)
 
 ---
 
@@ -203,8 +246,8 @@ workspace/
 │   ├── about/
 │   ├── adblock/
 │   ├── agents/
-│   ├── dirty-repo/           ← new on separate-server
-│   ├── git-init/             ← new on separate-server
+│   ├── dirty-repo/
+│   ├── git-init/
 │   ├── help/
 │   ├── keyboard-shortcuts/
 │   ├── model-provider-config/
@@ -225,7 +268,20 @@ Every import and package.json reference to `@natstack/*` becomes `@workspace/*`.
 
 The existing `createNatstackResolvePlugin()` in `src/main/natstackResolvePlugin.ts` and its consumer in `@natstack/typecheck` (`parseNatstackImport`, `resolveExportSubpath`) rename to `@workspace` equivalents.
 
-**About panels** get a `package.json` with natstack manifest:
+### About Page Discovery (Dynamic, Not Hardcoded)
+
+Currently, about pages are hardcoded in 6 locations:
+
+| File | Hardcoded knowledge |
+|------|-------------------|
+| `src/shared/types.ts` | `ShellPage` union type — 9 literal strings |
+| `src/main/aboutBuilder.ts` | `SHELL_PAGE_META` — titles, descriptions, `hiddenInLauncher` flags |
+| `src/main/nsAboutProtocol.ts` | `isValidAboutPage()` validates against hardcoded list |
+| `src/main/aboutProtocol.ts` | `isValidShellPage()` validates against hardcoded list |
+| `src/main/panelManager.ts` | Shell panel creation/validation flows |
+| `src/main/ipc/shellServices.ts` | `getShellPagesForLauncher()` for launcher UI |
+
+V2 replaces all of this with **dynamic manifest discovery**. About pages get a `package.json` with all metadata:
 
 ```json
 {
@@ -235,7 +291,8 @@ The existing `createNatstackResolvePlugin()` in `src/main/natstackResolvePlugin.
     "type": "app",
     "title": "Model Provider Config",
     "unsafe": true,
-    "shell": true
+    "shell": true,
+    "hiddenInLauncher": false
   },
   "dependencies": {
     "@workspace/react": "*",
@@ -244,7 +301,14 @@ The existing `createNatstackResolvePlugin()` in `src/main/natstackResolvePlugin.
 }
 ```
 
-The `unsafe: true` flag gives node integration. The `shell: true` flag grants shell service access and routes through `natstack-about://` protocol.
+The `unsafe: true` flag gives node integration. The `shell: true` flag grants shell service access and routes through `natstack-about://` protocol. The `hiddenInLauncher` flag replaces the hardcoded flag in `SHELL_PAGE_META`.
+
+**Migration steps for about-page routing:**
+1. Replace `ShellPage` union type in `src/shared/types.ts` with `string` (validated at runtime)
+2. Delete `SHELL_PAGE_META` from `aboutBuilder.ts` (file deleted entirely)
+3. Replace `isValidAboutPage()` / `isValidShellPage()` with build system query: "does this about page exist in the workspace?"
+4. Replace `getShellPagesForLauncher()` with workspace scan of `workspace/about/*/package.json` manifests
+5. Update `panelManager.ts` validation to use the build system's workspace graph
 
 ---
 
@@ -259,7 +323,7 @@ src/server/buildV2/
 ├── effectiveVersion.ts    ← EV computation (topo sort + bottom-up hash)
 ├── packageGraph.ts        ← DAG discovery from package.json files
 ├── buildStore.ts          ← Content-addressed build store ({userData}/builds/)
-├── externalDeps.ts        ← External dependency installation + caching
+├── externalDeps.ts        ← Transitive external dependency collection + cached installation
 ├── builder.ts             ← esbuild orchestration (panels + agents)
 ├── watcher.ts             ← File watcher → EV recomputation → rebuild triggers
 └── index.ts               ← Public API + RPC service registration
@@ -314,13 +378,13 @@ Previous EV map persisted to `{userData}/ev-map.json` (using `getUserDataPath()`
 
 ```
 {userData}/builds/
-├── {ev_hash_1}/
+├── {build_key_1}/
 │   ├── bundle.js
 │   ├── bundle.css
 │   ├── index.html
 │   ├── assets/
-│   └── metadata.json    ← { kind, name, ev, builtAt, esbuildMeta }
-├── {ev_hash_2}/
+│   └── metadata.json    ← { kind, name, ev, buildOptions, builtAt, esbuildMeta }
+├── {build_key_2}/
 │   └── ...
 └── ...
 ```
@@ -331,38 +395,72 @@ Uses `getUserDataPath()` from `src/main/envPaths.ts` — works in both Electron 
 
 ```typescript
 interface BuildStore {
-  has(ev: string): boolean;
-  get(ev: string): BuildResult | null;
-  put(ev: string, artifacts: BuildArtifacts): void;
-  gc(activeEvs: Set<string>): { freed: number };
+  has(key: string): boolean;
+  get(key: string): BuildResult | null;
+  put(key: string, artifacts: BuildArtifacts): void;
+  gc(activeKeys: Set<string>): { freed: number };
 }
 ```
 
 Trivially simple. No LRU, no TTL, no size limits (GC handles cleanup). `has()` is a directory existence check.
 
-### Phase 3: External Dependency Cache
+### Phase 3: Transitive External Dependency Cache
 
-**Step 3.1: External dep extraction** (`externalDeps.ts`)
+**Step 3.1: Transitive external dep collection** (`externalDeps.ts`)
 
-For a given panel/agent, partition its dependencies:
-- Internal: anything matching `@workspace*` prefixes → resolved via resolve plugin
-- External: everything else → installed via Arborist/pnpm
+For a given panel/agent, walk the package graph and collect **all** external dependencies from the unit itself and every internal package it transitively depends on:
+
+```typescript
+function collectTransitiveExternalDeps(
+  unit: GraphNode,
+  graph: PackageGraph
+): Record<string, string> {
+  const externals: Record<string, string> = {};
+  const visited = new Set<string>();
+
+  function walk(node: GraphNode) {
+    if (visited.has(node.path)) return;
+    visited.add(node.path);
+    for (const [name, version] of Object.entries(node.dependencies)) {
+      if (graph.isInternal(name)) {
+        walk(graph.get(name));  // recurse into internal dep
+      } else {
+        // External: take highest version if conflict
+        externals[name] = externals[name]
+          ? maxSemver(externals[name], version)
+          : version;
+      }
+    }
+  }
+
+  walk(unit);
+  return externals;
+}
+```
 
 **Step 3.2: Shared external dep cache**
 
 ```typescript
-function getExternalDepsDir(packageJson: object): string {
-  const externalDeps = extractExternalDeps(packageJson);
-  const key = hash(JSON.stringify(sortedEntries(externalDeps)));
+function getExternalDepsDir(transitiveExternals: Record<string, string>): string {
+  const key = hash(JSON.stringify(sortedEntries(transitiveExternals)));
   return path.join(getUserDataPath(), "external-deps", key);
 }
 ```
 
-Install into `{userData}/external-deps/{hash}/node_modules/` using Arborist pointed at the public npm registry. Skip install if directory already exists.
+Install into `{userData}/external-deps/{hash}/node_modules/` using Arborist pointed at the public npm registry. Install to a temp directory first, then atomically rename and write `.ready` sentinel. Check for sentinel on lookup, not directory existence.
 
 ### Phase 4: Builder
 
 **Step 4.1: esbuild orchestration** (`builder.ts`)
+
+Build options are determined from the unit's `package.json` manifest, not from caller arguments:
+
+```typescript
+interface BuildOptions {
+  unsafe: boolean | string;  // from manifest natstack.unsafe
+  sourcemap: boolean;        // from manifest natstack.sourcemap (default: true)
+}
+```
 
 Two build strategies, selected by manifest type:
 
@@ -371,8 +469,7 @@ Two build strategies, selected by manifest type:
 - Format: `esm` (or `cjs` if `unsafe: true`)
 - Target: `es2022`
 - Code splitting: enabled (unless unsafe)
-- Plugins: resolve plugin (generalized from `createNatstackResolvePlugin`), fs/path shims (safe mode), React dedupe
-- Module resolution: uses `resolveExportSubpath()` and `BUNDLE_CONDITIONS` from `@natstack/typecheck` resolution module
+- Plugins: resolve plugin (using `resolveExportSubpath()` + `BUNDLE_CONDITIONS` from `@workspace/typecheck`), fs/path shims (safe mode), React dedupe
 - Output: `bundle.js` + `bundle.css` + `index.html` + `assets/`
 
 **Agent build** (node target):
@@ -387,7 +484,7 @@ Two build strategies, selected by manifest type:
 **Step 4.2: Concurrency**
 
 - Semaphore with `MAX_CONCURRENT_BUILDS = 4`
-- Build coalescing: if build for same EV is already in flight, return its promise
+- Build coalescing: if build for same build key is already in flight, return its promise
 
 ### Phase 5: File Watcher
 
@@ -426,6 +523,9 @@ interface BuildService {
 
   // Garbage collect unreferenced builds
   gc(activeUnits: string[]): Promise<{ freed: number }>;
+
+  // List available about pages (for launcher UI)
+  getAboutPages(): Promise<AboutPageMeta[]>;
 }
 ```
 
@@ -511,15 +611,30 @@ Mechanical find-and-replace across the entire codebase:
 | `src/about-pages/model-provider-config/` | `workspace/about/model-provider-config/` |
 | `src/about-pages/new/` | `workspace/about/new/` |
 
-Each gets a new `package.json` with `@workspace-about/*` scope and `"unsafe": true, "shell": true` in the natstack manifest.
+Each gets a `package.json` with `@workspace-about/*` scope and metadata in the natstack manifest (title, description, unsafe, shell, hiddenInLauncher).
 
 **After move:** Delete `src/about-pages/` directory entirely.
 
-### Migration 4: Eliminate workers
+### Migration 4: Eliminate workers entirely
 
-Move the `template-builder` logic into the server process or an agent. The server already has full git access and file system capabilities.
+The `template-builder` worker (clones git repos to OPFS) moves to the server process. The server already has full git access via `gitServer`.
+
+**Specific rewrites:**
+- `src/main/contextTemplate/partitionBuilder.ts`: currently calls `panelManager.createTemplateBuilderWorker()` to spawn a hidden WebContentsView worker. Rewrite to call a server RPC method instead.
+- `src/main/panelManager.ts`: delete `createTemplateBuilderWorker()`, `closeTemplateBuilderWorker()`, `templateBuilderWorkers` Set, `buildWorkerAsync()`, `rebuildWorkerPanel()`, and all worker-related state tracking.
 
 **After migration:** Delete `src/builtin-workers/` directory entirely.
+
+### Migration 5: Dynamic about-page routing
+
+Replace all hardcoded about-page knowledge with dynamic manifest discovery:
+
+1. `src/shared/types.ts`: Replace `ShellPage` union type with `string` (runtime-validated)
+2. `src/main/aboutBuilder.ts`: **Delete entirely** (including `SHELL_PAGE_META`, `getShellPageKeys()`, `getShellPageTitle()`, `getShellPagesForLauncher()`)
+3. `src/main/nsAboutProtocol.ts`: Replace `isValidAboutPage()` with build system query
+4. `src/main/aboutProtocol.ts`: Replace `isValidShellPage()` with build system query
+5. `src/main/panelManager.ts`: Update shell panel creation to query workspace manifests
+6. `src/main/ipc/shellServices.ts`: Replace `getShellPagesForLauncher()` with `serverClient.call("build", "getAboutPages")`
 
 ---
 
@@ -539,8 +654,9 @@ Everything listed below is deleted or gutted after V2 is operational and migrati
 | `src/main/cacheUtils.ts` | Multi-layer cache clearing (Verdaccio + dependency graph + disk cache) — all layers gone |
 | `src/main/dependencyGraph.ts` | Consumer→package registry for invalidation — EVs eliminate the need |
 | `src/main/natstackPackageWatcher.ts` | Chokidar watcher for `packages/` — replaced by V2 workspace watcher |
-| `src/main/aboutBuilder.ts` | About page build pipeline with esbuild + resolve plugin — replaced by V2 builder |
+| `src/main/aboutBuilder.ts` | About page build pipeline + hardcoded `SHELL_PAGE_META` — replaced by V2 builder + dynamic discovery |
 | `src/main/builtinWorkerBuilder.ts` | Worker build pipeline — workers eliminated |
+| `src/main/natstackResolvePlugin.ts` | esbuild resolve plugin — subsumed by V2 builder |
 
 #### Build Pipeline V1
 | File | Purpose (now dead) |
@@ -628,22 +744,20 @@ Everything listed below is deleted or gutted after V2 is operational and migrati
 - Direct dependency on V1 orchestrator, sharedBuild, artifacts
 - V1 cache manager usage
 - `createNatstackResolvePlugin` usage (V2 builder handles this)
-- `buildWorker()` function entirely
+- `buildWorker()` function entirely (workers eliminated)
 
 **Replace:**
 - `buildPanel()` → delegate to server RPC `build.getBuild()`
-
-#### About Builder (`src/main/aboutBuilder.ts`) — DELETE ENTIRELY
-
-Currently builds about pages with its own esbuild pipeline + `createNatstackResolvePlugin`. V2 handles about pages as regular buildable units in workspace/about/.
 
 #### Panel Manager (`src/main/panelManager.ts`)
 
 **Remove:**
 - `buildWorkerAsync()` method (~50 lines)
 - `rebuildWorkerPanel()` method (~30 lines)
-- Worker-related state tracking
+- `createTemplateBuilderWorker()` / `closeTemplateBuilderWorker()` (~100 lines)
+- `templateBuilderWorkers` Set and all worker-related state tracking
 - References to Verdaccio server/config
+- Hardcoded shell page validation (replaced by build system query)
 
 #### Agent Builder (`src/main/agentBuilder.ts`)
 
@@ -654,14 +768,58 @@ Currently builds about pages with its own esbuild pipeline + `createNatstackReso
 **Replace:**
 - Build logic → delegate to server RPC `build.getBuild()`
 
+#### Typecheck Service (`src/main/typecheck/service.ts`)
+
+**Remove:**
+- `import { isVerdaccioReady, getVerdaccioUrl }` from verdaccioConfig
+- `import { getPackageStore, createPackageFetcher, createPackageLinker, serializeTree }` from package-store
+- All Verdaccio-based package resolution logic
+
+**Replace:**
+- Internal package type resolution → read types directly from `workspace/packages/` source (already accessible; just remove the Verdaccio indirection)
+
+#### Panel Protocol (`src/main/panelProtocol.ts`)
+
+**Remove:**
+- `import { getVerdaccioUrl, isVerdaccioReady }` from verdaccioConfig
+- Verdaccio URL injection into panel protocol responses
+
+#### Context Template Partition Builder (`src/main/contextTemplate/partitionBuilder.ts`)
+
+**Remove:**
+- Worker panel creation via `panelManager.createTemplateBuilderWorker()`
+- Hidden WebContentsView lifecycle management
+
+**Replace:**
+- Git clone operations → server RPC call (server has full git access)
+
 #### Shell Services (`src/main/ipc/shellServices.ts`)
 
 **Remove:**
+- `import { clearAllCaches }` from cacheUtils
+- `import { getShellPagesForLauncher }` from aboutBuilder
 - `clearBuildCache()` implementation that calls `clearAllCaches()`
-- Verdaccio cache invalidation calls
 
 **Replace:**
-- Simple `serverClient.call("build", "gc", [...])` + optional full recompute
+- Cache clearing → `serverClient.call("build", "gc", [...])`
+- Shell page listing → `serverClient.call("build", "getAboutPages")`
+
+#### About Protocol (`src/main/nsAboutProtocol.ts` and `src/main/aboutProtocol.ts`)
+
+**Remove:**
+- `import { getShellPageKeys }` from aboutBuilder
+- Hardcoded `VALID_ABOUT_PAGES` list
+
+**Replace:**
+- `isValidAboutPage()` / `isValidShellPage()` → query build system for known about pages
+
+#### Shared Types (`src/shared/types.ts`)
+
+**Remove:**
+- `ShellPage` union type (`"model-provider-config" | "about" | "keyboard-shortcuts" | ...`)
+
+**Replace:**
+- `type ShellPage = string` (runtime-validated against workspace manifests)
 
 #### App Build Script (`build.mjs`)
 
@@ -675,27 +833,27 @@ Currently builds about pages with its own esbuild pipeline + `createNatstackReso
 - Main/preload/renderer/server bundle (STEP 2) — now builds 4 bundles: main, preload, renderer, server
 - Static asset copying (STEP 3)
 
-#### Resolve Plugin (`src/main/natstackResolvePlugin.ts`) — DELETE OR MOVE
-
-This file currently provides `createNatstackResolvePlugin()` for the V1 about builder and worker builder. V2 subsumes this functionality inside `src/server/buildV2/builder.ts`. After V1 removal, this file has no consumers.
-
-The resolution logic in `packages/typecheck/src/resolution.ts` (`parseNatstackImport`, `resolveExportSubpath`, `BUNDLE_CONDITIONS`) is **kept** — V2 uses it directly.
-
 #### Electron Builder Config (`electron-builder.yml`)
 
 **Remove:**
 - `extraResources` entries for `dist/shipped-panels`, `dist/about-pages`, `dist/builtin-workers`
+- `packages/**/*` from `files` list (no workspace content shipped with app)
+- `packages/**/*` from `asarUnpack` list
+
+The production app ships only: compiled bundles (`dist/`), runtime dependencies (`node_modules/`), and `package.json`. No workspace source. Any workspace is loaded at runtime and built on demand.
 
 #### Root Package Config (`package.json`)
 
 **Remove from dependencies:**
 - `verdaccio`
-- `@npmcli/arborist` (unless kept for external deps)
 - `pacote`
 
 **Remove from devDependencies:**
-- `@types/npmcli__arborist`
+- `@types/npmcli__arborist` (if Arborist also removed)
 - `@types/pacote`
+
+**Keep:**
+- `@npmcli/arborist` (still used for external dep installation in V2)
 
 **Update scripts:**
 - Remove `build:dist` script
@@ -715,55 +873,63 @@ The resolution logic in `packages/typecheck/src/resolution.ts` (`parseNatstackIm
 
 ## Part 6: Implementation Order
 
-Build the V2 system in parallel with V1. No V1 code is modified until V2 is proven working.
+Build the V2 system in parallel with V1. **No V1 code is modified until V2 is proven working end-to-end on the existing layout.**
 
 ### Sprint 1: Foundation (no V1 changes)
 
 1. **`packageGraph.ts`** — DAG discovery, topo sort, cycle detection
 2. **`effectiveVersion.ts`** — Content hashing, bottom-up EV computation
-3. **`buildStore.ts`** — Content-addressed store (put/get/has/gc)
+3. **`buildStore.ts`** — Content-addressed store (put/get/has/gc), keyed by build key (ev + options)
 4. **Tests** for all three: unit tests with fixture packages
 
 ### Sprint 2: Building (no V1 changes)
 
-5. **`externalDeps.ts`** — External dependency extraction, cached installation
+5. **`externalDeps.ts`** — Transitive external dependency collection, cached installation with atomic writes
 6. **`builder.ts`** — esbuild orchestration with resolve plugin, both strategies
 7. **`watcher.ts`** — File watcher → EV recompute → build trigger → ws:event notification
 8. **`index.ts`** — Public API + RPC service registration
 9. **Integration tests**: build a test panel end-to-end through V2
 
-### Sprint 3: Migrations
+### Sprint 3: V2 Validation (no V1 changes yet)
 
-10. **Move `packages/` → `workspace/packages/`** (git mv)
-11. **Rename `@natstack/*` → `@workspace/*`** (find-and-replace)
-12. **Move `src/about-pages/` → `workspace/about/`** (git mv + add package.json manifests)
-13. **Eliminate template-builder worker** (move logic to server process)
-14. **Update pnpm-workspace.yaml, tsconfig paths, vitest aliases**
-15. **Verify**: `pnpm install`, `pnpm type-check`, `pnpm test` all pass
+10. **Wire V2 into `coreServices.ts`** alongside V1 — dual-run both systems
+11. **Register "build" RPC service on `rpcServer.ts`**
+12. **End-to-end test on existing layout**: V2 builds all current panels/agents/about-pages correctly, file changes trigger rebuilds, headless server works
+13. **Verify build output parity**: V2 output matches V1 for the same source inputs
 
-### Sprint 4: Integration & Switchover
+### Sprint 4: Migrations (V2 proven, now restructure)
 
-16. **Register build service in `coreServices.ts`** — replace Verdaccio/watcher startup with `buildSystemV2.initialize()`
-17. **Add "build" RPC service to `rpcServer.ts`** — route build requests to V2
-18. **Wire Electron `panelBuilder.ts`** — replace direct builds with `serverClient.call("build", ...)`
-19. **Wire Electron `panelManager.ts`** — remove worker methods, update build calls
-20. **Wire `agentBuilder.ts`** — replace build logic with RPC calls
-21. **Wire `shellServices.ts`** — replace cache clearing with RPC gc call
-22. **End-to-end test**: app starts, panels build, agents build, file changes trigger rebuilds, headless server builds work
+14. **Move `packages/` → `workspace/packages/`** (git mv)
+15. **Rename `@natstack/*` → `@workspace/*`** (find-and-replace)
+16. **Move `src/about-pages/` → `workspace/about/`** (git mv + add package.json manifests)
+17. **Eliminate template-builder worker** (rewrite `partitionBuilder.ts` to use server RPC)
+18. **Dynamic about-page routing** (replace hardcoded `ShellPage` type + `SHELL_PAGE_META`)
+19. **Update pnpm-workspace.yaml, tsconfig paths, vitest aliases**
+20. **Verify**: `pnpm install`, `pnpm type-check`, `pnpm test` all pass
 
-### Sprint 5: Dead Code Removal
+### Sprint 5: Switchover
 
-23. **Delete V1 build system** (all files listed in Part 5)
-24. **Delete `build-dist.mjs`**
-25. **Delete `src/main/natstackResolvePlugin.ts`** (subsumed by V2)
-26. **Delete `src/main/verdaccioConfig.ts`** (no longer needed)
-27. **Clean up `build.mjs`** — remove package compilation step
-28. **Clean up `electron-builder.yml`** — remove extraResources
-29. **Clean up `package.json`** — remove Verdaccio/Arborist deps
-30. **Delete `packages/` directory** (already moved)
-31. **Delete `src/about-pages/`** (already moved)
-32. **Delete `src/builtin-workers/`** (already eliminated)
-33. **Replace `BUILD_SYSTEM.md`** with updated documentation
+21. **Wire Electron `panelBuilder.ts`** — replace direct builds with `serverClient.call("build", ...)`
+22. **Wire Electron `panelManager.ts`** — remove worker methods, update build calls
+23. **Wire `agentBuilder.ts`** — replace build logic with RPC calls
+24. **Wire `shellServices.ts`** — replace cache clearing with RPC gc call
+25. **Wire about protocol handlers** — replace hardcoded validation with build system queries
+26. **Remove V1 from `coreServices.ts`** — stop starting Verdaccio/NatstackPackageWatcher
+27. **End-to-end test**: app starts, panels build, agents build, about pages discovered dynamically, file changes trigger rebuilds, headless server works
+
+### Sprint 6: Dead Code Removal
+
+28. **Delete V1 build system** (all files listed in Part 5)
+29. **Delete `build-dist.mjs`**
+30. **Clean up `build.mjs`** — remove package compilation step
+31. **Clean up `electron-builder.yml`** — remove extraResources, remove `packages/**/*` from files/asarUnpack
+32. **Clean up `package.json`** — remove Verdaccio/pacote deps
+33. **Clean up `typecheck/service.ts`** — remove Verdaccio/package-store imports
+34. **Clean up `panelProtocol.ts`** — remove Verdaccio URL injection
+35. **Delete `packages/` directory** (already moved)
+36. **Delete `src/about-pages/`** (already moved)
+37. **Delete `src/builtin-workers/`** (already eliminated)
+38. **Replace `BUILD_SYSTEM.md`** with updated documentation
 
 ---
 
@@ -777,6 +943,15 @@ The `separate-server` architecture already moved all backend services (Verdaccio
 - Build progress streams over the existing WebSocket event channel
 - Single source of truth for build artifacts across multiple Electron windows (future)
 
+### Why ship zero workspace content with the app?
+
+The production app is a generic runtime. It opens a workspace path and builds everything on demand. This means:
+- No coupling between app version and workspace content
+- The test `workspace/` directory is just a development workspace, not part of the app
+- First launch builds everything from source (one-time cost; cached forever after)
+- Updates to workspace content never require an app update
+- Multiple workspaces can share the same app installation
+
 ### Why not keep Verdaccio for external deps?
 
 Verdaccio is ~1000 lines of embedded server code with version computation, change detection, publishing, caching, and file watching — all for serving our own packages to ourselves. The `separate-server` branch already decoupled it (URL-based access via `verdaccioConfig.ts`, RPC for version queries), but it's still a massive accidental complexity tax. External deps can use Arborist directly against the real npm registry.
@@ -786,12 +961,20 @@ Verdaccio is ~1000 lines of embedded server code with version computation, chang
 The `separate-server` branch introduced `createNatstackResolvePlugin()` and the `resolution.ts` module in `@natstack/typecheck`. This plugin-based approach is better than raw aliases because:
 - It reads `package.json` exports dynamically (handles all subpath patterns)
 - It uses the same `resolveExportSubpath()` + `BUNDLE_CONDITIONS` as the type checker (resolution agreement = no false type errors)
-- It handles conditional exports (browser/node/import/require) correctly
+- It handles conditional exports (nested condition objects like `{ "types": "...", "default": "..." }`) correctly via recursive resolution
 - V2 can reuse this logic directly instead of reinventing it
+
+### Why include build options in the store key?
+
+Same source with `unsafe: true` produces CJS/node output; without it, ESM/browser. Sourcemaps change bundle content. The store key must capture everything that affects output: `build_key = hash(ev, unsafe, sourcemap)`. The V1 system already tracked this via `computeOptionsSuffix()` — V2 makes it explicit in the store key.
+
+### Why collect transitive external deps?
+
+When internal packages are aliased (built from source), esbuild bundles their code directly. But their external deps still need to be installed — esbuild can't resolve `react-markdown` if it's not in node_modules. Since the top-level panel may not list these deps, V2 walks the package graph and unions all transitive externals.
 
 ### Why content-addressed storage instead of LRU cache?
 
-LRU caches require invalidation logic. Content-addressed stores don't — entries are immutable, keyed by their content. You never ask "is this entry still valid?" You ask "does an entry exist for this EV?" The answer is always correct by construction. GC is trivial: delete entries not referenced by any active panel.
+LRU caches require invalidation logic. Content-addressed stores don't — entries are immutable, keyed by their content. You never ask "is this entry still valid?" You ask "does an entry exist for this key?" The answer is always correct by construction. GC is trivial: delete entries not referenced by any active panel.
 
 ### Why per-package debouncing instead of global debouncing?
 
@@ -800,6 +983,8 @@ Global debouncing (current system: 500ms) means editing package A delays the reb
 ### What about TypeScript type checking?
 
 Type checking remains a separate concern. The V2 build system compiles and bundles; it does not type-check. The existing `TypeDefinitionService` and `runTypeCheck()` flow can be invoked separately after builds complete, or in parallel. This keeps builds fast (esbuild is fast; tsc is slow).
+
+After migration, typecheck reads types from `workspace/packages/` source. The `TypeDefinitionService` uses a `packagesDir` variable — just point it to the new location.
 
 ### What about the routing bridge?
 
@@ -812,3 +997,7 @@ The `separate-server` branch added `routingBridge.ts` in `@natstack/runtime` whi
 - `dist/server.mjs` — standalone headless, uses system better-sqlite3 from `server-native/`
 
 V2 code lives in `src/server/buildV2/` and gets bundled into both. No special handling needed.
+
+### Why eliminate workers entirely?
+
+Worker panels exist to run untrusted code in a sandboxed WebContentsView. The only current worker is `template-builder`, which clones git repos to OPFS. This doesn't need sandboxing — the server process already has full git access. Moving the logic to a server RPC method is simpler, faster (no WebContentsView startup overhead), and eliminates the entire worker build/lifecycle infrastructure (builtinWorkerBuilder, buildWorkerAsync, rebuildWorkerPanel, templateBuilderWorkers Set, worker panel state tracking).
