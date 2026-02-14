@@ -63,13 +63,6 @@ export function getPanelRepoArgs(panel: Panel): Record<string, RepoArgSpec> | un
 }
 
 /**
- * Get the unsafe mode setting from the current snapshot.
- */
-export function getPanelUnsafe(panel: Panel): boolean | string | undefined {
-  return getPanelOptions(panel).unsafe;
-}
-
-/**
  * Get the sourcemap setting from the current snapshot.
  */
 export function getPanelSourcemap(panel: Panel): boolean | undefined {
@@ -162,7 +155,6 @@ export const SOURCE_SCOPED_OPTIONS = [
  */
 export const PANEL_SCOPED_OPTIONS = [
   "env",
-  "unsafe",
   "name",
   "templateSpec",
 ] as const;
@@ -224,7 +216,6 @@ export function createNavigationSnapshot(
   // Only inherit panel-scoped options
   const inheritedOptions: Partial<SnapshotOptions> = {
     env: prevOptions.env,
-    unsafe: prevOptions.unsafe,
     name: prevOptions.name,
     templateSpec: prevOptions.templateSpec,
   };

@@ -101,20 +101,14 @@ export interface BaseBuildOptions {
  * Panel-specific build options.
  */
 export interface PanelBuildOptions extends BaseBuildOptions {
-  /**
-   * Run panel with full Node.js API access instead of browser sandbox.
-   * - `true`: Unsafe mode with default scoped filesystem
-   * - `string`: Unsafe mode with custom filesystem root
-   */
-  unsafe?: boolean | string;
+  // All panels run in browser sandbox mode
 }
 
 /**
  * Worker-specific build options.
  */
 export interface WorkerBuildOptions extends BaseBuildOptions {
-  /** Run worker with Node.js integration */
-  unsafe?: boolean | string;
+  // All workers run in browser sandbox mode
 }
 
 /**

@@ -67,8 +67,6 @@ export interface CreateChildOptions {
   gitRef?: string;
   /** Repo arguments required by the target manifest */
   repoArgs?: Record<string, RepoArgSpec>;
-  /** Worker-only: unsafe mode configuration */
-  unsafe?: boolean | string;
   /** App-only: emit inline sourcemaps (default: true). Set to false to omit sourcemaps. */
   sourcemap?: boolean;
   /** Optional zod schemas for validating event payloads from this child (runtime-only; not sent to main). */
@@ -168,11 +166,6 @@ export interface AppChildSpec extends ChildSpecBase {
  */
 export interface WorkerChildSpec extends ChildSpecBase {
   type: "worker";
-  /**
-   * Run worker with full Node.js API access instead of browser sandbox.
-   * Unsafe workers can use require(), process, child_process, etc.
-   */
-  unsafe?: boolean;
   /**
    * Repo arguments required by the target worker's manifest.
    * Keys must match the `repoArgs` array in the manifest.

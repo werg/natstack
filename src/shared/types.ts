@@ -61,7 +61,6 @@ export interface PanelManifest {
   injectHostThemeVariables?: boolean;
   template?: "html" | "react";
   runtime?: "panel" | "worker";
-  unsafe?: boolean | string;
 }
 
 export type ThemeMode = "light" | "dark" | "system";

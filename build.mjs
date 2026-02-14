@@ -139,19 +139,6 @@ const safePreloadConfig = {
   logOverride,
 };
 
-const unsafePreloadConfig = {
-  entryPoints: ["src/preload/unsafePreload.ts"],
-  bundle: true,
-  platform: "node",
-  target: "node20",
-  format: "cjs",
-  outfile: "dist/unsafePreload.cjs",
-  external: ["electron"],
-  sourcemap: isDev,
-  minify: !isDev,
-  logOverride,
-};
-
 const adblockPreloadConfig = {
   entryPoints: ["src/preload/adblockPreload.ts"],
   bundle: true,
@@ -379,7 +366,6 @@ async function build() {
     await esbuild.build(mainConfig);
     await esbuild.build(preloadConfig);
     await esbuild.build(safePreloadConfig);
-    await esbuild.build(unsafePreloadConfig);
     await esbuild.build(adblockPreloadConfig);
     // Clean stale renderer artifacts before ESM build (prevents accidental loading of old CJS bundle)
     try { fs.unlinkSync("dist/renderer.js"); } catch {}

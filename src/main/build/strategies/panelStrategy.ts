@@ -2,11 +2,11 @@
  * Panel Build Strategy
  *
  * Implements BuildStrategy for panel builds with browser-specific configuration:
- * - Platform: browser (node if unsafe)
+ * - Platform: browser
  * - Target: es2022
- * - Format: esm (cjs if unsafe)
- * - Code splitting (unless unsafe)
- * - fs/path shims for safe mode
+ * - Format: esm
+ * - Code splitting
+ * - fs/path shims
  * - React dedupe plugin
  * - ESM externals pinning
  * - HTML/CSS generation
@@ -663,14 +663,13 @@ export class PanelBuildStrategy
 {
   readonly kind = "panel" as const;
 
-  getPlatformConfig(options: PanelBuildOptions): PlatformConfig {
-    const unsafe = Boolean(options.unsafe);
+  getPlatformConfig(_options: PanelBuildOptions): PlatformConfig {
     return {
-      platform: unsafe ? "node" : "browser",
+      platform: "browser",
       target: "es2022",
-      format: unsafe ? "cjs" : "esm",
+      format: "esm",
       conditions: ["natstack-panel"],
-      splitting: !unsafe,
+      splitting: true,
     };
   }
 
@@ -732,15 +731,13 @@ export class PanelBuildStrategy
 
   getPlugins(
     ctx: BuildContext<PanelManifest>,
-    options: PanelBuildOptions
+    _options: PanelBuildOptions
   ): esbuild.Plugin[] {
     const plugins: esbuild.Plugin[] = [];
-    const unsafe = Boolean(options.unsafe);
 
-    if (!unsafe) {
-      plugins.push(createPanelFsShimPlugin(ctx.workspace.depsDir));
-      plugins.push(createPanelPathShimPlugin(getAppRoot()));
-    }
+    // Always provide fs/path shims for browser sandbox
+    plugins.push(createPanelFsShimPlugin(ctx.workspace.depsDir));
+    plugins.push(createPanelPathShimPlugin(getAppRoot()));
 
     // Dedupe React and Radix if using @natstack/react
     if (ctx.manifest.dependencies && "@natstack/react" in ctx.manifest.dependencies) {
@@ -783,35 +780,18 @@ export class PanelBuildStrategy
 
   getBannerJs(
     _ctx: BuildContext<PanelManifest>,
-    options: PanelBuildOptions
+    _options: PanelBuildOptions
   ): string {
-    const unsafe = Boolean(options.unsafe);
-
-    if (unsafe) {
-      const importMetaUrlShim =
-        'var __import_meta_url = require("url").pathToFileURL(__filename).href;';
-      return [
-        importMetaUrlShim,
-        generateNodeCompatibilityPatch(),
-        generateAsyncTrackingBanner(),
-        generateModuleMapBanner(),
-      ].join("\n");
-    }
-
     return [generateAsyncTrackingBanner(), generateModuleMapBanner()].join("\n");
   }
 
   getAdditionalEsbuildOptions(
     _ctx: BuildContext<PanelManifest>,
-    options: PanelBuildOptions
+    _options: PanelBuildOptions
   ): Partial<esbuild.BuildOptions> {
-    const unsafe = Boolean(options.unsafe);
-
     return {
       loader: PANEL_ASSET_LOADERS,
       assetNames: "assets/[name]-[hash]",
-      supported: unsafe ? { "dynamic-import": false } : undefined,
-      define: unsafe ? { "import.meta.url": "__import_meta_url" } : undefined,
     };
   }
 
@@ -821,7 +801,6 @@ export class PanelBuildStrategy
     options: PanelBuildOptions
   ): Promise<PanelArtifacts> {
     const { workspace, manifest, sourcePath, log } = ctx;
-    const unsafe = Boolean(options.unsafe);
 
     // Read bundle
     const bundlePath = path.join(workspace.buildDir, "bundle.js");
@@ -853,7 +832,6 @@ export class PanelBuildStrategy
 
     const html = this.resolveHtml(sourcePath, manifest.title, externals, {
       includeCss: Boolean(css),
-      unsafe,
     });
 
     log(`Build complete (${bundle.length} bytes JS)`);
@@ -869,20 +847,12 @@ export class PanelBuildStrategy
     };
   }
 
-  supportsShims(options: PanelBuildOptions): boolean {
-    return !options.unsafe;
+  supportsShims(_options: PanelBuildOptions): boolean {
+    return true;
   }
 
   computeOptionsSuffix(options: PanelBuildOptions): string {
     const parts: string[] = [];
-
-    if (options.unsafe) {
-      if (typeof options.unsafe === "string") {
-        parts.push(`unsafe:${options.unsafe}`);
-      } else {
-        parts.push("unsafe");
-      }
-    }
 
     if (options.sourcemap === false) {
       parts.push("nosm");
@@ -1108,7 +1078,7 @@ import ${JSON.stringify(relativeEntry)};
     sourcePath: string,
     title: string,
     externals?: Record<string, string>,
-    options: { includeCss?: boolean; unsafe?: boolean } = {}
+    options: { includeCss?: boolean } = {}
   ): string {
     const sourceHtmlPath = path.join(sourcePath, "index.html");
     if (fs.existsSync(sourceHtmlPath)) {
@@ -1137,7 +1107,6 @@ import ${JSON.stringify(relativeEntry)};
     const cssLink = options.includeCss
       ? `\n  <link rel=\"stylesheet\" href=\"./bundle.css\" />`
       : "";
-    const scriptType = options.unsafe ? "" : ' type="module"';
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -1155,7 +1124,7 @@ import ${JSON.stringify(relativeEntry)};
 </head>
 <body>
   <div id="root"></div>
-  <script${scriptType} src="./bundle.js"></script>
+  <script type="module" src="./bundle.js"></script>
 </body>
 </html>`;
   }

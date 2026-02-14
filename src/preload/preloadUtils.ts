@@ -421,38 +421,6 @@ export function exposeGlobalsViaContextBridge(
   }
 }
 
-/**
- * Set globals directly on globalThis for unsafe preloads (contextIsolation: false).
- * Also sets __natstackFsRoot if scopePath is provided.
- */
-export function setUnsafeGlobals(
-  config: ParsedPreloadConfig,
-  transport: ReturnType<typeof createTransport>
-): void {
-  globalThis.__natstackId = config.panelId;
-  globalThis.__natstackContextId = config.contextId;
-  globalThis.__natstackKind = config.kind;
-  globalThis.__natstackParentId = config.parentId;
-  globalThis.__natstackInitialTheme = config.initialTheme;
-  globalThis.__natstackGitConfig = config.gitConfig as unknown as typeof globalThis.__natstackGitConfig;
-  globalThis.__natstackPubSubConfig = config.pubsubConfig as unknown as typeof globalThis.__natstackPubSubConfig;
-  globalThis.__natstackEnv = config.syntheticEnv;
-  globalThis.__natstackStateArgs = config.stateArgs;
-  globalThis.__natstackTransport = transport;
-
-  // Set filesystem scope root for unsafe panels/workers
-  if (config.scopePath) {
-    Object.defineProperty(globalThis, "__natstackFsRoot", {
-      value: config.scopePath,
-      writable: false,
-      enumerable: true,
-      configurable: false,
-    });
-  }
-
-  // Merge synthetic env with real process.env
-  Object.assign(process.env, config.syntheticEnv);
-}
 
 /**
  * Set up listener for stateArgs updates from main process via WS transport.
@@ -504,28 +472,3 @@ export function initSafePreload(contextBridge: Electron.ContextBridge): void {
   setupStateArgsListener(transport);
 }
 
-/**
- * Initialize an unsafe preload (contextIsolation: false, nodeIntegration: true).
- * Parses config, creates WS transport, sets globals directly.
- */
-export function initUnsafePreload(): void {
-  const config = parsePreloadConfig();
-  const transport = createTransport(config.panelId, config);
-
-  // Create server transport if server params are available (main mode)
-  const serverPort = parseServerPort();
-  const serverToken = parseServerToken();
-  if (serverPort && serverToken) {
-    globalThis.__natstackServerTransport = createWsTransport({
-      viewId: config.panelId,
-      wsPort: serverPort,
-      authToken: serverToken,
-      callerKind: config.kind,
-    });
-  }
-
-  setUnsafeGlobals(config, transport);
-  setupDevToolsShortcut(config, transport);
-  setupHistoryIntegration(config, transport);
-  setupStateArgsListener(transport);
-}

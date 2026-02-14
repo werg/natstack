@@ -14,7 +14,6 @@ import {
   getPanelOptions,
   getPanelEnv,
   getPanelContextId,
-  getPanelUnsafe,
   createSnapshot,
   createNavigationSnapshot,
   canGoBack,
@@ -26,7 +25,7 @@ import {
 } from "./panelTypes.js";
 import { validateStateArgs } from "./stateArgsValidator.js";
 import type { StateArgsValue } from "../shared/stateArgs.js";
-import { getActiveWorkspace, getContextScopePath } from "./paths.js";
+import { getActiveWorkspace } from "./paths.js";
 import type { ServerInfo } from "./serverInfo.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
 import * as SharedPanel from "../shared/types.js";
@@ -57,12 +56,10 @@ import {
   // Context ID functions (template-based system)
   createContextId,
   deriveInstanceIdFromPanelId,
-  createUnsafeContextId,
   // Template context functions
   resolveTemplate,
   computeImmutableSpec,
   ensureContextPartitionInitialized,
-  type ContextMode,
 } from "./contextTemplate/index.js";
 import { buildBuiltinWorker } from "./builtinWorkerBuilder.js";
 import { logMemorySnapshot } from "./memoryMonitor.js";
@@ -75,7 +72,6 @@ type PanelCreateOptions = {
   env?: Record<string, string>;
   gitRef?: string;
   repoArgs?: Record<string, SharedPanel.RepoArgSpec>;
-  unsafe?: boolean | string;
   sourcemap?: boolean;
   /**
    * Git spec for context template (e.g., "contexts/default").
@@ -497,18 +493,7 @@ export class PanelManager {
       }
     }
 
-    // Calculate and add scope path for unsafe panels/workers
-    const unsafeFlag = panel ? getPanelUnsafe(panel) : undefined;
-    if (unsafeFlag) {
-      const workspace = getActiveWorkspace();
-      if (workspace) {
-        const scopePath =
-          typeof unsafeFlag === "string"
-            ? unsafeFlag
-            : getContextScopePath(workspace.config.id, contextId ?? panelId);
-        additionalArgs.push(`--natstack-scope-path=${scopePath}`);
-      }
-    }
+    // Note: scope path is no longer needed - all panels run in safe mode
   }
 
   /**
@@ -573,7 +558,6 @@ export class PanelManager {
     } else if (type === "worker") {
       const additionalArgs = await this.buildPreloadArgs(panelId, "worker", "worker", contextId ?? "");
       await this.appendPanelEnvArgs(additionalArgs, panelId, panel, contextId);
-      const unsafeFlag = panel ? getPanelUnsafe(panel) : undefined;
 
       this.viewManager.createView({
         id: panelId,
@@ -583,7 +567,6 @@ export class PanelManager {
         parentId: parentId ?? undefined,
         injectHostThemeVariables: true,
         additionalArguments: additionalArgs,
-        unsafe: unsafeFlag,
       });
     } else {
       // Derive callerKind from panel type: shell panels authenticate as "shell"
@@ -591,7 +574,6 @@ export class PanelManager {
       const callerKind = panelType === "shell" ? "shell" as const : "panel" as const;
       const additionalArgs = await this.buildPreloadArgs(panelId, "panel", callerKind, contextId ?? "");
       await this.appendPanelEnvArgs(additionalArgs, panelId, panel, contextId);
-      const unsafeFlag = panel ? getPanelUnsafe(panel) : undefined;
 
       const view = this.viewManager.createView({
         id: panelId,
@@ -601,7 +583,6 @@ export class PanelManager {
         parentId: parentId ?? undefined,
         injectHostThemeVariables: true, // App panels always inject theme variables
         additionalArguments: additionalArgs,
-        unsafe: unsafeFlag,
       });
 
       // CDP registration, state tracking, and content indexing are for app panels, not shell pages
@@ -806,7 +787,7 @@ export class PanelManager {
       // ns:// - New navigation protocol (middle/ctrl-click always creates child)
       if (url.startsWith("ns:")) {
         try {
-          const { source, gitRef, templateSpec, contextId, repoArgs, env, stateArgs, name, focus, unsafe } = parseNsUrl(url);
+          const { source, gitRef, templateSpec, contextId, repoArgs, env, stateArgs, name, focus } = parseNsUrl(url);
           this.createPanel(
             panelId,
             source,
@@ -818,7 +799,6 @@ export class PanelManager {
               env,
               name,
               focus,
-              unsafe,
               replace: false, // Middle/ctrl-click always creates child
             },
             stateArgs
@@ -872,7 +852,7 @@ export class PanelManager {
       if (url.startsWith("ns:")) {
         event.preventDefault();
         try {
-          const { source, action, gitRef, templateSpec, contextId, repoArgs, env, stateArgs, name, focus, unsafe } = parseNsUrl(url);
+          const { source, action, gitRef, templateSpec, contextId, repoArgs, env, stateArgs, name, focus } = parseNsUrl(url);
 
           // Determine the operation:
           // 1. action=child → create child panel under caller
@@ -894,7 +874,6 @@ export class PanelManager {
                 env,
                 name,
                 focus,
-                unsafe,
                 replace: false,
               },
               stateArgs
@@ -912,7 +891,6 @@ export class PanelManager {
                 env,
                 name,
                 focus,
-                unsafe,
                 replace: true,
               },
               stateArgs
@@ -932,7 +910,6 @@ export class PanelManager {
                 env,
                 name,
                 focus,
-                unsafe,
                 replace: true,
               },
               stateArgs
@@ -1066,38 +1043,13 @@ export class PanelManager {
   }
 
   /**
-   * Resolve context ID for a panel based on template spec and safety mode.
-   *
-   * Safe panels: Use the template system with OPFS storage.
-   * Unsafe panels: Do NOT participate in templates - get a simple context ID.
-   *
-   * @throws Error if an unsafe panel tries to use a non-default templateSpec
+   * Resolve context ID for a panel based on template spec.
+   * All panels use the template system with OPFS storage.
    */
   private async resolveContext(
     panelId: string,
-    templateSpec: string,
-    isUnsafe: boolean
+    templateSpec: string
   ): Promise<string> {
-    // Unsafe panels cannot use the template system
-    if (isUnsafe) {
-      // Check if a non-default templateSpec was explicitly provided
-      // We allow the default because the caller might not know if it's safe/unsafe
-      if (templateSpec !== DEFAULT_TEMPLATE_SPEC) {
-        throw new Error(
-          `Unsafe panels cannot use context templates. ` +
-          `Panel "${panelId}" specified templateSpec "${templateSpec}" but unsafe mode does not support templates. ` +
-          `Remove the templateSpec or use safe mode.`
-        );
-      }
-
-      // Create a simple context ID without the template system
-      const instanceId = deriveInstanceIdFromPanelId(panelId);
-      const contextId = createUnsafeContextId(instanceId);
-      log.verbose(` Created unsafe context ID: ${contextId}`);
-      return contextId;
-    }
-
-    // Safe panels use the template system
     return this.resolveTemplateContext(panelId, templateSpec);
   }
 
@@ -1289,8 +1241,6 @@ export class PanelManager {
     const { manifest, relativePath, parent, options, isRoot, addAsRoot, replacePanel, stateArgs } = params;
 
     const isWorker = manifest.type === "worker";
-    // Determine unsafe mode from manifest or options
-    const unsafeFlag = options?.unsafe ?? manifest.unsafe;
 
     // Validate repoArgs: caller must provide exactly the args declared in manifest
     const declaredArgs = manifest.repoArgs ?? [];
@@ -1351,14 +1301,13 @@ export class PanelManager {
     this.reservedPanelIds.add(panelId);
 
     // Create auth tokens before resolveContext — it needs a git token via getGitTokenForPanel
-    const isUnsafe = Boolean(unsafeFlag);
     const callerKind = isWorker ? "worker" as const : "panel" as const;
     getTokenManager().createToken(panelId, callerKind);              // Electron WS auth
 
     try {
       await this.serverInfo.createPanelToken(panelId, callerKind);     // Server git/pubsub auth
       // Resolve context ID: use provided contextId if available, otherwise generate from template
-      const contextId = options.contextId ?? await this.resolveContext(panelId, options.templateSpec, isUnsafe);
+      const contextId = options.contextId ?? await this.resolveContext(panelId, options.templateSpec);
 
       const panelEnv = await this.buildPanelEnv(panelId, options?.env, {
         sourceRepo: relativePath,
@@ -1374,7 +1323,6 @@ export class PanelManager {
         contextId,
         {
           env: panelEnv,
-          unsafe: options.unsafe ?? manifest.unsafe,
           gitRef: options.gitRef,
           repoArgs: options.repoArgs,
           sourcemap: options.sourcemap,
@@ -1860,14 +1808,12 @@ export class PanelManager {
     panel.history = panel.history.slice(0, panel.historyIndex + 1);
 
     // Create new snapshot with proper option inheritance
-    // Shell targets need unsafe: "/" to override any inherited unsafe value
     const newSnapshot = createNavigationSnapshot(
       panel,
       source,
       targetType,
       {
         env: options?.env,
-        ...(targetType === "shell" ? { unsafe: "/" } : {}),
       },
       validatedStateArgs
     );
@@ -2454,14 +2400,12 @@ export class PanelManager {
       throw new Error(`A panel with id "${panelId}" is already running`);
     }
 
-    // Shell panels use unsafe mode for full service access
     const templateSpec = options?.templateSpec ?? DEFAULT_TEMPLATE_SPEC;
-    const contextId = await this.resolveContext(panelId, templateSpec, true);
+    const contextId = await this.resolveContext(panelId, templateSpec);
 
     // Create the initial snapshot for the shell panel
     const initialSnapshot = createSnapshot(`shell:${page}`, "shell", contextId, {
       env: options?.env,
-      unsafe: "/", // Shell panels have full filesystem access
       templateSpec,
     }, stateArgs);
     initialSnapshot.page = page;
@@ -2677,16 +2621,11 @@ export class PanelManager {
 
     const title = getShellPageTitle(page);
 
-    // Shell panels use unsafe mode for full service access
-    // Multi-instance pages get unique context IDs
-    // NOTE: Root shell panels use legacy contextId format until template system is fully integrated
-    const contextId = isMultiInstance
-      ? `unsafe_auto_${panelId.replace(":", "_")}`
-      : `unsafe_auto_shell~${page}`;
+    // Shell panels use the template system like app panels
+    const contextId = await this.resolveContext(panelId, DEFAULT_TEMPLATE_SPEC);
 
     // Create the initial snapshot for the shell panel
     const initialSnapshot = createSnapshot(`shell:${page}`, "shell", contextId, {
-      unsafe: "/", // Shell panels have full filesystem access
       templateSpec: DEFAULT_TEMPLATE_SPEC,
     });
     initialSnapshot.page = page;
@@ -2826,14 +2765,13 @@ export class PanelManager {
           };
           this.notifyPanelTreeUpdate();
         },
-        { unsafe: getPanelUnsafe(worker) }
+        {}
       );
 
       if (result.success && result.bundle) {
         // Generate worker host HTML that executes the bundle
         const workerHostHtml = this.generateWorkerHostHtml(
-          result.manifest?.title ?? worker.title,
-          Boolean(getPanelUnsafe(worker))
+          result.manifest?.title ?? worker.title
         );
 
         // Store worker content for protocol serving
@@ -2884,7 +2822,7 @@ export class PanelManager {
   /**
    * Generate worker host HTML that loads and executes the worker bundle.
    */
-  private generateWorkerHostHtml(title: string, unsafe: boolean): string {
+  private generateWorkerHostHtml(title: string): string {
     // Escape HTML special characters to prevent XSS
     const escapeHtml = (str: string) =>
       str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -2963,8 +2901,6 @@ export class PanelManager {
     const statusText = document.getElementById("status-text");
     const statusIndicator = document.getElementById("status-indicator");
     const consoleEl = document.getElementById("console");
-    const isUnsafe = ${unsafe ? "true" : "false"};
-
     // Get CSS variable values for status colors
     const rootStyles = getComputedStyle(document.documentElement);
     const statusColors = {
@@ -3008,7 +2944,7 @@ export class PanelManager {
 
     setStatus("running", ${jsSafeTitle});
   </script>
-  ${unsafe ? '<script src="./bundle.js"></script>' : '<script type="module" src="./bundle.js"></script>'}
+  <script type="module" src="./bundle.js"></script>
 </body>
 </html>`;
   }
@@ -3065,7 +3001,7 @@ export class PanelManager {
           };
           this.notifyPanelTreeUpdate();
         },
-        { sourcemap: options?.sourcemap !== false, unsafe: getPanelUnsafe(panel) }
+        { sourcemap: options?.sourcemap !== false }
       );
 
       if (result.success && result.bundle && result.html) {
@@ -4175,7 +4111,7 @@ export class PanelManager {
     const bundle = await buildBuiltinWorker("template-builder");
 
     // Generate worker host HTML
-    const workerHostHtml = this.generateWorkerHostHtml("Template Builder", false);
+    const workerHostHtml = this.generateWorkerHostHtml("Template Builder");
 
     // Store for protocol serving
     const htmlUrl = storeProtocolPanel(workerId, {
@@ -4196,7 +4132,6 @@ export class PanelManager {
       url: srcUrl.toString(),
       injectHostThemeVariables: false,
       additionalArguments: additionalArgs,
-      unsafe: false,
     });
 
     // Track this worker

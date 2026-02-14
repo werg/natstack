@@ -16,7 +16,6 @@ import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("AboutBuilder");
 import {
-  generateNodeCompatibilityPatch,
   generateAsyncTrackingBanner,
   generateModuleMapBanner,
 } from "./panelBuilder.js";
@@ -222,10 +221,8 @@ export class AboutBuilder {
       const bundlePath = path.join(outdir, "bundle.js");
 
       // Build with esbuild
-      // Shell pages use unsafe mode (nodeIntegration) for full service access
-      // Generate compatibility banners for hybrid browser/Node.js environment
+      // Shell pages run in browser sandbox with service access via RPC
       const bannerJs = [
-        generateNodeCompatibilityPatch(),
         generateAsyncTrackingBanner(),
         generateModuleMapBanner(),
       ].join("\n");
@@ -235,13 +232,13 @@ export class AboutBuilder {
       await esbuild.build({
         entryPoints: [entryPath],
         bundle: true,
-        platform: "node", // Node platform for nodeIntegration
+        platform: "browser",
         target: "es2022",
         conditions: ["natstack-panel"],
         outfile: bundlePath,
         sourcemap: "inline",
         keepNames: true,
-        format: "cjs", // CJS for nodeIntegration
+        format: "esm",
         absWorkingDir: pageDir,
         nodePaths: [appNodeModules],
         // Disable tsconfig paths - the root tsconfig maps @natstack/runtime to src/index.ts
@@ -257,9 +254,7 @@ export class AboutBuilder {
         // JSX configuration for React components
         jsx: "automatic",
         jsxImportSource: "react",
-        // Don't transform dynamic imports for shell pages
-        supported: { "dynamic-import": false },
-        // Compatibility banners for hybrid browser/Node.js environment
+        // Banners for async tracking and module map
         banner: { js: bannerJs },
         metafile: true,
         plugins: [
@@ -443,7 +438,7 @@ export class AboutBuilder {
 </head>
 <body>
   <div id="root"></div>
-  <script src="./bundle.js"></script>
+  <script type="module" src="./bundle.js"></script>
 </body>
 </html>`;
   }

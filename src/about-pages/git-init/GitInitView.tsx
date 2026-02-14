@@ -10,13 +10,9 @@ import { useMemo, useCallback, useState, useEffect } from "react";
 import { Flex, Button, Tooltip, Callout, Text, Code, Card } from "@radix-ui/themes";
 import { ExclamationTriangleIcon, CheckCircledIcon } from "@radix-ui/react-icons";
 import { GitStatusView, useGitStatus, type GitNotification } from "@natstack/git-ui";
-import { GitClient } from "@natstack/git";
-import * as fs from "fs/promises";
-import { execFile } from "child_process";
-import { promisify } from "util";
+import type { GitClient } from "@natstack/git";
 import type { ThemeAppearance } from "@natstack/runtime";
-
-const execFileAsync = promisify(execFile);
+import { createServiceGitClient, createServiceFs } from "../shared/serviceAdapters";
 
 export interface GitInitViewProps {
   panelId: string;
@@ -33,11 +29,12 @@ export function GitInitView({ repoPath, onContinueBuild, onNotify, theme }: GitI
   const [initError, setInitError] = useState<string | null>(null);
   const [isContinuing, setIsContinuing] = useState(false);
 
-  // GitClient for showing git UI after initialization
+  // Service-backed GitClient and fs (routed through main process RPC)
   const gitClient = useMemo(
-    () => new GitClient(fs, { serverUrl: "", token: "" }),
+    () => createServiceGitClient() as unknown as GitClient,
     []
   );
+  const serviceFs = useMemo(() => createServiceFs(repoPath), [repoPath]);
 
   // Use git status hook to track if repo is clean after initialization
   const { stagedFiles, unstagedFiles, loading, initialized } = useGitStatus();
@@ -60,16 +57,15 @@ export function GitInitView({ repoPath, onContinueBuild, onNotify, theme }: GitI
     setInitError(null);
 
     try {
-      // Run git init in the panel directory
-      await execFileAsync("git", ["init"], { cwd: repoPath });
+      // Run git init via service call
+      await gitClient.init(repoPath);
 
-      // Verify it worked by checking for .git directory
-      const gitDir = `${repoPath}/.git`;
-      try {
-        await fs.access(gitDir);
+      // Verify it worked via service call
+      const isRepo = await gitClient.isRepo(repoPath);
+      if (isRepo) {
         setIsInitialized(true);
-      } catch {
-        throw new Error("Git initialization succeeded but .git directory not found");
+      } else {
+        throw new Error("Git initialization succeeded but repository not found");
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -77,7 +73,7 @@ export function GitInitView({ repoPath, onContinueBuild, onNotify, theme }: GitI
     } finally {
       setIsInitializing(false);
     }
-  }, [repoPath]);
+  }, [repoPath, gitClient]);
 
   const handleContinueBuild = useCallback(() => {
     setIsContinuing(true);
@@ -179,7 +175,7 @@ export function GitInitView({ repoPath, onContinueBuild, onNotify, theme }: GitI
           // Show git UI after initialization
           <GitStatusView
             dir={repoPath}
-            fs={fs}
+            fs={serviceFs}
             gitClient={gitClient}
             onNotify={handleNotify}
             theme={theme}

@@ -38,7 +38,6 @@ export {
   getPanelEnv,
   getPanelGitRef,
   getPanelRepoArgs,
-  getPanelUnsafe,
   getPanelSourcemap,
   getPanelContextId,
   canGoBack,

@@ -9,10 +9,10 @@ import { useMemo, useCallback, useState, useEffect, useRef } from "react";
 import { Flex, Button, Tooltip, Callout } from "@radix-ui/themes";
 import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import { GitStatusView, useGitStatus, type GitNotification } from "@natstack/git-ui";
-import { GitClient } from "@natstack/git";
+import type { GitClient } from "@natstack/git";
 import { ai } from "@natstack/ai";
-import * as fs from "fs/promises";
 import type { ThemeAppearance } from "@natstack/runtime";
+import { createServiceGitClient, createServiceFs } from "../shared/serviceAdapters";
 
 export interface DirtyRepoViewProps {
   panelId: string;
@@ -24,14 +24,12 @@ export interface DirtyRepoViewProps {
 }
 
 export function DirtyRepoView({ repoPath, onRetryBuild, onNotify, theme }: DirtyRepoViewProps) {
-  // Create GitClient with direct Node.js fs access.
-  // Note: Empty serverUrl/token means remote operations (push/pull/fetch) are unavailable.
-  // This is intentional - DirtyRepoView is for local operations only (stage, commit, discard).
-  // Remote operations would fail with auth errors if attempted.
+  // Service-backed GitClient and fs (routed through main process RPC)
   const gitClient = useMemo(
-    () => new GitClient(fs, { serverUrl: "", token: "" }),
+    () => createServiceGitClient() as unknown as GitClient,
     []
   );
+  const serviceFs = useMemo(() => createServiceFs(repoPath), [repoPath]);
   const [isRetrying, setIsRetrying] = useState(false);
   const hasAutoRetried = useRef(false);
 
@@ -137,7 +135,7 @@ Respond with ONLY the commit message, no additional text or formatting.`;
       <Flex direction="column" style={{ flex: 1, minHeight: 0 }}>
         <GitStatusView
           dir={repoPath}
-          fs={fs}
+          fs={serviceFs}
           gitClient={gitClient}
           onNotify={handleNotify}
           theme={theme}

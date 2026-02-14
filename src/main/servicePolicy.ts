@@ -111,8 +111,8 @@ export const SERVICE_POLICIES: Record<string, ServicePolicy> = {
     description: "Verdaccio registry queries",
   },
   git: {
-    allowed: ["server"],
-    description: "Git server queries",
+    allowed: ["shell", "panel", "worker", "server"],
+    description: "Git operations and scoped filesystem access for panels",
   },
 };
 

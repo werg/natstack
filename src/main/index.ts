@@ -50,6 +50,7 @@ import { handleEventsService } from "./services/eventsService.js";
 import { setupTestApi } from "./testApi.js";
 import { getAdBlockManager } from "./adblock/index.js";
 import { handleAdBlockServiceCall } from "./ipc/adblockHandlers.js";
+import { handleGitServiceCall } from "./ipc/gitServiceHandler.js";
 import { startMemoryMonitor } from "./memoryMonitor.js";
 import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
 import { createServerClient, type ServerClient } from "./serverClient.js";
@@ -345,6 +346,9 @@ app.on("ready", async () => {
   dispatcher.register("events", handleEventsService);
   dispatcher.register("adblock", async (_ctx, serviceMethod, serviceArgs) => {
     return handleAdBlockServiceCall(serviceMethod, serviceArgs as unknown[]);
+  });
+  dispatcher.register("git", async (ctx, serviceMethod, serviceArgs) => {
+    return handleGitServiceCall(ctx, serviceMethod, serviceArgs as unknown[]);
   });
   setShellServicesAppMode(appMode);
 
