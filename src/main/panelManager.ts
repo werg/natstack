@@ -27,9 +27,9 @@ import {
 import { validateStateArgs } from "./stateArgsValidator.js";
 import type { StateArgsValue } from "../shared/stateArgs.js";
 import { getActiveWorkspace, getContextScopePath } from "./paths.js";
-import type { GitServer } from "./gitServer.js";
+import type { ServerInfo } from "./serverInfo.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
-import * as SharedPanel from "../shared/ipc/types.js";
+import * as SharedPanel from "../shared/types.js";
 import { getClaudeCodeConversationManager } from "./ai/claudeCodeConversationManager.js";
 import {
   storeProtocolPanel,
@@ -37,7 +37,7 @@ import {
   isProtocolPanel,
 } from "./panelProtocol.js";
 import { getCdpServer } from "./cdpServer.js";
-import { getPubSubServer } from "./pubsubServer.js";
+// getPubSubServer no longer imported — pubsub config comes via ServerInfo
 import { getTokenManager } from "./tokenManager.js";
 import type { ViewManager } from "./viewManager.js";
 import { parseNsUrl, type NsAction } from "./nsProtocol.js";
@@ -118,8 +118,10 @@ export class PanelManager {
   private focusedPanelId: string | null = null;
   private currentTheme: "light" | "dark" = nativeTheme.shouldUseDarkColors ? "dark" : "light";
   private panelsRoot: string;
-  private gitServer: GitServer;
+  private serverInfo: ServerInfo;
   private pendingBrowserNavigations: Map<string, { url: string; index: number }> = new Map();
+  private rpcServer: import("../server/rpcServer.js").RpcServer | null = null;
+  private rpcPort: number | null = null;
 
   // Debounce state for panel tree updates
   private treeUpdatePending = false;
@@ -131,11 +133,21 @@ export class PanelManager {
   private readonly MAX_CRASHES = 3;
   private readonly CRASH_WINDOW_MS = 60000; // 1 minute
 
-  constructor(gitServer: GitServer) {
-    this.gitServer = gitServer;
+  constructor(serverInfo: ServerInfo) {
+    this.serverInfo = serverInfo;
     const workspace = getActiveWorkspace();
     this.panelsRoot = workspace?.path ?? path.resolve(process.cwd());
     this.builder = new PanelBuilder();
+  }
+
+  /** Set the RPC server for WS-based communication */
+  setRpcServer(server: import("../server/rpcServer.js").RpcServer): void {
+    this.rpcServer = server;
+  }
+
+  /** Set the RPC server port for passing to panel preloads */
+  setRpcPort(port: number): void {
+    this.rpcPort = port;
   }
 
   /**
@@ -153,13 +165,10 @@ export class PanelManager {
     // Try to load existing panel tree from database first
     this.initializePanelTree().catch((error) => {
       console.error("[PanelManager] Failed to initialize panel tree:", error);
-      const shellContents = vm.getShellWebContents();
-      if (!shellContents.isDestroyed()) {
-        shellContents.send("panel:initialization-error", {
-          path: "",
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+      eventService.emit("panel-initialization-error", {
+        path: "",
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
   }
 
@@ -289,8 +298,10 @@ export class PanelManager {
         panel.children = panel.children.filter((c) => !persistence.isArchived(c.id));
       }
 
-      // Archive childless shell panels
-      if (getPanelType(panel) === "shell" && panel.children.length === 0) {
+      // Archive childless shell panels (except blocking pages like dirty-repo/git-init
+      // which represent real panels navigated in-place for git resolution)
+      const shellPage = getPanelType(panel) === "shell" ? getShellPage(panel) : undefined;
+      if (shellPage && shellPage !== "dirty-repo" && shellPage !== "git-init" && panel.children.length === 0) {
         log.verbose(` Archiving childless shell panel: ${panel.id}`);
         try {
           persistence.archivePanel(panel.id);
@@ -314,7 +325,6 @@ export class PanelManager {
     // Clear accumulated maps to prevent memory leaks
     this.crashHistory.clear();
     this.pendingBrowserNavigations.clear();
-    this.pendingAuthTokens.clear();
     this.browserStateCleanup.clear();
     this.linkInterceptionHandlers.clear();
     this.contentLoadHandlers.clear();
@@ -344,7 +354,7 @@ export class PanelManager {
         } else if (panelType === "browser") {
           // Browser panel - can create view directly
           const browserUrl = getBrowserResolvedUrl(panel) ?? getPanelSource(panel);
-          this.createViewForPanel(panel.id, browserUrl, "browser", getPanelContextId(panel));
+          void this.createViewForPanel(panel.id, browserUrl, "browser", getPanelContextId(panel));
         } else if (panelType === "shell") {
           // Shell panel - can create view directly using about protocol
           void this.restoreShellPanel(panel);
@@ -367,11 +377,6 @@ export class PanelManager {
    */
   private markPanelUnloaded(panel: Panel): void {
     const buildState = panel.artifacts?.buildState;
-    // Keep dirty and not-git-repo states - these indicate repo state issues that need user action
-    // Error states should NOT be preserved - they should rebuild to pick up fixes
-    if (buildState === "dirty" || buildState === "not-git-repo") {
-      return;
-    }
 
     const hasBuildArtifacts = Boolean(panel.artifacts?.htmlPath || panel.artifacts?.bundlePath);
     if (buildState === "pending" && !hasBuildArtifacts) {
@@ -408,8 +413,8 @@ export class PanelManager {
       const partition = `persist:${getPanelContextId(panel)}`;
       await registerAboutProtocolForPartition(partition);
 
-      // Create the view
-      this.createViewForShellPanel(panel, url);
+      // Create the view (unified code path)
+      await this.createViewForPanel(panel.id, url, "panel", getPanelContextId(panel));
 
       // Mark as ready and persist
       panel.artifacts = { buildState: "ready" };
@@ -437,6 +442,76 @@ export class PanelManager {
   }
 
   /**
+   * Build the common preload arguments shared by all non-browser views
+   * (panels, workers, and shell panels).
+   */
+  private async buildPreloadArgs(
+    panelId: string,
+    kind: "panel" | "worker",
+    callerKind: "panel" | "worker" | "shell",
+    contextId: string,
+  ): Promise<string[]> {
+    const authToken = getTokenManager().ensureToken(panelId, callerKind);
+    const serverToken = await this.serverInfo.ensurePanelToken(panelId, callerKind);
+    return [
+      `--natstack-panel-id=${panelId}`,
+      `--natstack-auth-token=${authToken}`,
+      `--natstack-theme=${this.currentTheme}`,
+      `--natstack-kind=${kind}`,
+      `--natstack-context-id=${contextId}`,
+      ...(this.rpcPort ? [`--natstack-ws-port=${this.rpcPort}`] : []),
+      `--natstack-server-port=${this.serverInfo.rpcPort}`,
+      `--natstack-server-token=${serverToken}`,
+    ];
+  }
+
+  /**
+   * Append env, stateArgs, and scopePath arguments to a preload args array.
+   * Shared by the panel and worker code paths in createViewForPanel.
+   */
+  private async appendPanelEnvArgs(
+    additionalArgs: string[],
+    panelId: string,
+    panel: Panel | undefined,
+    contextId: string | undefined,
+  ): Promise<void> {
+    // Refresh system tokens (pubsub, git) in case they're stale from a previous session
+    const panelEnv = panel ? await this.refreshEnvTokens(panelId, getPanelEnv(panel)) : undefined;
+    if (panelEnv && Object.keys(panelEnv).length > 0) {
+      try {
+        const encodedEnv = Buffer.from(JSON.stringify(panelEnv), "utf-8").toString("base64");
+        additionalArgs.push(`--natstack-panel-env=${encodedEnv}`);
+      } catch (error) {
+        console.error(`[PanelManager] Failed to encode env for ${panelId}`, error);
+      }
+    }
+
+    // Add stateArgs if available (from current snapshot)
+    const stateArgs = panel ? getPanelStateArgs(panel) : undefined;
+    if (stateArgs && Object.keys(stateArgs).length > 0) {
+      try {
+        const encodedStateArgs = Buffer.from(JSON.stringify(stateArgs), "utf-8").toString("base64");
+        additionalArgs.push(`--natstack-state-args=${encodedStateArgs}`);
+      } catch (error) {
+        console.error(`[PanelManager] Failed to encode stateArgs for ${panelId}`, error);
+      }
+    }
+
+    // Calculate and add scope path for unsafe panels/workers
+    const unsafeFlag = panel ? getPanelUnsafe(panel) : undefined;
+    if (unsafeFlag) {
+      const workspace = getActiveWorkspace();
+      if (workspace) {
+        const scopePath =
+          typeof unsafeFlag === "string"
+            ? unsafeFlag
+            : getContextScopePath(workspace.config.id, contextId ?? panelId);
+        additionalArgs.push(`--natstack-scope-path=${scopePath}`);
+      }
+    }
+  }
+
+  /**
    * Create a WebContentsView for a panel or browser.
    * Called when panel build is ready or browser is created.
    * @param panelId - The panel's tree ID
@@ -445,7 +520,7 @@ export class PanelManager {
    * @param contextId - The context ID for partition (required for panel/worker, ignored for browser)
    * @throws Error if ViewManager is not set
    */
-  createViewForPanel(panelId: string, url: string, type: "panel" | "browser" | "worker", contextId?: string): void {
+  async createViewForPanel(panelId: string, url: string, type: "panel" | "browser" | "worker", contextId?: string): Promise<void> {
     if (!this.viewManager) {
       throw new Error(`[PanelManager] ViewManager not set, cannot create view for ${panelId}`);
     }
@@ -496,59 +571,9 @@ export class PanelManager {
       // Intercept ns:// and new-window navigations for child creation
       this.setupLinkInterception(panelId, view.webContents, "browser");
     } else if (type === "worker") {
-      // Worker panels: isolated partition, worker preload with auth token and env
-      const authToken = randomBytes(32).toString("hex");
-      this.pendingAuthTokens.set(panelId, { token: authToken, createdAt: Date.now() });
-      this.cleanupExpiredAuthTokens();
-
-      // Build additional arguments for preload
-      const additionalArgs: string[] = [
-        `--natstack-panel-id=${panelId}`,
-        `--natstack-auth-token=${authToken}`,
-        `--natstack-theme=${this.currentTheme}`,
-        `--natstack-kind=worker`,
-        `--natstack-context-id=${contextId ?? ""}`,
-      ];
-
-      // Add worker env if available
-      // Refresh system tokens (pubsub, git) in case they're stale from a previous session
-      const workerEnv = panel ? this.refreshEnvTokens(panelId, getPanelEnv(panel)) : undefined;
-      if (workerEnv && Object.keys(workerEnv).length > 0) {
-        try {
-          const encodedEnv = Buffer.from(JSON.stringify(workerEnv), "utf-8").toString("base64");
-          additionalArgs.push(`--natstack-panel-env=${encodedEnv}`);
-        } catch (error) {
-          console.error(`[PanelManager] Failed to encode env for worker ${panelId}`, error);
-        }
-      }
-
-      // Add stateArgs if available (from current snapshot)
-      const workerStateArgs = panel ? getPanelStateArgs(panel) : undefined;
-      if (workerStateArgs && Object.keys(workerStateArgs).length > 0) {
-        try {
-          const encodedStateArgs = Buffer.from(JSON.stringify(workerStateArgs), "utf-8").toString("base64");
-          additionalArgs.push(`--natstack-state-args=${encodedStateArgs}`);
-        } catch (error) {
-          console.error(`[PanelManager] Failed to encode stateArgs for worker ${panelId}`, error);
-        }
-      }
-
-      // Get unsafe flag for workers (undefined = safe worker using ZenFS)
+      const additionalArgs = await this.buildPreloadArgs(panelId, "worker", "worker", contextId ?? "");
+      await this.appendPanelEnvArgs(additionalArgs, panelId, panel, contextId);
       const unsafeFlag = panel ? getPanelUnsafe(panel) : undefined;
-
-      // Calculate and add scope path for unsafe workers.
-      // Safe workers (falsey unsafeFlag) use ZenFS and don't need a scope path.
-      // Unsafe workers get either a custom root (string) or the default scoped path (true).
-      if (unsafeFlag) {
-        const workspace = getActiveWorkspace();
-        if (workspace) {
-          const scopePath =
-            typeof unsafeFlag === "string"
-              ? unsafeFlag // Custom root (e.g., "/" for full access)
-              : getContextScopePath(workspace.config.id, contextId ?? panelId); // Context-based scope
-          additionalArgs.push(`--natstack-scope-path=${scopePath}`);
-        }
-      }
 
       this.viewManager.createView({
         id: panelId,
@@ -561,59 +586,12 @@ export class PanelManager {
         unsafe: unsafeFlag,
       });
     } else {
-      // App panels: isolated partition, panel preload with auth token and env
-      const authToken = randomBytes(32).toString("hex");
-      this.pendingAuthTokens.set(panelId, { token: authToken, createdAt: Date.now() });
-
-      // Periodic cleanup of expired tokens (runs lazily on each panel creation)
-      this.cleanupExpiredAuthTokens();
-
-      // Build additional arguments for preload
-      const additionalArgs: string[] = [
-        `--natstack-panel-id=${panelId}`,
-        `--natstack-auth-token=${authToken}`,
-        `--natstack-theme=${this.currentTheme}`,
-        `--natstack-kind=panel`,
-        `--natstack-context-id=${contextId ?? ""}`,
-      ];
-
-      // Add panel env if available
-      // Refresh system tokens (pubsub, git) in case they're stale from a previous session
-      const panelEnvForArgs = panel ? this.refreshEnvTokens(panelId, getPanelEnv(panel)) : undefined;
-      if (panelEnvForArgs && Object.keys(panelEnvForArgs).length > 0) {
-        try {
-          const encodedEnv = Buffer.from(JSON.stringify(panelEnvForArgs), "utf-8").toString("base64");
-          additionalArgs.push(`--natstack-panel-env=${encodedEnv}`);
-        } catch (error) {
-          console.error(`[PanelManager] Failed to encode env for panel ${panelId}`, error);
-        }
-      }
-
-      // Add stateArgs if available (from current snapshot)
-      const panelStateArgs = panel ? getPanelStateArgs(panel) : undefined;
-      if (panelStateArgs && Object.keys(panelStateArgs).length > 0) {
-        try {
-          const encodedStateArgs = Buffer.from(JSON.stringify(panelStateArgs), "utf-8").toString("base64");
-          additionalArgs.push(`--natstack-state-args=${encodedStateArgs}`);
-        } catch (error) {
-          console.error(`[PanelManager] Failed to encode stateArgs for panel ${panelId}`, error);
-        }
-      }
-
-      // Get unsafe flag for app panels
+      // Derive callerKind from panel type: shell panels authenticate as "shell"
+      const panelType = panel ? getPanelType(panel) : undefined;
+      const callerKind = panelType === "shell" ? "shell" as const : "panel" as const;
+      const additionalArgs = await this.buildPreloadArgs(panelId, "panel", callerKind, contextId ?? "");
+      await this.appendPanelEnvArgs(additionalArgs, panelId, panel, contextId);
       const unsafeFlag = panel ? getPanelUnsafe(panel) : undefined;
-
-      // Calculate and add scope path for unsafe panels
-      if (unsafeFlag) {
-        const workspace = getActiveWorkspace();
-        if (workspace) {
-          const scopePath =
-            typeof unsafeFlag === "string"
-              ? unsafeFlag // Custom root (e.g., "/" for full access)
-              : getContextScopePath(workspace.config.id, contextId ?? panelId); // Context-based scope
-          additionalArgs.push(`--natstack-scope-path=${scopePath}`);
-        }
-      }
 
       const view = this.viewManager.createView({
         id: panelId,
@@ -626,21 +604,27 @@ export class PanelManager {
         unsafe: unsafeFlag,
       });
 
-      // Register app panels with CDP server for automation/testing (like browsers)
-      // Use named handler for cleanup
-      if (parentId) {
-        const domReadyHandler = () => {
-          getCdpServer().registerBrowser(panelId, view.webContents.id, parentId);
-        };
-        view.webContents.on("dom-ready", domReadyHandler);
-        this.contentLoadHandlers.set(panelId, { domReady: domReadyHandler });
+      // CDP registration, state tracking, and content indexing are for app panels, not shell pages
+      if (panelType !== "shell") {
+        // Register app panels with CDP server for automation/testing (like browsers)
+        // Use named handler for cleanup
+        if (parentId) {
+          const domReadyHandler = () => {
+            getCdpServer().registerBrowser(panelId, view.webContents.id, parentId);
+          };
+          view.webContents.on("dom-ready", domReadyHandler);
+          this.contentLoadHandlers.set(panelId, { domReady: domReadyHandler });
+        }
+
+        // Intercept ns:// and http(s) link clicks to create children
+        this.setupLinkInterception(panelId, view.webContents, "panel");
+
+        // Track browser state (URL, loading, title) - same as browser panels
+        this.setupBrowserStateTracking(panelId, view.webContents);
+      } else {
+        // Shell pages still need link interception for ns:// and ns-about:// links
+        this.setupLinkInterception(panelId, view.webContents, "panel");
       }
-
-      // Intercept ns:// and http(s) link clicks to create children
-      this.setupLinkInterception(panelId, view.webContents, "panel");
-
-      // Track browser state (URL, loading, title) - same as browser panels
-      this.setupBrowserStateTracking(panelId, view.webContents);
     }
   }
 
@@ -1147,8 +1131,8 @@ export class PanelManager {
     // Initialize context via OPFS partition copying
     log.verbose(` Initializing safe context: ${contextId}`);
     const gitConfig = {
-      serverUrl: this.gitServer.getBaseUrl(),
-      token: this.gitServer.getTokenForPanel(panelId),
+      serverUrl: this.serverInfo.gitBaseUrl,
+      token: await this.serverInfo.getGitTokenForPanel(panelId),
     };
     await ensureContextPartitionInitialized(
       contextId,
@@ -1167,40 +1151,42 @@ export class PanelManager {
    * Called when rehydrating panels after app restart to ensure tokens are valid.
    * Tokens are stored in-memory by TokenManager, so they're invalidated on restart.
    */
-  private refreshEnvTokens(
+  private async refreshEnvTokens(
     panelId: string,
     env: Record<string, string> | undefined
-  ): Record<string, string> | undefined {
+  ): Promise<Record<string, string> | undefined> {
     if (!env) return undefined;
 
-    // Create a fresh token for this panel
-    const freshToken = getTokenManager().getOrCreateToken(panelId);
+    // Get or recreate Electron WS auth token
+    const freshWsToken = getTokenManager().ensureToken(panelId, "panel");
+    // Get or recreate server-side token for git/pubsub
+    const serverToken = await this.serverInfo.getPanelToken(panelId);
     log.verbose(` Refreshing env tokens for ${panelId}`);
 
     // Create a mutable copy
     const refreshedEnv = { ...env };
 
-    // Refresh __GIT_TOKEN
-    if (refreshedEnv["__GIT_TOKEN"]) {
-      refreshedEnv["__GIT_TOKEN"] = freshToken;
+    // Refresh __GIT_TOKEN (server token for git access — never use Electron WS token)
+    if (refreshedEnv["__GIT_TOKEN"] && serverToken) {
+      refreshedEnv["__GIT_TOKEN"] = serverToken;
     }
 
-    // Refresh token in __GIT_CONFIG (JSON)
-    if (refreshedEnv["__GIT_CONFIG"]) {
+    // Refresh token in __GIT_CONFIG (JSON) — server token for git
+    if (refreshedEnv["__GIT_CONFIG"] && serverToken) {
       try {
         const gitConfig = JSON.parse(refreshedEnv["__GIT_CONFIG"]);
-        gitConfig.token = freshToken;
+        gitConfig.token = serverToken;
         refreshedEnv["__GIT_CONFIG"] = JSON.stringify(gitConfig);
       } catch {
         // Invalid JSON, leave as-is
       }
     }
 
-    // Refresh token in __PUBSUB_CONFIG (JSON)
-    if (refreshedEnv["__PUBSUB_CONFIG"]) {
+    // Refresh token in __PUBSUB_CONFIG (JSON) — server token for pubsub
+    if (refreshedEnv["__PUBSUB_CONFIG"] && serverToken) {
       try {
         const pubsubConfig = JSON.parse(refreshedEnv["__PUBSUB_CONFIG"]);
-        pubsubConfig.token = freshToken;
+        pubsubConfig.token = serverToken;
         refreshedEnv["__PUBSUB_CONFIG"] = JSON.stringify(pubsubConfig);
       } catch {
         // Invalid JSON, leave as-is
@@ -1214,7 +1200,7 @@ export class PanelManager {
    * Build env for a panel or worker, merging base env with system env.
    * @param baseEnv - Existing panel env to preserve, or null if creating fresh
    */
-  private buildPanelEnv(
+  private async buildPanelEnv(
     panelId: string,
     baseEnv: Record<string, string> | null | undefined,
     gitInfo?: {
@@ -1222,9 +1208,9 @@ export class PanelManager {
       gitRef?: string;
       resolvedRepoArgs?: Record<string, SharedPanel.RepoArgSpec>;
     }
-  ): Record<string, string> | undefined {
-    const gitToken = this.gitServer.getTokenForPanel(panelId);
-    const serverUrl = this.gitServer.getBaseUrl();
+  ): Promise<Record<string, string> | undefined> {
+    const gitToken = await this.serverInfo.getGitTokenForPanel(panelId);
+    const serverUrl = this.serverInfo.gitBaseUrl;
 
     // Build full git config for bootstrap (eliminates need for RPC during bootstrap)
     const gitConfig = gitInfo
@@ -1238,12 +1224,11 @@ export class PanelManager {
       : "";
 
     // Build pubsub config for real-time messaging
-    const pubsubServer = getPubSubServer();
-    const pubsubPort = pubsubServer.getPort();
-    const pubsubConfig = pubsubPort
+    const serverToken = await this.serverInfo.getPanelToken(panelId);
+    const pubsubConfig = this.serverInfo.pubsubUrl
       ? JSON.stringify({
-          serverUrl: `ws://127.0.0.1:${pubsubPort}`,
-          token: getTokenManager().getOrCreateToken(panelId),
+          serverUrl: this.serverInfo.pubsubUrl,
+          token: serverToken,
         })
       : "";
     const workspacePath = getActiveWorkspace()?.path;
@@ -1359,18 +1344,23 @@ export class PanelManager {
       isRoot,
     });
 
-    // Resolve context ID: use provided contextId if available, otherwise generate from template
-    const isUnsafe = Boolean(unsafeFlag);
-    const contextId = options.contextId ?? await this.resolveContext(panelId, options.templateSpec, isUnsafe);
-
     if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
       throw new Error(`A panel with id "${panelId}" is already running`);
     }
 
     this.reservedPanelIds.add(panelId);
 
+    // Create auth tokens before resolveContext — it needs a git token via getGitTokenForPanel
+    const isUnsafe = Boolean(unsafeFlag);
+    const callerKind = isWorker ? "worker" as const : "panel" as const;
+    getTokenManager().createToken(panelId, callerKind);              // Electron WS auth
+
     try {
-      const panelEnv = this.buildPanelEnv(panelId, options?.env, {
+      await this.serverInfo.createPanelToken(panelId, callerKind);     // Server git/pubsub auth
+      // Resolve context ID: use provided contextId if available, otherwise generate from template
+      const contextId = options.contextId ?? await this.resolveContext(panelId, options.templateSpec, isUnsafe);
+
+      const panelEnv = await this.buildPanelEnv(panelId, options?.env, {
         sourceRepo: relativePath,
         gitRef: options?.gitRef,
         resolvedRepoArgs: options?.repoArgs,
@@ -1488,6 +1478,11 @@ export class PanelManager {
       }
 
       return { id: panel.id, type: panelType, title: panel.title };
+    } catch (err) {
+      // If panel creation fails after token was created, revoke both
+      getTokenManager().revokeToken(panelId);
+      void this.serverInfo.revokePanelToken(panelId);
+      throw err;
     } finally {
       this.reservedPanelIds.delete(panelId);
     }
@@ -1625,13 +1620,9 @@ export class PanelManager {
     if (shellMatch && shellMatch[1]) {
       const page = shellMatch[1];
       if (!isValidShellPage(page)) {
-        throw new Error(`Invalid shell page: ${page}. Valid pages: model-provider-config, about, keyboard-shortcuts, help`);
+        throw new Error(`Invalid shell page: ${page}`);
       }
-      // Shell panels don't support stateArgs
-      if (stateArgs && Object.keys(stateArgs).length > 0) {
-        throw new Error("stateArgs not supported for shell panels");
-      }
-      return this.createShellPanelInternal(parent, page as SharedPanel.ShellPage, options, replacePanel);
+      return this.createShellPanelInternal(parent, page as SharedPanel.ShellPage, options, replacePanel, stateArgs);
     }
 
     const { relativePath, absolutePath } = this.normalizePanelPath(source);
@@ -1741,7 +1732,7 @@ export class PanelManager {
     this.persistPanel(panel, parentId);
 
     // Create WebContentsView for the browser (browsers don't use session-based partitions)
-    this.createViewForPanel(panel.id, url, "browser", contextId);
+    await this.createViewForPanel(panel.id, url, "browser", contextId);
 
     this.notifyPanelTreeUpdate();
 
@@ -1765,6 +1756,9 @@ export class PanelManager {
     for (const child of childrenToClose) {
       await this.closePanel(child.id);
     }
+
+    // Clean up resources (tokens, CDP, git, etc.) before removing from tree
+    this.unloadPanelResources(panelId);
 
     // Find the parent
     const parent = this.findParentPanel(panelId);
@@ -1854,8 +1848,11 @@ export class PanelManager {
         }
         validatedStateArgs = validation.data;
       }
+    } else if (targetType === "shell" && options?.stateArgs) {
+      // Shell panels accept stateArgs without schema validation
+      validatedStateArgs = options.stateArgs;
     } else if (options?.stateArgs) {
-      // Reject stateArgs for browser/shell panels
+      // Reject stateArgs for browser panels
       throw new Error(`stateArgs not supported for ${targetType} panels`);
     }
 
@@ -1863,11 +1860,15 @@ export class PanelManager {
     panel.history = panel.history.slice(0, panel.historyIndex + 1);
 
     // Create new snapshot with proper option inheritance
+    // Shell targets need unsafe: "/" to override any inherited unsafe value
     const newSnapshot = createNavigationSnapshot(
       panel,
       source,
       targetType,
-      { env: options?.env },
+      {
+        env: options?.env,
+        ...(targetType === "shell" ? { unsafe: "/" } : {}),
+      },
       validatedStateArgs
     );
     if (targetType === "browser") {
@@ -1978,9 +1979,10 @@ export class PanelManager {
     const currentSource = previousSource ?? getPanelSource(panel);
     const typeChanged = currentType !== snapshot.type;
 
-    // Tear down old view if type changed
+    // Tear down old view if type changed (pass previous type so cleanup targets
+    // the correct resource set, since the snapshot already reflects the new type)
     if (typeChanged) {
-      this.unloadPanelResources(panelId);
+      this.unloadPanelResources(panelId, currentType);
     }
 
     const contextId = getPanelContextId(panel);
@@ -1997,7 +1999,7 @@ export class PanelManager {
 
       panel.artifacts = { buildState: "ready" };
       this.persistArtifacts(panelId, panel.artifacts);
-      this.createViewForPanel(panelId, targetUrl, "browser", contextId);
+      await this.createViewForPanel(panelId, targetUrl, "browser", contextId);
       return;
     }
 
@@ -2030,7 +2032,7 @@ export class PanelManager {
       if (contents && !contents.isDestroyed()) {
         await contents.loadURL(url);
       } else {
-        this.createViewForShellPanel(panel, url);
+        await this.createViewForPanel(panelId, url, "panel", contextId);
       }
 
       panel.artifacts = { buildState: "ready" };
@@ -2283,28 +2285,23 @@ export class PanelManager {
     panelId: string,
     pushState: SharedPanel.PanelSnapshot["pushState"]
   ): boolean {
-    const contents = this.viewManager?.getWebContents(panelId);
-    if (!contents || contents.isDestroyed() || !pushState) {
-      return false;
-    }
+    if (!pushState) return false;
 
     const payload = {
       state: pushState.state,
       path: pushState.path,
     };
 
-    const send = () => {
-      if (contents.isDestroyed()) return;
-      contents.send("panel:history-popstate", payload);
-    };
-
-    if (contents.isLoading()) {
-      contents.once("did-finish-load", send);
-    } else {
-      send();
+    if (this.rpcServer) {
+      this.rpcServer.sendToClient(panelId, {
+        type: "ws:event",
+        event: "panel:history-popstate",
+        payload,
+      });
+      return true;
     }
 
-    return true;
+    return false;
   }
 
   /**
@@ -2426,7 +2423,8 @@ export class PanelManager {
     parent: Panel | null,
     page: SharedPanel.ShellPage,
     options?: PanelCreateOptions,
-    replacePanel?: Panel
+    replacePanel?: Panel,
+    stateArgs?: Record<string, unknown>
   ): Promise<{ id: string; type: SharedPanel.PanelType; title: string }> {
     // Build the about page if not already built
     let url: string;
@@ -2463,9 +2461,9 @@ export class PanelManager {
     // Create the initial snapshot for the shell panel
     const initialSnapshot = createSnapshot(`shell:${page}`, "shell", contextId, {
       env: options?.env,
-      unsafe: true, // Shell panels have full access
+      unsafe: "/", // Shell panels have full filesystem access
       templateSpec,
-    });
+    }, stateArgs);
     initialSnapshot.page = page;
 
     const panel: Panel = {
@@ -2533,8 +2531,8 @@ export class PanelManager {
     const partition = `persist:${getPanelContextId(panel)}`;
     await registerAboutProtocolForPartition(partition);
 
-    // Create WebContentsView for the shell panel
-    this.createViewForShellPanel(panel, url);
+    // Create WebContentsView for the shell panel (unified code path)
+    await this.createViewForPanel(panel.id, url, "panel", getPanelContextId(panel));
 
     // Focus after replace (takes over from the one being used)
     // Note: focusPanel calls updateSelectedPath and notifyPanelTreeUpdate
@@ -2688,7 +2686,7 @@ export class PanelManager {
 
     // Create the initial snapshot for the shell panel
     const initialSnapshot = createSnapshot(`shell:${page}`, "shell", contextId, {
-      unsafe: true, // Shell panels have full access
+      unsafe: "/", // Shell panels have full filesystem access
       templateSpec: DEFAULT_TEMPLATE_SPEC,
     });
     initialSnapshot.page = page;
@@ -2717,8 +2715,8 @@ export class PanelManager {
     const partition = `persist:${getPanelContextId(panel)}`;
     await registerAboutProtocolForPartition(partition);
 
-    // Create WebContentsView for the shell panel
-    this.createViewForShellPanel(panel, url);
+    // Create WebContentsView for the shell panel (unified code path)
+    await this.createViewForPanel(panel.id, url, "panel", getPanelContextId(panel));
 
     // Focus the newly created panel (this also notifies tree update)
     this.focusPanel(panel.id);
@@ -2766,52 +2764,6 @@ export class PanelManager {
   }
 
   /**
-   * Create a WebContentsView for a shell panel.
-   * Shell panels run with unsafe mode (nodeIntegration) for full service access.
-   */
-  private createViewForShellPanel(panel: Panel, url: string): void {
-    if (!this.viewManager) {
-      throw new Error(`[PanelManager] ViewManager not set, cannot create view for ${panel.id}`);
-    }
-
-    if (this.viewManager.hasView(panel.id)) {
-      return; // View already exists
-    }
-
-    const contextId = getPanelContextId(panel);
-    const authToken = randomBytes(32).toString("hex");
-    this.pendingAuthTokens.set(panel.id, { token: authToken, createdAt: Date.now() });
-    this.cleanupExpiredAuthTokens();
-
-    const additionalArgs: string[] = [
-      `--natstack-panel-id=${panel.id}`,
-      `--natstack-auth-token=${authToken}`,
-      `--natstack-theme=${this.currentTheme}`,
-      `--natstack-kind=panel`, // Shell panels use panel runtime for focus/theme events
-      `--natstack-context-id=${contextId}`,
-    ];
-
-    // Shell panels get full filesystem access
-    const workspace = getActiveWorkspace();
-    if (workspace) {
-      additionalArgs.push(`--natstack-scope-path=/`);
-    }
-
-    const view = this.viewManager.createView({
-      id: panel.id,
-      type: "panel",
-      partition: `persist:${contextId}`,
-      url,
-      injectHostThemeVariables: true,
-      additionalArguments: additionalArgs,
-      unsafe: "/", // Full filesystem access
-    });
-
-    // Add link interception for shell panels to handle ns:// and ns-about:// links
-    this.setupLinkInterception(panel.id, view.webContents, "panel");
-  }
-
-  /**
    * Find a shell panel by its page type.
    * Note: Returns the unified Panel type, not the legacy ShellPanel.
    */
@@ -2841,13 +2793,9 @@ export class PanelManager {
         const { isRepo, path: repoPath } = await checkGitRepository(absolutePanelPath);
 
         if (!isRepo) {
-          worker.artifacts = {
-            buildState: "not-git-repo",
-            notGitRepoPath: repoPath,
-            buildProgress: "Worker folder must be the root of a git repository",
-          };
-          this.persistArtifacts(worker.id, worker.artifacts);
-          this.notifyPanelTreeUpdate();
+          await this.navigatePanel(worker.id, "shell:git-init", "shell", {
+            stateArgs: { repoPath },
+          });
           return;
         }
 
@@ -2855,13 +2803,9 @@ export class PanelManager {
         const { clean, path: cleanRepoPath } = await checkWorktreeClean(absolutePanelPath);
 
         if (!clean) {
-          worker.artifacts = {
-            buildState: "dirty",
-            dirtyRepoPath: cleanRepoPath,
-            buildProgress: "Uncommitted changes detected",
-          };
-          this.persistArtifacts(worker.id, worker.artifacts);
-          this.notifyPanelTreeUpdate();
+          await this.navigatePanel(worker.id, "shell:dirty-repo", "shell", {
+            stateArgs: { repoPath: cleanRepoPath },
+          });
           return;
         }
       }
@@ -2912,7 +2856,7 @@ export class PanelManager {
         // Create WebContentsView for this worker
         const srcUrl = new URL(htmlUrl);
         srcUrl.searchParams.set("panelId", worker.id);
-        this.createViewForPanel(worker.id, srcUrl.toString(), "worker", getPanelContextId(worker));
+        await this.createViewForPanel(worker.id, srcUrl.toString(), "worker", getPanelContextId(worker));
       } else {
         // Build failed
         worker.artifacts = {
@@ -3088,13 +3032,9 @@ export class PanelManager {
         const { isRepo, path: repoPath } = await checkGitRepository(absolutePanelPath);
 
         if (!isRepo) {
-          panel.artifacts = {
-            buildState: "not-git-repo",
-            notGitRepoPath: repoPath,
-            buildProgress: "Panel folder must be the root of a git repository",
-          };
-          this.persistArtifacts(panel.id, panel.artifacts);
-          this.notifyPanelTreeUpdate();
+          await this.navigatePanel(panel.id, "shell:git-init", "shell", {
+            stateArgs: { repoPath },
+          });
           return;
         }
 
@@ -3102,13 +3042,9 @@ export class PanelManager {
         const { clean, path: cleanRepoPath } = await checkWorktreeClean(absolutePanelPath);
 
         if (!clean) {
-          panel.artifacts = {
-            buildState: "dirty",
-            dirtyRepoPath: cleanRepoPath,
-            buildProgress: "Uncommitted changes detected",
-          };
-          this.persistArtifacts(panel.id, panel.artifacts);
-          this.notifyPanelTreeUpdate();
+          await this.navigatePanel(panel.id, "shell:dirty-repo", "shell", {
+            stateArgs: { repoPath: cleanRepoPath },
+          });
           return;
         }
       }
@@ -3157,7 +3093,7 @@ export class PanelManager {
         // Create WebContentsView for this panel
         const srcUrl = new URL(htmlUrl);
         srcUrl.searchParams.set("panelId", panel.id);
-        this.createViewForPanel(panel.id, srcUrl.toString(), "panel", getPanelContextId(panel));
+        await this.createViewForPanel(panel.id, srcUrl.toString(), "panel", getPanelContextId(panel));
       } else {
         // Build failed
         panel.artifacts = {
@@ -3266,16 +3202,9 @@ export class PanelManager {
     // Release resources for this panel
     this.unloadPanelResources(panelId);
 
-    // Keep dirty and not-git-repo states - these indicate repo state issues that need user action
-    // Error states should NOT be preserved - they should rebuild to pick up fixes
-    const buildState = panel.artifacts?.buildState;
-    if (buildState === "dirty" || buildState === "not-git-repo") {
-      return;
-    }
-
     // Don't reset if already pending without build artifacts
     const hasBuildArtifacts = Boolean(panel.artifacts?.htmlPath || panel.artifacts?.bundlePath);
-    if (buildState === "pending" && !hasBuildArtifacts) {
+    if (panel.artifacts?.buildState === "pending" && !hasBuildArtifacts) {
       return;
     }
 
@@ -3341,7 +3270,7 @@ export class PanelManager {
       // Browser panels can be recreated directly
       const snapshot = getCurrentSnapshot(panel);
       const url = snapshot.resolvedUrl ?? getPanelSource(panel);
-      this.createViewForPanel(panel.id, url, "browser", getPanelContextId(panel));
+      await this.createViewForPanel(panel.id, url, "browser", getPanelContextId(panel));
       panel.artifacts = { buildState: "ready" };
       this.persistArtifacts(panelId, panel.artifacts);
       this.notifyPanelTreeUpdate();
@@ -3388,14 +3317,6 @@ export class PanelManager {
       };
     }
 
-    if (currentState === "dirty" || currentState === "not-git-repo") {
-      return {
-        success: false,
-        buildState: currentState,
-        error: panel.artifacts?.buildProgress ?? `Panel is ${currentState}`,
-      };
-    }
-
     // State is "pending" - trigger rebuild
     log.verbose(` ensurePanelLoaded: Rebuilding unloaded panel: ${panelId}`);
     await this.rebuildUnloadedPanel(panelId);
@@ -3420,7 +3341,7 @@ export class PanelManager {
       if (state === "ready") {
         return { success: true, buildState: "ready" };
       }
-      if (state === "error" || state === "dirty" || state === "not-git-repo") {
+      if (state === "error") {
         return {
           success: false,
           buildState: state,
@@ -3470,9 +3391,12 @@ export class PanelManager {
     this.persistHistory(panel);
 
     // Broadcast to panel for reactive update (no reload)
-    const contents = this.viewManager?.getViewContents(panelId);
-    if (contents) {
-      contents.send("stateArgs:updated", validation.data);
+    if (this.rpcServer) {
+      this.rpcServer.sendToClient(panelId, {
+        type: "ws:event",
+        event: "stateArgs:updated",
+        payload: validation.data,
+      });
     }
 
     return validation.data!;
@@ -3488,25 +3412,11 @@ export class PanelManager {
       throw new Error(`Panel not found: ${panelId}`);
     }
 
-    if (panel.artifacts.buildState !== "dirty") {
-      // Not in dirty state, nothing to retry
+    // Navigate back from dirty-repo shell page to trigger rebuild
+    const snapshot = getCurrentSnapshot(panel);
+    if (snapshot.type === "shell" && snapshot.source === "shell:dirty-repo") {
+      await this.goBack(panelId);
       return;
-    }
-
-    // Reset state and retry build
-    panel.artifacts = {
-      buildState: "building",
-      buildProgress: "Retrying build...",
-    };
-    this.notifyPanelTreeUpdate();
-
-    // Call appropriate build method based on panel type
-    const panelType = getPanelType(panel);
-    const options = getPanelOptions(panel);
-    if (panelType === "worker") {
-      await this.buildWorkerAsync(panel, { gitRef: options.gitRef });
-    } else if (panelType === "app") {
-      await this.buildPanelAsync(panel, { gitRef: options.gitRef });
     }
   }
 
@@ -3520,35 +3430,11 @@ export class PanelManager {
       throw new Error(`Panel not found: ${panelId}`);
     }
 
-    if (panel.artifacts.buildState !== "not-git-repo") {
-      // Not in not-git-repo state, nothing to initialize
+    // Navigate back from git-init shell page to trigger rebuild
+    const snapshot = getCurrentSnapshot(panel);
+    if (snapshot.type === "shell" && snapshot.source === "shell:git-init") {
+      await this.goBack(panelId);
       return;
-    }
-
-    // Reset state and re-run build
-    panel.artifacts = {
-      buildState: "building",
-      buildProgress: "Checking repository status...",
-    };
-    this.notifyPanelTreeUpdate();
-
-    try {
-      // Call appropriate build method based on panel type
-      const panelType = getPanelType(panel);
-      const options = getPanelOptions(panel);
-      if (panelType === "worker") {
-        await this.buildWorkerAsync(panel, { gitRef: options.gitRef });
-      } else if (panelType === "app") {
-        await this.buildPanelAsync(panel, { gitRef: options.gitRef });
-      }
-    } catch (error) {
-      // Build failed - set error state and notify
-      panel.artifacts = {
-        buildState: "error",
-        buildProgress: `Build failed: ${error instanceof Error ? error.message : String(error)}`,
-      };
-      this.notifyPanelTreeUpdate();
-      throw error; // Re-throw to notify caller
     }
   }
 
@@ -3626,22 +3512,12 @@ export class PanelManager {
     const panel = this.panels.get(panelId);
     if (!panel) return;
 
-    // Use ViewManager to get webContents for all panels (app, browser, worker).
-    if (!this.viewManager) return;
-
-    const contents = this.viewManager.getWebContents(panelId);
-    if (contents && !contents.isDestroyed()) {
-      try {
-        contents.send("panel:event", { panelId, ...payload });
-      } catch (error) {
-        // Handle race condition where render frame is disposed but webContents
-        // is not yet marked as destroyed. This can happen when panels are idle
-        // for extended periods and Electron garbage collects the render frame.
-        console.warn(
-          `[PanelManager] Failed to send event to panel ${panelId} (render frame may be disposed):`,
-          error instanceof Error ? error.message : error
-        );
-      }
+    if (this.rpcServer) {
+      this.rpcServer.sendToClient(panelId, {
+        type: "ws:event",
+        event: "panel:event",
+        payload: { panelId, ...payload },
+      });
     }
   }
 
@@ -3661,9 +3537,12 @@ export class PanelManager {
    * Called by unloadPanelTree for each panel in the subtree.
    * Note: Does NOT recurse into children - caller handles recursion.
    */
-  private unloadPanelResources(panelId: string): void {
+  private unloadPanelResources(panelId: string, typeOverride?: SharedPanel.PanelType): void {
     const panel = this.panels.get(panelId);
     if (!panel) return;
+
+    // Revoke auth token (disconnects WS connections via onRevoke listener)
+    getTokenManager().revokeToken(panelId);
 
     // Clean up crash history for this panel
     this.crashHistory.delete(panelId);
@@ -3675,8 +3554,9 @@ export class PanelManager {
     this.cleanupBrowserStateTracking(panelId, contents);
     this.cleanupLinkInterception(panelId, contents);
 
-    // Cleanup based on panel type
-    const panelType = getPanelType(panel);
+    // Cleanup based on panel type (typeOverride used during type-change teardown
+    // when the snapshot already reflects the new type)
+    const panelType = typeOverride ?? getPanelType(panel);
     switch (panelType) {
       case "worker":
         // Worker panels are now WebContentsView-based, cleanup via ViewManager below
@@ -3690,8 +3570,9 @@ export class PanelManager {
 
       case "app":
         // App panel cleanup
-        // Revoke git token for this panel
-        this.gitServer.revokeTokenForPanel(panelId);
+        // Revoke server-side tokens for this panel (fire-and-forget)
+        void this.serverInfo.revokePanelToken(panelId);
+        void this.serverInfo.revokeGitToken(panelId);
 
         // Revoke CDP token for this panel (cleans up browser ownership)
         getCdpServer().revokeTokenForPanel(panelId);
@@ -3736,7 +3617,7 @@ export class PanelManager {
     // Unload all resources (view, CDP, git tokens, Claude Code, protocol panels)
     // Note: unloadPanelResources handles:
     //   - browserStateCleanup and linkInterceptionHandlers cleanup
-    //   - viewManager.destroyView (which triggers guestInstanceMap cleanup via 'destroyed' event)
+    //   - viewManager.destroyView (which triggers cleanup via 'destroyed' event)
     //   - getCdpServer().revokeTokenForPanel / unregisterBrowser
     //   - gitServer.revokeTokenForPanel
     //   - getClaudeCodeConversationManager().endPanelConversations
@@ -3745,7 +3626,6 @@ export class PanelManager {
 
     // Clean up other ID-keyed structures not covered by unloadPanelResources
     this.pendingBrowserNavigations.delete(panel.id);
-    this.pendingAuthTokens.delete(panel.id); // TTL-based but clean up immediately
 
     // Remove from panels map
     this.panels.delete(panel.id);
@@ -4034,7 +3914,7 @@ export class PanelManager {
       if (panelType === "browser") {
         const snapshot = getCurrentSnapshot(panel);
         const url = snapshot.resolvedUrl ?? getPanelSource(panel);
-        this.createViewForPanel(panelId, url, "browser", contextId);
+        await this.createViewForPanel(panelId, url, "browser", contextId);
         log.verbose(` Recreated browser view for ${panelId}`);
       } else if (panelType === "shell") {
         await this.restoreShellPanel(panel);
@@ -4046,7 +3926,7 @@ export class PanelManager {
         if (builtUrl) {
           // Panel was built, recreate with the built URL
           const viewType = panelType === "worker" ? "worker" : "panel";
-          this.createViewForPanel(panelId, builtUrl, viewType, contextId);
+          await this.createViewForPanel(panelId, builtUrl, viewType, contextId);
           log.verbose(` Recreated ${panelType} view for ${panelId}`);
         } else {
           // Panel wasn't built yet or lost build state - trigger rebuild
@@ -4188,44 +4068,42 @@ export class PanelManager {
 
   /**
    * Get the workspace tree of all git repos.
-   * Delegates to gitServer.
+   * Delegates to server via ServerInfo.
    */
   async getWorkspaceTree(): Promise<SharedPanel.WorkspaceTree> {
-    return this.gitServer.getWorkspaceTree();
+    return this.serverInfo.getWorkspaceTree() as Promise<SharedPanel.WorkspaceTree>;
   }
 
   /**
    * List branches for a repo.
-   * Delegates to gitServer.
+   * Delegates to server via ServerInfo.
    */
   async listBranches(repoPath: string): Promise<SharedPanel.BranchInfo[]> {
-    return this.gitServer.listBranches(repoPath);
+    return this.serverInfo.listBranches(repoPath) as Promise<SharedPanel.BranchInfo[]>;
   }
 
   /**
    * List commits for a repo/ref.
-   * Delegates to gitServer.
+   * Delegates to server via ServerInfo.
    */
   async listCommits(repoPath: string, ref?: string, limit?: number): Promise<SharedPanel.CommitInfo[]> {
-    return this.gitServer.listCommits(repoPath, ref, limit);
+    return this.serverInfo.listCommits(repoPath, ref ?? "HEAD", limit ?? 50) as Promise<SharedPanel.CommitInfo[]>;
   }
 
-  // Map guestInstanceId (from webContents) to panelId
-  private guestInstanceMap: Map<number, string> = new Map();
-  // Map panelId -> pending auth token with timestamp for TTL cleanup
-  private pendingAuthTokens: Map<string, { token: string; createdAt: number }> = new Map();
-  // TTL for pending auth tokens (30 seconds should be plenty for webview init)
-  private readonly AUTH_TOKEN_TTL_MS = 30_000;
+  /**
+   * List discovered agents.
+   * Delegates to server via ServerInfo.
+   */
+  async listAgents(): Promise<unknown> {
+    return this.serverInfo.listAgents();
+  }
+
   // Map panelId -> browser state tracking cleanup info
   private browserStateCleanup = new Map<string, { cleanup: () => void; destroyedHandler: () => void }>();
   // Map panelId -> link interception handler for will-navigate
   private linkInterceptionHandlers = new Map<string, (event: Electron.Event, url: string) => void>();
   // Map panelId -> content load handlers (dom-ready, did-finish-load) for cleanup
   private contentLoadHandlers = new Map<string, { domReady?: () => void; didFinishLoad?: () => void }>();
-
-  getPanelIdForWebContents(contents: Electron.WebContents): string | undefined {
-    return this.guestInstanceMap.get(contents.id);
-  }
 
   /**
    * Get WebContents for a panel.
@@ -4236,63 +4114,6 @@ export class PanelManager {
       return undefined;
     }
     return this.viewManager.getWebContents(panelId) ?? undefined;
-  }
-
-  verifyAndRegister(panelId: string, token: string, senderId: number): void {
-    // Check if this is a reload - same webContentsId already registered for this panel.
-    // This is safe because:
-    // 1. The senderId (webContentsId) is assigned by Electron and cannot be spoofed
-    // 2. We only skip token validation if BOTH the senderId AND panelId match existing registration
-    // 3. A malicious panel with a different senderId cannot re-register as another panel
-    const existingPanelId = this.guestInstanceMap.get(senderId);
-    if (existingPanelId === panelId) {
-      // Re-registration after reload - panel is re-initializing with same webContents.
-      // Re-send theme to ensure panel has current theme after reload.
-      this.sendPanelEvent(panelId, { type: "theme", theme: this.currentTheme });
-      return;
-    }
-
-    const pending = this.pendingAuthTokens.get(panelId);
-    if (!pending || pending.token !== token) {
-      throw new Error(`Invalid auth token for panel ${panelId}`);
-    }
-
-    // Check if token has expired
-    if (Date.now() - pending.createdAt > this.AUTH_TOKEN_TTL_MS) {
-      this.pendingAuthTokens.delete(panelId);
-      throw new Error(`Auth token for panel ${panelId} has expired`);
-    }
-
-    // Token is valid and used
-    this.pendingAuthTokens.delete(panelId);
-
-    this.guestInstanceMap.set(senderId, panelId);
-    this.registerPanelView(panelId, senderId);
-  }
-
-  /**
-   * Clean up expired auth tokens to prevent memory leaks.
-   * Called lazily when new panels are created.
-   */
-  private cleanupExpiredAuthTokens(): void {
-    const now = Date.now();
-    for (const [panelId, pending] of this.pendingAuthTokens) {
-      if (now - pending.createdAt > this.AUTH_TOKEN_TTL_MS) {
-        this.pendingAuthTokens.delete(panelId);
-      }
-    }
-  }
-
-  private registerPanelView(panelId: string, senderId: number): void {
-    // ViewManager now tracks the webContents, we just need to set up cleanup for guestInstanceMap
-    const contents = this.viewManager?.getWebContents(panelId);
-    if (contents && !contents.isDestroyed()) {
-      contents.once("destroyed", () => {
-        this.guestInstanceMap.delete(senderId);
-      });
-    }
-
-    this.sendPanelEvent(panelId, { type: "theme", theme: this.currentTheme });
   }
 
   // =====================================================================
@@ -4328,10 +4149,9 @@ export class PanelManager {
 
     log.verbose(` Creating template builder worker: ${workerId}`);
 
-    // Generate auth token for the worker
-    const { randomBytes } = await import("crypto");
-    const authToken = randomBytes(32).toString("hex");
-    this.pendingAuthTokens.set(workerId, { token: authToken, createdAt: Date.now() });
+    // Create auth tokens for the worker
+    const authToken = getTokenManager().createToken(workerId, "worker");
+    await this.serverInfo.createPanelToken(workerId, "worker");
 
     // Build additional arguments for preload
     const additionalArgs: string[] = [
@@ -4340,6 +4160,7 @@ export class PanelManager {
       `--natstack-theme=${this.currentTheme}`,
       `--natstack-kind=worker`,
       `--natstack-context-id=${workerId}`,
+      ...(this.rpcPort ? [`--natstack-ws-port=${this.rpcPort}`] : []),
     ];
 
     // Encode template config as env (preload exposes this via process.env)
@@ -4394,8 +4215,9 @@ export class PanelManager {
     // Remove from tracking
     this.templateBuilderWorkers.delete(workerId);
 
-    // Clean up auth token
-    this.pendingAuthTokens.delete(workerId);
+    // Revoke auth tokens (disconnects WS connections via onRevoke listener)
+    getTokenManager().revokeToken(workerId);
+    void this.serverInfo.revokePanelToken(workerId);
 
     // Remove protocol panel content
     if (isProtocolPanel(workerId)) {

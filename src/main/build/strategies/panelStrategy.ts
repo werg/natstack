@@ -39,7 +39,7 @@ import {
 } from "@natstack/typecheck";
 import { isDev } from "../../utils.js";
 import { ESM_SAFE_PACKAGES } from "../../lazyBuild/esmTransformer.js";
-import { isVerdaccioServerInitialized } from "../../verdaccioServer.js";
+import { isVerdaccioReady } from "../../verdaccioConfig.js";
 import { getPackagesDir, getAppRoot } from "../../paths.js";
 import { isVerbose } from "../../devLog.js";
 import { PANEL_CSP_META } from "../../../shared/constants.js";
@@ -759,7 +759,7 @@ export class PanelBuildStrategy
     const externals: Record<string, string> = { ...(ctx.manifest.externals ?? {}) };
 
     // Auto-externalize ESM-safe packages with version pinning
-    if (isVerdaccioServerInitialized()) {
+    if (isVerdaccioReady()) {
       const autoExternalized: string[] = [];
       for (const pkgName of ESM_SAFE_PACKAGES) {
         if (!(pkgName in externals)) {

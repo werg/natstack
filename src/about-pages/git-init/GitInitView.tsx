@@ -7,7 +7,6 @@
  */
 
 import { useMemo, useCallback, useState, useEffect } from "react";
-import { useAtomValue } from "jotai";
 import { Flex, Button, Tooltip, Callout, Text, Code, Card } from "@radix-ui/themes";
 import { ExclamationTriangleIcon, CheckCircledIcon } from "@radix-ui/react-icons";
 import { GitStatusView, useGitStatus, type GitNotification } from "@natstack/git-ui";
@@ -15,7 +14,7 @@ import { GitClient } from "@natstack/git";
 import * as fs from "fs/promises";
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { effectiveThemeAtom } from "../state/themeAtoms";
+import type { ThemeAppearance } from "@natstack/runtime";
 
 const execFileAsync = promisify(execFile);
 
@@ -23,16 +22,16 @@ export interface GitInitViewProps {
   panelId: string;
   repoPath: string;
   onContinueBuild: () => void;
+  theme: ThemeAppearance;
   /** Optional notification handler */
   onNotify?: (notification: GitNotification) => void;
 }
 
-export function GitInitView({ repoPath, onContinueBuild, onNotify }: GitInitViewProps) {
+export function GitInitView({ repoPath, onContinueBuild, onNotify, theme }: GitInitViewProps) {
   const [isInitialized, setIsInitialized] = useState(false);
   const [isInitializing, setIsInitializing] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [isContinuing, setIsContinuing] = useState(false);
-  const theme = useAtomValue(effectiveThemeAtom);
 
   // GitClient for showing git UI after initialization
   const gitClient = useMemo(
@@ -150,10 +149,10 @@ export function GitInitView({ repoPath, onContinueBuild, onNotify }: GitInitView
                 (not just a subfolder within a larger repo) to ensure:
               </Text>
               <Flex direction="column" gap="2" ml="3">
-                <Text size="2">• Version control and change tracking per panel</Text>
-                <Text size="2">• Build reproducibility from committed state</Text>
-                <Text size="2">• Protection against building with uncommitted changes</Text>
-                <Text size="2">• Independent panel versioning and history</Text>
+                <Text size="2">- Version control and change tracking per panel</Text>
+                <Text size="2">- Build reproducibility from committed state</Text>
+                <Text size="2">- Protection against building with uncommitted changes</Text>
+                <Text size="2">- Independent panel versioning and history</Text>
               </Flex>
 
               <Text size="3" weight="bold" mt="2">

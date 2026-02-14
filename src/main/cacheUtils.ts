@@ -16,7 +16,7 @@
 
 import { promises as fsPromises, existsSync } from "fs";
 import * as path from "path";
-import { app } from "electron";
+import { getUserDataPath } from "./envPaths.js";
 import { exec } from "child_process";
 import { createDevLogger } from "./devLog.js";
 
@@ -65,14 +65,14 @@ export interface CacheClearResult {
  * Get the Verdaccio storage directory path.
  */
 function getVerdaccioStoragePath(): string {
-  return path.join(app.getPath("userData"), "verdaccio-storage");
+  return path.join(getUserDataPath(), "verdaccio-storage");
 }
 
 /**
  * Get the types cache directory path.
  */
 function getTypesCachePath(): string {
-  return path.join(app.getPath("userData"), "types-cache");
+  return path.join(getUserDataPath(), "types-cache");
 }
 
 /**

@@ -12,7 +12,7 @@
  */
 
 import { z } from "zod";
-import type { RepoArgSpec } from "../shared/ipc/types.js";
+import type { RepoArgSpec } from "../shared/types.js";
 
 const RepoArgSpecSchema = z.union([
   z.string(),

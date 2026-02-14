@@ -1,6 +1,10 @@
 /**
  * PanelDndContext - Drag-and-drop context for the panel tree.
  *
+ * Split into two contexts for selective re-renders:
+ * - PanelDndTreeContext: changes on tree mutations/collapse (stable during drag)
+ * - PanelDndDragContext: changes every pointer move during drag
+ *
  * Uses @dnd-kit/sortable for accessible drag-and-drop with:
  * - Horizontal offset to determine depth (drag right = nest deeper)
  * - Flattened tree for sortable operations
@@ -59,20 +63,10 @@ export const INDENTATION_WIDTH = 8;
 export const END_DROP_ZONE_ID = "__end_drop_zone__";
 
 // ============================================================================
-// Types
+// Types & Contexts
 // ============================================================================
 
-interface PanelDndContextValue {
-  /** ID of the panel currently being dragged */
-  activeId: string | null;
-  /** ID of the panel being hovered over during drag */
-  overId: string | null;
-  /** Projected depth for the dragged item */
-  projectedDepth: number | null;
-  /** ID of the item that should render the drop indicator */
-  indicatorItemId: string | null;
-  /** Whether indicator should show below target (moving down or nesting) */
-  showIndicatorBelow: boolean;
+interface PanelDndTreeContextValue {
   /** Flattened panel items for rendering */
   flattenedItems: FlattenedPanel[];
   /** Set of collapsed panel IDs */
@@ -87,17 +81,57 @@ interface PanelDndContextValue {
   unindentPanel: (panelId: string) => void;
 }
 
-const PanelDndContextInner = createContext<PanelDndContextValue | null>(null);
+interface PanelDndDragContextValue {
+  /** ID of the panel currently being dragged */
+  activeId: string | null;
+  /** ID of the panel being hovered over during drag */
+  overId: string | null;
+  /** Projected depth for the dragged item */
+  projectedDepth: number | null;
+  /** ID of the item that should render the drop indicator */
+  indicatorItemId: string | null;
+  /** Whether indicator should show below target (moving down or nesting) */
+  showIndicatorBelow: boolean;
+}
+
+/** Combined type for backward-compatible usePanelDnd() hook */
+type PanelDndContextValue = PanelDndTreeContextValue & PanelDndDragContextValue;
+
+const PanelDndTreeCtx = createContext<PanelDndTreeContextValue | null>(null);
+const PanelDndDragCtx = createContext<PanelDndDragContextValue | null>(null);
 
 /**
- * Hook to access drag-and-drop state in tree nodes.
+ * Hook for tree data (stable during drag). Use this in the sidebar component
+ * for tree structure, collapse state, and indent/unindent operations.
  */
-export function usePanelDnd(): PanelDndContextValue {
-  const context = useContext(PanelDndContextInner);
+export function usePanelDndTree(): PanelDndTreeContextValue {
+  const context = useContext(PanelDndTreeCtx);
   if (!context) {
-    throw new Error("usePanelDnd must be used within a PanelDndProvider");
+    throw new Error("usePanelDndTree must be used within a PanelDndProvider");
   }
   return context;
+}
+
+/**
+ * Hook for drag state (changes every pointer move). Use this only where
+ * drag-derived props (isDraggingAny, showIndicator, projectedDepth) are needed.
+ */
+export function usePanelDndDrag(): PanelDndDragContextValue {
+  const context = useContext(PanelDndDragCtx);
+  if (!context) {
+    throw new Error("usePanelDndDrag must be used within a PanelDndProvider");
+  }
+  return context;
+}
+
+/**
+ * Backward-compatible hook that merges both contexts.
+ * Prefer usePanelDndTree() / usePanelDndDrag() for selective re-renders.
+ */
+export function usePanelDnd(): PanelDndContextValue {
+  const tree = usePanelDndTree();
+  const drag = usePanelDndDrag();
+  return useMemo(() => ({ ...tree, ...drag }), [tree, drag]);
 }
 
 // ============================================================================
@@ -169,6 +203,12 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
     () => flattenTree(tree, collapsedIds),
     [tree, collapsedIds]
   );
+
+  // Refs for stable callbacks (avoids re-creating indentPanel/unindentPanel on every tree update)
+  const flattenedItemsRef = useRef(flattenedItems);
+  const panelMapRef = useRef(panelMap);
+  flattenedItemsRef.current = flattenedItems;
+  panelMapRef.current = panelMap;
 
   // Get sortable IDs (excluding children of the dragged item) + end drop zone
   const sortableIds = useMemo(() => {
@@ -313,16 +353,18 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
   }, []);
 
   const indentPanel = useCallback(async (panelId: string) => {
-    const index = flattenedItems.findIndex((i) => i.id === panelId);
+    const items = flattenedItemsRef.current;
+    const map = panelMapRef.current;
+    const index = items.findIndex((i) => i.id === panelId);
     if (index <= 0) return;
 
-    const item = flattenedItems[index];
-    const prevItem = flattenedItems[index - 1];
+    const item = items[index];
+    const prevItem = items[index - 1];
 
     // Can only indent if previous item exists and is at same or shallower depth
     if (!item || !prevItem || prevItem.depth < item.depth) return;
 
-    const newParent = panelMap.get(prevItem.id);
+    const newParent = map.get(prevItem.id);
     const targetPosition = newParent ? newParent.children.length : 0;
 
     await panelService.movePanel({
@@ -330,28 +372,29 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
       newParentId: prevItem.id,
       targetPosition,
     });
-  }, [flattenedItems, panelMap]);
+  }, []);
 
   const unindentPanel = useCallback(async (panelId: string) => {
-    const index = flattenedItems.findIndex((i) => i.id === panelId);
+    const items = flattenedItemsRef.current;
+    const index = items.findIndex((i) => i.id === panelId);
     if (index === -1) return;
 
-    const item = flattenedItems[index];
+    const item = items[index];
     if (!item || !item.parentId) return; // Not found or already root
 
     // Check if last sibling (only last sibling can unindent)
-    const nextItem = flattenedItems[index + 1];
+    const nextItem = items[index + 1];
     if (nextItem && nextItem.parentId === item.parentId) return;
 
     // Find grandparent
-    const parentItem = flattenedItems.find((i) => i.id === item.parentId);
+    const parentItem = items.find((i) => i.id === item.parentId);
     if (!parentItem) return;
 
     const grandparentId = parentItem.parentId;
     const currentParentId = item.parentId;
 
     // Find parent's position among its siblings to place after it
-    const siblings = flattenedItems.filter(
+    const siblings = items.filter(
       (i) => i.parentId === grandparentId && i.id !== panelId
     );
     const parentIndex = siblings.findIndex((s) => s.id === currentParentId);
@@ -362,7 +405,7 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
       newParentId: grandparentId,
       targetPosition,
     });
-  }, [flattenedItems]);
+  }, []);
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
     const id = event.active.id as string;
@@ -558,13 +601,9 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
     setOffsetLeft(0);
   }, []);
 
-  const contextValue = useMemo<PanelDndContextValue>(
+  // Split context values for selective re-renders
+  const treeContextValue = useMemo<PanelDndTreeContextValue>(
     () => ({
-      activeId,
-      overId,
-      projectedDepth: projection?.depth ?? null,
-      indicatorItemId,
-      showIndicatorBelow,
       flattenedItems,
       collapsedIds,
       toggleCollapse,
@@ -572,7 +611,18 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
       indentPanel,
       unindentPanel,
     }),
-    [activeId, overId, projection, indicatorItemId, showIndicatorBelow, flattenedItems, collapsedIds, toggleCollapse, expandIds, indentPanel, unindentPanel]
+    [flattenedItems, collapsedIds, toggleCollapse, expandIds, indentPanel, unindentPanel]
+  );
+
+  const dragContextValue = useMemo<PanelDndDragContextValue>(
+    () => ({
+      activeId,
+      overId,
+      projectedDepth: projection?.depth ?? null,
+      indicatorItemId,
+      showIndicatorBelow,
+    }),
+    [activeId, overId, projection, indicatorItemId, showIndicatorBelow]
   );
 
   return (
@@ -591,17 +641,19 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
       onDragCancel={handleDragCancel}
     >
       <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
-        <PanelDndContextInner.Provider value={contextValue}>
-          {children}
-          <DragOverlay dropAnimation={null}>
-            {activeId && (
-              <DraggedPanelPreview
-                title={activeTitle}
-                childCount={activeChildCount + 1}
-              />
-            )}
-          </DragOverlay>
-        </PanelDndContextInner.Provider>
+        <PanelDndTreeCtx.Provider value={treeContextValue}>
+          <PanelDndDragCtx.Provider value={dragContextValue}>
+            {children}
+            <DragOverlay dropAnimation={null}>
+              {activeId && (
+                <DraggedPanelPreview
+                  title={activeTitle}
+                  childCount={activeChildCount + 1}
+                />
+              )}
+            </DragOverlay>
+          </PanelDndDragCtx.Provider>
+        </PanelDndTreeCtx.Provider>
       </SortableContext>
     </DndContext>
   );

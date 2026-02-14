@@ -9,10 +9,27 @@ vi.stubGlobal("WebSocket", MockWebSocket);
 function createWsHarness(options?: { autoAckPublishes?: boolean }) {
   let onmessage: ((event: { data: string }) => void) | null = null;
   let capturedUrl: string | null = null;
-  let nextMessageId = 1;
+  let nextMessageId = 1000;
   const mockSend = vi.fn((data: string) => {
-    if (!options?.autoAckPublishes) return;
     const parsed = JSON.parse(data) as { action?: string; type?: string; payload?: unknown; persist?: boolean; ref?: number };
+
+    // Always auto-ack update-metadata so the PubSub layer resolves
+    if (parsed.action === "update-metadata" && onmessage && parsed.ref !== undefined) {
+      onmessage({
+        data: JSON.stringify({
+          kind: "persisted",
+          id: nextMessageId++,
+          ref: parsed.ref,
+          type: "presence",
+          payload: { action: "update", metadata: parsed.payload },
+          senderId: "me",
+          ts: Date.now(),
+        }),
+      });
+      return;
+    }
+
+    if (!options?.autoAckPublishes) return;
     if (parsed.action !== "publish" || !onmessage || parsed.ref === undefined) return;
     onmessage({
       data: JSON.stringify({
@@ -31,13 +48,21 @@ function createWsHarness(options?: { autoAckPublishes?: boolean }) {
     capturedUrl = url;
     const ws = {
       readyState: 1,
-      onopen: null,
+      _onopen: null as ((event: Event) => void) | null,
       _onmessage: null as ((event: { data: string }) => void) | null,
       onerror: null,
       onclose: null,
       close: vi.fn(),
       send: mockSend,
     };
+    Object.defineProperty(ws, "onopen", {
+      get: () => ws._onopen,
+      set: (handler: (event: Event) => void) => {
+        ws._onopen = handler;
+        // Auto-fire onopen on next microtick (like a real WebSocket connection)
+        if (handler) Promise.resolve().then(() => handler(new Event("open")));
+      },
+    });
     Object.defineProperty(ws, "onmessage", {
       get: () => ws._onmessage,
       set: (handler: (event: { data: string }) => void) => {

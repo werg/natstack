@@ -28,7 +28,7 @@ const DB_NAME = "pubsub-messages";
  * Token validation interface.
  */
 export interface TokenValidator {
-  validateToken(token: string): string | null;
+  validateToken(token: string): { callerId: string; callerKind: string } | null;
 }
 
 /**
@@ -78,6 +78,8 @@ export interface MessageStore {
   getMessageCount(channel: string, type?: string): number;
   /** Get the ID of the Nth-from-last message of a given type (for anchored replay). OFFSET 0 = last row. */
   getAnchorId(channel: string, type: string, offset: number): number | null;
+  /** Fetch update-message and error events for specific message UUIDs at or after a given ID */
+  queryTrailingUpdates(channel: string, messageUuids: string[], atOrAfterId: number): MessageRow[];
   createChannel(channel: string, contextId: string, createdBy: string, config?: ChannelConfig): void;
   getChannel(channel: string): ChannelInfo | null;
   /** Update channel config (merges with existing config) */
@@ -192,6 +194,15 @@ interface ServerMessage {
   }>;
   /** Whether there are more messages before these (sent in messages-before response) */
   hasMore?: boolean;
+  /** Trailing updates for boundary messages (messages-before response) */
+  trailingUpdates?: Array<{
+    id: number;
+    type: string;
+    payload: unknown;
+    senderId: string;
+    ts: number;
+    senderMetadata?: Record<string, unknown>;
+  }>;
   /** Agent manifests (list-agents-response) */
   agents?: AgentManifest[] | AgentInstanceSummary[];
   /** Whether operation succeeded (invite/remove-agent responses) */
@@ -472,6 +483,11 @@ abstract class BaseMessageStore implements MessageStore {
   abstract getAnchorId(channel: string, type: string, offset: number): number | null;
 
   /**
+   * Fetch trailing update-message and error events for specific message UUIDs.
+   */
+  abstract queryTrailingUpdates(channel: string, messageUuids: string[], atOrAfterId: number): MessageRow[];
+
+  /**
    * Register an agent for a channel (UPSERT - updates config if already exists).
    */
   abstract registerChannelAgent(channel: string, agentId: string, handle: string, config: string, registeredBy?: string): void;
@@ -691,6 +707,22 @@ class SqliteMessageStore extends BaseMessageStore {
     return rows.reverse(); // Return in chronological order (oldest first)
   }
 
+  queryTrailingUpdates(channel: string, messageUuids: string[], atOrAfterId: number): MessageRow[] {
+    if (!this.dbHandle || messageUuids.length === 0) return [];
+    const db = getDatabaseManager();
+    const placeholders = messageUuids.map(() => "?").join(", ");
+    return db.query<MessageRow>(
+      this.dbHandle,
+      `SELECT * FROM messages
+       WHERE channel = ?
+         AND id >= ?
+         AND type IN ('update-message', 'error')
+         AND json_extract(payload, '$.id') IN (${placeholders})
+       ORDER BY id ASC`,
+      [channel, atOrAfterId, ...messageUuids]
+    );
+  }
+
   getMessageCount(channel: string, type?: string): number {
     if (!this.dbHandle) return 0;
     const db = getDatabaseManager();
@@ -887,6 +919,18 @@ export class InMemoryMessageStore extends BaseMessageStore {
       .reverse();
   }
 
+  queryTrailingUpdates(channel: string, messageUuids: string[], atOrAfterId: number): MessageRow[] {
+    const uuidSet = new Set(messageUuids);
+    return this.messages.filter(m => {
+      if (m.channel !== channel || m.id < atOrAfterId) return false;
+      if (m.type !== "update-message" && m.type !== "error") return false;
+      try {
+        const payload = JSON.parse(m.payload);
+        return uuidSet.has(payload.id);
+      } catch { return false; }
+    });
+  }
+
   getMessageCount(channel: string, type?: string): number {
     return this.messages.filter((m) => m.channel === channel && (!type || m.type === type)).length;
   }
@@ -966,13 +1010,13 @@ export class InMemoryMessageStore extends BaseMessageStore {
  * Simple token validator for testing.
  */
 export class TestTokenValidator implements TokenValidator {
-  private tokens = new Map<string, string>();
+  private tokens = new Map<string, { callerId: string; callerKind: string }>();
 
-  addToken(token: string, clientId: string): void {
-    this.tokens.set(token, clientId);
+  addToken(token: string, clientId: string, callerKind: string = "panel"): void {
+    this.tokens.set(token, { callerId: clientId, callerKind });
   }
 
-  validateToken(token: string): string | null {
+  validateToken(token: string): { callerId: string; callerKind: string } | null {
     return this.tokens.get(token) ?? null;
   }
 }
@@ -1073,7 +1117,8 @@ export class PubSubServer {
     const metadata: Record<string, unknown> = {};
 
     // Validate token
-    const clientId = this.tokenValidator.validateToken(token);
+    const entry = this.tokenValidator.validateToken(token);
+    const clientId = entry?.callerId ?? null;
     if (!clientId) {
       console.warn(`[PubSubServer] Rejected connection - invalid token`);
       ws.close(4001, "unauthorized");
@@ -1376,7 +1421,35 @@ export class PubSubServer {
         };
       });
 
-      this.send(client.ws, { kind: "messages-before", messages, hasMore, ref });
+      // Fetch trailing update-message/error events beyond the page boundary
+      // for message UUIDs in the page (ensures boundary messages are complete)
+      const messageUuids: string[] = [];
+      const highestRowId = rowsToReturn.length > 0 ? rowsToReturn[rowsToReturn.length - 1].id : 0;
+      for (const msg of messages) {
+        if (msg.type === "message" && typeof msg.payload === "object" && msg.payload !== null) {
+          const uuid = (msg.payload as { id?: string }).id;
+          if (uuid) messageUuids.push(uuid);
+        }
+      }
+
+      let trailingUpdates: typeof messages = [];
+      if (messageUuids.length > 0 && highestRowId > 0) {
+        const trailingRows = this.messageStore.queryTrailingUpdates(
+          client.channel, messageUuids, highestRowId + 1
+        );
+        trailingUpdates = trailingRows.map(row => {
+          let payload: unknown;
+          try { payload = JSON.parse(row.payload); } catch { payload = row.payload; }
+          let senderMetadata: Record<string, unknown> | undefined;
+          if (row.sender_metadata) {
+            try { senderMetadata = JSON.parse(row.sender_metadata); } catch { /* ignore */ }
+          }
+          const attachments = deserializeAttachments(row.attachment);
+          return { id: row.id, type: row.type, payload, senderId: row.sender_id, ts: row.ts, senderMetadata, attachments };
+        });
+      }
+
+      this.send(client.ws, { kind: "messages-before", messages, trailingUpdates, hasMore, ref });
       return;
     }
 

@@ -64,12 +64,16 @@ export const SERVICE_POLICIES: Record<string, ServicePolicy> = {
   // ==========================================================================
 
   bridge: {
-    allowed: ["panel", "worker", "shell"],
+    allowed: ["panel", "worker", "shell", "server"],
     description: "Panel lifecycle (createPanel, close, navigation)",
   },
   typecheck: {
-    allowed: ["panel", "worker"],
+    allowed: ["panel", "worker", "server"],
     description: "Type definition fetching for panels and workers",
+  },
+  agentSettings: {
+    allowed: ["shell", "panel", "worker", "server"],
+    description: "Agent preferences and configuration",
   },
 
   // ==========================================================================
@@ -77,22 +81,39 @@ export const SERVICE_POLICIES: Record<string, ServicePolicy> = {
   // ==========================================================================
 
   ai: {
-    allowed: ["shell", "panel", "worker"],
+    allowed: ["shell", "panel", "worker", "server"],
     description: "AI/LLM operations",
   },
   db: {
-    allowed: ["shell", "panel", "worker"],
+    allowed: ["shell", "panel", "worker", "server"],
     description: "Database operations",
   },
   browser: {
-    allowed: ["shell", "panel", "worker"],
+    allowed: ["shell", "panel", "worker", "server"],
     description: "CDP/browser automation",
   },
   events: {
-    allowed: ["shell", "panel", "worker"],
+    allowed: ["shell", "panel", "worker", "server"],
     description: "Event subscriptions",
   },
   // Note: fs is handled internally by panels/workers via ZenFS, not via service dispatch
+
+  // ==========================================================================
+  // Server-only services (admin operations proxied from Electron)
+  // ==========================================================================
+
+  tokens: {
+    allowed: ["server"],
+    description: "Token management (create/revoke panel tokens)",
+  },
+  verdaccio: {
+    allowed: ["server"],
+    description: "Verdaccio registry queries",
+  },
+  git: {
+    allowed: ["server"],
+    description: "Git server queries",
+  },
 };
 
 /**

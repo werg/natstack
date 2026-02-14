@@ -32,7 +32,7 @@ import type {
   AvailableProvider,
   ModelRoleConfig,
   ShellPage,
-} from "../../shared/ipc/types.js";
+} from "../../shared/types.js";
 import { getPanelPersistence } from "../db/panelPersistence.js";
 import { getPanelSearchIndex } from "../db/panelSearchIndex.js";
 import type { SupportedProvider } from "../workspace/types.js";
@@ -60,7 +60,7 @@ import { getShellPagesForLauncher } from "../aboutBuilder.js";
 // These will be set during initialization to avoid circular dependencies
 let _panelManager: import("../panelManager.js").PanelManager | null = null;
 let _currentAppMode: AppMode = "chooser";
-let _aiHandler: import("../ai/aiHandler.js").AIHandler | null = null;
+let _serverClient: import("../serverClient.js").ServerClient | null = null;
 
 /**
  * Set the panel manager instance (called during initialization).
@@ -77,10 +77,10 @@ export function setShellServicesAppMode(mode: AppMode): void {
 }
 
 /**
- * Set the AI handler instance (called during initialization).
+ * Set the server client instance (called during initialization).
  */
-export function setShellServicesAiHandler(handler: import("../ai/aiHandler.js").AIHandler | null): void {
-  _aiHandler = handler;
+export function setShellServicesServerClient(client: import("../serverClient.js").ServerClient | null): void {
+  _serverClient = client;
 }
 
 function requirePanelManager(): import("../panelManager.js").PanelManager {
@@ -92,11 +92,12 @@ function requirePanelManager(): import("../panelManager.js").PanelManager {
 
 /**
  * Refresh AI providers after settings changes.
+ * Sends a reinitialize RPC to the server process.
  */
 async function refreshAiProviders(): Promise<void> {
-  if (!_aiHandler) return;
+  if (!_serverClient) return;
   try {
-    await _aiHandler.initialize();
+    await _serverClient.call("ai", "reinitialize", []);
   } catch (error) {
     console.error("[Settings] Failed to refresh AI providers:", error);
   }
@@ -176,9 +177,8 @@ export async function handleAppService(
         pnpmStore: false,
       });
       // Clear Verdaccio's in-memory caches (version cache, package discovery, ESM transformer)
-      const { isVerdaccioServerInitialized, getVerdaccioServer } = await import("../verdaccioServer.js");
-      if (isVerdaccioServerInitialized()) {
-        getVerdaccioServer().clearAllInMemoryCaches();
+      if (_serverClient) {
+        try { await _serverClient.call("verdaccio", "clearCaches", []); } catch {}
       }
       // Invalidate ready panels: reset state AND unload WebContents
       try {
@@ -471,9 +471,8 @@ export async function handleMenuService(
           pnpmStore: false,
         });
         // Clear Verdaccio's in-memory caches (version cache, package discovery, ESM transformer)
-        const { isVerdaccioServerInitialized, getVerdaccioServer } = await import("../verdaccioServer.js");
-        if (isVerdaccioServerInitialized()) {
-          getVerdaccioServer().clearAllInMemoryCaches();
+        if (_serverClient) {
+          try { await _serverClient.call("verdaccio", "clearCaches", []); } catch {}
         }
         // Invalidate ready panels: reset state AND unload WebContents
         try {

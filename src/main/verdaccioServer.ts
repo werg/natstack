@@ -23,7 +23,7 @@ import * as fs from "fs";
 import * as crypto from "crypto";
 import * as http from "http";
 import { promisify } from "util";
-import { app } from "electron";
+import { getUserDataPath } from "./envPaths.js";
 import { spawn, exec } from "child_process";
 import { runServer, ConfigBuilder } from "verdaccio";
 
@@ -283,7 +283,7 @@ export class VerdaccioServer {
 
   constructor(config?: VerdaccioServerConfig) {
     this.configuredPort = config?.port ?? PORT_RANGES.verdaccio.start;
-    this.storagePath = config?.storagePath ?? path.join(app.getPath("userData"), "verdaccio-storage");
+    this.storagePath = config?.storagePath ?? path.join(getUserDataPath(), "verdaccio-storage");
     this.workspaceRoot = config?.workspaceRoot ?? process.cwd();
     this.maxRestartAttempts = config?.maxRestartAttempts ?? 3;
     this.restartDelayMs = config?.restartDelayMs ?? 1000;

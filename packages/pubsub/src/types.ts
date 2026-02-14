@@ -107,6 +107,15 @@ export interface MessagesBeforeResponse {
     senderMetadata?: Record<string, unknown>;
     attachments?: Attachment[];
   }>;
+  trailingUpdates?: Array<{
+    id: number;
+    type: string;
+    payload: unknown;
+    senderId: string;
+    ts: number;
+    senderMetadata?: Record<string, unknown>;
+    attachments?: Attachment[];
+  }>;
   hasMore: boolean;
 }
 

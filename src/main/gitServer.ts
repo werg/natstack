@@ -1,5 +1,5 @@
 import { Git } from "node-git-server";
-import { app } from "electron";
+import { getUserDataPath } from "./envPaths.js";
 import * as path from "path";
 import * as fs from "fs";
 import * as fsPromises from "fs/promises";
@@ -8,7 +8,7 @@ import { spawn, spawnSync } from "child_process";
 import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("GitServer");
-import type { WorkspaceNode, WorkspaceTree, BranchInfo, CommitInfo } from "../shared/ipc/types.js";
+import type { WorkspaceNode, WorkspaceTree, BranchInfo, CommitInfo } from "../shared/types.js";
 import { GitAuthManager, getTokenManager } from "./tokenManager.js";
 import { tryBindPort } from "./portUtils.js";
 import type { GitWatcher } from "./workspace/gitWatcher.js";
@@ -82,7 +82,7 @@ export class GitServer {
 
   private ensureReposPath(): string {
     if (!this.resolvedReposPath) {
-      this.resolvedReposPath = this.configuredReposPath ?? app.getPath("userData");
+      this.resolvedReposPath = this.configuredReposPath ?? getUserDataPath();
     }
     return this.resolvedReposPath;
   }
@@ -249,7 +249,7 @@ export class GitServer {
    * Get or create a bearer token for a panel ID
    */
   getTokenForPanel(panelId: string): string {
-    return this.authManager.getOrCreateToken(panelId);
+    return this.authManager.getToken(panelId);
   }
 
   /**

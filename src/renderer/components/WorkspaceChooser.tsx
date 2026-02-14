@@ -14,7 +14,7 @@ import {
   wizardFormDataAtom,
 } from "../state/appModeAtoms";
 import { workspace } from "../shell/client";
-import type { RecentWorkspace } from "../../shared/ipc/types";
+import type { RecentWorkspace } from "../../shared/types";
 
 export function WorkspaceChooser() {
   const recentWorkspaces = useAtomValue(recentWorkspacesAtom);

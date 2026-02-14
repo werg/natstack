@@ -10,7 +10,7 @@
  * 6. Provides RPC bridge for DB operations
  */
 
-import { utilityProcess, type UtilityProcess } from "electron";
+// No top-level Electron import — detection happens at runtime in hasElectronUtilityProcess()
 import { randomUUID } from "crypto";
 import { EventEmitter } from "events";
 import type { AgentInitConfig, AgentInstanceInfo } from "@natstack/core";
@@ -30,8 +30,13 @@ import { getAgentDiscovery } from "./agentDiscovery.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
 import { createDevLogger } from "./devLog.js";
 import type { AIHandler, StreamTarget } from "./ai/aiHandler.js";
-import type { StreamTextOptions, StreamTextEvent } from "../shared/ipc/types.js";
+import type { StreamTextOptions, StreamTextEvent } from "../shared/types.js";
 import type { ToolExecutionResult } from "./ai/claudeCodeToolProxy.js";
+import {
+  type ProcessAdapter,
+  hasElectronUtilityProcess,
+  createNodeProcessAdapter,
+} from "./processAdapter.js";
 
 const log = createDevLogger("AgentHost");
 
@@ -75,7 +80,7 @@ interface LifecycleMessage {
 }
 
 interface AgentInstance extends AgentInstanceInfo {
-  process: UtilityProcess;
+  process: ProcessAdapter;
   rpcBridge: RpcBridge;
   /** Set when stop event has been emitted, prevents duplicate events from exit handler */
   stopEventEmitted?: boolean;
@@ -152,6 +157,34 @@ const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const ACTIVITY_CHECK_INTERVAL_MS = 60_000; // Check every minute
 
 // ===========================================================================
+// Process Adapter — uses shared processAdapter.ts module
+// ===========================================================================
+
+/**
+ * Spawn an agent process. Detection is separated from fork so that
+ * real fork failures (bad bundle path, permissions) propagate to the caller
+ * instead of being silently swallowed by a fallback.
+ */
+function createAgentProcess(
+  bundlePath: string,
+  opts: { serviceName: string; env: Record<string, string | undefined> }
+): ProcessAdapter {
+  if (hasElectronUtilityProcess()) {
+    // Electron path — fork errors propagate (not caught)
+    const { utilityProcess: up } = require("electron");
+    const proc = up.fork(bundlePath, [], {
+      serviceName: opts.serviceName,
+      stdio: "pipe",
+      env: opts.env,
+    });
+    return proc as unknown as ProcessAdapter;
+  }
+
+  // Node.js path
+  return createNodeProcessAdapter(bundlePath, opts.env);
+}
+
+// ===========================================================================
 // Host Transport Implementation
 // ===========================================================================
 
@@ -160,7 +193,7 @@ const ACTIVITY_CHECK_INTERVAL_MS = 60_000; // Check every minute
  * This bridges the gap between the main process and the agent process.
  */
 function createHostTransport(
-  proc: UtilityProcess,
+  proc: ProcessAdapter,
   selfId: string,
   onLifecycleMessage: (msg: LifecycleMessage) => void
 ): RpcTransport {
@@ -319,11 +352,9 @@ export class AgentHost extends EventEmitter {
 
     log.verbose(`[spawn] Forking utilityProcess for ${agentId} (instanceId=${instanceId.slice(0, 8)})`);
 
-    // 5. Fork utilityProcess
-    // stdio: 'pipe' is required to capture stdout/stderr - without it the streams are null
-    const proc = utilityProcess.fork(buildResult.bundlePath, [], {
+    // 5. Fork agent process (Electron utilityProcess or Node.js child_process)
+    const proc = createAgentProcess(buildResult.bundlePath, {
       serviceName: `agent-${agentId}-${instanceId.slice(0, 8)}`,
-      stdio: "pipe",
       env: {
         ...process.env,
         NODE_ENV: process.env["NODE_ENV"],

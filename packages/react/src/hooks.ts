@@ -654,3 +654,38 @@ function getBootstrapSuspense(): BootstrapResult | null {
 export function useBootstrapSuspense(): BootstrapResult | null {
   return getBootstrapSuspense();
 }
+
+// =============================================================================
+// Connection Error Hook
+// =============================================================================
+
+/**
+ * Subscribe to connection errors (terminal WebSocket auth failures).
+ * Returns null when connected, or an error object with code and reason.
+ *
+ * This fires when the WS transport encounters a terminal auth failure
+ * (e.g., invalid token, bad handshake). The panel is non-functional at
+ * this point since all RPC goes through the WebSocket.
+ *
+ * @example
+ * ```tsx
+ * function MyPanel() {
+ *   const connError = useConnectionError();
+ *   if (connError) {
+ *     return <div>Disconnected: {connError.reason} ({connError.code})</div>;
+ *   }
+ *   return <div>Panel content</div>;
+ * }
+ * ```
+ */
+export function useConnectionError(): { code: number; reason: string } | null {
+  const [error, setError] = useState<{ code: number; reason: string } | null>(null);
+
+  useEffect(() => {
+    return runtime.onConnectionError((err) => {
+      setError(err);
+    });
+  }, []);
+
+  return error;
+}

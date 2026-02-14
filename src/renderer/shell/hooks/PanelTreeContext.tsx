@@ -27,7 +27,7 @@ import type {
   PanelSummary,
   PanelAncestor,
   DescendantSiblingGroup,
-} from "../../../shared/ipc/types.js";
+} from "../../../shared/types.js";
 import {
   getPanelType,
   getPanelContextId,
@@ -63,8 +63,6 @@ export interface FullPanel {
     buildState?: string;
     buildProgress?: string;
     buildLog?: string;
-    dirtyRepoPath?: string;
-    notGitRepoPath?: string;
   };
   // Type-specific fields
   path?: string;

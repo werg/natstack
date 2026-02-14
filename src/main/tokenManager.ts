@@ -1,67 +1,134 @@
 import { randomBytes } from "crypto";
+import type { CallerKind } from "./serviceDispatcher.js";
 
 /**
- * Global token manager for panel/worker authentication.
+ * Global token manager for panel/worker/shell authentication.
  * Provides unified token management for all services (Git, CDP, etc.)
  *
- * Each panel/worker ID gets one token. Services can use this manager
- * to authenticate requests from panels/workers.
+ * Each caller ID gets one token. Services can use this manager
+ * to authenticate requests from panels/workers/shell.
  */
 export class TokenManager {
-  // token -> panelId
-  private tokenToPanelId = new Map<string, string>();
-  // panelId -> token
-  private panelIdToToken = new Map<string, string>();
+  // token -> { callerId, callerKind }
+  private tokenToEntry = new Map<
+    string,
+    { callerId: string; callerKind: CallerKind }
+  >();
+  // callerId -> token
+  private callerIdToToken = new Map<string, string>();
+  // revocation listeners
+  private revokeListeners: ((callerId: string) => void)[] = [];
+  // admin token for privileged operations
+  private adminToken: string | null = null;
 
   /**
-   * Generate or retrieve token for a panel/worker ID.
+   * Create a new token for a caller. Throws if a token already exists for this callerId.
    */
-  getOrCreateToken(panelId: string): string {
-    const existing = this.panelIdToToken.get(panelId);
-    if (existing) {
-      return existing;
+  createToken(callerId: string, callerKind: CallerKind): string {
+    if (this.callerIdToToken.has(callerId)) {
+      throw new Error(`Token already exists for caller "${callerId}"`);
     }
 
     const token = randomBytes(32).toString("hex");
-    this.tokenToPanelId.set(token, panelId);
-    this.panelIdToToken.set(panelId, token);
+    this.tokenToEntry.set(token, { callerId, callerKind });
+    this.callerIdToToken.set(callerId, token);
+    return token;
+  }
+
+  /**
+   * Ensure a token exists for a caller. If one already exists, return it.
+   * If not, create a new one. Used by rebuild/restore paths where the token
+   * may or may not have been revoked.
+   */
+  ensureToken(callerId: string, callerKind: CallerKind): string {
+    const existing = this.callerIdToToken.get(callerId);
+    if (existing) return existing;
+    return this.createToken(callerId, callerKind);
+  }
+
+  /**
+   * Get the existing token for a caller. Throws if no token exists.
+   */
+  getToken(callerId: string): string {
+    const token = this.callerIdToToken.get(callerId);
+    if (!token) {
+      throw new Error(`No token exists for caller "${callerId}"`);
+    }
     return token;
   }
 
   /**
    * Validate a bearer token.
-   * Returns the panel ID if valid, null otherwise.
+   * Returns the entry { callerId, callerKind } if valid, null otherwise.
    */
-  validateToken(token: string): string | null {
-    return this.tokenToPanelId.get(token) ?? null;
+  validateToken(
+    token: string
+  ): { callerId: string; callerKind: CallerKind } | null {
+    return this.tokenToEntry.get(token) ?? null;
   }
 
   /**
-   * Get the panel ID associated with a token.
+   * Convenience: get the caller ID (panel ID) associated with a token.
    */
   getPanelIdFromToken(token: string): string | null {
-    return this.tokenToPanelId.get(token) ?? null;
+    const entry = this.tokenToEntry.get(token);
+    return entry?.callerId ?? null;
   }
 
   /**
-   * Revoke token for a panel (e.g., when panel is closed).
+   * Revoke token for a caller (e.g., when panel is closed).
+   * Notifies all revocation listeners.
    */
-  revokeToken(panelId: string): boolean {
-    const token = this.panelIdToToken.get(panelId);
+  revokeToken(callerId: string): boolean {
+    const token = this.callerIdToToken.get(callerId);
     if (!token) return false;
 
-    this.panelIdToToken.delete(panelId);
-    this.tokenToPanelId.delete(token);
+    this.callerIdToToken.delete(callerId);
+    this.tokenToEntry.delete(token);
+
+    for (const listener of this.revokeListeners) {
+      listener(callerId);
+    }
+
     return true;
   }
 
   /**
-   * Clear all tokens.
+   * Register a listener that is called when a token is revoked.
+   */
+  onRevoke(listener: (callerId: string) => void): void {
+    this.revokeListeners.push(listener);
+  }
+
+  /**
+   * Clear all tokens and notify listeners for each.
    */
   clear(): void {
-    this.tokenToPanelId.clear();
-    this.panelIdToToken.clear();
+    const callerIds = [...this.callerIdToToken.keys()];
+    this.tokenToEntry.clear();
+    this.callerIdToToken.clear();
+
+    for (const callerId of callerIds) {
+      for (const listener of this.revokeListeners) {
+        listener(callerId);
+      }
+    }
   }
+
+  /**
+   * Set the admin token for privileged operations.
+   */
+  setAdminToken(token: string): void {
+    this.adminToken = token;
+  }
+
+  /**
+   * Validate an admin token.
+   */
+  validateAdminToken(token: string): boolean {
+    return this.adminToken !== null && token === this.adminToken;
+  }
+
 }
 
 // =============================================================================
@@ -91,10 +158,10 @@ export class GitAuthManager {
   constructor(private tokenManager: TokenManager) {}
 
   /**
-   * Get or create a token for a panel.
+   * Get the token for a panel.
    */
-  getOrCreateToken(panelId: string): string {
-    return this.tokenManager.getOrCreateToken(panelId);
+  getToken(panelId: string): string {
+    return this.tokenManager.getToken(panelId);
   }
 
   /**
@@ -148,7 +215,8 @@ export class GitAuthManager {
     repoPath: string,
     operation: "fetch" | "push"
   ): { valid: boolean; reason?: string } {
-    const panelId = this.tokenManager.validateToken(token);
+    const entry = this.tokenManager.validateToken(token);
+    const panelId = entry?.callerId ?? null;
     if (!panelId) {
       return { valid: false, reason: "Invalid token" };
     }

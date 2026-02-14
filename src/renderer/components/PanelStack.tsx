@@ -9,7 +9,7 @@ import {
 } from "@radix-ui/themes";
 
 import type { LazyTitleNavigationData, LazyStatusNavigationData } from "./navigationTypes";
-import type { PanelContextMenuAction } from "../../shared/ipc/types";
+import type { PanelContextMenuAction } from "../../shared/types";
 import {
   useRootPanels,
   useFullPanel,
@@ -20,8 +20,6 @@ import {
 import { panel as panelService, view } from "../shell/client";
 import { useNavigation } from "./NavigationContext";
 import { LazyPanelTreeSidebar } from "./LazyPanelTreeSidebar";
-import { DirtyRepoView } from "./DirtyRepoView";
-import { GitInitView } from "./GitInitView";
 import { useShellEvent } from "../shell/useShellEvent";
 
 interface PanelStackProps {
@@ -414,27 +412,8 @@ export function PanelStack({
       );
     }
 
-    // Show GitInitView when panel folder is not a git repository
-    if (artifacts?.buildState === "not-git-repo" && artifacts.notGitRepoPath) {
-      return (
-        <GitInitView
-          panelId={visiblePanel.id}
-          repoPath={artifacts.notGitRepoPath}
-          onContinueBuild={() => panelService.initGitRepo(visiblePanel.id)}
-        />
-      );
-    }
-
-    // Show DirtyRepoView when panel has uncommitted changes
-    if (artifacts?.buildState === "dirty" && artifacts.dirtyRepoPath) {
-      return (
-        <DirtyRepoView
-          panelId={visiblePanel.id}
-          repoPath={artifacts.dirtyRepoPath}
-          onRetryBuild={() => panelService.retryDirtyBuild(visiblePanel.id)}
-        />
-      );
-    }
+    // Dirty/not-git-repo states are now handled by navigating to shell pages
+    // (dirty-repo and git-init) in the build pipeline
 
     if (!artifacts?.htmlPath) {
       // Browser and shell panels - WebContentsView is managed by main process

@@ -1,9 +1,9 @@
 import { protocol, session } from "electron";
 import * as path from "path";
-import type { ProtocolBuildArtifacts } from "../shared/ipc/types.js";
+import type { ProtocolBuildArtifacts } from "../shared/types.js";
 import { randomBytes } from "crypto";
 import { createDevLogger } from "./devLog.js";
-import { getVerdaccioServer, isVerdaccioServerInitialized } from "./verdaccioServer.js";
+import { getVerdaccioUrl, isVerdaccioReady } from "./verdaccioConfig.js";
 
 const log = createDevLogger("PanelProtocol");
 
@@ -294,9 +294,8 @@ function injectBundleIntoHtml(html: string, panelId: string, token: string): str
   // Replace Verdaccio ESM placeholder with current URL
   // This allows cached builds to work even if Verdaccio restarts on a different port
   if (result.includes("__VERDACCIO_ESM__")) {
-    if (isVerdaccioServerInitialized()) {
-      const verdaccioUrl = getVerdaccioServer().getBaseUrl();
-      result = result.replace(/__VERDACCIO_ESM__/g, `${verdaccioUrl}/-/esm`);
+    if (isVerdaccioReady()) {
+      result = result.replace(/__VERDACCIO_ESM__/g, `${getVerdaccioUrl()!}/-/esm`);
     } else {
       // Verdaccio not running - remove the import map to avoid broken imports
       // The panel will fail to load external modules, but at least won't have connection errors

@@ -22,6 +22,76 @@ const nodeBuiltinsExternalPlugin = {
   },
 };
 
+const smokeTestConfig = {
+  entryPoints: ["src/server/smoke-test.ts"],
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "cjs",
+  outfile: "dist/smoke-test.cjs",
+  external: ["electron", "esbuild", "@npmcli/arborist", "better-sqlite3",
+             "verdaccio", "node-git-server"],
+  logOverride,
+};
+
+// Redirect better-sqlite3 to the server-native copy (compiled for system Node, not Electron).
+// Path is relative to outfile (dist/server.mjs) so the build artifact is portable.
+const serverNativeSqlitePath = path.relative(
+  path.dirname("dist/server.mjs"),
+  "server-native/node_modules/better-sqlite3/lib/index.js"
+).replace(/\\/g, "/");  // ESM import specifiers must use forward slashes
+const serverNativePlugin = {
+  name: "server-native-redirect",
+  setup(build) {
+    build.onResolve({ filter: /^better-sqlite3$/ }, () => ({
+      path: serverNativeSqlitePath.startsWith(".") ? serverNativeSqlitePath : "./" + serverNativeSqlitePath,
+      external: true,
+    }));
+  },
+};
+
+const serverNativeReady = fs.existsSync("server-native/node_modules/better-sqlite3");
+
+// CJS build for utilityProcess.fork() from Electron — uses Electron's built-in better-sqlite3
+const serverElectronConfig = {
+  entryPoints: ["src/server/index.ts"],
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "cjs",
+  outfile: "dist/server-electron.cjs",
+  external: ["electron", "esbuild", "@npmcli/arborist", "better-sqlite3",
+             "verdaccio", "node-git-server"],
+  sourcemap: isDev,
+  minify: !isDev,
+  logOverride,
+};
+
+const serverConfig = {
+  entryPoints: ["src/server/index.ts"],
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "esm",
+  outfile: "dist/server.mjs",
+  external: ["electron", "esbuild", "@npmcli/arborist",
+             "verdaccio", "node-git-server"],
+  plugins: [serverNativePlugin],
+  sourcemap: isDev,
+  minify: !isDev,
+  logOverride,
+  banner: {
+    js: `#!/usr/bin/env node
+import { createRequire as __createRequire } from "module";
+import { fileURLToPath as __fileURLToPath } from "url";
+import { dirname as __pathDirname } from "path";
+const require = __createRequire(import.meta.url);
+const __filename = __fileURLToPath(import.meta.url);
+const __dirname = __pathDirname(__filename);
+`.trim(),
+  },
+};
+
 const mainConfig = {
   entryPoints: ["src/main/index.ts"],
   bundle: true,
@@ -95,14 +165,53 @@ const adblockPreloadConfig = {
   logOverride,
 };
 
+// Plugin to rewrite bare Node builtin imports to node: prefix and mark electron as external.
+// Required for ESM splitting: esbuild can't bundle builtins but the renderer runs with
+// nodeIntegration: true, so node:-prefixed imports work at runtime.
+const rendererExternalsPlugin = {
+  name: "renderer-externals",
+  setup(build) {
+    // Hardcoded set of Node builtin module names (covers all common ones)
+    const builtins = new Set([
+      "assert", "buffer", "child_process", "cluster", "console", "constants",
+      "crypto", "dgram", "dns", "domain", "events", "fs", "fs/promises",
+      "http", "http2", "https", "module", "net", "os", "path", "perf_hooks",
+      "process", "punycode", "querystring", "readline", "repl", "stream",
+      "string_decoder", "sys", "timers", "tls", "tty", "url", "util", "v8",
+      "vm", "worker_threads", "zlib",
+    ]);
+
+    // Mark electron as external
+    build.onResolve({ filter: /^electron$/ }, (args) => ({
+      path: args.path,
+      external: true,
+    }));
+
+    // Rewrite bare builtin imports to node: prefix
+    build.onResolve({ filter: /.*/ }, (args) => {
+      if (builtins.has(args.path)) {
+        return { path: `node:${args.path}`, external: true };
+      }
+      // Already node:-prefixed — pass through as external
+      if (args.path.startsWith("node:")) {
+        return { path: args.path, external: true };
+      }
+      return undefined;
+    });
+  },
+};
+
 const rendererConfig = {
   entryPoints: ["src/renderer/index.tsx"],
   bundle: true,
   // Shell has nodeIntegration enabled, so we can use Node.js platform
   platform: "node",
   target: "node20",
-  format: "cjs",
-  outfile: "dist/renderer.js",
+  format: "esm",
+  outdir: "dist/renderer",
+  entryNames: "[name]",
+  chunkNames: "chunks/[name]-[hash]",
+  splitting: true,
   sourcemap: isDev,
   minify: !isDev,
   logOverride,
@@ -120,8 +229,7 @@ const rendererConfig = {
   define: {
     "process.env.NODE_ENV": isDev ? '"development"' : '"production"',
   },
-  // Electron is external; fs modules are external since DirtyRepoView uses direct Node.js fs
-  external: ["electron", "fs", "fs/promises", "path"],
+  plugins: [rendererExternalsPlugin],
 };
 
 function copyAssets() {
@@ -273,7 +381,19 @@ async function build() {
     await esbuild.build(safePreloadConfig);
     await esbuild.build(unsafePreloadConfig);
     await esbuild.build(adblockPreloadConfig);
+    // Clean stale renderer artifacts before ESM build (prevents accidental loading of old CJS bundle)
+    try { fs.unlinkSync("dist/renderer.js"); } catch {}
+    try { fs.unlinkSync("dist/renderer.css"); } catch {}
     await esbuild.build(rendererConfig);
+    await esbuild.build(smokeTestConfig);
+    await esbuild.build(serverElectronConfig);
+    if (serverNativeReady) {
+      await esbuild.build(serverConfig);
+    } else {
+      // Remove stale artifact so bin/script don't point at an outdated bundle
+      try { fs.unlinkSync("dist/server.mjs"); } catch {}
+      console.warn("[build] Skipping standalone server build — run 'pnpm server:install' first");
+    }
     await buildDependencyWorkers();
 
     // ========================================================================

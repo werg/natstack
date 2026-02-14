@@ -60,6 +60,15 @@ interface ServerMessage {
   }>;
   /** Whether there are more messages before these (sent in messages-before response) */
   hasMore?: boolean;
+  /** Trailing updates for boundary messages (messages-before response) */
+  trailingUpdates?: Array<{
+    id: number;
+    type: string;
+    payload: unknown;
+    senderId: string;
+    ts: number;
+    senderMetadata?: Record<string, unknown>;
+  }>;
   /** Agent manifests (list-agents-response) */
   agents?: AgentManifest[] | AgentInstanceSummary[];
   /** Whether operation succeeded (invite/remove-agent responses) */
@@ -142,6 +151,15 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
   /** Get older messages before a given ID (for pagination UI) */
   getMessagesBefore(beforeId: number, limit?: number): Promise<{
     messages: Array<{
+      id: number;
+      type: string;
+      payload: unknown;
+      senderId: string;
+      ts: number;
+      senderMetadata?: Record<string, unknown>;
+      attachments?: Attachment[];
+    }>;
+    trailingUpdates?: Array<{
       id: number;
       type: string;
       payload: unknown;
@@ -250,6 +268,15 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   // Pending get-messages-before tracking
   type MessagesBeforeResult = {
     messages: Array<{
+      id: number;
+      type: string;
+      payload: unknown;
+      senderId: string;
+      ts: number;
+      senderMetadata?: Record<string, unknown>;
+      attachments?: Attachment[];
+    }>;
+    trailingUpdates?: Array<{
       id: number;
       type: string;
       payload: unknown;
@@ -434,6 +461,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
             clearTimeout(pending.timeoutId);
             pending.resolve({
               messages: msg.messages ?? [],
+              trailingUpdates: msg.trailingUpdates,
               hasMore: msg.hasMore ?? false,
             });
             pendingMessagesBeforeRequests.delete(msg.ref);

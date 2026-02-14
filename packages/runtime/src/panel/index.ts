@@ -5,14 +5,17 @@ if (typeof globalThis.Buffer === "undefined") {
   globalThis.Buffer = Buffer;
 }
 
-import { createPanelTransport } from "./transport.js";
+import { createPanelTransport, createServerTransport } from "./transport.js";
 import { fs, fsReady } from "./fs.js"; // Conditional fs: Node.js for unsafe, ZenFS for safe
 import { initRuntime } from "../setup/initRuntime.js";
 export type { BootstrapResult } from "../shared/bootstrap.js";
+export type { ThemeAppearance, RuntimeFs, FileStats, MkdirOptions, RmOptions } from "../types.js";
+export type { AboutPage } from "../core/nsLinks.js";
 
 // Initialize runtime with panel-specific providers
 const { runtime, config } = initRuntime({
   createTransport: createPanelTransport,
+  createServerTransport,
   fs,
   fsReady,
 });
@@ -62,6 +65,7 @@ export const {
   onChildAdded,
   onChildRemoved,
   onChildCreationError,
+  onConnectionError,
   getInfo,
   closeSelf,
   unloadSelf,
