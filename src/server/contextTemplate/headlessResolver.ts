@@ -54,10 +54,46 @@ export interface SerializableTemplateSpec {
 }
 
 // ---------------------------------------------------------------------------
-// Cache: specHash → ImmutableTemplateSpec
+// Cache: specHash → ImmutableTemplateSpec (bounded LRU)
 // ---------------------------------------------------------------------------
 
-const specCache = new Map<string, ImmutableTemplateSpec>();
+/** Maximum number of entries (each spec gets 2 entries: full hash + short hash) */
+const SPEC_CACHE_MAX_ENTRIES = 200;
+
+/**
+ * Simple LRU cache backed by a Map. Map iteration order tracks insertion order;
+ * on access we delete-and-re-insert to move the entry to the tail. When the
+ * cache exceeds the limit, the oldest (first) entries are evicted.
+ */
+class LruSpecCache {
+  private map = new Map<string, ImmutableTemplateSpec>();
+
+  get(key: string): ImmutableTemplateSpec | undefined {
+    const val = this.map.get(key);
+    if (val !== undefined) {
+      // Move to tail (most recently used)
+      this.map.delete(key);
+      this.map.set(key, val);
+    }
+    return val;
+  }
+
+  set(key: string, value: ImmutableTemplateSpec): void {
+    // Delete first to refresh insertion order
+    this.map.delete(key);
+    this.map.set(key, value);
+    this.evict();
+  }
+
+  private evict(): void {
+    while (this.map.size > SPEC_CACHE_MAX_ENTRIES) {
+      const oldest = this.map.keys().next().value;
+      if (oldest !== undefined) this.map.delete(oldest);
+    }
+  }
+}
+
+const specCache = new LruSpecCache();
 
 // ---------------------------------------------------------------------------
 // Resolution

@@ -26,8 +26,8 @@ const tabPanels = new Map();
 /** @type {Map<string, object>} panelId → panel metadata */
 const panels = new Map();
 
-/** @type {Map<string, number>} panelId → tabId for hidden init tabs (pre-warming) */
-const initTabs = new Map();
+/** @type {Map<string, number>} panelId → windowId for minimized init windows (pre-warming) */
+const initWindows = new Map();
 
 /** @type {boolean} */
 let connected = false;
@@ -217,7 +217,7 @@ async function handleSSEEvent(event, dataStr, config) {
 
       // Close pre-warming init tab (if still open) — the real panel
       // will now handle any remaining bootstrap inline
-      closeInitTab(data.panelId);
+      closeInitWindow(data.panelId);
 
       // Auto-open tab if configured and URL is available
       if (config.autoOpenTabs && data.url && !panelTabs.has(data.panelId)) {
@@ -245,7 +245,7 @@ async function handleSSEEvent(event, dataStr, config) {
       panels.delete(data.panelId);
 
       // Close any pre-warming init tab
-      closeInitTab(data.panelId);
+      closeInitWindow(data.panelId);
 
       // Auto-close tab if configured
       if (config.autoCloseTabs) {
@@ -286,15 +286,17 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     tabPanels.delete(tabId);
   }
 
-  // Also clean up init tabs
-  for (const [pid, tid] of initTabs) {
-    if (tid === tabId) {
-      initTabs.delete(pid);
+  broadcastStatus();
+});
+
+// Clean up init window mappings when windows are closed
+chrome.windows.onRemoved.addListener((windowId) => {
+  for (const [pid, wid] of initWindows) {
+    if (wid === windowId) {
+      initWindows.delete(pid);
       break;
     }
   }
-
-  broadcastStatus();
 });
 
 // Track when tabs navigate to detect manually opened natstack tabs
@@ -346,10 +348,12 @@ async function groupNatstackTabs() {
 // ---------------------------------------------------------------------------
 
 /**
- * Pre-warm a panel's context by opening a hidden tab to /__init__.
- * The init page runs the OPFS bootstrap (clones git repos into OPFS) and
- * signals completion via chrome.runtime.sendMessage(). This way, when the
- * real panel tab opens after the build completes, OPFS is already populated.
+ * Pre-warm a panel's context by opening a minimized popup window to /__init__.
+ *
+ * Uses a minimized popup window instead of a background tab so the user
+ * doesn't see a tab flash in their tab bar. The init page runs the OPFS
+ * bootstrap (clones git repos into OPFS) and signals completion via
+ * chrome.runtime.sendMessage().
  *
  * @param {string} panelId
  * @param {string} subdomain
@@ -357,8 +361,7 @@ async function groupNatstackTabs() {
  * @param {object} config
  */
 async function preWarmContext(panelId, subdomain, initToken, config) {
-  // Don't pre-warm if we already have an init tab for this panel
-  if (initTabs.has(panelId)) return;
+  if (initWindows.has(panelId)) return;
 
   try {
     const serverUrl = new URL(config.serverUrl);
@@ -367,18 +370,21 @@ async function preWarmContext(panelId, subdomain, initToken, config) {
 
     console.log(`[NatStack] Pre-warming context for ${panelId}: ${initUrl}`);
 
-    const tab = await chrome.tabs.create({
+    const win = await chrome.windows.create({
       url: initUrl,
-      active: false,   // Don't steal focus
-      pinned: false,
+      type: "popup",
+      state: "minimized",
+      focused: false,
+      width: 400,
+      height: 300,
     });
 
-    if (tab.id != null) {
-      initTabs.set(panelId, tab.id);
+    if (win.id != null) {
+      initWindows.set(panelId, win.id);
 
-      // Auto-close init tab after 30s timeout (safety net)
+      // Auto-close after 30s timeout (safety net)
       setTimeout(() => {
-        closeInitTab(panelId);
+        closeInitWindow(panelId);
       }, 30000);
     }
   } catch (err) {
@@ -387,19 +393,19 @@ async function preWarmContext(panelId, subdomain, initToken, config) {
 }
 
 /**
- * Close and clean up a pre-warming init tab.
+ * Close and clean up a pre-warming init window.
  * @param {string} panelId
  */
-async function closeInitTab(panelId) {
-  const tabId = initTabs.get(panelId);
-  if (tabId == null) return;
-  initTabs.delete(panelId);
+async function closeInitWindow(panelId) {
+  const windowId = initWindows.get(panelId);
+  if (windowId == null) return;
+  initWindows.delete(panelId);
 
   try {
-    await chrome.tabs.remove(tabId);
-    console.log(`[NatStack] Closed init tab for ${panelId}`);
+    await chrome.windows.remove(windowId);
+    console.log(`[NatStack] Closed init window for ${panelId}`);
   } catch {
-    // Tab already closed
+    // Window already closed
   }
 }
 
@@ -480,7 +486,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     // Find the panel by contextId and close its init tab
     for (const [panelId, panel] of panels) {
       if (panel.contextId === msg.contextId || panel.subdomain === msg.subdomain) {
-        closeInitTab(panelId);
+        closeInitWindow(panelId);
         break;
       }
     }

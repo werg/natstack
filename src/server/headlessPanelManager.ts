@@ -259,25 +259,7 @@ export class HeadlessPanelManager {
     // so the extension can open /__init__ immediately for OPFS bootstrap.
     let initToken: string | undefined;
     if (this.deps.panelHttpServer) {
-      const earlyConfig = {
-        panelId: panel.id,
-        contextId: panel.contextId,
-        subdomain: panel.subdomain,
-        parentId: panel.parentId,
-        rpcPort: this.deps.rpcPort,
-        rpcToken: panel.rpcToken!,
-        gitBaseUrl: this.deps.gitBaseUrl,
-        gitToken: this.deps.getGitTokenForPanel(panel.id),
-        pubsubPort: this.deps.pubsubPort,
-        stateArgs: panel.stateArgs,
-        sourceRepo: panel.source,
-        resolvedRepoArgs: panel.repoArgs ?? {},
-        env: panel.env,
-        theme: "dark" as const,
-        specHash: panel.specHash ?? undefined,
-        specHashShort: panel.specHashShort ?? undefined,
-      };
-      initToken = this.deps.panelHttpServer.registerPendingPanel(panelId, earlyConfig);
+      initToken = this.deps.panelHttpServer.registerPendingPanel(panelId, this.buildPanelConfig(panel));
     }
 
     log.info(`[Panel] Created: ${panelId} (${subdomain}.localhost, ctx=${contextId}, spec=${specHashShort ?? "none"})`);
@@ -486,6 +468,31 @@ export class HeadlessPanelManager {
   // =========================================================================
 
   /**
+   * Build a PanelConfig from a HeadlessPanel.
+   * Called during both early registration and final storePanel.
+   */
+  private buildPanelConfig(panel: HeadlessPanel): import("./panelHttpServer.js").PanelConfig {
+    return {
+      panelId: panel.id,
+      contextId: panel.contextId,
+      subdomain: panel.subdomain,
+      parentId: panel.parentId,
+      rpcPort: this.deps.rpcPort,
+      rpcToken: panel.rpcToken!,
+      gitBaseUrl: this.deps.gitBaseUrl,
+      gitToken: this.deps.getGitTokenForPanel(panel.id),
+      pubsubPort: this.deps.pubsubPort,
+      stateArgs: panel.stateArgs,
+      sourceRepo: panel.source,
+      resolvedRepoArgs: panel.repoArgs ?? {},
+      env: panel.env,
+      theme: "dark",
+      specHash: panel.specHash ?? undefined,
+      specHashShort: panel.specHashShort ?? undefined,
+    };
+  }
+
+  /**
    * Build a panel and store its artifacts in the HTTP panel server.
    */
   private async buildAndServePanel(panel: HeadlessPanel): Promise<void> {
@@ -498,27 +505,7 @@ export class HeadlessPanelManager {
       panel.title = buildResult.metadata.name ?? panel.title;
 
       if (this.deps.panelHttpServer && buildResult.html && buildResult.bundle) {
-        // Get git token for this panel
-        const gitToken = this.deps.getGitTokenForPanel(panel.id);
-
-        this.deps.panelHttpServer.storePanel(panel.id, buildResult, {
-          panelId: panel.id,
-          contextId: panel.contextId,
-          subdomain: panel.subdomain,
-          parentId: panel.parentId,
-          rpcPort: this.deps.rpcPort,
-          rpcToken: panel.rpcToken!,
-          gitBaseUrl: this.deps.gitBaseUrl,
-          gitToken,
-          pubsubPort: this.deps.pubsubPort,
-          stateArgs: panel.stateArgs,
-          sourceRepo: panel.source,
-          resolvedRepoArgs: panel.repoArgs ?? {},
-          env: panel.env,
-          theme: "dark",
-          specHash: panel.specHash ?? undefined,
-          specHashShort: panel.specHashShort ?? undefined,
-        });
+        this.deps.panelHttpServer.storePanel(panel.id, buildResult, this.buildPanelConfig(panel));
 
         const panelUrl = this.deps.panelHttpServer.getPanelUrl(panel.id);
         this.emitEvent({
