@@ -6,22 +6,44 @@
  * /panels/:encodedPanelId/. The HTML is augmented with:
  *
  * 1. Injected globals (replacing Electron's preload/contextBridge)
- * 2. An inline WebSocket transport bridge (adapted from wsTransport.ts)
+ * 2. A pre-compiled browser transport (built from src/server/browserTransportEntry.ts)
  * 3. Proper CSP headers
  *
  * Authentication: Per-panel tokens are passed as ?token= query params on core
  * resources (HTML, bundle.js, bundle.css). This matches the Electron protocol
- * handler's approach. The token is also embedded in the HTML for the inline
- * transport to send as ws:auth.
+ * handler's approach. The token is also embedded in the HTML for the transport
+ * to send as ws:auth.
  */
 
 import { createServer, type Server as HttpServer } from "http";
+import * as fs from "fs";
 import * as path from "path";
 import { randomBytes } from "crypto";
 import { createDevLogger } from "../main/devLog.js";
 import type { BuildResult } from "./buildV2/buildStore.js";
 
 const log = createDevLogger("PanelHttpServer");
+
+// ---------------------------------------------------------------------------
+// Pre-compiled browser transport
+// ---------------------------------------------------------------------------
+
+/**
+ * Load the browser transport IIFE (built from src/server/browserTransportEntry.ts).
+ * Falls back to a stub if the file is not available (e.g. during tests).
+ */
+function loadBrowserTransport(): string {
+  // In the bundled server, __dirname points to dist/ where browserTransport.js lives
+  const transportPath = path.join(__dirname, "browserTransport.js");
+  try {
+    return fs.readFileSync(transportPath, "utf-8");
+  } catch {
+    log.info(`[PanelHttpServer] Browser transport not found at ${transportPath}, using inline stub`);
+    return `console.warn("[NatStack] Browser transport not available — panel RPC will not work.");`;
+  }
+}
+
+const BROWSER_TRANSPORT_JS = loadBrowserTransport();
 
 // ---------------------------------------------------------------------------
 // Types
@@ -349,226 +371,20 @@ export class PanelHttpServer {
       `globalThis.__natstackPubSubConfig = ${pubsubConfig};`,
       `globalThis.__natstackEnv = ${env};`,
       `globalThis.__natstackStateArgs = ${stateArgs};`,
+      `globalThis.__natstackRpcPort = ${JSON.stringify(config.rpcPort)};`,
+      `globalThis.__natstackRpcToken = ${JSON.stringify(config.rpcToken)};`,
       `globalThis.process = { env: ${env} };`,
     ].join("\n");
   }
 
   /**
-   * Generate the inline browser transport script. This is a self-contained
-   * adaptation of src/preload/wsTransport.ts that runs in a regular browser
-   * context (no Node.js, no Buffer, no process.argv).
-   *
-   * The transport implements the same ws:auth / ws:rpc / ws:stream-* protocol
-   * as the Electron preload, and is assigned to globalThis.__natstackTransport.
+   * Return the pre-compiled browser transport script (IIFE built from
+   * src/server/browserTransportEntry.ts, which reuses createWsTransport
+   * from src/preload/wsTransport.ts). Config is read from __natstack*
+   * globals that buildGlobalsScript() injects.
    */
-  private buildTransportScript(config: PanelConfig): string {
-    // Determine WS URL scheme from page context at runtime
-    const rpcPort = config.rpcPort;
-    const authToken = config.rpcToken;
-    const viewId = config.panelId;
-
-    return `
-// NatStack browser transport — adapted from src/preload/wsTransport.ts
-globalThis.__natstackTransport = (function() {
-  var listeners = new Set();
-  var bufferedMessages = [];
-  var outgoingBuffer = [];
-  var pendingToolCallIds = new Set();
-  var transportReady = false;
-  var flushScheduled = false;
-  var ws = null;
-  var authenticated = false;
-  var reconnectAttempt = 0;
-  var viewId = ${JSON.stringify(viewId)};
-  var authToken = ${JSON.stringify(authToken)};
-  var rpcPort = ${JSON.stringify(rpcPort)};
-
-  function normalizeEndpointId(targetId) {
-    if (targetId.startsWith("panel:")) return targetId.slice(6);
-    return targetId;
-  }
-
-  function deliver(fromId, message) {
-    if (!transportReady) {
-      bufferedMessages.push({ fromId: fromId, message: message });
-      if (bufferedMessages.length > 500) bufferedMessages.shift();
-      return;
-    }
-    listeners.forEach(function(listener) {
-      try { listener(fromId, message); }
-      catch (e) { console.error("Error in WS transport message handler:", e); }
-    });
-  }
-
-  function wsSend(msg) {
-    var data = JSON.stringify(msg);
-    if (ws && ws.readyState === WebSocket.OPEN && authenticated) {
-      ws.send(data);
-    } else {
-      outgoingBuffer.push(data);
-      if (outgoingBuffer.length > 500) outgoingBuffer.shift();
-    }
-  }
-
-  function flushOutgoing() {
-    if (!ws || ws.readyState !== WebSocket.OPEN || !authenticated) return;
-    outgoingBuffer.forEach(function(data) { ws.send(data); });
-    outgoingBuffer.length = 0;
-  }
-
-  function translatePanelEvent(payload) {
-    if (payload.panelId !== viewId) return;
-    if (payload.type === "focus") {
-      deliver("main", { type: "event", fromId: "main", event: "runtime:focus", payload: null });
-    } else if (payload.type === "theme") {
-      deliver("main", { type: "event", fromId: "main", event: "runtime:theme", payload: payload.theme });
-    } else if (payload.type === "child-creation-error") {
-      deliver("main", { type: "event", fromId: "main", event: "runtime:child-creation-error",
-        payload: { url: payload.url, error: payload.error } });
-    }
-  }
-
-  function handleServerMessage(msg) {
-    switch (msg.type) {
-      case "ws:auth-result":
-        if (msg.success) { authenticated = true; reconnectAttempt = 0; flushOutgoing(); }
-        else { console.error("[WsTransport] Auth failed:", msg.error); }
-        break;
-      case "ws:rpc":
-        deliver("main", msg.message);
-        break;
-      case "ws:stream-chunk":
-        deliver("main", { type: "event", fromId: "main", event: "ai:stream-text-chunk",
-          payload: { streamId: msg.streamId, chunk: msg.chunk } });
-        break;
-      case "ws:stream-end":
-        deliver("main", { type: "event", fromId: "main", event: "ai:stream-text-end",
-          payload: { streamId: msg.streamId } });
-        break;
-      case "ws:tool-exec":
-        pendingToolCallIds.add(msg.callId);
-        deliver("main", { type: "request", requestId: msg.callId, fromId: "main",
-          method: "ai.executeTool", args: [msg.streamId, msg.toolName, msg.args] });
-        break;
-      case "ws:event":
-        if (msg.event === "panel:event") { translatePanelEvent(msg.payload); }
-        else { deliver("main", { type: "event", fromId: "main", event: msg.event, payload: msg.payload }); }
-        break;
-      case "ws:panel-rpc-delivery":
-        deliver(msg.fromId, msg.message);
-        break;
-    }
-  }
-
-  function connect() {
-    var wsScheme = location.protocol === "https:" ? "wss" : "ws";
-    var wsHost = location.hostname || "127.0.0.1";
-    ws = new WebSocket(wsScheme + "://" + wsHost + ":" + rpcPort);
-
-    ws.onopen = function() {
-      ws.send(JSON.stringify({ type: "ws:auth", token: authToken }));
-    };
-    ws.onmessage = function(event) {
-      try { handleServerMessage(JSON.parse(event.data)); }
-      catch (e) { console.error("[WsTransport] Failed to parse:", e); }
-    };
-    ws.onclose = function(event) {
-      authenticated = false;
-      if (event.code === 4001 || event.code === 4005 || event.code === 4006) {
-        if (event.code !== 4001) {
-          console.error("[WsTransport] Terminal auth failure (" + event.code + "): " + event.reason);
-          deliver("main", { type: "event", fromId: "main", event: "runtime:connection-error",
-            payload: { code: event.code, reason: event.reason || "Authentication failed" } });
-        }
-        return;
-      }
-      var jitter = Math.random() * 500;
-      var delay = Math.min(1000 * Math.pow(2, reconnectAttempt) + jitter, 10000);
-      reconnectAttempt++;
-      setTimeout(connect, delay);
-    };
-    ws.onerror = function() { /* close event handles reconnect */ };
-  }
-
-  connect();
-
-  // Listen for stateArgs updates (mirrors setupStateArgsListener)
-  function setupStateListener() {
-    listeners.add(function(_fromId, message) {
-      if (message && message.type === "event" && message.event === "stateArgs:updated") {
-        globalThis.__natstackStateArgs = message.payload;
-        window.dispatchEvent(new CustomEvent("natstack:stateArgsChanged", { detail: message.payload }));
-      }
-    });
-  }
-
-  return {
-    send: function(targetId, message) {
-      if (!message || typeof message !== "object" || typeof message.type !== "string") {
-        return Promise.reject(new Error("Invalid RPC message"));
-      }
-      var normalized = normalizeEndpointId(targetId);
-
-      if (normalized === "main") {
-        if (message.type === "request") {
-          wsSend({ type: "ws:rpc", message: message });
-          return Promise.resolve();
-        }
-        if (message.type === "response") {
-          if (pendingToolCallIds.has(message.requestId)) {
-            pendingToolCallIds.delete(message.requestId);
-            if ("error" in message) {
-              wsSend({ type: "ws:tool-result", callId: message.requestId,
-                result: { content: [{ type: "text", text: message.error }], isError: true } });
-            } else {
-              var result = message.result;
-              if (!result || !Array.isArray(result.content)) {
-                wsSend({ type: "ws:tool-result", callId: message.requestId,
-                  result: { content: [{ type: "text", text: "Tool execution failed" }], isError: true } });
-              } else {
-                wsSend({ type: "ws:tool-result", callId: message.requestId, result: result });
-              }
-            }
-          } else {
-            wsSend({ type: "ws:rpc", message: message });
-          }
-          return Promise.resolve();
-        }
-        return Promise.resolve();
-      }
-
-      wsSend({ type: "ws:panel-rpc", targetId: normalized, message: message });
-      return Promise.resolve();
-    },
-    onMessage: function(handler) {
-      listeners.add(handler);
-      if (!flushScheduled) {
-        flushScheduled = true;
-        queueMicrotask(function() {
-          transportReady = true;
-          bufferedMessages.forEach(function(b) {
-            listeners.forEach(function(l) {
-              try { l(b.fromId, b.message); } catch(e) { console.error("Buffered delivery error:", e); }
-            });
-          });
-          bufferedMessages.length = 0;
-        });
-      }
-      return function() { listeners.delete(handler); };
-    }
-  };
-})();
-
-// Set up stateArgs listener after transport is created
-(function() {
-  globalThis.__natstackTransport.onMessage(function(_fromId, message) {
-    if (message && message.type === "event" && message.event === "stateArgs:updated") {
-      globalThis.__natstackStateArgs = message.payload;
-      window.dispatchEvent(new CustomEvent("natstack:stateArgsChanged", { detail: message.payload }));
-    }
-  });
-})();
-`;
+  private buildTransportScript(_config: PanelConfig): string {
+    return BROWSER_TRANSPORT_JS;
   }
 
   // =========================================================================

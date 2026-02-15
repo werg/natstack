@@ -1,14 +1,15 @@
 /**
  * Headless Bridge Service Handler
  *
- * Handles bridge service calls in headless mode (no Electron). Mirrors the
- * subset of bridge operations from src/main/ipc/bridgeHandlers.ts that make
- * sense without a GUI: panel creation, closing, state management, and tree
- * queries. GUI-only operations (devtools, repaint, dialogs) return errors.
+ * Handles bridge service calls in headless mode (no Electron). Common portable
+ * handlers (createChild, closeSelf, closeChild, getInfo, getChildPanels,
+ * setStateArgs, context templates) are delegated to
+ * src/shared/bridgeHandlersCommon.ts. This file handles headless-specific
+ * operations and stubs out GUI-only operations.
  */
 
 import type { HeadlessPanelManager } from "./headlessPanelManager.js";
-import type { CreateChildOptions } from "../shared/types.js";
+import { handleCommonBridgeMethod } from "../shared/bridgeHandlersCommon.js";
 
 /**
  * Handle a bridge service call in headless mode.
@@ -19,122 +20,12 @@ export async function handleHeadlessBridgeCall(
   method: string,
   args: unknown[],
 ): Promise<unknown> {
+  // Try common handlers first (shared with Electron mode)
+  const common = await handleCommonBridgeMethod(pm, callerId, method, args);
+  if (common.handled) return common.result;
+
+  // Headless-specific handlers
   switch (method) {
-    // =========================================================================
-    // Panel lifecycle
-    // =========================================================================
-
-    case "createChild": {
-      const [source, options, stateArgs] = args as [
-        string,
-        CreateChildOptions | undefined,
-        Record<string, unknown> | undefined,
-      ];
-      const panelOptions = options
-        ? { ...options, templateSpec: options.templateSpec ?? "contexts/default" }
-        : { templateSpec: "contexts/default" };
-      return pm.createPanel(callerId, source, panelOptions, stateArgs);
-    }
-
-    case "closeSelf": {
-      return pm.closePanel(callerId);
-    }
-
-    case "closeChild": {
-      const [childId] = args as [string];
-      const parentId = pm.findParentId(childId);
-      if (parentId !== callerId) {
-        throw new Error(`Panel "${callerId}" is not the parent of "${childId}"`);
-      }
-      return pm.closePanel(childId);
-    }
-
-    // =========================================================================
-    // Panel queries
-    // =========================================================================
-
-    case "getInfo": {
-      return pm.getInfo(callerId);
-    }
-
-    case "getChildPanels": {
-      const [options] = (args ?? []) as [{ includeStateArgs?: boolean }?];
-      return pm.getChildPanels(callerId, options);
-    }
-
-    // =========================================================================
-    // State management
-    // =========================================================================
-
-    case "setStateArgs": {
-      const [updates] = args as [Record<string, unknown>];
-      return pm.handleSetStateArgs(callerId, updates);
-    }
-
-    // =========================================================================
-    // Context templates (portable — no Electron dependency)
-    // =========================================================================
-
-    case "listContextTemplates": {
-      const { listAvailableTemplates } = await import(
-        "../main/contextTemplate/discovery.js"
-      );
-      return listAvailableTemplates();
-    }
-
-    case "hasContextTemplate": {
-      const [repoPath] = args as [string];
-      if (!repoPath?.trim()) throw new Error("Repo path is required");
-      const { hasContextTemplate } = await import(
-        "../main/contextTemplate/discovery.js"
-      );
-      return hasContextTemplate(repoPath);
-    }
-
-    case "loadContextTemplate": {
-      const [repoPath] = args as [string];
-      if (!repoPath?.trim()) throw new Error("Repo path is required");
-      const { loadContextTemplate } = await import(
-        "../main/contextTemplate/discovery.js"
-      );
-      return loadContextTemplate(repoPath);
-    }
-
-    case "initContextTemplate": {
-      const [repoPath] = args as [string];
-      if (!repoPath?.trim()) throw new Error("Repo path is required");
-      const { initContextTemplate } = await import(
-        "../main/contextTemplate/discovery.js"
-      );
-      return initContextTemplate(repoPath);
-    }
-
-    case "saveContextTemplate": {
-      const [repoPath, info] = args as [
-        string,
-        {
-          name?: string;
-          description?: string;
-          extends?: string;
-          structure?: Record<string, string>;
-        },
-      ];
-      if (!repoPath?.trim()) throw new Error("Repo path is required");
-      const { saveContextTemplate } = await import(
-        "../main/contextTemplate/discovery.js"
-      );
-      return saveContextTemplate(repoPath, info);
-    }
-
-    case "createRepo": {
-      const [repoPath] = args as [string];
-      if (!repoPath?.trim()) throw new Error("Repo path is required");
-      const { createRepo } = await import(
-        "../main/contextTemplate/discovery.js"
-      );
-      return createRepo(repoPath);
-    }
-
     // =========================================================================
     // Agent listing (portable)
     // =========================================================================

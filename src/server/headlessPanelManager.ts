@@ -18,10 +18,10 @@
  * later using the same schema as src/main/db/panelPersistence.ts.
  */
 
-import { randomBytes } from "crypto";
 import type { PanelType, ChildCreationResult, CreateChildOptions } from "../shared/types.js";
 import type { BuildResult } from "./buildV2/buildStore.js";
 import type { PanelHttpServer } from "./panelHttpServer.js";
+import { computePanelId } from "../shared/panelIdUtils.js";
 import { createDevLogger } from "../main/devLog.js";
 
 const log = createDevLogger("HeadlessPanelManager");
@@ -104,8 +104,8 @@ export class HeadlessPanelManager {
   ): Promise<ChildCreationResult> {
     const parent = callerId ? this.panels.get(callerId) : null;
 
-    // Generate panel ID using the same scheme as PanelManager
-    const panelId = this.computePanelId({
+    // Generate panel ID using the shared utility (same scheme as PanelManager)
+    const panelId = computePanelId({
       relativePath: source,
       parent,
       requestedId: options?.name,
@@ -282,42 +282,6 @@ export class HeadlessPanelManager {
   // =========================================================================
   // Internals
   // =========================================================================
-
-  private computePanelId(params: {
-    relativePath: string;
-    parent?: HeadlessPanel | null;
-    requestedId?: string;
-    isRoot?: boolean;
-  }): string {
-    const { relativePath, parent, requestedId, isRoot } = params;
-    const escapedPath = relativePath.replace(/\//g, "~");
-
-    if (isRoot) {
-      return `tree/${escapedPath}`;
-    }
-
-    const parentPrefix = parent?.id ?? "tree";
-
-    if (requestedId) {
-      const segment = this.sanitizeIdSegment(requestedId);
-      return `${parentPrefix}/${segment}`;
-    }
-
-    const autoSegment = this.generatePanelNonce();
-    return `${parentPrefix}/${escapedPath}/${autoSegment}`;
-  }
-
-  private sanitizeIdSegment(segment: string): string {
-    const trimmed = segment.trim();
-    if (!trimmed || trimmed === "." || trimmed.includes("/") || trimmed.includes("\\")) {
-      throw new Error(`Invalid panel identifier segment: ${segment}`);
-    }
-    return trimmed;
-  }
-
-  private generatePanelNonce(): string {
-    return `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
-  }
 
   /**
    * Build a panel and store its artifacts in the HTTP panel server.

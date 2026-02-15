@@ -1,14 +1,19 @@
 /**
  * Bridge service handlers for panel RPC calls.
  * Handles panel lifecycle operations like createChild, close, navigation, etc.
+ *
+ * Common portable handlers (createChild, closeSelf, closeChild, getInfo,
+ * getChildPanels, setStateArgs, context templates) are delegated to
+ * src/shared/bridgeHandlersCommon.ts. This file handles Electron-specific
+ * operations (dialogs, DevTools, navigation, browser state).
  */
 
 import { dialog } from "electron";
 import type { PanelManager } from "../panelManager.js";
 import type { CdpServer } from "../cdpServer.js";
-import type { CreateChildOptions } from "../../shared/types.js";
 import { handleTemplateComplete, type TemplateCompleteResult } from "../contextTemplate/partitionBuilder.js";
 import { getViewManager } from "../viewManager.js";
+import { handleCommonBridgeMethod } from "../../shared/bridgeHandlersCommon.js";
 
 /**
  * Handle bridge service calls from panels.
@@ -27,36 +32,15 @@ export async function handleBridgeCall(
   method: string,
   args: unknown[]
 ): Promise<unknown> {
+  // Try common handlers first (shared with headless mode)
+  const common = await handleCommonBridgeMethod(pm, callerId, method, args);
+  if (common.handled) return common.result;
+
+  // Electron-specific handlers
   switch (method) {
-    case "createChild": {
-      // Keep case name as "createChild" for backwards compatibility with panels calling bridge.createChild
-      // stateArgs is passed as a separate third parameter to enforce single source of truth
-      const [source, options, stateArgs] = args as [
-        string,
-        CreateChildOptions | undefined,
-        Record<string, unknown> | undefined
-      ];
-      // Map CreateChildOptions to PanelCreateOptions with default templateSpec
-      const panelOptions = options
-        ? { ...options, templateSpec: options.templateSpec ?? "contexts/default" }
-        : { templateSpec: "contexts/default" };
-      return pm.createPanel(callerId, source, panelOptions, stateArgs);
-    }
     case "createBrowserChild": {
       const [url] = args as [string];
       return pm.createBrowserChild(callerId, url);
-    }
-    case "getInfo": {
-      return pm.getInfo(callerId);
-    }
-    case "closeChild": {
-      const [childId] = args as [string];
-      // Verify caller is the parent of the child
-      const parentId = pm.findParentId(childId);
-      if (parentId !== callerId) {
-        throw new Error(`Panel "${callerId}" is not the parent of "${childId}"`);
-      }
-      return pm.closePanel(childId);
     }
     // Navigation methods - allow panels to navigate their children
     case "goBack": {
@@ -97,10 +81,6 @@ export async function handleBridgeCall(
       const [repoPath, ref, limit] = args as [string, string?, number?];
       return pm.listCommits(repoPath, ref, limit);
     }
-    case "closeSelf": {
-      // Allow any panel to close itself
-      return pm.closePanel(callerId);
-    }
     case "unloadSelf": {
       // Allow any panel to unload itself (release resources but stay in tree)
       return pm.unloadPanel(callerId);
@@ -110,11 +90,6 @@ export async function handleBridgeCall(
       // Used for agent worker recovery - chat panels can reload disconnected workers
       const [targetPanelId] = args as [string];
       return pm.ensurePanelLoaded(targetPanelId);
-    }
-    case "setStateArgs": {
-      // Allow any panel to update its own state args
-      const [updates] = args as [Record<string, unknown>];
-      return pm.handleSetStateArgs(callerId, updates);
     }
     case "signalTemplateComplete": {
       // Called by template-builder workers to signal completion
@@ -126,11 +101,6 @@ export async function handleBridgeCall(
       // Allow a panel to request a force repaint to recover from compositor stalls
       // where content exists in DOM but isn't being painted
       return pm.forceRepaint(callerId);
-    }
-    case "listContextTemplates": {
-      // List available context templates in the workspace
-      const { listAvailableTemplates } = await import("../contextTemplate/discovery.js");
-      return listAvailableTemplates();
     }
     case "createContextFromTemplate": {
       // Create a new context from a template spec
@@ -175,61 +145,6 @@ export async function handleBridgeCall(
         title: options?.title ?? "Select Folder",
       });
       return result.canceled ? null : result.filePaths[0] ?? null;
-    }
-    case "getChildPanels": {
-      // Get child panels with slim projection (excludes full stateArgs for perf/security)
-      const [options] = (args ?? []) as [{ includeStateArgs?: boolean }?];
-      return pm.getChildPanels(callerId, options);
-    }
-    case "hasContextTemplate": {
-      // Check if a repo has a context-template.yml file
-      const [repoPath] = args as [string];
-      if (!repoPath?.trim()) {
-        throw new Error("Repo path is required");
-      }
-
-      const { hasContextTemplate } = await import("../contextTemplate/discovery.js");
-      return hasContextTemplate(repoPath);
-    }
-    case "loadContextTemplate": {
-      // Load context template info from a repo (returns null if doesn't exist)
-      const [repoPath] = args as [string];
-      if (!repoPath?.trim()) {
-        throw new Error("Repo path is required");
-      }
-
-      const { loadContextTemplate } = await import("../contextTemplate/discovery.js");
-      return loadContextTemplate(repoPath);
-    }
-    case "initContextTemplate": {
-      // Initialize a basic context-template.yml in a repo
-      const [repoPath] = args as [string];
-      if (!repoPath?.trim()) {
-        throw new Error("Repo path is required");
-      }
-
-      const { initContextTemplate } = await import("../contextTemplate/discovery.js");
-      return initContextTemplate(repoPath);
-    }
-    case "saveContextTemplate": {
-      // Save updated context template info to a repo
-      const [repoPath, info] = args as [string, { name?: string; description?: string; extends?: string; structure?: Record<string, string> }];
-      if (!repoPath?.trim()) {
-        throw new Error("Repo path is required");
-      }
-
-      const { saveContextTemplate } = await import("../contextTemplate/discovery.js");
-      return saveContextTemplate(repoPath, info);
-    }
-    case "createRepo": {
-      // Create a new git repo in the workspace
-      const [repoPath] = args as [string];
-      if (!repoPath?.trim()) {
-        throw new Error("Repo path is required");
-      }
-
-      const { createRepo } = await import("../contextTemplate/discovery.js");
-      return createRepo(repoPath);
     }
     case "listAgents": {
       // List available agents - delegates to server where AgentDiscovery runs

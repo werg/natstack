@@ -20,6 +20,8 @@ export interface WsTransportConfig {
   wsPort: number;
   authToken: string;
   callerKind: string;
+  /** Override WebSocket URL. Default: ws://127.0.0.1:{wsPort} */
+  wsUrl?: string;
 }
 
 const normalizeEndpointId = (targetId: string): string => {
@@ -168,7 +170,8 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
   };
 
   const connect = () => {
-    ws = new WebSocket(`ws://127.0.0.1:${config.wsPort}`);
+    const url = config.wsUrl ?? `ws://127.0.0.1:${config.wsPort}`;
+    ws = new WebSocket(url);
 
     ws.onopen = () => {
       // Send auth message immediately — callerKind determined server-side

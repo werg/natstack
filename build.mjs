@@ -140,6 +140,20 @@ const adblockPreloadConfig = {
   logOverride,
 };
 
+// Browser transport IIFE — used by PanelHttpServer to inject into panel HTML.
+// Reuses createWsTransport from the preload, compiled for the browser.
+const browserTransportConfig = {
+  entryPoints: ["src/server/browserTransportEntry.ts"],
+  bundle: true,
+  platform: "browser",
+  target: "es2020",
+  format: "iife",
+  outfile: "dist/browserTransport.js",
+  sourcemap: isDev,
+  minify: !isDev,
+  logOverride,
+};
+
 // Plugin to rewrite bare Node builtin imports to node: prefix and mark electron as external.
 // Required for ESM splitting: esbuild can't bundle builtins but the renderer runs with
 // nodeIntegration: true, so node:-prefixed imports work at runtime.
@@ -373,6 +387,7 @@ async function build() {
     await esbuild.build(preloadConfig);
     await esbuild.build(safePreloadConfig);
     await esbuild.build(adblockPreloadConfig);
+    await esbuild.build(browserTransportConfig);
     // Clean stale renderer artifacts before ESM build (prevents accidental loading of old CJS bundle)
     try { fs.unlinkSync("dist/renderer.js"); } catch {}
     try { fs.unlinkSync("dist/renderer.css"); } catch {}

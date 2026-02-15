@@ -28,6 +28,11 @@ import type { StateArgsValue } from "../shared/stateArgs.js";
 import { getActiveWorkspace } from "./paths.js";
 import type { ServerInfo } from "./serverInfo.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
+import {
+  computePanelId as _computePanelId,
+  sanitizePanelIdSegment as _sanitizePanelIdSegment,
+  generatePanelNonce as _generatePanelNonce,
+} from "../shared/panelIdUtils.js";
 import * as SharedPanel from "../shared/types.js";
 import { getClaudeCodeConversationManager } from "./ai/claudeCodeConversationManager.js";
 import {
@@ -1013,43 +1018,11 @@ export class PanelManager {
     return normalizeRelativePanelPath(panelPath, this.panelsRoot);
   }
 
-  private sanitizeIdSegment(segment: string): string {
-    const trimmed = segment.trim();
-    if (!trimmed || trimmed === "." || trimmed.includes("/") || trimmed.includes("\\")) {
-      throw new Error(`Invalid panel identifier segment: ${segment}`);
-    }
-    return trimmed;
-  }
-
-  private generatePanelNonce(): string {
-    return `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
-  }
-
-  private computePanelId(params: {
-    relativePath: string;
-    parent?: Panel | null;
-    requestedId?: string;
-    isRoot?: boolean;
-  }): string {
-    const { relativePath, parent, requestedId, isRoot } = params;
-
-    // Escape slashes in path to avoid collisions
-    const escapedPath = relativePath.replace(/\//g, "~");
-
-    if (isRoot) {
-      return `tree/${escapedPath}`;
-    }
-
-    // Parent prefix: use parent's full ID, or "tree" for root panels
-    const parentPrefix = parent?.id ?? "tree";
-
-    if (requestedId) {
-      const segment = this.sanitizeIdSegment(requestedId);
-      return `${parentPrefix}/${segment}`;
-    }
-
-    const autoSegment = this.generatePanelNonce();
-    return `${parentPrefix}/${escapedPath}/${autoSegment}`;
+  // Panel ID utilities — delegated to shared module (src/shared/panelIdUtils.ts)
+  private sanitizeIdSegment(segment: string): string { return _sanitizePanelIdSegment(segment); }
+  private generatePanelNonce(): string { return _generatePanelNonce(); }
+  private computePanelId(params: { relativePath: string; parent?: Panel | null; requestedId?: string; isRoot?: boolean }): string {
+    return _computePanelId(params);
   }
 
   /**
