@@ -30,8 +30,8 @@ const helpSections: HelpSection[] = [
   {
     title: "Panels",
     content:
-      "Panels are React applications that run in isolated webviews. They can be app panels (your code), " +
-      "browser panels (external websites), or worker panels (background processes). " +
+      "Panels are React applications that run in isolated webviews. They can be app panels (your code) " +
+      "or browser panels (external websites). " +
       "Panels can create child panels and communicate via RPC.",
   },
   {

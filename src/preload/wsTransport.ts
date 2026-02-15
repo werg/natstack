@@ -24,7 +24,6 @@ export interface WsTransportConfig {
 
 const normalizeEndpointId = (targetId: string): string => {
   if (targetId.startsWith("panel:")) return targetId.slice(6);
-  if (targetId.startsWith("worker:")) return targetId.slice(7);
   return targetId;
 };
 

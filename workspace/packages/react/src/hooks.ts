@@ -425,20 +425,18 @@ export function usePanelChildren(): ReadonlyMap<string, ChildHandle> {
  *
  * @example
  * ```tsx
- * interface WorkerApi {
+ * interface ChildApi {
  *   compute(data: number[]): Promise<number>;
  * }
  *
  * function MyPanel() {
- *   const worker = usePanelCreateChild<WorkerApi>({
- *     type: "worker",
- *     name: "compute-worker",
- *     source: "workers/compute",
+ *   const child = usePanelCreateChild<ChildApi>({
+ *     source: "panels/compute",
  *   });
  *
  *   const handleCompute = async () => {
- *     if (worker) {
- *       const result = await worker.call.compute([1, 2, 3]);
+ *     if (child) {
+ *       const result = await child.call.compute([1, 2, 3]);
  *       console.log("Result:", result);
  *     }
  *   };
@@ -454,7 +452,7 @@ export function usePanelCreateChild<
   spec:
     | null
     | { kind: "browser"; url: string }
-    | { kind?: "appOrWorker"; source: string; options?: CreateChildOptions }
+    | { kind?: "app"; source: string; options?: CreateChildOptions }
 ): ChildHandle<T, E> | null {
   const [handle, setHandle] = useState<ChildHandle<T, E> | null>(null);
 

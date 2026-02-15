@@ -1,6 +1,6 @@
 /**
  * New Panel Page - Shell panel for launching panels from workspace.
- * Opens with Cmd/Ctrl+T and displays available panels, workers, and repos.
+ * Opens with Cmd/Ctrl+T and displays available panels and repos.
  */
 
 import { createRoot } from "react-dom/client";
@@ -265,13 +265,13 @@ function NewPanelPage() {
   }
 
   // Count items for tabs
-  const countLaunchable = (nodes: WorkspaceNode[], type?: "app" | "worker"): number => {
+  const countLaunchable = (nodes: WorkspaceNode[]): number => {
     let count = 0;
     for (const node of nodes) {
-      if (node.launchable && (!type || node.launchable.type === type)) {
+      if (node.launchable) {
         count++;
       }
-      count += countLaunchable(node.children, type);
+      count += countLaunchable(node.children);
     }
     return count;
   };
@@ -287,8 +287,7 @@ function NewPanelPage() {
     return count;
   };
 
-  const appCount = tree ? countLaunchable(tree.children, "app") : 0;
-  const workerCount = tree ? countLaunchable(tree.children, "worker") : 0;
+  const appCount = tree ? countLaunchable(tree.children) : 0;
   const repoCount = tree ? countRepos(tree.children) : 0;
 
   return (
@@ -322,7 +321,6 @@ function NewPanelPage() {
           <Tabs.Root defaultValue="panels">
             <Tabs.List>
               <Tabs.Trigger value="panels">Apps ({appCount})</Tabs.Trigger>
-              <Tabs.Trigger value="workers">Workers ({workerCount})</Tabs.Trigger>
               <Tabs.Trigger value="repos">Repos ({repoCount})</Tabs.Trigger>
               <Tabs.Trigger value="shell">Shell Pages</Tabs.Trigger>
             </Tabs.List>
@@ -334,7 +332,6 @@ function NewPanelPage() {
                     <WorkspaceTreeView
                       tree={tree}
                       filter="launchable"
-                      launchableType="app"
                       onSelect={handleSimpleLaunch}
                       selectedPath={selectedPath}
                       renderNodeExtra={renderNodeExtra}
@@ -342,23 +339,6 @@ function NewPanelPage() {
                   </Card>
                 ) : (
                   <Text color="gray">No app panels found in workspace</Text>
-                )}
-              </Tabs.Content>
-
-              <Tabs.Content value="workers">
-                {tree && workerCount > 0 ? (
-                  <Card>
-                    <WorkspaceTreeView
-                      tree={tree}
-                      filter="launchable"
-                      launchableType="worker"
-                      onSelect={handleSimpleLaunch}
-                      selectedPath={selectedPath}
-                      renderNodeExtra={renderNodeExtra}
-                    />
-                  </Card>
-                ) : (
-                  <Text color="gray">No workers found in workspace</Text>
                 )}
               </Tabs.Content>
 

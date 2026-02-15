@@ -15,7 +15,6 @@ function getTransportBridge(): NatstackTransportBridge {
 
 const normalizeEndpointId = (id: string): string => {
   if (id.startsWith("panel:")) return id.slice(6);
-  if (id.startsWith("worker:")) return id.slice(7);
   return id;
 };
 

@@ -6,14 +6,12 @@
 import { useState, useMemo, useCallback } from "react";
 import { Box, Flex, Text, IconButton } from "@radix-ui/themes";
 import { CaretRightIcon, CubeIcon, FileIcon } from "@radix-ui/react-icons";
-import type { WorkspaceTree, WorkspaceNode, EnvArgSchema } from "@workspace/runtime";
+import type { WorkspaceTree, WorkspaceNode } from "@workspace/runtime";
 
 interface WorkspaceTreeViewProps {
   tree: WorkspaceTree;
   /** Filter: "launchable" (has natstack), "repos" (git repos), "all" */
   filter?: "launchable" | "repos" | "all";
-  /** Further filter by launchable type */
-  launchableType?: "app" | "worker";
   /** Called when a leaf node is selected */
   onSelect: (node: WorkspaceNode) => void;
   /** Currently selected path */
@@ -28,7 +26,6 @@ interface TreeNodeProps {
   node: WorkspaceNode;
   depth: number;
   filter?: "launchable" | "repos" | "all";
-  launchableType?: "app" | "worker";
   onSelect: (node: WorkspaceNode) => void;
   selectedPath?: string;
   renderNodeExtra?: (node: WorkspaceNode) => React.ReactNode;
@@ -42,20 +39,10 @@ interface TreeNodeProps {
 function nodeMatchesFilter(
   node: WorkspaceNode,
   filter?: "launchable" | "repos" | "all",
-  launchableType?: "app" | "worker"
 ): boolean {
   if (filter === "all") return true;
-
-  if (filter === "launchable") {
-    if (!node.launchable) return false;
-    if (launchableType && node.launchable.type !== launchableType) return false;
-    return true;
-  }
-
-  if (filter === "repos") {
-    return node.isGitRepo;
-  }
-
+  if (filter === "launchable") return !!node.launchable;
+  if (filter === "repos") return node.isGitRepo;
   return true;
 }
 
@@ -65,14 +52,13 @@ function nodeMatchesFilter(
 function hasMatchingDescendants(
   node: WorkspaceNode,
   filter?: "launchable" | "repos" | "all",
-  launchableType?: "app" | "worker"
 ): boolean {
-  if (nodeMatchesFilter(node, filter, launchableType) && node.isGitRepo) {
+  if (nodeMatchesFilter(node, filter) && node.isGitRepo) {
     return true;
   }
 
   for (const child of node.children) {
-    if (hasMatchingDescendants(child, filter, launchableType)) {
+    if (hasMatchingDescendants(child, filter)) {
       return true;
     }
   }
@@ -86,13 +72,12 @@ function hasMatchingDescendants(
 function filterTree(
   nodes: WorkspaceNode[],
   filter?: "launchable" | "repos" | "all",
-  launchableType?: "app" | "worker"
 ): WorkspaceNode[] {
   return nodes
-    .filter((node) => hasMatchingDescendants(node, filter, launchableType))
+    .filter((node) => hasMatchingDescendants(node, filter))
     .map((node) => ({
       ...node,
-      children: filterTree(node.children, filter, launchableType),
+      children: filterTree(node.children, filter),
     }));
 }
 
@@ -100,7 +85,6 @@ function TreeNode({
   node,
   depth,
   filter,
-  launchableType,
   onSelect,
   selectedPath,
   renderNodeExtra,
@@ -110,7 +94,7 @@ function TreeNode({
   const isExpanded = expandedPaths.has(node.path);
   const isSelected = selectedPath === node.path;
   const hasChildren = node.children.length > 0;
-  const isSelectable = node.isGitRepo && nodeMatchesFilter(node, filter, launchableType);
+  const isSelectable = node.isGitRepo && nodeMatchesFilter(node, filter);
 
   const handleClick = useCallback(() => {
     if (isSelectable) {
@@ -228,7 +212,6 @@ function TreeNode({
             node={child}
             depth={depth + 1}
             filter={filter}
-            launchableType={launchableType}
             onSelect={onSelect}
             selectedPath={selectedPath}
             renderNodeExtra={renderNodeExtra}
@@ -243,7 +226,6 @@ function TreeNode({
 export function WorkspaceTreeView({
   tree,
   filter = "all",
-  launchableType,
   onSelect,
   selectedPath,
   renderNodeExtra,
@@ -273,8 +255,8 @@ export function WorkspaceTreeView({
 
   // Filter the tree based on filter criteria
   const filteredChildren = useMemo(
-    () => filterTree(tree.children, filter, launchableType),
-    [tree.children, filter, launchableType]
+    () => filterTree(tree.children, filter),
+    [tree.children, filter]
   );
 
   if (filteredChildren.length === 0) {
@@ -295,7 +277,6 @@ export function WorkspaceTreeView({
           node={node}
           depth={0}
           filter={filter}
-          launchableType={launchableType}
           onSelect={onSelect}
           selectedPath={selectedPath}
           renderNodeExtra={renderNodeExtra}

@@ -67,9 +67,6 @@ export interface PanelBuildResult {
   error?: string;
 }
 
-// Re-export PanelArtifacts for backwards compatibility
-export type { PanelArtifacts } from "../shared/types.js";
-
 export type PanelEventPayload =
   | { type: "child-creation-error"; url: string; error: string }
   | { type: "focus" }

@@ -631,7 +631,7 @@ export class GitServer {
    * Extract metadata from a directory's package.json and SKILL.md.
    * Returns launchable info (natstack config), package info (npm package), and skill info.
    * Intentionally permissive - returns info even with missing fields so the
-   * UI can show the entry and panelBuilder can report proper errors later.
+   * UI can show the entry and the build system can report proper errors later.
    */
   private async extractMetadata(absolutePath: string): Promise<{
     launchable?: WorkspaceNode["launchable"];

@@ -440,9 +440,9 @@ export interface WorkspaceNode {
   /** True if this directory is a git repository root */
   isGitRepo: boolean;
   /**
-   * If this is a launchable panel/worker (has natstack config).
+   * If this is a launchable panel (has natstack config).
    * Note: We intentionally include entries even if some fields are missing
-   * (e.g., no title) - better to show them in the UI and let panelBuilder
+   * (e.g., no title) - better to show them in the UI and let the build system
    * report the real error than to silently hide repos with incomplete configs.
    */
   launchable?: {
@@ -453,7 +453,6 @@ export interface WorkspaceNode {
   };
   /**
    * Package metadata if this repo has a package.json with a name.
-   * Used by VerdaccioServer to determine which repos are publishable packages.
    */
   packageInfo?: {
     name: string;
