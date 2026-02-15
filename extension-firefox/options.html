@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 380px;
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+      color: #e0e0e0;
+      background: #1a1a2e;
+      padding: 16px;
+    }
+    h2 {
+      font-size: 15px;
+      font-weight: 600;
+      color: #e94560;
+      margin-bottom: 16px;
+    }
+    label {
+      display: block;
+      font-size: 12px;
+      color: #aaa;
+      margin-bottom: 4px;
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: 6px 8px;
+      border: 1px solid #333;
+      border-radius: 4px;
+      background: #16213e;
+      color: #e0e0e0;
+      font-size: 13px;
+      font-family: monospace;
+      margin-bottom: 12px;
+    }
+    input[type="text"]:focus {
+      outline: none;
+      border-color: #0a84ff;
+    }
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    .checkbox-row label { margin-bottom: 0; color: #e0e0e0; }
+    .help {
+      font-size: 11px;
+      color: #666;
+      margin-bottom: 12px;
+      line-height: 1.4;
+    }
+    button {
+      padding: 6px 16px;
+      border: none;
+      border-radius: 4px;
+      background: #0a84ff;
+      color: white;
+      font-size: 13px;
+      cursor: pointer;
+      margin-top: 8px;
+    }
+    button:hover { background: #0070e0; }
+    .saved {
+      display: inline-block;
+      margin-left: 8px;
+      color: #4ade80;
+      font-size: 12px;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    .saved.show { opacity: 1; }
+  </style>
+</head>
+<body>
+  <h2>NatStack Connection</h2>
+
+  <label for="serverUrl">Server URL</label>
+  <input type="text" id="serverUrl" placeholder="http://127.0.0.1:3000">
+  <p class="help">The panel HTTP server URL. Printed to the console when natstack-server starts with --serve-panels.</p>
+
+  <label for="managementToken">Management Token</label>
+  <input type="text" id="managementToken" placeholder="Paste admin token from server output">
+  <p class="help">The admin token printed when the server starts. Used to authenticate API requests.</p>
+
+  <div class="checkbox-row">
+    <input type="checkbox" id="autoOpenTabs" checked>
+    <label for="autoOpenTabs">Auto-open tabs when panels are created</label>
+  </div>
+
+  <div class="checkbox-row">
+    <input type="checkbox" id="autoCloseTabs" checked>
+    <label for="autoCloseTabs">Auto-close tabs when panels are closed</label>
+  </div>
+
+  <button id="saveBtn">Save</button>
+  <span class="saved" id="savedMsg">Saved</span>
+
+  <script src="options.js"></script>
+</body>
+</html>

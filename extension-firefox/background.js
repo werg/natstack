@@ -1,16 +1,19 @@
 /**
- * NatStack Panel Manager — Background Service Worker
+ * NatStack Panel Manager — Background Script (Firefox)
  *
  * Connects to the natstack-server SSE endpoint, listens for panel lifecycle
  * events, and manages browser tabs accordingly.
+ *
+ * Uses browser.* APIs (Firefox WebExtensions). Firefox does not support
+ * tab groups, so that feature is omitted.
  */
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
-/** @type {EventSource | null} */
-let eventSource = null;
+/** @type {AbortController | null} */
+let abortController = null;
 
 /** @type {Map<string, number>} panelId → tabId */
 const panelTabs = new Map();
@@ -35,7 +38,7 @@ let reconnectTimer = null;
 // ---------------------------------------------------------------------------
 
 async function getConfig() {
-  const result = await chrome.storage.local.get(["serverUrl", "managementToken", "autoOpenTabs", "autoCloseTabs"]);
+  const result = await browser.storage.local.get(["serverUrl", "managementToken", "autoOpenTabs", "autoCloseTabs"]);
   return {
     serverUrl: result.serverUrl || "",
     managementToken: result.managementToken || "",
@@ -60,10 +63,12 @@ async function connect() {
   const url = `${config.serverUrl}/api/events`;
   console.log(`[NatStack] Connecting to SSE: ${url}`);
 
+  abortController = new AbortController();
+
   try {
-    // EventSource doesn't support custom headers, so we use fetch + ReadableStream
     const response = await fetch(url, {
       headers: { "Authorization": `Bearer ${config.managementToken}` },
+      signal: abortController.signal,
     });
 
     if (!response.ok) {
@@ -94,11 +99,12 @@ async function connect() {
         if (!msg.trim()) continue;
         const parsed = parseSSEMessage(msg);
         if (parsed) {
-          handleSSEEvent(parsed.event, parsed.data, config);
+          await handleSSEEvent(parsed.event, parsed.data, config);
         }
       }
     }
   } catch (err) {
+    if (err.name === "AbortError") return;
     console.error("[NatStack] SSE connection error:", err);
   }
 
@@ -108,9 +114,9 @@ async function connect() {
 }
 
 function disconnect() {
-  if (eventSource) {
-    eventSource.close();
-    eventSource = null;
+  if (abortController) {
+    abortController.abort();
+    abortController = null;
   }
   connected = false;
   if (reconnectTimer) {
@@ -175,7 +181,6 @@ async function handleSSEEvent(event, dataStr, config) {
 
   switch (event) {
     case "snapshot": {
-      // Initial state — sync panels map
       panels.clear();
       if (data.panels) {
         for (const p of data.panels) {
@@ -203,15 +208,10 @@ async function handleSSEEvent(event, dataStr, config) {
       // Auto-open tab if configured and URL is available
       if (config.autoOpenTabs && data.url && !panelTabs.has(data.panelId)) {
         try {
-          const tab = await chrome.tabs.create({ url: data.url, active: false });
+          const tab = await browser.tabs.create({ url: data.url, active: false });
           if (tab.id != null) {
             panelTabs.set(data.panelId, tab.id);
             tabPanels.set(tab.id, data.panelId);
-
-            // Try to group natstack tabs together
-            try {
-              await groupNatstackTabs();
-            } catch { /* tab grouping not supported or failed */ }
           }
         } catch (err) {
           console.error("[NatStack] Failed to open tab:", err);
@@ -225,12 +225,11 @@ async function handleSSEEvent(event, dataStr, config) {
     case "panel:closed": {
       panels.delete(data.panelId);
 
-      // Auto-close tab if configured
       if (config.autoCloseTabs) {
         const tabId = panelTabs.get(data.panelId);
         if (tabId != null) {
           try {
-            await chrome.tabs.remove(tabId);
+            await browser.tabs.remove(tabId);
           } catch { /* tab already closed */ }
         }
       }
@@ -256,8 +255,7 @@ async function handleSSEEvent(event, dataStr, config) {
 // Tab tracking
 // ---------------------------------------------------------------------------
 
-// Clean up mappings when tabs are closed by the user
-chrome.tabs.onRemoved.addListener((tabId) => {
+browser.tabs.onRemoved.addListener((tabId) => {
   const panelId = tabPanels.get(tabId);
   if (panelId) {
     panelTabs.delete(panelId);
@@ -266,13 +264,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
-// Track when tabs navigate to detect manually opened natstack tabs
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url && tab.url) {
     const match = tab.url.match(/^https?:\/\/([a-z0-9-]+)\.localhost(:\d+)?\//i);
     if (match) {
       const subdomain = match[1];
-      // Find panel by subdomain
       for (const [panelId, panel] of panels) {
         if (panel.subdomain === subdomain && !panelTabs.has(panelId)) {
           panelTabs.set(panelId, tabId);
@@ -285,37 +281,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }
 });
 
-/**
- * Group all natstack panel tabs into a Chrome tab group.
- * No-op on browsers that don't support the tab groups API (e.g. Firefox, older Edge).
- */
-async function groupNatstackTabs() {
-  if (typeof chrome.tabs.group !== "function") return;
-
-  const tabIds = Array.from(panelTabs.values());
-  if (tabIds.length < 2) return;
-
-  const tabs = await chrome.tabs.query({});
-  const natstackTabIds = tabIds.filter((id) => tabs.some((t) => t.id === id));
-  if (natstackTabIds.length < 2) return;
-
-  const existingTab = tabs.find((t) => natstackTabIds.includes(t.id) && t.groupId !== -1);
-  if (existingTab && existingTab.groupId !== -1) {
-    await chrome.tabs.group({ tabIds: natstackTabIds, groupId: existingTab.groupId });
-  } else {
-    const groupId = await chrome.tabs.group({ tabIds: natstackTabIds });
-    if (typeof chrome.tabGroups?.update === "function") {
-      await chrome.tabGroups.update(groupId, { title: "NatStack", color: "red" });
-    }
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Popup communication
 // ---------------------------------------------------------------------------
 
-function broadcastStatus() {
-  const status = {
+function buildStatusPayload() {
+  return {
     connected,
     panels: Array.from(panels.entries()).map(([id, p]) => ({
       panelId: id,
@@ -328,40 +299,27 @@ function broadcastStatus() {
       tabId: panelTabs.get(id) ?? null,
     })),
   };
+}
 
-  // Send to any open popup
-  chrome.runtime.sendMessage({ type: "status", ...status }).catch(() => {
-    // No popup open — ignore
+function broadcastStatus() {
+  browser.runtime.sendMessage({ type: "status", ...buildStatusPayload() }).catch(() => {
+    // No popup open
   });
 }
 
-// Handle messages from popup
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+browser.runtime.onMessage.addListener((msg, _sender) => {
   if (msg.type === "getStatus") {
-    const status = {
-      connected,
-      panels: Array.from(panels.entries()).map(([id, p]) => ({
-        panelId: id,
-        title: p.title || id,
-        subdomain: p.subdomain || "",
-        url: p.url || "",
-        source: p.source || "",
-        parentId: p.parentId || null,
-        hasTab: panelTabs.has(id),
-        tabId: panelTabs.get(id) ?? null,
-      })),
-    };
-    sendResponse(status);
-    return true;
+    // Firefox onMessage listeners can return a Promise for sendResponse
+    return Promise.resolve(buildStatusPayload());
   }
 
   if (msg.type === "focusTab") {
     const tabId = panelTabs.get(msg.panelId);
     if (tabId != null) {
-      chrome.tabs.update(tabId, { active: true });
-      chrome.tabs.get(tabId).then((tab) => {
+      browser.tabs.update(tabId, { active: true });
+      browser.tabs.get(tabId).then((tab) => {
         if (tab.windowId != null) {
-          chrome.windows.update(tab.windowId, { focused: true });
+          browser.windows.update(tab.windowId, { focused: true });
         }
       }).catch(() => {});
     }
@@ -370,7 +328,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   if (msg.type === "openPanel") {
     if (msg.url) {
-      chrome.tabs.create({ url: msg.url, active: true });
+      browser.tabs.create({ url: msg.url, active: true });
     }
     return false;
   }
@@ -386,13 +344,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 // Startup
 // ---------------------------------------------------------------------------
 
-// Listen for config changes
-chrome.storage.onChanged.addListener((changes, area) => {
+browser.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && (changes.serverUrl || changes.managementToken)) {
     reconnectAttempt = 0;
     connect();
   }
 });
 
-// Connect on install / startup
 connect();

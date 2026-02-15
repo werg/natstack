@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "NatStack Panel Manager",
+  "version": "0.1.0",
+  "description": "Manages NatStack panel tabs — auto-opens panels, shows panel tree, clean tab management.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "natstack-panel-manager@natstack.dev",
+      "strict_min_version": "109.0"
+    }
+  },
+  "permissions": [
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://*.localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "NatStack Panels"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+  "icons": {}
+}
