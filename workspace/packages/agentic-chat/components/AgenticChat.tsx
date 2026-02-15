@@ -1,4 +1,4 @@
-import type { ChannelConfig } from "@natstack/agentic-messaging";
+import type { ChannelConfig } from "@workspace/agentic-messaging";
 import { Theme } from "@radix-ui/themes";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { ToolRoleConflictModal } from "./ToolRoleConflictModal";

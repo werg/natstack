@@ -26,6 +26,7 @@ export function ChatInput() {
       const timer = setTimeout(() => setSendError(null), 5000);
       return () => clearTimeout(timer);
     }
+    return undefined;
   }, [sendError]);
 
   // Auto-resize textarea: use rAF-coalesced onInput handler

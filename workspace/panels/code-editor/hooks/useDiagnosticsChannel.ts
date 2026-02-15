@@ -6,8 +6,8 @@
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { pubsubConfig, id as panelClientId } from "@natstack/runtime";
-import { connect, type AgenticClient } from "@natstack/agentic-messaging";
+import { pubsubConfig, id as panelClientId } from "@workspace/runtime";
+import { connect, type AgenticClient, type AgenticParticipantMetadata } from "@workspace/agentic-messaging";
 import {
   TYPECHECK_EVENTS,
   type TypeCheckDiagnosticsEvent,
@@ -19,7 +19,7 @@ import {
 } from "../types";
 
 /** Metadata for code-editor participant */
-interface CodeEditorMetadata {
+interface CodeEditorMetadata extends AgenticParticipantMetadata {
   name: string;
   type: string;
   handle: string;
@@ -77,6 +77,8 @@ export function useDiagnosticsChannel(
       return;
     }
 
+    // Capture non-null value for use in async closure
+    const config = pubsubConfig;
     let cancelled = false;
 
     const connectToChannel = async () => {
@@ -84,8 +86,8 @@ export function useDiagnosticsChannel(
         cleanup();
 
         const client = await connect<CodeEditorMetadata>({
-          serverUrl: pubsubConfig.serverUrl,
-          token: pubsubConfig.token,
+          serverUrl: config.serverUrl,
+          token: config.token,
           channel: channelId,
           handle: `code-editor-${panelClientId.slice(0, 8)}`,
           name: "Code Editor",
@@ -106,13 +108,15 @@ export function useDiagnosticsChannel(
         setError(null);
 
         // Start event loop for raw pubsub messages
-        // Diagnostics are published directly to pubsub, not as agentic messages
+        // Diagnostics are published directly to pubsub, not as agentic messages.
+        // We access the underlying pubsub via cast since AgenticClient doesn't expose it.
         abortControllerRef.current = new AbortController();
         const { signal } = abortControllerRef.current;
-        const pubsub = client.pubsub;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const rawPubsub = (client as any).pubsub ?? (client as any);
         void (async () => {
           try {
-            for await (const msg of pubsub.messages()) {
+            for await (const msg of rawPubsub.messages()) {
               if (signal.aborted || cancelled) break;
 
               if (msg.kind === "ready") continue;
@@ -159,7 +163,7 @@ export function useDiagnosticsChannel(
         checkedFiles,
       };
 
-      void clientRef.current.pubsub.publish(
+      void clientRef.current.publish(
         TYPECHECK_EVENTS.DIAGNOSTICS,
         event
       );

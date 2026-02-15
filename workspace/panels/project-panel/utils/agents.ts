@@ -2,8 +2,8 @@
  * Agent utility functions for project-panel.
  */
 
-import { rpc } from "@natstack/runtime";
-import type { AgentManifest } from "@natstack/core";
+import { rpc } from "@workspace/runtime";
+import type { AgentManifest } from "@natstack/types";
 
 let cachedAgents: AgentManifest[] | null = null;
 

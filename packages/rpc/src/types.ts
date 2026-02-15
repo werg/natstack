@@ -129,4 +129,30 @@ export interface RpcBridgeInternal extends RpcBridge {
   _handleMessage(sourceId: string, message: RpcMessage): void;
 }
 
+// =============================================================================
+// IPC Envelope Types (absorbed from @workspace/agent-runtime/transport)
+// =============================================================================
 
+/**
+ * Message envelope for RPC over IPC.
+ * Wraps RPC messages with source/target routing information.
+ */
+export interface ParentPortEnvelope {
+  targetId: string;
+  sourceId?: string;
+  message: RpcMessage;
+}
+
+/**
+ * Type guard for ParentPortEnvelope.
+ */
+export function isParentPortEnvelope(msg: unknown): msg is ParentPortEnvelope {
+  if (typeof msg !== "object" || msg === null) return false;
+  const envelope = msg as Record<string, unknown>;
+  return (
+    typeof envelope["targetId"] === "string" &&
+    "message" in envelope &&
+    typeof envelope["message"] === "object" &&
+    envelope["message"] !== null
+  );
+}

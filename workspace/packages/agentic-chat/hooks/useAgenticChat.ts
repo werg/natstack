@@ -6,7 +6,7 @@
  */
 
 import { useState, useCallback, useMemo, useRef, useEffect, useReducer } from "react";
-import { CONTENT_TYPE_TYPING, CONTENT_TYPE_INLINE_UI } from "@natstack/agentic-messaging/utils";
+import { CONTENT_TYPE_TYPING, CONTENT_TYPE_INLINE_UI } from "@workspace/agentic-messaging/utils";
 import type {
   IncomingEvent,
   IncomingMethodResult,
@@ -21,12 +21,12 @@ import type {
   FeedbackFormArgs,
   FeedbackCustomArgs,
   ChannelConfig,
-} from "@natstack/agentic-messaging";
+} from "@workspace/agentic-messaging";
 import {
   FeedbackFormArgsSchema,
   FeedbackCustomArgsSchema,
-} from "@natstack/agentic-messaging/protocol-schemas";
-import type { Participant, RosterUpdate, AttachmentInput } from "@natstack/pubsub";
+} from "@workspace/agentic-messaging/protocol-schemas";
+import type { Participant, RosterUpdate, AttachmentInput } from "@workspace/pubsub";
 import {
   useFeedbackManager,
   useToolApproval,
@@ -39,7 +39,7 @@ import {
   type FeedbackUiToolArgs,
   type ActiveFeedbackTsx,
   type ActiveFeedbackSchema,
-} from "@natstack/tool-ui";
+} from "@workspace/tool-ui";
 import { useChannelConnection } from "./useChannelConnection";
 import { useMethodHistory } from "./useMethodHistory";
 import { useToolRole } from "./useToolRole";
@@ -538,7 +538,7 @@ export function useAgenticChat({
       const reconnectingHandles = new Set<string>();
       for (const newId of newIds) {
         if (!prevIds.has(newId) && newParticipants[newId]?.metadata?.type !== "panel") {
-          reconnectingHandles.add(newParticipants[newId].metadata.handle);
+          reconnectingHandles.add(newParticipants[newId]!.metadata.handle);
         }
       }
 
@@ -836,7 +836,7 @@ export default function App({ onSubmit, onCancel }) {
         // Build tool methods from provider
         let toolMethods: Record<string, MethodDefinition> = {};
         if (tools) {
-          const rawTools = tools({ clientRef, workspaceRoot: (channelConfig as Record<string, unknown>)?.workingDirectory as string | undefined });
+          const rawTools = tools({ clientRef, workspaceRoot: (channelConfig as Record<string, unknown>)?.['workingDirectory'] as string | undefined });
           // Wrap with approval
           toolMethods = wrapMethodsWithApproval(
             rawTools,

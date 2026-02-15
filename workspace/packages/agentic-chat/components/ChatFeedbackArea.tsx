@@ -2,7 +2,7 @@ import { Flex } from "@radix-ui/themes";
 import {
   FeedbackContainer,
   FeedbackFormRenderer,
-} from "@natstack/tool-ui";
+} from "@workspace/tool-ui";
 import { useChatContext } from "../context/ChatContext";
 
 /**

@@ -1,0 +1,14 @@
+{
+  "name": "@workspace/about-shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./serviceAdapters": "./serviceAdapters.ts",
+    "./types": "./types.ts"
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*",
+    "@natstack/git": "workspace:*"
+  }
+}

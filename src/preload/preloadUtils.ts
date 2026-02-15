@@ -42,10 +42,7 @@ export const ARG_AUTH_TOKEN = "--natstack-auth-token=";
 /** Argument prefix for theme */
 export const ARG_THEME = "--natstack-theme=";
 
-/** Argument prefix for scope path (unsafe mode) */
-export const ARG_SCOPE_PATH = "--natstack-scope-path=";
-
-/** Argument prefix for kind (panel or worker) */
+/** Argument prefix for kind (panel) */
 export const ARG_KIND = "--natstack-kind=";
 
 /** Argument prefix for context ID */
@@ -87,7 +84,6 @@ export interface GitConfig {
   serverUrl: string;
   token: string;
   sourceRepo: string;
-  gitRef?: string;
   resolvedRepoArgs: Record<string, unknown>;
 }
 
@@ -102,7 +98,6 @@ export interface ParsedPreloadConfig {
   kind: NatstackKind;
   authToken: string | undefined;
   initialTheme: "light" | "dark";
-  scopePath: string | null;
   syntheticEnv: Record<string, string>;
   parentId: string | null;
   gitConfig: GitConfig | null;
@@ -110,7 +105,7 @@ export interface ParsedPreloadConfig {
   stateArgs: Record<string, unknown>;
 }
 
-export type NatstackKind = "panel" | "worker" | "shell";
+export type NatstackKind = "panel" | "shell";
 
 // =============================================================================
 // Parsing functions
@@ -132,17 +127,12 @@ export function parseTheme(): "light" | "dark" {
   return theme === "dark" ? "dark" : "light";
 }
 
-export function parseScopePath(): string | null {
-  const arg = process.argv.find((value) => value.startsWith(ARG_SCOPE_PATH));
-  return arg ? (arg.split("=")[1] ?? null) : null;
-}
-
 export function parseKind(): NatstackKind {
   const arg = process.argv.find((value) => value.startsWith(ARG_KIND));
   const kind = arg?.split("=")[1];
-  if (kind === "worker") return "worker";
   // Note: "shell" kind is only used by the main shell UI which hardcodes it in index.ts.
   // Shell panels use kind=panel for full runtime API access.
+  if (kind === "shell") return "shell";
   return "panel";
 }
 
@@ -237,7 +227,7 @@ export function parsePreloadConfig(): ParsedPreloadConfig {
   const panelId = parsePanelId();
   const kind = parseKind();
   if (!panelId) {
-    throw new Error(`${kind === "worker" ? "Worker" : "Panel"} ID missing from additionalArguments`);
+    throw new Error("Panel ID missing from additionalArguments");
   }
 
   const syntheticEnv = parseEnvArg();
@@ -250,7 +240,6 @@ export function parsePreloadConfig(): ParsedPreloadConfig {
     kind,
     authToken: parseAuthToken(),
     initialTheme: parseTheme(),
-    scopePath: parseScopePath(),
     syntheticEnv,
     parentId,
     gitConfig: parseGitConfig(syntheticEnv),
@@ -405,7 +394,7 @@ export function exposeGlobalsViaContextBridge(
   // Minimal Node-ish env for libraries that expect process.env
   contextBridge.exposeInMainWorld("process", { env: config.syntheticEnv });
 
-  // NatStack globals for @natstack/runtime
+  // NatStack globals for @workspace/runtime
   contextBridge.exposeInMainWorld("__natstackId", config.panelId);
   contextBridge.exposeInMainWorld("__natstackContextId", config.contextId);
   contextBridge.exposeInMainWorld("__natstackKind", config.kind);
@@ -421,38 +410,6 @@ export function exposeGlobalsViaContextBridge(
   }
 }
 
-/**
- * Set globals directly on globalThis for unsafe preloads (contextIsolation: false).
- * Also sets __natstackFsRoot if scopePath is provided.
- */
-export function setUnsafeGlobals(
-  config: ParsedPreloadConfig,
-  transport: ReturnType<typeof createTransport>
-): void {
-  globalThis.__natstackId = config.panelId;
-  globalThis.__natstackContextId = config.contextId;
-  globalThis.__natstackKind = config.kind;
-  globalThis.__natstackParentId = config.parentId;
-  globalThis.__natstackInitialTheme = config.initialTheme;
-  globalThis.__natstackGitConfig = config.gitConfig as unknown as typeof globalThis.__natstackGitConfig;
-  globalThis.__natstackPubSubConfig = config.pubsubConfig as unknown as typeof globalThis.__natstackPubSubConfig;
-  globalThis.__natstackEnv = config.syntheticEnv;
-  globalThis.__natstackStateArgs = config.stateArgs;
-  globalThis.__natstackTransport = transport;
-
-  // Set filesystem scope root for unsafe panels/workers
-  if (config.scopePath) {
-    Object.defineProperty(globalThis, "__natstackFsRoot", {
-      value: config.scopePath,
-      writable: false,
-      enumerable: true,
-      configurable: false,
-    });
-  }
-
-  // Merge synthetic env with real process.env
-  Object.assign(process.env, config.syntheticEnv);
-}
 
 /**
  * Set up listener for stateArgs updates from main process via WS transport.
@@ -504,28 +461,3 @@ export function initSafePreload(contextBridge: Electron.ContextBridge): void {
   setupStateArgsListener(transport);
 }
 
-/**
- * Initialize an unsafe preload (contextIsolation: false, nodeIntegration: true).
- * Parses config, creates WS transport, sets globals directly.
- */
-export function initUnsafePreload(): void {
-  const config = parsePreloadConfig();
-  const transport = createTransport(config.panelId, config);
-
-  // Create server transport if server params are available (main mode)
-  const serverPort = parseServerPort();
-  const serverToken = parseServerToken();
-  if (serverPort && serverToken) {
-    globalThis.__natstackServerTransport = createWsTransport({
-      viewId: config.panelId,
-      wsPort: serverPort,
-      authToken: serverToken,
-      callerKind: config.kind,
-    });
-  }
-
-  setUnsafeGlobals(config, transport);
-  setupDevToolsShortcut(config, transport);
-  setupHistoryIntegration(config, transport);
-  setupStateArgsListener(transport);
-}

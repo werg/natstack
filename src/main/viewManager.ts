@@ -41,7 +41,7 @@ export interface ViewConfig {
   /** Unique view ID (typically panel ID) */
   id: string;
   /** View type for tracking */
-  type: "shell" | "panel" | "browser" | "worker";
+  type: "shell" | "panel" | "browser";
   /** Session partition (e.g., "persist:safe_auto_tree~panels~editor"). Omit for default session. */
   partition?: string;
   /** Preload script path. Set to null to disable preload (for browsers). */
@@ -54,18 +54,13 @@ export interface ViewConfig {
   injectHostThemeVariables?: boolean;
   /** Additional arguments to pass to the preload script */
   additionalArguments?: string[];
-  /**
-   * Run panel with full Node.js API access.
-   * - `true`: Unsafe mode with default scoped filesystem
-   * - `string`: Unsafe mode with custom filesystem root (e.g., "/" for full access)
-   */
-  unsafe?: boolean | string;
+  // Note: unsafe mode has been removed. All panels run in safe sandboxed mode.
 }
 
 interface ManagedView {
   id: string;
   view: WebContentsView;
-  type: "shell" | "panel" | "browser" | "worker";
+  type: "shell" | "panel" | "browser";
   parentId?: string;
   visible: boolean;
   bounds: ViewBounds;
@@ -97,7 +92,6 @@ export class ViewManager {
   private views = new Map<string, ManagedView>();
   private shellView: WebContentsView;
   private safePreloadPath: string;
-  private unsafePreloadPath: string;
   private adblockPreloadPath: string;
   private currentThemeCss: string | null = null;
   /** Per-view locks to prevent concurrent withViewVisible operations */
@@ -134,11 +128,6 @@ export class ViewManager {
   }) {
     this.window = options.window;
     this.safePreloadPath = options.safePreload;
-    // Calculate unsafe preload path (same directory, different file)
-    this.unsafePreloadPath = options.safePreload.replace(
-      /safePreload\.(c?js)$/,
-      "unsafePreload.$1"
-    );
     // Calculate adblock preload path for browser panels
     this.adblockPreloadPath = options.safePreload.replace(
       /safePreload\.(c?js)$/,
@@ -276,12 +265,11 @@ export class ViewManager {
       }
     }
 
-    // Build webPreferences based on view type and unsafe flag
-    const isUnsafe = Boolean(config.unsafe);
+    // All panels run in safe sandboxed mode
     const webPreferences: Electron.WebPreferences = {
-      nodeIntegration: isUnsafe,
-      contextIsolation: !isUnsafe,
-      sandbox: !isUnsafe,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
       session: ses,
       webviewTag: false,
       // Allow Chromium to throttle hidden views (saves CPU/battery).
@@ -290,16 +278,14 @@ export class ViewManager {
       backgroundThrottling: true,
     };
 
-    // Set preload: use provided preload, fall back to safe/unsafe preload, or omit if null
+    // Set preload: use provided preload, fall back to safe preload, or omit if null
     if (config.preload === null) {
       // Explicitly no preload (for browsers)
     } else if (config.preload) {
       webPreferences.preload = config.preload;
     } else {
-      // Both panels and workers use consolidated preloads (kind is passed via --natstack-kind)
-      webPreferences.preload = isUnsafe
-        ? this.unsafePreloadPath
-        : this.safePreloadPath;
+      // All panels and workers use the safe preload (kind is passed via --natstack-kind)
+      webPreferences.preload = this.safePreloadPath;
     }
 
     // Pass additional arguments to preload script

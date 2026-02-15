@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from "react";
 import { Box, Flex } from "@radix-ui/themes";
-import type { ActionData, TypingData } from "@natstack/agentic-messaging";
+import type { ActionData, TypingData } from "@workspace/agentic-messaging";
 import type { MethodHistoryEntry } from "./MethodHistoryItem";
 import { CompactMethodPill, ExpandedMethodDetail } from "./MethodHistoryItem";
 import { ThinkingPill, ExpandedThinking } from "./ThinkingMessage";

@@ -1,11 +1,11 @@
 # AI Integration
 
-Use `@natstack/ai` for streaming text generation with tool calling.
+Use `@workspace/ai` for streaming text generation with tool calling.
 
 ## Simple Streaming
 
 ```tsx
-import { ai } from "@natstack/ai";
+import { ai } from "@workspace/ai";
 
 const stream = ai.streamText({
   model: "fast",
@@ -23,8 +23,8 @@ for await (const event of stream) {
 ## Tool Calling
 
 ```tsx
-import { ai, tool } from "@natstack/ai";
-import { z } from "@natstack/runtime";
+import { ai, tool } from "@workspace/ai";
+import { z } from "@workspace/runtime";
 
 const tools = {
   get_time: tool({
@@ -82,7 +82,7 @@ Control browser panels with Playwright:
 
 ```typescript
 import { chromium } from "playwright-core";
-import { createBrowserChild } from "@natstack/runtime";
+import { createBrowserChild } from "@workspace/runtime";
 
 const browser = await createBrowserChild("https://example.com");
 const cdpUrl = await browser.getCdpEndpoint();

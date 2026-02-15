@@ -6,10 +6,10 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { Theme, Box, Flex, Separator, Card } from "@radix-ui/themes";
-import { usePanelTheme } from "@natstack/react";
-import { pubsubConfig, rpc, createChild, setStateArgs, useStateArgs, buildFocusLink, db, id as panelClientId } from "@natstack/runtime";
-import { setDbOpen, connect, type AgenticClient } from "@natstack/agentic-messaging";
-import type { AgentManifest } from "@natstack/core";
+import { usePanelTheme } from "@workspace/react";
+import { pubsubConfig, rpc, createChild, setStateArgs, useStateArgs, buildFocusLink, db, id as panelClientId } from "@workspace/runtime";
+import { setDbOpen, connect, type AgenticClient } from "@workspace/agentic-messaging";
+import type { AgentManifest } from "@natstack/types";
 
 // Configure agentic-messaging to use runtime's db
 setDbOpen(db.open);

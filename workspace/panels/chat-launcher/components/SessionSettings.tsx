@@ -7,10 +7,10 @@
 
 import { useState, useEffect } from "react";
 import { Card, Flex, Text, Select } from "@radix-ui/themes";
-import { ParameterEditor } from "@natstack/react";
-import { rpc } from "@natstack/runtime";
-import type { FieldValue } from "@natstack/core";
-import { SESSION_PARAMETERS } from "@natstack/agentic-messaging/config";
+import { ParameterEditor } from "@workspace/react";
+import { rpc } from "@workspace/runtime";
+import type { FieldValue } from "@natstack/types";
+import { SESSION_PARAMETERS } from "@workspace/agentic-messaging/config";
 import type { SessionConfig } from "../hooks/useAgentSelection";
 
 /** Template info returned from the bridge */

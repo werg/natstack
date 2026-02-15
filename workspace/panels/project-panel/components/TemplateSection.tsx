@@ -6,7 +6,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Box, Text, Card, Flex, Spinner } from "@radix-ui/themes";
 import { ChevronDownIcon, ChevronRightIcon, FileTextIcon } from "@radix-ui/react-icons";
-import { rpc } from "@natstack/runtime";
+import { rpc } from "@workspace/runtime";
 import { TemplateInfoCard, type TemplateInfo } from "@workspace/context-template-editor";
 
 interface TemplateSectionProps {

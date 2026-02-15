@@ -1,13 +1,11 @@
 /**
  * Protocol parser for ns:// URLs.
  *
- * URL Format: ns:///{source}?action={navigate|child}&context={context}&repoArgs={json}&gitRef={ref}
+ * URL Format: ns:///{source}?action={navigate|child}&contextId={id}&repoArgs={json}
  *
  * Examples:
  *   ns:///panels/editor
  *   ns:///panels/editor?action=child
- *   ns:///workers/background-task
- *   ns:///panels/editor?gitRef=main
  *   ns:///panels/editor?repoArgs=%7B%22workspace%22%3A%22repos%2Fapp%22%7D
  */
 
@@ -29,6 +27,9 @@ export type NsAction = "navigate" | "child";
 export interface ParsedNsUrl {
   source: string;
   action: NsAction;
+  /**
+   * Git ref (branch/tag/commit) for the panel source.
+   */
   gitRef?: string;
   /**
    * Git spec for context template (e.g., "contexts/default").
@@ -48,8 +49,6 @@ export interface ParsedNsUrl {
   name?: string;
   /** If true, immediately focus the new panel after creation (only applies to action=child on app panels) */
   focus?: boolean;
-  /** Unsafe mode configuration (true, false, or path string) */
-  unsafe?: boolean | string;
 }
 
 /**
@@ -78,26 +77,17 @@ export function parseNsUrl(url: string): ParsedNsUrl {
     throw new Error(`Invalid ns URL action: ${actionParam} (expected "navigate" or "child")`);
   }
 
-  const gitRef = parsed.searchParams.get("gitRef") ?? undefined;
   const name = parsed.searchParams.get("name") ?? undefined;
   const focus = parsed.searchParams.get("focus") === "true" || undefined;
+
+  // Parse gitRef: branch/tag/commit for the panel source
+  const gitRef = parsed.searchParams.get("gitRef") ?? undefined;
 
   // Parse templateSpec: git spec for context template
   const templateSpec = parsed.searchParams.get("templateSpec") ?? undefined;
 
   // Parse contextId: explicit context ID for partition sharing
   const contextId = parsed.searchParams.get("contextId") ?? undefined;
-
-  // Parse unsafe parameter: "true" -> true, "false" -> false, other string -> path
-  const unsafeParam = parsed.searchParams.get("unsafe");
-  let unsafe: boolean | string | undefined;
-  if (unsafeParam === "true") {
-    unsafe = true;
-  } else if (unsafeParam === "false") {
-    unsafe = false;
-  } else if (unsafeParam) {
-    unsafe = unsafeParam; // Path string
-  }
 
   let repoArgs: Record<string, RepoArgSpec> | undefined;
   const repoArgsParam = parsed.searchParams.get("repoArgs");
@@ -151,11 +141,14 @@ export function parseNsUrl(url: string): ParsedNsUrl {
     }
   }
 
-  return { source, action, gitRef, templateSpec, contextId, repoArgs, env, stateArgs, name, focus, unsafe };
+  return { source, action, gitRef, templateSpec, contextId, repoArgs, env, stateArgs, name, focus };
 }
 
 export interface BuildNsUrlOptions {
   action?: NsAction;
+  /**
+   * Git ref (branch/tag/commit) for the panel source.
+   */
   gitRef?: string;
   /**
    * Git spec for context template (e.g., "contexts/default").
@@ -173,8 +166,6 @@ export interface BuildNsUrlOptions {
   name?: string;
   /** If true, immediately focus the new panel after creation (only applies to action=child on app panels) */
   focus?: boolean;
-  /** Unsafe mode configuration (true, false, or path string) */
-  unsafe?: boolean | string;
 }
 
 /**
@@ -187,14 +178,14 @@ export function buildNsUrl(source: string, options?: BuildNsUrlOptions): string 
   if (options?.action && options.action !== "navigate") {
     searchParams.set("action", options.action);
   }
+  if (options?.gitRef) {
+    searchParams.set("gitRef", options.gitRef);
+  }
   if (options?.templateSpec) {
     searchParams.set("templateSpec", options.templateSpec);
   }
   if (options?.contextId) {
     searchParams.set("contextId", options.contextId);
-  }
-  if (options?.gitRef) {
-    searchParams.set("gitRef", options.gitRef);
   }
   if (options?.repoArgs) {
     searchParams.set("repoArgs", JSON.stringify(options.repoArgs));
@@ -210,9 +201,6 @@ export function buildNsUrl(source: string, options?: BuildNsUrlOptions): string 
   }
   if (options?.focus) {
     searchParams.set("focus", "true");
-  }
-  if (options?.unsafe !== undefined) {
-    searchParams.set("unsafe", String(options.unsafe));
   }
 
   const paramsStr = searchParams.toString();

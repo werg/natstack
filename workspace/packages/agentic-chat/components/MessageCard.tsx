@@ -1,7 +1,7 @@
 import React, { useCallback, type ComponentType } from "react";
 import { Box, Card, Flex, IconButton, Text } from "@radix-ui/themes";
 import { CopyIcon, CheckIcon } from "@radix-ui/react-icons";
-import { CONTENT_TYPE_INLINE_UI } from "@natstack/agentic-messaging/utils";
+import { CONTENT_TYPE_INLINE_UI } from "@workspace/agentic-messaging/utils";
 import { TypingIndicator } from "./TypingIndicator";
 import { MessageContent } from "./MessageContent";
 import { ImageGallery } from "./ImageGallery";

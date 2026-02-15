@@ -17,8 +17,8 @@ export default function MyApp() {
   "name": "@workspace-panels/my-app",
   "natstack": { "type": "app", "title": "My App" },
   "dependencies": {
-    "@natstack/runtime": "workspace:*",
-    "@natstack/react": "workspace:*"
+    "@workspace/runtime": "workspace:*",
+    "@workspace/react": "workspace:*"
   }
 }
 ```
@@ -29,7 +29,7 @@ That's it. NatStack auto-mounts your default export.
 
 ## React Hooks
 
-Import from `@natstack/react`:
+Import from `@workspace/react`:
 
 ```tsx
 import {
@@ -44,14 +44,14 @@ import {
   usePanelChildren,   // All children as Map
   usePanelParent,     // Parent handle (null if root)
   useBootstrap,       // Bootstrap state for repoArgs
-} from "@natstack/react";
+} from "@workspace/react";
 ```
 
 ### Theme Integration
 
 ```tsx
 import { Theme } from "@radix-ui/themes";
-import { usePanelTheme } from "@natstack/react";
+import { usePanelTheme } from "@workspace/react";
 
 export default function App() {
   const appearance = usePanelTheme();
@@ -66,7 +66,7 @@ export default function App() {
 ### Managing Children
 
 ```tsx
-import { useChildPanels } from "@natstack/react";
+import { useChildPanels } from "@workspace/react";
 
 function ParentPanel() {
   const { children, createChild, createBrowserChild } = useChildPanels();
@@ -133,7 +133,7 @@ function SessionLauncher() {
 When your panel declares `repoArgs`, use `useBootstrap` to track cloning progress:
 
 ```tsx
-import { useBootstrap } from "@natstack/react";
+import { useBootstrap } from "@workspace/react";
 
 function App() {
   const { loading, result, error } = useBootstrap();
@@ -156,7 +156,7 @@ For type-safe parent-child communication, define a contract:
 
 ```typescript
 // panels/editor/contract.ts
-import { z, defineContract } from "@natstack/runtime";
+import { z, defineContract } from "@workspace/runtime";
 
 export interface EditorApi {
   getContent(): Promise<string>;
@@ -193,7 +193,7 @@ export const editorContract = defineContract({
 ```tsx
 // panels/editor/index.tsx
 import { useEffect, useState } from "react";
-import { rpc, getParentWithContract, noopParent } from "@natstack/runtime";
+import { rpc, getParentWithContract, noopParent } from "@workspace/runtime";
 import { editorContract } from "./contract.js";
 
 const parent = getParentWithContract(editorContract) ?? noopParent;
@@ -229,7 +229,7 @@ export default function Editor() {
 ```tsx
 // panels/ide/index.tsx
 import { useState, useEffect } from "react";
-import { createChildWithContract } from "@natstack/runtime";
+import { createChildWithContract } from "@workspace/runtime";
 import { editorContract } from "@workspace-panels/editor/contract";
 
 export default function IDE() {
@@ -287,8 +287,8 @@ async function example() {
 
 ```typescript
 import { promises as fs } from "fs";
-import { GitClient } from "@natstack/git";
-import { gitConfig } from "@natstack/runtime";
+import { GitClient } from "@workspace/git";
+import { gitConfig } from "@workspace/runtime";
 
 const git = new GitClient(fs, {
   serverUrl: gitConfig.serverUrl,
@@ -342,10 +342,10 @@ Unsafe globals:
 
 ## AI Integration
 
-Use `@natstack/ai` for streaming text generation with tool calling:
+Use `@workspace/ai` for streaming text generation with tool calling:
 
 ```tsx
-import { ai } from "@natstack/ai";
+import { ai } from "@workspace/ai";
 
 // Simple streaming
 const stream = ai.streamText({
@@ -364,8 +364,8 @@ for await (const event of stream) {
 ### Tool Calling
 
 ```tsx
-import { ai, tool } from "@natstack/ai";
-import { z } from "@natstack/runtime";
+import { ai, tool } from "@workspace/ai";
+import { z } from "@workspace/runtime";
 
 const tools = {
   get_time: tool({
@@ -425,7 +425,7 @@ Control browser panels with Playwright:
 
 ```typescript
 import { chromium } from "playwright-core";
-import { createBrowserChild } from "@natstack/runtime";
+import { createBrowserChild } from "@workspace/runtime";
 
 const browser = await createBrowserChild("https://example.com");
 const cdpUrl = await browser.getCdpEndpoint();
@@ -504,7 +504,7 @@ Workers are background processes with console UI:
 
 ```typescript
 // workers/compute/index.ts
-import { rpc, parent } from "@natstack/runtime";
+import { rpc, parent } from "@workspace/runtime";
 
 rpc.expose({
   async compute(data: number[]) {
@@ -545,7 +545,7 @@ const result = await worker.call.compute([1, 2, 3, 4, 5]);
 
 5. **Wait for fs** — Use `fsReady` before filesystem operations:
    ```typescript
-   import { fsReady } from "@natstack/runtime";
+   import { fsReady } from "@workspace/runtime";
    await fsReady;
    // Now safe to use fs
    ```

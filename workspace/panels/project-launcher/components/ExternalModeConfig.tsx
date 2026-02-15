@@ -6,7 +6,7 @@
 import { useState } from "react";
 import { Box, Text, TextField, Button, Flex } from "@radix-ui/themes";
 import { ArchiveIcon, CheckCircledIcon } from "@radix-ui/react-icons";
-import { rpc } from "@natstack/runtime";
+import { rpc } from "@workspace/runtime";
 
 interface ExternalModeConfigProps {
   workingDirectory: string;

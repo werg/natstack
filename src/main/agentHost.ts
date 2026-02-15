@@ -11,21 +11,19 @@
  */
 
 // No top-level Electron import — detection happens at runtime in hasElectronUtilityProcess()
+import * as path from "path";
 import { randomUUID } from "crypto";
 import { EventEmitter } from "events";
-import type { AgentInitConfig, AgentInstanceInfo } from "@natstack/core";
+import type { AgentInitConfig, AgentInstanceInfo } from "@natstack/types";
 import type { MessageStore } from "./pubsubServer.js";
 import {
   createRpcBridge,
   type RpcBridge,
   type RpcTransport,
   type RpcMessage,
-} from "@natstack/rpc";
-import {
   isParentPortEnvelope,
   type ParentPortEnvelope,
-} from "@natstack/agent-runtime";
-import { getAgentBuilder } from "./agentBuilder.js";
+} from "@natstack/rpc";
 import { getAgentDiscovery } from "./agentDiscovery.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
 import { createDevLogger } from "./devLog.js";
@@ -92,12 +90,21 @@ interface SpawnOptions {
   config: Record<string, unknown>;
 }
 
+/** Result from V2 build service for agents */
+interface AgentBuildResult {
+  bundlePath: string;
+  dir: string;
+  metadata: { kind: string; name: string };
+}
+
 interface AgentHostOptions {
   workspaceRoot: string;
   pubsubUrl: string;
   messageStore: MessageStore;
   createToken: (instanceId: string) => string;
   revokeToken: (instanceId: string) => boolean;
+  /** Build an agent via V2 build service */
+  getBuild: (unitPath: string) => Promise<AgentBuildResult>;
 }
 
 /**
@@ -309,42 +316,18 @@ export class AgentHost extends EventEmitter {
       return existing;
     }
 
-    // 3. Build agent
+    // 3. Build agent via V2 build service
     log.verbose(`[spawn] Building agent ${agentId}...`);
-    const builder = getAgentBuilder();
-    const buildResult = await builder.build({
-      workspaceRoot: this.options.workspaceRoot,
-      agentName: agentId,
-    });
-
-    if (!buildResult.success || !buildResult.bundlePath) {
-      log.verbose(`[spawn] Build failed: ${buildResult.error}`);
-      if (buildResult.buildLog) {
-        log.verbose(`[spawn] Build log:\n${buildResult.buildLog}`);
-      }
-      throw new AgentSpawnError(
-        buildResult.error || "Unknown build error",
-        buildResult.buildLog,
-        buildResult.typeErrors,
-        buildResult.dirtyRepo
-      );
+    let buildResult: AgentBuildResult;
+    try {
+      buildResult = await this.options.getBuild(`agents/${agentId}`);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      log.verbose(`[spawn] Build failed: ${errorMsg}`);
+      throw new AgentSpawnError(errorMsg);
     }
 
     log.verbose(`[spawn] Build successful: ${buildResult.bundlePath}`);
-
-    // Emit warning if repo has uncommitted changes (but build succeeded)
-    if (buildResult.dirtyRepo) {
-      log.verbose(`[spawn] Agent ${agentId} has uncommitted changes`);
-      this.emit("agentLifecycle", {
-        channel: options.channel,
-        handle: options.handle,
-        agentId,
-        event: "warning",
-        reason: "dirty-repo",
-        details: buildResult.dirtyRepo,
-        timestamp: Date.now(),
-      } satisfies AgentLifecycleEvent);
-    }
 
     // 4. Generate instance ID and token
     const instanceId = randomUUID();
@@ -358,8 +341,8 @@ export class AgentHost extends EventEmitter {
       env: {
         ...process.env,
         NODE_ENV: process.env["NODE_ENV"],
-        // Set NODE_PATH for any future native addon needs
-        NODE_PATH: buildResult.nodeModulesDir,
+        // Set NODE_PATH to build dir for native addon resolution
+        NODE_PATH: path.join(buildResult.dir, "node_modules"),
       },
     });
 

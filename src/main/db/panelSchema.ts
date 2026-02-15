@@ -18,7 +18,7 @@ export const PANEL_SCHEMA_VERSION = 2;
 /**
  * Panel types stored in the database.
  */
-export type DbPanelType = "app" | "worker" | "browser" | "shell";
+export type DbPanelType = "app" | "browser" | "shell";
 
 /**
  * Panel event types for audit log.

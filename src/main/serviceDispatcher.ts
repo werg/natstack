@@ -1,18 +1,12 @@
 /**
- * ServiceDispatcher - Unified service dispatch for panels, workers, and shell.
+ * ServiceDispatcher - Unified service dispatch for panels and shell.
  *
- * Panels, workers (via IPC), and the shell renderer call main process services
+ * Panels and the shell renderer call main process services
  * like bridge, ai, db, browser, fs. This module provides a single registry
  * and dispatch mechanism that all code paths use.
- *
- * Benefits:
- * - Single source of truth for service handlers
- * - Consistent error handling
- * - Easier to add new services
- * - No code duplication between panel, worker, and shell paths
  */
 
-export type CallerKind = "panel" | "worker" | "shell" | "server";
+export type CallerKind = "panel" | "shell" | "server";
 
 export type ServiceContext = {
   /** The caller ID (panel/worker tree node ID, or "shell" for the shell renderer) */

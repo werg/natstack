@@ -1,0 +1,14 @@
+{
+  "name": "@workspace-about/help",
+  "version": "0.1.0",
+  "private": true,
+  "natstack": {
+    "type": "app",
+    "title": "Help",
+    "shell": true,
+    "hiddenInLauncher": false
+  },
+  "dependencies": {
+    "@workspace/react": "*"
+  }
+}

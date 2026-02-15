@@ -261,7 +261,6 @@ function createDefaultWorkspaceConfig(workspacePath: string): WorkspaceConfig {
 
   // Core directories
   fs.mkdirSync(path.join(workspacePath, "panels"), { recursive: true });
-  fs.mkdirSync(path.join(workspacePath, "workers"), { recursive: true });
   fs.mkdirSync(path.join(workspacePath, "packages"), { recursive: true });
   fs.mkdirSync(path.join(workspacePath, "contexts"), { recursive: true });
   fs.mkdirSync(path.join(workspacePath, ".cache"), { recursive: true });

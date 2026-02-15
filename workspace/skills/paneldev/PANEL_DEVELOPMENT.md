@@ -17,8 +17,8 @@ export default function MyApp() {
   "name": "@workspace-panels/my-app",
   "natstack": { "type": "app", "title": "My App" },
   "dependencies": {
-    "@natstack/runtime": "workspace:*",
-    "@natstack/react": "workspace:*"
+    "@workspace/runtime": "workspace:*",
+    "@workspace/react": "workspace:*"
   }
 }
 ```
@@ -38,14 +38,14 @@ import {
   usePanelChild,      // Get specific child
   usePanelParent,     // Parent handle
   useBootstrap,       // Bootstrap state for repoArgs
-} from "@natstack/react";
+} from "@workspace/react";
 ```
 
 ### Theme
 
 ```tsx
 import { Theme } from "@radix-ui/themes";
-import { usePanelTheme } from "@natstack/react";
+import { usePanelTheme } from "@workspace/react";
 
 export default function App() {
   const appearance = usePanelTheme();
@@ -56,7 +56,7 @@ export default function App() {
 ### Children
 
 ```tsx
-import { useChildPanels } from "@natstack/react";
+import { useChildPanels } from "@workspace/react";
 
 function Parent() {
   const { children, createChild, createBrowserChild } = useChildPanels();
@@ -102,8 +102,8 @@ await fs.mkdir("/subdir", { recursive: true });
 ### Git
 
 ```typescript
-import { GitClient } from "@natstack/git";
-import { gitConfig } from "@natstack/runtime";
+import { GitClient } from "@workspace/git";
+import { gitConfig } from "@workspace/runtime";
 
 const git = new GitClient(fs, { serverUrl: gitConfig.serverUrl, token: gitConfig.token });
 await git.clone({ url: `${gitConfig.serverUrl}/my-repo`, dir: "/repo" });
@@ -132,7 +132,7 @@ Background processes with console UI:
 
 ```typescript
 // workers/compute/index.ts
-import { rpc, parent } from "@natstack/runtime";
+import { rpc, parent } from "@workspace/runtime";
 
 rpc.expose({
   async compute(data: number[]) {

@@ -355,28 +355,13 @@ export function getPrebuiltAboutPagesDir(): string | null {
 }
 
 /**
- * Get the directory containing pre-built builtin workers.
- * These workers are bundled with the app and don't need runtime compilation.
- *
- * In production: Returns path to builtin-workers in resources directory
- * In development: Returns null (workers are compiled at runtime)
- */
-export function getPrebuiltBuiltinWorkersDir(): string | null {
-  if (isDev()) {
-    return null;
-  }
-  const workersPath = path.join(getResourcesPath(), "builtin-workers");
-  return fs.existsSync(workersPath) ? workersPath : null;
-}
-
-/**
  * Cached packages directory result.
  * undefined = not computed yet, null = doesn't exist, string = path
  */
 let _packagesDirCache: string | null | undefined;
 
 /**
- * Get the NatStack packages directory for @natstack/* types.
+ * Get the NatStack packages directory for @workspace/* types.
  * Returns null if packages directory doesn't exist (e.g., external workspace).
  * Result is cached since packages directory existence won't change at runtime.
  */

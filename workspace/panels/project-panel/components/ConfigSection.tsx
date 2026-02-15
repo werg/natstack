@@ -7,7 +7,7 @@ import { Box, Text, Card, Flex, Button, TextField, Separator } from "@radix-ui/t
 import { ChevronDownIcon, ChevronRightIcon, GearIcon } from "@radix-ui/react-icons";
 import { AgentSelector, type AgentInfo } from "@workspace/agentic-components";
 import type { ProjectConfig } from "../types";
-import { AUTONOMY_NOTCHES } from "@natstack/agentic-messaging/config";
+import { AUTONOMY_NOTCHES } from "@workspace/agentic-messaging/config";
 
 interface ConfigSectionProps {
   config: ProjectConfig;

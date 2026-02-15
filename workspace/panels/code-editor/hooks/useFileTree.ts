@@ -6,7 +6,7 @@
  */
 
 import { useState, useCallback, useEffect } from "react";
-import { fs } from "@natstack/runtime";
+import { fs } from "@workspace/runtime";
 import type { TreeNode } from "../types";
 
 export interface UseFileTreeResult {

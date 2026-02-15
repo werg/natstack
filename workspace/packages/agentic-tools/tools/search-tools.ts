@@ -10,7 +10,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import picomatch from "picomatch";
-import type { MethodDefinition } from "@natstack/agentic-messaging";
+import type { MethodDefinition } from "@workspace/agentic-messaging";
 import { resolvePath } from "./utils";
 import { createIgnoreFilter } from "./gitignore-cache";
 import {
@@ -19,7 +19,7 @@ import {
   FILE_TYPE_MAPPINGS,
   type GlobArgs,
   type GrepArgs,
-} from "@natstack/agentic-messaging/tool-schemas";
+} from "@workspace/agentic-messaging/tool-schemas";
 
 const MAX_RESULTS = 1000;
 
@@ -260,7 +260,7 @@ export async function grep(args: GrepArgs, workspaceRoot?: string): Promise<stri
         // Build line offset index for O(1) line lookup
         const lineOffsets: number[] = [0];
         for (let i = 0; i < lines.length; i++) {
-          lineOffsets.push(lineOffsets[i] + lines[i].length + 1);
+          lineOffsets.push((lineOffsets[i] ?? 0) + (lines[i] ?? "").length + 1);
         }
 
         // Binary search for line number at position
@@ -268,7 +268,7 @@ export async function grep(args: GrepArgs, workspaceRoot?: string): Promise<stri
           let low = 0, high = lineOffsets.length - 1;
           while (low < high) {
             const mid = Math.floor((low + high + 1) / 2);
-            if (lineOffsets[mid] <= pos) low = mid;
+            if ((lineOffsets[mid] ?? 0) <= pos) low = mid;
             else high = mid - 1;
           }
           return low;
@@ -286,7 +286,7 @@ export async function grep(args: GrepArgs, workspaceRoot?: string): Promise<stri
         }
       } else {
         for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
+          const line = lines[i] ?? "";
           regex.lastIndex = 0; // Reset regex state
           if (regex.test(line)) {
             matchedLineNums.add(i);
@@ -303,21 +303,21 @@ export async function grep(args: GrepArgs, workspaceRoot?: string): Promise<stri
         // Add context before
         for (let i = Math.max(0, lineNum - contextBefore); i < lineNum; i++) {
           if (!includedLines.has(i)) {
-            fileMatches.push({ lineNum: i + 1, line: lines[i], isContext: true });
+            fileMatches.push({ lineNum: i + 1, line: lines[i] ?? "", isContext: true });
             includedLines.add(i);
           }
         }
 
         // Add the matching line
         if (!includedLines.has(lineNum)) {
-          fileMatches.push({ lineNum: lineNum + 1, line: lines[lineNum] });
+          fileMatches.push({ lineNum: lineNum + 1, line: lines[lineNum] ?? "" });
           includedLines.add(lineNum);
         }
 
         // Add context after
         for (let i = lineNum + 1; i <= Math.min(lines.length - 1, lineNum + contextAfter); i++) {
           if (!includedLines.has(i)) {
-            fileMatches.push({ lineNum: i + 1, line: lines[i], isContext: true });
+            fileMatches.push({ lineNum: i + 1, line: lines[i] ?? "", isContext: true });
             includedLines.add(i);
           }
         }

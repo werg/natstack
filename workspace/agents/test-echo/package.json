@@ -6,5 +6,9 @@
     "type": "agent",
     "title": "Test Echo Agent",
     "description": "Simple echo agent for testing AgentHost functionality"
+  },
+  "dependencies": {
+    "@workspace/agent-runtime": "workspace:*",
+    "@workspace/agentic-messaging": "workspace:*"
   }
 }

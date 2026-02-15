@@ -1,12 +1,12 @@
 /**
- * @natstack/typecheck - TypeScript type checking for panels and workers.
+ * @workspace/typecheck - TypeScript type checking for panels and workers.
  *
  * This module provides type checking with module resolution that matches
  * the panel build system, ensuring developers get accurate feedback.
  *
  * @example
  * ```typescript
- * import { createTypeCheckService } from "@natstack/typecheck";
+ * import { createTypeCheckService } from "@workspace/typecheck";
  *
  * const service = createTypeCheckService({
  *   panelPath: "/workspace/panels/my-panel",
@@ -46,7 +46,7 @@ export {
   matchesDedupePattern,
   generateFsShimCode,
   isBareSpecifier,
-  parseNatstackImport,
+  parseWorkspaceImport,
   resolveExportSubpath,
   BUNDLE_CONDITIONS,
   TYPES_CONDITIONS,
@@ -60,7 +60,7 @@ export {
   type ResolutionResult,
 } from "./resolution.js";
 
-// Virtual type definitions (for fs/path shims and globals - NOT @natstack/runtime which uses real types)
+// Virtual type definitions (for fs/path shims and globals - NOT @workspace/runtime which uses real types)
 export { FS_TYPE_DEFINITIONS, PATH_TYPE_DEFINITIONS, GLOBAL_TYPE_DEFINITIONS, NODE_BUILTIN_TYPE_STUBS } from "./lib/index.js";
 
 // Dynamic natstack package type loading

@@ -1,10 +1,10 @@
-import type { MethodExecutionContext } from "@natstack/agentic-messaging";
+import type { MethodExecutionContext } from "@workspace/agentic-messaging";
 
-// Lazy-loaded @natstack/eval (~460KB sucrase deferred until first eval tool invocation)
-let evalModule: typeof import("@natstack/eval") | null = null;
+// Lazy-loaded @workspace/eval (~460KB sucrase deferred until first eval tool invocation)
+let evalModule: typeof import("@workspace/eval") | null = null;
 async function getEvalModule() {
   if (!evalModule) {
-    try { evalModule = await import("@natstack/eval"); }
+    try { evalModule = await import("@workspace/eval"); }
     catch (e) { throw new Error(`Failed to load eval module: ${e instanceof Error ? e.message : e}`); }
   }
   return evalModule;
@@ -213,7 +213,7 @@ export async function executeEvalTool(
     validateRequires,
   } = await getEvalModule();
 
-  // Use unified async tracking API from @natstack/eval
+  // Use unified async tracking API from @workspace/eval
   const tracking = getAsyncTracking();
 
   // Create a tracking context with auto-cleanup timeout (allows graceful cleanup after timeout)
@@ -243,7 +243,7 @@ export async function executeEvalTool(
   try {
     const transformed = await transformCode(code, { syntax });
 
-    // Use unified require validation from @natstack/eval
+    // Use unified require validation from @workspace/eval
     const require = getDefaultRequire();
     if (!require) {
       return {
@@ -295,7 +295,7 @@ export async function executeEvalTool(
         returnValue = await timedPromise;
       }
 
-      const safeReturnValue = safeSerialize(returnValue ?? result.exports.default);
+      const safeReturnValue = safeSerialize(returnValue ?? result.exports["default"]);
       return {
         success: true,
         consoleOutput: formatConsoleOutput(capture.getEntries()),
@@ -303,7 +303,7 @@ export async function executeEvalTool(
       };
     } else {
       // timeout=0: Return immediately without waiting for async
-      const safeReturnValue = safeSerialize(result.exports.default);
+      const safeReturnValue = safeSerialize(result.exports["default"]);
       return {
         success: true,
         consoleOutput: formatConsoleOutput(capture.getEntries()),

@@ -13,7 +13,7 @@
  * Configuration for module resolution behavior.
  */
 export interface ModuleResolutionConfig {
-  /** Enable fs module shimming (fs → @natstack/runtime async fs) */
+  /** Enable fs module shimming (fs → @workspace/runtime async fs) */
   fsShimEnabled: boolean;
   /** Packages to deduplicate (force single instance) */
   dedupePackages: string[];
@@ -43,7 +43,7 @@ export const DEFAULT_DEDUPE_PACKAGES = [
 ] as const;
 
 /**
- * Async fs methods exported by @natstack/runtime.
+ * Async fs methods exported by @workspace/runtime.
  * Used by both the build shim and type definitions.
  */
 export const FS_ASYNC_METHODS = [
@@ -175,19 +175,19 @@ export function isFsPromisesModule(specifier: string): boolean {
 }
 
 /**
- * Check if a module specifier refers to a @natstack/* package.
+ * Check if a module specifier refers to a @workspace/* package.
  */
 export function isNatstackModule(specifier: string): boolean {
-  return specifier.startsWith("@natstack/");
+  return specifier.startsWith("@workspace/");
 }
 
 /**
- * Extract the package name from a @natstack/* specifier.
+ * Extract the package name from a @workspace/* specifier.
  */
 export function getNatstackPackageName(specifier: string): string {
-  // @natstack/runtime → runtime
-  // @natstack/runtime/panel/fs → runtime
-  const withoutScope = specifier.slice("@natstack/".length);
+  // @workspace/runtime → runtime
+  // @workspace/runtime/panel/fs → runtime
+  const withoutScope = specifier.slice("@workspace/".length);
   const slashIndex = withoutScope.indexOf("/");
   return slashIndex === -1 ? withoutScope : withoutScope.slice(0, slashIndex);
 }
@@ -232,7 +232,7 @@ export function matchesDedupePattern(
 /**
  * Resolve a module specifier according to NatStack's resolution rules.
  *
- * @param specifier - The module specifier (e.g., "fs", "@natstack/runtime", "react")
+ * @param specifier - The module specifier (e.g., "fs", "@workspace/runtime", "react")
  * @param config - Resolution configuration
  * @returns Resolution result indicating how the module should be resolved
  */
@@ -250,7 +250,7 @@ export function resolveModule(
     return { kind: "path-shim" };
   }
 
-  // 3. @natstack/* resolution
+  // 3. @workspace/* resolution
   if (isNatstackModule(specifier)) {
     return { kind: "natstack", packageName: getNatstackPackageName(specifier) };
   }
@@ -284,13 +284,13 @@ export const constants = ${JSON.stringify(FS_CONSTANTS, null, 2)};`;
 
   if (isPromises) {
     // fs/promises - just export async methods
-    return `import { fs } from "@natstack/runtime";
+    return `import { fs } from "@workspace/runtime";
 export default fs;
 ${asyncExports}
 `;
   } else {
     // fs - export promises, async methods, sync stubs, and constants
-    return `import { fs } from "@natstack/runtime";
+    return `import { fs } from "@workspace/runtime";
 export default { ...fs, promises: fs };
 export const promises = fs;
 ${asyncExports}
@@ -301,10 +301,10 @@ ${fsConstants}
 }
 
 // ===========================================================================
-// @natstack/* Package Path Resolution
+// @workspace/* Package Path Resolution
 // ===========================================================================
 
-/** Conditions for esbuild bundling (@natstack/* packages). */
+/** Conditions for esbuild bundling (@workspace/* packages). */
 export const BUNDLE_CONDITIONS = ["natstack-panel", "default"] as const;
 
 /** Conditions for type definition resolution. */
@@ -314,7 +314,7 @@ export const TYPES_CONDITIONS = ["types"] as const;
 export const WORKSPACE_CONDITIONS = ["types", "default"] as const;
 
 /**
- * Parsed result of a @natstack/* import specifier.
+ * Parsed result of a @workspace/* import specifier.
  */
 export interface NatstackImportParts {
   /** Package directory name (e.g., "agentic-messaging") */
@@ -324,16 +324,16 @@ export interface NatstackImportParts {
 }
 
 /**
- * Parse a @natstack/* import specifier into package name and subpath.
- * Returns null if the specifier is not a @natstack/* import.
+ * Parse a @workspace/* import specifier into package name and subpath.
+ * Returns null if the specifier is not a @workspace/* import.
  *
  * Examples:
- *   "@natstack/runtime"             → { packageName: "runtime", subpath: "." }
- *   "@natstack/agentic-messaging/config" → { packageName: "agentic-messaging", subpath: "./config" }
+ *   "@workspace/runtime"             → { packageName: "runtime", subpath: "." }
+ *   "@workspace/agentic-messaging/config" → { packageName: "agentic-messaging", subpath: "./config" }
  */
-export function parseNatstackImport(specifier: string): NatstackImportParts | null {
-  if (!specifier.startsWith("@natstack/")) return null;
-  const withoutScope = specifier.slice("@natstack/".length);
+export function parseWorkspaceImport(specifier: string): NatstackImportParts | null {
+  if (!specifier.startsWith("@workspace/")) return null;
+  const withoutScope = specifier.slice("@workspace/".length);
   const slashIndex = withoutScope.indexOf("/");
   if (slashIndex === -1) {
     return { packageName: withoutScope, subpath: "." };

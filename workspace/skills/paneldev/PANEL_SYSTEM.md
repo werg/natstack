@@ -23,8 +23,8 @@ NatStack panels are TypeScript apps running in isolated webviews with parent-chi
     "exposeModules": ["@radix-ui/colors"]
   },
   "dependencies": {
-    "@natstack/runtime": "workspace:*",
-    "@natstack/react": "workspace:*"
+    "@workspace/runtime": "workspace:*",
+    "@workspace/react": "workspace:*"
   }
 }
 ```
@@ -62,7 +62,7 @@ import {
 
   // Lifecycle
   closeSelf, getInfo, getTheme, onThemeChange, onFocus,
-} from "@natstack/runtime";
+} from "@workspace/runtime";
 ```
 
 ## CreateChildOptions

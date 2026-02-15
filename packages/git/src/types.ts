@@ -1,37 +1,6 @@
-/**
- * Repo argument specification for createChild.
- * Can be a shorthand string or full object.
- *
- * Shorthand formats:
- * - "panels/shared" - defaults to main/master branch
- * - "panels/shared#develop" - specific branch
- * - "panels/shared@v1.0.0" - specific tag
- * - "panels/shared@abc123" - specific commit (7+ hex chars)
- */
-export type RepoArgSpec =
-  | string
-  | {
-      /** Git repository path relative to workspace (e.g., "panels/shared") */
-      repo: string;
-      /** Branch, tag, or commit hash to checkout */
-      ref?: string;
-    };
-
-/**
- * Normalized repo arg after parsing shorthand
- */
-export interface NormalizedRepoArg {
-  /** Name/key of this repo arg */
-  name: string;
-  /** Repository path */
-  repo: string;
-  /** Ref to checkout (branch, tag, or commit) */
-  ref?: string;
-  /** Resolved absolute URL for cloning */
-  resolvedUrl: string;
-  /** Path in OPFS where this will be cloned (/args/<name>) */
-  localPath: string;
-}
+// Canonical source for these types is @natstack/types
+import type { RepoArgSpec, NormalizedRepoArg } from "@natstack/types";
+export type { RepoArgSpec, NormalizedRepoArg };
 
 /**
  * Options for git operations

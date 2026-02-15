@@ -60,7 +60,7 @@ export {
   createWorkspaceToolMethodDefinitions,
 } from "./workspace-tools";
 
-import type { MethodDefinition } from "@natstack/agentic-messaging";
+import type { MethodDefinition } from "@workspace/agentic-messaging";
 import { createFileToolMethodDefinitions } from "./file-tools";
 import { createSearchToolMethodDefinitions } from "./search-tools";
 import { createDirectoryToolMethodDefinitions } from "./directory-tools";

@@ -8,7 +8,7 @@
 
 import { createSdkMcpServer, tool } from "ai-sdk-provider-claude-code";
 import { z } from "zod";
-import type { AIToolDefinition } from "@natstack/ai";
+import type { AIToolDefinition } from "@natstack/types";
 
 /**
  * MCP server configuration with instance (from claude-agent-sdk)

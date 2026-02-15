@@ -12,8 +12,8 @@ import type {
   AgentDebugPayload,
   AgentBuildError,
   AggregatedMessage,
-} from "@natstack/agentic-messaging";
-import type { Participant, Attachment } from "@natstack/pubsub";
+} from "@workspace/agentic-messaging";
+import type { Participant, Attachment } from "@workspace/pubsub";
 import type { MethodHistoryEntry } from "../components/MethodHistoryItem";
 import type { ChatParticipantMetadata, ChatMessage, PendingAgent } from "../types";
 
@@ -165,10 +165,10 @@ export function dispatchAgenticEvent(
       index++;
       if (index < middleware.length) {
         continued = false;
-        middleware[index](event, runNext);
+        middleware[index]!(event, runNext);
       }
     };
-    middleware[0](event, runNext);
+    middleware[0]!(event, runNext);
     // If any middleware did not call next(), stop processing
     if (!continued && index < middleware.length) return;
   }
@@ -181,12 +181,12 @@ export function dispatchAgenticEvent(
       handlers.setMessages((prev) => {
         const existingIndex = prev.findIndex((m) => m.id === event.id);
         if (existingIndex !== -1) {
-          if (prev[existingIndex].pending) {
+          if (prev[existingIndex]!.pending) {
             const updated = {
-              ...prev[existingIndex],
+              ...prev[existingIndex]!,
               pending: false,
               // Merge attachments from server (in case local didn't have them)
-              attachments: getEventAttachments(event) ?? prev[existingIndex].attachments,
+              attachments: getEventAttachments(event) ?? prev[existingIndex]!.attachments,
             };
             if (isPanelSender) {
               updated.complete = true;

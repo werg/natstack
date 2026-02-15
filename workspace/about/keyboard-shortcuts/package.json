@@ -1,0 +1,14 @@
+{
+  "name": "@workspace-about/keyboard-shortcuts",
+  "version": "0.1.0",
+  "private": true,
+  "natstack": {
+    "type": "app",
+    "title": "Keyboard Shortcuts",
+    "shell": true,
+    "hiddenInLauncher": false
+  },
+  "dependencies": {
+    "@workspace/react": "*"
+  }
+}

@@ -13,7 +13,7 @@ import type {
   IncomingToolRoleRequestEvent,
   IncomingToolRoleResponseEvent,
   IncomingToolRoleHandoffEvent,
-} from "@natstack/agentic-messaging";
+} from "@workspace/agentic-messaging";
 
 /**
  * State for a single tool group.

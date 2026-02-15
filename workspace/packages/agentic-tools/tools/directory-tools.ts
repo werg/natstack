@@ -7,14 +7,14 @@
 import * as fs from "fs";
 import type { Dirent, Stats } from "fs";
 import * as path from "path";
-import type { MethodDefinition } from "@natstack/agentic-messaging";
+import type { MethodDefinition } from "@workspace/agentic-messaging";
 import { resolvePath } from "./utils";
 import {
   TreeArgsSchema,
   ListDirectoryArgsSchema,
   type TreeArgs,
   type ListDirectoryArgs,
-} from "@natstack/agentic-messaging/tool-schemas";
+} from "@workspace/agentic-messaging/tool-schemas";
 
 /**
  * Default ignore patterns for tree
@@ -67,6 +67,7 @@ export async function tree(args: TreeArgs, workspaceRoot?: string): Promise<stri
 
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
+      if (!entry) continue;
       const isLast = i === entries.length - 1;
       const connector = isLast ? "└── " : "├── ";
       const childPrefix = prefix + (isLast ? "    " : "│   ");

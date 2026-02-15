@@ -9,7 +9,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as git from "isomorphic-git";
 import { GitClient } from "@natstack/git";
-import type { MethodDefinition } from "@natstack/agentic-messaging";
+import type { MethodDefinition } from "@workspace/agentic-messaging";
 import {
   WorkspaceListArgsSchema,
   WorkspaceCloneArgsSchema,
@@ -21,13 +21,13 @@ import {
   type ContextInfoArgs,
   type ContextTemplateListArgs,
   type ContextTemplateReadArgs,
-} from "@natstack/agentic-messaging/tool-schemas";
+} from "@workspace/agentic-messaging/tool-schemas";
 import {
   getWorkspaceTree,
   gitConfig,
   rpc,
   type WorkspaceNode,
-} from "@natstack/runtime";
+} from "@workspace/runtime";
 
 /** Standard workspace mount path prefix */
 const WORKSPACE_PREFIX = "/workspace";
@@ -106,7 +106,7 @@ function collectTemplateCandidates(nodes: WorkspaceNode[]): string[] {
     const node = stack.pop();
     if (!node) continue;
 
-    const topDir = node.path.split("/")[0];
+    const topDir = node.path.split("/")[0] ?? "";
     if (node.isGitRepo && TEMPLATE_DIRECTORIES.includes(topDir)) {
       results.push(node.path);
     }

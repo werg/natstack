@@ -1,0 +1,16 @@
+{
+  "name": "@workspace-about/model-provider-config",
+  "version": "0.1.0",
+  "private": true,
+  "natstack": {
+    "type": "app",
+    "title": "Model Provider Config",
+    "shell": true,
+    "hiddenInLauncher": false
+  },
+  "dependencies": {
+    "@workspace/about-shared": "workspace:*",
+    "@workspace/react": "*",
+    "@workspace/runtime": "*"
+  }
+}

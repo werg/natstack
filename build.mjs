@@ -22,18 +22,6 @@ const nodeBuiltinsExternalPlugin = {
   },
 };
 
-const smokeTestConfig = {
-  entryPoints: ["src/server/smoke-test.ts"],
-  bundle: true,
-  platform: "node",
-  target: "node20",
-  format: "cjs",
-  outfile: "dist/smoke-test.cjs",
-  external: ["electron", "esbuild", "@npmcli/arborist", "better-sqlite3",
-             "verdaccio", "node-git-server"],
-  logOverride,
-};
-
 // Redirect better-sqlite3 to the server-native copy (compiled for system Node, not Electron).
 // Path is relative to outfile (dist/server.mjs) so the build artifact is portable.
 const serverNativeSqlitePath = path.relative(
@@ -61,7 +49,7 @@ const serverElectronConfig = {
   format: "cjs",
   outfile: "dist/server-electron.cjs",
   external: ["electron", "esbuild", "@npmcli/arborist", "better-sqlite3",
-             "verdaccio", "node-git-server"],
+             "node-git-server"],
   sourcemap: isDev,
   minify: !isDev,
   logOverride,
@@ -75,7 +63,7 @@ const serverConfig = {
   format: "esm",
   outfile: "dist/server.mjs",
   external: ["electron", "esbuild", "@npmcli/arborist",
-             "verdaccio", "node-git-server"],
+             "node-git-server"],
   plugins: [serverNativePlugin],
   sourcemap: isDev,
   minify: !isDev,
@@ -133,19 +121,6 @@ const safePreloadConfig = {
   target: "node20",
   format: "cjs",
   outfile: "dist/safePreload.cjs",
-  external: ["electron"],
-  sourcemap: isDev,
-  minify: !isDev,
-  logOverride,
-};
-
-const unsafePreloadConfig = {
-  entryPoints: ["src/preload/unsafePreload.ts"],
-  bundle: true,
-  platform: "node",
-  target: "node20",
-  format: "cjs",
-  outfile: "dist/unsafePreload.cjs",
   external: ["electron"],
   sourcemap: isDev,
   minify: !isDev,
@@ -262,27 +237,38 @@ async function generateProtocolFiles() {
 }
 
 async function buildPlaywrightCore() {
-  console.log("Building @natstack/playwright-core (browser bundle)...");
+  console.log("Building @workspace/playwright-core (browser bundle)...");
   try {
-    execSync('pnpm --filter "@natstack/playwright-core" build', { stdio: 'inherit' });
-    console.log("@natstack/playwright-core built successfully!");
+    execSync('pnpm --filter "@workspace/playwright-core" build', { stdio: 'inherit' });
+    console.log("@workspace/playwright-core built successfully!");
   } catch (error) {
-    console.error("Failed to build @natstack/playwright-core:", error);
+    console.error("Failed to build @workspace/playwright-core:", error);
+    throw error;
+  }
+}
+
+async function buildNatstackPackages() {
+  console.log("Building @natstack/* infrastructure packages...");
+  try {
+    execSync('pnpm --filter "@natstack/*" build', { stdio: 'inherit' });
+    console.log("@natstack/* packages built successfully!");
+  } catch (error) {
+    console.error("Failed to build @natstack/* packages:", error);
     throw error;
   }
 }
 
 async function buildWorkspacePackages() {
-  console.log("Building other workspace packages...");
+  console.log("Building @workspace/* packages...");
   try {
     // Build all packages except playwright-core (already built separately)
     // Note: We intentionally do NOT use --parallel here because packages have
-    // inter-dependencies (e.g., @natstack/ai depends on @natstack/runtime).
+    // inter-dependencies (e.g., @workspace/ai depends on @workspace/runtime).
     // pnpm will automatically build in topological order (dependencies first).
-    execSync('pnpm --filter "!@natstack/playwright-core" --filter "@natstack/*" build', { stdio: 'inherit' });
-    console.log("Workspace packages built successfully!");
+    execSync('pnpm --filter "!@workspace/playwright-core" --filter "@workspace/*" build', { stdio: 'inherit' });
+    console.log("@workspace/* packages built successfully!");
   } catch (error) {
-    console.error("Failed to build workspace packages:", error);
+    console.error("Failed to build @workspace/* packages:", error);
     throw error;
   }
 }
@@ -364,10 +350,17 @@ async function build() {
     await buildPlaywrightCore();
 
     // ========================================================================
-    // STEP 1: Build other workspace packages
+    // STEP 0.75: Build @natstack/* infrastructure packages
+    // ========================================================================
+    // Must be built before @workspace/* packages since they depend on @natstack/*
+    // Dependencies: generateProtocolFiles
+    await buildNatstackPackages();
+
+    // ========================================================================
+    // STEP 1: Build @workspace/* packages
     // ========================================================================
     // These must be built as they are consumed by later steps
-    // Dependencies: generateProtocolFiles, buildPlaywrightCore
+    // Dependencies: buildNatstackPackages, buildPlaywrightCore
     await buildWorkspacePackages();
 
     // ========================================================================
@@ -379,13 +372,11 @@ async function build() {
     await esbuild.build(mainConfig);
     await esbuild.build(preloadConfig);
     await esbuild.build(safePreloadConfig);
-    await esbuild.build(unsafePreloadConfig);
     await esbuild.build(adblockPreloadConfig);
     // Clean stale renderer artifacts before ESM build (prevents accidental loading of old CJS bundle)
     try { fs.unlinkSync("dist/renderer.js"); } catch {}
     try { fs.unlinkSync("dist/renderer.css"); } catch {}
     await esbuild.build(rendererConfig);
-    await esbuild.build(smokeTestConfig);
     await esbuild.build(serverElectronConfig);
     if (serverNativeReady) {
       await esbuild.build(serverConfig);

@@ -14,7 +14,7 @@
  * 6. Tool calls flow: Codex -> HTTP MCP server -> pubsub
  */
 
-import { Agent, runAgent, type AgentState } from "@natstack/agent-runtime";
+import { Agent, runAgent, type AgentState } from "@workspace/agent-runtime";
 import {
   createMessageQueue,
   createInterruptController,
@@ -29,11 +29,11 @@ import {
   toCodexMcpTools,
   createCanUseToolGate,
   type MessageQueue,
-} from "@natstack/agent-patterns";
+} from "@workspace/agent-patterns";
 import {
   createRichTextChatSystemPrompt,
   createRestrictedModeSystemPrompt,
-} from "@natstack/agent-patterns/prompts";
+} from "@workspace/agent-patterns/prompts";
 import {
   jsonSchemaToZodRawShape,
   formatArgsForLog,
@@ -61,10 +61,10 @@ import {
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
-} from "@natstack/agentic-messaging";
-import { prettifyToolName } from "@natstack/agentic-messaging/utils";
-import type { Attachment } from "@natstack/pubsub";
-import { CODEX_PARAMETERS, findNewestInFamily, getRecommendedDefault } from "@natstack/agentic-messaging/config";
+} from "@workspace/agentic-messaging";
+import { prettifyToolName } from "@workspace/agentic-messaging/utils";
+import type { Attachment } from "@workspace/pubsub";
+import { CODEX_PARAMETERS, findNewestInFamily, getRecommendedDefault } from "@workspace/agentic-messaging/config";
 import { z } from "zod";
 import { Codex } from "@openai/codex-sdk";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -435,7 +435,7 @@ interface QueuedMessageInfo {
 }
 
 class CodexResponderAgent extends Agent<CodexAgentState, ChatParticipantMetadata> {
-  // Pattern helpers from @natstack/agent-patterns
+  // Pattern helpers from @workspace/agent-patterns
   private queue!: MessageQueue<IncomingNewMessage>;
   private interrupt!: ReturnType<typeof createInterruptController>;
   private settingsMgr!: ReturnType<typeof createSettingsManager<CodexSettings>>;
@@ -1307,22 +1307,23 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
                 if (todoItems && todoItems.length > 0) {
                   try {
                     // Convert Codex todo format to our format
-                    const todos: TodoItem[] = todoItems.map((t, i) => ({
-                      id: `todo-${i}`,
-                      text: t.text,
-                      completed: t.completed,
+                    const todos: TodoItem[] = todoItems.map((t) => ({
+                      content: t.text,
+                      activeForm: t.text,
+                      status: t.completed ? "completed" as const : "pending" as const,
                     }));
 
                     const inlineUiData: InlineUiData = {
-                      kind: "todolist",
-                      label: "Tasks",
-                      todos,
+                      id: "agent-todos",
                       code: getCachedTodoListCode() ?? "",
+                      props: { todos },
                     };
 
                     // Send as inline UI message
-                    const msgId = await ensureResponseMessage();
-                    await client.update(msgId, JSON.stringify(inlineUiData), CONTENT_TYPE_INLINE_UI);
+                    await client.send(JSON.stringify(inlineUiData), {
+                      contentType: CONTENT_TYPE_INLINE_UI,
+                      persist: true,
+                    });
                     this.log.info(`Sent todo list with ${todos.length} items`);
                   } catch (err) {
                     this.log.info(`Failed to send todo list: ${err}`);

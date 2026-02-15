@@ -1,0 +1,51 @@
+{
+  "name": "@workspace/core",
+  "version": "0.1.0",
+  "description": "Core types shared between @workspace/runtime and @workspace/agent-runtime",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./agent-types": {
+      "types": "./dist/agent-types.d.ts",
+      "default": "./dist/agent-types.js"
+    },
+    "./ipc-protocol": {
+      "types": "./dist/ipc-protocol.d.ts",
+      "default": "./dist/ipc-protocol.js"
+    },
+    "./form-schema": {
+      "types": "./dist/form-schema.d.ts",
+      "default": "./dist/form-schema.js"
+    },
+    "./config-types": {
+      "types": "./dist/config-types.d.ts",
+      "default": "./dist/config-types.js"
+    },
+    "./database": {
+      "types": "./dist/database.d.ts",
+      "default": "./dist/database.js"
+    },
+    "./base64": {
+      "types": "./dist/base64.d.ts",
+      "default": "./dist/base64.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "dev": "tsc --project tsconfig.build.json --watch"
+  },
+  "dependencies": {
+    "@natstack/types": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

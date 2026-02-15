@@ -158,7 +158,7 @@ export default function MyAgentPanel() {
 ### From React
 
 ```tsx
-import { usePanelPartition } from "@natstack/react";
+import { usePanelPartition } from "@workspace/react";
 
 function MyPanel() {
   const partition = usePanelPartition(); // string | null (loading)
@@ -169,7 +169,7 @@ function MyPanel() {
 ### From Runtime
 
 ```ts
-import { getInfo, contextId } from "@natstack/runtime";
+import { getInfo, contextId } from "@workspace/runtime";
 
 console.log(contextId);  // e.g. "safe_tpl_a1b2c3d4e5f6_panels~editor"
 const { partition } = await getInfo();
@@ -178,7 +178,7 @@ const { partition } = await getInfo();
 ### Parsing Context IDs
 
 ```ts
-import { parseContextId } from "@natstack/runtime";
+import { parseContextId } from "@workspace/runtime";
 
 const parsed = parseContextId("safe_tpl_a1b2c3d4e5f6_panels~editor");
 // { mode: "safe", templateSpecHash: "a1b2c3d4e5f6", instanceId: "panels~editor" }

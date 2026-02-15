@@ -1,7 +1,7 @@
 /**
  * natstack-server — Headless and IPC entry point for NatStack.
  *
- * Starts all headless-capable services (Verdaccio, Git, PubSub, RPC).
+ * Starts all headless-capable services (Build V2, Git, PubSub, RPC).
  *
  * Two runtime modes:
  * - **IPC mode** (utilityProcess or child_process.fork): receives config via
@@ -129,7 +129,6 @@ if (!ipcChannel) {
   if (args.logLevel) process.env["NATSTACK_LOG_LEVEL"] = args.logLevel;
 } else {
   // IPC mode: env vars already set by parent via fork({ env: {...} })
-  // NATSTACK_WORKSPACE, NATSTACK_USER_DATA_PATH, NATSTACK_APP_ROOT, NATSTACK_LOG_LEVEL
 }
 
 // =============================================================================
@@ -139,18 +138,14 @@ if (!ipcChannel) {
 async function main() {
   const { setUserDataPath } = await import("../main/envPaths.js");
   const { loadCentralEnv, discoverWorkspace, createWorkspace } = await import("../main/workspace/loader.js");
-  const { setActiveWorkspace, getAppRoot } = await import("../main/paths.js");
-  const { getMainCacheManager } = await import("../main/cacheManager.js");
-  const { scheduleGC, shutdownPackageStore } = await import("../main/package-store/index.js");
-  const { preloadNatstackTypesAsync } = await import("@natstack/typecheck");
-  const { setVerdaccioConfig } = await import("../main/verdaccioConfig.js");
+  const { setActiveWorkspace } = await import("../main/paths.js");
   const { GitServer } = await import("../main/gitServer.js");
   const { getTokenManager } = await import("../main/tokenManager.js");
   const { getServiceDispatcher } = await import("../main/serviceDispatcher.js");
   const { handleEventsService } = await import("../main/services/eventsService.js");
-  const { getDependencyGraph } = await import("../main/dependencyGraph.js");
   const { RpcServer } = await import("./rpcServer.js");
   const { startCoreServices } = await import("../main/coreServices.js");
+  const { initBuildSystemV2, createBuildServiceHandler } = await import("./buildV2/index.js");
 
   // In IPC mode, dataDir comes from NATSTACK_USER_DATA_PATH env var
   const dataDir = args.dataDir ?? process.env["NATSTACK_USER_DATA_PATH"];
@@ -161,7 +156,6 @@ async function main() {
   // Workspace resolution
   // ===========================================================================
 
-  // In IPC mode, workspace path comes from NATSTACK_WORKSPACE env var
   const workspaceArg = args.workspace ?? process.env["NATSTACK_WORKSPACE"];
   const workspacePath = discoverWorkspace(workspaceArg);
   const configPath = path.join(workspacePath, "natstack.yml");
@@ -178,20 +172,6 @@ async function main() {
   setActiveWorkspace(workspace);
 
   // ===========================================================================
-  // Singleton initialization
-  // ===========================================================================
-
-  const cacheManager = getMainCacheManager();
-  await cacheManager.initialize();
-
-  const cancelGC = scheduleGC(24 * 60 * 60 * 1000);
-
-  const packagesDir = path.join(getAppRoot(), "packages");
-  if (fs.existsSync(packagesDir)) {
-    await preloadNatstackTypesAsync(packagesDir);
-  }
-
-  // ===========================================================================
   // Service initialization
   // ===========================================================================
 
@@ -205,12 +185,16 @@ async function main() {
     },
   });
 
-  const handle = await startCoreServices({ workspace, gitServer });
+  // ===========================================================================
+  // Build System V2 (must init before core services — agents need build access)
+  // ===========================================================================
 
-  // Configure Verdaccio for the build pipeline (used by sharedBuild.ts)
-  setVerdaccioConfig({
-    url: `http://127.0.0.1:${handle.verdaccioServer.getPort()}`,
-    getPackageVersion: (name) => handle.verdaccioServer.getPackageVersion(name),
+  const buildSystem = await initBuildSystemV2(workspacePath, gitServer);
+
+  const handle = await startCoreServices({
+    workspace,
+    gitServer,
+    getBuild: (unitPath) => buildSystem.getBuild(unitPath),
   });
 
   // ===========================================================================
@@ -220,7 +204,10 @@ async function main() {
   const dispatcher = getServiceDispatcher();
   dispatcher.register("events", handleEventsService);
 
-  // Server-only services: tokens, verdaccio, git
+  // Build service
+  dispatcher.register("build", createBuildServiceHandler(buildSystem));
+
+  // Server-only services: tokens, git
   dispatcher.register("tokens", async (_ctx, method, serviceArgs) => {
     const tm = getTokenManager();
     const a = serviceArgs as unknown[];
@@ -230,18 +217,6 @@ async function main() {
       case "revoke": tm.revokeToken(a[0] as string); return;
       case "get": try { return tm.getToken(a[0] as string); } catch { return null; }
       default: throw new Error(`Unknown tokens method: ${method}`);
-    }
-  });
-
-  dispatcher.register("verdaccio", async (_ctx, method, serviceArgs) => {
-    const v = handle.verdaccioServer;
-    const a = serviceArgs as unknown[];
-    switch (method) {
-      case "getPackageVersion": return await v.getPackageVersion(a[0] as string) ?? null;
-      case "getBaseUrl": return v.getBaseUrl();
-      case "clearCaches": v.clearAllInMemoryCaches(); return;
-      case "ensureRunning": return await v.ensureRunning();
-      default: throw new Error(`Unknown verdaccio method: ${method}`);
     }
   });
 
@@ -281,14 +256,12 @@ async function main() {
     ipcChannel.postMessage({
       type: "ready",
       rpcPort,
-      verdaccioPort: handle.verdaccioServer.getPort(),
       gitPort: handle.gitServer.getPort(),
       pubsubPort: handle.pubsubPort,
       adminToken,
     });
   } else {
     console.log("natstack-server ready:");
-    console.log(`  Verdaccio: http://127.0.0.1:${handle.verdaccioServer.getPort()}`);
     console.log(`  Git:       http://127.0.0.1:${handle.gitServer.getPort()}`);
     console.log(`  PubSub:    ws://127.0.0.1:${handle.pubsubPort}`);
     console.log(`  RPC:       ws://127.0.0.1:${rpcPort}`);
@@ -306,24 +279,15 @@ async function main() {
     isShuttingDown = true;
     console.log("[Server] Shutting down...");
 
-    // Global singletons (always run, even if core shutdown fails)
-    try {
-      shutdownPackageStore();
-      console.log("[Server] PackageStore shutdown");
-    } catch (e) {
-      console.error("[Server] PackageStore error:", e);
-    }
-    cancelGC();
-
     const forceExit = setTimeout(() => {
       console.warn("[Server] Shutdown timeout — forcing exit");
       process.exit(1);
     }, 5000);
 
     await Promise.all([
+      buildSystem.shutdown().then(() => console.log("[Server] BuildV2 stopped")).catch((e) => console.error("[Server] BuildV2 stop error:", e)),
       handle.shutdown().catch((e) => console.error("[Server] Core shutdown error:", e)),
       rpcServer.stop().then(() => console.log("[Server] RPC stopped")).catch((e) => console.error("[Server] RPC stop error:", e)),
-      getDependencyGraph().then((g) => g.flush()).then(() => console.log("[Server] DependencyGraph flushed")).catch((e) => console.error("[Server] DependencyGraph error:", e)),
     ]).finally(() => {
       clearTimeout(forceExit);
       console.log("[Server] Shutdown complete");

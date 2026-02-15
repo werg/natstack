@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, type ComponentType } from "react";
 import { Box, Button, Card, Flex, ScrollArea, Text } from "@radix-ui/themes";
-import { prettifyToolName } from "@natstack/agentic-messaging/utils";
-import type { Participant } from "@natstack/pubsub";
+import { prettifyToolName } from "@workspace/agentic-messaging/utils";
+import type { Participant } from "@workspace/pubsub";
 import type { MethodHistoryEntry } from "./MethodHistoryItem";
 import { InlineGroup, type InlineItem } from "./InlineGroup";
 import { parseActionData } from "./ActionMessage";
@@ -137,7 +137,7 @@ function fullGroupComputation(
           type: "inline-group",
           items: currentInlineGroup,
           inlineItems: buildInlineItems(currentInlineGroup, methodEntries),
-          key: `inline-group-${currentInlineGroup[0].msg.id || currentInlineGroup[0].index}`,
+          key: `inline-group-${currentInlineGroup[0]!.msg.id || currentInlineGroup[0]!.index}`,
         });
         currentInlineGroup = [];
       }
@@ -150,7 +150,7 @@ function fullGroupComputation(
       type: "inline-group",
       items: currentInlineGroup,
       inlineItems: buildInlineItems(currentInlineGroup, methodEntries),
-      key: `inline-group-${currentInlineGroup[0].msg.id || currentInlineGroup[0].index}`,
+      key: `inline-group-${currentInlineGroup[0]!.msg.id || currentInlineGroup[0]!.index}`,
     });
   }
 
@@ -464,7 +464,7 @@ export const MessageList = React.memo(function MessageList({
         if (messages[i] !== cache.messages[i]) { onlyLastChanged = false; break; }
       }
       if (onlyLastChanged) {
-        const lastMsg = messages[messages.length - 1];
+        const lastMsg = messages[messages.length - 1]!;
         const lastItem = cache.result[cache.result.length - 1];
         const lastMsgInlineType = getInlineItemType(lastMsg);
         // If the last grouped item is a regular message with the same id, swap it in-place.
@@ -524,7 +524,7 @@ export const MessageList = React.memo(function MessageList({
         });
 
         for (let i = cache.messages.length; i < messages.length; i++) {
-          const msg = messages[i];
+          const msg = messages[i]!;
           // Skip completed typing indicators (same filter as fullGroupComputation)
           if (msg.contentType === "typing" && msg.complete) continue;
           // Skip superseded typing
@@ -543,7 +543,7 @@ export const MessageList = React.memo(function MessageList({
                 type: "inline-group",
                 items: tailInlineGroup,
                 inlineItems: buildInlineItems(tailInlineGroup, methodEntries),
-                key: `inline-group-${tailInlineGroup[0].msg.id || tailInlineGroup[0].index}`,
+                key: `inline-group-${tailInlineGroup[0]!.msg.id || tailInlineGroup[0]!.index}`,
               });
               tailInlineGroup = null;
             }
@@ -556,7 +556,7 @@ export const MessageList = React.memo(function MessageList({
             type: "inline-group",
             items: tailInlineGroup,
             inlineItems: buildInlineItems(tailInlineGroup, methodEntries),
-            key: `inline-group-${tailInlineGroup[0].msg.id || tailInlineGroup[0].index}`,
+            key: `inline-group-${tailInlineGroup[0]!.msg.id || tailInlineGroup[0]!.index}`,
           });
         }
 

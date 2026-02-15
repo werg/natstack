@@ -9,7 +9,6 @@ export const PORT_RANGES = {
   cdp: { start: 49252, end: 49352 },
   rpc: { start: 49352, end: 49452 },
   pubsub: { start: 49452, end: 49552 },
-  verdaccio: { start: 49552, end: 49652 },
 } as const;
 
 /**

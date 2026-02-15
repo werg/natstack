@@ -55,7 +55,6 @@ import {
   usesCliAuth,
 } from "../ai/providerFactory.js";
 import { fetchModelsForProvider, type FetchedModel } from "../ai/modelFetcher.js";
-import { getShellPagesForLauncher } from "../aboutBuilder.js";
 
 // These will be set during initialization to avoid circular dependencies
 let _panelManager: import("../panelManager.js").PanelManager | null = null;
@@ -163,22 +162,9 @@ export async function handleAppService(
       return path.join(__dirname, "..", "panelPreload.cjs");
 
     case "clearBuildCache": {
-      // Invalidate @natstack types FIRST to prevent stale reads during cache clearing
-      const { getTypeDefinitionService } = await import("../typecheck/service.js");
-      await getTypeDefinitionService().invalidateNatstackTypes();
-      // Then clear all other caches (same as automatic invalidation on package changes)
-      const { clearAllCaches } = await import("../cacheUtils.js");
-      await clearAllCaches({
-        buildCache: true,
-        buildArtifacts: true,
-        typesCache: true,
-        verdaccioStorage: true, // Clear Verdaccio to avoid stale @natstack packages
-        npmCache: false,
-        pnpmStore: false,
-      });
-      // Clear Verdaccio's in-memory caches (version cache, package discovery, ESM transformer)
+      // Trigger a full recompute via the server build service
       if (_serverClient) {
-        try { await _serverClient.call("verdaccio", "clearCaches", []); } catch {}
+        try { await _serverClient.call("build", "recompute", []); } catch {}
       }
       // Invalidate ready panels: reset state AND unload WebContents
       try {
@@ -194,8 +180,11 @@ export async function handleAppService(
       return _currentAppMode;
 
     case "getShellPages":
-      // Return shell pages available for the launcher (excludes "new" itself)
-      return getShellPagesForLauncher();
+      // Return shell pages available for the launcher via build service
+      if (_serverClient) {
+        try { return await _serverClient.call("build", "getAboutPages", []); } catch {}
+      }
+      return [];
 
     default:
       throw new Error(`Unknown app method: ${method}`);
@@ -458,21 +447,9 @@ export async function handleMenuService(
       const shellContents = vm.getShellWebContents();
 
       const clearBuildCache = async () => {
-        // Use the same logic as the clearBuildCache IPC handler (app.clearBuildCache)
-        const { getTypeDefinitionService } = await import("../typecheck/service.js");
-        await getTypeDefinitionService().invalidateNatstackTypes();
-        const { clearAllCaches } = await import("../cacheUtils.js");
-        await clearAllCaches({
-          buildCache: true,
-          buildArtifacts: true,
-          typesCache: true,
-          verdaccioStorage: true, // Clear Verdaccio to avoid stale @natstack packages
-          npmCache: false,
-          pnpmStore: false,
-        });
-        // Clear Verdaccio's in-memory caches (version cache, package discovery, ESM transformer)
+        // Trigger a full recompute via the server build service
         if (_serverClient) {
-          try { await _serverClient.call("verdaccio", "clearCaches", []); } catch {}
+          try { await _serverClient.call("build", "recompute", []); } catch {}
         }
         // Invalidate ready panels: reset state AND unload WebContents
         try {

@@ -1,6 +1,9 @@
 import React, { useRef } from "react";
 import { Badge, Button, Flex, Text } from "@radix-ui/themes";
+import type { Participant } from "@workspace/pubsub";
+import type { ToolApprovalProps } from "@workspace/tool-ui";
 import { useChatContext } from "../context/ChatContext";
+import type { ChatParticipantMetadata, PendingAgent } from "../types";
 import { ParticipantBadgeMenu } from "./ParticipantBadgeMenu";
 import { PendingAgentBadge } from "./PendingAgentBadge";
 import { ToolPermissionsDropdown } from "./ToolPermissionsDropdown";
@@ -51,7 +54,7 @@ export function ChatHeader() {
     const pIds = new Set(Object.keys(participants));
     const found = new Set<string>();
     for (let i = messages.length - 1; i >= 0 && found.size < pIds.size; i--) {
-      const msg = messages[i];
+      const msg = messages[i]!;
       if (msg.kind !== "message" || !pIds.has(msg.senderId) || found.has(msg.senderId)) continue;
       statusMap.set(msg.senderId, !msg.complete && !msg.error);
       found.add(msg.senderId);
@@ -89,17 +92,11 @@ interface ChatHeaderInnerProps {
   connected: boolean;
   status: string;
   sessionEnabled?: boolean;
-  participants: Record<string, { id: string; metadata: { handle: string; name: string; type: string; methods?: unknown[] } }>;
+  participants: Record<string, Participant<ChatParticipantMetadata>>;
   participantActiveStatus: Map<string, boolean>;
-  pendingAgents: Map<string, { agentId: string; status: string; error?: unknown }>;
+  pendingAgents: Map<string, PendingAgent>;
   onCallMethod?: (providerId: string, methodName: string, args: unknown) => void;
-  toolApproval?: {
-    settings: { agentGrants: Record<string, unknown> };
-    onSetFloor: (floor: unknown) => void;
-    onGrantAgent: (agentId: string) => void;
-    onRevokeAgent: (agentId: string) => void;
-    onRevokeAll: () => void;
-  };
+  toolApproval?: ToolApprovalProps;
   onAddAgent?: () => void;
   onReset: () => void;
   onDebugConsoleChange?: (agentHandle: string | null) => void;
@@ -172,7 +169,7 @@ const ChatHeaderInner = React.memo(function ChatHeaderInner({
             agentId={info.agentId}
             status={info.status}
             error={info.error}
-            onOpenDebugConsole={onDebugConsoleChange}
+            onOpenDebugConsole={onDebugConsoleChange ?? undefined}
           />
         ))}
         {onAddAgent && (

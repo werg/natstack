@@ -17,7 +17,7 @@ const log = createDevLogger("PanelSearchIndex");
  */
 export interface PanelSearchResult {
   id: string;
-  type: "app" | "worker" | "browser" | "shell";
+  type: "app" | "browser" | "shell";
   title: string;
   relevance: number;
   accessCount: number;
@@ -29,7 +29,7 @@ export interface PanelSearchResult {
  */
 interface IndexablePanel {
   id: string;
-  type: "app" | "worker" | "browser" | "shell";
+  type: "app" | "browser" | "shell";
   title: string;
   path?: string;
   url?: string;
@@ -264,7 +264,7 @@ export class PanelSearchIndex {
         // Parse history to get current snapshot
         const history = JSON.parse(panel.history) as Array<{
           source: string;
-          type: "app" | "worker" | "browser" | "shell";
+          type: "app" | "browser" | "shell";
           resolvedUrl?: string;
         }>;
         const currentSnapshot = history[panel.history_index] ?? history[0];
@@ -275,7 +275,7 @@ export class PanelSearchIndex {
           type: currentSnapshot.type,
           title: panel.title,
           // For app/worker, source is the path. For browser, use resolvedUrl.
-          path: currentSnapshot.type === "app" || currentSnapshot.type === "worker"
+          path: currentSnapshot.type === "app"
             ? currentSnapshot.source
             : undefined,
           url: currentSnapshot.type === "browser" ? currentSnapshot.resolvedUrl : undefined,

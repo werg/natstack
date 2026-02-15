@@ -16,11 +16,6 @@
 export type GitSpec = string;
 
 /**
- * Context mode determines security isolation level.
- */
-export type ContextMode = "safe" | "unsafe";
-
-/**
  * Raw template as parsed from YAML (context-template.yml)
  */
 export interface ContextTemplateYaml {
@@ -114,7 +109,7 @@ export interface TemplateBuild {
   /** The immutable spec this build was created from */
   spec: ImmutableTemplateSpec;
   /** Absolute path to the build directory */
-  scopePath: string;
+  buildPath: string;
   /** Timestamp when build was created */
   createdAt: number;
   /** Current build state */
@@ -200,10 +195,8 @@ export interface TemplateProgress {
  * Parsed context ID components
  */
 export interface ParsedContextId {
-  /** Security mode */
-  mode: ContextMode;
-  /** First 12 chars of template spec hash, or null for unsafe no-context IDs */
-  templateSpecHash: string | null;
+  /** First 12 chars of template spec hash */
+  templateSpecHash: string;
   /** Instance identifier (can contain underscores) */
   instanceId: string;
 }

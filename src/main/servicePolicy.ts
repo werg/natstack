@@ -1,7 +1,7 @@
 /**
  * Service Policy - Centralized permission definitions for services.
  *
- * This module defines which caller types (shell, panel, worker) can access
+ * This module defines which caller types (shell, panel, server) can access
  * which services. The policy is checked before dispatching service calls.
  */
 
@@ -18,8 +18,8 @@ export type ServicePolicy = {
  * Service permission policies.
  *
  * - Shell-only services: app, panel, view, workspace, central, settings, menu
- * - Panel/worker services: bridge
- * - Shared services: ai, db, browser, events, fs
+ * - Panel services: bridge
+ * - Shared services: ai, db, browser, events, build
  */
 export const SERVICE_POLICIES: Record<string, ServicePolicy> = {
   // ==========================================================================
@@ -60,19 +60,19 @@ export const SERVICE_POLICIES: Record<string, ServicePolicy> = {
   },
 
   // ==========================================================================
-  // Panel/worker services (userland operations)
+  // Panel services (userland operations)
   // ==========================================================================
 
   bridge: {
-    allowed: ["panel", "worker", "shell", "server"],
+    allowed: ["panel", "shell", "server"],
     description: "Panel lifecycle (createPanel, close, navigation)",
   },
   typecheck: {
-    allowed: ["panel", "worker", "server"],
-    description: "Type definition fetching for panels and workers",
+    allowed: ["panel", "server"],
+    description: "Type definition fetching for panels",
   },
   agentSettings: {
-    allowed: ["shell", "panel", "worker", "server"],
+    allowed: ["shell", "panel", "server"],
     description: "Agent preferences and configuration",
   },
 
@@ -81,22 +81,25 @@ export const SERVICE_POLICIES: Record<string, ServicePolicy> = {
   // ==========================================================================
 
   ai: {
-    allowed: ["shell", "panel", "worker", "server"],
+    allowed: ["shell", "panel", "server"],
     description: "AI/LLM operations",
   },
   db: {
-    allowed: ["shell", "panel", "worker", "server"],
+    allowed: ["shell", "panel", "server"],
     description: "Database operations",
   },
   browser: {
-    allowed: ["shell", "panel", "worker", "server"],
+    allowed: ["shell", "panel", "server"],
     description: "CDP/browser automation",
   },
   events: {
-    allowed: ["shell", "panel", "worker", "server"],
+    allowed: ["shell", "panel", "server"],
     description: "Event subscriptions",
   },
-  // Note: fs is handled internally by panels/workers via ZenFS, not via service dispatch
+  build: {
+    allowed: ["panel", "shell", "server"],
+    description: "Build system (getBuild, recompute, gc, getAboutPages)",
+  },
 
   // ==========================================================================
   // Server-only services (admin operations proxied from Electron)
@@ -106,30 +109,21 @@ export const SERVICE_POLICIES: Record<string, ServicePolicy> = {
     allowed: ["server"],
     description: "Token management (create/revoke panel tokens)",
   },
-  verdaccio: {
-    allowed: ["server"],
-    description: "Verdaccio registry queries",
-  },
   git: {
-    allowed: ["server"],
-    description: "Git server queries",
+    allowed: ["shell", "panel", "server"],
+    description: "Git operations and scoped filesystem access for panels",
   },
 };
 
 /**
  * Check if a caller kind can access a service.
  * Throws an error if access is denied.
- *
- * @param service - The service name
- * @param callerKind - The caller kind (shell, panel, worker)
- * @throws Error if access is denied or service is unknown
  */
 export function checkServiceAccess(service: string, callerKind: CallerKind): void {
   const policy = SERVICE_POLICIES[service];
 
   if (!policy) {
     // Unknown service - let the dispatcher handle it
-    // (it will throw "Unknown service" if not registered)
     return;
   }
 

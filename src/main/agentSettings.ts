@@ -12,7 +12,7 @@
 import Database from "better-sqlite3";
 import * as path from "path";
 import * as fs from "fs";
-import type { GlobalAgentSettings, AgentSettings } from "@natstack/core";
+import type { GlobalAgentSettings, AgentSettings } from "@natstack/types";
 import { getActiveWorkspace } from "./paths.js";
 import { getAgentDiscovery } from "./agentDiscovery.js";
 import { createDevLogger } from "./devLog.js";

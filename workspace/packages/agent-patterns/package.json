@@ -1,0 +1,52 @@
+{
+  "name": "@workspace/agent-patterns",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./queue": {
+      "types": "./dist/queue/index.d.ts",
+      "default": "./dist/queue/index.js"
+    },
+    "./settings": {
+      "types": "./dist/settings/index.d.ts",
+      "default": "./dist/settings/index.js"
+    },
+    "./trackers": {
+      "types": "./dist/trackers/index.d.ts",
+      "default": "./dist/trackers/index.js"
+    },
+    "./context": {
+      "types": "./dist/context/index.d.ts",
+      "default": "./dist/context/index.js"
+    },
+    "./interrupt": {
+      "types": "./dist/interrupt/index.d.ts",
+      "default": "./dist/interrupt/index.js"
+    },
+    "./prompts": {
+      "types": "./dist/prompts/index.d.ts",
+      "default": "./dist/prompts/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "dev": "tsc --project tsconfig.build.json --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@workspace/agentic-messaging": "workspace:*",
+    "@workspace/core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^3.0.5"
+  }
+}

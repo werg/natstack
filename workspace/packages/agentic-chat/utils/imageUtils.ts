@@ -2,14 +2,14 @@
  * Browser-side image utilities for the chat UI
  */
 
-import type { AttachmentInput, Attachment } from "@natstack/pubsub";
+import type { AttachmentInput, Attachment } from "@workspace/pubsub";
 import {
   SUPPORTED_IMAGE_TYPES,
   MAX_IMAGE_BYTES,
   MAX_TOTAL_BYTES,
   isImageMimeType,
   formatBytes,
-} from "@natstack/agentic-messaging/image-utils";
+} from "@workspace/agentic-messaging/image-utils";
 
 // Re-export constants and utilities from agentic-messaging
 export { SUPPORTED_IMAGE_TYPES, MAX_IMAGE_BYTES, MAX_TOTAL_BYTES, isImageMimeType, formatBytes };

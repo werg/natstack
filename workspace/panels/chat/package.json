@@ -27,9 +27,9 @@
     ]
   },
   "dependencies": {
-    "@natstack/runtime": "workspace:*",
-    "@natstack/react": "workspace:*",
-    "@natstack/agentic-messaging": "workspace:*",
+    "@workspace/runtime": "workspace:*",
+    "@workspace/react": "workspace:*",
+    "@workspace/agentic-messaging": "workspace:*",
     "@workspace/agentic-chat": "workspace:*",
     "@workspace/agentic-tools": "workspace:*",
     "@radix-ui/themes": "^3.2.1",

@@ -9,7 +9,6 @@ import { protocol, session } from "electron";
 import * as path from "path";
 import { randomBytes } from "crypto";
 import type { ProtocolBuildArtifacts, ShellPage } from "../shared/types.js";
-import { getShellPageKeys } from "./aboutBuilder.js";
 import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("AboutProtocol");
@@ -61,14 +60,6 @@ const registeredPartitions = new Set<string>();
 const registrationLocks = new Map<string, Promise<void>>();
 
 /**
- * Check if a string is a valid shell page.
- * Derives valid pages from SHELL_PAGE_META in aboutBuilder.ts (single source of truth).
- */
-export function isValidShellPage(page: string): page is ShellPage {
-  return getShellPageKeys().includes(page as ShellPage);
-}
-
-/**
  * Handle a protocol request for natstack-about://
  */
 export function handleAboutProtocolRequest(request: Request): Response {
@@ -79,17 +70,9 @@ export function handleAboutProtocolRequest(request: Request): Response {
   const page = url.hostname;
   const pathname = url.pathname || "/";
 
-  if (!isValidShellPage(page)) {
-    console.error(`[AboutProtocol] Invalid page: ${page}`);
-    return new Response(`Invalid about page: ${page}`, {
-      status: 404,
-      headers: { "Content-Type": "text/plain" },
-    });
-  }
-
   const pageContent = aboutPages.get(page);
   if (!pageContent) {
-    console.error(`[AboutProtocol] Page not built: ${page}`);
+    console.error(`[AboutProtocol] Page not found: ${page}`);
     return new Response(`About page not found: ${page}`, {
       status: 404,
       headers: { "Content-Type": "text/plain" },

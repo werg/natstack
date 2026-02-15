@@ -7,10 +7,10 @@
     "./types": "./types.ts"
   },
   "dependencies": {
-    "@natstack/agentic-messaging": "workspace:*",
-    "@natstack/eval": "workspace:*",
+    "@workspace/agentic-messaging": "workspace:*",
+    "@workspace/eval": "workspace:*",
     "@natstack/git": "workspace:*",
-    "@natstack/runtime": "workspace:*",
+    "@workspace/runtime": "workspace:*",
     "@types/diff": "^7.0.0",
     "@types/picomatch": "^3.0.0",
     "diff": "^7.0.0",

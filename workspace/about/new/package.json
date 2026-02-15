@@ -1,0 +1,15 @@
+{
+  "name": "@workspace-about/new",
+  "version": "0.1.0",
+  "private": true,
+  "natstack": {
+    "type": "app",
+    "title": "New Panel",
+    "shell": true,
+    "hiddenInLauncher": true
+  },
+  "dependencies": {
+    "@workspace/react": "*",
+    "@workspace/runtime": "*"
+  }
+}

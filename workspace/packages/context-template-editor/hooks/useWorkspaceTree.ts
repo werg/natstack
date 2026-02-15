@@ -3,7 +3,7 @@
  */
 
 import { useState, useEffect, useCallback } from "react";
-import { rpc } from "@natstack/runtime";
+import { rpc } from "@workspace/runtime";
 import type { WorkspaceTree, WorkspaceNode } from "../types";
 
 export interface UseWorkspaceTreeResult {
@@ -56,7 +56,7 @@ export function findProjectRepos(nodes: WorkspaceNode[], parentPath = ""): Works
 
   for (const node of nodes) {
     const nodePath = parentPath ? `${parentPath}/${node.name}` : node.name;
-    const topDir = nodePath.split("/")[0];
+    const topDir = nodePath.split("/")[0] ?? "";
 
     // Only include repos from known project directories
     if (PROJECT_DIRECTORIES.includes(topDir) && node.isGitRepo) {
@@ -78,7 +78,7 @@ export function findProjectRepos(nodes: WorkspaceNode[], parentPath = ""): Works
 export function groupReposByDirectory(repos: WorkspaceNode[]): Record<string, WorkspaceNode[]> {
   const groups: Record<string, WorkspaceNode[]> = {};
   for (const repo of repos) {
-    const topDir = repo.path.split("/")[0];
+    const topDir = repo.path.split("/")[0] ?? "";
     if (!groups[topDir]) {
       groups[topDir] = [];
     }
