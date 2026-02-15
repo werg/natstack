@@ -19,7 +19,6 @@ import {
   Box,
   Flex,
   IconButton,
-  ScrollArea,
   Text,
 } from "@radix-ui/themes";
 import { useSortable } from "@dnd-kit/sortable";
@@ -479,17 +478,17 @@ export function LazyPanelTreeSidebar({
     }));
   }, []);
 
-  // Get scroll element from Radix ScrollArea viewport
-  const scrollAreaRef = useRef<HTMLDivElement | null>(null);
-  const getScrollElement = useCallback(() => {
-    return scrollAreaRef.current?.querySelector<HTMLElement>("[data-radix-scroll-area-viewport]") ?? null;
-  }, []);
+  // Scroll container ref for the virtualizer.
+  // Uses a plain div with overflow:auto instead of Radix ScrollArea,
+  // because the virtualizer needs the scroll element to have a measurable
+  // client height from CSS layout (not from content).
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   // Virtual list — only mount items in/near the viewport.
   // +1 for the EndDropZone at the bottom.
   const virtualizer = useVirtualizer({
     count: flattenedItems.length + 1,
-    getScrollElement,
+    getScrollElement: () => scrollRef.current,
     estimateSize: () => 32,
     overscan: 10,
   });
@@ -529,8 +528,11 @@ export function LazyPanelTreeSidebar({
   const virtualItems = virtualizer.getVirtualItems();
 
   return (
-    <Flex direction="column" height="100%">
-      <ScrollArea ref={scrollAreaRef} type="auto" scrollbars="vertical" style={{ flex: 1 }}>
+    <Flex direction="column" style={{ flex: 1, minHeight: 0 }}>
+      <div
+        ref={scrollRef}
+        style={{ flex: 1, minHeight: 0, overflowY: "auto" }}
+      >
         <Box
           p="1"
           style={{
@@ -591,7 +593,7 @@ export function LazyPanelTreeSidebar({
             );
           })}
         </Box>
-      </ScrollArea>
+      </div>
       <Box p="2" style={{ borderTop: "1px solid var(--gray-6)" }}>
         <IconButton
           variant="ghost"

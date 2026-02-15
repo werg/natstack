@@ -37,6 +37,7 @@ import type { GitServer } from "../../main/gitServer.js";
 export interface AboutPageMeta {
   name: string;
   title: string;
+  description?: string;
   hiddenInLauncher: boolean;
 }
 
@@ -257,6 +258,7 @@ export async function initBuildSystemV2(
         pages.push({
           name: node.relativePath.replace("about/", ""),
           title: node.manifest.title ?? node.name,
+          description: node.manifest.description,
           hiddenInLauncher: node.manifest.hiddenInLauncher ?? false,
         });
       }

@@ -79,18 +79,26 @@ export function handleAboutProtocolRequest(request: Request): Response {
     });
   }
 
-  // Validate token
+  // Stored assets (code-split chunks, images, etc.) are server-controlled content
+  // and safe to serve without per-request token auth. Electron custom protocols
+  // don't send referer headers for dynamic import() requests, so chunks would
+  // otherwise get 403. The page entry points (html, bundle.js) are token-gated.
+  const assetContent = getAssetContent(pageContent.assets, pathname);
+  if (assetContent) {
+    return new Response(assetContent.content, {
+      status: 200,
+      headers: { "Content-Type": assetContent.contentType },
+    });
+  }
+
+  // Validate token for entry points (html, bundle.js, bundle.css).
+  // Assets (code-split chunks) are served above without auth, so all paths
+  // reaching here are entry points — require an explicit token parameter.
   const expectedToken = aboutPageTokens.get(page);
   const providedToken = url.searchParams.get("token") ?? "";
-  const isCorePath =
-    pathname === "/" ||
-    pathname === "/index.html" ||
-    pathname === "/bundle.js" ||
-    pathname === "/bundle.css";
   const hasValidToken = Boolean(expectedToken && providedToken === expectedToken);
-  const hasValidRefererToken = !isCorePath && Boolean(expectedToken && isAuthorizedByReferer(request, expectedToken));
 
-  if (!hasValidToken && !hasValidRefererToken) {
+  if (!hasValidToken) {
     return new Response("Unauthorized", {
       status: 403,
       headers: { "Content-Type": "text/plain" },
@@ -117,15 +125,6 @@ export function handleAboutProtocolRequest(request: Request): Response {
     return new Response(pageContent.css, {
       status: 200,
       headers: { "Content-Type": "text/css; charset=utf-8" },
-    });
-  }
-
-  // Check for asset
-  const assetContent = getAssetContent(pageContent.assets, pathname);
-  if (assetContent) {
-    return new Response(assetContent.content, {
-      status: 200,
-      headers: { "Content-Type": assetContent.contentType },
     });
   }
 
@@ -161,23 +160,6 @@ function injectBundleIntoHtml(html: string, page: string, token: string): string
   }
 
   return result;
-}
-
-/**
- * Check if request is authorized by referer.
- */
-function isAuthorizedByReferer(request: Request, expectedToken: string): boolean {
-  const referer = request.headers.get("referer") ?? request.headers.get("referrer");
-  if (!referer) return false;
-  try {
-    const refererUrl = new URL(referer);
-    if (refererUrl.protocol !== "natstack-about:") {
-      return false;
-    }
-    return refererUrl.searchParams.get("token") === expectedToken;
-  } catch {
-    return false;
-  }
 }
 
 /**

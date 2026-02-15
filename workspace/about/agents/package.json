@@ -5,6 +5,7 @@
   "natstack": {
     "type": "app",
     "title": "Agents",
+    "description": "Manage running agents and view logs",
     "shell": true,
     "hiddenInLauncher": false
   },

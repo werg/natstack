@@ -5,6 +5,7 @@
   "natstack": {
     "type": "app",
     "title": "Help",
+    "description": "Documentation and getting started",
     "shell": true,
     "hiddenInLauncher": false
   },

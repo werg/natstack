@@ -5,6 +5,7 @@
   "natstack": {
     "type": "app",
     "title": "Keyboard Shortcuts",
+    "description": "View and customize keyboard shortcuts",
     "shell": true,
     "hiddenInLauncher": false
   },

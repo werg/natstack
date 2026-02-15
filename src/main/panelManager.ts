@@ -143,6 +143,7 @@ export class PanelManager {
       bundle: string;
       html: string;
       css?: string;
+      assets?: Record<string, { content: string; encoding?: string }>;
       metadata?: { title?: string };
     } | null;
 
@@ -155,6 +156,7 @@ export class PanelManager {
       html: result.html,
       title: result.metadata?.title ?? page,
       css: result.css,
+      assets: result.assets as SharedPanel.ProtocolBuildArtifacts["assets"],
     });
   }
 
@@ -2346,8 +2348,16 @@ export class PanelManager {
       throw new Error(`A panel with id "${panelId}" is already running`);
     }
 
+    // Shell panels don't need OPFS pre-warming or git repo cloning —
+    // use a simple context ID for session isolation (same pattern as browser panels)
+    const instanceId = deriveInstanceIdFromPanelId(panelId);
+    const contextId = `shell_${instanceId}`;
+
+    // Create auth tokens for WS and server RPC access
+    getTokenManager().createToken(panelId, "panel");
+    await this.serverInfo.createPanelToken(panelId, "panel");
+
     const templateSpec = options?.templateSpec ?? DEFAULT_TEMPLATE_SPEC;
-    const contextId = await this.resolveContext(panelId, templateSpec);
 
     // Create the initial snapshot for the shell panel
     const initialSnapshot = createSnapshot(`shell:${page}`, "shell", contextId, {
@@ -2567,8 +2577,14 @@ export class PanelManager {
 
     const title = page;
 
-    // Shell panels use the template system like app panels
-    const contextId = await this.resolveContext(panelId, DEFAULT_TEMPLATE_SPEC);
+    // Shell panels don't need OPFS pre-warming or git repo cloning —
+    // use a simple context ID for session isolation (same pattern as browser panels)
+    const instanceId = deriveInstanceIdFromPanelId(panelId);
+    const contextId = `shell_${instanceId}`;
+
+    // Create auth tokens for WS and server RPC access
+    getTokenManager().createToken(panelId, "panel");
+    await this.serverInfo.createPanelToken(panelId, "panel");
 
     // Create the initial snapshot for the shell panel
     const initialSnapshot = createSnapshot(`shell:${page}`, "shell", contextId, {
