@@ -281,7 +281,7 @@ async function main() {
     // Start HTTP panel server if requested
     let panelHttpServer: InstanceType<typeof PanelHttpServer> | null = null;
     if (args.servePanels) {
-      panelHttpServer = new PanelHttpServer("127.0.0.1");
+      panelHttpServer = new PanelHttpServer("127.0.0.1", adminToken);
       panelHttpPort = await panelHttpServer.start(args.panelPort ?? 0);
       panelHttpServerInstance = panelHttpServer;
     }
@@ -296,6 +296,7 @@ async function main() {
       getGitTokenForPanel: (panelId) => handle.gitServer.getTokenForPanel(panelId),
       pubsubPort: handle.pubsubPort,
       sendToClient: (callerId, msg) => rpcServer.sendToClient(callerId, msg),
+      onPanelEvent: (event) => panelHttpServer?.broadcastEvent(event),
     });
 
     // Register bridge service for headless panel lifecycle
@@ -330,6 +331,8 @@ async function main() {
     console.log(`  RPC:       ws://127.0.0.1:${rpcPort}`);
     if (panelHttpPort) {
       console.log(`  Panels:    http://127.0.0.1:${panelHttpPort}`);
+      console.log(`  Panel API: http://127.0.0.1:${panelHttpPort}/api/panels`);
+      console.log(`  Panel SSE: http://127.0.0.1:${panelHttpPort}/api/events`);
     }
     console.log(`  Admin token: ${adminToken}`);
   }

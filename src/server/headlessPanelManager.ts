@@ -18,9 +18,10 @@
  * later using the same schema as src/main/db/panelPersistence.ts.
  */
 
+import { randomBytes } from "crypto";
 import type { PanelType, ChildCreationResult, CreateChildOptions, RepoArgSpec } from "../shared/types.js";
 import type { BuildResult } from "./buildV2/buildStore.js";
-import type { PanelHttpServer } from "./panelHttpServer.js";
+import type { PanelHttpServer, PanelLifecycleEvent } from "./panelHttpServer.js";
 import type { WsServerMessage } from "../shared/ws/protocol.js";
 import { computePanelId } from "../shared/panelIdUtils.js";
 import { loadPanelManifest } from "../main/panelTypes.js";
@@ -39,6 +40,8 @@ export interface HeadlessPanel {
   source: string;
   type: PanelType;
   contextId: string;
+  /** Short DNS-safe label used as the *.localhost subdomain */
+  subdomain: string;
   title: string;
   stateArgs: Record<string, unknown>;
   repoArgs?: Record<string, RepoArgSpec>;
@@ -59,6 +62,7 @@ export interface HeadlessPanelTree {
     source: string;
     type: PanelType;
     title: string;
+    subdomain: string;
     childCount: number;
     buildState: string;
   }>;
@@ -84,6 +88,8 @@ interface CreatePanelDeps {
   pubsubPort: number;
   /** Send a WS event to a connected panel (for reactive updates) */
   sendToClient?: (callerId: string, msg: WsServerMessage) => void;
+  /** Lifecycle event callback (panel created, built, closed, error) */
+  onPanelEvent?: (event: PanelLifecycleEvent) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,10 +98,37 @@ interface CreatePanelDeps {
 
 export class HeadlessPanelManager {
   private panels = new Map<string, HeadlessPanel>();
+  private activeSubdomains = new Set<string>();
   private deps: CreatePanelDeps;
 
   constructor(deps: CreatePanelDeps) {
     this.deps = deps;
+  }
+
+  /**
+   * Generate a short, human-readable DNS subdomain slug for a panel.
+   * Format: {name}-{hex3} (e.g., "editor-a4f", "chat-3b2")
+   */
+  private generateSubdomain(source: string): string {
+    const baseName = (source.split("/").pop() ?? source)
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 50) || "panel";
+
+    let slug: string;
+    do {
+      const suffix = randomBytes(2).toString("hex").slice(0, 3);
+      slug = `${baseName}-${suffix}`;
+    } while (this.activeSubdomains.has(slug));
+
+    this.activeSubdomains.add(slug);
+    return slug;
+  }
+
+  private emitEvent(event: PanelLifecycleEvent): void {
+    this.deps.onPanelEvent?.(event);
   }
 
   // =========================================================================
@@ -129,6 +162,9 @@ export class HeadlessPanelManager {
       options?.contextId ??
       `headless_${panelId.replace(/\//g, "~")}_${Date.now().toString(36)}`;
 
+    // Generate a short, human-readable subdomain for this panel
+    const subdomain = this.generateSubdomain(source);
+
     // Create RPC token for this panel
     const rpcToken = this.deps.createToken(panelId, "panel");
 
@@ -138,6 +174,7 @@ export class HeadlessPanelManager {
       source,
       type: "app",
       contextId,
+      subdomain,
       title: source.split("/").pop() ?? source,
       stateArgs: stateArgs ?? {},
       repoArgs: options?.repoArgs,
@@ -155,7 +192,16 @@ export class HeadlessPanelManager {
       parent.children.push(panelId);
     }
 
-    log.info(`[Panel] Created: ${panelId} (source: ${source})`);
+    log.info(`[Panel] Created: ${panelId} (${subdomain}.localhost, source: ${source})`);
+
+    this.emitEvent({
+      type: "panel:created",
+      panelId,
+      title: panel.title,
+      subdomain,
+      parentId: panel.parentId,
+      source,
+    });
 
     // Trigger async build + serve
     void this.buildAndServePanel(panel).catch((err) => {
@@ -195,6 +241,18 @@ export class HeadlessPanelManager {
     if (this.deps.panelHttpServer) {
       this.deps.panelHttpServer.removePanel(panelId);
     }
+
+    // Release subdomain
+    this.activeSubdomains.delete(panel.subdomain);
+
+    this.emitEvent({
+      type: "panel:closed",
+      panelId,
+      title: panel.title,
+      subdomain: panel.subdomain,
+      parentId: panel.parentId,
+      source: panel.source,
+    });
 
     this.panels.delete(panelId);
     log.info(`[Panel] Closed: ${panelId}`);
@@ -247,6 +305,7 @@ export class HeadlessPanelManager {
         source: panel.source,
         type: panel.type,
         title: panel.title,
+        subdomain: panel.subdomain,
         childCount: panel.children.length,
         buildState: panel.buildState,
       });
@@ -338,6 +397,7 @@ export class HeadlessPanelManager {
         this.deps.panelHttpServer.storePanel(panel.id, buildResult, {
           panelId: panel.id,
           contextId: panel.contextId,
+          subdomain: panel.subdomain,
           parentId: panel.parentId,
           rpcPort: this.deps.rpcPort,
           rpcToken: panel.rpcToken!,
@@ -351,6 +411,17 @@ export class HeadlessPanelManager {
           theme: "dark",
         });
 
+        const panelUrl = this.deps.panelHttpServer.getPanelUrl(panel.id);
+        this.emitEvent({
+          type: "panel:built",
+          panelId: panel.id,
+          title: panel.title,
+          subdomain: panel.subdomain,
+          url: panelUrl ?? undefined,
+          source: panel.source,
+          parentId: panel.parentId,
+        });
+
         log.info(`[Panel] Built and served: ${panel.id}`);
       } else {
         log.info(`[Panel] Built (no HTTP serving): ${panel.id}`);
@@ -358,6 +429,17 @@ export class HeadlessPanelManager {
     } catch (err) {
       panel.buildState = "failed";
       panel.buildError = err instanceof Error ? err.message : String(err);
+
+      this.emitEvent({
+        type: "panel:build-error",
+        panelId: panel.id,
+        title: panel.title,
+        subdomain: panel.subdomain,
+        error: panel.buildError,
+        source: panel.source,
+        parentId: panel.parentId,
+      });
+
       throw err;
     }
   }

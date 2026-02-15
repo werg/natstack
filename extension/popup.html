@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 320px;
+      min-height: 100px;
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+      color: #e0e0e0;
+      background: #1a1a2e;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      border-bottom: 1px solid #16213e;
+    }
+    .header h1 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #e94560;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      color: #888;
+    }
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #666;
+    }
+    .status-dot.connected { background: #4ade80; }
+    .status-dot.disconnected { background: #ef4444; }
+
+    /* Panel list */
+    .panel-list {
+      list-style: none;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    .panel-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid #16213e;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+    .panel-item:hover { background: #16213e; }
+    .panel-item:active { background: #1f2f4e; }
+    .panel-info { flex: 1; min-width: 0; }
+    .panel-title {
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .panel-sub {
+      font-size: 11px;
+      color: #666;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .panel-badge {
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: #16213e;
+      color: #888;
+      white-space: nowrap;
+    }
+    .panel-badge.open { background: #1a3a1a; color: #4ade80; }
+    .open-btn {
+      background: none;
+      border: 1px solid #333;
+      color: #0a84ff;
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .open-btn:hover { background: #16213e; }
+
+    /* Empty state */
+    .empty {
+      padding: 24px 12px;
+      text-align: center;
+      color: #666;
+    }
+    .empty p { margin-bottom: 6px; }
+
+    /* Footer */
+    .footer {
+      padding: 6px 12px;
+      border-top: 1px solid #16213e;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .footer a {
+      font-size: 11px;
+      color: #0a84ff;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>NatStack</h1>
+    <div class="status">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">Connecting...</span>
+    </div>
+  </div>
+
+  <ul class="panel-list" id="panelList"></ul>
+
+  <div class="empty" id="emptyState" style="display:none">
+    <p>No panels running</p>
+    <p style="font-size:11px">Create a panel via the RPC API or CLI</p>
+  </div>
+
+  <div class="footer">
+    <a id="settingsLink">Settings</a>
+    <a id="reconnectLink">Reconnect</a>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
