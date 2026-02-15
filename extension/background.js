@@ -3,6 +3,11 @@
  *
  * Connects to the natstack-server SSE endpoint, listens for panel lifecycle
  * events, and manages browser tabs accordingly.
+ *
+ * Context pre-warming: When a panel is created (but not yet built), the
+ * extension opens a hidden tab to the panel's /__init__ page. This pre-warms
+ * the OPFS storage by running the context bootstrap before the real panel
+ * tab is opened, so the panel loads with data already available.
  */
 
 // ---------------------------------------------------------------------------
@@ -20,6 +25,9 @@ const tabPanels = new Map();
 
 /** @type {Map<string, object>} panelId → panel metadata */
 const panels = new Map();
+
+/** @type {Map<string, number>} panelId → tabId for hidden init tabs (pre-warming) */
+const initTabs = new Map();
 
 /** @type {boolean} */
 let connected = false;
@@ -189,6 +197,12 @@ async function handleSSEEvent(event, dataStr, config) {
     case "panel:created": {
       panels.set(data.panelId, data);
       broadcastStatus();
+
+      // Pre-warm context: open a hidden tab to the /__init__ page
+      // This populates OPFS before the real panel tab is opened
+      if (data.subdomain && config.serverUrl) {
+        preWarmContext(data.panelId, data.subdomain, config);
+      }
       break;
     }
 
@@ -199,6 +213,10 @@ async function handleSSEEvent(event, dataStr, config) {
       } else {
         panels.set(data.panelId, data);
       }
+
+      // Close pre-warming init tab (if still open) — the real panel
+      // will now handle any remaining bootstrap inline
+      closeInitTab(data.panelId);
 
       // Auto-open tab if configured and URL is available
       if (config.autoOpenTabs && data.url && !panelTabs.has(data.panelId)) {
@@ -224,6 +242,9 @@ async function handleSSEEvent(event, dataStr, config) {
 
     case "panel:closed": {
       panels.delete(data.panelId);
+
+      // Close any pre-warming init tab
+      closeInitTab(data.panelId);
 
       // Auto-close tab if configured
       if (config.autoCloseTabs) {
@@ -311,6 +332,78 @@ async function groupNatstackTabs() {
 }
 
 // ---------------------------------------------------------------------------
+// Context pre-warming
+// ---------------------------------------------------------------------------
+
+/**
+ * Pre-warm a panel's context by opening a hidden tab to /__init__.
+ * The init page runs the OPFS bootstrap (clones git repos into OPFS) and
+ * signals completion via chrome.runtime.sendMessage(). This way, when the
+ * real panel tab opens after the build completes, OPFS is already populated.
+ *
+ * @param {string} panelId
+ * @param {string} subdomain
+ * @param {object} config
+ */
+async function preWarmContext(panelId, subdomain, config) {
+  // Don't pre-warm if we already have an init tab for this panel
+  if (initTabs.has(panelId)) return;
+
+  // We need the panel's HTTP token. The init page requires auth, so we
+  // build the URL from the panel data. The URL is available once the panel
+  // is built, but the subdomain is available immediately at panel:created.
+  // The init endpoint also accepts the token query param, so we need to
+  // wait for panel:built to get the URL. Instead, we'll attempt to load
+  // the init page and let it authenticate via the session cookie that the
+  // user's main tab will establish. If no session exists yet, the init
+  // page will return 403 — we'll just close the tab and rely on the
+  // inline bootstrap in the panel HTML.
+
+  // Build the init URL using the server port from the server URL
+  try {
+    const serverUrl = new URL(config.serverUrl);
+    const port = serverUrl.port || (serverUrl.protocol === "https:" ? "443" : "80");
+    const initUrl = `http://${subdomain}.localhost:${port}/__init__`;
+
+    console.log(`[NatStack] Pre-warming context for ${panelId}: ${initUrl}`);
+
+    const tab = await chrome.tabs.create({
+      url: initUrl,
+      active: false,   // Don't steal focus
+      pinned: false,
+    });
+
+    if (tab.id != null) {
+      initTabs.set(panelId, tab.id);
+
+      // Auto-close init tab after 30s timeout (safety net)
+      setTimeout(() => {
+        closeInitTab(panelId);
+      }, 30000);
+    }
+  } catch (err) {
+    console.warn(`[NatStack] Failed to pre-warm context for ${panelId}:`, err);
+  }
+}
+
+/**
+ * Close and clean up a pre-warming init tab.
+ * @param {string} panelId
+ */
+async function closeInitTab(panelId) {
+  const tabId = initTabs.get(panelId);
+  if (tabId == null) return;
+  initTabs.delete(panelId);
+
+  try {
+    await chrome.tabs.remove(tabId);
+    console.log(`[NatStack] Closed init tab for ${panelId}`);
+  } catch {
+    // Tab already closed
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Popup communication
 // ---------------------------------------------------------------------------
 
@@ -378,6 +471,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "reconnect") {
     reconnectAttempt = 0;
     connect();
+    return false;
+  }
+
+  // Context pre-warming completion signal from /__init__ page
+  if (msg.type === "contextInitComplete") {
+    console.log(`[NatStack] Context init complete: ${msg.contextId} — ${msg.status}`);
+    // Find the panel by contextId and close its init tab
+    for (const [panelId, panel] of panels) {
+      if (panel.contextId === msg.contextId || panel.subdomain === msg.subdomain) {
+        closeInitTab(panelId);
+        break;
+      }
+    }
     return false;
   }
 });

@@ -7,6 +7,13 @@
  * system and their artifacts are stored in the PanelHttpServer for browser
  * access.
  *
+ * Context Template Support:
+ * Uses the same template resolution pipeline as Electron (resolver → specHash
+ * → contextId) but delegates OPFS population to the browser via a bootstrap
+ * script injected into panel HTML. Panels sharing a contextId are assigned
+ * the same subdomain, giving them a shared browser origin and therefore
+ * shared localStorage, IndexedDB, OPFS, cookies, and service workers.
+ *
  * Panel types use the canonical PanelType ("app" | "browser" | "shell") from
  * src/shared/types.ts. Only "app" panels are created in headless mode —
  * "browser" and "shell" are GUI-specific. Workers/agents are NOT panels; they
@@ -27,6 +34,11 @@ import { computePanelId } from "../shared/panelIdUtils.js";
 import { loadPanelManifest } from "../main/panelTypes.js";
 import { validateStateArgs } from "../main/stateArgsValidator.js";
 import { createDevLogger } from "../main/devLog.js";
+import {
+  resolveHeadlessContext,
+  canResolveTemplates,
+  type HeadlessResolvedContext,
+} from "./contextTemplate/headlessResolver.js";
 
 const log = createDevLogger("HeadlessPanelManager");
 
@@ -42,6 +54,10 @@ export interface HeadlessPanel {
   contextId: string;
   /** Short DNS-safe label used as the *.localhost subdomain */
   subdomain: string;
+  /** Template spec hash (first 12 chars), if resolved from template */
+  specHashShort: string | null;
+  /** Full spec hash, if resolved from template */
+  specHash: string | null;
   title: string;
   stateArgs: Record<string, unknown>;
   repoArgs?: Record<string, RepoArgSpec>;
@@ -99,6 +115,8 @@ interface CreatePanelDeps {
 export class HeadlessPanelManager {
   private panels = new Map<string, HeadlessPanel>();
   private activeSubdomains = new Set<string>();
+  /** Reverse lookup: contextId → subdomain (for shared-context subdomain reuse) */
+  private contextSubdomains = new Map<string, string>();
   private deps: CreatePanelDeps;
 
   constructor(deps: CreatePanelDeps) {
@@ -125,6 +143,26 @@ export class HeadlessPanelManager {
 
     this.activeSubdomains.add(slug);
     return slug;
+  }
+
+  /**
+   * Get or create a subdomain for a context ID.
+   *
+   * Panels sharing the same contextId MUST share the same subdomain so they
+   * get the same browser origin (= shared localStorage, IndexedDB, OPFS,
+   * cookies, service workers). This mirrors Electron's persist:{contextId}
+   * partition sharing.
+   */
+  private getOrCreateSubdomain(contextId: string, source: string): string {
+    const existing = this.contextSubdomains.get(contextId);
+    if (existing && this.activeSubdomains.has(existing)) {
+      log.info(`[Context] Reusing subdomain "${existing}" for shared context ${contextId}`);
+      return existing;
+    }
+
+    const subdomain = this.generateSubdomain(source);
+    this.contextSubdomains.set(contextId, subdomain);
+    return subdomain;
   }
 
   private emitEvent(event: PanelLifecycleEvent): void {
@@ -155,15 +193,37 @@ export class HeadlessPanelManager {
       throw new Error(`A panel with id "${panelId}" is already running`);
     }
 
-    // Generate context ID (simplified — does not do full template resolution
-    // since that requires the workspace git repos; use provided contextId or
-    // generate a basic one)
-    const contextId =
-      options?.contextId ??
-      `headless_${panelId.replace(/\//g, "~")}_${Date.now().toString(36)}`;
+    // ── Context resolution ──
+    // Use the full template resolution pipeline when workspace is available,
+    // falling back to the simplified scheme for stateless operation.
+    let contextId: string;
+    let specHashShort: string | null = null;
+    let specHash: string | null = null;
 
-    // Generate a short, human-readable subdomain for this panel
-    const subdomain = this.generateSubdomain(source);
+    if (options?.contextId) {
+      // Explicit context ID provided — use as-is (enables context sharing)
+      contextId = options.contextId;
+    } else if (canResolveTemplates()) {
+      // Full template resolution available — use same pipeline as Electron
+      const templateSpec = options?.templateSpec ?? "contexts/default";
+      try {
+        const resolved: HeadlessResolvedContext = await resolveHeadlessContext(panelId, templateSpec);
+        contextId = resolved.contextId;
+        specHashShort = resolved.specHashShort;
+        specHash = resolved.specHash;
+      } catch (err) {
+        // Template resolution failed — fall back to simple scheme
+        log.info(`[Panel] Template resolution failed for ${panelId}, using fallback: ${err}`);
+        contextId = `headless_${panelId.replace(/\//g, "~")}_${Date.now().toString(36)}`;
+      }
+    } else {
+      // No workspace — simplified context ID
+      contextId = `headless_${panelId.replace(/\//g, "~")}_${Date.now().toString(36)}`;
+    }
+
+    // ── Subdomain assignment ──
+    // Panels sharing a contextId share a subdomain (= same origin = shared storage)
+    const subdomain = this.getOrCreateSubdomain(contextId, source);
 
     // Create RPC token for this panel
     const rpcToken = this.deps.createToken(panelId, "panel");
@@ -175,6 +235,8 @@ export class HeadlessPanelManager {
       type: "app",
       contextId,
       subdomain,
+      specHashShort,
+      specHash,
       title: source.split("/").pop() ?? source,
       stateArgs: stateArgs ?? {},
       repoArgs: options?.repoArgs,
@@ -192,7 +254,7 @@ export class HeadlessPanelManager {
       parent.children.push(panelId);
     }
 
-    log.info(`[Panel] Created: ${panelId} (${subdomain}.localhost, source: ${source})`);
+    log.info(`[Panel] Created: ${panelId} (${subdomain}.localhost, ctx=${contextId}, spec=${specHashShort ?? "none"})`);
 
     this.emitEvent({
       type: "panel:created",
@@ -242,8 +304,14 @@ export class HeadlessPanelManager {
       this.deps.panelHttpServer.removePanel(panelId);
     }
 
-    // Release subdomain
-    this.activeSubdomains.delete(panel.subdomain);
+    // Release subdomain only if no other panels use this context
+    const otherPanelsWithContext = Array.from(this.panels.values()).some(
+      (p) => p.id !== panelId && p.contextId === panel.contextId,
+    );
+    if (!otherPanelsWithContext) {
+      this.activeSubdomains.delete(panel.subdomain);
+      this.contextSubdomains.delete(panel.contextId);
+    }
 
     this.emitEvent({
       type: "panel:closed",
@@ -335,6 +403,17 @@ export class HeadlessPanelManager {
       }));
   }
 
+  /**
+   * Find a panel by its context ID.
+   * Used by context transfer API to locate panels for snapshot operations.
+   */
+  findPanelByContextId(contextId: string): HeadlessPanel | undefined {
+    for (const panel of this.panels.values()) {
+      if (panel.contextId === contextId) return panel;
+    }
+    return undefined;
+  }
+
   // =========================================================================
   // State args
   // =========================================================================
@@ -409,6 +488,8 @@ export class HeadlessPanelManager {
           resolvedRepoArgs: panel.repoArgs ?? {},
           env: panel.env,
           theme: "dark",
+          specHash: panel.specHash ?? undefined,
+          specHashShort: panel.specHashShort ?? undefined,
         });
 
         const panelUrl = this.deps.panelHttpServer.getPanelUrl(panel.id);

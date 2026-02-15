@@ -6,6 +6,11 @@
  *
  * Uses browser.* APIs (Firefox WebExtensions). Firefox does not support
  * tab groups, so that feature is omitted.
+ *
+ * Context pre-warming: When a panel is created (but not yet built), the
+ * extension opens a hidden tab to the panel's /__init__ page. This pre-warms
+ * the OPFS storage by running the context bootstrap before the real panel
+ * tab is opened, so the panel loads with data already available.
  */
 
 // ---------------------------------------------------------------------------
@@ -23,6 +28,9 @@ const tabPanels = new Map();
 
 /** @type {Map<string, object>} panelId → panel metadata */
 const panels = new Map();
+
+/** @type {Map<string, number>} panelId → tabId for hidden init tabs (pre-warming) */
+const initTabs = new Map();
 
 /** @type {boolean} */
 let connected = false;
@@ -194,6 +202,11 @@ async function handleSSEEvent(event, dataStr, config) {
     case "panel:created": {
       panels.set(data.panelId, data);
       broadcastStatus();
+
+      // Pre-warm context: open a hidden tab to the /__init__ page
+      if (data.subdomain && config.serverUrl) {
+        preWarmContext(data.panelId, data.subdomain, config);
+      }
       break;
     }
 
@@ -204,6 +217,9 @@ async function handleSSEEvent(event, dataStr, config) {
       } else {
         panels.set(data.panelId, data);
       }
+
+      // Close pre-warming init tab (if still open)
+      closeInitTab(data.panelId);
 
       // Auto-open tab if configured and URL is available
       if (config.autoOpenTabs && data.url && !panelTabs.has(data.panelId)) {
@@ -224,6 +240,9 @@ async function handleSSEEvent(event, dataStr, config) {
 
     case "panel:closed": {
       panels.delete(data.panelId);
+
+      // Close any pre-warming init tab
+      closeInitTab(data.panelId);
 
       if (config.autoCloseTabs) {
         const tabId = panelTabs.get(data.panelId);
@@ -262,6 +281,14 @@ browser.tabs.onRemoved.addListener((tabId) => {
     tabPanels.delete(tabId);
     broadcastStatus();
   }
+
+  // Also clean up init tabs
+  for (const [pid, tid] of initTabs) {
+    if (tid === tabId) {
+      initTabs.delete(pid);
+      break;
+    }
+  }
 });
 
 browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -280,6 +307,61 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// Context pre-warming
+// ---------------------------------------------------------------------------
+
+/**
+ * Pre-warm a panel's context by opening a hidden tab to /__init__.
+ * @param {string} panelId
+ * @param {string} subdomain
+ * @param {object} config
+ */
+async function preWarmContext(panelId, subdomain, config) {
+  if (initTabs.has(panelId)) return;
+
+  try {
+    const serverUrl = new URL(config.serverUrl);
+    const port = serverUrl.port || (serverUrl.protocol === "https:" ? "443" : "80");
+    const initUrl = `http://${subdomain}.localhost:${port}/__init__`;
+
+    console.log(`[NatStack] Pre-warming context for ${panelId}: ${initUrl}`);
+
+    const tab = await browser.tabs.create({
+      url: initUrl,
+      active: false,
+    });
+
+    if (tab.id != null) {
+      initTabs.set(panelId, tab.id);
+
+      // Auto-close init tab after 30s timeout (safety net)
+      setTimeout(() => {
+        closeInitTab(panelId);
+      }, 30000);
+    }
+  } catch (err) {
+    console.warn(`[NatStack] Failed to pre-warm context for ${panelId}:`, err);
+  }
+}
+
+/**
+ * Close and clean up a pre-warming init tab.
+ * @param {string} panelId
+ */
+async function closeInitTab(panelId) {
+  const tabId = initTabs.get(panelId);
+  if (tabId == null) return;
+  initTabs.delete(panelId);
+
+  try {
+    await browser.tabs.remove(tabId);
+    console.log(`[NatStack] Closed init tab for ${panelId}`);
+  } catch {
+    // Tab already closed
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Popup communication
@@ -309,7 +391,6 @@ function broadcastStatus() {
 
 browser.runtime.onMessage.addListener((msg, _sender) => {
   if (msg.type === "getStatus") {
-    // Firefox onMessage listeners can return a Promise for sendResponse
     return Promise.resolve(buildStatusPayload());
   }
 
@@ -336,6 +417,18 @@ browser.runtime.onMessage.addListener((msg, _sender) => {
   if (msg.type === "reconnect") {
     reconnectAttempt = 0;
     connect();
+    return false;
+  }
+
+  // Context pre-warming completion signal from /__init__ page
+  if (msg.type === "contextInitComplete") {
+    console.log(`[NatStack] Context init complete: ${msg.contextId} — ${msg.status}`);
+    for (const [panelId, panel] of panels) {
+      if (panel.contextId === msg.contextId || panel.subdomain === msg.subdomain) {
+        closeInitTab(panelId);
+        break;
+      }
+    }
     return false;
   }
 });
