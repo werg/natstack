@@ -233,21 +233,21 @@ export class HeadlessPanelManager {
     // ── StateArgs validation + defaults ──
     // Match Electron's creation-time behavior: validate against manifest
     // schema and apply defaults (e.g. boolean fields default to false).
+    // Only the manifest load is in a try-catch (expected to fail for dynamic
+    // sources); validation errors always propagate.
     let validatedStateArgs: Record<string, unknown> = stateArgs ?? {};
+    let manifest;
     try {
-      const manifest = loadPanelManifest(source);
-      if (stateArgs || manifest.stateArgs) {
-        const validation = validateStateArgs(stateArgs ?? {}, manifest.stateArgs);
-        if (!validation.success) {
-          throw new Error(`Invalid stateArgs for ${source}: ${validation.error}`);
-        }
-        validatedStateArgs = validation.data!;
+      manifest = loadPanelManifest(source);
+    } catch {
+      // Manifest not loadable (dynamic source) — skip validation
+    }
+    if (manifest && (stateArgs || manifest.stateArgs)) {
+      const validation = validateStateArgs(stateArgs ?? {}, manifest.stateArgs);
+      if (!validation.success) {
+        throw new Error(`Invalid stateArgs for ${source}: ${validation.error}`);
       }
-    } catch (err) {
-      // If manifest can't be loaded (dynamic source), accept raw stateArgs
-      if (err instanceof Error && err.message.startsWith("Invalid stateArgs")) {
-        throw err;
-      }
+      validatedStateArgs = validation.data!;
     }
 
     const panel: HeadlessPanel = {
@@ -529,10 +529,13 @@ export class HeadlessPanelManager {
     try {
       const buildResult = await this.deps.getBuild(panel.source);
 
-      // Guard against build-close race: if the panel was closed while the
-      // build was in-flight, don't resurrect it as a stored panel.
-      if (!this.panels.has(panel.id)) {
-        log.info(`[Panel] Build completed for ${panel.id} but panel was already closed — discarding`);
+      // Guard against build-close race: if the panel was closed (or closed
+      // and recreated with the same deterministic ID) while the build was
+      // in-flight, don't apply stale results. Object identity (===) catches
+      // both "closed" and "closed+reopened" — the latter puts a new object
+      // in the map under the same key.
+      if (this.panels.get(panel.id) !== panel) {
+        log.info(`[Panel] Build completed for ${panel.id} but panel was closed or replaced — discarding`);
         return;
       }
 
@@ -558,9 +561,9 @@ export class HeadlessPanelManager {
         log.info(`[Panel] Built (no HTTP serving): ${panel.id}`);
       }
     } catch (err) {
-      // Don't emit errors for panels closed during build
-      if (!this.panels.has(panel.id)) {
-        log.info(`[Panel] Build failed for ${panel.id} but panel was already closed — suppressing`);
+      // Don't emit errors for panels closed (or replaced) during build
+      if (this.panels.get(panel.id) !== panel) {
+        log.info(`[Panel] Build failed for ${panel.id} but panel was closed or replaced — suppressing`);
         return;
       }
 

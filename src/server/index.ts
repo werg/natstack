@@ -294,6 +294,7 @@ async function main() {
       rpcPort,
       gitBaseUrl: `http://127.0.0.1:${handle.gitServer.getPort()}`,
       getGitTokenForPanel: (panelId) => handle.gitServer.getTokenForPanel(panelId),
+      revokeGitToken: (panelId) => handle.gitServer.revokeTokenForPanel(panelId),
       pubsubPort: handle.pubsubPort,
       sendToClient: (callerId, msg) => rpcServer.sendToClient(callerId, msg),
       onPanelEvent: (event) => panelHttpServer?.broadcastEvent(event),
