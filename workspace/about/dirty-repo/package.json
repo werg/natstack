@@ -1,0 +1,19 @@
+{
+  "name": "@workspace-about/dirty-repo",
+  "version": "0.1.0",
+  "private": true,
+  "natstack": {
+    "type": "app",
+    "title": "Uncommitted Changes",
+    "shell": true,
+    "hiddenInLauncher": true
+  },
+  "dependencies": {
+    "@workspace/react": "*",
+    "@workspace/runtime": "*",
+    "@workspace/git-ui": "*",
+    "@workspace/about-shared": "workspace:*",
+    "@natstack/git": "workspace:*",
+    "@workspace/ai": "*"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "declaration": true,
+    "declarationMap": true,
+    "composite": true,
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@natstack/git": ["../../../packages/git/src/index.ts"],
+      "@natstack/typecheck": ["../../../packages/typecheck/src/index.ts"]
+    }
+  },
+  "include": ["src"]
+}

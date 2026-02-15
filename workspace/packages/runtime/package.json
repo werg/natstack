@@ -1,0 +1,34 @@
+{
+  "name": "@workspace/runtime",
+  "version": "0.1.0-git.dfc926d-dirty.2482fc2becd1",
+  "description": "Unified runtime for NatStack panels and workers",
+  "type": "module",
+  "main": "./dist/panel/index.js",
+  "types": "./dist/panel/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/panel/index.d.ts",
+      "natstack-panel": "./dist/panel/index.js",
+      "default": "./dist/panel/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "dev": "tsc --project tsconfig.build.json --watch"
+  },
+  "dependencies": {
+    "@workspace/agentic-messaging": "workspace:*",
+    "@workspace/ai": "workspace:*",
+    "@workspace/core": "workspace:*",
+    "@natstack/git": "workspace:*",
+    "@natstack/rpc": "workspace:*",
+    "@natstack/types": "workspace:*",
+    "@zenfs/core": "^2.4.4",
+    "@zenfs/dom": "^1.2.5",
+    "buffer": "^6.0.3",
+    "zod": "^3.24.0"
+  },
+  "files": [
+    "dist"
+  ]
+}

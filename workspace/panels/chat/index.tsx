@@ -5,15 +5,15 @@
  * and delegates to the reusable AgenticChat component.
  */
 
-import { pubsubConfig, id as panelClientId, buildNsLink, buildFocusLink, createChild, useStateArgs, forceRepaint, ensurePanelLoaded } from "@natstack/runtime";
-import { usePanelTheme } from "@natstack/react";
+import { pubsubConfig, id as panelClientId, buildNsLink, buildFocusLink, createChild, useStateArgs, forceRepaint, ensurePanelLoaded } from "@workspace/runtime";
+import { usePanelTheme } from "@workspace/react";
 import { useCallback, useMemo } from "react";
 import { Flex, Text, Button, Card } from "@radix-ui/themes";
 import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
 import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps } from "@workspace/agentic-chat";
 import { createAllToolMethodDefinitions, executeEvalTool, EVAL_DEFAULT_TIMEOUT_MS, EVAL_MAX_TIMEOUT_MS, EVAL_FRAMEWORK_TIMEOUT_MS } from "@workspace/agentic-tools";
 import { z } from "zod";
-import type { MethodDefinition } from "@natstack/agentic-messaging";
+import type { MethodDefinition } from "@workspace/agentic-messaging";
 
 /** Stable metadata object — avoids creating a new object every render */
 const PANEL_METADATA = { name: "Chat Panel", type: "panel" as const, handle: "user" };

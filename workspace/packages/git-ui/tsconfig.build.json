@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "exclude": ["**/*.test.ts", "**/*.spec.ts", "**/*.test.tsx", "**/*.spec.tsx"],
+  "compilerOptions": {
+    "paths": {
+      "@natstack/git": ["../../../packages/git/dist/index.d.ts"],
+      "@natstack/typecheck": ["../../../packages/typecheck/dist/index.d.ts"]
+    }
+  }
+}

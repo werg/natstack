@@ -1,6 +1,6 @@
 import { Checkbox, Flex, Select, Text, TextField } from "@radix-ui/themes";
-import { jsonSchemaToZod } from "@natstack/agentic-messaging/utils";
-import type { JsonSchema } from "@natstack/agentic-messaging";
+import { jsonSchemaToZod } from "@workspace/agentic-messaging/utils";
+import type { JsonSchema } from "@workspace/agentic-messaging";
 
 export interface JsonSchemaFormProps {
   schema: JsonSchema;
@@ -14,8 +14,8 @@ export interface JsonSchemaFormProps {
  * Supports: string, number, integer, boolean, enum types.
  */
 export function JsonSchemaForm({ schema, value, onChange, errors }: JsonSchemaFormProps) {
-  const properties = (schema.properties as Record<string, JsonSchema>) ?? {};
-  const requiredList = Array.isArray(schema.required) ? (schema.required as string[]) : [];
+  const properties = (schema['properties'] as Record<string, JsonSchema>) ?? {};
+  const requiredList = Array.isArray(schema['required']) ? (schema['required'] as string[]) : [];
   const requiredSet = new Set(requiredList);
 
   const handleFieldChange = (key: string, fieldValue: unknown) => {
@@ -49,9 +49,9 @@ interface SchemaFieldProps {
 }
 
 function SchemaField({ name, schema, value, onChange, required, error }: SchemaFieldProps) {
-  const description = schema.description as string | undefined;
-  const enumValues = schema.enum as unknown[] | undefined;
-  const type = schema.type as string | undefined;
+  const description = schema['description'] as string | undefined;
+  const enumValues = schema['enum'] as unknown[] | undefined;
+  const type = schema['type'] as string | undefined;
 
   // Handle enum (select dropdown)
   if (enumValues && enumValues.length > 0) {
@@ -120,7 +120,7 @@ function SchemaField({ name, schema, value, onChange, required, error }: SchemaF
         )}
         <TextField.Root
           type="number"
-          placeholder={schema.default !== undefined ? `Default: ${schema.default}` : undefined}
+          placeholder={schema['default'] !== undefined ? `Default: ${schema['default']}` : undefined}
           value={value !== undefined ? String(value) : ""}
           onChange={(e) => {
             const val = e.target.value;
@@ -150,7 +150,7 @@ function SchemaField({ name, schema, value, onChange, required, error }: SchemaF
         </Text>
       )}
       <TextField.Root
-        placeholder={schema.default !== undefined ? `Default: ${schema.default}` : undefined}
+        placeholder={schema['default'] !== undefined ? `Default: ${schema['default']}` : undefined}
         value={value !== undefined ? String(value) : ""}
         onChange={(e) => onChange(e.target.value || undefined)}
       />
@@ -216,7 +216,7 @@ export function validateSchemaForm(
     }
   } catch {
     // If schema conversion fails, fall back to basic required check
-    const requiredList = Array.isArray(schema.required) ? (schema.required as string[]) : [];
+    const requiredList = Array.isArray(schema['required']) ? (schema['required'] as string[]) : [];
     for (const key of requiredList) {
       const val = value[key];
       if (val === undefined || val === null || val === "") {
@@ -232,6 +232,6 @@ export function validateSchemaForm(
  * Check if a schema has any required parameters.
  */
 export function schemaHasRequiredParams(schema: JsonSchema): boolean {
-  const requiredList = Array.isArray(schema.required) ? (schema.required as string[]) : [];
+  const requiredList = Array.isArray(schema['required']) ? (schema['required'] as string[]) : [];
   return requiredList.length > 0;
 }

@@ -3,7 +3,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { rpc } from "@natstack/runtime";
+import { rpc } from "@workspace/runtime";
 import type { AvailableTemplate, WorkspaceTree, WorkspaceNode, ResolvedTemplate, MountPoint, TemplateInfo } from "../types";
 import { generateMountId, parseGitSpec } from "../types";
 
@@ -32,7 +32,7 @@ function findTemplates(nodes: WorkspaceNode[], parentPath = ""): AvailableTempla
 
   for (const node of nodes) {
     const nodePath = parentPath ? `${parentPath}/${node.name}` : node.name;
-    const topDir = nodePath.split("/")[0];
+    const topDir = nodePath.split("/")[0] ?? "";
 
     // Check if this is in a template directory and is a git repo
     if (TEMPLATE_DIRECTORIES.includes(topDir) && node.isGitRepo) {

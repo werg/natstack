@@ -8,13 +8,13 @@
  */
 
 import { useState, useCallback, useEffect } from "react";
-import { pubsubConfig, buildNsLink, closeSelf, getStateArgs, rpc, db, id } from "@natstack/runtime";
-import { setDbOpen, connect, type AgenticClient } from "@natstack/agentic-messaging";
+import { pubsubConfig, buildNsLink, closeSelf, getStateArgs, rpc, db, id } from "@workspace/runtime";
+import { setDbOpen, connect, type AgenticClient } from "@workspace/agentic-messaging";
 
 // Configure agentic-messaging to use runtime's db
 setDbOpen(db.open);
 
-import { usePanelTheme } from "@natstack/react";
+import { usePanelTheme } from "@workspace/react";
 import { Theme } from "@radix-ui/themes";
 import {
   useAgentSelection,
@@ -23,7 +23,7 @@ import {
   type SessionConfig,
 } from "./hooks/useAgentSelection";
 import { AgentSetupPhase } from "./components/AgentSetupPhase";
-import type { GlobalAgentSettings } from "@natstack/core";
+import type { GlobalAgentSettings } from "@natstack/types";
 
 const generateChannelId = () => `chat-${crypto.randomUUID().slice(0, 8)}`;
 

@@ -11,8 +11,8 @@ import {
   TextField,
 } from "@radix-ui/themes";
 import { InfoCircledIcon, ChevronDownIcon, ChevronRightIcon } from "@radix-ui/react-icons";
-import { ParameterEditor } from "@natstack/react";
-import type { FieldValue } from "@natstack/core";
+import { ParameterEditor } from "@workspace/react";
+import type { FieldValue } from "@natstack/types";
 import type {
   AgentSelectionWithRequirements,
   SessionConfig,

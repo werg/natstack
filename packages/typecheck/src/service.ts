@@ -6,7 +6,7 @@
  * needing to configure tsconfig files.
  *
  * Key features:
- * - Custom module resolution (fs shim, @natstack/*, dedupe)
+ * - Custom module resolution (fs shim, @workspace/*, dedupe)
  * - Virtual type definitions for shimmed APIs
  * - Language service integration (diagnostics, completions, hover)
  * - File watching with incremental updates
@@ -99,7 +99,7 @@ export interface TypeCheckServiceConfig {
   resolution?: Partial<ModuleResolutionConfig>;
   /** TypeScript compiler options override */
   compilerOptions?: ts.CompilerOptions;
-  /** Path mappings for @natstack/* packages */
+  /** Path mappings for @workspace/* packages */
   natstackPackagePaths?: Record<string, string>;
   /** Path to lib.d.ts files */
   libPath?: string;
@@ -111,7 +111,7 @@ export interface TypeCheckServiceConfig {
   /**
    * Path to the monorepo root (containing packages directory).
    * If provided, natstack types are loaded from packages dist folders.
-   * This enables dynamic type loading without bundled natstack-packages.ts.
+   * This enables dynamic type loading without bundled workspace-packages.ts.
    */
   workspaceRoot?: string;
   /**
@@ -148,7 +148,7 @@ export class TypeCheckService {
   private loadedExternalPackages = new Set<string>();
   /** Packages that need types fetched (collected during resolution) */
   private pendingExternalPackages = new Set<string>();
-  /** Loaded @natstack/* package types (dynamically loaded from filesystem) */
+  /** Loaded @workspace/* package types (dynamically loaded from filesystem) */
   private natstackPackageTypes: Record<string, NatstackPackageTypes> = {};
   /** Entry points for loaded external packages (package name -> entry file path) */
   private externalPackageEntryPoints = new Map<string, string>();
@@ -187,31 +187,31 @@ export class TypeCheckService {
    */
   private addVirtualLibs(): void {
     // Add fs type definitions
-    this.files.set("/@natstack/virtual/fs.d.ts", {
+    this.files.set("/@workspace/virtual/fs.d.ts", {
       content: FS_TYPE_DEFINITIONS,
       version: 1,
     });
 
     // Add path type definitions (for path shim -> pathe)
-    this.files.set("/@natstack/virtual/path.d.ts", {
+    this.files.set("/@workspace/virtual/path.d.ts", {
       content: PATH_TYPE_DEFINITIONS,
       version: 1,
     });
 
     // Add global type definitions
-    this.files.set("/@natstack/virtual/globals.d.ts", {
+    this.files.set("/@workspace/virtual/globals.d.ts", {
       content: GLOBAL_TYPE_DEFINITIONS,
       version: 1,
     });
 
     // Add Node.js built-in module type definitions (for workers)
-    this.files.set("/@natstack/virtual/node-builtins.d.ts", {
+    this.files.set("/@workspace/virtual/node-builtins.d.ts", {
       content: NODE_BUILTIN_TYPE_STUBS,
       version: 1,
     });
 
     // Add node: prefix module declarations (for workers using node:fs, node:path, etc.)
-    this.files.set("/@natstack/virtual/node-prefix-modules.d.ts", {
+    this.files.set("/@workspace/virtual/node-prefix-modules.d.ts", {
       content: NODE_FS_TYPE_DEFINITIONS,
       version: 1,
     });
@@ -224,7 +224,7 @@ export class TypeCheckService {
       });
     }
 
-    // Load @natstack/* package types dynamically from filesystem (including runtime)
+    // Load @workspace/* package types dynamically from filesystem (including runtime)
     const packagesDir = this.config.workspaceRoot
       ? findPackagesDir(this.config.workspaceRoot)
       : null;
@@ -233,7 +233,7 @@ export class TypeCheckService {
       this.natstackPackageTypes = loadNatstackPackageTypes(packagesDir);
       for (const [pkgName, pkgData] of Object.entries(this.natstackPackageTypes)) {
         for (const [fileName, content] of Object.entries(pkgData.files)) {
-          this.files.set(`/@natstack/packages/${pkgName}/${fileName}`, {
+          this.files.set(`/@workspace/packages/${pkgName}/${fileName}`, {
             content,
             version: 1,
           });
@@ -278,7 +278,7 @@ export class TypeCheckService {
   getFileNames(): string[] {
     return [...this.files.keys()].filter(
       (p) =>
-        !p.startsWith("/@natstack/virtual/") &&
+        !p.startsWith("/@workspace/virtual/") &&
         !p.startsWith("/@types/") &&
         !p.startsWith("/@typescript/lib/")
     );
@@ -745,7 +745,7 @@ export class TypeCheckService {
         // Map fs imports to our virtual fs type definitions
         return {
           resolvedModule: {
-            resolvedFileName: "/@natstack/virtual/fs.d.ts",
+            resolvedFileName: "/@workspace/virtual/fs.d.ts",
             isExternalLibraryImport: false,
             extension: ts.Extension.Dts,
           },
@@ -755,18 +755,18 @@ export class TypeCheckService {
         // Map path imports to our virtual path type definitions
         return {
           resolvedModule: {
-            resolvedFileName: "/@natstack/virtual/path.d.ts",
+            resolvedFileName: "/@workspace/virtual/path.d.ts",
             isExternalLibraryImport: false,
             extension: ts.Extension.Dts,
           },
         };
 
       case "natstack": {
-        // Check loaded @natstack/* packages (dynamically loaded from filesystem)
-        const fullPkgName = `@natstack/${result.packageName}`;
+        // Check loaded @workspace/* packages (dynamically loaded from filesystem)
+        const fullPkgName = `@workspace/${result.packageName}`;
         const pkgData = this.natstackPackageTypes[fullPkgName];
         if (pkgData) {
-          // Extract subpath from module name (e.g., @natstack/agentic-messaging/registry -> /registry)
+          // Extract subpath from module name (e.g., @workspace/agentic-messaging/registry -> /registry)
           const afterPkg = moduleName.slice(fullPkgName.length);
           // Convert /registry to ./registry to match package.json exports format
           const subpath = afterPkg.startsWith("/") ? "." + afterPkg : null;
@@ -777,7 +777,7 @@ export class TypeCheckService {
             entryFile = pkgData.subpaths[subpath];
           }
 
-          const entryPath = `/@natstack/packages/${fullPkgName}/${entryFile}`;
+          const entryPath = `/@workspace/packages/${fullPkgName}/${entryFile}`;
           if (this.files.has(entryPath)) {
             return {
               resolvedModule: {
@@ -789,7 +789,7 @@ export class TypeCheckService {
           }
         }
 
-        // Map @natstack/* to the package path if configured (fallback)
+        // Map @workspace/* to the package path if configured (fallback)
         const packagePath =
           this.config.natstackPackagePaths?.[result.packageName];
         if (packagePath) {

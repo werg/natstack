@@ -6,11 +6,11 @@
  */
 
 import { useState, useCallback, useEffect } from "react";
-import { rpc, buildNsLink } from "@natstack/runtime";
-import { usePanelTheme } from "@natstack/react";
+import { rpc, buildNsLink } from "@workspace/runtime";
+import { usePanelTheme } from "@workspace/react";
 import { Theme, Box, Flex, Heading, Text, TextField, Button, Separator, Card } from "@radix-ui/themes";
 import { RocketIcon } from "@radix-ui/react-icons";
-import type { AgentManifest } from "@natstack/core";
+import type { AgentManifest } from "@natstack/types";
 
 import { useProjectConfig } from "./hooks/useProjectConfig";
 import { LocationSettings } from "./components/LocationSettings";

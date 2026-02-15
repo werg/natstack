@@ -10,7 +10,7 @@ import * as path from "path";
 import * as git from "isomorphic-git";
 import { STAGE, type WalkerEntry } from "isomorphic-git";
 import { createTwoFilesPatch } from "diff";
-import type { MethodDefinition } from "@natstack/agentic-messaging";
+import type { MethodDefinition } from "@workspace/agentic-messaging";
 import { resolvePath } from "./utils";
 import type { z } from "zod";
 import {
@@ -20,7 +20,7 @@ import {
   GitAddArgsSchema,
   GitCommitArgsSchema,
   GitCheckoutArgsSchema,
-} from "@natstack/agentic-messaging/tool-schemas";
+} from "@workspace/agentic-messaging/tool-schemas";
 
 
 /**

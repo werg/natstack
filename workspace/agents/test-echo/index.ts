@@ -4,8 +4,8 @@
  * Echoes received messages back with a count.
  */
 
-import { Agent, runAgent } from "@natstack/agent-runtime";
-import type { EventStreamItem } from "@natstack/agentic-messaging";
+import { Agent, runAgent } from "@workspace/agent-runtime";
+import type { EventStreamItem } from "@workspace/agentic-messaging";
 
 interface TestEchoState {
   messageCount: number;

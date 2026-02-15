@@ -8,8 +8,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Dialog, Flex, Select, Text, TextField } from "@radix-ui/themes";
 import { GitClient } from "@natstack/git";
-import { fs, fsReady, gitConfig } from "@natstack/runtime";
-import { useBootstrap } from "@natstack/react";
+import { fs, fsReady, gitConfig } from "@workspace/runtime";
+import { useBootstrap } from "@workspace/react";
 import * as path from "path";
 
 import { useFileTree } from "./hooks/useFileTree";
@@ -127,7 +127,7 @@ export default function CodeEditorPanel() {
     setWorkspaceRoots((prev) => mergeWorkspaceRoots(prev, roots));
 
     if (!workspaceSelectionRef.current) {
-      setWorkspacePath(roots[0].path);
+      setWorkspacePath(roots[0]!.path);
       workspaceSelectionRef.current = true;
     }
   }, [bootstrap.result]);
@@ -223,7 +223,7 @@ export default function CodeEditorPanel() {
       const cleanPath = relativePath.startsWith("/") ? relativePath.slice(1) : relativePath;
       const fullPath = path.join(workspacePath, cleanPath);
       try {
-        const content = await fs.readFile(fullPath, "utf-8");
+        const content = await fs.readFile(fullPath, "utf-8") as string;
         tabs.openTab(fullPath, content);
         // Expand path to the file in tree
         fileTree.expandPath(relativePath);
@@ -341,7 +341,7 @@ export default function CodeEditorPanel() {
         // Need to load the file first
         void (async () => {
           try {
-            const content = await fs.readFile(file, "utf-8");
+            const content = await fs.readFile(file, "utf-8") as string;
             tabs.openTab(file, content);
             // Navigation will happen when editor subscribes
             navigation.navigateTo(line, column);
@@ -387,11 +387,11 @@ export default function CodeEditorPanel() {
             Workspace
           </Text>
           <Select.Root
+            size="1"
             value={workspacePath || undefined}
             onValueChange={handleWorkspaceSelect}
           >
             <Select.Trigger
-              size="1"
               placeholder="Select workspace"
               disabled={workspaceOptions.length === 0}
             />

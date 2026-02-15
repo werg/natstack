@@ -3,7 +3,7 @@
  */
 
 import { useState, useCallback } from "react";
-import { rpc } from "@natstack/runtime";
+import { rpc } from "@workspace/runtime";
 import type { ChildSessionInfo } from "../types";
 
 export function useChildSessions() {

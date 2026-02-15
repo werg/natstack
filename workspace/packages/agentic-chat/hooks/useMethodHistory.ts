@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import type { IncomingMethodResult } from "@natstack/agentic-messaging";
+import type { IncomingMethodResult } from "@workspace/agentic-messaging";
 import type { MethodHistoryEntry } from "../components/MethodHistoryItem";
 import type { ChatMessage } from "../types";
 

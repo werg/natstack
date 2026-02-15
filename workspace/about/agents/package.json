@@ -1,0 +1,17 @@
+{
+  "name": "@workspace-about/agents",
+  "version": "0.1.0",
+  "private": true,
+  "natstack": {
+    "type": "app",
+    "title": "Agents",
+    "shell": true,
+    "hiddenInLauncher": false
+  },
+  "dependencies": {
+    "@workspace/react": "*",
+    "@workspace/runtime": "*",
+    "@workspace/agentic-messaging": "*",
+    "@workspace/core": "*"
+  }
+}

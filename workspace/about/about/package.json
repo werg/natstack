@@ -1,0 +1,16 @@
+{
+  "name": "@workspace-about/about",
+  "version": "0.1.0",
+  "private": true,
+  "natstack": {
+    "type": "app",
+    "title": "About NatStack",
+    "shell": true,
+    "hiddenInLauncher": false
+  },
+  "dependencies": {
+    "@workspace/about-shared": "workspace:*",
+    "@workspace/react": "*",
+    "@workspace/runtime": "*"
+  }
+}

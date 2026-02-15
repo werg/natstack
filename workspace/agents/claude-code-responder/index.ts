@@ -3,8 +3,8 @@
  *
  * AI-powered code assistant using the Claude Agent SDK.
  * Migrated from workspace/workers/claude-code-responder to use:
- * - Agent base class from @natstack/agent-runtime
- * - Pattern helpers from @natstack/agent-patterns
+ * - Agent base class from @workspace/agent-runtime
+ * - Pattern helpers from @workspace/agent-patterns
  *
  * Features:
  * - Claude Agent SDK integration with session resumption
@@ -21,8 +21,8 @@ import { readdir, stat, readFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
 
-import { Agent, runAgent } from "@natstack/agent-runtime";
-import type { EventStreamItem } from "@natstack/agentic-messaging";
+import { Agent, runAgent } from "@workspace/agent-runtime";
+import type { EventStreamItem } from "@workspace/agentic-messaging";
 import {
   jsonSchemaToZodRawShape,
   formatArgsForLog,
@@ -52,20 +52,20 @@ import {
   type AgenticClient,
   type ChatParticipantMetadata,
   type IncomingNewMessage,
-} from "@natstack/agentic-messaging";
-import { prettifyToolName } from "@natstack/agentic-messaging/utils";
-import type { Attachment, Participant } from "@natstack/pubsub";
+} from "@workspace/agentic-messaging";
+import { prettifyToolName } from "@workspace/agentic-messaging/utils";
+import type { Attachment, Participant } from "@workspace/pubsub";
 import {
   recoverSession,
   generateRecoveryReviewUI,
   type PubsubMessageWithMetadata,
-} from "@natstack/agentic-messaging/recovery";
+} from "@workspace/agentic-messaging/recovery";
 import {
   CLAUDE_CODE_PARAMETERS,
   CLAUDE_MODEL_FALLBACKS,
   getRecommendedDefault,
   findNewestInFamily,
-} from "@natstack/agentic-messaging/config";
+} from "@workspace/agentic-messaging/config";
 import { z } from "zod";
 import {
   query,
@@ -89,11 +89,11 @@ import {
   type InterruptController,
   type SettingsManager,
   type MissedContextManager,
-} from "@natstack/agent-patterns";
+} from "@workspace/agent-patterns";
 import {
   createRichTextChatSystemPrompt,
   createRestrictedModeSystemPrompt,
-} from "@natstack/agent-patterns/prompts";
+} from "@workspace/agent-patterns/prompts";
 import {
   createRestrictedTaskTool,
   type ToolDefinitionWithExecute,
@@ -560,7 +560,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
       const recoveryResult = await recoverSession({
         sdkSessionId,
         workingDirectory,
-        sendMessage: async (content, metadata) => {
+        sendMessage: async (content: string, metadata: Record<string, unknown>) => {
           await client.send(content, { metadata, persist: true } as Parameters<typeof client.send>[1]);
         },
         getPubsubMessages: () => {
@@ -575,7 +575,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
             metadata: msg.metadata as PubsubMessageWithMetadata["metadata"],
           }));
         },
-        log: (msg) => this.log.debug(msg),
+        log: (msg: string) => this.log.debug(msg),
       });
 
       if (recoveryResult.recovered) {
@@ -982,7 +982,8 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
             return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
           }
         );
-        mcpTools.push(taskMcpTool);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mcpTools.push(taskMcpTool as any);
 
         pubsubServer = createSdkMcpServer({
           name: "workspace",
@@ -1066,11 +1067,11 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
         ...(() => {
           const servers: Record<string, ReturnType<typeof createSdkMcpServer>> = {};
           if (pubsubServer) {
-            servers.workspace = pubsubServer;
+            servers['workspace'] = pubsubServer;
           }
-          servers.channel = channelToolsServer;
+          servers['channel'] = channelToolsServer;
           if (attachmentsMcpServer) {
-            servers.attachments = attachmentsMcpServer;
+            servers['attachments'] = attachmentsMcpServer;
           }
           return { mcpServers: servers };
         })(),
@@ -1345,8 +1346,8 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
 
             if (resultMessage.usage) {
               await this.contextTracker.recordUsage({
-                inputTokens: resultMessage.usage.input_tokens ?? 0,
-                outputTokens: resultMessage.usage.output_tokens ?? 0,
+                inputTokens: resultMessage.usage['input_tokens'] ?? 0,
+                outputTokens: resultMessage.usage['output_tokens'] ?? 0,
                 costUsd: resultMessage.total_cost_usd,
               });
             }
@@ -1553,7 +1554,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
 
     // Handle ExitPlanMode
     if (toolName === "ExitPlanMode") {
-      let planFilePath = (input as Record<string, unknown>).planFilePath as string | undefined;
+      let planFilePath = (input as Record<string, unknown>)['planFilePath'] as string | undefined;
       if (!planFilePath) {
         planFilePath = await findMostRecentPlanFile() ?? undefined;
       }

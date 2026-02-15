@@ -11,8 +11,9 @@ import {
   TypeCheckWatcher,
   createOpfsFileSource,
   createTypeDefinitionClient,
+  type ReadableFs,
 } from "@natstack/typecheck";
-import { fs, rpc, normalizePath } from "@natstack/runtime";
+import { fs, rpc, normalizePath } from "@workspace/runtime";
 import { resultToDiagnostics, type Diagnostic } from "../types";
 import { useDiagnosticsChannel } from "./useDiagnosticsChannel";
 
@@ -63,7 +64,7 @@ export function useDiagnostics(
     setIsInitializing(true);
     setInitError(null);
 
-    const fileSource = createOpfsFileSource(fs, workspacePath);
+    const fileSource = createOpfsFileSource(fs as unknown as ReadableFs, workspacePath);
 
     // Create type definition client for fetching external package types
     const typeDefClient = createTypeDefinitionClient({

@@ -13,7 +13,7 @@ export { BUFFER_ENCODING_TYPE };
 
 /**
  * Minimal Zod type stubs for type checking.
- * Provides basic type information for @natstack/runtime's z export.
+ * Provides basic type information for @workspace/runtime's z export.
  */
 export const ZOD_TYPE_STUBS = `
 declare module "zod" {
@@ -599,7 +599,7 @@ declare namespace NodeJS {
 
 /**
  * Type definitions for the fs shim.
- * Maps to @natstack/runtime's RuntimeFs interface.
+ * Maps to @workspace/runtime's RuntimeFs interface.
  *
  * Uses shared interfaces from shared-types.ts to avoid duplication.
  */

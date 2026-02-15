@@ -1,0 +1,15 @@
+{
+  "name": "@workspace-about/adblock",
+  "version": "0.1.0",
+  "private": true,
+  "natstack": {
+    "type": "app",
+    "title": "Ad Blocking",
+    "shell": true,
+    "hiddenInLauncher": false
+  },
+  "dependencies": {
+    "@workspace/react": "*",
+    "@workspace/runtime": "*"
+  }
+}

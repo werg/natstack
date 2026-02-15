@@ -10,7 +10,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import type { MethodDefinition } from "@natstack/agentic-messaging";
+import type { MethodDefinition } from "@workspace/agentic-messaging";
 import {
   CheckTypesArgsSchema,
   GetTypeInfoArgsSchema,
@@ -18,8 +18,8 @@ import {
   type CheckTypesArgs,
   type GetTypeInfoArgs,
   type GetCompletionsArgs,
-} from "@natstack/agentic-messaging/tool-schemas";
-import { rpc } from "@natstack/runtime";
+} from "@workspace/agentic-messaging/tool-schemas";
+import { rpc } from "@workspace/runtime";
 
 /** Diagnostic shape returned by the main process RPC */
 interface RpcDiagnostic {

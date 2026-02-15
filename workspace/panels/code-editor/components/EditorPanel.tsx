@@ -2,7 +2,7 @@
  * Monaco editor panel component.
  *
  * Wraps the Monaco editor with lifecycle management and keyboard shortcuts.
- * Uses modern-monaco via @natstack/git-ui for async Monaco initialization.
+ * Uses modern-monaco via @workspace/git-ui for async Monaco initialization.
  */
 
 import { useRef, useEffect, useState } from "react";
@@ -13,7 +13,7 @@ import {
   configureMonacoTypeCheck,
   diagnosticsToMarkers,
   type MonacoNamespace,
-} from "@natstack/git-ui";
+} from "@workspace/git-ui";
 import { getLanguage, type Diagnostic } from "../types";
 import type { UseEditorNavigationResult } from "../hooks/useEditorNavigation";
 

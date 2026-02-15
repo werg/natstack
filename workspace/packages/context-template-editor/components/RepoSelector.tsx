@@ -41,7 +41,7 @@ export function RepoSelector({ onSelect, excludeRepos = [] }: RepoSelectorProps)
   const groupedRepos = useMemo(() => {
     const groups: Record<string, WorkspaceNode[]> = {};
     for (const repo of filteredRepos) {
-      const topDir = repo.path.split("/")[0];
+      const topDir = repo.path.split("/")[0] ?? "";
       if (!groups[topDir]) {
         groups[topDir] = [];
       }

@@ -1,0 +1,35 @@
+{
+  "name": "@workspace/playwright-core",
+  "version": "0.1.0-git.0fec5b5-dirty.b93591516d11",
+  "type": "module",
+  "description": "Browser-compatible CDP client library for orchestrating Chrome sessions",
+  "license": "Apache-2.0",
+  "main": "./dist/playwright-core.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/playwright-core.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "tsc --project tsconfig.build.json --watch"
+  },
+  "dependencies": {
+    "@types/ws": "^8.5.3",
+    "@types/xml2js": "^0.4.9",
+    "chromium-bidi": "^11.0.0",
+    "ws": "^8.17.1",
+    "xml2js": "^0.5.0",
+    "yaml": "2.6.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.0",
+    "typescript": "^5.9.3"
+  }
+}

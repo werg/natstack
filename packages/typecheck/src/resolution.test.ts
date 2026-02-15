@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   resolveExportSubpath,
-  parseNatstackImport,
+  parseWorkspaceImport,
   BUNDLE_CONDITIONS,
   TYPES_CONDITIONS,
   WORKSPACE_CONDITIONS,
@@ -134,31 +134,31 @@ describe("resolveExportSubpath", () => {
   });
 });
 
-describe("parseNatstackImport", () => {
+describe("parseWorkspaceImport", () => {
   it("parses root import", () => {
-    expect(parseNatstackImport("@natstack/runtime")).toEqual({
+    expect(parseWorkspaceImport("@workspace/runtime")).toEqual({
       packageName: "runtime",
       subpath: ".",
     });
   });
 
   it("parses subpath import", () => {
-    expect(parseNatstackImport("@natstack/agentic-messaging/config")).toEqual({
+    expect(parseWorkspaceImport("@workspace/agentic-messaging/config")).toEqual({
       packageName: "agentic-messaging",
       subpath: "./config",
     });
   });
 
   it("parses deep subpath import", () => {
-    expect(parseNatstackImport("@natstack/runtime/panel/fs")).toEqual({
+    expect(parseWorkspaceImport("@workspace/runtime/panel/fs")).toEqual({
       packageName: "runtime",
       subpath: "./panel/fs",
     });
   });
 
   it("returns null for non-natstack import", () => {
-    expect(parseNatstackImport("react")).toBeNull();
-    expect(parseNatstackImport("@scope/pkg")).toBeNull();
-    expect(parseNatstackImport("natstack/runtime")).toBeNull();
+    expect(parseWorkspaceImport("react")).toBeNull();
+    expect(parseWorkspaceImport("@scope/pkg")).toBeNull();
+    expect(parseWorkspaceImport("natstack/runtime")).toBeNull();
   });
 });

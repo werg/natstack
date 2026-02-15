@@ -29,6 +29,7 @@ describe("grep", () => {
           pattern: "hello",
           path: tempDir,
           "-w": true,
+          "-n": true,
           output_mode: "content",
         },
         tempDir
@@ -46,6 +47,7 @@ describe("grep", () => {
           path: tempDir,
           "-w": true,
           "-i": true,
+          "-n": true,
           output_mode: "content",
         },
         tempDir
@@ -68,6 +70,7 @@ describe("grep", () => {
           pattern: "foo.*bar",
           path: path.join(tempDir, "regex.txt"),
           "-F": true,
+          "-n": true,
           output_mode: "content",
         },
         tempDir
@@ -91,6 +94,7 @@ describe("grep", () => {
           pattern: "$100.00",
           path: path.join(tempDir, "special.txt"),
           "-F": true,
+          "-n": true,
           output_mode: "content",
         },
         tempDir
@@ -110,6 +114,7 @@ describe("grep", () => {
           pattern: "array[0]",
           path: path.join(tempDir, "brackets.txt"),
           "-F": true,
+          "-n": true,
           output_mode: "content",
         },
         tempDir
@@ -139,6 +144,7 @@ describe("grep", () => {
           path: path.join(tempDir, "combined.txt"),
           "-F": true,
           "-w": true,
+          "-n": true,
           output_mode: "content",
         },
         tempDir

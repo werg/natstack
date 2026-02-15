@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import { Button, Dialog, Flex, Text } from "@radix-ui/themes";
-import type { MethodAdvertisement } from "@natstack/agentic-messaging";
+import type { MethodAdvertisement } from "@workspace/agentic-messaging";
 import { JsonSchemaForm, validateSchemaForm } from "./JsonSchemaForm";
 
 export interface MethodArgumentsModalProps {

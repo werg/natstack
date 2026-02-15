@@ -1,6 +1,6 @@
 import { Flex, IconButton, Spinner, Text } from "@radix-ui/themes";
 import { StopIcon } from "@radix-ui/react-icons";
-import type { TypingData } from "@natstack/agentic-messaging";
+import type { TypingData } from "@workspace/agentic-messaging";
 
 /**
  * Compact pill for typing indicators.

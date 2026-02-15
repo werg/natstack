@@ -7,7 +7,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import type { MethodDefinition } from "@natstack/agentic-messaging";
+import type { MethodDefinition } from "@workspace/agentic-messaging";
 import { resolvePath } from "./utils";
 import {
   FileReadArgsSchema,
@@ -18,7 +18,7 @@ import {
   type FileWriteArgs,
   type FileEditArgs,
   type RmArgs,
-} from "@natstack/agentic-messaging/tool-schemas";
+} from "@workspace/agentic-messaging/tool-schemas";
 
 const MAX_LINE_LENGTH = 2000;
 const DEFAULT_LIMIT = 2000;

@@ -1,0 +1,23 @@
+{
+  "name": "@workspace/playwright-protocol",
+  "version": "0.1.0-fb77b350dbd3",
+  "type": "module",
+  "description": "Playwright CDP protocol definitions",
+  "license": "Apache-2.0",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "dev": "tsc --project tsconfig.build.json --watch"
+  },
+  "dependencies": {
+    "zod": "^3.25.76"
+  }
+}

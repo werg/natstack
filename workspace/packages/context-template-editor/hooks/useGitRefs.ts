@@ -3,7 +3,7 @@
  */
 
 import { useState, useEffect, useCallback } from "react";
-import { rpc } from "@natstack/runtime";
+import { rpc } from "@workspace/runtime";
 
 export interface GitBranch {
   name: string;

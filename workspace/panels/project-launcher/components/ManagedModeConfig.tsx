@@ -28,7 +28,7 @@ import {
   CubeIcon,
   ExclamationTriangleIcon,
 } from "@radix-ui/react-icons";
-import { rpc } from "@natstack/runtime";
+import { rpc } from "@workspace/runtime";
 import {
   type WorkspaceNode,
   type WorkspaceTree,

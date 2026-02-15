@@ -1,11 +1,11 @@
-# @natstack/rpc
+# @workspace/rpc
 
 Unified RPC bridge for NatStack panels, workers, and shell. This package provides the core communication layer that enables all parts of the application to call methods and emit events using a consistent API.
 
 ## Installation
 
 ```bash
-pnpm add @natstack/rpc
+pnpm add @workspace/rpc
 ```
 
 ## Overview
@@ -19,7 +19,7 @@ The RPC system has three main components:
 ## Quick Start
 
 ```typescript
-import { createRpcBridge, createHandlerRegistry } from "@natstack/rpc";
+import { createRpcBridge, createHandlerRegistry } from "@workspace/rpc";
 
 // 1. Create a transport (platform-specific)
 const registry = createHandlerRegistry();
@@ -155,7 +155,7 @@ interface RpcTransport {
 ### Example: Worker Transport
 
 ```typescript
-import { createHandlerRegistry, type RpcTransport } from "@natstack/rpc";
+import { createHandlerRegistry, type RpcTransport } from "@workspace/rpc";
 
 export function createWorkerTransport(): RpcTransport {
   const registry = createHandlerRegistry({ context: "worker" });
@@ -216,19 +216,19 @@ The RPC system uses three message types:
 
 ### Panels
 
-Panels access the RPC bridge via `@natstack/runtime`:
+Panels access the RPC bridge via `@workspace/runtime`:
 
 ```typescript
-import { rpc } from "@natstack/runtime";
+import { rpc } from "@workspace/runtime";
 await rpc.call("main", "bridge.createChild", spec);
 ```
 
 ### Workers
 
-Workers also import from `@natstack/runtime`:
+Workers also import from `@workspace/runtime`:
 
 ```typescript
-import { rpc } from "@natstack/runtime";
+import { rpc } from "@workspace/runtime";
 await rpc.call("main", "db.open", "mydb");
 ```
 
@@ -237,7 +237,7 @@ await rpc.call("main", "db.open", "mydb");
 The shell renderer uses RPC to communicate with main process services:
 
 ```typescript
-import { rpc } from "@natstack/runtime";
+import { rpc } from "@workspace/runtime";
 
 // Call main process services
 const info = await rpc.call<AppInfo>("main", "app.getInfo");
@@ -252,6 +252,6 @@ rpc.onEvent("event:panel-tree-updated", (fromId, payload) => {
 });
 ```
 
-The shell uses the same `@natstack/runtime` package. Environment detection (`__natstackKind === "shell"`) selects the shell transport which routes calls through `shell-rpc:call`.
+The shell uses the same `@workspace/runtime` package. Environment detection (`__natstackKind === "shell"`) selects the shell transport which routes calls through `shell-rpc:call`.
 
 All three consumers (panels, workers, shell) use identical APIs - the transport implementation handles platform differences.

@@ -25,9 +25,10 @@
     ]
   },
   "dependencies": {
-    "@natstack/runtime": "workspace:*",
-    "@natstack/react": "workspace:*",
-    "@natstack/agentic-messaging": "workspace:*",
+    "@natstack/types": "workspace:*",
+    "@workspace/runtime": "workspace:*",
+    "@workspace/react": "workspace:*",
+    "@workspace/agentic-messaging": "workspace:*",
     "@workspace/context-template-editor": "workspace:*",
     "@workspace/agentic-components": "workspace:*",
     "@workspace-panels/project-panel": "workspace:*",

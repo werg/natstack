@@ -8,7 +8,7 @@ import * as path from "path";
 import { resolveExportSubpath, TYPES_CONDITIONS } from "../resolution.js";
 
 /**
- * Discover @natstack/* packages by scanning the packages directory.
+ * Discover @workspace/* packages by scanning the packages directory.
  * Returns directory names that contain a package.json.
  */
 async function discoverPackages(packagesDir: string): Promise<string[]> {
@@ -48,7 +48,7 @@ interface PackageJson {
 const natstackTypesCache = new Map<string, Record<string, NatstackPackageTypes>>();
 
 /**
- * Get @natstack/* package types from the pre-warmed cache.
+ * Get @workspace/* package types from the pre-warmed cache.
  *
  * IMPORTANT: Call preloadNatstackTypesAsync() at app startup before using this.
  * If the cache is cold, returns empty object and logs a warning.
@@ -74,13 +74,13 @@ export function clearNatstackTypesCache(): void {
 }
 
 /**
- * Get types for a single @natstack/* package from the pre-warmed cache.
+ * Get types for a single @workspace/* package from the pre-warmed cache.
  *
  * IMPORTANT: Call preloadNatstackTypesAsync() at app startup before using this.
  */
 export function loadSinglePackageTypes(packagesDir: string, packageName: string): NatstackPackageTypes | null {
   const allTypes = loadNatstackPackageTypes(packagesDir);
-  const fullName = packageName.startsWith("@natstack/") ? packageName : `@natstack/${packageName}`;
+  const fullName = packageName.startsWith("@workspace/") ? packageName : `@workspace/${packageName}`;
   return allTypes[fullName] ?? null;
 }
 
@@ -107,7 +107,7 @@ export async function preloadNatstackTypesAsync(packagesDir: string): Promise<vo
   const result: Record<string, NatstackPackageTypes> = {};
   for (const { pkgName, types } of loadResults) {
     if (types) {
-      result[`@natstack/${pkgName}`] = types;
+      result[`@workspace/${pkgName}`] = types;
     }
   }
 

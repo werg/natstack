@@ -5,18 +5,18 @@
  * Listens for user messages on a channel and responds using AI streaming.
  *
  * Migrated from workspace/workers/pubsub-chat-responder to use:
- * - Agent base class from @natstack/agent-runtime
- * - Pattern helpers from @natstack/agent-patterns
+ * - Agent base class from @workspace/agent-runtime
+ * - Pattern helpers from @workspace/agent-patterns
  */
 
-import { Agent, runAgent } from "@natstack/agent-runtime";
+import { Agent, runAgent } from "@workspace/agent-runtime";
 import type {
   EventStreamItem,
   AgenticClient,
   ChatParticipantMetadata,
   IncomingNewMessage,
   ContextWindowUsage,
-} from "@natstack/agentic-messaging";
+} from "@workspace/agentic-messaging";
 import {
   createInterruptHandler,
   createPauseMethodDefinition,
@@ -30,13 +30,13 @@ import {
   createQueuePositionText,
   cleanupQueuedTypingTrackers,
   drainForInterleave,
-} from "@natstack/agentic-messaging";
+} from "@workspace/agentic-messaging";
 import {
   AI_RESPONDER_PARAMETERS,
   AI_ROLE_FALLBACKS,
-} from "@natstack/agentic-messaging/config";
-import type { Attachment } from "@natstack/pubsub";
-import type { Message, ToolResultPart } from "@natstack/ai";
+} from "@workspace/agentic-messaging/config";
+import type { Attachment } from "@workspace/pubsub";
+import type { Message, ToolResultPart } from "@natstack/types";
 import {
   createMessageQueue,
   createInterruptController,
@@ -53,11 +53,11 @@ import {
   type InterruptController,
   type SettingsManager,
   type MissedContextManager,
-} from "@natstack/agent-patterns";
+} from "@workspace/agent-patterns";
 import {
   createRestrictedModeSystemPrompt,
-} from "@natstack/agent-patterns/prompts";
-import { ai } from "@natstack/ai";
+} from "@workspace/agent-patterns/prompts";
+import { ai } from "@workspace/ai";
 import { z } from "zod";
 
 /**
@@ -86,6 +86,7 @@ interface PubsubChatSettings {
   maxSteps: number;
   thinkingBudget: number;
   hasShownApprovalPrompt: boolean;
+  [key: string]: string | number | boolean | undefined;
 }
 
 const DEFAULT_SETTINGS: PubsubChatSettings = {
@@ -105,6 +106,7 @@ const DEFAULT_SETTINGS: PubsubChatSettings = {
 interface PubsubChatState {
   // Currently empty - all user preferences handled via SettingsManager
   // Runtime manages checkpoint tracking separately
+  [key: string]: unknown;
 }
 
 /**
@@ -122,10 +124,10 @@ interface PubsubChatQueuedMessage {
 class PubsubChatResponder extends Agent<PubsubChatState> {
   state: PubsubChatState = {};
 
-  // Pattern helpers from @natstack/agent-patterns
+  // Pattern helpers from @workspace/agent-patterns
   private queue!: MessageQueue<IncomingNewMessage>;
   private interrupt!: InterruptController;
-  private settings!: SettingsManager<PubsubChatSettings>;
+  private settingsMgr!: SettingsManager<PubsubChatSettings>;
   private missedContext!: MissedContextManager;
   private contextTracker!: ReturnType<typeof createContextTracker>;
 
@@ -140,7 +142,7 @@ class PubsubChatResponder extends Agent<PubsubChatState> {
    * Use canonical accessors: this.config, this.agentId, etc.
    */
   getConnectOptions() {
-    const config = this.config as AgentConfig;
+    const config = this.config as unknown as AgentConfig;
 
     return {
       name: "AI Responder",
@@ -176,7 +178,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
           parameters: z.object({
             title: z.string().max(200).describe("Brief title for this conversation (1-5 words)"),
           }),
-          execute: async ({ title }) => {
+          execute: async ({ title }: { title: string }) => {
             await this.client.setChannelTitle(title);
             this.log.info(`Set channel title to: ${title}`);
             return { success: true, title };
@@ -201,11 +203,11 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
    * Uses canonical accessors: this.client, this.config, this.log
    */
   async onWake(): Promise<void> {
-    const config = this.config as AgentConfig;
+    const config = this.config as unknown as AgentConfig;
 
     // Initialize settings manager with 3-way merge
     // Note: this.client is now available (connected after getConnectOptions)
-    this.settings = createSettingsManager<PubsubChatSettings>({
+    this.settingsMgr = createSettingsManager<PubsubChatSettings>({
       client: this.client as AgenticClient<ChatParticipantMetadata>,
       defaults: DEFAULT_SETTINGS,
       initConfig: {
@@ -220,7 +222,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
 
     // Load settings with error handling - fall back to defaults on failure
     try {
-      await this.settings.load();
+      await this.settingsMgr.load();
     } catch (err) {
       this.log.warn("Failed to load settings from pubsub session, using defaults:", err);
       // Settings manager already has defaults, so we can continue
@@ -283,7 +285,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     });
 
     // Initialize context tracker for token usage monitoring
-    const currentSettings = this.settings.get();
+    const currentSettings = this.settingsMgr.get();
     this.contextTracker = createContextTracker({
       model: currentSettings.modelRole,
       log: (msg) => this.log.debug(msg),
@@ -294,11 +296,11 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
           : undefined;
 
         const metadata: ChatParticipantMetadata = {
+          ...currentMetadata,
           name: "AI Responder",
-          type: "ai-responder",
+          type: "ai-responder" as const,
           handle: this.handle,
           agentTypeId: this.agentId,
-          ...currentMetadata,
           contextUsage: usage,
         };
 
@@ -313,7 +315,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     this.log.info("PubsubChatResponder started", {
       channel: this.channel,
       handle: this.handle,
-      settings: this.settings.get(),
+      settings: this.settingsMgr.get(),
     });
   }
 
@@ -405,7 +407,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     const handle = this.client.callMethod(panel.id, "feedback_form", {
       title: "AI Responder Settings",
       fields,
-      values: this.settings.get(),
+      values: this.settingsMgr.get(),
     });
 
     const result = await handle.result;
@@ -423,10 +425,10 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
 
     // Apply new settings
     const newSettings = feedbackResult.value as Partial<PubsubChatSettings>;
-    await this.settings.update(newSettings);
-    this.log.info(`Settings updated: ${JSON.stringify(this.settings.get())}`);
+    await this.settingsMgr.update(newSettings);
+    this.log.info(`Settings updated: ${JSON.stringify(this.settingsMgr.get())}`);
 
-    return { success: true, settings: this.settings.get() };
+    return { success: true, settings: this.settingsMgr.get() };
   }
 
   /**
@@ -442,7 +444,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       this.queuedMessages.delete(incoming.id);
     }
 
-    const settings = this.settings.get();
+    const settings = this.settingsMgr.get();
 
     // Build prompt with missed context if available
     let prompt = String(incoming.content);
@@ -522,8 +524,8 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       const userContent = imageAttachments.length > 0
         ? [
             ...imageAttachments.map((a) => ({
-              type: "image" as const,
-              image: uint8ArrayToBase64(a.data),
+              type: "file" as const,
+              data: uint8ArrayToBase64(a.data),
               mimeType: a.mimeType,
             })),
             { type: "text" as const, text: prompt },
@@ -556,11 +558,11 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       // Create approval gate for deferred tool execution
       const approvalGate = createCanUseToolGate({
         byCanonical: registry.byCanonical,
-        getApprovalLevel: () => this.settings.get().autonomyLevel ?? 0,
-        hasShownApprovalPrompt: !!this.settings.get().hasShownApprovalPrompt,
+        getApprovalLevel: () => this.settingsMgr.get().autonomyLevel ?? 0,
+        hasShownApprovalPrompt: !!this.settingsMgr.get().hasShownApprovalPrompt,
         showPermissionPrompt: async (_tool, input) => {
           if (!panel) return { allow: false };
-          const currentSettings = this.settings.get();
+          const currentSettings = this.settingsMgr.get();
           return showPermissionPrompt(
             this.client as AgenticClient<ChatParticipantMetadata>,
             panel.id,
@@ -573,10 +575,10 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
           );
         },
         onAlwaysAllow: () => {
-          void this.settings.update({ autonomyLevel: 2 });
+          void this.settingsMgr.update({ autonomyLevel: 2 });
         },
         onFirstPrompt: () => {
-          void this.settings.update({ hasShownApprovalPrompt: true });
+          void this.settingsMgr.update({ hasShownApprovalPrompt: true });
         },
       });
 
@@ -618,6 +620,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         const autoToolResults: ToolResultPart[] = [];
         const pendingApprovals: Array<{ toolCallId: string; toolName: string; args: unknown }> = [];
         let finishReason: string = "stop";
+        let streamUsage: { promptTokens: number; completionTokens: number } | undefined;
 
         for await (const event of stream) {
           if (interruptHandler.isPaused()) {
@@ -690,11 +693,16 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
             case "step-finish":
               finishReason = event.finishReason;
               break;
+
+            case "finish":
+              if ("usage" in event && event.usage) {
+                streamUsage = event.usage;
+              }
+              break;
           }
         }
 
         // Record token usage
-        const streamUsage = await stream.usage;
         if (streamUsage) {
           await this.contextTracker.recordUsage({
             inputTokens: streamUsage.promptTokens ?? 0,
@@ -792,12 +800,12 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
           } else {
             // Merge all pending messages into a single user message to maintain
             // role alternation (consecutive user messages are rejected by some providers)
-            const allParts: Array<{ type: "image"; image: string; mimeType: string } | { type: "text"; text: string }> = [];
+            const allParts: Array<{ type: "file"; data: string; mimeType: string } | { type: "text"; text: string }> = [];
             for (const p of pending) {
               const pAttachments = (p as { attachments?: Attachment[] }).attachments;
               const pImages = filterImageAttachments(pAttachments);
               for (const a of pImages) {
-                allParts.push({ type: "image" as const, image: uint8ArrayToBase64(a.data), mimeType: a.mimeType });
+                allParts.push({ type: "file" as const, data: uint8ArrayToBase64(a.data), mimeType: a.mimeType });
               }
               allParts.push({ type: "text" as const, text: String(p.content) });
             }

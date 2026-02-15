@@ -1,0 +1,18 @@
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "declaration": true,
+    "declarationMap": true,
+    "composite": true,
+    "baseUrl": ".",
+    "paths": {
+      "@natstack/rpc": ["../../../packages/rpc/src/index.ts"],
+      "@natstack/git": ["../../../packages/git/src/index.ts"],
+      "@natstack/types": ["../../../packages/types/src/index.ts"]
+    }
+  },
+  "include": ["src"]
+}
+
