@@ -213,6 +213,16 @@ Each panel gets:
 - **OPFS filesystem** via ZenFS (works in Chrome, Safari, Firefox)
 - **Full service access** — AI, git, database, build, pubsub
 
+### Browser Extensions
+
+NatStack ships Chrome and Firefox extensions that connect to the headless
+server and automatically manage browser tabs for panels. The extensions
+handle SSE lifecycle events, context pre-warming, and subdomain-based
+origin isolation.
+
+See **[BROWSER_EXTENSIONS.md](BROWSER_EXTENSIONS.md)** for installation
+instructions, configuration, and the full connection flow.
+
 ### Headless Agents
 
 Agents run as headless Node.js processes managed by AgentHost. They work

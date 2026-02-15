@@ -54,6 +54,7 @@ import { startMemoryMonitor } from "./memoryMonitor.js";
 import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
 import { createServerClient, type ServerClient } from "./serverClient.js";
 import type { ServerInfo } from "./serverInfo.js";
+import { getServerInfo, setServerInfo } from "./serverInfoState.js";
 
 // =============================================================================
 // Early Diagnostics (enabled via NATSTACK_DEBUG_PATHS=1)
@@ -121,7 +122,6 @@ let panelManager: PanelManager | null = null;
 let rpcServer: RpcServer | null = null;
 let serverProcessManager: ServerProcessManager | null = null;
 let serverClient: ServerClient | null = null;
-let serverInfo: ServerInfo | null = null;
 let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
 let isCleaningUp = false; // Prevent re-entry in will-quit handler
@@ -132,10 +132,8 @@ function requireServerClient(): ServerClient {
   return serverClient;
 }
 
-/** Get the current ServerInfo (null in chooser mode or before server init) */
-export function getServerInfo(): ServerInfo | null {
-  return serverInfo;
-}
+// Re-export for any remaining consumers (prefer importing from serverInfoState directly)
+export { getServerInfo };
 
 // =============================================================================
 // Main Mode Initialization
@@ -381,7 +379,8 @@ app.on("ready", async () => {
       setShellServicesServerClient(serverClient);
 
       // Create panel manager with server info
-      serverInfo = buildServerInfo(ports);
+      const serverInfo = buildServerInfo(ports);
+      setServerInfo(serverInfo);
       panelManager = new PanelManager(serverInfo);
       setGlobalPanelManager(panelManager);
 
@@ -487,7 +486,7 @@ app.on("ready", async () => {
         );
         cdpServer = null;
       }
-      serverInfo = null;
+      setServerInfo(null);
 
       // Reset shell service refs
       setShellServicesServerClient(null);

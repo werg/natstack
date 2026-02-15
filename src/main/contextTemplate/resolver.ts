@@ -21,7 +21,7 @@ import { CircularExtendsError } from "./types.js";
 import { parseGitSpec, loadTemplateFromDir, parseTemplateYaml, TEMPLATE_FILE_NAME } from "./parser.js";
 import { getActiveWorkspace } from "../paths.js";
 import { isGitHubPath } from "../githubCloner.js";
-import { getServerInfo } from "../index.js";
+import { getServerInfo } from "../serverInfoState.js";
 
 const execFileAsync = promisify(execFile);
 
