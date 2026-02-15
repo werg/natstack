@@ -545,6 +545,7 @@ function createPathShimPlugin(resolveDir: string): esbuild.Plugin {
         () => ({
           contents: `export { basename, dirname, extname, format, isAbsolute, join, normalize, parse, relative, resolve, sep, delimiter, toNamespacedPath } from "pathe";
 import * as pathe from "pathe";
+export const posix = pathe;
 export default pathe;`,
           loader: "js",
           resolveDir,
@@ -857,6 +858,7 @@ async function buildPanel(
       entryNames: "[name]",
       chunkNames: "chunk-[hash]",
       external: externalSpecifiers,
+      tsconfigRaw: { compilerOptions: { jsx: "react-jsx" } },
     });
 
     if (isVerboseBuildLogEnabled() && result.metafile) {
@@ -1004,6 +1006,7 @@ async function buildAgent(
       plugins,
       nodePaths,
       external: KNOWN_NATIVE_EXTERNALS,
+      tsconfigRaw: { compilerOptions: {} },
     });
 
     const bundlePath = path.join(outdir, "bundle.mjs");
