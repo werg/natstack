@@ -394,6 +394,18 @@ export class PanelHttpServer {
   }
 
   /**
+   * Update a stored panel's config. Used when stateArgs change so that
+   * a page reload picks up the latest values (the injected globals are
+   * generated from the stored config at serve time).
+   */
+  updatePanelConfig(panelId: string, config: PanelConfig): void {
+    const panel = this.panels.get(panelId);
+    if (panel) {
+      panel.config = config;
+    }
+  }
+
+  /**
    * Push a lifecycle event to all connected SSE clients.
    */
   broadcastEvent(event: PanelLifecycleEvent): void {

@@ -14,8 +14,8 @@
 // State
 // ---------------------------------------------------------------------------
 
-/** @type {EventSource | null} */
-let eventSource = null;
+/** @type {AbortController | null} */
+let sseAbort = null;
 
 /** @type {Map<string, number>} panelId → tabId */
 const panelTabs = new Map();
@@ -68,10 +68,13 @@ async function connect() {
   const url = `${config.serverUrl}/api/events`;
   console.log(`[NatStack] Connecting to SSE: ${url}`);
 
+  sseAbort = new AbortController();
+
   try {
     // EventSource doesn't support custom headers, so we use fetch + ReadableStream
     const response = await fetch(url, {
       headers: { "Authorization": `Bearer ${config.managementToken}` },
+      signal: sseAbort.signal,
     });
 
     if (!response.ok) {
@@ -107,6 +110,7 @@ async function connect() {
       }
     }
   } catch (err) {
+    if (err.name === "AbortError") return;
     console.error("[NatStack] SSE connection error:", err);
   }
 
@@ -116,9 +120,9 @@ async function connect() {
 }
 
 function disconnect() {
-  if (eventSource) {
-    eventSource.close();
-    eventSource = null;
+  if (sseAbort) {
+    sseAbort.abort();
+    sseAbort = null;
   }
   connected = false;
   if (reconnectTimer) {

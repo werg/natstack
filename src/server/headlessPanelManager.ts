@@ -100,6 +100,8 @@ interface CreatePanelDeps {
   gitBaseUrl: string;
   /** Get a git token scoped to a panel */
   getGitTokenForPanel: (panelId: string) => string;
+  /** Revoke a git token when a panel is closed */
+  revokeGitToken?: (panelId: string) => void;
   /** PubSub server port */
   pubsubPort: number;
   /** Send a WS event to a connected panel (for reactive updates) */
@@ -228,6 +230,26 @@ export class HeadlessPanelManager {
     // Create RPC token for this panel
     const rpcToken = this.deps.createToken(panelId, "panel");
 
+    // ── StateArgs validation + defaults ──
+    // Match Electron's creation-time behavior: validate against manifest
+    // schema and apply defaults (e.g. boolean fields default to false).
+    let validatedStateArgs: Record<string, unknown> = stateArgs ?? {};
+    try {
+      const manifest = loadPanelManifest(source);
+      if (stateArgs || manifest.stateArgs) {
+        const validation = validateStateArgs(stateArgs ?? {}, manifest.stateArgs);
+        if (!validation.success) {
+          throw new Error(`Invalid stateArgs for ${source}: ${validation.error}`);
+        }
+        validatedStateArgs = validation.data!;
+      }
+    } catch (err) {
+      // If manifest can't be loaded (dynamic source), accept raw stateArgs
+      if (err instanceof Error && err.message.startsWith("Invalid stateArgs")) {
+        throw err;
+      }
+    }
+
     const panel: HeadlessPanel = {
       id: panelId,
       parentId: parent?.id ?? null,
@@ -238,7 +260,7 @@ export class HeadlessPanelManager {
       specHashShort,
       specHash,
       title: source.split("/").pop() ?? source,
-      stateArgs: stateArgs ?? {},
+      stateArgs: validatedStateArgs,
       repoArgs: options?.repoArgs,
       env: options?.env ?? {},
       children: [],
@@ -304,10 +326,11 @@ export class HeadlessPanelManager {
       }
     }
 
-    // Revoke token
+    // Revoke tokens (RPC + git)
     if (panel.rpcToken) {
       this.deps.revokeToken(panelId);
     }
+    this.deps.revokeGitToken?.(panelId);
 
     // Remove from HTTP server
     if (this.deps.panelHttpServer) {
@@ -451,6 +474,11 @@ export class HeadlessPanelManager {
 
     panel.stateArgs = validation.data!;
 
+    // Update stored config in HTTP server so page reloads get fresh stateArgs
+    if (this.deps.panelHttpServer) {
+      this.deps.panelHttpServer.updatePanelConfig(panelId, this.buildPanelConfig(panel));
+    }
+
     // Broadcast to panel for reactive update (mirrors Electron's sendToClient)
     if (this.deps.sendToClient) {
       this.deps.sendToClient(panelId, {
@@ -501,6 +529,13 @@ export class HeadlessPanelManager {
     try {
       const buildResult = await this.deps.getBuild(panel.source);
 
+      // Guard against build-close race: if the panel was closed while the
+      // build was in-flight, don't resurrect it as a stored panel.
+      if (!this.panels.has(panel.id)) {
+        log.info(`[Panel] Build completed for ${panel.id} but panel was already closed — discarding`);
+        return;
+      }
+
       panel.buildState = "built";
       panel.title = buildResult.metadata.name ?? panel.title;
 
@@ -523,6 +558,12 @@ export class HeadlessPanelManager {
         log.info(`[Panel] Built (no HTTP serving): ${panel.id}`);
       }
     } catch (err) {
+      // Don't emit errors for panels closed during build
+      if (!this.panels.has(panel.id)) {
+        log.info(`[Panel] Build failed for ${panel.id} but panel was already closed — suppressing`);
+        return;
+      }
+
       panel.buildState = "failed";
       panel.buildError = err instanceof Error ? err.message : String(err);
 
