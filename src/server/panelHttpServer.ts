@@ -100,6 +100,29 @@ const ASSET_MIME_TYPES: Record<string, string> = {
 };
 
 // ---------------------------------------------------------------------------
+// Subdomain helpers — origin isolation via *.localhost
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a contextId to a valid DNS subdomain label.
+ *
+ * Modern browsers (Chrome 73+, Firefox 84+) resolve *.localhost → 127.0.0.1
+ * per the WHATWG URL Standard, giving each subdomain a distinct origin. This
+ * means panels on different contexts get browser-enforced isolation of
+ * localStorage, IndexedDB, OPFS, cookies, and service workers — matching
+ * Electron's persist:{contextId} partition behaviour.
+ */
+export function contextIdToSubdomain(contextId: string): string {
+  const label = contextId
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 63);
+  return label || "default";
+}
+
+// ---------------------------------------------------------------------------
 // PanelHttpServer
 // ---------------------------------------------------------------------------
 
@@ -132,6 +155,29 @@ export class PanelHttpServer {
   }
 
   /**
+   * Get the origin URL for a panel's context.
+   * Uses {contextSubdomain}.localhost:{port} so the browser treats each
+   * context as a separate origin.
+   */
+  private getPanelOrigin(contextId: string): string {
+    const subdomain = contextIdToSubdomain(contextId);
+    return `http://${subdomain}.localhost:${this.port}`;
+  }
+
+  /**
+   * Get the full authenticated URL for a panel.
+   * Returns null if the panel is not stored or the server is not running.
+   */
+  getPanelUrl(panelId: string): string | null {
+    const panel = this.panels.get(panelId);
+    if (!panel || !this.port) return null;
+    const encodedId = encodeURIComponent(panelId);
+    const encodedToken = encodeURIComponent(panel.httpToken);
+    const origin = this.getPanelOrigin(panel.config.contextId);
+    return `${origin}/panels/${encodedId}/?token=${encodedToken}`;
+  }
+
+  /**
    * Store a built panel for HTTP serving.
    */
   storePanel(panelId: string, buildResult: BuildResult, config: PanelConfig): void {
@@ -152,7 +198,8 @@ export class PanelHttpServer {
       httpToken,
     });
 
-    log.info(`Stored panel: ${panelId} (token: ${httpToken.slice(0, 8)}...)`);
+    const subdomain = contextIdToSubdomain(config.contextId);
+    log.info(`Stored panel: ${panelId} (origin: ${subdomain}.localhost, token: ${httpToken.slice(0, 8)}...)`);
   }
 
   /**
@@ -338,6 +385,7 @@ export class PanelHttpServer {
    */
   private buildGlobalsScript(config: PanelConfig): string {
     const parentId = config.parentId !== null ? JSON.stringify(config.parentId) : "null";
+    const subdomain = contextIdToSubdomain(config.contextId);
     const gitConfig = JSON.stringify({
       serverUrl: config.gitBaseUrl,
       token: config.gitToken,
@@ -345,7 +393,7 @@ export class PanelHttpServer {
       resolvedRepoArgs: config.resolvedRepoArgs,
     });
     const pubsubConfig = JSON.stringify({
-      serverUrl: `ws://${this.host}:${config.pubsubPort}`,
+      serverUrl: `ws://${subdomain}.localhost:${config.pubsubPort}`,
       token: config.rpcToken,
     });
     const env = JSON.stringify({
@@ -358,7 +406,7 @@ export class PanelHttpServer {
         resolvedRepoArgs: config.resolvedRepoArgs,
       }),
       __PUBSUB_CONFIG: JSON.stringify({
-        serverUrl: `ws://${this.host}:${config.pubsubPort}`,
+        serverUrl: `ws://${subdomain}.localhost:${config.pubsubPort}`,
         token: config.rpcToken,
       }),
     });
@@ -399,8 +447,10 @@ export class PanelHttpServer {
     const panelEntries = Array.from(this.panels.entries()).map(([id, panel]) => {
       const encodedId = encodeURIComponent(id);
       const encodedToken = encodeURIComponent(panel.httpToken);
-      const url = `/panels/${encodedId}/?token=${encodedToken}`;
-      return `<li><a href="${url}">${escapeHtml(panel.title)} <code>${escapeHtml(id)}</code></a></li>`;
+      const origin = this.getPanelOrigin(panel.config.contextId);
+      const url = `${origin}/panels/${encodedId}/?token=${encodedToken}`;
+      const subdomain = contextIdToSubdomain(panel.config.contextId);
+      return `<li><a href="${url}">${escapeHtml(panel.title)} <code>${escapeHtml(id)}</code></a> <small>(${escapeHtml(subdomain)}.localhost)</small></li>`;
     });
 
     const html = `<!DOCTYPE html>
