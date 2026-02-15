@@ -59,6 +59,10 @@ export interface PanelConfig {
   gitToken: string;
   pubsubPort: number;
   stateArgs: Record<string, unknown>;
+  /** Panel's source repo path for git bootstrap (e.g., "panels/my-panel") */
+  sourceRepo: string;
+  /** Resolved repo args provided by parent at createChild time */
+  resolvedRepoArgs: Record<string, unknown>;
   env: Record<string, string>;
   theme: "light" | "dark";
 }
@@ -337,8 +341,8 @@ export class PanelHttpServer {
     const gitConfig = JSON.stringify({
       serverUrl: config.gitBaseUrl,
       token: config.gitToken,
-      sourceRepo: "",
-      resolvedRepoArgs: {},
+      sourceRepo: config.sourceRepo,
+      resolvedRepoArgs: config.resolvedRepoArgs,
     });
     const pubsubConfig = JSON.stringify({
       serverUrl: `ws://${this.host}:${config.pubsubPort}`,
@@ -350,8 +354,8 @@ export class PanelHttpServer {
       __GIT_CONFIG: JSON.stringify({
         serverUrl: config.gitBaseUrl,
         token: config.gitToken,
-        sourceRepo: "",
-        resolvedRepoArgs: {},
+        sourceRepo: config.sourceRepo,
+        resolvedRepoArgs: config.resolvedRepoArgs,
       }),
       __PUBSUB_CONFIG: JSON.stringify({
         serverUrl: `ws://${this.host}:${config.pubsubPort}`,

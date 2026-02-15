@@ -295,6 +295,7 @@ async function main() {
       gitBaseUrl: `http://127.0.0.1:${handle.gitServer.getPort()}`,
       getGitTokenForPanel: (panelId) => handle.gitServer.getTokenForPanel(panelId),
       pubsubPort: handle.pubsubPort,
+      sendToClient: (callerId, msg) => rpcServer.sendToClient(callerId, msg),
     });
 
     // Register bridge service for headless panel lifecycle

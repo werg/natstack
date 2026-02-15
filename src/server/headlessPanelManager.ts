@@ -18,10 +18,13 @@
  * later using the same schema as src/main/db/panelPersistence.ts.
  */
 
-import type { PanelType, ChildCreationResult, CreateChildOptions } from "../shared/types.js";
+import type { PanelType, ChildCreationResult, CreateChildOptions, RepoArgSpec } from "../shared/types.js";
 import type { BuildResult } from "./buildV2/buildStore.js";
 import type { PanelHttpServer } from "./panelHttpServer.js";
+import type { WsServerMessage } from "../shared/ws/protocol.js";
 import { computePanelId } from "../shared/panelIdUtils.js";
+import { loadPanelManifest } from "../main/panelTypes.js";
+import { validateStateArgs } from "../main/stateArgsValidator.js";
 import { createDevLogger } from "../main/devLog.js";
 
 const log = createDevLogger("HeadlessPanelManager");
@@ -38,6 +41,7 @@ export interface HeadlessPanel {
   contextId: string;
   title: string;
   stateArgs: Record<string, unknown>;
+  repoArgs?: Record<string, RepoArgSpec>;
   env: Record<string, string>;
   children: string[];
   /** RPC auth token for this panel */
@@ -78,6 +82,8 @@ interface CreatePanelDeps {
   getGitTokenForPanel: (panelId: string) => string;
   /** PubSub server port */
   pubsubPort: number;
+  /** Send a WS event to a connected panel (for reactive updates) */
+  sendToClient?: (callerId: string, msg: WsServerMessage) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +140,7 @@ export class HeadlessPanelManager {
       contextId,
       title: source.split("/").pop() ?? source,
       stateArgs: stateArgs ?? {},
+      repoArgs: options?.repoArgs,
       env: options?.env ?? {},
       children: [],
       rpcToken,
@@ -273,10 +280,39 @@ export class HeadlessPanelManager {
   // State args
   // =========================================================================
 
-  handleSetStateArgs(panelId: string, updates: Record<string, unknown>): void {
+  async handleSetStateArgs(panelId: string, updates: Record<string, unknown>): Promise<Record<string, unknown>> {
     const panel = this.panels.get(panelId);
     if (!panel) throw new Error(`Panel not found: ${panelId}`);
-    panel.stateArgs = { ...panel.stateArgs, ...updates };
+
+    // Load manifest to get stateArgs schema (matches Electron behavior)
+    let schema;
+    try {
+      const manifest = loadPanelManifest(panel.source);
+      schema = manifest.stateArgs;
+    } catch {
+      // If manifest can't be loaded (e.g. dynamic source), skip validation
+    }
+
+    const merged = { ...panel.stateArgs, ...updates };
+
+    // Validate merged args against schema
+    const validation = validateStateArgs(merged, schema);
+    if (!validation.success) {
+      throw new Error(`Invalid stateArgs: ${validation.error}`);
+    }
+
+    panel.stateArgs = validation.data!;
+
+    // Broadcast to panel for reactive update (mirrors Electron's sendToClient)
+    if (this.deps.sendToClient) {
+      this.deps.sendToClient(panelId, {
+        type: "ws:event",
+        event: "stateArgs:updated",
+        payload: validation.data,
+      });
+    }
+
+    return validation.data!;
   }
 
   // =========================================================================
@@ -309,6 +345,8 @@ export class HeadlessPanelManager {
           gitToken,
           pubsubPort: this.deps.pubsubPort,
           stateArgs: panel.stateArgs,
+          sourceRepo: panel.source,
+          resolvedRepoArgs: panel.repoArgs ?? {},
           env: panel.env,
           theme: "dark",
         });
