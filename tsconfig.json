@@ -64,6 +64,9 @@
       "@workspace/about-shared/serviceAdapters": ["workspace/packages/about-shared/serviceAdapters.ts"],
       "@workspace/about-shared/types": ["workspace/packages/about-shared/types.ts"],
       "@workspace/tool-ui": ["workspace/packages/tool-ui/src/index.ts"],
+      "@workspace/git-ui": ["workspace/packages/git-ui/src/index.ts"],
+      "@workspace/git-ui/constants": ["workspace/packages/git-ui/src/constants.ts"],
+      "@workspace/git-ui/monaco": ["workspace/packages/git-ui/src/monaco.ts"],
       "@workspace-panels/project-panel/types": ["workspace/panels/project-panel/types.ts"],
       "modern-monaco/editor-core": ["workspace/packages/git-ui/node_modules/modern-monaco/types/monaco.d.ts"]
     }
