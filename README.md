@@ -219,8 +219,3 @@ Agents run as headless Node.js processes managed by AgentHost. They work
 identically in both Electron and standalone mode — they connect to the RPC
 server with server-kind tokens and communicate via PubSub channels.
 
-### Architecture
-
-For detailed design documentation including security considerations, browser
-authentication model, and future plans (web shell, remote workers), see
-[docs/architecture/headless-service-architecture.md](docs/architecture/headless-service-architecture.md).
