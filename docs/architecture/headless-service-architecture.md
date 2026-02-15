@@ -149,14 +149,38 @@ Each `HeadlessPanel` tracks:
 - Source (package path), state args
 - Build status (pending, built, failed)
 - Auth token (for RPC and panel content serving)
-- Type: `app` | `worker`
+- Type: `PanelType` (`"app" | "browser" | "shell"` from `src/shared/types.ts`)
+
+**Type alignment:** `HeadlessPanel.type` uses the canonical `PanelType` from
+`src/shared/types.ts`. The headless manager only **creates** `app`-type panels
+(browser and shell types are GUI-specific), but it tracks whatever types exist
+in the tree for query compatibility.
+
+Workers (agents) are **not panels**. They are managed separately by `AgentHost`
+as Node.js child processes with their own lifecycle. Workers connect to the RPC
+server with `callerKind: "server"` tokens, not panel tokens. This separation is
+intentional — workers are compute processes, panels are UI contexts.
 
 For `app` panels in headless mode: the panel is **built but not rendered**.
 The built artifacts are stored and made available via the HTTP panel server
 (see section 4). A browser client can connect and display it.
 
-For `worker` panels: these already run as Node.js child processes via
-`AgentHost`. No change needed.
+### 3.4.1 Panel Tree Persistence
+
+**V1: In-memory only (acceptable for initial headless deployment).**
+
+The headless panel tree is ephemeral — lost on server restart. This is
+acceptable for v1 because:
+- Panels are cheap to recreate (build cache means instant rebuilds)
+- Browser clients reconnect and re-request their panel
+- Agents re-register with AgentHost on restart
+
+**V2 (future): SQLite persistence.**
+
+The Electron `PanelManager` already persists panel tree state to SQLite via
+`src/main/db/panelPersistence.ts`. The headless server can adopt the same
+schema when restart recovery becomes a requirement. The `db` service and
+`DatabaseManager` are already available in the server.
 
 ### 3.5 Headless Bridge Service
 
@@ -291,10 +315,10 @@ something similar with `injectBundleIntoHtml`. We extend this pattern:
 
     // Transport bridge — connects to RPC server via WebSocket
     // This replaces the preload's createWsTransport()
+    // URL scheme matches page context: ws:// for HTTP, wss:// for HTTPS
     globalThis.__natstackTransport = (function() {
-      // Inline transport implementation (or load from separate script)
-      // Uses native browser WebSocket
-      const ws = new WebSocket("ws://SERVER_HOST:RPC_PORT");
+      const wsScheme = location.protocol === "https:" ? "wss" : "ws";
+      const ws = new WebSocket(`${wsScheme}://SERVER_HOST:RPC_PORT`);
       // ... auth, message handling, reconnect ...
       return { send, onMessage };
     })();
@@ -450,48 +474,30 @@ all services headlessly with local agents, which already works.
 
 ---
 
-## 6. Implementation Plan
+## 6. Implementation Status
 
-### Phase 1: Headless Panel Manager (Server-side)
+### Phase 1: Headless Panel Manager (Done)
 
-**Files to create:**
+**Files created:**
 - `src/server/headlessPanelManager.ts` — Panel tree management without rendering
 - `src/server/headlessBridge.ts` — Bridge service handler for headless mode
 
-**Files to modify:**
-- `src/server/index.ts` — Register bridge service, initialize HeadlessPanelManager
-- `src/main/servicePolicy.ts` — No changes needed (bridge already allows server)
+### Phase 2: HTTP Panel Server + Server Integration (Done)
 
-**Outcome:** Server can manage panel lifecycle (create, close, tree traversal)
-without Electron. Agents and workers can create child panels that exist
-logically in the tree.
+**Files created:**
+- `src/server/panelHttpServer.ts` — HTTP server for panel content with inline
+  browser transport and globals injection
 
-### Phase 2: HTTP Panel Server
+**Files modified:**
+- `src/server/index.ts` — Added `--serve-panels` and `--panel-port` flags,
+  HeadlessPanelManager initialization, bridge service registration, HTTP panel
+  server startup
 
-**Files to create:**
-- `src/server/panelHttpServer.ts` — HTTP server for panel content
-- `src/server/browserTransport.ts` — Browser-compatible WS transport (inline script)
+### Phase 3: Web Shell (Future)
 
-**Files to modify:**
-- `src/server/index.ts` — Start HTTP panel server, integrate with build system
-- `src/server/headlessPanelManager.ts` — Store artifacts in HTTP server on build complete
-- `src/main/panelProtocol.ts` — Extract `handleProtocolRequest` logic into
-  shared module usable by both Electron protocol and HTTP server
-
-**Outcome:** Panels can be loaded in a regular browser tab. Browser connects
-to RPC server via WebSocket for full panel functionality.
-
-### Phase 3: Browser Transport & Shell
-
-**Files to create:**
-- `src/server/static/transport.js` — Standalone browser transport script
-
-**Files to modify:**
-- `workspace/packages/runtime/` — Ensure browser compatibility (already mostly there)
-- Build output HTML template — Add transport injection point
-
-**Outcome:** Full panel interactivity in browser. AI chat, code editing,
-project launching all work in Chrome/Firefox/Safari.
+- Port `src/renderer/` shell to run in a browser with panels in iframes
+- Or: browser extension for shell UI
+- Requires multi-panel coordination, drag-and-drop, sidebar
 
 ### Phase 4: Remote Workers (Future)
 
@@ -546,30 +552,91 @@ Recommendation: Start with same-origin (simpler), add subdomain isolation later.
 
 ## 8. Security Considerations
 
-### 8.1 Token Management
+### 8.1 Browser Authentication Model
 
-- Per-panel tokens are created by `TokenManager` and embedded in URLs/WebSocket auth
-- Tokens are validated by `RpcServer` before any service call
-- Token revocation disconnects the panel's WebSocket
+**Decision: Bearer token in JavaScript (explicit `ws:auth`), not HttpOnly cookies.**
 
-For browser serving:
-- Panel tokens should be set as `HttpOnly` cookies instead of URL params
-- RPC WebSocket auth uses the token directly (same as today)
-- CORS headers restrict which origins can connect
+The RPC server (`src/server/rpcServer.ts:118`) expects a `ws:auth` message as
+the first WebSocket frame. This is a deliberate protocol design — the client
+must explicitly authenticate by sending a token. This model works identically
+in Electron and browsers:
 
-### 8.2 Network Exposure
+1. Server generates a per-panel token via `TokenManager.createToken()`
+2. Token is embedded in the panel's HTML page (in the injected `<script>` tag)
+3. Browser JavaScript reads the token from `globalThis` and sends `ws:auth`
+4. Server validates and establishes the authenticated session
+
+**Why not HttpOnly cookies?** JS cannot read HttpOnly cookies, so it couldn't
+send the `ws:auth` message. Changing the auth protocol to cookie-based
+(validating during WS upgrade) would require modifying the existing RPC server
+contract that all panels and agents already use. The explicit token model is
+simpler and consistent across all client types.
+
+**Token exposure mitigation:**
+- Tokens are per-panel and short-lived (revoked when panel closes)
+- The HTML page containing the token is served with `Cache-Control: no-store`
+- Token is only valid for the specific panel's caller ID
+- In v1, server listens on `127.0.0.1` only (no network exposure)
+
+### 8.2 WebSocket Origin Validation
+
+**CORS does not protect WebSocket connections.** Browsers send an `Origin`
+header during the WS handshake, but the WebSocket protocol does not enforce
+same-origin policy. The server must explicitly validate the `Origin` header.
+
+The current `RpcServer` (`src/server/rpcServer.ts:73`) creates a
+`WebSocketServer` on an `http.Server` but does not validate Origin headers.
+This is acceptable today because:
+- Server binds to `127.0.0.1` (not reachable from other machines)
+- Token-based auth prevents unauthorized access even from localhost
+
+**When exposing to the network (future):** The `RpcServer` must add a
+`verifyClient` callback to the `WebSocketServer` configuration:
+
+```typescript
+this.wss = new WebSocketServer({
+  server: this.httpServer,
+  verifyClient: (info) => {
+    const origin = info.origin || info.req.headers.origin;
+    return this.allowedOrigins.has(origin);
+  },
+});
+```
+
+This is a required change before any non-localhost deployment.
+
+### 8.3 Transport URL Scheme (ws vs wss)
+
+The injected transport must match the page's security context:
+- **HTTP page** → `ws://` WebSocket (localhost development)
+- **HTTPS page** → `wss://` WebSocket (required — browsers block mixed content)
+
+The `PanelHttpServer` determines the WebSocket URL scheme from its own
+serving context. When served over HTTP (localhost), it injects `ws://`. When
+behind a TLS-terminating reverse proxy (future), it uses the `X-Forwarded-Proto`
+header or a configuration flag to inject `wss://`.
+
+```typescript
+// In panelHttpServer.ts globals injection:
+const wsScheme = config.tls ? "wss" : "ws";
+const wsUrl = `${wsScheme}://${config.rpcHost}:${config.rpcPort}`;
+```
+
+### 8.4 Network Exposure
 
 The server currently listens on `127.0.0.1` only. For remote access:
-- Add TLS support (HTTPS + WSS)
-- Add authentication for the admin token
-- Consider reverse proxy (nginx, caddy) in front of the server
+- Use a TLS-terminating reverse proxy (nginx, caddy) in front of the server
+- The proxy provides HTTPS + WSS, the server stays on plain HTTP/WS internally
+- Add `--allowed-origins` flag for explicit Origin validation
+- Admin token should be stored securely, not exposed in logs (use file or env var)
 
-### 8.3 Content Security Policy
+### 8.5 Content Security Policy
 
 Panel HTML already includes CSP meta tags. The HTTP server should also set
 CSP headers:
 - `default-src 'self'` — restrict resource loading
-- `connect-src ws://server:port` — allow WebSocket to RPC server
+- `connect-src ws://server:port wss://server:port` — allow WebSocket to RPC
+  server (scheme matches page context)
 - `script-src 'self' 'unsafe-inline'` — for injected globals script
 
 ---

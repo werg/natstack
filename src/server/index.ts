@@ -64,11 +64,15 @@ interface CliArgs {
   dataDir?: string;
   appRoot?: string;
   logLevel?: string;
+  servePanels?: boolean;
+  panelPort?: number;
 }
 
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {};
-  const known = new Set(["workspace", "data-dir", "app-root", "log-level"]);
+  const known = new Set(["workspace", "data-dir", "app-root", "log-level", "serve-panels", "panel-port"]);
+  /** Flags that don't take a value */
+  const booleanFlags = new Set(["serve-panels"]);
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -82,12 +86,17 @@ function parseArgs(argv: string[]): CliArgs {
         value = arg.slice(eqIdx + 1);
       } else {
         key = arg.slice(2);
-        value = argv[i + 1];
-        if (value !== undefined && !value.startsWith("--")) {
-          i++;
+        if (booleanFlags.has(key)) {
+          // Boolean flag: no value consumed
+          value = undefined;
         } else {
-          console.error(`Missing value for --${key}`);
-          process.exit(1);
+          value = argv[i + 1];
+          if (value !== undefined && !value.startsWith("--")) {
+            i++;
+          } else {
+            console.error(`Missing value for --${key}`);
+            process.exit(1);
+          }
         }
       }
     } else {
@@ -112,6 +121,16 @@ function parseArgs(argv: string[]): CliArgs {
         break;
       case "log-level":
         args.logLevel = value;
+        break;
+      case "serve-panels":
+        args.servePanels = true;
+        break;
+      case "panel-port":
+        args.panelPort = parseInt(value!, 10);
+        if (isNaN(args.panelPort)) {
+          console.error("--panel-port must be a number");
+          process.exit(1);
+        }
         break;
     }
   }
@@ -244,9 +263,52 @@ async function main() {
   });
 
   handle.registerAiService(rpcServer);
-  dispatcher.markInitialized();
 
   const rpcPort = await rpcServer.start();
+
+  // ===========================================================================
+  // Headless panel management + HTTP panel serving (standalone mode only)
+  // ===========================================================================
+
+  let panelHttpPort: number | null = null;
+  let panelHttpServerInstance: { stop(): Promise<void> } | null = null;
+
+  if (!ipcChannel) {
+    const { PanelHttpServer } = await import("./panelHttpServer.js");
+    const { HeadlessPanelManager } = await import("./headlessPanelManager.js");
+    const { handleHeadlessBridgeCall } = await import("./headlessBridge.js");
+
+    // Start HTTP panel server if requested
+    let panelHttpServer: InstanceType<typeof PanelHttpServer> | null = null;
+    if (args.servePanels) {
+      panelHttpServer = new PanelHttpServer("127.0.0.1");
+      panelHttpPort = await panelHttpServer.start(args.panelPort ?? 0);
+      panelHttpServerInstance = panelHttpServer;
+    }
+
+    const headlessPanelManager = new HeadlessPanelManager({
+      getBuild: (unitPath) => buildSystem.getBuild(unitPath),
+      createToken: (callerId, kind) => getTokenManager().createToken(callerId, kind),
+      revokeToken: (callerId) => getTokenManager().revokeToken(callerId),
+      panelHttpServer,
+      rpcPort,
+      gitBaseUrl: `http://127.0.0.1:${handle.gitServer.getPort()}`,
+      getGitTokenForPanel: (panelId) => handle.gitServer.getTokenForPanel(panelId),
+      pubsubPort: handle.pubsubPort,
+    });
+
+    // Register bridge service for headless panel lifecycle
+    dispatcher.register("bridge", async (ctx, method, serviceArgs) => {
+      return handleHeadlessBridgeCall(
+        headlessPanelManager,
+        ctx.callerId,
+        method,
+        serviceArgs as unknown[],
+      );
+    });
+  }
+
+  dispatcher.markInitialized();
 
   // ===========================================================================
   // Report ready
@@ -265,6 +327,9 @@ async function main() {
     console.log(`  Git:       http://127.0.0.1:${handle.gitServer.getPort()}`);
     console.log(`  PubSub:    ws://127.0.0.1:${handle.pubsubPort}`);
     console.log(`  RPC:       ws://127.0.0.1:${rpcPort}`);
+    if (panelHttpPort) {
+      console.log(`  Panels:    http://127.0.0.1:${panelHttpPort}`);
+    }
     console.log(`  Admin token: ${adminToken}`);
   }
 
@@ -284,11 +349,18 @@ async function main() {
       process.exit(1);
     }, 5000);
 
-    await Promise.all([
+    const shutdownTasks = [
       buildSystem.shutdown().then(() => console.log("[Server] BuildV2 stopped")).catch((e) => console.error("[Server] BuildV2 stop error:", e)),
       handle.shutdown().catch((e) => console.error("[Server] Core shutdown error:", e)),
       rpcServer.stop().then(() => console.log("[Server] RPC stopped")).catch((e) => console.error("[Server] RPC stop error:", e)),
-    ]).finally(() => {
+    ];
+    if (panelHttpServerInstance) {
+      shutdownTasks.push(
+        panelHttpServerInstance.stop().then(() => console.log("[Server] Panel HTTP stopped")).catch((e) => console.error("[Server] Panel HTTP stop error:", e)),
+      );
+    }
+
+    await Promise.all(shutdownTasks).finally(() => {
       clearTimeout(forceExit);
       console.log("[Server] Shutdown complete");
       process.exit(0);

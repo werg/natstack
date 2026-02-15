@@ -6,6 +6,16 @@
  * without creating WebContentsView instances. Panels are built by the build
  * system and their artifacts are stored in the PanelHttpServer for browser
  * access.
+ *
+ * Panel types use the canonical PanelType ("app" | "browser" | "shell") from
+ * src/shared/types.ts. Only "app" panels are created in headless mode —
+ * "browser" and "shell" are GUI-specific. Workers/agents are NOT panels; they
+ * are managed separately by AgentHost with callerKind: "server" tokens.
+ *
+ * Persistence: The panel tree is in-memory only (v1). This is acceptable
+ * because panels are cheap to recreate (build cache ensures fast rebuilds)
+ * and browser clients reconnect on reload. SQLite persistence can be added
+ * later using the same schema as src/main/db/panelPersistence.ts.
  */
 
 import { randomBytes } from "crypto";
@@ -65,7 +75,7 @@ interface CreatePanelDeps {
   /** Git server base URL */
   gitBaseUrl: string;
   /** Get a git token scoped to a panel */
-  getGitTokenForPanel: (panelId: string) => Promise<string>;
+  getGitTokenForPanel: (panelId: string) => string;
   /** PubSub server port */
   pubsubPort: number;
 }
@@ -323,7 +333,7 @@ export class HeadlessPanelManager {
 
       if (this.deps.panelHttpServer && buildResult.html && buildResult.bundle) {
         // Get git token for this panel
-        const gitToken = await this.deps.getGitTokenForPanel(panel.id);
+        const gitToken = this.deps.getGitTokenForPanel(panel.id);
 
         this.deps.panelHttpServer.storePanel(panel.id, buildResult, {
           panelId: panel.id,
