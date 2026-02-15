@@ -132,3 +132,95 @@ NATSTACK_RENDERER_MAX_OLD_SPACE_MB=4096 pnpm dev
 pnpm build
 pnpm start
 ```
+
+---
+
+## Headless Server
+
+NatStack can run without Electron as a standalone Node.js server. All core
+services — build, git, pubsub, AI, agents, database, tokens — are available
+over WebSocket RPC. Panels can optionally be served to a regular web browser
+over HTTP.
+
+### Prerequisites
+
+The standalone server requires native dependencies (better-sqlite3 compiled
+for system Node, not Electron's Node):
+
+```bash
+pnpm server:install
+pnpm build
+```
+
+### Running
+
+```bash
+node dist/server.mjs --workspace=/path/to/workspace
+```
+
+On startup the server prints connection details:
+
+```
+natstack-server ready:
+  Git:       http://127.0.0.1:9001
+  PubSub:    ws://127.0.0.1:9002
+  RPC:       ws://127.0.0.1:9003
+  Admin token: <hex>
+```
+
+### CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `--workspace=PATH` | Path to the NatStack workspace directory (must contain `natstack.yml`) |
+| `--data-dir=PATH` | User data directory (build cache, EV state, database) |
+| `--app-root=PATH` | Application root (defaults to cwd) |
+| `--log-level=LEVEL` | Log level |
+| `--serve-panels` | Enable HTTP panel serving for browser access |
+| `--panel-port=PORT` | Port for the panel HTTP server (default: random) |
+
+### Serving Panels to a Browser
+
+With `--serve-panels`, the server starts an HTTP server that serves panel
+content to any modern web browser — no Electron required:
+
+```bash
+node dist/server.mjs \
+  --workspace=/path/to/workspace \
+  --serve-panels \
+  --panel-port=8080
+```
+
+Output includes the panel server URL:
+
+```
+natstack-server ready:
+  Git:       http://127.0.0.1:9001
+  PubSub:    ws://127.0.0.1:9002
+  RPC:       ws://127.0.0.1:9003
+  Panels:    http://127.0.0.1:8080
+  Admin token: <hex>
+```
+
+Open `http://localhost:8080` to see a list of running panels. Panels are
+created via the RPC `bridge.createChild` method (using the admin token), then
+accessed by clicking their link on the index page.
+
+Each panel gets:
+- **Injected globals** replacing Electron's preload/contextBridge
+- **A WebSocket transport** connecting to the RPC server (same protocol as
+  the Electron preload)
+- **OPFS filesystem** via ZenFS (works in Chrome, Safari, Firefox)
+- **Full service access** — AI, git, database, build, pubsub
+
+### Headless Agents
+
+Agents run as headless Node.js processes managed by AgentHost. They work
+identically in both Electron and standalone mode — they connect to the RPC
+server with server-kind tokens and communicate via PubSub channels.
+
+### Architecture
+
+For detailed design documentation including security considerations, browser
+authentication model, and future plans (web shell, remote workers), see
+[docs/architecture/headless-service-architecture.md](docs/architecture/headless-service-architecture.md).
