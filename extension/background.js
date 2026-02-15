@@ -199,9 +199,10 @@ async function handleSSEEvent(event, dataStr, config) {
       broadcastStatus();
 
       // Pre-warm context: open a hidden tab to the /__init__ page
-      // This populates OPFS before the real panel tab is opened
-      if (data.subdomain && config.serverUrl) {
-        preWarmContext(data.panelId, data.subdomain, config);
+      // This populates OPFS before the real panel tab is opened.
+      // The initToken from the event authenticates the init page request.
+      if (data.subdomain && config.serverUrl && data.initToken) {
+        preWarmContext(data.panelId, data.subdomain, data.initToken, config);
       }
       break;
     }
@@ -283,8 +284,17 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (panelId) {
     panelTabs.delete(panelId);
     tabPanels.delete(tabId);
-    broadcastStatus();
   }
+
+  // Also clean up init tabs
+  for (const [pid, tid] of initTabs) {
+    if (tid === tabId) {
+      initTabs.delete(pid);
+      break;
+    }
+  }
+
+  broadcastStatus();
 });
 
 // Track when tabs navigate to detect manually opened natstack tabs
@@ -343,27 +353,17 @@ async function groupNatstackTabs() {
  *
  * @param {string} panelId
  * @param {string} subdomain
+ * @param {string} initToken - Short-lived token from panel:created event
  * @param {object} config
  */
-async function preWarmContext(panelId, subdomain, config) {
+async function preWarmContext(panelId, subdomain, initToken, config) {
   // Don't pre-warm if we already have an init tab for this panel
   if (initTabs.has(panelId)) return;
 
-  // We need the panel's HTTP token. The init page requires auth, so we
-  // build the URL from the panel data. The URL is available once the panel
-  // is built, but the subdomain is available immediately at panel:created.
-  // The init endpoint also accepts the token query param, so we need to
-  // wait for panel:built to get the URL. Instead, we'll attempt to load
-  // the init page and let it authenticate via the session cookie that the
-  // user's main tab will establish. If no session exists yet, the init
-  // page will return 403 — we'll just close the tab and rely on the
-  // inline bootstrap in the panel HTML.
-
-  // Build the init URL using the server port from the server URL
   try {
     const serverUrl = new URL(config.serverUrl);
     const port = serverUrl.port || (serverUrl.protocol === "https:" ? "443" : "80");
-    const initUrl = `http://${subdomain}.localhost:${port}/__init__`;
+    const initUrl = `http://${subdomain}.localhost:${port}/__init__?token=${encodeURIComponent(initToken)}`;
 
     console.log(`[NatStack] Pre-warming context for ${panelId}: ${initUrl}`);
 

@@ -254,6 +254,32 @@ export class HeadlessPanelManager {
       parent.children.push(panelId);
     }
 
+    // ── Early registration for pre-warming ──
+    // Register the subdomain in PanelHttpServer BEFORE the build starts
+    // so the extension can open /__init__ immediately for OPFS bootstrap.
+    let initToken: string | undefined;
+    if (this.deps.panelHttpServer) {
+      const earlyConfig = {
+        panelId: panel.id,
+        contextId: panel.contextId,
+        subdomain: panel.subdomain,
+        parentId: panel.parentId,
+        rpcPort: this.deps.rpcPort,
+        rpcToken: panel.rpcToken!,
+        gitBaseUrl: this.deps.gitBaseUrl,
+        gitToken: this.deps.getGitTokenForPanel(panel.id),
+        pubsubPort: this.deps.pubsubPort,
+        stateArgs: panel.stateArgs,
+        sourceRepo: panel.source,
+        resolvedRepoArgs: panel.repoArgs ?? {},
+        env: panel.env,
+        theme: "dark" as const,
+        specHash: panel.specHash ?? undefined,
+        specHashShort: panel.specHashShort ?? undefined,
+      };
+      initToken = this.deps.panelHttpServer.registerPendingPanel(panelId, earlyConfig);
+    }
+
     log.info(`[Panel] Created: ${panelId} (${subdomain}.localhost, ctx=${contextId}, spec=${specHashShort ?? "none"})`);
 
     this.emitEvent({
@@ -261,6 +287,8 @@ export class HeadlessPanelManager {
       panelId,
       title: panel.title,
       subdomain,
+      contextId,
+      initToken,
       parentId: panel.parentId,
       source,
     });

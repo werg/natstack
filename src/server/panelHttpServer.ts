@@ -98,6 +98,9 @@ export interface PanelLifecycleEvent {
   panelId: string;
   title: string;
   subdomain: string;
+  contextId?: string;
+  /** Init token for pre-warming (only on panel:created) */
+  initToken?: string;
   url?: string;
   error?: string;
   parentId?: string | null;
@@ -113,6 +116,20 @@ interface StoredPanel {
   title: string;
   /** Per-panel access token for HTTP resources */
   httpToken: string;
+}
+
+/**
+ * A panel registered before its build completes. Only serves /__init__
+ * for context pre-warming — not the full panel HTML/bundle.
+ */
+interface PendingPanel {
+  panelId: string;
+  subdomain: string;
+  contextId: string;
+  /** Short-lived token for authenticating the /__init__ pre-warming page */
+  initToken: string;
+  /** Partial config with just enough for the bootstrap script */
+  config: PanelConfig;
 }
 
 interface PanelSession {
@@ -225,6 +242,10 @@ export class PanelHttpServer {
   private panels = new Map<string, StoredPanel>();
   /** Reverse lookup: subdomain → panel (populated in storePanel) */
   private subdomainToPanel = new Map<string, StoredPanel>();
+  /** Panels registered before build completes (for pre-warming /__init__) */
+  private pendingPanels = new Map<string, PendingPanel>();
+  /** Reverse lookup: subdomain → pending panel */
+  private subdomainToPending = new Map<string, PendingPanel>();
   /** Cookie-based sessions: sessionId → session data */
   private sessions = new Map<string, PanelSession>();
   /** Active SSE connections for /api/events */
@@ -274,7 +295,37 @@ export class PanelHttpServer {
   }
 
   /**
+   * Register a panel's subdomain before its build completes.
+   *
+   * This enables context pre-warming: the browser extension can open a
+   * hidden tab to `{subdomain}.localhost/__init__?token={initToken}`
+   * immediately when `panel:created` fires, before the build finishes.
+   * The init page runs the OPFS bootstrap so storage is warm when the
+   * real panel tab opens.
+   *
+   * @returns The init token for authenticating the pre-warming request
+   */
+  registerPendingPanel(panelId: string, config: PanelConfig): string {
+    const initToken = randomBytes(24).toString("hex");
+
+    const pending: PendingPanel = {
+      panelId,
+      subdomain: config.subdomain,
+      contextId: config.contextId,
+      initToken,
+      config,
+    };
+
+    this.pendingPanels.set(panelId, pending);
+    this.subdomainToPending.set(config.subdomain, pending);
+
+    log.info(`Registered pending panel: ${panelId} (${config.subdomain}.localhost, initToken: ${initToken.slice(0, 8)}...)`);
+    return initToken;
+  }
+
+  /**
    * Store a built panel for HTTP serving.
+   * Promotes a pending panel (if any) to a fully served panel.
    */
   storePanel(panelId: string, buildResult: BuildResult, config: PanelConfig): void {
     if (!buildResult.html || !buildResult.bundle) {
@@ -296,6 +347,13 @@ export class PanelHttpServer {
     this.panels.set(panelId, stored);
     this.subdomainToPanel.set(config.subdomain, stored);
 
+    // Clean up pending entry (panel is now fully served)
+    const pending = this.pendingPanels.get(panelId);
+    if (pending) {
+      this.pendingPanels.delete(panelId);
+      this.subdomainToPending.delete(pending.subdomain);
+    }
+
     log.info(`Stored panel: ${panelId} (${config.subdomain}.localhost, token: ${httpToken.slice(0, 8)}...)`);
   }
 
@@ -315,6 +373,13 @@ export class PanelHttpServer {
       }
     }
     this.panels.delete(panelId);
+
+    // Also clean up any pending entry
+    const pending = this.pendingPanels.get(panelId);
+    if (pending) {
+      this.subdomainToPending.delete(pending.subdomain);
+      this.pendingPanels.delete(panelId);
+    }
   }
 
   /**
@@ -387,6 +452,23 @@ export class PanelHttpServer {
         this.handleSubdomainRequest(req, res, url, pathname, panel);
         return;
       }
+
+      // Check pending panels (pre-build: only serve /__init__ for pre-warming)
+      const pending = this.subdomainToPending.get(subdomain);
+      if (pending) {
+        if (pathname === "/__init__") {
+          this.servePendingInitPage(req, res, pending);
+          return;
+        }
+        if (pathname.startsWith("/api/context/")) {
+          this.handlePendingContextApi(req, res, url, pathname, pending);
+          return;
+        }
+        // Panel still building — show a loading page
+        this.serveBuildingPage(res, subdomain);
+        return;
+      }
+
       this.servePanelClosedPage(res, subdomain);
       return;
     }
@@ -858,6 +940,140 @@ ${this.buildOpfsBootstrapScript(config, true)}
   </script>
 </body>
 </html>`;
+  }
+
+  // =========================================================================
+  // Pending panel routing (pre-build, init-token auth)
+  // =========================================================================
+
+  /**
+   * Serve /__init__ for a pending (not yet built) panel.
+   * Auth via initToken in query string (extension provides this).
+   */
+  private servePendingInitPage(
+    req: import("http").IncomingMessage,
+    res: import("http").ServerResponse,
+    pending: PendingPanel,
+  ): void {
+    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const token = url.searchParams.get("token");
+
+    if (token !== pending.initToken) {
+      res.writeHead(403, { "Content-Type": "text/plain" });
+      res.end("Unauthorized");
+      return;
+    }
+
+    // Create a session cookie so subsequent API calls (from the bootstrap
+    // script) are authenticated without the token in the URL
+    const sid = randomBytes(16).toString("hex");
+    this.sessions.set(sid, {
+      panelId: pending.panelId,
+      subdomain: pending.subdomain,
+      createdAt: Date.now(),
+    });
+
+    const initHtml = this.buildInitPageHtml(pending.config);
+
+    res.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "Set-Cookie": `_ns_session=${sid}; HttpOnly; SameSite=Strict; Path=/`,
+    });
+    res.end(initHtml);
+  }
+
+  /**
+   * Handle context API requests for a pending panel.
+   * Only serves /api/context/template (needed by the bootstrap script).
+   */
+  private handlePendingContextApi(
+    req: import("http").IncomingMessage,
+    res: import("http").ServerResponse,
+    _url: URL,
+    pathname: string,
+    pending: PendingPanel,
+  ): void {
+    // CORS
+    res.setHeader("Access-Control-Allow-Origin", this.getPanelOrigin(pending.subdomain));
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    // Session cookie auth
+    const cookies = parseCookies(req.headers.cookie);
+    const sid = cookies["_ns_session"];
+    if (!sid) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Unauthorized" }));
+      return;
+    }
+    const session = this.sessions.get(sid);
+    if (!session || session.panelId !== pending.panelId) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Unauthorized" }));
+      return;
+    }
+
+    if (pathname === "/api/context/template") {
+      // Serve the template spec using the pending panel's config
+      const { specHash } = pending.config;
+      if (!specHash) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ hasTemplate: false, contextId: pending.contextId }));
+        return;
+      }
+      const spec = getSerializableSpec(specHash);
+      if (!spec) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ hasTemplate: true, contextId: pending.contextId, specHash, error: "Template spec not in cache" }));
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ hasTemplate: true, contextId: pending.contextId, ...spec }));
+      return;
+    }
+
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Not found" }));
+  }
+
+  /**
+   * Serve a "building" placeholder page for a pending panel.
+   */
+  private serveBuildingPage(res: import("http").ServerResponse, subdomain: string): void {
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building — NatStack</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 500px; margin: 4rem auto; padding: 0 1rem; text-align: center; color: #e0e0e0; background: #1a1a2e; }
+    h1 { color: #e94560; font-size: 1.5rem; }
+    p { color: #888; line-height: 1.6; }
+    .spinner { width: 24px; height: 24px; border: 3px solid #333; border-top: 3px solid #e94560;
+               border-radius: 50%; animation: spin 0.8s linear infinite; margin: 1rem auto; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+  <meta http-equiv="refresh" content="2">
+</head>
+<body>
+  <h1>Building Panel</h1>
+  <div class="spinner"></div>
+  <p>The panel at <code>${escapeHtml(subdomain)}.localhost</code> is still building. This page will refresh automatically.</p>
+</body>
+</html>`;
+
+    res.writeHead(202, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(html);
   }
 
   // =========================================================================
