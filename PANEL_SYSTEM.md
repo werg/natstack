@@ -36,8 +36,8 @@ my-panel/
     "exposeModules": ["@radix-ui/colors"]
   },
   "dependencies": {
-    "@natstack/runtime": "workspace:*",
-    "@natstack/react": "workspace:*"
+    "@workspace/runtime": "workspace:*",
+    "@workspace/react": "workspace:*"
   }
 }
 ```
@@ -103,7 +103,7 @@ import {
   isSafeContext,         // Check if safe mode
   isUnsafeContext,       // Check if unsafe mode
   buildNsLink,           // Build ns:// navigation link
-} from "@natstack/runtime";
+} from "@workspace/runtime";
 ```
 
 ## Creating Children
@@ -200,7 +200,7 @@ Define contracts for type-safe parent-child communication:
 
 ```typescript
 // panels/editor/contract.ts
-import { z, defineContract } from "@natstack/runtime";
+import { z, defineContract } from "@workspace/runtime";
 
 export interface EditorApi {
   getContent(): Promise<string>;
@@ -220,7 +220,7 @@ export const editorContract = defineContract({
 
 Child exposes methods:
 ```typescript
-import { rpc, getParentWithContract, noopParent } from "@natstack/runtime";
+import { rpc, getParentWithContract, noopParent } from "@workspace/runtime";
 import { editorContract } from "./contract.js";
 
 const parent = getParentWithContract(editorContract) ?? noopParent;
@@ -235,7 +235,7 @@ parent.emit("saved", { path: "/file.txt" }); // Typed!
 
 Parent uses contract:
 ```typescript
-import { createChildWithContract } from "@natstack/runtime";
+import { createChildWithContract } from "@workspace/runtime";
 import { editorContract } from "@workspace-panels/editor/contract";
 
 const editor = await createChildWithContract(editorContract);

@@ -29,39 +29,39 @@ const ROOT = path.join(__dirname, '..');
  */
 const injectedScripts = [
   [
-    path.join(ROOT, 'packages', 'playwright-injected', 'src', 'utilityScript.ts'),
-    path.join(ROOT, 'packages', 'playwright-injected', 'lib'),
-    path.join(ROOT, 'packages', 'playwright-core', 'src', 'generated'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-injected', 'src', 'utilityScript.ts'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-injected', 'lib'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-core', 'src', 'generated'),
     true,
   ],
   [
-    path.join(ROOT, 'packages', 'playwright-injected', 'src', 'injectedScript.ts'),
-    path.join(ROOT, 'packages', 'playwright-injected', 'lib'),
-    path.join(ROOT, 'packages', 'playwright-core', 'src', 'generated'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-injected', 'src', 'injectedScript.ts'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-injected', 'lib'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-core', 'src', 'generated'),
     true,
   ],
   [
-    path.join(ROOT, 'packages', 'playwright-injected', 'src', 'clock.ts'),
-    path.join(ROOT, 'packages', 'playwright-injected', 'lib'),
-    path.join(ROOT, 'packages', 'playwright-core', 'src', 'generated'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-injected', 'src', 'clock.ts'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-injected', 'lib'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-core', 'src', 'generated'),
     true,
   ],
   [
-    path.join(ROOT, 'packages', 'playwright-injected', 'src', 'storageScript.ts'),
-    path.join(ROOT, 'packages', 'playwright-injected', 'lib'),
-    path.join(ROOT, 'packages', 'playwright-core', 'src', 'generated'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-injected', 'src', 'storageScript.ts'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-injected', 'lib'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-core', 'src', 'generated'),
     true,
   ],
   [
-    path.join(ROOT, 'packages', 'playwright-injected', 'src', 'bindingsController.ts'),
-    path.join(ROOT, 'packages', 'playwright-injected', 'lib'),
-    path.join(ROOT, 'packages', 'playwright-core', 'src', 'generated'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-injected', 'src', 'bindingsController.ts'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-injected', 'lib'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-core', 'src', 'generated'),
     true,
   ],
   [
-    path.join(ROOT, 'packages', 'playwright-injected', 'src', 'webSocketMock.ts'),
-    path.join(ROOT, 'packages', 'playwright-injected', 'lib'),
-    path.join(ROOT, 'packages', 'playwright-core', 'src', 'generated'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-injected', 'src', 'webSocketMock.ts'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-injected', 'lib'),
+    path.join(ROOT, 'workspace', 'packages', 'playwright-core', 'src', 'generated'),
     true,
   ],
 ];
@@ -132,8 +132,8 @@ const inlineCSSPlugin = {
       platform: 'browser',
       target: 'ES2019',
       alias: {
-        '@isomorphic': path.join(ROOT, 'packages', 'playwright-core', 'src', 'utils', 'isomorphic'),
-        '@protocol': path.join(ROOT, 'packages', 'playwright-protocol', 'src'),
+        '@isomorphic': path.join(ROOT, 'workspace', 'packages', 'playwright-core', 'src', 'utils', 'isomorphic'),
+        '@protocol': path.join(ROOT, 'workspace', 'packages', 'playwright-protocol', 'src'),
       },
       plugins: [inlineCSSPlugin],
     });
