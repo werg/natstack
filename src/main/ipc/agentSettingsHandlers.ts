@@ -5,7 +5,7 @@
  * centralized agent preferences.
  */
 
-import type { GlobalAgentSettings, AgentSettings } from "@natstack/core";
+import type { GlobalAgentSettings, AgentSettings } from "@natstack/types";
 import { getAgentSettingsService } from "../agentSettings.js";
 import { getAgentDiscovery } from "../agentDiscovery.js";
 

@@ -117,11 +117,6 @@ describe("ns:// protocol", () => {
       expect(url).toBe("ns:///panels/editor");
     });
 
-    it("builds URL with gitRef", () => {
-      const url = buildNsUrl("panels/editor", { gitRef: "main" });
-      expect(url).toBe("ns:///panels/editor?gitRef=main");
-    });
-
     it("builds URL with templateSpec", () => {
       const url = buildNsUrl("panels/editor", { templateSpec: "contexts/default" });
       expect(url).toBe("ns:///panels/editor?templateSpec=contexts%2Fdefault");
@@ -139,14 +134,12 @@ describe("ns:// protocol", () => {
       const url = buildNsUrl("panels/editor", {
         action: "child",
         templateSpec: "contexts/custom",
-        gitRef: "main",
         repoArgs: { workspace: "repos/app" },
       });
       const parsed = parseNsUrl(url);
       expect(parsed.source).toBe("panels/editor");
       expect(parsed.action).toBe("child");
       expect(parsed.templateSpec).toBe("contexts/custom");
-      expect(parsed.gitRef).toBe("main");
       expect(parsed.repoArgs).toEqual({ workspace: "repos/app" });
     });
 
@@ -181,7 +174,6 @@ describe("ns:// protocol", () => {
       const options = {
         action: "child" as NsAction,
         templateSpec: "contexts/default",
-        gitRef: "feature/test",
         repoArgs: { workspace: { repo: "repos/app", ref: "v1.0.0" } },
         focus: true,
       };
@@ -190,7 +182,6 @@ describe("ns:// protocol", () => {
       expect(parsed.source).toBe("panels/editor");
       expect(parsed.action).toBe("child");
       expect(parsed.templateSpec).toBe("contexts/default");
-      expect(parsed.gitRef).toBe("feature/test");
       expect(parsed.repoArgs).toEqual({ workspace: { repo: "repos/app", ref: "v1.0.0" } });
       expect(parsed.focus).toBe(true);
     });
@@ -227,8 +218,9 @@ describe("ns-about:// protocol", () => {
       expect(() => parseNsAboutUrl("ns-about://")).toThrow("missing page");
     });
 
-    it("rejects invalid page", () => {
-      expect(() => parseNsAboutUrl("ns-about://invalid-page")).toThrow("Invalid ns-about page");
+    it("accepts any page name (dynamic discovery)", () => {
+      const result = parseNsAboutUrl("ns-about://custom-page");
+      expect(result.page).toBe("custom-page");
     });
   });
 
@@ -243,8 +235,9 @@ describe("ns-about:// protocol", () => {
       expect(url).toBe("ns-about://about");
     });
 
-    it("rejects invalid page", () => {
-      expect(() => buildNsAboutUrl("invalid" as any)).toThrow("Invalid about page");
+    it("builds URL for any page name", () => {
+      const url = buildNsAboutUrl("custom-page");
+      expect(url).toBe("ns-about://custom-page");
     });
   });
 

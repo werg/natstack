@@ -431,7 +431,7 @@ export function PanelStack({
         >
           <Spinner size="3" />
           <Text mt="3">
-            {visiblePanel.type === "worker" ? "Building worker..." : "Preparing panel..."}
+            {"Preparing panel..."}
           </Text>
         </Flex>
       );

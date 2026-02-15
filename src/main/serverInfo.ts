@@ -32,4 +32,6 @@ export interface ServerInfo {
   resolveRef(repoPath: string, ref: string): Promise<string>;
   /** List discovered agents (delegated to server) */
   listAgents(): Promise<unknown>;
+  /** Generic RPC call to a server service */
+  call(service: string, method: string, args: unknown[]): Promise<unknown>;
 }

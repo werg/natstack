@@ -5,7 +5,7 @@
  * requiring knowledge of the internal history-based structure.
  */
 
-import type { CreateChildOptions, RepoArgSpec } from "@natstack/runtime";
+import type { CreateChildOptions, RepoArgSpec } from "@natstack/types";
 import type { Panel, PanelSnapshot, PanelType, ShellPage, PanelManifest, StateArgsValue } from "../types.js";
 
 /**
@@ -49,24 +49,10 @@ export function getPanelEnv(panel: Panel): Record<string, string> | undefined {
 }
 
 /**
- * Get the git ref from the current snapshot.
- */
-export function getPanelGitRef(panel: Panel): string | undefined {
-  return getPanelOptions(panel).gitRef;
-}
-
-/**
  * Get repo args from the current snapshot.
  */
 export function getPanelRepoArgs(panel: Panel): Record<string, RepoArgSpec> | undefined {
   return getPanelOptions(panel).repoArgs;
-}
-
-/**
- * Get the sourcemap setting from the current snapshot.
- */
-export function getPanelSourcemap(panel: Panel): boolean | undefined {
-  return getPanelOptions(panel).sourcemap;
 }
 
 /**

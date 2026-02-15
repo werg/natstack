@@ -13,8 +13,8 @@ import { findAvailablePortForService } from "./portUtils.js";
 import { createDevLogger } from "./devLog.js";
 import type { AgentHost } from "./agentHost.js";
 import { AgentSpawnError } from "./agentHost.js";
-import type { AgentManifest } from "@natstack/core";
-import type { AgentBuildError } from "@natstack/agentic-messaging";
+import type { AgentManifest } from "@natstack/types";
+import type { AgentBuildError } from "@natstack/types";
 
 const log = createDevLogger("PubSubServer");
 

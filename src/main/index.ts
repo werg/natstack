@@ -21,7 +21,6 @@ import type { Workspace, AppMode } from "./workspace/types.js";
 import { getCentralData } from "./centralData.js";
 import { registerPanelProtocol, setupPanelProtocol } from "./panelProtocol.js";
 import { setupAboutProtocol } from "./aboutProtocol.js";
-import { getMainCacheManager } from "./cacheManager.js";
 import { getCdpServer, type CdpServer } from "./cdpServer.js";
 import { getTokenManager } from "./tokenManager.js";
 import { eventService } from "./services/eventsService.js";
@@ -54,7 +53,6 @@ import { handleGitServiceCall } from "./ipc/gitServiceHandler.js";
 import { startMemoryMonitor } from "./memoryMonitor.js";
 import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
 import { createServerClient, type ServerClient } from "./serverClient.js";
-import { setVerdaccioConfig } from "./verdaccioConfig.js";
 import type { ServerInfo } from "./serverInfo.js";
 
 // =============================================================================
@@ -195,6 +193,8 @@ function buildServerInfo(ports: ServerPorts): ServerInfo {
       requireServerClient().call("git", "resolveRef", [repoPath, ref]) as Promise<string>,
     listAgents: () =>
       requireServerClient().call("agentSettings", "listAgents", []),
+    call: (service, method, args) =>
+      requireServerClient().call(service, method, args),
   };
 }
 
@@ -330,11 +330,6 @@ app.on("ready", async () => {
     }
   }
 
-  // Start cache manager initialization in the background (non-blocking).
-  // get()/set() work immediately; disk entries merge when ready.
-  const cacheManager = getMainCacheManager();
-  cacheManager.startInitialize();
-
   // Register shell services (available in both modes)
   const dispatcher = getServiceDispatcher();
   dispatcher.register("app", handleAppService);
@@ -375,19 +370,12 @@ app.on("ready", async () => {
 
       const ports = await serverProcessManager.start();
       performance.mark("startup:server-spawned");
-      log.info(`[Server] Child process started (RPC: ${ports.rpcPort}, Verdaccio: ${ports.verdaccioPort}, Git: ${ports.gitPort}, PubSub: ${ports.pubsubPort})`);
+      log.info(`[Server] Child process started (RPC: ${ports.rpcPort}, Git: ${ports.gitPort}, PubSub: ${ports.pubsubPort})`);
 
       // Connect to server as admin
       serverClient = await createServerClient(ports.rpcPort, ports.adminToken);
       performance.mark("startup:server-connected");
       log.info("[Server] Admin WS client connected");
-
-      // Configure verdaccio URL for build pipeline
-      setVerdaccioConfig({
-        url: `http://127.0.0.1:${ports.verdaccioPort}`,
-        getPackageVersion: (name) =>
-          requireServerClient().call("verdaccio", "getPackageVersion", [name]) as Promise<string | null>,
-      });
 
       // Wire shell services
       setShellServicesServerClient(serverClient);

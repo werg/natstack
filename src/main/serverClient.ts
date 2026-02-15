@@ -1,7 +1,7 @@
 /**
  * ServerClient — WebSocket admin client that connects Electron to the server.
  *
- * Handles RPC calls for Electron-internal operations (verdaccio, tokens, git,
+ * Handles RPC calls for Electron-internal operations (tokens, git, build,
  * ai.reinitialize, etc.). Panels connect directly to the server for AI
  * streaming, tool execution, and other backend services.
  */

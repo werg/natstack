@@ -5,10 +5,9 @@ import type {
   ChildCreationResult,
   ChildSpec,
   AppChildSpec,
-  WorkerChildSpec,
   BrowserChildSpec,
-} from "@natstack/runtime";
-import type { RepoArgSpec } from "@natstack/git";
+} from "@natstack/types";
+import type { RepoArgSpec } from "@natstack/types";
 import type { StateArgsSchema, StateArgsValue } from "./stateArgs.js";
 
 // Re-export types for consumers of this module
@@ -17,7 +16,6 @@ export type {
   ChildCreationResult,
   ChildSpec,
   AppChildSpec,
-  WorkerChildSpec,
   BrowserChildSpec,
   RepoArgSpec,
   StateArgsSchema,
@@ -47,7 +45,7 @@ export interface EnvArgSchema {
  * Panel manifest from package.json natstack section.
  */
 export interface PanelManifest {
-  type: "app" | "worker";
+  type: "app";
   title: string;
   entry?: string;
   dependencies?: Record<string, string>;
@@ -60,7 +58,6 @@ export interface PanelManifest {
   dedupeModules?: string[];
   injectHostThemeVariables?: boolean;
   template?: "html" | "react";
-  runtime?: "panel" | "worker";
 }
 
 export type ThemeMode = "light" | "dark" | "system";
@@ -140,9 +137,9 @@ export interface ProtocolBuildArtifacts {
 // StreamText Types (Unified AI API)
 // =============================================================================
 
-// Import types from @natstack/ai to avoid duplication
+// Import types from @natstack/types to avoid duplication
 // These are the canonical message types used by both panels and IPC
-import type { Message as AIMessage } from "@natstack/ai";
+import type { Message as AIMessage } from "@natstack/types";
 
 /** Message type for IPC - directly uses AI SDK message format */
 export type StreamTextMessage = AIMessage;
@@ -200,16 +197,18 @@ export interface ToolExecutionResult {
 /**
  * Panel type discriminator.
  * - "app": Built webview from source code
- * - "worker": Background process in hidden WebContentsView
  * - "browser": External URL with Playwright automation
  * - "shell": System pages (settings, about, etc.) with full shell access
  */
-export type PanelType = "app" | "worker" | "browser" | "shell";
+export type PanelType = "app" | "browser" | "shell";
 
 /**
  * Shell panel page types.
  */
-export type ShellPage = "model-provider-config" | "about" | "keyboard-shortcuts" | "help" | "new" | "adblock" | "agents" | "dirty-repo" | "git-init";
+/**
+ * Shell panel page name. Dynamically discovered from workspace about-page manifests.
+ */
+export type ShellPage = string;
 
 /**
  * Browser panel navigation state (for browser webview internal state).
@@ -231,7 +230,7 @@ export interface BrowserState {
  */
 export interface PanelSnapshot {
   // === Required ===
-  /** Path or URL - workspace-relative path for app/worker, URL for browser */
+  /** Path or URL - workspace-relative path for app, URL for browser */
   source: string;
   /** Panel type */
   type: PanelType;
@@ -243,7 +242,7 @@ export interface PanelSnapshot {
   options: Omit<CreateChildOptions, "eventSchemas" | "focus">;
 
   // === State arguments (separate from options) ===
-  /** Validated state args for this snapshot (app/worker panels only) */
+  /** Validated state args for this snapshot (app panels only) */
   stateArgs?: StateArgsValue;
 
   // === Type-specific (set during navigation/runtime) ===
@@ -274,27 +273,6 @@ export interface Panel {
 
   // Runtime only (not in snapshot)
   artifacts: PanelArtifacts;
-}
-
-// =============================================================================
-// Isolated Worker Types
-// =============================================================================
-
-/**
- * Build state for workers (same as panels).
- */
-export type WorkerBuildState = "pending" | "cloning" | "building" | "ready" | "error";
-
-/**
- * Information about a created worker.
- */
-export interface WorkerInfo {
-  /** Worker ID (prefixed with "worker:") */
-  workerId: string;
-  /** Build state */
-  buildState: WorkerBuildState;
-  /** Error message if build failed */
-  error?: string;
 }
 
 // =============================================================================
@@ -468,7 +446,7 @@ export interface WorkspaceNode {
    * report the real error than to silently hide repos with incomplete configs.
    */
   launchable?: {
-    type: "app" | "worker";
+    type: "app";
     title: string;
     repoArgs?: string[];
     envArgs?: EnvArgSchema[];

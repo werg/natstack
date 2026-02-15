@@ -76,7 +76,7 @@ export function loadTemplateBuildMeta(specHash: string): TemplateBuild | null {
  * @param build - The build metadata to save
  */
 export function saveTemplateBuildMeta(build: TemplateBuild): void {
-  const metaPath = path.join(build.scopePath, META_FILE_NAME);
+  const metaPath = path.join(build.buildPath, META_FILE_NAME);
   fs.writeFileSync(metaPath, JSON.stringify(build, null, 2));
 }
 
@@ -242,7 +242,7 @@ export function getCacheStats(): {
 
     // Calculate size (rough estimate from directory)
     try {
-      totalSizeBytes += getDirectorySize(build.scopePath);
+      totalSizeBytes += getDirectorySize(build.buildPath);
     } catch {
       // Ignore size calculation errors
     }

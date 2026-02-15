@@ -36,11 +36,6 @@ export async function handleBrowserCall(
   method: string,
   args: unknown[]
 ): Promise<unknown> {
-  // Workers can only access getCdpEndpoint
-  if (callerKind === "worker" && method !== "getCdpEndpoint") {
-    throw new Error("Workers may only call browser.getCdpEndpoint");
-  }
-
   const [browserId] = args as [string];
 
   const assertOwner = () => {

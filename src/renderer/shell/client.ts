@@ -2,7 +2,7 @@
  * Shell Client - Typed wrappers for shell service calls via RPC.
  *
  * This module provides a typed API for shell to call main process services.
- * Uses a direct @natstack/rpc bridge from the shell transport global.
+ * Uses a direct @workspace/rpc bridge from the shell transport global.
  */
 
 import { createRpcBridge, type RpcBridge, type RpcTransport, type RpcMessage } from "@natstack/rpc";

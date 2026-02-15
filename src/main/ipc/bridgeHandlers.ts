@@ -149,7 +149,7 @@ export async function handleBridgeCall(
       const resolved = await resolveTemplate(templateSpec);
       const immutableSpec = computeImmutableSpec(resolved);
       const instanceId = generateInstanceId("chat");
-      const contextId = createContextId("safe", immutableSpec.specHash, instanceId);
+      const contextId = createContextId(immutableSpec.specHash, instanceId);
 
       // Get git config for partition initialization
       const si = getServerInfo();

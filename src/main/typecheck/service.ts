@@ -2,39 +2,19 @@
  * Main process TypeDefinitionService for NatStack type checking.
  *
  * Provides type definitions to the code-editor via RPC.
- * Uses the panel's build workspace (with "dev" commit) so that
- * build and editor share the same node_modules.
+ * Installs npm packages on demand for type resolution.
  */
 
 import * as fs from "fs/promises";
+import * as fsSync from "fs";
 import * as path from "path";
+import * as crypto from "crypto";
 import Arborist from "@npmcli/arborist";
 import { createTypeDefinitionLoader, loadNatstackPackageTypes, clearNatstackTypesCache, preloadNatstackTypesAsync, type NatstackPackageTypes } from "@natstack/typecheck";
 import { getPackagesDir } from "../paths.js";
-import { isVerdaccioReady, getVerdaccioUrl } from "../verdaccioConfig.js";
-import { getBuildKeyDirectories } from "../build/artifacts.js";
-import {
-  getPackageStore,
-  createPackageFetcher,
-  createPackageLinker,
-  serializeTree,
-  type SerializedTree,
-} from "../package-store/index.js";
+import { getUserDataPath } from "../envPaths.js";
 
-/**
- * Check if Verdaccio is running and can serve @natstack/* packages.
- */
-async function canUseVerdaccio(): Promise<boolean> {
-  if (!isVerdaccioReady()) {
-    return false;
-  }
-  try {
-    await fetch(getVerdaccioUrl()! + "/-/ping");
-    return true;
-  } catch {
-    return false;
-  }
-}
+const NPM_REGISTRY = "https://registry.npmjs.org";
 
 /**
  * Node.js built-in modules that shouldn't be fetched from npm.
@@ -68,12 +48,13 @@ function shouldSkipPackage(packageName: string): boolean {
 }
 
 /**
- * Extract package name from a 404 error message.
+ * Get a stable directory for type-checking deps, keyed by panel path.
  */
-function extractPackageFrom404(errorMsg: string): string | null {
-  if (!errorMsg.includes("404")) return null;
-  const match = errorMsg.match(/https?:\/\/[^\s]+\/(@[a-z0-9_-]+%2f[a-z0-9_-]+|[a-z0-9_-]+)(?:\s|$|-)/i);
-  return match?.[1] ? decodeURIComponent(match[1]) : null;
+function getTypecheckDepsDir(panelPath: string): string {
+  const hash = crypto.createHash("sha256").update(path.resolve(panelPath)).digest("hex").slice(0, 16);
+  const dir = path.join(getUserDataPath(), "typecheck-deps", hash);
+  fsSync.mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 /** Result type for package types */
@@ -87,7 +68,6 @@ export interface PackageTypesResult {
 
 /**
  * TypeDefinitionService - provides type definitions to code-editor via RPC.
- * Uses the panel's build workspace so build and editor share node_modules.
  */
 export class TypeDefinitionService {
   /** Cached @natstack package types */
@@ -112,18 +92,6 @@ export class TypeDefinitionService {
   }
 
   /**
-   * Get the deps directory for a panel (uses "dev" commit for live editing).
-   */
-  private getDepsDir(panelPath: string): string {
-    const { depsDir } = getBuildKeyDirectories({
-      kind: "panel",
-      canonicalPath: path.resolve(panelPath),
-      commit: "dev",
-    });
-    return depsDir;
-  }
-
-  /**
    * Get type definitions for packages.
    */
   async getPackageTypes(
@@ -140,8 +108,8 @@ export class TypeDefinitionService {
         continue;
       }
 
-      // Check @natstack/* local packages
-      if (packageName.startsWith("@natstack/")) {
+      // Check @workspace/* local packages
+      if (packageName.startsWith("@workspace/")) {
         const types = this.getNatstackTypes(packageName);
         if (Object.keys(types).length > 0) {
           results.set(packageName, { files: types });
@@ -155,7 +123,7 @@ export class TypeDefinitionService {
     if (toInstall.length === 0) return results;
 
     // Install and load types
-    const depsDir = this.getDepsDir(panelPath);
+    const depsDir = getTypecheckDepsDir(panelPath);
     const nodeModulesDir = path.join(depsDir, "node_modules");
 
     try {
@@ -226,23 +194,10 @@ export class TypeDefinitionService {
   }
 
   /**
-   * Install packages using content-addressable package store.
+   * Install packages using Arborist (standard npm install).
    */
   private async doInstall(depsDir: string, packageNames: string[]): Promise<void> {
     const packageJsonPath = path.join(depsDir, "package.json");
-    const npmrcPath = path.join(depsDir, ".npmrc");
-
-    const canServeNatstack = await canUseVerdaccio();
-    const registryUrl = canServeNatstack
-      ? getVerdaccioUrl()!
-      : "https://registry.npmjs.org";
-
-    // Set up .npmrc for Verdaccio
-    if (canServeNatstack) {
-      await fs.writeFile(npmrcPath, `registry=${registryUrl}\n`);
-    } else {
-      try { await fs.rm(npmrcPath); } catch { /* ignore */ }
-    }
 
     // Read or create package.json
     let packageJson: { name: string; private: boolean; dependencies: Record<string, string> };
@@ -260,37 +215,22 @@ export class TypeDefinitionService {
     }
     await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
 
-    // Install using content-addressable store
-    const arboristOptions: { path: string; registry?: string; legacyPeerDeps: boolean } = {
-      path: depsDir,
-      legacyPeerDeps: true,
-      registry: registryUrl,
-    };
-
+    // Install using Arborist reify (standard npm install)
     let retries = 0;
     while (retries < 3) {
       try {
-        // 1. Resolve dependency tree with Arborist
-        const arborist = new Arborist(arboristOptions);
-        const idealTree = await arborist.buildIdealTree();
-        const tree = serializeTree(idealTree);
-
-        // 2. Fetch packages to store
-        const fetcher = await createPackageFetcher(registryUrl);
-        const packages = tree.packages.map((p) => ({
-          name: p.name,
-          version: p.version,
-          integrity: p.integrity,
-        }));
-        await fetcher.fetchAll(packages, { concurrency: 10 });
-
-        // 3. Link from store to node_modules
-        const linker = await createPackageLinker(fetcher);
-        await linker.linkFromCache(depsDir, tree);
+        const arborist = new Arborist({
+          path: depsDir,
+          registry: NPM_REGISTRY,
+          legacyPeerDeps: true,
+        });
+        await arborist.buildIdealTree();
+        await arborist.reify();
         break;
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        const failedPkg = extractPackageFrom404(errorMsg);
+        // Extract package name from 404 errors and retry without it
+        const failedPkg = this.extractPackageFrom404(errorMsg);
         if (failedPkg && packageJson.dependencies[failedPkg]) {
           delete packageJson.dependencies[failedPkg];
           await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
@@ -302,7 +242,16 @@ export class TypeDefinitionService {
     }
 
     // Install @types/* for packages without built-in types
-    await this.installTypesPackages(depsDir, packageNames, packageJson, registryUrl);
+    await this.installTypesPackages(depsDir, packageNames, packageJson);
+  }
+
+  /**
+   * Extract package name from a 404 error message.
+   */
+  private extractPackageFrom404(errorMsg: string): string | null {
+    if (!errorMsg.includes("404")) return null;
+    const match = errorMsg.match(/https?:\/\/[^\s]+\/(@[a-z0-9_-]+%2f[a-z0-9_-]+|[a-z0-9_-]+)(?:\s|$|-)/i);
+    return match?.[1] ? decodeURIComponent(match[1]) : null;
   }
 
   /**
@@ -311,8 +260,7 @@ export class TypeDefinitionService {
   private async installTypesPackages(
     depsDir: string,
     packageNames: string[],
-    packageJson: { name: string; private: boolean; dependencies: Record<string, string> },
-    registryUrl: string
+    packageJson: { name: string; private: boolean; dependencies: Record<string, string> }
   ): Promise<void> {
     const packageJsonPath = path.join(depsDir, "package.json");
     const nodeModulesDir = path.join(depsDir, "node_modules");
@@ -338,28 +286,16 @@ export class TypeDefinitionService {
     await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
 
     try {
-      // Resolve and install @types packages using content-addressable store
       const arborist = new Arborist({
         path: depsDir,
-        registry: registryUrl,
+        registry: NPM_REGISTRY,
         legacyPeerDeps: true,
       });
-      const idealTree = await arborist.buildIdealTree();
-      const tree = serializeTree(idealTree);
-
-      const fetcher = await createPackageFetcher(registryUrl);
-      const packages = tree.packages.map((p) => ({
-        name: p.name,
-        version: p.version,
-        integrity: p.integrity,
-      }));
-      await fetcher.fetchAll(packages, { concurrency: 10 });
-
-      const linker = await createPackageLinker(fetcher);
-      await linker.linkFromCache(depsDir, tree);
+      await arborist.buildIdealTree();
+      await arborist.reify();
     } catch (error) {
       // @types/* failures are non-fatal - some packages don't have types
-      const failedPkg = extractPackageFrom404(String(error));
+      const failedPkg = this.extractPackageFrom404(String(error));
       if (failedPkg) {
         delete packageJson.dependencies[failedPkg];
         await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
@@ -368,7 +304,7 @@ export class TypeDefinitionService {
   }
 
   /**
-   * Invalidate and reload @natstack/* types cache.
+   * Invalidate and reload @workspace/* types cache.
    */
   async invalidateNatstackTypes(): Promise<void> {
     this.natstackTypes = null;

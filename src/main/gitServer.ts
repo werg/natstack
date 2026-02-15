@@ -26,6 +26,18 @@ import {
 const DEFAULT_GIT_SERVER_PORT = 63524;
 
 /**
+ * Structured push event emitted after a git push is accepted.
+ */
+export interface GitPushEvent {
+  /** Normalized repo path: e.g. "panels/chat" (no leading /, no .git suffix) */
+  repo: string;
+  /** Normalized branch name: e.g. "main" (no refs/heads/ prefix) */
+  branch: string;
+  /** New commit SHA */
+  commit: string;
+}
+
+/**
  * Configuration options for the git server
  */
 export interface GitServerConfig {
@@ -55,6 +67,9 @@ export class GitServer {
   // Track discovered repo paths for validation (normalized with forward slashes)
   private discoveredRepoPaths: Set<string> = new Set();
 
+  // Push event listeners
+  private pushListeners: Set<(event: GitPushEvent) => void> = new Set();
+
   // GitHub proxy configuration
   private githubConfig: Required<GitHubProxyConfig> = {
     enabled: true,
@@ -67,7 +82,7 @@ export class GitServer {
     this.configuredReposPath = config?.reposPath ?? null;
     // Note: initPatterns is for auto-init of NEW directories as git repos.
     // scanDirectory() is already recursive and discovers repos at any depth.
-    this.initPatterns = config?.initPatterns ?? ["panels/*", "workers/*", "packages/*"];
+    this.initPatterns = config?.initPatterns ?? ["panels/*", "packages/*"];
     this.authManager = new GitAuthManager(getTokenManager());
 
     // Apply GitHub proxy config
@@ -142,8 +157,12 @@ export class GitServer {
 
     // Handle push events
     this.git.on("push", (push) => {
-      log.verbose(` Push to ${push.repo}/${push.branch} (${push.commit})`);
       push.accept();
+      const repo = push.repo.replace(/^\/+/, "").replace(/\.git(\/.*)$/, "").replace(/\/+$/, "");
+      const branch = push.branch.replace(/^refs\/heads\//, "");
+      log.verbose(` Push to ${repo}/${branch} (${push.commit})`);
+      const event: GitPushEvent = { repo, branch, commit: push.commit };
+      for (const fn of this.pushListeners) fn(event);
     });
 
     // Handle fetch events
@@ -264,6 +283,14 @@ export class GitServer {
    */
   getReposPath(): string {
     return this.ensureReposPath();
+  }
+
+  /**
+   * Subscribe to push events. Returns an unsubscribe function.
+   */
+  onPush(handler: (event: GitPushEvent) => void): () => void {
+    this.pushListeners.add(handler);
+    return () => { this.pushListeners.delete(handler); };
   }
 
   /**
@@ -635,7 +662,7 @@ export class GitServer {
       if (packageJson.natstack) {
         const ns = packageJson.natstack;
         result.launchable = {
-          type: ns.type || (ns.runtime === "worker" ? "worker" : "app"),
+          type: ns.type || "app",
           title: ns.title || packageJson.name || path.basename(absolutePath),
           repoArgs: ns.repoArgs,
           envArgs: ns.envArgs,

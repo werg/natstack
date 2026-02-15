@@ -24,7 +24,7 @@ const shellTransport: TransportBridge = createWsTransport({
   callerKind: "shell",
 });
 
-// Expose the transport global for the shell client's direct @natstack/rpc bridge
+// Expose the transport global for the shell client's direct @workspace/rpc bridge
 declare global {
   var __natstackTransport: TransportBridge | undefined;
 }

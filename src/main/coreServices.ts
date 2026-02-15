@@ -3,21 +3,10 @@
  *
  * `startCoreServices` runs the service init sequence in dependency order
  * and returns a handle for deferred AI service registration and shutdown.
- * It is **fail-fast** — throws on error. Callers control error policy:
- *   - Electron wraps in try/catch and still calls markInitialized()
- *   - Server lets the error propagate to main().catch() and exits
- *
- * On partial failure, already-started resources are cleaned up before the
- * error is re-thrown (cleanup-on-error stack).
  */
 
-import * as path from "path";
 import { createDevLogger } from "./devLog.js";
-import { getUserDataPath } from "./envPaths.js";
-import { getAppRoot } from "./paths.js";
-import { createVerdaccioServer, type VerdaccioServer } from "./verdaccioServer.js";
 import { getTypeDefinitionService, typeCheckRpcMethods } from "./typecheck/service.js";
-import { getNatstackPackageWatcher, shutdownNatstackWatcher } from "./natstackPackageWatcher.js";
 import { createGitWatcher, type GitWatcher } from "./workspace/gitWatcher.js";
 import { getPubSubServer } from "./pubsubServer.js";
 import { initAgentDiscovery, shutdownAgentDiscovery } from "./agentDiscovery.js";
@@ -39,7 +28,6 @@ const log = createDevLogger("CoreServices");
 export interface CoreServicesHandle {
   aiHandler: AIHandler;
   gitServer: GitServer;
-  verdaccioServer: VerdaccioServer;
   gitWatcher: GitWatcher;
   pubsubPort: number;
   /** Register the "ai" dispatcher service (deferred — caller creates rpcServer first). */
@@ -51,11 +39,13 @@ export interface CoreServicesHandle {
 export async function startCoreServices({
   workspace,
   gitServer,
+  getBuild,
 }: {
   workspace: Workspace;
   gitServer: GitServer;
+  /** V2 build service — getBuild(unitPath) returns build result */
+  getBuild: (unitPath: string) => Promise<unknown>;
 }): Promise<CoreServicesHandle> {
-  // Cleanup stack: on partial failure, run these in reverse order before re-throwing.
   const cleanups: (() => void | Promise<void>)[] = [];
 
   try {
@@ -68,69 +58,39 @@ export async function startCoreServices({
     cleanups.push(() => shutdownAgentSettingsService());
     log.info("[AgentSettingsService] Initialized");
 
-    // Step 2: Verdaccio
-    const verdaccioServer = createVerdaccioServer({
-      workspaceRoot: getAppRoot(),
-      storagePath: path.join(getUserDataPath(), "verdaccio-storage"),
-    });
-    verdaccioServer.setNatstackPublishHook(() =>
-      getTypeDefinitionService().invalidateNatstackTypes()
-    );
-    await verdaccioServer.buildAllWorkspacePackages();
-    await verdaccioServer.start();
-    cleanups.push(() => verdaccioServer.stop());
-    log.info(`[Verdaccio] Registry started on port ${verdaccioServer.getPort()}`);
-
-    const publishResult = await verdaccioServer.publishChangedPackages();
-    if (publishResult.changesDetected.changed.length > 0) {
-      log.info(
-        `[Verdaccio] Synced ${publishResult.changesDetected.changed.length} packages: ${publishResult.changesDetected.changed.join(", ")}`
-      );
-    } else {
-      log.info("[Verdaccio] All packages up-to-date");
-    }
-
-    // Step 3: NatstackPackageWatcher
-    const natstackWatcher = getNatstackPackageWatcher(getAppRoot());
-    await natstackWatcher.initialize((pkgPath, pkgName) =>
-      verdaccioServer.republishPackage(pkgPath, pkgName)
-    );
-    cleanups.push(() => void shutdownNatstackWatcher());
-    log.info("[NatstackWatcher] Watching packages/ for file changes");
-
-    // Step 4: GitServer
+    // Step 2: GitServer
     await gitServer.start();
     cleanups.push(() => gitServer.stop());
     log.info(`[Git] Server started on port ${gitServer.getPort()}`);
 
-    // Step 5: GitWatcher + subscriptions
+    // Step 3: GitWatcher + subscriptions
     const gitWatcher = createGitWatcher(workspace);
     cleanups.push(() => gitWatcher.close());
     log.info("[GitWatcher] Started watching workspace for git changes");
     gitServer.subscribeToGitWatcher(gitWatcher);
-    await verdaccioServer.subscribeToGitWatcher(gitWatcher, workspace.path);
 
-    // Step 6: PubSub
+    // Step 4: PubSub
     const pubsubServer = getPubSubServer();
     const pubsubPort = await pubsubServer.start();
     cleanups.push(() => pubsubServer.stop());
     log.info(`[PubSub] Server started on port ${pubsubPort}`);
 
-    // Step 7: AgentHost
+    // Step 5: AgentHost (uses "server" tokens)
     const agentHost = initAgentHost({
       workspaceRoot: workspace.path,
       pubsubUrl: `ws://127.0.0.1:${pubsubPort}`,
       messageStore: pubsubServer.getMessageStore(),
       createToken: (instanceId) =>
-        getTokenManager().createToken(instanceId, "worker"),
+        getTokenManager().createToken(instanceId, "server"),
       revokeToken: (instanceId) => getTokenManager().revokeToken(instanceId),
+      getBuild: getBuild as (unitPath: string) => Promise<{ bundlePath: string; dir: string; metadata: { kind: string; name: string } }>,
     });
     await agentHost.initialize();
     cleanups.push(() => shutdownAgentHost());
     pubsubServer.setAgentHost(agentHost);
     log.info("[AgentHost] Initialized");
 
-    // Step 8: AI handler
+    // Step 6: AI handler
     const { AIHandler: AIHandlerClass } = await import("./ai/aiHandler.js");
     const aiHandler = new AIHandlerClass();
     await aiHandler.initialize();
@@ -201,12 +161,9 @@ export async function startCoreServices({
       }
     );
 
-    // Success — return handle. The cleanup stack is NOT run on success;
-    // instead, the returned shutdown() uses the same teardown order.
     return {
       aiHandler,
       gitServer,
-      verdaccioServer,
       gitWatcher,
       pubsubPort,
 
@@ -232,13 +189,10 @@ export async function startCoreServices({
       },
 
       async shutdown() {
-        // Synchronous stops first
         shutdownAgentSettingsService();
         shutdownAgentDiscovery();
         shutdownAgentHost();
-        void shutdownNatstackWatcher();
 
-        // Parallel async stops (each individually caught)
         await Promise.all([
           gitServer
             .stop()
@@ -258,17 +212,10 @@ export async function startCoreServices({
             .catch((e) =>
               console.error("[CoreServices] PubSub stop error:", e)
             ),
-          verdaccioServer
-            .stop()
-            .then(() => log.info("[Verdaccio] Server stopped"))
-            .catch((e) =>
-              console.error("[CoreServices] Verdaccio stop error:", e)
-            ),
         ]);
       },
     };
   } catch (error) {
-    // Partial failure — clean up already-started resources in reverse order
     log.info("[CoreServices] Partial init failure, cleaning up started resources...");
     for (const fn of cleanups.reverse()) {
       try {

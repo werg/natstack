@@ -12,27 +12,14 @@
  */
 
 import type { ShellPage } from "../shared/types.js";
-import { getShellPageKeys } from "./aboutBuilder.js";
-
-/**
- * Valid shell page names for ns-about:// protocol.
- * Derived from the canonical SHELL_PAGE_META in aboutBuilder.ts.
- */
-export const VALID_ABOUT_PAGES: ShellPage[] = getShellPageKeys();
 
 export interface ParsedNsAboutUrl {
   page: ShellPage;
 }
 
 /**
- * Check if a string is a valid shell page.
- */
-export function isValidAboutPage(page: string): page is ShellPage {
-  return VALID_ABOUT_PAGES.includes(page as ShellPage);
-}
-
-/**
  * Parse an ns-about:// URL into its components.
+ * About page names are dynamically discovered — no hardcoded validation.
  */
 export function parseNsAboutUrl(url: string): ParsedNsAboutUrl {
   const parsed = new URL(url);
@@ -47,10 +34,6 @@ export function parseNsAboutUrl(url: string): ParsedNsAboutUrl {
     throw new Error(`Invalid ns-about URL: missing page (${url})`);
   }
 
-  if (!isValidAboutPage(page)) {
-    throw new Error(`Invalid ns-about page: ${page}. Valid pages: ${VALID_ABOUT_PAGES.join(", ")}`);
-  }
-
   return { page };
 }
 
@@ -58,8 +41,5 @@ export function parseNsAboutUrl(url: string): ParsedNsAboutUrl {
  * Build an ns-about:// URL from a page name.
  */
 export function buildNsAboutUrl(page: ShellPage): string {
-  if (!isValidAboutPage(page)) {
-    throw new Error(`Invalid about page: ${page}. Valid pages: ${VALID_ABOUT_PAGES.join(", ")}`);
-  }
   return `ns-about://${page}`;
 }

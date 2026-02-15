@@ -7,7 +7,7 @@
  */
 
 import { createClaudeCode, type ClaudeCodeSettings } from "ai-sdk-provider-claude-code";
-import type { AIToolDefinition } from "@natstack/ai";
+import type { AIToolDefinition } from "@natstack/types";
 import {
   createToolProxyMcpServer,
   getMcpToolNames,

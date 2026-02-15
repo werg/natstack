@@ -4,7 +4,7 @@
  * Defines the message envelopes exchanged between WS clients (panels, workers,
  * shell, admin) and the RPC server. All types are pure data — no server state.
  *
- * Reuses RpcMessage from @natstack/rpc for the inner request/response payloads.
+ * Reuses RpcMessage from @workspace/rpc for the inner request/response payloads.
  */
 
 import type { RpcMessage } from "@natstack/rpc";

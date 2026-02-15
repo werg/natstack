@@ -18,7 +18,6 @@ import {
 
 export interface ServerPorts {
   rpcPort: number;
-  verdaccioPort: number;
   gitPort: number;
   pubsubPort: number;
   adminToken: string;
@@ -121,7 +120,6 @@ export class ServerProcessManager {
         if (msg?.type === "ready") {
           resolve({
             rpcPort: msg.rpcPort,
-            verdaccioPort: msg.verdaccioPort,
             gitPort: msg.gitPort,
             pubsubPort: msg.pubsubPort,
             adminToken: msg.adminToken,

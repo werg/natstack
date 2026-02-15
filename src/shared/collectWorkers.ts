@@ -38,7 +38,7 @@ export interface CollectWorkersOptions {
  * // workers = {
  * //   "monaco/editor.worker.js": {
  * //     specifier: "monaco-editor/esm/vs/editor/editor.worker.js",
- * //     declaredBy: "@natstack/git-ui"
+ * //     declaredBy: "@workspace/git-ui"
  * //   }
  * // }
  * ```

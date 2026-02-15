@@ -13,7 +13,7 @@
  * - Implements stream resource limits and cleanup
  */
 
-import type { AIRoleRecord, AIModelInfo, AIToolDefinition } from "@natstack/ai";
+import type { AIRoleRecord, AIModelInfo, AIToolDefinition } from "@natstack/types";
 import type {
   StreamTextOptions,
   StreamTextEvent,

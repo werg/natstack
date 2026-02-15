@@ -50,7 +50,7 @@ export type { PanelSummary, PanelAncestor, DescendantSiblingGroup };
  */
 export interface FullPanel {
   id: string;
-  type: "app" | "worker" | "browser" | "shell";
+  type: "app" | "browser" | "shell";
   title: string;
   contextId: string;
   parentId: string | null;
@@ -75,11 +75,8 @@ export interface FullPanel {
   };
   page?: string;
   sourceRepo?: string;
-  gitRef?: string;
   injectHostThemeVariables?: boolean;
-  unsafe?: boolean | string;
   resolvedRepoArgs?: Record<string, unknown>;
-  workerOptions?: { unsafe?: boolean | string };
 }
 
 // ============================================================================
@@ -376,20 +373,7 @@ function panelToFull(panel: Panel, parentId: string | null, position: number): F
       ...base,
       path: getPanelSource(panel),
       sourceRepo: getPanelSource(panel),
-      gitRef: options.gitRef,
       injectHostThemeVariables: true, // Default for app panels
-      unsafe: options.unsafe,
-      resolvedRepoArgs: options.repoArgs,
-    };
-  }
-
-  if (panelType === "worker") {
-    return {
-      ...base,
-      path: getPanelSource(panel),
-      sourceRepo: getPanelSource(panel),
-      gitRef: options.gitRef,
-      workerOptions: { unsafe: options.unsafe },
       resolvedRepoArgs: options.repoArgs,
     };
   }

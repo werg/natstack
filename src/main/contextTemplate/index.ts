@@ -1,12 +1,9 @@
 /**
  * Context Template System
  *
- * Provides Docker-like layered filesystem inheritance for SAFE panel contexts.
+ * Provides Docker-like layered filesystem inheritance for panel contexts.
  * Templates define git repositories to clone into specific paths within
  * a context's filesystem scope (OPFS).
- *
- * Note: Unsafe panels do NOT participate in the template system. They get
- * a simple context ID (unsafe_noctx_*) without any template initialization.
  *
  * ## Usage
  *
@@ -24,8 +21,8 @@
  * // Compute the immutable spec (detects conflicts)
  * const immutableSpec = computeImmutableSpec(resolved);
  *
- * // Generate a context ID (safe mode only uses templates)
- * const contextId = createContextId("safe", immutableSpec.specHash, "my-panel");
+ * // Generate a context ID
+ * const contextId = createContextId(immutableSpec.specHash, "my-panel");
  *
  * // Initialize a context partition from the template (OPFS-based)
  * await ensureContextPartitionInitialized(contextId, immutableSpec, gitConfig);
@@ -35,7 +32,6 @@
 // Types
 export type {
   GitSpec,
-  ContextMode,
   ContextTemplateYaml,
   ParsedGitSpec,
   ResolvedGitSpec,
@@ -66,10 +62,7 @@ export {
   createContextId,
   generateInstanceId,
   deriveInstanceIdFromPanelId,
-  validateContextIdMode,
   getTemplateSpecHashFromContextId,
-  createUnsafeContextId,
-  isUnsafeNoContextId,
 } from "./contextId.js";
 
 // Parser functions
@@ -162,7 +155,6 @@ const log = createDevLogger("ContextTemplate");
 /**
  * Create a context ID from a template git spec.
  * Resolves the template, computes the immutable spec, and generates the ID.
- * Only for safe mode - unsafe panels use createUnsafeContextId() directly.
  *
  * @param templateGitSpec - Git spec for the template
  * @param instanceId - Instance identifier
@@ -174,7 +166,7 @@ export async function createContextIdFromTemplateSpec(
 ): Promise<string> {
   const resolved = await resolveTemplate(templateGitSpec);
   const immutable = computeImmutableSpec(resolved);
-  return createContextId("safe", immutable.specHash, instanceId);
+  return createContextId(immutable.specHash, instanceId);
 }
 
 /**

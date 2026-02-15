@@ -41,7 +41,7 @@ export interface ViewConfig {
   /** Unique view ID (typically panel ID) */
   id: string;
   /** View type for tracking */
-  type: "shell" | "panel" | "browser" | "worker";
+  type: "shell" | "panel" | "browser";
   /** Session partition (e.g., "persist:safe_auto_tree~panels~editor"). Omit for default session. */
   partition?: string;
   /** Preload script path. Set to null to disable preload (for browsers). */
@@ -60,7 +60,7 @@ export interface ViewConfig {
 interface ManagedView {
   id: string;
   view: WebContentsView;
-  type: "shell" | "panel" | "browser" | "worker";
+  type: "shell" | "panel" | "browser";
   parentId?: string;
   visible: boolean;
   bounds: ViewBounds;
