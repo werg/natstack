@@ -30,12 +30,22 @@ import { WorkspaceTreeView } from "./WorkspaceTreeView";
 import { RepoSelector } from "./RepoSelector";
 
 /**
- * Shell page metadata returned from main process.
+ * About page metadata from the build service.
+ */
+interface AboutPageMeta {
+  name: string;
+  title: string;
+  description?: string;
+  hiddenInLauncher: boolean;
+}
+
+/**
+ * Shell page metadata for display.
  */
 interface ShellPageMeta {
   page: AboutPage;
   title: string;
-  description: string;
+  description?: string;
 }
 
 interface LaunchFormProps {
@@ -168,10 +178,14 @@ function NewPanelPage() {
     try {
       const [treeData, pagesData] = await Promise.all([
         getWorkspaceTree(),
-        rpc.call<ShellPageMeta[]>("main", "app.getShellPages"),
+        rpc.call<AboutPageMeta[]>("main", "build.getAboutPages"),
       ]);
       setTree(treeData);
-      setShellPages(pagesData);
+      setShellPages(
+        pagesData
+          .filter((p) => !p.hiddenInLauncher)
+          .map((p) => ({ page: p.name, title: p.title, description: p.description }))
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -367,9 +381,9 @@ function NewPanelPage() {
                   >
                     <Flex direction="column" gap="1">
                       <Text weight="medium">{page.title}</Text>
-                      <Text size="1" color="gray">
-                        {page.description}
-                      </Text>
+                      {page.description && (
+                        <Text size="1" color="gray">{page.description}</Text>
+                      )}
                     </Flex>
                   </Card>
                 ))}

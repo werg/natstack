@@ -126,6 +126,10 @@ describe("contextId", () => {
     it("handles multiple consecutive slashes", () => {
       expect(deriveInstanceIdFromPanelId("a//b")).toBe("a~~b");
     });
+
+    it("replaces colons with tildes (shell panel IDs)", () => {
+      expect(deriveInstanceIdFromPanelId("shell:new~mlo4zmbl")).toBe("shell~new~mlo4zmbl");
+    });
   });
 
   describe("generateInstanceId", () => {

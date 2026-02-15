@@ -228,12 +228,8 @@ export async function buildTemplatePartition(
     // The worker will read config from env and clone repos to OPFS
     await pm.createTemplateBuilderWorker(workerId, partitionName, templateConfig);
 
-    // Wait for completion signal
-    const result = await completionPromise;
-
-    if (!result.success) {
-      throw new Error(result.error ?? "Template build failed");
-    }
+    // Wait for completion signal (rejects on failure or timeout)
+    await completionPromise;
 
     // Destroy the worker view
     await pm.closeTemplateBuilderWorker(workerId);

@@ -50,6 +50,7 @@ export interface InternalDepRef {
 export interface PackageManifest {
   type?: "app";
   title?: string;
+  description?: string;
   entry?: string;
   shell?: boolean;
   hiddenInLauncher?: boolean;

@@ -106,8 +106,9 @@ export function generateInstanceId(prefix?: string): string {
  * @returns A deterministic instance ID
  */
 export function deriveInstanceIdFromPanelId(panelId: string): string {
-  // Replace slashes with tildes (same convention as old contextId system)
-  return panelId.replace(/\//g, "~");
+  // Replace slashes and colons with tildes (same convention as old contextId system)
+  // Colons appear in shell panel IDs (e.g., "shell:new~abc123")
+  return panelId.replace(/[/:]/g, "~");
 }
 
 /**

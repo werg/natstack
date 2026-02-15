@@ -5,6 +5,7 @@
   "natstack": {
     "type": "app",
     "title": "Ad Blocking",
+    "description": "Configure ad and tracker blocking",
     "shell": true,
     "hiddenInLauncher": false
   },

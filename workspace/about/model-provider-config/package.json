@@ -5,6 +5,7 @@
   "natstack": {
     "type": "app",
     "title": "Model Provider Config",
+    "description": "Configure AI model providers and API keys",
     "shell": true,
     "hiddenInLauncher": false
   },
