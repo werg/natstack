@@ -3810,6 +3810,7 @@ export class PanelManager {
     // Build the template-builder via the V2 build service
     const buildResult = await this.serverInfo.call("build", "getBuild", ["template-builder"]) as {
       bundle: string; html: string;
+      assets?: Record<string, { content: string; encoding?: string }>;
     } | null;
     if (!buildResult) {
       throw new Error("Failed to build template-builder via build service");
@@ -3821,6 +3822,7 @@ export class PanelManager {
       html: buildResult.html,
       title: "Template Builder",
       sourceRepo: "builtin:template-builder",
+      assets: buildResult.assets as SharedPanel.ProtocolBuildArtifacts["assets"],
     });
 
     // Create hidden view with template partition
