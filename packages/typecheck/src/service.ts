@@ -99,15 +99,13 @@ export interface TypeCheckServiceConfig {
   resolution?: Partial<ModuleResolutionConfig>;
   /** TypeScript compiler options override */
   compilerOptions?: ts.CompilerOptions;
-  /** Path mappings for @workspace/* packages */
-  natstackPackagePaths?: Record<string, string>;
   /** Path to lib.d.ts files */
   libPath?: string;
   /**
    * Callback to fetch external package types on-demand.
    * Returns files map and optionally referenced packages that should also be loaded.
    */
-  requestExternalTypes?: (packageName: string) => Promise<ExternalTypesResult | Map<string, string> | null>;
+  requestExternalTypes?: (packageName: string) => Promise<ExternalTypesResult | null>;
   /**
    * Path to the monorepo root (containing packages directory).
    * If provided, natstack types are loaded from packages dist folders.
@@ -352,11 +350,10 @@ export class TypeCheckService {
       const value = result.value;
       if (!value) continue;
 
-      // Handle both Map<string, string> (legacy) and ExternalTypesResult
-      const files = value instanceof Map ? value : value.files;
-      const referencedPackages = value instanceof Map ? undefined : value.referencedPackages;
-      const entryPoint = value instanceof Map ? undefined : value.entryPoint;
-      const subpaths = value instanceof Map ? undefined : value.subpaths;
+      const files = value.files;
+      const referencedPackages = value.referencedPackages;
+      const entryPoint = value.entryPoint;
+      const subpaths = value.subpaths;
 
       if (files && files.size > 0) {
         for (const [filePath, content] of files) {
@@ -400,7 +397,7 @@ export class TypeCheckService {
    * Uses typeLoader for direct filesystem access when available,
    * otherwise falls back to requestExternalTypes callback.
    */
-  private async loadTypesForPackage(packageName: string): Promise<ExternalTypesResult | Map<string, string> | null> {
+  private async loadTypesForPackage(packageName: string): Promise<ExternalTypesResult | null> {
     // Prefer direct filesystem access when nodeModulesPaths is configured
     if (this.typeLoader) {
       const result = await this.typeLoader.loadPackageTypes(packageName);
@@ -789,18 +786,14 @@ export class TypeCheckService {
           }
         }
 
-        // Map @workspace/* to the package path if configured (fallback)
-        const packagePath =
-          this.config.natstackPackagePaths?.[result.packageName];
-        if (packagePath) {
-          return {
-            resolvedModule: {
-              resolvedFileName: packagePath,
-              isExternalLibraryImport: false,
-              extension: ts.Extension.Ts,
-            },
-          };
+        // Fallback to user's workspace packages directory when available.
+        if (this.config.userWorkspacePath) {
+          const workspaceResolution = this.resolveWorkspaceModule(moduleName);
+          if (workspaceResolution) {
+            return workspaceResolution;
+          }
         }
+
         // Fall through to standard resolution
         break;
       }

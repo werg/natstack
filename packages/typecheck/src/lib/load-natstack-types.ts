@@ -32,15 +32,32 @@ async function discoverPackages(packagesDir: string): Promise<string[]> {
   }
 }
 
+/**
+ * Synchronous variant of discoverPackages for lazy cache misses.
+ */
+function discoverPackagesSync(packagesDir: string): string[] {
+  try {
+    const entries = fs.readdirSync(packagesDir, { withFileTypes: true });
+    const packages: string[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const pkgJson = path.join(packagesDir, entry.name, "package.json");
+      if (fs.existsSync(pkgJson)) {
+        packages.push(entry.name);
+      }
+    }
+    return packages;
+  } catch {
+    return [];
+  }
+}
+
 export interface NatstackPackageTypes {
   files: Record<string, string>;
   subpaths: Record<string, string>;
 }
 
 interface PackageJson {
-  name: string;
-  types?: string;
-  typings?: string;
   exports?: Record<string, string | Record<string, string>>;
 }
 
@@ -48,21 +65,20 @@ interface PackageJson {
 const natstackTypesCache = new Map<string, Record<string, NatstackPackageTypes>>();
 
 /**
- * Get @workspace/* package types from the pre-warmed cache.
+ * Get @workspace/* package types for a packages directory.
  *
- * IMPORTANT: Call preloadNatstackTypesAsync() at app startup before using this.
- * If the cache is cold, returns empty object and logs a warning.
+ * Uses a module-level cache keyed by packagesDir.
+ * On cache miss, types are loaded synchronously and cached.
+ * Call preloadNatstackTypesAsync() at startup to warm cache proactively.
  */
 export function loadNatstackPackageTypes(packagesDir: string): Record<string, NatstackPackageTypes> {
   const cached = natstackTypesCache.get(packagesDir);
   if (cached) return cached;
 
-  // Cache miss - preload wasn't called or used different path
-  console.warn(
-    `[loadNatstackPackageTypes] Cache miss for "${packagesDir}". ` +
-    `Call preloadNatstackTypesAsync() at startup to avoid this warning.`
-  );
-  return {};
+  // Cache miss - load synchronously and cache for subsequent calls.
+  const loaded = loadNatstackPackageTypesSync(packagesDir);
+  natstackTypesCache.set(packagesDir, loaded);
+  return loaded;
 }
 
 /**
@@ -74,9 +90,9 @@ export function clearNatstackTypesCache(): void {
 }
 
 /**
- * Get types for a single @workspace/* package from the pre-warmed cache.
+ * Get types for a single @workspace/* package.
  *
- * IMPORTANT: Call preloadNatstackTypesAsync() at app startup before using this.
+ * Call preloadNatstackTypesAsync() at startup to avoid synchronous cache-miss loading.
  */
 export function loadSinglePackageTypes(packagesDir: string, packageName: string): NatstackPackageTypes | null {
   const allTypes = loadNatstackPackageTypes(packagesDir);
@@ -114,6 +130,20 @@ export async function preloadNatstackTypesAsync(packagesDir: string): Promise<vo
   natstackTypesCache.set(packagesDir, result);
 }
 
+function loadNatstackPackageTypesSync(packagesDir: string): Record<string, NatstackPackageTypes> {
+  const packageNames = discoverPackagesSync(packagesDir);
+  const result: Record<string, NatstackPackageTypes> = {};
+
+  for (const pkgName of packageNames) {
+    const types = loadPackageTypesSync(packagesDir, pkgName);
+    if (types) {
+      result[`@workspace/${pkgName}`] = types;
+    }
+  }
+
+  return result;
+}
+
 async function loadPackageTypesAsync(
   packagesDir: string,
   pkgName: string
@@ -146,6 +176,49 @@ async function loadPackageTypesAsync(
   }
 
   // Build subpaths from package.json exports
+  const subpaths: Record<string, string> = {};
+  if (pkgJson.exports) {
+    for (const exportPath of Object.keys(pkgJson.exports)) {
+      if (exportPath === ".") continue;
+      const typesPath = resolveExportSubpath(pkgJson.exports as Record<string, unknown>, exportPath, TYPES_CONDITIONS);
+      if (typesPath && /\.d\.[cm]?ts$/.test(typesPath)) {
+        subpaths[exportPath] = typesPath.replace(/^\.\/dist\//, "");
+      }
+    }
+  }
+
+  return { files, subpaths };
+}
+
+function loadPackageTypesSync(
+  packagesDir: string,
+  pkgName: string
+): NatstackPackageTypes | null {
+  const pkgDir = path.join(packagesDir, pkgName);
+  const pkgJsonPath = path.join(pkgDir, "package.json");
+
+  if (!fs.existsSync(pkgJsonPath)) {
+    return null;
+  }
+
+  let pkgJson: PackageJson;
+  try {
+    pkgJson = JSON.parse(
+      fs.readFileSync(pkgJsonPath, "utf-8")
+    ) as PackageJson;
+  } catch {
+    return null;
+  }
+
+  const distDir = path.join(pkgDir, "dist");
+  const dtsFiles = readDtsFilesSync(distDir);
+  if (dtsFiles.size === 0) return null;
+
+  const files: Record<string, string> = {};
+  for (const [filePath, content] of dtsFiles) {
+    files[filePath] = content;
+  }
+
   const subpaths: Record<string, string> = {};
   if (pkgJson.exports) {
     for (const exportPath of Object.keys(pkgJson.exports)) {
@@ -205,12 +278,48 @@ async function readDtsFilesAsync(
   return files;
 }
 
-export function findPackagesDir(workspaceRoot: string): string | null {
-  const directPath = path.join(workspaceRoot, "packages");
-  if (fs.existsSync(directPath)) return directPath;
+function readDtsFilesSync(
+  dir: string,
+  baseDir: string = dir
+): Map<string, string> {
+  const files = new Map<string, string>();
 
-  const parentPath = path.join(path.dirname(workspaceRoot), "packages");
-  if (fs.existsSync(parentPath)) return parentPath;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return files;
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    const relativePath = path.relative(baseDir, fullPath);
+
+    if (entry.isDirectory()) {
+      const subFiles = readDtsFilesSync(fullPath, baseDir);
+      for (const [subPath, content] of subFiles) {
+        files.set(subPath, content);
+      }
+    } else if (entry.name.endsWith(".d.ts") && !entry.name.endsWith(".d.ts.map")) {
+      files.set(relativePath, fs.readFileSync(fullPath, "utf-8"));
+    }
+  }
+
+  return files;
+}
+
+export function findPackagesDir(workspaceRoot: string): string | null {
+  const parent = path.dirname(workspaceRoot);
+  const candidates = [
+    path.join(workspaceRoot, "workspace", "packages"),
+    path.join(workspaceRoot, "packages"),
+    path.join(parent, "workspace", "packages"),
+    path.join(parent, "packages"),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
 
   return null;
 }
