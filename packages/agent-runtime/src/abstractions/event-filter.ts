@@ -4,7 +4,7 @@
  * Shared event filtering logic for the agent event stream.
  */
 
-import type { Participant } from "@workspace/pubsub";
+import type { Participant } from "@natstack/pubsub";
 import type {
   AgenticParticipantMetadata,
   EventStreamItem,

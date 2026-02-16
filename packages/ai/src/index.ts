@@ -1,5 +1,5 @@
 /**
- * @workspace/ai
+ * @natstack/ai
  *
  * AI client and types for NatStack.
  *

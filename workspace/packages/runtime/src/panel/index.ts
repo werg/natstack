@@ -22,7 +22,7 @@ const { runtime, config } = initRuntime({
 // Configure dependency injection for shared packages
 // These packages use injection to avoid circular dependencies with runtime
 import { setDbOpen } from "@workspace/agentic-messaging";
-import { setRpc } from "@workspace/ai";
+import { setRpc } from "@natstack/ai";
 
 // Inject db opener for agentic-messaging (session persistence, etc.)
 setDbOpen(runtime.db.open);

@@ -10,7 +10,7 @@ import { Flex, Button, Tooltip, Callout } from "@radix-ui/themes";
 import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import { GitStatusView, useGitStatus, type GitNotification } from "@workspace/git-ui";
 import type { GitClient } from "@natstack/git";
-import { ai } from "@workspace/ai";
+import { ai } from "@natstack/ai";
 import type { ThemeAppearance } from "@workspace/runtime";
 import { createServiceGitClient, createServiceFs } from "@workspace/about-shared/serviceAdapters";
 
@@ -77,7 +77,7 @@ export function DirtyRepoView({ repoPath, onRetryBuild, onNotify, theme }: Dirty
     onNotify?.(notification);
   }, [onNotify]);
 
-  // AI commit message generation using @workspace/ai directly
+  // AI commit message generation using @natstack/ai directly
   const handleGenerateCommitMessage = useCallback(async (diff: string): Promise<string> => {
     const systemPrompt = `You are a helpful assistant that generates concise, descriptive git commit messages.
 Based on the provided diff, generate a commit message following these guidelines:

@@ -63,7 +63,7 @@ import {
   type IncomingNewMessage,
 } from "@workspace/agentic-messaging";
 import { prettifyToolName } from "@workspace/agentic-messaging/utils";
-import type { Attachment } from "@workspace/pubsub";
+import type { Attachment } from "@natstack/pubsub";
 import { CODEX_PARAMETERS, findNewestInFamily, getRecommendedDefault } from "@workspace/agentic-messaging/config";
 import { z } from "zod";
 import { Codex } from "@openai/codex-sdk";

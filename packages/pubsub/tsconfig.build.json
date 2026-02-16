@@ -3,7 +3,7 @@
   "exclude": ["**/*.test.ts", "**/*.spec.ts"],
   "compilerOptions": {
     "paths": {
-      "@natstack/types": ["../../../packages/types/dist/index.d.ts"]
+      "@natstack/types": ["../types/dist/index.d.ts"]
     }
   }
 }

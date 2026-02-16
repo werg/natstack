@@ -35,7 +35,7 @@ import {
   AI_RESPONDER_PARAMETERS,
   AI_ROLE_FALLBACKS,
 } from "@workspace/agentic-messaging/config";
-import type { Attachment } from "@workspace/pubsub";
+import type { Attachment } from "@natstack/pubsub";
 import type { Message, ToolResultPart } from "@natstack/types";
 import {
   createMessageQueue,
@@ -57,7 +57,7 @@ import {
 import {
   createRestrictedModeSystemPrompt,
 } from "@natstack/agent-patterns/prompts";
-import { ai } from "@workspace/ai";
+import { ai } from "@natstack/ai";
 import { z } from "zod";
 
 /**

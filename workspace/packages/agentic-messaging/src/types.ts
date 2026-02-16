@@ -18,7 +18,7 @@ import type {
   InviteAgentOptions,
   InviteAgentResult,
   RemoveAgentResult,
-} from "@workspace/pubsub";
+} from "@natstack/pubsub";
 import type { AgentBuildError } from "@natstack/types";
 import type { AgentManifest } from "@natstack/types";
 import type { z } from "zod";
@@ -457,7 +457,7 @@ export interface IncomingErrorMessage extends IncomingBase {
  */
 export type PresenceAction = "join" | "leave" | "update";
 
-// LeaveReason is re-exported from @workspace/pubsub above
+// LeaveReason is re-exported from @natstack/pubsub above
 
 /**
  * An incoming presence event (join/leave/update).

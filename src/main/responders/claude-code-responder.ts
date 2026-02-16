@@ -54,7 +54,7 @@ import {
   type IncomingNewMessage,
 } from "@workspace/agentic-messaging";
 import { prettifyToolName } from "@workspace/agentic-messaging/utils";
-import type { Attachment, Participant } from "@workspace/pubsub";
+import type { Attachment, Participant } from "@natstack/pubsub";
 import {
   recoverSession,
   generateRecoveryReviewUI,

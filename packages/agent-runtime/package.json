@@ -20,7 +20,7 @@
   },
   "peerDependencies": {
     "@workspace/agentic-messaging": "workspace:*",
-    "@workspace/pubsub": "workspace:*"
+    "@natstack/pubsub": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

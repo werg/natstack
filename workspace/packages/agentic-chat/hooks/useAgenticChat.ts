@@ -26,7 +26,7 @@ import {
   FeedbackFormArgsSchema,
   FeedbackCustomArgsSchema,
 } from "@workspace/agentic-messaging/protocol-schemas";
-import type { Participant, RosterUpdate, AttachmentInput } from "@workspace/pubsub";
+import type { Participant, RosterUpdate, AttachmentInput } from "@natstack/pubsub";
 import {
   useFeedbackManager,
   useToolApproval,

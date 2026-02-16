@@ -63,7 +63,7 @@
   "dependencies": {
     "@natstack/types": "workspace:*",
     "@workspace/core": "workspace:*",
-    "@workspace/pubsub": "workspace:*",
+    "@natstack/pubsub": "workspace:*",
     "ignore": "^5.3.2",
     "picomatch": "^4.0.0",
     "zod": "^3.24.1",

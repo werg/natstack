@@ -9,7 +9,7 @@ export default defineConfig({
       "@workspace/agentic-messaging/async": path.resolve(__dirname, "../agentic-messaging/src/async-entry.ts"),
       "@workspace/agentic-messaging/json-schema": path.resolve(__dirname, "../agentic-messaging/src/json-schema-entry.ts"),
       "@workspace/core": path.resolve(__dirname, "../core/src/index.ts"),
-      "@workspace/pubsub": path.resolve(__dirname, "../pubsub/src/index.ts"),
+      "@natstack/pubsub": path.resolve(__dirname, "../pubsub/src/index.ts"),
     },
   },
   test: {

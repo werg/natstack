@@ -1,5 +1,5 @@
 {
-  "name": "@workspace/ai",
+  "name": "@natstack/ai",
   "version": "0.1.0-f8a5baa65ee1",
   "type": "module",
   "main": "./dist/index.js",

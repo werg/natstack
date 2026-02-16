@@ -1,5 +1,5 @@
 {
-  "extends": "../../../tsconfig.json",
+  "extends": "../../tsconfig.json",
   "compilerOptions": {
     "outDir": "./dist",
     "rootDir": "./src",
@@ -8,8 +8,8 @@
     "composite": true,
     "baseUrl": ".",
     "paths": {
-      "@natstack/rpc": ["../../../packages/rpc/src/index.ts"],
-      "@natstack/types": ["../../../packages/types/src/index.ts"]
+      "@natstack/rpc": ["../rpc/src/index.ts"],
+      "@natstack/types": ["../types/src/index.ts"]
     }
   },
   "include": ["src"]
