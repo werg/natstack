@@ -113,7 +113,7 @@ export async function handleBridgeCall(
       const { computeImmutableSpec } = await import("../contextTemplate/specHash.js");
       const { createContextId, generateInstanceId } = await import("../contextTemplate/contextId.js");
       const { ensureContextPartitionInitialized } = await import("../contextTemplate/index.js");
-      const { getServerInfo } = await import("../index.js");
+      const { getServerInfo } = await import("../serverInfoState.js");
 
       // Resolve template and compute immutable spec
       const resolved = await resolveTemplate(templateSpec);

@@ -55,6 +55,65 @@ const serverElectronConfig = {
   logOverride,
 };
 
+// Stub out 'electron' for the standalone ESM server build.
+//
+// Problem: Shared code in src/main/ contains `try { require("electron") } catch`
+// guards that esbuild hoists to top-level ESM `import` statements. These fail
+// at module load time when electron isn't installed.
+//
+// Solution: Two-tier stub.  `app` throws on method calls so the try/catch
+// guards in envPaths.ts and paths.ts fall through to headless fallbacks.
+// Everything else (protocol, session, etc.) is a silent no-op Proxy for code
+// that runs at module scope.
+const electronStubPlugin = {
+  name: "electron-stub",
+  setup(build) {
+    build.onResolve({ filter: /^electron$/ }, () => ({
+      path: "electron",
+      namespace: "electron-stub",
+    }));
+    build.onLoad({ filter: /.*/, namespace: "electron-stub" }, () => ({
+      contents: `
+        const notElectron = new Error("Not running in Electron");
+
+        // app: throws on method calls so try/catch guards trigger fallbacks
+        const app = new Proxy({}, {
+          get(_, prop) {
+            if (prop === Symbol.toPrimitive) return () => "";
+            if (prop === "then") return undefined;
+            return function() { throw notElectron; };
+          },
+        });
+
+        // Silent no-op proxy for everything else
+        function noopFn() {}
+        const silentHandler = {
+          get(_, prop) {
+            if (prop === Symbol.toPrimitive) return () => "";
+            if (prop === "then") return undefined;
+            return new Proxy(noopFn, silentHandler);
+          },
+          apply() { return undefined; },
+        };
+        const silentProxy = new Proxy(noopFn, silentHandler);
+
+        export { app };
+        export const session = silentProxy;
+        export const protocol = silentProxy;
+        export const ipcMain = silentProxy;
+        export const nativeTheme = silentProxy;
+        export const dialog = silentProxy;
+        export const Menu = silentProxy;
+        export const WebContentsView = silentProxy;
+        export const webContents = silentProxy;
+        export const BaseWindow = silentProxy;
+        export default silentProxy;
+      `,
+      loader: "js",
+    }));
+  },
+};
+
 const serverConfig = {
   entryPoints: ["src/server/index.ts"],
   bundle: true,
@@ -62,9 +121,9 @@ const serverConfig = {
   target: "node20",
   format: "esm",
   outfile: "dist/server.mjs",
-  external: ["electron", "esbuild", "@npmcli/arborist",
+  external: ["esbuild", "@npmcli/arborist",
              "node-git-server"],
-  plugins: [serverNativePlugin],
+  plugins: [serverNativePlugin, electronStubPlugin],
   sourcemap: isDev,
   minify: !isDev,
   logOverride,
@@ -408,6 +467,8 @@ async function build() {
     // Dependencies: None (just copying files)
     // Required by: None
     copyAssets();
+    // Copy opfsBootstrap.js — plain JS loaded at runtime by PanelHttpServer
+    fs.copyFileSync("src/server/opfsBootstrap.js", "dist/opfsBootstrap.js");
 
     console.log("Build successful!");
   } catch (error) {
