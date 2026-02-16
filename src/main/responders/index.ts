@@ -9,7 +9,7 @@
  */
 
 import type { AgentManifest } from "@natstack/types";
-import type { Agent, AgentState } from "@workspace/agent-runtime";
+import type { Agent, AgentState } from "@natstack/agent-runtime";
 import { ClaudeCodeResponder } from "./claude-code-responder.js";
 import { CodexResponderAgent } from "./codex-responder.js";
 import { PubsubChatResponder } from "./pubsub-chat-responder.js";

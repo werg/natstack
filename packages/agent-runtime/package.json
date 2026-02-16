@@ -1,5 +1,5 @@
 {
-  "name": "@workspace/agent-runtime",
+  "name": "@natstack/agent-runtime",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -16,13 +16,10 @@
     "dev": "tsc --project tsconfig.build.json --watch"
   },
   "dependencies": {
-    "@natstack/rpc": "workspace:*",
-    "@natstack/types": "workspace:*",
-    "@workspace/core": "workspace:*"
+    "@natstack/types": "workspace:*"
   },
   "peerDependencies": {
     "@workspace/agentic-messaging": "workspace:*",
-    "@workspace/ai": "workspace:*",
     "@workspace/pubsub": "workspace:*"
   },
   "devDependencies": {

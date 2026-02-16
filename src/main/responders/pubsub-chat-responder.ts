@@ -5,11 +5,11 @@
  * Listens for user messages on a channel and responds using AI streaming.
  *
  * Migrated from workspace/workers/pubsub-chat-responder to use:
- * - Agent base class from @workspace/agent-runtime
+ * - Agent base class from @natstack/agent-runtime
  * - Pattern helpers from @workspace/agent-patterns
  */
 
-import { Agent } from "@workspace/agent-runtime";
+import { Agent } from "@natstack/agent-runtime";
 import type {
   EventStreamItem,
   AgenticClient,

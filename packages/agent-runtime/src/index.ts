@@ -1,5 +1,5 @@
 /**
- * @workspace/agent-runtime
+ * @natstack/agent-runtime
  *
  * Agent base class, state management, and storage types.
  * Agents extend `Agent<S>` and run in-process in the main server.

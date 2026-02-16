@@ -14,7 +14,7 @@
  * 6. Tool calls flow: Codex -> HTTP MCP server -> pubsub
  */
 
-import { Agent, type AgentState } from "@workspace/agent-runtime";
+import { Agent, type AgentState } from "@natstack/agent-runtime";
 import {
   createMessageQueue,
   createInterruptController,

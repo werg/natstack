@@ -1,7 +1,7 @@
 /**
  * Direct Storage Adapter
  *
- * Implements the StorageApi interface from @workspace/agent-runtime using
+ * Implements the StorageApi interface from @natstack/agent-runtime using
  * the DatabaseManager directly, bypassing the RPC bridge that was needed
  * when agents ran in separate processes.
  *
@@ -9,7 +9,7 @@
  * for responders that now run in the main server process.
  */
 
-import type { StorageApi, RunResult } from "@workspace/agent-runtime";
+import type { StorageApi, RunResult } from "@natstack/agent-runtime";
 import { getDatabaseManager } from "./db/databaseManager.js";
 
 /**
