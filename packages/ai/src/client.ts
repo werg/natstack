@@ -7,7 +7,10 @@ import type {
   ToolExecutionResult,
 } from "@natstack/types";
 import { getRpc } from "./rpc-inject.js";
-import { encodeBase64 } from "@workspace/core";
+
+function encodeBase64(data: Uint8Array): string {
+  return Buffer.from(data).toString("base64");
+}
 
 interface StreamTextBridgeOptions {
   model: string;
