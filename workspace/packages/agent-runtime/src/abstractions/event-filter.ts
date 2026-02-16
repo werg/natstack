@@ -1,11 +1,7 @@
 /**
  * Event Filtering Utility
  *
- * Shared event filtering logic used by both Electron and DO runtimes
- * to ensure consistent behavior when filtering the event stream.
- *
- * This was extracted from the client.ts shouldYieldEvent logic to
- * provide identical filtering in both runtime modes.
+ * Shared event filtering logic for the agent event stream.
  */
 
 import type { Participant } from "@workspace/pubsub";

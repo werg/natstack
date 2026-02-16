@@ -29,14 +29,6 @@
  * The `client` property is null in getConnectOptions() and populated after connect.
  * Use the type-safe accessor `this.client` which throws if accessed too early.
  *
- * ## Portability
- *
- * Agents written using this base class are portable between:
- * - Electron's utilityProcess (current deployment)
- * - Cloudflare Durable Objects (future deployment)
- *
- * The runtime abstractions (storage, event bus, AI) ensure agents work
- * identically regardless of deployment target.
  */
 
 import type { AgentState } from "@natstack/types";
@@ -167,21 +159,6 @@ export type AgentConnectOptions = Omit<
 >;
 
 /**
- * @deprecated Use `this.ctx` instead. initInfo is kept for backward compatibility
- * but ctx now provides the same information consistently.
- */
-export interface AgentInitInfo {
-  /** Agent type ID (from manifest) */
-  agentId: string;
-  /** Channel this agent is bound to */
-  channel: string;
-  /** Agent handle in the channel */
-  handle: string;
-  /** Agent configuration passed at spawn */
-  config: Record<string, unknown>;
-}
-
-/**
  * Internal interface for runtime-injected agent properties.
  * Used by the runtime to inject functionality that requires runtime context.
  * NOT part of the public API - agents should use the public accessors.
@@ -193,8 +170,6 @@ export interface AgentRuntimeInjection<S extends AgentState, M extends AgenticPa
   setState: (partial: Partial<S>) => void;
   /** Injected by runtime - unified agent context */
   ctx: AgentContext<M>;
-  /** Injected by runtime - deprecated init info */
-  initInfo: AgentInitInfo;
   /** Optional migration function for state upgrades */
   migrateState?: (oldState: AgentState, oldVersion: number) => S;
   /** Optional initialization hook */
@@ -286,13 +261,6 @@ export abstract class Agent<
    * @default 1
    */
   readonly stateVersion: number = 1;
-
-  /**
-   * @deprecated Use `this.ctx` directly - it's now available from getConnectOptions() onward.
-   * Kept for backward compatibility. Both initInfo and ctx.{agentId,channel,handle,config}
-   * will have the same values.
-   */
-  protected initInfo!: AgentInitInfo;
 
   /**
    * Unified agent context - available from getConnectOptions() onward.

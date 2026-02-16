@@ -466,7 +466,7 @@ export class CodexResponderAgent extends Agent<CodexAgentState, ChatParticipantM
   state: CodexAgentState = {};
 
   getConnectOptions() {
-    // Note: handle is set by the runtime from initInfo, we just set name/type
+    // Note: handle is set by the runtime from ctx, we just set name/type
     // Closures capture `this` - ctx will be populated when methods execute
     const contextId = this.ctx.config["contextId"] as string | undefined;
 

@@ -14,7 +14,7 @@ import * as path from "path";
 import * as fs from "fs";
 import type { GlobalAgentSettings, AgentSettings } from "@natstack/types";
 import { getActiveWorkspace } from "./paths.js";
-import { getAgentDiscovery } from "./agentDiscovery.js";
+import { RESPONDER_REGISTRY } from "./responders/index.js";
 import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("AgentSettings");
@@ -41,7 +41,6 @@ export function getAgentSettingsService(): AgentSettingsService | null {
 
 /**
  * Initialize the AgentSettingsService.
- * Call this after AgentDiscovery has completed its initial scan.
  */
 export async function initAgentSettingsService(): Promise<AgentSettingsService> {
   if (instance) {
@@ -65,10 +64,8 @@ export function shutdownAgentSettingsService(): void {
 
 export class AgentSettingsService {
   private db: Database.Database | null = null;
-  private unsubscribeDiscovery: (() => void)[] = [];
-
   /**
-   * Initialize the service - open database and sync with discovery.
+   * Initialize the service - open database and sync with registry.
    */
   async initialize(): Promise<void> {
     const workspace = getActiveWorkspace();
@@ -108,41 +105,20 @@ export class AgentSettingsService {
 
     log.verbose(`Database initialized at: ${dbPath}`);
 
-    // Sync with AgentDiscovery
-    await this.syncWithDiscovery();
-
-    // Subscribe to discovery events for live updates
-    const discovery = getAgentDiscovery();
-    if (discovery) {
-      const safeSync = () => {
-        this.syncWithDiscovery().catch((err) => {
-          console.error("[AgentSettings] Failed to sync with discovery:", err);
-        });
-      };
-      this.unsubscribeDiscovery.push(
-        discovery.on("added", safeSync),
-        discovery.on("removed", safeSync)
-      );
-    }
+    // Sync with responder registry
+    this.syncWithRegistry();
   }
 
   /**
-   * Sync database with AgentDiscovery.
-   * - Adds rows for newly discovered agents (with empty settings)
-   * - Deletes rows for agents no longer in workspace/agents/
+   * Sync database with the in-process responder registry.
+   * - Adds rows for registered agents (with empty settings)
+   * - Deletes rows for agents no longer in the registry
    * - Preserves existing settings for agents that still exist
    */
-  async syncWithDiscovery(): Promise<void> {
+  private syncWithRegistry(): void {
     if (!this.db) return;
 
-    const discovery = getAgentDiscovery();
-    if (!discovery) {
-      log.verbose("AgentDiscovery not available - skipping sync");
-      return;
-    }
-
-    const validAgents = discovery.listValid();
-    const validAgentIds = new Set(validAgents.map((a) => a.manifest.id));
+    const registryIds = new Set(RESPONDER_REGISTRY.keys());
 
     // Get existing agent IDs from database
     const existingRows = this.db
@@ -155,7 +131,7 @@ export class AgentSettingsService {
       "INSERT OR IGNORE INTO agent_settings (agent_id, settings, updated_at) VALUES (?, '{}', ?)"
     );
     const now = Date.now();
-    for (const agentId of validAgentIds) {
+    for (const agentId of registryIds) {
       if (!existingIds.has(agentId)) {
         insertStmt.run(agentId, now);
         log.verbose(`Added settings row for new agent: ${agentId}`);
@@ -165,7 +141,7 @@ export class AgentSettingsService {
     // Remove agents that no longer exist
     const deleteStmt = this.db.prepare("DELETE FROM agent_settings WHERE agent_id = ?");
     for (const agentId of existingIds) {
-      if (!validAgentIds.has(agentId)) {
+      if (!registryIds.has(agentId)) {
         deleteStmt.run(agentId);
         log.verbose(`Removed settings row for deleted agent: ${agentId}`);
       }
@@ -294,13 +270,6 @@ export class AgentSettingsService {
    * Shutdown the service.
    */
   shutdown(): void {
-    // Unsubscribe from discovery events
-    for (const unsub of this.unsubscribeDiscovery) {
-      unsub();
-    }
-    this.unsubscribeDiscovery = [];
-
-    // Close database
     if (this.db) {
       this.db.close();
       this.db = null;

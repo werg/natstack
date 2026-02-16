@@ -318,15 +318,14 @@ export class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
   private restrictedModeValidated = false;
 
   getConnectOptions() {
-    // Note: this.ctx is NOT available here - use this.initInfo instead
-    const config = this.initInfo.config as unknown as AgentConfig;
+    const config = this.config as unknown as AgentConfig;
 
     return {
       name: "Claude Code",
       type: "claude-code" as const,
       contextId: config.contextId,
       extraMetadata: {
-        agentTypeId: this.initInfo.agentId,
+        agentTypeId: this.agentId,
         executionMode: config.executionMode,
       },
       reconnect: true,

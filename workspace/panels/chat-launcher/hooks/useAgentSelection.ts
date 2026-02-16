@@ -103,7 +103,7 @@ export function useAgentSelection({ workspaceRoot, sessionConfig = DEFAULT_SESSI
 
     async function loadAgents() {
       try {
-        // Get agents from AgentDiscovery via bridge and settings via agentSettings service
+        // Get agents from responder registry via bridge and settings via agentSettings service
         const [manifests, allSettings] = await Promise.all([
           rpc.call<AgentManifest[]>("main", "bridge.listAgents"),
           rpc.call<Record<string, AgentSettings>>("main", "agentSettings.getAllAgentSettings"),

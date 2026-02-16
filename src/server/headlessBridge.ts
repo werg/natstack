@@ -31,10 +31,10 @@ export async function handleHeadlessBridgeCall(
     // =========================================================================
 
     case "listAgents": {
-      const { getAgentDiscovery } = await import(
-        "../main/agentDiscovery.js"
+      const { RESPONDER_REGISTRY } = await import(
+        "../main/responders/index.js"
       );
-      return getAgentDiscovery()?.list() ?? [];
+      return [...RESPONDER_REGISTRY.values()].map((r) => r.manifest);
     }
 
     // =========================================================================

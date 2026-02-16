@@ -7,7 +7,7 @@
 
 import type { GlobalAgentSettings, AgentSettings } from "@natstack/types";
 import { getAgentSettingsService } from "../agentSettings.js";
-import { getAgentDiscovery } from "../agentDiscovery.js";
+import { RESPONDER_REGISTRY } from "../responders/index.js";
 
 /**
  * Handle agentSettings service calls.
@@ -64,11 +64,7 @@ export async function handleAgentSettingsCall(
     }
 
     case "listAgents": {
-      const discovery = getAgentDiscovery();
-      if (!discovery) {
-        return [];
-      }
-      return discovery.listValid().map((agent) => agent.manifest);
+      return [...RESPONDER_REGISTRY.values()].map((r) => r.manifest);
     }
 
     default:

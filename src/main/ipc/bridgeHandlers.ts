@@ -147,7 +147,7 @@ export async function handleBridgeCall(
       return result.canceled ? null : result.filePaths[0] ?? null;
     }
     case "listAgents": {
-      // List available agents - delegates to server where AgentDiscovery runs
+      // List available agents from the in-process responder registry
       return pm.listAgents();
     }
     // =========================================================================

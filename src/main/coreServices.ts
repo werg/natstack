@@ -9,9 +9,8 @@ import { createDevLogger } from "./devLog.js";
 import { getTypeDefinitionService, typeCheckRpcMethods } from "./typecheck/service.js";
 import { createGitWatcher, type GitWatcher } from "./workspace/gitWatcher.js";
 import { getPubSubServer } from "./pubsubServer.js";
-import { initAgentDiscovery, shutdownAgentDiscovery } from "./agentDiscovery.js";
 import { initAgentSettingsService, shutdownAgentSettingsService } from "./agentSettings.js";
-import { initAgentHost, shutdownAgentHost, setAgentHostAiHandler } from "./agentHost.js";
+import { initAgentHost, shutdownAgentHost } from "./agentHost.js";
 import { getTokenManager } from "./tokenManager.js";
 import { getServiceDispatcher } from "./serviceDispatcher.js";
 import { handleAgentSettingsCall } from "./ipc/agentSettingsHandlers.js";
@@ -46,11 +45,7 @@ export async function startCoreServices({
   const cleanups: (() => void | Promise<void>)[] = [];
 
   try {
-    // Step 1: Agent discovery + settings
-    await initAgentDiscovery(workspace.path);
-    cleanups.push(() => shutdownAgentDiscovery());
-    log.info("[AgentDiscovery] Initialized");
-
+    // Step 1: Agent settings
     await initAgentSettingsService();
     cleanups.push(() => shutdownAgentSettingsService());
     log.info("[AgentSettingsService] Initialized");
@@ -90,8 +85,6 @@ export async function startCoreServices({
     const { AIHandler: AIHandlerClass } = await import("./ai/aiHandler.js");
     const aiHandler = new AIHandlerClass();
     await aiHandler.initialize();
-    setAgentHostAiHandler(aiHandler);
-
     // Register shared dispatcher services
     const dispatcher = getServiceDispatcher();
 
@@ -186,7 +179,6 @@ export async function startCoreServices({
 
       async shutdown() {
         shutdownAgentSettingsService();
-        shutdownAgentDiscovery();
         shutdownAgentHost();
 
         await Promise.all([

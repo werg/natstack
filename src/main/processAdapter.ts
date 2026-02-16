@@ -1,7 +1,7 @@
 /**
  * ProcessAdapter — abstracts Electron utilityProcess / Node.js child_process.
  *
- * Shared by AgentHost (agent spawning) and ServerProcessManager (server spawning).
+ * Used by ServerProcessManager (server spawning).
  */
 
 /**

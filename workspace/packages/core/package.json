@@ -14,10 +14,6 @@
       "types": "./dist/agent-types.d.ts",
       "default": "./dist/agent-types.js"
     },
-    "./ipc-protocol": {
-      "types": "./dist/ipc-protocol.d.ts",
-      "default": "./dist/ipc-protocol.js"
-    },
     "./form-schema": {
       "types": "./dist/form-schema.d.ts",
       "default": "./dist/form-schema.js"

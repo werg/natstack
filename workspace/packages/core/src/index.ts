@@ -10,9 +10,6 @@
  * Types have been moved to @natstack/types (canonical source).
  */
 
-// IPC protocol type guards
-export { isHostToAgentMessage, isAgentToHostMessage } from "./ipc-protocol.js";
-
 // Form schema runtime functions
 export {
   evaluateCondition,

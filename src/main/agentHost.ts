@@ -21,7 +21,6 @@ import type { Agent, AgentState, AgentContext, AgentRuntimeInjection, AgentLogge
 import { createStateStore, deepMerge, type StateStore } from "@workspace/agent-runtime";
 import type { AgenticClient, AgenticParticipantMetadata, EventStreamItem } from "@workspace/agentic-messaging";
 import { connect } from "@workspace/agentic-messaging";
-import { getAgentDiscovery } from "./agentDiscovery.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
 import { createDirectStorageApi } from "./directStorageAdapter.js";
 import { RESPONDER_REGISTRY } from "./responders/index.js";
@@ -123,14 +122,6 @@ export class AgentSpawnError extends Error {
   }
 }
 
-/**
- * Set the AI handler instance for agents.
- * No longer needed for in-process agents (they use the shared @workspace/ai singleton),
- * but kept as a no-op for backward compatibility with coreServices.ts.
- */
-export function setAgentHostAiHandler(_handler: unknown): void {
-  // No-op: in-process agents use the shared @workspace/ai module directly
-}
 
 // ===========================================================================
 // Constants
@@ -176,12 +167,7 @@ export class AgentHost extends EventEmitter {
     // 1. Validate agent exists in registry
     const registered = RESPONDER_REGISTRY.get(agentId);
     if (!registered) {
-      // Also check discovery for backward compatibility
-      const discovery = getAgentDiscovery();
-      const discoveredAgent = discovery?.get(agentId);
-      if (!discoveredAgent) {
-        throw new AgentSpawnError(`Agent not found: ${agentId}`);
-      }
+      throw new AgentSpawnError(`Agent not found: ${agentId}`);
     }
 
     // 2. Check for existing instance on this channel
@@ -189,10 +175,6 @@ export class AgentHost extends EventEmitter {
     if (existing) {
       log.verbose(`Agent ${agentId} already running on ${options.channel}`);
       return existing;
-    }
-
-    if (!registered) {
-      throw new AgentSpawnError(`Agent ${agentId} is not available as an in-process responder`);
     }
 
     // Emit spawning lifecycle event
@@ -266,12 +248,6 @@ export class AgentHost extends EventEmitter {
 
     const agentInternal = agent as unknown as AgentRuntimeInjection<AgentState, AgenticParticipantMetadata>;
     agentInternal.ctx = ctx;
-    agentInternal.initInfo = {
-      agentId,
-      channel: options.channel,
-      handle: options.handle,
-      config: options.config,
-    };
 
     // Inject setState
     agentInternal.setState = (partial: Partial<AgentState>) => {
@@ -525,23 +501,10 @@ export class AgentHost extends EventEmitter {
   }
 
   /**
-   * List all available agents from registry + discovery.
+   * List all available agents from the registry.
    */
   listAvailableAgents() {
-    // Primarily from the in-process registry
-    const manifests = [...RESPONDER_REGISTRY.values()].map((r) => r.manifest);
-
-    // Also include any from discovery (for backward compatibility)
-    const discovery = getAgentDiscovery();
-    if (discovery) {
-      for (const a of discovery.listValid()) {
-        if (!RESPONDER_REGISTRY.has(a.manifest.id)) {
-          manifests.push(a.manifest);
-        }
-      }
-    }
-
-    return manifests;
+    return [...RESPONDER_REGISTRY.values()].map((r) => r.manifest);
   }
 
   /**
