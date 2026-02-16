@@ -284,7 +284,8 @@ async function main() {
     let panelHttpServer: InstanceType<typeof PanelHttpServer> | null = null;
     if (args.servePanels) {
       panelHttpServer = new PanelHttpServer("127.0.0.1", adminToken);
-      panelHttpPort = await panelHttpServer.start(args.panelPort ?? 0);
+      const envPanelPort = process.env["NATSTACK_PANEL_PORT"] ? parseInt(process.env["NATSTACK_PANEL_PORT"], 10) : undefined;
+      panelHttpPort = await panelHttpServer.start(args.panelPort ?? envPanelPort ?? 0);
       panelHttpServerInstance = panelHttpServer;
     }
 
