@@ -1,5 +1,5 @@
 /**
- * @workspace/agent-patterns
+ * @natstack/agent-patterns
  *
  * Shared pattern libraries for agent development. These patterns provide
  * common functionality used across different agent implementations, reducing
@@ -26,7 +26,7 @@
  *   createInterruptController,
  *   createStandardTools,
  *   createResponseManager,
- * } from "@workspace/agent-patterns";
+ * } from "@natstack/agent-patterns";
  *
  * // Use patterns in your agent
  * class MyAgent extends Agent<MyState> {

@@ -6,7 +6,7 @@
  *
  * Migrated from workspace/workers/pubsub-chat-responder to use:
  * - Agent base class from @natstack/agent-runtime
- * - Pattern helpers from @workspace/agent-patterns
+ * - Pattern helpers from @natstack/agent-patterns
  */
 
 import { Agent } from "@natstack/agent-runtime";
@@ -53,10 +53,10 @@ import {
   type InterruptController,
   type SettingsManager,
   type MissedContextManager,
-} from "@workspace/agent-patterns";
+} from "@natstack/agent-patterns";
 import {
   createRestrictedModeSystemPrompt,
-} from "@workspace/agent-patterns/prompts";
+} from "@natstack/agent-patterns/prompts";
 import { ai } from "@workspace/ai";
 import { z } from "zod";
 
@@ -124,7 +124,7 @@ interface PubsubChatQueuedMessage {
 export class PubsubChatResponder extends Agent<PubsubChatState> {
   state: PubsubChatState = {};
 
-  // Pattern helpers from @workspace/agent-patterns
+  // Pattern helpers from @natstack/agent-patterns
   private queue!: MessageQueue<IncomingNewMessage>;
   private interrupt!: InterruptController;
   private settingsMgr!: SettingsManager<PubsubChatSettings>;

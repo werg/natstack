@@ -1,5 +1,5 @@
 {
-  "name": "@workspace/agent-patterns",
+  "name": "@natstack/agent-patterns",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -42,8 +42,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@workspace/agentic-messaging": "workspace:*",
-    "@workspace/core": "workspace:*"
+    "@workspace/agentic-messaging": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

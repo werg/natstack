@@ -4,7 +4,7 @@
  * AI-powered code assistant using the Claude Agent SDK.
  * Migrated from workspace/workers/claude-code-responder to use:
  * - Agent base class from @natstack/agent-runtime
- * - Pattern helpers from @workspace/agent-patterns
+ * - Pattern helpers from @natstack/agent-patterns
  *
  * Features:
  * - Claude Agent SDK integration with session resumption
@@ -89,11 +89,11 @@ import {
   type InterruptController,
   type SettingsManager,
   type MissedContextManager,
-} from "@workspace/agent-patterns";
+} from "@natstack/agent-patterns";
 import {
   createRichTextChatSystemPrompt,
   createRestrictedModeSystemPrompt,
-} from "@workspace/agent-patterns/prompts";
+} from "@natstack/agent-patterns/prompts";
 import {
   createRestrictedTaskTool,
   type ToolDefinitionWithExecute,

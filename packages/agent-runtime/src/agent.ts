@@ -515,7 +515,7 @@ export abstract class Agent<
    * Provides unified access to typing, thinking, and action trackers
    * with automatic cleanup.
    *
-   * Import createTrackerManager from @workspace/agent-patterns for the
+   * Import createTrackerManager from @natstack/agent-patterns for the
    * actual implementation - this is a convenience wrapper.
    *
    * @param replyTo - Message ID to use as replyTo for tracker messages
@@ -543,7 +543,7 @@ export abstract class Agent<
     action: { startAction: (data: { type: string; description?: string; toolUseId?: string }) => Promise<void>; completeAction: () => Promise<void>; cleanup: () => Promise<boolean> };
     cleanupAll: () => Promise<boolean>;
   } {
-    // This is a stub that should be overridden by agents using @workspace/agent-patterns
+    // This is a stub that should be overridden by agents using @natstack/agent-patterns
     // The default implementation provides no-op trackers
     const noopTracker = {
       startTyping: async () => {},
@@ -572,7 +572,7 @@ export abstract class Agent<
       this._trackerWarningShown = true;
       this.log.warn?.(
         "createTrackers() called but no tracker implementation available. " +
-        "Import createTrackerManager from @workspace/agent-patterns and override this method."
+        "Import createTrackerManager from @natstack/agent-patterns and override this method."
       );
     }
 

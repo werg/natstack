@@ -29,11 +29,11 @@ import {
   toCodexMcpTools,
   createCanUseToolGate,
   type MessageQueue,
-} from "@workspace/agent-patterns";
+} from "@natstack/agent-patterns";
 import {
   createRichTextChatSystemPrompt,
   createRestrictedModeSystemPrompt,
-} from "@workspace/agent-patterns/prompts";
+} from "@natstack/agent-patterns/prompts";
 import {
   jsonSchemaToZodRawShape,
   formatArgsForLog,
@@ -435,7 +435,7 @@ interface QueuedMessageInfo {
 }
 
 export class CodexResponderAgent extends Agent<CodexAgentState, ChatParticipantMetadata> {
-  // Pattern helpers from @workspace/agent-patterns
+  // Pattern helpers from @natstack/agent-patterns
   private queue!: MessageQueue<IncomingNewMessage>;
   private interrupt!: ReturnType<typeof createInterruptController>;
   private settingsMgr!: ReturnType<typeof createSettingsManager<CodexSettings>>;
