@@ -21,7 +21,7 @@ import { readdir, stat, readFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
 
-import { Agent, runAgent } from "@workspace/agent-runtime";
+import { Agent } from "@workspace/agent-runtime";
 import type { EventStreamItem } from "@workspace/agentic-messaging";
 import {
   jsonSchemaToZodRawShape,
@@ -97,7 +97,7 @@ import {
 import {
   createRestrictedTaskTool,
   type ToolDefinitionWithExecute,
-} from "./task-tool.js";
+} from "./claude-code-task-tool.js";
 
 // =============================================================================
 // Types and Interfaces
@@ -297,7 +297,7 @@ interface ClaudeCodeQueuedMessage {
   typingTracker: ReturnType<typeof createTypingTracker>;
 }
 
-class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
+export class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
   state: ClaudeCodeState = {};
 
   // Pattern helpers
@@ -1632,4 +1632,3 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
   }
 }
 
-runAgent(ClaudeCodeResponder);

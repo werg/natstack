@@ -31,7 +31,7 @@ export interface BuildArtifacts {
 }
 
 export interface BuildMetadata {
-  kind: "panel" | "about" | "agent" | "package";
+  kind: "panel" | "about" | "package";
   name: string;
   ev: string;
   sourcemap: boolean;
@@ -177,11 +177,6 @@ export function put(
 
   // Write bundle
   fs.writeFileSync(path.join(tmpDir, "bundle.js"), artifacts.bundle);
-
-  // Ensure Node.js treats bundle.js as ESM (agents are format: "esm")
-  if (metadata.kind === "agent") {
-    fs.writeFileSync(path.join(tmpDir, "package.json"), '{"type":"module"}');
-  }
 
   // Write CSS if present
   if (artifacts.css) {

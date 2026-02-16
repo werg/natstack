@@ -39,12 +39,9 @@ export interface CoreServicesHandle {
 export async function startCoreServices({
   workspace,
   gitServer,
-  getBuild,
 }: {
   workspace: Workspace;
   gitServer: GitServer;
-  /** V2 build service — getBuild(unitPath) returns build result */
-  getBuild: (unitPath: string) => Promise<unknown>;
 }): Promise<CoreServicesHandle> {
   const cleanups: (() => void | Promise<void>)[] = [];
 
@@ -83,7 +80,6 @@ export async function startCoreServices({
       createToken: (instanceId) =>
         getTokenManager().createToken(instanceId, "server"),
       revokeToken: (instanceId) => getTokenManager().revokeToken(instanceId),
-      getBuild: getBuild as (unitPath: string) => Promise<{ bundlePath: string; dir: string; metadata: { kind: string; name: string } }>,
     });
     await agentHost.initialize();
     cleanups.push(() => shutdownAgentHost());

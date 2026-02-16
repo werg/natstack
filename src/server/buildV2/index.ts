@@ -42,7 +42,7 @@ export interface AboutPageMeta {
 }
 
 export interface BuildSystemV2 {
-  /** Get build result for a panel/about/agent */
+  /** Get build result for a panel/about page */
   getBuild(unitPath: string): Promise<BuildResult>;
 
   /** Get effective version for a unit */
@@ -105,7 +105,7 @@ export async function initBuildSystemV2(
   // Step 5: Build anything that's missing from the store
   const buildableNodes = graph
     .allNodes()
-    .filter((n) => n.kind !== "package"); // Only panels, about pages, agents
+    .filter((n) => n.kind !== "package"); // Only panels and about pages
 
   let buildCount = 0;
   for (const node of buildableNodes) {

@@ -14,7 +14,7 @@
  * 6. Tool calls flow: Codex -> HTTP MCP server -> pubsub
  */
 
-import { Agent, runAgent, type AgentState } from "@workspace/agent-runtime";
+import { Agent, type AgentState } from "@workspace/agent-runtime";
 import {
   createMessageQueue,
   createInterruptController,
@@ -434,7 +434,7 @@ interface QueuedMessageInfo {
   typingTracker: ReturnType<typeof createTypingTracker>;
 }
 
-class CodexResponderAgent extends Agent<CodexAgentState, ChatParticipantMetadata> {
+export class CodexResponderAgent extends Agent<CodexAgentState, ChatParticipantMetadata> {
   // Pattern helpers from @workspace/agent-patterns
   private queue!: MessageQueue<IncomingNewMessage>;
   private interrupt!: ReturnType<typeof createInterruptController>;
@@ -1462,4 +1462,3 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
 // Bootstrap
 // =============================================================================
 
-void runAgent(CodexResponderAgent);

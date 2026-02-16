@@ -213,7 +213,6 @@ async function main() {
   const handle = await startCoreServices({
     workspace,
     gitServer,
-    getBuild: (unitPath) => buildSystem.getBuild(unitPath),
   });
 
   // ===========================================================================

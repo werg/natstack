@@ -1,87 +1,55 @@
 /**
- * AgentHost - Manages agent lifecycle using Electron's utilityProcess.
+ * AgentHost - Manages agent lifecycle with in-process responders.
  *
  * Responsibilities:
- * 1. Spawns agents as utilityProcess child processes
- * 2. Sends initialization config via IPC
- * 3. Tracks running instances per channel
- * 4. Enforces 5-minute channel inactivity timeout
- * 5. Handles graceful and forced shutdown
- * 6. Provides RPC bridge for DB operations
+ * 1. Instantiates agents in-process from the responder registry
+ * 2. Provides state persistence via direct StorageApi
+ * 3. Connects agents to pubsub via WebSocket
+ * 4. Tracks running instances per channel
+ * 5. Enforces 5-minute channel inactivity timeout
+ * 6. Handles graceful shutdown
+ *
+ * Previously agents were spawned as separate processes (utilityProcess/fork)
+ * with IPC/RPC bridges. Now they run in-process as trusted code.
  */
 
-// No top-level Electron import — detection happens at runtime in hasElectronUtilityProcess()
-import * as path from "path";
 import { randomUUID } from "crypto";
 import { EventEmitter } from "events";
-import type { AgentInitConfig, AgentInstanceInfo } from "@natstack/types";
+import type { AgentInstanceInfo } from "@natstack/types";
 import type { MessageStore } from "./pubsubServer.js";
-import {
-  createRpcBridge,
-  type RpcBridge,
-  type RpcTransport,
-  type RpcMessage,
-  isParentPortEnvelope,
-  type ParentPortEnvelope,
-} from "@natstack/rpc";
+import type { Agent, AgentState, AgentContext, AgentRuntimeInjection, AgentLogger } from "@workspace/agent-runtime";
+import { createStateStore, deepMerge, type StateStore } from "@workspace/agent-runtime";
+import type { AgenticClient, AgenticParticipantMetadata, EventStreamItem } from "@workspace/agentic-messaging";
+import { connect } from "@workspace/agentic-messaging";
 import { getAgentDiscovery } from "./agentDiscovery.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
+import { createDirectStorageApi } from "./directStorageAdapter.js";
+import { RESPONDER_REGISTRY } from "./responders/index.js";
 import { createDevLogger } from "./devLog.js";
-import type { AIHandler, StreamTarget } from "./ai/aiHandler.js";
-import type { StreamTextOptions, StreamTextEvent } from "../shared/types.js";
-import type { ToolExecutionResult } from "./ai/claudeCodeToolProxy.js";
-import {
-  type ProcessAdapter,
-  hasElectronUtilityProcess,
-  createNodeProcessAdapter,
-} from "./processAdapter.js";
 
 const log = createDevLogger("AgentHost");
-
-// Module-level AI handler reference (set via setAgentHostAiHandler)
-let _aiHandler: AIHandler | null = null;
-
-/**
- * Custom error class for agent spawn failures with full build diagnostics.
- * Includes build log, type errors, and dirty repo state when available.
- */
-export class AgentSpawnError extends Error {
-  constructor(
-    message: string,
-    public readonly buildLog?: string,
-    public readonly typeErrors?: Array<{ file: string; line: number; column: number; message: string }>,
-    public readonly dirtyRepo?: { modified: string[]; untracked: string[]; staged: string[] }
-  ) {
-    super(message);
-    this.name = "AgentSpawnError";
-  }
-}
-
-/**
- * Set the AI handler instance for agents (called during initialization).
- */
-export function setAgentHostAiHandler(handler: AIHandler | null): void {
-  _aiHandler = handler;
-}
 
 // ===========================================================================
 // Types
 // ===========================================================================
 
 /**
- * Lifecycle message from agent to host.
+ * In-process agent instance.
+ * Holds the agent object, its pubsub client, state store, and lifecycle control.
  */
-interface LifecycleMessage {
-  type: string;
-  error?: string;
-  [key: string]: unknown;
-}
-
 interface AgentInstance extends AgentInstanceInfo {
-  process: ProcessAdapter;
-  rpcBridge: RpcBridge;
-  /** Set when stop event has been emitted, prevents duplicate events from exit handler */
+  /** The agent object */
+  agent: Agent<AgentState>;
+  /** Pubsub client for this agent */
+  client: AgenticClient<AgenticParticipantMetadata> | null;
+  /** State store for persistence */
+  stateStore: StateStore<AgentState>;
+  /** Abort controller for the event loop */
+  abortController: AbortController;
+  /** Set when stop event has been emitted, prevents duplicate events */
   stopEventEmitted?: boolean;
+  /** Event loop promise (for awaiting during shutdown) */
+  eventLoopPromise?: Promise<void>;
 }
 
 interface SpawnOptions {
@@ -90,21 +58,12 @@ interface SpawnOptions {
   config: Record<string, unknown>;
 }
 
-/** Result from V2 build service for agents */
-interface AgentBuildResult {
-  bundlePath: string;
-  dir: string;
-  metadata: { kind: string; name: string };
-}
-
 interface AgentHostOptions {
   workspaceRoot: string;
   pubsubUrl: string;
   messageStore: MessageStore;
   createToken: (instanceId: string) => string;
   revokeToken: (instanceId: string) => boolean;
-  /** Build an agent via V2 build service */
-  getBuild: (unitPath: string) => Promise<AgentBuildResult>;
 }
 
 /**
@@ -127,8 +86,7 @@ export interface AgentLifecycleEvent {
   handle: string;
   agentId: string;
   event: "spawning" | "started" | "stopped" | "woken" | "warning";
-  reason?: "timeout" | "explicit" | "crash" | "idle" | "dirty-repo";
-  /** Additional details for warning events */
+  reason?: "timeout" | "explicit" | "crash" | "idle";
   details?: unknown;
   timestamp: number;
 }
@@ -155,108 +113,32 @@ export interface StoredSpawnConfig {
   config: Record<string, unknown>;
 }
 
+/**
+ * Custom error class for agent spawn failures.
+ */
+export class AgentSpawnError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentSpawnError";
+  }
+}
+
+/**
+ * Set the AI handler instance for agents.
+ * No longer needed for in-process agents (they use the shared @workspace/ai singleton),
+ * but kept as a no-op for backward compatibility with coreServices.ts.
+ */
+export function setAgentHostAiHandler(_handler: unknown): void {
+  // No-op: in-process agents use the shared @workspace/ai module directly
+}
+
 // ===========================================================================
 // Constants
 // ===========================================================================
 
-const SHUTDOWN_TIMEOUT_MS = 5_000; // 5s for graceful shutdown
 const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const ACTIVITY_CHECK_INTERVAL_MS = 60_000; // Check every minute
-
-// ===========================================================================
-// Process Adapter — uses shared processAdapter.ts module
-// ===========================================================================
-
-/**
- * Spawn an agent process. Detection is separated from fork so that
- * real fork failures (bad bundle path, permissions) propagate to the caller
- * instead of being silently swallowed by a fallback.
- */
-function createAgentProcess(
-  bundlePath: string,
-  opts: { serviceName: string; env: Record<string, string | undefined> }
-): ProcessAdapter {
-  if (hasElectronUtilityProcess()) {
-    // Electron path — fork errors propagate (not caught)
-    const { utilityProcess: up } = require("electron");
-    const proc = up.fork(bundlePath, [], {
-      serviceName: opts.serviceName,
-      stdio: "pipe",
-      env: opts.env,
-    });
-    return proc as unknown as ProcessAdapter;
-  }
-
-  // Node.js path
-  return createNodeProcessAdapter(bundlePath, opts.env);
-}
-
-// ===========================================================================
-// Host Transport Implementation
-// ===========================================================================
-
-/**
- * Create an RPC transport for a utilityProcess.
- * This bridges the gap between the main process and the agent process.
- */
-function createHostTransport(
-  proc: ProcessAdapter,
-  selfId: string,
-  onLifecycleMessage: (msg: LifecycleMessage) => void
-): RpcTransport {
-  const anyMessageHandlers = new Set<
-    (sourceId: string, message: RpcMessage) => void
-  >();
-
-  proc.on("message", (msg) => {
-    // Check if it's an RPC message (has envelope structure)
-    if (isParentPortEnvelope(msg)) {
-      const envelope = msg;
-      // Only handle messages targeted at us ("main")
-      if (envelope.targetId !== selfId && envelope.targetId !== "main") return;
-
-      const sourceId = envelope.sourceId ?? "agent";
-      const message = envelope.message;
-
-      for (const handler of anyMessageHandlers) {
-        handler(sourceId, message);
-      }
-      return;
-    }
-
-    // Otherwise it's a lifecycle message (ready, shutdown-complete, error)
-    const m = msg as { type?: string };
-    if (m.type) {
-      onLifecycleMessage(msg as LifecycleMessage);
-    }
-  });
-
-  return {
-    async send(targetId: string, message: RpcMessage): Promise<void> {
-      const envelope: ParentPortEnvelope = {
-        targetId,
-        sourceId: selfId,
-        message,
-      };
-      proc.postMessage(envelope);
-    },
-
-    onMessage(
-      _sourceId: string,
-      _handler: (message: RpcMessage) => void
-    ): () => void {
-      // Not used - we use onAnyMessage
-      return () => {};
-    },
-
-    onAnyMessage(
-      handler: (sourceId: string, message: RpcMessage) => void
-    ): () => void {
-      anyMessageHandlers.add(handler);
-      return () => anyMessageHandlers.delete(handler);
-    },
-  };
-}
+const SHUTDOWN_TIMEOUT_MS = 5_000; // 5s for graceful shutdown
 
 // ===========================================================================
 // AgentHost Class
@@ -278,7 +160,7 @@ export class AgentHost extends EventEmitter {
 
   async initialize(): Promise<void> {
     this.startActivityMonitoring();
-    log.verbose("AgentHost initialized");
+    log.verbose("AgentHost initialized (in-process mode)");
   }
 
   /**
@@ -291,23 +173,16 @@ export class AgentHost extends EventEmitter {
   ): Promise<AgentInstanceInfo> {
     log.verbose(`[spawn] Starting spawn for agent=${agentId}, channel=${options.channel}, handle=${options.handle}`);
 
-    // 1. Validate agent exists
-    const discovery = getAgentDiscovery();
-    if (!discovery) {
-      log.verbose(`[spawn] Error: AgentDiscovery not initialized`);
-      throw new Error("AgentDiscovery not initialized");
+    // 1. Validate agent exists in registry
+    const registered = RESPONDER_REGISTRY.get(agentId);
+    if (!registered) {
+      // Also check discovery for backward compatibility
+      const discovery = getAgentDiscovery();
+      const discoveredAgent = discovery?.get(agentId);
+      if (!discoveredAgent) {
+        throw new AgentSpawnError(`Agent not found: ${agentId}`);
+      }
     }
-    const agent = discovery.get(agentId);
-    if (!agent) {
-      log.verbose(`[spawn] Error: Agent not found: ${agentId}`);
-      throw new Error(`Agent not found: ${agentId}`);
-    }
-    if (!agent.valid) {
-      log.verbose(`[spawn] Error: Agent manifest invalid: ${agent.error}`);
-      throw new Error(`Agent manifest invalid: ${agent.error}`);
-    }
-
-    log.verbose(`[spawn] Agent manifest valid: ${agent.manifest.name}`);
 
     // 2. Check for existing instance on this channel
     const existing = this.getInstance(options.channel, agentId);
@@ -316,37 +191,11 @@ export class AgentHost extends EventEmitter {
       return existing;
     }
 
-    // 3. Build agent via V2 build service
-    log.verbose(`[spawn] Building agent ${agentId}...`);
-    let buildResult: AgentBuildResult;
-    try {
-      buildResult = await this.options.getBuild(`agents/${agentId}`);
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      log.verbose(`[spawn] Build failed: ${errorMsg}`);
-      throw new AgentSpawnError(errorMsg);
+    if (!registered) {
+      throw new AgentSpawnError(`Agent ${agentId} is not available as an in-process responder`);
     }
 
-    log.verbose(`[spawn] Build successful: ${buildResult.bundlePath}`);
-
-    // 4. Generate instance ID and token
-    const instanceId = randomUUID();
-    const token = this.options.createToken(instanceId);
-
-    log.verbose(`[spawn] Forking utilityProcess for ${agentId} (instanceId=${instanceId.slice(0, 8)})`);
-
-    // 5. Fork agent process (Electron utilityProcess or Node.js child_process)
-    const proc = createAgentProcess(buildResult.bundlePath, {
-      serviceName: `agent-${agentId}-${instanceId.slice(0, 8)}`,
-      env: {
-        ...process.env,
-        NODE_ENV: process.env["NODE_ENV"],
-        // Set NODE_PATH to build dir for native addon resolution
-        NODE_PATH: path.join(buildResult.dir, "node_modules"),
-      },
-    });
-
-    // Emit spawning lifecycle event immediately so UI can show pending state
+    // Emit spawning lifecycle event
     this.emit("agentLifecycle", {
       channel: options.channel,
       handle: options.handle,
@@ -355,187 +204,152 @@ export class AgentHost extends EventEmitter {
       timestamp: Date.now(),
     } satisfies AgentLifecycleEvent);
 
-    // 6. Set up lifecycle promise and RPC bridge BEFORE creating instance
-    // This avoids the deferred assignment code smell
-    let readyResolve: () => void;
-    let readyReject: (err: Error) => void;
-    const readyPromise = new Promise<void>((resolve, reject) => {
-      readyResolve = resolve;
-      readyReject = reject;
-    });
+    // 3. Generate instance ID and token
+    const instanceId = randomUUID();
+    const token = this.options.createToken(instanceId);
 
-    // Track whether agent is ready (for logging level decisions)
-    let agentReady = false;
+    // 4. Instantiate the agent in-process
+    const { AgentClass } = registered;
+    const agent = new AgentClass();
 
-    const onLifecycleMessage = (msg: LifecycleMessage) => {
-      log.verbose(`[spawn] Lifecycle message from ${agentId}: ${msg.type}`);
-      if (msg.type === "ready") {
-        log.verbose(`[spawn] Agent ${agentId} sent ready signal`);
-        agentReady = true;
-        readyResolve();
-      } else if (msg.type === "error") {
-        const errorMsg = (msg["error"] as string) || "Agent initialization error";
-        // Log at both verbose and error level so it's visible without verbose mode
-        log.verbose(`[spawn] Agent ${agentId} sent error: ${errorMsg}`);
-        console.error(`[AgentHost] Agent ${agentId} initialization error: ${errorMsg}`);
-        if (msg["stack"]) {
-          log.verbose(`[spawn] Stack: ${msg["stack"]}`);
-          console.error(`[AgentHost] Stack:\n${msg["stack"]}`);
-        }
-        readyReject(new Error(errorMsg));
-      } else if (msg.type === "log") {
-        // Forward structured log messages to pubsub channel
-        const level = (msg["level"] as "debug" | "info" | "warn" | "error") || "info";
-        const message = (msg["message"] as string) || "";
-        const stack = msg["stack"] as string | undefined;
-        this.emit("agentLog", {
-          channel: options.channel,
-          handle: options.handle,
-          agentId,
-          level,
-          message,
-          stack,
-          timestamp: Date.now(),
-        } satisfies AgentLogEvent);
-      }
+    // 5. Create logger that emits to AgentHost events
+    const agentLogger: AgentLogger = {
+      debug: (...args: unknown[]) => {
+        log.verbose(`[Agent:${agentId}] ${args.map(String).join(" ")}`);
+        this.emitLogEvent(options.channel, options.handle, agentId, "debug", args);
+      },
+      info: (...args: unknown[]) => {
+        log.verbose(`[Agent:${agentId}] ${args.map(String).join(" ")}`);
+        this.emitLogEvent(options.channel, options.handle, agentId, "info", args);
+      },
+      warn: (...args: unknown[]) => {
+        log.warn(`[Agent:${agentId}] ${args.map(String).join(" ")}`);
+        this.emitLogEvent(options.channel, options.handle, agentId, "warn", args);
+      },
+      error: (...args: unknown[]) => {
+        log.error(`[Agent:${agentId}] ${args.map(String).join(" ")}`);
+        this.emitLogEvent(options.channel, options.handle, agentId, "error", args);
+      },
     };
 
-    // Create transport and RPC bridge
-    const transport = createHostTransport(proc, "main", onLifecycleMessage);
-    const rpcBridge = createRpcBridge({ selfId: "main", transport });
+    // 6. Create state store with direct StorageApi
+    const ownerId = `agent:${agentId}:${options.handle}`;
+    const storageApi = createDirectStorageApi(ownerId);
+    const stateStore = createStateStore<AgentState>({
+      storage: storageApi,
+      key: {
+        agentId,
+        channel: options.channel,
+        handle: options.handle,
+      },
+      initial: agent.state,
+      version: agent.stateVersion,
+      migrate: (agent as unknown as AgentRuntimeInjection<AgentState, AgenticParticipantMetadata>).migrateState?.bind(agent),
+      autoSaveDelayMs: 100,
+    });
 
-    // Expose RPC methods to the agent
-    // Agent's RPC selfId matches what agent-runtime uses: agent:${agentId}:${handle}
-    const agentSelfId = `agent:${agentId}:${options.handle}`;
-    this.setupDbHandlers(rpcBridge, instanceId);
-    this.setupAiHandlers(rpcBridge, instanceId, agentSelfId);
+    // Load persisted state and merge with defaults
+    const persistedState = await stateStore.load();
+    agent.state = deepMerge(agent.state, persistedState);
 
-    // 7. Create instance record with all fields initialized
+    // 7. Inject context (client=null initially)
+    const ctx: AgentContext<AgenticParticipantMetadata> = {
+      agentId,
+      channel: options.channel,
+      handle: options.handle,
+      config: options.config,
+      log: agentLogger,
+      client: null,
+      pubsubUrl: this.options.pubsubUrl,
+      pubsubToken: token,
+    };
+
+    const agentInternal = agent as unknown as AgentRuntimeInjection<AgentState, AgenticParticipantMetadata>;
+    agentInternal.ctx = ctx;
+    agentInternal.initInfo = {
+      agentId,
+      channel: options.channel,
+      handle: options.handle,
+      config: options.config,
+    };
+
+    // Inject setState
+    agentInternal.setState = (partial: Partial<AgentState>) => {
+      agent.state = deepMerge(agent.state, partial);
+      stateStore.set(agent.state);
+    };
+
+    // Inject lastCheckpoint
+    const stateMetadata = stateStore.getMetadata();
+    Object.defineProperty(agent, "lastCheckpoint", {
+      get: () => stateMetadata.lastPubsubId,
+      configurable: true,
+    });
+
+    // 8. Connect to pubsub via WebSocket
+    const customOptions = agent.getConnectOptions?.() ?? {};
+    let client: AgenticClient<AgenticParticipantMetadata>;
+    try {
+      client = await connect({
+        serverUrl: this.options.pubsubUrl,
+        token,
+        channel: options.channel,
+        handle: options.handle,
+        name: customOptions.name ?? registered.manifest.title ?? agentId,
+        type: (customOptions as { type?: string }).type ?? "agent",
+        ...customOptions,
+      });
+    } catch (err) {
+      this.options.revokeToken(instanceId);
+      stateStore.destroy();
+      throw new AgentSpawnError(`Failed to connect agent ${agentId} to pubsub: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Populate client in context
+    ctx.client = client;
+
+    // 9. Load settings and call onWake
+    const abortController = new AbortController();
+
     const instance: AgentInstance = {
       id: instanceId,
       agentId,
       channel: options.channel,
       handle: options.handle,
       startedAt: Date.now(),
-      process: proc,
-      rpcBridge,
+      agent,
+      client,
+      stateStore,
+      abortController,
     };
-
     this.instances.set(instanceId, instance);
     this.markChannelActivity(options.channel);
 
-    // Capture stdout/stderr for debug events AND terminal logging
-    proc.stdout?.on("data", (data: Buffer) => {
-      const content = data.toString().trimEnd();
-      // Log at info level during startup to help debug issues, verbose after ready
-      if (agentReady) {
-        log.verbose(`[Agent:${agentId}:stdout] ${content}`);
-      } else {
-        console.log(`[Agent:${agentId}:stdout] ${content}`);
-      }
-      this.emit("agentOutput", {
-        channel: options.channel,
-        handle: options.handle,
-        agentId,
-        stream: "stdout",
-        content,
-        timestamp: Date.now(),
-      } satisfies AgentOutputEvent);
-    });
+    try {
+      // Load settings before onWake (same as runtime.ts does)
+      await agentInternal.loadSettings();
 
-    proc.stderr?.on("data", (data: Buffer) => {
-      const content = data.toString().trimEnd();
-      // Log at error level during startup to help debug issues, verbose after ready
-      if (agentReady) {
-        log.verbose(`[Agent:${agentId}:stderr] ${content}`);
-      } else {
-        console.error(`[Agent:${agentId}:stderr] ${content}`);
-      }
-      this.emit("agentOutput", {
-        channel: options.channel,
-        handle: options.handle,
-        agentId,
-        stream: "stderr",
-        content,
-        timestamp: Date.now(),
-      } satisfies AgentOutputEvent);
-    });
+      await agent.onWake();
+    } catch (err) {
+      log.error(`Agent ${agentId} failed during onWake: ${err}`);
+      await this.cleanupInstance(instanceId);
+      throw new AgentSpawnError(`Agent ${agentId} onWake failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
-    // Handle process exit - emit lifecycle event only if not already emitted
-    // Also reject readyPromise if process exits before sending ready signal
-    proc.on("exit", (code) => {
-      log.verbose(`Agent ${agentId} (${instanceId}) exited with code ${code}`);
-      const instance = this.instances.get(instanceId);
-      // Only emit if we haven't already emitted a stop event (e.g., from explicit kill or timeout)
-      if (instance && !instance.stopEventEmitted) {
-        const reason = code === 0 ? "idle" : "crash";
-        this.emit("agentLifecycle", {
-          channel: options.channel,
-          handle: options.handle,
-          agentId,
-          event: "stopped",
-          reason,
-          timestamp: Date.now(),
-        } satisfies AgentLifecycleEvent);
-      }
-      this.cleanupInstance(instanceId);
-      // Reject readyPromise if we haven't received ready yet (process crashed during init)
-      readyReject(new Error(`Agent process exited with code ${code} before sending ready signal`));
-    });
+    // 10. Start event loop in background
+    const eventsOptions = agent.getEventsOptions?.();
+    instance.eventLoopPromise = this.runEventLoop(instance, eventsOptions);
 
-    // 8. Wait for spawn event before sending init config
-    // utilityProcess emits 'spawn' when the process is ready to receive messages
-    await new Promise<void>((resolve, reject) => {
-      const onSpawn = () => {
-        proc.removeListener("spawn", onSpawn);
-        proc.removeListener("exit", onExit);
-        resolve();
-      };
-      const onExit = (code: number | null) => {
-        proc.removeListener("spawn", onSpawn);
-        proc.removeListener("exit", onExit);
-        reject(new Error(`Agent process exited with code ${code} before spawning`));
-      };
-      proc.on("spawn", onSpawn);
-      proc.on("exit", onExit);
-    });
-    log.verbose(`[spawn] Process spawned for ${agentId}`);
-
-    // 9. Send init config
-    const initConfig: AgentInitConfig = {
-      agentId,
+    // Emit started lifecycle event
+    this.emit("agentLifecycle", {
       channel: options.channel,
       handle: options.handle,
-      config: options.config,
-      pubsubUrl: this.options.pubsubUrl,
-      pubsubToken: token,
-    };
+      agentId,
+      event: "started",
+      timestamp: Date.now(),
+    } satisfies AgentLifecycleEvent);
 
-    log.verbose(`[spawn] Sending init config to ${agentId}: channel=${options.channel}, pubsubUrl=${this.options.pubsubUrl}`);
-    proc.postMessage({ type: "init", config: initConfig });
-
-    // 10. Await ready
-    log.verbose(`[spawn] Waiting for ready signal from ${agentId}...`);
-    try {
-      await readyPromise;
-      log.verbose(`[spawn] Agent ${agentId} ready on channel ${options.channel}`);
-
-      // Emit started lifecycle event
-      this.emit("agentLifecycle", {
-        channel: options.channel,
-        handle: options.handle,
-        agentId,
-        event: "started",
-        timestamp: Date.now(),
-      } satisfies AgentLifecycleEvent);
-    } catch (err) {
-      // Cleanup on failure
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      log.verbose(`[spawn] Failed to start agent ${agentId}: ${errorMsg}`);
-      this.cleanupInstance(instanceId);
-      proc.kill();
-      throw err;
-    }
+    log.verbose(`[spawn] Agent ${agentId} started on channel ${options.channel}`);
 
     return {
       id: instance.id,
@@ -547,7 +361,41 @@ export class AgentHost extends EventEmitter {
   }
 
   /**
-   * Kill an agent instance gracefully with fallback to force kill.
+   * Run the event loop for an in-process agent.
+   * Processes pubsub events and auto-checkpoints.
+   */
+  private async runEventLoop(
+    instance: AgentInstance,
+    eventsOptions?: Parameters<AgenticClient<AgenticParticipantMetadata>["events"]>[0]
+  ): Promise<void> {
+    const { agent, client, stateStore, abortController } = instance;
+    if (!client) return;
+
+    try {
+      for await (const event of client.events(eventsOptions)) {
+        if (abortController.signal.aborted) break;
+
+        try {
+          await agent.onEvent(event as EventStreamItem);
+        } catch (err) {
+          log.error(`Agent ${instance.agentId} onEvent error:`, err);
+        }
+
+        // Auto-checkpoint
+        const pubsubId = (event as { pubsubId?: number }).pubsubId;
+        if (pubsubId !== undefined) {
+          stateStore.setCheckpoint(pubsubId);
+        }
+      }
+    } catch (err) {
+      if (!abortController.signal.aborted) {
+        log.error(`Agent ${instance.agentId} event loop error:`, err);
+      }
+    }
+  }
+
+  /**
+   * Kill an agent instance gracefully.
    * Emits "stopped (explicit)" lifecycle event.
    */
   async kill(instanceId: string): Promise<boolean> {
@@ -556,7 +404,7 @@ export class AgentHost extends EventEmitter {
       return false;
     }
 
-    // Mark that we've emitted the stop event to prevent duplicate from exit handler
+    // Mark that we've emitted the stop event to prevent duplicate
     instance.stopEventEmitted = true;
 
     // Emit explicit stop lifecycle event
@@ -581,39 +429,43 @@ export class AgentHost extends EventEmitter {
       return false;
     }
 
-    return new Promise<boolean>((resolve) => {
-      let resolved = false;
+    // Abort the event loop
+    instance.abortController.abort();
 
-      const cleanup = () => {
-        if (resolved) return;
-        resolved = true;
-        instance.process.off("message", handler);
-        this.cleanupInstance(instanceId);
-        resolve(true);
-      };
-
-      // Listen for graceful shutdown
-      const handler = (msg: unknown) => {
-        const m = msg as { type?: string };
-        if (m.type === "shutdown-complete") {
-          log.verbose(`Agent ${instance.agentId} shutdown gracefully`);
-          cleanup();
+    // Graceful shutdown with timeout
+    try {
+      const shutdownPromise = (async () => {
+        try {
+          await instance.agent.onSleep();
+        } catch (err) {
+          log.warn(`Agent ${instance.agentId} onSleep error:`, err);
         }
-      };
-      instance.process.on("message", handler);
 
-      // Send shutdown signal
-      instance.process.postMessage({ type: "shutdown" });
+        // Flush state
+        instance.stateStore.set(instance.agent.state);
+        await instance.stateStore.flush();
+        instance.stateStore.destroy();
 
-      // Force kill after timeout
-      setTimeout(() => {
-        if (!resolved) {
-          log.verbose(`Force killing agent ${instance.agentId}`);
-          instance.process.kill();
-          cleanup();
+        // Close pubsub client
+        if (instance.client) {
+          try {
+            await instance.client.close();
+          } catch {
+            // Ignore close errors
+          }
         }
-      }, SHUTDOWN_TIMEOUT_MS);
-    });
+      })();
+
+      await Promise.race([
+        shutdownPromise,
+        new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_TIMEOUT_MS)),
+      ]);
+    } catch (err) {
+      log.warn(`Error during agent ${instance.agentId} shutdown:`, err);
+    }
+
+    await this.cleanupInstance(instanceId);
+    return true;
   }
 
   /**
@@ -673,16 +525,27 @@ export class AgentHost extends EventEmitter {
   }
 
   /**
-   * List all available agents from discovery.
+   * List all available agents from registry + discovery.
    */
   listAvailableAgents() {
+    // Primarily from the in-process registry
+    const manifests = [...RESPONDER_REGISTRY.values()].map((r) => r.manifest);
+
+    // Also include any from discovery (for backward compatibility)
     const discovery = getAgentDiscovery();
-    return discovery?.listValid().map((a) => a.manifest) ?? [];
+    if (discovery) {
+      for (const a of discovery.listValid()) {
+        if (!RESPONDER_REGISTRY.has(a.manifest.id)) {
+          manifests.push(a.manifest);
+        }
+      }
+    }
+
+    return manifests;
   }
 
   /**
    * Mark channel activity (resets inactivity timer).
-   * Called by PubSubServer on every channel message.
    */
   markChannelActivity(channel: string): void {
     this.channelActivity.set(channel, Date.now());
@@ -690,7 +553,6 @@ export class AgentHost extends EventEmitter {
 
   /**
    * Wake registered agents for a channel that aren't currently running.
-   * Called when there's activity on a channel with registered agents.
    */
   async wakeChannelAgents(channel: string): Promise<void> {
     if (this.isShuttingDown) return;
@@ -701,20 +563,20 @@ export class AgentHost extends EventEmitter {
     const now = Date.now();
 
     for (const registration of registeredAgents) {
-      // Skip if already running - check specific (channel, agentId, handle) to allow multiple handles
+      // Skip if already running
       const existing = this.getInstanceByHandle(channel, registration.agentId, registration.handle);
       if (existing) {
         continue;
       }
 
-      // Skip if in backoff period from a previous failed wake attempt
+      // Skip if in backoff period
       const backoffKey = `${channel}:${registration.agentId}`;
       const failure = this.wakeFailures.get(backoffKey);
       if (failure && now < failure.backoffUntil) {
         continue;
       }
 
-      // Parse the stored spawn config for the agent-specific config values
+      // Parse stored spawn config
       let spawnConfig: StoredSpawnConfig;
       try {
         spawnConfig = JSON.parse(registration.config) as StoredSpawnConfig;
@@ -726,14 +588,13 @@ export class AgentHost extends EventEmitter {
       log.verbose(`Waking agent ${registration.agentId} (@${registration.handle}) on channel ${channel}`);
 
       try {
-        // Use authoritative channel/handle from DB record, config from stored JSON
         await this.spawn(registration.agentId, {
           channel: registration.channel,
           handle: registration.handle,
           config: spawnConfig.config,
         });
 
-        // Success — clear any previous failure tracking
+        // Clear failure tracking on success
         this.wakeFailures.delete(backoffKey);
 
         // Emit woken lifecycle event
@@ -750,128 +611,8 @@ export class AgentHost extends EventEmitter {
         const delayMs = Math.min(5_000 * Math.pow(2, count - 1), 60_000);
         this.wakeFailures.set(backoffKey, { count, backoffUntil: now + delayMs });
         log.error(`Failed to wake agent ${registration.agentId} (attempt ${count}, next retry in ${delayMs / 1000}s): ${err}`);
-        // Don't throw - try to wake other agents
       }
     }
-  }
-
-  /**
-   * Set up database RPC handlers for an agent.
-   */
-  private setupDbHandlers(bridge: RpcBridge, instanceId: string): void {
-    const dbManager = getDatabaseManager();
-
-    bridge.exposeMethod("db.open", (name: string, readOnly?: boolean) => {
-      return dbManager.open(instanceId, name, readOnly);
-    });
-
-    bridge.exposeMethod("db.exec", (handle: string, sql: string) => {
-      dbManager.exec(handle, sql);
-    });
-
-    bridge.exposeMethod("db.run", (handle: string, sql: string, params?: unknown[]) => {
-      return dbManager.run(handle, sql, params);
-    });
-
-    bridge.exposeMethod("db.get", (handle: string, sql: string, params?: unknown[]) => {
-      return dbManager.get(handle, sql, params);
-    });
-
-    bridge.exposeMethod("db.query", (handle: string, sql: string, params?: unknown[]) => {
-      return dbManager.query(handle, sql, params);
-    });
-
-    bridge.exposeMethod("db.close", (handle: string) => {
-      dbManager.close(handle);
-    });
-  }
-
-  /**
-   * Set up AI RPC handlers for agents.
-   * Wires ai.listRoles, ai.streamTextStart, ai.streamCancel to the shared AIHandler.
-   *
-   * @param bridge - RPC bridge to the agent
-   * @param instanceId - Agent instance ID
-   * @param agentSelfId - Agent's RPC self ID (e.g., "agent:my-agent:handle")
-   */
-  private setupAiHandlers(bridge: RpcBridge, instanceId: string, agentSelfId: string): void {
-    // ai.listRoles - returns available AI roles/models
-    bridge.exposeMethod("ai.listRoles", () => {
-      if (!_aiHandler) {
-        throw new Error("AI handler not initialized");
-      }
-      return _aiHandler.getAvailableRoles();
-    });
-
-    // ai.streamCancel - cancel an active stream
-    bridge.exposeMethod("ai.streamCancel", (streamId: string) => {
-      if (!_aiHandler) {
-        throw new Error("AI handler not initialized");
-      }
-      _aiHandler.cancelStream(streamId);
-    });
-
-    // ai.streamTextStart - start a streaming AI request
-    bridge.exposeMethod(
-      "ai.streamTextStart",
-      (options: StreamTextOptions, streamId: string) => {
-        if (!_aiHandler) {
-          throw new Error("AI handler not initialized");
-        }
-
-        // Create an agent-specific StreamTarget that uses the RPC bridge
-        const target: StreamTarget = {
-          targetId: instanceId,
-
-          isAvailable: () => {
-            // Check if the agent instance is still running
-            return this.instances.has(instanceId);
-          },
-
-          sendChunk: (event: StreamTextEvent) => {
-            // Send stream chunk via RPC event to the agent's selfId
-            void bridge.emit(agentSelfId, "ai:stream-text-chunk", { streamId, chunk: event });
-          },
-
-          sendEnd: () => {
-            // Send stream end via RPC event to the agent's selfId
-            void bridge.emit(agentSelfId, "ai:stream-text-end", { streamId });
-          },
-
-          executeTool: async (
-            toolName: string,
-            args: Record<string, unknown>
-          ): Promise<ToolExecutionResult> => {
-            // Call the agent's ai.executeTool method via RPC
-            return bridge.call<ToolExecutionResult>(
-              agentSelfId,
-              "ai.executeTool",
-              streamId,
-              toolName,
-              args
-            );
-          },
-
-          onUnavailable: (listener: () => void) => {
-            // Monitor for agent exit
-            const instance = this.instances.get(instanceId);
-            if (!instance) {
-              // Already unavailable
-              listener();
-              return () => {};
-            }
-
-            // Watch for process exit
-            const exitHandler = () => listener();
-            instance.process.on("exit", exitHandler);
-            return () => instance.process.off("exit", exitHandler);
-          },
-        };
-
-        // Start streaming to the agent target
-        _aiHandler.startTargetStream(target, options, streamId);
-      }
-    );
   }
 
   /**
@@ -891,14 +632,12 @@ export class AgentHost extends EventEmitter {
       }
 
       for (const channel of channelsToCleanup) {
-        log.verbose(`Channel ${channel} inactive for 5 minutes, killing agents (they can auto-wake)`);
+        log.verbose(`Channel ${channel} inactive for 5 minutes, stopping agents (they can auto-wake)`);
 
         for (const instance of this.instances.values()) {
           if (instance.channel === channel) {
-            // Mark that we've emitted the stop event to prevent duplicate from exit handler
             instance.stopEventEmitted = true;
 
-            // Emit timeout lifecycle event before killing
             this.emit("agentLifecycle", {
               channel: instance.channel,
               handle: instance.handle,
@@ -915,18 +654,41 @@ export class AgentHost extends EventEmitter {
       }
     }, ACTIVITY_CHECK_INTERVAL_MS);
 
-    // Don't let the interval keep the process alive during shutdown
     this.activityCheckInterval.unref();
   }
 
   /**
-   * Clean up an instance (revoke token, close DB connections, remove from tracking).
+   * Emit a log event from an agent.
    */
-  private cleanupInstance(instanceId: string): void {
+  private emitLogEvent(
+    channel: string,
+    handle: string,
+    agentId: string,
+    level: "debug" | "info" | "warn" | "error",
+    args: unknown[]
+  ): void {
+    const message = args.map((a) => {
+      if (a instanceof Error) return a.stack ?? a.message;
+      return String(a);
+    }).join(" ");
+
+    this.emit("agentLog", {
+      channel,
+      handle,
+      agentId,
+      level,
+      message,
+      timestamp: Date.now(),
+    } satisfies AgentLogEvent);
+  }
+
+  /**
+   * Clean up an instance.
+   */
+  private async cleanupInstance(instanceId: string): Promise<void> {
     const instance = this.instances.get(instanceId);
     if (instance) {
-      // Close all DB connections owned by this agent
-      getDatabaseManager().closeAllForOwner(instanceId);
+      getDatabaseManager().closeAllForOwner(`agent:${instance.agentId}:${instance.handle}`);
       this.options.revokeToken(instanceId);
       this.instances.delete(instanceId);
     }
@@ -943,10 +705,16 @@ export class AgentHost extends EventEmitter {
       this.activityCheckInterval = null;
     }
 
-    // Clean up all agents (closes DB connections, revokes tokens)
+    // Kill all agents
     for (const instance of this.instances.values()) {
-      instance.process.kill();
-      getDatabaseManager().closeAllForOwner(instance.id);
+      instance.abortController.abort();
+      instance.stateStore.set(instance.agent.state);
+      void instance.stateStore.flush().catch(() => {});
+      instance.stateStore.destroy();
+      if (instance.client) {
+        void instance.client.close().catch(() => {});
+      }
+      getDatabaseManager().closeAllForOwner(`agent:${instance.agentId}:${instance.handle}`);
       this.options.revokeToken(instance.id);
     }
 

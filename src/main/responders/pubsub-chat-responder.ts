@@ -9,7 +9,7 @@
  * - Pattern helpers from @workspace/agent-patterns
  */
 
-import { Agent, runAgent } from "@workspace/agent-runtime";
+import { Agent } from "@workspace/agent-runtime";
 import type {
   EventStreamItem,
   AgenticClient,
@@ -121,7 +121,7 @@ interface PubsubChatQueuedMessage {
   typingTracker: ReturnType<typeof createTypingTracker>;
 }
 
-class PubsubChatResponder extends Agent<PubsubChatState> {
+export class PubsubChatResponder extends Agent<PubsubChatState> {
   state: PubsubChatState = {};
 
   // Pattern helpers from @workspace/agent-patterns
@@ -882,4 +882,3 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
   }
 }
 
-runAgent(PubsubChatResponder);

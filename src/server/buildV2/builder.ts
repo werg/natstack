@@ -1,9 +1,7 @@
 /**
- * Builder — esbuild orchestration for panels, about pages, and agents.
+ * Builder — esbuild orchestration for panels and about pages.
  *
- * Two build strategies:
- *   - Panel/About (browser target): ESM, code splitting, fs/path shims
- *   - Agent (node target): ESM, no splitting, full Node.js access
+ * Build strategy (browser target): ESM, code splitting, fs/path shims.
  *
  * Build options are manifest-derived, not caller-supplied.
  * Concurrency: semaphore with MAX_CONCURRENT_BUILDS = 4.
@@ -38,11 +36,6 @@ const PANEL_ASSET_LOADERS: Record<string, esbuild.Loader> = {
   ".mp3": "file", ".wav": "file", ".ogg": "file", ".mp4": "file", ".webm": "file",
   ".wasm": "file", ".pdf": "file",
 };
-
-const KNOWN_NATIVE_EXTERNALS = [
-  "*.node", "fsevents", "bufferutil", "utf-8-validate",
-  "node-pty", "cpu-features", "@parcel/watcher",
-];
 
 const TEXT_EXTENSIONS = new Set([
   ".js", ".css", ".json", ".map", ".svg", ".txt", ".md", ".html",
@@ -131,7 +124,6 @@ const inFlightBuilds = new Map<string, Promise<BuildResult>>();
  * exports-based dist/ paths to their TypeScript source equivalents.
  */
 const PANEL_CONDITIONS = ["natstack-panel", "import", "default"] as const;
-const NODE_CONDITIONS = ["import", "default"] as const;
 
 function createWorkspaceResolvePlugin(
   graph: PackageGraph,
@@ -142,7 +134,7 @@ function createWorkspaceResolvePlugin(
   return {
     name: "workspace-packages",
     setup(build) {
-      // Match @workspace/*, @workspace-panels/*, @workspace-about/*, @workspace-agents/*
+      // Match @workspace/*, @workspace-panels/*, @workspace-about/*
       build.onResolve({ filter: /^@workspace[-/]/ }, (args) => {
         const parsed = parseWorkspaceImport(args.path);
         if (!parsed) return null;
@@ -272,7 +264,7 @@ function createTsExtensionPlugin(sourceRoot: string): esbuild.Plugin {
 function parseWorkspaceImport(
   importPath: string,
 ): { packageName: string; subpath: string } | null {
-  // Match @workspace/name, @workspace-panels/name, @workspace-about/name, @workspace-agents/name
+  // Match @workspace/name, @workspace-panels/name, @workspace-about/name
   const match = importPath.match(/^(@workspace(?:-\w+)?)\/([^/]+)(\/.*)?$/);
   if (!match) return null;
 
@@ -697,7 +689,7 @@ export interface BuildOptions {
 }
 
 /**
- * Build a single unit (panel, about page, or agent).
+ * Build a single unit (panel or about page).
  * Returns a BuildResult from the content-addressed store.
  *
  * @param commitMap - Optional map of unit name → commit SHA for source extraction.
@@ -747,11 +739,7 @@ async function doBuild(
   const extracted = extractSourceForBuild(node, graph, workspaceRoot, commitMap);
 
   try {
-    if (node.kind === "agent") {
-      return await buildAgent(node, ev, buildKey, graph, workspaceRoot, sourcemap, extracted.sourceRoot);
-    } else {
-      return await buildPanel(node, ev, buildKey, graph, workspaceRoot, sourcemap, extracted.sourceRoot);
-    }
+    return await buildPanel(node, ev, buildKey, graph, workspaceRoot, sourcemap, extracted.sourceRoot);
   } finally {
     releaseSemaphore();
     extracted.cleanup();
@@ -943,86 +931,6 @@ async function buildPanel(
     return buildStore.put(buildKey, artifacts, metadata);
   } finally {
     // Clean up temp dir
-    try {
-      fs.rmSync(outdir, { recursive: true, force: true });
-    } catch {
-      // Ignore
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Agent Build
-// ---------------------------------------------------------------------------
-
-async function buildAgent(
-  node: GraphNode,
-  ev: string,
-  buildKey: string,
-  graph: PackageGraph,
-  workspaceRoot: string,
-  sourcemap: boolean,
-  sourceRoot: string,
-): Promise<BuildResult> {
-  const outdir = path.join(
-    require("os").tmpdir(),
-    "natstack-builds",
-    `build-${buildKey}`,
-  );
-  fs.mkdirSync(outdir, { recursive: true });
-
-  // Resolve entry point from extracted source
-  const sourcePath = remapPath(node.path, workspaceRoot, sourceRoot);
-  const entryFile = resolveEntryPoint(node, sourcePath);
-
-  // Collect and install external deps (from real filesystem, not git)
-  const externalDeps = collectTransitiveExternalDeps(node, graph);
-  const nodeModulesDir = await ensureExternalDeps(externalDeps);
-  const nodePaths = nodeModulesDir ? [nodeModulesDir] : [];
-
-  const rootNodeModules = path.join(workspaceRoot, "..", "node_modules");
-  if (fs.existsSync(rootNodeModules)) {
-    nodePaths.push(rootNodeModules);
-  }
-
-  // Resolve plugin uses extracted source paths — node conditions for agent builds
-  const plugins: esbuild.Plugin[] = [
-    createWorkspaceResolvePlugin(graph, workspaceRoot, sourceRoot, NODE_CONDITIONS),
-    createTsExtensionPlugin(sourceRoot),
-  ];
-
-  try {
-    await esbuild.build({
-      entryPoints: [entryFile],
-      bundle: true,
-      platform: "node",
-      target: "node20",
-      format: "esm",
-      splitting: false,
-      outfile: path.join(outdir, "bundle.mjs"),
-      sourcemap: sourcemap ? "inline" : false,
-      metafile: true,
-      logLevel: "warning",
-      plugins,
-      nodePaths,
-      external: KNOWN_NATIVE_EXTERNALS,
-      tsconfigRaw: { compilerOptions: {} },
-    });
-
-    const bundlePath = path.join(outdir, "bundle.mjs");
-    const bundle = fs.readFileSync(bundlePath, "utf-8");
-
-    const artifacts: BuildArtifacts = { bundle };
-    const metadata: BuildMetadata = {
-      kind: "agent",
-      name: node.name,
-      ev,
-      sourcemap,
-      builtAt: new Date().toISOString(),
-    };
-
-    return buildStore.put(buildKey, artifacts, metadata);
-  } finally {
     try {
       fs.rmSync(outdir, { recursive: true, force: true });
     } catch {
