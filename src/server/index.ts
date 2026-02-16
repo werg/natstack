@@ -254,8 +254,10 @@ async function main() {
     }
   });
 
-  // Generate admin token and set on TokenManager BEFORE RPC server starts
-  const adminToken = randomBytes(32).toString("hex");
+  // Admin token: use NATSTACK_ADMIN_TOKEN env var if set, otherwise generate random.
+  // A fixed token (e.g. in ~/.config/natstack/.env) avoids having to copy a new
+  // token every time the server restarts.
+  const adminToken = process.env["NATSTACK_ADMIN_TOKEN"] || randomBytes(32).toString("hex");
   getTokenManager().setAdminToken(adminToken);
 
   const rpcServer = new RpcServer({
