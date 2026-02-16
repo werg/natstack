@@ -215,7 +215,7 @@ export class AgentHost extends EventEmitter {
     };
 
     // 6. Create state store with direct StorageApi
-    const ownerId = `agent:${agentId}:${options.handle}`;
+    const ownerId = `agent:${agentId}:${options.channel}:${options.handle}`;
     const storageApi = createDirectStorageApi(ownerId);
     const stateStore = createStateStore<AgentState>({
       storage: storageApi,
@@ -276,8 +276,9 @@ export class AgentHost extends EventEmitter {
         ...customOptions,
       });
     } catch (err) {
-      this.options.revokeToken(instanceId);
       stateStore.destroy();
+      getDatabaseManager().closeAllForOwner(ownerId);
+      this.options.revokeToken(instanceId);
       throw new AgentSpawnError(`Failed to connect agent ${agentId} to pubsub: ${err instanceof Error ? err.message : String(err)}`);
     }
 
@@ -339,6 +340,7 @@ export class AgentHost extends EventEmitter {
   /**
    * Run the event loop for an in-process agent.
    * Processes pubsub events and auto-checkpoints.
+   * If the stream terminates unexpectedly, cleans up the instance.
    */
   private async runEventLoop(
     instance: AgentInstance,
@@ -367,6 +369,25 @@ export class AgentHost extends EventEmitter {
       if (!abortController.signal.aborted) {
         log.error(`Agent ${instance.agentId} event loop error:`, err);
       }
+    }
+
+    // If the event loop exited without an explicit kill (abort), clean up the zombie
+    if (!abortController.signal.aborted && this.instances.has(instance.id)) {
+      log.warn(`Agent ${instance.agentId} event loop terminated unexpectedly on channel ${instance.channel}`);
+
+      if (!instance.stopEventEmitted) {
+        instance.stopEventEmitted = true;
+        this.emit("agentLifecycle", {
+          channel: instance.channel,
+          handle: instance.handle,
+          agentId: instance.agentId,
+          event: "stopped",
+          reason: "crash",
+          timestamp: Date.now(),
+        } satisfies AgentLifecycleEvent);
+      }
+
+      await this.cleanupInstance(instance.id);
     }
   }
 
@@ -408,7 +429,7 @@ export class AgentHost extends EventEmitter {
     // Abort the event loop
     instance.abortController.abort();
 
-    // Graceful shutdown with timeout
+    // Graceful shutdown with timeout: run onSleep + flush state
     try {
       const shutdownPromise = (async () => {
         try {
@@ -417,19 +438,9 @@ export class AgentHost extends EventEmitter {
           log.warn(`Agent ${instance.agentId} onSleep error:`, err);
         }
 
-        // Flush state
+        // Flush final state
         instance.stateStore.set(instance.agent.state);
         await instance.stateStore.flush();
-        instance.stateStore.destroy();
-
-        // Close pubsub client
-        if (instance.client) {
-          try {
-            await instance.client.close();
-          } catch {
-            // Ignore close errors
-          }
-        }
       })();
 
       await Promise.race([
@@ -440,6 +451,7 @@ export class AgentHost extends EventEmitter {
       log.warn(`Error during agent ${instance.agentId} shutdown:`, err);
     }
 
+    // cleanupInstance handles: client.close, stateStore.destroy, DB close, token revoke
     await this.cleanupInstance(instanceId);
     return true;
   }
@@ -646,15 +658,33 @@ export class AgentHost extends EventEmitter {
   }
 
   /**
-   * Clean up an instance.
+   * Clean up an instance — closes all resources (client, stateStore, DB, token).
    */
   private async cleanupInstance(instanceId: string): Promise<void> {
     const instance = this.instances.get(instanceId);
-    if (instance) {
-      getDatabaseManager().closeAllForOwner(`agent:${instance.agentId}:${instance.handle}`);
-      this.options.revokeToken(instanceId);
-      this.instances.delete(instanceId);
+    if (!instance) return;
+
+    // Close pubsub client
+    if (instance.client) {
+      try {
+        await instance.client.close();
+      } catch {
+        // Ignore close errors
+      }
     }
+
+    // Destroy state store (stops auto-save timer)
+    try {
+      instance.stateStore.destroy();
+    } catch {
+      // Ignore destroy errors
+    }
+
+    // Close DB handles for this instance
+    getDatabaseManager().closeAllForOwner(`agent:${instance.agentId}:${instance.channel}:${instance.handle}`);
+
+    this.options.revokeToken(instanceId);
+    this.instances.delete(instanceId);
   }
 
   /**
@@ -677,7 +707,7 @@ export class AgentHost extends EventEmitter {
       if (instance.client) {
         void instance.client.close().catch(() => {});
       }
-      getDatabaseManager().closeAllForOwner(`agent:${instance.agentId}:${instance.handle}`);
+      getDatabaseManager().closeAllForOwner(`agent:${instance.agentId}:${instance.channel}:${instance.handle}`);
       this.options.revokeToken(instance.id);
     }
 

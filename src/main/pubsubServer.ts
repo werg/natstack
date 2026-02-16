@@ -12,9 +12,7 @@ import { getDatabaseManager } from "./db/databaseManager.js";
 import { findAvailablePortForService } from "./portUtils.js";
 import { createDevLogger } from "./devLog.js";
 import type { AgentHost } from "./agentHost.js";
-import { AgentSpawnError } from "./agentHost.js";
 import type { AgentManifest } from "@natstack/types";
-import type { AgentBuildError } from "@natstack/types";
 
 const log = createDevLogger("PubSubServer");
 
@@ -213,8 +211,6 @@ interface ServerMessage {
   success?: boolean;
   /** Instance ID of spawned agent (invite-agent-response) */
   instanceId?: string;
-  /** Structured build error with full diagnostics (invite-agent-response on failure) */
-  buildError?: AgentBuildError;
 }
 
 /** Presence event types for join/leave tracking */
@@ -1821,24 +1817,12 @@ export class PubSubServer {
         log.verbose(`[invite-agent] Stack: ${err.stack}`);
       }
 
-      // Extract structured build error if available
-      let buildError: AgentBuildError | undefined;
-      if (err instanceof AgentSpawnError) {
-        buildError = {
-          message: err.message,
-          buildLog: err.buildLog,
-          typeErrors: err.typeErrors,
-          dirtyRepo: err.dirtyRepo,
-        };
-      }
-
       // Broadcast spawn error to the channel so all participants can see it
       this.broadcastEphemeralDebug(client.channel, {
         debugType: "spawn-error",
         agentId: msg.agentId,
         handle,
         error: errorMsg,
-        buildError,
       });
 
       this.send(client.ws, {
@@ -1846,7 +1830,6 @@ export class PubSubServer {
         ref,
         success: false,
         error: errorMsg,
-        buildError,
       });
     }
   }
@@ -2331,7 +2314,6 @@ export class PubSubServer {
     reason?: "timeout" | "explicit" | "crash" | "idle" | "dirty-repo";
     details?: unknown;
     error?: string;
-    buildError?: AgentBuildError;
     level?: "debug" | "info" | "warn" | "error";
     message?: string;
     stack?: string;
