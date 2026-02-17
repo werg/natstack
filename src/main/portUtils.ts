@@ -1,4 +1,4 @@
-import type { Server as HttpServer } from "http";
+import * as net from "net";
 
 /**
  * Default port ranges for different services.
@@ -12,36 +12,34 @@ export const PORT_RANGES = {
 } as const;
 
 /**
- * Listen an existing HTTP server on an available port in a service's range.
- * No TOCTOU: the actual server is bound directly — no temp server involved.
+ * Probe whether a port is available on a specific host by binding a temp server.
+ * IMPORTANT: Always specify the same host the real server will use (default: 127.0.0.1)
+ * to avoid IPv4/IPv6 mismatch — probing on :: can succeed while 127.0.0.1 is taken.
  */
-export async function listenOnServicePort(
-  server: HttpServer,
+function probePort(port: number, host: string): Promise<net.Server | null> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => resolve(null));
+    server.once("listening", () => resolve(server));
+    server.listen(port, host);
+  });
+}
+
+/**
+ * Find an available port for a service. Returns the port number.
+ * Probes with a temp server on the correct host, closes it, then returns.
+ * Callers should bind their real server immediately after.
+ */
+export async function findServicePort(
   service: keyof typeof PORT_RANGES,
   host = "127.0.0.1"
 ): Promise<number> {
   const { start, end } = PORT_RANGES[service];
   for (let port = start; port < end; port++) {
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const onError = (err: NodeJS.ErrnoException) => {
-          if (err.code === "EADDRINUSE") {
-            server.removeListener("error", onError);
-            reject(err);
-          } else {
-            reject(err);
-          }
-        };
-        server.once("error", onError);
-        server.listen(port, host, () => {
-          server.removeListener("error", onError);
-          resolve();
-        });
-      });
+    const server = await probePort(port, host);
+    if (server) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       return port;
-    } catch (err: any) {
-      if (err.code === "EADDRINUSE") continue;
-      throw err;
     }
   }
   throw new Error(`No available port in ${service} range ${start}-${end - 1}`);

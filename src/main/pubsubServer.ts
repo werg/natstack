@@ -9,7 +9,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { createServer, type Server as HttpServer, type IncomingMessage } from "http";
 import { getTokenManager } from "./tokenManager.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
-import { listenOnServicePort } from "./portUtils.js";
+import { findServicePort } from "./portUtils.js";
 import { createDevLogger } from "./devLog.js";
 import type { AgentHost } from "./agentHost.js";
 import { AgentSpawnError } from "./agentHost.js";
@@ -1084,6 +1084,10 @@ export class PubSubServer {
   }
 
   async start(): Promise<number> {
+    if (this.requestedPort === undefined) {
+      this.port = await findServicePort("pubsub");
+    }
+
     // Create HTTP server for WebSocket upgrade
     this.httpServer = createServer();
     this.wss = new WebSocketServer({ server: this.httpServer });
@@ -1091,19 +1095,16 @@ export class PubSubServer {
 
     this.wss.on("connection", (ws, req) => this.handleConnection(ws, req));
 
-    if (this.requestedPort !== undefined) {
-      // Specific port requested — bind directly
-      await new Promise<void>((resolve, reject) => {
-        this.httpServer!.once("error", reject);
-        this.httpServer!.listen(this.requestedPort!, "127.0.0.1", () => resolve());
-      });
-      const addr = this.httpServer.address();
-      if (addr && typeof addr === "object") {
-        this.port = addr.port;
-      }
-    } else {
-      // Find available port — bind the actual server directly (no TOCTOU)
-      this.port = await listenOnServicePort(this.httpServer, "pubsub");
+    const listenPort = this.requestedPort ?? this.port!;
+    await new Promise<void>((resolve, reject) => {
+      this.httpServer!.once("error", reject);
+      this.httpServer!.listen(listenPort, "127.0.0.1", () => resolve());
+    });
+
+    // Get actual port (important when requestedPort is 0)
+    const addr = this.httpServer.address();
+    if (addr && typeof addr === "object") {
+      this.port = addr.port;
     }
 
     log.verbose(`[PubSub] Server listening on port ${this.port}`);

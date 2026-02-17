@@ -11,6 +11,7 @@ const log = createDevLogger("GitServer");
 import type { WorkspaceNode, WorkspaceTree, BranchInfo, CommitInfo } from "../shared/types.js";
 import { GitAuthManager, getTokenManager } from "./tokenManager.js";
 import { PORT_RANGES } from "./portUtils.js";
+import * as net from "net";
 import type { GitWatcher } from "./workspace/gitWatcher.js";
 import type { GitHubProxyConfig } from "./workspace/types.js";
 import {
@@ -103,38 +104,22 @@ export class GitServer {
   }
 
   /**
-   * Try to listen an HTTP server on an available port.
-   * Binds the real server directly — no temp server, no TOCTOU.
+   * Probe for an available port starting from configuredPort up to the git range end.
+   * Uses 127.0.0.1 to match the address the real server will bind to.
    */
-  private async listenOnAvailablePort(
-    server: http.Server,
-    startPort: number,
-    endPort: number
-  ): Promise<number> {
-    for (let port = startPort; port < endPort; port++) {
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const onError = (err: NodeJS.ErrnoException) => {
-            if (err.code === "EADDRINUSE") {
-              server.removeListener("error", onError);
-              reject(err);
-            } else {
-              reject(err);
-            }
-          };
-          server.once("error", onError);
-          server.listen(port, () => {
-            server.removeListener("error", onError);
-            resolve();
-          });
+  private async findAvailablePort(): Promise<number> {
+    const { end } = PORT_RANGES.git;
+    for (let port = this.configuredPort; port < end; port++) {
+      const ok = await new Promise<boolean>((resolve) => {
+        const srv = net.createServer();
+        srv.once("error", () => resolve(false));
+        srv.listen(port, "127.0.0.1", () => {
+          srv.close(() => resolve(true));
         });
-        return port;
-      } catch (err: any) {
-        if (err.code === "EADDRINUSE") continue;
-        throw err;
-      }
+      });
+      if (ok) return port;
     }
-    throw new Error(`Could not find available port in range ${startPort}-${endPort - 1}`);
+    throw new Error(`Could not find available port in range ${this.configuredPort}-${end - 1}`);
   }
 
   /**
@@ -230,12 +215,15 @@ export class GitServer {
       git.handle(req, res);
     });
 
-    // Bind directly — no temp server, no TOCTOU race
-    const { end } = PORT_RANGES.git;
-    const port = await this.listenOnAvailablePort(server, this.configuredPort, end);
+    const port = await this.findAvailablePort();
     if (port !== this.configuredPort) {
       log.verbose(` Configured port ${this.configuredPort} unavailable, using ${port}`);
     }
+
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(port, () => resolve());
+    });
 
     this.actualPort = port;
     log.verbose(` Started on http://localhost:${port}`);

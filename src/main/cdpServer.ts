@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { webContents } from "electron";
 import * as http from "http";
 import { URL } from "url";
-import { listenOnServicePort } from "./portUtils.js";
+import { findServicePort } from "./portUtils.js";
 import { getTokenManager, type TokenManager } from "./tokenManager.js";
 import { isViewManagerInitialized, getViewManager } from "./viewManager.js";
 import { createDevLogger } from "./devLog.js";
@@ -185,6 +185,8 @@ export class CdpServer {
   }
 
   async start(): Promise<number> {
+    const port = await findServicePort("cdp");
+
     this.server = http.createServer();
     this.wss = new WebSocketServer({ server: this.server });
 
@@ -192,9 +194,14 @@ export class CdpServer {
       void this.handleConnection(ws, req);
     });
 
-    this.actualPort = await listenOnServicePort(this.server, "cdp");
-    log.verbose(` Started on ws://localhost:${this.actualPort}`);
-    return this.actualPort;
+    await new Promise<void>((resolve, reject) => {
+      this.server!.once("error", reject);
+      this.server!.listen(port, () => resolve());
+    });
+
+    this.actualPort = port;
+    log.verbose(` Started on ws://localhost:${port}`);
+    return port;
   }
 
   private async handleConnection(ws: WebSocket, req: http.IncomingMessage): Promise<void> {
