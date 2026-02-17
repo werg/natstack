@@ -67,7 +67,7 @@ export class RpcServer {
 
   async start(): Promise<number> {
     const { port, server: tempServer } = await findAvailablePortForService("rpc");
-    tempServer.close();
+    await new Promise<void>((resolve) => tempServer.close(() => resolve()));
 
     this.httpServer = createServer();
     this.wss = new WebSocketServer({ server: this.httpServer });
