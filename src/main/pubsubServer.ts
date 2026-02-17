@@ -9,7 +9,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { createServer, type Server as HttpServer, type IncomingMessage } from "http";
 import { getTokenManager } from "./tokenManager.js";
 import { getDatabaseManager } from "./db/databaseManager.js";
-import { findAvailablePortForService } from "./portUtils.js";
+import { listenOnServicePort } from "./portUtils.js";
 import { createDevLogger } from "./devLog.js";
 import type { AgentHost } from "./agentHost.js";
 import { AgentSpawnError } from "./agentHost.js";
@@ -1086,35 +1086,28 @@ export class PubSubServer {
   async start(): Promise<number> {
     // Create HTTP server for WebSocket upgrade
     this.httpServer = createServer();
-
-    if (this.requestedPort === undefined) {
-      // Find available port using the standard method
-      const { server, port: foundPort } = await findAvailablePortForService("pubsub");
-      this.port = foundPort;
-      // Close the temporary server that was holding the port
-      await new Promise<void>((resolve) => {
-        server.close(() => resolve());
-      });
-    }
-
     this.wss = new WebSocketServer({ server: this.httpServer });
     this.messageStore.init();
 
     this.wss.on("connection", (ws, req) => this.handleConnection(ws, req));
 
-    return new Promise((resolve) => {
-      // Use 0 to let OS assign a port, or the requested port
-      const listenPort = this.requestedPort ?? this.port!;
-      this.httpServer!.listen(listenPort, "127.0.0.1", () => {
-        // Get the actual port assigned (important when requestedPort is 0)
-        const addr = this.httpServer!.address();
-        if (addr && typeof addr === "object") {
-          this.port = addr.port;
-        }
-        log.verbose(`[PubSub] Server listening on port ${this.port}`);
-        resolve(this.port!);
+    if (this.requestedPort !== undefined) {
+      // Specific port requested — bind directly
+      await new Promise<void>((resolve, reject) => {
+        this.httpServer!.once("error", reject);
+        this.httpServer!.listen(this.requestedPort!, "127.0.0.1", () => resolve());
       });
-    });
+      const addr = this.httpServer.address();
+      if (addr && typeof addr === "object") {
+        this.port = addr.port;
+      }
+    } else {
+      // Find available port — bind the actual server directly (no TOCTOU)
+      this.port = await listenOnServicePort(this.httpServer, "pubsub");
+    }
+
+    log.verbose(`[PubSub] Server listening on port ${this.port}`);
+    return this.port!;
   }
 
   private getOrCreateChannelState(channel: string): ChannelState {

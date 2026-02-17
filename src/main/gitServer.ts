@@ -10,7 +10,7 @@ import { createDevLogger } from "./devLog.js";
 const log = createDevLogger("GitServer");
 import type { WorkspaceNode, WorkspaceTree, BranchInfo, CommitInfo } from "../shared/types.js";
 import { GitAuthManager, getTokenManager } from "./tokenManager.js";
-import { tryBindPort } from "./portUtils.js";
+import { PORT_RANGES } from "./portUtils.js";
 import type { GitWatcher } from "./workspace/gitWatcher.js";
 import type { GitHubProxyConfig } from "./workspace/types.js";
 import {
@@ -103,19 +103,38 @@ export class GitServer {
   }
 
   /**
-   * Find an available port starting from the configured port.
-   * Returns the port and a temporary server holding it (to avoid TOCTOU).
+   * Try to listen an HTTP server on an available port.
+   * Binds the real server directly — no temp server, no TOCTOU.
    */
-  private async findAvailablePort(
-    startPort: number
-  ): Promise<{ port: number; tempServer: import("net").Server }> {
-    for (let port = startPort; port < startPort + 100; port++) {
-      const server = await tryBindPort(port);
-      if (server) {
-        return { port, tempServer: server };
+  private async listenOnAvailablePort(
+    server: http.Server,
+    startPort: number,
+    endPort: number
+  ): Promise<number> {
+    for (let port = startPort; port < endPort; port++) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const onError = (err: NodeJS.ErrnoException) => {
+            if (err.code === "EADDRINUSE") {
+              server.removeListener("error", onError);
+              reject(err);
+            } else {
+              reject(err);
+            }
+          };
+          server.once("error", onError);
+          server.listen(port, () => {
+            server.removeListener("error", onError);
+            resolve();
+          });
+        });
+        return port;
+      } catch (err: any) {
+        if (err.code === "EADDRINUSE") continue;
+        throw err;
       }
     }
-    throw new Error(`Could not find available port in range ${startPort}-${startPort + 99}`);
+    throw new Error(`Could not find available port in range ${startPort}-${endPort - 1}`);
   }
 
   /**
@@ -171,15 +190,6 @@ export class GitServer {
       fetch.accept();
     });
 
-    // Find an available port, starting from the configured one (TOCTOU-safe)
-    const { port, tempServer } = await this.findAvailablePort(this.configuredPort);
-    if (port !== this.configuredPort) {
-      log.verbose(` Configured port ${this.configuredPort} unavailable, using ${port}`);
-    }
-
-    // Close temp server and immediately bind our real server
-    await new Promise<void>((resolve) => tempServer.close(() => resolve()));
-
     const git = this.git;
     if (!git) {
       throw new Error("Git server not initialized");
@@ -195,43 +205,42 @@ export class GitServer {
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     };
 
-    return new Promise((resolve, reject) => {
-      const server = http.createServer(async (req, res) => {
-        applyCors(res);
-        if (req.method === "OPTIONS") {
-          res.writeHead(200);
-          res.end();
-          return;
-        }
+    const server = http.createServer(async (req, res) => {
+      applyCors(res);
+      if (req.method === "OPTIONS") {
+        res.writeHead(200);
+        res.end();
+        return;
+      }
 
-        // Check if this is a GitHub path that might need cloning
-        if (this.githubConfig.enabled && req.url) {
-          const urlPath = req.url.split("?")[0] ?? "";
-          const repoPath = this.normalizePath(urlPath);
+      // Check if this is a GitHub path that might need cloning
+      if (this.githubConfig.enabled && req.url) {
+        const urlPath = req.url.split("?")[0] ?? "";
+        const repoPath = this.normalizePath(urlPath);
 
-          if (isGitHubPath(repoPath)) {
-            const handled = await this.handleGitHubRequest(repoPath, res);
-            if (!handled) {
-              // Error response already sent
-              return;
-            }
+        if (isGitHubPath(repoPath)) {
+          const handled = await this.handleGitHubRequest(repoPath, res);
+          if (!handled) {
+            // Error response already sent
+            return;
           }
         }
+      }
 
-        git.handle(req, res);
-      });
-
-      server.on("error", (error: NodeJS.ErrnoException) => {
-        reject(error);
-      });
-
-      server.listen(port, () => {
-        this.actualPort = port;
-        log.verbose(` Started on http://localhost:${port}`);
-        log.verbose(` Repos directory: ${this.ensureReposPath()}`);
-        resolve(port);
-      });
+      git.handle(req, res);
     });
+
+    // Bind directly — no temp server, no TOCTOU race
+    const { end } = PORT_RANGES.git;
+    const port = await this.listenOnAvailablePort(server, this.configuredPort, end);
+    if (port !== this.configuredPort) {
+      log.verbose(` Configured port ${this.configuredPort} unavailable, using ${port}`);
+    }
+
+    this.actualPort = port;
+    log.verbose(` Started on http://localhost:${port}`);
+    log.verbose(` Repos directory: ${this.ensureReposPath()}`);
+    return port;
   }
 
   /**

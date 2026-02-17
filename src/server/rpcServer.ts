@@ -17,7 +17,7 @@ import type { StreamTextEvent } from "../shared/types.js";
 import type { StreamTarget } from "../main/ai/aiHandler.js";
 import type { ToolExecutionResult } from "../main/ai/claudeCodeToolProxy.js";
 import { TOOL_EXECUTION_TIMEOUT_MS } from "../shared/constants.js";
-import { findAvailablePortForService } from "../main/portUtils.js";
+import { listenOnServicePort } from "../main/portUtils.js";
 import {
   parseServiceMethod,
   getServiceDispatcher,
@@ -66,9 +66,6 @@ export class RpcServer {
   ) {}
 
   async start(): Promise<number> {
-    const { port, server: tempServer } = await findAvailablePortForService("rpc");
-    await new Promise<void>((resolve) => tempServer.close(() => resolve()));
-
     this.httpServer = createServer();
     this.wss = new WebSocketServer({ server: this.httpServer });
 
@@ -81,13 +78,8 @@ export class RpcServer {
       client.ws.close(4001, "Token revoked");
     });
 
-    await new Promise<void>((resolve, reject) => {
-      this.httpServer!.on("error", reject);
-      this.httpServer!.listen(port, "127.0.0.1", () => resolve());
-    });
-
-    this.port = port;
-    return port;
+    this.port = await listenOnServicePort(this.httpServer, "rpc");
+    return this.port;
   }
 
   getPort(): number | null {
