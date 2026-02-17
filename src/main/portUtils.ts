@@ -16,11 +16,14 @@ export const PORT_RANGES = {
  * IMPORTANT: Always specify the same host the real server will use (default: 127.0.0.1)
  * to avoid IPv4/IPv6 mismatch — probing on :: can succeed while 127.0.0.1 is taken.
  */
-function probePort(port: number, host: string): Promise<net.Server | null> {
+function probePort(
+  port: number,
+  host: string
+): Promise<{ server: net.Server } | { error: NodeJS.ErrnoException }> {
   return new Promise((resolve) => {
     const server = net.createServer();
-    server.once("error", () => resolve(null));
-    server.once("listening", () => resolve(server));
+    server.once("error", (err: NodeJS.ErrnoException) => resolve({ error: err }));
+    server.once("listening", () => resolve({ server }));
     server.listen(port, host);
   });
 }
@@ -35,12 +38,24 @@ export async function findServicePort(
   host = "127.0.0.1"
 ): Promise<number> {
   const { start, end } = PORT_RANGES[service];
+  let lastError: NodeJS.ErrnoException | null = null;
+
   for (let port = start; port < end; port++) {
-    const server = await probePort(port, host);
-    if (server) {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+    const result = await probePort(port, host);
+    if ("server" in result) {
+      await new Promise<void>((resolve) => result.server.close(() => resolve()));
       return port;
     }
+    // EADDRINUSE is expected (port taken), anything else is a system problem
+    if (result.error.code !== "EADDRINUSE") {
+      throw new Error(
+        `Cannot probe port ${port} for ${service}: ${result.error.code} - ${result.error.message}`
+      );
+    }
+    lastError = result.error;
   }
-  throw new Error(`No available port in ${service} range ${start}-${end - 1}`);
+
+  throw new Error(
+    `No available port in ${service} range ${start}-${end - 1} (last error: ${lastError?.code})`
+  );
 }

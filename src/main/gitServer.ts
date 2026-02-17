@@ -10,7 +10,6 @@ import { createDevLogger } from "./devLog.js";
 const log = createDevLogger("GitServer");
 import type { WorkspaceNode, WorkspaceTree, BranchInfo, CommitInfo } from "../shared/types.js";
 import { GitAuthManager, getTokenManager } from "./tokenManager.js";
-import { PORT_RANGES } from "./portUtils.js";
 import * as net from "net";
 import type { GitWatcher } from "./workspace/gitWatcher.js";
 import type { GitHubProxyConfig } from "./workspace/types.js";
@@ -105,19 +104,24 @@ export class GitServer {
 
   /**
    * Probe for an available port starting from configuredPort up to the git range end.
-   * Uses 127.0.0.1 to match the address the real server will bind to.
+   * No host specified (matching real server which also binds to all interfaces).
    */
   private async findAvailablePort(): Promise<number> {
-    const { end } = PORT_RANGES.git;
+    const end = this.configuredPort + 100;
     for (let port = this.configuredPort; port < end; port++) {
-      const ok = await new Promise<boolean>((resolve) => {
+      const result = await new Promise<{ ok: true } | { ok: false; error: NodeJS.ErrnoException }>((resolve) => {
         const srv = net.createServer();
-        srv.once("error", () => resolve(false));
-        srv.listen(port, "127.0.0.1", () => {
-          srv.close(() => resolve(true));
+        srv.once("error", (err: NodeJS.ErrnoException) => resolve({ ok: false, error: err }));
+        srv.listen(port, () => {
+          srv.close(() => resolve({ ok: true }));
         });
       });
-      if (ok) return port;
+      if (result.ok) return port;
+      if (result.error.code !== "EADDRINUSE") {
+        throw new Error(
+          `Cannot probe port ${port} for git: ${result.error.code} - ${result.error.message}`
+        );
+      }
     }
     throw new Error(`Could not find available port in range ${this.configuredPort}-${end - 1}`);
   }
