@@ -972,6 +972,7 @@ export class ViewManager {
    * visibility cycling (setVisible toggle may steal focus).
    */
   private keepCompositorAlive(): void {
+    if (this.window.isDestroyed()) return;
     const panelId = this.visiblePanelId;
     if (!panelId || !this.windowVisible) return;
     const managed = this.views.get(panelId);
@@ -1024,6 +1025,7 @@ export class ViewManager {
    * so the aggressive recovery won't disrupt user interaction.
    */
   private async detectAndRecoverStall(): Promise<void> {
+    if (this.window.isDestroyed()) return;
     const panelId = this.visiblePanelId;
     if (!panelId || !this.windowVisible) return;
     const managed = this.views.get(panelId);
