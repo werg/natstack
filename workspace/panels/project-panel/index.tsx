@@ -19,7 +19,6 @@ import { getAgentById, getAgentHandle } from "./utils/agents";
 import type { AgentInfo } from "@workspace/agentic-components/types";
 import { ProjectHeader } from "./components/ProjectHeader";
 import { ConfigSection } from "./components/ConfigSection";
-import { TemplateSection } from "./components/TemplateSection";
 import { LaunchSection } from "./components/LaunchSection";
 import { SessionHistory } from "./components/SessionHistory";
 import {
@@ -51,7 +50,6 @@ export default function ProjectPanel() {
   const { projectConfig, contextId } = stateArgs;
 
   const [configExpanded, setConfigExpanded] = useState(false);
-  const [templateExpanded, setTemplateExpanded] = useState(false);
   const [isLaunching, setIsLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [agentName, setAgentName] = useState<string | undefined>();
@@ -154,14 +152,7 @@ export default function ProjectPanel() {
 
       // Get or create context ID
       let sessionContextId = contextId;
-      if (!sessionContextId && projectConfig.projectLocation === "managed") {
-        // contextTemplateSpec is validated above, safe to use
-        sessionContextId = await rpc.call<string>(
-          "main",
-          "bridge.createContextFromTemplate",
-          projectConfig.contextTemplateSpec
-        );
-      } else if (!sessionContextId) {
+      if (!sessionContextId) {
         sessionContextId = crypto.randomUUID();
       }
 
@@ -250,18 +241,6 @@ export default function ProjectPanel() {
       <Box p="4" style={{ maxWidth: 600, margin: "0 auto" }}>
         <Flex direction="column" gap="4">
           <ProjectHeader config={projectConfig} />
-
-          {/* Template section for managed projects */}
-          {projectConfig.projectLocation === "managed" && projectConfig.includedRepos?.[0] && (
-            <>
-              <Separator size="4" />
-              <TemplateSection
-                repoPath={projectConfig.includedRepos[0]}
-                expanded={templateExpanded}
-                onToggle={() => setTemplateExpanded(!templateExpanded)}
-              />
-            </>
-          )}
 
           <Separator size="4" />
 

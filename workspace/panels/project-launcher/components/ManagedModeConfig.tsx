@@ -1,10 +1,9 @@
 /**
  * Configuration for managed workspace mode.
  * - Select or create a project repository
- * - Initialize context template if missing
  */
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   Box,
   Text,
@@ -26,32 +25,47 @@ import {
   ChevronRightIcon,
   MagnifyingGlassIcon,
   CubeIcon,
-  ExclamationTriangleIcon,
 } from "@radix-ui/react-icons";
 import { rpc } from "@workspace/runtime";
-import {
-  type WorkspaceNode,
-  type WorkspaceTree,
-  type TemplateInfo,
-  findProjectRepos,
-  groupReposByDirectory,
-  PROJECT_DIRECTORIES,
-  TemplateInfoCard,
-} from "@workspace/context-template-editor";
+import type { WorkspaceNode, WorkspaceTree } from "@workspace/runtime";
+
+/** Directories that can contain project repos */
+const PROJECT_DIRECTORIES = ["contexts", "panels", "workers", "projects"];
+
+/** Find all git repos in known project directories */
+function findProjectRepos(nodes: WorkspaceNode[], parentPath = ""): WorkspaceNode[] {
+  const repos: WorkspaceNode[] = [];
+  for (const node of nodes) {
+    const nodePath = parentPath ? `${parentPath}/${node.name}` : node.name;
+    const topDir = nodePath.split("/")[0] ?? "";
+    if (PROJECT_DIRECTORIES.includes(topDir) && node.isGitRepo) {
+      repos.push({ ...node, path: nodePath });
+    }
+    if (node.children.length > 0) {
+      repos.push(...findProjectRepos(node.children, nodePath));
+    }
+  }
+  return repos;
+}
+
+/** Group repos by their top-level directory */
+function groupReposByDirectory(repos: WorkspaceNode[]): Record<string, WorkspaceNode[]> {
+  const groups: Record<string, WorkspaceNode[]> = {};
+  for (const repo of repos) {
+    const dir = repo.path.split("/")[0] ?? "other";
+    (groups[dir] ??= []).push(repo);
+  }
+  return groups;
+}
 
 interface ManagedModeConfigProps {
   includedRepos: string[];
   onIncludedReposChange: (repos: string[]) => void;
-  onContextTemplateSpecChange: (spec: string) => void;
 }
-
-/** Template status for a repo */
-type TemplateStatus = "checking" | "exists" | "missing" | "error";
 
 export function ManagedModeConfig({
   includedRepos,
   onIncludedReposChange,
-  onContextTemplateSpecChange,
 }: ManagedModeConfigProps) {
   const [tree, setTree] = useState<WorkspaceTree | null>(null);
   const [loading, setLoading] = useState(true);
@@ -63,12 +77,7 @@ export function ManagedModeConfig({
   const [showCreateRepo, setShowCreateRepo] = useState(false);
   const [newRepoName, setNewRepoName] = useState("");
   const [newRepoLocation, setNewRepoLocation] = useState<string>("projects");
-
-  // Template status for selected repo
-  const [templateStatus, setTemplateStatus] = useState<TemplateStatus>("checking");
-  const [templateError, setTemplateError] = useState<string | null>(null);
-  const [templateInfo, setTemplateInfo] = useState<TemplateInfo | null>(null);
-  const [initializingTemplate, setInitializingTemplate] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   // Load workspace tree
   const loadTree = async () => {
@@ -88,56 +97,6 @@ export function ManagedModeConfig({
   useEffect(() => {
     void loadTree();
   }, []);
-
-  // Check if selected repo has a context template
-  const checkTemplateStatus = useCallback(async (repoPath: string) => {
-    if (!repoPath) {
-      setTemplateStatus("checking");
-      setTemplateInfo(null);
-      return;
-    }
-
-    setTemplateStatus("checking");
-    setTemplateError(null);
-    setTemplateInfo(null);
-
-    try {
-      // Try to load the template info (returns null if doesn't exist)
-      const info = await rpc.call<TemplateInfo | null>(
-        "main",
-        "bridge.loadContextTemplate",
-        repoPath
-      );
-
-      if (info) {
-        setTemplateStatus("exists");
-        setTemplateInfo(info);
-      } else {
-        setTemplateStatus("missing");
-      }
-    } catch (err) {
-      // If the bridge method doesn't exist or fails, try simpler check
-      console.warn("Failed to load template:", err);
-      try {
-        const hasTemplate = await rpc.call<boolean>(
-          "main",
-          "bridge.hasContextTemplate",
-          repoPath
-        );
-        setTemplateStatus(hasTemplate ? "exists" : "missing");
-      } catch {
-        setTemplateStatus("missing");
-        setTemplateError(err instanceof Error ? err.message : "Failed to check template");
-      }
-    }
-  }, []);
-
-  // Check template status when repo changes
-  useEffect(() => {
-    if (selectedRepo) {
-      void checkTemplateStatus(selectedRepo);
-    }
-  }, [selectedRepo, checkTemplateStatus]);
 
   // Find all repos
   const allRepos = useMemo(() => {
@@ -164,7 +123,7 @@ export function ManagedModeConfig({
   // Handle repo selection
   const handleRepoSelect = (repoPath: string) => {
     setSelectedRepo(repoPath);
-    // Don't call onContextTemplateSpecChange until we verify the template exists
+    onIncludedReposChange([repoPath]);
   };
 
   // Handle creating a new repo
@@ -174,6 +133,7 @@ export function ManagedModeConfig({
     const repoPath = `${newRepoLocation}/${newRepoName.trim()}`;
 
     try {
+      setCreateError(null);
       // Call bridge to create the repo
       await rpc.call("main", "bridge.createRepo", repoPath);
 
@@ -183,55 +143,9 @@ export function ManagedModeConfig({
       setShowCreateRepo(false);
       setNewRepoName("");
     } catch (err) {
-      console.error("Failed to create repo:", err);
+      setCreateError(err instanceof Error ? err.message : "Failed to create repository");
     }
   };
-
-  // Initialize context template for the selected repo
-  const handleInitializeTemplate = async () => {
-    if (!selectedRepo) return;
-
-    setInitializingTemplate(true);
-    try {
-      // Call bridge to create a basic context-template.yml
-      await rpc.call("main", "bridge.initContextTemplate", selectedRepo);
-
-      // Re-check template status
-      await checkTemplateStatus(selectedRepo);
-
-      // Now we can set the template spec
-      if (templateStatus === "exists") {
-        onContextTemplateSpecChange(selectedRepo);
-        onIncludedReposChange([selectedRepo]);
-      }
-    } catch (err) {
-      console.error("Failed to initialize template:", err);
-      setTemplateError(err instanceof Error ? err.message : "Failed to initialize template");
-    } finally {
-      setInitializingTemplate(false);
-    }
-  };
-
-  // Save template changes
-  const handleSaveTemplate = async (updatedInfo: TemplateInfo) => {
-    if (!selectedRepo) return;
-
-    try {
-      await rpc.call("main", "bridge.saveContextTemplate", selectedRepo, updatedInfo);
-      setTemplateInfo(updatedInfo);
-    } catch (err) {
-      console.error("Failed to save template:", err);
-      throw err; // Re-throw so TemplateInfoCard can show error
-    }
-  };
-
-  // When template exists, notify parent
-  useEffect(() => {
-    if (selectedRepo && templateStatus === "exists") {
-      onContextTemplateSpecChange(selectedRepo);
-      onIncludedReposChange([selectedRepo]);
-    }
-  }, [selectedRepo, templateStatus, onContextTemplateSpecChange, onIncludedReposChange]);
 
   if (loading) {
     return (
@@ -429,6 +343,11 @@ export function ManagedModeConfig({
               )}
             </Box>
 
+            {/* Error display */}
+            {createError && (
+              <Text size="2" color="red">{createError}</Text>
+            )}
+
             {/* Create button */}
             <Flex gap="2" justify="end">
               <Button
@@ -452,92 +371,6 @@ export function ManagedModeConfig({
         </Card>
       )}
 
-      {/* Template status section - shown when a repo is selected */}
-      {selectedRepo && (
-        <Box mt="4">
-          <Separator size="4" mb="3" />
-
-          <Text as="label" size="2" weight="medium" mb="2" style={{ display: "block" }}>
-            Context Template
-          </Text>
-
-          {templateStatus === "checking" && (
-            <Flex align="center" gap="2" p="3">
-              <Spinner size="1" />
-              <Text size="2" color="gray">
-                Checking for context template...
-              </Text>
-            </Flex>
-          )}
-
-          {templateStatus === "exists" && templateInfo && (
-            <TemplateInfoCard
-              info={templateInfo}
-              repoPath={selectedRepo}
-              editable={true}
-              onSave={handleSaveTemplate}
-              showStatus={true}
-            />
-          )}
-
-          {templateStatus === "missing" && (
-            <Card>
-              <Flex direction="column" gap="3">
-                <Callout.Root size="1" color="amber">
-                  <Callout.Icon>
-                    <ExclamationTriangleIcon />
-                  </Callout.Icon>
-                  <Callout.Text>
-                    This repository doesn't have a context template yet.
-                    Initialize one to define the sandbox environment.
-                  </Callout.Text>
-                </Callout.Root>
-
-                {templateError && (
-                  <Text size="1" color="red">
-                    {templateError}
-                  </Text>
-                )}
-
-                <Button
-                  variant="solid"
-                  size="2"
-                  onClick={handleInitializeTemplate}
-                  disabled={initializingTemplate}
-                >
-                  {initializingTemplate ? (
-                    <>
-                      <Spinner size="1" />
-                      Initializing...
-                    </>
-                  ) : (
-                    <>
-                      <PlusIcon />
-                      Initialize Context Template
-                    </>
-                  )}
-                </Button>
-
-                <Text size="1" color="gray">
-                  This will create a <code>context-template.yml</code> file in the repository
-                  with a basic configuration.
-                </Text>
-              </Flex>
-            </Card>
-          )}
-
-          {templateStatus === "error" && (
-            <Callout.Root size="1" color="red">
-              <Callout.Icon>
-                <ExclamationTriangleIcon />
-              </Callout.Icon>
-              <Callout.Text>
-                Failed to check template status: {templateError}
-              </Callout.Text>
-            </Callout.Root>
-          )}
-        </Box>
-      )}
     </Box>
   );
 }

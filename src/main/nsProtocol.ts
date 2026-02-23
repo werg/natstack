@@ -32,11 +32,6 @@ export interface ParsedNsUrl {
    */
   gitRef?: string;
   /**
-   * Git spec for context template (e.g., "contexts/default").
-   * If not provided, uses workspace default template.
-   */
-  templateSpec?: string;
-  /**
    * Explicit context ID for storage partition sharing.
    * If provided, the panel will use this context ID instead of generating a new one.
    * This enables multiple panels to share the same OPFS/IndexedDB partition.
@@ -82,9 +77,6 @@ export function parseNsUrl(url: string): ParsedNsUrl {
 
   // Parse gitRef: branch/tag/commit for the panel source
   const gitRef = parsed.searchParams.get("gitRef") ?? undefined;
-
-  // Parse templateSpec: git spec for context template
-  const templateSpec = parsed.searchParams.get("templateSpec") ?? undefined;
 
   // Parse contextId: explicit context ID for partition sharing
   const contextId = parsed.searchParams.get("contextId") ?? undefined;
@@ -141,7 +133,7 @@ export function parseNsUrl(url: string): ParsedNsUrl {
     }
   }
 
-  return { source, action, gitRef, templateSpec, contextId, repoArgs, env, stateArgs, name, focus };
+  return { source, action, gitRef, contextId, repoArgs, env, stateArgs, name, focus };
 }
 
 export interface BuildNsUrlOptions {
@@ -150,10 +142,6 @@ export interface BuildNsUrlOptions {
    * Git ref (branch/tag/commit) for the panel source.
    */
   gitRef?: string;
-  /**
-   * Git spec for context template (e.g., "contexts/default").
-   */
-  templateSpec?: string;
   /**
    * Explicit context ID for storage partition sharing.
    * If provided, the panel will use this context ID instead of generating a new one.
@@ -180,9 +168,6 @@ export function buildNsUrl(source: string, options?: BuildNsUrlOptions): string 
   }
   if (options?.gitRef) {
     searchParams.set("gitRef", options.gitRef);
-  }
-  if (options?.templateSpec) {
-    searchParams.set("templateSpec", options.templateSpec);
   }
   if (options?.contextId) {
     searchParams.set("contextId", options.contextId);

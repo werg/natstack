@@ -137,21 +137,13 @@ export default function ChatLauncher() {
     try {
       // Determine context ID:
       // 1. Channel mode with existing contextId: use it (adding agents to existing channel)
-      // 2. Browser mode with template: create sandbox context
-      // 3. Otherwise: generate a new UUID
+      // 2. Otherwise: generate a new UUID
       let contextId: string;
       if (isChannelMode && existingContextId) {
         // Adding agents to existing channel - must use the channel's contextId
         contextId = existingContextId;
-      } else if (sessionConfig.projectLocation === "browser" && sessionConfig.contextTemplateSpec) {
-        setStatus("Creating sandbox context...");
-        contextId = await rpc.call<string>(
-          "main",
-          "bridge.createContextFromTemplate",
-          sessionConfig.contextTemplateSpec
-        );
       } else {
-        // New chat in local mode: generate a unique context ID for session persistence
+        // Generate a unique context ID for session persistence
         contextId = crypto.randomUUID();
       }
 

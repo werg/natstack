@@ -234,7 +234,7 @@ export interface PanelSnapshot {
   source: string;
   /** Panel type */
   type: PanelType;
-  /** Resolved context ID (e.g., "safe_tpl_abc123_instance") - determines storage isolation */
+  /** Resolved context ID (e.g., "ctx_panels~editor") - determines storage isolation */
   contextId: string;
 
   // === Creation options (excluding runtime-only fields) ===

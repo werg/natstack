@@ -41,8 +41,6 @@ export const CANONICAL_TOOL_MAPPINGS: Record<string, string> = {
   workspace_list: "WorkspaceList",
   workspace_clone: "WorkspaceClone",
   context_info: "ContextInfo",
-  context_template_list: "ContextTemplateList",
-  context_template_read: "ContextTemplateRead",
   // Plan mode
   enter_plan_mode: "EnterPlanMode",
   exit_plan_mode: "ExitPlanMode",

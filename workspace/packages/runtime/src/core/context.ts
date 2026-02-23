@@ -2,15 +2,13 @@
  * Context ID utilities for NatStack panels and workers.
  *
  * Context IDs use the format:
- *    safe_tpl_{templateSpecHash}_{instanceId}
+ *    ctx_{instanceId}
  *
- * All panels run in safe sandboxed mode with template-based contexts.
+ * All panels run in safe sandboxed mode.
  */
 
 /** Parsed components of a context ID */
 export interface ParsedContextId {
-  /** Template spec hash */
-  templateSpecHash: string | null;
   instanceId: string;
 }
 
@@ -18,23 +16,22 @@ export interface ParsedContextId {
  * Parse a context ID into its components.
  * Returns null if the context ID is invalid.
  *
- * Format: safe_tpl_{hash}_{instanceId}
+ * Format: ctx_{instanceId}
  *
  * @example
  * ```ts
- * const parsed = parseContextId("safe_tpl_a1b2c3d4e5f6_panels~editor");
- * // { templateSpecHash: "a1b2c3d4e5f6", instanceId: "panels~editor" }
+ * const parsed = parseContextId("ctx_panels~editor");
+ * // { instanceId: "panels~editor" }
  *
  * const invalid = parseContextId("invalid");
  * // null
  * ```
  */
 export function parseContextId(contextId: string): ParsedContextId | null {
-  const tplMatch = contextId.match(/^safe_tpl_([a-f0-9]{12})_(.+)$/);
-  if (tplMatch && tplMatch[1] && tplMatch[2]) {
+  const match = contextId.match(/^ctx_(.+)$/);
+  if (match && match[1]) {
     return {
-      templateSpecHash: tplMatch[1],
-      instanceId: tplMatch[2],
+      instanceId: match[1],
     };
   }
 
@@ -46,7 +43,7 @@ export function parseContextId(contextId: string): ParsedContextId | null {
  *
  * @example
  * ```ts
- * isValidContextId("safe_tpl_a1b2c3d4e5f6_panels~editor"); // true
+ * isValidContextId("ctx_panels~editor"); // true
  * isValidContextId("invalid"); // false
  * ```
  */
@@ -60,7 +57,7 @@ export function isValidContextId(contextId: string): boolean {
  *
  * @example
  * ```ts
- * isSafeContext("safe_tpl_a1b2c3d4e5f6_panels~editor"); // true
+ * isSafeContext("ctx_panels~editor"); // true
  * ```
  */
 export function isSafeContext(contextId: string): boolean {
@@ -68,25 +65,11 @@ export function isSafeContext(contextId: string): boolean {
 }
 
 /**
- * Get the template spec hash from a context ID.
- *
- * @example
- * ```ts
- * getTemplateSpecHash("safe_tpl_a1b2c3d4e5f6_panels~editor"); // "a1b2c3d4e5f6"
- * getTemplateSpecHash("invalid"); // null
- * ```
- */
-export function getTemplateSpecHash(contextId: string): string | null {
-  const parsed = parseContextId(contextId);
-  return parsed?.templateSpecHash ?? null;
-}
-
-/**
  * Get the instance ID from a context ID.
  *
  * @example
  * ```ts
- * getInstanceId("safe_tpl_a1b2c3d4e5f6_panels~editor"); // "panels~editor"
+ * getInstanceId("ctx_panels~editor"); // "panels~editor"
  * getInstanceId("invalid"); // null
  * ```
  */

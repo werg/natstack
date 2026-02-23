@@ -210,20 +210,6 @@ export type WorkspaceCloneArgs = z.infer<typeof WorkspaceCloneArgsSchema>;
 export const ContextInfoArgsSchema = z.object({});
 export type ContextInfoArgs = z.infer<typeof ContextInfoArgsSchema>;
 
-/**
- * context_template_list - List available context templates in the workspace
- */
-export const ContextTemplateListArgsSchema = z.object({});
-export type ContextTemplateListArgs = z.infer<typeof ContextTemplateListArgsSchema>;
-
-/**
- * context_template_read - Read a context template's YAML
- */
-export const ContextTemplateReadArgsSchema = z.object({
-  template_spec: z.string().describe("Template spec to read (e.g., 'contexts/default')"),
-});
-export type ContextTemplateReadArgs = z.infer<typeof ContextTemplateReadArgsSchema>;
-
 // ============================================================================
 // Shell Operations
 // ============================================================================
@@ -370,8 +356,6 @@ export const RESTRICTED_MODE_REQUIRED_METHODS = [
   "workspace_list",
   "workspace_clone",
   "context_info",
-  "context_template_list",
-  "context_template_read",
 ] as const;
 
 /**
@@ -413,8 +397,6 @@ export const TOOL_GROUPS: Record<ToolGroup, readonly string[]> = {
     "workspace_list",
     "workspace_clone",
     "context_info",
-    "context_template_list",
-    "context_template_read",
   ],
 } as const;
 

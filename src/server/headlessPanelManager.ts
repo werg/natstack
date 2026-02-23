@@ -7,12 +7,9 @@
  * system and their artifacts are stored in the PanelHttpServer for browser
  * access.
  *
- * Context Template Support:
- * Uses the same template resolution pipeline as Electron (resolver → specHash
- * → contextId) but delegates OPFS population to the browser via a bootstrap
- * script injected into panel HTML. Panels sharing a contextId are assigned
- * the same subdomain, giving them a shared browser origin and therefore
- * shared localStorage, IndexedDB, OPFS, cookies, and service workers.
+ * Panels sharing a contextId are assigned the same subdomain, giving them a
+ * shared browser origin and therefore shared localStorage, IndexedDB, OPFS,
+ * cookies, and service workers.
  *
  * Panel types use the canonical PanelType ("app" | "browser" | "shell") from
  * src/shared/types.ts. Only "app" panels are created in headless mode —
@@ -34,11 +31,6 @@ import { computePanelId } from "../shared/panelIdUtils.js";
 import { loadPanelManifest } from "../main/panelTypes.js";
 import { validateStateArgs } from "../main/stateArgsValidator.js";
 import { createDevLogger } from "../main/devLog.js";
-import {
-  resolveHeadlessContext,
-  canResolveTemplates,
-  type HeadlessResolvedContext,
-} from "./contextTemplate/headlessResolver.js";
 
 const log = createDevLogger("HeadlessPanelManager");
 
@@ -54,10 +46,6 @@ export interface HeadlessPanel {
   contextId: string;
   /** Short DNS-safe label used as the *.localhost subdomain */
   subdomain: string;
-  /** Template spec hash (first 12 chars), if resolved from template */
-  specHashShort: string | null;
-  /** Full spec hash, if resolved from template */
-  specHash: string | null;
   title: string;
   stateArgs: Record<string, unknown>;
   repoArgs?: Record<string, RepoArgSpec>;
@@ -196,31 +184,13 @@ export class HeadlessPanelManager {
     }
 
     // ── Context resolution ──
-    // Use the full template resolution pipeline when workspace is available,
-    // falling back to the simplified scheme for stateless operation.
     let contextId: string;
-    let specHashShort: string | null = null;
-    let specHash: string | null = null;
 
     if (options?.contextId) {
       // Explicit context ID provided — use as-is (enables context sharing)
       contextId = options.contextId;
-    } else if (canResolveTemplates()) {
-      // Full template resolution available — use same pipeline as Electron
-      const templateSpec = options?.templateSpec ?? "contexts/default";
-      try {
-        const resolved: HeadlessResolvedContext = await resolveHeadlessContext(panelId, templateSpec);
-        contextId = resolved.contextId;
-        specHashShort = resolved.specHashShort;
-        specHash = resolved.specHash;
-      } catch (err) {
-        // Template resolution failed — fall back to simple scheme
-        log.info(`[Panel] Template resolution failed for ${panelId}, using fallback: ${err}`);
-        contextId = `headless_${panelId.replace(/\//g, "~")}_${Date.now().toString(36)}`;
-      }
     } else {
-      // No workspace — simplified context ID
-      contextId = `headless_${panelId.replace(/\//g, "~")}_${Date.now().toString(36)}`;
+      contextId = `ctx_${panelId.replace(/[/:]/g, "~")}`;
     }
 
     // ── Subdomain assignment ──
@@ -257,8 +227,6 @@ export class HeadlessPanelManager {
       type: "app",
       contextId,
       subdomain,
-      specHashShort,
-      specHash,
       title: source.split("/").pop() ?? source,
       stateArgs: validatedStateArgs,
       repoArgs: options?.repoArgs,
@@ -284,7 +252,7 @@ export class HeadlessPanelManager {
       initToken = this.deps.panelHttpServer.registerPendingPanel(panelId, this.buildPanelConfig(panel));
     }
 
-    log.info(`[Panel] Created: ${panelId} (${subdomain}.localhost, ctx=${contextId}, spec=${specHashShort ?? "none"})`);
+    log.info(`[Panel] Created: ${panelId} (${subdomain}.localhost, ctx=${contextId})`);
 
     this.emitEvent({
       type: "panel:created",
@@ -515,8 +483,6 @@ export class HeadlessPanelManager {
       resolvedRepoArgs: panel.repoArgs ?? {},
       env: panel.env,
       theme: "dark",
-      specHash: panel.specHash ?? undefined,
-      specHashShort: panel.specHashShort ?? undefined,
     };
   }
 

@@ -69,12 +69,6 @@ export interface CreateChildOptions {
   /** If true, immediately focus the new panel after creation (only applies to app panels) */
   focus?: boolean;
   /**
-   * Git spec for context template (e.g., "contexts/default").
-   * REQUIRED: Every panel must have a template for context initialization.
-   * If not provided, defaults to "contexts/default".
-   */
-  templateSpec?: string;
-  /**
    * Explicit context ID for storage partition sharing.
    * If provided, the panel will use this context ID instead of generating a new one.
    * This enables multiple panels to share the same OPFS/IndexedDB partition.

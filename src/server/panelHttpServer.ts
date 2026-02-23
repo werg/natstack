@@ -13,17 +13,12 @@
  * Management API:
  * - `GET /api/panels`  — JSON list of active panels (Bearer token auth)
  * - `GET /api/events`  — SSE stream of lifecycle events (Bearer token auth)
- *
- * Context Template API (per-subdomain, session-authed):
- * - `GET  /api/context/template`  — Template spec for OPFS bootstrap
- * - `POST /api/context/snapshot`  — Store OPFS snapshot (context transfer export)
- * - `GET  /api/context/snapshot`  — Retrieve OPFS snapshot (context transfer import)
- * - `GET  /__init__`              — Pre-warming init page (for extension)
+ * - `GET  /__init__`   — Pre-warming init page (for extension, per-subdomain)
  *
  * The HTML is augmented with:
  * 1. Injected globals (replacing Electron's preload/contextBridge)
  * 2. A pre-compiled browser transport IIFE
- * 3. OPFS bootstrap script (for template-based contexts)
+ * 3. OPFS bootstrap script (for init page pre-warming)
  * 4. Panel title + favicon
  */
 
@@ -33,15 +28,6 @@ import * as path from "path";
 import { randomBytes } from "crypto";
 import { createDevLogger } from "../main/devLog.js";
 import type { BuildResult } from "./buildV2/buildStore.js";
-import {
-  getSerializableSpec,
-} from "./contextTemplate/headlessResolver.js";
-import {
-  storeSnapshot,
-  getSnapshot,
-  getSnapshotMetadata,
-  type ContextSnapshot,
-} from "./contextTemplate/contextTransfer.js";
 
 const log = createDevLogger("PanelHttpServer");
 
@@ -468,11 +454,6 @@ export class PanelHttpServer {
         const panelId = config.panelId;
         const acceptedTokens = stored ? [stored.httpToken] : [pending!.initToken];
 
-        // Context API — works for both stored and pending panels
-        if (pathname.startsWith("/api/context/")) {
-          this.handleContextApiRequest(req, res, url, pathname, panelId, subdomain, config, acceptedTokens, !!stored);
-          return;
-        }
         // Pre-warming init page
         if (pathname === "/__init__") {
           this.serveInitPage(req, res, panelId, subdomain, config, acceptedTokens);
@@ -735,158 +716,6 @@ export class PanelHttpServer {
   // Context Template API (per-subdomain, unified for stored + pending)
   // =========================================================================
 
-  /**
-   * Handle context API requests on a panel's subdomain.
-   *
-   * Works for both stored (built) and pending (pre-build) panels.
-   * Auth via session cookie or accepted tokens.
-   *
-   * Endpoints:
-   * - GET  /api/context/template  → template spec for OPFS bootstrap
-   * - GET  /api/context/snapshot  → retrieve stored snapshot (import, built only)
-   * - POST /api/context/snapshot  → store snapshot (export, built only)
-   */
-  private async handleContextApiRequest(
-    req: import("http").IncomingMessage,
-    res: import("http").ServerResponse,
-    _url: URL,
-    pathname: string,
-    panelId: string,
-    subdomain: string,
-    config: PanelConfig,
-    acceptedTokens: string[],
-    isBuilt: boolean,
-  ): Promise<void> {
-    // CORS for panel-origin requests
-    res.setHeader("Access-Control-Allow-Origin", this.getPanelOrigin(subdomain));
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Credentials", "true");
-
-    if (req.method === "OPTIONS") {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
-
-    const { authed } = this.authenticateSubdomainRequest(req, panelId, acceptedTokens);
-    if (!authed) {
-      res.writeHead(403, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Unauthorized" }));
-      return;
-    }
-
-    try {
-      switch (pathname) {
-        case "/api/context/template":
-          this.serveContextTemplate(res, config);
-          break;
-        case "/api/context/snapshot":
-          if (!isBuilt) {
-            res.writeHead(404, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Snapshots not available during build" }));
-            break;
-          }
-          if (req.method === "POST") {
-            await this.handleSnapshotStore(req, res, config);
-          } else {
-            this.handleSnapshotRetrieve(res, config);
-          }
-          break;
-        default:
-          res.writeHead(404, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Not found" }));
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: message }));
-    }
-  }
-
-  /**
-   * GET /api/context/template
-   *
-   * Returns the resolved template spec for this panel's context.
-   * The browser bootstrap uses this to populate OPFS.
-   */
-  private serveContextTemplate(
-    res: import("http").ServerResponse,
-    config: PanelConfig,
-  ): void {
-    const { specHash, contextId } = config;
-
-    if (!specHash) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ hasTemplate: false, contextId }));
-      return;
-    }
-
-    const spec = getSerializableSpec(specHash);
-    if (!spec) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({
-        hasTemplate: true, contextId, specHash,
-        error: "Template spec not in cache (server may have restarted)",
-      }));
-      return;
-    }
-
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ hasTemplate: true, contextId, ...spec }));
-  }
-
-  /**
-   * POST /api/context/snapshot — store OPFS snapshot for context transfer.
-   */
-  private async handleSnapshotStore(
-    req: import("http").IncomingMessage,
-    res: import("http").ServerResponse,
-    config: PanelConfig,
-  ): Promise<void> {
-    const body = await readBody(req);
-    const snapshot: ContextSnapshot = JSON.parse(body);
-
-    if (!snapshot.sourceContextId || !Array.isArray(snapshot.opfsFiles)) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Invalid snapshot: missing sourceContextId or opfsFiles" }));
-      return;
-    }
-
-    storeSnapshot(config.contextId, snapshot);
-
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({
-      stored: true,
-      contextId: config.contextId,
-      fileCount: snapshot.opfsFiles.length,
-      totalSize: snapshot.totalSize,
-    }));
-  }
-
-  /**
-   * GET /api/context/snapshot — retrieve stored OPFS snapshot for import.
-   */
-  private handleSnapshotRetrieve(
-    res: import("http").ServerResponse,
-    config: PanelConfig,
-  ): void {
-    const snapshot = getSnapshot(config.contextId);
-
-    if (!snapshot) {
-      const meta = getSnapshotMetadata(config.contextId);
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({
-        error: meta ? "Snapshot expired" : "No snapshot available",
-        contextId: config.contextId,
-      }));
-      return;
-    }
-
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(snapshot));
-  }
-
   // =========================================================================
   // Pre-warming init page (unified for stored + pending)
   // =========================================================================
@@ -898,7 +727,7 @@ export class PanelHttpServer {
    * completion. Works for both stored and pending panels.
    *
    * When authenticated via token (not session cookie), creates a session
-   * so the bootstrap's `/api/context/template` fetch is authenticated.
+   * so the bootstrap's API calls are authenticated via cookie.
    */
   private serveInitPage(
     req: import("http").IncomingMessage,
@@ -1193,16 +1022,16 @@ ${this.buildOpfsBootstrapScript(config, true)}
    * penalty for already-initialized contexts.
    */
   private buildOpfsBootstrapScript(config: PanelConfig, isInitPage: boolean): string {
-    const { specHash, contextId, gitBaseUrl, gitToken } = config;
+    const { contextId, gitBaseUrl, gitToken } = config;
 
-    if (!specHash && !isInitPage) {
+    if (!isInitPage) {
       return `// No template spec — OPFS bootstrap skipped`;
     }
 
     // Inject config for the bootstrap script to read
     const configBlock = `globalThis.__opfsBootstrapConfig = ${JSON.stringify({
       contextId,
-      specHash: specHash ?? null,
+      specHash: null,
       gitBaseUrl,
       gitToken,
       isInitPage,

@@ -52,8 +52,6 @@ export {
   workspaceList,
   workspaceClone,
   contextInfo,
-  contextTemplateList,
-  contextTemplateRead,
 } from "./tools/workspace-tools";
 
 // --- Utilities ---

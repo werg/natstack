@@ -56,37 +56,6 @@ ContextInfo()
 
 **Note:** This tool scans common `/workspace/*` layouts and may not show custom mount paths.
 
-### ContextTemplateList (context_template_list)
-
-List available context templates in the workspace.
-
-**Parameters:** None
-
-**Returns:** List of template specs (e.g., `contexts/default`).
-
-**Example:**
-```
-ContextTemplateList()
-```
-
-### ContextTemplateRead (context_template_read)
-
-Read a context template's YAML configuration.
-
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `template_spec` | string | Yes | Template spec like `"contexts/default"` |
-
-**Returns:** Template YAML content (if present in context).
-
-**Example:**
-```
-ContextTemplateRead({ template_spec: "contexts/default" })
-```
-
-**Note:** The template repo must be cloned into your context first. To discover templates, run `ContextTemplateList()` and then `WorkspaceClone` the template repo you want.
-
 ---
 
 ## File Operations

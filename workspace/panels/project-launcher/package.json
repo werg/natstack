@@ -29,7 +29,6 @@
     "@workspace/runtime": "workspace:*",
     "@workspace/react": "workspace:*",
     "@workspace/agentic-messaging": "workspace:*",
-    "@workspace/context-template-editor": "workspace:*",
     "@workspace/agentic-components": "workspace:*",
     "@workspace-panels/project-panel": "workspace:*",
     "@radix-ui/themes": "^3.2.1",

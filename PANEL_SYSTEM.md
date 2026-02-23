@@ -132,7 +132,6 @@ const editor = await createChildWithContract(editorContract, { name: "editor" })
 | `env` | Record<string, string> | Environment variables |
 | `gitRef` | string | Git branch/tag/commit for source |
 | `repoArgs` | Record<string, RepoArgSpec> | Repo arguments for bootstrap |
-| `templateSpec` | string | Context template path |
 | `contextId` | string | Explicit context ID for storage partition sharing |
 | `unsafe` | boolean \| string | Node.js mode (workers only) |
 | `sourcemap` | boolean | Emit sourcemaps (default: true) |
@@ -247,18 +246,8 @@ editor.onEvent("saved", ({ path }) => console.log(path)); // Typed!
 
 Panels have isolated OPFS storage based on their context ID:
 
-- **Safe panels**: `safe_tpl_{hash}_{instanceId}` — OPFS sandbox with optional template
+- **Safe panels**: `safe_{instanceId}` — OPFS sandbox
 - **Unsafe panels**: `unsafe_noctx_{instanceId}` — Real Node.js filesystem
-
-Context templates pre-populate OPFS with git repos. Define in `context-template.yml`:
-
-```yaml
-extends: contexts/base
-deps:
-  /tools/search:
-    repo: tools/web-search
-    ref: main
-```
 
 ## Workspace Packages
 

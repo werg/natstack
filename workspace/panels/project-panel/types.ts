@@ -21,8 +21,6 @@ export interface ProjectConfig {
   workingDirectory?: string;
   /** Working directory for managed/OPFS mode (defaults to "/") */
   browserWorkingDirectory?: string;
-  /** Context template spec for managed mode (required if projectLocation === "managed") */
-  contextTemplateSpec?: string;
   /** Repos included in context template */
   includedRepos?: string[];
   /** Default agent to spawn for new sessions */
@@ -69,9 +67,6 @@ export const PROJECT_DEFAULTS = {
  * Validate project configuration.
  */
 export function validateProjectConfig(config: ProjectConfig): string | null {
-  if (config.projectLocation === "managed" && !config.contextTemplateSpec?.trim()) {
-    return "Managed projects require a context template selection";
-  }
   if (config.projectLocation === "external" && !config.workingDirectory?.trim()) {
     return "External projects require a working directory";
   }

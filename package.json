@@ -105,7 +105,6 @@
     "@workspace/agentic-messaging": "workspace:*",
     "@workspace/agentic-tools": "workspace:*",
     "@workspace/ai": "workspace:*",
-    "@workspace/context-template-editor": "workspace:*",
     "@workspace/core": "workspace:*",
     "@workspace/eval": "workspace:*",
     "@workspace/git-ui": "workspace:*",

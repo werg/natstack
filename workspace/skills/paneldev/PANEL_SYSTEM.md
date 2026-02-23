@@ -73,7 +73,6 @@ import {
 | `env` | Record<string, string> | Environment variables |
 | `gitRef` | string | Git branch/tag/commit |
 | `repoArgs` | Record<string, RepoArgSpec> | Bootstrap repos |
-| `templateSpec` | string | Context template path |
 | `contextId` | string | Storage partition ID |
 | `unsafe` | boolean \| string | Node.js mode |
 | `focus` | boolean | Focus after creation |
@@ -82,16 +81,8 @@ import {
 
 Panels have isolated OPFS storage based on context ID:
 
-- **Safe**: `safe_tpl_{hash}_{instanceId}` - OPFS sandbox
+- **Safe**: `safe_{instanceId}` - OPFS sandbox
 - **Unsafe**: `unsafe_noctx_{instanceId}` - Node.js filesystem
-
-Templates pre-populate OPFS:
-
-```yaml
-extends: contexts/base
-structure:
-  /workspace/tools/search: tools/web-search#main
-```
 
 ## Workspace Packages
 

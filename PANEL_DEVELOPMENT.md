@@ -445,27 +445,6 @@ await browser.reload();
 
 ---
 
-## Context Templates
-
-Pre-populate OPFS with git repos for consistent environments:
-
-```yaml
-# panels/my-agent/context-template.yml
-extends: contexts/base-agent
-
-deps:
-  /tools/search:
-    repo: tools/web-search
-    ref: main
-  /data/prompts:
-    repo: shared/prompts
-    ref: v1.0.0
-```
-
-Templates are built once and copied to each panel instance.
-
----
-
 ## Sharing Code
 
 ### Export from Panel

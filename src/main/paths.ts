@@ -184,40 +184,6 @@ export function getContextScopePath(workspaceId: string, contextId: string): str
   return scopePath;
 }
 
-/**
- * Get the template builds directory.
- * This is where cached template builds are stored, keyed by spec hash.
- *
- * Location: <central-config>/template-builds/
- *
- * @returns Absolute path to the template builds directory
- */
-export function getTemplateBuildDirectory(): string {
-  const configDir = getCentralConfigDirectory();
-  const buildsDir = path.join(configDir, "template-builds");
-  fs.mkdirSync(buildsDir, { recursive: true });
-  return buildsDir;
-}
-
-/**
- * Get the path for a specific template build by its spec hash.
- *
- * @param specHash - The SHA256 hash of the template spec (or first 12 chars)
- * @returns Absolute path to the template build directory
- */
-export function getTemplateBuildPath(specHash: string): string {
-  return path.join(getTemplateBuildDirectory(), specHash);
-}
-
-/**
- * Get the lock file path for a template build.
- *
- * @param specHash - The SHA256 hash of the template spec
- * @returns Absolute path to the lock file
- */
-export function getTemplateBuildLockPath(specHash: string): string {
-  return `${getTemplateBuildPath(specHash)}.lock`;
-}
 
 /**
  * Get the NatStack application root directory.
@@ -387,48 +353,3 @@ export function getAboutPagesDir(): string {
   return path.join(getAppRoot(), "src", "about-pages");
 }
 
-/**
- * Get the Partitions directory where Electron stores session data.
- * This is where partition folders are created for persist: sessions.
- *
- * Location: <userData>/Partitions/
- *
- * @returns Absolute path to the Partitions directory
- */
-export function getPartitionsDirectory(): string {
-  const configDir = getCentralConfigDirectory();
-  const partitionsDir = path.join(configDir, "Partitions");
-  fs.mkdirSync(partitionsDir, { recursive: true });
-  return partitionsDir;
-}
-
-/**
- * Get the path for a specific partition by name.
- *
- * @param partitionName - The partition name (e.g., "tpl_abc123456789")
- * @returns Absolute path to the partition folder
- */
-export function getPartitionPath(partitionName: string): string {
-  return path.join(getPartitionsDirectory(), partitionName);
-}
-
-/**
- * Get the template partition name from a spec hash.
- * Template partitions use the prefix "tpl_" followed by 12 chars of the hash.
- *
- * @param specHash - The template spec hash
- * @returns The partition name (e.g., "tpl_abc123456789")
- */
-export function getTemplatePartitionName(specHash: string): string {
-  return `tpl_${specHash.slice(0, 12)}`;
-}
-
-/**
- * Get the lock file path for a partition build.
- *
- * @param partitionName - The partition name
- * @returns Absolute path to the lock file
- */
-export function getPartitionBuildLockPath(partitionName: string): string {
-  return path.join(getPartitionsDirectory(), `.${partitionName}.lock`);
-}

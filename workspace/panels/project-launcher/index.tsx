@@ -28,7 +28,6 @@ export default function ProjectLauncher() {
     projectConfig,
     setLocation,
     setWorkingDirectory,
-    setContextTemplateSpec,
     setIncludedRepos,
     setDefaultAgent,
     setDefaultAutonomy,
@@ -75,14 +74,10 @@ export default function ProjectLauncher() {
     setError(null);
 
     try {
-      // For managed mode, pre-create the context
+      // For managed mode, generate a context ID
       let contextId: string | undefined;
-      if (projectConfig.projectLocation === "managed" && projectConfig.contextTemplateSpec) {
-        contextId = await rpc.call<string>(
-          "main",
-          "bridge.createContextFromTemplate",
-          projectConfig.contextTemplateSpec
-        );
+      if (projectConfig.projectLocation === "managed") {
+        contextId = `ctx_${crypto.randomUUID()}`;
       }
 
       // Navigate to project-panel with the config
@@ -147,7 +142,6 @@ export default function ProjectLauncher() {
                 <ManagedModeConfig
                   includedRepos={projectConfig.includedRepos ?? []}
                   onIncludedReposChange={setIncludedRepos}
-                  onContextTemplateSpecChange={setContextTemplateSpec}
                 />
               )}
 

@@ -10,7 +10,6 @@ describe("ns:// protocol", () => {
       expect(result.source).toBe("panels/editor");
       expect(result.action).toBe("navigate");
       expect(result.gitRef).toBeUndefined();
-      expect(result.templateSpec).toBeUndefined();
       expect(result.repoArgs).toBeUndefined();
     });
 
@@ -32,12 +31,6 @@ describe("ns:// protocol", () => {
       expect(result.gitRef).toBe("main");
     });
 
-    it("parses with templateSpec", () => {
-      const result = parseNsUrl("ns:///panels/editor?templateSpec=contexts/default");
-      expect(result.source).toBe("panels/editor");
-      expect(result.templateSpec).toBe("contexts/default");
-    });
-
     it("parses with repoArgs JSON", () => {
       const repoArgs = { workspace: "repos/app" };
       const url = `ns:///panels/editor?repoArgs=${encodeURIComponent(JSON.stringify(repoArgs))}`;
@@ -48,11 +41,10 @@ describe("ns:// protocol", () => {
 
     it("parses with all options", () => {
       const repoArgs = { workspace: "repos/app" };
-      const url = `ns:///panels/editor?action=child&templateSpec=contexts/custom&gitRef=main&repoArgs=${encodeURIComponent(JSON.stringify(repoArgs))}`;
+      const url = `ns:///panels/editor?action=child&gitRef=main&repoArgs=${encodeURIComponent(JSON.stringify(repoArgs))}`;
       const result = parseNsUrl(url);
       expect(result.source).toBe("panels/editor");
       expect(result.action).toBe("child");
-      expect(result.templateSpec).toBe("contexts/custom");
       expect(result.gitRef).toBe("main");
       expect(result.repoArgs).toEqual(repoArgs);
     });
@@ -117,11 +109,6 @@ describe("ns:// protocol", () => {
       expect(url).toBe("ns:///panels/editor");
     });
 
-    it("builds URL with templateSpec", () => {
-      const url = buildNsUrl("panels/editor", { templateSpec: "contexts/default" });
-      expect(url).toBe("ns:///panels/editor?templateSpec=contexts%2Fdefault");
-    });
-
     it("builds URL with repoArgs", () => {
       const url = buildNsUrl("panels/editor", { repoArgs: { workspace: "repos/app" } });
       expect(url).toContain("repoArgs=");
@@ -133,13 +120,11 @@ describe("ns:// protocol", () => {
     it("builds URL with all options", () => {
       const url = buildNsUrl("panels/editor", {
         action: "child",
-        templateSpec: "contexts/custom",
         repoArgs: { workspace: "repos/app" },
       });
       const parsed = parseNsUrl(url);
       expect(parsed.source).toBe("panels/editor");
       expect(parsed.action).toBe("child");
-      expect(parsed.templateSpec).toBe("contexts/custom");
       expect(parsed.repoArgs).toEqual({ workspace: "repos/app" });
     });
 
@@ -173,7 +158,6 @@ describe("ns:// protocol", () => {
     it("parseNsUrl(buildNsUrl(...)) returns original values", () => {
       const options = {
         action: "child" as NsAction,
-        templateSpec: "contexts/default",
         repoArgs: { workspace: { repo: "repos/app", ref: "v1.0.0" } },
         focus: true,
       };
@@ -181,7 +165,6 @@ describe("ns:// protocol", () => {
       const parsed = parseNsUrl(url);
       expect(parsed.source).toBe("panels/editor");
       expect(parsed.action).toBe("child");
-      expect(parsed.templateSpec).toBe("contexts/default");
       expect(parsed.repoArgs).toEqual({ workspace: { repo: "repos/app", ref: "v1.0.0" } });
       expect(parsed.focus).toBe(true);
     });

@@ -34,10 +34,6 @@ export function useProjectConfig({ workspaceRoot }: UseProjectConfigOptions = {}
     updateConfig({ workingDirectory: dir });
   }, [updateConfig]);
 
-  const setContextTemplateSpec = useCallback((spec: string) => {
-    updateConfig({ contextTemplateSpec: spec });
-  }, [updateConfig]);
-
   const setIncludedRepos = useCallback((repos: string[]) => {
     updateConfig({ includedRepos: repos });
   }, [updateConfig]);
@@ -65,7 +61,6 @@ export function useProjectConfig({ workspaceRoot }: UseProjectConfigOptions = {}
     updateConfig,
     setLocation,
     setWorkingDirectory,
-    setContextTemplateSpec,
     setIncludedRepos,
     setDefaultAgent,
     setDefaultAutonomy,

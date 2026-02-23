@@ -9,10 +9,14 @@
  */
 
 import { dialog } from "electron";
+import { existsSync } from "fs";
+import { mkdir, writeFile } from "fs/promises";
+import { join, resolve } from "path";
+import { execSync } from "child_process";
 import type { PanelManager } from "../panelManager.js";
 import type { CdpServer } from "../cdpServer.js";
-import { handleTemplateComplete, type TemplateCompleteResult } from "../contextTemplate/partitionBuilder.js";
 import { getViewManager } from "../viewManager.js";
+import { getActiveWorkspace } from "../paths.js";
 import { handleCommonBridgeMethod } from "../../shared/bridgeHandlersCommon.js";
 
 /**
@@ -91,51 +95,10 @@ export async function handleBridgeCall(
       const [targetPanelId] = args as [string];
       return pm.ensurePanelLoaded(targetPanelId);
     }
-    case "signalTemplateComplete": {
-      // Called by template-builder workers to signal completion
-      const [result] = args as [TemplateCompleteResult];
-      handleTemplateComplete(callerId, result);
-      return { success: true };
-    }
     case "forceRepaint": {
       // Allow a panel to request a force repaint to recover from compositor stalls
       // where content exists in DOM but isn't being painted
       return pm.forceRepaint(callerId);
-    }
-    case "createContextFromTemplate": {
-      // Create a new context from a template spec
-      const [templateSpec] = (args ?? []) as [string?];
-      if (!templateSpec?.trim()) {
-        throw new Error("Template spec cannot be empty - select at least one repository");
-      }
-
-      const { resolveTemplate } = await import("../contextTemplate/resolver.js");
-      const { computeImmutableSpec } = await import("../contextTemplate/specHash.js");
-      const { createContextId, generateInstanceId } = await import("../contextTemplate/contextId.js");
-      const { ensureContextPartitionInitialized } = await import("../contextTemplate/index.js");
-      const { getServerInfo } = await import("../serverInfoState.js");
-
-      // Resolve template and compute immutable spec
-      const resolved = await resolveTemplate(templateSpec);
-      const immutableSpec = computeImmutableSpec(resolved);
-      const instanceId = generateInstanceId("chat");
-      const contextId = createContextId(immutableSpec.specHash, instanceId);
-
-      // Get git config for partition initialization
-      const si = getServerInfo();
-      if (!si) {
-        throw new Error("Server not available - cannot initialize context");
-      }
-
-      const gitConfig = {
-        serverUrl: si.gitBaseUrl,
-        token: await si.getGitTokenForPanel(callerId),
-      };
-
-      // Initialize OPFS partition
-      await ensureContextPartitionInitialized(contextId, immutableSpec, gitConfig);
-
-      return contextId;
     }
     case "openFolderDialog": {
       // Folder picker for panels (mirrors shell's workspace.openFolderDialog)
@@ -149,6 +112,25 @@ export async function handleBridgeCall(
     case "listAgents": {
       // List available agents - delegates to server where AgentDiscovery runs
       return pm.listAgents();
+    }
+    case "createRepo": {
+      const [repoPath] = args as [string];
+      if (!repoPath?.trim()) throw new Error("Repo path is required");
+      const workspace = getActiveWorkspace();
+      if (!workspace) throw new Error("No active workspace");
+      const absolutePath = resolve(workspace.path, repoPath);
+      // Path traversal guard: ensure resolved path stays inside workspace
+      if (!absolutePath.startsWith(workspace.path + "/") && absolutePath !== workspace.path) {
+        throw new Error(`Invalid repo path: escapes workspace root`);
+      }
+      if (existsSync(absolutePath)) throw new Error(`Path already exists: ${repoPath}`);
+      await mkdir(absolutePath, { recursive: true });
+      execSync("git init", { cwd: absolutePath, stdio: "pipe" });
+      const repoName = repoPath.split("/").pop() ?? "project";
+      await writeFile(join(absolutePath, "README.md"), `# ${repoName}\n\nA new NatStack project.\n`, "utf-8");
+      execSync("git add README.md", { cwd: absolutePath, stdio: "pipe" });
+      execSync('git commit -m "Initial commit"', { cwd: absolutePath, stdio: "pipe" });
+      return;
     }
     // =========================================================================
     // History integration (replaces IPC panel:history-* handlers)

@@ -1,7 +1,7 @@
 /**
  * Workspace discovery and management tools for pubsub RPC.
  *
- * Implements: workspace_list, workspace_clone, context_info, context_template_list, context_template_read
+ * Implements: workspace_list, workspace_clone, context_info
  * Enables agents to discover, clone, and manage repos in their context.
  */
 
@@ -14,13 +14,9 @@ import {
   WorkspaceListArgsSchema,
   WorkspaceCloneArgsSchema,
   ContextInfoArgsSchema,
-  ContextTemplateListArgsSchema,
-  ContextTemplateReadArgsSchema,
   type WorkspaceListArgs,
   type WorkspaceCloneArgs,
   type ContextInfoArgs,
-  type ContextTemplateListArgs,
-  type ContextTemplateReadArgs,
 } from "@workspace/agentic-messaging/tool-schemas";
 import {
   getWorkspaceTree,
@@ -31,9 +27,6 @@ import {
 
 /** Standard workspace mount path prefix */
 const WORKSPACE_PREFIX = "/workspace";
-
-/** Directories that may contain context templates */
-const TEMPLATE_DIRECTORIES = ["contexts", "panels", "workers", "projects"];
 
 /**
  * Check if a node matches the requested category filter.
@@ -98,27 +91,6 @@ function formatWorkspaceTree(
   return lines.filter(Boolean).join("\n");
 }
 
-function collectTemplateCandidates(nodes: WorkspaceNode[]): string[] {
-  const results: string[] = [];
-  const stack = [...nodes];
-
-  while (stack.length > 0) {
-    const node = stack.pop();
-    if (!node) continue;
-
-    const topDir = node.path.split("/")[0] ?? "";
-    if (node.isGitRepo && TEMPLATE_DIRECTORIES.includes(topDir)) {
-      results.push(node.path);
-    }
-
-    if (node.children.length > 0) {
-      stack.push(...node.children);
-    }
-  }
-
-  return results;
-}
-
 /**
  * workspace_list - List available repos in the workspace
  */
@@ -141,44 +113,6 @@ export async function workspaceList(args: WorkspaceListArgs): Promise<string> {
     return `Workspace repositories${category !== "all" ? ` (${category})` : ""}:\n\n${formatted}`;
   } catch (error) {
     return `Error listing workspace: ${error instanceof Error ? error.message : String(error)}`;
-  }
-}
-
-/**
- * context_template_list - List available context templates in the workspace
- */
-export async function contextTemplateList(_args: ContextTemplateListArgs): Promise<string> {
-  try {
-    const tree = await getWorkspaceTree();
-
-    if (!tree.children || tree.children.length === 0) {
-      return "No repositories found in workspace.";
-    }
-
-    const candidates = collectTemplateCandidates(tree.children);
-    if (candidates.length === 0) {
-      return "No context templates found.";
-    }
-
-    const templateSpecs = await Promise.all(
-      candidates.map(async (spec) => {
-        try {
-          const hasTemplate = await rpc.call<boolean>("main", "bridge.hasContextTemplate", spec);
-          return hasTemplate ? spec : null;
-        } catch {
-          return null;
-        }
-      })
-    );
-
-    const templates = templateSpecs.filter((spec): spec is string => spec !== null).sort();
-    if (templates.length === 0) {
-      return "No context templates found.";
-    }
-
-    return `Context templates:\n\n${templates.map((spec) => `- ${spec}`).join("\n")}`;
-  } catch (error) {
-    return `Error listing context templates: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 
@@ -378,38 +312,6 @@ export async function contextInfo(
 }
 
 /**
- * context_template_read - Read a context template's YAML
- */
-export async function contextTemplateRead(
-  args: ContextTemplateReadArgs,
-  workspaceRoot?: string
-): Promise<string> {
-  const templateSpec = args.template_spec;
-
-  if (!templateSpec) {
-    return "No template_spec provided. Specify a template like 'contexts/default' or 'panels/chat'.";
-  }
-
-  // Template files are in the workspace, need to read via bridge or workspace tree
-  // For now, we'll try to read from the local OPFS if the context includes it
-  const possiblePaths = [
-    `/workspace/${templateSpec}/context-template.yml`,
-    `/workspace/${templateSpec}/context-template.yaml`,
-  ];
-
-  for (const templatePath of possiblePaths) {
-    try {
-      const content = await fs.promises.readFile(templatePath, "utf-8");
-      return `Template: ${templateSpec}\n\n${content}`;
-    } catch {
-      // Try next path
-    }
-  }
-
-  return `Template not found: ${templateSpec}\n\nNote: Clone the template's repo first with WorkspaceClone, or the template may not be in this context.`;
-}
-
-/**
  * Create workspace tool method definitions for pubsub RPC.
  */
 export function createWorkspaceToolMethodDefinitions(
@@ -440,20 +342,5 @@ export function createWorkspaceToolMethodDefinitions(
       },
     },
 
-    context_template_list: {
-      description: `List available context templates in the workspace.`,
-      parameters: ContextTemplateListArgsSchema,
-      async execute(args) {
-        return contextTemplateList(args as ContextTemplateListArgs);
-      },
-    },
-
-    context_template_read: {
-      description: `Read a context template's YAML. Template must be cloned first.`,
-      parameters: ContextTemplateReadArgsSchema,
-      async execute(args) {
-        return contextTemplateRead(args as ContextTemplateReadArgs, workspaceRoot);
-      },
-    },
   };
 }

@@ -149,20 +149,6 @@ rpc.expose({
 
 ---
 
-## Context Templates
-
-Pre-populate OPFS with repos:
-
-```yaml
-# panels/my-agent/context-template.yml
-extends: contexts/default
-
-structure:
-  /workspace/tools/search: tools/web-search#main
-```
-
----
-
 ## Related Docs
 
 - [RPC.md](RPC.md) - Typed contracts for parent-child communication

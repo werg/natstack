@@ -17,6 +17,7 @@ extensions act as the UI coordinator:
 4. **Pre-warm** OPFS storage by loading a hidden init page before the real panel
 5. **Auto-close** tabs when panels are destroyed
 
+
 Panels run in standard browser tabs with full access to NatStack services
 (AI, git, build, pubsub, database) via WebSocket RPC — the same protocol
 used by the Electron preload.
@@ -179,15 +180,10 @@ This mirrors Electron's `persist:{contextId}` partition behavior.
 
 When a `panel:created` event fires, the extension immediately opens a hidden
 tab to `{subdomain}.localhost/__init__?token={initToken}`. This init page
-runs the OPFS bootstrap script, which:
-
-1. Checks IndexedDB for a `.template-initialized` marker
-2. If not initialized, fetches the template spec from `/api/context/template`
-3. Clones git repository files into OPFS (up to 6 concurrent fetches)
-4. Writes the initialization marker
+runs the OPFS bootstrap script, which prepares the panel's storage partition.
 
 When the `panel:built` event arrives, the real panel tab opens with OPFS
-already populated — no loading delay.
+ready — no loading delay.
 
 ### Authentication
 
@@ -226,9 +222,6 @@ These endpoints are available on each panel's subdomain (session-cookie auth):
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/context/template` | GET | Template spec for OPFS bootstrap |
-| `/api/context/snapshot` | GET | Retrieve OPFS snapshot |
-| `/api/context/snapshot` | POST | Store OPFS snapshot |
 | `/__init__` | GET | Pre-warming init page |
 
 ---
@@ -295,7 +288,6 @@ Once the panel is created, the extension receives the `panel:created` and
 - Check the browser console on the panel tab for error messages
 - The git server must be reachable from the browser (default:
   `http://127.0.0.1:{gitPort}`)
-- Template repositories must exist in the workspace
 
 ### Server won't start
 
@@ -327,8 +319,8 @@ When serving a panel to the browser, the server augments the HTML with:
    `__natstackStateArgs`, etc. (replacing Electron's preload/contextBridge)
 2. **Browser transport IIFE** — creates a WebSocket connection to the RPC
    server using the same protocol as the Electron preload
-3. **OPFS bootstrap script** — populates the Origin Private File System from
-   the context template (git repos cloned into OPFS)
+3. **OPFS bootstrap script** — prepares the Origin Private File System for
+   panel storage
 
 This means panel source code is identical between Electron and browser — the
 transport layer is swapped transparently.

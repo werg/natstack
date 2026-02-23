@@ -38,7 +38,6 @@ export {
   parseContextId,
   isValidContextId,
   isSafeContext,
-  getTemplateSpecHash,
   getInstanceId,
 } from "../core/context.js";
 export type * from "../core/types.js";
