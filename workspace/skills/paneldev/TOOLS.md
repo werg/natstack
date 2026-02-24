@@ -86,7 +86,7 @@ Execute TypeScript/JavaScript code in the panel runtime.
 - Safe serialization of return values
 
 **Available Modules:**
-- `fs` (RPC-backed fs in safe panels)
+- `fs`
 - `react`, `react/jsx-runtime`
 - `@radix-ui/themes`, `@radix-ui/react-icons`
 - `isomorphic-git` (for advanced git operations)

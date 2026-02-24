@@ -1,6 +1,6 @@
 ---
 name: paneldev
-description: NatStack panel development docs - hooks, contracts, filesystem, git, AI. Clone and read SKILL.md to start.
+description: NatStack panel development docs - hooks, contracts, filesystem, git, AI. Read SKILL.md to start.
 ---
 
 # Panel Development Skill
@@ -20,7 +20,7 @@ Documentation for developing NatStack panels.
 
 ## Quick Start
 
-1. Read: `Read({ file_path: "skills/paneldev/PANEL_DEVELOPMENT.md" })`
+1. Read: `Read({ file_path: "workspace/skills/paneldev/PANEL_DEVELOPMENT.md" })`
 
 ## Panel Template
 

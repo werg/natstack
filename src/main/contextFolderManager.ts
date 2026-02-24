@@ -99,6 +99,21 @@ export class ContextFolderManager {
           await fs.cp(src, dest, { recursive: true, filter: copyFilter });
         }
 
+        // Generate SDK plugin manifest for skill discovery
+        const skillRepos = repos.filter((r) => r.startsWith("workspace/skills/"));
+        if (skillRepos.length > 0) {
+          const skillsDir = path.join(contextPath, "workspace", "skills");
+          await fs.mkdir(skillsDir, { recursive: true });
+          const manifest = {
+            name: "natstack-skills",
+            skills: skillRepos.map((r) => `./${r.slice("workspace/skills/".length)}`),
+          };
+          await fs.writeFile(
+            path.join(skillsDir, "package.json"),
+            JSON.stringify(manifest, null, 2),
+          );
+        }
+
         log.info(`Context folder ready: ${contextId} (${repos.length} repo(s) copied)`);
         return contextPath;
       } finally {

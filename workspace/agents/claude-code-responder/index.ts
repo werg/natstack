@@ -996,6 +996,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
         ...(settings.maxThinkingTokens && { maxThinkingTokens: settings.maxThinkingTokens }),
         ...(settings.executionMode && { executionMode: settings.executionMode }),
         canUseTool,
+        plugins: [{ type: 'local' as const, path: './workspace/skills' }],
       };
 
       queryInstance = query({

@@ -34,21 +34,4 @@ export function createRichTextChatSystemPrompt(
   return `${persona}\n\n${COMPONENT_ENHANCED_RICH_TEXT_GUIDE}`;
 }
 
-// ============================================================================
-// Workspace & Context Guide
-// ============================================================================
-
-/**
- * System prompt guidance for workspace discovery and skills.
- */
-export const WORKSPACE_CONTEXT_GUIDE = `## Workspace & Skills
-
-You have an isolated filesystem under /workspace/.
-
-**Skills** are repos with \`SKILL.md\` containing agent instructions.
-- Discover: \`WorkspaceList({ category: "skills" })\`
-- Clone: \`WorkspaceClone({ repo_spec: "skills/paneldev" })\`
-- Read: \`Read({ file_path: "/workspace/skills/paneldev/SKILL.md" })\`
-
-The \`skills/paneldev\` skill (included by default) has panel development docs.`;
 
