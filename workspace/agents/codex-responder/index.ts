@@ -25,20 +25,18 @@ import {
   createStandardMcpTools,
   executeStandardMcpTool,
   findPanelParticipant,
-  discoverPubsubToolsForMode,
+  discoverPubsubTools,
   toCodexMcpTools,
   createCanUseToolGate,
   type MessageQueue,
 } from "@workspace/agent-patterns";
 import {
   createRichTextChatSystemPrompt,
-  createRestrictedModeSystemPrompt,
 } from "@workspace/agent-patterns/prompts";
 import {
   jsonSchemaToZodRawShape,
   formatArgsForLog,
   createPauseMethodDefinition,
-  validateRestrictedMode,
   getDetailedActionDescription,
   CONTENT_TYPE_TYPING,
   CONTENT_TYPE_INLINE_UI,
@@ -72,7 +70,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import * as http from "node:http";
 import * as fs from "node:fs";
-import { writeFile, mkdtemp } from "node:fs/promises";
+import { writeFile, mkdir, mkdtemp } from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { randomUUID } from "node:crypto";
@@ -93,7 +91,7 @@ interface CodexAgentState extends AgentState {
 interface CodexSettings {
   model?: string;
   reasoningEffort?: number; // 0=minimal, 1=low, 2=medium, 3=high
-  autonomyLevel?: number; // 0=restricted/read-only, 1=standard/workspace, 2=autonomous/full-access
+  autonomyLevel?: number; // 0=read-only, 1=workspace-write, 2=full-access
   webSearchEnabled?: boolean;
   /** Whether we've shown at least one approval prompt (for first-time grant UI) */
   hasShownApprovalPrompt?: boolean;
@@ -158,45 +156,15 @@ function getSandboxModeFromAutonomy(
 }
 
 /**
- * Get the NatStack config directory (without Electron app module).
- * Platform-specific paths:
- * - Linux: ~/.config/natstack
- * - macOS: ~/Library/Application Support/natstack
- * - Windows: %APPDATA%/natstack
- */
-function getNatStackConfigDir(): string {
-  const home = os.homedir();
-
-  switch (process.platform) {
-    case "win32": {
-      const appData = process.env["APPDATA"] ?? path.join(home, "AppData", "Roaming");
-      return path.join(appData, "natstack");
-    }
-    case "darwin":
-      return path.join(home, "Library", "Application Support", "natstack");
-    default: {
-      const xdgConfig = process.env["XDG_CONFIG_HOME"] ?? path.join(home, ".config");
-      return path.join(xdgConfig, "natstack");
-    }
-  }
-}
-
-/**
- * Get or create a persistent Codex home directory for a session.
- * Sessions are stored in <natstack-config>/codex-sessions/<sessionKey>/
- * This allows session recovery across agent wake/sleep cycles.
+ * Set up Codex home directory inside the context folder.
+ * Creates {contextFolderPath}/.codex/ and copies auth.json from default Codex home if available.
  *
- * @param sessionKey - Unique session identifier (from pubsub client.sessionKey or contextId)
+ * @param contextFolderPath - The per-context working directory
  * @param log - Logger function
  */
-function getCodexHomeForSession(sessionKey: string, log: (msg: string) => void): string {
-  // Sanitize session key for filesystem use
-  const safeKey = sessionKey.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const codexSessionsDir = path.join(getNatStackConfigDir(), "codex-sessions");
-  const codexHome = path.join(codexSessionsDir, safeKey);
-
-  // Create directory if it doesn't exist
-  fs.mkdirSync(codexHome, { recursive: true });
+async function setupCodexHome(contextFolderPath: string, log: (msg: string) => void): Promise<string> {
+  const codexHome = path.join(contextFolderPath, ".codex");
+  await mkdir(codexHome, { recursive: true });
 
   // Copy auth.json from default Codex home if not already present
   const defaultCodexHome = path.join(os.homedir(), ".codex");
@@ -219,6 +187,7 @@ function getCodexHomeForSession(sessionKey: string, log: (msg: string) => void):
 
 /**
  * Update Codex config.toml with MCP server URL.
+ * Writes to {codexHome}/config.toml (where codexHome = {contextFolderPath}/.codex/).
  * Called each time we start an MCP server (which may be on a different port).
  */
 function updateCodexConfig(codexHome: string, mcpServerUrl: string, log: (msg: string) => void): void {
@@ -446,15 +415,17 @@ class CodexResponderAgent extends Agent<CodexAgentState, ChatParticipantMetadata
   // Per-message typing trackers for queue position display
   private queuedMessages = new Map<string, QueuedMessageInfo>();
 
-  // Channel configuration
-  private workingDirectory?: string;
-  private isRestrictedMode = false;
-
   /**
-   * Persistent Codex home directory for session storage.
+   * Codex home directory ({contextFolderPath}/.codex/).
    * Created once in onWake and reused across messages.
    */
-  private codexHome?: string;
+  private codexHome!: string;
+
+  /**
+   * Context folder path used as cwd for Codex.
+   * Set from initInfo.contextFolderPath in onWake (fail fast if missing).
+   */
+  private contextFolderPath!: string;
 
   /**
    * Worker-local fallback for SDK session ID.
@@ -599,27 +570,13 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     });
     await this.settingsMgr.load();
 
-    // Get channel config
-    const channelConfigWorkingDirectory = client.channelConfig?.workingDirectory;
-    const channelConfigRestrictedMode = client.channelConfig?.restrictedMode;
-    this.workingDirectory =
-      (this.ctx.config["workingDirectory"] as string | undefined)?.trim() ||
-      channelConfigWorkingDirectory?.trim() ||
-      process.env["NATSTACK_WORKSPACE"];
-    this.isRestrictedMode =
-      (this.ctx.config["restrictedMode"] as boolean | undefined) ?? channelConfigRestrictedMode ?? false;
-
-    if (this.workingDirectory) {
-      this.log.info(`Working directory: ${this.workingDirectory}`);
+    // Fail fast if contextFolderPath is not available
+    const contextFolderPath = this.initInfo.contextFolderPath;
+    if (!contextFolderPath) {
+      throw new Error("contextFolderPath is required but was not provided in initInfo");
     }
-    if (this.isRestrictedMode) {
-      this.log.info(`Restricted mode: enabled`);
-    }
-
-    // Validate restricted mode requirements
-    if (this.isRestrictedMode) {
-      await validateRestrictedMode(client, this.log.info);
-    }
+    this.contextFolderPath = contextFolderPath;
+    this.log.info(`Context folder path: ${this.contextFolderPath}`);
 
     // Initialize local SDK session fallback from persisted state or client
     if (client.sdkSessionId) {
@@ -671,13 +628,9 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       },
     });
 
-    // Create persistent Codex home directory for session storage
-    // Use contextId from config for persistent storage (allows session recovery across restarts)
-    const contextId = this.ctx.config["contextId"] as string | undefined;
-    if (contextId) {
-      this.codexHome = getCodexHomeForSession(contextId, this.log.info);
-      this.log.info(`Codex home: ${this.codexHome} (persistent)`);
-    }
+    // Create Codex home directory inside context folder
+    this.codexHome = await setupCodexHome(this.contextFolderPath, this.log.info);
+    this.log.info(`Codex home: ${this.codexHome}`);
 
     this.log.info("Codex agent woke up");
   }
@@ -869,14 +822,14 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       return responseId;
     };
 
-    // Discover tools via registry
-    const registry = await discoverPubsubToolsForMode(client, {
-      mode: this.isRestrictedMode ? "restricted" : "unrestricted",
+    // Discover tools via registry with unrestricted allowlist
+    const registry = await discoverPubsubTools(client, {
+      allowlist: ["feedback_form", "feedback_custom", "eval"],
       namePrefix: "pubsub",
-      ...(!this.isRestrictedMode && { timeoutMs: 1500 }),
+      timeoutMs: 1500,
     });
     this.log.info(
-      `Discovered ${registry.tools.length} tools from pubsub participants${this.isRestrictedMode ? " (restricted mode)" : ""}`
+      `Discovered ${registry.tools.length} tools from pubsub participants`
     );
     if (registry.tools.length > 0) {
       const toolNames = registry.tools.map((t) => `${t.providerId}:${t.methodName}`);
@@ -889,7 +842,6 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       registry,
       client,
       standardMcpTools,
-      { useCanonicalNames: this.isRestrictedMode },
     );
 
     // Create approval gate using the same pattern as other agents
@@ -970,10 +922,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       if (mcpTools.length > 0) {
         mcpServer = await createMcpHttpServer(mcpTools, executeToolWithActions, this.log.info);
         const mcpServerUrl = `http://127.0.0.1:${mcpServer.port}/mcp`;
-        // Update config in persistent Codex home directory (if available)
-        if (this.codexHome) {
-          updateCodexConfig(this.codexHome, mcpServerUrl, this.log.info);
-        }
+        updateCodexConfig(this.codexHome, mcpServerUrl, this.log.info);
       }
 
       // Initialize Codex SDK
@@ -982,16 +931,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       if (process.env["HOME"]) baseEnv["HOME"] = process.env["HOME"];
       if (process.env["OPENAI_API_KEY"]) baseEnv["OPENAI_API_KEY"] = process.env["OPENAI_API_KEY"];
       if (process.env["CODEX_API_KEY"]) baseEnv["CODEX_API_KEY"] = process.env["CODEX_API_KEY"];
-      if (this.codexHome) baseEnv["CODEX_HOME"] = this.codexHome;
-
-      // Only set workspace env vars in unrestricted mode
-      if (!this.isRestrictedMode) {
-        const workspaceOverride = this.workingDirectory ?? process.env["NATSTACK_WORKSPACE"];
-        if (workspaceOverride) {
-          baseEnv["NATSTACK_WORKSPACE"] = workspaceOverride;
-          baseEnv["PWD"] = workspaceOverride;
-        }
-      }
+      baseEnv["CODEX_HOME"] = this.codexHome;
 
       const codex = new Codex({
         codexPathOverride: "codex",
@@ -1003,14 +943,11 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       // Build thread options
       const settings = this.settingsMgr.get();
       const reasoningEffort = getReasoningEffort(settings.reasoningEffort);
-      const sandboxMode = this.isRestrictedMode
-        ? "read-only"
-        : getSandboxModeFromAutonomy(settings.autonomyLevel);
+      const sandboxMode = getSandboxModeFromAutonomy(settings.autonomyLevel);
 
       const threadOptions = {
         skipGitRepoCheck: true,
-        ...(!this.isRestrictedMode && this.workingDirectory && { cwd: this.workingDirectory }),
-        ...(this.isRestrictedMode && this.codexHome && { cwd: this.codexHome }),
+        cwd: this.contextFolderPath,
         ...(settings.model && { model: settings.model }),
         ...(reasoningEffort && { modelReasoningEffort: reasoningEffort }),
         sandboxMode,
@@ -1036,13 +973,9 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
       // (resumed threads already have the system prompt in conversation history)
       let promptWithSystem: string | typeof promptContent;
       if (typeof promptContent === "string") {
-        promptWithSystem = this.isRestrictedMode
-          ? `${createRestrictedModeSystemPrompt()}\n\n${promptContent}`
-          : `${createRichTextChatSystemPrompt()}\n\n${promptContent}`;
+        promptWithSystem = `${createRichTextChatSystemPrompt()}\n\n${promptContent}`;
       } else {
-        const systemPrompt = this.isRestrictedMode
-          ? createRestrictedModeSystemPrompt()
-          : createRichTextChatSystemPrompt();
+        const systemPrompt = createRichTextChatSystemPrompt();
         promptWithSystem = [
           { type: "text" as const, text: systemPrompt + "\n\n" },
           ...(promptContent as CodexUserInput[]),

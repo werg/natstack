@@ -11,6 +11,7 @@ export interface AgentInitConfig {
   config: Record<string, unknown>;
   pubsubUrl: string;
   pubsubToken: string;
+  contextFolderPath: string;
 }
 
 export type HostToAgentMessage =

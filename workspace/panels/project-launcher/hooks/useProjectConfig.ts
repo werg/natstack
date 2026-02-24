@@ -12,8 +12,7 @@ export interface UseProjectConfigOptions {
 
 export function useProjectConfig({ workspaceRoot }: UseProjectConfigOptions = {}) {
   const [projectConfig, setProjectConfig] = useState<ProjectConfig>(() =>
-    createProjectConfig("New Project", "external", {
-      workingDirectory: workspaceRoot ?? "",
+    createProjectConfig("New Project", {
       defaultAutonomy: PROJECT_DEFAULTS.defaultAutonomy,
     })
   );
@@ -25,14 +24,6 @@ export function useProjectConfig({ workspaceRoot }: UseProjectConfigOptions = {}
       updatedAt: Date.now(),
     }));
   }, []);
-
-  const setLocation = useCallback((location: "managed" | "external") => {
-    updateConfig({ projectLocation: location });
-  }, [updateConfig]);
-
-  const setWorkingDirectory = useCallback((dir: string) => {
-    updateConfig({ workingDirectory: dir });
-  }, [updateConfig]);
 
   const setIncludedRepos = useCallback((repos: string[]) => {
     updateConfig({ includedRepos: repos });
@@ -59,8 +50,6 @@ export function useProjectConfig({ workspaceRoot }: UseProjectConfigOptions = {}
   return {
     projectConfig,
     updateConfig,
-    setLocation,
-    setWorkingDirectory,
     setIncludedRepos,
     setDefaultAgent,
     setDefaultAutonomy,

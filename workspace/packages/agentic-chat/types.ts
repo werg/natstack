@@ -4,7 +4,6 @@ import type { ActiveFeedback, ToolApprovalProps } from "@workspace/tool-ui";
 import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 import type { PendingImage } from "./utils/imageUtils";
 import type { DirtyRepoDetails } from "./hooks/useAgentEvents";
-import type { UseToolRoleResult } from "./hooks/useToolRole";
 import type { ComponentType } from "react";
 
 // ===========================================================================
@@ -94,7 +93,6 @@ export interface AgenticChatActions {
 /** Dependencies provided to the tool provider factory */
 export interface ToolProviderDeps {
   clientRef: { current: { publish: (eventType: string, payload: unknown) => void } | null };
-  workspaceRoot?: string;
 }
 
 /** Inject tools at connect time */
@@ -175,7 +173,4 @@ export interface ChatContextValue {
 
   // Tool approval (optional)
   toolApproval?: ToolApprovalProps;
-
-  // Tool role state (for components that need shouldProvideGroup or conflict info)
-  toolRole?: UseToolRoleResult;
 }

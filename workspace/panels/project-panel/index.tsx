@@ -22,7 +22,6 @@ import { ConfigSection } from "./components/ConfigSection";
 import { LaunchSection } from "./components/LaunchSection";
 import { SessionHistory } from "./components/SessionHistory";
 import {
-  validateProjectConfig,
   PROJECT_DEFAULTS,
   type ProjectConfig,
   type ProjectPanelStateArgs,
@@ -129,13 +128,6 @@ export default function ProjectPanel() {
   }, []);
 
   const launchChat = useCallback(async () => {
-    // Validate config before launch
-    const validationError = validateProjectConfig(projectConfig);
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
-
     if (!pubsubConfig) {
       setError("Pubsub not configured");
       return;
@@ -156,17 +148,6 @@ export default function ProjectPanel() {
         sessionContextId = crypto.randomUUID();
       }
 
-      // Determine working directory based on mode
-      const isManaged = projectConfig.projectLocation === "managed";
-      const effectiveWorkingDirectory = isManaged
-        ? (projectConfig.browserWorkingDirectory ?? PROJECT_DEFAULTS.browserWorkingDirectory)
-        : projectConfig.workingDirectory;
-
-      const channelConfig = {
-        workingDirectory: effectiveWorkingDirectory,
-        restrictedMode: isManaged,
-      };
-
       // Create chat panel as child
       // contextId in options sets storage partition, in stateArgs tells app which context
       const chatHandle = await createChild("panels/chat", {
@@ -174,7 +155,6 @@ export default function ProjectPanel() {
         contextId: sessionContextId,
       }, {
         channelName: channelId,
-        channelConfig,
         contextId: sessionContextId,
       });
 
@@ -188,7 +168,6 @@ export default function ProjectPanel() {
             token: pubsubConfig.token,
             channel: channelId,
             contextId: sessionContextId,
-            channelConfig,
             handle: `project-launcher-${panelClientId}`,
             name: "Project Panel",
             type: "panel",
@@ -200,8 +179,6 @@ export default function ProjectPanel() {
           client.inviteAgent(agentDef.id, {
             handle: getAgentHandle(agentDef),
             config: {
-              workingDirectory: effectiveWorkingDirectory,
-              restrictedMode: isManaged,
               contextId: sessionContextId,
               autonomyLevel: projectConfig.defaultAutonomy ?? PROJECT_DEFAULTS.defaultAutonomy,
               ...projectConfig.defaultAgentConfig,

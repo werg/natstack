@@ -61,11 +61,11 @@ export interface ToClaudeMcpToolsOptions {
  * Convert a PubsubToolRegistry to Claude SDK MCP tool definitions.
  *
  * Returns tool definitions that can be passed to Claude SDK's tool() function,
- * plus the allowedTools list for restricted mode.
+ * plus the allowedTools list.
  *
  * @example
  * ```typescript
- * const registry = await waitForTools(client, { required: RESTRICTED_MODE_REQUIRED_METHODS });
+ * const registry = await waitForTools(client, { required: ["feedback_form"] });
  * const { toolDefs, allowedTools, execute } = toClaudeMcpTools(registry, client);
  *
  * // Create MCP tools for Claude SDK

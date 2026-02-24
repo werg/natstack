@@ -243,38 +243,10 @@ export const AUTONOMY_NOTCHES = [
 ] as const;
 
 /**
- * Project location options for session settings
- */
-export const PROJECT_LOCATION_OPTIONS = [
-  { value: "external", label: "External Filesystem", description: "Access files on your local machine" },
-  { value: "browser", label: "Browser Storage", description: "Sandboxed browser storage (restricted mode)" },
-] as const;
-
-/**
  * Session-level parameters for chat-launcher.
  * These configure the channel/session, not individual agents.
  */
 export const SESSION_PARAMETERS: FieldDefinition[] = [
-  {
-    key: "projectLocation",
-    label: "Project Location",
-    description: "Where the project files are stored",
-    type: "segmented",
-    default: "external",
-    options: [...PROJECT_LOCATION_OPTIONS],
-    group: "Session",
-    order: 0,
-  },
-  {
-    key: "workingDirectory",
-    label: "Working Directory",
-    description: "Path to the project directory",
-    type: "string",
-    placeholder: "/path/to/project",
-    visibleWhen: { field: "projectLocation", operator: "eq", value: "external" },
-    group: "Session",
-    order: 1,
-  },
   {
     key: "defaultAutonomy",
     label: "Default Autonomy",
@@ -287,7 +259,7 @@ export const SESSION_PARAMETERS: FieldDefinition[] = [
     notches: [...AUTONOMY_NOTCHES],
     warnings: [{ when: 2, message: "Allows unrestricted tool execution", severity: "danger" }],
     group: "Session",
-    order: 2,
+    order: 0,
   },
 ];
 
@@ -326,17 +298,6 @@ export const AI_ROLE_FALLBACKS: Array<{ value: string; label: string; descriptio
  * Claude Code agent parameters
  */
 export const CLAUDE_CODE_PARAMETERS: FieldDefinition[] = [
-  {
-    key: "workingDirectory",
-    label: "Working Directory",
-    description: "Required: Set in Session Settings",
-    type: "string",
-    channelLevel: true, // Value comes from channel config
-    required: true,     // This agent requires a working directory
-    placeholder: "/path/to/project",
-    group: "Environment",
-    order: 0,
-  },
   {
     key: "model",
     label: "Model",
@@ -388,17 +349,6 @@ export const CLAUDE_CODE_PARAMETERS: FieldDefinition[] = [
     warnings: [{ when: 2, message: "Allows unrestricted tool execution", severity: "danger" }],
     group: "Permissions",
     order: 4,
-  },
-  {
-    key: "restrictedMode",
-    label: "Restricted Mode",
-    description: "Determined by Session Settings (browser storage = restricted)",
-    type: "boolean",
-    channelLevel: true, // Value comes from channel config
-    required: false,    // Optional - has sensible default
-    default: false,
-    group: "Environment",
-    order: 5,
   },
 ];
 
@@ -492,17 +442,6 @@ export const AI_RESPONDER_PARAMETERS: FieldDefinition[] = [
  */
 export const CODEX_PARAMETERS: FieldDefinition[] = [
   {
-    key: "workingDirectory",
-    label: "Working Directory",
-    description: "Required: Set in Session Settings",
-    type: "string",
-    channelLevel: true, // Value comes from channel config
-    required: true,     // This agent requires a working directory
-    placeholder: "/path/to/project",
-    group: "Environment",
-    order: 0,
-  },
-  {
     key: "model",
     label: "Model",
     description: "OpenAI Codex model for code generation",
@@ -561,17 +500,6 @@ export const CODEX_PARAMETERS: FieldDefinition[] = [
     default: true,
     group: "Permissions",
     order: 4,
-  },
-  {
-    key: "restrictedMode",
-    label: "Restricted Mode",
-    description: "Determined by Session Settings (browser storage = restricted)",
-    type: "boolean",
-    channelLevel: true, // Value comes from channel config
-    required: false,    // Optional - has sensible default
-    default: false,
-    group: "Environment",
-    order: 5,
   },
 ];
 

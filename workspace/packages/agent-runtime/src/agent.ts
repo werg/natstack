@@ -141,6 +141,11 @@ export interface AgentContext<M extends AgenticParticipantMetadata = AgenticPart
    * Use this when creating SubagentManager.
    */
   readonly pubsubToken: string;
+  /**
+   * Absolute path to the per-context folder on the server filesystem.
+   * Use as the working directory (cwd) for file operations and subprocesses.
+   */
+  readonly contextFolderPath: string;
 }
 
 /**
@@ -179,6 +184,8 @@ export interface AgentInitInfo {
   handle: string;
   /** Agent configuration passed at spawn */
   config: Record<string, unknown>;
+  /** Absolute path to the per-context folder on the server filesystem */
+  contextFolderPath: string;
 }
 
 /**

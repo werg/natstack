@@ -15,6 +15,7 @@ import type { AgentHost } from "./agentHost.js";
 import { AgentSpawnError } from "./agentHost.js";
 import type { AgentManifest } from "@natstack/types";
 import type { AgentBuildError } from "@natstack/types";
+import type { ContextFolderManager } from "./contextFolderManager.js";
 
 const log = createDevLogger("PubSubServer");
 
@@ -36,8 +37,6 @@ export interface TokenValidator {
  * Set when the channel is created, readable by all participants.
  */
 export interface ChannelConfig {
-  workingDirectory?: string;
-  restrictedMode?: boolean;
   title?: string;
 }
 
@@ -1170,11 +1169,12 @@ export class PubSubServer {
     let channelConfig: ChannelConfig | undefined;
 
     if (!existingChannel) {
-      // First connection creates the channel
-      // Always create in database (even without contextId) to enable channel config updates
-      // Use empty string for contextId if not provided (channel is "global")
-      const effectiveContextId = contextIdParam || "";
-      this.messageStore.createChannel(channel, effectiveContextId, clientId, channelConfigFromClient);
+      // Every channel must have a contextId
+      if (!contextIdParam) {
+        ws.close(4003, "contextId required");
+        return;
+      }
+      this.messageStore.createChannel(channel, contextIdParam, clientId, channelConfigFromClient);
       // Re-fetch to get actual contextId (in case another client won the race)
       const created = this.messageStore.getChannel(channel);
       channelContextId = created?.contextId;
@@ -1775,6 +1775,42 @@ export class PubSubServer {
     const handle = msg.handle ?? msg.agentId;
     const config = msg.config ?? {};
 
+    // Look up channel contextId and resolve context folder path
+    const channelInfo = this.messageStore.getChannel(client.channel);
+    if (!channelInfo?.contextId) {
+      this.send(client.ws, {
+        kind: "invite-agent-response",
+        ref,
+        success: false,
+        error: "Channel has no contextId — cannot invite agent",
+      });
+      return;
+    }
+
+    if (!this.contextFolderManager) {
+      this.send(client.ws, {
+        kind: "invite-agent-response",
+        ref,
+        success: false,
+        error: "ContextFolderManager not initialized",
+      });
+      return;
+    }
+
+    let contextFolderPath: string;
+    try {
+      contextFolderPath = await this.contextFolderManager.ensureContextFolder(channelInfo.contextId);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.send(client.ws, {
+        kind: "invite-agent-response",
+        ref,
+        success: false,
+        error: `Failed to resolve context folder: ${errorMsg}`,
+      });
+      return;
+    }
+
     log.verbose(`[invite-agent] Spawning agent ${msg.agentId} with handle=${handle} on channel=${client.channel}`);
 
     try {
@@ -1782,6 +1818,7 @@ export class PubSubServer {
         channel: client.channel,
         handle,
         config,
+        contextFolderPath,
       });
 
       log.verbose(`[invite-agent] Agent spawned successfully: instanceId=${instance.id}`);
@@ -1791,7 +1828,8 @@ export class PubSubServer {
         channel: client.channel,
         handle,
         config,
-      });
+        contextId: channelInfo.contextId,
+      } satisfies import("./agentHost.js").StoredSpawnConfig);
       this.messageStore.registerChannelAgent(
         client.channel,
         msg.agentId,
@@ -2235,6 +2273,14 @@ export class PubSubServer {
   // ===========================================================================
 
   private agentHost: AgentHost | null = null;
+  private contextFolderManager: ContextFolderManager | null = null;
+
+  /**
+   * Set the ContextFolderManager for resolving context folder paths.
+   */
+  setContextFolderManager(manager: ContextFolderManager): void {
+    this.contextFolderManager = manager;
+  }
 
   /**
    * Set the AgentHost reference for agent lifecycle management.

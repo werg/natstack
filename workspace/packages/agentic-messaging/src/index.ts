@@ -84,8 +84,8 @@ export {
 } from "./missed-context.js";
 
 // Tool approval utilities
-export { requestToolApproval, needsApprovalForTool, isReadOnlyTool, READ_ONLY_TOOLS, APPROVAL_LEVELS } from "./tool-approval.js";
-export type { ApprovalOptions, ApprovalLevel } from "./tool-approval.js";
+export { needsApprovalForTool, isReadOnlyTool, APPROVAL_LEVELS } from "./tool-approval.js";
+export type { ApprovalLevel } from "./tool-approval.js";
 
 // Tool schemas for pubsub RPC tools
 export * from "./tool-schemas.js";
@@ -117,7 +117,6 @@ export {
 // Worker base utilities (shared across claude-code-responder, codex-responder, and other workers)
 export {
   showPermissionPrompt,
-  validateRestrictedMode,
   createApprovalSchema,
   type PermissionPromptOptions,
   type CreateApprovalSchemaParams,

@@ -8,9 +8,6 @@
 import type { AgenticClient } from "./types.js";
 import type { ChatParticipantMetadata } from "./responder-utils.js";
 import {
-  validateRequiredMethods,
-  RESTRICTED_MODE_REQUIRED_METHODS,
-  CANONICAL_PUBSUB_TOOL_NAMES,
   hasRichPreview,
 } from "./tool-schemas.js";
 import { normalizeToolName, getCanonicalToolName } from "./tool-name-utils.js";
@@ -43,14 +40,10 @@ export interface CreateApprovalSchemaParams {
 /**
  * Create a unified approval schema for tool approval prompts.
  *
- * This schema is used by both:
- * - Unrestricted mode: Worker builds schema and calls feedback_form RPC
- * - Restricted mode: Panel middleware builds schema and creates ActiveFeedbackSchema
- *
- * The schema provides consistent UI regardless of where the approval check happens:
+ * The schema provides consistent UI for permission prompts:
  * - approvalHeader: Shows agent name, tool name, first-time grant status, floor level
  * - reason (optional): Shows why approval is needed
- * - toolPreview: Rich preview for supported tools (Monaco diffs, git previews)
+ * - toolPreview: Rich preview for supported tools (bash, plan mode)
  * - buttonGroup: Allow/Deny decision buttons with tool-specific labels
  *
  * @param params - Parameters for the approval schema
@@ -164,10 +157,7 @@ export interface PermissionPromptOptions {
 
 /**
  * Show a permission prompt using feedback_form with the unified approval schema.
- * This is the pattern for tool approval in unrestricted mode (worker-side).
- *
- * Uses the same approvalHeader + toolPreview + buttonGroup pattern as restricted mode,
- * ensuring consistent UI regardless of where the approval check happens.
+ * Used by agent workers to request tool approval from the user.
  *
  * @param client - Connected agentic client
  * @param panelId - ID of the panel participant to show the prompt
@@ -247,45 +237,5 @@ export async function showPermissionPrompt(
   }
 }
 
-// ============================================================================
-// Panel Utilities
-// ============================================================================
 
-// ============================================================================
-// Restricted Mode Utilities
-// ============================================================================
-
-/**
- * Validate required methods for restricted mode and send warning if missing.
- *
- * @param client - Connected agentic client
- * @param log - Optional logging function
- * @returns Validation result with warningSent flag
- */
-export async function validateRestrictedMode(
-  client: AgenticClient<ChatParticipantMetadata>,
-  log?: (message: string) => void
-): Promise<{ ok: boolean; missing: string[]; warningSent: boolean }> {
-  log?.("Restricted mode enabled - validating required methods...");
-
-  const methods = client.discoverMethodDefs();
-  const validation = validateRequiredMethods(methods, RESTRICTED_MODE_REQUIRED_METHODS);
-
-  if (!validation.ok) {
-    log?.(`Missing required methods: ${validation.missing.join(", ")}`);
-    await client.send(
-      `⚠️ **Restricted mode requires additional tools**\n\n` +
-      `Missing methods: \`${validation.missing.join("`, `")}\`\n\n` +
-      `Please ensure the chat panel provides these methods, or disable restricted mode.`
-    );
-    return { ...validation, warningSent: true };
-  }
-
-  const pubsubTools = validation.available.filter(
-    (m): m is typeof CANONICAL_PUBSUB_TOOL_NAMES[number] =>
-      (CANONICAL_PUBSUB_TOOL_NAMES as readonly string[]).includes(m)
-  );
-  log?.(`All required methods available: ${pubsubTools.join(", ")}`);
-  return { ...validation, warningSent: false };
-}
 

@@ -1,8 +1,7 @@
 /**
  * Session Settings Component
  *
- * Sets channel-level configuration (workingDirectory, restrictedMode via projectLocation)
- * and session defaults (defaultAutonomy).
+ * Sets session defaults (defaultAutonomy).
  */
 
 import { Card, Flex, Text } from "@radix-ui/themes";

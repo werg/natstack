@@ -15,15 +15,12 @@ export {
 export {
   buildPubsubToolRegistry,
   discoverPubsubTools,
-  discoverPubsubToolsForMode,
   waitForTools,
   createToolExecutor,
   type PubsubTool,
   type PubsubToolRegistry,
   type BuildRegistryOptions,
   type DiscoverPubsubToolsOptions,
-  type DiscoverPubsubToolsForModeOptions,
-  DEFAULT_UNRESTRICTED_PUBSUB_METHODS,
 } from "./pubsub-tool-registry.js";
 
 // Tracking hooks
@@ -49,7 +46,6 @@ export {
   type AiSdkToolDefinition,
   type ToAiSdkToolsOptions,
   type CodexToolDefinition,
-  type ToCodexMcpToolsOptions,
   type ClaudeMcpToolsResult,
   type ClaudeMcpToolDef,
   type ToClaudeMcpToolsOptions,

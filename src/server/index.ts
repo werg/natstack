@@ -210,10 +210,18 @@ async function main() {
 
   const buildSystem = await initBuildSystemV2(workspacePath, gitServer);
 
+  // Create ContextFolderManager before core services so agents get context folder paths
+  const { ContextFolderManager } = await import("../main/contextFolderManager.js");
+  const contextFolderManager = new ContextFolderManager({
+    workspacePath: workspacePath,
+    getWorkspaceTree: () => gitServer.getWorkspaceTree(),
+  });
+
   const handle = await startCoreServices({
     workspace,
     gitServer,
     getBuild: (unitPath) => buildSystem.getBuild(unitPath),
+    contextFolderManager,
   });
 
   // ===========================================================================
@@ -317,12 +325,7 @@ async function main() {
     });
 
     // Filesystem service — per-context sandboxed fs via RPC
-    const { ContextFolderManager } = await import("../main/contextFolderManager.js");
     const { FsService, handleFsCall } = await import("../main/fsService.js");
-    const contextFolderManager = new ContextFolderManager({
-      workspacePath: workspacePath,
-      getWorkspaceTree: () => handle.gitServer.getWorkspaceTree(),
-    });
     const fsService = new FsService(contextFolderManager);
     fsServiceRef = fsService;
     headlessPanelManager.setFsService(fsService);

@@ -70,18 +70,6 @@ export function ConfigSection({ config, agents, agentsLoading, expanded, onToggl
               </Flex>
             </Box>
 
-            {/* Location Info (read-only) */}
-            <Box>
-              <Text as="label" size="1" color="gray" mb="1" style={{ display: "block" }}>
-                Location
-              </Text>
-              <Text size="2">
-                {config.projectLocation === "managed"
-                  ? `Managed (${config.includedRepos?.length ?? 0} repos)`
-                  : config.workingDirectory ?? "Not set"}
-              </Text>
-            </Box>
-
             {/* Default Agent */}
             <Box>
               <AgentSelector

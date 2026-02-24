@@ -2,66 +2,46 @@
 
 ## Overview
 
-Your environment is an isolated per-context filesystem under `/workspace/`. Workflow:
+Your working directory is the context folder. Use native SDK tools (Bash, Read, Write, Edit, Glob, Grep) to develop panels. Workflow:
 
-1. **Discover** repos: `WorkspaceList({ category: "..." })`
-2. **Clone** needed repos: `WorkspaceClone({ repo_spec: "..." })`
-3. **Edit** code: `Read`, `Edit`, `Write`
-4. **Commit**: `GitAdd`, `GitCommit`
+1. **Explore** the workspace: `Bash`, `Glob`, `Read`
+2. **Edit** code: `Read`, `Edit`, `Write`
+3. **Commit**: `Bash` with git commands
 
 ---
 
 ## Step-by-Step
 
-### 1. Discover
+### 1. Explore
 
 ```
-WorkspaceList({ category: "all" })
+Bash({ command: "ls panels/" })
+Glob({ pattern: "panels/*/package.json" })
 ```
 
-Filter options: `skills`, `panels`, `workers`, `contexts`, `packages`, `all`
-
-### 2. Check Context
+### 2. Read Code
 
 ```
-ContextInfo()
+Read({ file_path: "panels/code-editor/index.tsx" })
+Grep({ pattern: "useState", path: "panels/code-editor" })
 ```
 
-See what's already mounted.
-
-### 3. Clone
-
-```
-WorkspaceClone({ repo_spec: "panels/code-editor" })
-```
-
-Options: `repo#branch`, `repo@tag`, custom mount_path.
-
-### 4. Explore
-
-```
-Tree({ path: "/workspace/panels/code-editor" })
-Read({ file_path: "/workspace/panels/code-editor/index.tsx" })
-Grep({ pattern: "useState", path: "/workspace/panels/code-editor" })
-```
-
-### 5. Edit
+### 3. Edit
 
 ```
 Edit({
-  file_path: "/workspace/panels/code-editor/index.tsx",
+  file_path: "panels/code-editor/index.tsx",
   old_string: "const [value, setValue] = useState('')",
   new_string: "const [value, setValue] = useState('initial')"
 })
 ```
 
-### 6. Commit
+### 4. Commit
 
 ```
-GitStatus({ path: "/workspace/panels/code-editor" })
-GitDiff({ path: "/workspace/panels/code-editor" })
-GitAdd({ path: "/workspace/panels/code-editor", files: ["index.tsx"] })
-GitCommit({ message: "Update initial value", path: "/workspace/panels/code-editor" })
+Bash({ command: "git status" })
+Bash({ command: "git diff" })
+Bash({ command: "git add panels/code-editor/index.tsx && git commit -m 'Update initial value'" })
 ```
 
 ---
@@ -70,22 +50,20 @@ GitCommit({ message: "Update initial value", path: "/workspace/panels/code-edito
 
 ### New Panel
 
-1. Clone existing panel as template
-2. Update package.json name
-3. Modify code
-4. Commit
+1. Read an existing panel as reference
+2. Write new panel files (package.json, index.tsx)
+3. Commit
 
 ### Bug Fix
 
-1. Clone affected panel
-2. Search for issue: `Grep({ pattern: "error", path: "..." })`
-3. Fix with `Edit`
-4. Commit: "Fix: description"
+1. Search for issue: `Grep({ pattern: "error", path: "panels/..." })`
+2. Fix with `Edit`
+3. Commit: "Fix: description"
 
 ### Check Types
 
 ```
-CheckTypes({ panel_path: "/workspace/panels/code-editor" })
+CheckTypes({ panel_path: "panels/code-editor" })
 ```
 
 ---

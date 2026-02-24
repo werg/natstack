@@ -1,7 +1,7 @@
 /**
  * Project Launcher Panel
  *
- * Configure and create new projects (managed or external).
+ * Configure and create new projects.
  * After configuration, navigates to project-panel with the project config.
  */
 
@@ -13,26 +13,21 @@ import { RocketIcon } from "@radix-ui/react-icons";
 import type { AgentManifest } from "@natstack/types";
 
 import { useProjectConfig } from "./hooks/useProjectConfig";
-import { LocationSettings } from "./components/LocationSettings";
-import { ExternalModeConfig } from "./components/ExternalModeConfig";
 import { ManagedModeConfig } from "./components/ManagedModeConfig";
 import { AgentSelector } from "@workspace/agentic-components";
 import { AutonomySettings } from "./components/AutonomySettings";
-import { validateProjectConfig, type ProjectPanelStateArgs } from "@workspace-panels/project-panel/types";
+import type { ProjectPanelStateArgs } from "@workspace-panels/project-panel/types";
 
 export default function ProjectLauncher() {
   const theme = usePanelTheme();
-  const workspaceRoot = process.env["NATSTACK_WORKSPACE"]?.trim();
 
   const {
     projectConfig,
-    setLocation,
-    setWorkingDirectory,
     setIncludedRepos,
     setDefaultAgent,
     setDefaultAutonomy,
     setName,
-  } = useProjectConfig({ workspaceRoot });
+  } = useProjectConfig();
 
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,22 +58,12 @@ export default function ProjectLauncher() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleCreateProject = useCallback(async () => {
-    // Validate config
-    const validationError = validateProjectConfig(projectConfig);
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
-
     setIsCreating(true);
     setError(null);
 
     try {
-      // For managed mode, generate a context ID
-      let contextId: string | undefined;
-      if (projectConfig.projectLocation === "managed") {
-        contextId = `ctx_${crypto.randomUUID()}`;
-      }
+      // Generate a context ID
+      const contextId = `ctx_${crypto.randomUUID()}`;
 
       // Navigate to project-panel with the config
       const stateArgs: ProjectPanelStateArgs = {
@@ -124,26 +109,11 @@ export default function ProjectLauncher() {
 
               <Separator size="4" />
 
-              {/* Location Mode */}
-              <LocationSettings
-                location={projectConfig.projectLocation}
-                onLocationChange={setLocation}
+              {/* Repos config */}
+              <ManagedModeConfig
+                includedRepos={projectConfig.includedRepos ?? []}
+                onIncludedReposChange={setIncludedRepos}
               />
-
-              <Separator size="4" />
-
-              {/* Mode-specific config */}
-              {projectConfig.projectLocation === "external" ? (
-                <ExternalModeConfig
-                  workingDirectory={projectConfig.workingDirectory ?? ""}
-                  onWorkingDirectoryChange={setWorkingDirectory}
-                />
-              ) : (
-                <ManagedModeConfig
-                  includedRepos={projectConfig.includedRepos ?? []}
-                  onIncludedReposChange={setIncludedRepos}
-                />
-              )}
 
               <Separator size="4" />
 

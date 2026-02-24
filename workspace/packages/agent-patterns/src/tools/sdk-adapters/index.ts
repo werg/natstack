@@ -3,7 +3,7 @@
  */
 
 export { toAiSdkTools, type AiSdkToolDefinition, type ToAiSdkToolsOptions } from "./ai-sdk.js";
-export { toCodexMcpTools, type CodexToolDefinition, type ToCodexMcpToolsOptions } from "./codex.js";
+export { toCodexMcpTools, type CodexToolDefinition } from "./codex.js";
 export {
   toClaudeMcpTools,
   type ClaudeMcpToolsResult,

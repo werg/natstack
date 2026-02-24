@@ -19,28 +19,6 @@
  * Used to provide familiar tool names to the LLM while using pubsub RPC underneath.
  */
 export const CANONICAL_TOOL_MAPPINGS: Record<string, string> = {
-  // File operations
-  file_read: "Read",
-  file_write: "Write",
-  file_edit: "Edit",
-  rm: "Remove",
-  // Search tools
-  glob: "Glob",
-  grep: "Grep",
-  // Directory tools
-  tree: "Tree",
-  list_directory: "ListDirectory",
-  // Git tools - map to Bash-like names for LLM familiarity
-  git_status: "GitStatus",
-  git_diff: "GitDiff",
-  git_log: "GitLog",
-  git_add: "GitAdd",
-  git_commit: "GitCommit",
-  git_checkout: "GitCheckout",
-  // Workspace tools
-  workspace_list: "WorkspaceList",
-  workspace_clone: "WorkspaceClone",
-  context_info: "ContextInfo",
   // Plan mode
   enter_plan_mode: "EnterPlanMode",
   exit_plan_mode: "ExitPlanMode",

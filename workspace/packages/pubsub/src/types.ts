@@ -12,8 +12,6 @@ import type { AgentManifest } from "@natstack/types";
  * as a separate top-level field in the ready message. Access it via client.contextId.
  */
 export interface ChannelConfig {
-  workingDirectory?: string;
-  restrictedMode?: boolean;
   title?: string;
 }
 

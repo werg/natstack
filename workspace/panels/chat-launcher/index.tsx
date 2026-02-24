@@ -19,7 +19,6 @@ import { Theme } from "@radix-ui/themes";
 import {
   useAgentSelection,
   DEFAULT_SESSION_CONFIG,
-  toChannelConfig,
   type SessionConfig,
 } from "./hooks/useAgentSelection";
 import { AgentSetupPhase } from "./components/AgentSetupPhase";
@@ -51,11 +50,10 @@ export default function ChatLauncher() {
   const [isStarting, setIsStarting] = useState(false);
   const [globalSettingsLoaded, setGlobalSettingsLoaded] = useState(false);
 
-  // Session config - includes channel config (workingDirectory, restrictedMode) and session defaults
+  // Session config - includes session defaults
   // Initial values are from DEFAULT_SESSION_CONFIG, then overwritten by global settings
   const [sessionConfig, setSessionConfig] = useState<SessionConfig>(() => ({
     ...DEFAULT_SESSION_CONFIG,
-    workingDirectory: workspaceRoot ?? "",
   }));
 
   // Load global settings and apply to session config (only on first mount)
@@ -67,7 +65,6 @@ export default function ChatLauncher() {
         const global = await rpc.call<GlobalAgentSettings>("main", "agentSettings.getGlobalSettings");
         setSessionConfig((prev) => ({
           ...prev,
-          projectLocation: global.defaultProjectLocation,
           defaultAutonomy: global.defaultAutonomy,
         }));
       } catch (err) {
@@ -147,9 +144,6 @@ export default function ChatLauncher() {
         contextId = crypto.randomUUID();
       }
 
-      // Derive channel config from session config (note: contextId is NOT part of channelConfig)
-      const channelConfig = toChannelConfig(sessionConfig);
-
       // Connect to pubsub to invite agents
       setStatus("Connecting to channel...");
       client = await connect({
@@ -157,7 +151,6 @@ export default function ChatLauncher() {
         token: pubsubConfig.token,
         channel: targetChannelId,
         contextId,
-        channelConfig,
         handle: `launcher-${id}`,
         name: "Chat Launcher",
         type: "panel",
@@ -174,9 +167,6 @@ export default function ChatLauncher() {
         client.inviteAgent(agent.agent.id, {
           handle: agent.agent.proposedHandle ?? agent.agent.id,
           config: {
-            // Channel config values passed directly to avoid timing issues
-            workingDirectory: channelConfig.workingDirectory,
-            restrictedMode: channelConfig.restrictedMode,
             // contextId tells the agent which channel context it belongs to
             contextId,
             ...config,
@@ -221,7 +211,6 @@ export default function ChatLauncher() {
           contextId,
           stateArgs: {
             channelName: targetChannelId,
-            channelConfig,
             contextId,
             pendingAgents: selectedAgents.map((a) => ({
               agentId: a.agent.id,
@@ -243,7 +232,7 @@ export default function ChatLauncher() {
         }
       }
     }
-  }, [agentsWithRequirements, buildSpawnConfig, channelId, isChannelMode, sessionConfig]);
+  }, [agentsWithRequirements, buildSpawnConfig, channelId, isChannelMode]);
 
   return (
     <Theme appearance={theme}>

@@ -1,7 +1,6 @@
 import type { ChannelConfig } from "@workspace/agentic-messaging";
 import { Theme } from "@radix-ui/themes";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { ToolRoleConflictModal } from "./ToolRoleConflictModal";
 import { ChatLayout } from "./ChatLayout";
 import { ChatProvider } from "../context/ChatProvider";
 import { useAgenticChat } from "../hooks/useAgenticChat";
@@ -34,7 +33,7 @@ export interface AgenticChatProps {
 /**
  * High-level drop-in agentic chat component.
  *
- * Composes useAgenticChat() → ErrorBoundary → ToolRoleConflictModal → ChatProvider → ChatLayout.
+ * Composes useAgenticChat() → ErrorBoundary → ChatProvider → ChatLayout.
  *
  * For custom layouts, use useAgenticChat() + ChatProvider + individual components directly.
  */
@@ -50,7 +49,7 @@ export function AgenticChat({
   pendingAgents: pendingAgentInfos,
   eventMiddleware,
 }: AgenticChatProps) {
-  const { contextValue, inputContextValue, toolRole } = useAgenticChat({
+  const { contextValue, inputContextValue } = useAgenticChat({
     config,
     channelName,
     channelConfig,
@@ -65,17 +64,6 @@ export function AgenticChat({
 
   return (
     <ErrorBoundary>
-      {/* Tool role conflict modals — orchestration-level, outside ChatProvider */}
-      {toolRole.pendingConflicts.map((conflict) => (
-        <ToolRoleConflictModal
-          key={conflict.group}
-          conflict={conflict}
-          onTakeOver={() => void toolRole.requestTakeOver(conflict.group)}
-          onDefer={() => toolRole.acceptExisting(conflict.group)}
-          onDismiss={() => toolRole.dismissConflict(conflict.group)}
-          isNegotiating={toolRole.groupStates[conflict.group]?.negotiating ?? false}
-        />
-      ))}
       {/* Theme is applied here (above ChatProvider) rather than in ChatLayout
           so that ChatLayout does NOT read from context. This prevents
           keystroke-driven context updates from re-rendering ChatLayout and

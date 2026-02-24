@@ -22,6 +22,7 @@ import type { Workspace } from "./workspace/types.js";
 import type { GitServer } from "./gitServer.js";
 import type { AIHandler } from "./ai/aiHandler.js";
 import type { RpcServer } from "../server/rpcServer.js";
+import type { ContextFolderManager } from "./contextFolderManager.js";
 
 const log = createDevLogger("CoreServices");
 
@@ -40,11 +41,13 @@ export async function startCoreServices({
   workspace,
   gitServer,
   getBuild,
+  contextFolderManager,
 }: {
   workspace: Workspace;
   gitServer: GitServer;
   /** V2 build service — getBuild(unitPath) returns build result */
   getBuild: (unitPath: string) => Promise<unknown>;
+  contextFolderManager: ContextFolderManager;
 }): Promise<CoreServicesHandle> {
   const cleanups: (() => void | Promise<void>)[] = [];
 
@@ -84,10 +87,12 @@ export async function startCoreServices({
         getTokenManager().createToken(instanceId, "server"),
       revokeToken: (instanceId) => getTokenManager().revokeToken(instanceId),
       getBuild: getBuild as (unitPath: string) => Promise<{ bundlePath: string; dir: string; metadata: { kind: string; name: string } }>,
+      contextFolderManager,
     });
     await agentHost.initialize();
     cleanups.push(() => shutdownAgentHost());
     pubsubServer.setAgentHost(agentHost);
+    pubsubServer.setContextFolderManager(contextFolderManager);
     log.info("[AgentHost] Initialized");
 
     // Step 6: AI handler

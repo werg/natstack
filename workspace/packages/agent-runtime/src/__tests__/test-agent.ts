@@ -132,6 +132,7 @@ export function validateTypes() {
     log: {} as AgentContext["log"],
     pubsubUrl: "http://localhost:8787",
     pubsubToken: "test-token",
+    contextFolderPath: "/tmp/test-context",
   };
 
   // AgentState is an index signature type

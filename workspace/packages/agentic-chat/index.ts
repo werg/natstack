@@ -34,16 +34,9 @@ export type {
   UseChannelConnectionResult,
   ConnectOptions,
   ConnectionStatus,
-  ToolRolesConfig,
 } from "./hooks/useChannelConnection";
 
 export { useMethodHistory } from "./hooks/useMethodHistory";
-export { useToolRole } from "./hooks/useToolRole";
-export type {
-  UseToolRoleResult,
-  ToolGroupState,
-  PendingConflict,
-} from "./hooks/useToolRole";
 
 export { dispatchAgenticEvent } from "./hooks/useAgentEvents";
 export type {
@@ -85,7 +78,6 @@ export { ImageGallery } from "./components/ImageGallery";
 export { ImageInput, getAttachmentInputsFromPendingImages } from "./components/ImageInput";
 export { ParticipantBadgeMenu } from "./components/ParticipantBadgeMenu";
 export { ToolPermissionsDropdown } from "./components/ToolPermissionsDropdown";
-export { ToolRoleConflictModal } from "./components/ToolRoleConflictModal";
 export { AgentDebugConsole } from "./components/AgentDebugConsole";
 export { AgentDisconnectedMessage } from "./components/AgentDisconnectedMessage";
 export { DirtyRepoWarning } from "./components/DirtyRepoWarning";

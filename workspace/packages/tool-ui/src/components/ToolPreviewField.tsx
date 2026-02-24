@@ -2,62 +2,22 @@
  * ToolPreviewField Component
  *
  * Renders a rich preview for tool arguments based on tool name.
- * Used by FeedbackFormRenderer for both restricted and unrestricted mode approval prompts.
+ * Used by FeedbackFormRenderer for approval prompts.
  *
- * Provides Monaco diffs, styled git previews, etc. based on the tool type.
+ * Provides styled previews for bash commands, plan mode, etc.
  * Falls back to JSON display for unknown tools.
- *
- * Note: Monaco-dependent previews (FileEditPreview, FileWritePreview) are lazy-loaded
- * to avoid bundling Monaco (~27MB) in consumers that don't use file edit/write tools.
  */
 
-import { lazy, Suspense, type ReactNode } from "react";
-import { Box, Text, Spinner } from "@radix-ui/themes";
+import { type ReactNode } from "react";
+import { Box, Text } from "@radix-ui/themes";
 import {
-  RmPreview,
   BashPreview,
-  GitCommitPreview,
-  GitCheckoutPreview,
-  GitAddPreview,
   EnterPlanModePreview,
   ExitPlanModePreview,
-  isFileEditArgs,
-  isFileWriteArgs,
-  isRmArgs,
   isBashArgs,
-  isGitCommitArgs,
-  isGitCheckoutArgs,
-  isGitAddArgs,
   isEnterPlanModeArgs,
   isExitPlanModeArgs,
 } from "./tool-previews/core.js";
-
-// Lazy-load Monaco-dependent components to avoid bundling Monaco in all consumers
-const FileEditPreview = lazy(() =>
-  import("./tool-previews/monaco.js").then((m) => ({ default: m.FileEditPreview }))
-);
-const FileWritePreview = lazy(() =>
-  import("./tool-previews/monaco.js").then((m) => ({ default: m.FileWritePreview }))
-);
-
-/** Loading fallback for Monaco previews */
-function MonacoLoadingFallback() {
-  return (
-    <Box
-      style={{
-        background: "var(--gray-3)",
-        borderRadius: 6,
-        padding: 24,
-        display: "flex",
-        justifyContent: "center",
-        alignItems: "center",
-        minHeight: 80,
-      }}
-    >
-      <Spinner size="2" />
-    </Box>
-  );
-}
 
 export interface ToolPreviewFieldProps {
   toolName: string;
@@ -82,6 +42,11 @@ function formatArgs(args: unknown): string {
   }
 }
 
+/** Simple type guard helpers for preview components */
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 /**
  * Render the appropriate preview component for the tool arguments.
  * Returns the rich preview if available, otherwise falls back to JSON.
@@ -91,64 +56,11 @@ export function ToolPreviewField({
   args,
   theme = "dark",
 }: ToolPreviewFieldProps): ReactNode {
-  // file_edit - Monaco diff (lazy-loaded)
-  if (toolName === "file_edit" && isFileEditArgs(args)) {
-    return (
-      <Suspense fallback={<MonacoLoadingFallback />}>
-        <FileEditPreview
-          file_path={args.file_path}
-          old_string={args.old_string}
-          new_string={args.new_string}
-          replace_all={args.replace_all}
-          theme={theme}
-        />
-      </Suspense>
-    );
-  }
-
-  // file_write - Monaco code view (lazy-loaded)
-  if (toolName === "file_write" && isFileWriteArgs(args)) {
-    return (
-      <Suspense fallback={<MonacoLoadingFallback />}>
-        <FileWritePreview
-          file_path={args.file_path}
-          content={args.content}
-          theme={theme}
-        />
-      </Suspense>
-    );
-  }
-
-  // rm - Danger warning card
-  if (toolName === "rm" && isRmArgs(args)) {
-    return <RmPreview path={args.path} recursive={args.recursive} />;
-  }
+  const a = isRecord(args) ? args : undefined;
 
   // bash - Pretty command display
   if (toolName === "bash" && isBashArgs(args)) {
-    return <BashPreview command={args.command} description={args.description} />;
-  }
-
-  // git_commit - Styled commit message
-  if (toolName === "git_commit" && isGitCommitArgs(args)) {
-    return <GitCommitPreview message={args.message} path={args.path} />;
-  }
-
-  // git_checkout - Branch/file operation display
-  if (toolName === "git_checkout" && isGitCheckoutArgs(args)) {
-    return (
-      <GitCheckoutPreview
-        branch={args.branch}
-        file={args.file}
-        create={args.create}
-        path={args.path}
-      />
-    );
-  }
-
-  // git_add - File staging display
-  if (toolName === "git_add" && isGitAddArgs(args)) {
-    return <GitAddPreview files={args.files} path={args.path} />;
+    return <BashPreview command={(args as { command: string }).command} description={(args as { description?: string }).description} />;
   }
 
   // enter_plan_mode - Plan mode entry request
@@ -170,7 +82,8 @@ export function ToolPreviewField({
     const plan = typeof extendedArgs["plan"] === "string"
       ? extendedArgs["plan"]
       : undefined;
-    return <ExitPlanModePreview plan={plan} allowedPrompts={args.allowedPrompts} planFilePath={planFilePath} />;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return <ExitPlanModePreview plan={plan} allowedPrompts={extendedArgs["allowedPrompts"] as any} planFilePath={planFilePath} />;
   }
 
   // Default: JSON display

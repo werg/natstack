@@ -11,17 +11,6 @@
     ],
     "parameters": [
       {
-        "key": "workingDirectory",
-        "label": "Working Directory",
-        "description": "Required: Set in Session Settings",
-        "type": "string",
-        "channelLevel": true,
-        "required": true,
-        "placeholder": "/path/to/project",
-        "group": "Environment",
-        "order": 0
-      },
-      {
         "key": "model",
         "label": "Model",
         "description": "Claude model for code generation",
@@ -82,17 +71,6 @@
         "warnings": [{ "when": 2, "message": "Allows unrestricted tool execution", "severity": "danger" }],
         "group": "Permissions",
         "order": 4
-      },
-      {
-        "key": "restrictedMode",
-        "label": "Restricted Mode",
-        "description": "Determined by Session Settings (browser storage = restricted)",
-        "type": "boolean",
-        "channelLevel": true,
-        "required": false,
-        "default": false,
-        "group": "Environment",
-        "order": 5
       }
     ]
   },

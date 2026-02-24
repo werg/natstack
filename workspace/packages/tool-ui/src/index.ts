@@ -35,40 +35,15 @@ export { FeedbackContainer, type FeedbackContainerProps } from "./components/Fee
 export { ToolPreviewField, type ToolPreviewFieldProps } from "./components/ToolPreviewField";
 export { ErrorBoundary } from "./components/ErrorBoundary";
 
-// Tool Previews (Monaco-free core exports)
-// Note: FileEditPreview and FileWritePreview require Monaco and are available
-// from "@workspace/tool-ui/monaco" to avoid bundling Monaco in all consumers.
+// Tool Previews (core exports)
 export {
-  RmPreview,
-  GitCommitPreview,
-  GitCheckoutPreview,
-  GitAddPreview,
-  isFileEditArgs,
-  isFileWriteArgs,
-  isRmArgs,
-  isGitCommitArgs,
-  isGitCheckoutArgs,
-  isGitAddArgs,
+  BashPreview,
+  isBashArgs,
   hasRichPreview,
   RICH_PREVIEW_TOOLS,
-  type RmPreviewProps,
-  type GitCommitPreviewProps,
-  type GitCheckoutPreviewProps,
-  type GitAddPreviewProps,
-  type FileEditArgs,
-  type FileWriteArgs,
-  type RmArgs,
-  type GitCommitArgs,
-  type GitCheckoutArgs,
-  type GitAddArgs,
+  type BashArgs,
   type RichPreviewToolName,
 } from "./components/tool-previews/core.js";
-
-// Re-export types for Monaco previews (types don't cause bundling)
-export type {
-  FileEditPreviewProps,
-  FileWritePreviewProps,
-} from "./components/tool-previews/monaco.js";
 
 // ============================================================================
 // Hooks
@@ -80,7 +55,7 @@ export { useToolApproval, APPROVAL_LEVELS, type FeedbackFunctions } from "./hook
 // Middleware
 // ============================================================================
 export { wrapMethodsWithApproval } from "./middleware/approval-middleware";
-export type { ApprovalFunctions, ToolRoleFunctions, GetToolRoleFunctions } from "./middleware/approval-middleware";
+export type { ApprovalFunctions } from "./middleware/approval-middleware";
 
 // ============================================================================
 // Custom Feedback (TSX)

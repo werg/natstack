@@ -35,80 +35,6 @@ export function createRichTextChatSystemPrompt(
 }
 
 // ============================================================================
-// Restricted Mode System Prompt
-// ============================================================================
-
-/**
- * System prompt guidance for restricted environments where bash is unavailable.
- * This informs the LLM about available tools and their constraints.
- */
-export const RESTRICTED_MODE_ENVIRONMENT_GUIDE = `## Environment Constraints
-
-You are running in a restricted environment without shell access. You MUST use only the tools provided in this environment.
-Tool names are PascalCase and arguments are snake_case. Clone the \`skills/paneldev\` skill for detailed tool documentation.
-
-### Always Available Tools
-
-These tools are always available in restricted mode:
-
-| Tool | Purpose |
-|------|---------|
-| \`Read\` | Read file contents |
-| \`Write\` | Create/overwrite files |
-| \`Edit\` | String replacement editing |
-| \`Glob\` | Find files by pattern |
-| \`Grep\` | Search file contents |
-| \`Tree\` | Show directory structure |
-| \`ListDirectory\` | List directory contents |
-| \`GitStatus\` | Repository status |
-| \`GitDiff\` | Show file changes |
-| \`GitLog\` | Commit history |
-| \`WebSearch\` | Search the web |
-| \`WebFetch\` | Fetch web page content |
-
-Workspace tools: \`WorkspaceList\`, \`WorkspaceClone\`, \`ContextInfo\`.
-
-### Conditionally Available Tools
-
-These tools MAY be available depending on your environment. Check if they work before relying on them:
-
-| Tool | Purpose |
-|------|---------|
-| \`Remove\` | Delete files/directories |
-| \`GitAdd\` | Stage files |
-| \`GitCommit\` | Create commits |
-| \`GitCheckout\` | Switch branches/restore |
-
-If a conditionally available tool is unavailable, explain to the user what manual steps they can take instead.
-
-### Additional Tools
-
-Some environments also expose tools like \`CheckTypes\`, \`GetTypeInfo\`, \`GetCompletions\`, and \`Eval\`.
-
-### DISABLED Tools - Do NOT attempt to use these
-
-The following tools/commands are NOT available in this environment. Do not try to call them:
-
-**Shell/Bash commands (NO Bash tool available):**
-- \`npm\`, \`yarn\`, \`pnpm\`, \`bun\` - package managers
-- \`node\`, \`python\`, \`ruby\` - interpreters
-- \`make\`, \`cargo\`, \`go build\` - build tools
-- \`pytest\`, \`jest\`, \`vitest\` - test runners
-- \`eslint\`, \`prettier\`, \`tsc\` - linters/formatters
-- \`docker\`, \`kubectl\` - container tools
-- \`ssh\`, \`scp\` - remote access
-- Any other shell command
-
-### Workflow Adaptations
-
-1. **For git operations:** Use \`GitStatus\`, \`GitDiff\`, \`GitLog\` (always available) and \`GitAdd\`, \`GitCommit\`, \`GitCheckout\` (if available)
-2. **For file search:** Use \`Glob\` and \`Grep\` tools
-3. **For file editing:** Use \`Edit\` for replacements
-4. **For web lookups:** Use \`WebSearch\` and \`WebFetch\` for documentation, APIs, etc.
-5. **For build/test commands:** Inform the user they must run these manually
-6. **For installations:** Inform the user to install dependencies manually`;
-
-// ============================================================================
 // Workspace & Context Guide
 // ============================================================================
 
@@ -126,15 +52,3 @@ You have an isolated filesystem under /workspace/.
 
 The \`skills/paneldev\` skill (included by default) has panel development docs.`;
 
-/**
- * Create a system prompt for restricted mode (no bash access).
- * Combines the rich text guide with restricted environment guidance.
- *
- * @param persona - Optional persona description
- * @returns Complete system prompt for restricted mode
- */
-export function createRestrictedModeSystemPrompt(
-  persona: string = DEFAULT_CHAT_ASSISTANT_PERSONA
-): string {
-  return `${persona}\n\n${COMPONENT_ENHANCED_RICH_TEXT_GUIDE}\n\n${RESTRICTED_MODE_ENVIRONMENT_GUIDE}\n\n${WORKSPACE_CONTEXT_GUIDE}`;
-}

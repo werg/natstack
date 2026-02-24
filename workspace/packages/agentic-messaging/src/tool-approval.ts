@@ -1,13 +1,11 @@
 /**
  * Tool Approval Utilities
  *
- * Functions for requesting user approval before executing tools
- * in an agentic workflow using feedback_form.
+ * Functions for determining whether tools need user approval
+ * based on approval level and tool name patterns.
  */
 
-import type { AgenticClient } from "./types.js";
 import {
-  CANONICAL_TOOL_MAPPINGS,
   REVERSE_CANONICAL_MAPPINGS,
   extractMethodName,
   normalizeToolName,
@@ -33,112 +31,33 @@ export const APPROVAL_LEVELS = {
 export type ApprovalLevel = typeof APPROVAL_LEVELS[keyof typeof APPROVAL_LEVELS];
 
 /**
- * Base read-only tools (snake_case) - single source of truth.
- * These tools don't modify state and can be auto-approved at the "Auto-Safe" level.
+ * Known read-only tools by exact name.
+ * Covers native SDK tool names that don't match prefix patterns.
  */
-const READ_ONLY_BASE_TOOLS = [
-  "file_read", "glob", "grep", "tree", "list_directory",
-  "git_status", "git_diff", "git_log",
-  "workspace_list", "context_info",
-] as const;
-
-/**
- * Read-only tools set including both naming conventions.
- * Derived from READ_ONLY_BASE_TOOLS using canonical mappings.
- */
-export const READ_ONLY_TOOLS = new Set<string>([
-  ...READ_ONLY_BASE_TOOLS,
-  ...READ_ONLY_BASE_TOOLS.map(name => CANONICAL_TOOL_MAPPINGS[name]).filter((v): v is string => v !== undefined),
+const KNOWN_READ_ONLY_TOOLS = new Set([
+  // Native SDK tools (PascalCase)
+  "Glob",
+  "Grep",
+  "View",
+  // Pubsub tools (snake_case)
+  "check_types",
 ]);
-
-export interface ApprovalOptions {
-  title?: string;
-  severity?: "info" | "warning" | "danger";
-  showArgs?: boolean;
-  /** Abort signal to cancel the approval request */
-  signal?: AbortSignal;
-}
-
-/**
- * Show tool approval UI via feedback_form and wait for user decision.
- * Returns false if cancelled or aborted.
- */
-export async function requestToolApproval(
-  client: AgenticClient,
-  panelId: string,
-  toolName: string,
-  args: Record<string, unknown>,
-  options: ApprovalOptions = {}
-): Promise<boolean> {
-  // Extract display name from prefixed tool name (e.g., "pubsub_abc123_settings" -> "settings")
-  const displayName = extractMethodName(toolName);
-
-  const fields: Array<Record<string, unknown>> = [
-    {
-      key: "tool",
-      label: "Tool",
-      type: "readonly",
-      default: displayName,
-    },
-  ];
-
-  if (options.showArgs !== false) {
-    fields.push({
-      key: "args",
-      label: "Arguments",
-      type: "code",
-      language: "json",
-      maxHeight: 150,
-      default: JSON.stringify(args, null, 2),
-    });
-  }
-
-  fields.push({
-    key: "decision",
-    label: "Decision",
-    type: "buttonGroup",
-    submitOnSelect: true,
-    buttons: [
-      { value: "deny", label: "Deny", color: "gray" },
-      { value: "allow", label: "Allow", color: "green" },
-    ],
-  });
-
-  const handle = client.callMethod(panelId, "feedback_form", {
-    title: options.title ?? `Allow ${displayName}?`,
-    severity: options.severity ?? "warning",
-    hideSubmit: true,
-    fields,
-  }, { signal: options.signal });
-
-  try {
-    const result = await handle.result;
-    const content = result.content as { type?: string; value?: Record<string, unknown> } | undefined;
-    if (content?.type === "cancel") return false;
-    return content?.value?.["decision"] === "allow";
-  } catch (err) {
-    // If aborted or cancelled, return false (deny)
-    if (err instanceof Error && err.message === "cancelled") {
-      return false;
-    }
-    throw err;
-  }
-}
 
 /**
  * Check if a tool is read-only (safe for auto-approval at level 1).
- * Uses both the explicit READ_ONLY_TOOLS set and pattern matching.
+ * Uses an explicit set for known tools and prefix pattern matching.
  */
 export function isReadOnlyTool(methodName: string): boolean {
-  // Check explicit list first
-  if (READ_ONLY_TOOLS.has(methodName)) return true;
+  // Check explicit set first
+  if (KNOWN_READ_ONLY_TOOLS.has(methodName)) return true;
 
   // Try reverse lookup for canonical names
   const snakeName = REVERSE_CANONICAL_MAPPINGS[methodName];
-  if (snakeName && READ_ONLY_TOOLS.has(snakeName)) return true;
+  if (snakeName && KNOWN_READ_ONLY_TOOLS.has(snakeName)) return true;
 
-  // Fall back to pattern matching for additional tools
+  // Prefix pattern matching
   const readPatterns = [/^read/i, /^get/i, /^list/i, /^search/i, /^find/i, /^query/i, /^fetch/i];
+  if (snakeName && readPatterns.some((p) => p.test(snakeName))) return true;
   return readPatterns.some((p) => p.test(methodName));
 }
 

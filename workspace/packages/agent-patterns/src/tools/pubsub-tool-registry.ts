@@ -2,20 +2,14 @@
  * PubsubToolRegistry - Pure discovery layer for pubsub tools.
  *
  * Transforms discoverMethodDefs() output into normalized PubsubTool objects
- * with canonical names, wire names, and group associations.
+ * with canonical names and wire names.
  *
  * This is pure data - no approval logic, no execution, no action tracking.
  * SDK adapters compose these concerns on top.
  */
 
 import type { AgenticClient, DiscoveredMethod } from "@workspace/agentic-messaging";
-import {
-  getGroupsForTool,
-  validateRequiredMethods,
-  RESTRICTED_MODE_REQUIRED_METHODS,
-} from "@workspace/agentic-messaging";
 import { getCanonicalToolName } from "@workspace/agentic-messaging/utils";
-import type { ToolGroup } from "@workspace/agentic-messaging";
 
 /**
  * A normalized tool discovered via pubsub.
@@ -38,8 +32,6 @@ export interface PubsubTool {
   parameters: Record<string, unknown>;
   /** Whether this is a menu-only method (not an AI tool) */
   menu: boolean;
-  /** Tool groups this belongs to (for conflict resolution) */
-  groups: ToolGroup[];
 }
 
 /**
@@ -70,33 +62,12 @@ export interface BuildRegistryOptions {
   namePrefix?: string;
 }
 
-export const DEFAULT_UNRESTRICTED_PUBSUB_METHODS = [
-  "feedback_form",
-  "feedback_custom",
-  "eval",
-] as const;
-
 export interface DiscoverPubsubToolsOptions extends BuildRegistryOptions {
   /** Method names that must be available before building (optional) */
   required?: readonly string[];
   /** Limit registry to this allowlist of method names (optional) */
   allowlist?: readonly string[];
   /** Maximum time to wait for required tools (default: 5000ms) */
-  timeoutMs?: number;
-  /** Polling interval (default: 100ms) */
-  pollIntervalMs?: number;
-  /** Logger */
-  log?: (msg: string) => void;
-}
-
-export interface DiscoverPubsubToolsForModeOptions extends BuildRegistryOptions {
-  /** Mode used to select default required/allowlist policies */
-  mode: "restricted" | "unrestricted";
-  /** Override required method names (defaults to restricted policy) */
-  required?: readonly string[];
-  /** Override allowlist method names (defaults to unrestricted policy) */
-  allowlist?: readonly string[];
-  /** Maximum time to wait (default: 5000ms) */
   timeoutMs?: number;
   /** Polling interval (default: 100ms) */
   pollIntervalMs?: number;
@@ -153,7 +124,6 @@ export function buildPubsubToolRegistry(
       "_"
     );
     const canonicalName = getCanonicalToolName(method.name);
-    const groups = getGroupsForTool(method.name);
 
     const tool: PubsubTool = {
       providerId: method.providerId,
@@ -166,7 +136,6 @@ export function buildPubsubToolRegistry(
         : undefined,
       parameters: method.parameters as Record<string, unknown>,
       menu: method.menu ?? false,
-      groups,
     };
 
     tools.push(tool);
@@ -232,39 +201,6 @@ export async function discoverPubsubTools(
 }
 
 /**
- * Discover pubsub tools based on restricted/unrestricted mode defaults.
- *
- * Restricted mode defaults to RESTRICTED_MODE_REQUIRED_METHODS.
- * Unrestricted mode defaults to feedback_form/feedback_custom only.
- */
-export async function discoverPubsubToolsForMode(
-  client: AgenticClient,
-  options: DiscoverPubsubToolsForModeOptions
-): Promise<PubsubToolRegistry> {
-  const required =
-    options.required ??
-    (options.mode === "restricted" ? RESTRICTED_MODE_REQUIRED_METHODS : []);
-
-  const allowlist =
-    options.allowlist ??
-    (options.mode === "unrestricted"
-      ? DEFAULT_UNRESTRICTED_PUBSUB_METHODS
-      : []);
-
-  return discoverPubsubTools(client, {
-    includeSelf: options.includeSelf,
-    includeMenu: options.includeMenu,
-    namePrefix: options.namePrefix,
-    required,
-    allowlist,
-    timeoutMs: options.timeoutMs,
-    pollIntervalMs: options.pollIntervalMs,
-    log: options.log,
-    filter: options.filter,
-  });
-}
-
-/**
  * Wait for required tools to be advertised by panel participants.
  * Polls until all required methods are available in the roster.
  *
@@ -274,7 +210,7 @@ export async function discoverPubsubToolsForMode(
  * @example
  * ```typescript
  * const registry = await waitForTools(client, {
- *   required: RESTRICTED_MODE_REQUIRED_METHODS,
+ *   required: ["feedback_form"],
  *   timeoutMs: 5000,
  * });
  * ```
@@ -295,24 +231,29 @@ export async function waitForTools(
   const { required, timeoutMs = 5000, pollIntervalMs = 100, log } = options;
   const start = Date.now();
 
-  let validation = validateRequiredMethods(client.discoverMethodDefs(), required);
-  if (validation.ok) {
+  function getMissing(): string[] {
+    const available = new Set(client.discoverMethodDefs().map((m) => m.name));
+    return required.filter((name) => !available.has(name));
+  }
+
+  let missing = getMissing();
+  if (missing.length === 0) {
     return buildPubsubToolRegistry(client);
   }
 
-  log?.(`Waiting for tools: ${validation.missing.join(", ")}`);
+  log?.(`Waiting for tools: ${missing.join(", ")}`);
 
   while (Date.now() - start < timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-    validation = validateRequiredMethods(client.discoverMethodDefs(), required);
-    if (validation.ok) {
+    missing = getMissing();
+    if (missing.length === 0) {
       log?.("All required tools available");
       return buildPubsubToolRegistry(client);
     }
   }
 
   log?.(
-    `Tools still missing after ${timeoutMs}ms: ${validation.missing.join(", ")}`
+    `Tools still missing after ${timeoutMs}ms: ${missing.join(", ")}`
   );
 
   // Return registry with whatever is available
