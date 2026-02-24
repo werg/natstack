@@ -5,7 +5,7 @@ description: NatStack panel development docs - hooks, contracts, filesystem, git
 
 # Panel Development Skill
 
-Documentation for developing NatStack panels in restricted mode (OPFS sandbox).
+Documentation for developing NatStack panels in restricted mode (sandboxed context folder).
 
 ## Files
 

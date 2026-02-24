@@ -26,7 +26,7 @@ We believe that **file systems, files, and code execution** are the most robust 
 **Git** offers a powerful, distributed metaphor for managing state, history, and concurrency. NatStack uses git not just for version control, but as the fundamental synchronization mechanism for application state.
 
 ### Lightweight Sandboxing
-Full containerization (like Docker or heavy VMs) is often overkill for UI-focused agentic tasks. NatStack hits the "sweet spot" by using **sandboxed browser processes** backed by **Origin Private File System (OPFS)**. This provides security and isolation without the overhead of a full OS.
+Full containerization (like Docker or heavy VMs) is often overkill for UI-focused agentic tasks. NatStack hits the "sweet spot" by using **sandboxed browser processes** backed by **server-side per-context folders**. This provides security and isolation without the overhead of a full OS.
 
 ---
 

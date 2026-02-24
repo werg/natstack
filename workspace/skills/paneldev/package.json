@@ -2,5 +2,5 @@
   "name": "@workspace-skills/paneldev",
   "version": "0.1.0",
   "private": true,
-  "description": "Learn NatStack panel development in restricted mode (OPFS sandbox)"
+  "description": "Learn NatStack panel development in restricted mode (sandboxed context folder)"
 }

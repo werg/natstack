@@ -79,9 +79,9 @@ import {
 
 ## Context & Storage
 
-Panels have isolated OPFS storage based on context ID:
+Panels have isolated storage based on context ID:
 
-- **Safe**: `safe_{instanceId}` - OPFS sandbox
+- **Safe**: `ctx_{instanceId}` - server-side context folder
 - **Unsafe**: `unsafe_noctx_{instanceId}` - Node.js filesystem
 
 ## Workspace Packages

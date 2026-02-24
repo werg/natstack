@@ -196,7 +196,7 @@ export const WorkspaceListArgsSchema = z.object({
 export type WorkspaceListArgs = z.infer<typeof WorkspaceListArgsSchema>;
 
 /**
- * workspace_clone - Clone a repo into the current context's OPFS
+ * workspace_clone - Clone a repo into the current context's filesystem
  */
 export const WorkspaceCloneArgsSchema = z.object({
   repo_spec: z.string().describe("Repo spec like 'panels/editor', 'panels/editor#main', or 'panels/editor@v1.0.0'"),

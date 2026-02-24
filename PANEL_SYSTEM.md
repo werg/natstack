@@ -49,7 +49,7 @@ my-panel/
 | `type` | `"app"` \| `"worker"` | **Required** | Panel type |
 | `title` | string | **Required** | Display name |
 | `entry` | string | `index.tsx` | Entry point file |
-| `unsafe` | boolean | `false` | Enable Node.js APIs (bypasses OPFS sandbox) |
+| `unsafe` | boolean | `false` | Enable Node.js APIs (bypasses sandboxed filesystem) |
 | `repoArgs` | string[] | `[]` | Named repo slots for bootstrap |
 | `exposeModules` | string[] | `[]` | Extra modules to bundle |
 | `injectHostThemeVariables` | boolean | `true` | Inherit theme CSS variables |
@@ -83,7 +83,7 @@ import {
 
   // Services
   db,                    // SQLite database access
-  fs,                    // Filesystem (OPFS or Node.js)
+  fs,                    // Filesystem (RPC-backed or Node.js)
   fsReady,               // Promise that resolves when fs ready
 
   // Configuration
@@ -139,7 +139,7 @@ const editor = await createChildWithContract(editorContract, { name: "editor" })
 
 ### Context ID for Storage Sharing
 
-When multiple panels need to share the same OPFS/IndexedDB storage partition, pass the same `contextId` in options:
+When multiple panels need to share the same filesystem and storage partition, pass the same `contextId` in options:
 
 ```typescript
 // Generate or receive a shared context ID
@@ -244,9 +244,9 @@ editor.onEvent("saved", ({ path }) => console.log(path)); // Typed!
 
 ## Context & Storage
 
-Panels have isolated OPFS storage based on their context ID:
+Panels have isolated storage based on their context ID:
 
-- **Safe panels**: `safe_{instanceId}` — OPFS sandbox
+- **Safe panels**: `ctx_{instanceId}` — server-side context folder
 - **Unsafe panels**: `unsafe_noctx_{instanceId}` — Real Node.js filesystem
 
 ## Workspace Packages

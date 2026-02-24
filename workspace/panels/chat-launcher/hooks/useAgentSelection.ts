@@ -11,7 +11,7 @@ export interface SessionConfig {
   projectLocation: "external" | "browser";
   /** Working directory for external/native filesystem mode */
   workingDirectory: string;
-  /** Working directory for browser/OPFS mode (defaults to "/") */
+  /** Working directory for browser/panel mode (defaults to "/") */
   browserWorkingDirectory: string;
   defaultAutonomy: 0 | 1 | 2;
 }

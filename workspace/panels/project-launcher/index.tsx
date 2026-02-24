@@ -88,7 +88,7 @@ export default function ProjectLauncher() {
 
       const projectPanelUrl = buildNsLink("panels/project-panel", {
         action: "navigate",
-        // contextId in options sets storage partition (OPFS/IndexedDB sharing)
+        // contextId in options sets storage partition (filesystem and storage sharing)
         contextId,
         stateArgs: stateArgs as unknown as Record<string, unknown>,
       });

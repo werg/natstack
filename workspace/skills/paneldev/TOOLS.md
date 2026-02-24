@@ -258,7 +258,7 @@ Execute TypeScript/JavaScript code.
 - Safe serialization of return values
 
 **Available Modules:**
-- `fs` (OPFS shim in safe panels)
+- `fs` (RPC-backed fs in safe panels)
 - `react`, `react/jsx-runtime`
 - `@radix-ui/themes`, `@radix-ui/react-icons`
 - `isomorphic-git` (for advanced git operations)

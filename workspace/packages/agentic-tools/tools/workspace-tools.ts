@@ -140,7 +140,7 @@ function parseRepoSpec(spec: string): { repoPath: string; ref?: string } {
 }
 
 /**
- * workspace_clone - Clone a repo into the context's OPFS
+ * workspace_clone - Clone a repo into the context's filesystem
  */
 export async function workspaceClone(
   args: WorkspaceCloneArgs,

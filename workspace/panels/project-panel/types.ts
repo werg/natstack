@@ -19,7 +19,7 @@ export interface ProjectConfig {
   projectLocation: "managed" | "external";
   /** Working directory for external/native filesystem mode */
   workingDirectory?: string;
-  /** Working directory for managed/OPFS mode (defaults to "/") */
+  /** Working directory for managed/panel mode (defaults to "/") */
   browserWorkingDirectory?: string;
   /** Repos included in context template */
   includedRepos?: string[];
@@ -60,7 +60,7 @@ export interface ChildSessionInfo {
  */
 export const PROJECT_DEFAULTS = {
   defaultAutonomy: 2 as const, // Full auto
-  browserWorkingDirectory: "/" as const, // OPFS root
+  browserWorkingDirectory: "/" as const, // context root
 } satisfies Partial<ProjectConfig>;
 
 /**

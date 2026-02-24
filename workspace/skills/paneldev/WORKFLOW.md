@@ -2,7 +2,7 @@
 
 ## Overview
 
-Your environment is an isolated OPFS filesystem under `/workspace/`. Workflow:
+Your environment is an isolated per-context filesystem under `/workspace/`. Workflow:
 
 1. **Discover** repos: `WorkspaceList({ category: "..." })`
 2. **Clone** needed repos: `WorkspaceClone({ repo_spec: "..." })`

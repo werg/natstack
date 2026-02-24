@@ -72,7 +72,7 @@ export function usePanelId(): string {
  * - type: "auto" | "named" - auto = tree-derived, named = explicit
  * - identifier: tree path or random string
  *
- * Panels/workers with the same context share OPFS state.
+ * Panels/workers with the same context share filesystem and storage state.
  *
  * @example
  * ```tsx

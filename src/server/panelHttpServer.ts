@@ -18,7 +18,7 @@
  * The HTML is augmented with:
  * 1. Injected globals (replacing Electron's preload/contextBridge)
  * 2. A pre-compiled browser transport IIFE
- * 3. OPFS bootstrap script (for init page pre-warming)
+ * 3. Context bootstrap script (for init page pre-warming)
  * 4. Panel title + favicon
  */
 
@@ -32,7 +32,7 @@ import type { BuildResult } from "./buildV2/buildStore.js";
 const log = createDevLogger("PanelHttpServer");
 
 // ---------------------------------------------------------------------------
-// Pre-compiled browser transport + OPFS bootstrap
+// Pre-compiled browser transport + context bootstrap
 // ---------------------------------------------------------------------------
 
 function loadBrowserTransport(): string {
@@ -50,8 +50,8 @@ function loadOpfsBootstrap(): string {
   try {
     return fs.readFileSync(bootstrapPath, "utf-8");
   } catch {
-    log.info(`[PanelHttpServer] OPFS bootstrap not found at ${bootstrapPath}, using inline stub`);
-    return `console.warn("[NatStack] OPFS bootstrap not available — context templates will not be populated.");`;
+    log.info(`[PanelHttpServer] Context bootstrap not found at ${bootstrapPath}, using inline stub`);
+    return `console.warn("[NatStack] Context bootstrap not available.");`;
   }
 }
 
@@ -162,7 +162,7 @@ const ASSET_MIME_TYPES: Record<string, string> = {
  * Modern browsers (Chrome 73+, Firefox 84+) resolve *.localhost → 127.0.0.1
  * per the WHATWG URL Standard, giving each subdomain a distinct origin. This
  * means panels on different contexts get browser-enforced isolation of
- * localStorage, IndexedDB, OPFS, cookies, and service workers — matching
+ * localStorage, IndexedDB, cookies, and service workers — matching
  * Electron's persist:{contextId} partition behaviour.
  */
 export function contextIdToSubdomain(contextId: string): string {
@@ -293,7 +293,7 @@ export class PanelHttpServer {
    * This enables context pre-warming: the browser extension can open a
    * hidden tab to `{subdomain}.localhost/__init__?token={initToken}`
    * immediately when `panel:created` fires, before the build finishes.
-   * The init page runs the OPFS bootstrap so storage is warm when the
+   * The init page runs the context bootstrap so storage is warm when the
    * real panel tab opens.
    *
    * @returns The init token for authenticating the pre-warming request
@@ -719,7 +719,7 @@ export class PanelHttpServer {
   /**
    * GET /__init__
    *
-   * Serves a lightweight page that runs the OPFS bootstrap and signals
+   * Serves a lightweight page that runs the context bootstrap and signals
    * completion. Works for both stored and pending panels.
    *
    * When authenticated via token (not session cookie), creates a session
@@ -758,7 +758,7 @@ export class PanelHttpServer {
   }
 
   /**
-   * Build the init page HTML with the OPFS bootstrap.
+   * Build the init page HTML with the context bootstrap.
    */
   private buildInitPageHtml(config: PanelConfig): string {
     return `<!DOCTYPE html>
@@ -930,7 +930,7 @@ ${this.buildOpfsBootstrapScript(config, true)}
       html = html.replace("</head>", `<link rel="icon" type="image/svg+xml" href="/favicon.svg">\n</head>`);
     }
 
-    // ── Globals + transport + OPFS bootstrap injection ──
+    // ── Globals + transport + context bootstrap injection ──
     const injection = `<script>\n${globalsScript}\n${transportScript}\n${bootstrapScript}\n</script>`;
     const firstScriptIdx = html.indexOf("<script");
     if (firstScriptIdx !== -1) {
@@ -1010,7 +1010,7 @@ ${this.buildOpfsBootstrapScript(config, true)}
   }
 
   /**
-   * Generate the OPFS bootstrap injection.
+   * Generate the context bootstrap injection.
    *
    * Injects minimal signaling config and the bootstrap script.
    * Context filesystem is now server-side; this only handles init-page signaling.

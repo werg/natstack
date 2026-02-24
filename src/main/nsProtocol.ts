@@ -34,7 +34,7 @@ export interface ParsedNsUrl {
   /**
    * Explicit context ID for storage partition sharing.
    * If provided, the panel will use this context ID instead of generating a new one.
-   * This enables multiple panels to share the same OPFS/IndexedDB partition.
+   * This enables multiple panels to share the same filesystem and storage partition.
    */
   contextId?: string;
   repoArgs?: Record<string, RepoArgSpec>;

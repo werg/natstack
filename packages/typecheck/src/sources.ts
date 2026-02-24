@@ -4,11 +4,11 @@
  * This module provides a unified interface for reading source files from
  * different backends:
  * - Disk: For external development (main process)
- * - OPFS: For in-app development (panel/worker context)
+ * - Panel: For in-app development (panel/worker context)
  * - Virtual: For testing or synthetic sources
  */
 
-/** Minimal filesystem interface for OPFS-based file sources. */
+/** Minimal filesystem interface for panel-based file sources. */
 export interface ReadableFs {
   readFile(path: string, encoding?: BufferEncoding): Promise<string | Uint8Array>;
   readdir(path: string): Promise<string[]>;

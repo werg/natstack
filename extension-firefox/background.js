@@ -9,7 +9,7 @@
  *
  * Context pre-warming: When a panel is created (but not yet built), the
  * extension opens a hidden tab to the panel's /__init__ page. This pre-warms
- * the OPFS storage by running the context bootstrap before the real panel
+ * the context by running the context bootstrap before the real panel
  * tab is opened, so the panel loads with data already available.
  */
 

@@ -15,9 +15,9 @@ export function validateBrowserEnvironment(): void {
     missing.push('crypto.subtle');
   }
 
-  // OPFS fs is critical for file operations in the browser
+  // fs is critical for file operations in the browser
   if (!(globalThis as any).fs) {
-    missing.push('globalThis.fs (OPFS)');
+    missing.push('globalThis.fs');
   }
 
   if (missing.length) {
@@ -27,7 +27,7 @@ export function validateBrowserEnvironment(): void {
       'This library requires:\n' +
       '- WebSocket API\n' +
       '- Web Crypto API\n' +
-      '- OPFS FileSystem API (injected as globalThis.fs)\n'
+      '- FileSystem API (injected as globalThis.fs)\n'
     );
   }
 }

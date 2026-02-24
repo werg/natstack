@@ -76,7 +76,7 @@ function Parent() {
 
 ### Shared Storage
 
-Multiple panels sharing OPFS storage:
+Multiple panels sharing filesystem and storage:
 
 ```tsx
 const contextId = crypto.randomUUID();
@@ -89,7 +89,7 @@ Pass `contextId` in both options (for storage) and stateArgs (for app logic).
 
 ---
 
-## File System (OPFS)
+## File System
 
 ```tsx
 import { promises as fs } from "fs";

@@ -8,7 +8,7 @@
  * access.
  *
  * Panels sharing a contextId are assigned the same subdomain, giving them a
- * shared browser origin and therefore shared localStorage, IndexedDB, OPFS,
+ * shared browser origin and therefore shared localStorage, IndexedDB,
  * cookies, and service workers.
  *
  * Panel types use the canonical PanelType ("app" | "browser" | "shell") from
@@ -144,7 +144,7 @@ export class HeadlessPanelManager {
    * Get or create a subdomain for a context ID.
    *
    * Panels sharing the same contextId MUST share the same subdomain so they
-   * get the same browser origin (= shared localStorage, IndexedDB, OPFS,
+   * get the same browser origin (= shared localStorage, IndexedDB,
    * cookies, service workers). This mirrors Electron's persist:{contextId}
    * partition sharing.
    */
@@ -257,7 +257,7 @@ export class HeadlessPanelManager {
 
       // ── Early registration for pre-warming ──
       // Register the subdomain in PanelHttpServer BEFORE the build starts
-      // so the extension can open /__init__ immediately for OPFS bootstrap.
+      // so the extension can open /__init__ immediately for context bootstrap.
       let initToken: string | undefined;
       if (this.deps.panelHttpServer) {
         initToken = this.deps.panelHttpServer.registerPendingPanel(panelId, this.buildPanelConfig(panel));

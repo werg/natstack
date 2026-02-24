@@ -149,7 +149,7 @@ const result = await adapter.evaluate({
 The library requires:
 - **WebSocket API** - For CDP communication
 - **Web Crypto API** - For cryptographic operations
-- **OPFS FileSystem** - Injected as `globalThis.fs`
+- **Filesystem** - Injected as `globalThis.fs` (RPC-backed in safe panels)
 
 ### Validation
 
