@@ -119,8 +119,6 @@
     "@radix-ui/themes": "^3.2.1",
     "@types/json-schema": "^7.0.15",
     "@types/ws": "^8.18.1",
-    "@zenfs/core": "^2.4.4",
-    "@zenfs/dom": "^1.2.5",
     "ai": "6.0.0-beta.114",
     "ai-sdk-provider-claude-code": "^2.2.1",
     "ai-sdk-provider-codex-cli": "^0.6.0",

@@ -39,10 +39,10 @@ NatStack is built as a hierarchical, tree-based browser where every "tab" is a s
 - **Hierarchy**: Panels can spawn child panels, creating a recursive interface that maps naturally to task decomposition.
 - **Isolation**: Each panel runs in its own process, ensuring that a crash or security issue in one mini-app does not compromise the host.
 
-### 2. The File System (OPFS + ZenFS)
-- **Storage**: Each panel is backed by a persistent **Origin Private File System (OPFS)**.
-- **Access**: We use a custom runtime (ZenFS) to expose this browser-native storage as a standard Node.js `fs` API.
-- **Result**: Agents running inside a panel perceive a standard Linux-like file system, allowing them to use standard tools and libraries.
+### 2. The File System (Server-Side Context Folders)
+- **Storage**: Each panel is backed by a persistent **per-context folder** on the server at `{workspace}/.contexts/{contextId}/`.
+- **Access**: Panel `fs` calls go through RPC to a sandboxed `FsService` that uses Node.js `fs/promises`, exposing a standard Node.js `fs` API.
+- **Result**: Agents running inside a panel perceive a standard Linux-like file system, and files are visible on disk for debugging and server-side tool access.
 
 ### 3. The Build System (On-the-Fly Compilation)
 - **Just-in-Time**: Panels are not pre-compiled binaries. They are source code directories.
@@ -210,7 +210,7 @@ Each panel gets:
 - **Injected globals** replacing Electron's preload/contextBridge
 - **A WebSocket transport** connecting to the RPC server (same protocol as
   the Electron preload)
-- **OPFS filesystem** via ZenFS (works in Chrome, Safari, Firefox)
+- **RPC-backed filesystem** via server-side context folders
 - **Full service access** — AI, git, database, build, pubsub
 
 ### Browser Extensions

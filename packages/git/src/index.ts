@@ -2,12 +2,12 @@
  * @natstack/git - Git operations for NatStack panels
  *
  * Provides git clone/pull/push operations using isomorphic-git,
- * designed to work with ZenFS OPFS backend in browser panels.
+ * designed to work with RPC-backed filesystem in browser panels.
  *
  * Usage:
  * ```typescript
  * import { GitClient } from "@natstack/git";
- * import { promises as fsPromises } from "fs"; // ZenFS-shimmed in panels
+ * import { promises as fsPromises } from "fs"; // RPC-backed in panels
  *
  * // Create git client - pass fs/promises directly
  * const git = new GitClient(fsPromises, {

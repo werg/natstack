@@ -1,36 +1,32 @@
-# OPFS and Storage Partitions
+# Context Folders and Storage Partitions
 
-This document explains how Origin Private File System (OPFS) storage isolation works for NatStack panels.
+This document explains how per-context filesystem storage works for NatStack panels.
 
-## What is OPFS?
+## How Context Folders Work
 
-OPFS (Origin Private File System) is a browser storage API that provides a private file system for web applications. In Electron, OPFS is scoped to the **session partition**, so different partitions get different storage.
-
-## Context ID Formats
-
-NatStack uses two context ID formats:
-
-### Safe Panels
+Each panel gets a **context ID** that maps to a real directory on the server at
+`{workspace}/.contexts/{contextId}/`. When a context folder is first accessed, the
+server copies all workspace git repos into it (minus `.git/`, `node_modules/`,
+`.cache/`, `.databases/`). Panel `fs` calls go through RPC to a sandboxed `FsService`
+that operates on these folders using Node.js `fs/promises`.
 
 ```
-safe_{instanceId}
+Panel code  ->  fs shim  ->  RPC  ->  FsService  ->  Node.js fs (per-context folder)
 ```
 
-- **safe_**: Prefix indicating a safe, sandboxed panel
-- **instanceId**: Unique identifier for this instance (derived from panel ID)
-
-Example: `safe_panels~editor`
-
-### Unsafe Panels
+## Context ID Format
 
 ```
-unsafe_noctx_{instanceId}
+ctx_{instanceId}
 ```
 
-- **unsafe_noctx_**: Prefix indicating an unsafe panel without OPFS
-- **instanceId**: Unique identifier for this instance
+- **ctx_**: Prefix for all context IDs
+- **instanceId**: Derived from the panel ID (with `/` and `:` replaced by `~`)
 
-Example: `unsafe_noctx_panels~terminal`
+Example: `ctx_panels~editor`
+
+Panels can also receive an explicit `contextId` via `CreateChildOptions.contextId`
+to enable context sharing (multiple panels operating on the same folder).
 
 ## Getting Context Info
 
@@ -41,7 +37,7 @@ import { usePanelPartition } from "@workspace/react";
 
 function MyPanel() {
   const partition = usePanelPartition(); // string | null (loading)
-  return <div>Storage: {partition ?? "loading..."}</div>;
+  return <div>Context: {partition ?? "loading..."}</div>;
 }
 ```
 
@@ -50,8 +46,8 @@ function MyPanel() {
 ```ts
 import { getInfo, contextId } from "@workspace/runtime";
 
-console.log(contextId);  // e.g. "safe_panels~editor"
-const { partition } = await getInfo();
+console.log(contextId);  // e.g. "ctx_panels~editor"
+const { partition, contextId: cid } = await getInfo();
 ```
 
 ### Parsing Context IDs
@@ -59,26 +55,18 @@ const { partition } = await getInfo();
 ```ts
 import { parseContextId } from "@workspace/runtime";
 
-const parsed = parseContextId("safe_panels~editor");
+const parsed = parseContextId("ctx_panels~editor");
 // { mode: "safe", instanceId: "panels~editor" }
-
-const unsafe = parseContextId("unsafe_noctx_panels~terminal");
-// { mode: "unsafe", instanceId: "panels~terminal" }
 ```
 
 ## Context Behavior by Panel Type
 
-### Safe Panels (Default)
+### App Panels (Default)
 
-- Use OPFS for storage
-- Storage is isolated per context partition
-- Context ID format: `safe_{instanceId}`
-
-### Unsafe Panels
-
-- Use native Node.js filesystem
-- Storage is in `context-scopes/` directory
-- Context ID format: `unsafe_noctx_{instanceId}`
+- Filesystem backed by server-side context folder
+- Files visible on disk at `{workspace}/.contexts/{contextId}/`
+- Storage is isolated per context ID
+- Context ID format: `ctx_{instanceId}`
 
 ### Browser Panels
 
@@ -87,13 +75,16 @@ const unsafe = parseContextId("unsafe_noctx_panels~terminal");
 
 ## Implementation Details
 
-- Safe panels use `partition: persist:${contextId}` in Electron
-- Context partitions are stored in `partitions/` directory
+- Panels use `partition: persist:${contextId}` in Electron for browser-level storage (cookies, localStorage, IndexedDB)
+- Context folders are created on-demand when first accessed
+- Filesystem operations are sandboxed: path traversal and symlink escapes are rejected
+- FileHandles have a 5-minute idle timeout and are cleaned up on panel disconnect
+- Context folders persist across panel restarts; no automatic cleanup
 
 ## Security Considerations
 
-- Each context partition is isolated at the Chromium level
-- Context mode (`safe`/`unsafe`) is encoded in the ID and validated
-- Safe panels cannot use unsafe contexts (prevents privilege escalation)
-- OPFS is origin-private and partition-private
-- Context isolation and sandboxing are enabled for safe panels
+- All fs operations are sandboxed to the context folder root
+- Path traversal (`../../etc/passwd`) is rejected
+- Symlinks pointing outside the sandbox are rejected
+- FileHandle ownership is verified per panel — a panel cannot access another panel's open handles
+- Context ID validation rejects unsafe characters (`/`, `\`, `..`, null bytes)

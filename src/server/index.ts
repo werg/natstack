@@ -258,8 +258,14 @@ async function main() {
   const adminToken = randomBytes(32).toString("hex");
   getTokenManager().setAdminToken(adminToken);
 
+  let fsServiceRef: { closeHandlesForPanel(panelId: string): void } | null = null;
+
   const rpcServer = new RpcServer({
     tokenManager: getTokenManager(),
+    onClientDisconnect: (callerId, callerKind) => {
+      const handleKey = callerKind === "panel" ? callerId : `server:${callerId}`;
+      fsServiceRef?.closeHandlesForPanel(handleKey);
+    },
   });
 
   handle.registerAiService(rpcServer);
@@ -308,6 +314,21 @@ async function main() {
         method,
         serviceArgs as unknown[],
       );
+    });
+
+    // Filesystem service — per-context sandboxed fs via RPC
+    const { ContextFolderManager } = await import("../main/contextFolderManager.js");
+    const { FsService, handleFsCall } = await import("../main/fsService.js");
+    const contextFolderManager = new ContextFolderManager({
+      workspacePath: workspacePath,
+      getWorkspaceTree: () => handle.gitServer.getWorkspaceTree(),
+    });
+    const fsService = new FsService(contextFolderManager);
+    fsServiceRef = fsService;
+    headlessPanelManager.setFsService(fsService);
+
+    dispatcher.register("fs", async (ctx, method, serviceArgs) => {
+      return handleFsCall(fsService, ctx, method, serviceArgs as unknown[]);
     });
   }
 

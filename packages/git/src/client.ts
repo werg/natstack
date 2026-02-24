@@ -99,11 +99,11 @@ function wrapFsForGit(fsPromises: FsPromisesLike): FsClient {
 
       stat: async (path: string) => fsPromises.stat(path),
 
-      lstat: async (path: string) => fsPromises.stat(path), // OPFS has no symlinks
+      lstat: async (path: string) => fsPromises.stat(path), // fallback to stat for compatibility
 
       readlink: async (path: string) => {
         if (!warnedReadlink) {
-          console.warn("readlink not supported in OPFS; returning placeholder");
+          console.warn("readlink not supported in fs adapter; returning placeholder");
           warnedReadlink = true;
         }
         return path;
@@ -111,7 +111,7 @@ function wrapFsForGit(fsPromises: FsPromisesLike): FsClient {
 
       symlink: async (target: string, linkPath: string) => {
         if (!warnedSymlink) {
-          console.warn("symlink not supported in OPFS; performing best-effort copy");
+          console.warn("symlink not supported in fs adapter; performing best-effort copy");
           warnedSymlink = true;
         }
         try {
@@ -123,7 +123,7 @@ function wrapFsForGit(fsPromises: FsPromisesLike): FsClient {
       },
 
       chmod: async () => {
-        // No-op: OPFS doesn't support chmod
+        // No-op in fs adapter
       },
     },
   };
@@ -752,11 +752,11 @@ function parseConflictMarkers(content: string): {
 }
 
 /**
- * Git client for panel OPFS operations
+ * Git client for panel filesystem operations
  *
  * Wraps isomorphic-git with:
  * - Bearer token authentication for NatStack git server
- * - ZenFS filesystem integration (automatically adapts fs/promises)
+ * - Filesystem integration (automatically adapts fs/promises)
  * - Simplified API for common operations
  *
  * @example

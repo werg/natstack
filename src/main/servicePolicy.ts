@@ -67,6 +67,10 @@ export const SERVICE_POLICIES: Record<string, ServicePolicy> = {
     allowed: ["panel", "shell", "server"],
     description: "Panel lifecycle (createPanel, close, navigation)",
   },
+  fs: {
+    allowed: ["panel", "server"],
+    description: "Per-context filesystem operations (sandboxed to context folder)",
+  },
   typecheck: {
     allowed: ["panel", "server"],
     description: "Type definition fetching for panels",

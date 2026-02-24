@@ -62,6 +62,8 @@ export class RpcServer {
     private deps: {
       tokenManager: TokenManager;
       panelManager?: PanelManagerLike;
+      /** Called when an authenticated client disconnects (e.g., for fs handle cleanup) */
+      onClientDisconnect?: (callerId: string, callerKind: CallerKind) => void;
     }
   ) {}
 
@@ -326,6 +328,9 @@ export class RpcServer {
         pending.reject(new Error("Client disconnected"));
       }
     }
+
+    // Notify listeners (e.g., fs handle cleanup)
+    this.deps.onClientDisconnect?.(client.callerId, client.callerKind);
   }
 
   private cleanupClient(client: WsClientState): void {

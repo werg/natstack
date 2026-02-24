@@ -84,10 +84,6 @@ export interface PanelConfig {
   resolvedRepoArgs: Record<string, unknown>;
   env: Record<string, string>;
   theme: "light" | "dark";
-  /** Template spec hash (full), if resolved from template */
-  specHash?: string;
-  /** Template spec hash (first 12 chars), if resolved from template */
-  specHashShort?: string;
 }
 
 export interface PanelLifecycleEvent {
@@ -1016,24 +1012,16 @@ ${this.buildOpfsBootstrapScript(config, true)}
   /**
    * Generate the OPFS bootstrap injection.
    *
-   * Injects config as `globalThis.__opfsBootstrapConfig`, then appends the
-   * pre-loaded bootstrap script (opfsBootstrap.js). On subsequent loads the
-   * IndexedDB marker check is instant (< 1ms) so there's no performance
-   * penalty for already-initialized contexts.
+   * Injects minimal signaling config and the bootstrap script.
+   * Context filesystem is now server-side; this only handles init-page signaling.
    */
   private buildOpfsBootstrapScript(config: PanelConfig, isInitPage: boolean): string {
-    const { contextId, gitBaseUrl, gitToken } = config;
-
     if (!isInitPage) {
-      return `// No template spec — OPFS bootstrap skipped`;
+      return `globalThis.__natstackContextReady = true;`;
     }
 
-    // Inject config for the bootstrap script to read
     const configBlock = `globalThis.__opfsBootstrapConfig = ${JSON.stringify({
-      contextId,
-      specHash: null,
-      gitBaseUrl,
-      gitToken,
+      contextId: config.contextId,
       isInitPage,
     })};`;
 

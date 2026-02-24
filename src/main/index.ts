@@ -50,6 +50,8 @@ import { setupTestApi } from "./testApi.js";
 import { getAdBlockManager } from "./adblock/index.js";
 import { handleAdBlockServiceCall } from "./ipc/adblockHandlers.js";
 import { handleGitServiceCall } from "./ipc/gitServiceHandler.js";
+import { ContextFolderManager } from "./contextFolderManager.js";
+import { FsService, handleFsCall } from "./fsService.js";
 import { startMemoryMonitor } from "./memoryMonitor.js";
 import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
 import { createServerClient, type ServerClient } from "./serverClient.js";
@@ -412,12 +414,29 @@ app.on("ready", async () => {
         );
       });
 
+      // Filesystem service — per-context sandboxed fs via RPC
+      const contextFolderManager = new ContextFolderManager({
+        workspacePath: workspace!.path,
+        getWorkspaceTree: () =>
+          requireServerClient().call("git", "getWorkspaceTree", []) as Promise<any>,
+      });
+      const fsService = new FsService(contextFolderManager);
+      panelManager.setFsService(fsService);
+
+      dispatcher.register("fs", async (ctx, serviceMethod, serviceArgs) => {
+        return handleFsCall(fsService, ctx, serviceMethod, serviceArgs as unknown[]);
+      });
+
       dispatcher.markInitialized();
 
       const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
       rpcServer = new RpcServerClass({
         tokenManager: getTokenManager(),
         panelManager: panelManager ?? undefined,
+        onClientDisconnect: (callerId, callerKind) => {
+          const handleKey = callerKind === "panel" ? callerId : `server:${callerId}`;
+          fsService.closeHandlesForPanel(handleKey);
+        },
       });
       const rpcPort = await rpcServer.start();
       log.info(`[RPC] Server started on port ${rpcPort}`);

@@ -116,11 +116,11 @@ export function createDiskFileSource(basePath: string): FileSource {
 }
 
 /**
- * Create a file source from OPFS/ZenFS (for in-app dev in panels).
+ * Create a file source from the panel filesystem (for in-app dev in panels).
  */
 export function createOpfsFileSource(fs: ReadableFs, basePath: string): FileSource {
   const resolvePath = (filePath: string): string => {
-    // Simple path resolution for OPFS
+    // Simple path resolution for panel filesystem
     if (filePath.startsWith("/")) {
       return filePath;
     }

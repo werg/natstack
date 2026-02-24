@@ -28,6 +28,7 @@ import type { StateArgsValue } from "../shared/stateArgs.js";
 import { getActiveWorkspace } from "./paths.js";
 import type { ServerInfo } from "./serverInfo.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
+import type { FsService } from "./fsService.js";
 import {
   computePanelId as _computePanelId,
   sanitizePanelIdSegment as _sanitizePanelIdSegment,
@@ -98,6 +99,7 @@ export class PanelManager {
   private pendingBrowserNavigations: Map<string, { url: string; index: number }> = new Map();
   private rpcServer: import("../server/rpcServer.js").RpcServer | null = null;
   private rpcPort: number | null = null;
+  private fsService: FsService | null = null;
 
   // Debounce state for panel tree updates
   private treeUpdatePending = false;
@@ -156,6 +158,10 @@ export class PanelManager {
   }
 
   /** Set the RPC server for WS-based communication */
+  setFsService(service: FsService): void {
+    this.fsService = service;
+  }
+
   setRpcServer(server: import("../server/rpcServer.js").RpcServer): void {
     this.rpcServer = server;
   }
@@ -219,6 +225,16 @@ export class PanelManager {
             }
           };
           buildPanelsMap(remainingPanels);
+
+          // Register panel→context mappings for fs service routing (startup restore)
+          if (this.fsService) {
+            for (const panel of this.panels.values()) {
+              const ctxId = getPanelContextId(panel);
+              if (ctxId) {
+                this.fsService.registerPanelContext(panel.id, ctxId);
+              }
+            }
+          }
 
           // Create views for panels that have build artifacts ready
           this.restorePanelViews(remainingPanels);
@@ -1195,6 +1211,9 @@ export class PanelManager {
       // Resolve context ID: use provided contextId if available, otherwise generate from panel ID
       const contextId = options.contextId ?? `ctx_${panelId.replace(/[/:]/g, "~")}`;
 
+      // Register panel→context mapping for fs service routing
+      this.fsService?.registerPanelContext(panelId, contextId);
+
       const panelEnv = await this.buildPanelEnv(panelId, options?.env, {
         sourceRepo: relativePath,
         resolvedRepoArgs: options?.repoArgs,
@@ -1304,9 +1323,10 @@ export class PanelManager {
 
       return { id: panel.id, type: "app" as SharedPanel.PanelType, title: panel.title };
     } catch (err) {
-      // If panel creation fails after token was created, revoke both
+      // If panel creation fails after token was created, clean up
       getTokenManager().revokeToken(panelId);
       void this.serverInfo.revokePanelToken(panelId);
+      this.fsService?.unregisterPanelContext(panelId);
       throw err;
     } finally {
       this.reservedPanelIds.delete(panelId);
@@ -1591,6 +1611,9 @@ export class PanelManager {
       // It's a root panel
       this.rootPanels = this.rootPanels.filter((p) => p.id !== panelId);
     }
+
+    // Unregister panel→context mapping (permanent removal only)
+    this.fsService?.unregisterPanelContext(panelId);
 
     // Destroy the view
     this.viewManager?.destroyView(panelId);
@@ -3073,6 +3096,9 @@ export class PanelManager {
     const panel = this.panels.get(panelId);
     if (!panel) return;
 
+    // Close open file handles for this panel (safe on any teardown path)
+    this.fsService?.closeHandlesForPanel(panelId);
+
     // Revoke auth token (disconnects WS connections via onRevoke listener)
     getTokenManager().revokeToken(panelId);
 
@@ -3150,6 +3176,9 @@ export class PanelManager {
     //   - getClaudeCodeConversationManager().endPanelConversations
     //   - removeProtocolPanel (if applicable)
     this.unloadPanelResources(panel.id);
+
+    // Unregister panel→context mapping (permanent removal only)
+    this.fsService?.unregisterPanelContext(panel.id);
 
     // Clean up other ID-keyed structures not covered by unloadPanelResources
     this.pendingBrowserNavigations.delete(panel.id);
