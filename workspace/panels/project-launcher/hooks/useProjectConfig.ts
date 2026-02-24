@@ -6,11 +6,7 @@ import { useState, useCallback } from "react";
 import type { ProjectConfig } from "@workspace-panels/project-panel/types";
 import { createProjectConfig, PROJECT_DEFAULTS } from "@workspace-panels/project-panel/types";
 
-export interface UseProjectConfigOptions {
-  workspaceRoot?: string;
-}
-
-export function useProjectConfig({ workspaceRoot }: UseProjectConfigOptions = {}) {
+export function useProjectConfig() {
   const [projectConfig, setProjectConfig] = useState<ProjectConfig>(() =>
     createProjectConfig("New Project", {
       defaultAutonomy: PROJECT_DEFAULTS.defaultAutonomy,

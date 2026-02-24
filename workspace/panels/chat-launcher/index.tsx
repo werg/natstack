@@ -40,7 +40,6 @@ const existingContextId = stateArgs.contextId?.trim() || null;
 
 export default function ChatLauncher() {
   const theme = usePanelTheme();
-  const workspaceRoot = process.env["NATSTACK_WORKSPACE"]?.trim();
 
   // Channel modification mode: existing channel was passed via stateArgs
   const isChannelMode = existingChannelName !== null;
@@ -83,7 +82,7 @@ export default function ChatLauncher() {
     toggleAgentSelection,
     updateAgentConfig,
     buildSpawnConfig,
-  } = useAgentSelection({ workspaceRoot, sessionConfig });
+  } = useAgentSelection({ sessionConfig });
 
   const startChat = useCallback(async () => {
     if (!pubsubConfig) return;

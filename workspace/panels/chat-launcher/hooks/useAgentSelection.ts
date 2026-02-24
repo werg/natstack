@@ -57,11 +57,10 @@ export function getPerAgentParams(params: FieldDefinition[] | undefined): FieldD
 }
 
 interface UseAgentSelectionOptions {
-  workspaceRoot?: string;
   sessionConfig?: SessionConfig;
 }
 
-export function useAgentSelection({ workspaceRoot, sessionConfig = DEFAULT_SESSION_CONFIG }: UseAgentSelectionOptions = {}) {
+export function useAgentSelection({ sessionConfig = DEFAULT_SESSION_CONFIG }: UseAgentSelectionOptions = {}) {
   const [availableAgents, setAvailableAgents] = useState<AgentSelection[]>([]);
   const [selectionStatus, setSelectionStatus] = useState("Loading agents...");
 
@@ -125,7 +124,7 @@ export function useAgentSelection({ workspaceRoot, sessionConfig = DEFAULT_SESSI
     return () => {
       mounted = false;
     };
-  }, [workspaceRoot]);
+  }, []);
 
   const toggleAgentSelection = useCallback((agentId: string) => {
     setAvailableAgents((prev) =>
