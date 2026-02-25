@@ -54,6 +54,7 @@ release
 workspace/.env
 workspace/.secrets.yml
 workspace/.databases/
+workspace/.contexts
 
 # Playwright
 packages/playwright-core/src/generated/

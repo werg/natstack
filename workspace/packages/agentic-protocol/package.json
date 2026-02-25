@@ -1,0 +1,73 @@
+{
+  "name": "@workspace/agentic-protocol",
+  "version": "0.1.0",
+  "description": "Protocol types, tool utilities, and tracker factories for agentic messaging",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "default": "./dist/types.js"
+    },
+    "./tool-name-utils": {
+      "types": "./dist/tool-name-utils.d.ts",
+      "default": "./dist/tool-name-utils.js"
+    },
+    "./tool-schemas": {
+      "types": "./dist/tool-schemas.d.ts",
+      "default": "./dist/tool-schemas.js"
+    },
+    "./tool-approval": {
+      "types": "./dist/tool-approval.d.ts",
+      "default": "./dist/tool-approval.js"
+    },
+    "./context-tracker": {
+      "types": "./dist/context-tracker.d.ts",
+      "default": "./dist/context-tracker.js"
+    },
+    "./content-types": {
+      "types": "./dist/content-types.d.ts",
+      "default": "./dist/content-types.js"
+    },
+    "./tracker-types": {
+      "types": "./dist/tracker-types.d.ts",
+      "default": "./dist/tracker-types.js"
+    },
+    "./tracker-factories": {
+      "types": "./dist/tracker-factories.d.ts",
+      "default": "./dist/tracker-factories.js"
+    },
+    "./missed-context": {
+      "types": "./dist/missed-context.d.ts",
+      "default": "./dist/missed-context.js"
+    },
+    "./action-descriptions": {
+      "types": "./dist/action-descriptions.d.ts",
+      "default": "./dist/action-descriptions.js"
+    },
+    "./todo-types": {
+      "types": "./dist/todo-types.d.ts",
+      "default": "./dist/todo-types.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "dev": "tsc --project tsconfig.build.json --watch"
+  },
+  "dependencies": {
+    "@natstack/types": "workspace:*",
+    "@natstack/pubsub": "workspace:*",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "files": [
+    "dist"
+  ]
+}
