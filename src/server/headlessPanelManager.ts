@@ -109,6 +109,7 @@ export class HeadlessPanelManager {
   private contextSubdomains = new Map<string, string>();
   private deps: CreatePanelDeps;
   private fsService: import("../main/fsService.js").FsService | null = null;
+  private currentTheme: "light" | "dark" = "dark";
 
   constructor(deps: CreatePanelDeps) {
     this.deps = deps;
@@ -116,6 +117,19 @@ export class HeadlessPanelManager {
 
   setFsService(service: import("../main/fsService.js").FsService): void {
     this.fsService = service;
+  }
+
+  setCurrentTheme(theme: "light" | "dark"): void {
+    this.currentTheme = theme;
+
+    // Update stored HTTP configs so page reloads pick up the new theme
+    if (this.deps.panelHttpServer) {
+      for (const [panelId, panel] of this.panels) {
+        if (panel.buildState === "built") {
+          this.deps.panelHttpServer.updatePanelConfig(panelId, this.buildPanelConfig(panel));
+        }
+      }
+    }
   }
 
   /**
@@ -218,6 +232,16 @@ export class HeadlessPanelManager {
     subdomainOverride?: string,
   ): Promise<ChildCreationResult> {
     const parent = callerId ? this.panels.get(callerId) : null;
+
+    // Guard: reject URL sources early — browser panels are not supported in headless mode.
+    // In Electron, PanelManager detects URLs and creates browser panels; here we fail
+    // with a clear error instead of a confusing build failure.
+    if (/^https?:\/\//i.test(source)) {
+      throw new Error(
+        `Browser panels are not supported in headless mode (source: "${source}"). ` +
+        "Use the Electron app for web browsing panels."
+      );
+    }
 
     // Generate panel ID using the shared utility (same scheme as PanelManager)
     const panelId = computePanelId({
@@ -565,7 +589,7 @@ export class HeadlessPanelManager {
       sourceRepo: panel.source,
       resolvedRepoArgs: panel.repoArgs ?? {},
       env: panel.env,
-      theme: "dark",
+      theme: this.currentTheme,
     };
   }
 

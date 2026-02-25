@@ -137,7 +137,7 @@ export class PanelManager {
     getTokenManager().ensureToken(panelId, "shell");
     await this.serverInfo.ensurePanelToken(panelId, "shell");
 
-    const httpConfig = await this.buildHttpPanelConfig(panel, `shell:${page}`);
+    const httpConfig = await this.buildPanelConfig(panel, `shell:${page}`);
     this.panelHttpServer!.storePanel(panelId, result, httpConfig);
     return this.panelHttpServer!.getPanelUrl(panelId)!;
   }
@@ -2420,9 +2420,9 @@ export class PanelManager {
   }
 
   /**
-   * Build an HttpPanelConfig for serving a panel via PanelHttpServer.
+   * Build a PanelConfig for serving a panel via PanelHttpServer.
    */
-  private async buildHttpPanelConfig(panel: Panel, panelSource: string): Promise<HttpPanelConfig> {
+  private async buildPanelConfig(panel: Panel, panelSource: string): Promise<HttpPanelConfig> {
     const contextId = getPanelContextId(panel);
     const subdomain = contextIdToSubdomain(contextId);
     const parentId = this.findParentId(panel.id) ?? null;
@@ -2506,7 +2506,7 @@ export class PanelManager {
 
       if (buildResult.bundle && buildResult.html) {
         // Store panel content in PanelHttpServer for HTTP subdomain serving
-        const httpConfig = await this.buildHttpPanelConfig(panel, panelSource);
+        const httpConfig = await this.buildPanelConfig(panel, panelSource);
         this.panelHttpServer!.storePanel(panel.id, buildResult, httpConfig);
         const htmlUrl = this.panelHttpServer!.getPanelUrl(panel.id)!;
 
@@ -2802,7 +2802,7 @@ export class PanelManager {
 
     // Update stored HTTP config so page reloads get fresh stateArgs
     if (this.panelHttpServer) {
-      const httpConfig = await this.buildHttpPanelConfig(panel, getPanelSource(panel));
+      const httpConfig = await this.buildPanelConfig(panel, getPanelSource(panel));
       this.panelHttpServer.updatePanelConfig(panelId, httpConfig);
     }
 
@@ -2928,7 +2928,7 @@ export class PanelManager {
       for (const [panelId, panel] of this.panels) {
         const pType = getPanelType(panel);
         if ((pType === "app" || pType === "shell") && panel.artifacts?.buildState === "ready") {
-          void this.buildHttpPanelConfig(panel, getPanelSource(panel)).then((httpConfig) => {
+          void this.buildPanelConfig(panel, getPanelSource(panel)).then((httpConfig) => {
             this.panelHttpServer?.updatePanelConfig(panelId, httpConfig);
           }).catch(() => { /* non-fatal — panel may be closing */ });
         }
