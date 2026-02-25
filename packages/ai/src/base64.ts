@@ -1,8 +1,7 @@
 /**
- * Base64 - Portable base64 encoding/decoding utilities.
+ * Base64 - Portable base64 encoding utility.
  *
- * Works in both Node.js and browser environments.
- * Used by @workspace/ai and other packages that need to encode binary data.
+ * Inlined from @workspace/core/base64.ts during package rescoping.
  */
 
 const getBuffer = (): (typeof Buffer) | null => {
@@ -37,37 +36,4 @@ export function encodeBase64(data: Uint8Array): string {
     binary += String.fromCharCode.apply(null, Array.from(chunk) as number[]);
   }
   return btoaFn(binary);
-}
-
-/**
- * Decode a base64 string to Uint8Array.
- */
-export function decodeBase64(encoded: string): Uint8Array {
-  if (typeof encoded !== "string") {
-    throw new TypeError("Input must be string");
-  }
-  if (encoded.length === 0) return new Uint8Array(0);
-
-  const BufferCtor = getBuffer();
-  if (BufferCtor) {
-    return new Uint8Array(BufferCtor.from(encoded, "base64"));
-  }
-
-  const atobFn = (globalThis as unknown as { atob?: (data: string) => string }).atob;
-  if (!atobFn) {
-    throw new Error("Base64 decoding is not available (missing atob)");
-  }
-
-  try {
-    const binary = atobFn(encoded);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
-  } catch (error) {
-    throw new Error(
-      `Failed to decode base64: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
 }

@@ -3,7 +3,7 @@
  * Provides validation, conversion, and LLM API format builders
  */
 
-import type { Attachment } from "@workspace/pubsub";
+import type { Attachment } from "@natstack/pubsub";
 
 // Supported image MIME types
 export const SUPPORTED_IMAGE_TYPES = [

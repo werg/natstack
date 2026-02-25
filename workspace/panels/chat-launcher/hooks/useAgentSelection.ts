@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { rpc } from "@workspace/runtime";
 import type { FieldDefinition, FieldValue, AgentManifest, AgentSettings } from "@natstack/types";
-import type { ChannelConfig } from "@workspace/pubsub";
+import type { ChannelConfig } from "@natstack/pubsub";
 
 /**
  * Session configuration - what chat-launcher tracks locally.

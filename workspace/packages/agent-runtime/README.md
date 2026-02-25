@@ -168,7 +168,7 @@ Located in `electron/`:
 |------|---------|
 | `electron-storage.ts` | Wraps RPC DatabaseInterface → StorageApi |
 | `ws-event-bus.ts` | Wraps AgenticClient → EventBus |
-| `rpc-ai-provider.ts` | Wraps @workspace/ai → AiProvider |
+| `rpc-ai-provider.ts` | Wraps @natstack/ai → AiProvider |
 | `create-runtime.ts` | Factory to create ElectronRuntimeContext |
 | `event-source.ts` | WebSocket event loop → agent.onEvent() |
 
@@ -287,7 +287,7 @@ For DO, this would be the DurableObject class that:
 
 1. **`runtime.ts` is Electron-specific** - Despite sitting at package root, it uses Electron-specific imports (RPC, parentPort, WebSocket connect). A cleaner design would move this to `electron/run-agent.ts`.
 
-2. **Peer dependency on @workspace/ai** - The Electron adapter wraps this package. Future runtimes that call AI directly won't need it.
+2. **Peer dependency on @natstack/ai** - The Electron adapter wraps this package. Future runtimes that call AI directly won't need it.
 
 3. **Agent base class has some Electron assumptions** - Some protected methods assume the existence of certain runtime features.
 

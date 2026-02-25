@@ -25,6 +25,7 @@
  *   config: {},
  *   db,
  *   client,
+ *   aiClient,
  *   log,
  * });
  *

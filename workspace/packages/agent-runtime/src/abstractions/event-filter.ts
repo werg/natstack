@@ -8,12 +8,12 @@
  * provide identical filtering in both runtime modes.
  */
 
-import type { Participant } from "@workspace/pubsub";
+import type { Participant } from "@natstack/pubsub";
 import type {
   AgenticParticipantMetadata,
   EventStreamItem,
   IncomingEvent,
-} from "@workspace/agentic-messaging";
+} from "@workspace/agentic-protocol";
 
 /**
  * Context needed for event filtering decisions.

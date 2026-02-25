@@ -12,7 +12,6 @@
   "dependencies": {
     "@workspace/react": "*",
     "@workspace/runtime": "*",
-    "@workspace/agentic-messaging": "*",
-    "@workspace/core": "*"
+    "@workspace/agentic-messaging": "*"
   }
 }

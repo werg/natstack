@@ -31,7 +31,7 @@
  * @example
  * ```typescript
  * import { Agent, runAgent } from '@workspace/agent-runtime';
- * import type { EventStreamItem } from '@workspace/agentic-messaging';
+ * import type { EventStreamItem } from '@workspace/agentic-protocol';
  *
  * interface MyState {
  *   messageCount: number;
@@ -107,8 +107,8 @@ export { createIpcTransport } from "./ipc-transport.js";
 export { isParentPortEnvelope } from "./transport.js";
 export type { ParentPortEnvelope } from "./transport.js";
 
-// Re-export database client from core for convenience
-export { createDbClient } from "@workspace/core";
+// Re-export database client for convenience
+export { createDbClient } from "./database.js";
 export type { DbClient, DatabaseInterface, RpcCaller } from "@natstack/types";
 
 // ============================================================================

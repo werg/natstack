@@ -7,7 +7,7 @@
 
 import { Badge, Button, DropdownMenu, Flex, Text } from "@radix-ui/themes";
 import { LockClosedIcon, CheckIcon } from "@radix-ui/react-icons";
-import type { Participant } from "@workspace/pubsub";
+import type { Participant } from "@natstack/pubsub";
 import { APPROVAL_LEVELS, type ToolApprovalSettings, type ApprovalLevel } from "@workspace/tool-ui";
 import type { ChatParticipantMetadata } from "../types";
 

@@ -5,7 +5,7 @@
  * Codex uses an HTTP MCP server to discover and invoke tools.
  */
 
-import type { AgenticClient } from "@workspace/agentic-messaging";
+import type { AgenticClient } from "@workspace/agentic-protocol";
 import type { PubsubToolRegistry } from "../pubsub-tool-registry.js";
 import { createToolExecutor } from "../pubsub-tool-registry.js";
 

@@ -7,7 +7,8 @@
  */
 
 import type { DatabaseInterface } from "@natstack/types";
-import type { AgenticClient, AgenticParticipantMetadata } from "@workspace/agentic-messaging";
+import type { AiClient } from "@natstack/ai";
+import type { AgenticClient, AgenticParticipantMetadata } from "@workspace/agentic-protocol";
 import type { RuntimeContext, RuntimeContextConfig } from "../abstractions/runtime-context.js";
 import { createRuntimeContext } from "../abstractions/runtime-context.js";
 import type { AgentLogger } from "../agent.js";
@@ -36,6 +37,9 @@ export interface ElectronRuntimeConfig<M extends AgenticParticipantMetadata = Ag
 
   /** Connected AgenticClient */
   client: AgenticClient<M>;
+
+  /** AI client (from createAiClient) */
+  aiClient: AiClient;
 
   /** Logger */
   log: AgentLogger;
@@ -68,6 +72,7 @@ export interface ElectronRuntimeConfig<M extends AgenticParticipantMetadata = Ag
  *   config: agentConfig,
  *   db,
  *   client,
+ *   aiClient,
  *   log,
  *   initialCheckpoint: stateStore.getMetadata().lastPubsubId,
  *   onCheckpointAdvance: (pubsubId) => stateStore.setCheckpoint(pubsubId),
@@ -87,6 +92,7 @@ export function createElectronRuntime<M extends AgenticParticipantMetadata = Age
     config: agentConfig,
     db,
     client,
+    aiClient,
     log,
     initialCheckpoint,
     onCheckpointAdvance,
@@ -95,7 +101,7 @@ export function createElectronRuntime<M extends AgenticParticipantMetadata = Age
   // Create adapters
   const storage = createElectronStorage(db);
   const eventBus = createWsEventBus(client);
-  const ai = createRpcAiProvider();
+  const ai = createRpcAiProvider(aiClient);
 
   // Create and return the runtime context
   const runtimeConfig: RuntimeContextConfig<M> = {

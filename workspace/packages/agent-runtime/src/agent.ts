@@ -40,13 +40,14 @@
  */
 
 import type { AgentState } from "@natstack/types";
+import type { AiClient } from "@natstack/ai";
 import type {
   AgenticClient,
   AgenticParticipantMetadata,
   EventStreamItem,
   EventStreamOptions,
   ConnectOptions,
-} from "@workspace/agentic-messaging";
+} from "@workspace/agentic-protocol";
 
 // Re-export AgentState for convenience
 export type { AgentState };
@@ -146,6 +147,11 @@ export interface AgentContext<M extends AgenticParticipantMetadata = AgenticPart
    * Use as the working directory (cwd) for file operations and subprocesses.
    */
   readonly contextFolderPath: string;
+  /**
+   * AI client for streaming and text generation.
+   * Available after runtime initialization.
+   */
+  readonly ai: AiClient;
 }
 
 /**
@@ -388,6 +394,20 @@ export abstract class Agent<
       );
     }
     return this.ctx.channel;
+  }
+
+  /**
+   * AI client accessor. Available after runtime initialization.
+   * @throws Error if accessed before context injection (in constructor)
+   */
+  protected get ai(): AiClient {
+    if (!this.ctx?.ai) {
+      throw new Error(
+        "ai accessed before context injection. " +
+        "Use this.ai in onWake() or later, not in constructor."
+      );
+    }
+    return this.ctx.ai;
   }
 
   /**

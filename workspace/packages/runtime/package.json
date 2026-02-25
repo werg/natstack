@@ -18,8 +18,7 @@
   },
   "dependencies": {
     "@workspace/agentic-messaging": "workspace:*",
-    "@workspace/ai": "workspace:*",
-    "@workspace/core": "workspace:*",
+    "@natstack/ai": "workspace:*",
     "@natstack/git": "workspace:*",
     "@natstack/rpc": "workspace:*",
     "@natstack/types": "workspace:*",

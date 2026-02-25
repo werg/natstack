@@ -11,7 +11,7 @@ import {
   type AgenticClient,
   type AgenticParticipantMetadata,
   type MissedContext,
-} from "@workspace/agentic-messaging";
+} from "@workspace/agentic-protocol";
 
 /**
  * Options for creating a missed context manager.

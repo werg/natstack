@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createMessageQueue } from "../queue/message-queue.js";
-import type { EventStreamItem } from "@workspace/agentic-messaging";
+import type { EventStreamItem } from "@workspace/agentic-protocol";
 
 // Mock event factory
 function createMockEvent(id: number): EventStreamItem {

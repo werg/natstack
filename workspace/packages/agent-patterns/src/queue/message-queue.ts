@@ -6,7 +6,7 @@
  * and handle graceful shutdown.
  */
 
-import type { EventStreamItem } from "@workspace/agentic-messaging";
+import type { EventStreamItem } from "@workspace/agentic-protocol";
 
 /**
  * Statistics about the queue state.

@@ -9,7 +9,7 @@ import type {
   ContextWindowUsage,
   NormalizedUsage,
   TokenUsage,
-} from "@workspace/agentic-messaging";
+} from "@workspace/agentic-protocol";
 
 // ============================================================================
 // Model Context Limits

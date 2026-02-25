@@ -2,7 +2,7 @@ import {
   connect as connectPubSub,
   type PubSubMessage,
   type RosterUpdate,
-} from "@workspace/pubsub";
+} from "@natstack/pubsub";
 import { zodToJsonSchema as convertZodToJsonSchema } from "zod-to-json-schema";
 import { z } from "zod";
 

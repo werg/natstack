@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createSettingsManager } from "../settings/settings-manager.js";
-import type { AgenticClient, AgenticParticipantMetadata } from "@workspace/agentic-messaging";
+import type { AgenticClient, AgenticParticipantMetadata } from "@workspace/agentic-protocol";
 
 // Mock client factory
 function createMockClient(savedSettings: Record<string, unknown> | null = null): AgenticClient<AgenticParticipantMetadata> {
