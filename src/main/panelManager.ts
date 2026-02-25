@@ -2679,14 +2679,11 @@ export class PanelManager {
       };
       this.notifyPanelTreeUpdate();
 
-      // Build via V2 build service (server process)
-      const buildResult = await this.serverInfo.call("build", "getBuild", [panelSource]) as {
-        bundle: string;
-        html?: string;
-        css?: string;
-        assets?: Record<string, { content: string; encoding?: string }>;
-        metadata: { name: string };
-      };
+      // Build via V2 build service (server process).
+      // The RPC returns a BuildResult; we only need the content fields
+      // (html, bundle, css, assets, metadata) for HTTP serving.
+      const buildResult = await this.serverInfo.call("build", "getBuild", [panelSource]) as
+        import("../server/buildV2/buildStore.js").BuildResult;
 
       // Read manifest locally for fields not in build metadata
       let manifest: PanelManifest | undefined;
@@ -2699,7 +2696,7 @@ export class PanelManager {
       if (buildResult.bundle && buildResult.html) {
         // Store panel content in PanelHttpServer for HTTP subdomain serving
         const httpConfig = await this.buildHttpPanelConfig(panel, panelSource);
-        this.panelHttpServer!.storePanel(panel.id, buildResult as any, httpConfig);
+        this.panelHttpServer!.storePanel(panel.id, buildResult, httpConfig);
         const htmlUrl = this.panelHttpServer!.getPanelUrl(panel.id)!;
 
         // Update panel with successful build
@@ -2992,6 +2989,12 @@ export class PanelManager {
     // Persist panel history (includes current snapshot)
     this.persistHistory(panel);
 
+    // Update stored HTTP config so page reloads get fresh stateArgs
+    if (this.panelHttpServer) {
+      const httpConfig = await this.buildHttpPanelConfig(panel, getPanelSource(panel));
+      this.panelHttpServer.updatePanelConfig(panelId, httpConfig);
+    }
+
     // Broadcast to panel for reactive update (no reload)
     if (this.rpcServer) {
       this.rpcServer.sendToClient(panelId, {
@@ -3108,6 +3111,17 @@ export class PanelManager {
 
   setCurrentTheme(theme: "light" | "dark"): void {
     this.currentTheme = theme;
+
+    // Update stored HTTP configs so page reloads pick up the new theme
+    if (this.panelHttpServer) {
+      for (const [panelId, panel] of this.panels) {
+        if (getPanelType(panel) === "app" && panel.artifacts?.buildState === "ready") {
+          void this.buildHttpPanelConfig(panel, getPanelSource(panel)).then((httpConfig) => {
+            this.panelHttpServer?.updatePanelConfig(panelId, httpConfig);
+          }).catch(() => { /* non-fatal — panel may be closing */ });
+        }
+      }
+    }
   }
 
   sendPanelEvent(panelId: string, payload: PanelEventPayload): void {
