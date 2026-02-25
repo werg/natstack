@@ -43,9 +43,7 @@ export async function handleCommonBridgeMethod(
         CreateChildOptions | undefined,
         Record<string, unknown> | undefined,
       ];
-      const panelOptions = options
-        ? { ...options, templateSpec: (options as any).templateSpec ?? "contexts/default" }
-        : { templateSpec: "contexts/default" };
+      const panelOptions = options ?? {};
       return { handled: true, result: await pm.createPanel(callerId, source, panelOptions, stateArgs) };
     }
 
@@ -80,53 +78,6 @@ export async function handleCommonBridgeMethod(
     case "setStateArgs": {
       const [updates] = args as [Record<string, unknown>];
       return { handled: true, result: await pm.handleSetStateArgs(callerId, updates) };
-    }
-
-    // =========================================================================
-    // Context template operations
-    // =========================================================================
-
-    case "listContextTemplates": {
-      const { listAvailableTemplates } = await import("../main/contextTemplate/discovery.js");
-      return { handled: true, result: await listAvailableTemplates() };
-    }
-
-    case "hasContextTemplate": {
-      const [repoPath] = args as [string];
-      if (!repoPath?.trim()) throw new Error("Repo path is required");
-      const { hasContextTemplate } = await import("../main/contextTemplate/discovery.js");
-      return { handled: true, result: await hasContextTemplate(repoPath) };
-    }
-
-    case "loadContextTemplate": {
-      const [repoPath] = args as [string];
-      if (!repoPath?.trim()) throw new Error("Repo path is required");
-      const { loadContextTemplate } = await import("../main/contextTemplate/discovery.js");
-      return { handled: true, result: await loadContextTemplate(repoPath) };
-    }
-
-    case "initContextTemplate": {
-      const [repoPath] = args as [string];
-      if (!repoPath?.trim()) throw new Error("Repo path is required");
-      const { initContextTemplate } = await import("../main/contextTemplate/discovery.js");
-      return { handled: true, result: await initContextTemplate(repoPath) };
-    }
-
-    case "saveContextTemplate": {
-      const [repoPath, info] = args as [
-        string,
-        { name?: string; description?: string; extends?: string; structure?: Record<string, string> },
-      ];
-      if (!repoPath?.trim()) throw new Error("Repo path is required");
-      const { saveContextTemplate } = await import("../main/contextTemplate/discovery.js");
-      return { handled: true, result: await saveContextTemplate(repoPath, info) };
-    }
-
-    case "createRepo": {
-      const [repoPath] = args as [string];
-      if (!repoPath?.trim()) throw new Error("Repo path is required");
-      const { createRepo } = await import("../main/contextTemplate/discovery.js");
-      return { handled: true, result: await createRepo(repoPath) };
     }
 
     default:

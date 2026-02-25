@@ -20,7 +20,7 @@ export function getFileName(filePath: string): string {
 
 /**
  * Resolve a relative path against a base path.
- * This is a simple implementation for browser/OPFS contexts.
+ * This is a simple implementation for browser/panel contexts.
  * For full path resolution with .. handling, use Node.js path module.
  */
 export function resolvePath(basePath: string, relativePath: string): string {

@@ -15,7 +15,6 @@ export {
   AI_ROLE_FALLBACKS,
   // Shared UI components
   AUTONOMY_NOTCHES,
-  PROJECT_LOCATION_OPTIONS,
   SESSION_PARAMETERS,
   filterPerAgentParameters,
   // Model version utilities

@@ -95,7 +95,7 @@ function ParentPanel() {
 
 ### Shared Storage with contextId
 
-When panels need to share the same OPFS/IndexedDB storage (e.g., chat + agents in a session):
+When panels need to share the same filesystem and storage (e.g., chat + agents in a session):
 
 ```tsx
 function SessionLauncher() {
@@ -267,9 +267,9 @@ export default function IDE() {
 
 ---
 
-## File System (OPFS)
+## File System
 
-Safe panels use OPFS with a Node.js-compatible API:
+Safe panels use an RPC-backed filesystem with a Node.js-compatible API:
 
 ```tsx
 import { promises as fs } from "fs";
@@ -322,7 +322,7 @@ import { readFileSync, readdirSync } from "fs";
 import { platform, homedir } from "os";
 import { join } from "path";
 
-// Sync APIs work (not available in OPFS)
+// Sync APIs work (not available in safe mode)
 const content = readFileSync("/etc/hostname", "utf-8");
 const files = readdirSync(homedir());
 
@@ -442,27 +442,6 @@ await browser.navigate("https://other.com");
 await browser.goBack();
 await browser.reload();
 ```
-
----
-
-## Context Templates
-
-Pre-populate OPFS with git repos for consistent environments:
-
-```yaml
-# panels/my-agent/context-template.yml
-extends: contexts/base-agent
-
-deps:
-  /tools/search:
-    repo: tools/web-search
-    ref: main
-  /data/prompts:
-    repo: shared/prompts
-    ref: v1.0.0
-```
-
-Templates are built once and copied to each panel instance.
 
 ---
 

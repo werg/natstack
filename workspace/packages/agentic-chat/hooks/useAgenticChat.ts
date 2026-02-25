@@ -10,9 +10,6 @@ import { CONTENT_TYPE_TYPING, CONTENT_TYPE_INLINE_UI } from "@workspace/agentic-
 import type {
   IncomingEvent,
   IncomingMethodResult,
-  IncomingToolRoleRequestEvent,
-  IncomingToolRoleResponseEvent,
-  IncomingToolRoleHandoffEvent,
   AggregatedEvent,
   AgentDebugPayload,
   MethodDefinition,
@@ -42,7 +39,6 @@ import {
 } from "@workspace/tool-ui";
 import { useChannelConnection } from "./useChannelConnection";
 import { useMethodHistory } from "./useMethodHistory";
-import { useToolRole } from "./useToolRole";
 import { dispatchAgenticEvent, aggregatedToChatMessage, type DirtyRepoDetails, type EventMiddleware } from "./useAgentEvents";
 import { cleanupPendingImages, type PendingImage } from "../utils/imageUtils";
 import { parseInlineUiData } from "../components/InlineUiMessage";
@@ -143,7 +139,7 @@ export interface UseAgenticChatOptions {
   config: ConnectionConfig;
   /** Channel name to connect to */
   channelName: string;
-  /** Channel configuration (working directory, restricted mode, etc.) */
+  /** Channel configuration */
   channelConfig?: ChannelConfig;
   /** Context ID for channel authorization */
   contextId?: string;
@@ -172,7 +168,7 @@ export function useAgenticChat({
   theme = "dark",
   pendingAgentInfos,
   eventMiddleware,
-}: UseAgenticChatOptions): { contextValue: ChatContextValue; inputContextValue: ChatInputContextValue; toolRole: ReturnType<typeof useToolRole> } {
+}: UseAgenticChatOptions): { contextValue: ChatContextValue; inputContextValue: ChatInputContextValue } {
   const selfIdRef = useRef<string | null>(null);
   const hasConnectedRef = useRef(false);
   const participantsRef = useRef<Record<string, Participant<ChatParticipantMetadata>>>({});
@@ -180,10 +176,6 @@ export function useAgenticChat({
   const suppressDisconnectRef = useRef(true);
   /** Agent handles that stopped due to idle timeout — used to suppress disconnect messages */
   const expectedStopsRef = useRef(new Set<string>());
-  const toolRoleHandlerRef = useRef<((event: IncomingToolRoleRequestEvent) => void) | null>(null);
-  const toolRoleResponseHandlerRef = useRef<((event: IncomingToolRoleResponseEvent) => void) | null>(null);
-  const toolRoleHandoffHandlerRef = useRef<((event: IncomingToolRoleHandoffEvent) => void) | null>(null);
-
   // Refs for stable callback deps — avoids recreating onEvent/sendMessage on every keystroke
   const eventMiddlewareRef = useRef(eventMiddleware);
   eventMiddlewareRef.current = eventMiddleware;
@@ -376,11 +368,6 @@ export function useAgenticChat({
   const { clientRef, connected, clientId, connect: connectToChannel } = useChannelConnection({
     config,
     metadata,
-    toolRoles: {
-      "file-ops": { providing: true },
-      "git-ops": { providing: true },
-      "workspace-ops": { providing: true },
-    },
     onEvent: useCallback(
       (event: IncomingEvent) => {
         try {
@@ -392,15 +379,6 @@ export function useAgenticChat({
             participantsRef.current,
             eventMiddlewareRef.current,
           );
-          if (event.type === "tool-role-request") {
-            try { toolRoleHandlerRef.current?.(event); } catch (err) { console.error("[Chat] Tool role request error:", err); }
-          }
-          if (event.type === "tool-role-response") {
-            try { toolRoleResponseHandlerRef.current?.(event); } catch (err) { console.error("[Chat] Tool role response error:", err); }
-          }
-          if (event.type === "tool-role-handoff") {
-            try { toolRoleHandoffHandlerRef.current?.(event); } catch (err) { console.error("[Chat] Tool role handoff error:", err); }
-          }
         } catch (err) {
           console.error("[Chat] Event dispatch error:", err);
         }
@@ -691,15 +669,6 @@ export function useAgenticChat({
   // Tool approval
   const approval = useToolApproval(clientRef.current, { addFeedback, removeFeedback });
 
-  // Tool role
-  const toolRole = useToolRole(clientRef.current, clientId);
-
-  useEffect(() => {
-    toolRoleHandlerRef.current = toolRole.handleToolRoleRequest;
-    toolRoleResponseHandlerRef.current = toolRole.handleToolRoleResponse;
-    toolRoleHandoffHandlerRef.current = toolRole.handleToolRoleHandoff;
-  }, [toolRole.handleToolRoleRequest, toolRole.handleToolRoleResponse, toolRole.handleToolRoleHandoff]);
-
   // Feedback handlers
   const handleFeedbackResult = useCallback((callId: string, feedbackResult: FeedbackResult) => {
     if (feedbackResult.type === "submit") {
@@ -767,14 +736,11 @@ export function useAgenticChat({
   const handleFeedbackFormCallRef = useRef(handleFeedbackFormCall);
   const handleFeedbackCustomCallRef = useRef(handleFeedbackCustomCall);
   const approvalRef = useRef(approval);
-  const toolRoleShouldProvideGroupRef = useRef(toolRole.shouldProvideGroup);
-
   useEffect(() => {
     handleFeedbackFormCallRef.current = handleFeedbackFormCall;
     handleFeedbackCustomCallRef.current = handleFeedbackCustomCall;
     approvalRef.current = approval;
-    toolRoleShouldProvideGroupRef.current = toolRole.shouldProvideGroup;
-  }, [handleFeedbackFormCall, handleFeedbackCustomCall, approval, toolRole.shouldProvideGroup]);
+  }, [handleFeedbackFormCall, handleFeedbackCustomCall, approval]);
 
   // Connect to channel on mount
   useEffect(() => {
@@ -836,7 +802,7 @@ export default function App({ onSubmit, onCancel }) {
         // Build tool methods from provider
         let toolMethods: Record<string, MethodDefinition> = {};
         if (tools) {
-          const rawTools = tools({ clientRef, workspaceRoot: (channelConfig as Record<string, unknown>)?.['workingDirectory'] as string | undefined });
+          const rawTools = tools({ clientRef });
           // Wrap with approval
           toolMethods = wrapMethodsWithApproval(
             rawTools,
@@ -846,7 +812,6 @@ export default function App({ onSubmit, onCancel }) {
               requestApproval: (...args) => approvalRef.current.requestApproval(...args),
             },
             (agentId) => clientRef.current?.roster[agentId]?.metadata.name ?? agentId,
-            () => ({ shouldProvideGroup: toolRoleShouldProvideGroupRef.current! })
           );
         }
 
@@ -985,7 +950,6 @@ export default function App({ onSubmit, onCancel }) {
     onFocusPanel,
     onReloadPanel,
     toolApproval: toolApprovalValue,
-    toolRole,
   }), [
     connected, status, channelName, sessionEnabled,
     messages, methodEntries, inlineUiComponents, hasMoreHistory, loadingMore,
@@ -995,7 +959,7 @@ export default function App({ onSubmit, onCancel }) {
     loadEarlierMessages, handleInterruptAgent, handleCallMethod,
     handleFeedbackDismiss, handleFeedbackError, handleDismissDirtyWarning, reset,
     onAddAgent, onFocusPanel, onReloadPanel,
-    toolApprovalValue, toolRole,
+    toolApprovalValue,
   ]);
 
   const inputContextValue: ChatInputContextValue = useMemo(() => ({
@@ -1006,5 +970,5 @@ export default function App({ onSubmit, onCancel }) {
     onImagesChange: setPendingImages,
   }), [input, pendingImages, handleInputChange, sendMessage]);
 
-  return { contextValue, inputContextValue, toolRole };
+  return { contextValue, inputContextValue };
 }

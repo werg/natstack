@@ -15,14 +15,6 @@ export interface ProjectConfig {
   id: string;
   /** Display name for the project */
   name: string;
-  /** Project location mode */
-  projectLocation: "managed" | "external";
-  /** Working directory for external/native filesystem mode */
-  workingDirectory?: string;
-  /** Working directory for managed/OPFS mode (defaults to "/") */
-  browserWorkingDirectory?: string;
-  /** Context template spec for managed mode (required if projectLocation === "managed") */
-  contextTemplateSpec?: string;
   /** Repos included in context template */
   includedRepos?: string[];
   /** Default agent to spawn for new sessions */
@@ -62,21 +54,7 @@ export interface ChildSessionInfo {
  */
 export const PROJECT_DEFAULTS = {
   defaultAutonomy: 2 as const, // Full auto
-  browserWorkingDirectory: "/" as const, // OPFS root
 } satisfies Partial<ProjectConfig>;
-
-/**
- * Validate project configuration.
- */
-export function validateProjectConfig(config: ProjectConfig): string | null {
-  if (config.projectLocation === "managed" && !config.contextTemplateSpec?.trim()) {
-    return "Managed projects require a context template selection";
-  }
-  if (config.projectLocation === "external" && !config.workingDirectory?.trim()) {
-    return "External projects require a working directory";
-  }
-  return null;
-}
 
 /**
  * Generate a new project ID.
@@ -90,14 +68,12 @@ export function generateProjectId(): string {
  */
 export function createProjectConfig(
   name: string,
-  location: "managed" | "external",
   overrides?: Partial<ProjectConfig>
 ): ProjectConfig {
   const now = Date.now();
   return {
     id: generateProjectId(),
     name,
-    projectLocation: location,
     defaultAutonomy: PROJECT_DEFAULTS.defaultAutonomy,
     createdAt: now,
     updatedAt: now,

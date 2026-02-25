@@ -6,7 +6,6 @@
  */
 
 import type { AgenticClient } from "@workspace/agentic-messaging";
-import { getCanonicalToolName } from "@workspace/agentic-messaging/utils";
 import type { PubsubToolRegistry } from "../pubsub-tool-registry.js";
 import { createToolExecutor } from "../pubsub-tool-registry.js";
 
@@ -21,28 +20,11 @@ export interface CodexToolDefinition {
   originalName: string;
 }
 
-export interface ToCodexMcpToolsOptions {
-  /** Use canonical (PascalCase) names for display (default: only in restricted mode) */
-  useCanonicalNames?: boolean;
-}
-
 /**
  * Convert a PubsubToolRegistry to Codex MCP tool definitions.
  *
  * Returns tool definitions with `originalName` markers for routing,
  * plus an execute function that dispatches by originalName.
- *
- * @example
- * ```typescript
- * const registry = buildPubsubToolRegistry(client);
- * const standardMcpTools = createStandardMcpTools();
- * const { definitions, execute } = toCodexMcpTools(registry, client, standardMcpTools, {
- *   useCanonicalNames: isRestrictedMode,
- * });
- *
- * // Register on MCP HTTP server
- * const mcpServer = await createMcpHttpServer(definitions, execute, log);
- * ```
  */
 export function toCodexMcpTools(
   registry: PubsubToolRegistry,
@@ -53,7 +35,6 @@ export function toCodexMcpTools(
     parameters: Record<string, unknown>;
     originalName: string;
   }>,
-  options?: ToCodexMcpToolsOptions
 ): {
   definitions: CodexToolDefinition[];
   /** Map from originalName -> display name for action tracking */
@@ -61,16 +42,13 @@ export function toCodexMcpTools(
   /** Execute a tool by its originalName (wire name or standard tool marker) */
   execute: (originalName: string, args: unknown, signal?: AbortSignal) => Promise<unknown>;
 } {
-  const useCanonical = options?.useCanonicalNames ?? false;
   const definitions: CodexToolDefinition[] = [];
   const originalToDisplay = new Map<string, string>();
   const executorCache = new Map<string, (args: unknown, signal?: AbortSignal) => Promise<unknown>>();
 
   // Add pubsub tools
   for (const tool of registry.tools) {
-    const displayName = useCanonical
-      ? getCanonicalToolName(tool.methodName)
-      : tool.wireName;
+    const displayName = tool.wireName;
 
     definitions.push({
       name: displayName,

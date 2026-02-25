@@ -6,7 +6,7 @@
  *
  * Context pre-warming: When a panel is created (but not yet built), the
  * extension opens a hidden tab to the panel's /__init__ page. This pre-warms
- * the OPFS storage by running the context bootstrap before the real panel
+ * the context by running the context bootstrap before the real panel
  * tab is opened, so the panel loads with data already available.
  */
 
@@ -241,7 +241,7 @@ async function handleSSEEvent(event, dataStr, config) {
       broadcastStatus();
 
       // Pre-warm context: open a hidden tab to the /__init__ page
-      // This populates OPFS before the real panel tab is opened.
+      // This pre-warms the context before the real panel tab is opened.
       // The initToken from the event authenticates the init page request.
       if (data.subdomain && config.serverUrl && data.initToken) {
         preWarmContext(data.panelId, data.subdomain, data.initToken, config);
@@ -393,8 +393,8 @@ async function groupNatstackTabs() {
  * Pre-warm a panel's context by opening a minimized popup window to /__init__.
  *
  * Uses a minimized popup window instead of a background tab so the user
- * doesn't see a tab flash in their tab bar. The init page runs the OPFS
- * bootstrap (clones git repos into OPFS) and signals completion via
+ * doesn't see a tab flash in their tab bar. The init page runs the context
+ * bootstrap and signals completion via
  * chrome.runtime.sendMessage().
  *
  * @param {string} panelId

@@ -9,15 +9,16 @@ import { createBootstrapState, runBootstrap, getBootstrapPromise } from "../shar
 import { getInjectedConfig, type InjectedConfig } from "../shared/globals.js";
 import type { RuntimeFs, BootstrapResult } from "../types.js";
 import type { RpcTransport } from "@natstack/rpc";
+import { _initFsWithRpc } from "../panel/fs.js";
 
 export interface InitRuntimeOptions {
   /** Function to create the RPC transport */
   createTransport: () => RpcTransport;
   /** Function to create the server RPC transport (direct panel→server) */
   createServerTransport?: () => RpcTransport | null;
-  /** Filesystem implementation (ZenFS for both panels and workers) */
+  /** Filesystem implementation (RPC-backed proxy) */
   fs: RuntimeFs;
-  /** Promise that resolves when fs is ready (async ZenFS initialization) */
+  /** Promise that resolves when fs is ready (resolves when RPC connects) */
   fsReady?: Promise<void>;
   /** Optional function to set up globals before runtime initialization */
   setupGlobals?: () => void;
@@ -69,6 +70,9 @@ export function initRuntime(options: InitRuntimeOptions): InitRuntimeResult {
     // Pass a getter wrapper that defers to bootstrapState.promise
     bootstrapPromise: null,
   });
+
+  // Initialize RPC-backed fs with the runtime's RPC bridge
+  _initFsWithRpc(runtime.rpc);
 
   // Start bootstrap after runtime creation (fs may be factory-created)
   if (config.gitConfig) {

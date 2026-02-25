@@ -210,10 +210,18 @@ async function main() {
 
   const buildSystem = await initBuildSystemV2(workspacePath, gitServer);
 
+  // Create ContextFolderManager before core services so agents get context folder paths
+  const { ContextFolderManager } = await import("../main/contextFolderManager.js");
+  const contextFolderManager = new ContextFolderManager({
+    workspacePath: workspacePath,
+    getWorkspaceTree: () => gitServer.getWorkspaceTree(),
+  });
+
   const handle = await startCoreServices({
     workspace,
     gitServer,
     getBuild: (unitPath) => buildSystem.getBuild(unitPath),
+    contextFolderManager,
   });
 
   // ===========================================================================
@@ -260,8 +268,14 @@ async function main() {
   const adminToken = process.env["NATSTACK_ADMIN_TOKEN"] || randomBytes(32).toString("hex");
   getTokenManager().setAdminToken(adminToken);
 
+  let fsServiceRef: { closeHandlesForPanel(panelId: string): void } | null = null;
+
   const rpcServer = new RpcServer({
     tokenManager: getTokenManager(),
+    onClientDisconnect: (callerId, callerKind) => {
+      const handleKey = callerKind === "panel" ? callerId : `server:${callerId}`;
+      fsServiceRef?.closeHandlesForPanel(handleKey);
+    },
   });
 
   handle.registerAiService(rpcServer);
@@ -311,6 +325,16 @@ async function main() {
         method,
         serviceArgs as unknown[],
       );
+    });
+
+    // Filesystem service — per-context sandboxed fs via RPC
+    const { FsService, handleFsCall } = await import("../main/fsService.js");
+    const fsService = new FsService(contextFolderManager);
+    fsServiceRef = fsService;
+    headlessPanelManager.setFsService(fsService);
+
+    dispatcher.register("fs", async (ctx, method, serviceArgs) => {
+      return handleFsCall(fsService, ctx, method, serviceArgs as unknown[]);
     });
   }
 

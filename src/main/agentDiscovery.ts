@@ -199,7 +199,10 @@ export function createAgentDiscovery(workspacePath: string): AgentDiscovery {
       ],
       {
         ignoreInitial: true,
-        ignored: ["**/node_modules/**", "**/.git/**"],
+        ignored: (filePath: string) => {
+          // Function-based ignore to correctly exclude directories (not just contents)
+          return filePath.includes("/node_modules") || filePath.includes("/.git/");
+        },
       }
     );
 

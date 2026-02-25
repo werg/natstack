@@ -1,6 +1,6 @@
 /**
  * Minimal state holder for ServerInfo — avoids importing src/main/index.ts
- * (which has heavy side effects) from shared code like contextTemplate/resolver.
+ * (which has heavy side effects) from shared code.
  */
 import type { ServerInfo } from "./serverInfo.js";
 

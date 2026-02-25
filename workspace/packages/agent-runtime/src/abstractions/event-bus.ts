@@ -21,8 +21,6 @@ import type {
   MethodDefinition,
   MethodCallHandle,
   SendResult,
-  ToolGroup,
-  ToolRoleConflict,
   ChannelConfig,
   AgentManifest,
   AgentInstanceSummary,
@@ -245,43 +243,6 @@ export interface EventBus<M extends AgenticParticipantMetadata = AgenticParticip
 
   /** Session key (if session enabled) */
   readonly sessionKey: string | undefined;
-
-  // ==========================================================================
-  // Tool Role Negotiation
-  // ==========================================================================
-
-  /**
-   * Subscribe to tool role conflict events.
-   *
-   * @param handler - Called when tool role conflicts are detected
-   * @returns Unsubscribe function
-   */
-  onToolRoleConflict(handler: (conflicts: ToolRoleConflict[]) => void): () => void;
-
-  /**
-   * Request to take over a tool group from the current provider.
-   *
-   * @param group - Tool group to request
-   */
-  requestToolRole(group: ToolGroup): Promise<void>;
-
-  /**
-   * Respond to a tool role request (accept/reject handoff).
-   *
-   * @param group - Tool group being requested
-   * @param accepted - Whether to accept the handoff
-   * @param handoffTo - ID of participant to hand off to (if accepted)
-   */
-  respondToolRole(group: ToolGroup, accepted: boolean, handoffTo?: string): Promise<void>;
-
-  /**
-   * Announce completion of a tool role handoff.
-   *
-   * @param group - Tool group that was handed off
-   * @param from - Previous provider ID
-   * @param to - New provider ID
-   */
-  announceToolRoleHandoff(group: ToolGroup, from: string, to: string): Promise<void>;
 
   // ==========================================================================
   // Channel Management

@@ -6,14 +6,9 @@ import { useState, useCallback } from "react";
 import type { ProjectConfig } from "@workspace-panels/project-panel/types";
 import { createProjectConfig, PROJECT_DEFAULTS } from "@workspace-panels/project-panel/types";
 
-export interface UseProjectConfigOptions {
-  workspaceRoot?: string;
-}
-
-export function useProjectConfig({ workspaceRoot }: UseProjectConfigOptions = {}) {
+export function useProjectConfig() {
   const [projectConfig, setProjectConfig] = useState<ProjectConfig>(() =>
-    createProjectConfig("New Project", "external", {
-      workingDirectory: workspaceRoot ?? "",
+    createProjectConfig("New Project", {
       defaultAutonomy: PROJECT_DEFAULTS.defaultAutonomy,
     })
   );
@@ -25,18 +20,6 @@ export function useProjectConfig({ workspaceRoot }: UseProjectConfigOptions = {}
       updatedAt: Date.now(),
     }));
   }, []);
-
-  const setLocation = useCallback((location: "managed" | "external") => {
-    updateConfig({ projectLocation: location });
-  }, [updateConfig]);
-
-  const setWorkingDirectory = useCallback((dir: string) => {
-    updateConfig({ workingDirectory: dir });
-  }, [updateConfig]);
-
-  const setContextTemplateSpec = useCallback((spec: string) => {
-    updateConfig({ contextTemplateSpec: spec });
-  }, [updateConfig]);
 
   const setIncludedRepos = useCallback((repos: string[]) => {
     updateConfig({ includedRepos: repos });
@@ -63,9 +46,6 @@ export function useProjectConfig({ workspaceRoot }: UseProjectConfigOptions = {}
   return {
     projectConfig,
     updateConfig,
-    setLocation,
-    setWorkingDirectory,
-    setContextTemplateSpec,
     setIncludedRepos,
     setDefaultAgent,
     setDefaultAutonomy,

@@ -368,7 +368,7 @@ export function computeEffectiveVersionsWithCache(
 // ---------------------------------------------------------------------------
 
 /** Increment when build logic changes (plugins, esbuild options, shims) to invalidate all cached builds. */
-const BUILD_CACHE_VERSION = "2";
+const BUILD_CACHE_VERSION = "3";
 
 /**
  * Compute the build key for a unit: hash(BUILD_CACHE_VERSION, unitName, ev, sourcemap).

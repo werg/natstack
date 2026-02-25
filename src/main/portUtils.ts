@@ -12,49 +12,50 @@ export const PORT_RANGES = {
 } as const;
 
 /**
- * Try to bind to a port and return the server if successful.
- * This avoids TOCTOU race conditions by returning the bound server directly.
+ * Probe whether a port is available on a specific host by binding a temp server.
+ * IMPORTANT: Always specify the same host the real server will use (default: 127.0.0.1)
+ * to avoid IPv4/IPv6 mismatch — probing on :: can succeed while 127.0.0.1 is taken.
  */
-export function tryBindPort(port: number): Promise<net.Server | null> {
+function probePort(
+  port: number,
+  host: string
+): Promise<{ server: net.Server } | { error: NodeJS.ErrnoException }> {
   return new Promise((resolve) => {
     const server = net.createServer();
-    server.once("error", () => resolve(null));
-    server.once("listening", () => resolve(server));
-    server.listen(port);
+    server.once("error", (err: NodeJS.ErrnoException) => resolve({ error: err }));
+    server.once("listening", () => resolve({ server }));
+    server.listen(port, host);
   });
 }
 
 /**
- * Find an available port within a range and return the bound server.
- * This eliminates TOCTOU by keeping the server bound until the caller is ready.
- * @param startPort - First port to try
- * @param endPort - Last port to try (exclusive)
- * @returns Object with port number and the bound server (caller must close it before using the port)
- * @throws Error if no port is available in the range
+ * Find an available port for a service. Returns the port number.
+ * Probes with a temp server on the correct host, closes it, then returns.
+ * Callers should bind their real server immediately after.
  */
-export async function findAndBindPort(
-  startPort: number,
-  endPort?: number
-): Promise<{ port: number; server: net.Server }> {
-  const maxPort = endPort ?? startPort + 100;
-  for (let port = startPort; port < maxPort; port++) {
-    const server = await tryBindPort(port);
-    if (server) {
-      return { port, server };
-    }
-  }
-  throw new Error(`No available port in range ${startPort}-${maxPort - 1}`);
-}
+export async function findServicePort(
+  service: keyof typeof PORT_RANGES,
+  host = "127.0.0.1"
+): Promise<number> {
+  const { start, end } = PORT_RANGES[service];
+  let lastError: NodeJS.ErrnoException | null = null;
 
-/**
- * Find an available port for a specific service and return the bound server.
- * Caller must close the returned server before binding their own server to the port.
- * @param service - Service name from PORT_RANGES
- * @returns Object with port number and temporary server holding the port
- */
-export async function findAvailablePortForService(
-  service: keyof typeof PORT_RANGES
-): Promise<{ port: number; server: net.Server }> {
-  const range = PORT_RANGES[service];
-  return findAndBindPort(range.start, range.end);
+  for (let port = start; port < end; port++) {
+    const result = await probePort(port, host);
+    if ("server" in result) {
+      await new Promise<void>((resolve) => result.server.close(() => resolve()));
+      return port;
+    }
+    // EADDRINUSE is expected (port taken), anything else is a system problem
+    if (result.error.code !== "EADDRINUSE") {
+      throw new Error(
+        `Cannot probe port ${port} for ${service}: ${result.error.code} - ${result.error.message}`
+      );
+    }
+    lastError = result.error;
+  }
+
+  throw new Error(
+    `No available port in ${service} range ${start}-${end - 1} (last error: ${lastError?.code})`
+  );
 }

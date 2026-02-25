@@ -8,10 +8,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./monaco": {
-      "types": "./dist/components/tool-previews/monaco.d.ts",
-      "default": "./dist/components/tool-previews/monaco.js"
     }
   },
   "files": [

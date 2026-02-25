@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { webContents } from "electron";
 import * as http from "http";
 import { URL } from "url";
-import { findAvailablePortForService } from "./portUtils.js";
+import { findServicePort } from "./portUtils.js";
 import { getTokenManager, type TokenManager } from "./tokenManager.js";
 import { isViewManagerInitialized, getViewManager } from "./viewManager.js";
 import { createDevLogger } from "./devLog.js";
@@ -185,11 +185,7 @@ export class CdpServer {
   }
 
   async start(): Promise<number> {
-    // Find and reserve port atomically (avoids TOCTOU race)
-    const { port, server: tempServer } = await findAvailablePortForService("cdp");
-
-    // Close temp server and immediately bind our real server to the same port
-    await new Promise<void>((resolve) => tempServer.close(() => resolve()));
+    const port = await findServicePort("cdp");
 
     this.server = http.createServer();
     this.wss = new WebSocketServer({ server: this.server });
@@ -198,14 +194,14 @@ export class CdpServer {
       void this.handleConnection(ws, req);
     });
 
-    return new Promise((resolve, reject) => {
-      this.server!.on("error", reject);
-      this.server!.listen(port, () => {
-        this.actualPort = port;
-        log.verbose(` Started on ws://localhost:${port}`);
-        resolve(port);
-      });
+    await new Promise<void>((resolve, reject) => {
+      this.server!.once("error", reject);
+      this.server!.listen(port, () => resolve());
     });
+
+    this.actualPort = port;
+    log.verbose(` Started on ws://localhost:${port}`);
+    return port;
   }
 
   private async handleConnection(ws: WebSocket, req: http.IncomingMessage): Promise<void> {

@@ -7,12 +7,9 @@
  * system and their artifacts are stored in the PanelHttpServer for browser
  * access.
  *
- * Context Template Support:
- * Uses the same template resolution pipeline as Electron (resolver → specHash
- * → contextId) but delegates OPFS population to the browser via a bootstrap
- * script injected into panel HTML. Panels sharing a contextId are assigned
- * the same subdomain, giving them a shared browser origin and therefore
- * shared localStorage, IndexedDB, OPFS, cookies, and service workers.
+ * Panels sharing a contextId are assigned the same subdomain, giving them a
+ * shared browser origin and therefore shared localStorage, IndexedDB,
+ * cookies, and service workers.
  *
  * Panel types use the canonical PanelType ("app" | "browser" | "shell") from
  * src/shared/types.ts. Only "app" panels are created in headless mode —
@@ -34,11 +31,6 @@ import { computePanelId } from "../shared/panelIdUtils.js";
 import { loadPanelManifest } from "../main/panelTypes.js";
 import { validateStateArgs } from "../main/stateArgsValidator.js";
 import { createDevLogger } from "../main/devLog.js";
-import {
-  resolveHeadlessContext,
-  canResolveTemplates,
-  type HeadlessResolvedContext,
-} from "./contextTemplate/headlessResolver.js";
 
 const log = createDevLogger("HeadlessPanelManager");
 
@@ -54,10 +46,6 @@ export interface HeadlessPanel {
   contextId: string;
   /** Short DNS-safe label used as the *.localhost subdomain */
   subdomain: string;
-  /** Template spec hash (first 12 chars), if resolved from template */
-  specHashShort: string | null;
-  /** Full spec hash, if resolved from template */
-  specHash: string | null;
   title: string;
   stateArgs: Record<string, unknown>;
   repoArgs?: Record<string, RepoArgSpec>;
@@ -120,9 +108,14 @@ export class HeadlessPanelManager {
   /** Reverse lookup: contextId → subdomain (for shared-context subdomain reuse) */
   private contextSubdomains = new Map<string, string>();
   private deps: CreatePanelDeps;
+  private fsService: import("../main/fsService.js").FsService | null = null;
 
   constructor(deps: CreatePanelDeps) {
     this.deps = deps;
+  }
+
+  setFsService(service: import("../main/fsService.js").FsService): void {
+    this.fsService = service;
   }
 
   /**
@@ -151,7 +144,7 @@ export class HeadlessPanelManager {
    * Get or create a subdomain for a context ID.
    *
    * Panels sharing the same contextId MUST share the same subdomain so they
-   * get the same browser origin (= shared localStorage, IndexedDB, OPFS,
+   * get the same browser origin (= shared localStorage, IndexedDB,
    * cookies, service workers). This mirrors Electron's persist:{contextId}
    * partition sharing.
    */
@@ -196,113 +189,117 @@ export class HeadlessPanelManager {
     }
 
     // ── Context resolution ──
-    // Use the full template resolution pipeline when workspace is available,
-    // falling back to the simplified scheme for stateless operation.
     let contextId: string;
-    let specHashShort: string | null = null;
-    let specHash: string | null = null;
 
     if (options?.contextId) {
       // Explicit context ID provided — use as-is (enables context sharing)
       contextId = options.contextId;
-    } else if (canResolveTemplates()) {
-      // Full template resolution available — use same pipeline as Electron
-      const templateSpec = options?.templateSpec ?? "contexts/default";
-      try {
-        const resolved: HeadlessResolvedContext = await resolveHeadlessContext(panelId, templateSpec);
-        contextId = resolved.contextId;
-        specHashShort = resolved.specHashShort;
-        specHash = resolved.specHash;
-      } catch (err) {
-        // Template resolution failed — fall back to simple scheme
-        log.info(`[Panel] Template resolution failed for ${panelId}, using fallback: ${err}`);
-        contextId = `headless_${panelId.replace(/\//g, "~")}_${Date.now().toString(36)}`;
-      }
     } else {
-      // No workspace — simplified context ID
-      contextId = `headless_${panelId.replace(/\//g, "~")}_${Date.now().toString(36)}`;
+      contextId = `ctx_${panelId.replace(/[/:]/g, "~")}`;
     }
 
-    // ── Subdomain assignment ──
-    // Panels sharing a contextId share a subdomain (= same origin = shared storage)
-    const subdomain = this.getOrCreateSubdomain(contextId, source);
+    // Register panel→context mapping for fs service routing
+    this.fsService?.registerPanelContext(panelId, contextId);
 
-    // Create RPC token for this panel
-    const rpcToken = this.deps.createToken(panelId, "panel");
-
-    // ── StateArgs validation + defaults ──
-    // Match Electron's creation-time behavior: validate against manifest
-    // schema and apply defaults (e.g. boolean fields default to false).
-    // Only the manifest load is in a try-catch (expected to fail for dynamic
-    // sources); validation errors always propagate.
-    let validatedStateArgs: Record<string, unknown> = stateArgs ?? {};
-    let manifest;
+    let rpcToken: string | null = null;
+    let subdomain: string | null = null;
     try {
-      manifest = loadPanelManifest(source);
-    } catch {
-      // Manifest not loadable (dynamic source) — skip validation
-    }
-    if (manifest && (stateArgs || manifest.stateArgs)) {
-      const validation = validateStateArgs(stateArgs ?? {}, manifest.stateArgs);
-      if (!validation.success) {
-        throw new Error(`Invalid stateArgs for ${source}: ${validation.error}`);
+      // ── Subdomain assignment ──
+      // Panels sharing a contextId share a subdomain (= same origin = shared storage)
+      subdomain = this.getOrCreateSubdomain(contextId, source);
+
+      // Create RPC token for this panel
+      rpcToken = this.deps.createToken(panelId, "panel");
+
+      // ── StateArgs validation + defaults ──
+      // Match Electron's creation-time behavior: validate against manifest
+      // schema and apply defaults (e.g. boolean fields default to false).
+      // Only the manifest load is in a try-catch (expected to fail for dynamic
+      // sources); validation errors always propagate.
+      let validatedStateArgs: Record<string, unknown> = stateArgs ?? {};
+      let manifest;
+      try {
+        manifest = loadPanelManifest(source);
+      } catch {
+        // Manifest not loadable (dynamic source) — skip validation
       }
-      validatedStateArgs = validation.data!;
+      if (manifest && (stateArgs || manifest.stateArgs)) {
+        const validation = validateStateArgs(stateArgs ?? {}, manifest.stateArgs);
+        if (!validation.success) {
+          throw new Error(`Invalid stateArgs for ${source}: ${validation.error}`);
+        }
+        validatedStateArgs = validation.data!;
+      }
+
+      const panel: HeadlessPanel = {
+        id: panelId,
+        parentId: parent?.id ?? null,
+        source,
+        type: "app",
+        contextId,
+        subdomain,
+        title: source.split("/").pop() ?? source,
+        stateArgs: validatedStateArgs,
+        repoArgs: options?.repoArgs,
+        env: options?.env ?? {},
+        children: [],
+        rpcToken,
+        buildState: "pending",
+        createdAt: Date.now(),
+      };
+
+      this.panels.set(panelId, panel);
+
+      // Register as child of parent
+      if (parent) {
+        parent.children.push(panelId);
+      }
+
+      // ── Early registration for pre-warming ──
+      // Register the subdomain in PanelHttpServer BEFORE the build starts
+      // so the extension can open /__init__ immediately for context bootstrap.
+      let initToken: string | undefined;
+      if (this.deps.panelHttpServer) {
+        initToken = this.deps.panelHttpServer.registerPendingPanel(panelId, this.buildPanelConfig(panel));
+      }
+
+      log.info(`[Panel] Created: ${panelId} (${subdomain}.localhost, ctx=${contextId})`);
+
+      this.emitEvent({
+        type: "panel:created",
+        panelId,
+        title: panel.title,
+        subdomain,
+        contextId,
+        initToken,
+        parentId: panel.parentId,
+        source,
+      });
+
+      // Trigger async build + serve
+      void this.buildAndServePanel(panel).catch((err) => {
+        log.info(`[Panel] Build failed for ${panelId}: ${err}`);
+      });
+
+      return { id: panelId, type: "app" };
+    } catch (err) {
+      // Rollback: unregister context mapping, revoke token, release subdomain on failure
+      this.fsService?.unregisterPanelContext(panelId);
+      if (rpcToken) {
+        this.deps.revokeToken(panelId);
+      }
+      if (subdomain) {
+        // Release subdomain only if no other panel already uses this context
+        const otherPanelsWithContext = Array.from(this.panels.values()).some(
+          (p) => p.contextId === contextId,
+        );
+        if (!otherPanelsWithContext) {
+          this.activeSubdomains.delete(subdomain);
+          this.contextSubdomains.delete(contextId);
+        }
+      }
+      throw err;
     }
-
-    const panel: HeadlessPanel = {
-      id: panelId,
-      parentId: parent?.id ?? null,
-      source,
-      type: "app",
-      contextId,
-      subdomain,
-      specHashShort,
-      specHash,
-      title: source.split("/").pop() ?? source,
-      stateArgs: validatedStateArgs,
-      repoArgs: options?.repoArgs,
-      env: options?.env ?? {},
-      children: [],
-      rpcToken,
-      buildState: "pending",
-      createdAt: Date.now(),
-    };
-
-    this.panels.set(panelId, panel);
-
-    // Register as child of parent
-    if (parent) {
-      parent.children.push(panelId);
-    }
-
-    // ── Early registration for pre-warming ──
-    // Register the subdomain in PanelHttpServer BEFORE the build starts
-    // so the extension can open /__init__ immediately for OPFS bootstrap.
-    let initToken: string | undefined;
-    if (this.deps.panelHttpServer) {
-      initToken = this.deps.panelHttpServer.registerPendingPanel(panelId, this.buildPanelConfig(panel));
-    }
-
-    log.info(`[Panel] Created: ${panelId} (${subdomain}.localhost, ctx=${contextId}, spec=${specHashShort ?? "none"})`);
-
-    this.emitEvent({
-      type: "panel:created",
-      panelId,
-      title: panel.title,
-      subdomain,
-      contextId,
-      initToken,
-      parentId: panel.parentId,
-      source,
-    });
-
-    // Trigger async build + serve
-    void this.buildAndServePanel(panel).catch((err) => {
-      log.info(`[Panel] Build failed for ${panelId}: ${err}`);
-    });
-
-    return { id: panelId, type: "app" };
   }
 
   // =========================================================================
@@ -325,6 +322,10 @@ export class HeadlessPanelManager {
         parent.children = parent.children.filter((id) => id !== panelId);
       }
     }
+
+    // Close open file handles and unregister panel→context mapping
+    this.fsService?.closeHandlesForPanel(panelId);
+    this.fsService?.unregisterPanelContext(panelId);
 
     // Revoke tokens (RPC + git)
     if (panel.rpcToken) {
@@ -515,8 +516,6 @@ export class HeadlessPanelManager {
       resolvedRepoArgs: panel.repoArgs ?? {},
       env: panel.env,
       theme: "dark",
-      specHash: panel.specHash ?? undefined,
-      specHashShort: panel.specHashShort ?? undefined,
     };
   }
 

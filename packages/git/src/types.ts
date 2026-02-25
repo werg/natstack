@@ -23,7 +23,7 @@ export interface GitClientOptions {
 export interface CloneOptions {
   /** Repository URL */
   url: string;
-  /** Local directory path in OPFS */
+  /** Local directory path */
   dir: string;
   /** Branch/tag/commit to checkout */
   ref?: string;

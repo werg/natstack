@@ -77,7 +77,6 @@ export async function handleHeadlessBridgeCall(
     case "updateBrowserState":
     case "ensurePanelLoaded":
     case "unloadSelf":
-    case "signalTemplateComplete":
       // No-op
       return;
 

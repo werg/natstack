@@ -13,7 +13,7 @@ export function toFileStats(stats: unknown): FileStats {
   const s = stats as Record<string, unknown> | null | undefined;
   const isFileFn = s?.["isFile"];
   const isDirFn = s?.["isDirectory"];
-  // Call methods with proper `this` binding - ZenFS methods need their context
+  // Call methods with proper `this` binding - some fs implementations need their context
   const isFileBool = typeof isFileFn === "function" ? (isFileFn as () => boolean).call(s) : !!isFileFn;
   const isDirBool = typeof isDirFn === "function" ? (isDirFn as () => boolean).call(s) : !!isDirFn;
   const sizeVal = s?.["size"];

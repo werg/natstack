@@ -8,8 +8,8 @@
  * - Timeout handling to prevent resource leaks
  * - Cleanup on tool completion or error
  *
- * Used by unrestricted mode in claude-code-responder to manage
- * Task tool subagents that stream their output to the chat.
+ * Used by claude-code-responder to manage Task tool subagents
+ * that stream their output to the chat.
  */
 
 import {
@@ -128,16 +128,6 @@ export class SubagentManager {
       channel: this.channel,
       contextId: this.parentClient.contextId,
     };
-  }
-
-  /**
-   * Get connection options for external use (e.g., restricted mode Task tool).
-   *
-   * This is useful when you need to create subagent connections outside of
-   * SubagentManager's normal lifecycle management (e.g., in task-tool.ts).
-   */
-  getConnectionOptionsForExternalUse() {
-    return this.getConnectionOptions();
   }
 
   /**

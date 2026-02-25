@@ -104,15 +104,12 @@ export {
   // PubsubToolRegistry
   buildPubsubToolRegistry,
   discoverPubsubTools,
-  discoverPubsubToolsForMode,
   waitForTools,
   createToolExecutor,
   type PubsubTool,
   type PubsubToolRegistry,
   type BuildRegistryOptions,
   type DiscoverPubsubToolsOptions,
-  type DiscoverPubsubToolsForModeOptions,
-  DEFAULT_UNRESTRICTED_PUBSUB_METHODS,
   // Tracking hooks
   createActionTrackingHooks,
   wrapWithTracking,
@@ -129,7 +126,6 @@ export {
   type AiSdkToolDefinition,
   type ToAiSdkToolsOptions,
   type CodexToolDefinition,
-  type ToCodexMcpToolsOptions,
   type ClaudeMcpToolsResult,
   type ClaudeMcpToolDef,
   type ToClaudeMcpToolsOptions,
@@ -155,7 +151,5 @@ export {
 export {
   DEFAULT_CHAT_ASSISTANT_PERSONA,
   COMPONENT_ENHANCED_RICH_TEXT_GUIDE,
-  RESTRICTED_MODE_ENVIRONMENT_GUIDE,
   createRichTextChatSystemPrompt,
-  createRestrictedModeSystemPrompt,
 } from "./prompts/index.js";

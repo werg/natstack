@@ -5,8 +5,7 @@
  * Handles both first-time agent grants and per-call approvals.
  */
 
-import type { MethodDefinition, MethodExecutionContext, ToolGroup } from "@workspace/agentic-messaging";
-import { getGroupsForTool } from "@workspace/agentic-messaging";
+import type { MethodDefinition, MethodExecutionContext } from "@workspace/agentic-messaging";
 import type { z } from "zod";
 
 /**
@@ -28,20 +27,6 @@ export interface ApprovalFunctions {
 }
 
 /**
- * Tool role functions for checking if we should provide tools.
- */
-export interface ToolRoleFunctions {
-  /** Check if we should provide tools for a group (no conflict or we won) */
-  shouldProvideGroup: (group: ToolGroup) => boolean;
-}
-
-/**
- * Getter function to retrieve tool role functions at execution time.
- * This avoids stale closure issues when tool role state changes.
- */
-export type GetToolRoleFunctions = () => ToolRoleFunctions | undefined;
-
-/**
  * Methods that should NOT be wrapped with approval.
  * These are meta-tools that handle feedback/communication.
  */
@@ -51,7 +36,6 @@ const META_TOOLS = new Set(["eval", "feedback_form", "feedback_custom", "pause"]
  * Wrap method definitions with approval middleware.
  *
  * For each method:
- * 0. Check if we should provide this tool (tool role conflicts)
  * 1. Check if agent is granted (isAgentGranted)
  * 2. If not -> request first-time grant approval
  * 3. If granted -> check if this tool needs per-call approval (checkToolApproval)
@@ -62,14 +46,12 @@ const META_TOOLS = new Set(["eval", "feedback_form", "feedback_custom", "pause"]
  * @param methods - Record of method name to method definition
  * @param approval - Approval functions from useToolApproval hook
  * @param getAgentName - Function to get display name for an agent ID
- * @param getToolRole - Optional getter for tool role functions (called at execution time to avoid stale closures)
  * @returns Wrapped method definitions
  */
 export function wrapMethodsWithApproval(
   methods: Record<string, MethodDefinition>,
   approval: ApprovalFunctions,
   getAgentName: (agentId: string) => string,
-  getToolRole?: GetToolRoleFunctions
 ): Record<string, MethodDefinition> {
   const wrapped: Record<string, MethodDefinition> = {};
 
@@ -83,18 +65,6 @@ export function wrapMethodsWithApproval(
     wrapped[name] = {
       ...method,
       execute: async (args: z.infer<typeof method.parameters>, ctx: MethodExecutionContext) => {
-        // Step 0: Check if we should provide this tool (tool role conflicts)
-        // Call getToolRole() at execution time to get fresh state
-        const toolRole = getToolRole?.();
-        if (toolRole) {
-          const groups = getGroupsForTool(name);
-          for (const group of groups) {
-            if (!toolRole.shouldProvideGroup(group)) {
-              throw new Error(`Tool ${name} is provided by another panel (${group} conflict resolved)`);
-            }
-          }
-        }
-
         const agentId = ctx.callerId;
         const agentName = getAgentName(agentId);
 

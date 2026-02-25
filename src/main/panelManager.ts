@@ -28,6 +28,7 @@ import type { StateArgsValue } from "../shared/stateArgs.js";
 import { getActiveWorkspace } from "./paths.js";
 import type { ServerInfo } from "./serverInfo.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
+import type { FsService } from "./fsService.js";
 import {
   computePanelId as _computePanelId,
   sanitizePanelIdSegment as _sanitizePanelIdSegment,
@@ -53,35 +54,16 @@ import { getAboutPageUrl, hasAboutPage, storeAboutPage, registerAboutProtocolFor
 import { getPanelPersistence } from "./db/panelPersistence.js";
 import { getPanelSearchIndex } from "./db/panelSearchIndex.js";
 import { extractAndIndexPageContent } from "./db/pageContentExtractor.js";
-import {
-  cleanupOrphanedTempBuilds,
-  cleanupStaleLocks,
-  // Context ID functions (template-based system)
-  createContextId,
-  deriveInstanceIdFromPanelId,
-  // Template context functions
-  resolveTemplate,
-  computeImmutableSpec,
-  ensureContextPartitionInitialized,
-} from "./contextTemplate/index.js";
 import { logMemorySnapshot } from "./memoryMonitor.js";
-
-/** Default template spec used when none is explicitly provided */
-const DEFAULT_TEMPLATE_SPEC = "contexts/default";
 
 type PanelCreateOptions = {
   name?: string;
   env?: Record<string, string>;
   repoArgs?: Record<string, SharedPanel.RepoArgSpec>;
   /**
-   * Git spec for context template (e.g., "contexts/default").
-   * REQUIRED: Every panel must have a template for context initialization.
-   */
-  templateSpec: string;
-  /**
    * Explicit context ID for storage partition sharing.
    * If provided, the panel will use this context ID instead of generating a new one.
-   * This enables multiple panels to share the same OPFS/IndexedDB partition.
+   * This enables multiple panels to share the same filesystem and storage partition.
    */
   contextId?: string;
   /** If true, immediately focus the new panel after creation (only applies to app panels) */
@@ -117,6 +99,7 @@ export class PanelManager {
   private pendingBrowserNavigations: Map<string, { url: string; index: number }> = new Map();
   private rpcServer: import("../server/rpcServer.js").RpcServer | null = null;
   private rpcPort: number | null = null;
+  private fsService: FsService | null = null;
 
   // Debounce state for panel tree updates
   private treeUpdatePending = false;
@@ -175,6 +158,10 @@ export class PanelManager {
   }
 
   /** Set the RPC server for WS-based communication */
+  setFsService(service: FsService): void {
+    this.fsService = service;
+  }
+
   setRpcServer(server: import("../server/rpcServer.js").RpcServer): void {
     this.rpcServer = server;
   }
@@ -212,19 +199,6 @@ export class PanelManager {
   private async initializePanelTree(): Promise<void> {
     const persistence = getPanelPersistence();
 
-    // Clean up orphaned temp builds and stale locks from previous crashes
-    try {
-      const tempsCleaned = cleanupOrphanedTempBuilds();
-      const locksCleaned = cleanupStaleLocks();
-      if (tempsCleaned > 0 || locksCleaned > 0) {
-        console.log(
-          `[PanelManager] Cleaned up ${tempsCleaned} orphaned temp builds and ${locksCleaned} stale locks`
-        );
-      }
-    } catch (error) {
-      console.warn("[PanelManager] Failed to clean up template build artifacts:", error);
-    }
-
     try {
       // Try to load existing panels from database
       const existingPanels = persistence.getFullTree();
@@ -251,6 +225,16 @@ export class PanelManager {
             }
           };
           buildPanelsMap(remainingPanels);
+
+          // Register panel→context mappings for fs service routing (startup restore)
+          if (this.fsService) {
+            for (const panel of this.panels.values()) {
+              const ctxId = getPanelContextId(panel);
+              if (ctxId) {
+                this.fsService.registerPanelContext(panel.id, ctxId);
+              }
+            }
+          }
 
           // Create views for panels that have build artifacts ready
           this.restorePanelViews(remainingPanels);
@@ -363,11 +347,6 @@ export class PanelManager {
     this.linkInterceptionHandlers.clear();
     this.contentLoadHandlers.clear();
 
-    // Close any lingering template builder workers
-    for (const workerId of this.templateBuilderWorkers) {
-      void this.closeTemplateBuilderWorker(workerId).catch(() => {});
-    }
-    this.templateBuilderWorkers.clear();
   }
 
   /**
@@ -808,13 +787,12 @@ export class PanelManager {
       // ns:// - New navigation protocol (middle/ctrl-click always creates child)
       if (url.startsWith("ns:")) {
         try {
-          const { source, templateSpec, contextId, repoArgs, env, stateArgs, name, focus } = parseNsUrl(url);
+          const { source, contextId, repoArgs, env, stateArgs, name, focus } = parseNsUrl(url);
           this.createPanel(
             panelId,
             source,
             {
-              templateSpec: templateSpec ?? DEFAULT_TEMPLATE_SPEC,
-              contextId,
+                            contextId,
               repoArgs,
               env,
               name,
@@ -833,7 +811,7 @@ export class PanelManager {
       if (url.startsWith("ns-about:")) {
         try {
           const { page } = parseNsAboutUrl(url);
-          this.createPanel(panelId, `shell:${page}`, { templateSpec: DEFAULT_TEMPLATE_SPEC, replace: false }).catch((err: unknown) =>
+          this.createPanel(panelId, `shell:${page}`, { replace: false }).catch((err: unknown) =>
             this.handleChildCreationError(panelId, err, url)
           );
         } catch (err) {
@@ -872,7 +850,7 @@ export class PanelManager {
       if (url.startsWith("ns:")) {
         event.preventDefault();
         try {
-          const { source, action, templateSpec, contextId, repoArgs, env, stateArgs, name, focus } = parseNsUrl(url);
+          const { source, action, contextId, repoArgs, env, stateArgs, name, focus } = parseNsUrl(url);
 
           // Determine the operation:
           // 1. action=child → create child panel under caller
@@ -887,8 +865,7 @@ export class PanelManager {
               panelId,
               source,
               {
-                templateSpec: templateSpec ?? DEFAULT_TEMPLATE_SPEC,
-                contextId,
+                                contextId,
                 repoArgs,
                 env,
                 name,
@@ -903,8 +880,7 @@ export class PanelManager {
               panelId,
               source,
               {
-                templateSpec: templateSpec ?? DEFAULT_TEMPLATE_SPEC,
-                contextId,
+                                contextId,
                 repoArgs,
                 env,
                 name,
@@ -921,8 +897,7 @@ export class PanelManager {
               panelId,
               source,
               {
-                templateSpec: templateSpec ?? DEFAULT_TEMPLATE_SPEC,
-                contextId,
+                                contextId,
                 repoArgs,
                 env,
                 name,
@@ -1027,59 +1002,6 @@ export class PanelManager {
     return _computePanelId(params);
   }
 
-  /**
-   * Resolve context ID for a panel based on template spec.
-   * All panels use the template system with OPFS storage.
-   */
-  private async resolveContext(
-    panelId: string,
-    templateSpec: string
-  ): Promise<string> {
-    return this.resolveTemplateContext(panelId, templateSpec);
-  }
-
-  /**
-   * Resolve a template-based context ID for SAFE panels only.
-   * Resolves the template, computes the immutable spec, and initializes the OPFS context.
-   */
-  private async resolveTemplateContext(
-    panelId: string,
-    templateSpec: string
-  ): Promise<string> {
-    const workspace = getActiveWorkspace();
-    if (!workspace) throw new Error("No active workspace");
-
-    log.verbose(` Resolving template: ${templateSpec}`);
-
-    // Resolve template and compute spec
-    const resolved = await resolveTemplate(templateSpec);
-    const immutableSpec = computeImmutableSpec(resolved);
-
-    log.verbose(` Template resolved:`, {
-      specHash: immutableSpec.specHash.slice(0, 12),
-      structureKeys: Object.keys(immutableSpec.structure),
-      inheritanceChain: immutableSpec.inheritanceChain,
-    });
-
-    // Generate context ID with template format (always safe mode now)
-    const instanceId = deriveInstanceIdFromPanelId(panelId);
-    const contextId = createContextId(immutableSpec.specHash, instanceId);
-
-    // Initialize context via OPFS partition copying
-    log.verbose(` Initializing safe context: ${contextId}`);
-    const gitConfig = {
-      serverUrl: this.serverInfo.gitBaseUrl,
-      token: await this.serverInfo.getGitTokenForPanel(panelId),
-    };
-    await ensureContextPartitionInitialized(
-      contextId,
-      immutableSpec,
-      gitConfig
-    );
-    log.verbose(` Context initialized successfully`);
-
-    return contextId;
-  }
 
   // Public methods for RPC services
 
@@ -1205,7 +1127,7 @@ export class PanelManager {
   /**
    * Shared creation path for both root and child panels.
    * When replacePanel is provided, it replaces that panel in the tree at the same position.
-   * templateSpec is REQUIRED - every panel must have a context template.
+   * Context ID is auto-generated as ctx_{instanceId} if not provided.
    *
    * Root panel modes:
    * - isRoot: true, addAsRoot: false (default) - Reset tree and create single root panel
@@ -1286,8 +1208,11 @@ export class PanelManager {
 
     try {
       await this.serverInfo.createPanelToken(panelId, "panel");     // Server git/pubsub auth
-      // Resolve context ID: use provided contextId if available, otherwise generate from template
-      const contextId = options.contextId ?? await this.resolveContext(panelId, options.templateSpec);
+      // Resolve context ID: use provided contextId if available, otherwise generate from panel ID
+      const contextId = options.contextId ?? `ctx_${panelId.replace(/[/:]/g, "~")}`;
+
+      // Register panel→context mapping for fs service routing
+      this.fsService?.registerPanelContext(panelId, contextId);
 
       const panelEnv = await this.buildPanelEnv(panelId, options?.env, {
         sourceRepo: relativePath,
@@ -1302,7 +1227,6 @@ export class PanelManager {
         {
           env: panelEnv,
           repoArgs: options.repoArgs,
-          templateSpec: options.templateSpec,
         },
         validatedStateArgs
       );
@@ -1399,9 +1323,10 @@ export class PanelManager {
 
       return { id: panel.id, type: "app" as SharedPanel.PanelType, title: panel.title };
     } catch (err) {
-      // If panel creation fails after token was created, revoke both
+      // If panel creation fails after token was created, clean up
       getTokenManager().revokeToken(panelId);
       void this.serverInfo.revokePanelToken(panelId);
+      this.fsService?.unregisterPanelContext(panelId);
       throw err;
     } finally {
       this.reservedPanelIds.delete(panelId);
@@ -1554,17 +1479,11 @@ export class PanelManager {
       );
     }
 
-    // templateSpec is required - use default if not provided
-    const resolvedOptions: PanelCreateOptions = options ?? { templateSpec: DEFAULT_TEMPLATE_SPEC };
-    if (!resolvedOptions.templateSpec) {
-      resolvedOptions.templateSpec = DEFAULT_TEMPLATE_SPEC;
-    }
-
     return this.createPanelFromManifest({
       manifest,
       relativePath,
       parent,
-      options: resolvedOptions,
+      options: options ?? {},
       replacePanel,
       stateArgs,
     });
@@ -1609,17 +1528,15 @@ export class PanelManager {
 
     // Browser panels don't use partitions or templates - they use the default Chromium session.
     // Generate a simple context ID without template resolution overhead.
-    const instanceId = deriveInstanceIdFromPanelId(panelId);
-    const contextId = `browser_${instanceId}`;
+    const instanceId = panelId.replace(/[/:]/g, "~");
+    const contextId = `ctx_${instanceId}`;
 
     if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
       throw new Error(`A panel with id "${panelId}" is already running`);
     }
 
     // Create the initial snapshot for the browser panel
-    const initialSnapshot = createSnapshot(url, "browser", contextId, {
-      templateSpec: DEFAULT_TEMPLATE_SPEC,
-    });
+    const initialSnapshot = createSnapshot(url, "browser", contextId, {});
     // Add browser-specific state to snapshot
     initialSnapshot.resolvedUrl = url;
     initialSnapshot.browserState = {
@@ -1694,6 +1611,9 @@ export class PanelManager {
       // It's a root panel
       this.rootPanels = this.rootPanels.filter((p) => p.id !== panelId);
     }
+
+    // Unregister panel→context mapping (permanent removal only)
+    this.fsService?.unregisterPanelContext(panelId);
 
     // Destroy the view
     this.viewManager?.destroyView(panelId);
@@ -2348,21 +2268,17 @@ export class PanelManager {
       throw new Error(`A panel with id "${panelId}" is already running`);
     }
 
-    // Shell panels don't need OPFS pre-warming or git repo cloning —
-    // use a simple context ID for session isolation (same pattern as browser panels)
-    const instanceId = deriveInstanceIdFromPanelId(panelId);
-    const contextId = `shell_${instanceId}`;
+    // Shell panels use a simple context ID for session isolation
+    const instanceId = panelId.replace(/[/:]/g, "~");
+    const contextId = `ctx_${instanceId}`;
 
     // Create auth tokens for WS and server RPC access
     getTokenManager().createToken(panelId, "panel");
     await this.serverInfo.createPanelToken(panelId, "panel");
 
-    const templateSpec = options?.templateSpec ?? DEFAULT_TEMPLATE_SPEC;
-
     // Create the initial snapshot for the shell panel
     const initialSnapshot = createSnapshot(`shell:${page}`, "shell", contextId, {
       env: options?.env,
-      templateSpec,
     }, stateArgs);
     initialSnapshot.page = page;
 
@@ -2577,19 +2493,16 @@ export class PanelManager {
 
     const title = page;
 
-    // Shell panels don't need OPFS pre-warming or git repo cloning —
-    // use a simple context ID for session isolation (same pattern as browser panels)
-    const instanceId = deriveInstanceIdFromPanelId(panelId);
-    const contextId = `shell_${instanceId}`;
+    // Shell panels use a simple context ID for session isolation
+    const instanceId = panelId.replace(/[/:]/g, "~");
+    const contextId = `ctx_${instanceId}`;
 
     // Create auth tokens for WS and server RPC access
     getTokenManager().createToken(panelId, "panel");
     await this.serverInfo.createPanelToken(panelId, "panel");
 
     // Create the initial snapshot for the shell panel
-    const initialSnapshot = createSnapshot(`shell:${page}`, "shell", contextId, {
-      templateSpec: DEFAULT_TEMPLATE_SPEC,
-    });
+    const initialSnapshot = createSnapshot(`shell:${page}`, "shell", contextId, {});
     initialSnapshot.page = page;
 
     const panel: Panel = {
@@ -2646,8 +2559,7 @@ export class PanelManager {
       );
     }
 
-    // Use default template spec
-    const options: PanelCreateOptions = { templateSpec: DEFAULT_TEMPLATE_SPEC };
+    const options: PanelCreateOptions = {};
 
     return this.createPanelFromManifest({
       manifest,
@@ -3184,6 +3096,9 @@ export class PanelManager {
     const panel = this.panels.get(panelId);
     if (!panel) return;
 
+    // Close open file handles for this panel (safe on any teardown path)
+    this.fsService?.closeHandlesForPanel(panelId);
+
     // Revoke auth token (disconnects WS connections via onRevoke listener)
     getTokenManager().revokeToken(panelId);
 
@@ -3261,6 +3176,9 @@ export class PanelManager {
     //   - getClaudeCodeConversationManager().endPanelConversations
     //   - removeProtocolPanel (if applicable)
     this.unloadPanelResources(panel.id);
+
+    // Unregister panel→context mapping (permanent removal only)
+    this.fsService?.unregisterPanelContext(panel.id);
 
     // Clean up other ID-keyed structures not covered by unloadPanelResources
     this.pendingBrowserNavigations.delete(panel.id);
@@ -3753,123 +3671,6 @@ export class PanelManager {
     return this.viewManager.getWebContents(panelId) ?? undefined;
   }
 
-  // =====================================================================
-  // Template Builder Worker Methods
-  // =====================================================================
-
-  /**
-   * Map of template builder worker IDs that are currently active.
-   * Used to track workers for cleanup on completion/timeout.
-   */
-  private templateBuilderWorkers = new Set<string>();
-
-  /**
-   * Create a hidden template builder worker to sync OPFS.
-   * The worker clones template deps to its partition's OPFS storage.
-   *
-   * @param workerId - Unique ID for this builder worker
-   * @param partitionName - Partition name for OPFS storage (e.g., "tpl_abc123456789")
-   * @param templateConfig - Configuration for the template build
-   */
-  async createTemplateBuilderWorker(
-    workerId: string,
-    partitionName: string,
-    templateConfig: {
-      structure: Record<string, { repo: string; resolvedCommit: string }>;
-      specHash: string;
-      gitConfig: { serverUrl: string; token: string };
-    }
-  ): Promise<void> {
-    if (!this.viewManager) {
-      throw new Error("ViewManager not available");
-    }
-
-    log.verbose(` Creating template builder worker: ${workerId}`);
-
-    // Create auth tokens for the builder panel
-    const authToken = getTokenManager().createToken(workerId, "panel");
-    await this.serverInfo.createPanelToken(workerId, "panel");
-
-    // Build additional arguments for preload
-    const additionalArgs: string[] = [
-      `--natstack-panel-id=${workerId}`,
-      `--natstack-auth-token=${authToken}`,
-      `--natstack-theme=${this.currentTheme}`,
-      `--natstack-kind=panel`,
-      `--natstack-context-id=${workerId}`,
-      ...(this.rpcPort ? [`--natstack-ws-port=${this.rpcPort}`] : []),
-    ];
-
-    // Encode template config as env (preload exposes this via process.env)
-    const panelEnv = {
-      NATSTACK_TEMPLATE_CONFIG: JSON.stringify(templateConfig),
-    };
-    const encodedEnv = Buffer.from(JSON.stringify(panelEnv), "utf-8").toString("base64");
-    additionalArgs.push(`--natstack-panel-env=${encodedEnv}`);
-
-    // Build the template-builder via the V2 build service
-    const buildResult = await this.serverInfo.call("build", "getBuild", ["template-builder"]) as {
-      bundle: string; html: string;
-      assets?: Record<string, { content: string; encoding?: string }>;
-    } | null;
-    if (!buildResult) {
-      throw new Error("Failed to build template-builder via build service");
-    }
-
-    // Store for protocol serving
-    const htmlUrl = storeProtocolPanel(workerId, {
-      bundle: buildResult.bundle,
-      html: buildResult.html,
-      title: "Template Builder",
-      sourceRepo: "builtin:template-builder",
-      assets: buildResult.assets as SharedPanel.ProtocolBuildArtifacts["assets"],
-    });
-
-    // Create hidden view with template partition
-    const srcUrl = new URL(htmlUrl);
-    srcUrl.searchParams.set("panelId", workerId);
-
-    this.viewManager.createView({
-      id: workerId,
-      type: "panel",
-      partition: `persist:${partitionName}`,
-      url: srcUrl.toString(),
-      injectHostThemeVariables: false,
-      additionalArguments: additionalArgs,
-    });
-
-    // Track this worker
-    this.templateBuilderWorkers.add(workerId);
-    log.verbose(` Template builder worker created: ${workerId}`);
-  }
-
-  /**
-   * Close a template builder worker and clean up resources.
-   *
-   * @param workerId - The worker ID to close
-   */
-  async closeTemplateBuilderWorker(workerId: string): Promise<void> {
-    log.verbose(` Closing template builder worker: ${workerId}`);
-
-    // Remove from tracking
-    this.templateBuilderWorkers.delete(workerId);
-
-    // Revoke auth tokens (disconnects WS connections via onRevoke listener)
-    getTokenManager().revokeToken(workerId);
-    void this.serverInfo.revokePanelToken(workerId);
-
-    // Remove protocol panel content
-    if (isProtocolPanel(workerId)) {
-      removeProtocolPanel(workerId);
-    }
-
-    // Destroy the view
-    if (this.viewManager?.hasView(workerId)) {
-      this.viewManager.destroyView(workerId);
-    }
-
-    log.verbose(` Template builder worker closed: ${workerId}`);
-  }
 }
 
 // Global PanelManager instance for internal use

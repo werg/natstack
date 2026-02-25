@@ -78,12 +78,6 @@ export function createWsEventBus<M extends AgenticParticipantMetadata = AgenticP
       return client.sessionKey;
     },
 
-    // Tool role negotiation
-    onToolRoleConflict: client.onToolRoleConflict.bind(client),
-    requestToolRole: client.requestToolRole.bind(client),
-    respondToolRole: client.respondToolRole.bind(client),
-    announceToolRoleHandoff: client.announceToolRoleHandoff.bind(client),
-
     // Channel management
     get contextId() {
       return client.contextId;

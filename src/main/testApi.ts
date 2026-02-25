@@ -30,7 +30,6 @@ export interface TestApi {
       name?: string;
       env?: Record<string, string>;
       focus?: boolean;
-      templateSpec?: string;
     }
   ): Promise<{ id: string; type: SharedPanel.PanelType; title: string }>;
 
@@ -96,11 +95,7 @@ export function setupTestApi(panelManager: PanelManager): void {
     },
 
     async createPanel(parentId, source, options) {
-      // Ensure templateSpec has a default value
-      const resolvedOptions = options
-        ? { ...options, templateSpec: options.templateSpec ?? "contexts/default" }
-        : { templateSpec: "contexts/default" };
-      return panelManager.createPanel(parentId, source, resolvedOptions);
+      return panelManager.createPanel(parentId, source, options ?? {});
     },
 
     async closePanel(id) {

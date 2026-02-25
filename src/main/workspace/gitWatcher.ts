@@ -42,12 +42,20 @@ export function createGitWatcher(workspace: Workspace): GitWatcher {
   const watchPaths = [workspace.gitReposPath];
 
   const watcher = chokidar.watch(watchPaths, {
-    ignored: [
-      "**/node_modules/**",
-      "**/.git/objects/**", // Don't watch git object store (too noisy)
-      "**/.git/logs/**", // Don't watch reflogs
-    ],
+    ignored: (filePath: string) => {
+      const p = normalizePath(filePath);
+      // Skip node_modules entirely (must match both the dir and contents)
+      if (p.includes("/node_modules")) return true;
+      // Skip .git/objects (too noisy)
+      if (p.includes("/.git/objects")) return true;
+      // Skip .git/logs (reflogs)
+      if (p.includes("/.git/logs")) return true;
+      // Skip .cache directory
+      if (p.includes("/.cache")) return true;
+      return false;
+    },
     ignoreInitial: true,
+    followSymlinks: false, // Don't follow symlinks (prevents traversing pnpm-linked packages)
     // No depth limit - support arbitrary nesting like packages/@scope/deep/nested/lib
   });
 

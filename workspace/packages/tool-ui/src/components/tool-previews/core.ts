@@ -5,11 +5,7 @@
  * bundling the Monaco editor.
  */
 
-export { RmPreview, type RmPreviewProps } from "./RmPreview.js";
 export { BashPreview, type BashPreviewProps } from "./BashPreview.js";
-export { GitCommitPreview, type GitCommitPreviewProps } from "./GitCommitPreview.js";
-export { GitCheckoutPreview, type GitCheckoutPreviewProps } from "./GitCheckoutPreview.js";
-export { GitAddPreview, type GitAddPreviewProps } from "./GitAddPreview.js";
 export { ExitPlanModePreview, type ExitPlanModePreviewProps } from "./ExitPlanModePreview.js";
 export { EnterPlanModePreview, type EnterPlanModePreviewProps } from "./EnterPlanModePreview.js";
 
@@ -20,26 +16,14 @@ export { EnterPlanModePreview, type EnterPlanModePreviewProps } from "./EnterPla
 // These are the canonical definitions - we re-export them for convenience
 export {
   // Type guards
-  isFileEditArgs,
-  isFileWriteArgs,
-  isRmArgs,
   isBashArgs,
-  isGitCommitArgs,
-  isGitCheckoutArgs,
-  isGitAddArgs,
   isEnterPlanModeArgs,
   isExitPlanModeArgs,
   // Rich preview helpers
   hasRichPreview,
   RICH_PREVIEW_TOOLS,
   // Types
-  type FileEditArgs,
-  type FileWriteArgs,
-  type RmArgs,
   type BashArgs,
-  type GitCommitArgs,
-  type GitCheckoutArgs,
-  type GitAddArgs,
   type EnterPlanModeArgs,
   type ExitPlanModeArgs,
   type AllowedPrompt,

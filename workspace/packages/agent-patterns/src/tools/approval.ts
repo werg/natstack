@@ -99,7 +99,6 @@ export function createCanUseToolGate(options: CanUseToolGateOptions): {
           wireName: toolName,
           parameters: {},
           menu: false,
-          groups: [],
         };
         const { allow, alwaysAllow } = await showPermissionPrompt(minimalTool, input);
 
@@ -146,7 +145,8 @@ export interface WrapWithApprovalOptions {
  *   tool,
  *   getApprovalLevel: () => settingsMgr.get().autonomyLevel ?? 0,
  *   requestApproval: async (tool, args) => {
- *     return await requestToolApproval(client, panelId, tool.canonicalName, args);
+ *     const result = await showPermissionPrompt(client, panelId, tool.canonicalName, args);
+ *     return result.allow;
  *   },
  * });
  * ```

@@ -11,17 +11,6 @@
     ],
     "parameters": [
       {
-        "key": "workingDirectory",
-        "label": "Working Directory",
-        "description": "Required: Set in Session Settings",
-        "type": "string",
-        "channelLevel": true,
-        "required": true,
-        "placeholder": "/path/to/project",
-        "group": "Environment",
-        "order": 0
-      },
-      {
         "key": "model",
         "label": "Model",
         "description": "OpenAI Codex model for code generation",
@@ -84,17 +73,6 @@
         "default": true,
         "group": "Permissions",
         "order": 4
-      },
-      {
-        "key": "restrictedMode",
-        "label": "Restricted Mode",
-        "description": "Determined by Session Settings (browser storage = restricted)",
-        "type": "boolean",
-        "channelLevel": true,
-        "required": false,
-        "default": false,
-        "group": "Environment",
-        "order": 5
       }
     ]
   },

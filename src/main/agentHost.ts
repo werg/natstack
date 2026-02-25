@@ -35,6 +35,7 @@ import {
   hasElectronUtilityProcess,
   createNodeProcessAdapter,
 } from "./processAdapter.js";
+import type { ContextFolderManager } from "./contextFolderManager.js";
 
 const log = createDevLogger("AgentHost");
 
@@ -88,6 +89,7 @@ interface SpawnOptions {
   channel: string;
   handle: string;
   config: Record<string, unknown>;
+  contextFolderPath: string;
 }
 
 /** Result from V2 build service for agents */
@@ -105,6 +107,7 @@ interface AgentHostOptions {
   revokeToken: (instanceId: string) => boolean;
   /** Build an agent via V2 build service */
   getBuild: (unitPath: string) => Promise<AgentBuildResult>;
+  contextFolderManager: ContextFolderManager;
 }
 
 /**
@@ -153,6 +156,7 @@ export interface StoredSpawnConfig {
   channel: string;
   handle: string;
   config: Record<string, unknown>;
+  contextId: string;
 }
 
 // ===========================================================================
@@ -509,6 +513,7 @@ export class AgentHost extends EventEmitter {
       config: options.config,
       pubsubUrl: this.options.pubsubUrl,
       pubsubToken: token,
+      contextFolderPath: options.contextFolderPath,
     };
 
     log.verbose(`[spawn] Sending init config to ${agentId}: channel=${options.channel}, pubsubUrl=${this.options.pubsubUrl}`);
@@ -723,6 +728,20 @@ export class AgentHost extends EventEmitter {
         continue;
       }
 
+      // Resolve context folder path at wake time
+      if (!spawnConfig.contextId) {
+        log.warn(`No contextId in stored config for agent ${registration.agentId} on ${channel}, skipping wake`);
+        continue;
+      }
+
+      let contextFolderPath: string;
+      try {
+        contextFolderPath = await this.options.contextFolderManager.ensureContextFolder(spawnConfig.contextId);
+      } catch (err) {
+        log.error(`Failed to resolve context folder for ${registration.agentId}: ${err}`);
+        continue;
+      }
+
       log.verbose(`Waking agent ${registration.agentId} (@${registration.handle}) on channel ${channel}`);
 
       try {
@@ -731,6 +750,7 @@ export class AgentHost extends EventEmitter {
           channel: registration.channel,
           handle: registration.handle,
           config: spawnConfig.config,
+          contextFolderPath,
         });
 
         // Success — clear any previous failure tracking

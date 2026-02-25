@@ -5,36 +5,12 @@ import type { ChannelConfig } from "@workspace/pubsub";
 
 /**
  * Session configuration - what chat-launcher tracks locally.
- * ChannelConfig = subset that gets persisted with the channel.
  */
 export interface SessionConfig {
-  projectLocation: "external" | "browser";
-  /** Working directory for external/native filesystem mode */
-  workingDirectory: string;
-  /** Working directory for browser/OPFS mode (defaults to "/") */
-  browserWorkingDirectory: string;
   defaultAutonomy: 0 | 1 | 2;
-  /** Selected template spec for browser mode (e.g., "contexts/default") */
-  contextTemplateSpec?: string;
-}
-
-/** Derive ChannelConfig from SessionConfig */
-export function toChannelConfig(session: SessionConfig): ChannelConfig {
-  const isRestricted = session.projectLocation === "browser";
-  // Use the appropriate working directory based on mode
-  const workingDir = isRestricted
-    ? session.browserWorkingDirectory
-    : session.workingDirectory;
-  return {
-    workingDirectory: workingDir || undefined,
-    restrictedMode: isRestricted,
-  };
 }
 
 export const DEFAULT_SESSION_CONFIG: SessionConfig = {
-  projectLocation: "external",
-  workingDirectory: "",
-  browserWorkingDirectory: "/",
   defaultAutonomy: 2,
 };
 
@@ -48,7 +24,7 @@ export interface AgentSelection {
 
 /** Agent selection with computed unmet requirements */
 export interface AgentSelectionWithRequirements extends AgentSelection {
-  /** Channel-level requirements not satisfied, e.g., ["workingDirectory"] */
+  /** Channel-level requirements not satisfied */
   unmetRequirements: string[];
 }
 
@@ -81,20 +57,18 @@ export function getPerAgentParams(params: FieldDefinition[] | undefined): FieldD
 }
 
 interface UseAgentSelectionOptions {
-  workspaceRoot?: string;
   sessionConfig?: SessionConfig;
 }
 
-export function useAgentSelection({ workspaceRoot, sessionConfig = DEFAULT_SESSION_CONFIG }: UseAgentSelectionOptions = {}) {
+export function useAgentSelection({ sessionConfig = DEFAULT_SESSION_CONFIG }: UseAgentSelectionOptions = {}) {
   const [availableAgents, setAvailableAgents] = useState<AgentSelection[]>([]);
   const [selectionStatus, setSelectionStatus] = useState("Loading agents...");
 
   // Compute agents with requirements - recomputes when sessionConfig changes
   const agentsWithRequirements = useMemo((): AgentSelectionWithRequirements[] => {
-    const channelConfig = toChannelConfig(sessionConfig);
     return availableAgents.map((agent) => ({
       ...agent,
-      unmetRequirements: checkChannelRequirements(agent.agent.parameters, channelConfig),
+      unmetRequirements: checkChannelRequirements(agent.agent.parameters, {}),
     }));
   }, [availableAgents, sessionConfig]);
 
@@ -150,7 +124,7 @@ export function useAgentSelection({ workspaceRoot, sessionConfig = DEFAULT_SESSI
     return () => {
       mounted = false;
     };
-  }, [workspaceRoot]);
+  }, []);
 
   const toggleAgentSelection = useCallback((agentId: string) => {
     setAvailableAgents((prev) =>

@@ -142,7 +142,6 @@ export const SOURCE_SCOPED_OPTIONS = [
 export const PANEL_SCOPED_OPTIONS = [
   "env",
   "name",
-  "templateSpec",
 ] as const;
 
 /**
@@ -203,7 +202,6 @@ export function createNavigationSnapshot(
   const inheritedOptions: Partial<SnapshotOptions> = {
     env: prevOptions.env,
     name: prevOptions.name,
-    templateSpec: prevOptions.templateSpec,
   };
 
   // Merge inherited options with new options (new options override)

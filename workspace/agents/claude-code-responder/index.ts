@@ -9,8 +9,8 @@
  * Features:
  * - Claude Agent SDK integration with session resumption
  * - Complex tool handling with permission flows
- * - Restricted mode with pubsub-based tools
- * - Unrestricted mode with native SDK tools
+ * - Pubsub-based tools (feedback, eval, type checking)
+ * - Native SDK tools for file operations
  * - Image attachment handling via MCP
  * - Subagent management
  * - Session recovery
@@ -25,12 +25,10 @@ import { Agent, runAgent } from "@workspace/agent-runtime";
 import type { EventStreamItem } from "@workspace/agentic-messaging";
 import {
   jsonSchemaToZodRawShape,
-  formatArgsForLog,
   createInterruptHandler,
   createPauseMethodDefinition,
   DEFAULT_MISSED_CONTEXT_MAX_CHARS,
   showPermissionPrompt,
-  validateRestrictedMode,
   createThinkingTracker,
   createActionTracker,
   createTypingTracker,
@@ -82,7 +80,7 @@ import {
   createMissedContextManager,
   createContextTracker,
   findPanelParticipant,
-  discoverPubsubToolsForMode,
+  discoverPubsubTools,
   toClaudeMcpTools,
   createCanUseToolGate,
   type MessageQueue,
@@ -92,12 +90,7 @@ import {
 } from "@workspace/agent-patterns";
 import {
   createRichTextChatSystemPrompt,
-  createRestrictedModeSystemPrompt,
 } from "@workspace/agent-patterns/prompts";
-import {
-  createRestrictedTaskTool,
-  type ToolDefinitionWithExecute,
-} from "./task-tool.js";
 
 // =============================================================================
 // Types and Interfaces
@@ -112,8 +105,6 @@ interface AgentConfig {
   maxThinkingTokens?: number;
   executionMode?: "plan" | "edit";
   autonomyLevel?: number;
-  workingDirectory?: string;
-  restrictedMode: boolean;
 }
 
 /**
@@ -315,7 +306,6 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
   private subagents!: SubagentManager;
   private activeQueryInstance: Query | null = null;
   private pendingRecoveryContext: string | null = null;
-  private restrictedModeValidated = false;
 
   getConnectOptions() {
     // Note: this.ctx is NOT available here - use this.initInfo instead
@@ -481,15 +471,18 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     });
 
     // Session recovery
-    if (this.state.sdkSessionId && config.workingDirectory && !config.restrictedMode) {
-      await this.performSessionRecovery(this.state.sdkSessionId, config.workingDirectory);
+    const contextFolderPath = this.initInfo.contextFolderPath;
+    if (!contextFolderPath) {
+      throw new Error("contextFolderPath is required but was not provided");
+    }
+    if (this.state.sdkSessionId) {
+      await this.performSessionRecovery(this.state.sdkSessionId, contextFolderPath);
     }
 
     this.log.info("ClaudeCodeResponder started", {
       channel: this.channel,
       handle: this.handle,
-      restrictedMode: config.restrictedMode,
-      workingDirectory: config.workingDirectory,
+      contextFolderPath,
       settings: this.settingsMgr.get(),
     });
   }
@@ -551,7 +544,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     this.log.info("ClaudeCodeResponder shutting down");
   }
 
-  private async performSessionRecovery(sdkSessionId: string, workingDirectory: string): Promise<void> {
+  private async performSessionRecovery(sdkSessionId: string, contextFolderPath: string): Promise<void> {
     const client = this.client as AgenticClient<ChatParticipantMetadata>;
 
     this.log.info(`Performing session recovery for SDK session: ${sdkSessionId}`);
@@ -559,7 +552,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     try {
       const recoveryResult = await recoverSession({
         sdkSessionId,
-        workingDirectory,
+        workingDirectory: contextFolderPath,
         sendMessage: async (content: string, metadata: Record<string, unknown>) => {
           await client.send(content, { metadata, persist: true } as Parameters<typeof client.send>[1]);
         },
@@ -701,7 +694,6 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
   }
 
   private async handleUserMessage(incoming: IncomingNewMessage): Promise<void> {
-    const config = this.config as unknown as AgentConfig;
     const client = this.client as AgenticClient<ChatParticipantMetadata>;
     const settings = this.settingsMgr.get();
 
@@ -712,12 +704,6 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
     if (queuedInfo) {
       await queuedInfo.typingTracker.cleanup();
       this.queuedMessages.delete(incoming.id);
-    }
-
-    // Validate restricted mode on first message
-    if (config.restrictedMode && !this.restrictedModeValidated) {
-      await validateRestrictedMode(client, (msg) => this.log.debug(msg));
-      this.restrictedModeValidated = true;
     }
 
     // Build prompt with missed and recovery context
@@ -832,7 +818,6 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
 
       // Build MCP servers
       let pubsubServer: ReturnType<typeof createSdkMcpServer> | undefined;
-      let allowedTools: string[] = [];
 
       // Channel tools server
       const setTitleTool = tool(
@@ -850,10 +835,6 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
         version: "1.0.0",
         tools: [setTitleTool],
       });
-
-      if (config.restrictedMode) {
-        allowedTools.push("mcp__channel__set_title");
-      }
 
       // Attachments MCP server
       let attachmentsMcpServer: ReturnType<typeof createSdkMcpServer> | undefined;
@@ -910,9 +891,6 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
           tools: [listImagesTool, getImageTool, getCurrentImagesTool],
         });
 
-        if (config.restrictedMode) {
-          allowedTools.push("mcp__attachments__list_images", "mcp__attachments__get_image", "mcp__attachments__get_current_images");
-        }
       }
 
       // Build prompt with image note
@@ -922,7 +900,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
           ? `${prompt}\n\n[${allImageAttachments.size} historical image(s) available. Call list_images to see them.]`
           : prompt;
 
-      let pubsubRegistry: Awaited<ReturnType<typeof discoverPubsubToolsForMode>> | undefined;
+      let pubsubRegistry: Awaited<ReturnType<typeof discoverPubsubTools>> | undefined;
 
       // Resume session
       const resumeSessionId = client.sdkSessionId || this.state.sdkSessionId;
@@ -930,39 +908,19 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
         this.log.debug(`Resuming session: ${resumeSessionId}`);
       }
 
-      if (config.restrictedMode) {
-        // Wait for tools and build registry
-        const registry = await discoverPubsubToolsForMode(client, {
-          mode: "restricted",
-          log: (msg) => this.log.debug(msg),
-        });
-        pubsubRegistry = registry;
-        this.log.info(`Discovered ${registry.tools.length} tools for restricted mode`);
-        if (registry.tools.length > 0) {
-          const toolNames = registry.tools.map((t) => `${t.providerId}:${t.methodName}`);
-          this.log.info(`Restricted mode tools: ${toolNames.join(", ")}`);
-        }
+      // Discover pubsub tools (feedback_form, feedback_custom, eval, check_types, get_type_info, get_completions)
+      pubsubRegistry = await discoverPubsubTools(client, {
+        allowlist: ["feedback_form", "feedback_custom", "eval", "check_types", "get_type_info", "get_completions"],
+        timeoutMs: 1500,
+        log: (msg) => this.log.debug(msg),
+      });
 
-        // Build Claude SDK MCP tools via adapter
-        const { toolDefs: claudeToolDefs, allowedTools: registryAllowedTools, execute: registryExecute } = toClaudeMcpTools(registry, client);
+      if (pubsubRegistry.tools.length > 0) {
+        this.log.info(`Discovered ${pubsubRegistry.tools.length} pubsub tools`);
+        const toolNames = pubsubRegistry.tools.map((t) => `${t.providerId}:${t.methodName}`);
+        this.log.info(`Pubsub tools: ${toolNames.join(", ")}`);
 
-        // Build ToolDefinitionWithExecute[] for the Task tool (needs wire names)
-        const toolDefsWithExecute: ToolDefinitionWithExecute[] = registry.tools.map((t) => ({
-          name: t.wireName,
-          description: t.description,
-          inputSchema: t.parameters,
-          execute: async (args: unknown) => registryExecute(t.canonicalName, args),
-        }));
-
-        const restrictedTaskTool = createRestrictedTaskTool({
-          parentClient: client,
-          availableTools: toolDefsWithExecute,
-          claudeExecutable: this.claudeExecutable,
-          connectionOptions: this.subagents.getConnectionOptionsForExternalUse(),
-          parentSettings: { maxThinkingTokens: settings.maxThinkingTokens },
-        });
-
-        // Create MCP tools from registry adapter output
+        const { toolDefs: claudeToolDefs } = toClaudeMcpTools(pubsubRegistry, client);
         const mcpTools = claudeToolDefs.map((t) =>
           tool(
             t.name,
@@ -972,60 +930,13 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
           )
         );
 
-        // Add Task tool
-        const taskMcpTool = tool(
-          "Task",
-          restrictedTaskTool.description,
-          restrictedTaskTool.inputSchema.shape,
-          async (args: unknown) => {
-            const result = await restrictedTaskTool.execute(args as Parameters<typeof restrictedTaskTool.execute>[0]);
-            return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
-          }
-        );
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        mcpTools.push(taskMcpTool as any);
-
         pubsubServer = createSdkMcpServer({
           name: "workspace",
           version: "1.0.0",
           tools: mcpTools,
         });
-
-        allowedTools = [
-          ...registryAllowedTools,
-          "mcp__workspace__Task",
-          "TodoWrite",
-        ];
       } else {
-        pubsubRegistry = await discoverPubsubToolsForMode(client, {
-          mode: "unrestricted",
-          timeoutMs: 1500,
-          log: (msg) => this.log.debug(msg),
-        });
-
-        if (pubsubRegistry.tools.length > 0) {
-          this.log.info(`Discovered ${pubsubRegistry.tools.length} unrestricted pubsub tools`);
-          const toolNames = pubsubRegistry.tools.map((t) => `${t.providerId}:${t.methodName}`);
-          this.log.info(`Unrestricted pubsub tools: ${toolNames.join(", ")}`);
-
-          const { toolDefs: claudeToolDefs } = toClaudeMcpTools(pubsubRegistry, client);
-          const mcpTools = claudeToolDefs.map((t) =>
-            tool(
-              t.name,
-              t.description,
-              jsonSchemaToZodRawShape(t.parameters),
-              t.execute
-            )
-          );
-
-          pubsubServer = createSdkMcpServer({
-            name: "workspace",
-            version: "1.0.0",
-            tools: mcpTools,
-          });
-        } else {
-          this.log.info("No unrestricted pubsub tools available");
-        }
+        this.log.info("No pubsub tools available");
       }
 
       // Create approval gate for pubsub tools
@@ -1075,21 +986,17 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
           }
           return { mcpServers: servers };
         })(),
-        systemPrompt: config.restrictedMode
-          ? createRestrictedModeSystemPrompt()
-          : createRichTextChatSystemPrompt(),
+        systemPrompt: createRichTextChatSystemPrompt(),
         pathToClaudeCodeExecutable: this.claudeExecutable,
-        ...(allowedTools.length > 0 && { allowedTools }),
-        disallowedTools: config.restrictedMode
-          ? ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Task", "NotebookEdit"]
-          : [],
-        ...(!config.restrictedMode && config.workingDirectory && { cwd: config.workingDirectory }),
+        disallowedTools: [],
+        cwd: this.initInfo.contextFolderPath,
         includePartialMessages: true,
         ...(resumeSessionId && { resume: resumeSessionId }),
         ...(settings.model && { model: settings.model }),
         ...(settings.maxThinkingTokens && { maxThinkingTokens: settings.maxThinkingTokens }),
         ...(settings.executionMode && { executionMode: settings.executionMode }),
         canUseTool,
+        plugins: [{ type: 'local' as const, path: './workspace/skills' }],
       };
 
       queryInstance = query({
@@ -1299,8 +1206,8 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
                         }
                       }
 
-                      // Subagent creation for unrestricted mode
-                      if (acc.toolName === "Task" && !config.restrictedMode) {
+                      // Subagent creation for Task tool
+                      if (acc.toolName === "Task") {
                         const taskArgs = parsedInput as { description?: string; subagent_type?: string };
                         await this.subagents.create(toolId, {
                           taskDescription: taskArgs.description ?? "Subagent task",

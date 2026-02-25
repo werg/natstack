@@ -17,7 +17,7 @@ import type { StreamTextEvent } from "../shared/types.js";
 import type { StreamTarget } from "../main/ai/aiHandler.js";
 import type { ToolExecutionResult } from "../main/ai/claudeCodeToolProxy.js";
 import { TOOL_EXECUTION_TIMEOUT_MS } from "../shared/constants.js";
-import { findAvailablePortForService } from "../main/portUtils.js";
+import { findServicePort } from "../main/portUtils.js";
 import {
   parseServiceMethod,
   getServiceDispatcher,
@@ -62,12 +62,13 @@ export class RpcServer {
     private deps: {
       tokenManager: TokenManager;
       panelManager?: PanelManagerLike;
+      /** Called when an authenticated client disconnects (e.g., for fs handle cleanup) */
+      onClientDisconnect?: (callerId: string, callerKind: CallerKind) => void;
     }
   ) {}
 
   async start(): Promise<number> {
-    const { port, server: tempServer } = await findAvailablePortForService("rpc");
-    tempServer.close();
+    const port = await findServicePort("rpc");
 
     this.httpServer = createServer();
     this.wss = new WebSocketServer({ server: this.httpServer });
@@ -82,7 +83,7 @@ export class RpcServer {
     });
 
     await new Promise<void>((resolve, reject) => {
-      this.httpServer!.on("error", reject);
+      this.httpServer!.once("error", reject);
       this.httpServer!.listen(port, "127.0.0.1", () => resolve());
     });
 
@@ -327,6 +328,9 @@ export class RpcServer {
         pending.reject(new Error("Client disconnected"));
       }
     }
+
+    // Notify listeners (e.g., fs handle cleanup)
+    this.deps.onClientDisconnect?.(client.callerId, client.callerKind);
   }
 
   private cleanupClient(client: WsClientState): void {

@@ -15,9 +15,9 @@ export interface BootstrapConfig {
   gitRef?: string;
   /** Resolved repo args (name -> spec) provided by parent at createChild time */
   repoArgs?: Record<string, RepoArgSpec>;
-  /** Path in OPFS for panel source (default: "/src") */
+  /** Path for panel source (default: "/src") */
   sourcePath?: string;
-  /** Path in OPFS for repo args (default: "/args") */
+  /** Path for repo args (default: "/args") */
   argsPath?: string;
   /** Author info for commits */
   author?: {
@@ -32,11 +32,11 @@ export interface BootstrapConfig {
 export interface BootstrapResult {
   /** Whether bootstrap succeeded */
   success: boolean;
-  /** Path to panel source in OPFS */
+  /** Path to panel source */
   sourcePath: string;
   /** Current commit SHA of panel source (for cache key generation) */
   sourceCommit?: string;
-  /** Map of repo arg name -> path in OPFS */
+  /** Map of repo arg name -> path */
   argPaths: Record<string, string>;
   /** Map of repo arg name -> commit SHA (for cache key generation) */
   argCommits: Record<string, string>;
@@ -130,12 +130,12 @@ async function cloneWithDefaultBranch(
 }
 
 /**
- * Bootstrap a panel by cloning/pulling its source and repo args into OPFS.
+ * Bootstrap a panel by cloning/pulling its source and repo args.
  *
  * Usage:
  * ```typescript
  * import { bootstrap } from "@natstack/git";
- * import { fs } from "@zenfs/core";
+ * import { fs } from "@workspace/runtime";
  *
  * const config = await window.__natstackPanelBridge.git.getConfig();
  * const result = await bootstrap(fs, config);
@@ -249,7 +249,7 @@ export async function bootstrap(
             if (origin && origin.url !== arg.resolvedUrl) {
               throw new Error(
                 `Remote mismatch: expected ${arg.resolvedUrl}, found ${origin.url}. ` +
-                  `Clear OPFS to resolve.`
+                  `Clear context folder to resolve.`
               );
             }
 

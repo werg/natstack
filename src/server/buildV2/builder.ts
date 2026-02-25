@@ -897,9 +897,10 @@ async function buildPanel(
     const assets: Record<string, { content: string; encoding?: "base64" }> = {};
     if (result.metafile) {
       for (const outputPath of Object.keys(result.metafile.outputs)) {
-        const absPath = path.isAbsolute(outputPath)
-          ? outputPath
-          : path.join(outdir, outputPath);
+        // esbuild metafile keys are relative to absWorkingDir (defaults to
+        // process.cwd()), NOT relative to outdir.  path.resolve uses CWD,
+        // matching esbuild's convention.
+        const absPath = path.resolve(outputPath);
 
         // Skip main bundle and CSS
         const basename = path.basename(absPath);

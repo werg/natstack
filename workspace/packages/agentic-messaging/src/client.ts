@@ -39,8 +39,6 @@ import type {
   JsonSchema,
   MissedContext,
   FormatOptions,
-  ToolGroup,
-  ToolRoleConflict,
 } from "./types.js";
 import { AgenticError, ValidationError } from "./types.js";
 import { aggregateReplayEvents, formatMissedContext } from "./missed-context.js";
@@ -54,11 +52,7 @@ import {
   MethodCancelSchema,
   MethodResultSchema,
   UpdateMessageSchema,
-  ToolRoleRequestSchema,
-  ToolRoleResponseSchema,
-  ToolRoleHandoffSchema,
 } from "./protocol.js";
-import { ALL_TOOL_GROUPS } from "./tool-schemas.js";
 import { AsyncQueue, createFanout } from "./async-queue.js";
 
 const INTERNAL_METADATA_KEY = "_agentic";
@@ -71,29 +65,6 @@ const AgenticMetadataSchema = z.object({
   name: z.string().min(1, "name is required"),
   type: z.string().min(1, "type is required"),
   handle: z.string().min(1, "handle is required"),
-}).passthrough();
-
-/**
- * Schema for validating tool role declarations in participant metadata.
- * Used during conflict detection to safely extract toolRoles.
- */
-const ToolRoleDeclarationSchema = z.object({
-  providing: z.boolean(),
-  priority: z.number().optional(),
-});
-
-const ToolRolesSchema = z.record(
-  z.enum(["file-ops", "git-ops", "workspace-ops"]),
-  ToolRoleDeclarationSchema
-).optional();
-
-/**
- * Schema for extracting conflict-relevant fields from participant metadata.
- * Uses safeParse to gracefully handle malformed metadata.
- */
-const ConflictMetadataSchema = z.object({
-  name: z.string().optional(),
-  toolRoles: ToolRolesSchema,
 }).passthrough();
 
 type AnyRecord = Record<string, unknown>;
@@ -152,83 +123,6 @@ function toAgenticErrorFromMethodResult(content: unknown): AgenticError {
     return new AgenticError(content["error"], code as never, content);
   }
   return new AgenticError("method execution failed", "execution-error", content);
-}
-
-// ============================================================================
-// Tool Role Conflict Detection
-// ============================================================================
-
-/**
- * Detect tool role conflicts in the roster.
- * A conflict exists when multiple participants claim to provide the same tool group.
- */
-function detectToolRoleConflicts<T extends AgenticParticipantMetadata>(
-  roster: Record<string, { metadata: T }>,
-  participantFirstSeen: Map<string, number>
-): ToolRoleConflict[] {
-  const conflicts: ToolRoleConflict[] = [];
-
-  for (const group of ALL_TOOL_GROUPS) {
-    // Find all participants claiming this group
-    const providers: Array<{
-      id: string;
-      name: string;
-      joinedAt: number;
-      priority?: number;
-    }> = [];
-
-    for (const [id, participant] of Object.entries(roster)) {
-      // Use Zod safeParse to gracefully handle malformed metadata
-      const parsed = ConflictMetadataSchema.safeParse(participant.metadata);
-      if (!parsed.success) continue; // Skip participants with invalid metadata
-
-      const meta = parsed.data;
-      const roleDecl = meta.toolRoles?.[group];
-      if (roleDecl?.providing) {
-        providers.push({
-          id,
-          name: meta.name || id,
-          joinedAt: participantFirstSeen.get(id) ?? Date.now(),
-          priority: roleDecl.priority,
-        });
-      }
-    }
-
-    // Only a conflict if more than one provider
-    if (providers.length > 1) {
-      const resolvedProvider = resolveToolRoleConflict(providers);
-      conflicts.push({
-        group,
-        providers,
-        resolvedProvider,
-      });
-    }
-  }
-
-  return conflicts;
-}
-
-/**
- * Resolve a tool role conflict by selecting the winning provider.
- * Priority: lower priority wins → earlier joinedAt wins → lexicographic id wins
- */
-function resolveToolRoleConflict(
-  providers: Array<{ id: string; joinedAt: number; priority?: number }>
-): string {
-  if (providers.length === 0) {
-    throw new Error("resolveToolRoleConflict called with empty providers array");
-  }
-  const sorted = [...providers].sort((a, b) => {
-    // Priority: lower wins (undefined treated as Infinity)
-    const aPriority = a.priority ?? Infinity;
-    const bPriority = b.priority ?? Infinity;
-    if (aPriority !== bPriority) return aPriority - bPriority;
-    // Join time: earlier wins
-    if (a.joinedAt !== b.joinedAt) return a.joinedAt - b.joinedAt;
-    // ID: lexicographic tiebreaker
-    return a.id.localeCompare(b.id);
-  });
-  return sorted[0]!.id;
 }
 
 /** Row shape from getMessagesBefore pagination results */
@@ -454,8 +348,6 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
   const errorHandlers = new Set<(error: Error) => void>();
   const eventsFanout = createFanout<IncomingEvent>();
   const methodCallHandlers = new Set<(call: IncomingMethodCall) => void>();
-  const toolRoleConflictHandlers = new Set<(conflicts: ToolRoleConflict[]) => void>();
-
   const replayEvents: IncomingEvent[] = [];
   let missedMessages: AggregatedEvent[] = [];
 
@@ -480,10 +372,6 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
 
   function emitMethodCall(call: IncomingMethodCall): void {
     for (const handler of methodCallHandlers) handler(call);
-  }
-
-  function emitToolRoleConflicts(conflicts: ToolRoleConflict[]): void {
-    for (const handler of toolRoleConflictHandlers) handler(conflicts);
   }
 
   /**
@@ -677,14 +565,6 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       }
     }
 
-    // Check for tool role conflicts after initial replay is complete
-    // This avoids false conflicts during replay as participants are being reconstructed
-    if (initialReplayComplete) {
-      const conflicts = detectToolRoleConflicts(roster.participants, participantFirstSeen);
-      if (conflicts.length > 0) {
-        emitToolRoleConflicts(conflicts);
-      }
-    }
   });
 
   function validateSend<TSchema extends z.ZodTypeAny>(
@@ -1098,54 +978,6 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
       return { ...presenceEvent, type: "presence" };
     }
 
-    // Tool Role Negotiation Messages
-    if (type === "tool-role-request") {
-      const parsed = validateReceive(ToolRoleRequestSchema, payload, "ToolRoleRequest");
-      if (!parsed) return null;
-      return {
-        type: "tool-role-request",
-        kind,
-        senderId,
-        ts,
-        pubsubId,
-        senderMetadata: normalizedSender,
-        group: parsed.group,
-        requesterId: parsed.requesterId,
-        requesterType: parsed.requesterType,
-      };
-    }
-
-    if (type === "tool-role-response") {
-      const parsed = validateReceive(ToolRoleResponseSchema, payload, "ToolRoleResponse");
-      if (!parsed) return null;
-      return {
-        type: "tool-role-response",
-        kind,
-        senderId,
-        ts,
-        pubsubId,
-        senderMetadata: normalizedSender,
-        group: parsed.group,
-        accepted: parsed.accepted,
-        handoffTo: parsed.handoffTo,
-      };
-    }
-
-    if (type === "tool-role-handoff") {
-      const parsed = validateReceive(ToolRoleHandoffSchema, payload, "ToolRoleHandoff");
-      if (!parsed) return null;
-      return {
-        type: "tool-role-handoff",
-        kind,
-        senderId,
-        ts,
-        pubsubId,
-        senderMetadata: normalizedSender,
-        group: parsed.group,
-        from: parsed.from,
-        to: parsed.to,
-      };
-    }
 
     return null;
   }
@@ -1751,32 +1583,6 @@ export async function connect<T extends AgenticParticipantMetadata = AgenticPart
     resolveHandles: resolveHandlesImpl,
     getParticipantByHandle: getParticipantByHandleImpl,
     onRoster: pubsub.onRoster,
-    // Tool Role Negotiation
-    onToolRoleConflict: (handler) => {
-      toolRoleConflictHandlers.add(handler);
-      return () => toolRoleConflictHandlers.delete(handler);
-    },
-    requestToolRole: async (group: ToolGroup) => {
-      await pubsub.publish("tool-role-request", {
-        group,
-        requesterId: selfId ?? instanceId,
-        requesterType: currentMetadata["type"] ?? "unknown",
-      });
-    },
-    respondToolRole: async (group: ToolGroup, accepted: boolean, handoffTo?: string) => {
-      await pubsub.publish("tool-role-response", {
-        group,
-        accepted,
-        handoffTo,
-      });
-    },
-    announceToolRoleHandoff: async (group: ToolGroup, from: string, to: string) => {
-      await pubsub.publish("tool-role-handoff", {
-        group,
-        from,
-        to,
-      });
-    },
     get channelConfig() {
       return pubsub.channelConfig;
     },

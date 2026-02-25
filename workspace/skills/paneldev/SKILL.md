@@ -1,11 +1,11 @@
 ---
 name: paneldev
-description: NatStack panel development docs - hooks, contracts, filesystem, git, AI. Clone and read SKILL.md to start.
+description: NatStack panel development docs - hooks, contracts, filesystem, git, AI. Read SKILL.md to start.
 ---
 
 # Panel Development Skill
 
-Documentation for developing NatStack panels in restricted mode (OPFS sandbox).
+Documentation for developing NatStack panels.
 
 ## Files
 
@@ -20,8 +20,7 @@ Documentation for developing NatStack panels in restricted mode (OPFS sandbox).
 
 ## Quick Start
 
-1. Clone: `WorkspaceClone({ repo_spec: "skills/paneldev" })`
-2. Read: `Read({ file_path: "/workspace/skills/paneldev/PANEL_DEVELOPMENT.md" })`
+1. Read: `Read({ file_path: "workspace/skills/paneldev/PANEL_DEVELOPMENT.md" })`
 
 ## Panel Template
 
@@ -44,8 +43,8 @@ export default function MyApp() {
 
 | Task | Command |
 |------|---------|
-| Discover repos | `WorkspaceList({ category: "panels" })` |
-| Clone a repo | `WorkspaceClone({ repo_spec: "panels/..." })` |
-| Check context | `ContextInfo()` |
-| Git status | `GitStatus({ path: "/workspace/..." })` |
-| Commit | `GitCommit({ message: "...", path: "/workspace/..." })` |
+| List files | `Bash({ command: "ls panels/" })` |
+| Read a file | `Read({ file_path: "panels/my-app/index.tsx" })` |
+| Edit a file | `Edit({ file_path: "panels/my-app/index.tsx", old_string: "...", new_string: "..." })` |
+| Git status | `Bash({ command: "git status" })` |
+| Commit | `Bash({ command: "git add -A && git commit -m '...'" })` |

@@ -6,7 +6,7 @@ if (typeof globalThis.Buffer === "undefined") {
 }
 
 import { createPanelTransport, createServerTransport } from "./transport.js";
-import { fs, fsReady } from "./fs.js"; // Conditional fs: Node.js for unsafe, ZenFS for safe
+import { fs, fsReady } from "./fs.js"; // RPC-backed fs (server-side per-context folders)
 import { initRuntime } from "../setup/initRuntime.js";
 export type { BootstrapResult } from "../shared/bootstrap.js";
 export type { ThemeAppearance, RuntimeFs, FileStats, MkdirOptions, RmOptions } from "../types.js";
@@ -38,7 +38,6 @@ export {
   parseContextId,
   isValidContextId,
   isSafeContext,
-  getTemplateSpecHash,
   getInstanceId,
 } from "../core/context.js";
 export type * from "../core/types.js";

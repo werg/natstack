@@ -69,10 +69,11 @@ describe("PubSub Server", () => {
   const createClient = (
     token: string,
     channel: string,
-    sinceId?: number
+    sinceId?: number,
+    contextId: string = "ctx_test"
   ): Promise<ClientConnection> => {
     return new Promise((resolve, reject) => {
-      const params = new URLSearchParams({ token, channel });
+      const params = new URLSearchParams({ token, channel, contextId });
       if (sinceId !== undefined) {
         params.set("sinceId", String(sinceId));
       }
@@ -333,7 +334,6 @@ describe("PubSub Server", () => {
       payload?: { action?: string };
     };
     // Message replays (sinceId filters to msg2 and msg3)
-    // Note: leave presence may be replayed again by replayMessages if its id > sinceId
     const replay1 = (await waitForMessage(client2)) as {
       kind: string;
       id: number;
@@ -345,11 +345,6 @@ describe("PubSub Server", () => {
       id: number;
       type?: string;
       payload: { text?: string };
-    };
-    // Leave presence may be replayed again (id > sinceId)
-    const replay3 = (await waitForMessage(client2)) as {
-      kind: string;
-      type?: string;
     };
     const ready = (await waitForMessage(client2)) as { kind: string };
     const joinPresence = (await waitForMessage(client2)) as { kind: string; type?: string };
@@ -367,10 +362,6 @@ describe("PubSub Server", () => {
     expect(replay2.kind).toBe("replay");
     expect(replay2.id).toBe(msg3.id);
     expect(replay2.payload.text).toBe("message 3");
-
-    // Leave presence replayed again (its id > sinceId)
-    expect(replay3.kind).toBe("replay");
-    expect(replay3.type).toBe("presence");
 
     expect(ready.kind).toBe("ready");
     expect(joinPresence.kind).toBe("persisted");
@@ -482,6 +473,7 @@ describe("PubSub Server", () => {
       const params = new URLSearchParams({
         token: "client-a-token",
         channel: presenceChannel,
+        contextId: "ctx_test",
       });
       const ws = new WebSocket(`ws://127.0.0.1:${port}/?${params.toString()}`);
       openClients.push(ws);

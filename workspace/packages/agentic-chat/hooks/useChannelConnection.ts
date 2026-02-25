@@ -6,8 +6,6 @@ import type {
   IncomingEvent,
   AggregatedEvent,
   MethodDefinition,
-  ToolGroup,
-  ToolRoleDeclaration,
   ChannelConfig,
 } from "@workspace/agentic-messaging";
 import { isAggregatedEvent } from "@workspace/agentic-messaging";
@@ -15,15 +13,10 @@ import type { ChatParticipantMetadata, ConnectionConfig } from "../types";
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
 
-/** Tool roles configuration for the connection */
-export type ToolRolesConfig = Partial<Record<ToolGroup, ToolRoleDeclaration>>;
-
 export interface UseChannelConnectionOptions {
   /** Connection configuration (server URL, token, client ID) */
   config: ConnectionConfig;
   metadata: ChatParticipantMetadata;
-  /** Tool roles this panel provides (for conflict detection) */
-  toolRoles?: ToolRolesConfig;
   /** Called for each live event (messages, method calls, method results, presence) */
   onEvent?: (event: IncomingEvent) => void;
   /** Called for each aggregated replay event (collect mode) */
@@ -61,7 +54,6 @@ export interface UseChannelConnectionResult {
 export function useChannelConnection({
   config,
   metadata,
-  toolRoles,
   onEvent,
   onAggregatedEvent,
   onRoster,
@@ -127,7 +119,6 @@ export function useChannelConnection({
           methods,
           replayMode: "collect",
           replayMessageLimit: 200,
-          extraMetadata: toolRoles ? { toolRoles } : undefined,
         });
 
         clientRef.current = newClient;
@@ -206,7 +197,7 @@ export function useChannelConnection({
         throw error;
       }
     },
-    [config, metadata, toolRoles, disconnect]
+    [config, metadata, disconnect]
   );
 
   // Clean up on unmount

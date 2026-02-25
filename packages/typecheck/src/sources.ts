@@ -4,11 +4,11 @@
  * This module provides a unified interface for reading source files from
  * different backends:
  * - Disk: For external development (main process)
- * - OPFS: For in-app development (panel/worker context)
+ * - Panel: For in-app development (panel/worker context)
  * - Virtual: For testing or synthetic sources
  */
 
-/** Minimal filesystem interface for OPFS-based file sources. */
+/** Minimal filesystem interface for panel-based file sources. */
 export interface ReadableFs {
   readFile(path: string, encoding?: BufferEncoding): Promise<string | Uint8Array>;
   readdir(path: string): Promise<string[]>;
@@ -116,11 +116,11 @@ export function createDiskFileSource(basePath: string): FileSource {
 }
 
 /**
- * Create a file source from OPFS/ZenFS (for in-app dev in panels).
+ * Create a file source from the panel filesystem (for in-app dev in panels).
  */
 export function createOpfsFileSource(fs: ReadableFs, basePath: string): FileSource {
   const resolvePath = (filePath: string): string => {
-    // Simple path resolution for OPFS
+    // Simple path resolution for panel filesystem
     if (filePath.startsWith("/")) {
       return filePath;
     }

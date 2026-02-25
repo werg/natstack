@@ -12,7 +12,7 @@ The Playwright fork remediation has successfully implemented the foundational in
 
 1. **Removed Feature Bloat** - Deleted 40 duplicate .js files and incompatible custom APIs
 2. **Created CDP Infrastructure** - Three new adapter classes for direct CDP integration
-3. **Validated Browser Environment** - Startup checks ensure required APIs (WebSocket, Crypto, OPFS)
+3. **Validated Browser Environment** - Startup checks ensure required APIs (WebSocket, Crypto, filesystem)
 4. **Maintained API Parity** - Public API structure preserved for drop-in compatibility
 5. **Clean Build Output** - Successfully bundles to 507KB (unminified), ~80KB gzipped
 
@@ -28,7 +28,7 @@ The Playwright fork remediation has successfully implemented the foundational in
   - Removed unmaintained copies that were causing maintenance burden
 
 #### Fixed
-- **`browser-stubs/fs.ts`** - Added startup validation for OPFS fs requirement
+- **`browser-stubs/fs.ts`** - Added startup validation for filesystem requirement
 - **`browser-stubs/events.ts`** - Verified browser-compatible EventEmitter implementation
 - **Created `validateBrowserEnvironment.ts`** - Fails fast with clear error messages if required APIs are missing
 
@@ -36,7 +36,7 @@ The Playwright fork remediation has successfully implemented the foundational in
 | Module | Status | Action |
 |--------|--------|--------|
 | events.ts | ✅ | Using simple browser-compatible implementation |
-| fs.ts | ✅ | OPFS validation enforced at startup |
+| fs.ts | ✅ | Filesystem validation enforced at startup |
 | crypto.ts | ✅ | Uses Web Crypto API |
 | path.ts | ✅ | Browser-compatible implementation |
 | http/https.ts | ✅ | Stubbed (minimal use) |
@@ -141,7 +141,7 @@ Clean CDP-Direct Architecture
 | Selector Engine | Full InjectedScript | Ready for integration | 🔄 In Progress |
 | Browser Support | Multi-browser | Chrome/Chromium only | ✅ Focused |
 | Protocol Layer | Full dispatcher pattern | Direct CDP calls | ✅ Lean |
-| OPFS Support | Not required | Mandatory | ✅ Enforced |
+| Filesystem | Not required | Required (injected) | ✅ Enforced |
 
 ## Building the Project
 
@@ -191,7 +191,7 @@ export { Locator } from './client/locator';
 - `IMPLEMENTATION_GUIDE.md` - Detailed migration guide
 
 ### Modified (Existing)
-- `src/browser-stubs/fs.ts` - Added OPFS validation
+- `src/browser-stubs/fs.ts` - Added filesystem validation
 - `src/index.ts` - Updated exports
 
 ### Deleted
@@ -232,7 +232,7 @@ Create CDP-backed implementations:
 ✅ **API Compatibility**: Public API matches Playwright exactly
 ✅ **CDP Infrastructure**: Core adapters in place and building
 ✅ **Browser Compatibility**: All code works in browser context
-✅ **OPFS Validation**: Fails fast if fs not available
+✅ **Filesystem Validation**: Fails fast if fs not available
 ✅ **Single Session Focus**: Optimized for one Chrome instance
 
 ## Risk Mitigation
@@ -242,7 +242,7 @@ Create CDP-backed implementations:
 | InjectedScript size | Already bundled in separate package, lazily loaded |
 | Object lifetime leaks | CDP object ID tracking and releaseObject() cleanup |
 | Context switching errors | Per-context InjectedScript caching in InjectedScriptLoader |
-| OPFS unavailable | Startup validation with clear error messages |
+| Filesystem unavailable | Startup validation with clear error messages |
 | Type safety | Framework prevents runtime type errors early |
 
 ## Code Quality
@@ -271,7 +271,7 @@ The remediation has successfully established a clean, modern foundation for a br
 
 1. **Full Playwright API compatibility** via public API preservation
 2. **Simplified internals** through direct CDP calls
-3. **Browser-first architecture** with OPFS and WebSocket validation
+3. **Browser-first architecture** with filesystem and WebSocket validation
 4. **Maintainability** through clean separation of concerns
 
 The next phase of implementation can now focus on adapting the remaining client classes (Page, Browser, ElementHandle) to use the CDP infrastructure while maintaining the exact same user-facing API.

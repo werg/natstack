@@ -29,13 +29,13 @@ export function createBootstrapState(): BootstrapState {
 }
 
 export interface RunBootstrapOptions {
-  /** Filesystem implementation (ZenFS for both panels and workers) */
+  /** Filesystem implementation (RPC-backed for panels, direct for workers) */
   fs: RuntimeFs;
   /** Git configuration with server URL, token, and repoArgs */
   gitConfig: GitConfig | null;
   /** State container to store results */
   state: BootstrapState;
-  /** Optional: Promise that resolves when fs is ready (for panel's async ZenFS init) */
+  /** Optional: Promise that resolves when fs is ready (for panel's async RPC init) */
   fsReady?: Promise<void>;
   /** Log prefix for console messages */
   logPrefix?: string;

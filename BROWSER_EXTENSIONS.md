@@ -14,8 +14,9 @@ extensions act as the UI coordinator:
 1. **Connect** to the server's SSE event stream
 2. **Listen** for panel lifecycle events (`panel:created`, `panel:built`, `panel:closed`)
 3. **Auto-open** browser tabs for new panels (each on its own `*.localhost` subdomain)
-4. **Pre-warm** OPFS storage by loading a hidden init page before the real panel
+4. **Pre-warm** context by loading a hidden init page before the real panel
 5. **Auto-close** tabs when panels are destroyed
+
 
 Panels run in standard browser tabs with full access to NatStack services
 (AI, git, build, pubsub, database) via WebSocket RPC — the same protocol
@@ -31,7 +32,7 @@ Before installing the extension, you need a running headless server.
 
 ```bash
 pnpm server:install    # compiles better-sqlite3 for system Node
-pnpm build             # builds dist/server.mjs + browser transport + OPFS bootstrap
+pnpm build             # builds dist/server.mjs + browser transport + context bootstrap
 ```
 
 ### 2. Start the headless server with panel serving
@@ -150,7 +151,7 @@ Extension                          Server
    |<-- event: panel:created ---------|  (new panel, includes initToken)
    |                                  |
    |--- Open hidden tab:              |
-   |    {subdomain}.localhost/__init__ |  (pre-warm OPFS)
+   |    {subdomain}.localhost/__init__ |  (pre-warm context)
    |                                  |
    |<-- event: panel:built -----------|  (build complete, URL ready)
    |                                  |
@@ -170,7 +171,6 @@ resolve `*.localhost` to `127.0.0.1` per the WHATWG URL Standard. Each
 subdomain gets a distinct browser origin, giving panels:
 
 - Separate **localStorage** and **IndexedDB**
-- Separate **Origin Private File System (OPFS)**
 - Separate **cookies** and **service workers**
 
 This mirrors Electron's `persist:{contextId}` partition behavior.
@@ -179,15 +179,10 @@ This mirrors Electron's `persist:{contextId}` partition behavior.
 
 When a `panel:created` event fires, the extension immediately opens a hidden
 tab to `{subdomain}.localhost/__init__?token={initToken}`. This init page
-runs the OPFS bootstrap script, which:
+runs the context bootstrap script, which prepares the panel's session.
 
-1. Checks IndexedDB for a `.template-initialized` marker
-2. If not initialized, fetches the template spec from `/api/context/template`
-3. Clones git repository files into OPFS (up to 6 concurrent fetches)
-4. Writes the initialization marker
-
-When the `panel:built` event arrives, the real panel tab opens with OPFS
-already populated — no loading delay.
+When the `panel:built` event arrives, the real panel tab opens with the
+context ready — no loading delay.
 
 ### Authentication
 
@@ -226,9 +221,6 @@ These endpoints are available on each panel's subdomain (session-cookie auth):
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/context/template` | GET | Template spec for OPFS bootstrap |
-| `/api/context/snapshot` | GET | Retrieve OPFS snapshot |
-| `/api/context/snapshot` | POST | Store OPFS snapshot |
 | `/__init__` | GET | Pre-warming init page |
 
 ---
@@ -290,12 +282,11 @@ Once the panel is created, the extension receives the `panel:created` and
 - Ensure `*.localhost` resolves to `127.0.0.1` (works by default on modern
   browsers, but some corporate DNS configs may interfere)
 
-### OPFS bootstrap fails
+### Context bootstrap fails
 
 - Check the browser console on the panel tab for error messages
 - The git server must be reachable from the browser (default:
   `http://127.0.0.1:{gitPort}`)
-- Template repositories must exist in the workspace
 
 ### Server won't start
 
@@ -327,8 +318,8 @@ When serving a panel to the browser, the server augments the HTML with:
    `__natstackStateArgs`, etc. (replacing Electron's preload/contextBridge)
 2. **Browser transport IIFE** — creates a WebSocket connection to the RPC
    server using the same protocol as the Electron preload
-3. **OPFS bootstrap script** — populates the Origin Private File System from
-   the context template (git repos cloned into OPFS)
+3. **Context bootstrap script** — prepares the panel's session and
+   initializes the RPC-backed filesystem connection
 
 This means panel source code is identical between Electron and browser — the
 transport layer is swapped transparently.

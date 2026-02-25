@@ -487,7 +487,7 @@ export default function CodeEditorPanel() {
         <Dialog.Content style={{ maxWidth: 480 }}>
           <Dialog.Title>Load Repository</Dialog.Title>
           <Dialog.Description size="2" color="gray">
-            Clone a repository into this panel's OPFS context and set it as the
+            Clone a repository into this panel's context folder and set it as the
             active workspace.
           </Dialog.Description>
           <Flex direction="column" gap="3" mt="4">

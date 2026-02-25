@@ -4,7 +4,7 @@
  * Provides utilities for creating and managing subagent pubsub connections,
  * and translating SDK stream events to pubsub messages.
  *
- * Used by both unrestricted mode (event routing) and restricted mode (custom Task tool).
+ * Used by SubagentManager for Task tool subagent event routing.
  */
 
 import { connect } from "./client.js";

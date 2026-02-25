@@ -19,11 +19,9 @@ import { getAgentById, getAgentHandle } from "./utils/agents";
 import type { AgentInfo } from "@workspace/agentic-components/types";
 import { ProjectHeader } from "./components/ProjectHeader";
 import { ConfigSection } from "./components/ConfigSection";
-import { TemplateSection } from "./components/TemplateSection";
 import { LaunchSection } from "./components/LaunchSection";
 import { SessionHistory } from "./components/SessionHistory";
 import {
-  validateProjectConfig,
   PROJECT_DEFAULTS,
   type ProjectConfig,
   type ProjectPanelStateArgs,
@@ -51,7 +49,6 @@ export default function ProjectPanel() {
   const { projectConfig, contextId } = stateArgs;
 
   const [configExpanded, setConfigExpanded] = useState(false);
-  const [templateExpanded, setTemplateExpanded] = useState(false);
   const [isLaunching, setIsLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [agentName, setAgentName] = useState<string | undefined>();
@@ -131,13 +128,6 @@ export default function ProjectPanel() {
   }, []);
 
   const launchChat = useCallback(async () => {
-    // Validate config before launch
-    const validationError = validateProjectConfig(projectConfig);
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
-
     if (!pubsubConfig) {
       setError("Pubsub not configured");
       return;
@@ -154,27 +144,9 @@ export default function ProjectPanel() {
 
       // Get or create context ID
       let sessionContextId = contextId;
-      if (!sessionContextId && projectConfig.projectLocation === "managed") {
-        // contextTemplateSpec is validated above, safe to use
-        sessionContextId = await rpc.call<string>(
-          "main",
-          "bridge.createContextFromTemplate",
-          projectConfig.contextTemplateSpec
-        );
-      } else if (!sessionContextId) {
+      if (!sessionContextId) {
         sessionContextId = crypto.randomUUID();
       }
-
-      // Determine working directory based on mode
-      const isManaged = projectConfig.projectLocation === "managed";
-      const effectiveWorkingDirectory = isManaged
-        ? (projectConfig.browserWorkingDirectory ?? PROJECT_DEFAULTS.browserWorkingDirectory)
-        : projectConfig.workingDirectory;
-
-      const channelConfig = {
-        workingDirectory: effectiveWorkingDirectory,
-        restrictedMode: isManaged,
-      };
 
       // Create chat panel as child
       // contextId in options sets storage partition, in stateArgs tells app which context
@@ -183,7 +155,6 @@ export default function ProjectPanel() {
         contextId: sessionContextId,
       }, {
         channelName: channelId,
-        channelConfig,
         contextId: sessionContextId,
       });
 
@@ -197,7 +168,6 @@ export default function ProjectPanel() {
             token: pubsubConfig.token,
             channel: channelId,
             contextId: sessionContextId,
-            channelConfig,
             handle: `project-launcher-${panelClientId}`,
             name: "Project Panel",
             type: "panel",
@@ -209,8 +179,6 @@ export default function ProjectPanel() {
           client.inviteAgent(agentDef.id, {
             handle: getAgentHandle(agentDef),
             config: {
-              workingDirectory: effectiveWorkingDirectory,
-              restrictedMode: isManaged,
               contextId: sessionContextId,
               autonomyLevel: projectConfig.defaultAutonomy ?? PROJECT_DEFAULTS.defaultAutonomy,
               ...projectConfig.defaultAgentConfig,
@@ -250,18 +218,6 @@ export default function ProjectPanel() {
       <Box p="4" style={{ maxWidth: 600, margin: "0 auto" }}>
         <Flex direction="column" gap="4">
           <ProjectHeader config={projectConfig} />
-
-          {/* Template section for managed projects */}
-          {projectConfig.projectLocation === "managed" && projectConfig.includedRepos?.[0] && (
-            <>
-              <Separator size="4" />
-              <TemplateSection
-                repoPath={projectConfig.includedRepos[0]}
-                expanded={templateExpanded}
-                onToggle={() => setTemplateExpanded(!templateExpanded)}
-              />
-            </>
-          )}
 
           <Separator size="4" />
 

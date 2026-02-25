@@ -46,7 +46,7 @@ import {
   createStandardTools,
   createContextTracker,
   findPanelParticipant,
-  discoverPubsubToolsForMode,
+  discoverPubsubTools,
   toAiSdkTools,
   createCanUseToolGate,
   type MessageQueue,
@@ -55,7 +55,7 @@ import {
   type MissedContextManager,
 } from "@workspace/agent-patterns";
 import {
-  createRestrictedModeSystemPrompt,
+  createRichTextChatSystemPrompt,
 } from "@workspace/agent-patterns/prompts";
 import { ai } from "@workspace/ai";
 import { z } from "zod";
@@ -204,6 +204,11 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
    */
   async onWake(): Promise<void> {
     const config = this.config as unknown as AgentConfig;
+
+    // Fail fast if contextFolderPath is not available
+    if (!this.initInfo.contextFolderPath) {
+      throw new Error("contextFolderPath is required but was not provided in initInfo");
+    }
 
     // Initialize settings manager with 3-way merge
     // Note: this.client is now available (connected after getConnectOptions)
@@ -540,10 +545,10 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         { role: "user" as const, content: userContent },
       ];
 
-      // Discover tools from channel participants via registry
-      const registry = await discoverPubsubToolsForMode(
+      // Discover tools from channel participants via registry with unrestricted allowlist
+      const registry = await discoverPubsubTools(
         this.client as AgenticClient<ChatParticipantMetadata>,
-        { mode: "restricted", timeoutMs: 1500, log: (msg) => this.log.debug(msg) },
+        { allowlist: ["feedback_form", "feedback_custom", "eval"], timeoutMs: 1500, log: (msg) => this.log.debug(msg) },
       );
 
       // Build tools object for AI SDK using adapter
@@ -604,7 +609,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
 
         const stream = ai.streamText({
           model: settings.modelRole,
-          system: createRestrictedModeSystemPrompt(),
+          system: createRichTextChatSystemPrompt(),
           messages,
           tools: Object.keys(tools).length > 0 ? tools : undefined,
           maxSteps: 1,

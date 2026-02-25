@@ -21,10 +21,7 @@ const PANEL_METADATA = { name: "Chat Panel", type: "panel" as const, handle: "us
 /** Type for chat panel state args */
 interface ChatStateArgs {
   channelName: string;
-  channelConfig?: {
-    workingDirectory?: string;
-    restrictedMode?: boolean;
-  };
+  channelConfig?: Record<string, unknown>;
   contextId?: string;
   pendingAgents?: Array<{ agentId: string; handle: string }>;
 }
@@ -33,11 +30,6 @@ export default function ChatPanel() {
   const theme = usePanelTheme();
   const stateArgs = useStateArgs<ChatStateArgs>();
   const { channelName, channelConfig, contextId } = stateArgs;
-
-  // Derive workspace root
-  const workspaceRoot = channelConfig?.workingDirectory
-    || process.env["NATSTACK_WORKSPACE"]?.trim()
-    || (channelConfig?.restrictedMode ? "/" : undefined);
 
   // Build ConnectionConfig from runtime
   const config: ConnectionConfig = {
@@ -86,12 +78,11 @@ export default function ChatPanel() {
   }), [handleNewConversation, handleAddAgent, handleFocusPanel, handleReloadPanel]);
 
   // Tool provider: creates all tool method definitions + eval
-  const toolProvider: ToolProvider = useCallback(({ clientRef, workspaceRoot: wsRoot }: ToolProviderDeps) => {
+  const toolProvider: ToolProvider = useCallback(({ clientRef }: ToolProviderDeps) => {
     const diagnosticsPublisher = (eventType: string, payload: unknown) => {
       void clientRef.current?.publish(eventType, payload);
     };
     const fileTools = createAllToolMethodDefinitions({
-      workspaceRoot: wsRoot ?? workspaceRoot,
       diagnosticsPublisher,
     });
 
@@ -144,7 +135,7 @@ Use standard ESM imports - they're transformed to require() automatically:
     };
 
     return { eval: evalMethodDef, ...fileTools };
-  }, [workspaceRoot]);
+  }, []);
 
   // Error state: no channel name provided
   if (!channelName) {

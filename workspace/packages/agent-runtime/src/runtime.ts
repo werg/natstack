@@ -172,7 +172,7 @@ export async function runAgent<S extends AgentState>(
   // Step 2: Resolve init config
   const initConfig = config ?? (await waitForInit(ipc));
   console.log("[agent-runtime] received init config:", initConfig?.agentId);
-  const { agentId, channel, handle, config: agentConfig, pubsubUrl, pubsubToken } = initConfig;
+  const { agentId, channel, handle, config: agentConfig, pubsubUrl, pubsubToken, contextFolderPath } = initConfig;
 
   // Create logger
   const log = createAgentLogger(agentId, sendToHost);
@@ -247,6 +247,7 @@ export async function runAgent<S extends AgentState>(
     client: null, // Populated after pubsub connects
     pubsubUrl,
     pubsubToken,
+    contextFolderPath,
   };
 
   // Inject ctx first (unified context model) via the internal interface
@@ -258,6 +259,7 @@ export async function runAgent<S extends AgentState>(
     channel,
     handle,
     config: agentConfig,
+    contextFolderPath,
   };
 
   // Step 6: Connect to pubsub (NOW getConnectOptions can use lastCheckpoint AND ctx)

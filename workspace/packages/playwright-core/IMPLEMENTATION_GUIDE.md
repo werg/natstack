@@ -10,7 +10,7 @@ This document describes the remediation plan implementation status and the appro
 - **Removed** `/client/crBrowser.ts` - incompatible custom API
 - **Deleted** 40 duplicate `.js` files in `/client/` - esbuild handles TypeScript directly
 - **Fixed browser stubs**:
-  - `fs.ts` - Added OPFS validation at module load
+  - `fs.ts` - Added filesystem validation at module load
   - `events.ts` - Maintained simple browser-compatible EventEmitter
   - Created `validateBrowserEnvironment.ts` - Startup validation for required APIs
 
@@ -286,7 +286,7 @@ src/
 │   │   └── protocol.d.ts (keep)
 │   └── [other files]
 └── browser-stubs/
-    ├── fs.ts ✅ (OPFS validation added)
+    ├── fs.ts ✅ (filesystem validation added)
     ├── events.ts (keep - browser compatible)
     └── [other stubs]
 ```
