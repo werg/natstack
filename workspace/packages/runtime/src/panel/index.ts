@@ -36,7 +36,6 @@ export { buildNsLink, buildAboutLink, buildFocusLink } from "../core/nsLinks.js"
 export {
   parseContextId,
   isValidContextId,
-  isSafeContext,
   getInstanceId,
 } from "../core/context.js";
 export type * from "../core/types.js";
@@ -45,6 +44,7 @@ export type { Runtime } from "../setup/createRuntime.js";
 export const id = config.id;
 const gitConfig = config.gitConfig;
 const pubsubConfig = config.pubsubConfig;
+const env = config.env;
 
 export const {
   parentId: runtimeParentId,
@@ -80,7 +80,7 @@ export const {
 
 export { runtimeParentId as parentId };
 
-export { fs, fsReady, gitConfig, pubsubConfig, aiClient as ai };
+export { fs, fsReady, gitConfig, pubsubConfig, env, aiClient as ai };
 
 // Path utilities for cross-platform path handling
 export { normalizePath, getFileName, resolvePath } from "../shared/pathUtils.js";

@@ -111,17 +111,16 @@ await git.clone({ url: `${gitConfig.serverUrl}/my-repo`, dir: "/repo" });
 
 ---
 
-## Unsafe Mode (Node.js)
-
-Enable real filesystem access:
-
-```json
-{ "natstack": { "type": "app", "title": "Terminal", "unsafe": true } }
-```
+## Environment Variables
 
 ```typescript
-import { readFileSync, readdirSync } from "fs";
-const files = readdirSync(process.env.HOME);
+import { env } from "@workspace/runtime";
+const workspace = env["NATSTACK_WORKSPACE"] || "/workspace";
+```
+
+Set via `createChild`:
+```typescript
+await createChild("panels/editor", { name: "editor", env: { NATSTACK_WORKSPACE: "/path" } });
 ```
 
 ---

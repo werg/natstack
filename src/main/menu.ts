@@ -317,6 +317,13 @@ export function setupMenu(
         { role: "togglefullscreen" },
         { type: "separator" },
         {
+          label: "Toggle Panel Developer Tools",
+          accelerator: "CmdOrCtrl+Shift+I",
+          click: () => {
+            eventService.emit("toggle-panel-devtools");
+          },
+        },
+        {
           label: "Toggle App Developer Tools",
           accelerator: "CmdOrCtrl+Alt+I",
           click: () => {

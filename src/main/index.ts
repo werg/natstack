@@ -221,7 +221,7 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
   viewManager = initViewManager({
     window: mainWindow,
     shellPreload: path.join(__dirname, "preload.cjs"),
-    safePreload: path.join(__dirname, "safePreload.cjs"),
+    adblockPreload: path.join(__dirname, "adblockPreload.cjs"),
     shellHtmlPath: path.join(__dirname, "index.html"),
     shellAdditionalArguments: [
       `--natstack-ws-port=${wsArgs.rpcPort}`,
@@ -443,7 +443,8 @@ app.on("ready", async () => {
 
       // Start PanelHttpServer for HTTP subdomain panel serving in Electron
       const { PanelHttpServer } = await import("../server/panelHttpServer.js");
-      panelHttpServer = new PanelHttpServer("127.0.0.1");
+      const { randomBytes } = await import("crypto");
+      panelHttpServer = new PanelHttpServer("127.0.0.1", randomBytes(32).toString("hex"));
       const panelHttpPort = await panelHttpServer.start(0);
       log.info(`[PanelHTTP] Panel HTTP server started on port ${panelHttpPort}`);
       panelManager.setPanelHttpServer(panelHttpServer, panelHttpPort);

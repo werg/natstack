@@ -77,7 +77,7 @@ function writeConnectionJson(configDir: string, ports: ServicePorts): void {
   };
 
   const filePath = path.join(configDir, "connection.json");
-  fs.writeFileSync(filePath, JSON.stringify(connection, null, 2) + "\n");
+  fs.writeFileSync(filePath, JSON.stringify(connection, null, 2) + "\n", { mode: 0o600 });
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +106,8 @@ function readMessage() {
   return new Promise((resolve, reject) => {
     const header = Buffer.alloc(4);
     let headerRead = 0;
+    let msgLen = -1;
+    let body = Buffer.alloc(0);
 
     process.stdin.on("readable", function onReadable() {
       // Read the 4-byte length header
@@ -116,27 +118,27 @@ function readMessage() {
         headerRead += chunk.length;
       }
 
-      const msgLen = header.readUInt32LE(0);
-      if (msgLen === 0 || msgLen > 1024 * 1024) {
-        reject(new Error("Invalid message length: " + msgLen));
-        return;
+      if (msgLen < 0) {
+        msgLen = header.readUInt32LE(0);
+        if (msgLen === 0 || msgLen > 1024 * 1024) {
+          reject(new Error("Invalid message length: " + msgLen));
+          return;
+        }
       }
 
-      let body = Buffer.alloc(0);
-      const readBody = () => {
-        while (body.length < msgLen) {
-          const chunk = process.stdin.read(msgLen - body.length);
-          if (chunk === null) return; // wait for more data
-          body = Buffer.concat([body, chunk]);
-        }
-        process.stdin.removeListener("readable", onReadable);
-        try {
-          resolve(JSON.parse(body.toString("utf-8")));
-        } catch (e) {
-          reject(e);
-        }
-      };
-      readBody();
+      // Read body (may arrive across multiple readable events)
+      while (body.length < msgLen) {
+        const chunk = process.stdin.read(msgLen - body.length);
+        if (chunk === null) return; // wait for more data
+        body = Buffer.concat([body, chunk]);
+      }
+
+      process.stdin.removeListener("readable", onReadable);
+      try {
+        resolve(JSON.parse(body.toString("utf-8")));
+      } catch (e) {
+        reject(e);
+      }
     });
   });
 }

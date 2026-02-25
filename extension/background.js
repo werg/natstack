@@ -549,12 +549,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 // Try native messaging auto-discovery, then connect.
-// If native discovery succeeds, it sets storage which triggers the
-// onChanged listener above → automatic reconnect with the new config.
-// If it fails, we fall through to connect() with whatever config exists.
-tryNativeDiscovery().then((discovered) => {
-  if (!discovered) {
-    connect();
-  }
-  // If discovered, the storage.onChanged listener handles the reconnect
+// Always call connect() afterwards — if discovery updated storage, the
+// onChanged listener already triggered a reconnect (connect() deduplicates
+// via disconnect()). If config was unchanged, no onChanged fires, so we
+// must call connect() explicitly to establish the SSE connection.
+tryNativeDiscovery().then(() => {
+  connect();
 });

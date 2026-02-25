@@ -42,7 +42,7 @@ export interface ViewConfig {
   id: string;
   /** View type for tracking */
   type: "shell" | "panel" | "browser";
-  /** Session partition (e.g., "persist:safe_auto_tree~panels~editor"). Omit for default session. */
+  /** Session partition for browser views (shared session for cookies/auth). Omit for default session. */
   partition?: string;
   /** Preload script path. Set to null to disable preload (for browsers). */
   preload?: string | null;
@@ -52,9 +52,6 @@ export interface ViewConfig {
   parentId?: string;
   /** Whether to inject host theme CSS */
   injectHostThemeVariables?: boolean;
-  /** Additional arguments to pass to the preload script */
-  additionalArguments?: string[];
-  // Note: unsafe mode has been removed. All panels run in safe sandboxed mode.
 }
 
 interface ManagedView {
@@ -91,7 +88,6 @@ export class ViewManager {
   private window: BaseWindow;
   private views = new Map<string, ManagedView>();
   private shellView: WebContentsView;
-  private safePreloadPath: string;
   private adblockPreloadPath: string;
   private currentThemeCss: string | null = null;
   /** Per-view locks to prevent concurrent withViewVisible operations */
@@ -119,18 +115,13 @@ export class ViewManager {
   constructor(options: {
     window: BaseWindow;
     shellPreload: string;
-    safePreload: string;
+    adblockPreload: string;
     shellHtmlPath: string;
     shellAdditionalArguments?: string[];
     devTools?: boolean;
   }) {
     this.window = options.window;
-    this.safePreloadPath = options.safePreload;
-    // Calculate adblock preload path for browser panels
-    this.adblockPreloadPath = options.safePreload.replace(
-      /safePreload\.(c?js)$/,
-      "adblockPreload.$1"
-    );
+    this.adblockPreloadPath = options.adblockPreload;
 
     // Create shell view (React UI) - fills entire window
     // nodeIntegration enabled for direct fs/git access (shell is trusted app UI)
@@ -260,19 +251,9 @@ export class ViewManager {
       backgroundThrottling: true,
     };
 
-    // Set preload: use provided preload, fall back to safe preload, or omit if null
-    if (config.preload === null) {
-      // Explicitly no preload (for browsers)
-    } else if (config.preload) {
+    // Set preload if explicitly provided (e.g. adblock preload for browser panels)
+    if (config.preload) {
       webPreferences.preload = config.preload;
-    } else {
-      // All panels and workers use the safe preload (kind is passed via --natstack-kind)
-      webPreferences.preload = this.safePreloadPath;
-    }
-
-    // Pass additional arguments to preload script
-    if (config.additionalArguments && config.additionalArguments.length > 0) {
-      webPreferences.additionalArguments = config.additionalArguments;
     }
 
     const view = new WebContentsView({ webPreferences });
@@ -1159,7 +1140,7 @@ let viewManager: ViewManager | null = null;
 export function initViewManager(options: {
   window: BaseWindow;
   shellPreload: string;
-  safePreload: string;
+  adblockPreload: string;
   shellHtmlPath: string;
   shellAdditionalArguments?: string[];
   devTools?: boolean;

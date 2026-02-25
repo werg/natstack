@@ -162,15 +162,14 @@ function escapeIdForPath(id: string): string {
 }
 
 /**
- * Get the scoped filesystem root directory for an unsafe panel or worker context.
+ * Get the scoped filesystem root directory for a panel or worker context.
  * Creates a directory at: <central-config>/context-scopes/<workspace-id>/<escaped-context-id>/
  *
- * This provides each context with its own isolated filesystem sandbox when unsafe=true.
- * Panels/workers sharing a context also share the same filesystem scope.
- * Panels or workers with unsafe="/" will use "/" as their scope path (full system access).
+ * Each context gets its own isolated filesystem scope.
+ * Panels/workers sharing a contextId also share the same filesystem scope.
  *
  * @param workspaceId - The workspace ID from workspace config
- * @param contextId - The context ID (format: {mode}_{type}_{identifier})
+ * @param contextId - The context ID (format: ctx_{identifier})
  * @returns Absolute path to the scope directory
  */
 export function getContextScopePath(workspaceId: string, contextId: string): string {

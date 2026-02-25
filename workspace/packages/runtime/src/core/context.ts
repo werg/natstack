@@ -52,19 +52,6 @@ export function isValidContextId(contextId: string): boolean {
 }
 
 /**
- * Check if a context is safe (runs in sandboxed context).
- * All contexts are safe - this always returns true for valid context IDs.
- *
- * @example
- * ```ts
- * isSafeContext("ctx_panels~editor"); // true
- * ```
- */
-export function isSafeContext(contextId: string): boolean {
-  return parseContextId(contextId) !== null;
-}
-
-/**
  * Get the instance ID from a context ID.
  *
  * @example

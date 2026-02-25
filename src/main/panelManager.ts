@@ -133,9 +133,10 @@ export class PanelManager {
       throw new Error(`Shell page build not found: ${page}`);
     }
 
-    // Ensure auth tokens exist (may not persist across restarts)
-    getTokenManager().ensureToken(panelId, "shell");
-    await this.serverInfo.ensurePanelToken(panelId, "shell");
+    // Ensure auth tokens exist (may not persist across restarts).
+    // Use "panel" kind consistently — shell panels are panels, not the shell renderer.
+    getTokenManager().ensureToken(panelId, "panel");
+    await this.serverInfo.ensurePanelToken(panelId, "panel");
 
     const httpConfig = await this.buildPanelConfig(panel, `shell:${page}`);
     this.panelHttpServer!.storePanel(panelId, result, httpConfig);
@@ -507,7 +508,10 @@ export class PanelManager {
         injectHostThemeVariables: true,
       });
 
-      // CDP registration, state tracking, and content indexing are for app panels, not shell pages
+      // Track browser state (URL, loading, title) for all panel types including shell
+      this.setupBrowserStateTracking(panelId, view.webContents);
+
+      // CDP registration and content indexing are for app panels, not shell pages
       if (panelType !== "shell") {
         // Register app panels with CDP server for automation/testing (like browsers)
         // Use named handler for cleanup
@@ -521,9 +525,6 @@ export class PanelManager {
 
         // Intercept ns:// and http(s) link clicks to create children
         this.setupLinkInterception(panelId, view.webContents, "panel");
-
-        // Track browser state (URL, loading, title) - same as browser panels
-        this.setupBrowserStateTracking(panelId, view.webContents);
       } else {
         // Shell pages still need link interception for ns:// and ns-about:// links
         this.setupLinkInterception(panelId, view.webContents, "panel");
@@ -2227,8 +2228,8 @@ export class PanelManager {
   ): void {
     const panel = this.panels.get(browserId);
     const panelType = panel ? getPanelType(panel) : null;
-    if (!panel || (panelType !== "browser" && panelType !== "app")) {
-      console.warn(`[PanelManager] Panel not found or not browser/app: ${browserId}`);
+    if (!panel || (panelType !== "browser" && panelType !== "app" && panelType !== "shell")) {
+      console.warn(`[PanelManager] Panel not found or not browser/app/shell: ${browserId}`);
       return;
     }
 
@@ -2433,6 +2434,10 @@ export class PanelManager {
     const stateArgs = getPanelStateArgs(panel) ?? {};
     const repoArgs = snapshot.options.repoArgs ?? {};
 
+    // Ensure the panel has a server-side token for direct server RPC + PubSub auth
+    const serverRpcToken = await this.serverInfo.getPanelToken(panel.id)
+      ?? await this.serverInfo.ensurePanelToken(panel.id, "panel");
+
     return {
       panelId: panel.id,
       contextId,
@@ -2440,14 +2445,18 @@ export class PanelManager {
       parentId,
       rpcPort: this.rpcPort!,
       rpcToken,
+      serverRpcPort: this.serverInfo.rpcPort,
+      serverRpcToken,
       gitBaseUrl: this.serverInfo.gitBaseUrl,
       gitToken,
       pubsubPort: parseInt(new URL(this.serverInfo.pubsubUrl).port, 10),
+      pubsubToken: serverRpcToken,
       stateArgs,
       sourceRepo: panelSource,
       resolvedRepoArgs: repoArgs,
       env,
       theme: this.currentTheme,
+      title: panel.title,
     };
   }
 
@@ -2664,6 +2673,11 @@ export class PanelManager {
     if (panel.artifacts.buildState !== "pending") {
       return;
     }
+
+    // Ensure auth tokens exist — they don't persist across restarts and are
+    // revoked on unload, so we must recreate them before buildPanelConfig().
+    getTokenManager().ensureToken(panelId, "panel");
+    await this.serverInfo.ensurePanelToken(panelId, "panel");
 
     // Set building state
     panel.artifacts = {

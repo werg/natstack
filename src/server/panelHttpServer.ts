@@ -76,14 +76,22 @@ export interface PanelConfig {
   parentId: string | null;
   rpcPort: number;
   rpcToken: string;
+  /** Server-process RPC port for direct AI/DB/build calls (Electron only) */
+  serverRpcPort?: number;
+  /** Auth token for the server-process RPC server (Electron only) */
+  serverRpcToken?: string;
   gitBaseUrl: string;
   gitToken: string;
   pubsubPort: number;
+  /** Auth token for PubSub (server-process token, distinct from main rpcToken) */
+  pubsubToken: string;
   stateArgs: Record<string, unknown>;
   sourceRepo: string;
   resolvedRepoArgs: Record<string, unknown>;
   env: Record<string, string>;
   theme: "light" | "dark";
+  /** Human-friendly title for the HTML <title> tag (manifest title or page name) */
+  title?: string;
 }
 
 export interface PanelLifecycleEvent {
@@ -286,7 +294,15 @@ export class PanelHttpServer {
   }
 
   async start(port = 0): Promise<number> {
-    this.httpServer = createServer((req, res) => this.handleRequest(req, res));
+    this.httpServer = createServer((req, res) => {
+      this.handleRequest(req, res).catch((err) => {
+        log.info(`Request handler error: ${err}`);
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "text/plain" });
+          res.end("Internal Server Error");
+        }
+      });
+    });
 
     await new Promise<void>((resolve, reject) => {
       this.httpServer!.on("error", reject);
@@ -366,7 +382,7 @@ export class PanelHttpServer {
       bundle: buildResult.bundle,
       css: buildResult.css,
       assets: buildResult.assets,
-      title: buildResult.metadata.name,
+      title: config.title || buildResult.metadata.name,
       httpToken,
     };
 
@@ -453,10 +469,10 @@ export class PanelHttpServer {
   // Request routing
   // =========================================================================
 
-  private handleRequest(
+  private async handleRequest(
     req: import("http").IncomingMessage,
     res: import("http").ServerResponse,
-  ): void {
+  ): Promise<void> {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const pathname = url.pathname;
     const subdomain = extractSubdomain(req.headers.host ?? "");
@@ -502,12 +518,17 @@ export class PanelHttpServer {
       // ── On-demand panel creation from source registry ──────────────
       const registryEntry = this.sourceRegistry.get(subdomain);
       if (registryEntry && this.onDemandCreate) {
-        // Trigger on-demand creation (async — HeadlessPanelManager is
-        // idempotent so concurrent requests are safe)
-        void this.onDemandCreate(registryEntry.source, subdomain).catch((err) => {
+        // Await creation — this resolves as soon as the panel is registered
+        // (before the build starts), so the response delay is minimal.
+        // Once we have the panelId, we can set a session cookie so auth
+        // works when the build completes and the page auto-refreshes.
+        try {
+          const panelId = await this.onDemandCreate(registryEntry.source, subdomain);
+          this.serveBuildingPageWithSession(req, res, subdomain, panelId);
+        } catch (err) {
           log.info(`On-demand creation failed for ${subdomain}: ${err}`);
-        });
-        this.serveBuildingPage(res, subdomain);
+          this.serveBuildingPage(res, subdomain);
+        }
         return;
       }
 
@@ -1044,7 +1065,7 @@ ${this.buildOpfsBootstrapScript(config, true)}
     });
     const pubsubConfig = JSON.stringify({
       serverUrl: `ws://${subdomain}.localhost:${config.pubsubPort}`,
-      token: config.rpcToken,
+      token: config.pubsubToken,
     });
     const env = JSON.stringify({
       ...config.env,
@@ -1057,7 +1078,7 @@ ${this.buildOpfsBootstrapScript(config, true)}
       }),
       __PUBSUB_CONFIG: JSON.stringify({
         serverUrl: `ws://${subdomain}.localhost:${config.pubsubPort}`,
-        token: config.rpcToken,
+        token: config.pubsubToken,
       }),
     });
     const stateArgs = JSON.stringify(config.stateArgs);
@@ -1075,6 +1096,11 @@ ${this.buildOpfsBootstrapScript(config, true)}
       `globalThis.__natstackStateArgs = ${stateArgs};`,
       `globalThis.__natstackRpcPort = ${JSON.stringify(config.rpcPort)};`,
       `globalThis.__natstackRpcToken = ${JSON.stringify(config.rpcToken)};`,
+      // Server-process transport for AI/DB/build (Electron dual-process only)
+      ...(config.serverRpcPort ? [
+        `globalThis.__natstackServerRpcPort = ${JSON.stringify(config.serverRpcPort)};`,
+        `globalThis.__natstackServerRpcToken = ${JSON.stringify(config.serverRpcToken)};`,
+      ] : []),
       `globalThis.process = { env: ${env} };`,
     ].join("\n");
   }

@@ -53,6 +53,8 @@ vi.mock("electron", () => {
   const mockBaseWindow = {
     contentView: mockContentView,
     getContentSize: vi.fn().mockReturnValue([1200, 800]),
+    isDestroyed: vi.fn().mockReturnValue(false),
+    isVisible: vi.fn().mockReturnValue(true),
     on: vi.fn(),
   };
 
@@ -102,7 +104,7 @@ describe("ViewManager", () => {
       const vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        safePreload: "/path/to/safePreload.js",
+        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
 
@@ -115,7 +117,7 @@ describe("ViewManager", () => {
       const vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        safePreload: "/path/to/safePreload.js",
+        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
         devTools: true,
       });
@@ -132,22 +134,21 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        safePreload: "/path/to/safePreload.js",
+        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
 
-    it("creates a panel view with isolated partition", () => {
+    it("creates a panel view via HTTP subdomain", () => {
       const view = vm.createView({
         id: "test-panel",
         type: "panel",
-        partition: "persist:test-panel",
-        url: "natstack-panel://test-panel/",
+        preload: null,
+        url: "http://test-panel.localhost:9100/?token=abc",
       });
 
       expect(view).toBeDefined();
       expect(vm.hasView("test-panel")).toBe(true);
-      expect(session.fromPartition).toHaveBeenCalledWith("persist:test-panel");
     });
 
     it("creates a browser view with default session", () => {
@@ -166,33 +167,20 @@ describe("ViewManager", () => {
       vm.createView({
         id: "test-view",
         type: "panel",
-        url: "natstack-panel://test/",
+        preload: null,
+        url: "http://test-view.localhost:9100/",
       });
 
       expect(() => {
         vm.createView({
           id: "test-view",
           type: "panel",
-          url: "natstack-panel://test/",
+          preload: null,
+          url: "http://test-view.localhost:9100/",
         });
       }).toThrow("View already exists: test-view");
     });
 
-    it("passes additional arguments to webPreferences", () => {
-      vm.createView({
-        id: "test-panel",
-        type: "panel",
-        additionalArguments: ["--arg1=value1", "--arg2=value2"],
-      });
-
-      expect(WebContentsView).toHaveBeenCalledWith(
-        expect.objectContaining({
-          webPreferences: expect.objectContaining({
-            additionalArguments: ["--arg1=value1", "--arg2=value2"],
-          }),
-        })
-      );
-    });
   });
 
   describe("view lifecycle", () => {
@@ -202,7 +190,7 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        safePreload: "/path/to/safePreload.js",
+        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
@@ -233,7 +221,7 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        safePreload: "/path/to/safePreload.js",
+        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
@@ -275,7 +263,7 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        safePreload: "/path/to/safePreload.js",
+        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
@@ -315,7 +303,7 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        safePreload: "/path/to/safePreload.js",
+        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
@@ -378,7 +366,7 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        safePreload: "/path/to/safePreload.js",
+        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
@@ -405,7 +393,7 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        safePreload: "/path/to/safePreload.js",
+        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
@@ -470,7 +458,7 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        safePreload: "/path/to/safePreload.js",
+        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
@@ -592,7 +580,7 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        safePreload: "/path/to/safePreload.js",
+        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
@@ -681,7 +669,7 @@ describe("ViewManager", () => {
       const vm = initViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        safePreload: "/path/to/safePreload.js",
+        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
 
@@ -694,7 +682,7 @@ describe("ViewManager", () => {
       initViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        safePreload: "/path/to/safePreload.js",
+        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
 
@@ -702,7 +690,7 @@ describe("ViewManager", () => {
         initViewManager({
           window: mockWindow,
           shellPreload: "/path/to/preload.js",
-          safePreload: "/path/to/safePreload.js",
+          adblockPreload: "/path/to/adblockPreload.js",
           shellHtmlPath: "/path/to/index.html",
         });
       }).toThrow("ViewManager already initialized");

@@ -49,7 +49,6 @@ my-panel/
 | `type` | `"app"` \| `"worker"` | **Required** | Panel type |
 | `title` | string | **Required** | Display name |
 | `entry` | string | `index.tsx` | Entry point file |
-| `unsafe` | boolean | `false` | Enable Node.js APIs (bypasses sandboxed filesystem) |
 | `repoArgs` | string[] | `[]` | Named repo slots for bootstrap |
 | `exposeModules` | string[] | `[]` | Extra modules to bundle |
 | `injectHostThemeVariables` | boolean | `true` | Inherit theme CSS variables |
@@ -89,6 +88,7 @@ import {
   // Configuration
   gitConfig,             // Git server config
   pubsubConfig,          // PubSub config
+  env,                   // Environment variables (Record<string, string>)
   bootstrapPromise,      // Resolves when repoArgs cloned
 
   // Lifecycle
@@ -100,8 +100,6 @@ import {
 
   // Utilities
   parseContextId,        // Parse context ID components
-  isSafeContext,         // Check if safe mode
-  isUnsafeContext,       // Check if unsafe mode
   buildNsLink,           // Build ns:// navigation link
 } from "@workspace/runtime";
 ```
@@ -133,7 +131,6 @@ const editor = await createChildWithContract(editorContract, { name: "editor" })
 | `gitRef` | string | Git branch/tag/commit for source |
 | `repoArgs` | Record<string, RepoArgSpec> | Repo arguments for bootstrap |
 | `contextId` | string | Explicit context ID for storage partition sharing |
-| `unsafe` | boolean \| string | Node.js mode (workers only) |
 | `sourcemap` | boolean | Emit sourcemaps (default: true) |
 | `focus` | boolean | Focus after creation |
 
@@ -246,8 +243,8 @@ editor.onEvent("saved", ({ path }) => console.log(path)); // Typed!
 
 Panels have isolated storage based on their context ID:
 
-- **Safe panels**: `ctx_{instanceId}` — server-side context folder
-- **Unsafe panels**: `unsafe_noctx_{instanceId}` — Real Node.js filesystem
+- **Default**: `ctx_{instanceId}` — server-side context folder per panel
+- **Shared**: Pass `contextId` in options to share storage between panels
 
 ## Workspace Packages
 

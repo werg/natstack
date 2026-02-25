@@ -298,7 +298,14 @@ async function main() {
     let panelHttpServer: InstanceType<typeof PanelHttpServer> | null = null;
     if (args.servePanels) {
       panelHttpServer = new PanelHttpServer("127.0.0.1", adminToken);
-      const envPanelPort = process.env["NATSTACK_PANEL_PORT"] ? parseInt(process.env["NATSTACK_PANEL_PORT"], 10) : undefined;
+      let envPanelPort: number | undefined;
+      if (process.env["NATSTACK_PANEL_PORT"]) {
+        envPanelPort = parseInt(process.env["NATSTACK_PANEL_PORT"], 10);
+        if (isNaN(envPanelPort)) {
+          console.warn("[Server] NATSTACK_PANEL_PORT is not a valid number, ignoring");
+          envPanelPort = undefined;
+        }
+      }
       panelHttpPort = await panelHttpServer.start(args.panelPort ?? envPanelPort ?? 0);
       panelHttpServerInstance = panelHttpServer;
     }
@@ -336,32 +343,40 @@ async function main() {
       const panelNodes = graph.allNodes().filter((n) => n.kind === "panel");
 
       // Compute deterministic subdomains from base names
-      const rawEntries = panelNodes.map((n) => {
-        const baseName = (n.relativePath.split("/").pop() ?? n.relativePath)
-          .toLowerCase()
-          .replace(/[^a-z0-9]/g, "-")
-          .replace(/-+/g, "-")
-          .replace(/^-|-$/g, "") || "panel";
-        return {
-          subdomain: baseName,
-          source: n.relativePath,
-          name: n.manifest.title ?? n.name,
-        };
-      });
+      const sanitize = (s: string) =>
+        s.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
 
-      // Resolve collisions by using the full relative path
+      const rawEntries = panelNodes.map((n) => ({
+        subdomain: sanitize(n.relativePath.split("/").pop() ?? n.relativePath) || "panel",
+        source: n.relativePath,
+        name: n.manifest.title ?? n.name,
+      }));
+
+      // Resolve collisions: use full path for any duplicated base names
       const counts = new Map<string, number>();
       for (const e of rawEntries) {
         counts.set(e.subdomain, (counts.get(e.subdomain) ?? 0) + 1);
       }
       for (const e of rawEntries) {
         if ((counts.get(e.subdomain) ?? 0) > 1) {
-          e.subdomain = e.source
-            .toLowerCase()
-            .replace(/[^a-z0-9]/g, "-")
-            .replace(/-+/g, "-")
-            .replace(/^-|-$/g, "");
+          e.subdomain = sanitize(e.source);
         }
+      }
+
+      // Truncate to DNS label max (63 chars) and deduplicate final subdomains.
+      // Must check renamed candidates against the full set of assigned names
+      // to avoid collisions (e.g. [panel, panel, panel-1] → panel-1 clash).
+      const assigned = new Set<string>();
+      for (const e of rawEntries) {
+        let candidate = e.subdomain.slice(0, 63).replace(/-$/, "");
+        let suffix = 1;
+        while (assigned.has(candidate)) {
+          const tag = `-${suffix}`;
+          candidate = e.subdomain.slice(0, 63 - tag.length).replace(/-$/, "") + tag;
+          suffix++;
+        }
+        e.subdomain = candidate;
+        assigned.add(candidate);
       }
 
       panelHttpServer.populateSourceRegistry(rawEntries);

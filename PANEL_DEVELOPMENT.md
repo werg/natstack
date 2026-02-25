@@ -36,7 +36,7 @@ import {
   usePanel,           // Get full runtime API
   usePanelTheme,      // "light" | "dark", auto-updates
   usePanelId,         // Panel's unique ID
-  usePanelPartition,  // Storage partition (null while loading)
+  usePanelPartition,  // Storage partition name (null while loading)
   useContextId,       // Context ID for storage grouping
   usePanelFocus,      // Whether panel is focused
   useChildPanels,     // Manage child panels
@@ -301,42 +301,23 @@ await git.pull({ dir: "/repo" });
 
 ---
 
-## Unsafe Mode (Node.js)
+## Environment Variables
 
-Enable full Node.js access for panels that need real filesystem:
-
-```json
-{
-  "natstack": {
-    "type": "app",
-    "title": "Terminal",
-    "unsafe": true
-  }
-}
-```
-
-In unsafe mode:
+Access environment variables passed to your panel via `env` from the runtime:
 
 ```typescript
-import { readFileSync, readdirSync } from "fs";
-import { platform, homedir } from "os";
-import { join } from "path";
+import { env } from "@workspace/runtime";
 
-// Sync APIs work (not available in safe mode)
-const content = readFileSync("/etc/hostname", "utf-8");
-const files = readdirSync(homedir());
-
-// Real process.env
-console.log(process.env.HOME);
-
-// Dynamic require
-const crypto = require("crypto");
+const workspace = env["NATSTACK_WORKSPACE"] || "/workspace";
 ```
 
-Unsafe globals:
-- `__natstackFsRoot` — Scoped fs root (if configured)
-- `__natstackId` — Panel ID
-- `__natstackKind` — "panel" or "worker"
+Environment variables are set via the `env` option in `createChild`:
+```typescript
+await createChild("panels/code-editor", {
+  name: "editor",
+  env: { NATSTACK_WORKSPACE: "/my/path" },
+});
+```
 
 ---
 
@@ -356,7 +337,7 @@ const stream = ai.streamText({
 
 for await (const event of stream) {
   if (event.type === "text-delta") {
-    process.stdout.write(event.text);
+    console.log(event.text);
   }
 }
 ```

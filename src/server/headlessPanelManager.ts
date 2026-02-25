@@ -205,12 +205,22 @@ export class HeadlessPanelManager {
     const inFlight = this.onDemandInFlight.get(subdomain);
     if (inFlight) return inFlight;
 
-    const promise = this.createPanel("server", source, undefined, undefined, subdomain)
-      .then((result) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`On-demand panel creation timed out for ${subdomain}`)), 60_000);
+    });
+
+    const promise = Promise.race([
+      this.createPanel("server", source, undefined, undefined, subdomain).then((result) => result.id),
+      timeout,
+    ])
+      .then((id) => {
+        clearTimeout(timer);
         this.onDemandInFlight.delete(subdomain);
-        return result.id;
+        return id;
       })
       .catch((err) => {
+        clearTimeout(timer);
         this.onDemandInFlight.delete(subdomain);
         throw err;
       });
@@ -585,6 +595,8 @@ export class HeadlessPanelManager {
       gitBaseUrl: this.deps.gitBaseUrl,
       gitToken: this.deps.getGitTokenForPanel(panel.id),
       pubsubPort: this.deps.pubsubPort,
+      pubsubToken: panel.rpcToken!,
+      title: panel.title,
       stateArgs: panel.stateArgs,
       sourceRepo: panel.source,
       resolvedRepoArgs: panel.repoArgs ?? {},

@@ -36,7 +36,6 @@ NatStack panels are TypeScript apps running in isolated webviews with parent-chi
 | `type` | `"app"` \| `"worker"` | Required | Panel type |
 | `title` | string | Required | Display name |
 | `entry` | string | `index.tsx` | Entry point |
-| `unsafe` | boolean | `false` | Enable Node.js APIs |
 | `repoArgs` | string[] | `[]` | Named repo slots for bootstrap |
 | `exposeModules` | string[] | `[]` | Extra modules to bundle |
 
@@ -58,7 +57,7 @@ import {
   rpc,
 
   // Services
-  db, fs, fsReady, gitConfig, pubsubConfig,
+  db, fs, fsReady, gitConfig, pubsubConfig, env,
 
   // Lifecycle
   closeSelf, getInfo, getTheme, onThemeChange, onFocus,
@@ -74,15 +73,14 @@ import {
 | `gitRef` | string | Git branch/tag/commit |
 | `repoArgs` | Record<string, RepoArgSpec> | Bootstrap repos |
 | `contextId` | string | Storage partition ID |
-| `unsafe` | boolean \| string | Node.js mode |
 | `focus` | boolean | Focus after creation |
 
 ## Context & Storage
 
 Panels have isolated storage based on context ID:
 
-- **Safe**: `ctx_{instanceId}` - server-side context folder
-- **Unsafe**: `unsafe_noctx_{instanceId}` - Node.js filesystem
+- **Default**: `ctx_{instanceId}` — server-side context folder per panel
+- **Shared**: Pass `contextId` in options to share storage between panels
 
 ## Workspace Packages
 

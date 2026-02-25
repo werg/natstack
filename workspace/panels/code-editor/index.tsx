@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Dialog, Flex, Select, Text, TextField } from "@radix-ui/themes";
 import { GitClient } from "@natstack/git";
-import { fs, fsReady, gitConfig } from "@workspace/runtime";
+import { fs, fsReady, gitConfig, env } from "@workspace/runtime";
 import { useBootstrap } from "@workspace/react";
 import * as path from "path";
 
@@ -27,7 +27,7 @@ import { UnsavedChangesDialog } from "./components/UnsavedChangesDialog";
  * Default workspace path - uses NATSTACK_WORKSPACE env var or falls back to /workspace.
  */
 function getWorkspacePath(): string {
-  const envPath = process.env["NATSTACK_WORKSPACE"]?.trim();
+  const envPath = env["NATSTACK_WORKSPACE"]?.trim();
   return envPath || "/workspace";
 }
 

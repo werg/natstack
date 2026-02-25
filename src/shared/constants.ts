@@ -33,10 +33,10 @@ export const DEFAULT_MAX_STEPS = 10;
  * Allows connections to localhost services (git, pubsub) and external APIs.
  */
 export const PANEL_CSP = [
-  "default-src 'self' natstack-panel: https: data: blob:",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval' natstack-panel: https: http://localhost:* http://127.0.0.1:*",
+  "default-src 'self' https: data: blob:",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https: http://localhost:* http://127.0.0.1:*",
   "style-src 'self' 'unsafe-inline' https:",
-  "img-src 'self' natstack-panel: https: data: blob:",
+  "img-src 'self' https: data: blob:",
   "font-src 'self' https: data:",
   "connect-src 'self' ws://127.0.0.1:* wss://127.0.0.1:* http://127.0.0.1:* https://127.0.0.1:* ws://localhost:* wss://localhost:* http://localhost:* https://localhost:* ws: wss: https:",
 ].join("; ");
