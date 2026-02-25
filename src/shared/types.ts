@@ -108,31 +108,6 @@ export interface PanelArtifacts {
   buildLog?: string;
 }
 
-/**
- * Build artifacts for protocol-served panels via natstack-panel://.
- * All panels (root and child) are now served this way.
- */
-export interface ProtocolBuildArtifacts {
-  /** The bundled JavaScript code */
-  bundle: string;
-  /** Generated or provided HTML template */
-  html: string;
-  /** Panel title from manifest */
-  title: string;
-  /** CSS bundle if any */
-  css?: string;
-  /** Additional asset files (path -> content + encoding) */
-  assets?: Record<string, { content: string; encoding?: "utf8" | "base64" }>;
-  /** Whether to inject host theme variables (defaults to true) */
-  injectHostThemeVariables?: boolean;
-  /** Optional source repo path (workspace-relative) to retain git association */
-  sourceRepo?: string;
-  /** Repo args declared in manifest (slot names only) */
-  repoArgs?: string[];
-}
-// Panel interface moved to discriminated union types section below
-// See: AppPanel, WorkerPanel, BrowserPanel, Panel
-
 // =============================================================================
 // StreamText Types (Unified AI API)
 // =============================================================================

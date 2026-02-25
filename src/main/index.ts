@@ -20,7 +20,6 @@ import {
 import type { Workspace, AppMode } from "./workspace/types.js";
 import { getCentralData } from "./centralData.js";
 import { registerPanelProtocol } from "./panelProtocol.js";
-import { setupAboutProtocol } from "./aboutProtocol.js";
 import { getCdpServer, type CdpServer } from "./cdpServer.js";
 import { getTokenManager } from "./tokenManager.js";
 import { eventService } from "./services/eventsService.js";
@@ -280,9 +279,6 @@ function requirePanelManager(): PanelManager {
 
 app.on("ready", async () => {
   performance.mark("startup:ready");
-
-  // Set up about protocol handler (shell pages)
-  setupAboutProtocol();
 
   // Auto-update check (production only)
   if (!isDev()) {

@@ -72,11 +72,6 @@ vi.mock("electron", () => {
   };
 });
 
-// Mock panelProtocol
-vi.mock("./panelProtocol.js", () => ({
-  handleProtocolRequest: vi.fn(),
-}));
-
 // Import after mocks are set up
 import {
   ViewManager,

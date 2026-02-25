@@ -12,7 +12,6 @@ import {
   getPanelType,
   getPanelSource,
   getPanelOptions,
-  getPanelEnv,
   getPanelContextId,
   createSnapshot,
   createNavigationSnapshot,
@@ -50,7 +49,6 @@ import { parseNsAboutUrl } from "./nsAboutProtocol.js";
 import { parseNsFocusUrl } from "./nsFocusProtocol.js";
 import { checkWorktreeClean, checkGitRepository } from "./gitChecks.js";
 import { eventService } from "./services/eventsService.js";
-import { getAboutPageUrl, hasAboutPage, storeAboutPage, registerAboutProtocolForPartition } from "./aboutProtocol.js";
 import { getPanelPersistence } from "./db/panelPersistence.js";
 import { getPanelSearchIndex } from "./db/panelSearchIndex.js";
 import { extractAndIndexPageContent } from "./db/pageContentExtractor.js";
@@ -123,40 +121,25 @@ export class PanelManager {
    * Fetch about page build from the server and store in the about protocol.
    * Returns the protocol URL for the page.
    */
-  private async fetchAndStoreAboutPage(page: string): Promise<string> {
-    const result = await this.serverInfo.call("build", "getBuild", [page]) as {
-      bundle: string;
-      html: string;
-      css?: string;
-      assets?: Record<string, { content: string; encoding?: string }>;
-      metadata?: { title?: string };
-    } | null;
-
-    if (!result) {
-      throw new Error(`About page build not found: ${page}`);
-    }
-
-    return storeAboutPage(page, {
-      bundle: result.bundle,
-      html: result.html,
-      title: result.metadata?.title ?? page,
-      css: result.css,
-      assets: result.assets as SharedPanel.ProtocolBuildArtifacts["assets"],
-    });
-  }
-
   /**
-   * Get the title for an about page from the build system.
+   * Build a shell page and store it in PanelHttpServer for HTTP serving.
+   * Returns the HTTP URL for the panel.
    */
-  private async getAboutPageTitle(page: string): Promise<string> {
-    try {
-      const result = await this.serverInfo.call("build", "getBuild", [page]) as {
-        metadata?: { title?: string };
-      } | null;
-      return result?.metadata?.title ?? page;
-    } catch {
-      return page;
+  private async buildAndStoreShellPage(panelId: string, page: string, panel: Panel): Promise<string> {
+    const result = await this.serverInfo.call("build", "getBuild", [page]) as
+      import("../server/buildV2/buildStore.js").BuildResult | null;
+
+    if (!result || !result.bundle || !result.html) {
+      throw new Error(`Shell page build not found: ${page}`);
     }
+
+    // Ensure auth tokens exist (may not persist across restarts)
+    getTokenManager().ensureToken(panelId, "shell");
+    await this.serverInfo.ensurePanelToken(panelId, "shell");
+
+    const httpConfig = await this.buildHttpPanelConfig(panel, `shell:${page}`);
+    this.panelHttpServer!.storePanel(panelId, result, httpConfig);
+    return this.panelHttpServer!.getPanelUrl(panelId)!;
   }
 
   /** Set the RPC server for WS-based communication */
@@ -419,19 +402,10 @@ export class PanelManager {
         throw new Error(`Panel ${panel.id} is not a shell panel`);
       }
 
-      // Build the about page
-      let url: string;
-      if (hasAboutPage(page)) {
-        url = getAboutPageUrl(page);
-      } else {
-        url = await this.fetchAndStoreAboutPage(page);
-      }
+      // Build and store shell page via PanelHttpServer
+      const url = await this.buildAndStoreShellPage(panel.id, page, panel);
 
-      // Register the about protocol for the shell panel's partition
-      const partition = `persist:${getPanelContextId(panel)}`;
-      await registerAboutProtocolForPartition(partition);
-
-      // Create the view (unified code path)
+      // Create the view (unified code path — HTTP subdomain, no partition needed)
       await this.createViewForPanel(panel.id, url, "panel", getPanelContextId(panel));
 
       // Mark as ready and persist
@@ -457,64 +431,6 @@ export class PanelManager {
       throw new Error("ViewManager not set - call setViewManager first");
     }
     return this.viewManager;
-  }
-
-  /**
-   * Build the common preload arguments shared by all non-browser views
-   * (panels and shell panels).
-   */
-  private async buildPreloadArgs(
-    panelId: string,
-    kind: "panel",
-    callerKind: "panel" | "shell",
-    contextId: string,
-  ): Promise<string[]> {
-    const authToken = getTokenManager().ensureToken(panelId, callerKind);
-    const serverToken = await this.serverInfo.ensurePanelToken(panelId, callerKind);
-    return [
-      `--natstack-panel-id=${panelId}`,
-      `--natstack-auth-token=${authToken}`,
-      `--natstack-theme=${this.currentTheme}`,
-      `--natstack-kind=${kind}`,
-      `--natstack-context-id=${contextId}`,
-      ...(this.rpcPort ? [`--natstack-ws-port=${this.rpcPort}`] : []),
-      `--natstack-server-port=${this.serverInfo.rpcPort}`,
-      `--natstack-server-token=${serverToken}`,
-    ];
-  }
-
-  /**
-   * Append env and stateArgs arguments to a preload args array.
-   */
-  private async appendPanelEnvArgs(
-    additionalArgs: string[],
-    panelId: string,
-    panel: Panel | undefined,
-    contextId: string | undefined,
-  ): Promise<void> {
-    // Refresh system tokens (pubsub, git) in case they're stale from a previous session
-    const panelEnv = panel ? await this.refreshEnvTokens(panelId, getPanelEnv(panel)) : undefined;
-    if (panelEnv && Object.keys(panelEnv).length > 0) {
-      try {
-        const encodedEnv = Buffer.from(JSON.stringify(panelEnv), "utf-8").toString("base64");
-        additionalArgs.push(`--natstack-panel-env=${encodedEnv}`);
-      } catch (error) {
-        console.error(`[PanelManager] Failed to encode env for ${panelId}`, error);
-      }
-    }
-
-    // Add stateArgs if available (from current snapshot)
-    const stateArgs = panel ? getPanelStateArgs(panel) : undefined;
-    if (stateArgs && Object.keys(stateArgs).length > 0) {
-      try {
-        const encodedStateArgs = Buffer.from(JSON.stringify(stateArgs), "utf-8").toString("base64");
-        additionalArgs.push(`--natstack-state-args=${encodedStateArgs}`);
-      } catch (error) {
-        console.error(`[PanelManager] Failed to encode stateArgs for ${panelId}`, error);
-      }
-    }
-
-    // Note: scope path is no longer needed - all panels run in safe mode
   }
 
   /**
@@ -578,36 +494,18 @@ export class PanelManager {
       this.setupLinkInterception(panelId, view.webContents, "browser");
     } else {
       const panelType = panel ? getPanelType(panel) : undefined;
-      const isHttpPanel = url.startsWith("http://") || url.startsWith("https://");
 
-      let view: import("electron").WebContentsView;
-      if (isHttpPanel) {
-        // HTTP subdomain panels: globals injected via HTML by PanelHttpServer.
-        // Subdomain origin isolation replaces Electron partition-based isolation.
-        view = this.viewManager.createView({
-          id: panelId,
-          type: "panel",
-          preload: null, // No preload — globals + transport injected in HTML
-          url: url,
-          parentId: parentId ?? undefined,
-          injectHostThemeVariables: true,
-        });
-      } else {
-        // Non-HTTP panels (shell pages via natstack-about://): keep preload + partition
-        const callerKind = panelType === "shell" ? "shell" as const : "panel" as const;
-        const additionalArgs = await this.buildPreloadArgs(panelId, "panel", callerKind, contextId ?? "");
-        await this.appendPanelEnvArgs(additionalArgs, panelId, panel, contextId);
-
-        view = this.viewManager.createView({
-          id: panelId,
-          type: "panel",
-          partition: `persist:${contextId ?? panelId}`,
-          url: url,
-          parentId: parentId ?? undefined,
-          injectHostThemeVariables: true,
-          additionalArguments: additionalArgs,
-        });
-      }
+      // All panels (app + shell) served via HTTP subdomain.
+      // Globals injected via HTML by PanelHttpServer; subdomain origin isolation
+      // replaces Electron partition-based isolation.
+      const view = this.viewManager.createView({
+        id: panelId,
+        type: "panel",
+        preload: null, // No preload — globals + transport injected in HTML
+        url: url,
+        parentId: parentId ?? undefined,
+        injectHostThemeVariables: true,
+      });
 
       // CDP registration, state tracking, and content indexing are for app panels, not shell pages
       if (panelType !== "shell") {
@@ -1028,56 +926,6 @@ export class PanelManager {
 
 
   // Public methods for RPC services
-
-  /**
-   * Refresh system tokens in an existing env.
-   * Called when rehydrating panels after app restart to ensure tokens are valid.
-   * Tokens are stored in-memory by TokenManager, so they're invalidated on restart.
-   */
-  private async refreshEnvTokens(
-    panelId: string,
-    env: Record<string, string> | undefined
-  ): Promise<Record<string, string> | undefined> {
-    if (!env) return undefined;
-
-    // Get or recreate Electron WS auth token
-    const freshWsToken = getTokenManager().ensureToken(panelId, "panel");
-    // Get or recreate server-side token for git/pubsub
-    const serverToken = await this.serverInfo.getPanelToken(panelId);
-    log.verbose(` Refreshing env tokens for ${panelId}`);
-
-    // Create a mutable copy
-    const refreshedEnv = { ...env };
-
-    // Refresh __GIT_TOKEN (server token for git access — never use Electron WS token)
-    if (refreshedEnv["__GIT_TOKEN"] && serverToken) {
-      refreshedEnv["__GIT_TOKEN"] = serverToken;
-    }
-
-    // Refresh token in __GIT_CONFIG (JSON) — server token for git
-    if (refreshedEnv["__GIT_CONFIG"] && serverToken) {
-      try {
-        const gitConfig = JSON.parse(refreshedEnv["__GIT_CONFIG"]);
-        gitConfig.token = serverToken;
-        refreshedEnv["__GIT_CONFIG"] = JSON.stringify(gitConfig);
-      } catch {
-        // Invalid JSON, leave as-is
-      }
-    }
-
-    // Refresh token in __PUBSUB_CONFIG (JSON) — server token for pubsub
-    if (refreshedEnv["__PUBSUB_CONFIG"] && serverToken) {
-      try {
-        const pubsubConfig = JSON.parse(refreshedEnv["__PUBSUB_CONFIG"]);
-        pubsubConfig.token = serverToken;
-        refreshedEnv["__PUBSUB_CONFIG"] = JSON.stringify(pubsubConfig);
-      } catch {
-        // Invalid JSON, leave as-is
-      }
-    }
-
-    return refreshedEnv;
-  }
 
   /**
    * Build env for a panel, merging base env with system env.
@@ -1869,15 +1717,8 @@ export class PanelManager {
       panel.artifacts = { buildState: "building", buildProgress: "Loading shell page..." };
       this.persistArtifacts(panelId, panel.artifacts);
 
-      const partition = `persist:${contextId}`;
-      await registerAboutProtocolForPartition(partition);
-
-      let url: string;
-      if (hasAboutPage(page)) {
-        url = getAboutPageUrl(page);
-      } else {
-        url = await this.fetchAndStoreAboutPage(page);
-      }
+      // Build and store shell page via PanelHttpServer
+      const url = await this.buildAndStoreShellPage(panelId, page, panel);
 
       const contents = this.viewManager.getWebContents(panelId);
       if (contents && !contents.isDestroyed()) {
@@ -2264,20 +2105,6 @@ export class PanelManager {
     replacePanel?: Panel,
     stateArgs?: Record<string, unknown>
   ): Promise<{ id: string; type: SharedPanel.PanelType; title: string }> {
-    // Build the about page if not already built
-    let url: string;
-    if (hasAboutPage(page)) {
-      url = getAboutPageUrl(page);
-    } else {
-      try {
-        url = await this.fetchAndStoreAboutPage(page);
-      } catch (error) {
-        throw new Error(
-          `Failed to build shell page ${page}: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-    }
-
     const title = page;
 
     // Generate unique panel ID
@@ -2367,11 +2194,10 @@ export class PanelManager {
     // Persist to database
     this.persistPanel(panel, parent?.id ?? null);
 
-    // Register the about protocol for the shell panel's partition
-    const partition = `persist:${getPanelContextId(panel)}`;
-    await registerAboutProtocolForPartition(partition);
+    // Build and store shell page via PanelHttpServer
+    const url = await this.buildAndStoreShellPage(panelId, page, panel);
 
-    // Create WebContentsView for the shell panel (unified code path)
+    // Create WebContentsView for the shell panel (HTTP subdomain, no partition needed)
     await this.createViewForPanel(panel.id, url, "panel", getPanelContextId(panel));
 
     // Focus after replace (takes over from the one being used)
@@ -2501,20 +2327,6 @@ export class PanelManager {
       }
     }
 
-    // Build the about page if not already built
-    let url: string;
-    if (hasAboutPage(page)) {
-      url = getAboutPageUrl(page);
-    } else {
-      try {
-        url = await this.fetchAndStoreAboutPage(page);
-      } catch (error) {
-        throw new Error(
-          `Failed to build shell page ${page}: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-    }
-
     const title = page;
 
     // Shell panels use a simple context ID for session isolation
@@ -2549,11 +2361,10 @@ export class PanelManager {
     // Persist to database
     this.persistPanel(panel, null);
 
-    // Register the about protocol for the shell panel's partition
-    const partition = `persist:${getPanelContextId(panel)}`;
-    await registerAboutProtocolForPartition(partition);
+    // Build and store shell page via PanelHttpServer
+    const url = await this.buildAndStoreShellPage(panelId, page, panel);
 
-    // Create WebContentsView for the shell panel (unified code path)
+    // Create WebContentsView for the shell panel (HTTP subdomain, no partition needed)
     await this.createViewForPanel(panel.id, url, "panel", getPanelContextId(panel));
 
     // Focus the newly created panel (this also notifies tree update)
@@ -2618,9 +2429,9 @@ export class PanelManager {
     const rpcToken = getTokenManager().getToken(panel.id) ?? "";
     const gitToken = await this.serverInfo.getGitTokenForPanel(panel.id);
     const snapshot = getCurrentSnapshot(panel);
-    const env = snapshot.env ?? {};
+    const env = snapshot.options.env ?? {};
     const stateArgs = getPanelStateArgs(panel) ?? {};
-    const repoArgs = snapshot.repoArgs ?? {};
+    const repoArgs = snapshot.options.repoArgs ?? {};
 
     return {
       panelId: panel.id,
@@ -3115,7 +2926,8 @@ export class PanelManager {
     // Update stored HTTP configs so page reloads pick up the new theme
     if (this.panelHttpServer) {
       for (const [panelId, panel] of this.panels) {
-        if (getPanelType(panel) === "app" && panel.artifacts?.buildState === "ready") {
+        const pType = getPanelType(panel);
+        if ((pType === "app" || pType === "shell") && panel.artifacts?.buildState === "ready") {
           void this.buildHttpPanelConfig(panel, getPanelSource(panel)).then((httpConfig) => {
             this.panelHttpServer?.updatePanelConfig(panelId, httpConfig);
           }).catch(() => { /* non-fatal — panel may be closing */ });
@@ -3195,6 +3007,11 @@ export class PanelManager {
         getClaudeCodeConversationManager().endPanelConversations(panelId);
 
         // Clean up HTTP-served panel content
+        this.panelHttpServer?.removePanel(panelId);
+        break;
+
+      case "shell":
+        // Shell panel cleanup — remove from PanelHttpServer
         this.panelHttpServer?.removePanel(panelId);
         break;
     }
