@@ -247,9 +247,42 @@ export class PanelHttpServer {
   private host: string;
   private managementToken: string | null;
 
+  /**
+   * Source registry: deterministic subdomain → panel source info.
+   * Populated at startup from the package graph. Enables on-demand panel
+   * creation when a browser visits a known subdomain.
+   */
+  private sourceRegistry = new Map<string, { source: string; name: string }>();
+
+  /**
+   * Callback to trigger on-demand panel creation when a browser visits
+   * a registered subdomain that has no running panel.
+   */
+  private onDemandCreate: ((source: string, subdomain: string) => Promise<string>) | null = null;
+
   constructor(host = "127.0.0.1", managementToken?: string) {
     this.host = host;
     this.managementToken = managementToken ?? null;
+  }
+
+  /**
+   * Populate the source registry with available panels from the package graph.
+   * Each entry maps a deterministic subdomain to the panel's source path.
+   */
+  populateSourceRegistry(entries: Array<{ subdomain: string; source: string; name: string }>): void {
+    this.sourceRegistry.clear();
+    for (const entry of entries) {
+      this.sourceRegistry.set(entry.subdomain, { source: entry.source, name: entry.name });
+    }
+    log.info(`Source registry populated with ${entries.length} panels`);
+  }
+
+  /**
+   * Set the callback for on-demand panel creation.
+   * Called when a browser visits a registered subdomain with no running panel.
+   */
+  setOnDemandCreate(handler: (source: string, subdomain: string) => Promise<string>): void {
+    this.onDemandCreate = handler;
   }
 
   async start(port = 0): Promise<number> {
@@ -460,7 +493,20 @@ export class PanelHttpServer {
           this.handleSubdomainRequest(req, res, url, pathname, stored);
           return;
         }
-        // Panel still building — show a loading page
+        // Panel still building — set a session cookie so auth works
+        // once the build completes and the page auto-refreshes.
+        this.serveBuildingPageWithSession(req, res, subdomain, pending!.panelId);
+        return;
+      }
+
+      // ── On-demand panel creation from source registry ──────────────
+      const registryEntry = this.sourceRegistry.get(subdomain);
+      if (registryEntry && this.onDemandCreate) {
+        // Trigger on-demand creation (async — HeadlessPanelManager is
+        // idempotent so concurrent requests are safe)
+        void this.onDemandCreate(registryEntry.source, subdomain).catch((err) => {
+          log.info(`On-demand creation failed for ${subdomain}: ${err}`);
+        });
         this.serveBuildingPage(res, subdomain);
         return;
       }
@@ -792,7 +838,7 @@ ${this.buildOpfsBootstrapScript(config, true)}
   /**
    * Serve a "building" placeholder page for a pending panel.
    */
-  private serveBuildingPage(res: import("http").ServerResponse, subdomain: string): void {
+  private serveBuildingPage(res: import("http").ServerResponse, subdomain: string, setCookie?: string): void {
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -817,8 +863,36 @@ ${this.buildOpfsBootstrapScript(config, true)}
 </body>
 </html>`;
 
-    res.writeHead(202, { "Content-Type": "text/html; charset=utf-8" });
+    const headers: Record<string, string> = { "Content-Type": "text/html; charset=utf-8" };
+    if (setCookie) {
+      headers["Set-Cookie"] = setCookie;
+    }
+    res.writeHead(202, headers);
     res.end(html);
+  }
+
+  /**
+   * Serve building page and set a session cookie for the pending panel.
+   * This ensures the browser has a valid session by the time the build
+   * completes and the page auto-refreshes to the real panel.
+   */
+  private serveBuildingPageWithSession(
+    req: import("http").IncomingMessage,
+    res: import("http").ServerResponse,
+    subdomain: string,
+    panelId: string,
+  ): void {
+    // Only set a cookie if the browser doesn't already have a valid session
+    const cookies = parseCookies(req.headers.cookie);
+    const existingSid = cookies["_ns_session"];
+    const existingSession = existingSid ? this.sessions.get(existingSid) : undefined;
+
+    if (existingSession && existingSession.panelId === panelId) {
+      this.serveBuildingPage(res, subdomain);
+    } else {
+      const sid = this.createPanelSession(panelId, subdomain);
+      this.serveBuildingPage(res, subdomain, `_ns_session=${sid}; HttpOnly; SameSite=Strict; Path=/`);
+    }
   }
 
   // =========================================================================
@@ -1033,15 +1107,48 @@ ${this.buildOpfsBootstrapScript(config, true)}
   // =========================================================================
 
   private serveIndex(res: import("http").ServerResponse): void {
-    const panelEntries = Array.from(this.panels.entries()).map(([id, panel]) => {
+    // Build a set of subdomains that are currently running (stored or pending)
+    const runningSubdomains = new Set<string>();
+    for (const panel of this.panels.values()) {
+      runningSubdomains.add(panel.config.subdomain);
+    }
+    for (const pending of this.pendingPanels.values()) {
+      runningSubdomains.add(pending.subdomain);
+    }
+
+    // Active panels: currently running with direct links
+    const activeEntries = Array.from(this.panels.entries()).map(([id, panel]) => {
       const origin = this.getPanelOrigin(panel.config.subdomain);
       const url = `${origin}/?token=${encodeURIComponent(panel.httpToken)}`;
       return `<li>
   <a href="${url}">${escapeHtml(panel.title)}</a>
-  <code>${escapeHtml(id)}</code>
+  <span class="badge running">running</span>
   <small class="sub">${escapeHtml(panel.config.subdomain)}.localhost</small>
 </li>`;
     });
+
+    // Available panels: from source registry, not currently running
+    const availableEntries = Array.from(this.sourceRegistry.entries())
+      .filter(([subdomain]) => !runningSubdomains.has(subdomain))
+      .map(([subdomain, { name }]) => {
+        const origin = this.getPanelOrigin(subdomain);
+        return `<li>
+  <a href="${origin}/">${escapeHtml(name)}</a>
+  <small class="sub">${escapeHtml(subdomain)}.localhost</small>
+</li>`;
+      });
+
+    // Building panels: currently pending
+    const buildingEntries = Array.from(this.pendingPanels.values()).map((pending) => {
+      const origin = this.getPanelOrigin(pending.subdomain);
+      return `<li>
+  <a href="${origin}/">${escapeHtml(pending.panelId)}</a>
+  <span class="badge building">building</span>
+  <small class="sub">${escapeHtml(pending.subdomain)}.localhost</small>
+</li>`;
+    });
+
+    const allEntries = [...activeEntries, ...buildingEntries, ...availableEntries];
 
     const html = `<!DOCTYPE html>
 <html lang="en">
@@ -1060,13 +1167,16 @@ ${this.buildOpfsBootstrapScript(config, true)}
     a:hover { text-decoration: underline; }
     .sub { color: #555; margin-left: 0.5em; }
     .empty { color: #888; }
+    .badge { font-size: 0.7em; padding: 0.15em 0.5em; border-radius: 3px; margin-left: 0.5em; text-transform: uppercase; font-weight: 600; }
+    .badge.running { background: #1b5e20; color: #81c784; }
+    .badge.building { background: #4a3800; color: #ffd54f; }
   </style>
 </head>
 <body>
   <h1>NatStack Panels</h1>
-  ${panelEntries.length > 0
-    ? `<ul>${panelEntries.join("\n")}</ul>`
-    : `<p class="empty">No panels are currently running. Create a panel via the RPC API.</p>`
+  ${allEntries.length > 0
+    ? `<ul>${allEntries.join("\n")}</ul>`
+    : `<p class="empty">No panels available. Add panels to the workspace <code>panels/</code> directory.</p>`
   }
 </body>
 </html>`;

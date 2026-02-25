@@ -327,6 +327,51 @@ async function main() {
       );
     });
 
+    // ── On-demand panel creation: populate source registry ───────────
+    // Scan the package graph for available panels and register them with
+    // deterministic subdomains. When a browser visits one of these subdomains,
+    // PanelHttpServer triggers on-demand creation via HeadlessPanelManager.
+    if (panelHttpServer) {
+      const graph = buildSystem.getGraph();
+      const panelNodes = graph.allNodes().filter((n) => n.kind === "panel");
+
+      // Compute deterministic subdomains from base names
+      const rawEntries = panelNodes.map((n) => {
+        const baseName = (n.relativePath.split("/").pop() ?? n.relativePath)
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, "-")
+          .replace(/-+/g, "-")
+          .replace(/^-|-$/g, "") || "panel";
+        return {
+          subdomain: baseName,
+          source: n.relativePath,
+          name: n.manifest.title ?? n.name,
+        };
+      });
+
+      // Resolve collisions by using the full relative path
+      const counts = new Map<string, number>();
+      for (const e of rawEntries) {
+        counts.set(e.subdomain, (counts.get(e.subdomain) ?? 0) + 1);
+      }
+      for (const e of rawEntries) {
+        if ((counts.get(e.subdomain) ?? 0) > 1) {
+          e.subdomain = e.source
+            .toLowerCase()
+            .replace(/[^a-z0-9]/g, "-")
+            .replace(/-+/g, "-")
+            .replace(/^-|-$/g, "");
+        }
+      }
+
+      panelHttpServer.populateSourceRegistry(rawEntries);
+      panelHttpServer.setOnDemandCreate((source, subdomain) => {
+        return headlessPanelManager.createPanelOnDemand(source, subdomain);
+      });
+
+      console.log(`  On-demand panels: ${rawEntries.map((e) => e.subdomain).join(", ") || "(none)"}`);
+    }
+
     // Filesystem service — per-context sandboxed fs via RPC
     const { FsService, handleFsCall } = await import("../main/fsService.js");
     const fsService = new FsService(contextFolderManager);

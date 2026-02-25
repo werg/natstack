@@ -165,6 +165,47 @@ export class HeadlessPanelManager {
   }
 
   // =========================================================================
+  // On-demand panel creation (browser-driven)
+  // =========================================================================
+
+  /** In-flight on-demand creates, keyed by subdomain (prevents duplicate work) */
+  private onDemandInFlight = new Map<string, Promise<string>>();
+
+  /**
+   * Create a panel on-demand when a browser visits a registered subdomain.
+   *
+   * Idempotent: if a panel already exists on this subdomain, returns its ID.
+   * Concurrent calls for the same subdomain are coalesced into a single create.
+   *
+   * @param source  Workspace-relative panel source path (e.g., "panels/chat")
+   * @param subdomain  The deterministic subdomain from the source registry
+   * @returns The panel ID
+   */
+  async createPanelOnDemand(source: string, subdomain: string): Promise<string> {
+    // Already running on this subdomain?
+    for (const panel of this.panels.values()) {
+      if (panel.subdomain === subdomain) return panel.id;
+    }
+
+    // Already being created?
+    const inFlight = this.onDemandInFlight.get(subdomain);
+    if (inFlight) return inFlight;
+
+    const promise = this.createPanel("server", source, undefined, undefined, subdomain)
+      .then((result) => {
+        this.onDemandInFlight.delete(subdomain);
+        return result.id;
+      })
+      .catch((err) => {
+        this.onDemandInFlight.delete(subdomain);
+        throw err;
+      });
+
+    this.onDemandInFlight.set(subdomain, promise);
+    return promise;
+  }
+
+  // =========================================================================
   // Panel creation
   // =========================================================================
 
@@ -173,6 +214,8 @@ export class HeadlessPanelManager {
     source: string,
     options?: CreateChildOptions,
     stateArgs?: Record<string, unknown>,
+    /** Use this subdomain instead of generating a random one (for on-demand creation) */
+    subdomainOverride?: string,
   ): Promise<ChildCreationResult> {
     const parent = callerId ? this.panels.get(callerId) : null;
 
@@ -205,8 +248,15 @@ export class HeadlessPanelManager {
     let subdomain: string | null = null;
     try {
       // ── Subdomain assignment ──
+      // On-demand creation provides a predetermined subdomain; otherwise generate one.
       // Panels sharing a contextId share a subdomain (= same origin = shared storage)
-      subdomain = this.getOrCreateSubdomain(contextId, source);
+      if (subdomainOverride) {
+        subdomain = subdomainOverride;
+        this.activeSubdomains.add(subdomain);
+        this.contextSubdomains.set(contextId, subdomain);
+      } else {
+        subdomain = this.getOrCreateSubdomain(contextId, source);
+      }
 
       // Create RPC token for this panel
       rpcToken = this.deps.createToken(panelId, "panel");
