@@ -288,6 +288,7 @@ async function main() {
 
   let panelHttpPort: number | null = null;
   let panelHttpServerInstance: { stop(): Promise<void> } | null = null;
+  let cdpBridgeInstance: { stop(): Promise<void> } | null = null;
 
   if (!ipcChannel) {
     const { PanelHttpServer } = await import("./panelHttpServer.js");
@@ -385,6 +386,50 @@ async function main() {
       });
 
       console.log(`  On-demand panels: ${rawEntries.map((e) => e.subdomain).join(", ") || "(none)"}`);
+
+      // CDP bridge for browser extension automation
+      const { CdpBridge } = await import("./cdpBridge.js");
+      const cdpBridge = new CdpBridge({
+        tokenManager: getTokenManager(),
+        adminToken,
+        canAccessBrowser: (requestingPanelId, browserId) => {
+          return headlessPanelManager.canAccessPanel(requestingPanelId, browserId);
+        },
+        panelOwnsBrowser: (requestingPanelId, browserId) => {
+          return headlessPanelManager.panelOwnsBrowser(requestingPanelId, browserId);
+        },
+        port: panelHttpPort!,
+      });
+      panelHttpServer.setCdpBridge(cdpBridge);
+      cdpBridgeInstance = cdpBridge;
+
+      // Register browser service for CDP + navigation
+      dispatcher.register("browser", async (ctx, method, serviceArgs) => {
+        const a = serviceArgs as unknown[];
+        switch (method) {
+          case "getCdpEndpoint": {
+            const endpoint = cdpBridge.getCdpEndpoint(a[0] as string, ctx.callerId);
+            if (!endpoint) throw new Error(`Access denied or browser not found: ${a[0]}`);
+            return endpoint;
+          }
+          case "navigate":
+          case "goBack":
+          case "goForward":
+          case "reload":
+          case "stop": {
+            return cdpBridge.sendBrowserCommand(a[0] as string, ctx.callerId, method, a.slice(1));
+          }
+          default:
+            throw new Error(`Unknown browser method: ${method}`);
+        }
+      });
+    }
+
+    // Stub browser service when --serve-panels is off
+    if (!panelHttpServer) {
+      dispatcher.register("browser", async () => {
+        throw new Error("browser service requires --serve-panels mode");
+      });
     }
 
     // Filesystem service — per-context sandboxed fs via RPC
@@ -461,6 +506,11 @@ async function main() {
       handle.shutdown().catch((e) => console.error("[Server] Core shutdown error:", e)),
       rpcServer.stop().then(() => console.log("[Server] RPC stopped")).catch((e) => console.error("[Server] RPC stop error:", e)),
     ];
+    if (cdpBridgeInstance) {
+      shutdownTasks.push(
+        cdpBridgeInstance.stop().then(() => console.log("[Server] CDP bridge stopped")).catch((e) => console.error("[Server] CDP bridge stop error:", e)),
+      );
+    }
     if (panelHttpServerInstance) {
       shutdownTasks.push(
         panelHttpServerInstance.stop().then(() => console.log("[Server] Panel HTTP stopped")).catch((e) => console.error("[Server] Panel HTTP stop error:", e)),

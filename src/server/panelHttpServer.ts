@@ -26,8 +26,10 @@ import { createServer, type Server as HttpServer } from "http";
 import * as fs from "fs";
 import * as path from "path";
 import { randomBytes } from "crypto";
+import { WebSocketServer } from "ws";
 import { createDevLogger } from "../main/devLog.js";
 import type { BuildResult } from "./buildV2/buildStore.js";
+import type { CdpBridge } from "./cdpBridge.js";
 
 const log = createDevLogger("PanelHttpServer");
 
@@ -268,6 +270,9 @@ export class PanelHttpServer {
    */
   private onDemandCreate: ((source: string, subdomain: string) => Promise<string>) | null = null;
 
+  private wss: WebSocketServer | null = null;
+  private cdpBridge: CdpBridge | null = null;
+
   constructor(host = "127.0.0.1", managementToken?: string) {
     this.host = host;
     this.managementToken = managementToken ?? null;
@@ -293,6 +298,10 @@ export class PanelHttpServer {
     this.onDemandCreate = handler;
   }
 
+  setCdpBridge(bridge: CdpBridge): void {
+    this.cdpBridge = bridge;
+  }
+
   async start(port = 0): Promise<number> {
     this.httpServer = createServer((req, res) => {
       this.handleRequest(req, res).catch((err) => {
@@ -302,6 +311,16 @@ export class PanelHttpServer {
           res.end("Internal Server Error");
         }
       });
+    });
+
+    // WebSocket upgrade handler for CDP bridge
+    this.wss = new WebSocketServer({ noServer: true });
+    this.httpServer.on("upgrade", (req, socket, head) => {
+      if (this.cdpBridge) {
+        this.cdpBridge.handleUpgrade(req, socket, head, this.wss!);
+      } else {
+        socket.destroy();
+      }
     });
 
     await new Promise<void>((resolve, reject) => {
@@ -455,6 +474,11 @@ export class PanelHttpServer {
       try { res.end(); } catch { /* already closed */ }
     }
     this.sseConnections.clear();
+
+    if (this.wss) {
+      this.wss.close();
+      this.wss = null;
+    }
 
     if (this.httpServer) {
       await new Promise<void>((resolve) => {

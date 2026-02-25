@@ -533,6 +533,25 @@ export class HeadlessPanelManager {
   }
 
   // =========================================================================
+  // Access control (for CDP bridge)
+  // =========================================================================
+
+  /** Ancestry-based access: direct parent or any ancestor can access target. */
+  canAccessPanel(requestingPanelId: string, targetPanelId: string): boolean {
+    const target = this.panels.get(targetPanelId);
+    if (!target) return false;
+    if (target.parentId === requestingPanelId) return true;
+    return targetPanelId.startsWith(requestingPanelId + "/");
+  }
+
+  /** Owner-only access: only direct parent can access target. */
+  panelOwnsBrowser(requestingPanelId: string, targetPanelId: string): boolean {
+    const target = this.panels.get(targetPanelId);
+    if (!target) return false;
+    return target.parentId === requestingPanelId;
+  }
+
+  // =========================================================================
   // State args
   // =========================================================================
 

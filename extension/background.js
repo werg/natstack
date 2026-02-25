@@ -39,6 +39,26 @@ let reconnectAttempt = 0;
 let reconnectTimer = null;
 
 // ---------------------------------------------------------------------------
+// Module-scope config (hoisted for CDP bridge access)
+// ---------------------------------------------------------------------------
+
+/** @type {string} */
+let serverUrl = "";
+
+/** @type {string} */
+let managementToken = "";
+
+// ---------------------------------------------------------------------------
+// CDP bridge state (Chrome-only — Firefox lacks chrome.debugger)
+// ---------------------------------------------------------------------------
+
+/** @type {WebSocket | null} */
+let cdpWs = null;
+
+/** @type {Map<string, boolean>} browserId → attached */
+const debuggerAttached = new Map();
+
+// ---------------------------------------------------------------------------
 // Config helpers
 // ---------------------------------------------------------------------------
 
@@ -46,9 +66,12 @@ const NATIVE_HOST_NAME = "com.natstack.connector";
 
 async function getConfig() {
   const result = await chrome.storage.local.get(["serverUrl", "managementToken", "autoOpenTabs", "autoCloseTabs"]);
+  // Update module-scope vars so CDP bridge can access them
+  serverUrl = result.serverUrl || "";
+  managementToken = result.managementToken || "";
   return {
-    serverUrl: result.serverUrl || "",
-    managementToken: result.managementToken || "",
+    serverUrl,
+    managementToken,
     autoOpenTabs: result.autoOpenTabs !== false,
     autoCloseTabs: result.autoCloseTabs !== false,
   };
@@ -124,6 +147,7 @@ async function connect() {
     connected = true;
     reconnectAttempt = 0;
     broadcastStatus();
+    connectCdpBridge();
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -163,6 +187,7 @@ function disconnect() {
     sseAbort = null;
   }
   connected = false;
+  disconnectCdpBridge();
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
@@ -269,6 +294,11 @@ async function handleSSEEvent(event, dataStr, config) {
             panelTabs.set(data.panelId, tab.id);
             tabPanels.set(tab.id, data.panelId);
 
+            // Register with CDP bridge
+            if (cdpWs && cdpWs.readyState === WebSocket.OPEN) {
+              cdpWs.send(JSON.stringify({ type: "cdp:register", browserId: data.panelId, tabId: tab.id }));
+            }
+
             // Try to group natstack tabs together
             try {
               await groupNatstackTabs();
@@ -289,6 +319,12 @@ async function handleSSEEvent(event, dataStr, config) {
       // Close any pre-warming init tab
       closeInitWindow(data.panelId);
 
+      // Unregister from CDP bridge and detach debugger
+      if (cdpWs && cdpWs.readyState === WebSocket.OPEN) {
+        cdpWs.send(JSON.stringify({ type: "cdp:unregister", browserId: data.panelId }));
+      }
+      detachDebugger(data.panelId);
+
       // Auto-close tab if configured
       if (config.autoCloseTabs) {
         const tabId = panelTabs.get(data.panelId);
@@ -298,6 +334,8 @@ async function handleSSEEvent(event, dataStr, config) {
           } catch { /* tab already closed */ }
         }
       }
+      const closedTabId = panelTabs.get(data.panelId);
+      if (closedTabId != null) tabPanels.delete(closedTabId);
       panelTabs.delete(data.panelId);
 
       broadcastStatus();
@@ -324,6 +362,12 @@ async function handleSSEEvent(event, dataStr, config) {
 chrome.tabs.onRemoved.addListener((tabId) => {
   const panelId = tabPanels.get(tabId);
   if (panelId) {
+    // Unregister from CDP bridge and detach debugger
+    if (cdpWs && cdpWs.readyState === WebSocket.OPEN) {
+      cdpWs.send(JSON.stringify({ type: "cdp:unregister", browserId: panelId }));
+    }
+    detachDebugger(panelId);
+
     panelTabs.delete(panelId);
     tabPanels.delete(tabId);
   }
@@ -352,6 +396,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
         if (panel.subdomain === subdomain && !panelTabs.has(panelId)) {
           panelTabs.set(panelId, tabId);
           tabPanels.set(tabId, panelId);
+
+          // Register with CDP bridge
+          if (cdpWs && cdpWs.readyState === WebSocket.OPEN) {
+            cdpWs.send(JSON.stringify({ type: "cdp:register", browserId: panelId, tabId }));
+          }
+
           broadcastStatus();
           break;
         }
@@ -406,8 +456,8 @@ async function preWarmContext(panelId, subdomain, initToken, config) {
   if (initWindows.has(panelId)) return;
 
   try {
-    const serverUrl = new URL(config.serverUrl);
-    const port = serverUrl.port || (serverUrl.protocol === "https:" ? "443" : "80");
+    const parsedUrl = new URL(config.serverUrl);
+    const port = parsedUrl.port || (parsedUrl.protocol === "https:" ? "443" : "80");
     const initUrl = `http://${subdomain}.localhost:${port}/__init__?token=${encodeURIComponent(initToken)}`;
 
     console.log(`[NatStack] Pre-warming context for ${panelId}: ${initUrl}`);
@@ -450,6 +500,179 @@ async function closeInitWindow(panelId) {
     // Window already closed
   }
 }
+
+// ---------------------------------------------------------------------------
+// CDP bridge (Chrome-only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Connect to the server's CDP bridge WebSocket.
+ * Called when SSE connection succeeds.
+ */
+function connectCdpBridge() {
+  if (!serverUrl || !managementToken) return;
+  if (cdpWs) { cdpWs.close(); cdpWs = null; }
+
+  const url = serverUrl.replace(/^http/, "ws") + "/api/cdp-bridge?token=" + managementToken;
+  const ws = new WebSocket(url);
+  cdpWs = ws;
+
+  ws.onopen = () => {
+    if (cdpWs !== ws) return; // replaced
+    console.log("[NatStack] CDP bridge connected");
+    // Register all currently tracked panel tabs
+    for (const [panelId, tabId] of panelTabs) {
+      ws.send(JSON.stringify({ type: "cdp:register", browserId: panelId, tabId }));
+    }
+  };
+
+  ws.onmessage = async (event) => {
+    if (cdpWs !== ws) return; // replaced
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.type === "cdp:command") await handleCdpCommand(msg);
+      else if (msg.type === "cdp:detach") await detachDebugger(msg.browserId);
+      else if (msg.type === "nav:command") await handleNavCommand(msg);
+    } catch (err) {
+      console.error("[NatStack] CDP bridge message error:", err);
+    }
+  };
+
+  ws.onclose = () => {
+    if (cdpWs !== ws) return; // replaced — don't null out the new connection
+    console.log("[NatStack] CDP bridge disconnected");
+    cdpWs = null;
+    // Retry once after 2s if SSE is still connected (covers independent WS drop)
+    if (connected) {
+      setTimeout(() => {
+        if (connected && !cdpWs) {
+          console.log("[NatStack] CDP bridge retry (SSE still connected)");
+          connectCdpBridge();
+        }
+      }, 2000);
+    }
+  };
+
+  ws.onerror = (err) => {
+    console.error("[NatStack] CDP bridge WebSocket error:", err);
+  };
+}
+
+/**
+ * Disconnect from the CDP bridge and detach all debuggers.
+ * Called when SSE disconnects.
+ */
+function disconnectCdpBridge() {
+  if (cdpWs) { cdpWs.close(); cdpWs = null; }
+  for (const [browserId] of debuggerAttached) {
+    const tabId = panelTabs.get(browserId);
+    if (tabId != null) {
+      chrome.debugger.detach({ tabId }).catch(() => {});
+    }
+  }
+  debuggerAttached.clear();
+}
+
+/**
+ * Detach debugger for a specific browser and clear its attached flag.
+ * @param {string} browserId
+ */
+async function detachDebugger(browserId) {
+  if (!debuggerAttached.has(browserId)) return;
+  debuggerAttached.delete(browserId);
+  const tabId = panelTabs.get(browserId);
+  if (tabId != null) {
+    try {
+      await chrome.debugger.detach({ tabId });
+    } catch {
+      // Already detached
+    }
+  }
+}
+
+/**
+ * Handle a CDP command from the server bridge.
+ * Lazy-attaches the debugger on first command.
+ * @param {object} msg
+ */
+async function handleCdpCommand(msg) {
+  const { requestId, browserId, method, params, sessionId } = msg;
+  const tabId = panelTabs.get(browserId);
+  if (tabId == null) {
+    cdpWs?.send(JSON.stringify({ type: "cdp:error", requestId, browserId, error: "Tab not found" }));
+    return;
+  }
+
+  try {
+    // Lazy attach — also re-attaches after DevTools detach
+    if (!debuggerAttached.get(browserId)) {
+      await chrome.debugger.attach({ tabId }, "1.3");
+      debuggerAttached.set(browserId, true);
+    }
+
+    // sessionId goes INSIDE the target object (Chrome flat sessions)
+    const target = sessionId ? { tabId, sessionId } : { tabId };
+    const result = await chrome.debugger.sendCommand(target, method, params ?? {});
+    cdpWs?.send(JSON.stringify({ type: "cdp:result", requestId, browserId, result, sessionId }));
+  } catch (err) {
+    cdpWs?.send(JSON.stringify({ type: "cdp:error", requestId, browserId, error: err.message }));
+  }
+}
+
+/**
+ * Handle a navigation command from the server bridge.
+ * Uses chrome.tabs API (no debugger needed) except for "stop".
+ * @param {object} msg
+ */
+async function handleNavCommand(msg) {
+  const { requestId, browserId, action, url } = msg;
+  const tabId = panelTabs.get(browserId);
+  if (tabId == null) {
+    cdpWs?.send(JSON.stringify({ type: "nav:error", requestId, browserId, error: "Tab not found" }));
+    return;
+  }
+  try {
+    switch (action) {
+      case "navigate": await chrome.tabs.update(tabId, { url }); break;
+      case "goBack":   await chrome.tabs.goBack(tabId); break;
+      case "goForward": await chrome.tabs.goForward(tabId); break;
+      case "reload":   await chrome.tabs.reload(tabId); break;
+      case "stop":
+        if (debuggerAttached.get(browserId)) {
+          await chrome.debugger.sendCommand({ tabId }, "Page.stopLoading", {});
+        }
+        break;
+    }
+    cdpWs?.send(JSON.stringify({ type: "nav:result", requestId, browserId }));
+  } catch (err) {
+    cdpWs?.send(JSON.stringify({ type: "nav:error", requestId, browserId, error: err.message }));
+  }
+}
+
+// Forward CDP events from chrome.debugger to the server bridge
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  if (!cdpWs || cdpWs.readyState !== WebSocket.OPEN) return;
+  const browserId = tabPanels.get(source.tabId);
+  if (!browserId) return;
+
+  cdpWs.send(JSON.stringify({
+    type: "cdp:event",
+    browserId,
+    method,
+    params,
+    sessionId: source.sessionId,
+  }));
+});
+
+// Handle debugger detach (e.g. user opens DevTools) — lazy reattach on next command
+chrome.debugger.onDetach.addListener((source, _reason) => {
+  const browserId = tabPanels.get(source.tabId);
+  if (browserId) {
+    // Just clear attached flag — next CDP command will re-attach.
+    // Do NOT unregister: the tab still exists (user may have just opened DevTools).
+    debuggerAttached.delete(browserId);
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Popup communication
@@ -542,9 +765,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 // Listen for config changes
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && (changes.serverUrl || changes.managementToken)) {
-    reconnectAttempt = 0;
-    connect();
+  if (area === "local") {
+    if (changes.serverUrl) serverUrl = changes.serverUrl.newValue || "";
+    if (changes.managementToken) managementToken = changes.managementToken.newValue || "";
+    if (changes.serverUrl || changes.managementToken) {
+      reconnectAttempt = 0;
+      connect();
+    }
   }
 });
 
