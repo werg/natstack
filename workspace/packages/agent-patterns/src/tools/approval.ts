@@ -13,7 +13,7 @@
 import {
   needsApprovalForTool,
   type ApprovalLevel,
-} from "@workspace/agentic-messaging";
+} from "@workspace/agentic-protocol";
 import type { PubsubTool } from "./pubsub-tool-registry.js";
 
 /**

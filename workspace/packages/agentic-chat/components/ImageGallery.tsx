@@ -5,7 +5,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Box, Dialog, Flex, IconButton, Text } from "@radix-ui/themes";
 import { Cross2Icon, DownloadIcon, ZoomInIcon } from "@radix-ui/react-icons";
-import type { Attachment } from "@workspace/pubsub";
+import type { Attachment } from "@natstack/pubsub";
 import { formatBytes, createImagePreviewUrl, revokeImagePreviewUrl, isImageMimeType } from "../utils/imageUtils";
 
 interface ImageGalleryProps {

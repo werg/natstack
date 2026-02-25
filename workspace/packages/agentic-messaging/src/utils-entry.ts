@@ -10,11 +10,11 @@
 // JSON Schema utilities
 export { jsonSchemaToZod, jsonSchemaToZodRawShape, isRecord } from "./json-schema-to-zod.js";
 
-// Content type constants
+// Content type constants (from protocol)
 export {
   CONTENT_TYPE_TYPING,
   CONTENT_TYPE_INLINE_UI,
-} from "./responder-utils.js";
+} from "@workspace/agentic-protocol/content-types";
 
-// Tool name utilities (lightweight - no Zod schemas)
-export { extractMethodName, getCanonicalToolName, prettifyToolName } from "./tool-name-utils.js";
+// Tool name utilities (from protocol, lightweight - no Zod schemas)
+export { extractMethodName, getCanonicalToolName, prettifyToolName } from "@workspace/agentic-protocol/tool-name-utils";

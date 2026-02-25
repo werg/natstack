@@ -6,8 +6,8 @@ import type {
   ToolDefinition,
   ToolExecutionResult,
 } from "@natstack/types";
-import { getRpc } from "./rpc-inject.js";
-import { encodeBase64 } from "@workspace/core";
+import type { RpcBridge } from "@natstack/rpc";
+import { encodeBase64 } from "./base64.js";
 
 interface StreamTextBridgeOptions {
   model: string;
@@ -132,84 +132,78 @@ export type AiClient = {
   clearRoleCache(): void;
 };
 
-function createAiClient(): AiClient {
-  // Lazy initialization state
-  let initialized = false;
+/**
+ * Create an AI client backed by the given RPC bridge.
+ *
+ * @param rpc The RPC bridge to use for AI communication
+ */
+export function createAiClient(rpc: RpcBridge): AiClient {
   const streamChunkListeners = new Set<(streamId: string, chunk: SerializableStreamEvent) => void>();
   const streamEndListeners = new Set<(streamId: string) => void>();
 
   // Initialize RPC event listeners and expose tool execution method
-  // Called lazily on first use to allow RPC to be configured first
-  function ensureInitialized(): void {
-    if (initialized) return;
-    initialized = true;
+  rpc.onEvent("ai:stream-text-chunk", (_fromId, payload) => {
+    const { streamId, chunk } = payload as { streamId: string; chunk: SerializableStreamEvent };
+    for (const listener of streamChunkListeners) listener(streamId, chunk);
+  });
 
-    const rpc = getRpc();
+  rpc.onEvent("ai:stream-text-end", (_fromId, payload) => {
+    const { streamId } = payload as { streamId: string };
+    for (const listener of streamEndListeners) listener(streamId);
+  });
 
-    rpc.onEvent("ai:stream-text-chunk", (_fromId, payload) => {
-      const { streamId, chunk } = payload as { streamId: string; chunk: SerializableStreamEvent };
-      for (const listener of streamChunkListeners) listener(streamId, chunk);
-    });
-
-    rpc.onEvent("ai:stream-text-end", (_fromId, payload) => {
-      const { streamId } = payload as { streamId: string };
-      for (const listener of streamEndListeners) listener(streamId);
-    });
-
-    rpc.exposeMethod(
-      "ai.executeTool",
-      async (
-        streamId: string,
-        toolName: string,
-        toolArgs: Record<string, unknown>
-      ): Promise<ToolExecutionResult> => {
-        const streamCallbacks = registeredToolCallbacks.get(streamId);
-        const callback = streamCallbacks?.get(toolName);
-        if (!callback) {
-          return { content: [{ type: "text", text: `Unknown tool: ${toolName}` }], isError: true };
-        }
-
-        try {
-          const result = await callback(toolArgs);
-
-          // Pass through already-wrapped ToolExecutionResult results (supports optional `data`).
-          if (
-            result &&
-            typeof result === "object" &&
-            "content" in (result as Record<string, unknown>) &&
-            Array.isArray((result as { content?: unknown }).content)
-          ) {
-            return result as ToolExecutionResult;
-          }
-
-          let resultText: string;
-          if (typeof result === "string") {
-            resultText = result;
-          } else {
-            try {
-              resultText = JSON.stringify(result);
-            } catch {
-              resultText = String(result);
-            }
-          }
-          return { content: [{ type: "text", text: resultText }] };
-        } catch (err) {
-          return {
-            content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }],
-            isError: true,
-          };
-        }
+  rpc.exposeMethod(
+    "ai.executeTool",
+    async (
+      streamId: string,
+      toolName: string,
+      toolArgs: Record<string, unknown>
+    ): Promise<ToolExecutionResult> => {
+      const streamCallbacks = registeredToolCallbacks.get(streamId);
+      const callback = streamCallbacks?.get(toolName);
+      if (!callback) {
+        return { content: [{ type: "text", text: `Unknown tool: ${toolName}` }], isError: true };
       }
-    );
-  }
+
+      try {
+        const result = await callback(toolArgs);
+
+        // Pass through already-wrapped ToolExecutionResult results (supports optional `data`).
+        if (
+          result &&
+          typeof result === "object" &&
+          "content" in (result as Record<string, unknown>) &&
+          Array.isArray((result as { content?: unknown }).content)
+        ) {
+          return result as ToolExecutionResult;
+        }
+
+        let resultText: string;
+        if (typeof result === "string") {
+          resultText = result;
+        } else {
+          try {
+            resultText = JSON.stringify(result);
+          } catch {
+            resultText = String(result);
+          }
+        }
+        return { content: [{ type: "text", text: resultText }] };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }],
+          isError: true,
+        };
+      }
+    }
+  );
 
   let roleRecordCache: AIRoleRecord | null = null;
 
   return {
     async listRoles(): Promise<AIRoleRecord> {
-      ensureInitialized();
       if (roleRecordCache) return roleRecordCache;
-      roleRecordCache = await getRpc().call<AIRoleRecord>("main", "ai.listRoles");
+      roleRecordCache = await rpc.call<AIRoleRecord>("main", "ai.listRoles");
       return roleRecordCache;
     },
 
@@ -218,8 +212,6 @@ function createAiClient(): AiClient {
     },
 
     streamText(options: StreamTextOptions): AsyncIterable<StreamEvent> {
-      ensureInitialized();
-      const rpc = getRpc();
       const streamId = crypto.randomUUID();
 
       const toolCallbacks = new Map<string, ToolCallback>();
@@ -423,5 +415,3 @@ function createAiClient(): AiClient {
     },
   };
 }
-
-export const ai = createAiClient();

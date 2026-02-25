@@ -8,8 +8,8 @@
  * SDK adapters compose these concerns on top.
  */
 
-import type { AgenticClient, DiscoveredMethod } from "@workspace/agentic-messaging";
-import { getCanonicalToolName } from "@workspace/agentic-messaging/utils";
+import type { AgenticClient, DiscoveredMethod } from "@workspace/agentic-protocol";
+import { getCanonicalToolName } from "@workspace/agentic-protocol";
 
 /**
  * A normalized tool discovered via pubsub.

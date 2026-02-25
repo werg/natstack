@@ -27,8 +27,8 @@ import type {
   InviteAgentOptions,
   InviteAgentResult,
   RemoveAgentResult,
-} from "@workspace/agentic-messaging";
-import type { Participant, RosterUpdate } from "@workspace/pubsub";
+} from "@workspace/agentic-protocol";
+import type { Participant, RosterUpdate } from "@natstack/pubsub";
 import type { z } from "zod";
 
 /**

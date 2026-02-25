@@ -1,6 +1,6 @@
 # @workspace/agentic-messaging
 
-Agentic messaging protocol and SDK over `@workspace/pubsub`. Enables method discovery, invocation, and streaming results between distributed participants.
+Agentic messaging protocol and SDK over `@natstack/pubsub`. Enables method discovery, invocation, and streaming results between distributed participants.
 
 ## Installation
 
@@ -34,7 +34,7 @@ const client = await connect({
 
 ## Overview
 
-This package builds on `@workspace/pubsub` to provide:
+This package builds on `@natstack/pubsub` to provide:
 
 - **Message consumers** - Send/receive chat-like messages with streaming support
 - **Method providers** - Advertise and execute methods with automatic dispatch
@@ -629,6 +629,6 @@ export {
 
 ## Dependencies
 
-- `@workspace/pubsub` - Transport layer
+- `@natstack/pubsub` - Transport layer
 - `zod` - Runtime validation
 - `zod-to-json-schema` - Convert Zod to JSON Schema for metadata

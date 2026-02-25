@@ -13,7 +13,6 @@
     "@workspace/runtime": "*",
     "@workspace/git-ui": "*",
     "@workspace/about-shared": "workspace:*",
-    "@natstack/git": "workspace:*",
-    "@workspace/ai": "*"
+    "@natstack/git": "workspace:*"
   }
 }

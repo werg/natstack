@@ -1,5 +1,5 @@
 /**
- * PubSub Types - Shared types extracted from @workspace/pubsub.
+ * PubSub Types - Shared types extracted from @natstack/pubsub.
  */
 /**
  * Structured agent build error with full diagnostics.

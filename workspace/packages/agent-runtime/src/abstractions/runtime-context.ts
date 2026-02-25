@@ -21,7 +21,7 @@ import type { StorageApi } from "./storage.js";
 import type { EventBus } from "./event-bus.js";
 import type { AiProvider } from "./ai-provider.js";
 import type { AgentLogger } from "../agent.js";
-import type { AgenticParticipantMetadata } from "@workspace/agentic-messaging";
+import type { AgenticParticipantMetadata } from "@workspace/agentic-protocol";
 
 /**
  * Runtime mode indicator.

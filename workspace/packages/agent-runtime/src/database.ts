@@ -1,7 +1,7 @@
 /**
- * Database - Minimal database interface for state persistence.
+ * Database - RPC database proxy factory.
  *
- * Types are canonical in @natstack/types. Runtime code (createDbClient) lives here.
+ * Inlined from @workspace/core/database.ts during package rescoping.
  */
 
 import type { DatabaseInterface, DbRunResult, RpcCaller, DbClient } from "@natstack/types";

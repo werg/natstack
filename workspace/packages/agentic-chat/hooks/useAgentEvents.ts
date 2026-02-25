@@ -13,7 +13,7 @@ import type {
   AgentBuildError,
   AggregatedMessage,
 } from "@workspace/agentic-messaging";
-import type { Participant, Attachment } from "@workspace/pubsub";
+import type { Participant, Attachment } from "@natstack/pubsub";
 import type { MethodHistoryEntry } from "../components/MethodHistoryItem";
 import type { ChatParticipantMetadata, ChatMessage, PendingAgent } from "../types";
 

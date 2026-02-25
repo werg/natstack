@@ -5,7 +5,7 @@
  * Uses canonical names (Read, Write, etc.) for Claude-style LLMs.
  */
 
-import type { AgenticClient } from "@workspace/agentic-messaging";
+import type { AgenticClient } from "@workspace/agentic-protocol";
 import type { PubsubToolRegistry } from "../pubsub-tool-registry.js";
 import { createToolExecutor } from "../pubsub-tool-registry.js";
 

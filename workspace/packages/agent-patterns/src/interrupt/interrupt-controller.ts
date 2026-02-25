@@ -11,7 +11,7 @@
  * - Optional pubsub monitoring for pause RPC events
  */
 
-import type { AgenticClient, AgenticParticipantMetadata, EventStreamItem } from "@workspace/agentic-messaging";
+import type { AgenticClient, AgenticParticipantMetadata, EventStreamItem } from "@workspace/agentic-protocol";
 
 /**
  * Options for creating an interrupt controller with pubsub monitoring.

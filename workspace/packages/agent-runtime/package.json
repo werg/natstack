@@ -17,13 +17,13 @@
   },
   "dependencies": {
     "@natstack/rpc": "workspace:*",
-    "@natstack/types": "workspace:*",
-    "@workspace/core": "workspace:*"
+    "@natstack/types": "workspace:*"
   },
   "peerDependencies": {
+    "@workspace/agentic-protocol": "workspace:*",
     "@workspace/agentic-messaging": "workspace:*",
-    "@workspace/ai": "workspace:*",
-    "@workspace/pubsub": "workspace:*"
+    "@natstack/ai": "workspace:*",
+    "@natstack/pubsub": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

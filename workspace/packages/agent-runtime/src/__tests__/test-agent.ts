@@ -6,7 +6,7 @@
 
 import { Agent, runAgent } from "../index.js";
 import type { AgentState, AgentContext, AgentConnectOptions } from "../index.js";
-import type { EventStreamItem, EventStreamOptions } from "@workspace/agentic-messaging";
+import type { EventStreamItem, EventStreamOptions } from "@workspace/agentic-protocol";
 import { z } from "zod";
 
 // Test: Define a custom state interface
@@ -130,6 +130,7 @@ export function validateTypes() {
     config: {},
     client: {} as AgentContext["client"],
     log: {} as AgentContext["log"],
+    ai: {} as AgentContext["ai"],
     pubsubUrl: "http://localhost:8787",
     pubsubToken: "test-token",
     contextFolderPath: "/tmp/test-context",

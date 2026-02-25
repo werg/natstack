@@ -13,7 +13,7 @@
  *    when settings are stored in agent state or managed externally.
  */
 
-import type { AgenticClient, AgenticParticipantMetadata } from "@workspace/agentic-messaging";
+import type { AgenticClient, AgenticParticipantMetadata } from "@workspace/agentic-protocol";
 
 /**
  * Deep merge utility for settings.

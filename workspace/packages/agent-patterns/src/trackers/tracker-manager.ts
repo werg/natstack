@@ -14,7 +14,7 @@ import {
   type ActionTracker,
   type AgenticClient,
   type AgenticParticipantMetadata,
-} from "@workspace/agentic-messaging";
+} from "@workspace/agentic-protocol";
 
 /**
  * Options for creating a tracker manager.
