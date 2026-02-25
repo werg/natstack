@@ -18,7 +18,7 @@ import type {
   AgenticParticipantMetadata,
   EventStreamItem,
   EventStreamOptions,
-} from "@workspace/agentic-messaging";
+} from "@workspace/agentic-protocol";
 import type { Agent } from "../agent.js";
 import type { AgentLogger } from "../agent.js";
 import { shouldYieldEvent, createFilterContext, isAgentDebugEvent } from "../abstractions/event-filter.js";

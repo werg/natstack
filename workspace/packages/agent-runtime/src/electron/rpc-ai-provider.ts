@@ -1,11 +1,11 @@
 /**
  * RPC AI Provider (Electron)
  *
- * Wraps the existing @workspace/ai client to implement AiProvider interface.
+ * Wraps the @natstack/ai client to implement AiProvider interface.
  * All operations are RPC-based, communicating with the host AIHandler.
  */
 
-import { ai } from "@workspace/ai";
+import type { AiClient } from "@natstack/ai";
 import type {
   AiProvider,
   AIRoleRecord,
@@ -22,10 +22,10 @@ import type {
 } from "@natstack/types";
 
 /**
- * Convert our StreamTextOptions to @workspace/ai StreamTextOptions format.
+ * Convert our StreamTextOptions to @natstack/ai StreamTextOptions format.
  */
-function convertToAiOptions(options: StreamTextOptions): Parameters<typeof ai.streamText>[0] {
-  // Convert messages to @workspace/ai Message format
+function convertToAiOptions(ai: AiClient, options: StreamTextOptions): Parameters<typeof ai.streamText>[0] {
+  // Convert messages to @natstack/ai Message format
   const messages: Message[] = [];
 
   // Add system message if provided
@@ -51,7 +51,7 @@ function convertToAiOptions(options: StreamTextOptions): Parameters<typeof ai.st
   // Determine model - use role or direct model ID
   const model = options.model ?? options.role ?? "smart";
 
-  // Convert tools to @workspace/ai format
+  // Convert tools to @natstack/ai format
   const tools = options.tools
     ? Object.fromEntries(
         options.tools.map((t) => [
@@ -74,7 +74,7 @@ function convertToAiOptions(options: StreamTextOptions): Parameters<typeof ai.st
 }
 
 /**
- * Convert @workspace/ai StreamEvent to our StreamEvent format.
+ * Convert @natstack/ai StreamEvent to our StreamEvent format.
  */
 function convertStreamEvent(event: AiStreamEvent): StreamEvent {
   switch (event.type) {
@@ -109,7 +109,7 @@ function convertStreamEvent(event: AiStreamEvent): StreamEvent {
 }
 
 /**
- * Convert @workspace/ai AIRoleRecord to our AIRoleRecord format.
+ * Convert @natstack/ai AIRoleRecord to our AIRoleRecord format.
  */
 function convertRoleRecord(record: AiRoleRecord): AIRoleRecord {
   const result: AIRoleRecord = {};
@@ -120,14 +120,12 @@ function convertRoleRecord(record: AiRoleRecord): AIRoleRecord {
 }
 
 /**
- * Create an RPC-based AI provider from the @workspace/ai client.
+ * Create an RPC-based AI provider from an @natstack/ai client.
  *
- * This adapter wraps the existing ai client (which uses RPC under the hood)
- * to implement the unified AiProvider interface.
- *
+ * @param ai The AI client instance (created via createAiClient)
  * @returns AiProvider implementation
  */
-export function createRpcAiProvider(): AiProvider {
+export function createRpcAiProvider(ai: AiClient): AiProvider {
   return {
     async listRoles(): Promise<AIRoleRecord> {
       const roles = await ai.listRoles();
@@ -136,7 +134,7 @@ export function createRpcAiProvider(): AiProvider {
 
     streamText(options: StreamTextOptions): StreamHandle {
       const streamId = crypto.randomUUID();
-      const aiOptions = convertToAiOptions(options);
+      const aiOptions = convertToAiOptions(ai, options);
       const iterable = ai.streamText(aiOptions);
 
       // Track accumulated results
@@ -225,9 +223,6 @@ export function createRpcAiProvider(): AiProvider {
 
         cancel() {
           cancelled = true;
-          // The underlying @workspace/ai client doesn't have a direct cancel method
-          // that we can call here, but setting cancelled will cause us to stop
-          // yielding events on the next iteration
         },
 
         get done() {
@@ -241,12 +236,12 @@ export function createRpcAiProvider(): AiProvider {
     },
 
     async generateText(options: StreamTextOptions): Promise<GenerateResult> {
-      const aiOptions = convertToAiOptions(options);
+      const aiOptions = convertToAiOptions(ai, options);
       const text = await ai.generateText(aiOptions);
 
       return {
         text,
-        usage: { promptTokens: 0, completionTokens: 0 }, // ai.generateText doesn't return usage
+        usage: { promptTokens: 0, completionTokens: 0 },
         cancelled: false,
       };
     },

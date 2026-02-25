@@ -1,12 +1,12 @@
 /**
- * @workspace/pubsub - WebSocket pub/sub client for NatStack
+ * @natstack/pubsub - WebSocket pub/sub client for NatStack
  *
  * Provides real-time messaging between panels and workers via a persistent
  * WebSocket connection with SQLite-backed message history.
  *
  * @example Basic usage
  * ```typescript
- * import { connect } from "@workspace/pubsub";
+ * import { connect } from "@natstack/pubsub";
  * import { pubsubConfig } from "@workspace/runtime/panel";
  *
  * // Connect to a channel
@@ -81,7 +81,7 @@ import { PubSubError, type ConnectOptions, type ParticipantMetadata } from "./ty
  *
  * @example
  * ```typescript
- * import { connectWithConfig } from "@workspace/pubsub";
+ * import { connectWithConfig } from "@natstack/pubsub";
  * import { pubsubConfig } from "@workspace/runtime/panel";
  *
  * const client = connectWithConfig(pubsubConfig, { channel: "notifications" });

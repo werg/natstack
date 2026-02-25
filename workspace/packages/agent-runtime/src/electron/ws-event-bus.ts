@@ -12,7 +12,7 @@
 import type {
   AgenticClient,
   AgenticParticipantMetadata,
-} from "@workspace/agentic-messaging";
+} from "@workspace/agentic-protocol";
 import type { EventBus } from "../abstractions/event-bus.js";
 
 /**

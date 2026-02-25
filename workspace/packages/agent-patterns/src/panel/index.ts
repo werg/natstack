@@ -4,7 +4,7 @@
  * Centralizes panel discovery and method invocation to keep agents consistent.
  */
 
-import type { AgenticClient, AgenticParticipantMetadata } from "@workspace/agentic-messaging";
+import type { AgenticClient, AgenticParticipantMetadata } from "@workspace/agentic-protocol";
 
 export interface PanelLookupOptions {
   /** Preferred panel handle (defaults to "user") */

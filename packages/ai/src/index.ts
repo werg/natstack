@@ -1,19 +1,15 @@
 /**
- * @workspace/ai
+ * @natstack/ai
  *
- * AI client and types for NatStack.
+ * AI client for NatStack.
  *
- * This package provides a ready-to-use AI client that works in both
- * panels and workers, built on top of @workspace/runtime's RPC layer.
- *
- * Types have been moved to @natstack/types (canonical source).
+ * Provides a factory for creating AI clients backed by an RPC bridge.
+ * Types live in @natstack/types (canonical source).
  */
 
-// Export the pre-wired ai client
-export { ai } from "./client.js";
-
-// RPC injection (for runtime configuration)
-export { setRpc, getRpc } from "./rpc-inject.js";
+// Export the AI client factory and type
+export { createAiClient } from "./client.js";
+export type { AiClient } from "./client.js";
 
 // =============================================================================
 // Tool Helper (Zod -> JSON Schema)

@@ -6,13 +6,13 @@
  * claude-code-responder, and codex-responder.
  */
 
-import type { AgenticClient, ChatParticipantMetadata } from "@workspace/agentic-messaging";
+import type { AgenticClient, ChatParticipantMetadata } from "@workspace/agentic-protocol";
 import {
   CONTENT_TYPE_INLINE_UI,
   getCachedTodoListCode,
   type TodoItem,
   type InlineUiData,
-} from "@workspace/agentic-messaging";
+} from "@workspace/agentic-protocol";
 
 /**
  * Standard tool definition structure compatible with AI SDK tools.

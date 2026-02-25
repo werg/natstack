@@ -5,8 +5,8 @@
  * Supports deferred execution for tools requiring approval.
  */
 
-import type { AgenticClient } from "@workspace/agentic-messaging";
-import { needsApprovalForTool, type ApprovalLevel } from "@workspace/agentic-messaging";
+import type { AgenticClient } from "@workspace/agentic-protocol";
+import { needsApprovalForTool, type ApprovalLevel } from "@workspace/agentic-protocol";
 import type { PubsubToolRegistry, PubsubTool } from "../pubsub-tool-registry.js";
 import { createToolExecutor } from "../pubsub-tool-registry.js";
 import type { StandardToolDefinition } from "../standard-tools.js";

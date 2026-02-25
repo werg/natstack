@@ -1,11 +1,11 @@
 # AI Integration
 
-Use `@workspace/ai` for streaming text generation with tool calling.
+Use `@workspace/runtime` for streaming text generation with tool calling.
 
 ## Simple Streaming
 
 ```tsx
-import { ai } from "@workspace/ai";
+import { ai } from "@workspace/runtime";
 
 const stream = ai.streamText({
   model: "fast",
@@ -23,7 +23,8 @@ for await (const event of stream) {
 ## Tool Calling
 
 ```tsx
-import { ai, tool } from "@workspace/ai";
+import { ai } from "@workspace/runtime";
+import { tool } from "@natstack/ai";
 import { z } from "@workspace/runtime";
 
 const tools = {

@@ -5,7 +5,7 @@
  * checkpoint commits, and message completion that appears in all agents.
  */
 
-import type { AgenticClient, ChatParticipantMetadata } from "@workspace/agentic-messaging";
+import type { AgenticClient, ChatParticipantMetadata } from "@workspace/agentic-protocol";
 import type { TrackerManager } from "../trackers/tracker-manager.js";
 
 /**

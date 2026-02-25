@@ -1,6 +1,6 @@
 import React, { useRef } from "react";
 import { Badge, Button, Flex, Text } from "@radix-ui/themes";
-import type { Participant } from "@workspace/pubsub";
+import type { Participant } from "@natstack/pubsub";
 import type { ToolApprovalProps } from "@workspace/tool-ui";
 import { useChatContext } from "../context/ChatContext";
 import type { ChatParticipantMetadata, PendingAgent } from "../types";

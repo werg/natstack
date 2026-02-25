@@ -42,8 +42,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@workspace/agentic-messaging": "workspace:*",
-    "@workspace/core": "workspace:*"
+    "@workspace/agentic-protocol": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

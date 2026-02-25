@@ -1,7 +1,7 @@
 /**
  * IPC Protocol Types - Message types for host <-> agent communication.
  *
- * Type guards (isHostToAgentMessage, isAgentToHostMessage) live in @workspace/core.
+ * Type guards (isHostToAgentMessage, isAgentToHostMessage) live in @workspace/agent-runtime.
  */
 
 export interface AgentInitConfig {

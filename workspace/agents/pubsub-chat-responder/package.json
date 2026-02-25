@@ -103,7 +103,6 @@
     "@workspace/agent-runtime": "workspace:*",
     "@workspace/agent-patterns": "workspace:*",
     "@workspace/agentic-messaging": "workspace:*",
-    "@workspace/ai": "workspace:*",
-    "@workspace/pubsub": "workspace:*"
+    "@natstack/pubsub": "workspace:*"
   }
 }

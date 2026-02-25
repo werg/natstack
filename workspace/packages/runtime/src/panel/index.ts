@@ -20,15 +20,14 @@ const { runtime, config } = initRuntime({
 });
 
 // Configure dependency injection for shared packages
-// These packages use injection to avoid circular dependencies with runtime
 import { setDbOpen } from "@workspace/agentic-messaging";
-import { setRpc } from "@workspace/ai";
+import { createAiClient, type AiClient } from "@natstack/ai";
 
 // Inject db opener for agentic-messaging (session persistence, etc.)
 setDbOpen(runtime.db.open);
 
-// Inject RPC bridge for AI package (streaming, tool execution, etc.)
-setRpc(runtime.rpc);
+// Create AI client with the runtime's RPC bridge
+const aiClient: AiClient = createAiClient(runtime.rpc);
 
 export * as Rpc from "../core/rpc.js";
 export { z } from "../core/zod.js";
@@ -81,7 +80,7 @@ export const {
 
 export { runtimeParentId as parentId };
 
-export { fs, fsReady, gitConfig, pubsubConfig };
+export { fs, fsReady, gitConfig, pubsubConfig, aiClient as ai };
 
 // Path utilities for cross-platform path handling
 export { normalizePath, getFileName, resolvePath } from "../shared/pathUtils.js";

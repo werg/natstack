@@ -5,8 +5,8 @@
  * with tool executors via wrapWithTracking().
  */
 
-import type { ActionTracker } from "@workspace/agentic-messaging";
-import { getDetailedActionDescription } from "@workspace/agentic-messaging";
+import type { ActionTracker } from "@workspace/agentic-protocol";
+import { getDetailedActionDescription } from "@workspace/agentic-protocol";
 import type { PubsubTool } from "./pubsub-tool-registry.js";
 
 /**

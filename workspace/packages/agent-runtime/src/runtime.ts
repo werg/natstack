@@ -14,13 +14,11 @@
 
 import { createRpcBridge } from "@natstack/rpc";
 import type { AgentInitConfig, AgentToHostMessage, AgentState } from "@natstack/types";
-import {
-  isHostToAgentMessage,
-  createDbClient,
-} from "@workspace/core";
+import { isHostToAgentMessage } from "./ipc-utils.js";
+import { createDbClient } from "./database.js";
 import { connect, setDbOpen } from "@workspace/agentic-messaging";
-import type { AgenticClient, EventStreamItem, AgenticParticipantMetadata } from "@workspace/agentic-messaging";
-import { setRpc } from "@workspace/ai";
+import type { AgenticClient, EventStreamItem, AgenticParticipantMetadata } from "@workspace/agentic-protocol";
+import { createAiClient } from "@natstack/ai";
 
 import { Agent, deepMerge, type AgentContext, type AgentLogger, type AgentRuntimeInjection } from "./agent.js";
 import { getAgentIpcChannel, type AgentIpcChannel } from "./ipc-channel.js";
@@ -187,10 +185,10 @@ export async function runAgent<S extends AgentState>(
   const transport = createIpcTransport(ipc, selfId);
   const rpc = createRpcBridge({ selfId, transport });
 
-  // Create DB client and inject for shared packages
+  // Create DB client and AI client
   const dbClient = createDbClient(rpc);
   setDbOpen(dbClient.open);  // For agentic-messaging session persistence
-  setRpc(rpc);               // For @workspace/ai streaming and tool execution
+  const aiClient = createAiClient(rpc);  // AI streaming and tool execution
 
   // Step 5: Set up state management BEFORE pubsub connect
   // This allows getConnectOptions() to use lastCheckpoint for replay recovery
@@ -248,6 +246,7 @@ export async function runAgent<S extends AgentState>(
     pubsubUrl,
     pubsubToken,
     contextFolderPath,
+    ai: aiClient,
   };
 
   // Inject ctx first (unified context model) via the internal interface

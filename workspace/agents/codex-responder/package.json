@@ -80,7 +80,7 @@
     "@workspace/agent-runtime": "workspace:*",
     "@workspace/agent-patterns": "workspace:*",
     "@workspace/agentic-messaging": "workspace:*",
-    "@workspace/pubsub": "workspace:*",
+    "@natstack/pubsub": "workspace:*",
     "@openai/codex-sdk": "*",
     "@modelcontextprotocol/sdk": "*",
     "zod": "*"

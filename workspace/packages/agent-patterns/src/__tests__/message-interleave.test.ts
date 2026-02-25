@@ -10,7 +10,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { createMessageQueue } from "../queue/message-queue.js";
-import type { EventStreamItem } from "@workspace/agentic-messaging";
+import type { EventStreamItem } from "@workspace/agentic-protocol";
 
 function createMockEvent(id: number, content?: string): EventStreamItem {
   return {

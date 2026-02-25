@@ -35,7 +35,7 @@ import {
   AI_RESPONDER_PARAMETERS,
   AI_ROLE_FALLBACKS,
 } from "@workspace/agentic-messaging/config";
-import type { Attachment } from "@workspace/pubsub";
+import type { Attachment } from "@natstack/pubsub";
 import type { Message, ToolResultPart } from "@natstack/types";
 import {
   createMessageQueue,
@@ -57,7 +57,6 @@ import {
 import {
   createRichTextChatSystemPrompt,
 } from "@workspace/agent-patterns/prompts";
-import { ai } from "@workspace/ai";
 import { z } from "zod";
 
 /**
@@ -390,7 +389,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     // Fetch model roles dynamically
     let roleOptions: Array<{ value: string; label: string }> = [];
     try {
-      const roles = await ai.listRoles();
+      const roles = await this.ai.listRoles();
       roleOptions = Object.entries(roles).map(([key, info]) => ({
         value: key,
         label: info.displayName ?? key,
@@ -607,7 +606,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
         // Create fresh abort signal for this AI call
         const signal = this.interrupt.createAbortSignal();
 
-        const stream = ai.streamText({
+        const stream = this.ai.streamText({
           model: settings.modelRole,
           system: createRichTextChatSystemPrompt(),
           messages,
