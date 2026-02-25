@@ -24,7 +24,7 @@ import {
   type NativeImage,
   session,
 } from "electron";
-import { handleProtocolRequest } from "./panelProtocol.js";
+
 import { getAdBlockManager } from "./adblock/index.js";
 import { createDevLogger } from "./devLog.js";
 
@@ -96,8 +96,6 @@ export class ViewManager {
   private currentThemeCss: string | null = null;
   /** Per-view locks to prevent concurrent withViewVisible operations */
   private visibilityLocks = new Map<string, Promise<unknown>>();
-  /** Track sessions that have had the protocol registered (by partition name or "default") */
-  private registeredProtocolSessions = new Set<string>();
   /** Current layout state for calculating panel bounds */
   private layoutState: LayoutState = {
     titleBarHeight: 32,
@@ -248,22 +246,6 @@ export class ViewManager {
     const ses = config.partition
       ? session.fromPartition(config.partition)
       : session.defaultSession;
-
-    // Register natstack-panel:// protocol for this partition's session.
-    // Track registered sessions to avoid duplicate registration attempts.
-    // For browser views using defaultSession, the protocol is already registered at app startup.
-    const sessionKey = config.partition ?? "default";
-    if (!this.registeredProtocolSessions.has(sessionKey)) {
-      try {
-        ses.protocol.handle("natstack-panel", handleProtocolRequest);
-        this.registeredProtocolSessions.add(sessionKey);
-      } catch {
-        // Protocol might already be registered (e.g., defaultSession at app startup)
-        // Mark as registered to avoid future attempts
-        this.registeredProtocolSessions.add(sessionKey);
-        log.verbose(` Protocol already registered for session: ${sessionKey}`);
-      }
-    }
 
     // All panels run in safe sandboxed mode
     const webPreferences: Electron.WebPreferences = {

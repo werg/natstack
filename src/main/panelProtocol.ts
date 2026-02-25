@@ -81,16 +81,6 @@ const registrationLocks = new Map<string, Promise<void>>();
 export function registerPanelProtocol(): void {
   protocol.registerSchemesAsPrivileged([
     {
-      scheme: "natstack-panel",
-      privileges: {
-        standard: true,
-        secure: true,
-        supportFetchAPI: true,
-        corsEnabled: true,
-        stream: true,
-      },
-    },
-    {
       scheme: "natstack-about",
       privileges: {
         standard: true,

@@ -37,10 +37,10 @@ import {
 import * as SharedPanel from "../shared/types.js";
 import { getClaudeCodeConversationManager } from "./ai/claudeCodeConversationManager.js";
 import {
-  storeProtocolPanel,
-  removeProtocolPanel,
-  isProtocolPanel,
-} from "./panelProtocol.js";
+  contextIdToSubdomain,
+  PanelHttpServer,
+  type PanelConfig as HttpPanelConfig,
+} from "../server/panelHttpServer.js";
 import { getCdpServer } from "./cdpServer.js";
 // getPubSubServer no longer imported — pubsub config comes via ServerInfo
 import { getTokenManager } from "./tokenManager.js";
@@ -99,6 +99,8 @@ export class PanelManager {
   private pendingBrowserNavigations: Map<string, { url: string; index: number }> = new Map();
   private rpcServer: import("../server/rpcServer.js").RpcServer | null = null;
   private rpcPort: number | null = null;
+  private panelHttpServer: PanelHttpServer | null = null;
+  private panelHttpPort: number | null = null;
   private fsService: FsService | null = null;
 
   // Debounce state for panel tree updates
@@ -169,6 +171,12 @@ export class PanelManager {
   /** Set the RPC server port for passing to panel preloads */
   setRpcPort(port: number): void {
     this.rpcPort = port;
+  }
+
+  /** Set the PanelHttpServer for serving panel content via HTTP subdomains */
+  setPanelHttpServer(server: PanelHttpServer, port: number): void {
+    this.panelHttpServer = server;
+    this.panelHttpPort = port;
   }
 
   /**
@@ -569,21 +577,37 @@ export class PanelManager {
       // Intercept ns:// and new-window navigations for child creation
       this.setupLinkInterception(panelId, view.webContents, "browser");
     } else {
-      // Derive callerKind from panel type: shell panels authenticate as "shell"
       const panelType = panel ? getPanelType(panel) : undefined;
-      const callerKind = panelType === "shell" ? "shell" as const : "panel" as const;
-      const additionalArgs = await this.buildPreloadArgs(panelId, "panel", callerKind, contextId ?? "");
-      await this.appendPanelEnvArgs(additionalArgs, panelId, panel, contextId);
+      const isHttpPanel = url.startsWith("http://") || url.startsWith("https://");
 
-      const view = this.viewManager.createView({
-        id: panelId,
-        type: "panel",
-        partition: `persist:${contextId ?? panelId}`, // Context-based partition
-        url: url,
-        parentId: parentId ?? undefined,
-        injectHostThemeVariables: true, // App panels always inject theme variables
-        additionalArguments: additionalArgs,
-      });
+      let view: import("electron").WebContentsView;
+      if (isHttpPanel) {
+        // HTTP subdomain panels: globals injected via HTML by PanelHttpServer.
+        // Subdomain origin isolation replaces Electron partition-based isolation.
+        view = this.viewManager.createView({
+          id: panelId,
+          type: "panel",
+          preload: null, // No preload — globals + transport injected in HTML
+          url: url,
+          parentId: parentId ?? undefined,
+          injectHostThemeVariables: true,
+        });
+      } else {
+        // Non-HTTP panels (shell pages via natstack-about://): keep preload + partition
+        const callerKind = panelType === "shell" ? "shell" as const : "panel" as const;
+        const additionalArgs = await this.buildPreloadArgs(panelId, "panel", callerKind, contextId ?? "");
+        await this.appendPanelEnvArgs(additionalArgs, panelId, panel, contextId);
+
+        view = this.viewManager.createView({
+          id: panelId,
+          type: "panel",
+          partition: `persist:${contextId ?? panelId}`,
+          url: url,
+          parentId: parentId ?? undefined,
+          injectHostThemeVariables: true,
+          additionalArguments: additionalArgs,
+        });
+      }
 
       // CDP registration, state tracking, and content indexing are for app panels, not shell pages
       if (panelType !== "shell") {
@@ -2585,8 +2609,40 @@ export class PanelManager {
   }
 
   /**
+   * Build an HttpPanelConfig for serving a panel via PanelHttpServer.
+   */
+  private async buildHttpPanelConfig(panel: Panel, panelSource: string): Promise<HttpPanelConfig> {
+    const contextId = getPanelContextId(panel);
+    const subdomain = contextIdToSubdomain(contextId);
+    const parentId = this.findParentId(panel.id) ?? null;
+    const rpcToken = getTokenManager().getToken(panel.id) ?? "";
+    const gitToken = await this.serverInfo.getGitTokenForPanel(panel.id);
+    const snapshot = getCurrentSnapshot(panel);
+    const env = snapshot.env ?? {};
+    const stateArgs = getPanelStateArgs(panel) ?? {};
+    const repoArgs = snapshot.repoArgs ?? {};
+
+    return {
+      panelId: panel.id,
+      contextId,
+      subdomain,
+      parentId,
+      rpcPort: this.rpcPort!,
+      rpcToken,
+      gitBaseUrl: this.serverInfo.gitBaseUrl,
+      gitToken,
+      pubsubPort: parseInt(new URL(this.serverInfo.pubsubUrl).port, 10),
+      stateArgs,
+      sourceRepo: panelSource,
+      resolvedRepoArgs: repoArgs,
+      env,
+      theme: this.currentTheme,
+    };
+  }
+
+  /**
    * Build a panel asynchronously and update its state.
-   * Works for both root and child panels (all use protocol serving now).
+   * Stores built content in PanelHttpServer for HTTP subdomain serving.
    */
   private async buildPanelAsync(panel: Panel): Promise<void> {
     try {
@@ -2641,17 +2697,10 @@ export class PanelManager {
       }
 
       if (buildResult.bundle && buildResult.html) {
-        // Store panel content for protocol serving
-        const htmlUrl = storeProtocolPanel(panel.id, {
-          bundle: buildResult.bundle,
-          html: buildResult.html,
-          title: manifest?.title ?? panel.title,
-          css: buildResult.css,
-          assets: buildResult.assets as SharedPanel.ProtocolBuildArtifacts["assets"],
-          injectHostThemeVariables: manifest?.injectHostThemeVariables !== false,
-          sourceRepo: panelSource,
-          repoArgs: manifest?.repoArgs,
-        });
+        // Store panel content in PanelHttpServer for HTTP subdomain serving
+        const httpConfig = await this.buildHttpPanelConfig(panel, panelSource);
+        this.panelHttpServer!.storePanel(panel.id, buildResult as any, httpConfig);
+        const htmlUrl = this.panelHttpServer!.getPanelUrl(panel.id)!;
 
         // Update panel with successful build
         panel.artifacts = {
@@ -2661,10 +2710,8 @@ export class PanelManager {
         };
         this.persistArtifacts(panel.id, panel.artifacts);
 
-        // Create WebContentsView for this panel
-        const srcUrl = new URL(htmlUrl);
-        srcUrl.searchParams.set("panelId", panel.id);
-        await this.createViewForPanel(panel.id, srcUrl.toString(), "panel", getPanelContextId(panel));
+        // Create WebContentsView for this panel (HTTP subdomain — no partition needed)
+        await this.createViewForPanel(panel.id, htmlUrl, "panel", getPanelContextId(panel));
       } else {
         // Build returned no bundle/html
         panel.artifacts = {
@@ -3133,10 +3180,8 @@ export class PanelManager {
         // Clean up any Claude Code conversations for this panel
         getClaudeCodeConversationManager().endPanelConversations(panelId);
 
-        // Clean up protocol-served panel content if applicable
-        if (isProtocolPanel(panelId)) {
-          removeProtocolPanel(panelId);
-        }
+        // Clean up HTTP-served panel content
+        this.panelHttpServer?.removePanel(panelId);
         break;
     }
 
@@ -3167,14 +3212,14 @@ export class PanelManager {
       this.closePanelSubtree(child);
     }
 
-    // Unload all resources (view, CDP, git tokens, Claude Code, protocol panels)
+    // Unload all resources (view, CDP, git tokens, Claude Code, HTTP panel)
     // Note: unloadPanelResources handles:
     //   - browserStateCleanup and linkInterceptionHandlers cleanup
     //   - viewManager.destroyView (which triggers cleanup via 'destroyed' event)
     //   - getCdpServer().revokeTokenForPanel / unregisterBrowser
     //   - gitServer.revokeTokenForPanel
     //   - getClaudeCodeConversationManager().endPanelConversations
-    //   - removeProtocolPanel (if applicable)
+    //   - panelHttpServer.removePanel (if applicable)
     this.unloadPanelResources(panel.id);
 
     // Unregister panel→context mapping (permanent removal only)

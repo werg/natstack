@@ -19,7 +19,7 @@ import {
 } from "./workspace/loader.js";
 import type { Workspace, AppMode } from "./workspace/types.js";
 import { getCentralData } from "./centralData.js";
-import { registerPanelProtocol, setupPanelProtocol } from "./panelProtocol.js";
+import { registerPanelProtocol } from "./panelProtocol.js";
 import { setupAboutProtocol } from "./aboutProtocol.js";
 import { getCdpServer, type CdpServer } from "./cdpServer.js";
 import { getTokenManager } from "./tokenManager.js";
@@ -124,6 +124,7 @@ let panelManager: PanelManager | null = null;
 let rpcServer: RpcServer | null = null;
 let serverProcessManager: ServerProcessManager | null = null;
 let serverClient: ServerClient | null = null;
+let panelHttpServer: import("../server/panelHttpServer.js").PanelHttpServer | null = null;
 let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
 let isCleaningUp = false; // Prevent re-entry in will-quit handler
@@ -280,8 +281,7 @@ function requirePanelManager(): PanelManager {
 app.on("ready", async () => {
   performance.mark("startup:ready");
 
-  // Set up panel protocol handler
-  setupPanelProtocol();
+  // Set up about protocol handler (shell pages)
   setupAboutProtocol();
 
   // Auto-update check (production only)
@@ -445,6 +445,13 @@ app.on("ready", async () => {
       panelManager.setRpcServer(rpcServer);
       panelManager.setRpcPort(rpcPort);
 
+      // Start PanelHttpServer for HTTP subdomain panel serving in Electron
+      const { PanelHttpServer } = await import("../server/panelHttpServer.js");
+      panelHttpServer = new PanelHttpServer("127.0.0.1");
+      const panelHttpPort = await panelHttpServer.start(0);
+      log.info(`[PanelHTTP] Panel HTTP server started on port ${panelHttpPort}`);
+      panelManager.setPanelHttpServer(panelHttpServer, panelHttpPort);
+
       // Generate shell token and create window
       const shellToken = getTokenManager().ensureToken("shell", "shell");
       void createWindow({ rpcPort, shellToken });
@@ -504,6 +511,12 @@ app.on("ready", async () => {
           cdpServer.stop().catch((e) => console.error("[App] cdpServer cleanup error:", e))
         );
         cdpServer = null;
+      }
+      if (panelHttpServer) {
+        cleanupPromises.push(
+          panelHttpServer.stop().catch((e) => console.error("[App] panelHttpServer cleanup error:", e))
+        );
+        panelHttpServer = null;
       }
       setServerInfo(null);
 
@@ -572,7 +585,7 @@ app.on("will-quit", (event) => {
     }
   }
 
-  const hasResourcesToClean = serverClient || serverProcessManager || rpcServer || cdpServer;
+  const hasResourcesToClean = serverClient || serverProcessManager || rpcServer || cdpServer || panelHttpServer;
   if (hasResourcesToClean) {
     isCleaningUp = true;
     event.preventDefault();
@@ -618,7 +631,14 @@ app.on("will-quit", (event) => {
       );
     }
 
-    // No more: dependency graph flush, package store shutdown (server handles these)
+    if (panelHttpServer) {
+      stopPromises.push(
+        panelHttpServer
+          .stop()
+          .then(() => console.log("[App] Panel HTTP server stopped"))
+          .catch((e) => console.error("[App] Error stopping panel HTTP server:", e))
+      );
+    }
 
     // Add a timeout to ensure we exit even if cleanup hangs
     const shutdownTimeout = setTimeout(() => {
