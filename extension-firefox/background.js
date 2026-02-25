@@ -45,6 +45,8 @@ let reconnectTimer = null;
 // Config helpers
 // ---------------------------------------------------------------------------
 
+const NATIVE_HOST_NAME = "com.natstack.connector";
+
 async function getConfig() {
   const result = await browser.storage.local.get(["serverUrl", "managementToken", "autoOpenTabs", "autoCloseTabs"]);
   return {
@@ -53,6 +55,42 @@ async function getConfig() {
     autoOpenTabs: result.autoOpenTabs !== false,
     autoCloseTabs: result.autoCloseTabs !== false,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Native messaging auto-discovery
+// ---------------------------------------------------------------------------
+
+/**
+ * Try to discover the running natstack-server via native messaging.
+ * If successful, stores the config in browser.storage.local so the normal
+ * SSE connect() path picks it up. This is idempotent — safe to call on
+ * every startup. Falls back silently if native messaging is unavailable.
+ */
+async function tryNativeDiscovery() {
+  try {
+    const response = await browser.runtime.sendNativeMessage(NATIVE_HOST_NAME, { action: "getConfig" });
+    if (response && response.success && response.serverUrl && response.managementToken) {
+      const current = await browser.storage.local.get(["serverUrl", "managementToken"]);
+      // Only update if the values actually changed (avoids triggering unnecessary reconnects)
+      if (current.serverUrl !== response.serverUrl || current.managementToken !== response.managementToken) {
+        await browser.storage.local.set({
+          serverUrl: response.serverUrl,
+          managementToken: response.managementToken,
+        });
+        console.log("[NatStack] Auto-configured via native messaging:", response.serverUrl);
+      } else {
+        console.log("[NatStack] Native messaging config unchanged, skipping update");
+      }
+      return true;
+    }
+    console.log("[NatStack] Native messaging responded but no valid config:", response);
+    return false;
+  } catch (err) {
+    // Native messaging not available — this is expected when the host isn't installed
+    console.log("[NatStack] Native messaging unavailable, using manual config:", err.message || err);
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -456,4 +494,13 @@ browser.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-connect();
+// Try native messaging auto-discovery, then connect.
+// If native discovery succeeds, it sets storage which triggers the
+// onChanged listener above → automatic reconnect with the new config.
+// If it fails, we fall through to connect() with whatever config exists.
+tryNativeDiscovery().then((discovered) => {
+  if (!discovered) {
+    connect();
+  }
+  // If discovered, the storage.onChanged listener handles the reconnect
+});

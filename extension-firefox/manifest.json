@@ -11,7 +11,8 @@
   },
   "permissions": [
     "tabs",
-    "storage"
+    "storage",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "http://*.localhost/*",

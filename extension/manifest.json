@@ -3,9 +3,11 @@
   "name": "NatStack Panel Manager",
   "version": "0.1.0",
   "description": "Manages NatStack panel tabs — auto-opens panels, shows panel tree, clean tab management.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwf4+jFBr6PnIPKM33P7Jq8xG8QHcnSncH+I0dBp4jjYjto1VB+WCh5fvjz/ghWBEDGbb3/F/XreLuzqK99IEPBnVkK6qK5KjT6bg7qS/FzrlkO8nnJY+/Cj3wOR/FtBgl8c0+H3YqbHvQKW0f2pgq+WPkUqI4O7L0VY8V7vbEYMRNx3YKxOi1YzhBAjmmvY6aEZENi9t7b3aqlkND0uiRUL5+VZm8w7pAajk/CudU2ckHrKqSYXSqJAHtwqzOZVfvINhT+Ws8j0LRAQKGOyfP2IH5NaCB782yjRIS2X15Ma9PrfQGYQBvU0JKQ8Sq0BfA+lnUCSw84lttfHYtvjfDQIDAQAB",
   "permissions": [
     "tabs",
-    "storage"
+    "storage",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "http://*.localhost/*",

@@ -155,7 +155,7 @@ if (!ipcChannel) {
 // =============================================================================
 
 async function main() {
-  const { setUserDataPath } = await import("../main/envPaths.js");
+  const { setUserDataPath, getUserDataPath } = await import("../main/envPaths.js");
   const { loadCentralEnv, discoverWorkspace, createWorkspace } = await import("../main/workspace/loader.js");
   const { setActiveWorkspace } = await import("../main/paths.js");
   const { GitServer } = await import("../main/gitServer.js");
@@ -329,6 +329,21 @@ async function main() {
       adminToken,
     });
   } else {
+    // Register for browser extension auto-discovery (idempotent file writes)
+    const { registerHeadlessService } = await import("./headlessServiceRegistration.js");
+    try {
+      const configDir = args.dataDir ?? process.env["NATSTACK_USER_DATA_PATH"] ?? getUserDataPath();
+      registerHeadlessService(configDir, {
+        rpcPort,
+        panelPort: panelHttpPort,
+        gitPort: handle.gitServer.getPort(),
+        pubsubPort: handle.pubsubPort,
+        adminToken,
+      });
+    } catch (err) {
+      console.warn("[Server] Failed to register headless service:", err);
+    }
+
     console.log("natstack-server ready:");
     console.log(`  Git:       http://127.0.0.1:${handle.gitServer.getPort()}`);
     console.log(`  PubSub:    ws://127.0.0.1:${handle.pubsubPort}`);
