@@ -1,3 +1,4 @@
+import { describe, it, expect, vi } from "vitest";
 import { createAiClient } from "./client.js";
 import type { RpcBridge } from "@natstack/rpc";
 

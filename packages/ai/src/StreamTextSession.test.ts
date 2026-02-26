@@ -1,8 +1,15 @@
+import { describe, it, expect, vi } from "vitest";
+import type { StreamTextOptions } from "@natstack/types";
 import { StreamTextSession } from "./StreamTextSession.js";
+
+/** Minimal options stub — tests only exercise event processing, not model/messages */
+function opts(overrides: Partial<StreamTextOptions> = {}): StreamTextOptions {
+  return { model: "test", messages: [], ...overrides };
+}
 
 describe("StreamTextSession", () => {
   it("processEvent with text-delta accumulates fullText", async () => {
-    const session = new StreamTextSession("s1", {}, vi.fn());
+    const session = new StreamTextSession("s1", opts(), vi.fn());
 
     await session.processEvent({ type: "text-delta", text: "hello " });
     await session.processEvent({ type: "text-delta", text: "world" });
@@ -14,7 +21,7 @@ describe("StreamTextSession", () => {
   });
 
   it("processEvent with tool-call accumulates toolCalls", async () => {
-    const session = new StreamTextSession("s1", {}, vi.fn());
+    const session = new StreamTextSession("s1", opts(), vi.fn());
 
     await session.processEvent({
       type: "tool-call",
@@ -32,7 +39,7 @@ describe("StreamTextSession", () => {
 
   it("processEvent with step-finish resets per-step state and calls onStepFinish", async () => {
     const onStepFinish = vi.fn();
-    const session = new StreamTextSession("s1", { onStepFinish }, vi.fn());
+    const session = new StreamTextSession("s1", opts({ onStepFinish }), vi.fn());
 
     await session.processEvent({ type: "text-delta", text: "step1 text" });
     await session.processEvent({
@@ -58,12 +65,12 @@ describe("StreamTextSession", () => {
     });
 
     expect(onStepFinish).toHaveBeenCalledTimes(2);
-    expect(onStepFinish.mock.calls[1][0].text).toBe("step2");
+    expect(onStepFinish.mock.calls[1]![0].text).toBe("step2");
   });
 
   it("processEvent with finish calls onFinish callback with accumulated state", async () => {
     const onFinish = vi.fn();
-    const session = new StreamTextSession("s1", { onFinish }, vi.fn());
+    const session = new StreamTextSession("s1", opts({ onFinish }), vi.fn());
 
     await session.processEvent({ type: "text-delta", text: "result text" });
     await session.processEvent({
@@ -83,7 +90,7 @@ describe("StreamTextSession", () => {
 
   it("processEvent with error calls onError callback and sets streamError", async () => {
     const onError = vi.fn();
-    const session = new StreamTextSession("s1", { onError }, vi.fn());
+    const session = new StreamTextSession("s1", opts({ onError }), vi.fn());
 
     const err = new Error("stream failed");
     await session.processEvent({ type: "error", error: err });
@@ -93,7 +100,7 @@ describe("StreamTextSession", () => {
 
   it("onChunk callback is called for every event type", async () => {
     const onChunk = vi.fn();
-    const session = new StreamTextSession("s1", { onChunk }, vi.fn());
+    const session = new StreamTextSession("s1", opts({ onChunk }), vi.fn());
 
     const events = [
       { type: "text-delta" as const, text: "hi" },
@@ -106,15 +113,15 @@ describe("StreamTextSession", () => {
     }
 
     expect(onChunk).toHaveBeenCalledTimes(3);
-    expect(onChunk.mock.calls[0][0]).toEqual(events[0]);
-    expect(onChunk.mock.calls[1][0]).toEqual(events[1]);
-    expect(onChunk.mock.calls[2][0]).toEqual(events[2]);
+    expect(onChunk.mock.calls[0]![0]).toEqual(events[0]);
+    expect(onChunk.mock.calls[1]![0]).toEqual(events[1]);
+    expect(onChunk.mock.calls[2]![0]).toEqual(events[2]);
   });
 
   it("callback errors are caught and logged", async () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const onChunk = vi.fn().mockRejectedValue(new Error("callback broke"));
-    const session = new StreamTextSession("s1", { onChunk }, vi.fn());
+    const session = new StreamTextSession("s1", opts({ onChunk }), vi.fn());
 
     // Should not throw despite callback error
     await session.processEvent({ type: "text-delta", text: "hi" });
@@ -124,7 +131,7 @@ describe("StreamTextSession", () => {
   });
 
   it("cleanup resolves all pending promises", async () => {
-    const session = new StreamTextSession("s1", {}, vi.fn());
+    const session = new StreamTextSession("s1", opts(), vi.fn());
     const result = session.toResult();
 
     await session.processEvent({ type: "text-delta", text: "final" });
@@ -142,7 +149,7 @@ describe("StreamTextSession", () => {
   });
 
   it("createIterator delivers queued events", async () => {
-    const session = new StreamTextSession("s1", {}, vi.fn());
+    const session = new StreamTextSession("s1", opts(), vi.fn());
 
     // Queue events before creating iterator
     await session.processEvent({ type: "text-delta", text: "a" });
@@ -166,7 +173,7 @@ describe("StreamTextSession", () => {
   });
 
   it("createIterator throws on second call", () => {
-    const session = new StreamTextSession("s1", {}, vi.fn());
+    const session = new StreamTextSession("s1", opts(), vi.fn());
 
     session.createIterator();
 
@@ -175,7 +182,7 @@ describe("StreamTextSession", () => {
 
   it("cancel calls onCancel and cleans up", async () => {
     const onCancel = vi.fn();
-    const session = new StreamTextSession("s1", {}, onCancel);
+    const session = new StreamTextSession("s1", opts(), onCancel);
     const unsub = vi.fn();
     session.addUnsubscriber(unsub);
 

@@ -214,7 +214,7 @@ describe("path key consistency (Bug 2 regression)", () => {
     const result = await typeCheckRpcMethods["typecheck.check"](panelDir, "components/Button.tsx");
 
     expect(result.diagnostics.length).toBeGreaterThan(0);
-    expect(result.diagnostics[0].file).toBe(join(subDir, "Button.tsx"));
+    expect(result.diagnostics[0]!.file).toBe(join(subDir, "Button.tsx"));
   });
 });
 
