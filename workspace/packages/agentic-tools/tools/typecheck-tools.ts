@@ -8,8 +8,6 @@
  * compiler out of the chat panel bundle.
  */
 
-import * as fs from "fs";
-import * as path from "path";
 import type { MethodDefinition } from "@workspace/agentic-messaging";
 import {
   CheckTypesArgsSchema,
@@ -81,20 +79,8 @@ function formatDiagnostics(diagnostics: RpcDiagnostic[]): string {
  * check_types - Run TypeScript type checking via main process RPC
  */
 export async function checkTypes(args: CheckTypesArgs, publish?: DiagnosticsPublisher): Promise<string> {
-  let fileContent: string | undefined;
-
-  // Read file content to send with the RPC call
-  if (args.file_path) {
-    const resolvedFile = path.resolve(args.panel_path, args.file_path);
-    try {
-      fileContent = await fs.promises.readFile(resolvedFile, "utf-8");
-    } catch (err) {
-      return `Error reading file: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  }
-
   const result = await rpc.call<{ diagnostics: RpcDiagnostic[]; checkedFiles: string[] }>(
-    "main", "typecheck.check", args.panel_path, args.file_path, fileContent
+    "main", "typecheck.check", args.panel_path, args.file_path, undefined
   );
 
   if (publish) {
@@ -113,17 +99,8 @@ export async function checkTypes(args: CheckTypesArgs, publish?: DiagnosticsPubl
  * get_type_info - Get type information at a position via main process RPC
  */
 export async function getTypeInfo(args: GetTypeInfoArgs): Promise<string> {
-  // Read file content so the server uses the latest version (not a stale cache)
-  const resolvedFile = path.resolve(args.panel_path, args.file_path);
-  let fileContent: string | undefined;
-  try {
-    fileContent = await fs.promises.readFile(resolvedFile, "utf-8");
-  } catch {
-    // Non-fatal: server will try to read it or use cached version
-  }
-
   const info = await rpc.call<RpcQuickInfo | null>(
-    "main", "typecheck.getTypeInfo", args.panel_path, args.file_path, args.line, args.column, fileContent
+    "main", "typecheck.getTypeInfo", args.panel_path, args.file_path, args.line, args.column, undefined
   );
 
   if (!info) {
@@ -150,17 +127,8 @@ export async function getTypeInfo(args: GetTypeInfoArgs): Promise<string> {
  * get_completions - Get code completions at a position via main process RPC
  */
 export async function getCompletions(args: GetCompletionsArgs): Promise<string> {
-  // Read file content so the server uses the latest version (not a stale cache)
-  const resolvedFile = path.resolve(args.panel_path, args.file_path);
-  let fileContent: string | undefined;
-  try {
-    fileContent = await fs.promises.readFile(resolvedFile, "utf-8");
-  } catch {
-    // Non-fatal: server will try to read it or use cached version
-  }
-
   const completions = await rpc.call<{ entries: { name: string; kind: string }[] } | null>(
-    "main", "typecheck.getCompletions", args.panel_path, args.file_path, args.line, args.column, fileContent
+    "main", "typecheck.getCompletions", args.panel_path, args.file_path, args.line, args.column, undefined
   );
 
   if (!completions || completions.entries.length === 0) {

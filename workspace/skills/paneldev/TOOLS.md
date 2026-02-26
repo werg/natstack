@@ -100,8 +100,15 @@ Run TypeScript diagnostics on a panel/worker.
 **Parameters:**
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| `panel_path` | string | Yes | Root path of the panel/worker |
+| `panel_path` | string | Yes | Absolute path to the panel/worker root |
 | `file_path` | string | No | Specific file to check |
+
+**Note:** `panel_path` must be an absolute path. Your working directory is already the context folder root, so construct the path as:
+```bash
+# Get absolute panel path
+Bash({ command: "echo $(pwd)/workspace/panels/my-panel" })
+# → /abs/context/path/workspace/panels/my-panel
+```
 
 ### GetTypeInfo (get_type_info)
 
@@ -110,10 +117,12 @@ Get type information at a position.
 **Parameters:**
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| `panel_path` | string | Yes | Root path of the panel/worker |
+| `panel_path` | string | Yes | Absolute path to the panel/worker root |
 | `file_path` | string | Yes | Path to the file |
 | `line` | number | Yes | Line number (1-indexed) |
 | `column` | number | Yes | Column number (1-indexed) |
+
+**Note:** `panel_path` must be an absolute path (see CheckTypes above).
 
 ### GetCompletions (get_completions)
 
@@ -122,10 +131,12 @@ Get code completions at a position.
 **Parameters:**
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| `panel_path` | string | Yes | Root path of the panel/worker |
+| `panel_path` | string | Yes | Absolute path to the panel/worker root |
 | `file_path` | string | Yes | Path to the file |
 | `line` | number | Yes | Line number (1-indexed) |
 | `column` | number | Yes | Column number (1-indexed) |
+
+**Note:** `panel_path` must be an absolute path (see CheckTypes above).
 
 ---
 

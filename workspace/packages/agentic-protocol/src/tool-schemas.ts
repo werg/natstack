@@ -83,7 +83,10 @@ export type EnterPlanModeArgs = z.infer<typeof EnterPlanModeArgsSchema>;
  * Returns diagnostics (errors, warnings) from the TypeScript compiler
  */
 export const CheckTypesArgsSchema = z.object({
-  panel_path: z.string().describe("Root path of the panel/worker being developed"),
+  panel_path: z.string().describe(
+    "Absolute filesystem path to the root of the panel/worker " +
+    "(e.g. /abs/path/to/context/workspace/panels/my-panel)"
+  ),
   file_path: z.string().optional().describe("Specific file to check (checks all if omitted)"),
 });
 export type CheckTypesArgs = z.infer<typeof CheckTypesArgsSchema>;
@@ -93,7 +96,7 @@ export type CheckTypesArgs = z.infer<typeof CheckTypesArgsSchema>;
  * Useful for understanding types and getting documentation
  */
 export const GetTypeInfoArgsSchema = z.object({
-  panel_path: z.string().describe("Root path of the panel/worker"),
+  panel_path: z.string().describe("Absolute filesystem path to the root of the panel/worker"),
   file_path: z.string().describe("Path to the file"),
   line: z.number().describe("Line number (1-indexed)"),
   column: z.number().describe("Column number (1-indexed)"),
@@ -104,7 +107,7 @@ export type GetTypeInfoArgs = z.infer<typeof GetTypeInfoArgsSchema>;
  * get_completions - Get code completions at a position
  */
 export const GetCompletionsArgsSchema = z.object({
-  panel_path: z.string().describe("Root path of the panel/worker"),
+  panel_path: z.string().describe("Absolute filesystem path to the root of the panel/worker"),
   file_path: z.string().describe("Path to the file"),
   line: z.number().describe("Line number (1-indexed)"),
   column: z.number().describe("Column number (1-indexed)"),

@@ -353,29 +353,34 @@ async function getOrCreateTypeCheckService(panelPath: string): Promise<TypeCheck
   const cached = typeCheckServiceCache.get(resolved);
   if (cached) return cached;
 
-  const { createPanelTypeCheckService, createDiskFileSource } = await import("@natstack/typecheck");
+  const {
+    TypeCheckService: TCS,
+    createTypeDefinitionClient,
+    createDiskFileSource,
+    loadSourceFiles,
+  } = await import("@natstack/typecheck");
 
-  const service = await createPanelTypeCheckService({
-    panelPath: resolved,
-    fileSource: createDiskFileSource(resolved),
-    // In the main process, external types are resolved directly via TypeDefinitionService
-    rpcCall: async <T>(targetId: string, method: string, ...args: unknown[]) => {
-      // Route typecheck.getPackageTypes directly to the local service
-      if (method === "typecheck.getPackageTypes") {
-        return typeCheckRpcMethods["typecheck.getPackageTypes"](
-          args[0] as string,
-          args[1] as string
-        ) as T;
-      }
-      if (method === "typecheck.getPackageTypesBatch") {
-        return typeCheckRpcMethods["typecheck.getPackageTypesBatch"](
-          args[0] as string,
-          args[1] as string[]
-        ) as T;
-      }
+  const typeDefClient = createTypeDefinitionClient({
+    rpcCall: async <T>(_targetId: string, method: string, ...args: unknown[]) => {
+      if (method === "typecheck.getPackageTypes")
+        return typeCheckRpcMethods["typecheck.getPackageTypes"](args[0] as string, args[1] as string) as T;
+      if (method === "typecheck.getPackageTypesBatch")
+        return typeCheckRpcMethods["typecheck.getPackageTypesBatch"](args[0] as string, args[1] as string[]) as T;
       throw new Error(`Unknown RPC method in main process typecheck: ${method}`);
     },
   });
+
+  const service = new TCS({
+    panelPath: resolved,
+    requestExternalTypes: (packageName) => typeDefClient.getPackageTypes(resolved, packageName),
+  });
+
+  // Load initial files with absolute paths (consistent with all downstream updateFile calls)
+  const fileSource = createDiskFileSource(resolved);
+  const files = await loadSourceFiles(fileSource, ".");
+  for (const [relPath, content] of files) {
+    service.updateFile(path.resolve(resolved, relPath), content);
+  }
 
   typeCheckServiceCache.set(resolved, service);
   return service;
@@ -437,15 +442,29 @@ export const typeCheckRpcMethods = {
     fileContent?: string
   ): Promise<{ diagnostics: SerializedDiagnostic[]; checkedFiles: string[] }> => {
     const service = await getOrCreateTypeCheckService(panelPath);
+    const resolved = path.resolve(panelPath);
 
-    // Update file content if provided
-    if (filePath && fileContent !== undefined) {
-      const resolvedFile = path.resolve(panelPath, filePath);
-      service.updateFile(resolvedFile, fileContent);
+    if (filePath) {
+      const resolvedFile = path.resolve(resolved, filePath);
+      if (fileContent !== undefined) {
+        service.updateFile(resolvedFile, fileContent);
+      } else {
+        // Always refresh from disk — agent may have edited since service was created
+        try {
+          service.updateFile(resolvedFile, await fs.readFile(resolvedFile, "utf-8"));
+        } catch { /* file may not exist yet */ }
+      }
+    } else {
+      // Whole-panel check: resync all files from disk
+      const { loadSourceFiles, createDiskFileSource } = await import("@natstack/typecheck");
+      const files = await loadSourceFiles(createDiskFileSource(resolved), ".");
+      for (const [relPath, content] of files) {
+        service.updateFile(path.resolve(resolved, relPath), content);
+      }
     }
 
     const result = await service.checkWithExternalTypes(
-      filePath ? path.resolve(panelPath, filePath) : undefined
+      filePath ? path.resolve(resolved, filePath) : undefined
     );
     return {
       diagnostics: serializeDiagnostics(result.diagnostics),
@@ -461,18 +480,16 @@ export const typeCheckRpcMethods = {
     fileContent?: string
   ): Promise<{ displayParts: string; documentation?: string; tags?: { name: string; text?: string }[] } | null> => {
     const service = await getOrCreateTypeCheckService(panelPath);
-    const resolvedFile = path.resolve(panelPath, filePath);
+    const resolved = path.resolve(panelPath);
+    const resolvedFile = path.resolve(resolved, filePath);
 
-    // Ensure file is loaded/updated
+    // Ensure file is loaded/updated — always refresh from disk for freshness
     if (fileContent !== undefined) {
       service.updateFile(resolvedFile, fileContent);
-    } else if (!service.hasFile(resolvedFile)) {
+    } else {
       try {
-        const content = await fs.readFile(resolvedFile, "utf-8");
-        service.updateFile(resolvedFile, content);
-      } catch (err) {
-        return null;
-      }
+        service.updateFile(resolvedFile, await fs.readFile(resolvedFile, "utf-8"));
+      } catch { return null; }
     }
 
     const info = service.getQuickInfo(resolvedFile, line, column);
@@ -492,18 +509,16 @@ export const typeCheckRpcMethods = {
     fileContent?: string
   ): Promise<{ entries: { name: string; kind: string }[] } | null> => {
     const service = await getOrCreateTypeCheckService(panelPath);
-    const resolvedFile = path.resolve(panelPath, filePath);
+    const resolved = path.resolve(panelPath);
+    const resolvedFile = path.resolve(resolved, filePath);
 
-    // Ensure file is loaded/updated
+    // Ensure file is loaded/updated — always refresh from disk for freshness
     if (fileContent !== undefined) {
       service.updateFile(resolvedFile, fileContent);
-    } else if (!service.hasFile(resolvedFile)) {
+    } else {
       try {
-        const content = await fs.readFile(resolvedFile, "utf-8");
-        service.updateFile(resolvedFile, content);
-      } catch (err) {
-        return null;
-      }
+        service.updateFile(resolvedFile, await fs.readFile(resolvedFile, "utf-8"));
+      } catch { return null; }
     }
 
     const completions = service.getCompletions(resolvedFile, line, column);
