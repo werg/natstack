@@ -22,8 +22,8 @@ const child = spawn(electronBinary, args, {
   stdio: "inherit",
   env: {
     ...process.env,
-    // Increase Node.js memory limit for main process (4GB)
-    NODE_OPTIONS: "--max-old-space-size=4096",
+    // Increase Node.js memory limit for main process (3GB)
+    NODE_OPTIONS: "--max-old-space-size=3072",
   },
 });
 
