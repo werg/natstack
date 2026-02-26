@@ -106,8 +106,9 @@ describe("nsLinks", () => {
       expect(url).toBe("ns-about://keyboard-shortcuts");
     });
 
-    it("rejects invalid page", () => {
-      expect(() => buildAboutLink("invalid" as any)).toThrow("Invalid about page");
+    it("builds URL for arbitrary page names", () => {
+      const url = buildAboutLink("custom-page");
+      expect(url).toBe("ns-about://custom-page");
     });
   });
 
