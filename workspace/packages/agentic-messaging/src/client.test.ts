@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { z } from "zod";
 import { connect } from "./client.js";
 
@@ -85,8 +85,16 @@ function createWsHarness(options?: { autoAckPublishes?: boolean }) {
 }
 
 describe("@workspace/agentic-messaging", () => {
+  let clients: ReturnType<typeof connect>[] = [];
+
   beforeEach(() => {
     MockWebSocket.mockReset();
+    clients = [];
+  });
+
+  afterEach(async () => {
+    // Clean up all clients to prevent handle conflicts between tests
+    await Promise.all(clients.map((c) => c.close().catch(() => {})));
   });
 
   it("callMethod() publishes method-call and resolves on method-result", async () => {
@@ -192,6 +200,8 @@ describe("@workspace/agentic-messaging", () => {
     await streamTask;
     expect(chunks.length).toBe(1);
     expect((chunks[0] as { complete: boolean }).complete).toBe(true);
+
+    await client.close();
   });
 
   it("auto-executes provided methods and publishes streaming method-results", async () => {
@@ -275,6 +285,8 @@ describe("@workspace/agentic-messaging", () => {
     expect(methodResultPublishes.length).toBe(2);
     expect(methodResultPublishes[0]!.payload.complete).toBe(false);
     expect(methodResultPublishes[1]!.payload.complete).toBe(true);
+
+    await client.close();
   });
 
   it("methods in connect options are advertised in initial metadata", async () => {
