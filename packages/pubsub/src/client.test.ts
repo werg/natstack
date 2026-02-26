@@ -892,6 +892,11 @@ describe("PubSubClient", () => {
           "user-b": { id: "user-b", metadata: { name: "Bob" } },
         },
         ts: 12346,
+        change: {
+          type: "join",
+          participantId: "user-b",
+          metadata: { name: "Bob" },
+        },
       });
     });
 
@@ -1031,11 +1036,19 @@ describe("PubSubClient", () => {
           readyState: 1,
           send: vi.fn(),
           close: vi.fn(),
+          _onmessage: null as ((event: { data: string }) => void) | null,
           addEventListener: vi.fn((event: string, handler: (event: { data: string }) => void) => {
             if (event === "message") onmessage = handler;
           }),
           removeEventListener: vi.fn(),
         };
+        Object.defineProperty(ws, "onmessage", {
+          get: () => ws._onmessage,
+          set: (handler: (event: { data: string }) => void) => {
+            ws._onmessage = handler;
+            onmessage = handler;
+          },
+        });
         return ws;
       });
 

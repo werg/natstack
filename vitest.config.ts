@@ -15,6 +15,6 @@ export default defineConfig({
   test: {
     globals: true,
     include: ["src/**/*.test.ts", "workspace/**/*.test.ts", "packages/**/*.test.ts"],
-    exclude: ["node_modules", "dist"],
+    exclude: ["**/node_modules/**", "dist", "workspace/.contexts"],
   },
 });
