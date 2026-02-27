@@ -1021,7 +1021,7 @@ export class TypeCheckService {
       return null;
     }
 
-    // Parse: @workspace-panels/project-panel/types -> packageName=project-panel, subpath=types
+    // Parse: @workspace-panels/<package>/<subpath> -> packageName, subpath
     const withoutScope = moduleName.slice(scope.length);
     const slashIndex = withoutScope.indexOf("/");
     const packageName = slashIndex === -1 ? withoutScope : withoutScope.slice(0, slashIndex);

@@ -24,7 +24,6 @@
     "types": ["node", "vitest/globals"],
     "baseUrl": ".",
     "paths": {
-      "@workspace-panels/project-panel/types": ["workspace/panels/project-panel/types.ts"],
       "modern-monaco/editor-core": ["workspace/packages/git-ui/node_modules/modern-monaco/types/monaco.d.ts"]
     }
   },

@@ -2883,7 +2883,6 @@ export class PanelManager {
 
   /**
    * Get child panels for a given panel (slim projection).
-   * Used by project-panel to list child chat sessions.
    *
    * Note: createdAt is approximated with Date.now() since the Panel in-memory
    * structure doesn't include it (it's only in the DB). This means timestamps
