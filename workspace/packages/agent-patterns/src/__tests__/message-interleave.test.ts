@@ -482,13 +482,13 @@ describe("Message Interleaving Pattern", () => {
   });
 
   /**
-   * Simulates the Codex Responder interleaving pattern:
+   * Simulates the Pi Responder interleaving pattern:
    * - Outer while loop wrapping inner for-await
    * - Interleave at item.completed for tool items
    * - abortCurrent() before takePending() (synchronous, cannot fail)
    * - Fresh abort signal per iteration
    */
-  describe("Codex Responder Pattern", () => {
+  describe("Pi Responder Pattern", () => {
     it("should interleave at item.completed for tool items", async () => {
       vi.useRealTimers();
       const resumePrompts: string[] = [];
@@ -509,7 +509,7 @@ describe("Message Interleaving Pattern", () => {
               interleavePrompt = null;
             }
 
-            // Simulate Codex stream events
+            // Simulate Pi stream events
             const events = [
               { type: "item.started", itemType: "reasoning" },
               { type: "item.completed", itemType: "command_execution" }, // tool item
@@ -551,13 +551,13 @@ describe("Message Interleaving Pattern", () => {
         },
       });
 
-      queue.enqueue(createMockEvent(1, "initial codex prompt"));
+      queue.enqueue(createMockEvent(1, "initial pi prompt"));
       queue.enqueue(createMockEvent(2, "mid-tool message"));
 
       processResolve!();
       await queue.drain();
 
-      expect(resumePrompts[0]).toBe("initial codex prompt");
+      expect(resumePrompts[0]).toBe("initial pi prompt");
       expect(resumePrompts[1]).toBe("mid-tool message");
       expect(resumePrompts[2]).toBe("anchored-to-msg-2");
     });
@@ -634,9 +634,9 @@ describe("Message Interleaving Pattern", () => {
   });
 
   /**
-   * Tests for the system prompt on resume fix in codex-responder
+   * Tests for the system prompt on resume fix in pi-responder
    */
-  describe("Codex System Prompt on Resume", () => {
+  describe("Pi System Prompt on Resume", () => {
     it("should only prepend system prompt for new threads", () => {
       const systemPrompt = "You are a helpful assistant.";
       const userPrompt = "Hello";

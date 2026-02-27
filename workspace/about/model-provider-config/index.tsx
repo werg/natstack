@@ -260,9 +260,7 @@ function ProviderRow({ provider, providerInfo, onUpdate }: ProviderRowProps) {
             <Text size="1" color="gray">
               {provider.id === "claude-code"
                 ? "Requires CLI installation. Run: npm install -g @anthropic-ai/claude-code && claude login"
-                : provider.id === "codex-cli"
-                  ? "Requires CLI installation. Run: npm install -g @openai/codex && codex login"
-                  : "Requires CLI authentication. Please install and log in to the CLI tool."}
+                : "Requires CLI authentication. Please install and log in to the CLI tool."}
             </Text>
           </Box>
         )}

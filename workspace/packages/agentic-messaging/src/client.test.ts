@@ -94,7 +94,7 @@ describe("@workspace/agentic-messaging", () => {
 
   afterEach(async () => {
     // Clean up all clients to prevent handle conflicts between tests
-    await Promise.all(clients.map((c) => c.close().catch(() => {})));
+    await Promise.all(clients.map(async (c) => (await c).close().catch(() => {})));
   });
 
   it("callMethod() publishes method-call and resolves on method-result", async () => {

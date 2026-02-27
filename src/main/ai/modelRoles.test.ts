@@ -95,9 +95,9 @@ describe("ModelRoleResolver", () => {
       summarizer: "openai:gpt-4o-mini",
     });
     const roles = resolver.getAllRoles();
-    expect(roles.summarizer).toBe("openai:gpt-4o-mini");
+    expect(roles["summarizer"]).toBe("openai:gpt-4o-mini");
     // Standard roles should still be present (defaults)
-    expect(roles.smart).toBe("anthropic:claude-opus-4-6");
+    expect(roles["smart"]).toBe("anthropic:claude-opus-4-6");
   });
 
   it("updateConfig changes resolved models", () => {

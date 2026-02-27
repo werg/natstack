@@ -306,6 +306,7 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
           handle: this.handle,
           agentTypeId: this.agentId,
           contextUsage: usage,
+          activeModel: this.settingsMgr.get().modelRole,
         };
 
         try {
@@ -431,6 +432,24 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     const newSettings = feedbackResult.value as Partial<PubsubChatSettings>;
     await this.settingsMgr.update(newSettings);
     this.log.info(`Settings updated: ${JSON.stringify(this.settingsMgr.get())}`);
+
+    // Update metadata with new model role
+    const currentMetadata = this.client.clientId
+      ? this.client.roster[this.client.clientId]?.metadata
+      : undefined;
+    const metadata: ChatParticipantMetadata = {
+      ...currentMetadata,
+      name: "AI Responder",
+      type: "ai-responder" as const,
+      handle: this.handle,
+      agentTypeId: this.agentId,
+      activeModel: this.settingsMgr.get().modelRole,
+    };
+    try {
+      await this.client.updateMetadata(metadata);
+    } catch (err) {
+      this.log.error("Failed to update metadata after settings change", err);
+    }
 
     return { success: true, settings: this.settingsMgr.get() };
   }

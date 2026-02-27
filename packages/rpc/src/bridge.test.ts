@@ -11,7 +11,7 @@ function createMockTransport() {
 }
 
 function captureOnAnyMessageHandler(transport: RpcTransport) {
-  const call = vi.mocked(transport.onAnyMessage).mock.calls[0];
+  const call = vi.mocked(transport.onAnyMessage).mock.calls[0]!;
   return call[0] as (sourceId: string, message: RpcMessage) => void;
 }
 
@@ -24,7 +24,7 @@ describe("createRpcBridge", () => {
     const callPromise = bridge.call("target", "greet", "world");
 
     // Extract the requestId from the sent message
-    const sendCall = vi.mocked(transport.send).mock.calls[0];
+    const sendCall = vi.mocked(transport.send).mock.calls[0]!;
     expect(sendCall[0]).toBe("target");
     const request = sendCall[1] as RpcRequest;
     expect(request.type).toBe("request");
@@ -121,7 +121,7 @@ describe("createRpcBridge", () => {
 
     const callPromise = bridge.call("target", "fail");
 
-    const sendCall = vi.mocked(transport.send).mock.calls[0];
+    const sendCall = vi.mocked(transport.send).mock.calls[0]!;
     const request = sendCall[1] as RpcRequest;
 
     const response: RpcResponse = {

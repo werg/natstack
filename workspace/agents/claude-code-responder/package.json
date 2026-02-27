@@ -11,24 +11,6 @@
     ],
     "parameters": [
       {
-        "key": "model",
-        "label": "Model",
-        "description": "Claude model for code generation",
-        "type": "select",
-        "required": false,
-        "default": "claude-opus-4-6",
-        "options": [
-          { "value": "claude-opus-4-6", "label": "Claude Opus 4.6", "description": "Most capable model" },
-          { "value": "claude-sonnet-4-5-20250929", "label": "Claude Sonnet 4.5", "description": "Balanced performance" },
-          { "value": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5", "description": "Fast and efficient" },
-          { "value": "claude-opus-4-5-20251101", "label": "Claude Opus 4.5" },
-          { "value": "claude-opus-4-1-20250805", "label": "Claude Opus 4.1" },
-          { "value": "claude-sonnet-4-20250514", "label": "Claude Sonnet 4" }
-        ],
-        "group": "Model",
-        "order": 1
-      },
-      {
         "key": "maxThinkingTokens",
         "label": "Thinking Budget",
         "description": "Extended thinking token budget for complex reasoning",

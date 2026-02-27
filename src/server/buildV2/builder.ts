@@ -986,6 +986,13 @@ async function buildAgent(
     nodePaths.push(rootNodeModules);
   }
 
+  // Respect manifest.externals for agents (same as panels)
+  const manifestExternals = node.manifest.externals ?? {};
+  const externalSpecifiers = [
+    ...KNOWN_NATIVE_EXTERNALS,
+    ...expandExternalSpecifiers(manifestExternals),
+  ];
+
   // Resolve plugin uses extracted source paths — node conditions for agent builds
   const plugins: esbuild.Plugin[] = [
     createWorkspaceResolvePlugin(graph, workspaceRoot, sourceRoot, NODE_CONDITIONS),
@@ -1006,7 +1013,7 @@ async function buildAgent(
       logLevel: "warning",
       plugins,
       nodePaths,
-      external: KNOWN_NATIVE_EXTERNALS,
+      external: externalSpecifiers,
       tsconfigRaw: { compilerOptions: {} },
     });
 
@@ -1022,7 +1029,21 @@ async function buildAgent(
       builtAt: new Date().toISOString(),
     };
 
-    return buildStore.put(buildKey, artifacts, metadata);
+    const result = buildStore.put(buildKey, artifacts, metadata);
+
+    // Symlink external deps into the build dir so NODE_PATH resolution works at runtime
+    if (nodeModulesDir) {
+      const targetLink = path.join(result.dir, "node_modules");
+      try {
+        if (!fs.existsSync(targetLink)) {
+          fs.symlinkSync(nodeModulesDir, targetLink, "dir");
+        }
+      } catch {
+        // Race or already exists — ignore
+      }
+    }
+
+    return result;
   } finally {
     try {
       fs.rmSync(outdir, { recursive: true, force: true });

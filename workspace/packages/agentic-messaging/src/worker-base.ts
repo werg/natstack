@@ -1,7 +1,7 @@
 /**
  * Worker Base Utilities
  *
- * Shared utilities for LLM worker implementations (claude-code-responder, codex-responder, etc.).
+ * Shared utilities for LLM worker implementations (claude-code-responder, pi-responder, etc.).
  * Provides common patterns for permission prompts via feedback_form.
  */
 

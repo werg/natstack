@@ -107,7 +107,7 @@ describe("collectTransitiveExternalDeps", () => {
 
     const deps = collectTransitiveExternalDeps(root, graph);
     // ^4.18.0 is the highest
-    expect(deps.lodash).toBe("^4.18.0");
+    expect(deps["lodash"]).toBe("^4.18.0");
   });
 
   it("treats wildcards * as lowest priority in version comparison", () => {
@@ -127,7 +127,7 @@ describe("collectTransitiveExternalDeps", () => {
     graph.addNode(root);
 
     const deps = collectTransitiveExternalDeps(root, graph);
-    expect(deps.lodash).toBe("^4.17.21");
+    expect(deps["lodash"]).toBe("^4.17.21");
   });
 
   it("does not visit the same internal node twice (cycle-safe)", () => {

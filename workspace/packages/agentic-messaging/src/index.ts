@@ -114,7 +114,7 @@ export {
   type OpenAIContent,
 } from "./image-utils.js";
 
-// Worker base utilities (shared across claude-code-responder, codex-responder, and other workers)
+// Worker base utilities (shared across claude-code-responder, pi-responder, and other workers)
 export {
   showPermissionPrompt,
   createApprovalSchema,

@@ -3,7 +3,7 @@
  *
  * Provides common tool definitions used across multiple agents.
  * These tools are nearly identical across pubsub-chat-responder,
- * claude-code-responder, and codex-responder.
+ * claude-code-responder, and pi-responder.
  */
 
 import type { AgenticClient, ChatParticipantMetadata } from "@workspace/agentic-protocol";
@@ -158,7 +158,7 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
  * Creates set_title and TodoWrite tool definitions for MCP servers.
  * Returns tool definitions with special originalName markers for direct execution.
  *
- * Use with the Codex HTTP MCP bridge pattern where tools need special handling.
+ * Use with MCP bridge patterns where tools need special handling.
  *
  * @example
  * ```typescript
@@ -236,7 +236,7 @@ Only have ONE task as in_progress at a time. Mark tasks complete immediately aft
 
 /**
  * Execute a standard MCP tool by its originalName marker.
- * Use this with createStandardMcpTools() for the Codex MCP bridge pattern.
+ * Use this with createStandardMcpTools() for MCP bridge patterns.
  *
  * @example
  * ```typescript

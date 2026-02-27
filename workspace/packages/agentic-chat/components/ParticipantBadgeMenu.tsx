@@ -31,7 +31,7 @@ function getParticipantColor(type: string) {
       return "purple";
     case "claude-code":
       return "orange";
-    case "codex":
+    case "pi":
       return "teal";
     case "subagent":
       return "cyan";
@@ -90,6 +90,7 @@ export function ParticipantBadgeMenu({
   const isAgent = participant.metadata.type !== "panel";
   const showGrantStatus = isAgent && isGranted !== undefined;
   const isPlanMode = participant.metadata.executionMode === "plan";
+  const activeModel = participant.metadata.activeModel;
 
   // Extract context usage from metadata (if available)
   const contextUsage = participant.metadata.contextUsage as ContextWindowUsage | undefined;
@@ -128,41 +129,66 @@ export function ParticipantBadgeMenu({
     </Badge>
   ) : null;
 
+  // Model subtitle shown beneath the badge — absolutely positioned to avoid affecting layout height
+  const modelSubtitle = activeModel ? (
+    <Text
+      size="1"
+      color="gray"
+      style={{
+        position: "absolute",
+        top: "100%",
+        left: "50%",
+        transform: "translateX(-50%)",
+        fontSize: "9px",
+        lineHeight: 1,
+        opacity: 0.7,
+        whiteSpace: "nowrap",
+        pointerEvents: "none",
+      }}
+    >
+      {activeModel}
+    </Text>
+  ) : null;
+
   // Simple badge without dropdown when no menu items, no grant status, and no debug console
   const showDebugConsole = isAgent && onOpenDebugConsole;
   if (!hasMenuItems && !showGrantStatus && !showDebugConsole) {
     return (
-      <Badge color={color}>
-        @{participant.metadata.handle}
-        {planModeIndicator}
-        {statusIndicator}
-      </Badge>
+      <span style={{ position: "relative" }}>
+        <Badge color={color}>
+          @{participant.metadata.handle}
+          {planModeIndicator}
+          {statusIndicator}
+        </Badge>
+        {modelSubtitle}
+      </span>
     );
   }
 
   // Badge with dropdown menu when menu items or grant status to show
   return (
     <>
-      <DropdownMenu.Root>
-        <DropdownMenu.Trigger>
-          <Badge color={color} style={{ cursor: "pointer" }}>
-            @{participant.metadata.handle}
-            {planModeIndicator}
-            {statusIndicator}
-            <TriangleDownIcon
-              style={{
-                marginLeft: 4,
-                width: 10,
-                height: 10,
-                opacity: 0.6,
-                ...(hasActiveMessage && !hasContextUsage && {
-                  animation: "pulse 1s ease-in-out infinite",
-                  opacity: 1,
-                }),
-              }}
-            />
-          </Badge>
-        </DropdownMenu.Trigger>
+      <span style={{ position: "relative" }}>
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger>
+            <Badge color={color} style={{ cursor: "pointer" }}>
+              @{participant.metadata.handle}
+              {planModeIndicator}
+              {statusIndicator}
+              <TriangleDownIcon
+                style={{
+                  marginLeft: 4,
+                  width: 10,
+                  height: 10,
+                  opacity: 0.6,
+                  ...(hasActiveMessage && !hasContextUsage && {
+                    animation: "pulse 1s ease-in-out infinite",
+                    opacity: 1,
+                  }),
+                }}
+              />
+            </Badge>
+          </DropdownMenu.Trigger>
 
         <DropdownMenu.Content>
           {/* Show tool access status for agents (non-panel participants) */}
@@ -205,7 +231,9 @@ export function ParticipantBadgeMenu({
             </>
           )}
         </DropdownMenu.Content>
-      </DropdownMenu.Root>
+        </DropdownMenu.Root>
+        {modelSubtitle}
+      </span>
 
       {selectedMethod && (
         <MethodArgumentsModal

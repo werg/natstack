@@ -8,7 +8,7 @@ describe("validateStateArgs", () => {
 
   it("rejects non-JSON-serializable input (circular reference)", () => {
     const obj: Record<string, unknown> = {};
-    obj.self = obj;
+    obj["self"] = obj;
     const result = validateStateArgs(obj, undefined);
     expect(result).toEqual({ success: false, error: "stateArgs must be JSON-serializable" });
   });
@@ -32,8 +32,8 @@ describe("validateStateArgs", () => {
     const schema = {
       type: "object" as const,
       properties: {
-        name: { type: "string" },
-        age: { type: "number" },
+        name: { type: "string" as const },
+        age: { type: "number" as const },
       },
       required: ["name"],
     };
@@ -48,7 +48,7 @@ describe("validateStateArgs", () => {
     const schema = {
       type: "object" as const,
       properties: {
-        name: { type: "string" },
+        name: { type: "string" as const },
       },
       required: ["name"],
     };
@@ -64,7 +64,7 @@ describe("validateStateArgs", () => {
     const schema = {
       type: "object" as const,
       properties: {
-        color: { type: "string", default: "blue" },
+        color: { type: "string" as const, default: "blue" },
       },
     };
     const result = validateStateArgs({}, schema);
@@ -78,7 +78,7 @@ describe("validateStateArgs", () => {
     const schema = {
       type: "object" as const,
       properties: {
-        count: { type: "number" },
+        count: { type: "number" as const },
       },
     };
     const result = validateStateArgs({ count: "42" }, schema);

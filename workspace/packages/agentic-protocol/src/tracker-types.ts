@@ -14,7 +14,7 @@ import type { ContextWindowUsage } from "./context-tracker.js";
  */
 export interface ChatParticipantMetadata extends AgenticParticipantMetadata {
   name: string;
-  type: "panel" | "ai-responder" | "claude-code" | "codex" | "subagent";
+  type: "panel" | "ai-responder" | "claude-code" | "pi" | "subagent";
   /** Runtime panel/worker ID - allows chat panel to link participant to child panel for focus/reload */
   panelId?: string;
   /** Agent type ID for identification/recovery (e.g., "claude-code-responder") */
@@ -71,7 +71,7 @@ export interface TypingData {
   senderId: string;
   /** Display name of who is typing */
   senderName?: string;
-  /** Participant type (e.g., "panel", "claude-code", "codex") */
+  /** Participant type (e.g., "panel", "claude-code", "pi") */
   senderType?: string;
   /** Optional context (e.g., "preparing response", "searching files") */
   context?: string;
@@ -87,7 +87,7 @@ export interface ThinkingTrackerState {
   currentContentType: "thinking" | "text" | null;
   /** Message ID for the current thinking message, if any */
   thinkingMessageId: string | null;
-  /** Item ID for the current thinking block (for Codex SDK) */
+  /** Item ID for the current thinking block */
   thinkingItemId: string | null;
 }
 

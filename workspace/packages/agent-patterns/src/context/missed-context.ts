@@ -42,7 +42,7 @@ export interface MissedContextManagerOptions {
    * Useful for excluding the agent's own responses (which are already
    * in the AI thread history) to prevent duplication.
    *
-   * @example ["codex", "agent"] — exclude agent-sent messages
+   * @example ["pi", "agent"] — exclude agent-sent messages
    */
   excludeSenderTypes?: string[];
 }

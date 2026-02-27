@@ -1,0 +1,66 @@
+{
+  "name": "@workspace-agents/pi-responder",
+  "version": "0.1.0",
+  "type": "module",
+  "natstack": {
+    "type": "agent",
+    "title": "Pi Responder",
+    "description": "AI-powered code assistant using the Pi Coding Agent SDK with multi-provider model support",
+    "channels": [
+      "chat:*"
+    ],
+    "externals": {
+      "@mariozechner/pi-ai": "*",
+      "@mariozechner/pi-coding-agent": "*"
+    },
+    "parameters": [
+      {
+        "key": "thinkingLevel",
+        "label": "Thinking Level",
+        "description": "Extended thinking depth",
+        "type": "slider",
+        "required": false,
+        "default": 3,
+        "min": 0,
+        "max": 5,
+        "step": 1,
+        "notches": [
+          { "value": 0, "label": "Off", "description": "No extended thinking" },
+          { "value": 1, "label": "Minimal", "description": "Light reasoning" },
+          { "value": 2, "label": "Low", "description": "Quick reasoning" },
+          { "value": 3, "label": "Medium", "description": "Balanced approach" },
+          { "value": 4, "label": "High", "description": "Thorough reasoning" },
+          { "value": 5, "label": "Max", "description": "Maximum depth" }
+        ],
+        "group": "Model",
+        "order": 2
+      },
+      {
+        "key": "autonomyLevel",
+        "label": "Autonomy",
+        "type": "slider",
+        "default": 2,
+        "min": 0,
+        "max": 2,
+        "step": 1,
+        "notches": [
+          { "value": 0, "label": "Restricted", "description": "Read-only access, requires approval" },
+          { "value": 1, "label": "Standard", "description": "Can modify workspace" },
+          { "value": 2, "label": "Autonomous", "description": "Full access, minimal restrictions" }
+        ],
+        "warnings": [{ "when": 2, "message": "Allows unrestricted file system access", "severity": "danger" }],
+        "group": "Permissions",
+        "order": 3
+      }
+    ]
+  },
+  "dependencies": {
+    "@workspace/agent-runtime": "workspace:*",
+    "@workspace/agent-patterns": "workspace:*",
+    "@workspace/agentic-messaging": "workspace:*",
+    "@natstack/pubsub": "workspace:*",
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "zod": "*"
+  }
+}

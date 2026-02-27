@@ -41,11 +41,11 @@ export {
 // SDK adapters
 export {
   toAiSdkTools,
-  toCodexMcpTools,
+  toPiCustomTools,
   toClaudeMcpTools,
   type AiSdkToolDefinition,
   type ToAiSdkToolsOptions,
-  type CodexToolDefinition,
+  type PiToolDefinition,
   type ClaudeMcpToolsResult,
   type ClaudeMcpToolDef,
   type ToClaudeMcpToolsOptions,

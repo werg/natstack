@@ -40,13 +40,13 @@ describe("providerFactory", () => {
       expect(isSupportedProvider("google")).toBe(true);
       expect(isSupportedProvider("groq")).toBe(true);
       expect(isSupportedProvider("claude-code")).toBe(true);
-      expect(isSupportedProvider("codex-cli")).toBe(true);
     });
 
     it("returns false for unknown provider ids", () => {
       expect(isSupportedProvider("unknown")).toBe(false);
       expect(isSupportedProvider("")).toBe(false);
       expect(isSupportedProvider("ANTHROPIC")).toBe(false);
+      expect(isSupportedProvider("codex-cli")).toBe(false);
     });
   });
 
@@ -67,7 +67,7 @@ describe("providerFactory", () => {
       expect(providers).toContain("replicate");
       expect(providers).toContain("perplexity");
       expect(providers).toContain("claude-code");
-      expect(providers).toContain("codex-cli");
+      expect(providers).not.toContain("codex-cli");
     });
   });
 
@@ -86,7 +86,6 @@ describe("providerFactory", () => {
       expect(getProviderDisplayName("replicate")).toBe("Replicate");
       expect(getProviderDisplayName("perplexity")).toBe("Perplexity");
       expect(getProviderDisplayName("claude-code")).toBe("Claude Code");
-      expect(getProviderDisplayName("codex-cli")).toBe("Codex CLI");
     });
   });
 
@@ -94,29 +93,26 @@ describe("providerFactory", () => {
   // hasProviderApiKey
   // -------------------------------------------------------------------------
   describe("hasProviderApiKey", () => {
-    const originalEnv = { ...process.env };
-
     afterEach(() => {
       // Restore env
-      delete process.env.ANTHROPIC_API_KEY;
-      delete process.env.OPENAI_API_KEY;
+      delete process.env["ANTHROPIC_API_KEY"];
+      delete process.env["OPENAI_API_KEY"];
     });
 
     it("returns true when the provider env var is set", () => {
-      process.env.ANTHROPIC_API_KEY = "sk-test-123";
+      process.env["ANTHROPIC_API_KEY"] = "sk-test-123";
       expect(hasProviderApiKey("anthropic")).toBe(true);
     });
 
     it("returns false when the provider env var is not set", () => {
-      delete process.env.ANTHROPIC_API_KEY;
+      delete process.env["ANTHROPIC_API_KEY"];
       expect(hasProviderApiKey("anthropic")).toBe(false);
     });
 
     it("returns false for CLI-auth providers (empty env var name)", () => {
-      // claude-code and codex-cli have empty string env vars,
+      // claude-code has empty string env var,
       // so process.env[""] is always undefined
       expect(hasProviderApiKey("claude-code")).toBe(false);
-      expect(hasProviderApiKey("codex-cli")).toBe(false);
     });
   });
 
@@ -124,9 +120,8 @@ describe("providerFactory", () => {
   // usesCliAuth
   // -------------------------------------------------------------------------
   describe("usesCliAuth", () => {
-    it("returns true for claude-code and codex-cli", () => {
+    it("returns true for claude-code", () => {
       expect(usesCliAuth("claude-code")).toBe(true);
-      expect(usesCliAuth("codex-cli")).toBe(true);
     });
 
     it("returns false for API-key providers", () => {
@@ -143,7 +138,7 @@ describe("providerFactory", () => {
     it("returns non-empty model arrays for known providers", () => {
       const knownProviders: SupportedProvider[] = [
         "anthropic", "openai", "google", "groq", "openrouter",
-        "mistral", "together", "replicate", "perplexity", "claude-code", "codex-cli",
+        "mistral", "together", "replicate", "perplexity", "claude-code",
       ];
       for (const id of knownProviders) {
         const models = getDefaultModelsForProvider(id);
@@ -180,7 +175,6 @@ describe("providerFactory", () => {
       expect(envVars.perplexity).toBe("PERPLEXITY_API_KEY");
       // CLI-auth providers have empty string env var
       expect(envVars["claude-code"]).toBe("");
-      expect(envVars["codex-cli"]).toBe("");
     });
   });
 

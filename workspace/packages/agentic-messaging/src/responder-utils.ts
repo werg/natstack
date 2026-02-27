@@ -40,7 +40,7 @@ export {
 
 /**
  * Create a prefixed logger function for responder workers.
- * @param prefix - The prefix to include in log messages (e.g., "Claude Code", "Codex")
+ * @param prefix - The prefix to include in log messages (e.g., "Claude Code", "Pi")
  * @param workerId - Optional worker ID to include in logs
  */
 export function createLogger(prefix: string, workerId?: string): (message: string) => void {

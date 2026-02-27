@@ -10,7 +10,6 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createMistral } from "@ai-sdk/mistral";
 import { createClaudeCode } from "ai-sdk-provider-claude-code";
-import { codexCli } from "ai-sdk-provider-codex-cli";
 import { execSync } from "child_process";
 import type { AIProviderConfig } from "./aiHandler.js";
 import type { SupportedProvider } from "../workspace/types.js";
@@ -39,13 +38,6 @@ export function findExecutable(name: string): string | undefined {
  */
 function findClaudeCodeExecutable(): string | undefined {
   return findExecutable("claude");
-}
-
-/**
- * Find the path to the Codex CLI executable.
- */
-function findCodexCliExecutable(): string | undefined {
-  return findExecutable("codex");
 }
 
 /**
@@ -232,23 +224,6 @@ const DEFAULT_MODELS: Record<SupportedProvider, ModelInfo[]> = {
       description: "Claude Code agent with Haiku model - fast and efficient",
     },
   ],
-  "codex-cli": [
-    {
-      id: "gpt-5.1-codex",
-      displayName: "Codex CLI (GPT-5.1 Codex)",
-      description: "OpenAI Codex agent - optimized for coding tasks",
-    },
-    {
-      id: "gpt-5.1-codex-max",
-      displayName: "Codex CLI (GPT-5.1 Codex Max)",
-      description: "OpenAI Codex agent - flagship model for complex coding",
-    },
-    {
-      id: "gpt-5.1-codex-mini",
-      displayName: "Codex CLI (GPT-5.1 Codex Mini)",
-      description: "OpenAI Codex agent - lightweight and fast",
-    },
-  ],
 };
 
 /**
@@ -278,7 +253,6 @@ const PROVIDER_ENV_VARS: Record<SupportedProvider, string> = {
   replicate: "REPLICATE_API_KEY",
   perplexity: "PERPLEXITY_API_KEY",
   "claude-code": "", // Uses CLI auth, not API key
-  "codex-cli": "", // Uses CLI auth, not API key
 };
 
 /**
@@ -319,27 +293,6 @@ export function createProviderFromConfig(providerId: SupportedProvider): AIProvi
           pathToClaudeCodeExecutable: claudeExecutable,
           cwd: getActiveWorkspace()?.path ?? process.cwd(),
           permissionMode: "default",
-        }),
-      models,
-    };
-  }
-
-  // Codex CLI uses CLI authentication, not API keys
-  if (providerId === "codex-cli") {
-    // Find the Codex CLI executable path or fall back to npx
-    const codexExecutable = findCodexCliExecutable();
-
-    return {
-      id: providerId,
-      name: "Codex CLI",
-      createModel: (modelId) =>
-        codexCli(modelId, {
-          // Fall back to npx if CLI not installed
-          allowNpx: !codexExecutable,
-          // Skip git repo check for flexibility
-          skipGitRepoCheck: true,
-          // Use active workspace or current working directory as the project root
-          cwd: getActiveWorkspace()?.path ?? process.cwd(),
         }),
       models,
     };
@@ -467,7 +420,6 @@ export function getProviderDisplayName(providerId: SupportedProvider): string {
     replicate: "Replicate",
     perplexity: "Perplexity",
     "claude-code": "Claude Code",
-    "codex-cli": "Codex CLI",
   };
   return displayNames[providerId] ?? providerId;
 }
@@ -484,5 +436,5 @@ export function hasProviderApiKey(providerId: SupportedProvider): boolean {
  * Check if a provider uses CLI authentication instead of API keys
  */
 export function usesCliAuth(providerId: SupportedProvider): boolean {
-  return providerId === "claude-code" || providerId === "codex-cli";
+  return providerId === "claude-code";
 }

@@ -11,21 +11,6 @@
     ],
     "parameters": [
       {
-        "key": "modelRole",
-        "label": "Model Role",
-        "description": "Optimized model configuration for different tasks",
-        "type": "select",
-        "required": false,
-        "default": "coding",
-        "options": [
-          { "value": "fast", "label": "Fast", "description": "Quick responses, lower latency" },
-          { "value": "smart", "label": "Smart", "description": "More thoughtful, higher quality" },
-          { "value": "coding", "label": "Coding", "description": "Optimized for code generation" }
-        ],
-        "group": "Model",
-        "order": 0
-      },
-      {
         "key": "temperature",
         "label": "Temperature",
         "description": "Controls randomness in responses",

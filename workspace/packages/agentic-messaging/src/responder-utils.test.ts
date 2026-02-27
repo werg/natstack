@@ -28,7 +28,7 @@ describe("formatArgsForLog", () => {
 
   it("handles circular references by replacing with [Circular]", () => {
     const obj: Record<string, unknown> = { a: 1 };
-    obj.self = obj;
+    obj["self"] = obj;
     const result = formatArgsForLog(obj);
     expect(result).toContain("[Circular]");
   });

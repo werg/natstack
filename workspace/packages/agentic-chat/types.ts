@@ -23,7 +23,7 @@ export interface PendingAgent {
 /** Metadata for participants in this channel */
 export interface ChatParticipantMetadata {
   name: string;
-  type: "panel" | "ai-responder" | "claude-code" | "codex" | "subagent";
+  type: "panel" | "ai-responder" | "claude-code" | "pi" | "subagent";
   handle: string;
   /** Methods this participant provides (for menu display) */
   methods?: MethodAdvertisement[];
@@ -35,6 +35,8 @@ export interface ChatParticipantMetadata {
   contextUsage?: ContextWindowUsage;
   /** Execution mode - "plan" for planning only, "edit" for full execution */
   executionMode?: "plan" | "edit";
+  /** Display name of the model currently in use (e.g., "Claude Opus 4.6") */
+  activeModel?: string;
   /** Index signature to satisfy ParticipantMetadata constraint */
   [key: string]: unknown;
 }

@@ -50,7 +50,7 @@ export const PARTICIPANT_TYPES = {
   PANEL: "panel",
   WORKER: "worker",
   CLAUDE_CODE: "claude-code",
-  CODEX: "codex",
+  PI: "pi",
   AI_RESPONDER: "ai-responder",
 } as const;
 
@@ -66,7 +66,7 @@ export interface AgenticParticipantMetadata extends ParticipantMetadata {
   /** Participant type (e.g., "panel", "worker", "agent") */
   type: string;
   /**
-   * Unique handle for @-mentions (e.g., "claude", "codex", "user").
+   * Unique handle for @-mentions (e.g., "claude", "pi", "user").
    * Must be unique within the channel. Conflicts cause connection errors.
    */
   handle: string;

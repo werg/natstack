@@ -91,17 +91,17 @@ describe("createMissedContextManager", () => {
   it("excludeSenderTypes filtering: matching sender types are excluded", () => {
     const messages = [
       { pubsubId: 1, content: "human msg", senderType: "panel" },
-      { pubsubId: 2, content: "agent msg", senderType: "codex" },
+      { pubsubId: 2, content: "agent msg", senderType: "pi" },
       { pubsubId: 3, content: "another human", senderType: "panel" },
     ];
     const manager = createMissedContextManager({
       client: makeClient(messages) as any,
-      excludeSenderTypes: ["codex"],
+      excludeSenderTypes: ["pi"],
     });
 
     manager.rebuild();
 
-    // formatMissedContext should exclude the codex message
+    // formatMissedContext should exclude the pi message
     expect(formatMissedContext).toHaveBeenCalledWith(
       [
         { pubsubId: 1, content: "human msg", senderType: "panel" },

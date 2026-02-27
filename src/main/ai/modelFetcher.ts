@@ -215,11 +215,6 @@ const CLI_PROVIDER_MODELS: Record<string, FetchedModel[]> = {
     { id: "sonnet", displayName: "Claude Code (Sonnet)", description: "Balanced coding performance" },
     { id: "haiku", displayName: "Claude Code (Haiku)", description: "Fast and efficient" },
   ],
-  "codex-cli": [
-    { id: "gpt-5.3-codex", displayName: "Codex CLI (GPT-5.3 Codex)", description: "Most advanced agentic coding" },
-    { id: "gpt-5.2-codex", displayName: "Codex CLI (GPT-5.2 Codex)", description: "Previous generation" },
-    { id: "gpt-5.2-codex-mini", displayName: "Codex CLI (GPT-5.2 Codex Mini)", description: "Lightweight" },
-  ],
 };
 
 /**
@@ -230,7 +225,7 @@ export async function fetchModelsForProvider(
   apiKey: string
 ): Promise<FetchedModel[] | null> {
   // Handle CLI-based providers
-  if (providerId === "claude-code" || providerId === "codex-cli") {
+  if (providerId === "claude-code") {
     return CLI_PROVIDER_MODELS[providerId] ?? null;
   }
 
@@ -300,7 +295,7 @@ export async function fetchAllProviderModels(
   // Fetch in parallel with individual error handling
   const fetchPromises = providers.map(async (provider) => {
     // Skip providers without API keys (except CLI-based ones)
-    const isCli = provider.id === "claude-code" || provider.id === "codex-cli";
+    const isCli = provider.id === "claude-code";
     if (!isCli && !provider.apiKey) {
       return;
     }

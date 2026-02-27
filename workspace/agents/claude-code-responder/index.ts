@@ -451,6 +451,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
           type: "claude-code" as const,
           contextUsage: usage,
           executionMode: this.settingsMgr.get().executionMode,
+          activeModel: this.settingsMgr.get().model,
         };
 
         try {
@@ -683,6 +684,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
       handle: this.handle,
       ...currentMetadata,
       executionMode: this.settingsMgr.get().executionMode,
+      activeModel: this.settingsMgr.get().model,
     };
     try {
       await client.updateMetadata(metadata);

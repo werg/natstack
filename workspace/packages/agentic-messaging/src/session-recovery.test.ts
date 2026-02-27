@@ -121,10 +121,10 @@ describe("computeSyncDeltas", () => {
     expect(deltas.commonAncestorUuid).toBe("sdk-2");
     // p3 is in pubsub but not in SDK
     expect(deltas.pubsubDelta).toHaveLength(1);
-    expect(deltas.pubsubDelta[0].id).toBe("p3");
+    expect(deltas.pubsubDelta[0]!.id).toBe("p3");
     // sdk-3 is in SDK but not in pubsub
     expect(deltas.sdkDelta).toHaveLength(1);
-    expect(deltas.sdkDelta[0].uuid).toBe("sdk-3");
+    expect(deltas.sdkDelta[0]!.uuid).toBe("sdk-3");
   });
 
   it("returns correct deltas without common ancestor", () => {
@@ -263,10 +263,10 @@ describe("prepareRecoveredMessages", () => {
 
     const recovered = prepareRecoveredMessages(messages);
     expect(recovered).toHaveLength(2);
-    expect(recovered[0].sdkUuid).toBe("u1");
-    expect(recovered[0].type).toBe("user");
-    expect(recovered[1].sdkUuid).toBe("u2");
-    expect(recovered[1].type).toBe("assistant");
+    expect(recovered[0]!.sdkUuid).toBe("u1");
+    expect(recovered[0]!.type).toBe("user");
+    expect(recovered[1]!.sdkUuid).toBe("u2");
+    expect(recovered[1]!.type).toBe("assistant");
   });
 
   it("skips messages with empty text content", () => {

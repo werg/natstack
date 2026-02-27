@@ -133,7 +133,7 @@ export interface WrapWithApprovalOptions {
 }
 
 /**
- * Wrap a tool executor with approval checking (for Codex/AI SDK).
+ * Wrap a tool executor with approval checking (for Pi/AI SDK).
  *
  * Unlike the Claude gate which runs before execution, this wraps the
  * executor so approval is checked at execution time.

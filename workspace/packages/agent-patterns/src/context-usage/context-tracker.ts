@@ -116,7 +116,7 @@ export interface ContextTrackerState {
  * ContextTracker manages context window usage tracking and metadata updates.
  *
  * This utility provides a consistent way to track token usage across
- * different agent implementations (claude-code-responder, codex-responder, etc.).
+ * different agent implementations (claude-code-responder, pi-responder, etc.).
  *
  * It handles:
  * - Accumulating usage from multiple API calls within a turn

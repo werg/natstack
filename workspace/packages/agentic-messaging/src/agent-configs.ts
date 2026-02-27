@@ -20,7 +20,7 @@ import type { FieldDefinition, FieldValue } from "@natstack/types";
 export interface ParsedModelVersion {
   /** Original model ID */
   id: string;
-  /** Model family (e.g., "opus", "sonnet", "haiku", "codex") */
+  /** Model family (e.g., "opus", "sonnet", "haiku", "gpt") */
   family: string;
   /** Major version number */
   major: number;
@@ -42,7 +42,7 @@ const MODEL_FAMILY_TIERS: Record<string, number> = {
   opus: 100,
   sonnet: 80,
   haiku: 60,
-  // OpenAI/Codex families
+  // OpenAI/GPT families
   codex: 90,
   gpt: 85,
   o3: 95,
@@ -438,42 +438,38 @@ export const AI_RESPONDER_PARAMETERS: FieldDefinition[] = [
 ];
 
 /**
- * Codex agent parameters
+ * Pi Coding Agent parameters
  */
-export const CODEX_PARAMETERS: FieldDefinition[] = [
+export const PI_PARAMETERS: FieldDefinition[] = [
   {
     key: "model",
     label: "Model",
-    description: "OpenAI Codex model for code generation",
+    description: "Model for code generation",
     type: "select",
     required: false,
-    default: "gpt-5.3-codex",
-    options: [
-      { value: "gpt-5.3-codex", label: "GPT-5.3 Codex", description: "Most advanced agentic coding model" },
-      { value: "gpt-5.2-codex", label: "GPT-5.2 Codex", description: "Previous generation" },
-      { value: "gpt-5.2-codex-max", label: "GPT-5.2 Codex Max", description: "Long-horizon agentic coding" },
-      { value: "gpt-5.2-codex-mini", label: "GPT-5.2 Codex Mini", description: "Cost-effective coding" },
-      { value: "gpt-5.2", label: "GPT-5.2", description: "Best general agentic model" },
-      { value: "gpt-5.1-codex", label: "GPT-5.1 Codex", description: "Legacy Codex model" },
-    ],
+    default: "claude-opus-4-6",
+    // Options populated dynamically at runtime by Pi SDK's model registry
+    options: [],
     group: "Model",
     order: 1,
   },
   {
-    key: "reasoningEffort",
-    label: "Reasoning Effort",
-    description: "Higher effort = more thorough but slower",
+    key: "thinkingLevel",
+    label: "Thinking Level",
+    description: "Extended thinking depth (higher = more thorough but slower)",
     type: "slider",
     required: false,
-    default: 3, // high
+    default: 3, // medium
     min: 0,
-    max: 3,
+    max: 5,
     step: 1,
     notches: [
-      { value: 0, label: "Minimal", description: "Fast, minimal reasoning" },
-      { value: 1, label: "Low", description: "Quick reasoning" },
-      { value: 2, label: "Medium", description: "Balanced approach" },
-      { value: 3, label: "High", description: "Thorough, slower" },
+      { value: 0, label: "Off", description: "No extended thinking" },
+      { value: 1, label: "Minimal", description: "Light reasoning" },
+      { value: 2, label: "Low", description: "Quick reasoning" },
+      { value: 3, label: "Medium", description: "Balanced approach" },
+      { value: 4, label: "High", description: "Thorough reasoning" },
+      { value: 5, label: "Max", description: "Maximum depth" },
     ],
     group: "Model",
     order: 2,
@@ -490,16 +486,6 @@ export const CODEX_PARAMETERS: FieldDefinition[] = [
     warnings: [{ when: 2, message: "Allows unrestricted file system access", severity: "danger" }],
     group: "Permissions",
     order: 3,
-  },
-  {
-    key: "webSearchEnabled",
-    label: "Web Search",
-    description: "Allow web search capabilities",
-    type: "boolean",
-    required: false,
-    default: true,
-    group: "Permissions",
-    order: 4,
   },
 ];
 
@@ -518,32 +504,3 @@ export function getParameterDefaults(
   return defaults;
 }
 
-// ============================================================================
-// Agent Parameter Registry
-// ============================================================================
-
-/**
- * Maps agent IDs to their authoritative parameter definitions.
- * package.json parameters are merged in at runtime only for keys
- * not already covered here.
- */
-export const AGENT_PARAMETER_REGISTRY: Record<string, FieldDefinition[]> = {
-  "claude-code-responder": CLAUDE_CODE_PARAMETERS,
-  "codex-responder": CODEX_PARAMETERS,
-  "pubsub-chat-responder": AI_RESPONDER_PARAMETERS,
-};
-
-/**
- * Enrich a manifest's parameters using the central registry.
- * Central params take precedence; any extra keys from the manifest
- * (e.g. agent-specific params not yet in the registry) are appended.
- */
-export function enrichManifestParameters(
-  manifest: { id: string; parameters?: FieldDefinition[] }
-): FieldDefinition[] {
-  const centralParams = AGENT_PARAMETER_REGISTRY[manifest.id];
-  if (!centralParams) return manifest.parameters ?? [];
-  const centralKeys = new Set(centralParams.map((p) => p.key));
-  const extraParams = (manifest.parameters ?? []).filter((p) => !centralKeys.has(p.key));
-  return [...centralParams, ...extraParams];
-}

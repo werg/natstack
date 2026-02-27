@@ -8,7 +8,7 @@ Session resumption provides:
 
 - Stable session keys per workspace/channel/handle
 - Pubsub checkpoints for replay and resume
-- SDK session tracking (Claude/Codex) via explicit updates
+- SDK session tracking (Claude/Pi) via explicit updates
 - Manual history storage for stateless responders
 - Automatic interruption marking on disconnect
 

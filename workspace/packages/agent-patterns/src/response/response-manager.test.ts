@@ -69,7 +69,7 @@ describe("createResponseManager", () => {
     // stopTyping should be called before send
     const stopOrder = mockTrackers.typing.stopTyping.mock.invocationCallOrder[0];
     const sendOrder = mockClient.send.mock.invocationCallOrder[0];
-    expect(stopOrder).toBeLessThan(sendOrder);
+    expect(stopOrder).toBeLessThan(sendOrder!);
   });
 
   it("commitCheckpointIfNeeded calls commitCheckpoint once, second call is no-op", () => {
