@@ -176,6 +176,14 @@ export function useAgentSelection({ sessionConfig = DEFAULT_SESSION_CONFIG }: Us
     [sessionConfig.defaultAutonomy]
   );
 
+  const deselectAll = useCallback(() => {
+    setAvailableAgents((prev) =>
+      prev.some((a) => a.selected)
+        ? prev.map((a) => a.selected ? { ...a, selected: false } : a)
+        : prev
+    );
+  }, []);
+
   return {
     availableAgents,
     agentsWithRequirements,
@@ -183,5 +191,6 @@ export function useAgentSelection({ sessionConfig = DEFAULT_SESSION_CONFIG }: Us
     toggleAgentSelection,
     updateAgentConfig,
     buildSpawnConfig,
+    deselectAll,
   };
 }

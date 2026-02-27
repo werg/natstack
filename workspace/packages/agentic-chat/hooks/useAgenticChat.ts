@@ -1,132 +1,30 @@
 /**
- * useAgenticChat — Main orchestration hook for agentic chat.
+ * useAgenticChat — Thin composer hook.
  *
- * Extracts all state management from the original panels/chat/index.tsx.
- * Returns a ChatContextValue-compatible object that can be passed to ChatProvider.
+ * Composes useChatCore + all feature hooks (roster tracking, pending agents,
+ * feedback, tools, debug, inline UI) into the full ChatContextValue.
+ *
+ * For minimal chat (no tools, no feedback, no debug), use useChatCore directly.
  */
 
-import { useState, useCallback, useMemo, useRef, useEffect, useReducer } from "react";
-import { CONTENT_TYPE_TYPING, CONTENT_TYPE_INLINE_UI } from "@workspace/agentic-messaging/utils";
+import { useCallback, useMemo, useRef, useEffect } from "react";
+import type { ChannelConfig, MethodDefinition } from "@workspace/agentic-messaging";
+import { useChatCore, type FeatureEventHandlers, type RosterExtension, type ReconnectExtension } from "./core/useChatCore";
+import { useRosterTracking } from "./features/useRosterTracking";
+import { usePendingAgents } from "./features/usePendingAgents";
+import { useChatFeedback } from "./features/useChatFeedback";
+import { useChatTools } from "./features/useChatTools";
+import { useChatDebug } from "./features/useChatDebug";
+import { useInlineUi } from "./features/useInlineUi";
+import type { EventMiddleware } from "./useAgentEvents";
 import type {
-  IncomingEvent,
-  IncomingMethodResult,
-  AggregatedEvent,
-  AgentDebugPayload,
-  MethodDefinition,
-  MethodExecutionContext,
-  TypingData,
-  FeedbackFormArgs,
-  FeedbackCustomArgs,
-  ChannelConfig,
-} from "@workspace/agentic-messaging";
-import {
-  FeedbackFormArgsSchema,
-  FeedbackCustomArgsSchema,
-} from "@workspace/agentic-messaging/protocol-schemas";
-import type { Participant, RosterUpdate, AttachmentInput } from "@natstack/pubsub";
-import {
-  useFeedbackManager,
-  useToolApproval,
-  wrapMethodsWithApproval,
-  compileFeedbackComponent,
-  cleanupFeedbackComponent,
-  compileInlineUiComponent,
-  cleanupInlineUiComponent,
-  type FeedbackResult,
-  type FeedbackUiToolArgs,
-  type ActiveFeedbackTsx,
-  type ActiveFeedbackSchema,
-} from "@workspace/tool-ui";
-import { useChannelConnection } from "./useChannelConnection";
-import { useMethodHistory } from "./useMethodHistory";
-import { dispatchAgenticEvent, aggregatedToChatMessage, type DirtyRepoDetails, type EventMiddleware } from "./useAgentEvents";
-import { cleanupPendingImages, type PendingImage } from "../utils/imageUtils";
-import { parseInlineUiData } from "../components/InlineUiMessage";
-import type { MethodHistoryEntry } from "../components/MethodHistoryItem";
-import type {
-  ChatMessage,
-  ChatParticipantMetadata,
-  DisconnectedAgentInfo,
-  PendingAgent,
   ConnectionConfig,
   AgenticChatActions,
   ToolProvider,
+  ChatParticipantMetadata,
   ChatContextValue,
   ChatInputContextValue,
-  InlineUiComponentEntry,
 } from "../types";
-
-// =============================================================================
-// Message window reducer — single source of truth for messages + pagination
-// =============================================================================
-
-const MAX_VISIBLE_MESSAGES = 500;
-const TRIM_THRESHOLD = MAX_VISIBLE_MESSAGES * 2;
-
-interface MessageWindowState {
-  messages: ChatMessage[];
-  oldestLoadedId: number | null;
-  paginationExhausted: boolean;
-}
-
-type MessageWindowAction =
-  | { type: "replace"; updater: (prev: ChatMessage[]) => ChatMessage[] }
-  | { type: "prepend"; olderMessages: ChatMessage[]; newCursor: number; exhausted: boolean }
-  | { type: "reset" };
-
-const messageWindowInitialState: MessageWindowState = {
-  messages: [],
-  oldestLoadedId: null,
-  paginationExhausted: false,
-};
-
-function messageWindowReducer(state: MessageWindowState, action: MessageWindowAction): MessageWindowState {
-  switch (action.type) {
-    case "replace": {
-      const updated = action.updater(state.messages);
-      if (updated === state.messages) return state;
-
-      // Auto-trim if over threshold
-      if (updated.length > TRIM_THRESHOLD) {
-        const trimmed = updated.slice(-MAX_VISIBLE_MESSAGES);
-        const trimFirstPubsubId = trimmed[0]?.pubsubId;
-        return {
-          messages: trimmed,
-          oldestLoadedId: trimFirstPubsubId ?? state.oldestLoadedId,
-          paginationExhausted: false, // trimming means there's more history
-        };
-      }
-
-      // Initialize cursor if not yet set
-      let { oldestLoadedId } = state;
-      if (oldestLoadedId === null && updated.length > 0) {
-        const firstWithId = updated.find((m) => m.pubsubId !== undefined);
-        if (firstWithId?.pubsubId !== undefined) {
-          oldestLoadedId = firstWithId.pubsubId;
-        }
-      }
-
-      return { ...state, messages: updated, oldestLoadedId };
-    }
-    case "prepend": {
-      // Dedup by pubsubId
-      const existingIds = new Set(
-        state.messages.filter((m) => m.pubsubId != null).map((m) => m.pubsubId)
-      );
-      const deduped = action.olderMessages.filter(
-        (m) => !m.pubsubId || !existingIds.has(m.pubsubId)
-      );
-      const merged = deduped.length > 0 ? [...deduped, ...state.messages] : state.messages;
-      return {
-        messages: merged,
-        oldestLoadedId: action.newCursor,
-        paginationExhausted: action.exhausted,
-      };
-    }
-    case "reset":
-      return messageWindowInitialState;
-  }
-}
 
 /** Pending agent info passed from launcher */
 interface PendingAgentInfo {
@@ -135,25 +33,15 @@ interface PendingAgentInfo {
 }
 
 export interface UseAgenticChatOptions {
-  /** Connection configuration (server URL, token, client ID) */
   config: ConnectionConfig;
-  /** Channel name to connect to */
   channelName: string;
-  /** Channel configuration */
   channelConfig?: ChannelConfig;
-  /** Context ID for channel authorization */
   contextId?: string;
-  /** Participant metadata for this client */
   metadata?: ChatParticipantMetadata;
-  /** Tool provider factory — receives deps, returns method definitions */
   tools?: ToolProvider;
-  /** Platform-specific actions */
   actions?: AgenticChatActions;
-  /** Theme for the chat UI */
   theme?: "light" | "dark";
-  /** Agents that are being spawned */
   pendingAgentInfos?: PendingAgentInfo[];
-  /** Optional event middleware for custom event handling */
   eventMiddleware?: EventMiddleware[];
 }
 
@@ -169,806 +57,175 @@ export function useAgenticChat({
   pendingAgentInfos,
   eventMiddleware,
 }: UseAgenticChatOptions): { contextValue: ChatContextValue; inputContextValue: ChatInputContextValue } {
-  const selfIdRef = useRef<string | null>(null);
-  const hasConnectedRef = useRef(false);
-  const participantsRef = useRef<Record<string, Participant<ChatParticipantMetadata>>>({});
-  const prevParticipantsRef = useRef<Record<string, Participant<ChatParticipantMetadata>>>({});
-  const suppressDisconnectRef = useRef(true);
-  /** Agent handles that stopped due to idle timeout — used to suppress disconnect messages */
-  const expectedStopsRef = useRef(new Set<string>());
-  // Refs for stable callback deps — avoids recreating onEvent/sendMessage on every keystroke
-  const eventMiddlewareRef = useRef(eventMiddleware);
-  eventMiddlewareRef.current = eventMiddleware;
-  const inputRef = useRef("");
+  // --- Extension refs (populated below, read by core via refs) ---
+  const featureHandlersRef = useRef<FeatureEventHandlers>({});
+  const rosterExtensionsRef = useRef<RosterExtension[]>([]);
+  const reconnectExtensionsRef = useRef<ReconnectExtension[]>([]);
 
-  // Chat state — reducer-based message window
-  const [messageWindow, dispatch] = useReducer(messageWindowReducer, messageWindowInitialState);
-  const { messages } = messageWindow;
-  const setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>> = useCallback(
-    (action: React.SetStateAction<ChatMessage[]>) => {
-      dispatch({ type: "replace", updater: typeof action === "function" ? action : () => action });
-    },
-    []
-  );
-  const [input, setInput] = useState("");
-  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
-  const [status, setStatus] = useState("Connecting...");
-  const [participants, setParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
-  const [historicalParticipants, setHistoricalParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
-  const [debugEvents, setDebugEvents] = useState<Array<AgentDebugPayload & { ts: number }>>([]);
-  const [debugConsoleAgent, setDebugConsoleAgent] = useState<string | null>(null);
-  const [dirtyRepoWarnings, setDirtyRepoWarnings] = useState<Map<string, DirtyRepoDetails>>(new Map());
-
-  const [pendingAgents, setPendingAgents] = useState<Map<string, PendingAgent>>(() => {
-    const initial = new Map<string, PendingAgent>();
-    if (pendingAgentInfos) {
-      for (const agent of pendingAgentInfos) {
-        initial.set(agent.handle, { agentId: agent.agentId, status: "starting" });
-      }
-    }
-    return initial;
-  });
-
-  // Pending agent timeout handling
-  const PENDING_TIMEOUT_MS = 45_000;
-  const pendingTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-
-  useEffect(() => {
-    const timeouts = pendingTimeoutsRef.current;
-    for (const [handle, agent] of pendingAgents) {
-      if (agent.status === "starting" && !timeouts.has(handle)) {
-        const timeout = setTimeout(() => {
-          setPendingAgents(prev => {
-            const next = new Map(prev);
-            const existing = next.get(handle);
-            if (existing?.status === "starting") {
-              next.set(handle, {
-                ...existing,
-                status: "error",
-                error: { message: "Agent failed to start (timeout)" },
-              });
-            }
-            return next;
-          });
-          timeouts.delete(handle);
-        }, PENDING_TIMEOUT_MS);
-        timeouts.set(handle, timeout);
-      }
-    }
-    for (const [handle, timeout] of timeouts) {
-      if (!pendingAgents.has(handle)) {
-        clearTimeout(timeout);
-        timeouts.delete(handle);
-      }
-    }
-  }, [pendingAgents]);
-
-  useEffect(() => {
-    return () => {
-      for (const timeout of pendingTimeoutsRef.current.values()) {
-        clearTimeout(timeout);
-      }
-    };
-  }, []);
-
-  // Inline UI components
-  const [inlineUiComponents, setInlineUiComponents] = useState<Map<string, InlineUiComponentEntry>>(new Map());
-
-  useEffect(() => {
-    const compileInlineUiMessages = async () => {
-      for (const msg of messages) {
-        if (msg.contentType !== CONTENT_TYPE_INLINE_UI) continue;
-        const data = parseInlineUiData(msg.content);
-        if (!data) continue;
-        if (inlineUiComponents.has(data.id)) continue;
-
-        try {
-          const result = await compileInlineUiComponent({ code: data.code });
-          if (result.success) {
-            setInlineUiComponents(prev => {
-              const updated = new Map(prev);
-              updated.set(data.id, { Component: result.Component!, cacheKey: result.cacheKey! });
-              return updated;
-            });
-          } else {
-            setInlineUiComponents(prev => {
-              const updated = new Map(prev);
-              updated.set(data.id, { cacheKey: data.code, error: result.error });
-              return updated;
-            });
-          }
-        } catch (err) {
-          setInlineUiComponents(prev => {
-            const updated = new Map(prev);
-            updated.set(data.id, { cacheKey: data.code, error: err instanceof Error ? err.message : String(err) });
-            return updated;
-          });
-        }
-      }
-    };
-    void compileInlineUiMessages();
-  }, [messages, inlineUiComponents]);
-
-  // Pagination state — firstChatMessageId from server, synced via onReady
-  const [firstChatMessageId, setFirstChatMessageId] = useState<number | undefined>();
-  const [loadingMore, setLoadingMore] = useState(false);
-
-  // Derive hasMoreHistory from reducer state + server boundary
-  const hasMoreHistory = useMemo(() => {
-    if (messageWindow.paginationExhausted) return false;
-    if (messageWindow.oldestLoadedId === null) return false;
-    if (firstChatMessageId !== undefined) {
-      return messageWindow.oldestLoadedId > firstChatMessageId;
-    }
-    return true;
-  }, [messageWindow.paginationExhausted, messageWindow.oldestLoadedId, firstChatMessageId]);
-
-  // Inline UI cleanup when messages shrink (e.g. after trim in reducer)
-  const prevMsgCountRef = useRef(0);
-  useEffect(() => {
-    if (messages.length >= prevMsgCountRef.current) {
-      prevMsgCountRef.current = messages.length;
-      return;
-    }
-    prevMsgCountRef.current = messages.length;
-    // Collect referenced inline UI IDs from surviving messages
-    const referencedUiIds = new Set<string>();
-    for (const msg of messages) {
-      if (msg.contentType === CONTENT_TYPE_INLINE_UI) {
-        const data = parseInlineUiData(msg.content);
-        if (data) referencedUiIds.add(data.id);
-      }
-    }
-    setInlineUiComponents(prevComponents => {
-      const next = new Map(prevComponents);
-      let removedCount = 0;
-      for (const [id, component] of prevComponents) {
-        if (!referencedUiIds.has(id)) {
-          if (component.Component && component.cacheKey) {
-            cleanupInlineUiComponent(component.cacheKey);
-          }
-          next.delete(id);
-          removedCount++;
-        }
-      }
-      return removedCount > 0 ? next : prevComponents;
-    });
-  }, [messages]);
-
-  // Cleanup pending images on unmount
-  const pendingImagesRef = useRef(pendingImages);
-  pendingImagesRef.current = pendingImages;
-  useEffect(() => {
-    return () => { cleanupPendingImages(pendingImagesRef.current); };
-  }, []);
-
-  // Combine historical + current participants
-  const allParticipants = useMemo(() => {
-    return { ...historicalParticipants, ...participants };
-  }, [historicalParticipants, participants]);
-  participantsRef.current = allParticipants;
-
-  const handleDismissDirtyWarning = useCallback((agentName: string) => {
-    setDirtyRepoWarnings((prev) => {
-      const next = new Map(prev);
-      next.delete(agentName);
-      return next;
-    });
-  }, []);
-
-  // Feedback manager
-  const { activeFeedbacks, addFeedback, removeFeedback, dismissFeedback, handleFeedbackError } = useFeedbackManager();
-  const activeFeedbacksRef = useRef(activeFeedbacks);
-  activeFeedbacksRef.current = activeFeedbacks;
-
-  const { methodEntries, addMethodHistoryEntry, updateMethodHistoryEntry, handleMethodResult, clearMethodHistory } =
-    useMethodHistory({ setMessages, clientId: config.clientId });
-
-  // Channel connection
-  const { clientRef, connected, clientId, connect: connectToChannel } = useChannelConnection({
+  // --- Core ---
+  const core = useChatCore({
     config,
+    channelName,
+    channelConfig,
+    contextId,
     metadata,
-    onEvent: useCallback(
-      (event: IncomingEvent) => {
-        try {
-          const selfId = selfIdRef.current ?? config.clientId;
-          dispatchAgenticEvent(
-            event,
-            { setMessages, addMethodHistoryEntry, handleMethodResult, setDebugEvents, setDirtyRepoWarnings, setPendingAgents, expectedStops: expectedStopsRef.current },
-            selfId,
-            participantsRef.current,
-            eventMiddlewareRef.current,
-          );
-        } catch (err) {
-          console.error("[Chat] Event dispatch error:", err);
-        }
-      },
-      [setMessages, addMethodHistoryEntry, handleMethodResult, config.clientId]
-    ),
-    onAggregatedEvent: useCallback((event: AggregatedEvent) => {
-      switch (event.type) {
-        case "message": {
-          const chatMsg = aggregatedToChatMessage(event);
-          setMessages(prev => {
-            // Dedup by pubsubId
-            if (chatMsg.pubsubId && prev.some(m => m.pubsubId === chatMsg.pubsubId)) return prev;
-            // Dedup by UUID
-            if (prev.some(m => m.id === chatMsg.id)) return prev;
-            return [...prev, chatMsg];
-          });
-          break;
-        }
-        case "method-call": {
-          addMethodHistoryEntry({
-            callId: event.callId,
-            methodName: event.methodName,
-            description: undefined,
-            args: event.args,
-            status: "pending",
-            startedAt: event.ts,
-            providerId: event.providerId,
-            callerId: event.senderId,
-            handledLocally: false,
-          });
-          break;
-        }
-        case "method-result": {
-          const isError = event.status === "error";
-          handleMethodResult({
-            kind: "replay",
-            senderId: event.senderId,
-            ts: event.ts,
-            callId: event.callId,
-            content: event.content,
-            complete: event.status !== "incomplete",
-            isError,
-            pubsubId: event.pubsubId,
-            senderMetadata: {
-              name: event.senderName,
-              type: event.senderType,
-              handle: event.senderHandle,
-            },
-          } as IncomingMethodResult);
-          break;
-        }
-      }
-    }, [setMessages, addMethodHistoryEntry, handleMethodResult]),
-    onRoster: useCallback((roster: RosterUpdate<ChatParticipantMetadata>) => {
-      const newParticipants = roster.participants;
-      const prevParts = prevParticipantsRef.current;
-
-      if (suppressDisconnectRef.current && config.clientId in newParticipants) {
-        suppressDisconnectRef.current = false;
-      }
-
-      setHistoricalParticipants((prev) => {
-        let changed = false;
-        const next = { ...prev };
-        for (const [id, participant] of Object.entries(newParticipants)) {
-          if (!(id in next)) { next[id] = participant; changed = true; }
-        }
-        return changed ? next : prev;
-      });
-
-      const prevIds = new Set(Object.keys(prevParts));
-      const newIds = new Set(Object.keys(newParticipants));
-      const disconnectedIds: string[] = [];
-
-      if (!suppressDisconnectRef.current) {
-        // Check if this roster update carries a graceful leave reason
-        const changeIsGraceful = roster.change?.type === "leave" && roster.change.leaveReason === "graceful";
-
-        for (const prevId of prevIds) {
-          if (!newIds.has(prevId)) {
-            disconnectedIds.push(prevId);
-            // Skip disconnect message for graceful leaves (hibernation, normal shutdown)
-            if (changeIsGraceful && roster.change?.participantId === prevId) {
-              continue;
-            }
-            const disconnected = prevParts[prevId];
-            const meta = disconnected?.metadata;
-            if (meta && meta.type !== "panel") {
-              // Determine if this is an expected stop (idle timeout / hibernation).
-              // Two signals: (1) lifecycle event with reason "timeout"/"idle" arrived
-              // before the roster leave, (2) the leaveReason from the server is "graceful".
-              const isExpectedStop = expectedStopsRef.current.has(meta.handle) || changeIsGraceful;
-
-              // Clean up the expected-stop tracking
-              expectedStopsRef.current.delete(meta.handle);
-
-              // Don't show a scary disconnect message for expected stops —
-              // the agent will auto-wake when the user sends the next message.
-              if (!isExpectedStop) {
-                const agentInfo: DisconnectedAgentInfo = {
-                  name: meta.name, handle: meta.handle, panelId: meta.panelId, agentTypeId: meta.agentTypeId, type: meta.type,
-                };
-                setMessages((prev) => [...prev, {
-                  id: `system-disconnect-${prevId}-${Date.now()}`, senderId: "system", content: "", kind: "system", complete: true, disconnectedAgent: agentInfo,
-                }]);
-              }
-            }
-          }
-        }
-      }
-
-      if (disconnectedIds.length > 0) {
-        const disconnectedSet = new Set(disconnectedIds);
-        setMessages((prev) => {
-          let changed = false;
-          const next = prev.map((msg) => {
-            if (msg.contentType === "typing" && !msg.complete && disconnectedSet.has(msg.senderId)) { changed = true; return { ...msg, complete: true }; }
-            return msg;
-          });
-          return changed ? next : prev;
-        });
-      }
-
-      const newHandles = new Set(Object.values(newParticipants).map((p) => p.metadata.handle));
-      setPendingAgents((prev) => {
-        let changed = false;
-        const next = new Map(prev);
-        for (const handle of prev.keys()) {
-          if (newHandles.has(handle)) { next.delete(handle); changed = true; }
-        }
-        return changed ? next : prev;
-      });
-
-      const reconnectingHandles = new Set<string>();
-      for (const newId of newIds) {
-        if (!prevIds.has(newId) && newParticipants[newId]?.metadata?.type !== "panel") {
-          reconnectingHandles.add(newParticipants[newId]!.metadata.handle);
-        }
-      }
-
-      if (reconnectingHandles.size > 0) {
-        const staleSenderIds = new Set<string>();
-        for (const [id, p] of Object.entries(prevParts)) {
-          if (reconnectingHandles.has(p.metadata.handle) && !newIds.has(id)) { staleSenderIds.add(id); }
-        }
-        if (staleSenderIds.size > 0) {
-          setMessages((prev) => {
-            let changed = false;
-            const next = prev.map((msg) => {
-              if (msg.contentType === "typing" && !msg.complete && staleSenderIds.has(msg.senderId)) { changed = true; return { ...msg, complete: true }; }
-              return msg;
-            });
-            return changed ? next : prev;
-          });
-        }
-      }
-
-      const agentHandles = new Set(Object.values(newParticipants).filter(p => p.metadata.type !== "panel").map(p => p.metadata.handle));
-      setMessages((prev) => {
-        const filtered = prev.filter(msg => {
-          if (msg.kind !== "system" || !msg.disconnectedAgent) return true;
-          return !agentHandles.has(msg.disconnectedAgent.handle);
-        });
-        return filtered.length === prev.length ? prev : filtered;
-      });
-
-      prevParticipantsRef.current = newParticipants;
-      setParticipants(newParticipants);
-    }, [config.clientId]),
-    onReconnect: useCallback(() => {
-      suppressDisconnectRef.current = true;
-      prevParticipantsRef.current = {};
-      setMessages((prev) => {
-        const filtered = prev.filter(msg => msg.kind !== "system" || !msg.disconnectedAgent);
-        return filtered.length === prev.length ? prev : filtered;
-      });
-    }, []),
-    onError: useCallback((error: Error) => {
-      console.error("[Chat] Connection error:", error);
-      setStatus(`Error: ${error.message}`);
-    }, []),
+    theme,
+    eventMiddleware,
+    featureHandlersRef,
+    rosterExtensionsRef,
+    reconnectExtensionsRef,
   });
 
-  // Synchronous guard to prevent duplicate concurrent calls from scroll bursts
-  const loadingMoreRef = useRef(false);
+  // --- Feature hooks ---
+  const roster = useRosterTracking({
+    setMessages: core.setMessages,
+    configClientId: config.clientId,
+  });
 
-  // Sync firstChatMessageId on every ready (initial + reconnect)
-  useEffect(() => {
-    const client = clientRef.current;
-    if (!client || !connected) return;
-    return client.onReady(() => {
-      setFirstChatMessageId(client.firstChatMessageId);
-    });
-  }, [connected, clientRef]);
+  const pending = usePendingAgents({
+    initialPendingAgents: pendingAgentInfos,
+  });
 
-  // Load earlier messages (using aggregated pagination)
-  const loadEarlierMessages = useCallback(async () => {
-    const client = clientRef.current;
-    const oldestLoadedId = messageWindow.oldestLoadedId;
-    if (!client || loadingMoreRef.current || !hasMoreHistory || !oldestLoadedId) return;
-    loadingMoreRef.current = true;
-    setLoadingMore(true);
-    try {
-      let currentBeforeId = oldestLoadedId;
-      let olderMessages: ChatMessage[] = [];
-      let hasMore = true;
+  const feedback = useChatFeedback({
+    addMethodHistoryEntry: core.addMethodHistoryEntry,
+    updateMethodHistoryEntry: core.updateMethodHistoryEntry,
+  });
 
-      // Loop to skip pages with only non-message events (method calls, presence, etc.)
-      while (hasMore && olderMessages.length === 0) {
-        const result = await client.getAggregatedMessagesBefore(currentBeforeId, 50);
-        olderMessages = result.messages.map(aggregatedToChatMessage);
-        hasMore = result.hasMore;
+  const chatTools = useChatTools({
+    clientRef: core.clientRef,
+    tools,
+    addFeedback: feedback.addFeedback,
+    removeFeedback: feedback.removeFeedback,
+  });
 
-        // Always advance cursor via nextBeforeId (prevents livelock on empty pages)
-        if (result.nextBeforeId !== undefined) {
-          currentBeforeId = result.nextBeforeId;
-        } else {
-          hasMore = false;
-          break;
-        }
-      }
+  const debug = useChatDebug();
 
-      dispatch({ type: "prepend", olderMessages, newCursor: currentBeforeId, exhausted: !hasMore });
-    } catch (err) {
-      console.error("[Chat] Failed to load earlier messages:", err);
-    } finally {
-      loadingMoreRef.current = false;
-      setLoadingMore(false);
-    }
-  }, [clientRef, messageWindow.oldestLoadedId, hasMoreHistory]);
+  const inlineUi = useInlineUi({ messages: core.messages });
 
-  useEffect(() => { selfIdRef.current = clientId; }, [clientId]);
+  // --- Combine participants (must happen before wiring refs) ---
+  const allParticipants = useMemo(() => {
+    return { ...roster.historicalParticipants, ...core.participants };
+  }, [roster.historicalParticipants, core.participants]);
 
-  // Channel title subscription
-  useEffect(() => {
-    const client = clientRef.current;
-    if (!client || !connected) return;
-    const initialTitle = client.channelConfig?.title;
-    if (initialTitle) document.title = initialTitle;
-    const unsubscribe = client.onTitleChange((title) => { document.title = title; });
-    return () => { unsubscribe(); };
-  }, [connected, clientRef]);
+  // FIX: participantsRef must include historical participants so that
+  // dispatchAgenticEvent can look up method descriptions for agents
+  // that have left and rejoined with a different client ID.
+  core.participantsRef.current = allParticipants;
 
-  // Typing indicators
-  const typingMessageIdRef = useRef<string | null>(null);
-  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const TYPING_DEBOUNCE_MS = 2000;
+  // --- Wire up extension refs (synchronous, during render) ---
+  featureHandlersRef.current = {
+    setDebugEvents: debug.setDebugEvents,
+    setDirtyRepoWarnings: debug.setDirtyRepoWarnings,
+    setPendingAgents: pending.setPendingAgents,
+    expectedStops: roster.expectedStopsRef.current,
+  };
 
-  useEffect(() => {
-    return () => {
-      if (typingTimeoutRef.current) { clearTimeout(typingTimeoutRef.current); typingTimeoutRef.current = null; }
-    };
-  }, []);
+  rosterExtensionsRef.current = [
+    roster.rosterExtension,
+    pending.rosterExtension,
+  ];
 
-  const stopTyping = useCallback(async () => {
-    if (typingTimeoutRef.current) { clearTimeout(typingTimeoutRef.current); typingTimeoutRef.current = null; }
-    if (typingMessageIdRef.current && clientRef.current?.connected) {
-      await clientRef.current.update(typingMessageIdRef.current, "", { complete: true, persist: false });
-      typingMessageIdRef.current = null;
-    }
-  }, [clientRef]);
+  reconnectExtensionsRef.current = [
+    roster.onReconnect,
+  ];
 
-  const startTyping = useCallback(async () => {
-    const client = clientRef.current;
-    if (!client?.connected) return;
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    if (!typingMessageIdRef.current) {
-      const typingData: TypingData = { senderId: client.clientId ?? config.clientId, senderName: metadata.name, senderType: metadata.type };
-      const { messageId } = await client.send(JSON.stringify(typingData), { contentType: CONTENT_TYPE_TYPING, persist: false });
-      typingMessageIdRef.current = messageId;
-    }
-    typingTimeoutRef.current = setTimeout(() => {
-      void stopTyping().catch((err) => console.error("[Chat] Stop typing timeout error:", err));
-    }, TYPING_DEBOUNCE_MS);
-  }, [clientRef, config.clientId, metadata.name, metadata.type, stopTyping]);
+  // --- Stable refs for connection effect (avoids unstable object deps) ---
+  const feedbackRef = useRef(feedback);
+  const chatToolsRef = useRef(chatTools);
+  feedbackRef.current = feedback;
+  chatToolsRef.current = chatTools;
 
-  const handleInputChange = useCallback((value: string) => {
-    setInput(value);
-    inputRef.current = value;
-    if (value.trim()) {
-      void startTyping().catch((err) => console.error("[Chat] Start typing error:", err));
-    } else {
-      void stopTyping().catch((err) => console.error("[Chat] Stop typing error:", err));
-    }
-  }, [startTyping, stopTyping]);
-
-  // Tool approval
-  const approval = useToolApproval(clientRef.current, { addFeedback, removeFeedback });
-
-  // Feedback handlers
-  const handleFeedbackResult = useCallback((callId: string, feedbackResult: FeedbackResult) => {
-    if (feedbackResult.type === "submit") {
-      updateMethodHistoryEntry(callId, { status: "success", result: feedbackResult.value, completedAt: Date.now() });
-    } else if (feedbackResult.type === "cancel") {
-      updateMethodHistoryEntry(callId, { status: "success", result: null, completedAt: Date.now() });
-    } else {
-      updateMethodHistoryEntry(callId, { status: "error", error: feedbackResult.message, completedAt: Date.now() });
-    }
-  }, [updateMethodHistoryEntry]);
-
-  const handleFeedbackFormCall = useCallback(
-    async (callId: string, args: FeedbackFormArgs, ctx: MethodExecutionContext) => {
-      const entry: MethodHistoryEntry = {
-        callId, methodName: "feedback_form", description: "Display a form to collect user input",
-        args, status: "pending", startedAt: Date.now(), callerId: ctx.callerId, handledLocally: true,
-      };
-      addMethodHistoryEntry(entry);
-      return new Promise<FeedbackResult>((resolve, reject) => {
-        const feedback: ActiveFeedbackSchema = {
-          type: "schema", callId, title: args.title, fields: args.fields, values: args.values ?? {},
-          submitLabel: args.submitLabel, cancelLabel: args.cancelLabel,
-          timeout: args.timeout, timeoutAction: args.timeoutAction, severity: args.severity,
-          hideSubmit: args.hideSubmit, hideCancel: args.hideCancel, createdAt: Date.now(),
-          complete: (feedbackResult: FeedbackResult) => {
-            removeFeedback(callId); handleFeedbackResult(callId, feedbackResult); resolve(feedbackResult);
-          },
-        };
-        addFeedback(feedback);
-      });
-    },
-    [addFeedback, removeFeedback, addMethodHistoryEntry, handleFeedbackResult]
-  );
-
-  const handleFeedbackCustomCall = useCallback(
-    async (callId: string, args: FeedbackCustomArgs, ctx: MethodExecutionContext) => {
-      const entry: MethodHistoryEntry = {
-        callId, methodName: "feedback_custom", description: "Display a custom React component for user interaction",
-        args, status: "pending", startedAt: Date.now(), callerId: ctx.callerId, handledLocally: true,
-      };
-      addMethodHistoryEntry(entry);
-      const result = await compileFeedbackComponent({ code: args.code } as FeedbackUiToolArgs);
-      if (!result.success) {
-        updateMethodHistoryEntry(callId, { status: "error", error: result.error, completedAt: Date.now() });
-        throw new Error(result.error);
-      }
-      const cacheKey = result.cacheKey!;
-      return new Promise<FeedbackResult>((resolve, reject) => {
-        const feedback: ActiveFeedbackTsx = {
-          type: "tsx", callId, Component: result.Component!, createdAt: Date.now(), cacheKey, title: args.title,
-          complete: (feedbackResult: FeedbackResult) => {
-            removeFeedback(callId); cleanupFeedbackComponent(cacheKey);
-            handleFeedbackResult(callId, feedbackResult); resolve(feedbackResult);
-          },
-        };
-        addFeedback(feedback);
-      });
-    },
-    [addFeedback, removeFeedback, addMethodHistoryEntry, updateMethodHistoryEntry, handleFeedbackResult]
-  );
-
-  const handleFeedbackDismiss = useCallback((callId: string) => { dismissFeedback(callId); }, [dismissFeedback]);
-
-  // Refs for stable callback access in connection effect
-  const handleFeedbackFormCallRef = useRef(handleFeedbackFormCall);
-  const handleFeedbackCustomCallRef = useRef(handleFeedbackCustomCall);
-  const approvalRef = useRef(approval);
-  useEffect(() => {
-    handleFeedbackFormCallRef.current = handleFeedbackFormCall;
-    handleFeedbackCustomCallRef.current = handleFeedbackCustomCall;
-    approvalRef.current = approval;
-  }, [handleFeedbackFormCall, handleFeedbackCustomCall, approval]);
-
-  // Connect to channel on mount
+  // --- Connect to channel on mount ---
   useEffect(() => {
     if (!channelName || !config.serverUrl) return;
-    if (hasConnectedRef.current) return;
-    hasConnectedRef.current = true;
+    if (core.hasConnectedRef.current) return;
+    core.hasConnectedRef.current = true;
 
     async function doConnect() {
       try {
-        const feedbackFormMethodDef: MethodDefinition = {
-          description: `Show a form to collect user input.
-
-**Result:** \`{ type: "submit", value: { fieldKey: userValue, ... } }\` or \`{ type: "cancel" }\`
-
-**Field types:** string, number, boolean, select (needs \`options\`), slider (\`min\`/\`max\`), segmented (\`options\`)
-**Field props:** \`key\` (required), \`label\` (required), \`type\` (required), \`default\`, \`required\`, \`description\`
-**Pre-populate:** Add \`values: { "key": "existing value" }\``,
-          parameters: FeedbackFormArgsSchema,
-          execute: async (args, ctx) => handleFeedbackFormCallRef.current(ctx.callId, args as FeedbackFormArgs, ctx),
-        };
-
-        const feedbackCustomMethodDef: MethodDefinition = {
-          description: `[Chat Panel] Show a custom React UI. For advanced cases only - prefer feedback_form for standard forms.
-
-**Result:** \`{ type: "submit", value: ... }\` or \`{ type: "cancel" }\`
-
-Component receives \`onSubmit(value)\`, \`onCancel()\`, \`onError(msg)\` props.
-Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\`
-
-**Requirements:**
-- Component MUST use \`export default\` (named exports alone won't work)
-- Syntax: TSX (TypeScript + JSX)
-
-**Rendering context:** Your component is rendered inside a container Card with a header, scroll area, and resize handle. Do NOT wrap your component in a top-level Card — use \`<Flex direction="column" gap="3" p="2">\` or similar as root.
-
-**Example:**
-\`\`\`tsx
-import { useState } from "react";
-import { Button, Flex, Text, TextField } from "@radix-ui/themes";
-
-export default function App({ onSubmit, onCancel }) {
-  const [name, setName] = useState("");
-  return (
-    <Flex direction="column" gap="3" p="2">
-      <Text size="2" weight="bold">What is your name?</Text>
-      <TextField.Root value={name} onChange={e => setName(e.target.value)} />
-      <Flex gap="2" justify="end">
-        <Button variant="soft" onClick={onCancel}>Cancel</Button>
-        <Button onClick={() => onSubmit({ name })}>Submit</Button>
-      </Flex>
-    </Flex>
-  );
-}
-\`\`\``,
-          parameters: FeedbackCustomArgsSchema,
-          execute: async (args, ctx) => handleFeedbackCustomCallRef.current(ctx.callId, args as FeedbackCustomArgs, ctx),
-        };
-
-        // Build tool methods from provider
-        let toolMethods: Record<string, MethodDefinition> = {};
-        if (tools) {
-          const rawTools = tools({ clientRef });
-          // Wrap with approval
-          toolMethods = wrapMethodsWithApproval(
-            rawTools,
-            {
-              isAgentGranted: (...args) => approvalRef.current.isAgentGranted(...args),
-              checkToolApproval: (...args) => approvalRef.current.checkToolApproval(...args),
-              requestApproval: (...args) => approvalRef.current.requestApproval(...args),
-            },
-            (agentId) => clientRef.current?.roster[agentId]?.metadata.name ?? agentId,
-          );
-        }
+        const feedbackMethods = feedbackRef.current.buildFeedbackMethods();
+        const toolMethods = chatToolsRef.current.buildToolMethods();
 
         const methods: Record<string, MethodDefinition> = {
-          feedback_form: feedbackFormMethodDef,
-          feedback_custom: feedbackCustomMethodDef,
+          ...feedbackMethods,
           ...toolMethods,
         };
 
-        await connectToChannel({ channelId: channelName, methods, channelConfig, contextId });
-        setFirstChatMessageId(clientRef.current?.firstChatMessageId);
-        setStatus("Connected");
+        await core.connectToChannel({ channelId: channelName, methods, channelConfig, contextId });
+        core.selfIdRef.current = core.clientRef.current?.clientId ?? null;
       } catch (err) {
         console.error("[Chat] Connection error:", err);
-        setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
-        hasConnectedRef.current = false;
+        core.hasConnectedRef.current = false;
       }
     }
 
     void doConnect();
-  }, [channelName, channelConfig, contextId, connectToChannel, config.serverUrl, tools]);
+  }, [channelName, channelConfig, contextId, core.connectToChannel, config.serverUrl, core.hasConnectedRef, core.selfIdRef, core.clientRef]);
 
-  // Reset handler
+  // --- Combined reset ---
   const reset = useCallback(() => {
-    dispatch({ type: "reset" });
-    setFirstChatMessageId(undefined);
-    setInput("");
-    inputRef.current = "";
-    cleanupPendingImages(pendingImagesRef.current);
-    setPendingImages([]);
-    setParticipants({});
-    setHistoricalParticipants({});
-    clearMethodHistory();
-    for (const callId of activeFeedbacksRef.current.keys()) { dismissFeedback(callId); }
-    // Reset pagination state
-    loadingMoreRef.current = false;
-    setLoadingMore(false);
+    core.resetCore();
+    roster.resetRoster();
+    pending.resetPending();
+    feedback.dismissAll();
+    debug.resetDebug();
     actions?.onNewConversation?.();
-  }, [clearMethodHistory, dismissFeedback, actions]);
+  }, [core.resetCore, roster.resetRoster, pending.resetPending, feedback.dismissAll, debug.resetDebug, actions]);
 
-  // Send message — uses inputRef for stable identity (no dep on `input` state)
-  const sendMessage = useCallback(async (attachments?: AttachmentInput[]): Promise<void> => {
-    const currentInput = inputRef.current;
-    const hasText = currentInput.trim().length > 0;
-    const hasAttachments = attachments && attachments.length > 0;
-    if ((!hasText && !hasAttachments) || !clientRef.current?.connected) return;
-    await stopTyping();
-    const text = currentInput.trim();
-    setInput("");
-    inputRef.current = "";
-    const { messageId } = await clientRef.current.send(text || "", { attachments: hasAttachments ? attachments : undefined });
-    const selfId = clientRef.current.clientId ?? config.clientId;
-    setMessages((prev) => {
-      if (prev.some((m) => m.id === messageId)) return prev;
-      return [...prev, { id: messageId, senderId: selfId, content: text, complete: true, pending: true, kind: "message" }];
-    });
-  }, [config.clientId, clientRef, stopTyping]);
-
-  // Interrupt agent
-  const handleInterruptAgent = useCallback(
-    async (agentId: string, _messageId?: string, agentHandle?: string) => {
-      if (!clientRef.current) return;
-      const roster = participantsRef.current;
-      let targetId = agentId;
-      if (!roster[agentId] && agentHandle) {
-        const byHandle = Object.values(roster).find(p => p.metadata.handle === agentHandle && p.metadata.type !== "panel");
-        if (byHandle) { targetId = byHandle.id; } else { console.warn(`Cannot interrupt: agent ${agentHandle} not in roster`); return; }
-      }
-      try { await clientRef.current.callMethod(targetId, "pause", { reason: "User interrupted execution" }).result; }
-      catch (error) { console.error("Failed to interrupt agent:", error); }
-    },
-    [clientRef]
-  );
-
-  const handleCallMethod = useCallback(
-    (providerId: string, methodName: string, args: unknown) => {
-      if (!clientRef.current) return;
-      void clientRef.current.callMethod(providerId, methodName, args).result.catch((error: unknown) => {
-        console.error(`Failed to call method ${methodName} on ${providerId}:`, error);
-      });
-    },
-    [clientRef]
-  );
-
-  // Memoize tool approval object to avoid creating a new reference every render
-  const toolApprovalValue = useMemo(() => ({
-    settings: approval.settings,
-    onSetFloor: approval.setGlobalFloor,
-    onGrantAgent: approval.grantAgent,
-    onRevokeAgent: approval.revokeAgent,
-    onRevokeAll: approval.revokeAll,
-  }), [approval.settings, approval.setGlobalFloor, approval.grantAgent, approval.revokeAgent, approval.revokeAll]);
-
-  // Wrap platform actions — useCallback must be called unconditionally
+  // --- Wrap platform actions ---
   const handleAddAgent = useCallback(async () => {
     if (!actions?.onAddAgent) return;
-    const launcherContextId = clientRef.current?.contextId;
+    const launcherContextId = core.clientRef.current?.contextId;
     await actions.onAddAgent(channelName, launcherContextId);
-  }, [channelName, clientRef, actions]);
+  }, [channelName, core.clientRef, actions]);
 
-  // Memoize the two context values separately so consumers only re-render
-  // when their specific slice changes.
-
-  const sessionEnabled = clientRef.current?.sessionEnabled;
+  const sessionEnabled = core.clientRef.current?.sessionEnabled;
   const onAddAgent = actions?.onAddAgent ? handleAddAgent : undefined;
   const onFocusPanel = actions?.onFocusPanel;
   const onReloadPanel = actions?.onReloadPanel;
 
+  // --- Assemble context values ---
   const contextValue: ChatContextValue = useMemo(() => ({
-    connected,
-    status,
+    connected: core.connected,
+    status: core.status,
     channelId: channelName,
     sessionEnabled,
-    messages,
-    methodEntries,
-    inlineUiComponents,
-    hasMoreHistory,
-    loadingMore,
-    participants,
+    messages: core.messages,
+    methodEntries: core.methodEntries,
+    inlineUiComponents: inlineUi.inlineUiComponents,
+    hasMoreHistory: core.hasMoreHistory,
+    loadingMore: core.loadingMore,
+    participants: core.participants,
     allParticipants,
-    debugEvents,
-    debugConsoleAgent,
-    dirtyRepoWarnings,
-    pendingAgents,
-    activeFeedbacks,
+    debugEvents: debug.debugEvents,
+    debugConsoleAgent: debug.debugConsoleAgent,
+    dirtyRepoWarnings: debug.dirtyRepoWarnings,
+    pendingAgents: pending.pendingAgents,
+    activeFeedbacks: feedback.activeFeedbacks,
     theme,
-    onLoadEarlierMessages: loadEarlierMessages,
-    onInterrupt: handleInterruptAgent,
-    onCallMethod: handleCallMethod,
-    onFeedbackDismiss: handleFeedbackDismiss,
-    onFeedbackError: handleFeedbackError,
-    onDebugConsoleChange: setDebugConsoleAgent,
-    onDismissDirtyWarning: handleDismissDirtyWarning,
+    onLoadEarlierMessages: core.loadEarlierMessages,
+    onInterrupt: core.handleInterruptAgent,
+    onCallMethod: core.handleCallMethod,
+    onFeedbackDismiss: feedback.onFeedbackDismiss,
+    onFeedbackError: feedback.onFeedbackError,
+    onDebugConsoleChange: debug.setDebugConsoleAgent,
+    onDismissDirtyWarning: debug.onDismissDirtyWarning,
     onReset: reset,
     onAddAgent,
     onFocusPanel,
     onReloadPanel,
-    toolApproval: toolApprovalValue,
+    toolApproval: chatTools.toolApprovalValue,
   }), [
-    connected, status, channelName, sessionEnabled,
-    messages, methodEntries, inlineUiComponents, hasMoreHistory, loadingMore,
-    participants, allParticipants,
-    debugEvents, debugConsoleAgent, dirtyRepoWarnings, pendingAgents,
-    activeFeedbacks, theme,
-    loadEarlierMessages, handleInterruptAgent, handleCallMethod,
-    handleFeedbackDismiss, handleFeedbackError, handleDismissDirtyWarning, reset,
+    core.connected, core.status, channelName, sessionEnabled,
+    core.messages, core.methodEntries, inlineUi.inlineUiComponents, core.hasMoreHistory, core.loadingMore,
+    core.participants, allParticipants,
+    debug.debugEvents, debug.debugConsoleAgent, debug.dirtyRepoWarnings, pending.pendingAgents,
+    feedback.activeFeedbacks, theme,
+    core.loadEarlierMessages, core.handleInterruptAgent, core.handleCallMethod,
+    feedback.onFeedbackDismiss, feedback.onFeedbackError, debug.setDebugConsoleAgent, debug.onDismissDirtyWarning, reset,
     onAddAgent, onFocusPanel, onReloadPanel,
-    toolApprovalValue,
+    chatTools.toolApprovalValue,
   ]);
 
-  const inputContextValue: ChatInputContextValue = useMemo(() => ({
-    input,
-    pendingImages,
-    onInputChange: handleInputChange,
-    onSendMessage: sendMessage,
-    onImagesChange: setPendingImages,
-  }), [input, pendingImages, handleInputChange, sendMessage]);
-
-  return { contextValue, inputContextValue };
+  return { contextValue, inputContextValue: core.inputContextValue };
 }

@@ -250,8 +250,8 @@ function createDefaultWorkspaceConfig(workspacePath: string): WorkspaceConfig {
   // In production, these will be loaded from pre-built bundles
   const config: WorkspaceConfig = {
     id,
-    // Root panel to show when workspace opens (uses shipped chat-launcher)
-    rootPanel: "panels/chat-launcher",
+    // Root panel to show when workspace opens (chat panel handles both setup and chat phases)
+    rootPanel: "panels/chat",
   };
 
   console.log(`[Workspace] Creating default workspace at ${workspacePath}`);
@@ -274,8 +274,8 @@ function createDefaultWorkspaceConfig(workspacePath: string): WorkspaceConfig {
 id: ${id}
 
 # Default panel to open when workspace loads
-# In production, this uses the shipped chat-launcher panel
-rootPanel: panels/chat-launcher
+# Chat panel handles both setup (agent selection) and chat phases
+rootPanel: panels/chat
 
 # Git server configuration (optional)
 # git:

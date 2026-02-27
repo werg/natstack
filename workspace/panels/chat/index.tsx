@@ -1,26 +1,33 @@
 /**
- * Agentic Chat Panel — Thin wrapper over @workspace/agentic-chat
+ * Agentic Chat Panel — Phase orchestrator
  *
- * Reads runtime-specific configuration (pubsubConfig, panel ID, theme, stateArgs)
- * and delegates to the reusable AgenticChat component.
+ * Two phases:
+ * - "setup": Agent selection and chat creation (formerly chat-launcher panel)
+ * - "chat": Active chat session (AgenticChat component)
+ *
+ * When opened without a channelName stateArg, starts in setup phase.
+ * After setup completes (or when channelName is provided), enters chat phase.
+ * "New Conversation" resets to setup phase. "Add Agent" opens a centered dialog.
  */
 
-import { pubsubConfig, id as panelClientId, buildNsLink, buildFocusLink, createChild, useStateArgs, forceRepaint, ensurePanelLoaded } from "@workspace/runtime";
+import { pubsubConfig, id as panelClientId, buildFocusLink, useStateArgs, setStateArgs, forceRepaint, ensurePanelLoaded } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
-import { useCallback, useMemo } from "react";
-import { Flex, Text, Button, Card } from "@radix-ui/themes";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { Flex, Theme } from "@radix-ui/themes";
 import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
 import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps } from "@workspace/agentic-chat";
 import { createAllToolMethodDefinitions, executeEvalTool, EVAL_DEFAULT_TIMEOUT_MS, EVAL_MAX_TIMEOUT_MS, EVAL_FRAMEWORK_TIMEOUT_MS } from "@workspace/agentic-tools";
 import { z } from "zod";
 import type { MethodDefinition } from "@workspace/agentic-messaging";
+import { ChatSetup, type ChatSetupResult } from "./components/ChatSetup";
+import { AddAgentDialog } from "./components/AddAgentDialog";
 
 /** Stable metadata object — avoids creating a new object every render */
 const PANEL_METADATA = { name: "Chat Panel", type: "panel" as const, handle: "user" };
 
 /** Type for chat panel state args */
 interface ChatStateArgs {
-  channelName: string;
+  channelName?: string;
   channelConfig?: Record<string, unknown>;
   contextId?: string;
   pendingAgents?: Array<{ agentId: string; handle: string }>;
@@ -29,7 +36,45 @@ interface ChatStateArgs {
 export default function ChatPanel() {
   const theme = usePanelTheme();
   const stateArgs = useStateArgs<ChatStateArgs>();
-  const { channelName, channelConfig, contextId } = stateArgs;
+
+  // Phase state: "setup" when no channelName, "chat" when we have one
+  const initialPhase = stateArgs.channelName ? "chat" as const : "setup" as const;
+  const [phase, setPhase] = useState<"setup" | "chat">(initialPhase);
+
+  // Chat phase state — from stateArgs or from setup completion
+  // contextId is optional: deep links may omit it, and the server allows undefined
+  const [chatState, setChatState] = useState<{
+    channelName: string;
+    contextId?: string;
+    pendingAgents?: Array<{ agentId: string; handle: string }>;
+  } | null>(() => {
+    if (stateArgs.channelName) {
+      return {
+        channelName: stateArgs.channelName,
+        contextId: stateArgs.contextId,
+        pendingAgents: stateArgs.pendingAgents,
+      };
+    }
+    return null;
+  });
+
+  // Add Agent dialog state
+  const [addAgentOpen, setAddAgentOpen] = useState(false);
+
+  // Setup phase completion handler
+  const handleSetupComplete = useCallback((result: ChatSetupResult) => {
+    // Persist to SQLite so reloads go straight to chat
+    void setStateArgs({
+      channelName: result.channelName,
+      contextId: result.contextId,
+    });
+    setChatState({
+      channelName: result.channelName,
+      contextId: result.contextId,
+      pendingAgents: result.pendingAgents,
+    });
+    setPhase("chat");
+  }, []);
 
   // Build ConnectionConfig from runtime
   const config: ConnectionConfig = {
@@ -38,18 +83,21 @@ export default function ChatPanel() {
     clientId: panelClientId,
   };
 
-  // Build AgenticChatActions from runtime navigation functions
+  // New Conversation: reset to setup phase
   const handleNewConversation = useCallback(() => {
-    const launcherUrl = buildNsLink("panels/chat-launcher", { action: "navigate" });
-    window.location.href = launcherUrl;
+    // Clear persisted state
+    void setStateArgs({ channelName: undefined, contextId: undefined, pendingAgents: undefined });
+    setChatState(null);
+    setPhase("setup");
   }, []);
 
-  const handleAddAgent = useCallback(async (channelName: string, launcherContextId?: string) => {
-    await createChild(
-      "panels/chat-launcher",
-      { name: "add-agent", focus: true, contextId: launcherContextId },
-      { channelName, contextId: launcherContextId }
-    );
+  // Add Agent: open the dialog instead of creating a child panel
+  // Use the resolved contextId from useAgenticChat (which may come from the server)
+  // rather than relying solely on stateArgs, so deep-link sessions get the canonical contextId.
+  const resolvedContextIdRef = useRef<string | undefined>(undefined);
+  const handleAddAgent = useCallback(async (_channelName: string, contextId?: string) => {
+    resolvedContextIdRef.current = contextId;
+    setAddAgentOpen(true);
   }, []);
 
   const handleFocusPanel = useCallback((panelId: string) => {
@@ -113,64 +161,62 @@ Use standard ESM imports - they're transformed to require() automatically:
           lastFlush = now;
         };
 
-        try {
-          const result = await executeEvalTool(args as { code: string; syntax?: "typescript" | "jsx" | "tsx"; timeout?: number }, ctx, {
-            onConsoleEntry: (formatted: string) => {
-              consoleBuffer = consoleBuffer ? `${consoleBuffer}\n${formatted}` : formatted;
-              flushConsole();
-            },
-          });
-          if (!result.success) {
-            if (result.consoleOutput) consoleBuffer = result.consoleOutput;
-            throw new Error(result.error || "Eval failed");
-          }
-          return {
-            consoleOutput: result.consoleOutput || "(no output)",
-            returnValue: result.returnValue,
-          };
-        } catch (err) {
-          throw err;
+        const result = await executeEvalTool(args as { code: string; syntax?: "typescript" | "jsx" | "tsx"; timeout?: number }, ctx, {
+          onConsoleEntry: (formatted: string) => {
+            consoleBuffer = consoleBuffer ? `${consoleBuffer}\n${formatted}` : formatted;
+            flushConsole();
+          },
+        });
+        if (!result.success) {
+          if (result.consoleOutput) consoleBuffer = result.consoleOutput;
+          throw new Error(result.error || "Eval failed");
         }
+        return {
+          consoleOutput: result.consoleOutput || "(no output)",
+          returnValue: result.returnValue,
+        };
       },
     };
 
     return { eval: evalMethodDef, ...fileTools };
   }, []);
 
-  // Error state: no channel name provided
-  if (!channelName) {
+  // Setup phase
+  if (phase === "setup") {
     return (
       <ErrorBoundary>
-        <Flex direction="column" align="center" justify="center" style={{ height: "100vh", padding: 16 }} gap="3">
-          <Card>
-            <Flex direction="column" gap="3" p="4" align="center">
-              <Text size="4" weight="bold" color="red">
-                Missing Channel Name
-              </Text>
-              <Text size="2" color="gray" style={{ textAlign: "center" }}>
-                This panel requires a channelName state arg to connect to a chat channel.
-              </Text>
-              <Button onClick={handleNewConversation}>
-                Start New Conversation
-              </Button>
-            </Flex>
-          </Card>
-        </Flex>
+        <Theme appearance={theme}>
+          <Flex direction="column" style={{ height: "100vh" }}>
+            <ChatSetup onComplete={handleSetupComplete} />
+          </Flex>
+        </Theme>
       </ErrorBoundary>
     );
   }
 
+  // Chat phase — chatState is guaranteed non-null when phase === "chat"
+  if (!chatState) return null;
+  const { channelName, contextId, pendingAgents } = chatState;
+
   return (
-    <AgenticChat
-      config={config}
-      channelName={channelName}
-      channelConfig={channelConfig}
-      contextId={contextId}
-      metadata={PANEL_METADATA}
-      tools={toolProvider}
-      actions={chatActions}
-      theme={theme}
-      pendingAgents={stateArgs.pendingAgents}
-    />
+    <>
+      <AgenticChat
+        config={config}
+        channelName={channelName}
+        channelConfig={stateArgs.channelConfig}
+        contextId={contextId}
+        metadata={PANEL_METADATA}
+        tools={toolProvider}
+        actions={chatActions}
+        theme={theme}
+        pendingAgents={pendingAgents}
+      />
+      <AddAgentDialog
+        open={addAgentOpen}
+        onOpenChange={setAddAgentOpen}
+        channelName={channelName}
+        contextId={resolvedContextIdRef.current ?? contextId}
+      />
+    </>
   );
 }

@@ -28,6 +28,24 @@ export type { ChatProviderProps } from "./context/ChatProvider";
 export { useAgenticChat } from "./hooks/useAgenticChat";
 export type { UseAgenticChatOptions } from "./hooks/useAgenticChat";
 
+// Core hook (minimum viable chat — no tools, feedback, debug, or roster tracking)
+export { useChatCore } from "./hooks/core/useChatCore";
+export type { UseChatCoreOptions, ChatCoreState, FeatureEventHandlers, RosterExtension, ReconnectExtension } from "./hooks/core/useChatCore";
+
+// Feature hooks (composable additions to core)
+export { useRosterTracking } from "./hooks/features/useRosterTracking";
+export type { RosterTrackingState } from "./hooks/features/useRosterTracking";
+export { usePendingAgents } from "./hooks/features/usePendingAgents";
+export type { PendingAgentsState } from "./hooks/features/usePendingAgents";
+export { useChatFeedback } from "./hooks/features/useChatFeedback";
+export type { ChatFeedbackState } from "./hooks/features/useChatFeedback";
+export { useChatTools } from "./hooks/features/useChatTools";
+export type { ChatToolsState } from "./hooks/features/useChatTools";
+export { useChatDebug } from "./hooks/features/useChatDebug";
+export type { ChatDebugState } from "./hooks/features/useChatDebug";
+export { useInlineUi } from "./hooks/features/useInlineUi";
+export type { InlineUiState } from "./hooks/features/useInlineUi";
+
 export { useChannelConnection } from "./hooks/useChannelConnection";
 export type {
   UseChannelConnectionOptions,

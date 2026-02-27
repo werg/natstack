@@ -54,7 +54,7 @@ export function AgentSetupPhase({
   const isMultiAgent = selectedCount > 1;
 
   return (
-    <Flex direction="column" style={{ height: "100vh", padding: 16 }} gap="3">
+    <Flex direction="column" style={{ flex: 1, padding: 16 }} gap="3">
       <Flex justify="between" align="center">
         <Text size="5" weight="bold">
           {isChannelMode ? "Add Agents" : "New Chat"}
