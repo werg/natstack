@@ -23,8 +23,10 @@ import type { PanelManifest } from "../shared/types.js";
  * Reads the natstack field and merges top-level dependencies.
  */
 export function loadPanelManifest(panelPath: string): PanelManifest {
-  const absolutePath = path.resolve(panelPath);
-  const packageJsonPath = path.join(absolutePath, "package.json");
+  if (!path.isAbsolute(panelPath)) {
+    throw new Error(`loadPanelManifest requires absolute path, got relative: ${panelPath}`);
+  }
+  const packageJsonPath = path.join(panelPath, "package.json");
 
   if (!fs.existsSync(packageJsonPath)) {
     throw new Error(`package.json not found in ${panelPath}`);

@@ -2796,8 +2796,10 @@ export class PanelManager {
       throw new Error(`setStateArgs not supported for ${panelType} panels`);
     }
 
-    // Load manifest to get schema
-    const manifest = await loadPanelManifest(getPanelSource(panel));
+    // Load manifest to get schema (resolve against workspace root, not CWD)
+    const panelSource = getPanelSource(panel);
+    const absolutePath = path.resolve(this.panelsRoot, panelSource);
+    const manifest = await loadPanelManifest(absolutePath);
     const currentArgs = getPanelStateArgs(panel) ?? {};
     const merged = { ...currentArgs, ...updates };
 

@@ -64,9 +64,11 @@ export default function ChatPanel() {
   // Setup phase completion handler
   const handleSetupComplete = useCallback((result: ChatSetupResult) => {
     // Persist to SQLite so reloads go straight to chat
-    void setStateArgs({
+    setStateArgs({
       channelName: result.channelName,
       contextId: result.contextId,
+    }).catch((err) => {
+      console.error("[ChatPanel] setStateArgs FAILED:", err);
     });
     setChatState({
       channelName: result.channelName,
@@ -86,7 +88,9 @@ export default function ChatPanel() {
   // New Conversation: reset to setup phase
   const handleNewConversation = useCallback(() => {
     // Clear persisted state
-    void setStateArgs({ channelName: undefined, contextId: undefined, pendingAgents: undefined });
+    setStateArgs({ channelName: undefined, contextId: undefined, pendingAgents: undefined }).catch((err) => {
+      console.error("[ChatPanel] setStateArgs clear FAILED:", err);
+    });
     setChatState(null);
     setPhase("setup");
   }, []);
