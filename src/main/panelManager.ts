@@ -260,7 +260,7 @@ export class PanelManager {
   }
 
   /**
-   * Run workspace init panels and show the launcher.
+   * Run workspace init panels and show the root panel (or launcher fallback).
    * Called when panel tree is empty (fresh install or after cleanup).
    */
   private async runInitPanelsAndLauncher(): Promise<void> {
@@ -281,7 +281,19 @@ export class PanelManager {
       }
     }
 
-    // Always show the launcher
+    // If workspace defines a rootPanel, open it directly instead of the launcher
+    const rootPanelSource = workspace?.config.rootPanel;
+    if (rootPanelSource) {
+      try {
+        const result = await this.createInitPanel(rootPanelSource);
+        log.verbose(` Created root panel from config: ${result.id}`);
+        return;
+      } catch (error) {
+        console.error(`[PanelManager] Failed to create rootPanel "${rootPanelSource}", falling back to launcher:`, error);
+      }
+    }
+
+    // Fallback: show the launcher
     await this.createShellPanel("new");
   }
 

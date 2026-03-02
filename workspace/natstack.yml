@@ -3,6 +3,9 @@
 
 id: natstack-dev
 
+# Default panel to open when workspace loads (fresh start)
+rootPanel: panels/chat
+
 # Git server configuration
 git:
   port: 63524
