@@ -81,6 +81,7 @@ export type JsonValue =
 export interface GlobalAgentSettings {
   defaultProjectLocation: "external" | "browser";
   defaultAutonomy: 0 | 1 | 2;
+  defaultAgent: string | null;
 }
 
 export type AgentSettings = Record<string, JsonValue>;

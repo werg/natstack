@@ -16,7 +16,7 @@ export function AgentSelector({
 }: AgentSelectorProps) {
   const handleAgentChange = useCallback(
     (value: string) => {
-      onDefaultAgentChange(value === "none" ? undefined : value);
+      onDefaultAgentChange(value === "none" ? null : value);
     },
     [onDefaultAgentChange]
   );
@@ -39,18 +39,16 @@ export function AgentSelector({
 
       <RadioGroup.Root value={defaultAgentId ?? "none"} onValueChange={handleAgentChange}>
         <Flex direction="column" gap="2">
-          {agents.length === 0 && (
-            <Card size="1" asChild>
-              <label style={{ cursor: "pointer" }}>
-                <Flex align="center" gap="2">
-                  <RadioGroup.Item value="none" />
-                  <Text size="2" color="gray">
-                    No default agent
-                  </Text>
-                </Flex>
-              </label>
-            </Card>
-          )}
+          <Card size="1" asChild>
+            <label style={{ cursor: "pointer" }}>
+              <Flex align="center" gap="2">
+                <RadioGroup.Item value="none" />
+                <Text size="2" color="gray">
+                  No default agent
+                </Text>
+              </Flex>
+            </label>
+          </Card>
 
           {agents.map((agent) => (
             <Card key={agent.id} size="1" asChild>

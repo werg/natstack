@@ -25,6 +25,7 @@ const DATABASE_NAME = "agent-settings";
 const DEFAULT_GLOBAL_SETTINGS: GlobalAgentSettings = {
   defaultProjectLocation: "external",
   defaultAutonomy: 2,
+  defaultAgent: null,
 };
 
 /**
@@ -169,6 +170,13 @@ export class AgentSettingsService {
         deleteStmt.run(agentId);
         log.verbose(`Removed settings row for deleted agent: ${agentId}`);
       }
+    }
+
+    // Clean up stale defaultAgent if the referenced agent was removed
+    const globalSettings = this.getGlobalSettings();
+    if (globalSettings.defaultAgent && !validAgentIds.has(globalSettings.defaultAgent)) {
+      log.verbose(`Clearing stale defaultAgent: ${globalSettings.defaultAgent} (agent no longer exists)`);
+      this.setGlobalSetting("defaultAgent", null);
     }
   }
 

@@ -10,10 +10,10 @@ export interface AgentInfo {
 export interface AgentSelectorProps {
   /** Available agents to select from */
   agents: AgentInfo[];
-  /** Currently selected agent ID */
-  defaultAgentId?: string;
+  /** Currently selected agent ID, null = no default */
+  defaultAgentId: string | null;
   /** Callback when selection changes */
-  onDefaultAgentChange: (agentId: string | undefined) => void;
+  onDefaultAgentChange: (agentId: string | null) => void;
   /** Show loading state */
   loading?: boolean;
 }

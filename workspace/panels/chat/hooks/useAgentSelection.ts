@@ -62,7 +62,12 @@ interface UseAgentSelectionOptions {
 
 export function useAgentSelection({ sessionConfig = DEFAULT_SESSION_CONFIG }: UseAgentSelectionOptions = {}) {
   const [availableAgents, setAvailableAgents] = useState<AgentSelection[]>([]);
-  const [selectionStatus, setSelectionStatus] = useState("Loading agents...");
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const selectionStatus = isLoading
+    ? "Loading agents..."
+    : loadError ?? (availableAgents.length > 0 ? "Ready" : "No agents found");
 
   // Compute agents with requirements - recomputes when sessionConfig changes
   const agentsWithRequirements = useMemo((): AgentSelectionWithRequirements[] => {
@@ -111,10 +116,11 @@ export function useAgentSelection({ sessionConfig = DEFAULT_SESSION_CONFIG }: Us
         }
 
         setAvailableAgents(agents);
-        setSelectionStatus(agents.length > 0 ? "Ready" : "No agents found");
+        setIsLoading(false);
       } catch (err) {
         if (mounted) {
-          setSelectionStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
+          setLoadError(`Error: ${err instanceof Error ? err.message : String(err)}`);
+          setIsLoading(false);
         }
       }
     }
@@ -187,6 +193,8 @@ export function useAgentSelection({ sessionConfig = DEFAULT_SESSION_CONFIG }: Us
   return {
     availableAgents,
     agentsWithRequirements,
+    isLoading,
+    loadError,
     selectionStatus,
     toggleAgentSelection,
     updateAgentConfig,

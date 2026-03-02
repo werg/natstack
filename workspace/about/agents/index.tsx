@@ -24,12 +24,15 @@ import {
 import { rpc } from "@workspace/runtime";
 import { usePanelTheme, ParameterEditor } from "@workspace/react";
 import { filterPerAgentParameters } from "@workspace/agentic-messaging/config";
+import { AgentSelector } from "@workspace/agentic-components";
+import type { AgentInfo } from "@workspace/agentic-components";
 import type { AgentManifest, GlobalAgentSettings, AgentSettings, FieldValue } from "@natstack/types";
 
 /** Default global settings (fallback if service fails) */
 const DEFAULT_GLOBAL_SETTINGS: GlobalAgentSettings = {
   defaultProjectLocation: "external",
   defaultAutonomy: 2,
+  defaultAgent: null,
 };
 
 function AgentsConfigPage() {
@@ -182,6 +185,17 @@ function AgentsConfigPage() {
               {globalSettings.defaultAutonomy === 2 && "Full access with minimal restrictions."}
             </Text>
           </Flex>
+
+          <AgentSelector
+            agents={agents.map((a): AgentInfo => ({
+              id: a.id,
+              name: a.name,
+              description: a.description,
+            }))}
+            defaultAgentId={globalSettings.defaultAgent}
+            onDefaultAgentChange={(agentId) => updateGlobalSetting("defaultAgent", agentId)}
+            loading={loading}
+          />
         </Flex>
       </Card>
 
