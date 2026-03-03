@@ -1,0 +1,8 @@
+{
+  "name": "@workspace-panels/test-panel",
+  "version": "0.1.0",
+  "natstack": {
+    "type": "app",
+    "title": "Test Panel"
+  }
+}
