@@ -117,6 +117,14 @@ export const SERVICE_POLICIES: Record<string, ServicePolicy> = {
     allowed: ["shell", "panel", "server"],
     description: "Git operations and scoped filesystem access for panels",
   },
+  test: {
+    allowed: ["panel", "server"],
+    description: "Run tests on workspace panels/packages",
+  },
+  project: {
+    allowed: ["panel", "server"],
+    description: "Scaffold new workspace projects",
+  },
 };
 
 /**

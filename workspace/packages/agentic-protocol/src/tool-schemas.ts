@@ -84,10 +84,9 @@ export type EnterPlanModeArgs = z.infer<typeof EnterPlanModeArgsSchema>;
  */
 export const CheckTypesArgsSchema = z.object({
   panel_path: z.string().describe(
-    "Absolute filesystem path to the root of the panel/worker " +
-    "(e.g. /abs/path/to/context/workspace/panels/my-panel)"
+    'Relative path to the panel/worker root (e.g. "panels/my-panel")'
   ),
-  file_path: z.string().optional().describe("Specific file to check (checks all if omitted)"),
+  file_path: z.string().optional().describe("Specific file within the panel to check (checks all if omitted)"),
 });
 export type CheckTypesArgs = z.infer<typeof CheckTypesArgsSchema>;
 
@@ -96,8 +95,8 @@ export type CheckTypesArgs = z.infer<typeof CheckTypesArgsSchema>;
  * Useful for understanding types and getting documentation
  */
 export const GetTypeInfoArgsSchema = z.object({
-  panel_path: z.string().describe("Absolute filesystem path to the root of the panel/worker"),
-  file_path: z.string().describe("Path to the file"),
+  panel_path: z.string().describe('Relative path to the panel/worker root (e.g. "panels/my-panel")'),
+  file_path: z.string().describe("File path relative to the panel root"),
   line: z.number().describe("Line number (1-indexed)"),
   column: z.number().describe("Column number (1-indexed)"),
 });
@@ -107,12 +106,58 @@ export type GetTypeInfoArgs = z.infer<typeof GetTypeInfoArgsSchema>;
  * get_completions - Get code completions at a position
  */
 export const GetCompletionsArgsSchema = z.object({
-  panel_path: z.string().describe("Absolute filesystem path to the root of the panel/worker"),
-  file_path: z.string().describe("Path to the file"),
+  panel_path: z.string().describe('Relative path to the panel/worker root (e.g. "panels/my-panel")'),
+  file_path: z.string().describe("File path relative to the panel root"),
   line: z.number().describe("Line number (1-indexed)"),
   column: z.number().describe("Column number (1-indexed)"),
 });
 export type GetCompletionsArgs = z.infer<typeof GetCompletionsArgsSchema>;
+
+// ============================================================================
+// Project Management Tools
+// ============================================================================
+
+/**
+ * create_project - Scaffold a new workspace project (panel, package, skill, agent)
+ */
+export const CreateProjectArgsSchema = z.object({
+  type: z.enum(["panel", "package", "skill", "agent"]).describe("Project type to scaffold"),
+  name: z.string().describe("Directory name and package name suffix (e.g. 'my-app')"),
+  title: z.string().optional().describe("Human-readable title (defaults to name)"),
+});
+export type CreateProjectArgs = z.infer<typeof CreateProjectArgsSchema>;
+
+/**
+ * launch_panel - Launch a child panel or browser
+ */
+export const LaunchPanelArgsSchema = z.object({
+  source: z.string().describe('Panel path (e.g. "panels/my-app") or URL for browser panels'),
+  name: z.string().optional().describe("Stable child name for reuse"),
+  browser: z.boolean().optional().describe("If true, launch as a browser child"),
+  context_id: z.string().optional().describe("Shared storage context (defaults to current chat context)"),
+});
+export type LaunchPanelArgs = z.infer<typeof LaunchPanelArgsSchema>;
+
+/**
+ * run_tests - Run vitest tests on a workspace panel or package
+ */
+export const RunTestsArgsSchema = z.object({
+  target: z.string().describe('Relative path to panel/package (e.g. "panels/my-app")'),
+  file: z.string().optional().describe("Specific test file within the target"),
+  test_name: z.string().optional().describe("Filter by test name pattern"),
+});
+export type RunTestsArgs = z.infer<typeof RunTestsArgsSchema>;
+
+/**
+ * git - Git operations on the workspace context folder
+ */
+export const GitArgsSchema = z.object({
+  operation: z.enum(["status", "diff", "commit", "log", "push"]).describe("Git operation to perform"),
+  path: z.string().optional().describe("Relative path within workspace (default: repository root)"),
+  message: z.string().optional().describe('Commit message (required for "commit" operation)'),
+  files: z.array(z.string()).optional().describe("Files to stage (default: all changed files)"),
+});
+export type GitArgs = z.infer<typeof GitArgsSchema>;
 
 // ============================================================================
 // Rich Preview Support

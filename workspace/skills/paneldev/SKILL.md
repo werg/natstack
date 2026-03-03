@@ -43,8 +43,11 @@ export default function MyApp() {
 
 | Task | Command |
 |------|---------|
-| List files | `Bash({ command: "ls panels/" })` |
+| Create panel | `create_project({ type: "panel", name: "my-app" })` |
 | Read a file | `Read({ file_path: "panels/my-app/index.tsx" })` |
 | Edit a file | `Edit({ file_path: "panels/my-app/index.tsx", old_string: "...", new_string: "..." })` |
-| Git status | `Bash({ command: "git status" })` |
-| Commit | `Bash({ command: "git add -A && git commit -m '...'" })` |
+| Git status | `git({ operation: "status" })` |
+| Commit | `git({ operation: "commit", message: "..." })` |
+| Check types | `check_types({ panel_path: "panels/my-app" })` |
+| Run tests | `run_tests({ target: "panels/my-app" })` |
+| Launch panel | `launch_panel({ source: "panels/my-app" })` |

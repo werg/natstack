@@ -99,20 +99,19 @@ export class ContextFolderManager {
           await fs.cp(src, dest, { recursive: true, filter: copyFilter });
         }
 
-        // Generate SDK plugin manifest for skill discovery
-        const skillRepos = repos.filter((r) => r.startsWith("workspace/skills/"));
-        if (skillRepos.length > 0) {
-          const skillsDir = path.join(contextPath, "workspace", "skills");
-          await fs.mkdir(skillsDir, { recursive: true });
-          const manifest = {
-            name: "natstack-skills",
-            skills: skillRepos.map((r) => `./${r.slice("workspace/skills/".length)}`),
-          };
-          await fs.writeFile(
-            path.join(skillsDir, "package.json"),
-            JSON.stringify(manifest, null, 2),
-          );
-        }
+        // Generate Claude Code plugin manifest so skills/ is discovered as a plugin.
+        // The CLI expects .claude-plugin/plugin.json at the plugin root, with skills
+        // in a skills/ subdirectory (each containing SKILL.md).
+        const pluginDir = path.join(contextPath, ".claude-plugin");
+        await fs.mkdir(pluginDir, { recursive: true });
+        await fs.writeFile(
+          path.join(pluginDir, "plugin.json"),
+          JSON.stringify({
+            name: "natstack-workspace",
+            description: "NatStack workspace skills",
+            version: "0.1.0",
+          }, null, 2),
+        );
 
         log.info(`Context folder ready: ${contextId} (${repos.length} repo(s) copied)`);
         return contextPath;

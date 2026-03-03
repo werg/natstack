@@ -9,6 +9,7 @@ export default defineConfig({
       ignore: path.resolve(__dirname, "node_modules/.pnpm/ignore@5.3.2/node_modules/ignore"),
       picomatch: path.resolve(__dirname, "node_modules/.pnpm/picomatch@4.0.3/node_modules/picomatch"),
       // Workspace packages
+      "@workspace/agentic-messaging/tool-schemas": path.resolve(__dirname, "workspace/packages/agentic-messaging/src/tool-schemas.ts"),
       "@workspace/agentic-messaging": path.resolve(__dirname, "workspace/packages/agentic-messaging/src/index.ts"),
     },
   },

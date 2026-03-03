@@ -18,6 +18,8 @@
 import * as path from "path";
 import * as fs from "fs";
 import { randomBytes } from "crypto";
+// __filename is available natively in CJS and via the esbuild banner shim in ESM.
+declare const __filename: string;
 
 // =============================================================================
 // IPC channel detection (synchronous — must run before main())
@@ -250,6 +252,15 @@ async function main() {
   dispatcher.register("git", async (_ctx, method, serviceArgs) => {
     const g = handle.gitServer;
     const a = serviceArgs as unknown[];
+
+    // Context-scoped git operations (from agentic tools)
+    if (method.startsWith("context")) {
+      const { handleGitContextCall } = await import("../main/services/gitContextService.js");
+      return handleGitContextCall(
+        contextFolderManager, g, getTokenManager(), method, a,
+      );
+    }
+
     switch (method) {
       case "getWorkspaceTree": return g.getWorkspaceTree();
       case "listBranches": return g.listBranches(a[0] as string);
@@ -260,6 +271,31 @@ async function main() {
       case "resolveRef": return g.resolveRef(a[0] as string, a[1] as string);
       default: throw new Error(`Unknown git method: ${method}`);
     }
+  });
+
+  // Test runner service
+  // Resolve testSetup.ts relative to this module's location. The path differs
+  // between dev mode (src/server/ → ../main/services/) and dist mode
+  // (dist/ → ../src/main/services/) so we check both candidates.
+  const serverDir = path.dirname(__filename);
+  const setupCandidates = [
+    path.resolve(serverDir, "../main/services/testSetup.ts"),      // dev: src/server → src/main
+    path.resolve(serverDir, "../src/main/services/testSetup.ts"),  // dist: dist → src/main
+  ];
+  const panelTestSetupPath: string = setupCandidates.find(p => fs.existsSync(p)) ?? setupCandidates[0]!;
+  dispatcher.register("test", async (_ctx, method, serviceArgs) => {
+    const { handleTestCall } = await import("../main/services/testRunnerService.js");
+    return handleTestCall(
+      { contextFolderManager, workspaceRoot: workspacePath, panelTestSetupPath },
+      method,
+      serviceArgs as unknown[],
+    );
+  });
+
+  // Project scaffolding service
+  dispatcher.register("project", async (_ctx, method, serviceArgs) => {
+    const { handleProjectCall } = await import("../main/services/projectService.js");
+    return handleProjectCall(contextFolderManager, handle.gitServer, method, serviceArgs as unknown[]);
   });
 
   // Admin token: use NATSTACK_ADMIN_TOKEN env var if set, otherwise generate random.

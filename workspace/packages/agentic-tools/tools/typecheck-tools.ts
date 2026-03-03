@@ -17,7 +17,7 @@ import {
   type GetTypeInfoArgs,
   type GetCompletionsArgs,
 } from "@workspace/agentic-messaging/tool-schemas";
-import { rpc } from "@workspace/runtime";
+import { rpc, contextId } from "@workspace/runtime";
 
 /** Diagnostic shape returned by the main process RPC */
 interface RpcDiagnostic {
@@ -80,7 +80,7 @@ function formatDiagnostics(diagnostics: RpcDiagnostic[]): string {
  */
 export async function checkTypes(args: CheckTypesArgs, publish?: DiagnosticsPublisher): Promise<string> {
   const result = await rpc.call<{ diagnostics: RpcDiagnostic[]; checkedFiles: string[] }>(
-    "main", "typecheck.check", args.panel_path, args.file_path, undefined
+    "main", "typecheck.check", args.panel_path, args.file_path, undefined, contextId
   );
 
   if (publish) {
@@ -100,7 +100,7 @@ export async function checkTypes(args: CheckTypesArgs, publish?: DiagnosticsPubl
  */
 export async function getTypeInfo(args: GetTypeInfoArgs): Promise<string> {
   const info = await rpc.call<RpcQuickInfo | null>(
-    "main", "typecheck.getTypeInfo", args.panel_path, args.file_path, args.line, args.column, undefined
+    "main", "typecheck.getTypeInfo", args.panel_path, args.file_path, args.line, args.column, undefined, contextId
   );
 
   if (!info) {
@@ -128,7 +128,7 @@ export async function getTypeInfo(args: GetTypeInfoArgs): Promise<string> {
  */
 export async function getCompletions(args: GetCompletionsArgs): Promise<string> {
   const completions = await rpc.call<{ entries: { name: string; kind: string }[] } | null>(
-    "main", "typecheck.getCompletions", args.panel_path, args.file_path, args.line, args.column, undefined
+    "main", "typecheck.getCompletions", args.panel_path, args.file_path, args.line, args.column, undefined, contextId
   );
 
   if (!completions || completions.entries.length === 0) {

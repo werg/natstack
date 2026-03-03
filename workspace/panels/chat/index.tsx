@@ -10,13 +10,14 @@
  * "New Conversation" resets to setup phase. "Add Agent" opens a centered dialog.
  */
 
-import { pubsubConfig, id as panelClientId, buildFocusLink, useStateArgs, setStateArgs, forceRepaint, ensurePanelLoaded } from "@workspace/runtime";
+import { pubsubConfig, id as panelClientId, buildFocusLink, useStateArgs, setStateArgs, forceRepaint, ensurePanelLoaded, createChild, createBrowserChild, contextId as runtimeContextId } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Flex, Theme } from "@radix-ui/themes";
 import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
 import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps } from "@workspace/agentic-chat";
 import { createAllToolMethodDefinitions, executeEvalTool, EVAL_DEFAULT_TIMEOUT_MS, EVAL_MAX_TIMEOUT_MS, EVAL_FRAMEWORK_TIMEOUT_MS } from "@workspace/agentic-tools";
+import { LaunchPanelArgsSchema, type LaunchPanelArgs } from "@workspace/agentic-messaging/tool-schemas";
 import { z } from "zod";
 import type { MethodDefinition } from "@workspace/agentic-messaging";
 import { ChatSetup, type ChatSetupResult } from "./components/ChatSetup";
@@ -182,7 +183,36 @@ Use standard ESM imports - they're transformed to require() automatically:
       },
     };
 
-    return { eval: evalMethodDef, ...fileTools };
+    // Launch panel tool definition
+    const launchPanelDef: MethodDefinition = {
+      description:
+        "Launch a child panel or browser. " +
+        "For panels: provide the panel source path (e.g. 'panels/my-app'). " +
+        "For browsers: set browser=true and provide a URL. " +
+        "Returns the child panel ID which can be used with getCdpEndpoint() for Playwright automation.",
+      parameters: LaunchPanelArgsSchema,
+      execute: async (args: LaunchPanelArgs) => {
+        const resolvedContextId = args.context_id ?? runtimeContextId;
+
+        if (args.browser) {
+          const handle = await createBrowserChild(args.source);
+          return { id: handle.id, type: "browser", source: args.source };
+        }
+
+        const handle = await createChild(args.source, {
+          name: args.name,
+          contextId: resolvedContextId,
+        });
+        return {
+          id: handle.id,
+          type: handle.type,
+          name: handle.name,
+          source: handle.source,
+        };
+      },
+    };
+
+    return { eval: evalMethodDef, launch_panel: launchPanelDef, ...fileTools };
   }, []);
 
   // Setup phase

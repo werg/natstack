@@ -1,7 +1,7 @@
 /**
  * Tools index.
  *
- * Exports typecheck tool implementations and method definition creators.
+ * Exports all tool implementations and method definition creators.
  */
 
 // Type checking tools
@@ -13,8 +13,20 @@ export {
   type DiagnosticsPublisher,
 } from "./typecheck-tools";
 
+// Git tools
+export { gitOp, createGitToolMethodDefinitions } from "./git-tools";
+
+// Project tools
+export { createProject, createProjectToolMethodDefinitions } from "./project-tools";
+
+// Test tools
+export { runTests, createTestToolMethodDefinitions } from "./test-tools";
+
 import type { MethodDefinition } from "@workspace/agentic-messaging";
 import { createTypeCheckToolMethodDefinitions, type DiagnosticsPublisher } from "./typecheck-tools";
+import { createGitToolMethodDefinitions } from "./git-tools";
+import { createProjectToolMethodDefinitions } from "./project-tools";
+import { createTestToolMethodDefinitions } from "./test-tools";
 
 export interface CreateAllToolsOptions {
   /**
@@ -38,5 +50,8 @@ export function createAllToolMethodDefinitions(
 
   return {
     ...createTypeCheckToolMethodDefinitions(diagnosticsPublisher),
+    ...createGitToolMethodDefinitions(),
+    ...createProjectToolMethodDefinitions(),
+    ...createTestToolMethodDefinitions(),
   };
 }

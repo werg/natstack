@@ -1,20 +1,8 @@
 # Agent Tools Reference
 
-Agents use native SDK tools (Bash, Read, Write, Edit, Glob, Grep, etc.) with the current working directory set to the context folder. All file paths are relative to the context folder root.
+Agents use native SDK tools (Read, Write, Edit, Glob, Grep) and PubSub tools for operations that require the panel runtime or main process.
 
-## Native SDK Tools
-
-These are the standard tools provided by the agent SDK. They operate directly on the context folder filesystem.
-
-### Bash
-
-Execute shell commands. The working directory is the context folder.
-
-```
-Bash({ command: "ls panels/" })
-Bash({ command: "git status" })
-Bash({ command: "git add -A && git commit -m 'Update panel'" })
-```
+## Filesystem Tools (Native SDK)
 
 ### Read
 
@@ -64,11 +52,139 @@ Grep({ pattern: "import.*runtime", type: "ts" })
 
 ---
 
-## PubSub Tools (Feedback, Eval, Type Checking)
+## Project Management
 
-These tools are provided via the NatStack pubsub channel for operations that require the panel runtime environment.
+### create_project
 
-### Eval (eval)
+Scaffold a new workspace project with boilerplate files. Automatically initializes git and pushes to trigger auto-build.
+
+**Parameters:**
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `type` | `"panel"` \| `"package"` \| `"skill"` \| `"agent"` | Yes | Project type |
+| `name` | string | Yes | Directory and package name suffix |
+| `title` | string | No | Human-readable title (defaults to name) |
+
+```
+create_project({ type: "panel", name: "my-app", title: "My App" })
+create_project({ type: "package", name: "utils" })
+```
+
+### git
+
+Git operations on the workspace context folder.
+
+**Parameters:**
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `operation` | `"status"` \| `"diff"` \| `"commit"` \| `"log"` \| `"push"` | Yes | Git operation |
+| `path` | string | No | Relative path within workspace (default: root) |
+| `message` | string | For commit | Commit message |
+| `files` | string[] | No | Files to stage (default: all changed) |
+
+```
+git({ operation: "status" })
+git({ operation: "diff" })
+git({ operation: "commit", message: "Add counter component" })
+git({ operation: "log" })
+git({ operation: "push" })
+```
+
+---
+
+## Quality & Testing
+
+### check_types
+
+Run TypeScript type checking on panel/worker files. Returns diagnostics (errors, warnings) from the TypeScript compiler.
+
+**Parameters:**
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `panel_path` | string | Yes | Relative or absolute path to the panel/worker root |
+| `file_path` | string | No | Specific file to check |
+
+```
+check_types({ panel_path: "panels/my-app" })
+check_types({ panel_path: "panels/my-app", file_path: "index.tsx" })
+```
+
+### run_tests
+
+Run vitest tests on a workspace panel or package.
+
+**Parameters:**
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `target` | string | Yes | Relative path to panel/package |
+| `file` | string | No | Specific test file |
+| `test_name` | string | No | Filter by test name pattern |
+
+```
+run_tests({ target: "panels/my-app" })
+run_tests({ target: "panels/my-app", file: "counter.test.tsx" })
+run_tests({ target: "packages/utils", test_name: "formatDate" })
+```
+
+**What's covered:** Pure logic tests, component tests with mocked runtime globals, package tests.
+
+**Not covered (use `eval` or `launch_panel` + Playwright):** Tests needing live RPC/transport, integration tests against running panels.
+
+### get_type_info
+
+Get TypeScript type information at a specific position.
+
+**Parameters:**
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `panel_path` | string | Yes | Relative or absolute path to the panel/worker root |
+| `file_path` | string | Yes | Path to the file |
+| `line` | number | Yes | Line number (1-indexed) |
+| `column` | number | Yes | Column number (1-indexed) |
+
+### get_completions
+
+Get code completions at a specific position.
+
+**Parameters:**
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `panel_path` | string | Yes | Relative or absolute path to the panel/worker root |
+| `file_path` | string | Yes | Path to the file |
+| `line` | number | Yes | Line number (1-indexed) |
+| `column` | number | Yes | Column number (1-indexed) |
+
+---
+
+## Runtime Tools
+
+### launch_panel
+
+Launch a child panel or browser for preview and testing.
+
+**Parameters:**
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `source` | string | Yes | Panel path or URL |
+| `name` | string | No | Stable child name |
+| `browser` | boolean | No | Launch as browser child |
+| `context_id` | string | No | Shared storage context |
+
+```
+launch_panel({ source: "panels/my-app" })
+launch_panel({ source: "https://example.com", browser: true })
+```
+
+The returned `id` can be used with `getCdpEndpoint()` via eval for Playwright automation:
+
+```
+eval({ code: `
+  const { getCdpEndpoint } = await import("playwright");
+  // Use the panel ID from launch_panel result
+` })
+```
+
+### eval
 
 Execute TypeScript/JavaScript code in the panel runtime.
 
@@ -79,68 +195,11 @@ Execute TypeScript/JavaScript code in the panel runtime.
 | `syntax` | `"typescript"` \| `"tsx"` \| `"jsx"` | No | Syntax mode (default: `"tsx"`) |
 | `timeout` | number | No | Max async wait in ms (default: 10000, max: 90000) |
 
-**Features:**
-- Top-level await support
-- Console output streaming
-- Async operation tracking
-- Safe serialization of return values
-
-**Available Modules:**
-- `fs`
-- `react`, `react/jsx-runtime`
-- `@radix-ui/themes`, `@radix-ui/react-icons`
-- `isomorphic-git` (for advanced git operations)
-
 ---
 
-### CheckTypes (check_types)
+## Web Tools
 
-Run TypeScript diagnostics on a panel/worker.
-
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `panel_path` | string | Yes | Absolute path to the panel/worker root |
-| `file_path` | string | No | Specific file to check |
-
-**Note:** `panel_path` must be an absolute path. Your working directory is already the context folder root, so construct the path as:
-```bash
-# Get absolute panel path
-Bash({ command: "echo $(pwd)/workspace/panels/my-panel" })
-# → /abs/context/path/workspace/panels/my-panel
-```
-
-### GetTypeInfo (get_type_info)
-
-Get type information at a position.
-
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `panel_path` | string | Yes | Absolute path to the panel/worker root |
-| `file_path` | string | Yes | Path to the file |
-| `line` | number | Yes | Line number (1-indexed) |
-| `column` | number | Yes | Column number (1-indexed) |
-
-**Note:** `panel_path` must be an absolute path (see CheckTypes above).
-
-### GetCompletions (get_completions)
-
-Get code completions at a position.
-
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `panel_path` | string | Yes | Absolute path to the panel/worker root |
-| `file_path` | string | Yes | Path to the file |
-| `line` | number | Yes | Line number (1-indexed) |
-| `column` | number | Yes | Column number (1-indexed) |
-
-**Note:** `panel_path` must be an absolute path (see CheckTypes above).
-
----
-
-### WebSearch (web_search)
+### web_search
 
 Search the web for information.
 
@@ -151,7 +210,7 @@ Search the web for information.
 | `allowed_domains` | string[] | No | Only include results from these domains |
 | `blocked_domains` | string[] | No | Exclude results from these domains |
 
-### WebFetch (web_fetch)
+### web_fetch
 
 Fetch and process content from a URL.
 
@@ -160,3 +219,7 @@ Fetch and process content from a URL.
 |------|------|----------|-------------|
 | `url` | string | Yes | URL to fetch |
 | `prompt` | string | Yes | What to extract from the page |
+
+---
+
+**Note:** The Bash tool is available as a fallback but prefer the structured tools above for safety and discoverability.
