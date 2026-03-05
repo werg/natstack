@@ -1,18 +1,16 @@
 /**
  * HeadlessPanelManager — Panel lifecycle management without Electron rendering.
  *
- * Manages the panel tree (create, close, tree traversal, state args) using the
- * same ID generation and context resolution as the Electron PanelManager, but
- * without creating WebContentsView instances. Panels are registered in the
- * PanelHttpServer, which handles build-on-demand and serving.
+ * Manages panels (create, close, state args) using the same ID generation and
+ * context resolution as the Electron PanelManager, but without creating
+ * WebContentsView instances. Panels are flat (no parent/child tree). They are
+ * registered in the PanelHttpServer, which handles build-on-demand and serving.
  *
  * Subdomain = contextIdToSubdomain(contextId). Panels sharing a contextId get
  * the same subdomain (= shared browser origin = shared localStorage, IndexedDB,
  * cookies, service workers). URL path = source (e.g., panels/my-app).
  *
- * Panel types use the canonical PanelType ("app" | "browser" | "shell") from
- * src/shared/types.ts. Only "app" panels are created in headless mode —
- * "browser" and "shell" are GUI-specific. Workers/agents are NOT panels; they
+ * All panels are type "app". Workers/agents are NOT panels; they
  * are managed separately by AgentHost with callerKind: "server" tokens.
  *
  * Persistence: The panel tree is in-memory only (v1). This is acceptable
@@ -21,7 +19,7 @@
  * later using the same schema as src/main/db/panelPersistence.ts.
  */
 
-import type { PanelType, ChildCreationResult, CreateChildOptions, RepoArgSpec } from "../shared/types.js";
+import type { ChildCreationResult, CreateChildOptions, RepoArgSpec } from "../shared/types.js";
 import type { PanelHttpServer, PanelLifecycleEvent } from "./panelHttpServer.js";
 import { contextIdToSubdomain } from "./panelHttpServer.js";
 import type { WsServerMessage } from "../shared/ws/protocol.js";
@@ -40,7 +38,6 @@ export interface HeadlessPanel {
   id: string;
   parentId: string | null;
   source: string;
-  type: PanelType;
   contextId: string;
   /** Short DNS-safe label used as the *.localhost subdomain */
   subdomain: string;
@@ -48,7 +45,6 @@ export interface HeadlessPanel {
   stateArgs: Record<string, unknown>;
   repoArgs?: Record<string, RepoArgSpec>;
   env: Record<string, string>;
-  children: string[];
   /** RPC auth token for this panel */
   rpcToken: string | null;
   /** Build state */
@@ -62,10 +58,8 @@ export interface HeadlessPanelTree {
     id: string;
     parentId: string | null;
     source: string;
-    type: PanelType;
     title: string;
     subdomain: string;
-    childCount: number;
     buildState: string;
   }>;
   roots: string[];
@@ -168,7 +162,7 @@ export class HeadlessPanelManager {
     });
 
     const promise = Promise.race([
-      this.createPanel("server", source, undefined, undefined, subdomain).then((result) => result.id),
+      this.createPanel("server", source, {}, undefined, subdomain).then((result) => result.id),
       timeout,
     ])
       .then((id) => {
@@ -200,8 +194,6 @@ export class HeadlessPanelManager {
     /** Use this subdomain instead of deriving from contextId (for on-demand creation) */
     subdomainOverride?: string,
   ): Promise<ChildCreationResult> {
-    const parent = callerId ? this.panels.get(callerId) : null;
-
     // Guard: reject URL sources early — browser panels are not supported in headless mode.
     if (/^https?:\/\//i.test(source)) {
       throw new Error(
@@ -213,9 +205,8 @@ export class HeadlessPanelManager {
     // Generate panel ID using the shared utility (same scheme as PanelManager)
     const panelId = computePanelId({
       relativePath: source,
-      parent,
       requestedId: options?.name,
-      isRoot: !parent,
+      isRoot: true,
     });
 
     if (this.panels.has(panelId)) {
@@ -227,7 +218,7 @@ export class HeadlessPanelManager {
     if (options?.contextId) {
       contextId = options.contextId;
     } else {
-      contextId = `ctx_${panelId.replace(/[/:]/g, "~")}`;
+      contextId = `ctx-${panelId.replace(/[^a-z0-9]/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").toLowerCase().slice(0, 59)}`;
     }
 
     // Register panel→context mapping for fs service routing
@@ -260,27 +251,20 @@ export class HeadlessPanelManager {
 
       const panel: HeadlessPanel = {
         id: panelId,
-        parentId: parent?.id ?? null,
+        parentId: null,
         source,
-        type: "app",
         contextId,
         subdomain,
         title: source.split("/").pop() ?? source,
         stateArgs: validatedStateArgs,
         repoArgs: options?.repoArgs,
         env: options?.env ?? {},
-        children: [],
         rpcToken,
         buildState: "pending",
         createdAt: Date.now(),
       };
 
       this.panels.set(panelId, panel);
-
-      // Register as child of parent
-      if (parent) {
-        parent.children.push(panelId);
-      }
 
       log.info(`[Panel] Created: ${panelId} (${subdomain}.localhost/${source}, ctx=${contextId})`);
 
@@ -290,7 +274,7 @@ export class HeadlessPanelManager {
         title: panel.title,
         subdomain,
         contextId,
-        parentId: panel.parentId,
+        parentId: null,
         source,
       });
 
@@ -298,7 +282,7 @@ export class HeadlessPanelManager {
       // (the HTTP server triggers the build on-demand when a request arrives)
       panel.buildState = "built";
 
-      return { id: panelId, type: "app" };
+      return { id: panelId };
     } catch (err) {
       // Rollback: unregister context mapping, revoke token on failure
       this.fsService?.unregisterPanelContext(panelId);
@@ -316,19 +300,6 @@ export class HeadlessPanelManager {
   closePanel(panelId: string): void {
     const panel = this.panels.get(panelId);
     if (!panel) return;
-
-    // Close children first (depth-first)
-    for (const childId of [...panel.children]) {
-      this.closePanel(childId);
-    }
-
-    // Remove from parent's children list
-    if (panel.parentId) {
-      const parent = this.panels.get(panel.parentId);
-      if (parent) {
-        parent.children = parent.children.filter((id) => id !== panelId);
-      }
-    }
 
     // Close open file handles and unregister panel→context mapping
     this.fsService?.closeHandlesForPanel(panelId);
@@ -381,63 +352,33 @@ export class HeadlessPanelManager {
     };
   }
 
-  findParentId(childId: string): string | null {
-    return this.panels.get(childId)?.parentId ?? null;
+  /** No child management — always returns null. Kept for PanelManagerLike interface. */
+  findParentId(_childId: string): string | null {
+    return null;
   }
 
-  isDescendantOf(childId: string, ancestorId: string): boolean {
-    let current = childId;
-    const visited = new Set<string>();
-    while (current) {
-      if (visited.has(current)) return false;
-      visited.add(current);
-      const panel = this.panels.get(current);
-      if (!panel?.parentId) return false;
-      if (panel.parentId === ancestorId) return true;
-      current = panel.parentId;
-    }
+  /** No child management — always returns false. Kept for PanelManagerLike interface. */
+  isDescendantOf(_childId: string, _ancestorId: string): boolean {
     return false;
   }
 
   getSerializablePanelTree(): HeadlessPanelTree {
-    const roots: string[] = [];
     const panels: HeadlessPanelTree["panels"] = [];
+    const roots: string[] = [];
 
     for (const [id, panel] of this.panels) {
       panels.push({
         id,
-        parentId: panel.parentId,
+        parentId: null,
         source: panel.source,
-        type: panel.type,
         title: panel.title,
         subdomain: panel.subdomain,
-        childCount: panel.children.length,
         buildState: panel.buildState,
       });
-      if (!panel.parentId) {
-        roots.push(id);
-      }
+      roots.push(id);
     }
 
     return { panels, roots };
-  }
-
-  getChildPanels(
-    parentId: string,
-    _options?: { includeStateArgs?: boolean },
-  ): Array<{ id: string; source: string; type: PanelType; title: string }> {
-    const parent = this.panels.get(parentId);
-    if (!parent) return [];
-
-    return parent.children
-      .map((childId) => this.panels.get(childId))
-      .filter((p): p is HeadlessPanel => p !== undefined)
-      .map((p) => ({
-        id: p.id,
-        source: p.source,
-        type: p.type,
-        title: p.title,
-      }));
   }
 
   /**
@@ -451,23 +392,14 @@ export class HeadlessPanelManager {
     return undefined;
   }
 
-  // =========================================================================
-  // Access control (for CDP bridge)
-  // =========================================================================
-
-  /** Ancestry-based access: direct parent or any ancestor can access target. */
-  canAccessPanel(requestingPanelId: string, targetPanelId: string): boolean {
-    const target = this.panels.get(targetPanelId);
-    if (!target) return false;
-    if (target.parentId === requestingPanelId) return true;
-    return targetPanelId.startsWith(requestingPanelId + "/");
+  /** No child management — always returns false. */
+  canAccessPanel(_requestingPanelId: string, _targetPanelId: string): boolean {
+    return false;
   }
 
-  /** Owner-only access: only direct parent can access target. */
-  panelOwnsBrowser(requestingPanelId: string, targetPanelId: string): boolean {
-    const target = this.panels.get(targetPanelId);
-    if (!target) return false;
-    return target.parentId === requestingPanelId;
+  /** No child management — always returns false. */
+  panelOwnsBrowser(_requestingPanelId: string, _targetPanelId: string): boolean {
+    return false;
   }
 
   // =========================================================================

@@ -2,10 +2,8 @@
  * Headless Bridge Service Handler
  *
  * Handles bridge service calls in headless mode (no Electron). Common portable
- * handlers (createChild, closeSelf, closeChild, getInfo, getChildPanels,
- * setStateArgs, context templates) are delegated to
- * src/shared/bridgeHandlersCommon.ts. This file handles headless-specific
- * operations and stubs out GUI-only operations.
+ * handlers (closeSelf, getInfo, setStateArgs, focusPanel, getBootstrapConfig)
+ * are delegated to src/shared/bridgeHandlersCommon.ts.
  */
 
 import type { HeadlessPanelManager } from "./headlessPanelManager.js";
@@ -41,12 +39,6 @@ export async function handleHeadlessBridgeCall(
     // GUI-only operations — not supported in headless mode
     // =========================================================================
 
-    case "createBrowserChild":
-      throw new Error(
-        "Browser panels are not supported in headless mode. " +
-        "Use the Electron app or connect via a web browser."
-      );
-
     case "openDevtools":
     case "forceRepaint":
       // Silently succeed — these are no-ops without a GUI
@@ -58,23 +50,6 @@ export async function handleHeadlessBridgeCall(
         "Pass folder paths via stateArgs or CLI arguments."
       );
 
-    // =========================================================================
-    // Navigation/history — tracked but no visual effect in headless
-    // =========================================================================
-
-    case "navigatePanel":
-    case "goBack":
-    case "goForward":
-    case "historyPush":
-    case "historyReplace":
-    case "historyBack":
-    case "historyForward":
-    case "historyGo":
-    case "historyReload":
-      // No-op in headless mode — no WebContentsView to navigate
-      return;
-
-    case "updateBrowserState":
     case "unloadSelf":
       // No-op
       return;

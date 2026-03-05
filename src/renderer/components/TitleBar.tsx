@@ -281,7 +281,7 @@ function BreadcrumbBar({
   ) => {
     e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
-    const action = await menu.showPanelContext(panel.id, panel.type, getWindowPositionFromRect(rect));
+    const action = await menu.showPanelContext(panel.id, getWindowPositionFromRect(rect));
     if (action) {
       onPanelAction?.(panel.id, action);
     }

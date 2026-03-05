@@ -1,83 +1,60 @@
-# Browser Extensions
+# Browser Extension
 
-NatStack ships browser extensions for Chrome and Firefox that connect to the
-headless server and manage panel tabs automatically. This document covers
-installation, configuration, and the end-to-end workflow.
+NatStack includes a minimal Chrome extension for CDP (Chrome DevTools Protocol)
+relay and native messaging. The extension is **not required** for basic panel
+usage -- users navigate directly to panel URLs in their browser.
 
 ---
 
 ## Overview
 
-When running NatStack as a headless server (without Electron), the browser
-extensions act as the UI coordinator:
+The Chrome extension serves two purposes:
 
-1. **Connect** to the server's SSE event stream
-2. **Listen** for panel lifecycle events (`panel:created`, `panel:built`, `panel:closed`)
-3. **Auto-open** browser tabs for new panels (each on its own `*.localhost` subdomain)
-4. **Pre-warm** context by loading a hidden init page before the real panel
-5. **Auto-close** tabs when panels are destroyed
+1. **CDP Bridge** -- Relays Chrome DevTools Protocol commands between the
+   NatStack server and browser tabs, enabling Playwright-based automation.
+2. **Native Messaging** -- Allows the server to auto-discover the running
+   browser instance via Chrome's native messaging host.
 
-
-Panels run in standard browser tabs with full access to NatStack services
-(AI, git, build, pubsub, database) via WebSocket RPC — the same protocol
-used by the Electron preload.
+The extension is ~150-360 lines of plain JavaScript with no build step.
 
 ---
 
-## Prerequisites
+## Panel Access
 
-Before installing the extension, you need a running headless server.
-
-### 1. Install server native dependencies
-
-```bash
-pnpm server:install    # compiles better-sqlite3 for system Node
-pnpm build             # builds dist/server.mjs + browser transport + context bootstrap
-```
-
-### 2. Start the headless server with panel serving
-
-```bash
-node dist/server.mjs \
-  --workspace=/path/to/workspace \
-  --serve-panels \
-  --panel-port=8080
-```
-
-The server prints connection details on startup:
+Panels are served over HTTP. No extension is needed to view them. Navigate
+directly to:
 
 ```
-natstack-server ready:
-  Git:       http://127.0.0.1:9001
-  PubSub:    ws://127.0.0.1:9002
-  RPC:       ws://127.0.0.1:9003
-  Panels:    http://127.0.0.1:8080
-  Panel API: http://127.0.0.1:8080/api/panels
-  Panel SSE: http://127.0.0.1:8080/api/events
-  Admin token: <hex string>
+http://{contextSubdomain}.localhost:{port}/{source}/
 ```
 
-You'll need two values from this output for the extension:
-- **Panels URL** (e.g., `http://127.0.0.1:8080`)
-- **Admin token** (the hex string)
+For example:
 
-### CLI Flags Reference
+```
+http://ctx-abc.localhost:5173/panels/my-app/
+```
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--workspace=PATH` | Workspace directory (must contain `natstack.yml`) | *(required)* |
-| `--data-dir=PATH` | User data directory (build cache, database) | `~/.config/natstack` |
-| `--app-root=PATH` | Application root | `cwd` |
-| `--log-level=LEVEL` | Log verbosity | `info` |
-| `--serve-panels` | Enable HTTP panel serving for browsers | `false` |
-| `--panel-port=PORT` | Port for the panel HTTP server | random |
+### Subdomain-Based Isolation
+
+Each panel runs on its own `*.localhost` subdomain. Modern browsers (Chrome 73+,
+Firefox 84+) resolve `*.localhost` to `127.0.0.1` per the WHATWG URL Standard.
+Each subdomain gets a distinct browser origin, giving panels:
+
+- Separate **localStorage** and **IndexedDB**
+- Separate **cookies** and **service workers**
+
+This mirrors Electron's `persist:{contextId}` partition behavior.
+
+> **Note:** Some corporate DNS configurations may interfere with `*.localhost`
+> resolution. If panels fail to load, verify that `*.localhost` resolves to
+> `127.0.0.1` in your environment.
 
 ---
 
 ## Installing the Chrome Extension
 
-The Chrome extension is in the `extension/` directory. It uses Manifest V3
-with a service worker background script.
+The extension is in the `extension/` directory. It uses Manifest V3 with a
+service worker background script.
 
 ### Step-by-step
 
@@ -85,241 +62,67 @@ with a service worker background script.
 2. Enable **Developer mode** (toggle in the top-right corner)
 3. Click **Load unpacked**
 4. Select the `extension/` directory inside your NatStack checkout
-5. The "NatStack Panel Manager" extension appears in your toolbar
-
-### Configure the extension
-
-1. Click the NatStack extension icon in the toolbar
-2. Click **Settings** in the popup footer (or right-click the icon and choose *Options*)
-3. Enter the **Server URL** from the server output (e.g., `http://127.0.0.1:8080`)
-4. Paste the **Management Token** (the admin token hex string)
-5. Optionally toggle:
-   - **Auto-open tabs** — automatically opens a new tab when a panel is created
-   - **Auto-close tabs** — automatically closes the tab when a panel is destroyed
-6. Click **Save**
-
-The extension popup shows a green dot and "Connected" when the SSE stream is active.
+5. The extension appears in your toolbar
 
 ### Permissions
 
 The Chrome extension requires:
-- `tabs` — to create, focus, and close panel tabs
-- `storage` — to persist server URL and token in `chrome.storage.local`
+
+- `debugger` -- to relay CDP commands via `chrome.debugger`
+- `nativeMessaging` -- for server auto-discovery
+- `storage` -- to persist settings in `chrome.storage.local`
 - Host permissions for `http://*.localhost/*` and `http://127.0.0.1/*`
 
 ---
 
-## Installing the Firefox Extension
+## How the CDP Bridge Works
 
-The Firefox extension is in the `extension-firefox/` directory. It uses
-Manifest V3 with Firefox's gecko-specific settings.
+The NatStack server can drive browser tabs via Playwright. Instead of launching
+a separate browser process, it connects through the extension:
 
-### Step-by-step
+1. Server sends CDP commands to the extension via native messaging.
+2. The extension forwards commands to the target tab using `chrome.debugger`.
+3. CDP responses and events flow back through the same channel.
 
-1. Open Firefox and navigate to `about:debugging#/runtime/this-firefox`
-2. Click **Load Temporary Add-on...**
-3. Select `extension-firefox/manifest.json` inside your NatStack checkout
-4. The "NatStack Panel Manager" extension appears in your toolbar
-
-> **Note:** Temporary add-ons in Firefox are removed when the browser closes.
-> For persistent installation, you would need to sign the extension via
-> `about:addons` or use `web-ext` for development.
-
-### Configure the extension
-
-Same as Chrome — click the extension icon, go to Settings, enter the server
-URL and management token.
-
-### Firefox differences
-
-- No tab grouping support (Chrome-only `tabGroups` API)
-- Background script runs as a persistent page (not a service worker)
-- Minimum Firefox version: 109.0
+This allows the server (and agents) to inspect, interact with, and test panels
+running in the user's existing browser session.
 
 ---
 
-## How It Works
+## What the Server Injects into Panel HTML
 
-### Connection Flow
+When serving a panel to the browser, the server augments the HTML with:
 
-```
-Extension                          Server
-   |                                  |
-   |--- GET /api/events ------------->|  (SSE with Bearer token)
-   |<-- event: snapshot --------------|  (current panel state)
-   |                                  |
-   |<-- event: panel:created ---------|  (new panel, includes initToken)
-   |                                  |
-   |--- Open hidden tab:              |
-   |    {subdomain}.localhost/__init__ |  (pre-warm context)
-   |                                  |
-   |<-- event: panel:built -----------|  (build complete, URL ready)
-   |                                  |
-   |--- Open panel tab:               |
-   |    {subdomain}.localhost/?token=  |  (full panel)
-   |--- Close hidden init tab         |
-   |                                  |
-   |<-- event: panel:closed ----------|
-   |--- Close panel tab               |
-```
+1. **Injected globals** -- `__natstackId`, `__natstackRpcPort`,
+   `__natstackRpcToken`, `__natstackStateArgs`, etc. (replacing Electron's
+   preload/contextBridge)
+2. **Browser transport IIFE** -- creates a WebSocket connection to the RPC
+   server using the same protocol as the Electron preload
+3. **Context bootstrap script** -- prepares the panel's session and initializes
+   the RPC-backed filesystem connection
 
-### Subdomain-Based Isolation
-
-Each panel runs on its own `*.localhost` subdomain (e.g.,
-`editor-a4f.localhost:8080`). Modern browsers (Chrome 73+, Firefox 84+)
-resolve `*.localhost` to `127.0.0.1` per the WHATWG URL Standard. Each
-subdomain gets a distinct browser origin, giving panels:
-
-- Separate **localStorage** and **IndexedDB**
-- Separate **cookies** and **service workers**
-
-This mirrors Electron's `persist:{contextId}` partition behavior.
-
-### Context Pre-warming
-
-When a `panel:created` event fires, the extension immediately opens a hidden
-tab to `{subdomain}.localhost/__init__?token={initToken}`. This init page
-runs the context bootstrap script, which prepares the panel's session.
-
-When the `panel:built` event arrives, the real panel tab opens with the
-context ready — no loading delay.
-
-### Authentication
-
-- **Management API** (`/api/panels`, `/api/events`): Bearer token in the
-  `Authorization` header
-- **Panel tabs**: Token in the URL query string (`?token=...`), exchanged for
-  an `HttpOnly` session cookie on first load. Subsequent requests use the
-  cookie, keeping URLs clean.
-
----
-
-## Management API
-
-The panel HTTP server exposes management endpoints on the bare host
-(no subdomain):
-
-| Endpoint | Auth | Description |
-|----------|------|-------------|
-| `GET /` | none | Index page listing active panels |
-| `GET /api/panels` | Bearer token | JSON array of active panels |
-| `GET /api/events` | Bearer token | SSE stream of lifecycle events |
-
-### SSE Event Types
-
-| Event | Payload | When |
-|-------|---------|------|
-| `snapshot` | Full panel list | On initial SSE connection |
-| `panel:created` | `{ panelId, title, subdomain, initToken }` | Panel registered (before build) |
-| `panel:built` | `{ panelId, title, subdomain, url }` | Panel build complete |
-| `panel:closed` | `{ panelId }` | Panel destroyed |
-| `panel:build-error` | `{ panelId, error }` | Panel build failed |
-
-### Per-Subdomain API
-
-These endpoints are available on each panel's subdomain (session-cookie auth):
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/__init__` | GET | Pre-warming init page |
-
----
-
-## Creating Panels
-
-Panels are created via the WebSocket RPC API using the admin token. The
-server doesn't create panels automatically — an RPC client (agent, CLI tool,
-or custom script) must request them.
-
-### Example: Creating a Panel via the Admin RPC
-
-```javascript
-import WebSocket from "ws";
-
-const ws = new WebSocket("ws://127.0.0.1:9003");
-
-ws.on("open", () => {
-  // Authenticate with admin token
-  ws.send(JSON.stringify({
-    type: "ws:auth",
-    token: "<admin-token-from-server-output>"
-  }));
-
-  // Create a panel
-  ws.send(JSON.stringify({
-    id: 1,
-    type: "call",
-    service: "bridge",
-    method: "createChild",
-    args: ["workspace/panels/my-panel", {}]
-  }));
-});
-
-ws.on("message", (data) => {
-  console.log(JSON.parse(data.toString()));
-});
-```
-
-Once the panel is created, the extension receives the `panel:created` and
-`panel:built` SSE events and automatically opens the tab.
+Panel source code is identical between Electron and browser -- the transport
+layer is swapped transparently.
 
 ---
 
 ## Troubleshooting
 
-### Extension shows "Disconnected"
+### Panels show a blank page or network error
 
 - Verify the server is running with `--serve-panels`
-- Check the Server URL in extension settings matches the Panels URL from
-  server output (including port)
-- Verify the management token is correct (copy-paste from server output)
-- Click **Reconnect** in the popup footer
-
-### Panel tabs show "Panel not found" or blank page
-
-- The panel may have been closed on the server side
-- Check the browser console for CORS or network errors
-- Ensure `*.localhost` resolves to `127.0.0.1` (works by default on modern
-  browsers, but some corporate DNS configs may interfere)
-
-### Context bootstrap fails
-
-- Check the browser console on the panel tab for error messages
-- The git server must be reachable from the browser (default:
-  `http://127.0.0.1:{gitPort}`)
+- Ensure `*.localhost` resolves to `127.0.0.1` (default on modern browsers)
+- Check the browser console for CORS or WebSocket errors
 
 ### Server won't start
 
 - Run `pnpm server:install` first (compiles better-sqlite3 for system Node)
 - Ensure `natstack.yml` exists in the workspace directory
-- Check for port conflicts if using `--panel-port` with a fixed port
+- Check for port conflicts if using a fixed `--panel-port`
 
----
+### CDP relay not working
 
-## Architecture Notes
-
-### What's in the Extension
-
-The extensions are plain JavaScript — no build step required. Each contains:
-
-```
-extension/                     (or extension-firefox/)
-  manifest.json                Manifest V3 config
-  background.js                Service worker (Chrome) / background script (Firefox)
-  popup.html + popup.js        Toolbar popup showing panel list + connection status
-  options.html + options.js    Settings page for server URL + token
-```
-
-### What the Server Injects into Panel HTML
-
-When serving a panel to the browser, the server augments the HTML with:
-
-1. **Injected globals** — `__natstackId`, `__natstackRpcPort`, `__natstackRpcToken`,
-   `__natstackStateArgs`, etc. (replacing Electron's preload/contextBridge)
-2. **Browser transport IIFE** — creates a WebSocket connection to the RPC
-   server using the same protocol as the Electron preload
-3. **Context bootstrap script** — prepares the panel's session and
-   initializes the RPC-backed filesystem connection
-
-This means panel source code is identical between Electron and browser — the
-transport layer is swapped transparently.
+- Confirm the extension is loaded and enabled in `chrome://extensions/`
+- Check that the native messaging host is installed correctly
+- Look for errors in the extension's service worker console
+  (click "Inspect views: service worker" on the extension card)

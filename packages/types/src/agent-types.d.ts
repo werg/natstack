@@ -48,6 +48,7 @@ export type JsonValue = string | number | boolean | null | JsonValue[] | {
 export interface GlobalAgentSettings {
     defaultProjectLocation: "external" | "browser";
     defaultAutonomy: 0 | 1 | 2;
+    defaultAgent: string | null;
 }
 export type AgentSettings = Record<string, JsonValue>;
 //# sourceMappingURL=agent-types.d.ts.map

@@ -37,9 +37,7 @@ import type {
   ThemeMode,
   ThemeAppearance,
   Panel,
-  PanelType,
   PanelContextMenuAction,
-  BrowserState,
   RecentWorkspace,
   WorkspaceValidation,
   SettingsData,
@@ -78,10 +76,10 @@ export const panel = {
   archive: (panelId: string) => rpc.call<void>("main", "panel.archive", panelId),
   retryDirtyBuild: (panelId: string) => rpc.call<void>("main", "panel.retryDirtyBuild", panelId),
   initGitRepo: (panelId: string) => rpc.call<void>("main", "panel.initGitRepo", panelId),
-  updateBrowserState: (browserId: string, state: Partial<BrowserState> & { url?: string }) =>
-    rpc.call<void>("main", "panel.updateBrowserState", browserId, state),
+  updatePanelState: (panelId: string, state: { url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean }) =>
+    rpc.call<void>("main", "panel.updatePanelState", panelId, state),
   createShellPanel: (page: ShellPage) =>
-    rpc.call<{ id: string; type: PanelType; title: string }>("main", "panel.createShellPanel", page),
+    rpc.call<{ id: string; title: string }>("main", "panel.createShellPanel", page),
   // Drag-and-drop and tree management
   movePanel: (request: MovePanelRequest) =>
     rpc.call<void>("main", "panel.movePanel", request),
@@ -143,8 +141,8 @@ export const menu = {
     rpc.call<void>("main", "menu.showHamburger", position),
   showContext: (items: MenuItem[], position: Position) =>
     rpc.call<string | null>("main", "menu.showContext", items, position),
-  showPanelContext: (panelId: string, panelType: PanelType, position: Position) =>
-    rpc.call<PanelContextMenuAction | null>("main", "menu.showPanelContext", panelId, panelType, position),
+  showPanelContext: (panelId: string, position: Position) =>
+    rpc.call<PanelContextMenuAction | null>("main", "menu.showPanelContext", panelId, position),
 };
 
 // =============================================================================

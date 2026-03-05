@@ -29,13 +29,10 @@ import type {
   DescendantSiblingGroup,
 } from "../../../shared/types.js";
 import {
-  getPanelType,
   getPanelContextId,
   getPanelSource,
   getPanelOptions,
-  getCurrentSnapshot,
-  getShellPage,
-  getBrowserResolvedUrl,
+  getSourcePage,
 } from "../../../shared/panel/accessors.js";
 
 // Re-export types for consumers
@@ -50,7 +47,6 @@ export type { PanelSummary, PanelAncestor, DescendantSiblingGroup };
  */
 export interface FullPanel {
   id: string;
-  type: "app" | "browser" | "shell";
   title: string;
   contextId: string;
   parentId: string | null;
@@ -64,15 +60,7 @@ export interface FullPanel {
     buildProgress?: string;
     buildLog?: string;
   };
-  // Type-specific fields
   path?: string;
-  url?: string;
-  browserState?: {
-    pageTitle: string;
-    isLoading: boolean;
-    canGoBack: boolean;
-    canGoForward: boolean;
-  };
   page?: string;
   sourceRepo?: string;
   injectHostThemeVariables?: boolean;
@@ -119,7 +107,6 @@ export function flattenTree(
       index,
       panel: {
         id: panel.id,
-        type: getPanelType(panel),
         title: panel.title,
         childCount: panel.children.length,
         buildState: panel.artifacts?.buildState,
@@ -340,7 +327,6 @@ export function findParentAtDepth(
 function panelToSummary(panel: Panel, position: number): PanelSummary {
   return {
     id: panel.id,
-    type: getPanelType(panel),
     title: panel.title,
     childCount: panel.children.length,
     buildState: panel.artifacts?.buildState,
@@ -352,50 +338,23 @@ function panelToSummary(panel: Panel, position: number): PanelSummary {
  * Convert Panel to FullPanel with resolved parent ID.
  */
 function panelToFull(panel: Panel, parentId: string | null, position: number): FullPanel {
-  const panelType = getPanelType(panel);
   const options = getPanelOptions(panel);
-  const snapshot = getCurrentSnapshot(panel);
+  const source = getPanelSource(panel);
 
-  const base: FullPanel = {
+  return {
     id: panel.id,
-    type: panelType,
     title: panel.title,
     contextId: getPanelContextId(panel),
     parentId,
     position,
     selectedChildId: panel.selectedChildId,
     artifacts: panel.artifacts ?? {},
+    path: source,
+    sourceRepo: source,
+    page: getSourcePage(panel),
+    injectHostThemeVariables: true,
+    resolvedRepoArgs: options.repoArgs,
   };
-
-  // Add type-specific fields
-  if (panelType === "app") {
-    return {
-      ...base,
-      path: getPanelSource(panel),
-      sourceRepo: getPanelSource(panel),
-      injectHostThemeVariables: true, // Default for app panels
-      resolvedRepoArgs: options.repoArgs,
-    };
-  }
-
-  if (panelType === "browser") {
-    return {
-      ...base,
-      url: getBrowserResolvedUrl(panel) ?? getPanelSource(panel),
-      browserState: snapshot.browserState,
-      injectHostThemeVariables: false,
-    };
-  }
-
-  if (panelType === "shell") {
-    return {
-      ...base,
-      page: getShellPage(panel),
-      injectHostThemeVariables: true,
-    };
-  }
-
-  return base;
 }
 
 // ============================================================================
@@ -612,7 +571,6 @@ export function useAncestors(panelId: string | null): {
       result.unshift({
         id: parent.id,
         title: parent.title,
-        type: getPanelType(parent),
         depth,
       });
 

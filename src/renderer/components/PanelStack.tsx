@@ -306,19 +306,18 @@ export function PanelStack({
     }
     previousVisiblePanelId.current = panelId;
 
-    // For app/worker panels, only interact with view if htmlPath is set (view is created after build)
-    // Browser and shell panels don't have htmlPath but do have views
+    // Only interact with view if it exists (htmlPath set after build, or shell about/ pages)
     // Panels with errors, still building, or unloaded (pending) have no view to show
     const buildState = visiblePanel?.artifacts?.buildState;
     const isUnloaded = buildState === "pending" || buildState === "building" || buildState === "error";
-    const hasView = !isUnloaded && (visiblePanel?.type === "browser" || visiblePanel?.type === "shell" || !!htmlPath);
+    const hasView = !isUnloaded && (!!visiblePanel?.page || !!htmlPath);
     if (!hasView) {
       return;
     }
 
     // Show current panel's view - main process handles bounds calculation
     void view.setVisible(panelId, true);
-  }, [visiblePanel?.id, visiblePanel?.type, visiblePanel?.artifacts?.htmlPath, visiblePanel?.artifacts?.buildState]);
+  }, [visiblePanel?.id, visiblePanel?.page, visiblePanel?.artifacts?.htmlPath, visiblePanel?.artifacts?.buildState]);
 
   // Notify main process of layout changes (sidebar visibility and width)
   const sidebarVisible = navigationMode === "tree";
@@ -416,12 +415,12 @@ export function PanelStack({
     // (dirty-repo and git-init) in the build pipeline
 
     if (!artifacts?.htmlPath) {
-      // Browser and shell panels - WebContentsView is managed by main process
-      if (visiblePanel.type === "browser" || visiblePanel.type === "shell") {
+      // Shell about/ pages - WebContentsView is managed by main process
+      if (visiblePanel.page) {
         return <Box style={{ flex: 1, position: "relative", height: "100%" }} />;
       }
 
-      // Panel/worker loading state (while build is in progress)
+      // Panel loading state (while build is in progress)
       return (
         <Flex
           direction="column"

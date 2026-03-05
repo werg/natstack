@@ -12,13 +12,9 @@ import type Database from "better-sqlite3";
 /**
  * Current schema version.
  * v2: Removed artifacts column - build state is now runtime-only.
+ * v3: Removed PanelType, searchable_url, page_content_summary. URL-based navigation.
  */
-export const PANEL_SCHEMA_VERSION = 2;
-
-/**
- * Panel types stored in the database.
- */
-export type DbPanelType = "app" | "browser" | "shell";
+export const PANEL_SCHEMA_VERSION = 3;
 
 /**
  * Panel event types for audit log.
@@ -64,10 +60,8 @@ export interface DbPanelSearchMetadataRow {
   panel_id: string;
   searchable_title: string;
   searchable_path: string | null;
-  searchable_url: string | null;
   manifest_description: string | null;
   manifest_dependencies: string | null; // JSON array
-  page_content_summary: string | null;
   tags: string | null; // JSON array
   keywords: string | null; // JSON array
   access_count: number;
@@ -126,14 +120,10 @@ CREATE TABLE IF NOT EXISTS panel_search_metadata (
     -- Core searchable fields
     searchable_title TEXT NOT NULL,
     searchable_path TEXT,
-    searchable_url TEXT,
 
     -- From manifest (package.json natstack section)
     manifest_description TEXT,
     manifest_dependencies TEXT,
-
-    -- Extracted page content (for browser panels)
-    page_content_summary TEXT,
 
     -- Auto-detected tags and keywords
     tags TEXT,
@@ -149,10 +139,8 @@ CREATE TABLE IF NOT EXISTS panel_search_metadata (
 CREATE VIRTUAL TABLE IF NOT EXISTS panel_fts USING fts5(
     searchable_title,
     searchable_path,
-    searchable_url,
     manifest_description,
     manifest_dependencies,
-    page_content_summary,
     tags,
     keywords,
     content='panel_search_metadata',
@@ -174,33 +162,33 @@ CREATE TABLE IF NOT EXISTS schema_version (
 const FTS_TRIGGERS_SQL = `
 -- Trigger for insert
 CREATE TRIGGER IF NOT EXISTS panel_fts_insert AFTER INSERT ON panel_search_metadata BEGIN
-    INSERT INTO panel_fts(rowid, searchable_title, searchable_path, searchable_url,
-        manifest_description, manifest_dependencies, page_content_summary, tags, keywords)
-    VALUES (NEW.rowid, NEW.searchable_title, NEW.searchable_path, NEW.searchable_url,
-        NEW.manifest_description, NEW.manifest_dependencies, NEW.page_content_summary,
+    INSERT INTO panel_fts(rowid, searchable_title, searchable_path,
+        manifest_description, manifest_dependencies, tags, keywords)
+    VALUES (NEW.rowid, NEW.searchable_title, NEW.searchable_path,
+        NEW.manifest_description, NEW.manifest_dependencies,
         NEW.tags, NEW.keywords);
 END;
 
 -- Trigger for delete
 CREATE TRIGGER IF NOT EXISTS panel_fts_delete AFTER DELETE ON panel_search_metadata BEGIN
-    INSERT INTO panel_fts(panel_fts, rowid, searchable_title, searchable_path, searchable_url,
-        manifest_description, manifest_dependencies, page_content_summary, tags, keywords)
-    VALUES ('delete', OLD.rowid, OLD.searchable_title, OLD.searchable_path, OLD.searchable_url,
-        OLD.manifest_description, OLD.manifest_dependencies, OLD.page_content_summary,
+    INSERT INTO panel_fts(panel_fts, rowid, searchable_title, searchable_path,
+        manifest_description, manifest_dependencies, tags, keywords)
+    VALUES ('delete', OLD.rowid, OLD.searchable_title, OLD.searchable_path,
+        OLD.manifest_description, OLD.manifest_dependencies,
         OLD.tags, OLD.keywords);
 END;
 
 -- Trigger for update
 CREATE TRIGGER IF NOT EXISTS panel_fts_update AFTER UPDATE ON panel_search_metadata BEGIN
-    INSERT INTO panel_fts(panel_fts, rowid, searchable_title, searchable_path, searchable_url,
-        manifest_description, manifest_dependencies, page_content_summary, tags, keywords)
-    VALUES ('delete', OLD.rowid, OLD.searchable_title, OLD.searchable_path, OLD.searchable_url,
-        OLD.manifest_description, OLD.manifest_dependencies, OLD.page_content_summary,
+    INSERT INTO panel_fts(panel_fts, rowid, searchable_title, searchable_path,
+        manifest_description, manifest_dependencies, tags, keywords)
+    VALUES ('delete', OLD.rowid, OLD.searchable_title, OLD.searchable_path,
+        OLD.manifest_description, OLD.manifest_dependencies,
         OLD.tags, OLD.keywords);
-    INSERT INTO panel_fts(rowid, searchable_title, searchable_path, searchable_url,
-        manifest_description, manifest_dependencies, page_content_summary, tags, keywords)
-    VALUES (NEW.rowid, NEW.searchable_title, NEW.searchable_path, NEW.searchable_url,
-        NEW.manifest_description, NEW.manifest_dependencies, NEW.page_content_summary,
+    INSERT INTO panel_fts(rowid, searchable_title, searchable_path,
+        manifest_description, manifest_dependencies, tags, keywords)
+    VALUES (NEW.rowid, NEW.searchable_title, NEW.searchable_path,
+        NEW.manifest_description, NEW.manifest_dependencies,
         NEW.tags, NEW.keywords);
 END;
 `;
@@ -248,7 +236,6 @@ export function initializePanelSchema(db: Database.Database): void {
 
 /**
  * SQL queries for common operations.
- * Note: type is extracted from history JSON using json_extract.
  * Note: buildState is NOT stored - it's runtime-only.
  */
 export const PANEL_QUERIES = {
@@ -265,9 +252,7 @@ export const PANEL_QUERIES = {
       FROM panels p JOIN ancestors a ON p.id = a.parent_id
       WHERE a.depth < 20 AND p.archived_at IS NULL
     )
-    SELECT id, parent_id, title,
-           json_extract(history, '$[' || history_index || '].type') as type,
-           depth
+    SELECT id, parent_id, title, depth
     FROM ancestors WHERE depth > 0 ORDER BY depth DESC
   `,
 
@@ -275,9 +260,7 @@ export const PANEL_QUERIES = {
    * Get siblings (for tab bar, ordered by position).
    */
   SIBLINGS: `
-    SELECT p.id, p.title,
-           json_extract(p.history, '$[' || p.history_index || '].type') as type,
-           p.position,
+    SELECT p.id, p.title, p.position,
       (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
     FROM panels p
     WHERE p.parent_id = (SELECT parent_id FROM panels WHERE id = ?) AND p.archived_at IS NULL
@@ -288,9 +271,7 @@ export const PANEL_QUERIES = {
    * Get children (for tree expansion, ordered by position).
    */
   CHILDREN: `
-    SELECT p.id, p.title,
-           json_extract(p.history, '$[' || p.history_index || '].type') as type,
-           p.position,
+    SELECT p.id, p.title, p.position,
       (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
     FROM panels p WHERE p.parent_id = ? AND p.archived_at IS NULL
     ORDER BY p.position
@@ -300,9 +281,7 @@ export const PANEL_QUERIES = {
    * Get root panels (no parent).
    */
   ROOT_PANELS: `
-    SELECT p.id, p.title,
-           json_extract(p.history, '$[' || p.history_index || '].type') as type,
-           p.position,
+    SELECT p.id, p.title, p.position,
       (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
     FROM panels p WHERE p.parent_id IS NULL AND p.workspace_id = ? AND p.archived_at IS NULL
     ORDER BY p.position
@@ -369,9 +348,7 @@ export const PANEL_QUERIES = {
    * Get children with pagination (ordered by position, newest first when prepending).
    */
   CHILDREN_PAGINATED: `
-    SELECT p.id, p.title,
-           json_extract(p.history, '$[' || p.history_index || '].type') as type,
-           p.position,
+    SELECT p.id, p.title, p.position,
       (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
     FROM panels p WHERE p.parent_id = ? AND p.archived_at IS NULL
     ORDER BY p.position ASC
@@ -389,9 +366,7 @@ export const PANEL_QUERIES = {
    * Get root panels with pagination.
    */
   ROOT_PANELS_PAGINATED: `
-    SELECT p.id, p.title,
-           json_extract(p.history, '$[' || p.history_index || '].type') as type,
-           p.position,
+    SELECT p.id, p.title, p.position,
       (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
     FROM panels p WHERE p.parent_id IS NULL AND p.workspace_id = ? AND p.archived_at IS NULL
     ORDER BY p.position ASC

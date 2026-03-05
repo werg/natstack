@@ -15,7 +15,7 @@ export default function MyApp() {
 // panels/my-app/package.json
 {
   "name": "@workspace-panels/my-app",
-  "natstack": { "type": "app", "title": "My App" },
+  "natstack": { "title": "My App" },
   "dependencies": {
     "@workspace/runtime": "workspace:*",
     "@workspace/react": "workspace:*"
@@ -34,8 +34,6 @@ import {
   usePanelId,         // Panel's unique ID
   useContextId,       // Context ID for storage
   usePanelFocus,      // Focus state
-  useChildPanels,     // Manage children
-  usePanelChild,      // Get specific child
   usePanelParent,     // Parent handle
   useBootstrap,       // Bootstrap state for repoArgs
 } from "@workspace/react";
@@ -53,39 +51,41 @@ export default function App() {
 }
 ```
 
-### Children
+### Navigation
+
+Panels navigate via URLs using `buildPanelLink`:
 
 ```tsx
-import { useChildPanels } from "@workspace/react";
+import { buildPanelLink } from "@workspace/runtime";
 
-function Parent() {
-  const { children, createChild, createBrowserChild } = useChildPanels();
+// Same-context navigation
+window.location.href = buildPanelLink("panels/editor");
 
-  return (
-    <div>
-      <button onClick={() => createChild("panels/editor", { name: "editor" })}>
-        Add Editor
-      </button>
-      <ul>
-        {children.map(c => <li key={c.id}>{c.name}</li>)}
-      </ul>
-    </div>
-  );
-}
+// Cross-context navigation (different storage partition)
+window.location.href = buildPanelLink("panels/chat", {
+  contextId: "abc-123",
+  stateArgs: { channelName: "general" },
+});
+
+// Open in new tab
+window.open(buildPanelLink("panels/editor"));
 ```
 
 ### Shared Storage
 
-Multiple panels sharing filesystem and storage:
+Multiple panels sharing filesystem and storage via cross-context navigation:
 
 ```tsx
-const contextId = crypto.randomUUID();
+const contextId = "shared-session-id";
 
-await createChild("panels/chat", { name: "chat", contextId }, { contextId });
-await createChild("workers/agent", { name: "agent", contextId }, { contextId });
+// Navigate to chat in shared context
+window.location.href = buildPanelLink("panels/chat", {
+  contextId,
+  stateArgs: { contextId },
+});
 ```
 
-Pass `contextId` in both options (for storage) and stateArgs (for app logic).
+The `contextId` must be DNS-safe (lowercase alphanumeric + hyphens).
 
 ---
 
@@ -118,10 +118,7 @@ import { env } from "@workspace/runtime";
 const workspace = env["NATSTACK_WORKSPACE"] || "/workspace";
 ```
 
-Set via `createChild`:
-```typescript
-await createChild("panels/editor", { name: "editor", env: { NATSTACK_WORKSPACE: "/path" } });
-```
+Environment variables are set at panel creation time via the server.
 
 ---
 
@@ -143,7 +140,7 @@ rpc.expose({
 ```
 
 ```json
-{ "natstack": { "type": "worker", "title": "Compute" } }
+{ "natstack": { "title": "Compute" } }
 ```
 
 ---
@@ -151,6 +148,6 @@ rpc.expose({
 ## Related Docs
 
 - [RPC.md](RPC.md) - Typed contracts for parent-child communication
-- [AI.md](AI.md) - AI integration and browser automation
+- [AI.md](AI.md) - AI integration
 - [PANEL_SYSTEM.md](PANEL_SYSTEM.md) - API reference
 - [TOOLS.md](TOOLS.md) - Agent tools reference

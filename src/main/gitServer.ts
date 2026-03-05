@@ -738,7 +738,6 @@ export class GitServer {
       if (packageJson.natstack) {
         const ns = packageJson.natstack;
         result.launchable = {
-          type: ns.type || "app",
           title: ns.title || packageJson.name || path.basename(absolutePath),
           repoArgs: ns.repoArgs,
           envArgs: ns.envArgs,

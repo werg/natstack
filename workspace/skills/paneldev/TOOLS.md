@@ -83,8 +83,7 @@ Available via `import { ... } from "@workspace/runtime"`:
 | API | Description |
 |-----|-------------|
 | `rpc` | RPC bridge for calling main-process services via `rpc.call(target, method, ...args)` |
-| `createChild(source, opts)` | Create a child panel |
-| `createBrowserChild(url)` | Create a browser child |
+| `buildPanelLink(source, opts)` | Build a URL for navigating to a panel |
 | `focusPanel(panelId)` | Focus an existing panel by ID |
 
 **Pre-injected** (use directly, do NOT import):
@@ -159,21 +158,21 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { rpc, createChild, focusPanel } from "@workspace/runtime";
+  import { rpc, buildPanelLink } from "@workspace/runtime";
   await rpc.call("main", "git.contextOp", contextId, "commit_and_push", "panels/my-app", "Initial");
-  const handle = await createChild("panels/my-app", { contextId });
-  focusPanel(handle.id);
-  console.log("Panel ID:", handle.id);
+  window.open(buildPanelLink("panels/my-app", { contextId }));
 `, timeout: 30000 })
 ```
+
+`window.open` creates a child panel (like target="_blank"). The host intercepts the open and creates a proper panel view.
 
 #### Rebuild after edits
 
 ```
 eval({ code: `
-  import { rpc, focusPanel } from "@workspace/runtime";
+  import { rpc, buildPanelLink } from "@workspace/runtime";
   await rpc.call("main", "git.contextOp", contextId, "commit_and_push", "panels/my-app", "Update");
-  focusPanel("<panel-id>");
+  window.open(buildPanelLink("panels/my-app", { contextId }));
 `, timeout: 30000 })
 ```
 

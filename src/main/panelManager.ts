@@ -1,25 +1,17 @@
 import * as path from "path";
-import * as fs from "fs";
 import { randomBytes } from "crypto";
 import { nativeTheme } from "electron";
 import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("PanelManager");
-import type { PanelEventPayload, Panel, PanelManifest, PanelSnapshot } from "./panelTypes.js";
+import type { PanelEventPayload, Panel, PanelManifest } from "./panelTypes.js";
 import {
   loadPanelManifest,
   getCurrentSnapshot,
-  getPanelType,
   getPanelSource,
-  getPanelOptions,
   getPanelContextId,
   createSnapshot,
-  createNavigationSnapshot,
-  canGoBack,
-  canGoForward,
-  getShellPage,
-  getBrowserResolvedUrl,
-  getPushState,
+  getSourcePage,
   getPanelStateArgs,
 } from "./panelTypes.js";
 import { validateStateArgs } from "./stateArgsValidator.js";
@@ -47,7 +39,6 @@ import { checkWorktreeClean, checkGitRepository } from "./gitChecks.js";
 import { eventService } from "./services/eventsService.js";
 import { getPanelPersistence } from "./db/panelPersistence.js";
 import { getPanelSearchIndex } from "./db/panelSearchIndex.js";
-import { extractAndIndexPageContent } from "./db/pageContentExtractor.js";
 import { logMemorySnapshot } from "./memoryMonitor.js";
 
 type PanelCreateOptions = {
@@ -62,15 +53,12 @@ type PanelCreateOptions = {
   contextId?: string;
   /** If true, immediately focus the new panel after creation (only applies to app panels) */
   focus?: boolean;
-  /** If true, replace the caller panel instead of creating a sibling */
-  replace?: boolean;
 };
 
 /** Parsed result from a *.localhost panel URL */
 type ParsedPanelUrl = {
   source: string;
   isShell: boolean;
-  action?: string;
   contextId?: string;
   options: PanelCreateOptions;
   env?: Record<string, string>;
@@ -101,7 +89,7 @@ export class PanelManager {
   private currentTheme: "light" | "dark" = nativeTheme.shouldUseDarkColors ? "dark" : "light";
   private panelsRoot: string;
   private serverInfo: ServerInfo;
-  private pendingBrowserNavigations: Map<string, { url: string; index: number }> = new Map();
+  // pendingBrowserNavigations removed — navigation is URL-based
   private rpcServer: import("../server/rpcServer.js").RpcServer | null = null;
   private rpcPort: number | null = null;
   private panelHttpServer: PanelHttpServer | null = null;
@@ -124,16 +112,6 @@ export class PanelManager {
     this.panelsRoot = workspace?.path ?? path.resolve(process.cwd());
   }
 
-  /**
-   * Get the HTTP URL for a shell panel. Ensures auth tokens exist.
-   */
-  private async registerShellInHttpServer(panelId: string, page: string, panel: Panel): Promise<string> {
-    // Ensure auth tokens exist (may not persist across restarts).
-    getTokenManager().ensureToken(panelId, "panel");
-    await this.serverInfo.ensurePanelToken(panelId, "panel");
-
-    return this.getPanelUrlForSource(panel, `about/${page}`);
-  }
 
   /** Set the RPC server for WS-based communication */
   setFsService(service: FsService): void {
@@ -222,7 +200,7 @@ export class PanelManager {
       const existingPanels = persistence.getFullTree();
 
       if (existingPanels.length > 0) {
-        // Clean up shell panels that have no children (they served their purpose)
+        // Clean up about/* panels that have no children (they served their purpose)
         this.cleanupChildlessShellPanels(existingPanels, persistence);
 
         // Filter out panels that were archived during cleanup
@@ -324,14 +302,14 @@ export class PanelManager {
   }
 
   /**
-   * Archive shell panels that have no children at startup/shutdown.
+   * Archive shell panels (about/* sources) that have no children at startup/shutdown.
    *
    * Shell panels are launcher UIs (e.g., about/new, about/about) that exist
    * primarily to launch other panels. A childless shell panel indicates the
    * user opened a launcher but never launched anything from it. These serve
    * no purpose in the tree and should be cleaned up.
    *
-   * Note: This only applies to shell-type panels, not app/worker/browser panels
+   * Note: This only applies to about/* panels, not regular app panels
    * which users might legitimately want to keep without children.
    */
   private cleanupChildlessShellPanels(
@@ -348,7 +326,7 @@ export class PanelManager {
 
       // Archive childless shell panels (except blocking pages like dirty-repo/git-init
       // which represent real panels navigated in-place for git resolution)
-      const shellPage = getPanelType(panel) === "shell" ? getShellPage(panel) : undefined;
+      const shellPage = getSourcePage(panel);
       if (shellPage && shellPage !== "dirty-repo" && shellPage !== "git-init" && panel.children.length === 0) {
         log.verbose(` Archiving childless shell panel: ${panel.id}`);
         try {
@@ -363,7 +341,7 @@ export class PanelManager {
 
   /**
    * Public method to run cleanup on app shutdown.
-   * Archives childless shell panels so they don't clutter the tree on next startup.
+   * Archives childless about/* panels so they don't clutter the tree on next startup.
    */
   public runShutdownCleanup(): void {
     console.log("[PanelManager] Running shutdown cleanup...");
@@ -372,7 +350,7 @@ export class PanelManager {
 
     // Clear accumulated maps to prevent memory leaks
     this.crashHistory.clear();
-    this.pendingBrowserNavigations.clear();
+    // pendingBrowserNavigations removed — navigation is URL-based
     this.browserStateCleanup.clear();
     this.linkInterceptionHandlers.clear();
     this.contentLoadHandlers.clear();
@@ -381,26 +359,13 @@ export class PanelManager {
 
   /**
    * Recursively restore panels from database.
-   * App/worker panels are restored as unloaded and rebuild on focus.
-   * Browser/shell panels recreate views directly.
+   * All panels are restored as unloaded and rebuild on focus.
    */
   private restorePanelViews(panels: Panel[]): void {
     for (const panel of panels) {
       try {
-        const panelType = getPanelType(panel);
-        if (panelType === "app") {
-          // App panels rebuild only when focused/loaded.
-          this.markPanelUnloaded(panel);
-        } else if (panelType === "browser") {
-          const browserUrl = getBrowserResolvedUrl(panel) ?? getPanelSource(panel);
-          // NatStack panel URLs use {subdomain}.localhost — stale ports/tokens from previous sessions.
-          // Use "panel" type to compute fresh URL with current port + auth cookies.
-          const isLocalhost = browserUrl.includes(".localhost:");
-          void this.createViewForPanel(panel.id, browserUrl, isLocalhost ? "panel" : "browser", getPanelContextId(panel));
-        } else if (panelType === "shell") {
-          // Shell panel - restore via HTTP server registration
-          void this.restoreShellPanel(panel);
-        }
+        // All panels rebuild only when focused/loaded.
+        this.markPanelUnloaded(panel);
       } catch (error) {
         console.error(`[PanelManager] Failed to restore panel ${panel.id}:`, error);
       }
@@ -432,36 +397,6 @@ export class PanelManager {
     this.persistArtifacts(panel.id, panel.artifacts);
   }
 
-  /**
-   * Restore a shell panel by building its page and creating the view.
-   */
-  private async restoreShellPanel(panel: Panel): Promise<void> {
-    try {
-      // Get the shell page from the snapshot
-      const page = getShellPage(panel);
-      if (!page) {
-        throw new Error(`Panel ${panel.id} is not a shell panel`);
-      }
-
-      // Register in HTTP server — build happens on demand
-      const url = await this.registerShellInHttpServer(panel.id, page, panel);
-
-      // Create the view — HTTP server serves building page then auto-refreshes
-      await this.createViewForPanel(panel.id, url, "panel", getPanelContextId(panel));
-
-      panel.artifacts = { buildState: "building" };
-      this.persistArtifacts(panel.id, panel.artifacts);
-      this.notifyPanelTreeUpdate();
-    } catch (error) {
-      console.error(`[PanelManager] Failed to restore shell panel ${panel.id}:`, error);
-      panel.artifacts = {
-        buildState: "error",
-        buildProgress: `Restore failed: ${error instanceof Error ? error.message : String(error)}`,
-      };
-      this.persistArtifacts(panel.id, panel.artifacts);
-      this.notifyPanelTreeUpdate();
-    }
-  }
 
   /**
    * Get the ViewManager (throws if not set).
@@ -474,15 +409,15 @@ export class PanelManager {
   }
 
   /**
-   * Create a WebContentsView for a panel or browser.
-   * Called when panel build is ready or browser is created.
+   * Create a WebContentsView for a panel.
+   * Called when panel build is ready or panel is created.
    * @param panelId - The panel's tree ID
    * @param url - The URL to load
-   * @param type - The view type
-   * @param contextId - The context ID for partition (required for panel, ignored for browser)
+   * @param _type - Unused, kept for call-site compatibility (always "panel")
+   * @param contextId - The context ID for partition
    * @throws Error if ViewManager is not set
    */
-  async createViewForPanel(panelId: string, url: string, type: "panel" | "browser", contextId?: string): Promise<void> {
+  async createViewForPanel(panelId: string, url: string, _type: "panel" = "panel", contextId?: string): Promise<void> {
     if (!this.viewManager) {
       throw new Error(`[PanelManager] ViewManager not set, cannot create view for ${panelId}`);
     }
@@ -499,130 +434,87 @@ export class PanelManager {
     const panel = this.panels.get(panelId);
     const parentId = this.findParentId(panelId);
 
-    if (type === "browser") {
-      // Browser panels: adblock preload for cosmetic filtering, shared session for cookies/auth
-      const view = this.viewManager.createView({
-        id: panelId,
-        type: "browser",
-        // No partition = default session (shared across browsers)
-        preload: this.viewManager.getAdblockPreloadPath(), // Adblock preload for cosmetic filtering
-        url: url,
-        parentId: parentId ?? undefined,
-        injectHostThemeVariables: false,
+    // Set subdomain-scoped auth cookie + nonce-keyed boot cookie before
+    // creating the view, so the webview's first request is already authenticated.
+    let viewUrl = url;
+    if (this.panelHttpServer && this.panelHttpPort && panel) {
+      const ctxId = getPanelContextId(panel);
+      const subdomain = contextIdToSubdomain(ctxId);
+      const source = getPanelSource(panel);
+      const rpcToken = getTokenManager().ensureToken(panelId, "panel");
+      const origin = `http://${subdomain}.localhost:${this.panelHttpPort}`;
+      const bk = randomBytes(8).toString("hex");
+
+      const sid = this.panelHttpServer.ensureSubdomainSession(subdomain);
+      const { session: electronSession } = await import("electron");
+      await electronSession.defaultSession.cookies.set({
+        url: `${origin}/`,
+        name: "_ns_session",
+        value: sid,
+        path: "/",
+        httpOnly: true,
+        sameSite: "strict",
+      });
+      await electronSession.defaultSession.cookies.set({
+        url: `${origin}/`,
+        name: `_ns_boot_${bk}`,
+        value: encodeURIComponent(JSON.stringify({
+          pid: panelId,
+          rpcPort: this.rpcPort!,
+          rpcToken,
+        })),
+        path: "/",
+        httpOnly: false,
+        sameSite: "strict",
+        expirationDate: Math.floor(Date.now() / 1000) + 60,
       });
 
-      // Register with CDP server when dom-ready (use named handler for cleanup)
-      const handlers: { domReady?: () => void; didFinishLoad?: () => void } = {};
-      if (parentId) {
-        handlers.domReady = () => {
-          getCdpServer().registerBrowser(panelId, view.webContents.id, parentId);
-        };
-        view.webContents.on("dom-ready", handlers.domReady);
-      }
-
-      // Track browser state changes
-      this.setupBrowserStateTracking(panelId, view.webContents);
-
-      // Extract and index page content for search (use named handler for cleanup)
-      handlers.didFinishLoad = () => {
-        extractAndIndexPageContent(panelId, view.webContents);
-      };
-      view.webContents.on("did-finish-load", handlers.didFinishLoad);
-      this.contentLoadHandlers.set(panelId, handlers);
-
-      // Intercept localhost URL and new-window navigations for child creation
-      this.setupLinkInterception(panelId, view.webContents, "browser");
-    } else {
-      const panelType = panel ? getPanelType(panel) : undefined;
-
-      // Set subdomain-scoped auth cookie + nonce-keyed boot cookie before
-      // creating the view, so the webview's first request is already authenticated.
-      let viewUrl = url;
-      if (this.panelHttpServer && this.panelHttpPort && panel) {
-        const ctxId = getPanelContextId(panel);
-        const subdomain = contextIdToSubdomain(ctxId);
-        const source = getPanelSource(panel);
-        const rpcToken = getTokenManager().ensureToken(panelId, "panel");
-        const origin = `http://${subdomain}.localhost:${this.panelHttpPort}`;
-        const bk = randomBytes(8).toString("hex");
-
-        const sid = this.panelHttpServer.ensureSubdomainSession(subdomain);
-        const { session: electronSession } = await import("electron");
-        await electronSession.defaultSession.cookies.set({
-          url: `${origin}/`,
-          name: "_ns_session",
-          value: sid,
-          path: "/",
-          httpOnly: true,
-          sameSite: "strict",
-        });
-        await electronSession.defaultSession.cookies.set({
-          url: `${origin}/`,
-          name: `_ns_boot_${bk}`,
-          value: encodeURIComponent(JSON.stringify({
-            pid: panelId,
-            rpcPort: this.rpcPort!,
-            rpcToken,
-          })),
-          path: "/",
-          httpOnly: false,
-          sameSite: "strict",
-          expirationDate: Math.floor(Date.now() / 1000) + 60,
-        });
-
-        // Server RPC port/token for the second WS connection (build, AI, DB services)
-        const serverRpcToken = await this.serverInfo.ensurePanelToken(panelId, "panel");
-        viewUrl = `${origin}/${source}/?pid=${encodeURIComponent(panelId)}&_bk=${bk}&rpcPort=${this.rpcPort!}&rpcToken=${encodeURIComponent(rpcToken)}&serverRpcPort=${this.serverInfo.rpcPort}&serverRpcToken=${encodeURIComponent(serverRpcToken)}`;
-      }
-
-      // All panels (app + shell) served via HTTP subdomain.
-      // Config fetched at runtime by loader script; subdomain origin isolation
-      // replaces Electron partition-based isolation.
-      const view = this.viewManager.createView({
-        id: panelId,
-        type: "panel",
-        preload: null, // No preload — config fetched at runtime via /__config
-        url: viewUrl,
-        parentId: parentId ?? undefined,
-        injectHostThemeVariables: true,
-      });
-
-      // Track browser state (URL, loading, title) for all panel types including shell
-      this.setupBrowserStateTracking(panelId, view.webContents);
-
-      // CDP registration and content indexing are for app panels, not shell pages
-      if (panelType !== "shell") {
-        // Register app panels with CDP server for automation/testing (like browsers)
-        // Use named handler for cleanup
-        if (parentId) {
-          const domReadyHandler = () => {
-            getCdpServer().registerBrowser(panelId, view.webContents.id, parentId);
-          };
-          view.webContents.on("dom-ready", domReadyHandler);
-          this.contentLoadHandlers.set(panelId, { domReady: domReadyHandler });
-        }
-
-        // Intercept localhost URL and http(s) link clicks to create children
-        this.setupLinkInterception(panelId, view.webContents, "panel");
-      } else {
-        // Shell pages also need link interception for panel/shell navigation
-        this.setupLinkInterception(panelId, view.webContents, "panel");
-      }
+      // Server RPC port/token for the second WS connection (build, AI, DB services)
+      const serverRpcToken = await this.serverInfo.ensurePanelToken(panelId, "panel");
+      viewUrl = `${origin}/${source}/?pid=${encodeURIComponent(panelId)}&_bk=${bk}&rpcPort=${this.rpcPort!}&rpcToken=${encodeURIComponent(rpcToken)}&serverRpcPort=${this.serverInfo.rpcPort}&serverRpcToken=${encodeURIComponent(serverRpcToken)}`;
     }
+
+    // All panels served via HTTP subdomain.
+    // Config fetched at runtime by loader script; subdomain origin isolation
+    // replaces Electron partition-based isolation.
+    const view = this.viewManager.createView({
+      id: panelId,
+      type: "panel",
+      preload: null, // No preload — config fetched at runtime via /__config
+      url: viewUrl,
+      parentId: parentId ?? undefined,
+      injectHostThemeVariables: true,
+    });
+
+    // Track browser state (URL, loading, title) for all panels
+    this.setupBrowserStateTracking(panelId, view.webContents);
+
+    // Register panels with CDP server for automation/testing
+    // Use named handler for cleanup
+    if (parentId) {
+      const domReadyHandler = () => {
+        getCdpServer().registerBrowser(panelId, view.webContents.id, parentId);
+      };
+      view.webContents.on("dom-ready", domReadyHandler);
+      this.contentLoadHandlers.set(panelId, { domReady: domReadyHandler });
+    }
+
+    // Intercept localhost URL and http(s) link clicks to create children
+    this.setupLinkInterception(panelId, view.webContents);
   }
 
   /**
    * Setup webContents event tracking for browser state (URL, loading, navigation).
    */
   private setupBrowserStateTracking(panelId: string, contents: Electron.WebContents): void {
-    let pendingState: Partial<SharedPanel.BrowserState & { url?: string }> = {};
+    let pendingState: Partial<{ url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean }> = {};
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     let cleaned = false;
 
     const flushPendingState = () => {
       if (cleaned) return; // Don't update after cleanup
       if (Object.keys(pendingState).length > 0) {
-        this.updateBrowserState(panelId, pendingState);
+        this.updatePanelState(panelId, pendingState);
         pendingState = {};
       }
       debounceTimer = null;
@@ -641,6 +533,19 @@ export class PanelManager {
       didNavigate: (_event: Electron.Event, url: string) => {
         log.verbose(` Panel ${panelId} navigated to: ${url}`);
         queueStateUpdate({ url });
+        // Update panel source metadata if the source path changed (same-subdomain nav)
+        try {
+          const parsed = new URL(url);
+          // Extract source from pathname: /panels/chat/ → panels/chat
+          const pathSource = parsed.pathname.replace(/^\//, "").replace(/\/$/, "");
+          const panel = this.panels.get(panelId);
+          if (panel && pathSource && getPanelSource(panel) !== pathSource) {
+            panel.snapshot.source = pathSource;
+            log.verbose(` Panel ${panelId} source updated to: ${pathSource}`);
+          }
+        } catch {
+          // Non-URL navigations (about:blank etc.) — ignore
+        }
       },
       didNavigateInPage: (_event: Electron.Event, url: string) => {
         queueStateUpdate({ url });
@@ -767,7 +672,6 @@ export class PanelManager {
   private setupLinkInterception(
     panelId: string,
     contents: Electron.WebContents,
-    viewType: "panel" | "browser"
   ): void {
     // Intercept new-window requests (middle click / ctrl+click / target="_blank").
     contents.setWindowOpenHandler((details) => {
@@ -778,76 +682,50 @@ export class PanelManager {
         void this.createPanel(
           panelId,
           parsed.source,
-          { replace: false, ...parsed.options },
+          parsed.options,
           parsed.stateArgs
         ).catch((err: unknown) => this.handleChildCreationError(panelId, err, url));
         return { action: "deny" };
       }
 
       if (/^https?:\/\//i.test(url)) {
-        void this.createBrowserChild(panelId, url).catch((err) =>
-          this.handleChildCreationError(panelId, err, url)
-        );
+        // External URLs — open in system browser
+        import("electron").then(({ shell }) => shell.openExternal(url));
         return { action: "deny" };
       }
 
       return { action: "deny" };
     });
 
-    // Intercept in-place navigations (normal left-click without modifiers).
+    // Intercept navigation: external URLs → system browser, cross-subdomain → context switch.
     const willNavigateHandler = (event: Electron.Event, url: string) => {
-      const parsed = this.parseLocalhostUrl(url);
-      if (parsed) {
-        event.preventDefault();
-        if (parsed.action === "child") {
-          void this.createPanel(
-            panelId,
-            parsed.source,
-            { replace: false, ...parsed.options },
-            parsed.stateArgs
-          ).catch((err: unknown) => this.handleChildCreationError(panelId, err, url));
-        } else {
-          const callerPanel = this.panels.get(panelId);
-          const isShellPanel = callerPanel && getPanelType(callerPanel) === "shell";
-
-          if (isShellPanel || parsed.contextId) {
-            // Shell panels: replace with new panel
-            // Non-shell with contextId: replace to get new storage partition
-            void this.createPanel(
-              panelId,
-              parsed.source,
-              { replace: true, ...parsed.options },
-              parsed.stateArgs
-            ).catch((err: unknown) => this.handleChildCreationError(panelId, err, url));
-          } else {
-            // Non-shell navigation: mutate panel in place
-            const targetType: SharedPanel.PanelType = parsed.isShell ? "shell" : "app";
-            void this.navigatePanel(panelId, parsed.source, targetType, {
-              env: parsed.env, stateArgs: parsed.stateArgs,
-            }).catch((err: unknown) =>
-              this.handleChildCreationError(panelId, err, url)
-            );
-          }
+      // External URLs → system browser
+      if (!url.includes(".localhost:") && !url.includes("//localhost:")) {
+        if (/^https?:\/\//i.test(url)) {
+          event.preventDefault();
+          import("electron").then(({ shell }) => shell.openExternal(url));
         }
         return;
       }
 
-      // Localhost URLs not caught by parseLocalhostUrl (bootstrap/recovery params)
-      // should proceed without interception — they're the panel's own load.
-      if (/\.localhost[:/]/i.test(url) || /\/\/localhost[:/]/i.test(url)) {
-        return; // Allow the navigation
-      }
+      // Cross-subdomain: detect and handle context switch
+      const panel = this.panels.get(panelId);
+      if (!panel || !this.panelHttpServer || !this.panelHttpPort) return;
 
-      // http(s):// handling (external URLs only — localhost already handled above)
-      if (/^https?:\/\//i.test(url)) {
-        if (viewType === "panel") {
-          event.preventDefault();
-          void this.navigatePanel(panelId, url, "browser").catch((err) =>
-            this.handleChildCreationError(panelId, err, url)
-          );
-        }
-        // Browser views: allow normal http(s) navigation in place
-      }
+      const currentSubdomain = contextIdToSubdomain(getPanelContextId(panel));
+      try {
+        const targetUrl = new URL(url);
+        const targetSubdomain = targetUrl.hostname.endsWith(".localhost")
+          ? targetUrl.hostname.slice(0, -".localhost".length)
+          : null;
+
+        if (!targetSubdomain || targetSubdomain === currentSubdomain) return;
+        // Different subdomain → intercept, update context, re-navigate with auth
+
+        event.preventDefault();
+        void this.handleCrossContextNavigation(panelId, panel, targetUrl, targetSubdomain)
+          .catch((err) => log.warn(`[CrossCtx] Navigation failed for ${panelId}:`, err));
+      } catch { /* not a valid URL, let it pass */ }
     };
 
     // Store and register the handler for cleanup
@@ -882,7 +760,6 @@ export class PanelManager {
       return {
         source,
         isShell: source.startsWith("about/"),
-        action: u.searchParams.get("action") ?? undefined,
         contextId: u.searchParams.get("contextId") ?? undefined,
         options: {
           contextId: u.searchParams.get("contextId") ?? undefined,
@@ -908,6 +785,108 @@ export class PanelManager {
         contents.off("will-navigate", handler);
       }
       this.linkInterceptionHandlers.delete(panelId);
+    }
+  }
+
+  /**
+   * Handle cross-subdomain navigation by updating the panel's context in-place
+   * and re-navigating the existing webview with proper auth cookies.
+   *
+   * This avoids triggering onDemandCreate on the HTTP server, which would
+   * try to create a duplicate panel.
+   */
+  private async handleCrossContextNavigation(
+    panelId: string,
+    panel: Panel,
+    targetUrl: URL,
+    targetSubdomain: string,
+  ): Promise<void> {
+    if (!this.panelHttpServer || !this.panelHttpPort || !this.viewManager) return;
+
+    // Parse source from URL pathname: /panels/chat/ → panels/chat
+    const pathMatch = targetUrl.pathname.match(/^\/([^/]+\/[^/]+)(\/.*)?$/);
+    if (!pathMatch) {
+      log.warn(`[CrossCtx] Cannot parse source from URL: ${targetUrl.href}`);
+      return;
+    }
+    const source = pathMatch[1]!;
+
+    // Parse stateArgs from URL query params
+    let stateArgs: Record<string, unknown> | undefined;
+    if (targetUrl.searchParams.has("stateArgs")) {
+      try {
+        stateArgs = JSON.parse(targetUrl.searchParams.get("stateArgs")!);
+      } catch { /* ignore parse errors */ }
+    }
+
+    // Derive new contextId from the target subdomain's query params or the subdomain itself.
+    // buildPanelLink puts contextId in the query when crossing contexts.
+    const newContextId = targetUrl.searchParams.get("contextId") ?? targetSubdomain;
+
+    log.info(`[CrossCtx] Panel ${panelId}: context switch ${contextIdToSubdomain(getPanelContextId(panel))} → ${targetSubdomain} (source: ${source})`);
+
+    // Save old state for rollback on failure
+    const oldContextId = panel.snapshot.contextId;
+    const oldSource = panel.snapshot.source;
+    const oldStateArgs = panel.snapshot.stateArgs;
+
+    try {
+      // 1. Set auth cookies for the new subdomain (same pattern as createViewForPanel)
+      const rpcToken = getTokenManager().ensureToken(panelId, "panel");
+      const origin = `http://${targetSubdomain}.localhost:${this.panelHttpPort}`;
+      const bk = randomBytes(8).toString("hex");
+
+      const sid = this.panelHttpServer.ensureSubdomainSession(targetSubdomain);
+      const { session: electronSession } = await import("electron");
+      await electronSession.defaultSession.cookies.set({
+        url: `${origin}/`,
+        name: "_ns_session",
+        value: sid,
+        path: "/",
+        httpOnly: true,
+        sameSite: "strict",
+      });
+      await electronSession.defaultSession.cookies.set({
+        url: `${origin}/`,
+        name: `_ns_boot_${bk}`,
+        value: encodeURIComponent(JSON.stringify({
+          pid: panelId,
+          rpcPort: this.rpcPort!,
+          rpcToken,
+        })),
+        path: "/",
+        httpOnly: false,
+        sameSite: "strict",
+        expirationDate: Math.floor(Date.now() / 1000) + 60,
+      });
+
+      // 2. Build authenticated URL
+      const serverRpcToken = await this.serverInfo.ensurePanelToken(panelId, "panel");
+      const authUrl = `${origin}/${source}/?pid=${encodeURIComponent(panelId)}&_bk=${bk}&rpcPort=${this.rpcPort!}&rpcToken=${encodeURIComponent(rpcToken)}&serverRpcPort=${this.serverInfo.rpcPort}&serverRpcToken=${encodeURIComponent(serverRpcToken)}`;
+
+      // 3. Update panel snapshot (context, source, stateArgs) — after async ops succeed
+      panel.snapshot.contextId = newContextId;
+      panel.snapshot.source = source;
+      if (stateArgs !== undefined) {
+        panel.snapshot.stateArgs = stateArgs;
+      }
+
+      // 4. Re-register FS mapping for the new context
+      this.fsService?.registerPanelContext(panelId, newContextId);
+
+      // 5. Navigate the existing webview
+      await this.viewManager.navigateView(panelId, authUrl);
+
+      // 6. Persist updated snapshot and notify panel tree
+      this.persistPanel(panel, this.findParentId(panelId));
+      this.notifyPanelTreeUpdate();
+    } catch (err) {
+      // Rollback snapshot on failure
+      panel.snapshot.contextId = oldContextId;
+      panel.snapshot.source = oldSource;
+      panel.snapshot.stateArgs = oldStateArgs;
+      this.fsService?.registerPanelContext(panelId, oldContextId);
+      throw err;
     }
   }
 
@@ -1021,7 +1000,6 @@ export class PanelManager {
 
   /**
    * Shared creation path for both root and child panels.
-   * When replacePanel is provided, it replaces that panel in the tree at the same position.
    * Context ID is auto-generated as ctx_{instanceId} if not provided.
    *
    * Root panel modes:
@@ -1035,10 +1013,9 @@ export class PanelManager {
     options: PanelCreateOptions;
     isRoot?: boolean;
     addAsRoot?: boolean;
-    replacePanel?: Panel;
     stateArgs?: Record<string, unknown>;
-  }): Promise<{ id: string; type: SharedPanel.PanelType; title: string }> {
-    const { manifest, relativePath, parent, options, isRoot, addAsRoot, replacePanel, stateArgs } = params;
+  }): Promise<{ id: string; title: string }> {
+    const { manifest, relativePath, parent, options, isRoot, addAsRoot, stateArgs } = params;
 
     // Validate repoArgs: caller must provide exactly the args declared in manifest
     const declaredArgs = manifest.repoArgs ?? [];
@@ -1103,8 +1080,8 @@ export class PanelManager {
 
     try {
       await this.serverInfo.createPanelToken(panelId, "panel");     // Server git/pubsub auth
-      // Resolve context ID: use provided contextId if available, otherwise generate from panel ID
-      const contextId = options.contextId ?? `ctx_${panelId.replace(/[/:]/g, "~")}`;
+      // Resolve context ID: use provided contextId if available, otherwise generate a DNS-safe one from panel ID
+      const contextId = options.contextId ?? `ctx-${panelId.replace(/[^a-z0-9]/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").toLowerCase().slice(0, 59)}`;
 
       // Register panel→context mapping for fs service routing
       this.fsService?.registerPanelContext(panelId, contextId);
@@ -1117,7 +1094,6 @@ export class PanelManager {
       // Create the initial snapshot with all options and stateArgs
       const initialSnapshot = createSnapshot(
         relativePath,
-        "app",
         contextId,
         {
           env: panelEnv,
@@ -1126,66 +1102,20 @@ export class PanelManager {
         validatedStateArgs
       );
 
-      // Create the panel with history-based structure
+      // Create the panel with snapshot
       const panel: Panel = {
         id: panelId,
         title: manifest.title,
         children: [],
         selectedChildId: null,
-        history: [initialSnapshot],
-        historyIndex: 0,
+        snapshot: initialSnapshot,
         artifacts: {
           buildState: "building",
           buildProgress: "Starting build...",
         },
       };
 
-      // IMPORTANT: replacePanel branch must come BEFORE isRoot check
-      // to prevent root replacement from hitting the "reset everything" isRoot path
-      if (replacePanel) {
-        // Replace mode: clean up first, then insert new panel
-        // This ensures cleanup code doesn't see the new panel while old is still live
-
-        // Track selection and position before cleanup
-        const wasSelected = parent ? parent.selectedChildId === replacePanel.id : false;
-        let replaceIndex = -1;
-        if (parent) {
-          replaceIndex = parent.children.findIndex(c => c.id === replacePanel.id);
-        } else {
-          replaceIndex = this.rootPanels.findIndex(p => p.id === replacePanel.id);
-        }
-
-        // Validate that we found the panel (should always succeed)
-        if (replaceIndex === -1) {
-          // This shouldn't happen - replacePanel should be in tree
-          // Log error and abort replacement to avoid corrupted state
-          console.error(`[PanelManager] replacePanel ${replacePanel.id} not found in tree - aborting replacement`);
-          throw new Error(`Cannot replace panel: ${replacePanel.id} not found in tree`);
-        }
-
-        // Remove from tree before cleanup to avoid iteration issues
-        if (parent) {
-          parent.children.splice(replaceIndex, 1);
-        } else {
-          this.rootPanels.splice(replaceIndex, 1);
-        }
-
-        // Clean up the replaced panel and its entire subtree
-        this.closePanelSubtree(replacePanel);
-
-        // NOW insert the new panel at the same position
-        if (parent) {
-          parent.children.splice(replaceIndex, 0, panel);
-          // Only update selection if the replaced panel was selected
-          if (wasSelected) {
-            parent.selectedChildId = panel.id;
-          }
-        } else {
-          // Root replacement - insert at same index
-          this.rootPanels.splice(replaceIndex, 0, panel);
-        }
-        this.panels.set(panel.id, panel);
-      } else if (isRoot && addAsRoot) {
+      if (isRoot && addAsRoot) {
         // Add as root without resetting - used for init panels
         this.rootPanels.unshift(panel);
         this.panels.set(panel.id, panel);
@@ -1208,7 +1138,7 @@ export class PanelManager {
       // - Always focus after replace (new panel takes over from the one being used)
       // - Otherwise, focus only if explicitly requested (and only for app panels)
       // Note: focusPanel calls updateSelectedPath and notifyPanelTreeUpdate
-      if (replacePanel || (options?.focus && getPanelType(panel) === "app")) {
+      if (options?.focus) {
         this.focusPanel(panel.id);
       } else {
         this.notifyPanelTreeUpdate();
@@ -1224,17 +1154,18 @@ export class PanelManager {
         const absolutePanelPath = path.resolve(this.panelsRoot, panelSource);
         const { isRepo, path: repoPath } = await checkGitRepository(absolutePanelPath);
         if (!isRepo) {
-          await this.navigatePanel(panel.id, "about/git-init", "shell", {
-            stateArgs: { repoPath },
-          });
-          return { id: panel.id, type: "app" as SharedPanel.PanelType, title: panel.title };
+          // Load git-init shell page directly in the webview
+          const gitInitUrl = this.getPanelUrlForSource(panel, `about/git-init`);
+          panel.snapshot = createSnapshot("about/git-init", getPanelContextId(panel), {}, { repoPath });
+          await this.createViewForPanel(panel.id, gitInitUrl, "panel", getPanelContextId(panel));
+          return { id: panel.id, title: panel.title };
         }
         const { clean, path: cleanRepoPath } = await checkWorktreeClean(absolutePanelPath);
         if (!clean) {
-          await this.navigatePanel(panel.id, "about/dirty-repo", "shell", {
-            stateArgs: { repoPath: cleanRepoPath },
-          });
-          return { id: panel.id, type: "app" as SharedPanel.PanelType, title: panel.title };
+          const dirtyUrl = this.getPanelUrlForSource(panel, `about/dirty-repo`);
+          panel.snapshot = createSnapshot("about/dirty-repo", getPanelContextId(panel), {}, { repoPath: cleanRepoPath });
+          await this.createViewForPanel(panel.id, dirtyUrl, "panel", getPanelContextId(panel));
+          return { id: panel.id, title: panel.title };
         }
       }
 
@@ -1251,7 +1182,7 @@ export class PanelManager {
       };
       this.notifyPanelTreeUpdate();
 
-      return { id: panel.id, type: "app" as SharedPanel.PanelType, title: panel.title };
+      return { id: panel.id, title: panel.title };
     } catch (err) {
       // If panel creation fails after token was created, clean up
       getTokenManager().revokeToken(panelId);
@@ -1270,8 +1201,6 @@ export class PanelManager {
     try {
       const persistence = getPanelPersistence();
       const currentSnapshot = getCurrentSnapshot(panel);
-      const panelType = currentSnapshot.type;
-
       // Check if panel already exists (e.g., on app restart)
       const existingPanel = persistence.getPanel(panel.id);
 
@@ -1282,8 +1211,7 @@ export class PanelManager {
         // Note: artifacts are NOT persisted - they're runtime-only state
         persistence.updatePanel(panel.id, {
           parentId,
-          history: panel.history,
-          historyIndex: panel.historyIndex,
+          snapshot: panel.snapshot,
         });
         if (parentId) {
           persistence.setSelectedChild(parentId, panel.id);
@@ -1304,7 +1232,7 @@ export class PanelManager {
         });
 
         // Log created event
-        persistence.logEvent(panel.id, "created", { type: panelType });
+        persistence.logEvent(panel.id, "created", {});
 
         // Set parent's selected_child_id to this new child
         // This ensures breadcrumbs show the newly created child as selected
@@ -1316,33 +1244,23 @@ export class PanelManager {
             inMemoryParent.selectedChildId = panel.id;
           }
         }
+      } else {
+        // Update existing active panel's snapshot in DB
+        persistence.updatePanel(panel.id, {
+          parentId,
+          snapshot: currentSnapshot,
+        });
       }
 
       // Index panel for search
       try {
         const searchIndex = getPanelSearchIndex();
         const source = currentSnapshot.source;
-        if (panelType === "app") {
-          searchIndex.indexPanel({
-            id: panel.id,
-            type: panelType,
-            title: panel.title,
-            path: source,
-          });
-        } else if (panelType === "browser") {
-          searchIndex.indexPanel({
-            id: panel.id,
-            type: "browser",
-            title: panel.title,
-            url: source,
-          });
-        } else if (panelType === "shell") {
-          searchIndex.indexPanel({
-            id: panel.id,
-            type: "shell",
-            title: panel.title,
-          });
-        }
+        searchIndex.indexPanel({
+          id: panel.id,
+          title: panel.title,
+          path: source,
+        });
       } catch (indexError) {
         console.error(`[PanelManager] Failed to index panel ${panel.id}:`, indexError);
       }
@@ -1357,10 +1275,8 @@ export class PanelManager {
    * - App panels from manifest source paths (e.g., "panels/editor")
    * - Shell pages with "about/" prefix (e.g., "about/about", "about/model-provider-config")
    *
-   * When options.replace is true, the caller panel is replaced in the tree.
-   * When options.replace is false (default), a child panel is created under the caller.
-   *
-   * Main process handles git checkout and build asynchronously for app types.
+   * A child panel is created under the caller.
+   * Main process handles git checkout and build asynchronously.
    * Returns panel info immediately; build happens in background.
    */
   async createPanel(
@@ -1368,33 +1284,27 @@ export class PanelManager {
     source: string,
     options?: PanelCreateOptions,
     stateArgs?: Record<string, unknown>
-  ): Promise<{ id: string; type: SharedPanel.PanelType; title: string }> {
+  ): Promise<{ id: string; title: string }> {
     const caller = this.panels.get(callerId);
     if (!caller) {
       throw new Error(`Caller panel not found: ${callerId}`);
     }
 
-    // Determine the actual parent based on replace mode
-    let parent: Panel | null;
-    let replacePanel: Panel | undefined;
+    // Caller is the parent of the new panel
+    const parent: Panel | null = caller;
 
-    if (options?.replace) {
-      // Replace mode: caller is being replaced, find its parent
-      parent = this.findParentPanel(callerId);
-      replacePanel = caller;
-
-      // Root replacement is allowed (parent will be null)
-      // The new panel becomes a root panel
-    } else {
-      // Child mode (default): caller is the parent
-      parent = caller;
-    }
-
-    // Check for shell page source (e.g., "about/about")
-    const shellMatch = source.match(/^about\/(.+)$/);
-    if (shellMatch && shellMatch[1]) {
-      const page = shellMatch[1];
-      return this.createShellPanelInternal(parent, page as SharedPanel.ShellPage, options, replacePanel, stateArgs);
+    // Shell pages (about/*) use the same creation path as regular panels
+    if (source.startsWith("about/")) {
+      // Shell pages don't have manifests on disk; use a minimal manifest
+      const page = source.slice(6);
+      const manifest: PanelManifest = { title: page };
+      return this.createPanelFromManifest({
+        manifest,
+        relativePath: source,
+        parent,
+        options: options ?? {},
+        stateArgs,
+      });
     }
 
     const { relativePath, absolutePath } = this.normalizePanelPath(source);
@@ -1408,7 +1318,7 @@ export class PanelManager {
         // Programmatic launch (e.g. agent's launch_panel tool): workspace
         // directory may not have files yet (push checkout is async). Use a
         // minimal manifest — the build system handles file discovery.
-        manifest = { type: "app", title: path.basename(relativePath) };
+        manifest = { title: path.basename(relativePath) };
       } else {
         throw new Error(
           `Failed to load manifest for ${source}: ${error instanceof Error ? error.message : String(error)}`
@@ -1421,93 +1331,8 @@ export class PanelManager {
       relativePath,
       parent,
       options: options ?? {},
-      replacePanel,
       stateArgs,
     });
-  }
-
-  /**
-   * Create a browser child panel that loads an external URL.
-   * Browser panels don't require manifest or build - they load external content directly.
-   */
-  async createBrowserChild(
-    parentId: string,
-    url: string
-  ): Promise<{ id: string; type: SharedPanel.PanelType; title: string }> {
-    const parent = this.panels.get(parentId);
-    if (!parent) {
-      throw new Error(`Parent panel not found: ${parentId}`);
-    }
-
-    // Validate URL protocol
-    let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(url);
-    } catch {
-      throw new Error(`Invalid URL format: "${url}"`);
-    }
-
-    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-      throw new Error(
-        `Invalid URL protocol "${parsedUrl.protocol}". Only http: and https: are allowed.`
-      );
-    }
-
-    // Always generate a unique name (callers can label via UI/title instead).
-    const browserName = `browser-${this.generatePanelNonce()}`;
-
-    const panelId = this.computePanelId({
-      relativePath: `browser/${browserName}`,
-      parent,
-      requestedId: browserName,
-      isRoot: false,
-    });
-
-    // Browser panels don't use partitions or templates - they use the default Chromium session.
-    // Generate a simple context ID without template resolution overhead.
-    const instanceId = panelId.replace(/[/:]/g, "~");
-    const contextId = `ctx_${instanceId}`;
-
-    if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
-      throw new Error(`A panel with id "${panelId}" is already running`);
-    }
-
-    // Create the initial snapshot for the browser panel
-    const initialSnapshot = createSnapshot(url, "browser", contextId, {});
-    // Add browser-specific state to snapshot
-    initialSnapshot.resolvedUrl = url;
-    initialSnapshot.browserState = {
-      pageTitle: parsedUrl.hostname,
-      isLoading: true,
-      canGoBack: false,
-      canGoForward: false,
-    };
-
-    const panel: Panel = {
-      id: panelId,
-      title: parsedUrl.hostname,
-      children: [],
-      selectedChildId: null,
-      history: [initialSnapshot],
-      historyIndex: 0,
-      artifacts: {
-        buildState: "ready",
-      },
-    };
-
-    parent.children.unshift(panel); // Prepend for newest-first ordering
-    parent.selectedChildId = panel.id;
-    this.panels.set(panel.id, panel);
-
-    // Persist to database
-    this.persistPanel(panel, parentId);
-
-    // Create WebContentsView for the browser (browsers don't use session-based partitions)
-    await this.createViewForPanel(panel.id, url, "browser", contextId);
-
-    this.notifyPanelTreeUpdate();
-
-    return { id: panel.id, type: "browser", title: panel.title };
   }
 
   /**
@@ -1566,440 +1391,8 @@ export class PanelManager {
     this.notifyPanelTreeUpdate();
   }
 
-  // ===========================================================================
-  // Navigation Methods
-  // ===========================================================================
+  // Navigation removed — URL-based navigation, browser handles history natively.
 
-  /**
-   * Navigate a panel to a new source in-place.
-   * - Truncates forward history (like browser navigation)
-   * - Pushes new snapshot to history
-   * - Loads the new content
-   */
-  async navigatePanel(
-    panelId: string,
-    source: string,
-    targetType: SharedPanel.PanelType,
-    options?: { env?: Record<string, string>; stateArgs?: Record<string, unknown> }
-  ): Promise<void> {
-    const panel = this.panels.get(panelId);
-    if (!panel) {
-      throw new Error(`Panel not found: ${panelId}`);
-    }
-
-    // Capture current type/source BEFORE changing history
-    const previousType = getPanelType(panel);
-    const previousSource = getPanelSource(panel);
-
-    // Validate that targetType is consistent with source
-    // - URLs (http://, https://) should be "browser"
-    // - about/ prefix should be "shell"
-    // - panels/ prefix (or other) should be "app"
-    const isUrl = source.startsWith("http://") || source.startsWith("https://");
-    const expectedType: SharedPanel.PanelType = isUrl
-      ? "browser"
-      : source.startsWith("about/")
-        ? "shell"
-        : "app";
-    if (targetType !== expectedType) {
-      throw new Error(
-        `Type mismatch: source "${source}" implies type "${expectedType}" but got "${targetType}"`
-      );
-    }
-
-    // Validate stateArgs for app panels (applies defaults even if stateArgs is undefined)
-    let validatedStateArgs: StateArgsValue | undefined;
-    if (targetType === "app") {
-      const { absolutePath } = this.normalizePanelPath(source);
-      const manifest = loadPanelManifest(absolutePath);
-      if (manifest.stateArgs || options?.stateArgs) {
-        const validation = validateStateArgs(options?.stateArgs ?? {}, manifest.stateArgs);
-        if (!validation.success) {
-          throw new Error(`Invalid stateArgs for ${source}: ${validation.error}`);
-        }
-        validatedStateArgs = validation.data;
-      }
-    } else if (targetType === "shell" && options?.stateArgs) {
-      // Shell panels accept stateArgs without schema validation
-      validatedStateArgs = options.stateArgs;
-    } else if (options?.stateArgs) {
-      // Reject stateArgs for browser panels
-      throw new Error(`stateArgs not supported for ${targetType} panels`);
-    }
-
-    // Truncate forward history
-    panel.history = panel.history.slice(0, panel.historyIndex + 1);
-
-    // Create new snapshot with proper option inheritance
-    const newSnapshot = createNavigationSnapshot(
-      panel,
-      source,
-      targetType,
-      {
-        env: options?.env,
-      },
-      validatedStateArgs
-    );
-    if (targetType === "browser") {
-      newSnapshot.resolvedUrl = source;
-    }
-
-    // Push new snapshot
-    panel.history.push(newSnapshot);
-    panel.historyIndex = panel.history.length - 1;
-
-    // Load the content (this will rebuild if needed)
-    await this._loadHistorySnapshot(panelId, newSnapshot, previousType, previousSource);
-
-    // Persist history
-    this.persistHistory(panel);
-
-    this.notifyPanelTreeUpdate();
-  }
-
-  /**
-   * Go back in the panel's navigation history.
-   * Does NOT push a new entry - just moves the index.
-   */
-  async goBack(panelId: string): Promise<void> {
-    const panel = this.panels.get(panelId);
-    if (!panel) {
-      throw new Error(`Panel not found: ${panelId}`);
-    }
-
-    if (!canGoBack(panel)) {
-      console.warn(`[PanelManager] Cannot go back - no history for panel ${panelId}`);
-      return;
-    }
-
-    // Capture current type/source BEFORE changing index
-    const previousType = getPanelType(panel);
-    const previousSource = getPanelSource(panel);
-
-    panel.historyIndex--;
-
-    const snapshot = panel.history[panel.historyIndex];
-    if (snapshot) {
-      await this._loadHistorySnapshot(panelId, snapshot, previousType, previousSource);
-    }
-
-    // Persist history
-    this.persistHistory(panel);
-
-    this.notifyPanelTreeUpdate();
-  }
-
-  /**
-   * Go forward in the panel's navigation history.
-   * Does NOT push a new entry - just moves the index.
-   */
-  async goForward(panelId: string): Promise<void> {
-    const panel = this.panels.get(panelId);
-    if (!panel) {
-      throw new Error(`Panel not found: ${panelId}`);
-    }
-
-    if (!canGoForward(panel)) {
-      console.warn(`[PanelManager] Cannot go forward - at end of history for panel ${panelId}`);
-      return;
-    }
-
-    // Capture current type/source BEFORE changing index
-    const previousType = getPanelType(panel);
-    const previousSource = getPanelSource(panel);
-
-    panel.historyIndex++;
-
-    const snapshot = panel.history[panel.historyIndex];
-    if (snapshot) {
-      await this._loadHistorySnapshot(panelId, snapshot, previousType, previousSource);
-    }
-
-    // Persist history
-    this.persistHistory(panel);
-
-    this.notifyPanelTreeUpdate();
-  }
-
-  /**
-   * Internal: Load a history snapshot without modifying the history.
-   * This is used by goBack, goForward, and navigatePanel.
-   *
-   * @param previousType - The panel type before navigation (for detecting type changes)
-   * @param previousSource - The panel source before navigation (for detecting source changes)
-   */
-  private async _loadHistorySnapshot(
-    panelId: string,
-    snapshot: PanelSnapshot,
-    previousType?: SharedPanel.PanelType,
-    previousSource?: string
-  ): Promise<void> {
-    const panel = this.panels.get(panelId);
-    if (!panel) return;
-
-    if (!this.viewManager) {
-      console.warn(`[PanelManager] ViewManager not set - cannot load history snapshot for ${panelId}`);
-      return;
-    }
-
-    // Use passed-in previous values if available, otherwise derive from current panel state
-    // (the latter case is for navigatePanel which pushes then loads in one step)
-    const currentType = previousType ?? getPanelType(panel);
-    const currentSource = previousSource ?? getPanelSource(panel);
-    const typeChanged = currentType !== snapshot.type;
-
-    // Tear down old view if type changed (pass previous type so cleanup targets
-    // the correct resource set, since the snapshot already reflects the new type)
-    if (typeChanged) {
-      this.unloadPanelResources(panelId, currentType);
-    }
-
-    const contextId = getPanelContextId(panel);
-
-    if (snapshot.type === "browser") {
-      const targetUrl = snapshot.resolvedUrl ?? snapshot.source;
-      this.markPendingBrowserNavigation(panelId, targetUrl);
-
-      // Update snapshot with loading state
-      snapshot.browserState = {
-        ...(snapshot.browserState ?? { pageTitle: "", canGoBack: false, canGoForward: false }),
-        isLoading: true,
-      };
-
-      panel.artifacts = { buildState: "ready" };
-      this.persistArtifacts(panelId, panel.artifacts);
-      // NatStack panel URLs use {subdomain}.localhost — need "panel" type for fresh port/auth
-      const isLocalhost = targetUrl.includes(".localhost:");
-      await this.createViewForPanel(panelId, targetUrl, isLocalhost ? "panel" : "browser", contextId);
-      return;
-    }
-
-    if (snapshot.type === "shell") {
-      const rawPage = snapshot.source.startsWith("about/")
-        ? snapshot.source.slice("about/".length)
-        : snapshot.source;
-      const page = rawPage as SharedPanel.ShellPage;
-      snapshot.page = page;
-      panel.title = page;
-      panel.artifacts = { buildState: "building", buildProgress: "Loading shell page..." };
-      this.persistArtifacts(panelId, panel.artifacts);
-
-      // Register in HTTP server — build happens on demand
-      const url = await this.registerShellInHttpServer(panelId, page, panel);
-
-      const contents = this.viewManager.getWebContents(panelId);
-      if (contents && !contents.isDestroyed()) {
-        await contents.loadURL(url);
-      } else {
-        await this.createViewForPanel(panelId, url, "panel", contextId);
-      }
-
-      // onBuildComplete callback will update artifacts when build finishes
-      return;
-    }
-
-    if (snapshot.type === "app") {
-      const hasPushState = Boolean(snapshot.pushState);
-      const shouldDispatchPopState =
-        hasPushState && !typeChanged && currentSource === snapshot.source;
-
-      if (shouldDispatchPopState && this.dispatchPopState(panelId, snapshot.pushState!)) {
-        return;
-      }
-
-      if (!typeChanged) {
-        this.unloadPanelResources(panelId);
-      }
-
-      panel.artifacts = {
-        buildState: "building",
-        buildProgress: "Rebuilding panel...",
-      };
-      this.persistArtifacts(panelId, panel.artifacts);
-      await this.rebuildAppPanel(panel);
-      if (hasPushState) {
-        this.dispatchPopState(panelId, snapshot.pushState!);
-      }
-      return;
-    }
-
-  }
-
-  /**
-   * Persist panel history to the database.
-   */
-  private persistHistory(panel: Panel): void {
-    try {
-      const persistence = getPanelPersistence();
-      persistence.updateHistory(panel.id, panel.history, panel.historyIndex);
-    } catch (error) {
-      console.error(`[PanelManager] Failed to persist history for ${panel.id}:`, error);
-    }
-  }
-
-  private markPendingBrowserNavigation(panelId: string, url: string): void {
-    const panel = this.panels.get(panelId);
-    if (!panel) return;
-    this.pendingBrowserNavigations.set(panelId, { url, index: panel.historyIndex });
-  }
-
-  /**
-   * Record a browser navigation event from did-navigate.
-   *
-   * Browser navigation state management:
-   *
-   *   ┌─────────────────────────────────────────────────────────────────────┐
-   *   │                     recordBrowserNavigation                         │
-   *   └─────────────────────────────────────────────────────────────────────┘
-   *                                    │
-   *                    ┌───────────────┴───────────────┐
-   *                    │ Has navigationState?          │
-   *                    └───────────────┬───────────────┘
-   *                           No │            │ Yes
-   *              ┌───────────────┘            └───────────────┐
-   *              ▼                                            ▼
-   *   ┌─────────────────────┐               ┌─────────────────────────────┐
-   *   │ Create initial state│               │ Check pendingBrowserNav?    │
-   *   │ and return          │               └─────────────┬───────────────┘
-   *   └─────────────────────┘                      Yes │        │ No
-   *                                     ┌─────────────┘        └──────────┐
-   *                                     ▼                                 ▼
-   *                          ┌─────────────────────┐      ┌───────────────────────┐
-   *                          │ Reconcile: update   │      │ Same as current URL?  │
-   *                          │ resolvedUrl on the  │      └───────────┬───────────┘
-   *                          │ pending entry, clear│             Yes │      │ No
-   *                          │ pending, return     │      ┌──────────┘      └──────┐
-   *                          └─────────────────────┘      ▼                        ▼
-   *                                                ┌─────────────┐    ┌────────────────────┐
-   *                                                │ Update      │    │ Truncate forward   │
-   *                                                │ resolvedUrl,│    │ history, push new  │
-   *                                                │ return      │    │ entry, update index│
-   *                                                └─────────────┘    └────────────────────┘
-   *
-   * The pending navigation mechanism handles the gap between when we initiate a
-   * navigation (markPendingBrowserNavigation) and when did-navigate fires. This
-   * ensures redirects update the correct history entry rather than creating duplicates.
-   */
-  private recordBrowserNavigation(panelId: string, url: string): void {
-    const panel = this.panels.get(panelId);
-    if (!panel || getPanelType(panel) !== "browser") return;
-
-    const pending = this.pendingBrowserNavigations.get(panelId);
-    if (pending) {
-      this.pendingBrowserNavigations.delete(panelId);
-      const snapshot = panel.history[pending.index];
-      if (snapshot && snapshot.type === "browser") {
-        snapshot.resolvedUrl = url;
-      }
-      return;
-    }
-
-    const current = panel.history[panel.historyIndex];
-    const currentUrl = current?.type === "browser" ? (current.resolvedUrl ?? current.source) : null;
-    if (currentUrl === url) {
-      if (current && current.type === "browser") {
-        current.resolvedUrl = url;
-      }
-      return;
-    }
-
-    // Truncate forward history and push new snapshot
-    panel.history = panel.history.slice(0, panel.historyIndex + 1);
-    const contextId = getPanelContextId(panel);
-    const newSnapshot = createSnapshot(url, "browser", contextId, getPanelOptions(panel));
-    newSnapshot.resolvedUrl = url;
-    panel.history.push(newSnapshot);
-    panel.historyIndex = panel.history.length - 1;
-  }
-
-  /**
-   * Sanitize pushState data for persistence.
-   * Non-JSON-serializable values (functions, circular refs, etc.) are replaced with null.
-   */
-  private sanitizePushState(state: unknown): unknown {
-    try {
-      // Round-trip through JSON to ensure serializability
-      return JSON.parse(JSON.stringify(state));
-    } catch (error) {
-      console.warn(
-        `[PanelManager] pushState contains unserializable data and will be null on restore:`,
-        error instanceof Error ? error.message : error
-      );
-      return null;
-    }
-  }
-
-  handleHistoryPushState(panelId: string, state: unknown, path: string): void {
-    const panel = this.panels.get(panelId);
-    if (!panel || getPanelType(panel) !== "app") return;
-
-    // Truncate forward history
-    panel.history = panel.history.slice(0, panel.historyIndex + 1);
-
-    // Create new snapshot with pushState (sanitized for persistence)
-    const source = getPanelSource(panel);
-    const contextId = getPanelContextId(panel);
-    const newSnapshot = createSnapshot(source, "app", contextId, getPanelOptions(panel));
-    newSnapshot.pushState = { state: this.sanitizePushState(state), path };
-    panel.history.push(newSnapshot);
-    panel.historyIndex = panel.history.length - 1;
-
-    this.persistHistory(panel);
-    this.notifyPanelTreeUpdate();
-  }
-
-  handleHistoryReplaceState(panelId: string, state: unknown, path: string): void {
-    const panel = this.panels.get(panelId);
-    if (!panel || getPanelType(panel) !== "app") return;
-
-    const current = panel.history[panel.historyIndex];
-    if (current) {
-      // Update existing snapshot's pushState (sanitized for persistence)
-      current.pushState = { state: this.sanitizePushState(state), path };
-    }
-
-    this.persistHistory(panel);
-    this.notifyPanelTreeUpdate();
-  }
-
-  async goToHistoryOffset(panelId: string, offset: number): Promise<void> {
-    if (offset === 0) return;
-
-    const panel = this.panels.get(panelId);
-    if (!panel) {
-      throw new Error(`Panel not found: ${panelId}`);
-    }
-
-    if (panel.history.length === 0) {
-      console.warn(`[PanelManager] Cannot go to history offset - no history for panel ${panelId}`);
-      return;
-    }
-
-    const targetIndex = panel.historyIndex + offset;
-    if (targetIndex < 0 || targetIndex >= panel.history.length || targetIndex === panel.historyIndex) {
-      return;
-    }
-
-    // Capture current type/source BEFORE changing index
-    const previousType = getPanelType(panel);
-    const previousSource = getPanelSource(panel);
-
-    panel.historyIndex = targetIndex;
-
-    const snapshot = panel.history[panel.historyIndex];
-    if (snapshot) {
-      await this._loadHistorySnapshot(panelId, snapshot, previousType, previousSource);
-    }
-
-    // Persist the updated history index
-    this.persistHistory(panel);
-
-    this.notifyPanelTreeUpdate();
-  }
-
-  /**
-   * Reload the current panel view, rebuilding if the view is unloaded.
-   */
   async reloadPanel(panelId: string): Promise<void> {
     if (!this.viewManager) {
       console.warn(`[PanelManager] ViewManager not set - cannot reload panel ${panelId}`);
@@ -2027,91 +1420,6 @@ export class PanelManager {
     return this.viewManager.forceRepaint(panelId);
   }
 
-  private dispatchPopState(
-    panelId: string,
-    pushState: SharedPanel.PanelSnapshot["pushState"]
-  ): boolean {
-    if (!pushState) return false;
-
-    const payload = {
-      state: pushState.state,
-      path: pushState.path,
-    };
-
-    if (this.rpcServer) {
-      this.rpcServer.sendToClient(panelId, {
-        type: "ws:event",
-        event: "panel:history-popstate",
-        payload,
-      });
-      return true;
-    }
-
-    return false;
-  }
-
-  /**
-   * Replace a panel instance in the tree, preserving parent/child relationships.
-   */
-  private replacePanelInTree(panelId: string, panel: Panel): void {
-    const parent = this.findParentPanel(panelId);
-    if (parent) {
-      parent.children = parent.children.map((child) => (child.id === panelId ? panel : child));
-    } else {
-      this.rootPanels = this.rootPanels.map((root) => (root.id === panelId ? panel : root));
-    }
-    this.panels.set(panelId, panel);
-  }
-
-  /**
-   * Navigate panel to a new source by creating a navigation snapshot.
-   * This is the unified way to change what a panel displays.
-   */
-  private navigatePanelToSnapshot(
-    panel: Panel,
-    newType: SharedPanel.PanelType,
-    source: string,
-    resolvedUrl?: string
-  ): void {
-    // Create the new snapshot with proper option inheritance
-    const newSnapshot = createNavigationSnapshot(panel, source, newType);
-
-    // Add type-specific fields to the snapshot
-    if (newType === "browser") {
-      newSnapshot.resolvedUrl = resolvedUrl ?? source;
-      newSnapshot.browserState = {
-        pageTitle: panel.title,
-        isLoading: true,
-        canGoBack: false,
-        canGoForward: false,
-      };
-    } else if (newType === "shell") {
-      const rawPage = source.startsWith("about/") ? source.slice("about/".length) : source;
-      newSnapshot.page = rawPage as SharedPanel.ShellPage;
-    }
-
-    // Update title based on new type
-    if (newType === "browser" && newSnapshot.resolvedUrl) {
-      try {
-        panel.title = new URL(newSnapshot.resolvedUrl).hostname || panel.title;
-      } catch {
-        // Keep existing title
-      }
-    } else if (newType === "shell" && newSnapshot.page) {
-      panel.title = newSnapshot.page;
-    }
-
-    // Push the new snapshot to history (truncate forward history)
-    panel.history = panel.history.slice(0, panel.historyIndex + 1);
-    panel.history.push(newSnapshot);
-    panel.historyIndex = panel.history.length - 1;
-
-    // Reset build state
-    panel.artifacts = {
-      buildState: "building",
-      buildProgress: "Loading...",
-    };
-  }
 
   /**
    * Update search index for a panel.
@@ -2119,16 +1427,12 @@ export class PanelManager {
   private updateSearchIndex(panel: Panel): void {
     try {
       const searchIndex = getPanelSearchIndex();
-      const panelType = getPanelType(panel);
       const source = getPanelSource(panel);
-      const snapshot = getCurrentSnapshot(panel);
 
       searchIndex.indexPanel({
         id: panel.id,
-        type: panelType,
         title: panel.title,
-        path: panelType === "app" ? source : undefined,
-        url: panelType === "browser" ? snapshot.resolvedUrl : undefined,
+        path: source,
       });
     } catch (error) {
       console.error(`[PanelManager] Failed to update search index for ${panel.id}:`, error);
@@ -2140,149 +1444,19 @@ export class PanelManager {
    * Uses accessor functions for the new snapshot architecture.
    */
   private getCurrentSource(panel: Panel): string {
-    const panelType = getPanelType(panel);
-    const source = getPanelSource(panel);
-    const snapshot = getCurrentSnapshot(panel);
-
-    switch (panelType) {
-      case "app":
-        return source;
-      case "browser":
-        return snapshot.resolvedUrl ?? source;
-      case "shell":
-        return snapshot.page ? `about/${snapshot.page}` : source;
-      default:
-        return source;
-    }
+    return getPanelSource(panel);
   }
 
-  /**
-   * Internal helper to create a shell panel with parent/replace semantics.
-   * Shell panels are pre-built system pages (model-provider-config, about, keyboard-shortcuts, help)
-   * that have full shell-level access to services.
-   *
-   * When replacePanel is provided, it replaces that panel in the tree at the same position.
-   * When replacePanel is not provided, a child panel is created under the parent.
-   */
-  private async createShellPanelInternal(
-    parent: Panel | null,
-    page: SharedPanel.ShellPage,
-    options?: PanelCreateOptions,
-    replacePanel?: Panel,
-    stateArgs?: Record<string, unknown>
-  ): Promise<{ id: string; type: SharedPanel.PanelType; title: string }> {
-    const title = page;
-
-    // Generate unique panel ID
-    const panelId = this.computePanelId({
-      relativePath: `about/${page}`,
-      parent,
-      requestedId: options?.name,
-      isRoot: !parent && !replacePanel,
-    });
-
-    if (this.panels.has(panelId) || this.reservedPanelIds.has(panelId)) {
-      throw new Error(`A panel with id "${panelId}" is already running`);
-    }
-
-    // Shell panels use a simple context ID for session isolation
-    const instanceId = panelId.replace(/[/:]/g, "~");
-    const contextId = `ctx_${instanceId}`;
-
-    // Create auth tokens for WS and server RPC access
-    getTokenManager().createToken(panelId, "panel");
-    await this.serverInfo.createPanelToken(panelId, "panel");
-
-    // Create the initial snapshot for the shell panel
-    const initialSnapshot = createSnapshot(`about/${page}`, "shell", contextId, {
-      env: options?.env,
-    }, stateArgs);
-    initialSnapshot.page = page;
-
-    const panel: Panel = {
-      id: panelId,
-      title,
-      children: [],
-      selectedChildId: null,
-      history: [initialSnapshot],
-      historyIndex: 0,
-      artifacts: {
-        buildState: "ready",
-      },
-    };
-
-    // Handle tree insertion based on replace mode
-    if (replacePanel) {
-      // Replace mode: clean up first, then insert new panel
-      const wasSelected = parent ? parent.selectedChildId === replacePanel.id : false;
-      let replaceIndex = -1;
-      if (parent) {
-        replaceIndex = parent.children.findIndex(c => c.id === replacePanel.id);
-      } else {
-        replaceIndex = this.rootPanels.findIndex(p => p.id === replacePanel.id);
-      }
-
-      if (replaceIndex === -1) {
-        console.error(`[PanelManager] replacePanel ${replacePanel.id} not found in tree - aborting replacement`);
-        throw new Error(`Cannot replace panel: ${replacePanel.id} not found in tree`);
-      }
-
-      // Remove from tree before cleanup
-      if (parent) {
-        parent.children.splice(replaceIndex, 1);
-      } else {
-        this.rootPanels.splice(replaceIndex, 1);
-      }
-
-      // Clean up the replaced panel and its entire subtree
-      this.closePanelSubtree(replacePanel);
-
-      // Insert the new panel at the same position
-      if (parent) {
-        parent.children.splice(replaceIndex, 0, panel);
-        if (wasSelected) {
-          parent.selectedChildId = panel.id;
-        }
-      } else {
-        this.rootPanels.splice(replaceIndex, 0, panel);
-      }
-      this.panels.set(panel.id, panel);
-    } else if (parent) {
-      // Child mode: add as child of parent (prepend for newest-first ordering)
-      parent.children.unshift(panel);
-      parent.selectedChildId = panel.id;
-      this.panels.set(panel.id, panel);
-    } else {
-      // Root mode (no parent, no replace) - this shouldn't normally happen for shell panels
-      this.panels.set(panel.id, panel);
-    }
-
-    // Persist to database
-    this.persistPanel(panel, parent?.id ?? null);
-
-    // Register in HTTP server — build happens on demand
-    const url = await this.registerShellInHttpServer(panelId, page, panel);
-    panel.artifacts = { buildState: "building" };
-
-    // Create WebContentsView for the shell panel (HTTP subdomain, no partition needed)
-    await this.createViewForPanel(panel.id, url, "panel", getPanelContextId(panel));
-
-    // Focus after replace (takes over from the one being used)
-    // Note: focusPanel calls updateSelectedPath and notifyPanelTreeUpdate
-    if (replacePanel) {
-      this.focusPanel(panel.id);
-    } else {
-      this.notifyPanelTreeUpdate();
-    }
-
-    return { id: panel.id, type: getPanelType(panel), title: panel.title };
-  }
 
   /**
    * Update browser panel state (URL, loading, navigation capabilities).
    * Called when the renderer forwards webview events.
    */
-  updateBrowserState(
+  /**
+   * Update panel metadata from webview navigation events.
+   * Simplified: just tracks title changes for the panel tree UI.
+   */
+  updatePanelState(
     browserId: string,
     state: {
       url?: string;
@@ -2293,152 +1467,68 @@ export class PanelManager {
     }
   ): void {
     const panel = this.panels.get(browserId);
-    const panelType = panel ? getPanelType(panel) : null;
-    if (!panel || (panelType !== "browser" && panelType !== "app" && panelType !== "shell")) {
-      console.warn(`[PanelManager] Panel not found or not browser/app/shell: ${browserId}`);
-      return;
-    }
+    if (!panel) return;
 
-    // Update URL if provided - this may push a new history entry
-    if (state.url !== undefined) {
-      // Record navigation BEFORE updating resolvedUrl (so we can detect the change)
-      // This may push a new history entry, changing panel.historyIndex
-      this.recordBrowserNavigation(browserId, state.url);
-    }
-
-    // Get the CURRENT snapshot (after potential history push)
     const snapshot = getCurrentSnapshot(panel);
 
-    // Update resolvedUrl on the current snapshot
     if (state.url !== undefined) {
       snapshot.resolvedUrl = state.url;
     }
 
-    // Ensure browserState exists
-    if (!snapshot.browserState) {
-      snapshot.browserState = {
-        pageTitle: panel.title,
-        isLoading: false,
-        canGoBack: false,
-        canGoForward: false,
-      };
-    }
-
-    // Update browserState fields
     if (state.pageTitle !== undefined) {
-      snapshot.browserState.pageTitle = state.pageTitle;
-      panel.title = state.pageTitle; // Also update the panel title
-    }
-    if (state.isLoading !== undefined) {
-      snapshot.browserState.isLoading = state.isLoading;
-    }
-    if (state.canGoBack !== undefined) {
-      snapshot.browserState.canGoBack = state.canGoBack;
-    }
-    if (state.canGoForward !== undefined) {
-      snapshot.browserState.canGoForward = state.canGoForward;
-    }
-
-    // Persist state changes to database
-    try {
-      const persistence = getPanelPersistence();
-      if (state.pageTitle !== undefined) {
+      panel.title = state.pageTitle;
+      try {
+        const persistence = getPanelPersistence();
         persistence.setTitle(browserId, state.pageTitle);
+      } catch (error) {
+        console.error(`[PanelManager] Failed to persist title for ${browserId}:`, error);
       }
-      if (state.url !== undefined || state.isLoading !== undefined ||
-          state.canGoBack !== undefined || state.canGoForward !== undefined) {
-        this.persistHistory(panel);
-      }
-    } catch (error) {
-      console.error(`[PanelManager] Failed to persist browser state for ${browserId}:`, error);
-    }
-
-    // Update search index for URL and title changes
-    try {
-      const searchIndex = getPanelSearchIndex();
-      if (state.pageTitle !== undefined) {
+      try {
+        const searchIndex = getPanelSearchIndex();
         searchIndex.updateTitle(browserId, state.pageTitle);
-      }
-      if (state.url !== undefined) {
-        searchIndex.updateUrl(browserId, state.url);
-      }
-    } catch (error) {
-      console.error(`[PanelManager] Failed to update search index for ${browserId}:`, error);
+      } catch {}
     }
 
     this.notifyPanelTreeUpdate();
   }
 
+
   /**
    * Create a shell panel for system pages (model-provider-config, about, etc.).
-   * Shell panels have full access to shell services and appear in the panel tree.
+   * Shell panels are app panels with source `about/{page}`.
    * Most pages are singletons (navigating to existing shows it, not creates new).
    * The "new" page supports multiple instances for launching different panels.
    */
   async createShellPanel(
     page: SharedPanel.ShellPage
-  ): Promise<{ id: string; type: SharedPanel.PanelType; title: string }> {
+  ): Promise<{ id: string; title: string }> {
     // "new" pages can have multiple instances, others are singletons
     const isMultiInstance = page === "new";
-    const panelId = isMultiInstance
-      ? `about/${page}~${Date.now().toString(36)}`
-      : `about/${page}`;
 
-    // Check if shell panel already exists for this page (only for singleton pages)
     if (!isMultiInstance) {
+      const panelId = `about/${page}`;
       const existing = this.panels.get(panelId);
       if (existing) {
         // Focus existing panel and return
         this.focusPanel(existing.id);
-        return { id: existing.id, type: getPanelType(existing), title: existing.title };
+        return { id: existing.id, title: existing.title };
       }
     }
 
-    const title = page;
+    const source = `about/${page}`;
+    const manifest: PanelManifest = { title: page };
+    const name = isMultiInstance ? `about/${page}~${Date.now().toString(36)}` : undefined;
 
-    // Shell panels use a simple context ID for session isolation
-    const instanceId = panelId.replace(/[/:]/g, "~");
-    const contextId = `ctx_${instanceId}`;
+    const result = await this.createPanelFromManifest({
+      manifest,
+      relativePath: source,
+      parent: null,
+      options: { name, focus: true },
+      isRoot: true,
+      addAsRoot: true,
+    });
 
-    // Create auth tokens for WS and server RPC access
-    getTokenManager().createToken(panelId, "panel");
-    await this.serverInfo.createPanelToken(panelId, "panel");
-
-    // Create the initial snapshot for the shell panel
-    const initialSnapshot = createSnapshot(`about/${page}`, "shell", contextId, {});
-    initialSnapshot.page = page;
-
-    const panel: Panel = {
-      id: panelId,
-      title,
-      children: [],
-      selectedChildId: null,
-      history: [initialSnapshot],
-      historyIndex: 0,
-      artifacts: {
-        buildState: "ready",
-      },
-    };
-
-    // Add to root panels (shell panels are top-level)
-    // Insert at position 0 for newest-first ordering
-    this.rootPanels.splice(0, 0, panel);
-    this.panels.set(panel.id, panel);
-
-    // Persist to database
-    this.persistPanel(panel, null);
-
-    // Register in HTTP server — build happens on demand
-    const url = await this.registerShellInHttpServer(panelId, page, panel);
-    panel.artifacts = { buildState: "building" };
-
-    // Create WebContentsView for the shell panel (HTTP subdomain, no partition needed)
-    await this.createViewForPanel(panel.id, url, "panel", getPanelContextId(panel));
-
-    // Focus the newly created panel (this also notifies tree update)
-    this.focusPanel(panel.id);
-
-    return { id: panel.id, type: getPanelType(panel), title: panel.title };
+    return result;
   }
 
   /**
@@ -2449,7 +1539,7 @@ export class PanelManager {
    */
   async createInitPanel(
     source: string
-  ): Promise<{ id: string; type: SharedPanel.PanelType; title: string }> {
+  ): Promise<{ id: string; title: string }> {
     const { relativePath, absolutePath } = this.normalizePanelPath(source);
 
     // Read manifest
@@ -2481,7 +1571,7 @@ export class PanelManager {
   findShellPanel(page: SharedPanel.ShellPage): Panel | null {
     const panelId = `about/${page}`;
     const panel = this.panels.get(panelId);
-    if (panel && getPanelType(panel) === "shell") {
+    if (panel && getPanelSource(panel).startsWith("about/")) {
       return panel;
     }
     return null;
@@ -2653,11 +1743,9 @@ export class PanelManager {
     // Reset and unload ready/error panels (in-memory only)
     for (const [panelId, panel] of this.panels) {
       const buildState = panel.artifacts?.buildState;
-      const panelType = panel.history[panel.historyIndex]?.type;
 
-      // Only reset app panels with ready or error state
-      if (panelType === "app" &&
-          (buildState === "ready" || buildState === "error")) {
+      // Only reset panels with ready or error state
+      if (buildState === "ready" || buildState === "error") {
         // Invalidate source-keyed build cache so next request triggers fresh build
         const source = getPanelSource(panel);
         this.panelHttpServer?.invalidateBuild(source);
@@ -2768,23 +1856,8 @@ export class PanelManager {
     };
     this.notifyPanelTreeUpdate();
 
-    // Rebuild based on panel type
-    const panelType = getPanelType(panel);
-    if (panelType === "app") {
-      await this.rebuildAppPanel(panel);
-    } else if (panelType === "browser") {
-      const snapshot = getCurrentSnapshot(panel);
-      const url = snapshot.resolvedUrl ?? getPanelSource(panel);
-      // NatStack panel URLs use {subdomain}.localhost — need "panel" type for fresh port/auth
-      const isLocalhost = url.includes(".localhost:");
-      await this.createViewForPanel(panel.id, url, isLocalhost ? "panel" : "browser", getPanelContextId(panel));
-      panel.artifacts = { buildState: "ready" };
-      this.persistArtifacts(panelId, panel.artifacts);
-      this.notifyPanelTreeUpdate();
-    } else if (panelType === "shell") {
-      // Shell panels can be recreated directly
-      await this.restoreShellPanel(panel);
-    }
+    // All panels rebuild via the same path
+    await this.rebuildAppPanel(panel);
   }
 
   /**
@@ -2795,11 +1868,6 @@ export class PanelManager {
     const panel = this.panels.get(panelId);
     if (!panel) {
       throw new Error(`Panel not found: ${panelId}`);
-    }
-
-    const panelType = getPanelType(panel);
-    if (panelType !== "app") {
-      throw new Error(`setStateArgs not supported for ${panelType} panels`);
     }
 
     // Load manifest to get schema (resolve against workspace root, not CWD)
@@ -2819,8 +1887,8 @@ export class PanelManager {
     const snapshot = getCurrentSnapshot(panel);
     snapshot.stateArgs = validation.data;
 
-    // Persist panel history (includes current snapshot)
-    this.persistHistory(panel);
+    // Persist snapshot
+    this.persistPanel(panel, this.findParentId(panel.id));
 
     // StateArgs changes are picked up via getBootstrapConfig RPC on next load.
     // No per-panel HTTP server state to update.
@@ -2847,12 +1915,8 @@ export class PanelManager {
       throw new Error(`Panel not found: ${panelId}`);
     }
 
-    // Navigate back from dirty-repo shell page to trigger rebuild
-    const snapshot = getCurrentSnapshot(panel);
-    if (snapshot.type === "shell" && snapshot.source === "about/dirty-repo") {
-      await this.goBack(panelId);
-      return;
-    }
+    // Reload the panel — user resolved dirty state, rebuild from scratch
+    await this.rebuildUnloadedPanel(panelId);
   }
 
   /**
@@ -2865,12 +1929,8 @@ export class PanelManager {
       throw new Error(`Panel not found: ${panelId}`);
     }
 
-    // Navigate back from git-init shell page to trigger rebuild
-    const snapshot = getCurrentSnapshot(panel);
-    if (snapshot.type === "shell" && snapshot.source === "about/git-init") {
-      await this.goBack(panelId);
-      return;
-    }
+    // Reload the panel — user initialized the git repo, rebuild from scratch
+    await this.rebuildUnloadedPanel(panelId);
   }
 
   getInfo(panelId: string): SharedPanel.PanelInfo {
@@ -2884,42 +1944,6 @@ export class PanelManager {
       partition: contextId, // Partition is now based on session, not panel ID
       contextId,
     };
-  }
-
-  /**
-   * Get child panels for a given panel (slim projection).
-   *
-   * Note: createdAt is approximated with Date.now() since the Panel in-memory
-   * structure doesn't include it (it's only in the DB). This means timestamps
-   * will show "Just now" after refresh. For accurate timestamps, we'd need to
-   * query the database for each child panel.
-   */
-  getChildPanels(
-    panelId: string,
-    options?: { includeStateArgs?: boolean }
-  ): Array<{
-    id: string;
-    title: string;
-    source: string;
-    createdAt: number;
-    stateArgs?: Record<string, unknown>;
-  }> {
-    const panel = this.panels.get(panelId);
-    if (!panel) return [];
-    return panel.children.map((child) => {
-      const base = {
-        id: child.id,
-        title: child.title,
-        source: getPanelSource(child),
-        // TODO: Query DB for actual created_at if accurate timestamps are needed
-        createdAt: Date.now(),
-      };
-      // Only include stateArgs if explicitly requested (perf/data-exposure concern)
-      if (options?.includeStateArgs) {
-        return { ...base, stateArgs: getPanelStateArgs(child) };
-      }
-      return base;
-    });
   }
 
   getSerializablePanelTree(): Panel[] {
@@ -2990,7 +2014,7 @@ export class PanelManager {
    * Called by unloadPanelTree for each panel in the subtree.
    * Note: Does NOT recurse into children - caller handles recursion.
    */
-  private unloadPanelResources(panelId: string, typeOverride?: SharedPanel.PanelType): void {
+  private unloadPanelResources(panelId: string): void {
     const panel = this.panels.get(panelId);
     if (!panel) return;
 
@@ -3010,36 +2034,19 @@ export class PanelManager {
     this.cleanupBrowserStateTracking(panelId, contents);
     this.cleanupLinkInterception(panelId, contents);
 
-    // Cleanup based on panel type (typeOverride used during type-change teardown
-    // when the snapshot already reflects the new type)
-    const panelType = typeOverride ?? getPanelType(panel);
-    switch (panelType) {
-      case "browser":
-        // Unregister from CDP server
-        getCdpServer().unregisterBrowser(panelId);
-        break;
+    // Clean up panel resources (all panels are type "app" now)
+    // Revoke server-side tokens for this panel (fire-and-forget)
+    void this.serverInfo.revokePanelToken(panelId);
+    void this.serverInfo.revokeGitToken(panelId);
 
-      case "app":
-        // App panel cleanup
-        // Revoke server-side tokens for this panel (fire-and-forget)
-        void this.serverInfo.revokePanelToken(panelId);
-        void this.serverInfo.revokeGitToken(panelId);
+    // Revoke CDP token for this panel (cleans up browser ownership)
+    getCdpServer().revokeTokenForPanel(panelId);
 
-        // Revoke CDP token for this panel (cleans up browser ownership)
-        getCdpServer().revokeTokenForPanel(panelId);
+    // Clean up any Claude Code conversations for this panel
+    getClaudeCodeConversationManager().endPanelConversations(panelId);
 
-        // Clean up any Claude Code conversations for this panel
-        getClaudeCodeConversationManager().endPanelConversations(panelId);
-
-        // Clear subdomain sessions if no panels remain on this subdomain
-        this.clearSubdomainSessionsIfEmpty(panelId);
-        break;
-
-      case "shell":
-        // Shell panel cleanup
-        this.clearSubdomainSessionsIfEmpty(panelId);
-        break;
-    }
+    // Clear subdomain sessions if no panels remain on this subdomain
+    this.clearSubdomainSessionsIfEmpty(panelId);
 
     // Destroy the WebContentsView (but keep panel in memory/tree)
     if (this.viewManager?.hasView(panelId)) {
@@ -3072,7 +2079,7 @@ export class PanelManager {
     // Note: unloadPanelResources handles:
     //   - browserStateCleanup and linkInterceptionHandlers cleanup
     //   - viewManager.destroyView (which triggers cleanup via 'destroyed' event)
-    //   - getCdpServer().revokeTokenForPanel / unregisterBrowser
+    //   - getCdpServer().revokeTokenForPanel
     //   - gitServer.revokeTokenForPanel
     //   - getClaudeCodeConversationManager().endPanelConversations
     //   - clearSubdomainSessionsIfEmpty (cleans up HTTP sessions when last panel on subdomain closes)
@@ -3082,7 +2089,7 @@ export class PanelManager {
     this.fsService?.unregisterPanelContext(panel.id);
 
     // Clean up other ID-keyed structures not covered by unloadPanelResources
-    this.pendingBrowserNavigations.delete(panel.id);
+    // pendingBrowserNavigations removed — navigation is URL-based
 
     // Remove from panels map
     this.panels.delete(panel.id);
@@ -3363,35 +2370,22 @@ export class PanelManager {
       this.viewManager.destroyView(panelId);
     }
 
-    // Recreate based on panel type
-    const panelType = getPanelType(panel);
+    // Recreate view for the panel
     const contextId = getPanelContextId(panel);
 
     try {
-      if (panelType === "browser") {
-        const snapshot = getCurrentSnapshot(panel);
-        const url = snapshot.resolvedUrl ?? getPanelSource(panel);
-        // NatStack panel URLs use {subdomain}.localhost — need "panel" type for fresh port/auth
-        const isLocalhost = url.includes(".localhost:");
-        await this.createViewForPanel(panelId, url, isLocalhost ? "panel" : "browser", contextId);
-        log.verbose(` Recreated browser view for ${panelId}`);
-      } else if (panelType === "shell") {
-        await this.restoreShellPanel(panel);
-        log.verbose(` Recreated shell view for ${panelId}`);
-      } else if (panelType === "app") {
-        // For app panels, check if we have a built URL to restore
-        const snapshot = getCurrentSnapshot(panel);
-        const builtUrl = snapshot.resolvedUrl;
-        if (builtUrl) {
-          // Panel was built, recreate with the built URL
-          await this.createViewForPanel(panelId, builtUrl, "panel", contextId);
-          log.verbose(` Recreated ${panelType} view for ${panelId}`);
-        } else {
-          // Panel wasn't built yet or lost build state - trigger rebuild
-          log.verbose(` No built URL for ${panelId}, triggering rebuild`);
-          panel.artifacts = { buildState: "pending" };
-          this.notifyPanelTreeUpdate();
-        }
+      // Check if we have a built URL to restore
+      const snapshot = getCurrentSnapshot(panel);
+      const builtUrl = snapshot.resolvedUrl;
+      if (builtUrl) {
+        // Panel was built, recreate with the built URL
+        await this.createViewForPanel(panelId, builtUrl, "panel", contextId);
+        log.verbose(` Recreated view for ${panelId}`);
+      } else {
+        // Panel wasn't built yet or lost build state - trigger rebuild
+        log.verbose(` No built URL for ${panelId}, triggering rebuild`);
+        panel.artifacts = { buildState: "pending" };
+        this.notifyPanelTreeUpdate();
       }
     } catch (error) {
       console.error(
@@ -3404,27 +2398,6 @@ export class PanelManager {
     }
   }
 
-  /**
-   * Find a browser panel by its URL.
-   * Used for auto-registering browser webviews when they attach.
-   * Returns null if no matching browser panel is found.
-   */
-  findBrowserPanelByUrl(url: string): Panel | null {
-    // Normalize the URL for comparison
-    const normalizedUrl = url.toLowerCase();
-
-    for (const panel of this.panels.values()) {
-      if (getPanelType(panel) === "browser") {
-        const snapshot = getCurrentSnapshot(panel);
-        const browserUrl = snapshot.resolvedUrl?.toLowerCase();
-        // Match if URLs are the same or if the browser navigated (URL might have changed)
-        if (browserUrl && (normalizedUrl.startsWith(browserUrl) || browserUrl.startsWith(normalizedUrl))) {
-          return panel;
-        }
-      }
-    }
-    return null;
-  }
 
   /**
    * Notify renderer of panel tree changes.

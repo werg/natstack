@@ -72,12 +72,12 @@ export async function handleBrowserCall(
     }
     case "goBack": {
       assertOwner();
-      await panelManager.goBack(browserId);
+      getContents().goBack();
       return;
     }
     case "goForward": {
       assertOwner();
-      await panelManager.goForward(browserId);
+      getContents().goForward();
       return;
     }
     case "reload": {

@@ -20,21 +20,17 @@ const log = createDevLogger("ContextFolderManager");
 const SKIP_DIRS = new Set([".git", "node_modules", ".cache", ".databases"]);
 
 /**
- * Validate that a context ID is safe as a single directory name.
- * Rejects: contains / or \, equals . or .., contains null bytes, exceeds 200 chars.
+ * Validate that a context ID is DNS-safe (lowercase alphanumeric + hyphens).
+ * This ensures contextId round-trips through contextIdToSubdomain without lossy normalization.
  */
 function validateContextId(contextId: string): void {
-  if (!contextId || contextId.length > 200) {
-    throw new Error(`Invalid context ID: length must be 1-200, got ${contextId.length}`);
+  if (!contextId || contextId.length > 63) {
+    throw new Error(`Invalid context ID: length must be 1-63, got ${contextId.length}`);
   }
-  if (contextId === "." || contextId === "..") {
-    throw new Error(`Invalid context ID: '${contextId}' is reserved`);
-  }
-  if (contextId.includes("/") || contextId.includes("\\")) {
-    throw new Error(`Invalid context ID: must not contain slashes`);
-  }
-  if (contextId.includes("\0")) {
-    throw new Error(`Invalid context ID: must not contain null bytes`);
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(contextId)) {
+    throw new Error(
+      `Invalid context ID: must be lowercase alphanumeric with hyphens, not starting/ending with hyphen. Got "${contextId}"`,
+    );
   }
 }
 

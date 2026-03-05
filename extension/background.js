@@ -1,42 +1,23 @@
 /**
- * NatStack Panel Manager — Background Service Worker
+ * NatStack Extension — CDP Relay + Native Messaging
  *
- * Connects to the natstack-server SSE endpoint, listens for panel lifecycle
- * events, and manages browser tabs accordingly.
- *
- * Context pre-warming: When a panel is created (but not yet built), the
- * extension opens a hidden tab to the panel's /__init__ page. This pre-warms
- * the context by running the context bootstrap before the real panel
- * tab is opened, so the panel loads with data already available.
+ * Chrome-only: relays CDP commands between the natstack server's WebSocket
+ * bridge and chrome.debugger, and tracks tab URLs for CDP targeting.
+ * Native messaging provides server auto-discovery.
  */
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
-/** @type {AbortController | null} */
-let sseAbort = null;
-
-/** @type {Map<string, number>} panelId → tabId */
+/** @type {Map<string, number>} browserId → tabId */
 const panelTabs = new Map();
 
-/** @type {Map<number, string>} tabId → panelId (reverse lookup) */
+/** @type {Map<number, string>} tabId → browserId (reverse lookup) */
 const tabPanels = new Map();
-
-/** @type {Map<string, object>} panelId → panel metadata */
-const panels = new Map();
-
-/** @type {Map<string, number>} panelId → windowId for minimized init windows (pre-warming) */
-const initWindows = new Map();
 
 /** @type {boolean} */
 let connected = false;
-
-/** @type {number} */
-let reconnectAttempt = 0;
-
-/** @type {ReturnType<typeof setTimeout> | null} */
-let reconnectTimer = null;
 
 // ---------------------------------------------------------------------------
 // Module-scope config (hoisted for CDP bridge access)
@@ -65,16 +46,11 @@ const debuggerAttached = new Map();
 const NATIVE_HOST_NAME = "com.natstack.connector";
 
 async function getConfig() {
-  const result = await chrome.storage.local.get(["serverUrl", "managementToken", "autoOpenTabs", "autoCloseTabs"]);
+  const result = await chrome.storage.local.get(["serverUrl", "managementToken"]);
   // Update module-scope vars so CDP bridge can access them
   serverUrl = result.serverUrl || "";
   managementToken = result.managementToken || "";
-  return {
-    serverUrl,
-    managementToken,
-    autoOpenTabs: result.autoOpenTabs !== false,
-    autoCloseTabs: result.autoCloseTabs !== false,
-  };
+  return { serverUrl, managementToken };
 }
 
 // ---------------------------------------------------------------------------
@@ -84,7 +60,7 @@ async function getConfig() {
 /**
  * Try to discover the running natstack-server via native messaging.
  * If successful, stores the config in chrome.storage.local so the normal
- * SSE connect() path picks it up. This is idempotent — safe to call on
+ * connect() path picks it up. This is idempotent — safe to call on
  * every startup. Falls back silently if native messaging is unavailable.
  */
 async function tryNativeDiscovery() {
@@ -114,7 +90,7 @@ async function tryNativeDiscovery() {
 }
 
 // ---------------------------------------------------------------------------
-// SSE connection
+// Connection lifecycle
 // ---------------------------------------------------------------------------
 
 async function connect() {
@@ -126,379 +102,54 @@ async function connect() {
     return;
   }
 
-  const url = `${config.serverUrl}/api/events`;
-  console.log(`[NatStack] Connecting to SSE: ${url}`);
-
-  sseAbort = new AbortController();
-
-  try {
-    // EventSource doesn't support custom headers, so we use fetch + ReadableStream
-    const response = await fetch(url, {
-      headers: { "Authorization": `Bearer ${config.managementToken}` },
-      signal: sseAbort.signal,
-    });
-
-    if (!response.ok) {
-      console.error(`[NatStack] SSE connection failed: ${response.status}`);
-      scheduleReconnect();
-      return;
-    }
-
-    connected = true;
-    reconnectAttempt = 0;
-    broadcastStatus();
-    connectCdpBridge();
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-
-      // Parse SSE messages from buffer
-      const messages = buffer.split("\n\n");
-      buffer = messages.pop() || "";
-
-      for (const msg of messages) {
-        if (!msg.trim()) continue;
-        const parsed = parseSSEMessage(msg);
-        if (parsed) {
-          handleSSEEvent(parsed.event, parsed.data, config);
-        }
-      }
-    }
-  } catch (err) {
-    if (err.name === "AbortError") return;
-    console.error("[NatStack] SSE connection error:", err);
-  }
-
-  connected = false;
-  broadcastStatus();
-  scheduleReconnect();
+  connected = true;
+  connectCdpBridge();
 }
 
 function disconnect() {
-  if (sseAbort) {
-    sseAbort.abort();
-    sseAbort = null;
-  }
   connected = false;
   disconnectCdpBridge();
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-}
-
-function scheduleReconnect() {
-  if (reconnectTimer) return;
-  const delay = Math.min(1000 * Math.pow(2, reconnectAttempt) + Math.random() * 500, 30000);
-  reconnectAttempt++;
-  console.log(`[NatStack] Reconnecting in ${Math.round(delay)}ms (attempt ${reconnectAttempt})`);
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    connect();
-  }, delay);
-}
-
-/**
- * Parse a raw SSE message block into {event, data}.
- * @param {string} raw
- * @returns {{ event: string, data: string } | null}
- */
-function parseSSEMessage(raw) {
-  let event = "message";
-  let data = "";
-
-  for (const line of raw.split("\n")) {
-    if (line.startsWith("event: ")) {
-      event = line.slice(7).trim();
-    } else if (line.startsWith("data: ")) {
-      data += line.slice(6);
-    } else if (line.startsWith("data:")) {
-      data += line.slice(5);
-    }
-  }
-
-  if (!data) return null;
-  return { event, data };
 }
 
 // ---------------------------------------------------------------------------
-// Event handling
-// ---------------------------------------------------------------------------
-
-/**
- * @param {string} event
- * @param {string} dataStr
- * @param {object} config
- */
-async function handleSSEEvent(event, dataStr, config) {
-  let data;
-  try {
-    data = JSON.parse(dataStr);
-  } catch {
-    console.warn("[NatStack] Failed to parse SSE data:", dataStr);
-    return;
-  }
-
-  console.log(`[NatStack] Event: ${event}`, data);
-
-  switch (event) {
-    case "snapshot": {
-      // Initial state — sync panels map
-      panels.clear();
-      if (data.panels) {
-        for (const p of data.panels) {
-          panels.set(p.panelId, p);
-        }
-      }
-      broadcastStatus();
-      break;
-    }
-
-    case "panel:created": {
-      panels.set(data.panelId, data);
-      broadcastStatus();
-
-      // Pre-warm context: open a hidden tab to the /__init__ page
-      // This pre-warms the context before the real panel tab is opened.
-      if (data.subdomain && config.serverUrl && data.contextId) {
-        preWarmContext(data.panelId, data.subdomain, data.contextId, config);
-      }
-      break;
-    }
-
-    case "panel:built": {
-      const existing = panels.get(data.panelId);
-      if (existing) {
-        Object.assign(existing, data);
-      } else {
-        panels.set(data.panelId, data);
-      }
-
-      // Close pre-warming init tab (if still open) — the real panel
-      // will now handle any remaining bootstrap inline
-      closeInitWindow(data.panelId);
-
-      // Auto-open tab if configured and URL is available
-      if (config.autoOpenTabs && data.url && !panelTabs.has(data.panelId)) {
-        try {
-          const tab = await chrome.tabs.create({ url: data.url, active: false });
-          if (tab.id != null) {
-            panelTabs.set(data.panelId, tab.id);
-            tabPanels.set(tab.id, data.panelId);
-
-            // Register with CDP bridge
-            if (cdpWs && cdpWs.readyState === WebSocket.OPEN) {
-              cdpWs.send(JSON.stringify({ type: "cdp:register", browserId: data.panelId, tabId: tab.id }));
-            }
-
-            // Try to group natstack tabs together
-            try {
-              await groupNatstackTabs();
-            } catch { /* tab grouping not supported or failed */ }
-          }
-        } catch (err) {
-          console.error("[NatStack] Failed to open tab:", err);
-        }
-      }
-
-      broadcastStatus();
-      break;
-    }
-
-    case "panel:closed": {
-      panels.delete(data.panelId);
-
-      // Close any pre-warming init tab
-      closeInitWindow(data.panelId);
-
-      // Unregister from CDP bridge and detach debugger
-      if (cdpWs && cdpWs.readyState === WebSocket.OPEN) {
-        cdpWs.send(JSON.stringify({ type: "cdp:unregister", browserId: data.panelId }));
-      }
-      detachDebugger(data.panelId);
-
-      // Auto-close tab if configured
-      if (config.autoCloseTabs) {
-        const tabId = panelTabs.get(data.panelId);
-        if (tabId != null) {
-          try {
-            await chrome.tabs.remove(tabId);
-          } catch { /* tab already closed */ }
-        }
-      }
-      const closedTabId = panelTabs.get(data.panelId);
-      if (closedTabId != null) tabPanels.delete(closedTabId);
-      panelTabs.delete(data.panelId);
-
-      broadcastStatus();
-      break;
-    }
-
-    case "panel:build-error": {
-      const existing2 = panels.get(data.panelId);
-      if (existing2) {
-        existing2.buildState = "failed";
-        existing2.error = data.error;
-      }
-      broadcastStatus();
-      break;
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Tab tracking
+// Tab URL tracking (for CDP targeting)
 // ---------------------------------------------------------------------------
 
 // Clean up mappings when tabs are closed by the user
 chrome.tabs.onRemoved.addListener((tabId) => {
-  const panelId = tabPanels.get(tabId);
-  if (panelId) {
+  const browserId = tabPanels.get(tabId);
+  if (browserId) {
     // Unregister from CDP bridge and detach debugger
     if (cdpWs && cdpWs.readyState === WebSocket.OPEN) {
-      cdpWs.send(JSON.stringify({ type: "cdp:unregister", browserId: panelId }));
+      cdpWs.send(JSON.stringify({ type: "cdp:unregister", browserId }));
     }
-    detachDebugger(panelId);
+    detachDebugger(browserId);
 
-    panelTabs.delete(panelId);
+    panelTabs.delete(browserId);
     tabPanels.delete(tabId);
   }
-
-  broadcastStatus();
 });
 
-// Clean up init window mappings when windows are closed
-chrome.windows.onRemoved.addListener((windowId) => {
-  for (const [pid, wid] of initWindows) {
-    if (wid === windowId) {
-      initWindows.delete(pid);
-      break;
-    }
-  }
-});
-
-// Track when tabs navigate to detect manually opened natstack tabs
+// Track when tabs navigate to detect natstack tabs by subdomain
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url && tab.url) {
     const match = tab.url.match(/^https?:\/\/([a-z0-9-]+)\.localhost(:\d+)?\//i);
     if (match) {
       const subdomain = match[1];
-      // Find panel by subdomain
-      for (const [panelId, panel] of panels) {
-        if (panel.subdomain === subdomain && !panelTabs.has(panelId)) {
-          panelTabs.set(panelId, tabId);
-          tabPanels.set(tabId, panelId);
+      // If this tab isn't already tracked for a browserId, register it
+      if (!tabPanels.has(tabId)) {
+        // Use subdomain as browserId for CDP targeting
+        panelTabs.set(subdomain, tabId);
+        tabPanels.set(tabId, subdomain);
 
-          // Register with CDP bridge
-          if (cdpWs && cdpWs.readyState === WebSocket.OPEN) {
-            cdpWs.send(JSON.stringify({ type: "cdp:register", browserId: panelId, tabId }));
-          }
-
-          broadcastStatus();
-          break;
+        // Register with CDP bridge
+        if (cdpWs && cdpWs.readyState === WebSocket.OPEN) {
+          cdpWs.send(JSON.stringify({ type: "cdp:register", browserId: subdomain, tabId }));
         }
       }
     }
   }
 });
-
-/**
- * Group all natstack panel tabs into a Chrome tab group.
- * No-op on browsers that don't support the tab groups API (e.g. Firefox, older Edge).
- */
-async function groupNatstackTabs() {
-  if (typeof chrome.tabs.group !== "function") return;
-
-  const tabIds = Array.from(panelTabs.values());
-  if (tabIds.length < 2) return;
-
-  const tabs = await chrome.tabs.query({});
-  const natstackTabIds = tabIds.filter((id) => tabs.some((t) => t.id === id));
-  if (natstackTabIds.length < 2) return;
-
-  const existingTab = tabs.find((t) => natstackTabIds.includes(t.id) && t.groupId !== -1);
-  if (existingTab && existingTab.groupId !== -1) {
-    await chrome.tabs.group({ tabIds: natstackTabIds, groupId: existingTab.groupId });
-  } else {
-    const groupId = await chrome.tabs.group({ tabIds: natstackTabIds });
-    if (typeof chrome.tabGroups?.update === "function") {
-      await chrome.tabGroups.update(groupId, { title: "NatStack", color: "red" });
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Context pre-warming
-// ---------------------------------------------------------------------------
-
-/**
- * Pre-warm a panel's context by opening a minimized popup window to /__init__.
- *
- * Uses a minimized popup window instead of a background tab so the user
- * doesn't see a tab flash in their tab bar. The init page runs the context
- * bootstrap and signals completion via
- * chrome.runtime.sendMessage().
- *
- * @param {string} panelId
- * @param {string} subdomain
- * @param {string} contextId - Context ID for OPFS bootstrap
- * @param {object} config
- */
-async function preWarmContext(panelId, subdomain, contextId, config) {
-  if (initWindows.has(panelId)) return;
-
-  try {
-    const parsedUrl = new URL(config.serverUrl);
-    const port = parsedUrl.port || (parsedUrl.protocol === "https:" ? "443" : "80");
-    const initUrl = `http://${subdomain}.localhost:${port}/__init__?contextId=${encodeURIComponent(contextId)}`;
-
-    console.log(`[NatStack] Pre-warming context for ${panelId}: ${initUrl}`);
-
-    const win = await chrome.windows.create({
-      url: initUrl,
-      type: "popup",
-      state: "minimized",
-      focused: false,
-      width: 400,
-      height: 300,
-    });
-
-    if (win.id != null) {
-      initWindows.set(panelId, win.id);
-
-      // Auto-close after 30s timeout (safety net)
-      setTimeout(() => {
-        closeInitWindow(panelId);
-      }, 30000);
-    }
-  } catch (err) {
-    console.warn(`[NatStack] Failed to pre-warm context for ${panelId}:`, err);
-  }
-}
-
-/**
- * Close and clean up a pre-warming init window.
- * @param {string} panelId
- */
-async function closeInitWindow(panelId) {
-  const windowId = initWindows.get(panelId);
-  if (windowId == null) return;
-  initWindows.delete(panelId);
-
-  try {
-    await chrome.windows.remove(windowId);
-    console.log(`[NatStack] Closed init window for ${panelId}`);
-  } catch {
-    // Window already closed
-  }
-}
 
 // ---------------------------------------------------------------------------
 // CDP bridge (Chrome-only)
@@ -506,7 +157,7 @@ async function closeInitWindow(panelId) {
 
 /**
  * Connect to the server's CDP bridge WebSocket.
- * Called when SSE connection succeeds.
+ * Called when connection succeeds.
  */
 function connectCdpBridge() {
   if (!serverUrl || !managementToken) return;
@@ -520,8 +171,8 @@ function connectCdpBridge() {
     if (cdpWs !== ws) return; // replaced
     console.log("[NatStack] CDP bridge connected");
     // Register all currently tracked panel tabs
-    for (const [panelId, tabId] of panelTabs) {
-      ws.send(JSON.stringify({ type: "cdp:register", browserId: panelId, tabId }));
+    for (const [browserId, tabId] of panelTabs) {
+      ws.send(JSON.stringify({ type: "cdp:register", browserId, tabId }));
     }
   };
 
@@ -541,11 +192,11 @@ function connectCdpBridge() {
     if (cdpWs !== ws) return; // replaced — don't null out the new connection
     console.log("[NatStack] CDP bridge disconnected");
     cdpWs = null;
-    // Retry once after 2s if SSE is still connected (covers independent WS drop)
+    // Retry once after 2s if still connected (covers independent WS drop)
     if (connected) {
       setTimeout(() => {
         if (connected && !cdpWs) {
-          console.log("[NatStack] CDP bridge retry (SSE still connected)");
+          console.log("[NatStack] CDP bridge retry");
           connectCdpBridge();
         }
       }, 2000);
@@ -559,7 +210,6 @@ function connectCdpBridge() {
 
 /**
  * Disconnect from the CDP bridge and detach all debuggers.
- * Called when SSE disconnects.
  */
 function disconnectCdpBridge() {
   if (cdpWs) { cdpWs.close(); cdpWs = null; }
@@ -677,83 +327,15 @@ chrome.debugger.onDetach.addListener((source, _reason) => {
 // Popup communication
 // ---------------------------------------------------------------------------
 
-function broadcastStatus() {
-  const status = {
-    connected,
-    panels: Array.from(panels.entries()).map(([id, p]) => ({
-      panelId: id,
-      title: p.title || id,
-      subdomain: p.subdomain || "",
-      url: p.url || "",
-      source: p.source || "",
-      parentId: p.parentId || null,
-      hasTab: panelTabs.has(id),
-      tabId: panelTabs.get(id) ?? null,
-    })),
-  };
-
-  // Send to any open popup
-  chrome.runtime.sendMessage({ type: "status", ...status }).catch(() => {
-    // No popup open — ignore
-  });
-}
-
 // Handle messages from popup
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "getStatus") {
-    const status = {
-      connected,
-      panels: Array.from(panels.entries()).map(([id, p]) => ({
-        panelId: id,
-        title: p.title || id,
-        subdomain: p.subdomain || "",
-        url: p.url || "",
-        source: p.source || "",
-        parentId: p.parentId || null,
-        hasTab: panelTabs.has(id),
-        tabId: panelTabs.get(id) ?? null,
-      })),
-    };
-    sendResponse(status);
+    sendResponse({ connected });
     return true;
   }
 
-  if (msg.type === "focusTab") {
-    const tabId = panelTabs.get(msg.panelId);
-    if (tabId != null) {
-      chrome.tabs.update(tabId, { active: true });
-      chrome.tabs.get(tabId).then((tab) => {
-        if (tab.windowId != null) {
-          chrome.windows.update(tab.windowId, { focused: true });
-        }
-      }).catch(() => {});
-    }
-    return false;
-  }
-
-  if (msg.type === "openPanel") {
-    if (msg.url) {
-      chrome.tabs.create({ url: msg.url, active: true });
-    }
-    return false;
-  }
-
   if (msg.type === "reconnect") {
-    reconnectAttempt = 0;
     connect();
-    return false;
-  }
-
-  // Context pre-warming completion signal from /__init__ page
-  if (msg.type === "contextInitComplete") {
-    console.log(`[NatStack] Context init complete: ${msg.contextId} — ${msg.status}`);
-    // Find the panel by contextId and close its init tab
-    for (const [panelId, panel] of panels) {
-      if (panel.contextId === msg.contextId || panel.subdomain === msg.subdomain) {
-        closeInitWindow(panelId);
-        break;
-      }
-    }
     return false;
   }
 });
@@ -768,17 +350,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (changes.serverUrl) serverUrl = changes.serverUrl.newValue || "";
     if (changes.managementToken) managementToken = changes.managementToken.newValue || "";
     if (changes.serverUrl || changes.managementToken) {
-      reconnectAttempt = 0;
       connect();
     }
   }
 });
 
 // Try native messaging auto-discovery, then connect.
-// Always call connect() afterwards — if discovery updated storage, the
-// onChanged listener already triggered a reconnect (connect() deduplicates
-// via disconnect()). If config was unchanged, no onChanged fires, so we
-// must call connect() explicitly to establish the SSE connection.
 tryNativeDiscovery().then(() => {
   connect();
 });

@@ -305,12 +305,18 @@ async function main() {
   getTokenManager().setAdminToken(adminToken);
 
   let fsServiceRef: { closeHandlesForPanel(panelId: string): void } | null = null;
+  let panelManagerRef: { closePanel(panelId: string): void } | null = null;
 
   const rpcServer = new RpcServer({
     tokenManager: getTokenManager(),
     onClientDisconnect: (callerId, callerKind) => {
       const handleKey = callerKind === "panel" ? callerId : `server:${callerId}`;
       fsServiceRef?.closeHandlesForPanel(handleKey);
+      // In headless mode, remove the panel from the tree on disconnect.
+      // The grace period in rpcServer ensures normal reloads don't trigger this.
+      if (callerKind === "panel") {
+        panelManagerRef?.closePanel(callerId);
+      }
     },
   });
 
@@ -359,6 +365,8 @@ async function main() {
       sendToClient: (callerId, msg) => rpcServer.sendToClient(callerId, msg),
       onPanelEvent: (event) => panelHttpServer?.broadcastEvent(event),
     });
+
+    panelManagerRef = headlessPanelManager;
 
     // Register bridge service for headless panel lifecycle
     dispatcher.register("bridge", async (ctx, method, serviceArgs) => {

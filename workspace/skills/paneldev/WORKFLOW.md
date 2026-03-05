@@ -59,27 +59,27 @@ eval({ code: `
 
 ### 4. Launch
 
-Commit, push, and create child (build happens on-demand):
+Commit, push, and open as a child panel (build happens on-demand):
 
 ```
 eval({ code: `
-  import { rpc, createChild, focusPanel } from "@workspace/runtime";
+  import { rpc, buildPanelLink } from "@workspace/runtime";
   await rpc.call("main", "git.contextOp", contextId, "commit_and_push", "panels/my-app", "Initial launch");
-  const handle = await createChild("panels/my-app", { contextId });
-  focusPanel(handle.id);
-  console.log("Panel ID:", handle.id);
+  window.open(buildPanelLink("panels/my-app", { contextId }));
 `, timeout: 30000 })
 ```
 
+`window.open` creates a child panel view. The host intercepts the open and creates a proper panel.
+
 ### 5. Iterate
 
-Edit files, then commit+push (rebuild happens on-demand when panel refreshes):
+Edit files, then commit+push and re-open (rebuild happens on-demand):
 
 ```
 eval({ code: `
-  import { rpc, focusPanel } from "@workspace/runtime";
+  import { rpc, buildPanelLink } from "@workspace/runtime";
   await rpc.call("main", "git.contextOp", contextId, "commit_and_push", "panels/my-app", "Update");
-  focusPanel("<panel-id>");
+  window.open(buildPanelLink("panels/my-app", { contextId }));
 `, timeout: 30000 })
 ```
 
@@ -91,12 +91,13 @@ eval({ code: `
 
 1. Create via eval (`project.create`)
 2. Edit the generated `index.tsx`
-3. Launch via eval (`commit_and_push` + `createChild` + `focusPanel`)
+3. Launch via eval (`commit_and_push` + `window.open(buildPanelLink(...))`)
 
 ### Iterating on Code
 
 1. Edit files with `Edit`
-2. Rebuild via eval (`commit_and_push` + `focusPanel(id)`)
+2. Rebuild via eval (`commit_and_push` + `window.open(buildPanelLink(...))`)
+
 3. Read the error or inspect the panel
 4. Edit again, rebuild again
 
@@ -116,4 +117,4 @@ eval({ code: `
 4. **Relative paths only** — All paths are relative to your working directory
 5. **Check types early** — Catch errors before launching
 6. **Read build errors** — If launch fails, the error tells you what to fix
-7. **Store the panel ID** — Save the panel ID from first launch for subsequent `focusPanel` calls
+7. **Use buildPanelLink for navigation** — `buildPanelLink(source, { contextId })` builds the correct URL

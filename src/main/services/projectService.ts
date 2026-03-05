@@ -50,7 +50,7 @@ function generateTemplate(type: string, name: string, title: string): ProjectTem
               version: "0.1.0",
               private: true,
               type: "module",
-              natstack: { type: "app", title },
+              natstack: { title },
               dependencies: {
                 "@workspace/runtime": "workspace:*",
                 "@workspace/react": "workspace:*",

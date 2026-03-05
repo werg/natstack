@@ -31,16 +31,10 @@ export interface TestApi {
       env?: Record<string, string>;
       focus?: boolean;
     }
-  ): Promise<{ id: string; type: SharedPanel.PanelType; title: string }>;
+  ): Promise<{ id: string; title: string }>;
 
   /** Close a panel and all its children */
   closePanel(id: string): Promise<void>;
-
-  /** Navigate back in panel history */
-  goBack(panelId: string): Promise<void>;
-
-  /** Navigate forward in panel history */
-  goForward(panelId: string): Promise<void>;
 
   /** Check if a panel's view is loaded */
   isPanelLoaded(panelId: string): boolean;
@@ -100,14 +94,6 @@ export function setupTestApi(panelManager: PanelManager): void {
 
     async closePanel(id) {
       return panelManager.closePanel(id);
-    },
-
-    async goBack(panelId) {
-      return panelManager.goBack(panelId);
-    },
-
-    async goForward(panelId) {
-      return panelManager.goForward(panelId);
     },
 
     isPanelLoaded(panelId): boolean {

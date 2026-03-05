@@ -57,6 +57,9 @@ export class RpcServer {
   private clients = new Map<WebSocket, WsClientState>();
   private callerToClient = new Map<string, WsClientState>();
   private pendingToolCalls = new Map<string, PendingToolCall>();
+  private disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  private static readonly DISCONNECT_GRACE_MS = 3000;
 
   constructor(
     private deps: {
@@ -159,6 +162,13 @@ export class RpcServer {
 
     // Single-active-connection enforcement for non-admin callers
     if (callerKind !== "server") {
+      // Cancel any pending disconnect timer (client reconnected within grace period)
+      const pendingTimer = this.disconnectTimers.get(callerId);
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        this.disconnectTimers.delete(callerId);
+      }
+
       const existing = this.callerToClient.get(callerId);
       if (existing) {
         existing.ws.close(4002, "Replaced by new connection");
@@ -313,8 +323,9 @@ export class RpcServer {
 
   private handleClose(client: WsClientState): void {
     // Only remove from callerToClient if this client is still the current one
-    // (a replacement connection may have already overwritten it)
+    // (a replacement connection may have already overwritten it — code 4002)
     const current = this.callerToClient.get(client.callerId);
+    const wasReplaced = current !== client;
     if (current === client) {
       this.callerToClient.delete(client.callerId);
     }
@@ -329,8 +340,24 @@ export class RpcServer {
       }
     }
 
-    // Notify listeners (e.g., fs handle cleanup)
-    this.deps.onClientDisconnect?.(client.callerId, client.callerKind);
+    // If this socket was replaced (code 4002), don't start cleanup timer —
+    // the replacement is already connected.
+    if (wasReplaced) return;
+
+    // Grace-period cleanup: wait before firing disconnect callback.
+    // Normal reloads/reconnects will cancel this timer.
+    const existing = this.disconnectTimers.get(client.callerId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      this.disconnectTimers.delete(client.callerId);
+      // Only fire if the caller hasn't reconnected
+      if (!this.callerToClient.has(client.callerId)) {
+        this.deps.onClientDisconnect?.(client.callerId, client.callerKind);
+      }
+    }, RpcServer.DISCONNECT_GRACE_MS);
+
+    this.disconnectTimers.set(client.callerId, timer);
   }
 
   private cleanupClient(client: WsClientState): void {
@@ -443,6 +470,12 @@ export class RpcServer {
       pending.reject(new Error("Server shutting down"));
     }
     this.pendingToolCalls.clear();
+
+    // Clear disconnect timers
+    for (const timer of this.disconnectTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.disconnectTimers.clear();
 
     // Close WebSocket server
     if (this.wss) {

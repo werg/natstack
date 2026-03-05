@@ -43,6 +43,8 @@ describe("handleBrowserCall", () => {
     loadURL: vi.fn().mockResolvedValue(undefined),
     reload: vi.fn(),
     stop: vi.fn(),
+    goBack: vi.fn(),
+    goForward: vi.fn(),
   };
   const viewManager = {
     getWebContents: vi.fn().mockReturnValue(mockWc),
@@ -137,7 +139,7 @@ describe("handleBrowserCall", () => {
       "panel-1",
       "browser-1",
     );
-    expect(panelManager.goBack).toHaveBeenCalledWith("browser-1");
+    expect(mockWc.goBack).toHaveBeenCalled();
   });
 
   it("goForward checks ownership and delegates to panelManager", async () => {
@@ -154,7 +156,7 @@ describe("handleBrowserCall", () => {
       "panel-1",
       "browser-1",
     );
-    expect(panelManager.goForward).toHaveBeenCalledWith("browser-1");
+    expect(mockWc.goForward).toHaveBeenCalled();
   });
 
   it("throws on unknown method", async () => {

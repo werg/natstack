@@ -15,34 +15,16 @@ export interface CreateChildOptions {
   eventSchemas?: unknown;
   focus?: boolean;
   contextId?: string;
-  /** If true, replace the calling panel instead of creating a child */
-  replace?: boolean;
 }
 
 export interface ChildCreationResult {
   id: string;
-  type: "app" | "browser";
 }
 
-interface ChildSpecBase {
+export interface ChildSpec {
   name?: string;
   env?: Record<string, string>;
   source: string;
   eventSchemas?: unknown;
-}
-
-export interface ChildSpecCommon extends ChildSpecBase {
-  type: "app" | "browser";
-}
-
-export interface AppChildSpec extends ChildSpecBase {
-  type: "app";
   repoArgs?: Record<string, RepoArgSpec>;
 }
-
-export interface BrowserChildSpec extends ChildSpecBase {
-  type: "browser";
-  title?: string;
-}
-
-export type ChildSpec = AppChildSpec | BrowserChildSpec;

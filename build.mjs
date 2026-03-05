@@ -453,8 +453,6 @@ async function build() {
     // Dependencies: None (just copying files)
     // Required by: None
     copyAssets();
-    // Copy opfsBootstrap.js — plain JS loaded at runtime by PanelHttpServer
-    fs.copyFileSync("src/server/opfsBootstrap.js", "dist/opfsBootstrap.js");
 
     console.log("Build successful!");
   } catch (error) {

@@ -17,7 +17,6 @@ const log = createDevLogger("PanelSearchIndex");
  */
 export interface PanelSearchResult {
   id: string;
-  type: "app" | "browser" | "shell";
   title: string;
   relevance: number;
   accessCount: number;
@@ -29,13 +28,11 @@ export interface PanelSearchResult {
  */
 interface IndexablePanel {
   id: string;
-  type: "app" | "browser" | "shell";
   title: string;
+  /** Source path for the panel */
   path?: string;
-  url?: string;
   manifestDescription?: string;
   manifestDependencies?: string[];
-  pageContentSummary?: string;
   tags?: string[];
   keywords?: string[];
 }
@@ -66,10 +63,8 @@ export class PanelSearchIndex {
           UPDATE panel_search_metadata SET
             searchable_title = ?,
             searchable_path = ?,
-            searchable_url = ?,
             manifest_description = ?,
             manifest_dependencies = ?,
-            page_content_summary = ?,
             tags = ?,
             keywords = ?,
             last_indexed_at = ?
@@ -77,10 +72,8 @@ export class PanelSearchIndex {
         `).run(
           panel.title,
           panel.path ?? null,
-          panel.url ?? null,
           panel.manifestDescription ?? null,
           panel.manifestDependencies ? JSON.stringify(panel.manifestDependencies) : null,
-          panel.pageContentSummary ?? null,
           panel.tags ? JSON.stringify(panel.tags) : null,
           panel.keywords ? JSON.stringify(panel.keywords) : null,
           now,
@@ -93,23 +86,19 @@ export class PanelSearchIndex {
             panel_id,
             searchable_title,
             searchable_path,
-            searchable_url,
             manifest_description,
             manifest_dependencies,
-            page_content_summary,
             tags,
             keywords,
             access_count,
             last_indexed_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
         `).run(
           panel.id,
           panel.title,
           panel.path ?? null,
-          panel.url ?? null,
           panel.manifestDescription ?? null,
           panel.manifestDependencies ? JSON.stringify(panel.manifestDependencies) : null,
-          panel.pageContentSummary ?? null,
           panel.tags ? JSON.stringify(panel.tags) : null,
           panel.keywords ? JSON.stringify(panel.keywords) : null,
           now
@@ -143,7 +132,6 @@ export class PanelSearchIndex {
           SELECT
             p.id,
             p.title,
-            json_extract(p.history, '$[' || p.history_index || '].type') as type,
             m.access_count,
             bm25(panel_fts) as relevance
           FROM panel_fts
@@ -155,7 +143,6 @@ export class PanelSearchIndex {
         `)
         .all(safeQuery, workspaceId, limit) as Array<{
         id: string;
-        type: string;
         title: string;
         access_count: number;
         relevance: number;
@@ -163,7 +150,6 @@ export class PanelSearchIndex {
 
       return rows.map((row) => ({
         id: row.id,
-        type: row.type as PanelSearchResult["type"],
         title: row.title,
         relevance: row.relevance,
         accessCount: row.access_count,
@@ -191,22 +177,6 @@ export class PanelSearchIndex {
   }
 
   /**
-   * Update page content summary for a browser panel.
-   */
-  updatePageContent(panelId: string, contentSummary: string): void {
-    try {
-      const db = this.getDb();
-      db.prepare(`
-        UPDATE panel_search_metadata
-        SET page_content_summary = ?, last_indexed_at = ?
-        WHERE panel_id = ?
-      `).run(contentSummary, Date.now(), panelId);
-    } catch (error) {
-      console.error(`[PanelSearchIndex] Failed to update page content for ${panelId}:`, error);
-    }
-  }
-
-  /**
    * Update searchable title for a panel (called when title changes).
    */
   updateTitle(panelId: string, title: string): void {
@@ -219,22 +189,6 @@ export class PanelSearchIndex {
       `).run(title, Date.now(), panelId);
     } catch (error) {
       console.error(`[PanelSearchIndex] Failed to update title for ${panelId}:`, error);
-    }
-  }
-
-  /**
-   * Update searchable URL for a browser panel (called when URL changes).
-   */
-  updateUrl(panelId: string, url: string): void {
-    try {
-      const db = this.getDb();
-      db.prepare(`
-        UPDATE panel_search_metadata
-        SET searchable_url = ?, last_indexed_at = ?
-        WHERE panel_id = ?
-      `).run(url, Date.now(), panelId);
-    } catch (error) {
-      console.error(`[PanelSearchIndex] Failed to update URL for ${panelId}:`, error);
     }
   }
 
@@ -264,21 +218,14 @@ export class PanelSearchIndex {
         // Parse history to get current snapshot
         const history = JSON.parse(panel.history) as Array<{
           source: string;
-          type: "app" | "browser" | "shell";
-          resolvedUrl?: string;
         }>;
         const currentSnapshot = history[panel.history_index] ?? history[0];
         if (!currentSnapshot) continue;
 
         this.indexPanel({
           id: panel.id,
-          type: currentSnapshot.type,
           title: panel.title,
-          // For app/worker, source is the path. For browser, use resolvedUrl.
-          path: currentSnapshot.type === "app"
-            ? currentSnapshot.source
-            : undefined,
-          url: currentSnapshot.type === "browser" ? currentSnapshot.resolvedUrl : undefined,
+          path: currentSnapshot.source,
         });
       }
 

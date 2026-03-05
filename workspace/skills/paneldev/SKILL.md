@@ -23,7 +23,7 @@ Documentation for developing NatStack panels.
 1. **Relative paths only** — use `panels/my-app/index.tsx`, NEVER `/home/.../workspace/...`
 2. **NEVER use Bash** for git, file listing, or file creation — use the structured tools
 3. **Use eval for runtime operations** — project creation, git, typecheck, tests, launching panels
-4. **Static imports only in eval** — `import { rpc, createChild } from "@workspace/runtime"` (NOT `await import(...)`)
+4. **Static imports only in eval** — `import { rpc, buildPanelLink } from "@workspace/runtime"` (NOT `await import(...)`)
 5. **`contextId` is pre-injected** — use it directly in eval, do NOT import it from `@workspace/runtime`
 
 ## Quick Start Workflow
@@ -48,11 +48,9 @@ Launch via eval:
 
 ```
 eval({ code: `
-  import { rpc, createChild, focusPanel } from "@workspace/runtime";
+  import { rpc, buildPanelLink } from "@workspace/runtime";
   await rpc.call("main", "git.contextOp", contextId, "commit_and_push", "panels/my-app", "Initial launch");
-  const handle = await createChild("panels/my-app", { contextId });
-  focusPanel(handle.id);
-  console.log("Panel ID:", handle.id);
+  window.open(buildPanelLink("panels/my-app", { contextId }));
 `, timeout: 30000 })
 ```
 
@@ -66,5 +64,5 @@ eval({ code: `
 | Check types | `eval` — `rpc.call("main", "typecheck.check", "panels/my-app")` |
 | Run tests | `eval` — `rpc.call("main", "test.run", contextId, "panels/my-app")` |
 | Git operations | `eval` — `rpc.call("main", "git.contextOp", contextId, "status")` |
-| Launch panel | `eval` — `createChild(source, { contextId })` + `focusPanel(id)` |
-| Rebuild panel | `eval` — `commit_and_push` + `focusPanel(id)` |
+| Launch panel | `eval` — `commit_and_push` + `window.open(buildPanelLink(source, { contextId }))` |
+| Rebuild panel | `eval` — `commit_and_push` + `window.open(buildPanelLink(source, { contextId }))` |

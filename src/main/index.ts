@@ -239,20 +239,22 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
   // Guard callbacks: panelManager is null in chooser mode — early return instead of throwing.
   setupMenu(mainWindow, viewManager.getShellWebContents(), {
     onHistoryBack: () => {
-      if (!panelManager) return;
+      if (!panelManager || !viewManager) return;
       const panelId = panelManager.getFocusedPanelId();
-      if (!panelId || !panelManager.getPanel(panelId)) return;
-      void panelManager.goBack(panelId).catch((error) => {
-        console.error(`[Menu] Failed to navigate back for ${panelId}:`, error);
-      });
+      if (!panelId) return;
+      const contents = viewManager.getWebContents(panelId);
+      if (contents && !contents.isDestroyed() && contents.canGoBack()) {
+        contents.goBack();
+      }
     },
     onHistoryForward: () => {
-      if (!panelManager) return;
+      if (!panelManager || !viewManager) return;
       const panelId = panelManager.getFocusedPanelId();
-      if (!panelId || !panelManager.getPanel(panelId)) return;
-      void panelManager.goForward(panelId).catch((error) => {
-        console.error(`[Menu] Failed to navigate forward for ${panelId}:`, error);
-      });
+      if (!panelId) return;
+      const contents = viewManager.getWebContents(panelId);
+      if (contents && !contents.isDestroyed() && contents.canGoForward()) {
+        contents.goForward();
+      }
     },
   });
 }

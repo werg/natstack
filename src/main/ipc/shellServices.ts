@@ -296,15 +296,15 @@ export async function handlePanelService(
       return;
     }
 
-    case "updateBrowserState": {
-      const [browserId, state] = args as [string, {
+    case "updatePanelState": {
+      const [panelId, state] = args as [string, {
         url?: string;
         pageTitle?: string;
         isLoading?: boolean;
         canGoBack?: boolean;
         canGoForward?: boolean;
       }];
-      pm.updateBrowserState(browserId, state);
+      pm.updatePanelState(panelId, state);
       return;
     }
 
@@ -403,13 +403,13 @@ export async function handleViewService(
 
     case "browserGoBack": {
       const browserId = args[0] as string;
-      await pm.goBack(browserId);
+      vm.getWebContents(browserId)?.goBack();
       return;
     }
 
     case "browserGoForward": {
       const browserId = args[0] as string;
-      await pm.goForward(browserId);
+      vm.getWebContents(browserId)?.goForward();
       return;
     }
 
@@ -466,16 +466,12 @@ export async function handleMenuService(
         onHistoryBack: () => {
           const panelId = pm.getFocusedPanelId();
           if (!panelId || !pm.getPanel(panelId)) return;
-          void pm.goBack(panelId).catch((error) => {
-            console.error(`[Menu] Failed to navigate back for ${panelId}:`, error);
-          });
+          vm.getWebContents(panelId)?.goBack();
         },
         onHistoryForward: () => {
           const panelId = pm.getFocusedPanelId();
           if (!panelId || !pm.getPanel(panelId)) return;
-          void pm.goForward(panelId).catch((error) => {
-            console.error(`[Menu] Failed to navigate forward for ${panelId}:`, error);
-          });
+          vm.getWebContents(panelId)?.goForward();
         },
       });
       const menu = Menu.buildFromTemplate(template);
@@ -505,8 +501,7 @@ export async function handleMenuService(
     }
 
     case "showPanelContext": {
-      const [_panelId, panelType, position] = args as [
-        string,
+      const [_panelId, position] = args as [
         string,
         { x: number; y: number }
       ];
@@ -514,13 +509,11 @@ export async function handleMenuService(
       return new Promise<PanelContextMenuAction | null>((resolve) => {
         const template: MenuItemConstructorOptions[] = [];
 
-        if (panelType === "app" || panelType === "browser" || panelType === "shell") {
-          template.push({
-            label: "Reload",
-            click: () => resolve("reload"),
-          });
-          template.push({ type: "separator" });
-        }
+        template.push({
+          label: "Reload",
+          click: () => resolve("reload"),
+        });
+        template.push({ type: "separator" });
 
         template.push({
           label: "Unload",

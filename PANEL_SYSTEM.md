@@ -1,14 +1,6 @@
 # Panel System Overview
 
-NatStack panels are dynamically loaded TypeScript apps that run in isolated webviews. Each panel can spawn child panels, workers, and browser panels, forming a hierarchical tree.
-
-## Panel Types
-
-| Type | Description | Use Case |
-|------|-------------|----------|
-| `app` | UI panel built from source | Editors, dashboards, tools |
-| `worker` | Background process with console UI | Long-running tasks, computations |
-| `browser` | External URL with Playwright automation | Web scraping, testing |
+NatStack panels are dynamically loaded TypeScript apps that run in isolated webviews. Panels navigate to each other via URL-based navigation.
 
 ## Panel Structure
 
@@ -16,7 +8,7 @@ NatStack panels are dynamically loaded TypeScript apps that run in isolated webv
 my-panel/
 ├── package.json      # Manifest with natstack field (required)
 ├── index.tsx         # Entry point
-├── contract.ts       # Optional: RPC contract for typed communication
+├── contract.ts       # Optional: RPC contract for typed parent communication
 └── style.css         # Optional: Styles
 ```
 
@@ -29,11 +21,11 @@ my-panel/
   "private": true,
   "type": "module",
   "natstack": {
-    "type": "app",
     "title": "My Panel",
     "entry": "index.tsx",
     "repoArgs": ["history"],
-    "exposeModules": ["@radix-ui/colors"]
+    "exposeModules": ["@radix-ui/colors"],
+    "injectHostThemeVariables": true
   },
   "dependencies": {
     "@workspace/runtime": "workspace:*",
@@ -46,7 +38,6 @@ my-panel/
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `type` | `"app"` \| `"worker"` | **Required** | Panel type |
 | `title` | string | **Required** | Display name |
 | `entry` | string | `index.tsx` | Entry point file |
 | `repoArgs` | string[] | `[]` | Named repo slots for bootstrap |
@@ -62,14 +53,9 @@ import {
   parentId,              // Parent's ID or null
   contextId,             // Storage context ID
 
-  // Child management
-  createChild,           // Create app/worker child
-  createBrowserChild,    // Create browser child
-  createChildWithContract, // Create with typed contract
-  children,              // ReadonlyMap of children
-  getChild,              // Get child by name
-  onChildAdded,          // Subscribe to child additions
-  onChildRemoved,        // Subscribe to child removals (close)
+  // Navigation
+  buildPanelLink,        // Build URL for panel navigation
+  contextIdToSubdomain,  // Convert context ID to subdomain string
 
   // Parent communication
   parent,                // ParentHandle (noop if root)
@@ -100,86 +86,38 @@ import {
 
   // Utilities
   parseContextId,        // Parse context ID components
-  buildPanelLink,        // Build panel navigation link (relative HTTP path)
 } from "@workspace/runtime";
 ```
 
-## Creating Children
+## Navigation
+
+Panels navigate to other panels using URL-based navigation with `buildPanelLink`.
+
+### Same-context navigation
+
+Navigate to another panel within the same context:
 
 ```typescript
-// App or worker (type from manifest)
-const editor = await createChild("panels/editor", {
-  name: "editor",           // Optional stable ID
-  env: { FILE: "/foo.txt" }, // Environment variables
-  gitRef: "main",           // Git ref for source
-});
+import { buildPanelLink } from "@workspace/runtime";
 
-// Browser panel
-const browser = await createBrowserChild("https://example.com");
-
-// With typed contract
-import { editorContract } from "@workspace-panels/editor/contract";
-const editor = await createChildWithContract(editorContract, { name: "editor" });
+// Navigate to the chat panel in the current context
+window.location.href = buildPanelLink("panels/chat");
 ```
 
-### CreateChildOptions
+### Cross-context navigation
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `name` | string | Stable ID within parent (omit for ephemeral) |
-| `env` | Record<string, string> | Environment variables |
-| `gitRef` | string | Git branch/tag/commit for source |
-| `repoArgs` | Record<string, RepoArgSpec> | Repo arguments for bootstrap |
-| `contextId` | string | Explicit context ID for storage partition sharing |
-| `sourcemap` | boolean | Emit sourcemaps (default: true) |
-| `focus` | boolean | Focus after creation |
-
-### Context ID for Storage Sharing
-
-When multiple panels need to share the same filesystem and storage partition, pass the same `contextId` in options:
+Navigate to a panel in a different context by providing a `contextId`:
 
 ```typescript
-// Generate or receive a shared context ID
-const sharedContextId = crypto.randomUUID();
+import { buildPanelLink } from "@workspace/runtime";
 
-// Create chat panel with shared context
-const chat = await createChild("panels/chat", {
-  name: "chat",
-  contextId: sharedContextId,  // Sets storage partition
-}, {
-  contextId: sharedContextId,  // Also pass in stateArgs for app logic
-});
-
-// Create worker with same context - shares storage with chat
-const worker = await createChild("workers/agent", {
-  name: "agent",
-  contextId: sharedContextId,
-}, {
-  contextId: sharedContextId,
-});
+// Navigate to a panel in a specific context
+window.location.href = buildPanelLink("panels/chat", { contextId: "abc-123" });
 ```
 
-Note: `contextId` must be passed in both `options` (for storage partition) and `stateArgs` (for application logic) if your panel needs to know its context ID at runtime.
+`buildPanelLink` returns a relative path for same-context navigation and an absolute URL (with the context subdomain) when `contextId` is provided.
 
-## ChildHandle Methods
-
-```typescript
-child.id          // Unique ID
-child.name        // Name from creation
-child.type        // "app" | "worker" | "browser"
-child.source      // Panel path or URL
-
-child.call.method(args)           // Call exposed RPC method
-child.onEvent("event", handler)   // Listen for events
-child.emit("event", payload)      // Emit event to child
-child.close()                     // Close the panel
-
-// Browser-specific
-child.navigate(url)
-child.goBack() / child.goForward()
-child.reload() / child.stop()
-child.getCdpEndpoint()            // For Playwright
-```
+The `contextIdToSubdomain` utility (exported from `@workspace/runtime`) converts a context ID into the subdomain string used in cross-context URLs.
 
 ## ParentHandle Methods
 
@@ -192,7 +130,7 @@ parent.onEvent("event", handler)  // Listen for parent events
 
 ## Typed RPC Contracts
 
-Define contracts for type-safe parent-child communication:
+Define contracts for type-safe parent communication:
 
 ```typescript
 // panels/editor/contract.ts
@@ -214,7 +152,8 @@ export const editorContract = defineContract({
 });
 ```
 
-Child exposes methods:
+A panel exposes methods and communicates with its parent using the contract:
+
 ```typescript
 import { rpc, getParentWithContract, noopParent } from "@workspace/runtime";
 import { editorContract } from "./contract.js";
@@ -229,22 +168,12 @@ rpc.expose({
 parent.emit("saved", { path: "/file.txt" }); // Typed!
 ```
 
-Parent uses contract:
-```typescript
-import { createChildWithContract } from "@workspace/runtime";
-import { editorContract } from "@workspace-panels/editor/contract";
-
-const editor = await createChildWithContract(editorContract);
-const text = await editor.call.getContent(); // Typed!
-editor.onEvent("saved", ({ path }) => console.log(path)); // Typed!
-```
-
 ## Context & Storage
 
 Panels have isolated storage based on their context ID:
 
-- **Default**: `ctx_{instanceId}` — server-side context folder per panel
-- **Shared**: Pass `contextId` in options to share storage between panels
+- **Default**: `ctx_{instanceId}` -- server-side context folder per panel
+- **Shared**: Panels sharing the same `contextId` share storage
 
 ## Workspace Packages
 

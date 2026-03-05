@@ -15,7 +15,7 @@ export default function MyApp() {
 // panels/my-app/package.json
 {
   "name": "@workspace-panels/my-app",
-  "natstack": { "type": "app", "title": "My App" },
+  "natstack": { "title": "My App" },
   "dependencies": {
     "@workspace/runtime": "workspace:*",
     "@workspace/react": "workspace:*"
@@ -39,9 +39,6 @@ import {
   usePanelPartition,  // Storage partition name (null while loading)
   useContextId,       // Context ID for storage grouping
   usePanelFocus,      // Whether panel is focused
-  useChildPanels,     // Manage child panels
-  usePanelChild,      // Get specific child by name
-  usePanelChildren,   // All children as Map
   usePanelParent,     // Parent handle (null if root)
   useBootstrap,       // Bootstrap state for repoArgs
 } from "@workspace/react";
@@ -63,31 +60,37 @@ export default function App() {
 }
 ```
 
-### Managing Children
+### Navigation
+
+Navigation between panels is URL-based using `buildPanelLink` from `@workspace/runtime`:
 
 ```tsx
-import { useChildPanels } from "@workspace/react";
+import { buildPanelLink } from "@workspace/runtime";
 
-function ParentPanel() {
-  const { children, createChild, createBrowserChild } = useChildPanels();
-
-  const addEditor = async () => {
-    await createChild("panels/editor", { name: "editor" });
+function NavigationExample() {
+  // Navigate in the same context (replaces current panel)
+  const openEditor = () => {
+    window.location.href = buildPanelLink("panels/editor");
   };
 
-  const addBrowser = async () => {
-    await createBrowserChild("https://example.com");
+  // Navigate to a panel in a different context, passing state
+  const openChat = () => {
+    window.location.href = buildPanelLink("panels/chat", {
+      contextId: "abc-123",
+      stateArgs: { channel: "my-channel" },
+    });
+  };
+
+  // Open a panel in a new tab
+  const openEditorTab = () => {
+    window.open(buildPanelLink("panels/editor"));
   };
 
   return (
     <div>
-      <button onClick={addEditor}>Add Editor</button>
-      <button onClick={addBrowser}>Add Browser</button>
-      <ul>
-        {children.map(child => (
-          <li key={child.id}>{child.name} ({child.type})</li>
-        ))}
-      </ul>
+      <button onClick={openEditor}>Open Editor</button>
+      <button onClick={openChat}>Open Chat</button>
+      <button onClick={openEditorTab}>Editor (New Tab)</button>
     </div>
   );
 }
@@ -98,35 +101,37 @@ function ParentPanel() {
 When panels need to share the same filesystem and storage (e.g., chat + agents in a session):
 
 ```tsx
+import { buildPanelLink } from "@workspace/runtime";
+
 function SessionLauncher() {
-  const launchSession = async () => {
+  const launchSession = () => {
     // Generate shared context ID for the session
     const sessionContextId = crypto.randomUUID();
 
-    // Create chat panel with shared storage
-    const chat = await createChild("panels/chat", {
-      name: "chat-session",
-      contextId: sessionContextId,  // Sets storage partition
-    }, {
-      channelName: "my-channel",
-      contextId: sessionContextId,  // App logic also needs context ID
+    // Navigate to chat panel with shared storage
+    window.location.href = buildPanelLink("panels/chat", {
+      contextId: sessionContextId,
+      stateArgs: {
+        channelName: "my-channel",
+        contextId: sessionContextId,
+      },
     });
 
-    // Create agent worker sharing the same storage
-    await createChild("workers/agent", {
-      name: "agent",
-      contextId: sessionContextId,  // Same partition as chat
-    }, {
-      channel: "my-channel",
+    // Or open an agent worker in a new tab sharing the same storage
+    window.open(buildPanelLink("workers/agent", {
       contextId: sessionContextId,
-    });
+      stateArgs: {
+        channel: "my-channel",
+        contextId: sessionContextId,
+      },
+    }));
   };
 
   return <button onClick={launchSession}>Start Session</button>;
 }
 ```
 
-**Important:** Pass `contextId` in both options (for storage) and stateArgs (for app logic).
+**Important:** Pass `contextId` in both the link options (for storage) and stateArgs (for app logic).
 
 ### Bootstrap State
 
@@ -229,37 +234,21 @@ export default function Editor() {
 ```tsx
 // panels/ide/index.tsx
 import { useState, useEffect } from "react";
-import { createChildWithContract } from "@workspace/runtime";
+import { buildPanelLink } from "@workspace/runtime";
 import { editorContract } from "@workspace-panels/editor/contract";
 
 export default function IDE() {
-  const [editor, setEditor] = useState(null);
   const [dirty, setDirty] = useState(false);
 
-  const launch = async () => {
-    const child = await createChildWithContract(editorContract, { name: "editor" });
-    setEditor(child);
+  const launch = () => {
+    // Navigate to the editor panel via URL
+    window.open(buildPanelLink("panels/editor"));
   };
-
-  useEffect(() => {
-    if (!editor) return;
-    const unsub1 = editor.onEvent("saved", ({ path }) => {
-      console.log("Saved:", path);
-      setDirty(false);
-    });
-    const unsub2 = editor.onEvent("modified", ({ dirty }) => setDirty(dirty));
-    return () => { unsub1(); unsub2(); };
-  }, [editor]);
 
   return (
     <div>
       <button onClick={launch}>Open Editor</button>
-      {editor && (
-        <>
-          <span>{dirty ? "Modified" : "Saved"}</span>
-          <button onClick={() => editor.call.save()}>Save</button>
-        </>
-      )}
+      <span>{dirty ? "Modified" : "Saved"}</span>
     </div>
   );
 }
@@ -309,14 +298,6 @@ Access environment variables passed to your panel via `env` from the runtime:
 import { env } from "@workspace/runtime";
 
 const workspace = env["NATSTACK_WORKSPACE"] || "/workspace";
-```
-
-Environment variables are set via the `env` option in `createChild`:
-```typescript
-await createChild("panels/code-editor", {
-  name: "editor",
-  env: { NATSTACK_WORKSPACE: "/my/path" },
-});
 ```
 
 ---
@@ -401,32 +382,6 @@ const roles = await ai.listRoles();
 
 ---
 
-## Browser Automation
-
-Control browser panels with Playwright:
-
-```typescript
-import { chromium } from "playwright-core";
-import { createBrowserChild } from "@workspace/runtime";
-
-const browser = await createBrowserChild("https://example.com");
-const cdpUrl = await browser.getCdpEndpoint();
-
-const conn = await chromium.connectOverCDP(cdpUrl);
-const page = conn.contexts()[0].pages()[0];
-
-await page.click(".button");
-await page.fill("input[name=search]", "query");
-const text = await page.textContent(".result");
-
-// Navigation
-await browser.navigate("https://other.com");
-await browser.goBack();
-await browser.reload();
-```
-
----
-
 ## Sharing Code
 
 ### Export from Panel
@@ -478,35 +433,42 @@ rpc.expose({
 
 ```json
 {
-  "natstack": { "type": "worker", "title": "Compute Worker" }
+  "natstack": { "title": "Compute Worker" }
 }
 ```
 
-Create from parent:
+Workers are launched via URL-based navigation:
 ```typescript
-const worker = await createChild("workers/compute", { name: "compute" });
-const result = await worker.call.compute([1, 2, 3, 4, 5]);
+import { buildPanelLink } from "@workspace/runtime";
+
+window.open(buildPanelLink("workers/compute"));
 ```
 
 ---
 
 ## Best Practices
 
-1. **Use hooks** — `useChildPanels`, `usePanelTheme`, etc. handle subscriptions automatically
+1. **Use hooks** -- `usePanelTheme`, `useContextId`, etc. handle subscriptions automatically
 
-2. **Use contracts** — Type safety across panel boundaries catches errors at compile time
+2. **Use contracts** -- Type safety across panel boundaries catches errors at compile time
 
-3. **Use noopParent** — Avoid null checks when panel may run standalone:
+3. **Use noopParent** -- Avoid null checks when panel may run standalone:
    ```typescript
    const parent = getParentWithContract(contract) ?? noopParent;
    parent.emit("event", data); // Safe even if no parent
    ```
 
-4. **Export contracts** — Put contract in separate file and export via package.json
+4. **Export contracts** -- Put contract in separate file and export via package.json
 
-5. **Wait for fs** — Use `fsReady` before filesystem operations:
+5. **Wait for fs** -- Use `fsReady` before filesystem operations:
    ```typescript
    import { fsReady } from "@workspace/runtime";
    await fsReady;
    // Now safe to use fs
+   ```
+
+6. **Use buildPanelLink for navigation** -- All panel navigation uses URL-based links:
+   ```typescript
+   import { buildPanelLink } from "@workspace/runtime";
+   window.location.href = buildPanelLink("panels/target");
    ```

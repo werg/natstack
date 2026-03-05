@@ -128,20 +128,6 @@ export const CreateProjectArgsSchema = z.object({
 export type CreateProjectArgs = z.infer<typeof CreateProjectArgsSchema>;
 
 /**
- * launch_panel - Launch a child panel or browser
- */
-export const LaunchPanelArgsSchema = z.object({
-  source: z.string().describe('Panel path (e.g. "panels/my-app") or URL for browser panels'),
-  name: z.string().optional().describe("Stable child name (same name = reuse existing panel)"),
-  browser: z.boolean().optional().describe("If true, launch as a browser child"),
-  contextId: z.string().optional().describe("Shared storage context (defaults to current chat context)"),
-  stateArgs: z.record(z.unknown()).optional().describe("Initial state arguments to pass to the panel"),
-  env: z.record(z.string()).optional().describe("Environment variables to pass to the child"),
-  focus: z.boolean().optional().describe("If true, immediately focus the new panel after creation"),
-});
-export type LaunchPanelArgs = z.infer<typeof LaunchPanelArgsSchema>;
-
-/**
  * run_tests - Run vitest tests on a workspace panel or package
  */
 export const RunTestsArgsSchema = z.object({

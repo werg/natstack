@@ -70,7 +70,7 @@ describe("PubSub Server", () => {
     token: string,
     channel: string,
     sinceId?: number,
-    contextId: string = "ctx_test"
+    contextId: string = "ctx-test"
   ): Promise<ClientConnection> => {
     return new Promise((resolve, reject) => {
       const params = new URLSearchParams({ token, channel, contextId });
@@ -473,7 +473,7 @@ describe("PubSub Server", () => {
       const params = new URLSearchParams({
         token: "client-a-token",
         channel: presenceChannel,
-        contextId: "ctx_test",
+        contextId: "ctx-test",
       });
       const ws = new WebSocket(`ws://127.0.0.1:${port}/?${params.toString()}`);
       openClients.push(ws);

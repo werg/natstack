@@ -192,6 +192,12 @@ export const CONFIG_LOADER_JS = `(async () => {
   }
 
   // ── 8. Set remaining globals from RPC config ──
+  // URL stateArgs (from buildPanelLink) take precedence over server-stored stateArgs,
+  // since the URL represents the navigation intent (e.g., cross-context launch with params).
+  let effectiveStateArgs = cfg.stateArgs;
+  if (url.searchParams.has("stateArgs")) {
+    try { effectiveStateArgs = JSON.parse(url.searchParams.get("stateArgs")); } catch { /* ignore */ }
+  }
   Object.assign(globalThis, {
     __natstackContextId: cfg.contextId,
     __natstackParentId: cfg.parentId,
@@ -199,7 +205,7 @@ export const CONFIG_LOADER_JS = `(async () => {
     __natstackGitConfig: cfg.gitConfig,
     __natstackPubSubConfig: cfg.pubsubConfig,
     __natstackEnv: cfg.env,
-    __natstackStateArgs: cfg.stateArgs,
+    __natstackStateArgs: effectiveStateArgs,
     process: { env: cfg.env },
   });
 

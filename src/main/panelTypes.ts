@@ -4,14 +4,10 @@ import * as path from "path";
 // Re-export types from shared types (canonical definitions)
 export type {
   RepoArgSpec,
-  PanelType,
   Panel,
   PanelSnapshot,
   PanelManifest,
-  BrowserState,
   ChildSpec,
-  AppChildSpec,
-  BrowserChildSpec,
   EnvArgSchema,
   ShellPage,
 } from "../shared/types.js";
@@ -45,11 +41,6 @@ export function loadPanelManifest(panelPath: string): PanelManifest {
     throw new Error("natstack.title must be specified in package.json");
   }
 
-  // Default type to "app"
-  if (!manifest.type) {
-    manifest.type = "app";
-  }
-
   // Merge package.json dependencies with natstack.dependencies
   const pkgDeps = packageJson["dependencies"] as Record<string, string> | undefined;
   if (pkgDeps) {
@@ -77,19 +68,14 @@ export type PanelEventPayload =
 // Re-export accessor functions for panel state
 export {
   getCurrentSnapshot,
-  getPanelType,
   getPanelSource,
   getPanelOptions,
   getPanelEnv,
   getPanelRepoArgs,
   getPanelContextId,
-  canGoBack,
-  canGoForward,
   getInjectHostThemeVariables,
-  getShellPage,
+  getSourcePage,
   getBrowserResolvedUrl,
-  getPushState,
   getPanelStateArgs,
   createSnapshot,
-  createNavigationSnapshot,
 } from "../shared/panel/accessors.js";

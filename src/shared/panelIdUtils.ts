@@ -50,6 +50,10 @@ export function computePanelId(params: {
   const escapedPath = relativePath.replace(/\//g, "~");
 
   if (isRoot) {
+    if (requestedId) {
+      const segment = sanitizePanelIdSegment(requestedId);
+      return `tree/${segment}`;
+    }
     return `tree/${escapedPath}`;
   }
 

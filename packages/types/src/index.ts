@@ -82,9 +82,6 @@ export type {
 export type {
   CreateChildOptions,
   ChildCreationResult,
-  ChildSpecCommon,
-  AppChildSpec,
-  BrowserChildSpec,
   ChildSpec,
 } from "./runtime-types.js";
 

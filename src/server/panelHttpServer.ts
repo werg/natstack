@@ -31,7 +31,6 @@
  * Endpoints:
  * - `GET /api/panels`       — JSON list of active panels (Bearer token auth)
  * - `GET /api/events`       — SSE stream of lifecycle events (Bearer token auth)
- * - `GET /__init__`         — Pre-warming init page (unauthenticated, contextId from query)
  * - `?_fresh` on navigation — Force re-bootstrap (missing/stale sessionStorage or cross-source nav)
  * - `GET /__loader.js`      — Config loader script (no auth)
  * - `GET /__transport.js`   — Browser RPC transport (no auth)
@@ -480,22 +479,8 @@ export class PanelHttpServer {
         return;
       }
 
-      // Pre-warming init page (unauthenticated, contextId from query)
-      if (pathname === "/__init__") {
-        const contextId = url.searchParams.get("contextId") ?? subdomain;
-        this.serveInitPage(res, contextId);
-        return;
-      }
-
       const parsed = extractSourcePath(pathname);
       if (parsed) {
-        // Pre-warming init page at /{source}/__init__
-        if (parsed.resource === "/__init__") {
-          const contextId = url.searchParams.get("contextId") ?? subdomain;
-          this.serveInitPage(res, contextId);
-          return;
-        }
-
         // ── Session-cookie auth check ──
         const cookies = parseCookies(req.headers.cookie);
         const sid = cookies["_ns_session"];
@@ -509,7 +494,7 @@ export class PanelHttpServer {
         if (!isAuthed || forceFresh) {
           const isNavigation = parsed.resource === "/" || parsed.resource === "/index.html";
           if (isNavigation) {
-            await this.bootstrapBrowserTab(res, parsed.source, subdomain);
+            await this.bootstrapBrowserTab(res, parsed.source, subdomain, url);
             return;
           }
           if (!isAuthed) {
@@ -565,6 +550,7 @@ export class PanelHttpServer {
     res: import("http").ServerResponse,
     source: string,
     subdomain: string,
+    originalUrl: URL,
   ): Promise<void> {
     // Find registry entry for this subdomain
     const registryEntry = this.sourceRegistry.get(subdomain);
@@ -584,8 +570,16 @@ export class PanelHttpServer {
       };
       if (result.serverRpcPort) bootData["serverRpcPort"] = result.serverRpcPort;
       if (result.serverRpcToken) bootData["serverRpcToken"] = result.serverRpcToken;
+
+      // Preserve user query params (stateArgs, env, repoArgs, etc.) through the redirect.
+      // Remove internal bootstrap params (_fresh, _bk) and add the new _bk.
+      const redirectParams = new URLSearchParams(originalUrl.searchParams);
+      redirectParams.delete("_fresh");
+      redirectParams.delete("_bk");
+      redirectParams.set("_bk", bk);
+
       res.writeHead(302, {
-        "Location": `/${effectiveSource}/?_bk=${bk}`,
+        "Location": `/${effectiveSource}/?${redirectParams.toString()}`,
         "Set-Cookie": [
           `_ns_session=${sid}; HttpOnly; SameSite=Strict; Path=/`,
           `_ns_boot_${bk}=${encodeURIComponent(JSON.stringify(bootData))}; SameSite=Strict; Path=/; Max-Age=60`,
@@ -757,60 +751,6 @@ export class PanelHttpServer {
   }
 
   // =========================================================================
-  // Pre-warming init page (unauthenticated)
-  // =========================================================================
-
-  /**
-   * GET /__init__?contextId=X
-   *
-   * Serves a lightweight page that runs the OPFS context bootstrap.
-   * Unauthenticated — only creates OPFS storage, no secrets involved.
-   */
-  private serveInitPage(
-    res: import("http").ServerResponse,
-    contextId: string,
-  ): void {
-    const initHtml = this.buildInitPageHtml(contextId);
-    res.writeHead(200, {
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "no-store",
-    });
-    res.end(initHtml);
-  }
-
-  /**
-   * Build the init page HTML with the context bootstrap.
-   */
-  private buildInitPageHtml(contextId: string): string {
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>NatStack Context Init</title>
-  <style>
-    body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0;
-           display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-    .status { text-align: center; }
-    .spinner { width: 24px; height: 24px; border: 3px solid #333; border-top: 3px solid #e94560;
-               border-radius: 50%; animation: spin 0.8s linear infinite; margin: 1rem auto; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .done { color: #4caf50; }
-    .error { color: #e94560; }
-  </style>
-</head>
-<body>
-  <div class="status" id="status">
-    <div class="spinner" id="spinner"></div>
-    <p id="message">Initializing context...</p>
-  </div>
-  <script>
-${this.buildInitBootstrapScript(contextId)}
-  </script>
-</body>
-</html>`;
-  }
-
-  // =========================================================================
   // Building / error pages
   // =========================================================================
 
@@ -951,32 +891,6 @@ ${this.buildInitBootstrapScript(contextId)}
       "Cache-Control": "no-store",
     });
     res.end(build.html);
-  }
-
-  // =========================================================================
-  // HTML generation (init page only — panel HTML is now static)
-  // =========================================================================
-
-  /**
-   * Generate the context bootstrap injection for the init page.
-   * Uses OPFS bootstrap script loaded from file.
-   */
-  private buildInitBootstrapScript(contextId: string): string {
-    const opfsBootstrapJs = this.loadOpfsBootstrap();
-    const configBlock = `globalThis.__opfsBootstrapConfig = ${JSON.stringify({
-      contextId,
-      isInitPage: true,
-    })};`;
-    return `${configBlock}\n${opfsBootstrapJs}`;
-  }
-
-  private loadOpfsBootstrap(): string {
-    const bootstrapPath = path.join(__dirname, "opfsBootstrap.js");
-    try {
-      return fs.readFileSync(bootstrapPath, "utf-8");
-    } catch {
-      return `console.warn("[NatStack] Context bootstrap not available.");`;
-    }
   }
 
   // =========================================================================

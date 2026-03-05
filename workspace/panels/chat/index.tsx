@@ -5,13 +5,13 @@
  * - No channelName: Shows setup phase (agent selection + chat creation)
  * - With channelName: Shows active chat session
  *
- * Setup completes via createChild("panels/chat", { replace: true, contextId }),
- * which replaces this panel with a new one that has the correct contextId.
- * This means the replaced panel's contextId = channel contextId, so eval code
- * gets the right contextId automatically from the runtime.
+ * Setup completes via URL navigation to the same panel with a new contextId
+ * (cross-context absolute URL). The browser navigates to a different subdomain,
+ * the old panel's WS disconnects and gets cleaned up via grace-period, and the
+ * new panel bootstraps with contextId = channel contextId.
  */
 
-import { pubsubConfig, id as panelClientId, contextId, focusPanel, useStateArgs, createChild, forceRepaint } from "@workspace/runtime";
+import { pubsubConfig, id as panelClientId, contextId, focusPanel, useStateArgs, buildPanelLink, forceRepaint } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Flex, Theme } from "@radix-ui/themes";
@@ -48,9 +48,11 @@ export default function ChatPanel() {
     clientId: panelClientId,
   };
 
-  // New Conversation: replace with a fresh chat panel (no stateArgs)
+  // New Conversation: force re-bootstrap to get a fresh panel with no stateArgs.
+  // ?_fresh clears sessionStorage identity and triggers server-side on-demand creation.
   const handleNewConversation = useCallback(() => {
-    void createChild("panels/chat", { replace: true });
+    sessionStorage.clear();
+    window.location.href = buildPanelLink("panels/chat") + "?_fresh";
   }, []);
 
   // Add Agent: open the dialog instead of creating a child panel
@@ -86,7 +88,7 @@ Async operations (fetch, await, etc.) are automatically awaited.
 Top-level await is supported.
 
 Use static ESM imports (transformed to require() automatically):
-- import { rpc, createChild, focusPanel } from "@workspace/runtime"
+- import { rpc, focusPanel, buildPanelLink } from "@workspace/runtime"
 
 The variable \`contextId\` is pre-injected — use it directly, do NOT import it from @workspace/runtime.
 IMPORTANT: Use static import syntax, NOT dynamic await import().`,

@@ -19,11 +19,6 @@ import { handleBridgeCall } from "./bridgeHandlers.js";
 
 describe("handleBridgeCall", () => {
   const pm = {
-    findParentId: vi.fn(),
-    goBack: vi.fn().mockResolvedValue(undefined),
-    goForward: vi.fn().mockResolvedValue(undefined),
-    navigatePanel: vi.fn().mockResolvedValue(undefined),
-    createBrowserChild: vi.fn(),
     getWorkspaceTree: vi.fn(),
     listBranches: vi.fn(),
     listCommits: vi.fn(),
@@ -31,12 +26,7 @@ describe("handleBridgeCall", () => {
     focusPanel: vi.fn(),
     forceRepaint: vi.fn(),
     listAgents: vi.fn(),
-    handleHistoryPushState: vi.fn(),
-    handleHistoryReplaceState: vi.fn(),
-    goToHistoryOffset: vi.fn(),
     reloadPanel: vi.fn(),
-    isDescendantOf: vi.fn(),
-    updateBrowserState: vi.fn(),
   };
   const cdpServer = {
     panelOwnsBrowser: vi.fn(),
@@ -60,87 +50,6 @@ describe("handleBridgeCall", () => {
       [{ type: "chat" }],
     );
     expect(result).toEqual({ id: "child-1" });
-    // Should not proceed to switch cases
-    expect(pm.goBack).not.toHaveBeenCalled();
-  });
-
-  it("goBack validates parent-child relationship", async () => {
-    pm.findParentId.mockReturnValue("panel-1");
-    await handleBridgeCall(
-      pm as any,
-      cdpServer as any,
-      "panel-1",
-      "goBack",
-      ["child-1"],
-    );
-    expect(pm.findParentId).toHaveBeenCalledWith("child-1");
-    expect(pm.goBack).toHaveBeenCalledWith("child-1");
-
-    // Should throw when caller is not the parent
-    pm.findParentId.mockReturnValue("other-panel");
-    await expect(
-      handleBridgeCall(
-        pm as any,
-        cdpServer as any,
-        "panel-1",
-        "goBack",
-        ["child-1"],
-      ),
-    ).rejects.toThrow('Panel "panel-1" is not the parent of "child-1"');
-  });
-
-  it("goForward validates parent-child relationship", async () => {
-    pm.findParentId.mockReturnValue("panel-1");
-    await handleBridgeCall(
-      pm as any,
-      cdpServer as any,
-      "panel-1",
-      "goForward",
-      ["child-1"],
-    );
-    expect(pm.findParentId).toHaveBeenCalledWith("child-1");
-    expect(pm.goForward).toHaveBeenCalledWith("child-1");
-
-    // Should throw when caller is not the parent
-    pm.findParentId.mockReturnValue("other-panel");
-    await expect(
-      handleBridgeCall(
-        pm as any,
-        cdpServer as any,
-        "panel-1",
-        "goForward",
-        ["child-1"],
-      ),
-    ).rejects.toThrow('Panel "panel-1" is not the parent of "child-1"');
-  });
-
-  it("navigatePanel validates parent-child relationship", async () => {
-    pm.findParentId.mockReturnValue("panel-1");
-    await handleBridgeCall(
-      pm as any,
-      cdpServer as any,
-      "panel-1",
-      "navigatePanel",
-      ["child-1", "ns://source", "chat"],
-    );
-    expect(pm.findParentId).toHaveBeenCalledWith("child-1");
-    expect(pm.navigatePanel).toHaveBeenCalledWith(
-      "child-1",
-      "ns://source",
-      "chat",
-    );
-
-    // Should throw when caller is not the parent
-    pm.findParentId.mockReturnValue("other-panel");
-    await expect(
-      handleBridgeCall(
-        pm as any,
-        cdpServer as any,
-        "panel-1",
-        "navigatePanel",
-        ["child-1", "ns://source", "chat"],
-      ),
-    ).rejects.toThrow('Panel "panel-1" is not the parent of "child-1"');
   });
 
   it("throws on unknown method not handled by common handler", async () => {

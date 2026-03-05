@@ -26,7 +26,7 @@ describe("testSetup - panel globals stubs", () => {
   });
 
   it("installs __natstackContextId", () => {
-    expect(globalThis.__natstackContextId).toBe("ctx_test");
+    expect(globalThis.__natstackContextId).toBe("ctx-test");
   });
 
   it("__natstackRequire__ returns registered modules", () => {

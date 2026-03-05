@@ -7,7 +7,7 @@
 
 import Database from "better-sqlite3";
 import { initializePanelSchema, type DbPanelRow } from "../../src/main/db/panelSchema.js";
-import type { PanelSnapshot, PanelType } from "../../src/shared/types.js";
+import type { PanelSnapshot } from "../../src/shared/types.js";
 
 /**
  * Create an in-memory test database with the panel schema.
@@ -28,7 +28,6 @@ export interface TestPanelOptions {
   workspaceId?: string;
   parentId?: string | null;
   source: string;
-  type: PanelType;
   title?: string;
   position?: number;
   env?: Record<string, string>;
@@ -41,15 +40,12 @@ export interface TestPanelOptions {
 function createTestSnapshot(options: TestPanelOptions): PanelSnapshot {
   const snapshot: PanelSnapshot = {
     source: options.source,
-    type: options.type,
+    contextId: options.contextId ?? "default",
     options: {},
   };
 
   if (options.env) {
     snapshot.options.env = options.env;
-  }
-  if (options.contextId) {
-    snapshot.options.contextId = options.contextId;
   }
 
   return snapshot;
@@ -118,8 +114,8 @@ export function createPanelTreeFixture(
   insertTestPanel(db, {
     id: rootId,
     workspaceId,
-    source: "panels/launcher",
-    type: "shell",
+    source: "about/launcher",
+
     title: "Launcher",
     position: 0,
   });
@@ -132,7 +128,7 @@ export function createPanelTreeFixture(
     workspaceId,
     parentId: rootId,
     source: "panels/code-editor",
-    type: "app",
+
     title: "Editor",
     position: 0,
   });
@@ -145,7 +141,7 @@ export function createPanelTreeFixture(
     workspaceId,
     parentId: rootId,
     source: "panels/chat",
-    type: "app",
+
     title: "Chat",
     position: 1,
   });
@@ -158,7 +154,7 @@ export function createPanelTreeFixture(
     workspaceId,
     parentId: chatId,
     source: "workers/chat-responder",
-    type: "worker",
+
     title: "AI Worker",
     position: 0,
   });

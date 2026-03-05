@@ -50,120 +50,6 @@ export type InferEventMap<T extends EventSchemaMap> = {
   [K in keyof T]: T[K] extends ZodType<infer U> ? U : never;
 };
 
-// =============================================================================
-// Child Spec Types (spec-based API for createChild)
-// =============================================================================
-
-/**
- * Options for creating an app child panel.
- */
-export interface CreateChildOptions {
-  /** Optional name for this child (becomes part of the panel ID). If omitted, a random ID is generated. */
-  name?: string;
-  /** Environment variables to pass to the child */
-  env?: Record<string, string>;
-  /** Repo arguments required by the target manifest */
-  repoArgs?: Record<string, RepoArgSpec>;
-  /** Optional zod schemas for validating event payloads from this child (runtime-only; not sent to main). */
-  eventSchemas?: EventSchemaMap;
-  /** If true, immediately focus the new panel after creation (only applies to app panels) */
-  focus?: boolean;
-  /**
-   * Explicit context ID for storage partition sharing.
-   * If provided, the panel will use this context ID instead of generating a new one.
-   * This enables multiple panels to share the same filesystem and storage partition.
-   */
-  contextId?: string;
-  /** If true, replace the calling panel instead of creating a child */
-  replace?: boolean;
-}
-
-export interface ChildCreationResult {
-  id: string;
-  type: "app" | "browser";
-}
-
-/**
- * Base fields shared by all child spec types.
- * Extended by AppChildSpec and BrowserChildSpec.
- */
-interface ChildSpecBase {
-  /** Optional name for this child (becomes part of the panel ID). If omitted, a random ID is generated. */
-  name?: string;
-  /** Environment variables to pass to the child */
-  env?: Record<string, string>;
-  /** Source: workspace-relative path for app/worker, URL for browser */
-  source: string;
-  /**
-   * Optional zod schemas for validating event payloads from this child.
-   * When provided, incoming events are validated before being passed to listeners.
-   * Invalid payloads will log an error and not trigger the listener.
-   *
-   * @example
-   * ```ts
-   * import { z } from "@workspace/runtime";
-   *
-   * const child = await panel.createChild({
-   *   type: "app",
-   *   source: "panels/editor",
-   *   eventSchemas: {
-   *     "saved": z.object({ path: z.string() }),
-   *     "error": z.object({ message: z.string() }),
-   *   },
-   * });
-   * ```
-   */
-  eventSchemas?: EventSchemaMap;
-}
-
-/**
- * Common fields shared by all child spec types.
- * Used as a type constraint for generic child handling.
- * This is the intersection of all child spec types' common fields.
- */
-export interface ChildSpecCommon extends ChildSpecBase {
-  /** Child type discriminator */
-  type: "app" | "browser";
-}
-
-
-/**
- * Spec for creating an app panel child.
- * Name is optional - if omitted, context is auto-derived from tree path.
- * Use `contextId: "some-id"` to share storage across panels, or omit for an isolated context.
- */
-export interface AppChildSpec extends ChildSpecBase {
-  type: "app";
-  /**
-   * Repo arguments required by the target panel's manifest.
-   * Keys must match the `repoArgs` array in the manifest.
-   *
-   * @example
-   * ```ts
-   * repoArgs: {
-   *   history: "repos/history#main",           // shorthand
-   *   components: { repo: "repos/ui", ref: "v1.0.0" }  // object
-   * }
-   * ```
-   */
-  repoArgs?: Record<string, RepoArgSpec>;
-}
-
-/**
- * Spec for creating a browser panel child.
- * Name is optional - if omitted, a random ID is generated.
- */
-export interface BrowserChildSpec extends ChildSpecBase {
-  type: "browser";
-  /** Optional title (defaults to URL hostname) */
-  title?: string;
-}
-
-/**
- * Union type for createChild spec parameter.
- */
-export type ChildSpec = AppChildSpec | BrowserChildSpec;
-
 /**
  * Git configuration for a panel or worker.
  */
@@ -196,7 +82,7 @@ export interface EndpointInfo {
 }
 
 // =============================================================================
-// ChildHandle Types (unified handle for child management)
+// RPC Proxy Types
 // =============================================================================
 
 /**
@@ -208,119 +94,6 @@ export type TypedCallProxy<T extends Rpc.ExposedMethods> = {
     ? (...args: A) => Promise<Awaited<R>>
     : never;
 };
-
-/**
- * Unified handle for interacting with any child (app, worker, browser).
- *
- * @typeParam T - RPC methods exposed by the child (inferred or explicit)
- * @typeParam E - RPC event map for events from child (what parent receives)
- * @typeParam EmitE - RPC event map for events to child (what parent sends)
- */
-export interface ChildHandle<
-  T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
-  E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
-  EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
-> {
-  /** Unique child ID (used internally for IPC) */
-  readonly id: string;
-
-  /** Child type discriminator */
-  readonly type: "app" | "browser";
-
-  /** Name provided at creation (unique within parent) */
-  readonly name: string;
-
-  /** Source: panel path for app/worker, URL for browser */
-  readonly source: string;
-
-  // === RPC ===
-
-  /**
-   * Typed RPC call proxy. Methods are inferred from T.
-   * @example handle.call.doSomething(arg1, arg2)
-   */
-  readonly call: TypedCallProxy<T>;
-
-  /**
-   * Emit a typed event to this child.
-   * @example handle.emit("theme-changed", { theme: "dark" })
-   */
-  emit<EventName extends Extract<keyof EmitE, string>>(
-    event: EventName,
-    payload: EmitE[EventName]
-  ): Promise<void>;
-
-  /**
-   * Emit an event to this child (untyped fallback).
-   * @example handle.emit("dataUpdated", { items: [...] })
-   */
-  emit(event: string, payload: unknown): Promise<void>;
-
-  /**
-   * Listen for events from this child (typed if event map provided).
-   * @returns Unsubscribe function
-   */
-  onEvent<EventName extends Extract<keyof E, string>>(
-    event: EventName,
-    listener: (payload: E[EventName]) => void
-  ): () => void;
-
-  /**
-   * Listen for events from this child (untyped fallback).
-   * @returns Unsubscribe function
-   */
-  onEvent(event: string, listener: (payload: unknown) => void): () => void;
-
-  /**
-   * Listen for multiple events from this child.
-   * Returns a single cleanup function that unsubscribes all listeners.
-   */
-  onEvents(listeners: Partial<{ [EventName in Extract<keyof E, string>]: (payload: E[EventName]) => void }>): () => void;
-  onEvents(listeners: Record<string, (payload: unknown) => void>): () => void;
-
-  // === Automation ===
-
-  /**
-   * Get CDP WebSocket endpoint for Playwright automation.
-   * Available for app and browser children (not workers).
-   */
-  getCdpEndpoint(): Promise<string>;
-
-  // === Navigation ===
-
-  /** Navigate to URL (browser only) */
-  navigate(url: string): Promise<void>;
-
-  /** Go back in unified history (all child types) */
-  goBack(): Promise<void>;
-
-  /** Go forward in unified history (all child types) */
-  goForward(): Promise<void>;
-
-  /** Reload page (browser only) */
-  reload(): Promise<void>;
-
-  /** Stop loading (browser only) */
-  stop(): Promise<void>;
-
-  /**
-   * Close this child panel and remove it from the tree.
-   * All children are closed recursively.
-   * Panels are archived (soft delete) in the database.
-   */
-  close(): Promise<void>;
-}
-
-
-/**
- * Callback for child lifecycle events.
- */
-export type ChildAddedCallback<T extends Rpc.ExposedMethods = Rpc.ExposedMethods> = (
-  name: string,
-  handle: ChildHandle<T>
-) => void;
-
-export type ChildRemovedCallback = (name: string) => void;
 
 // =============================================================================
 // ParentHandle Types (for child→parent communication)
@@ -395,62 +168,23 @@ export interface ParentHandle<
 }
 
 // =============================================================================
-// Panel Contract Types (unified parent-child interface definition)
+// Contract Types (for typed parent↔child communication)
 // =============================================================================
 
 /**
- * Definition for one side of the parent-child relationship.
- * Specifies what methods are exposed and what events are emitted.
+ * One side of a panel contract (child or parent).
  */
 export interface ContractSide<
   Methods extends Rpc.ExposedMethods = Rpc.ExposedMethods,
   Emits extends EventSchemaMap = EventSchemaMap
 > {
-  /** RPC methods exposed by this side (use interface for typing, phantom at runtime) */
   readonly methods?: Methods;
-  /** Events emitted by this side (zod schemas for validation) */
   readonly emits?: Emits;
 }
 
 /**
- * A contract defining the interface between parent and child panels.
- * Both parent and child import this same contract object.
- *
- * - Parent uses it with `panel.createChild(contract, options)` to get a typed ChildHandle
- * - Child uses it with `panel.getParent(contract)` to get a typed ParentHandle
- *
- * @typeParam ChildMethods - RPC methods the child exposes
- * @typeParam ChildEmits - Events the child emits (parent receives)
- * @typeParam ParentMethods - RPC methods the parent exposes
- * @typeParam ParentEmits - Events the parent emits (child receives)
- *
- * @example
- * ```ts
- * import { z, defineContract } from "@workspace/runtime";
- *
- * // Define interfaces for RPC methods
- * interface EditorMethods {
- *   openFile(path: string): Promise<void>;
- *   save(): Promise<void>;
- * }
- *
- * // Create the contract
- * export const editorContract = defineContract({
- *   source: "panels/editor",
- *   child: {
- *     methods: {} as EditorMethods,
- *     emits: {
- *       "saved": z.object({ path: z.string() }),
- *       "dirty": z.object({ isDirty: z.boolean() }),
- *     },
- *   },
- *   parent: {
- *     emits: {
- *       "theme-changed": z.object({ theme: z.enum(["light", "dark"]) }),
- *     },
- *   },
- * });
- * ```
+ * A typed contract between a parent and child panel.
+ * Defines RPC methods and events for both sides.
  */
 export interface PanelContract<
   ChildMethods extends Rpc.ExposedMethods = Rpc.ExposedMethods,
@@ -458,27 +192,11 @@ export interface PanelContract<
   ParentMethods extends Rpc.ExposedMethods = Rpc.ExposedMethods,
   ParentEmits extends EventSchemaMap = EventSchemaMap
 > {
-  /** Workspace-relative path to the child panel source */
   readonly source: string;
-
-  /** Child's side of the contract */
   readonly child?: ContractSide<ChildMethods, ChildEmits>;
-
-  /** Parent's side of the contract */
   readonly parent?: ContractSide<ParentMethods, ParentEmits>;
-
-  /** Internal marker for type inference */
   readonly __brand?: "PanelContract";
 }
-
-/**
- * Extract the ChildHandle type from a contract.
- * Used internally by createChild when given a contract.
- */
-export type ChildHandleFromContract<C extends PanelContract> =
-  C extends PanelContract<infer ChildMethods, infer ChildEmits, infer _ParentMethods, infer ParentEmits>
-    ? ChildHandle<ChildMethods, InferEventMap<ChildEmits>, InferEventMap<ParentEmits>>
-    : never;
 
 /**
  * Extract the ParentHandle type from a contract.

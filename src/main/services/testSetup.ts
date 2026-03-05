@@ -30,4 +30,4 @@ declare global {
 
 // Panel identity stubs
 (globalThis as any).__natstackId = "test-panel";
-(globalThis as any).__natstackContextId = "ctx_test";
+(globalThis as any).__natstackContextId = "ctx-test";

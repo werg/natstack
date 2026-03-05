@@ -78,7 +78,6 @@ describe("handleProjectCall", () => {
     expect(pkgCall).toBeTruthy();
     const pkg = JSON.parse(pkgCall![1] as string);
     expect(pkg.name).toBe("@workspace-panels/my-app");
-    expect(pkg.natstack.type).toBe("app");
     expect(pkg.natstack.title).toBe("My App");
     expect(pkg.private).toBe(true);
     expect(pkg.type).toBe("module");

@@ -154,7 +154,7 @@ describe("ViewManager", () => {
     it("creates a browser view with default session", () => {
       const view = vm.createView({
         id: "test-browser",
-        type: "browser",
+        type: "panel",
         preload: null,
         url: "https://example.com",
       });
@@ -311,7 +311,7 @@ describe("ViewManager", () => {
     it("navigateView loads URL", async () => {
       const view = vm.createView({
         id: "test-view",
-        type: "browser",
+        type: "panel",
         preload: null,
       });
 
@@ -323,7 +323,7 @@ describe("ViewManager", () => {
     it("getViewUrl returns current URL", () => {
       const view = vm.createView({
         id: "test-view",
-        type: "browser",
+        type: "panel",
         preload: null,
       });
 
@@ -335,7 +335,7 @@ describe("ViewManager", () => {
     it("navigation methods delegate to webContents", () => {
       const view = vm.createView({
         id: "test-view",
-        type: "browser",
+        type: "panel",
         preload: null,
       });
 

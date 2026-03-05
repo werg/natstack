@@ -1,8 +1,8 @@
 import { PANEL_SCHEMA_VERSION, PANEL_QUERIES } from "./panelSchema.js";
 
 describe("panelSchema exports", () => {
-  it("PANEL_SCHEMA_VERSION is 2", () => {
-    expect(PANEL_SCHEMA_VERSION).toBe(2);
+  it("PANEL_SCHEMA_VERSION is 3", () => {
+    expect(PANEL_SCHEMA_VERSION).toBe(3);
   });
 
   it("PANEL_QUERIES has expected keys", () => {

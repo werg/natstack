@@ -162,7 +162,7 @@ const SortableTreeItem = memo(function SortableTreeItem({
       e.preventDefault();
       e.stopPropagation();
       const { screenX, screenY } = e;
-      const action = await menu.showPanelContext(panel.id, panel.type, {
+      const action = await menu.showPanelContext(panel.id, {
         x: Math.round(screenX),
         y: Math.round(screenY),
       });
@@ -170,7 +170,7 @@ const SortableTreeItem = memo(function SortableTreeItem({
         onPanelAction?.(panel.id, action);
       }
     },
-    [panel.id, panel.type, onPanelAction]
+    [panel.id, onPanelAction]
   );
 
   const handleToggleExpand = useCallback(
@@ -371,7 +371,6 @@ const SortableTreeItem = memo(function SortableTreeItem({
     prev.item.collapsed === next.item.collapsed &&
     prev.item.parentId === next.item.parentId &&
     prev.item.panel.title === next.item.panel.title &&
-    prev.item.panel.type === next.item.panel.type &&
     prev.item.panel.childCount === next.item.panel.childCount &&
     prev.item.panel.buildState === next.item.panel.buildState &&
     prev.isSelected === next.isSelected &&

@@ -4,8 +4,6 @@ import type {
   CreateChildOptions,
   ChildCreationResult,
   ChildSpec,
-  AppChildSpec,
-  BrowserChildSpec,
 } from "@natstack/types";
 import type { RepoArgSpec } from "@natstack/types";
 import type { StateArgsSchema, StateArgsValue } from "./stateArgs.js";
@@ -15,8 +13,6 @@ export type {
   CreateChildOptions,
   ChildCreationResult,
   ChildSpec,
-  AppChildSpec,
-  BrowserChildSpec,
   RepoArgSpec,
   StateArgsSchema,
   StateArgsValue,
@@ -45,7 +41,6 @@ export interface EnvArgSchema {
  * Panel manifest from package.json natstack section.
  */
 export interface PanelManifest {
-  type: "app";
   title: string;
   entry?: string;
   dependencies?: Record<string, string>;
@@ -155,30 +150,9 @@ export interface ToolExecutionResult {
 // =============================================================================
 
 /**
- * Panel type discriminator.
- * - "app": Built webview from source code
- * - "browser": External URL with Playwright automation
- * - "shell": System pages (settings, about, etc.) with full shell access
- */
-export type PanelType = "app" | "browser" | "shell";
-
-/**
- * Shell panel page types.
- */
-/**
  * Shell panel page name. Dynamically discovered from workspace about-page manifests.
  */
 export type ShellPage = string;
-
-/**
- * Browser panel navigation state (for browser webview internal state).
- */
-export interface BrowserState {
-  pageTitle: string;
-  isLoading: boolean;
-  canGoBack: boolean;
-  canGoForward: boolean;
-}
 
 // =============================================================================
 // PanelSnapshot - Unified Panel State (New Architecture)
@@ -189,31 +163,16 @@ export interface BrowserState {
  * Explicitly embeds CreateChildOptions to ensure correspondence.
  */
 export interface PanelSnapshot {
-  // === Required ===
-  /** Path or URL - workspace-relative path for app, URL for browser */
+  /** Workspace-relative source path (e.g., "panels/chat", "about/new") */
   source: string;
-  /** Panel type */
-  type: PanelType;
-  /** Resolved context ID (e.g., "ctx_panels~editor") - determines storage isolation */
+  /** Resolved context ID (e.g., "ctx-panels-editor") - determines storage isolation */
   contextId: string;
-
-  // === Creation options (excluding runtime-only fields) ===
   /** Panel options from CreateChildOptions (excluding eventSchemas, focus) */
   options: Omit<CreateChildOptions, "eventSchemas" | "focus">;
-
-  // === State arguments (separate from options) ===
-  /** Validated state args for this snapshot (app panels only) */
+  /** Validated state args for this snapshot */
   stateArgs?: StateArgsValue;
-
-  // === Type-specific (set during navigation/runtime) ===
-  /** browser: actual URL after redirects */
+  /** Actual URL after redirects (when applicable) */
   resolvedUrl?: string;
-  /** app: history.pushState (sanitized) */
-  pushState?: { state: unknown; path: string };
-  /** shell: page name */
-  page?: ShellPage;
-  /** browser: internal webview navigation state */
-  browserState?: BrowserState;
 }
 
 /**
@@ -227,9 +186,8 @@ export interface Panel {
   children: Panel[];
   selectedChildId: string | null;
 
-  // History = array of snapshots
-  history: PanelSnapshot[];
-  historyIndex: number;
+  // Single current snapshot (replaces history array — browser handles history natively)
+  snapshot: PanelSnapshot;
 
   // Runtime only (not in snapshot)
   artifacts: PanelArtifacts;
@@ -354,7 +312,6 @@ export interface PaginatedRootPanels {
  */
 export interface PanelSummary {
   id: string;
-  type: PanelType;
   title: string;
   childCount: number;
   buildState?: string;
@@ -367,7 +324,6 @@ export interface PanelSummary {
 export interface PanelAncestor {
   id: string;
   title: string;
-  type: PanelType;
   depth: number;
 }
 
@@ -406,7 +362,6 @@ export interface WorkspaceNode {
    * report the real error than to silently hide repos with incomplete configs.
    */
   launchable?: {
-    type: "app";
     title: string;
     repoArgs?: string[];
     envArgs?: EnvArgSchema[];

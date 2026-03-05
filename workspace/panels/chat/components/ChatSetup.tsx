@@ -7,7 +7,7 @@
  */
 
 import { useState, useCallback, useEffect, useRef } from "react";
-import { pubsubConfig, rpc, db, id, createChild } from "@workspace/runtime";
+import { pubsubConfig, rpc, db, id, buildPanelLink } from "@workspace/runtime";
 import { setDbOpen, connect, type AgenticClient } from "@workspace/agentic-messaging";
 import {
   useAgentSelection,
@@ -152,14 +152,17 @@ export function ChatSetup() {
       await client.close();
       client = null;
 
-      // Replace this panel with a new chat panel that has the channel context
-      void createChild("panels/chat", { contextId, replace: true }, {
-        channelName: targetChannelId,
+      // Navigate to chat panel with cross-context URL (new subdomain = new contextId)
+      window.location.href = buildPanelLink("panels/chat", {
         contextId,
-        pendingAgents: agents.map((a) => ({
-          agentId: a.agent.id,
-          handle: a.agent.proposedHandle ?? a.agent.id,
-        })),
+        stateArgs: {
+          channelName: targetChannelId,
+          contextId,
+          pendingAgents: agents.map((a) => ({
+            agentId: a.agent.id,
+            handle: a.agent.proposedHandle ?? a.agent.id,
+          })),
+        },
       });
     } catch (err) {
       setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);

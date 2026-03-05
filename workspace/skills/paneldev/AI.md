@@ -83,10 +83,10 @@ Control browser panels with Playwright:
 
 ```typescript
 import { chromium } from "playwright-core";
-import { createBrowserChild } from "@workspace/runtime";
 
-const browser = await createBrowserChild("https://example.com");
-const cdpUrl = await browser.getCdpEndpoint();
+// Open a browser child via window.open (host intercepts and creates a panel)
+window.open("https://example.com");
+// Browser panels expose CDP endpoints via the bridge
 
 const conn = await chromium.connectOverCDP(cdpUrl);
 const page = conn.contexts()[0].pages()[0];

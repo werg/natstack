@@ -25,7 +25,6 @@ import {
   session,
 } from "electron";
 
-import { getAdBlockManager } from "./adblock/index.js";
 import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("ViewManager");
@@ -41,7 +40,7 @@ export interface ViewConfig {
   /** Unique view ID (typically panel ID) */
   id: string;
   /** View type for tracking */
-  type: "shell" | "panel" | "browser";
+  type: "shell" | "panel";
   /** Session partition for browser views (shared session for cookies/auth). Omit for default session. */
   partition?: string;
   /** Preload script path. Set to null to disable preload (for browsers). */
@@ -57,7 +56,7 @@ export interface ViewConfig {
 interface ManagedView {
   id: string;
   view: WebContentsView;
-  type: "shell" | "panel" | "browser";
+  type: "shell" | "panel";
   parentId?: string;
   visible: boolean;
   bounds: ViewBounds;
@@ -391,14 +390,6 @@ export class ViewManager {
       return;
     }
 
-    // Clean up adblock main frame URL tracking for browser views
-    if (managed.type === "browser" && !managed.view.webContents.isDestroyed()) {
-      try {
-        getAdBlockManager().clearMainFrameUrl(managed.view.webContents.id);
-      } catch {
-        // AdBlockManager might not be initialized yet
-      }
-    }
     // View destruction is a normal operation - no need to log
 
     // Remove only our specific handlers (not others' listeners)

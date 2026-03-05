@@ -1,12 +1,9 @@
 import { createRpcBridge, type RpcBridge, type RpcTransport } from "@natstack/rpc";
 import { createRoutingBridge } from "../shared/routingBridge.js";
 import { createDbClient } from "../shared/database.js";
-import { createChildManager } from "../shared/children.js";
 import {
   noopParent,
   type PanelContract,
-  type CreateChildOptions,
-  type ChildCreationResult,
   type EndpointInfo,
   type GitConfig,
   type PubSubConfig,
@@ -64,58 +61,7 @@ export function createRuntime(deps: RuntimeDeps) {
   // Initialize the stateArgs bridge for setStateArgs() function
   _initStateArgsBridge((updates) => callMain<Record<string, unknown>>("bridge.setStateArgs", updates));
 
-  const bridge = {
-    async createChild(
-      source: string,
-      options?: Omit<CreateChildOptions, "eventSchemas">,
-      stateArgs?: Record<string, unknown>
-    ): Promise<ChildCreationResult> {
-      return callMain<ChildCreationResult>("bridge.createChild", source, options, stateArgs);
-    },
-
-    async createBrowserChild(url: string): Promise<ChildCreationResult> {
-      return callMain<ChildCreationResult>("bridge.createBrowserChild", url);
-    },
-
-    async closeChild(childId: string): Promise<void> {
-      await callMain<void>("bridge.closeChild", childId);
-    },
-
-    // Unified history navigation methods
-    async goBack(childId: string): Promise<void> {
-      await callMain<void>("bridge.goBack", childId);
-    },
-    async goForward(childId: string): Promise<void> {
-      await callMain<void>("bridge.goForward", childId);
-    },
-    async navigatePanel(childId: string, source: string, targetType: string): Promise<void> {
-      await callMain<void>("bridge.navigatePanel", childId, source, targetType);
-    },
-
-    browser: {
-      async getCdpEndpoint(browserId: string): Promise<string> {
-        return callMain<string>("browser.getCdpEndpoint", browserId);
-      },
-      async navigate(browserId: string, url: string): Promise<void> {
-        await callMain<void>("browser.navigate", browserId, url);
-      },
-      async goBack(browserId: string): Promise<void> {
-        await callMain<void>("browser.goBack", browserId);
-      },
-      async goForward(browserId: string): Promise<void> {
-        await callMain<void>("browser.goForward", browserId);
-      },
-      async reload(browserId: string): Promise<void> {
-        await callMain<void>("browser.reload", browserId);
-      },
-      async stop(browserId: string): Promise<void> {
-        await callMain<void>("browser.stop", browserId);
-      },
-    },
-  };
-
   const db = createDbClient(rpc);
-  const childManager = createChildManager({ rpc, bridge });
 
   const parentHandleOrNull = deps.parentId ? createParentHandle({ rpc, parentId: deps.parentId }) : null;
   const parent: ParentHandle = parentHandleOrNull ?? noopParent;
@@ -168,22 +114,10 @@ export function createRuntime(deps: RuntimeDeps) {
   };
 
   const destroy = () => {
-    childManager.destroy();
     for (const unsub of themeUnsubscribers) unsub();
     for (const unsub of focusUnsubscribers) unsub();
     focusUnsubscribers.length = 0;
     themeListeners.clear();
-  };
-
-  const onChildCreationError = (
-    callback: (error: { url: string; error: string }) => void
-  ): (() => void) => {
-    return rpc.onEvent("runtime:child-creation-error", (fromId, payload) => {
-      if (fromId !== "main") return;
-      const data = payload as { url?: unknown; error?: unknown } | null;
-      if (!data || typeof data.url !== "string" || typeof data.error !== "string") return;
-      callback({ url: data.url, error: data.error });
-    });
   };
 
   const onConnectionError = (
@@ -213,14 +147,6 @@ export function createRuntime(deps: RuntimeDeps) {
     getParent,
     getParentWithContract,
 
-    createChild: childManager.createChild,
-    createBrowserChild: childManager.createBrowserChild,
-    createChildWithContract: childManager.createChildWithContract,
-    children: childManager.children,
-    getChild: childManager.getChild,
-    onChildAdded: childManager.onChildAdded,
-    onChildRemoved: childManager.onChildRemoved,
-    onChildCreationError,
     onConnectionError,
 
     getInfo: () => callMain<EndpointInfo>("bridge.getInfo"),

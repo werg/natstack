@@ -29,7 +29,6 @@ import type {
   Panel,
   PanelSnapshot,
   PanelSummary,
-  PanelType,
 } from "../../shared/types.js";
 
 // Re-export PanelSummary from shared types
@@ -63,10 +62,8 @@ export interface CreatePanelInput {
  */
 export interface UpdatePanelInput {
   selectedChildId?: string | null;
-  /** Update the history array (for navigation) */
-  history?: PanelSnapshot[];
-  /** Update the history index */
-  historyIndex?: number;
+  /** Update the snapshot */
+  snapshot?: PanelSnapshot;
   parentId?: string | null;
 }
 
@@ -248,14 +245,12 @@ export class PanelPersistence {
     const rows = db.prepare(PANEL_QUERIES.ROOT_PANELS).all(workspaceId) as Array<{
       id: string;
       title: string;
-      type: PanelType;
       position: number;
       child_count: number;
     }>;
 
     return rows.map((row) => ({
       id: row.id,
-      type: row.type,
       title: row.title,
       childCount: row.child_count,
       position: row.position,
@@ -273,14 +268,12 @@ export class PanelPersistence {
     const rows = db.prepare(PANEL_QUERIES.CHILDREN).all(parentId) as Array<{
       id: string;
       title: string;
-      type: PanelType;
       position: number;
       child_count: number;
     }>;
 
     return rows.map((row) => ({
       id: row.id,
-      type: row.type,
       title: row.title,
       childCount: row.child_count,
       position: row.position,
@@ -296,14 +289,12 @@ export class PanelPersistence {
     const rows = db.prepare(PANEL_QUERIES.SIBLINGS).all(panelId) as Array<{
       id: string;
       title: string;
-      type: PanelType;
       position: number;
       child_count: number;
     }>;
 
     return rows.map((row) => ({
       id: row.id,
-      type: row.type,
       title: row.title,
       childCount: row.child_count,
       position: row.position,
@@ -319,13 +310,11 @@ export class PanelPersistence {
     const rows = db.prepare(PANEL_QUERIES.ANCESTORS).all(panelId) as Array<{
       id: string;
       title: string;
-      type: PanelType;
       depth: number;
     }>;
 
     return rows.map((row) => ({
       id: row.id,
-      type: row.type,
       title: row.title,
       childCount: 0, // Not relevant for breadcrumbs
       position: 0,
@@ -394,32 +383,16 @@ export class PanelPersistence {
       params.push(input.parentId);
     }
 
-    if (input.history !== undefined) {
+    if (input.snapshot !== undefined) {
       updates.push("history = ?");
-      params.push(JSON.stringify(input.history));
-    }
-
-    if (input.historyIndex !== undefined) {
+      params.push(JSON.stringify([input.snapshot]));
       updates.push("history_index = ?");
-      params.push(input.historyIndex);
+      params.push(0);
     }
 
     params.push(panelId);
 
     db.prepare(`UPDATE panels SET ${updates.join(", ")} WHERE id = ?`).run(...params);
-  }
-
-  /**
-   * Update panel history (for navigation).
-   */
-  updateHistory(panelId: string, history: PanelSnapshot[], historyIndex: number): void {
-    const db = this.ensureOpen();
-    db.prepare("UPDATE panels SET history = ?, history_index = ?, updated_at = ? WHERE id = ?").run(
-      JSON.stringify(history),
-      historyIndex,
-      Date.now(),
-      panelId
-    );
   }
 
   /**
@@ -597,14 +570,12 @@ export class PanelPersistence {
     const rows = db.prepare(PANEL_QUERIES.CHILDREN_PAGINATED).all(parentId, limit, offset) as Array<{
       id: string;
       title: string;
-      type: PanelType;
       position: number;
       child_count: number;
     }>;
 
     const children = rows.map((row) => ({
       id: row.id,
-      type: row.type,
       title: row.title,
       childCount: row.child_count,
       position: row.position,
@@ -637,14 +608,12 @@ export class PanelPersistence {
       .all(workspaceId, limit, offset) as Array<{
       id: string;
       title: string;
-      type: PanelType;
       position: number;
       child_count: number;
     }>;
 
     const panels = rows.map((row) => ({
       id: row.id,
-      type: row.type,
       title: row.title,
       childCount: row.child_count,
       position: row.position,
@@ -874,7 +843,7 @@ export class PanelPersistence {
       throw new Error(`Panel ${row.id} has invalid history: must be non-empty array`);
     }
 
-    // Validate historyIndex is within bounds
+    // Use the current snapshot (at historyIndex, or fallback to first)
     let historyIndex = row.history_index;
     if (historyIndex < 0 || historyIndex >= history.length) {
       console.warn(
@@ -888,8 +857,7 @@ export class PanelPersistence {
       title: row.title,
       children: [], // Will be populated by tree builder
       selectedChildId: row.selected_child_id,
-      history,
-      historyIndex,
+      snapshot: history[historyIndex]!,
       // artifacts is runtime-only - start with empty object
       // PanelManager will set buildState to "pending" on load
       artifacts: {},
