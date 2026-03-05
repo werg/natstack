@@ -542,6 +542,7 @@ export class PanelManager {
           if (panel && pathSource && getPanelSource(panel) !== pathSource) {
             panel.snapshot.source = pathSource;
             log.verbose(` Panel ${panelId} source updated to: ${pathSource}`);
+            this.persistPanel(panel, this.findParentId(panelId));
           }
         } catch {
           // Non-URL navigations (about:blank etc.) — ignore
@@ -903,6 +904,7 @@ export class PanelManager {
     }
 
     this.updateSelectedPath(targetPanelId);
+    getPanelPersistence().updateSelectedPath(targetPanelId);
     this.notifyPanelTreeUpdate();
 
     // Emit focus event to the panel only if it has a view
