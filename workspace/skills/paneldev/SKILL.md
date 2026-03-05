@@ -18,36 +18,53 @@ Documentation for developing NatStack panels.
 | [TOOLS.md](TOOLS.md) | Agent tools reference |
 | [WORKFLOW.md](WORKFLOW.md) | Development workflow |
 
-## Quick Start
+## Critical Rules
 
-1. Read: `Read({ file_path: "workspace/skills/paneldev/PANEL_DEVELOPMENT.md" })`
+1. **Relative paths only** — use `panels/my-app/index.tsx`, NEVER `/home/.../workspace/...`
+2. **NEVER use Bash** for git, file listing, or file creation — use the structured tools
+3. **Use eval for runtime operations** — project creation, git, typecheck, tests, launching panels
+4. **Static imports only in eval** — `import { rpc, createChild } from "@workspace/runtime"` (NOT `await import(...)`)
+5. **`contextId` is pre-injected** — use it directly in eval, do NOT import it from `@workspace/runtime`
 
-## Panel Template
+## Quick Start Workflow
 
-```tsx
-// panels/my-app/index.tsx
-export default function MyApp() {
-  return <div>Hello World!</div>;
-}
+Create a project via eval:
+
+```
+eval({ code: `
+  import { rpc } from "@workspace/runtime";
+  await rpc.call("main", "project.create", contextId, "panel", "my-app", "My App");
+`, timeout: 30000 })
 ```
 
-```json
-// panels/my-app/package.json
-{
-  "name": "@workspace-panels/my-app",
-  "natstack": { "type": "app", "title": "My App" }
-}
+Edit the generated files:
+
+```
+Read({ file_path: "panels/my-app/index.tsx" })
+Edit({ file_path: "panels/my-app/index.tsx", old_string: "...", new_string: "..." })
+```
+
+Launch via eval:
+
+```
+eval({ code: `
+  import { rpc, createChild, focusPanel } from "@workspace/runtime";
+  await rpc.call("main", "git.contextOp", contextId, "commit_and_push", "panels/my-app", "Initial launch");
+  const handle = await createChild("panels/my-app", { contextId });
+  focusPanel(handle.id);
+  console.log("Panel ID:", handle.id);
+`, timeout: 30000 })
 ```
 
 ## Common Tasks
 
-| Task | Command |
-|------|---------|
-| Create panel | `create_project({ type: "panel", name: "my-app" })` |
+| Task | How |
+|------|-----|
+| Create panel | `eval` — `rpc.call("main", "project.create", contextId, "panel", "my-app")` |
 | Read a file | `Read({ file_path: "panels/my-app/index.tsx" })` |
 | Edit a file | `Edit({ file_path: "panels/my-app/index.tsx", old_string: "...", new_string: "..." })` |
-| Git status | `git({ operation: "status" })` |
-| Commit | `git({ operation: "commit", message: "..." })` |
-| Check types | `check_types({ panel_path: "panels/my-app" })` |
-| Run tests | `run_tests({ target: "panels/my-app" })` |
-| Launch panel | `launch_panel({ source: "panels/my-app" })` |
+| Check types | `eval` — `rpc.call("main", "typecheck.check", "panels/my-app")` |
+| Run tests | `eval` — `rpc.call("main", "test.run", contextId, "panels/my-app")` |
+| Git operations | `eval` — `rpc.call("main", "git.contextOp", contextId, "status")` |
+| Launch panel | `eval` — `createChild(source, { contextId })` + `focusPanel(id)` |
+| Rebuild panel | `eval` — `commit_and_push` + `focusPanel(id)` |

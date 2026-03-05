@@ -7,7 +7,7 @@
  */
 
 import { useState, useCallback, useEffect, useRef } from "react";
-import { pubsubConfig, rpc, db, id } from "@workspace/runtime";
+import { pubsubConfig, rpc, db, id, createChild } from "@workspace/runtime";
 import { setDbOpen, connect, type AgenticClient } from "@workspace/agentic-messaging";
 import {
   useAgentSelection,
@@ -30,11 +30,7 @@ export interface ChatSetupResult {
   pendingAgents: Array<{ agentId: string; handle: string }>;
 }
 
-interface ChatSetupProps {
-  onComplete: (result: ChatSetupResult) => void;
-}
-
-export function ChatSetup({ onComplete }: ChatSetupProps) {
+export function ChatSetup() {
   const [channelId, setChannelId] = useState<string>(generateChannelId);
   const [status, setStatus] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
@@ -156,7 +152,8 @@ export function ChatSetup({ onComplete }: ChatSetupProps) {
       await client.close();
       client = null;
 
-      onComplete({
+      // Replace this panel with a new chat panel that has the channel context
+      void createChild("panels/chat", { contextId, replace: true }, {
         channelName: targetChannelId,
         contextId,
         pendingAgents: agents.map((a) => ({
@@ -171,7 +168,7 @@ export function ChatSetup({ onComplete }: ChatSetupProps) {
         try { await client.close(); } catch { /* ignore */ }
       }
     }
-  }, [buildSpawnConfig, channelId, onComplete]);
+  }, [buildSpawnConfig, channelId]);
 
   /** Manual start — validates selection, then launches */
   const startChat = useCallback(async () => {

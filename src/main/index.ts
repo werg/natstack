@@ -19,7 +19,6 @@ import {
 } from "./workspace/loader.js";
 import type { Workspace, AppMode } from "./workspace/types.js";
 import { getCentralData } from "./centralData.js";
-import { registerPanelProtocol } from "./panelProtocol.js";
 import { getCdpServer, type CdpServer } from "./cdpServer.js";
 import { getTokenManager } from "./tokenManager.js";
 import { eventService } from "./services/eventsService.js";
@@ -85,13 +84,6 @@ if (process.env["NATSTACK_DEBUG_PATHS"] === "1") {
 // but these are a more aggressive fallback if needed.
 // app.commandLine.appendSwitch("disable-renderer-backgrounding");
 // app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
-
-// =============================================================================
-// Protocol Registration (must happen before app ready)
-// =============================================================================
-
-// Register custom protocol for serving panel bundles
-registerPanelProtocol();
 
 // =============================================================================
 // Configuration Initialization

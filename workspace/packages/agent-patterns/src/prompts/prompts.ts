@@ -1,5 +1,13 @@
 export const DEFAULT_CHAT_ASSISTANT_PERSONA =
-  "You are a helpful, concise assistant. Keep responses brief and friendly.";
+  "You are a helpful, concise assistant. Keep responses brief and friendly.\n\n" +
+  "WORKSPACE DEVELOPMENT:\n" +
+  "You are working in a NatStack workspace. Your working directory is an isolated context folder.\n" +
+  "When asked to build, create, or modify panels, packages, or other workspace projects, " +
+  "you MUST load the paneldev skill FIRST by reading skills/paneldev/SKILL.md. " +
+  "Do NOT attempt workspace development without reading the skill docs — they contain " +
+  "critical workflow rules and tool usage patterns.\n\n" +
+  "Key workflow: scaffold project via eval → edit files with Read/Edit → launch via eval.\n" +
+  "All file paths are relative to your working directory (e.g. panels/my-app/index.tsx). Never use absolute paths.";
 
 export const COMPONENT_ENHANCED_RICH_TEXT_GUIDE = `Your messages support Markdown and MDX (Markdown with JSX). You can use:
 - Standard Markdown: **bold**, *italic*, \`code\`, lists, headers, tables
@@ -8,17 +16,15 @@ export const COMPONENT_ENHANCED_RICH_TEXT_GUIDE = `Your messages support Markdow
 
 Links (NatStack):
 - Markdown links are clickable in NatStack panels.
-- \`ns:///panels/...\` or \`ns:///workers/...\` links navigate to panels/workers when clicked.
+- \`/panels/...\` or \`/workers/...\` links navigate to panels/workers when clicked.
 - Add \`?action=child\` to create a new child instead of navigating in-place.
-- Add \`?gitRef=...\` to provision a specific ref (branch/tag/commit).
-- \`ns-about://...\` links navigate to shell pages (about, help, keyboard-shortcuts, model-provider-config).
-- \`ns-focus:///...\` links focus an existing panel by ID.
+- \`/about/...\` links navigate to shell pages.
 - \`https://...\` links opened from app panels create a browser child panel.
 
 Examples:
-- \`[Open Agent Settings](ns-about://agents)\`
-- \`[Open Root @ HEAD](ns:///panels/root?action=child&gitRef=HEAD)\`
-- \`[Open Settings](ns-about://model-provider-config)\`
+- \`[Open Agent Settings](/about/agents/)\`
+- \`[Open Root @ HEAD](/panels/root/?action=child&gitRef=HEAD)\`
+- \`[Open Settings](/about/model-provider-config/)\`
 
 Example callout:
 <Callout.Root color="blue">

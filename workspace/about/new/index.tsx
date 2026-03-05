@@ -20,7 +20,7 @@ import {
   Separator,
   Tabs,
 } from "@radix-ui/themes";
-import { getWorkspaceTree, buildNsLink, buildAboutLink, onFocus, rpc } from "@workspace/runtime";
+import { getWorkspaceTree, buildPanelLink, buildShellLink, onFocus, rpc } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import type { WorkspaceTree, WorkspaceNode, EnvArgSchema } from "@workspace/runtime";
 
@@ -208,7 +208,7 @@ function NewPanelPage() {
       const hasRepoArgs = Object.keys(repoArgs).length > 0;
       const hasEnv = Object.keys(env).length > 0;
 
-      const url = buildNsLink(node.path, {
+      const url = buildPanelLink(node.path, {
         repoArgs: hasRepoArgs ? repoArgs : undefined,
         env: hasEnv ? env : undefined,
       });
@@ -229,7 +229,7 @@ function NewPanelPage() {
       (node.launchable?.envArgs?.length ?? 0) > 0;
 
     if (!hasArgs && node.launchable) {
-      const url = buildNsLink(node.path);
+      const url = buildPanelLink(node.path);
       window.location.href = url;
     } else {
       setSelectedPath(node.path);
@@ -243,7 +243,7 @@ function NewPanelPage() {
   }, [urlInput]);
 
   const handleShellPageClick = useCallback((page: AboutPage) => {
-    window.location.href = buildAboutLink(page);
+    window.location.href = buildShellLink(page);
   }, []);
 
   const renderNodeExtra = useCallback(
@@ -320,7 +320,7 @@ function NewPanelPage() {
             <Flex gap="2">
               <TextField.Root
                 style={{ flex: 1 }}
-                placeholder="Enter URL or ns:// path..."
+                placeholder="Enter URL or /panels/... path..."
                 value={urlInput}
                 onChange={(e) => setUrlInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleUrlNavigate()}

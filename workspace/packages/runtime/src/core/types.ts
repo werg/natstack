@@ -74,6 +74,8 @@ export interface CreateChildOptions {
    * This enables multiple panels to share the same filesystem and storage partition.
    */
   contextId?: string;
+  /** If true, replace the calling panel instead of creating a child */
+  replace?: boolean;
 }
 
 export interface ChildCreationResult {
@@ -128,7 +130,7 @@ export interface ChildSpecCommon extends ChildSpecBase {
 /**
  * Spec for creating an app panel child.
  * Name is optional - if omitted, context is auto-derived from tree path.
- * Use `contextId: "some-id"` to share storage across panels, or `contextId: true` for isolation.
+ * Use `contextId: "some-id"` to share storage across panels, or omit for an isolated context.
  */
 export interface AppChildSpec extends ChildSpecBase {
   type: "app";
@@ -191,21 +193,6 @@ export interface EndpointInfo {
   partition: string;
   /** Context ID (format: {mode}_{type}_{identifier}) */
   contextId: string;
-}
-
-/**
- * Result from ensurePanelLoaded - detailed info about panel load status.
- * Used for agent worker recovery to report errors to the user.
- */
-export interface EnsureLoadedResult {
-  /** Whether the panel is now loaded and ready */
-  success: boolean;
-  /** The current build state */
-  buildState: string;
-  /** Error message if failed */
-  error?: string;
-  /** Build log if available (for error diagnosis) */
-  buildLog?: string;
 }
 
 // =============================================================================

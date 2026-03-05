@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock child_process — use vi.hoisted for proper hoisting
 const { mockExecFile } = vi.hoisted(() => ({
-  mockExecFile: vi.fn().mockResolvedValue({ stdout: "" }),
+  mockExecFile: vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
 }));
 
 vi.mock("child_process", () => ({
@@ -29,13 +29,6 @@ vi.mock("fs", () => ({
   writeFileSync: mockWriteFileSync,
 }));
 
-// Mock tokenManager
-vi.mock("../../tokenManager.js", () => ({
-  getTokenManager: () => ({
-    ensureToken: vi.fn().mockReturnValue("test-token"),
-  }),
-}));
-
 import { handleProjectCall } from "../projectService";
 
 describe("handleProjectCall", () => {
@@ -45,17 +38,21 @@ describe("handleProjectCall", () => {
   const mockGitServer = {
     getBaseUrl: vi.fn().mockReturnValue("http://localhost:9418"),
   };
+  const mockTokenManager = {
+    ensureToken: vi.fn().mockReturnValue("test-token"),
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockExistsSync.mockReturnValue(false);
-    mockExecFile.mockResolvedValue({ stdout: "" });
+    mockExecFile.mockResolvedValue({ stdout: "", stderr: "" });
   });
 
   it("creates a panel project", async () => {
     const result = await handleProjectCall(
       mockContextFolderManager as any,
       mockGitServer as any,
+      mockTokenManager as any,
       "create",
       ["ctx_123", "panel", "my-app", "My App"],
     );
@@ -83,12 +80,20 @@ describe("handleProjectCall", () => {
     expect(pkg.name).toBe("@workspace-panels/my-app");
     expect(pkg.natstack.type).toBe("app");
     expect(pkg.natstack.title).toBe("My App");
+    expect(pkg.private).toBe(true);
+    expect(pkg.type).toBe("module");
+    expect(pkg.dependencies).toEqual({
+      "@workspace/runtime": "workspace:*",
+      "@workspace/react": "workspace:*",
+      "@radix-ui/themes": "^3.2.1",
+    });
   });
 
   it("creates a package project", async () => {
     const result = await handleProjectCall(
       mockContextFolderManager as any,
       mockGitServer as any,
+      mockTokenManager as any,
       "create",
       ["ctx_123", "package", "utils", undefined],
     ) as any;
@@ -108,6 +113,7 @@ describe("handleProjectCall", () => {
     const result = await handleProjectCall(
       mockContextFolderManager as any,
       mockGitServer as any,
+      mockTokenManager as any,
       "create",
       ["ctx_123", "skill", "my-skill", "My Skill"],
     ) as any;
@@ -120,6 +126,7 @@ describe("handleProjectCall", () => {
     const result = await handleProjectCall(
       mockContextFolderManager as any,
       mockGitServer as any,
+      mockTokenManager as any,
       "create",
       ["ctx_123", "agent", "my-agent", "My Agent"],
     ) as any;
@@ -133,6 +140,7 @@ describe("handleProjectCall", () => {
       handleProjectCall(
         mockContextFolderManager as any,
         mockGitServer as any,
+        mockTokenManager as any,
         "create",
         ["ctx_123", "panel", "a/b", "Bad"],
       ),
@@ -144,6 +152,7 @@ describe("handleProjectCall", () => {
       handleProjectCall(
         mockContextFolderManager as any,
         mockGitServer as any,
+        mockTokenManager as any,
         "create",
         ["ctx_123", "panel", "foo..bar", "Bad"],
       ),
@@ -155,6 +164,7 @@ describe("handleProjectCall", () => {
       handleProjectCall(
         mockContextFolderManager as any,
         mockGitServer as any,
+        mockTokenManager as any,
         "create",
         ["ctx_123", "widget", "test", "Test"],
       ),
@@ -168,6 +178,7 @@ describe("handleProjectCall", () => {
       handleProjectCall(
         mockContextFolderManager as any,
         mockGitServer as any,
+        mockTokenManager as any,
         "create",
         ["ctx_123", "panel", "my-app", "My App"],
       ),
@@ -178,6 +189,7 @@ describe("handleProjectCall", () => {
     const result = await handleProjectCall(
       mockContextFolderManager as any,
       mockGitServer as any,
+      mockTokenManager as any,
       "create",
       ["ctx_123", "panel", "my-app", undefined],
     ) as any;
@@ -185,11 +197,37 @@ describe("handleProjectCall", () => {
     expect(result.title).toBe("my-app");
   });
 
+  it("returns pushFailed when push fails", async () => {
+    // Make push fail (last git call)
+    let callCount = 0;
+    mockExecFile.mockImplementation(async () => {
+      callCount++;
+      // The push is the last git call (after init, config x2, remote, add, commit, config auth)
+      if (callCount >= 8) {
+        throw new Error("push failed: remote hung up");
+      }
+      return { stdout: "", stderr: "" };
+    });
+
+    const result = await handleProjectCall(
+      mockContextFolderManager as any,
+      mockGitServer as any,
+      mockTokenManager as any,
+      "create",
+      ["ctx_123", "panel", "my-app", "My App"],
+    ) as any;
+
+    expect(result.created).toBe("panels/my-app");
+    expect(result.pushFailed).toBe(true);
+    expect(result.pushError).toContain("push failed");
+  });
+
   it("throws on unknown method", async () => {
     await expect(
       handleProjectCall(
         mockContextFolderManager as any,
         mockGitServer as any,
+        mockTokenManager as any,
         "delete",
         [],
       ),

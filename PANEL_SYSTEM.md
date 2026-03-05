@@ -100,7 +100,7 @@ import {
 
   // Utilities
   parseContextId,        // Parse context ID components
-  buildNsLink,           // Build ns:// navigation link
+  buildPanelLink,        // Build panel navigation link (relative HTTP path)
 } from "@workspace/runtime";
 ```
 

@@ -242,9 +242,8 @@ async function handleSSEEvent(event, dataStr, config) {
       broadcastStatus();
 
       // Pre-warm context: open a hidden tab to the /__init__ page.
-      // The initToken from the event authenticates the init page request.
-      if (data.subdomain && config.serverUrl && data.initToken) {
-        preWarmContext(data.panelId, data.subdomain, data.initToken, config);
+      if (data.subdomain && config.serverUrl && data.contextId) {
+        preWarmContext(data.panelId, data.subdomain, data.contextId, config);
       }
       break;
     }
@@ -361,16 +360,16 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
  *
  * @param {string} panelId
  * @param {string} subdomain
- * @param {string} initToken - Short-lived token from panel:created event
+ * @param {string} contextId - Context ID for OPFS bootstrap
  * @param {object} config
  */
-async function preWarmContext(panelId, subdomain, initToken, config) {
+async function preWarmContext(panelId, subdomain, contextId, config) {
   if (initWindows.has(panelId)) return;
 
   try {
     const serverUrl = new URL(config.serverUrl);
     const port = serverUrl.port || (serverUrl.protocol === "https:" ? "443" : "80");
-    const initUrl = `http://${subdomain}.localhost:${port}/__init__?token=${encodeURIComponent(initToken)}`;
+    const initUrl = `http://${subdomain}.localhost:${port}/__init__?contextId=${encodeURIComponent(contextId)}`;
 
     console.log(`[NatStack] Pre-warming context for ${panelId}: ${initUrl}`);
 

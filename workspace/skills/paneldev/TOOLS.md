@@ -1,6 +1,15 @@
 # Agent Tools Reference
 
-Agents use native SDK tools (Read, Write, Edit, Glob, Grep) and PubSub tools for operations that require the panel runtime or main process.
+Your working directory is the **context folder** — an isolated copy of the workspace.
+
+**CRITICAL RULES:**
+- All file paths are **relative to your working directory** (e.g., `panels/my-app/index.tsx`)
+- **NEVER** use absolute paths (e.g., `/home/.../workspace/panels/...`)
+- **NEVER** use `Bash` for git operations, file listing, or file creation — use the structured tools
+- In eval, use **static imports** (`import { rpc } from "@workspace/runtime"`), NOT dynamic `await import(...)`
+- `contextId` is **pre-injected** — use it directly, do NOT import it from `@workspace/runtime`
+
+---
 
 ## Filesystem Tools (Native SDK)
 
@@ -52,141 +61,13 @@ Grep({ pattern: "import.*runtime", type: "ts" })
 
 ---
 
-## Project Management
+## eval
 
-### create_project
+Execute TypeScript/JavaScript code in the panel runtime. Runtime APIs are available via static imports from `@workspace/runtime`.
 
-Scaffold a new workspace project with boilerplate files. Automatically initializes git and pushes to trigger auto-build.
-
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `type` | `"panel"` \| `"package"` \| `"skill"` \| `"agent"` | Yes | Project type |
-| `name` | string | Yes | Directory and package name suffix |
-| `title` | string | No | Human-readable title (defaults to name) |
-
-```
-create_project({ type: "panel", name: "my-app", title: "My App" })
-create_project({ type: "package", name: "utils" })
-```
-
-### git
-
-Git operations on the workspace context folder.
-
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `operation` | `"status"` \| `"diff"` \| `"commit"` \| `"log"` \| `"push"` | Yes | Git operation |
-| `path` | string | No | Relative path within workspace (default: root) |
-| `message` | string | For commit | Commit message |
-| `files` | string[] | No | Files to stage (default: all changed) |
-
-```
-git({ operation: "status" })
-git({ operation: "diff" })
-git({ operation: "commit", message: "Add counter component" })
-git({ operation: "log" })
-git({ operation: "push" })
-```
-
----
-
-## Quality & Testing
-
-### check_types
-
-Run TypeScript type checking on panel/worker files. Returns diagnostics (errors, warnings) from the TypeScript compiler.
-
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `panel_path` | string | Yes | Relative or absolute path to the panel/worker root |
-| `file_path` | string | No | Specific file to check |
-
-```
-check_types({ panel_path: "panels/my-app" })
-check_types({ panel_path: "panels/my-app", file_path: "index.tsx" })
-```
-
-### run_tests
-
-Run vitest tests on a workspace panel or package.
-
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `target` | string | Yes | Relative path to panel/package |
-| `file` | string | No | Specific test file |
-| `test_name` | string | No | Filter by test name pattern |
-
-```
-run_tests({ target: "panels/my-app" })
-run_tests({ target: "panels/my-app", file: "counter.test.tsx" })
-run_tests({ target: "packages/utils", test_name: "formatDate" })
-```
-
-**What's covered:** Pure logic tests, component tests with mocked runtime globals, package tests.
-
-**Not covered (use `eval` or `launch_panel` + Playwright):** Tests needing live RPC/transport, integration tests against running panels.
-
-### get_type_info
-
-Get TypeScript type information at a specific position.
-
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `panel_path` | string | Yes | Relative or absolute path to the panel/worker root |
-| `file_path` | string | Yes | Path to the file |
-| `line` | number | Yes | Line number (1-indexed) |
-| `column` | number | Yes | Column number (1-indexed) |
-
-### get_completions
-
-Get code completions at a specific position.
-
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `panel_path` | string | Yes | Relative or absolute path to the panel/worker root |
-| `file_path` | string | Yes | Path to the file |
-| `line` | number | Yes | Line number (1-indexed) |
-| `column` | number | Yes | Column number (1-indexed) |
-
----
-
-## Runtime Tools
-
-### launch_panel
-
-Launch a child panel or browser for preview and testing.
-
-**Parameters:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `source` | string | Yes | Panel path or URL |
-| `name` | string | No | Stable child name |
-| `browser` | boolean | No | Launch as browser child |
-| `context_id` | string | No | Shared storage context |
-
-```
-launch_panel({ source: "panels/my-app" })
-launch_panel({ source: "https://example.com", browser: true })
-```
-
-The returned `id` can be used with `getCdpEndpoint()` via eval for Playwright automation:
-
-```
-eval({ code: `
-  const { getCdpEndpoint } = await import("playwright");
-  // Use the panel ID from launch_panel result
-` })
-```
-
-### eval
-
-Execute TypeScript/JavaScript code in the panel runtime.
+**IMPORTANT:**
+- Use static `import` syntax, NOT dynamic `await import(...)`.
+- `contextId` is **pre-injected** — use it directly, do NOT import it from the runtime.
 
 **Parameters:**
 | Name | Type | Required | Description |
@@ -194,6 +75,107 @@ Execute TypeScript/JavaScript code in the panel runtime.
 | `code` | string | Yes | Code to execute |
 | `syntax` | `"typescript"` \| `"tsx"` \| `"jsx"` | No | Syntax mode (default: `"tsx"`) |
 | `timeout` | number | No | Max async wait in ms (default: 10000, max: 90000) |
+
+### Runtime APIs
+
+Available via `import { ... } from "@workspace/runtime"`:
+
+| API | Description |
+|-----|-------------|
+| `rpc` | RPC bridge for calling main-process services via `rpc.call(target, method, ...args)` |
+| `createChild(source, opts)` | Create a child panel |
+| `createBrowserChild(url)` | Create a browser child |
+| `focusPanel(panelId)` | Focus an existing panel by ID |
+
+**Pre-injected** (use directly, do NOT import):
+
+| Variable | Description |
+|----------|-------------|
+| `contextId` | Current agent context ID for scoped operations |
+
+### RPC Services
+
+Called via `rpc.call("main", "service.method", ...args)`:
+
+#### project.create
+
+Scaffold a new workspace project (panel, package, skill, agent).
+
+```
+eval({ code: `
+  import { rpc } from "@workspace/runtime";
+  await rpc.call("main", "project.create", contextId, "panel", "my-app", "My App");
+`, timeout: 30000 })
+```
+
+#### git.contextOp
+
+Git operations scoped to the current context.
+
+```
+// Status
+eval({ code: `
+  import { rpc } from "@workspace/runtime";
+  const status = await rpc.call("main", "git.contextOp", contextId, "status");
+  console.log(status);
+`, timeout: 30000 })
+
+// Commit and push
+eval({ code: `
+  import { rpc } from "@workspace/runtime";
+  await rpc.call("main", "git.contextOp", contextId, "commit_and_push", "panels/my-app", "Update");
+`, timeout: 30000 })
+```
+
+Operations: `status`, `diff`, `log`, `commit`, `push`, `commit_and_push`
+
+#### typecheck.check
+
+Run TypeScript type checking on a panel/package.
+
+```
+eval({ code: `
+  import { rpc } from "@workspace/runtime";
+  const result = await rpc.call("main", "typecheck.check", "panels/my-app");
+  console.log(result);
+`, timeout: 30000 })
+```
+
+#### test.run
+
+Run vitest tests on a workspace panel or package.
+
+```
+eval({ code: `
+  import { rpc } from "@workspace/runtime";
+  const result = await rpc.call("main", "test.run", contextId, "panels/my-app");
+  console.log(result);
+`, timeout: 60000 })
+```
+
+### Panel Lifecycle
+
+#### First launch
+
+```
+eval({ code: `
+  import { rpc, createChild, focusPanel } from "@workspace/runtime";
+  await rpc.call("main", "git.contextOp", contextId, "commit_and_push", "panels/my-app", "Initial");
+  const handle = await createChild("panels/my-app", { contextId });
+  focusPanel(handle.id);
+  console.log("Panel ID:", handle.id);
+`, timeout: 30000 })
+```
+
+#### Rebuild after edits
+
+```
+eval({ code: `
+  import { rpc, focusPanel } from "@workspace/runtime";
+  await rpc.call("main", "git.contextOp", contextId, "commit_and_push", "panels/my-app", "Update");
+  focusPanel("<panel-id>");
+`, timeout: 30000 })
+```
 
 ---
 
@@ -219,7 +201,3 @@ Fetch and process content from a URL.
 |------|------|----------|-------------|
 | `url` | string | Yes | URL to fetch |
 | `prompt` | string | Yes | What to extract from the page |
-
----
-
-**Note:** The Bash tool is available as a fallback but prefer the structured tools above for safety and discoverability.

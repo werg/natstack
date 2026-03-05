@@ -18,7 +18,6 @@ function makeNode(
     dependencies: {},
     internalDeps,
     internalDepRefs: {},
-    contentHash: "",
     manifest: {},
     ...overrides,
   };

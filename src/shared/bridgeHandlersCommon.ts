@@ -19,6 +19,8 @@ export interface BridgePanelManager {
   findParentId(childId: string): string | null;
   getChildPanels(parentId: string, options?: { includeStateArgs?: boolean }): unknown;
   handleSetStateArgs(panelId: string, updates: Record<string, unknown>): Promise<unknown> | void;
+  focusPanel?(panelId: string): void;
+  getBootstrapConfig?(callerId: string): Promise<unknown> | unknown;
 }
 
 /**
@@ -78,6 +80,17 @@ export async function handleCommonBridgeMethod(
     case "setStateArgs": {
       const [updates] = args as [Record<string, unknown>];
       return { handled: true, result: await pm.handleSetStateArgs(callerId, updates) };
+    }
+
+    case "focusPanel": {
+      const [targetId] = args as [string];
+      pm.focusPanel?.(targetId);
+      return { handled: true, result: undefined };
+    }
+
+    case "getBootstrapConfig": {
+      if (!pm.getBootstrapConfig) return { handled: false };
+      return { handled: true, result: await pm.getBootstrapConfig(callerId) };
     }
 
     default:

@@ -1,26 +1,26 @@
 /**
- * Agentic Chat Panel — Phase orchestrator
+ * Agentic Chat Panel
  *
- * Two phases:
- * - "setup": Agent selection and chat creation (formerly chat-launcher panel)
- * - "chat": Active chat session (AgenticChat component)
+ * Two modes based on stateArgs:
+ * - No channelName: Shows setup phase (agent selection + chat creation)
+ * - With channelName: Shows active chat session
  *
- * When opened without a channelName stateArg, starts in setup phase.
- * After setup completes (or when channelName is provided), enters chat phase.
- * "New Conversation" resets to setup phase. "Add Agent" opens a centered dialog.
+ * Setup completes via createChild("panels/chat", { replace: true, contextId }),
+ * which replaces this panel with a new one that has the correct contextId.
+ * This means the replaced panel's contextId = channel contextId, so eval code
+ * gets the right contextId automatically from the runtime.
  */
 
-import { pubsubConfig, id as panelClientId, buildFocusLink, useStateArgs, setStateArgs, forceRepaint, ensurePanelLoaded, createChild, createBrowserChild, contextId as runtimeContextId } from "@workspace/runtime";
+import { pubsubConfig, id as panelClientId, contextId, focusPanel, useStateArgs, createChild, forceRepaint } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Flex, Theme } from "@radix-ui/themes";
 import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
 import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps } from "@workspace/agentic-chat";
-import { createAllToolMethodDefinitions, executeEvalTool, EVAL_DEFAULT_TIMEOUT_MS, EVAL_MAX_TIMEOUT_MS, EVAL_FRAMEWORK_TIMEOUT_MS } from "@workspace/agentic-tools";
-import { LaunchPanelArgsSchema, type LaunchPanelArgs } from "@workspace/agentic-messaging/tool-schemas";
+import { executeEvalTool, EVAL_DEFAULT_TIMEOUT_MS, EVAL_MAX_TIMEOUT_MS, EVAL_FRAMEWORK_TIMEOUT_MS } from "@workspace/agentic-tools";
 import { z } from "zod";
 import type { MethodDefinition } from "@workspace/agentic-messaging";
-import { ChatSetup, type ChatSetupResult } from "./components/ChatSetup";
+import { ChatSetup } from "./components/ChatSetup";
 import { AddAgentDialog } from "./components/AddAgentDialog";
 
 /** Stable metadata object — avoids creating a new object every render */
@@ -38,46 +38,8 @@ export default function ChatPanel() {
   const theme = usePanelTheme();
   const stateArgs = useStateArgs<ChatStateArgs>();
 
-  // Phase state: "setup" when no channelName, "chat" when we have one
-  const initialPhase = stateArgs.channelName ? "chat" as const : "setup" as const;
-  const [phase, setPhase] = useState<"setup" | "chat">(initialPhase);
-
-  // Chat phase state — from stateArgs or from setup completion
-  // contextId is optional: deep links may omit it, and the server allows undefined
-  const [chatState, setChatState] = useState<{
-    channelName: string;
-    contextId?: string;
-    pendingAgents?: Array<{ agentId: string; handle: string }>;
-  } | null>(() => {
-    if (stateArgs.channelName) {
-      return {
-        channelName: stateArgs.channelName,
-        contextId: stateArgs.contextId,
-        pendingAgents: stateArgs.pendingAgents,
-      };
-    }
-    return null;
-  });
-
   // Add Agent dialog state
   const [addAgentOpen, setAddAgentOpen] = useState(false);
-
-  // Setup phase completion handler
-  const handleSetupComplete = useCallback((result: ChatSetupResult) => {
-    // Persist to SQLite so reloads go straight to chat
-    setStateArgs({
-      channelName: result.channelName,
-      contextId: result.contextId,
-    }).catch((err) => {
-      console.error("[ChatPanel] setStateArgs FAILED:", err);
-    });
-    setChatState({
-      channelName: result.channelName,
-      contextId: result.contextId,
-      pendingAgents: result.pendingAgents,
-    });
-    setPhase("chat");
-  }, []);
 
   // Build ConnectionConfig from runtime
   const config: ConnectionConfig = {
@@ -86,40 +48,24 @@ export default function ChatPanel() {
     clientId: panelClientId,
   };
 
-  // New Conversation: reset to setup phase
+  // New Conversation: replace with a fresh chat panel (no stateArgs)
   const handleNewConversation = useCallback(() => {
-    // Clear persisted state
-    setStateArgs({ channelName: undefined, contextId: undefined, pendingAgents: undefined }).catch((err) => {
-      console.error("[ChatPanel] setStateArgs clear FAILED:", err);
-    });
-    setChatState(null);
-    setPhase("setup");
+    void createChild("panels/chat", { replace: true });
   }, []);
 
   // Add Agent: open the dialog instead of creating a child panel
-  // Use the resolved contextId from useAgenticChat (which may come from the server)
-  // rather than relying solely on stateArgs, so deep-link sessions get the canonical contextId.
   const resolvedContextIdRef = useRef<string | undefined>(undefined);
-  const handleAddAgent = useCallback(async (_channelName: string, contextId?: string) => {
-    resolvedContextIdRef.current = contextId;
+  const handleAddAgent = useCallback(async (_channelName: string, ctxId?: string) => {
+    resolvedContextIdRef.current = ctxId;
     setAddAgentOpen(true);
   }, []);
 
   const handleFocusPanel = useCallback((panelId: string) => {
-    window.location.href = buildFocusLink(panelId);
+    void focusPanel(panelId);
   }, []);
 
   const handleReloadPanel = useCallback(async (panelId: string) => {
-    try {
-      const result = await ensurePanelLoaded(panelId);
-      if (!result.success) {
-        console.error(`Failed to reload panel ${panelId}:`, result.error);
-        window.location.href = buildFocusLink(panelId);
-      }
-    } catch (error) {
-      console.error(`Error reloading panel ${panelId}:`, error);
-      window.location.href = buildFocusLink(panelId);
-    }
+    void focusPanel(panelId);
   }, []);
 
   const chatActions: AgenticChatActions = useMemo(() => ({
@@ -130,16 +76,8 @@ export default function ChatPanel() {
     onBecomeVisible: forceRepaint,
   }), [handleNewConversation, handleAddAgent, handleFocusPanel, handleReloadPanel]);
 
-  // Tool provider: creates all tool method definitions + eval
-  const toolProvider: ToolProvider = useCallback(({ clientRef }: ToolProviderDeps) => {
-    const diagnosticsPublisher = (eventType: string, payload: unknown) => {
-      void clientRef.current?.publish(eventType, payload);
-    };
-    const fileTools = createAllToolMethodDefinitions({
-      diagnosticsPublisher,
-    });
-
-    // Eval tool definition
+  // Tool provider: only eval tool — all other operations use eval + runtime APIs
+  const toolProvider: ToolProvider = useCallback((_deps: ToolProviderDeps) => {
     const evalMethodDef: MethodDefinition = {
       description: `Execute TypeScript/JavaScript code for side-effects.
 
@@ -147,9 +85,11 @@ Console output is streamed in real-time as code executes.
 Async operations (fetch, await, etc.) are automatically awaited.
 Top-level await is supported.
 
-Use standard ESM imports - they're transformed to require() automatically:
-- import { useState } from "react"
-- import { Button } from "@radix-ui/themes"`,
+Use static ESM imports (transformed to require() automatically):
+- import { rpc, createChild, focusPanel } from "@workspace/runtime"
+
+The variable \`contextId\` is pre-injected — use it directly, do NOT import it from @workspace/runtime.
+IMPORTANT: Use static import syntax, NOT dynamic await import().`,
       parameters: z.object({
         code: z.string().describe("The TypeScript/JavaScript code to execute"),
         syntax: z.enum(["typescript", "jsx", "tsx"]).default("tsx").describe("Target syntax"),
@@ -166,7 +106,13 @@ Use standard ESM imports - they're transformed to require() automatically:
           lastFlush = now;
         };
 
-        const result = await executeEvalTool(args as { code: string; syntax?: "typescript" | "jsx" | "tsx"; timeout?: number }, ctx, {
+        // The panel's contextId (from runtime) IS the channel contextId because
+        // ChatSetup replaced this panel with contextId = channel contextId.
+        // Inject it so eval code can use it directly.
+        const codeWithContext = `const contextId = ${JSON.stringify(contextId)};\n${(args as { code: string }).code}`;
+        const evalArgs = { ...(args as { code: string; syntax?: "typescript" | "jsx" | "tsx"; timeout?: number }), code: codeWithContext };
+
+        const result = await executeEvalTool(evalArgs, ctx, {
           onConsoleEntry: (formatted: string) => {
             consoleBuffer = consoleBuffer ? `${consoleBuffer}\n${formatted}` : formatted;
             flushConsole();
@@ -183,54 +129,24 @@ Use standard ESM imports - they're transformed to require() automatically:
       },
     };
 
-    // Launch panel tool definition
-    const launchPanelDef: MethodDefinition = {
-      description:
-        "Launch a child panel or browser. " +
-        "For panels: provide the panel source path (e.g. 'panels/my-app'). " +
-        "For browsers: set browser=true and provide a URL. " +
-        "Returns the child panel ID which can be used with getCdpEndpoint() for Playwright automation.",
-      parameters: LaunchPanelArgsSchema,
-      execute: async (args: LaunchPanelArgs) => {
-        const resolvedContextId = args.context_id ?? runtimeContextId;
-
-        if (args.browser) {
-          const handle = await createBrowserChild(args.source);
-          return { id: handle.id, type: "browser", source: args.source };
-        }
-
-        const handle = await createChild(args.source, {
-          name: args.name,
-          contextId: resolvedContextId,
-        });
-        return {
-          id: handle.id,
-          type: handle.type,
-          name: handle.name,
-          source: handle.source,
-        };
-      },
-    };
-
-    return { eval: evalMethodDef, launch_panel: launchPanelDef, ...fileTools };
+    return { eval: evalMethodDef };
   }, []);
 
-  // Setup phase
-  if (phase === "setup") {
+  // Setup phase — no channelName in stateArgs
+  if (!stateArgs.channelName) {
     return (
       <ErrorBoundary>
         <Theme appearance={theme}>
           <Flex direction="column" style={{ height: "100vh" }}>
-            <ChatSetup onComplete={handleSetupComplete} />
+            <ChatSetup />
           </Flex>
         </Theme>
       </ErrorBoundary>
     );
   }
 
-  // Chat phase — chatState is guaranteed non-null when phase === "chat"
-  if (!chatState) return null;
-  const { channelName, contextId, pendingAgents } = chatState;
+  // Chat phase — channelName present in stateArgs
+  const { channelName, pendingAgents } = stateArgs;
 
   return (
     <>
@@ -238,7 +154,7 @@ Use standard ESM imports - they're transformed to require() automatically:
         config={config}
         channelName={channelName}
         channelConfig={stateArgs.channelConfig}
-        contextId={contextId}
+        contextId={stateArgs.contextId}
         metadata={PANEL_METADATA}
         tools={toolProvider}
         actions={chatActions}
@@ -249,7 +165,7 @@ Use standard ESM imports - they're transformed to require() automatically:
         open={addAgentOpen}
         onOpenChange={setAddAgentOpen}
         channelName={channelName}
-        contextId={resolvedContextIdRef.current ?? contextId}
+        contextId={resolvedContextIdRef.current ?? stateArgs.contextId}
       />
     </>
   );

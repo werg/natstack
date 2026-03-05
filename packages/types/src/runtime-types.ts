@@ -15,6 +15,8 @@ export interface CreateChildOptions {
   eventSchemas?: unknown;
   focus?: boolean;
   contextId?: string;
+  /** If true, replace the calling panel instead of creating a child */
+  replace?: boolean;
 }
 
 export interface ChildCreationResult {

@@ -26,7 +26,8 @@
       "react/jsx-dev-runtime",
       "@radix-ui/themes",
       "@radix-ui/react-icons",
-      "isomorphic-git"
+      "isomorphic-git",
+      "@workspace/runtime"
     ]
   },
   "dependencies": {

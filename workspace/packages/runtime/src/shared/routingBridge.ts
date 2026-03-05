@@ -1,13 +1,13 @@
 import type { RpcBridge } from "@natstack/rpc";
 
 /** Services that run on the server process (backend compute) */
-const SERVER_SERVICES = new Set(["ai", "db", "typecheck", "agentSettings", "build", "git"]);
+const SERVER_SERVICES = new Set(["ai", "db", "typecheck", "agentSettings", "build", "git", "project", "test"]);
 
 type EventListener = (fromId: string, payload: unknown) => void;
 
 /**
  * Create a routing bridge that dispatches calls by service name:
- * - Server services (ai, db, typecheck, agentSettings, build, git) → serverBridge
+ * - Server services (ai, db, typecheck, agentSettings, build, git, project, test) → serverBridge
  * - Everything else (bridge, browser, events, panel-to-panel) → electronBridge
  */
 export function createRoutingBridge(electronBridge: RpcBridge, serverBridge: RpcBridge): RpcBridge {

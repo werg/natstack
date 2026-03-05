@@ -14,7 +14,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
-import { execFileSync } from "child_process";
+import { execFile, execFileSync } from "child_process";
 import type { InternalDepRef, PackageGraph } from "./packageGraph.js";
 import { getUserDataPath } from "../../main/envPaths.js";
 
@@ -30,6 +30,11 @@ export interface ChangeSet {
   changed: string[];
   added: string[];
   removed: string[];
+}
+
+/** Per-unit git tree hash, tracked separately from the immutable PackageGraph. */
+export interface ContentHashMap {
+  [packageName: string]: string;
 }
 
 /** Per-unit commit SHA at the main branch, used for cold-start change detection. */
@@ -71,6 +76,22 @@ export function computeGitTreeHash(repoPath: string, ref?: string): string {
   return execFileSync("git", ["rev-parse", `${resolvedRef}^{tree}`], {
     cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
   }).toString().trim();
+}
+
+/**
+ * Async version of computeGitTreeHash — does not block the event loop.
+ * Used in the hot path (getBuild) where blocking would stall HTTP serving.
+ */
+export function computeGitTreeHashAsync(repoPath: string, ref?: string): Promise<string> {
+  const resolvedRef = ref ?? resolveMainRef(repoPath);
+  return new Promise((resolve, reject) => {
+    execFile("git", ["rev-parse", `${resolvedRef}^{tree}`], {
+      cwd: repoPath, encoding: "utf-8",
+    }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(stdout.toString().trim());
+    });
+  });
 }
 
 /** Get the commit SHA at a specific ref. Returns null if ref doesn't exist. */
@@ -143,45 +164,58 @@ function hashStrings(parts: string[]): string {
 /**
  * Compute effective versions for all nodes in the graph using git tree hashes
  * at the main branch. Nodes where refs/heads/main doesn't exist are skipped.
+ *
+ * @param hashes - Optional pre-computed content hashes. Missing entries are
+ *   computed from git on the fly. The returned contentHashes includes all
+ *   entries (pre-computed + newly resolved).
  */
-export function computeEffectiveVersions(graph: PackageGraph): EffectiveVersionMap {
+export function computeEffectiveVersions(
+  graph: PackageGraph,
+  hashes?: ContentHashMap,
+): { evMap: EffectiveVersionMap; contentHashes: ContentHashMap } {
   const evMap: EffectiveVersionMap = {};
+  const contentHashes: ContentHashMap = { ...hashes };
   const commitCache = new Map<string, string | null>();
 
   for (const node of graph.topologicalOrder()) {
-    try {
-      if (!node.contentHash) {
-        node.contentHash = computeGitTreeHash(node.path);
+    let hash = contentHashes[node.name];
+    if (!hash) {
+      try {
+        hash = computeGitTreeHash(node.path);
+        contentHashes[node.name] = hash;
+      } catch {
+        // No main/master branch — skip this node (not buildable)
+        continue;
       }
-    } catch {
-      // No main/master branch — skip this node (not buildable)
-      continue;
     }
 
     // EV = hash(contentHash, dep edge signatures: name+ref+commit+depEv)
     const depSigs = buildDepSignatures(graph, node.name, evMap, commitCache);
-    evMap[node.name] = hashStrings([node.contentHash, ...depSigs]);
+    evMap[node.name] = hashStrings([hash, ...depSigs]);
   }
 
-  return evMap;
+  return { evMap, contentHashes };
 }
 
 /**
  * Recompute tree hash for a specific node and propagate EV changes
- * up through its reverse dependencies.
+ * up through its reverse dependencies. Does NOT mutate the graph.
  *
+ * @param contentHashes - Current content hash map (not mutated).
  * @param commitSha - Optional commit SHA to pin the changed node at (from push event).
- *   Passed to computeGitTreeHash so the tree hash matches the exact push commit.
+ * @returns Updated evMap and contentHashes (new objects, inputs unchanged).
  */
 export function recomputeFromNode(
   graph: PackageGraph,
   nodeName: string,
   currentEvMap: EffectiveVersionMap,
+  contentHashes: ContentHashMap,
   commitSha?: string,
-): EffectiveVersionMap {
+): { evMap: EffectiveVersionMap; contentHashes: ContentHashMap } {
   const commitCache = new Map<string, string | null>();
   const node = graph.get(nodeName);
-  node.contentHash = computeGitTreeHash(node.path, commitSha);
+  const newHashes = { ...contentHashes };
+  newHashes[nodeName] = computeGitTreeHash(node.path, commitSha);
 
   // Recompute EVs for this node and all its reverse deps
   const affected = new Set([nodeName]);
@@ -195,19 +229,19 @@ export function recomputeFromNode(
   for (const n of graph.topologicalOrder()) {
     if (!affected.has(n.name)) continue;
 
-    // Lazily compute contentHash for reverse deps that don't have one yet
-    // (e.g., after cold-start cache hit where only the changed node was hashed)
-    if (!n.contentHash) {
+    let hash = newHashes[n.name];
+    if (!hash) {
       try {
-        n.contentHash = computeGitTreeHash(n.path);
+        hash = computeGitTreeHash(n.path);
+        newHashes[n.name] = hash;
       } catch { continue; }
     }
 
     const depSigs = buildDepSignatures(graph, n.name, newEvMap, commitCache);
-    newEvMap[n.name] = hashStrings([n.contentHash, ...depSigs]);
+    newEvMap[n.name] = hashStrings([hash, ...depSigs]);
   }
 
-  return newEvMap;
+  return { evMap: newEvMap, contentHashes: newHashes };
 }
 
 /**
@@ -319,8 +353,9 @@ export function computeEffectiveVersionsWithCache(
   currentRefs: RefState,
   prevRefs: RefState,
   prevEvMap: EffectiveVersionMap,
-): EffectiveVersionMap {
+): { evMap: EffectiveVersionMap; contentHashes: ContentHashMap } {
   const evMap: EffectiveVersionMap = {};
+  const contentHashes: ContentHashMap = {};
   const recomputed = new Set<string>();
   const commitCache = new Map<string, string | null>();
 
@@ -348,19 +383,21 @@ export function computeEffectiveVersionsWithCache(
       evMap[node.name] = prevEvMap[node.name]!;
     } else {
       // Changed — recompute tree hash
+      let hash: string;
       try {
-        node.contentHash = computeGitTreeHash(node.path);
+        hash = computeGitTreeHash(node.path);
       } catch {
         continue; // Can't resolve main ref — skip
       }
+      contentHashes[node.name] = hash;
 
       const depSigs = buildDepSignatures(graph, node.name, evMap, commitCache);
-      evMap[node.name] = hashStrings([node.contentHash, ...depSigs]);
+      evMap[node.name] = hashStrings([hash, ...depSigs]);
       recomputed.add(node.name);
     }
   }
 
-  return evMap;
+  return { evMap, contentHashes };
 }
 
 // ---------------------------------------------------------------------------

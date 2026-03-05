@@ -83,7 +83,7 @@ export function loadNatstackPackageTypes(packagesDir: string): Record<string, Na
 
 /**
  * Clear the loadNatstackPackageTypes cache.
- * Call when workspace packages change (e.g., after Verdaccio republish).
+ * Call when workspace packages change (e.g., after a package is rebuilt).
  */
 export function clearNatstackTypesCache(): void {
   natstackTypesCache.clear();

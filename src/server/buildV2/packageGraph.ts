@@ -28,8 +28,6 @@ export interface GraphNode {
   internalDeps: string[];
   /** Internal dependency ref spec (branch/ref/commit) keyed by dep name */
   internalDepRefs: Record<string, InternalDepRef>;
-  /** Content hash (populated by effectiveVersion) */
-  contentHash: string;
   /** natstack manifest from package.json */
   manifest: PackageManifest;
 }
@@ -264,7 +262,6 @@ function scanDirectory(
       dependencies: allDeps,
       internalDeps,
       internalDepRefs,
-      contentHash: "", // populated later
       manifest: pkg.natstack ?? {},
     });
   }

@@ -7,7 +7,7 @@
  * 3. Changes to .git/refs/heads/* (new commit on a branch)
  *
  * This is the source of truth for triggering GitServer cache invalidation
- * and Verdaccio republishing.
+ * and build system updates.
  */
 
 import chokidar from "chokidar";
@@ -52,6 +52,10 @@ export function createGitWatcher(workspace: Workspace): GitWatcher {
       if (p.includes("/.git/logs")) return true;
       // Skip .cache directory
       if (p.includes("/.cache")) return true;
+      // Skip .contexts directory — these are generated context folder copies
+      // with their own .git repos (from create_project / Claude Code CLI).
+      // They are not workspace repos and should not trigger cache invalidation.
+      if (p.includes("/.contexts")) return true;
       return false;
     },
     ignoreInitial: true,

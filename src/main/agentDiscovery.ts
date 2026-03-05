@@ -9,7 +9,7 @@
  *
  * IDENTIFIERS:
  *   - manifest.id = directory name (for AgentBuilder/AgentHost lookup)
- *   - package.json name = can be scoped (for Verdaccio publishing)
+ *   - package.json name = can be scoped (e.g. @workspace-agents/my-agent)
  */
 
 import * as fs from "fs";

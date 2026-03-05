@@ -28,7 +28,7 @@ describe("handleBridgeCall", () => {
     listBranches: vi.fn(),
     listCommits: vi.fn(),
     unloadPanel: vi.fn(),
-    ensurePanelLoaded: vi.fn(),
+    focusPanel: vi.fn(),
     forceRepaint: vi.fn(),
     listAgents: vi.fn(),
     handleHistoryPushState: vi.fn(),

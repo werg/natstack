@@ -17,6 +17,58 @@ import type { TokenManager } from "../tokenManager.js";
 
 const execFileAsync = promisify(execFile);
 
+// ---------------------------------------------------------------------------
+// Post-push checkout waiter
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a listener that waits for the git server to complete post-push
+ * checkout for a specific repo. Must be set up BEFORE `git push` runs to
+ * avoid a race where the event fires before the listener is registered.
+ *
+ * Resolves when the matching push event fires (working tree is updated)
+ * or after timeoutMs (graceful degradation — build may still work from
+ * the old checkout or a slightly delayed one).
+ */
+function createPushCheckoutWaiter(
+  gitServer: GitServer,
+  repoPath: string,
+  timeoutMs: number = 10_000,
+): { promise: Promise<void>; cancel: () => void } {
+  let resolve!: () => void;
+  let settled = false;
+
+  const promise = new Promise<void>((res) => { resolve = res; });
+
+  const timeout = setTimeout(() => {
+    if (!settled) {
+      settled = true;
+      unsubscribe();
+      resolve();
+    }
+  }, timeoutMs);
+
+  const unsubscribe = gitServer.onPush((event) => {
+    if (!settled && event.repo === repoPath) {
+      settled = true;
+      clearTimeout(timeout);
+      unsubscribe();
+      resolve();
+    }
+  });
+
+  const cancel = () => {
+    if (!settled) {
+      settled = true;
+      clearTimeout(timeout);
+      unsubscribe();
+      resolve();
+    }
+  };
+
+  return { promise, cancel };
+}
+
 /** Cache of directories we've already initialized git in */
 const initializedPaths = new Set<string>();
 
@@ -174,8 +226,62 @@ export async function handleGitContextCall(
         "config", "http.extraHeader", `Authorization: Bearer ${token}`,
       ]);
 
-      const output = await git(targetDir, ["push", "-u", "origin", "main"]);
-      return output || "Pushed to origin/main";
+      // Set up listener BEFORE push so we don't miss the event
+      const pushWaiter = createPushCheckoutWaiter(gitServer, repoPath);
+      try {
+        await git(targetDir, ["push", "-u", "origin", "main"]);
+      } catch (err) {
+        pushWaiter.cancel();
+        throw err;
+      }
+      // Wait for post-push checkout (symbolic-ref + reset --hard) to complete
+      await pushWaiter.promise;
+
+      return "Pushed to origin/main";
+    }
+
+    case "commit_and_push": {
+      if (!message) {
+        throw new Error("Commit message is required for 'commit_and_push' operation");
+      }
+
+      // Stage files
+      if (files && files.length > 0) {
+        for (const f of files) {
+          resolveWithinContext(targetDir, f);
+        }
+        await git(targetDir, ["add", ...files]);
+      } else {
+        await git(targetDir, ["add", "-A"]);
+      }
+
+      // Check if there's anything staged
+      const staged = await git(targetDir, ["diff", "--cached", "--stat"]);
+      if (!staged.trim()) {
+        return "Nothing to commit (no staged changes)";
+      }
+
+      // Commit
+      const commitOutput = await git(targetDir, ["commit", "-m", message]);
+
+      // Push — wait for post-push checkout to complete before returning,
+      // so callers (like launch_panel) can immediately use the updated working tree.
+      const token = tokenManager.ensureToken(contextId, "server");
+      await git(targetDir, [
+        "config", "http.extraHeader", `Authorization: Bearer ${token}`,
+      ]);
+
+      // Set up listener BEFORE push so we don't miss the event
+      const pushWaiter = createPushCheckoutWaiter(gitServer, repoPath);
+      try {
+        await git(targetDir, ["push", "-u", "origin", "main"]);
+      } catch (pushErr) {
+        pushWaiter.cancel();
+        throw pushErr;
+      }
+      await pushWaiter.promise;
+
+      return (commitOutput.trim() + "\nPushed to origin/main").trim();
     }
 
     default:

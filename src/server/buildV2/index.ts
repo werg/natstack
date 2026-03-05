@@ -7,6 +7,10 @@
  * Builds are triggered by git push events (main/master branches only).
  * Cold-start detects what changed while the server was down via ref-state
  * comparison.
+ *
+ * Immutability: the PackageGraph is never mutated after creation. Content
+ * hashes are tracked in a separate ContentHashMap, ensuring EV computations
+ * are always consistent with their inputs.
  */
 
 import * as path from "path";
@@ -14,6 +18,8 @@ import { discoverPackageGraph, type PackageGraph, type GraphNode } from "./packa
 import {
   computeEffectiveVersions,
   computeEffectiveVersionsWithCache,
+  computeGitTreeHashAsync,
+  recomputeFromNode,
   snapshotRefState,
   loadPersistedRefState,
   loadPersistedEvMap,
@@ -22,6 +28,7 @@ import {
   diffEvMaps,
   computeBuildKey,
   type EffectiveVersionMap,
+  type ContentHashMap,
   type ChangeSet,
 } from "./effectiveVersion.js";
 import * as buildStore from "./buildStore.js";
@@ -66,6 +73,13 @@ export interface BuildSystemV2 {
   /** Get the workspace root */
   getWorkspaceRoot(): string;
 
+  /**
+   * Register a callback for when a push-triggered build completes.
+   * The callback receives the source path (e.g. "panels/chat") so the
+   * HTTP server can invalidate its serving cache.
+   */
+  onPushBuild(callback: (source: string) => void): void;
+
   /** Shut down (stop push trigger) */
   shutdown(): Promise<void>;
 }
@@ -91,8 +105,8 @@ export async function initBuildSystemV2(
   const previousEvMap = loadPersistedEvMap();
 
   // Step 3: Compute effective versions with cold-start optimization
-  const evMap = computeEffectiveVersionsWithCache(graph, currentRefs, prevRefs, previousEvMap);
-  const changeset = diffEvMaps(previousEvMap, evMap);
+  const initResult = computeEffectiveVersionsWithCache(graph, currentRefs, prevRefs, previousEvMap);
+  const changeset = diffEvMaps(previousEvMap, initResult.evMap);
   console.log(
     `[BuildV2] EV diff: ${changeset.changed.length} changed, ` +
       `${changeset.added.length} added, ${changeset.removed.length} removed`,
@@ -100,7 +114,7 @@ export async function initBuildSystemV2(
 
   // Step 4: Persist new ref state + EV map
   persistRefState(currentRefs);
-  persistEvMap(evMap);
+  persistEvMap(initResult.evMap);
 
   // Step 5: Build anything that's missing from the store
   const buildableNodes = graph
@@ -109,7 +123,7 @@ export async function initBuildSystemV2(
 
   let buildCount = 0;
   for (const node of buildableNodes) {
-    const ev = evMap[node.name];
+    const ev = initResult.evMap[node.name];
     if (!ev) continue;
 
     const sourcemap = node.manifest.sourcemap !== false;
@@ -124,14 +138,14 @@ export async function initBuildSystemV2(
     console.log(`[BuildV2] Building ${buildCount} units...`);
     const buildPromises = buildableNodes
       .filter((node) => {
-        const ev = evMap[node.name];
+        const ev = initResult.evMap[node.name];
         if (!ev) return false;
         const sourcemap = node.manifest.sourcemap !== false;
         return !buildStore.has(computeBuildKey(node.name, ev, sourcemap));
       })
       .map(async (node) => {
         try {
-          await buildUnit(node, evMap[node.name]!, graph, workspaceRoot);
+          await buildUnit(node, initResult.evMap[node.name]!, graph, workspaceRoot);
           console.log(`[BuildV2] Built ${node.name}`);
         } catch (error) {
           console.error(
@@ -148,18 +162,20 @@ export async function initBuildSystemV2(
   }
 
   // Step 6: Start push trigger (subscribes to git push events)
-  const pushTrigger = new PushTrigger(graph, evMap, workspaceRoot);
+  const pushTrigger = new PushTrigger(graph, initResult.evMap, initResult.contentHashes, workspaceRoot);
   pushTrigger.subscribeTo(gitServer);
   console.log("[BuildV2] Push trigger started");
 
-  // Track current state
-  let currentEvMap = evMap;
+  // Track current state — these are the single source of truth for the build API.
+  // The push trigger emits "graph-updated" to keep them in sync.
+  let currentEvMap = initResult.evMap;
+  let currentContentHashes: ContentHashMap = initResult.contentHashes;
   let currentGraph = graph;
 
-  // Keep in sync when pushTrigger does a full rediscovery (Fix 4)
-  pushTrigger.on("graph-updated", ({ graph: g, evMap: ev }) => {
+  pushTrigger.on("graph-updated", ({ graph: g, evMap: ev, contentHashes: ch }) => {
     currentGraph = g;
     currentEvMap = ev;
+    currentContentHashes = ch;
   });
 
   // ---------------------------------------------------------------------------
@@ -169,12 +185,47 @@ export async function initBuildSystemV2(
   return {
     async getBuild(unitPath: string): Promise<BuildResult> {
       // unitPath can be a package name or workspace-relative path
-      const node = resolveUnit(currentGraph, unitPath, workspaceRoot);
+      let node = resolveUnit(currentGraph, unitPath, workspaceRoot);
       if (!node) {
-        throw new Error(`Unknown build unit: ${unitPath}`);
+        // Unit not in current graph — may have been just created via create_project.
+        // Try a quick rediscovery before giving up.
+        const newGraph = discoverPackageGraph(workspaceRoot);
+        const result = computeEffectiveVersions(newGraph);
+        currentGraph = newGraph;
+        currentEvMap = result.evMap;
+        currentContentHashes = result.contentHashes;
+        persistEvMap(result.evMap);
+        persistRefState(snapshotRefState(newGraph));
+        pushTrigger.updateState(newGraph, result.evMap, result.contentHashes);
+
+        node = resolveUnit(currentGraph, unitPath, workspaceRoot);
+        if (!node) {
+          throw new Error(`Unknown build unit: ${unitPath}`);
+        }
       }
 
-      const ev = currentEvMap[node.name];
+      // Check if the git tree hash has changed since the last EV computation.
+      // This catches the race where commit_and_push returns before the push
+      // trigger has processed the event. Fast path: if hash matches, skip
+      // the expensive recomputeFromNode call entirely.
+      // Uses async git to avoid blocking the event loop on every HTML request.
+      let ev = currentEvMap[node.name];
+      try {
+        const freshTreeHash = await computeGitTreeHashAsync(node.path);
+        if (freshTreeHash !== currentContentHashes[node.name]) {
+          const result = recomputeFromNode(currentGraph, node.name, currentEvMap, currentContentHashes);
+          const freshEv = result.evMap[node.name];
+          if (freshEv && freshEv !== ev) {
+            currentEvMap = result.evMap;
+            currentContentHashes = result.contentHashes;
+            persistEvMap(result.evMap);
+            ev = freshEv;
+          }
+        }
+      } catch {
+        // Git hash check failed — use cached EV (best effort)
+      }
+
       if (!ev) {
         throw new Error(`No effective version for ${node.name}`);
       }
@@ -197,35 +248,35 @@ export async function initBuildSystemV2(
     async recompute(): Promise<ChangeSet> {
       // Re-discover and recompute
       const newGraph = discoverPackageGraph(workspaceRoot);
-      const newEvMap = computeEffectiveVersions(newGraph);
-      const changes = diffEvMaps(currentEvMap, newEvMap);
+      const result = computeEffectiveVersions(newGraph);
+      const changes = diffEvMaps(currentEvMap, result.evMap);
 
       currentGraph = newGraph;
-      currentEvMap = newEvMap;
-      persistEvMap(newEvMap);
+      currentEvMap = result.evMap;
+      currentContentHashes = result.contentHashes;
+      persistEvMap(result.evMap);
       persistRefState(snapshotRefState(newGraph));
 
       // Update push trigger with new state
-      pushTrigger.updateGraph(newGraph);
-      pushTrigger.updateEvMap(newEvMap);
+      pushTrigger.updateState(newGraph, result.evMap, result.contentHashes);
 
       // Trigger builds for changed buildable units
       const buildableChanged = [...changes.changed, ...changes.added].filter(
         (name) => {
-          const node = newGraph.tryGet(name);
-          return node && node.kind !== "package";
+          const n = newGraph.tryGet(name);
+          return n && n.kind !== "package";
         },
       );
 
       for (const name of buildableChanged) {
-        const node = newGraph.get(name);
-        const ev = newEvMap[name]!;
-        const sourcemap = node.manifest.sourcemap !== false;
-        const buildKey = computeBuildKey(name, ev, sourcemap);
+        const n = newGraph.get(name);
+        const ev = result.evMap[name]!;
+        const sourcemap = n.manifest.sourcemap !== false;
+        const bk = computeBuildKey(name, ev, sourcemap);
 
-        if (!buildStore.has(buildKey)) {
+        if (!buildStore.has(bk)) {
           try {
-            await buildUnit(node, ev, newGraph, workspaceRoot);
+            await buildUnit(n, ev, newGraph, workspaceRoot);
           } catch (error) {
             console.error(
               `[BuildV2] Failed to rebuild ${name}:`,
@@ -243,9 +294,9 @@ export async function initBuildSystemV2(
       for (const name of activeUnits) {
         const ev = currentEvMap[name];
         if (!ev) continue;
-        const node = currentGraph.tryGet(name);
-        if (!node) continue;
-        const sourcemap = node.manifest.sourcemap !== false;
+        const n = currentGraph.tryGet(name);
+        if (!n) continue;
+        const sourcemap = n.manifest.sourcemap !== false;
         activeKeys.add(computeBuildKey(name, ev, sourcemap));
       }
       return buildStore.gc(activeKeys);
@@ -253,13 +304,13 @@ export async function initBuildSystemV2(
 
     async getAboutPages(): Promise<AboutPageMeta[]> {
       const pages: AboutPageMeta[] = [];
-      for (const node of currentGraph.allNodes()) {
-        if (node.kind !== "about") continue;
+      for (const n of currentGraph.allNodes()) {
+        if (n.kind !== "about") continue;
         pages.push({
-          name: node.relativePath.replace("about/", ""),
-          title: node.manifest.title ?? node.name,
-          description: node.manifest.description,
-          hiddenInLauncher: node.manifest.hiddenInLauncher ?? false,
+          name: n.relativePath.replace("about/", ""),
+          title: n.manifest.title ?? n.name,
+          description: n.manifest.description,
+          hiddenInLauncher: n.manifest.hiddenInLauncher ?? false,
         });
       }
       return pages;
@@ -275,6 +326,13 @@ export async function initBuildSystemV2(
 
     getWorkspaceRoot(): string {
       return workspaceRoot;
+    },
+
+    onPushBuild(callback: (source: string) => void): void {
+      pushTrigger.on("build-complete", ({ name }: { name: string }) => {
+        const node = currentGraph.tryGet(name);
+        if (node) callback(node.relativePath);
+      });
     },
 
     async shutdown(): Promise<void> {

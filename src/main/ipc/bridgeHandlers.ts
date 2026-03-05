@@ -14,6 +14,7 @@ import { mkdir, writeFile } from "fs/promises";
 import { join, resolve } from "path";
 import { execSync } from "child_process";
 import type { PanelManager } from "../panelManager.js";
+import type * as SharedPanel from "../../shared/types.js";
 import type { CdpServer } from "../cdpServer.js";
 import { getViewManager } from "../viewManager.js";
 import { getActiveWorkspace } from "../paths.js";
@@ -88,12 +89,6 @@ export async function handleBridgeCall(
     case "unloadSelf": {
       // Allow any panel to unload itself (release resources but stay in tree)
       return pm.unloadPanel(callerId);
-    }
-    case "ensurePanelLoaded": {
-      // Allow any panel to ensure another panel is loaded
-      // Used for agent worker recovery - chat panels can reload disconnected workers
-      const [targetPanelId] = args as [string];
-      return pm.ensurePanelLoaded(targetPanelId);
     }
     case "forceRepaint": {
       // Allow a panel to request a force repaint to recover from compositor stalls

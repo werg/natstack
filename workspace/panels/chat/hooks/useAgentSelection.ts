@@ -144,7 +144,7 @@ export function useAgentSelection({ sessionConfig = DEFAULT_SESSION_CONFIG }: Us
 
   const updateAgentConfig = useCallback(
     (agentId: string, key: string, value: FieldValue) => {
-      // Update local state only - defaults are managed via ns-about://agents
+      // Update local state only - defaults are managed via about/agents
       setAvailableAgents((prev) =>
         prev.map((agent) =>
           agent.agent.id === agentId

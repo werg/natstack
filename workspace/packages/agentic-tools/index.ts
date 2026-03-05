@@ -1,23 +1,7 @@
 // =============================================================================
-// @workspace/agentic-tools — Sandbox coding tool method definitions
+// @workspace/agentic-tools — Eval tool for sandbox code execution
 // =============================================================================
 
-// --- Tool registry ---
-export {
-  createAllToolMethodDefinitions,
-  type CreateAllToolsOptions,
-} from "./tools";
-
-// --- Typecheck tools ---
-export {
-  createTypeCheckToolMethodDefinitions,
-  checkTypes,
-  getTypeInfo,
-  getCompletions,
-  type DiagnosticsPublisher,
-} from "./tools/typecheck-tools";
-
-// --- Eval ---
 export {
   executeEvalTool,
   EVAL_DEFAULT_TIMEOUT_MS,

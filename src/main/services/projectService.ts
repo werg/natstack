@@ -11,10 +11,13 @@ import * as fs from "fs";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { validateProjectName, resolveWithinContext } from "./contextPaths.js";
+import { createDevLogger } from "../devLog.js";
 import type { ContextFolderManager } from "../contextFolderManager.js";
 import type { GitServer } from "../gitServer.js";
+import type { TokenManager } from "../tokenManager.js";
 
 const execFileAsync = promisify(execFile);
+const log = createDevLogger("ProjectService");
 
 /** Type directories by project type */
 const TYPE_DIRS: Record<string, string> = {
@@ -45,7 +48,14 @@ function generateTemplate(type: string, name: string, title: string): ProjectTem
             {
               name: `${PACKAGE_SCOPES[type]}/${name}`,
               version: "0.1.0",
+              private: true,
+              type: "module",
               natstack: { type: "app", title },
+              dependencies: {
+                "@workspace/runtime": "workspace:*",
+                "@workspace/react": "workspace:*",
+                "@radix-ui/themes": "^3.2.1",
+              },
             },
             null,
             2,
@@ -75,6 +85,8 @@ export default function ${toPascalCase(name)}() {
             {
               name: `${PACKAGE_SCOPES[type]}/${name}`,
               version: "0.1.0",
+              private: true,
+              type: "module",
               exports: { ".": "./index.ts" },
             },
             null,
@@ -128,16 +140,17 @@ function toPascalCase(str: string): string {
 }
 
 async function gitExec(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, {
+  const { stdout, stderr } = await execFileAsync("git", args, {
     cwd,
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
   });
-  return stdout;
+  return stdout || stderr || "";
 }
 
 export async function handleProjectCall(
   contextFolderManager: ContextFolderManager,
   gitServer: GitServer,
+  tokenManager: TokenManager,
   method: string,
   args: unknown[],
 ): Promise<unknown> {
@@ -149,6 +162,8 @@ export async function handleProjectCall(
   const type = args[1] as string;
   const name = args[2] as string;
   const title = (args[3] as string | undefined) ?? name;
+
+  log.info(`Creating ${type} project: ${name} (title: ${title}, context: ${contextId})`);
 
   // Validate inputs
   validateProjectName(name);
@@ -176,6 +191,7 @@ export async function handleProjectCall(
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
     fs.writeFileSync(fullPath, content, "utf-8");
   }
+  log.info(`Template files written to ${projectDir}`);
 
   // Initialize git repo
   await gitExec(projectDir, ["init", "-b", "main"]);
@@ -186,18 +202,36 @@ export async function handleProjectCall(
   const repoPath = `${typeDir}/${name}`;
   const remoteUrl = `${gitServer.getBaseUrl()}/${repoPath}`;
   await gitExec(projectDir, ["remote", "add", "origin", remoteUrl]);
+  log.info(`Git initialized with remote: ${remoteUrl}`);
 
-  // Commit and push
+  // Commit
   await gitExec(projectDir, ["add", "-A"]);
   await gitExec(projectDir, ["commit", "-m", `Create ${type}: ${title}`]);
 
   // Configure auth and push
-  const { getTokenManager } = await import("../tokenManager.js");
-  const token = getTokenManager().ensureToken(contextId, "server");
+  const token = tokenManager.ensureToken(contextId, "server");
   await gitExec(projectDir, [
     "config", "http.extraHeader", `Authorization: Bearer ${token}`,
   ]);
-  await gitExec(projectDir, ["push", "-u", "origin", "main"]);
+
+  try {
+    await gitExec(projectDir, ["push", "-u", "origin", "main"]);
+    log.info(`Pushed ${typeDir}/${name} to origin`);
+  } catch (pushErr: unknown) {
+    const msg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+    log.warn(`Push failed for ${typeDir}/${name}: ${msg}`);
+    // Still return success — files are committed locally in the context folder.
+    // The agent can push manually later via the git tool.
+    return {
+      created: `${typeDir}/${name}`,
+      type,
+      name,
+      title,
+      files: Object.keys(template.files),
+      pushFailed: true,
+      pushError: msg,
+    };
+  }
 
   return {
     created: `${typeDir}/${name}`,

@@ -32,7 +32,7 @@ const aiClient: AiClient = createAiClient(runtime.rpc);
 export * as Rpc from "../core/rpc.js";
 export { z } from "../core/zod.js";
 export { defineContract, noopParent } from "../core/defineContract.js";
-export { buildNsLink, buildAboutLink, buildFocusLink } from "../core/nsLinks.js";
+export { buildPanelLink, buildShellLink } from "../core/panelLinks.js";
 export {
   parseContextId,
   isValidContextId,
@@ -66,7 +66,7 @@ export const {
   closeSelf,
   unloadSelf,
   forceRepaint,
-  ensurePanelLoaded,
+  focusPanel,
   getWorkspaceTree,
   listBranches,
   listCommits,

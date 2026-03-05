@@ -75,7 +75,6 @@ export async function handleHeadlessBridgeCall(
       return;
 
     case "updateBrowserState":
-    case "ensurePanelLoaded":
     case "unloadSelf":
       // No-op
       return;

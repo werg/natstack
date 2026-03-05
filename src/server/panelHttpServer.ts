@@ -1,25 +1,40 @@
 /**
- * PanelHttpServer — Serves panel content over HTTP for browser access.
+ * PanelHttpServer — Zero per-panel state HTTP server.
  *
- * Two routing modes:
+ * **Source-based URL routing**:
+ *   URL = `http://{contextSubdomain}.localhost:{port}/{source}/`
+ *   - Subdomain = context (origin/storage partition)
+ *   - Path = source (which panel code, e.g. `panels/my-app`)
  *
- * 1. **Subdomain routing** (primary): Each panel gets its own *.localhost
- *    subdomain and is served at `/`. Auth uses HttpOnly session cookies so
- *    the URL stays clean after the initial token-bearing redirect.
+ * **Build cache keyed by source** — shared across panels with same source.
+ * **Build output is 100% static** — per-panel config delivered via RPC
+ *   (`bridge.getBootstrapConfig`). Auth uses subdomain-scoped session cookies;
+ *   panel identity bootstrapped via nonce-keyed `_ns_boot_{bk}` cookies.
  *
- * 2. **Legacy path routing** (fallback): Panels at `/panels/{encodedId}/`
- *    with `?token=` query params. Works on bare 127.0.0.1 without subdomains.
+ * **On-demand build** — triggered when a request arrives for a source whose
+ *   build isn't cached. Serves a "building" page with auto-refresh.
  *
- * Management API:
- * - `GET /api/panels`  — JSON list of active panels (Bearer token auth)
- * - `GET /api/events`  — SSE stream of lifecycle events (Bearer token auth)
- * - `GET  /__init__`   — Pre-warming init page (for extension, per-subdomain)
+ * **Auth model**:
+ * - Electron: PanelManager sets `_ns_session` + `_ns_boot_{bk}` cookies via
+ *   Electron `session.cookies.set()`, URL includes `?_bk={bk}&pid={panelId}`.
+ * - Browser (fresh tab): single redirect via `bootstrapBrowserTab` → cookies set → loader.
+ * - Browser (authed tab): existing cookie + sessionStorage.
  *
- * The HTML is augmented with:
- * 1. Injected globals (replacing Electron's preload/contextBridge)
- * 2. A pre-compiled browser transport IIFE
- * 3. Context bootstrap script (for init page pre-warming)
- * 4. Panel title + favicon
+ * **Zero per-panel state**: The HTTP server stores ONLY:
+ * - `servingCache` + `buildInFlight` + `buildErrors` (source-keyed)
+ * - `sessions` (subdomain-scoped cookie auth)
+ * - `sseConnections` (SSE transport)
+ * - `sourceRegistry` (static catalog from package graph)
+ *
+ * All panel-specific data comes via `PanelHttpCallbacks`.
+ *
+ * Endpoints:
+ * - `GET /api/panels`       — JSON list of active panels (Bearer token auth)
+ * - `GET /api/events`       — SSE stream of lifecycle events (Bearer token auth)
+ * - `GET /__init__`         — Pre-warming init page (unauthenticated, contextId from query)
+ * - `?_fresh` on navigation — Force re-bootstrap (missing/stale sessionStorage or cross-source nav)
+ * - `GET /__loader.js`      — Config loader script (no auth)
+ * - `GET /__transport.js`   — Browser RPC transport (no auth)
  */
 
 import { createServer, type Server as HttpServer } from "http";
@@ -28,8 +43,9 @@ import * as path from "path";
 import { randomBytes } from "crypto";
 import { WebSocketServer } from "ws";
 import { createDevLogger } from "../main/devLog.js";
-import type { BuildResult } from "./buildV2/buildStore.js";
+import type { BuildResult, BuildMetadata } from "./buildV2/buildStore.js";
 import type { CdpBridge } from "./cdpBridge.js";
+import { CONFIG_LOADER_JS } from "./configLoader.js";
 
 const log = createDevLogger("PanelHttpServer");
 
@@ -47,18 +63,7 @@ function loadBrowserTransport(): string {
   }
 }
 
-function loadOpfsBootstrap(): string {
-  const bootstrapPath = path.join(__dirname, "opfsBootstrap.js");
-  try {
-    return fs.readFileSync(bootstrapPath, "utf-8");
-  } catch {
-    log.info(`[PanelHttpServer] Context bootstrap not found at ${bootstrapPath}, using inline stub`);
-    return `console.warn("[NatStack] Context bootstrap not available.");`;
-  }
-}
-
 const BROWSER_TRANSPORT_JS = loadBrowserTransport();
-const OPFS_BOOTSTRAP_JS = loadOpfsBootstrap();
 
 // ---------------------------------------------------------------------------
 // Embedded favicon (SVG)
@@ -70,73 +75,59 @@ const DEFAULT_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 // Types
 // ---------------------------------------------------------------------------
 
-export interface PanelConfig {
-  panelId: string;
-  contextId: string;
-  /** Short DNS-safe label used as the *.localhost subdomain */
-  subdomain: string;
-  parentId: string | null;
-  rpcPort: number;
-  rpcToken: string;
-  /** Server-process RPC port for direct AI/DB/build calls (Electron only) */
-  serverRpcPort?: number;
-  /** Auth token for the server-process RPC server (Electron only) */
-  serverRpcToken?: string;
-  gitBaseUrl: string;
-  gitToken: string;
-  pubsubPort: number;
-  /** Auth token for PubSub (server-process token, distinct from main rpcToken) */
-  pubsubToken: string;
-  stateArgs: Record<string, unknown>;
-  sourceRepo: string;
-  resolvedRepoArgs: Record<string, unknown>;
-  env: Record<string, string>;
-  theme: "light" | "dark";
-  /** Human-friendly title for the HTML <title> tag (manifest title or page name) */
-  title?: string;
-}
-
 export interface PanelLifecycleEvent {
   type: "panel:created" | "panel:built" | "panel:closed" | "panel:build-error";
   panelId: string;
   title: string;
   subdomain: string;
   contextId?: string;
-  /** Init token for pre-warming (only on panel:created) */
-  initToken?: string;
   url?: string;
   error?: string;
   parentId?: string | null;
   source?: string;
 }
 
-interface StoredPanel {
-  config: PanelConfig;
+/**
+ * Callback interface for panel-related data.
+ * The HTTP server receives all panel data via these callbacks — no per-panel state stored.
+ */
+export interface PanelHttpCallbacks {
+  /** Browser bootstrap: create/find panel, return bootstrap credentials */
+  onDemandCreate(source: string, subdomain: string): Promise<{
+    panelId: string;
+    rpcPort: number;
+    rpcToken: string;
+    serverRpcPort?: number;
+    serverRpcToken?: string;
+  }>;
+
+  /** Management API: list all panels */
+  listPanels(): Array<{
+    panelId: string;
+    title: string;
+    subdomain: string;
+    source: string;
+    parentId: string | null;
+    contextId: string;
+  }>;
+
+  /** Build-complete notification (source-level) */
+  onBuildComplete?(source: string, error?: string): void;
+
+  /** Build trigger */
+  getBuild(source: string): Promise<BuildResult>;
+}
+
+/** Build output cached by source path (shared across panels) */
+interface CachedBuild {
   html: string;
   bundle: string;
   css?: string;
   assets?: Record<string, { content: string; encoding?: string }>;
-  title: string;
-  /** Per-panel access token for HTTP resources */
-  httpToken: string;
+  metadata: BuildMetadata;
 }
 
-/**
- * A panel registered before its build completes. Only serves /__init__
- * for context pre-warming — not the full panel HTML/bundle.
- */
-interface PendingPanel {
-  panelId: string;
-  subdomain: string;
-  contextId: string;
-  /** Short-lived token for authenticating the /__init__ pre-warming page */
-  initToken: string;
-  /** Partial config with just enough for the bootstrap script */
-  config: PanelConfig;
-}
-
-interface PanelSession {
-  panelId: string;
+interface SubdomainSession {
   subdomain: string;
   createdAt: number;
 }
@@ -216,24 +207,15 @@ function parseCookies(header: string | undefined): Record<string, string> {
 }
 
 /**
- * Read the full request body as a string.
+ * Extract source path (first two segments) and resource from URL pathname.
+ *  /panels/my-app/bundle.js → { source: "panels/my-app", resource: "/bundle.js" }
+ *  /panels/my-app/ → { source: "panels/my-app", resource: "/" }
+ *  /panels/my-app → { source: "panels/my-app", resource: "/" }
  */
-function readBody(req: import("http").IncomingMessage, maxSize = 100 * 1024 * 1024): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    req.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > maxSize) {
-        req.destroy();
-        reject(new Error(`Request body too large (max: ${maxSize} bytes)`));
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
-    req.on("error", reject);
-  });
+function extractSourcePath(pathname: string): { source: string; resource: string } | null {
+  const match = pathname.match(/^\/([^/]+\/[^/]+)(\/.*)?$/);
+  if (!match) return null;
+  return { source: match[1]!, resource: match[2] || "/" };
 }
 
 // ---------------------------------------------------------------------------
@@ -242,17 +224,22 @@ function readBody(req: import("http").IncomingMessage, maxSize = 100 * 1024 * 10
 
 export class PanelHttpServer {
   private httpServer: HttpServer | null = null;
-  private panels = new Map<string, StoredPanel>();
-  /** Reverse lookup: subdomain → panel (populated in storePanel) */
-  private subdomainToPanel = new Map<string, StoredPanel>();
-  /** Panels registered before build completes (for pre-warming /__init__) */
-  private pendingPanels = new Map<string, PendingPanel>();
-  /** Reverse lookup: subdomain → pending panel */
-  private subdomainToPending = new Map<string, PendingPanel>();
+
+  /** Serving cache: source → last resolved build (for fast sub-resource serving within a page load) */
+  private servingCache = new Map<string, CachedBuild>();
+
   /** Cookie-based sessions: sessionId → session data */
-  private sessions = new Map<string, PanelSession>();
+  private sessions = new Map<string, SubdomainSession>();
+
   /** Active SSE connections for /api/events */
   private sseConnections = new Set<import("http").ServerResponse>();
+
+  /** Builds currently in flight (dedup concurrent requests) */
+  private buildInFlight = new Map<string, Promise<void>>();
+
+  /** Build errors: source → error message (surface to next request) */
+  private buildErrors = new Map<string, string>();
+
   private port: number | null = null;
   private host: string;
   private managementToken: string | null;
@@ -264,11 +251,8 @@ export class PanelHttpServer {
    */
   private sourceRegistry = new Map<string, { source: string; name: string }>();
 
-  /**
-   * Callback to trigger on-demand panel creation when a browser visits
-   * a registered subdomain that has no running panel.
-   */
-  private onDemandCreate: ((source: string, subdomain: string) => Promise<string>) | null = null;
+  /** Callbacks for panel-related data (zero per-panel state on server) */
+  private callbacks: PanelHttpCallbacks | null = null;
 
   private wss: WebSocketServer | null = null;
   private cdpBridge: CdpBridge | null = null;
@@ -276,6 +260,18 @@ export class PanelHttpServer {
   constructor(host = "127.0.0.1", managementToken?: string) {
     this.host = host;
     this.managementToken = managementToken ?? null;
+  }
+
+  // =========================================================================
+  // Configuration
+  // =========================================================================
+
+  /**
+   * Set the callback interface for panel-related queries.
+   * All panel data comes through these callbacks — no per-panel state stored.
+   */
+  setCallbacks(callbacks: PanelHttpCallbacks): void {
+    this.callbacks = callbacks;
   }
 
   /**
@@ -290,17 +286,13 @@ export class PanelHttpServer {
     log.info(`Source registry populated with ${entries.length} panels`);
   }
 
-  /**
-   * Set the callback for on-demand panel creation.
-   * Called when a browser visits a registered subdomain with no running panel.
-   */
-  setOnDemandCreate(handler: (source: string, subdomain: string) => Promise<string>): void {
-    this.onDemandCreate = handler;
-  }
-
   setCdpBridge(bridge: CdpBridge): void {
     this.cdpBridge = bridge;
   }
+
+  // =========================================================================
+  // Server lifecycle
+  // =========================================================================
 
   async start(port = 0): Promise<number> {
     this.httpServer = createServer((req, res) => {
@@ -343,117 +335,78 @@ export class PanelHttpServer {
     return `http://${subdomain}.localhost:${this.port}`;
   }
 
-  /**
-   * Get the full authenticated URL for a panel (token in query string).
-   * After the browser follows this URL, the token is exchanged for a cookie
-   * and the user sees a clean URL.
-   */
-  getPanelUrl(panelId: string): string | null {
-    const panel = this.panels.get(panelId);
-    if (!panel || !this.port) return null;
-    const origin = this.getPanelOrigin(panel.config.subdomain);
-    return `${origin}/?token=${encodeURIComponent(panel.httpToken)}`;
-  }
+  // =========================================================================
+  // Build cache (source-keyed, inherently server)
+  // =========================================================================
 
   /**
-   * Register a panel's subdomain before its build completes.
-   *
-   * This enables context pre-warming: the browser extension can open a
-   * hidden tab to `{subdomain}.localhost/__init__?token={initToken}`
-   * immediately when `panel:created` fires, before the build finishes.
-   * The init page runs the context bootstrap so storage is warm when the
-   * real panel tab opens.
-   *
-   * @returns The init token for authenticating the pre-warming request
+   * Store a build result. Keyed by source, shared across panels.
    */
-  registerPendingPanel(panelId: string, config: PanelConfig): string {
-    const initToken = randomBytes(24).toString("hex");
-
-    const pending: PendingPanel = {
-      panelId,
-      subdomain: config.subdomain,
-      contextId: config.contextId,
-      initToken,
-      config,
-    };
-
-    this.pendingPanels.set(panelId, pending);
-    this.subdomainToPending.set(config.subdomain, pending);
-
-    log.info(`Registered pending panel: ${panelId} (${config.subdomain}.localhost, initToken: ${initToken.slice(0, 8)}...)`);
-    return initToken;
-  }
-
-  /**
-   * Store a built panel for HTTP serving.
-   * Promotes a pending panel (if any) to a fully served panel.
-   */
-  storePanel(panelId: string, buildResult: BuildResult, config: PanelConfig): void {
+  storeBuild(source: string, buildResult: BuildResult): void {
     if (!buildResult.html || !buildResult.bundle) {
-      throw new Error(`Build result for ${panelId} missing HTML or bundle`);
+      throw new Error(`Build result for ${source} missing HTML or bundle`);
     }
 
-    const httpToken = randomBytes(32).toString("hex");
-
-    const stored: StoredPanel = {
-      config,
+    this.servingCache.set(source, {
       html: buildResult.html,
       bundle: buildResult.bundle,
       css: buildResult.css,
       assets: buildResult.assets,
-      title: config.title || buildResult.metadata.name,
-      httpToken,
-    };
+      metadata: buildResult.metadata,
+    });
 
-    this.panels.set(panelId, stored);
-    this.subdomainToPanel.set(config.subdomain, stored);
+    log.info(`Stored build: ${source}`);
 
-    // Clean up pending entry (panel is now fully served)
-    const pending = this.pendingPanels.get(panelId);
-    if (pending) {
-      this.pendingPanels.delete(panelId);
-      this.subdomainToPending.delete(pending.subdomain);
-    }
-
-    log.info(`Stored panel: ${panelId} (${config.subdomain}.localhost, token: ${httpToken.slice(0, 8)}...)`);
+    // Notify callback (source-level — caller does per-panel fan-out)
+    this.callbacks?.onBuildComplete?.(source);
   }
 
   /**
-   * Remove a panel from HTTP serving. Invalidates sessions and cleans up
-   * the subdomain mapping.
+   * Invalidate cached build for a source (used by force-rebuild).
+   * Also clears build errors so force-rebuild retries cleanly.
    */
-  removePanel(panelId: string): void {
-    const panel = this.panels.get(panelId);
-    if (panel) {
-      this.subdomainToPanel.delete(panel.config.subdomain);
-      // Invalidate all sessions for this panel
-      for (const [sid, session] of this.sessions) {
-        if (session.panelId === panelId) {
-          this.sessions.delete(sid);
-        }
-      }
-    }
-    this.panels.delete(panelId);
-
-    // Also clean up any pending entry
-    const pending = this.pendingPanels.get(panelId);
-    if (pending) {
-      this.subdomainToPending.delete(pending.subdomain);
-      this.pendingPanels.delete(panelId);
-    }
+  invalidateBuild(source: string): void {
+    this.servingCache.delete(source);
+    this.buildErrors.delete(source);
   }
 
   /**
-   * Update a stored panel's config. Used when stateArgs change so that
-   * a page reload picks up the latest values (the injected globals are
-   * generated from the stored config at serve time).
+   * Check if a build is cached for a source.
    */
-  updatePanelConfig(panelId: string, config: PanelConfig): void {
-    const panel = this.panels.get(panelId);
-    if (panel) {
-      panel.config = config;
+  hasBuild(source: string): boolean {
+    return this.servingCache.has(source);
+  }
+
+  // =========================================================================
+  // Session management (subdomain-scoped)
+  // =========================================================================
+
+  /**
+   * Ensure a subdomain session exists for auth. Returns the session ID.
+   * Creates one if none exists. Used by Electron PanelManager for cookie-based auth.
+   */
+  ensureSubdomainSession(subdomain: string): string {
+    for (const [sid, s] of this.sessions) {
+      if (s.subdomain === subdomain) return sid;
+    }
+    const sid = randomBytes(16).toString("hex");
+    this.sessions.set(sid, { subdomain, createdAt: Date.now() });
+    return sid;
+  }
+
+  /**
+   * Clear all sessions for a subdomain.
+   * Called by panel manager when the last panel on a subdomain closes.
+   */
+  clearSubdomainSessions(subdomain: string): void {
+    for (const [sid, s] of this.sessions) {
+      if (s.subdomain === subdomain) this.sessions.delete(sid);
     }
   }
+
+  // =========================================================================
+  // SSE events
+  // =========================================================================
 
   /**
    * Push a lifecycle event to all connected SSE clients.
@@ -513,62 +466,86 @@ export class PanelHttpServer {
       return;
     }
 
-    // ── Subdomain routing: serve panel at / ─────────────────────────────
+    // ── Subdomain routing ────────────────────────────────────────────────
     if (subdomain) {
-      const stored = this.subdomainToPanel.get(subdomain);
-      const pending = stored ? null : this.subdomainToPending.get(subdomain);
-
-      if (stored || pending) {
-        const config = stored ? stored.config : pending!.config;
-        const panelId = config.panelId;
-        const acceptedTokens = stored ? [stored.httpToken] : [pending!.initToken];
-
-        // Pre-warming init page
-        if (pathname === "/__init__") {
-          this.serveInitPage(req, res, panelId, subdomain, config, acceptedTokens);
-          return;
-        }
-        // Full panel serving (stored only)
-        if (stored) {
-          this.handleSubdomainRequest(req, res, url, pathname, stored);
-          return;
-        }
-        // Panel still building — set a session cookie so auth works
-        // once the build completes and the page auto-refreshes.
-        this.serveBuildingPageWithSession(req, res, subdomain, pending!.panelId);
+      // Static scripts (no auth required)
+      if (pathname === "/__loader.js") {
+        res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "public, max-age=3600" });
+        res.end(CONFIG_LOADER_JS);
+        return;
+      }
+      if (pathname === "/__transport.js") {
+        res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "public, max-age=3600" });
+        res.end(BROWSER_TRANSPORT_JS);
         return;
       }
 
-      // ── On-demand panel creation from source registry ──────────────
-      const registryEntry = this.sourceRegistry.get(subdomain);
-      if (registryEntry && this.onDemandCreate) {
-        // Await creation — this resolves as soon as the panel is registered
-        // (before the build starts), so the response delay is minimal.
-        // Once we have the panelId, we can set a session cookie so auth
-        // works when the build completes and the page auto-refreshes.
-        try {
-          const panelId = await this.onDemandCreate(registryEntry.source, subdomain);
-          this.serveBuildingPageWithSession(req, res, subdomain, panelId);
-        } catch (err) {
-          log.info(`On-demand creation failed for ${subdomain}: ${err}`);
-          this.serveBuildingPage(res, subdomain);
+      // Pre-warming init page (unauthenticated, contextId from query)
+      if (pathname === "/__init__") {
+        const contextId = url.searchParams.get("contextId") ?? subdomain;
+        this.serveInitPage(res, contextId);
+        return;
+      }
+
+      const parsed = extractSourcePath(pathname);
+      if (parsed) {
+        // Pre-warming init page at /{source}/__init__
+        if (parsed.resource === "/__init__") {
+          const contextId = url.searchParams.get("contextId") ?? subdomain;
+          this.serveInitPage(res, contextId);
+          return;
+        }
+
+        // ── Session-cookie auth check ──
+        const cookies = parseCookies(req.headers.cookie);
+        const sid = cookies["_ns_session"];
+        const session = sid ? this.sessions.get(sid) : null;
+        const isAuthed = session && session.subdomain === subdomain;
+
+        // ── ?_fresh forces re-bootstrap (cross-source navigation on same subdomain) ──
+        const forceFresh = url.searchParams.has("_fresh");
+
+        // ── Unauthenticated (or force-fresh) HTML/navigation → single-redirect bootstrap ──
+        if (!isAuthed || forceFresh) {
+          const isNavigation = parsed.resource === "/" || parsed.resource === "/index.html";
+          if (isNavigation) {
+            await this.bootstrapBrowserTab(res, parsed.source, subdomain);
+            return;
+          }
+          if (!isAuthed) {
+            // Non-HTML asset without auth → 403
+            res.writeHead(403, { "Content-Type": "text/plain" });
+            res.end("Unauthorized");
+            return;
+          }
+        }
+
+        // ── Authenticated: serve static resource ──
+        // HTML (page load): always resolve through getBuild to ensure freshness.
+        // Sub-resources (JS/CSS/assets): serve from buildCache (loaded same page).
+        const isHtmlRequest = parsed.resource === "/" || parsed.resource === "/index.html";
+        if (isHtmlRequest) {
+          await this.resolveAndServeBuild(res, parsed.source, subdomain);
+        } else {
+          const build = this.servingCache.get(parsed.source);
+          if (build) {
+            this.servePanelResource(res, build, parsed.resource);
+          } else {
+            // Sub-resource arrived before HTML resolved — trigger build, don't wait
+            await this.resolveAndServeBuild(res, parsed.source, subdomain, false);
+          }
         }
         return;
       }
 
+      // No valid source path on subdomain
       this.servePanelClosedPage(res, subdomain);
       return;
     }
 
-    // ── No subdomain (127.0.0.1): index or legacy /panels/ ─────────────
+    // ── No subdomain (127.0.0.1): index page ─────────────────────────
     if (pathname === "/" || pathname === "/index.html") {
       this.serveIndex(res);
-      return;
-    }
-
-    const panelMatch = pathname.match(/^\/panels\/([^/]+)(\/.*)?$/);
-    if (panelMatch) {
-      this.handleLegacyPanelRequest(res, url, panelMatch);
       return;
     }
 
@@ -577,90 +554,120 @@ export class PanelHttpServer {
   }
 
   // =========================================================================
-  // Subdomain panel routing (cookie-based auth)
+  // Browser tab bootstrap — single redirect
   // =========================================================================
 
-  private handleSubdomainRequest(
-    req: import("http").IncomingMessage,
+  /**
+   * Bootstrap a fresh browser tab: create a panel on-demand via callback,
+   * set session + nonce-keyed boot cookie, redirect.
+   */
+  private async bootstrapBrowserTab(
     res: import("http").ServerResponse,
-    url: URL,
-    pathname: string,
-    panel: StoredPanel,
-  ): void {
-    const token = url.searchParams.get("token");
+    source: string,
+    subdomain: string,
+  ): Promise<void> {
+    // Find registry entry for this subdomain
+    const registryEntry = this.sourceRegistry.get(subdomain);
+    const effectiveSource = registryEntry?.source ?? source;
 
-    // Valid token → create session cookie, redirect to clean URL
-    if (token === panel.httpToken) {
-      const sid = randomBytes(16).toString("hex");
-      this.sessions.set(sid, {
-        panelId: panel.config.panelId,
-        subdomain: panel.config.subdomain,
-        createdAt: Date.now(),
-      });
-      // Strip the token param
-      const cleanUrl = new URL(url.toString());
-      cleanUrl.searchParams.delete("token");
-      const location = cleanUrl.pathname + (cleanUrl.search || "");
-
-      res.writeHead(302, {
-        "Location": location,
-        "Set-Cookie": `_ns_session=${sid}; HttpOnly; SameSite=Strict; Path=/`,
-      });
-      res.end();
+    if (!this.callbacks?.onDemandCreate) {
+      this.servePanelClosedPage(res, subdomain);
       return;
     }
 
-    // Check session cookie
-    const cookies = parseCookies(req.headers.cookie);
-    const sid = cookies["_ns_session"];
-    if (sid) {
-      const session = this.sessions.get(sid);
-      if (session && session.panelId === panel.config.panelId) {
-        this.servePanelResource(res, panel, pathname, true);
-        return;
-      }
+    try {
+      const result = await this.callbacks.onDemandCreate(effectiveSource, subdomain);
+      const bk = randomBytes(8).toString("hex");
+      const sid = this.ensureSubdomainSession(subdomain);
+      const bootData: Record<string, unknown> = {
+        pid: result.panelId, rpcPort: result.rpcPort, rpcToken: result.rpcToken,
+      };
+      if (result.serverRpcPort) bootData["serverRpcPort"] = result.serverRpcPort;
+      if (result.serverRpcToken) bootData["serverRpcToken"] = result.serverRpcToken;
+      res.writeHead(302, {
+        "Location": `/${effectiveSource}/?_bk=${bk}`,
+        "Set-Cookie": [
+          `_ns_session=${sid}; HttpOnly; SameSite=Strict; Path=/`,
+          `_ns_boot_${bk}=${encodeURIComponent(JSON.stringify(bootData))}; SameSite=Strict; Path=/; Max-Age=60`,
+        ],
+      });
+      res.end();
+    } catch (err) {
+      log.info(`On-demand creation failed for ${subdomain}/${source}: ${err}`);
+      this.servePanelClosedPage(res, subdomain);
     }
-
-    // No valid auth
-    res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
-<title>Unauthorized — NatStack</title>
-<style>body{font-family:system-ui,sans-serif;max-width:500px;margin:4rem auto;padding:0 1rem;text-align:center;color:#e0e0e0;background:#1a1a2e}h1{color:#e94560}a{color:#0a84ff}</style>
-</head><body><h1>Unauthorized</h1>
-<p>Open this panel from the <a href="http://127.0.0.1:${this.port}/">index page</a> or browser extension.</p>
-</body></html>`);
   }
 
   // =========================================================================
-  // Legacy /panels/ routing (token-based auth)
+  // Build resolution (single source of truth)
   // =========================================================================
 
-  private handleLegacyPanelRequest(
+  /**
+   * Resolve the current build for a source via getBuild callback.
+   *
+   * The build system (buildStore + EV recompute) is the single source of truth
+   * for builds. This method always goes through it to ensure freshness, then
+   * updates servingCache so sub-resource requests are served fast.
+   *
+   * @param waitForResult - If true, waits briefly for getBuild to resolve
+   *   (used for HTML requests where a fast cached build is likely).
+   *   If false, immediately shows the building page (used for sub-resource fallback).
+   */
+  private async resolveAndServeBuild(
     res: import("http").ServerResponse,
-    url: URL,
-    match: RegExpMatchArray,
-  ): void {
-    const panelId = decodeURIComponent(match[1]!);
-    const resourcePath = match[2] ?? "/";
+    source: string,
+    subdomain: string,
+    waitForResult = true,
+  ): Promise<void> {
+    // Start build if not already in flight (dedup concurrent requests).
+    // Always start a fresh getBuild — errors from previous attempts are
+    // cleared when the new build completes or fails again.
+    if (!this.buildInFlight.has(source)) {
+      if (!this.callbacks?.getBuild) {
+        this.servePanelClosedPage(res, subdomain);
+        return;
+      }
+      const promise = this.callbacks.getBuild(source).then((result) => {
+        this.storeBuild(source, result);
+        this.buildErrors.delete(source);
+        this.buildInFlight.delete(source);
+      }).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.info(`Build failed for ${source}: ${msg}`);
+        this.buildErrors.set(source, msg);
+        this.buildInFlight.delete(source);
+        this.callbacks?.onBuildComplete?.(source, msg);
+      });
+      this.buildInFlight.set(source, promise);
+    }
 
-    const panel = this.panels.get(panelId);
-    if (!panel) {
-      res.writeHead(404, { "Content-Type": "text/plain" });
-      res.end(`Panel not found: ${panelId}`);
+    if (!waitForResult) {
+      this.serveBuildingPage(res, subdomain);
       return;
     }
 
-    const token = url.searchParams.get("token") ?? "";
-    const isCorePath = resourcePath === "/" || resourcePath === "/index.html" ||
-      resourcePath === "/bundle.js" || resourcePath === "/bundle.css";
+    // Wait briefly — if build is already cached in buildStore, getBuild returns fast
+    const FAST_RESOLVE_MS = 500;
+    const resolved = await Promise.race([
+      this.buildInFlight.get(source)!.then(() => true),
+      new Promise<false>((r) => setTimeout(() => r(false), FAST_RESOLVE_MS)),
+    ]);
 
-    if (isCorePath && token !== panel.httpToken) {
-      res.writeHead(403, { "Content-Type": "text/plain" });
-      res.end("Unauthorized");
-      return;
+    if (resolved) {
+      const build = this.servingCache.get(source);
+      if (build) {
+        this.servePanelResource(res, build, "/");
+      } else {
+        const error = this.buildErrors.get(source);
+        if (error) {
+          this.serveBuildErrorPage(res, source, error);
+        } else {
+          this.serveBuildingPage(res, subdomain);
+        }
+      }
+    } else {
+      this.serveBuildingPage(res, subdomain);
     }
-
-    this.servePanelResource(res, panel, resourcePath, false);
   }
 
   // =========================================================================
@@ -713,14 +720,9 @@ export class PanelHttpServer {
   }
 
   private serveApiPanels(res: import("http").ServerResponse): void {
-    const panels = Array.from(this.panels.entries()).map(([id, panel]) => ({
-      panelId: id,
-      title: panel.title,
-      subdomain: panel.config.subdomain,
-      url: this.getPanelUrl(id),
-      source: panel.config.sourceRepo,
-      parentId: panel.config.parentId,
-      contextId: panel.config.contextId,
+    const panels = (this.callbacks?.listPanels() ?? []).map(p => ({
+      ...p,
+      url: `http://${p.subdomain}.localhost:${this.port}/${p.source}/`,
     }));
 
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -738,13 +740,13 @@ export class PanelHttpServer {
     });
 
     // Send current state as initial snapshot
-    const panels = Array.from(this.panels.entries()).map(([id, panel]) => ({
-      panelId: id,
-      title: panel.title,
-      subdomain: panel.config.subdomain,
-      url: this.getPanelUrl(id),
-      source: panel.config.sourceRepo,
-      parentId: panel.config.parentId,
+    const panels = (this.callbacks?.listPanels() ?? []).map(p => ({
+      panelId: p.panelId,
+      title: p.title,
+      subdomain: p.subdomain,
+      url: `http://${p.subdomain}.localhost:${this.port}/${p.source}/`,
+      source: p.source,
+      parentId: p.parentId,
     }));
     res.write(`event: snapshot\ndata: ${JSON.stringify({ panels })}\n\n`);
 
@@ -755,103 +757,31 @@ export class PanelHttpServer {
   }
 
   // =========================================================================
-  // Subdomain auth helpers
+  // Pre-warming init page (unauthenticated)
   // =========================================================================
 
   /**
-   * Authenticate a request on a panel's subdomain.
-   * Checks session cookie first, then falls back to query-string token.
+   * GET /__init__?contextId=X
    *
-   * @returns `authed` true if valid, `viaToken` true if matched via token
-   *          (rather than session cookie).
-   */
-  private authenticateSubdomainRequest(
-    req: import("http").IncomingMessage,
-    panelId: string,
-    acceptedTokens: string[],
-  ): { authed: boolean; viaToken: boolean } {
-    // Check session cookie first
-    const cookies = parseCookies(req.headers.cookie);
-    const sid = cookies["_ns_session"];
-    if (sid) {
-      const session = this.sessions.get(sid);
-      if (session && session.panelId === panelId) {
-        return { authed: true, viaToken: false };
-      }
-    }
-
-    // Check token in query string
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
-    const token = url.searchParams.get("token");
-    if (token && acceptedTokens.includes(token)) {
-      return { authed: true, viaToken: true };
-    }
-
-    return { authed: false, viaToken: false };
-  }
-
-  /**
-   * Create a session cookie for a panel and return the session ID.
-   */
-  private createPanelSession(panelId: string, subdomain: string): string {
-    const sid = randomBytes(16).toString("hex");
-    this.sessions.set(sid, { panelId, subdomain, createdAt: Date.now() });
-    return sid;
-  }
-
-  // =========================================================================
-  // Context Template API (per-subdomain, unified for stored + pending)
-  // =========================================================================
-
-  // =========================================================================
-  // Pre-warming init page (unified for stored + pending)
-  // =========================================================================
-
-  /**
-   * GET /__init__
-   *
-   * Serves a lightweight page that runs the context bootstrap and signals
-   * completion. Works for both stored and pending panels.
-   *
-   * When authenticated via token (not session cookie), creates a session
-   * so the bootstrap's API calls are authenticated via cookie.
+   * Serves a lightweight page that runs the OPFS context bootstrap.
+   * Unauthenticated — only creates OPFS storage, no secrets involved.
    */
   private serveInitPage(
-    req: import("http").IncomingMessage,
     res: import("http").ServerResponse,
-    panelId: string,
-    subdomain: string,
-    config: PanelConfig,
-    acceptedTokens: string[],
+    contextId: string,
   ): void {
-    const { authed, viaToken } = this.authenticateSubdomainRequest(req, panelId, acceptedTokens);
-    if (!authed) {
-      res.writeHead(403, { "Content-Type": "text/plain" });
-      res.end("Unauthorized");
-      return;
-    }
-
-    const headers: Record<string, string> = {
+    const initHtml = this.buildInitPageHtml(contextId);
+    res.writeHead(200, {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
-    };
-
-    // When authenticated via token (not session), create a session so the
-    // bootstrap script's API calls are authenticated via cookie.
-    if (viaToken) {
-      const sid = this.createPanelSession(panelId, subdomain);
-      headers["Set-Cookie"] = `_ns_session=${sid}; HttpOnly; SameSite=Strict; Path=/`;
-    }
-
-    const initHtml = this.buildInitPageHtml(config);
-    res.writeHead(200, headers);
+    });
     res.end(initHtml);
   }
 
   /**
    * Build the init page HTML with the context bootstrap.
    */
-  private buildInitPageHtml(config: PanelConfig): string {
+  private buildInitPageHtml(contextId: string): string {
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -874,16 +804,20 @@ export class PanelHttpServer {
     <p id="message">Initializing context...</p>
   </div>
   <script>
-${this.buildOpfsBootstrapScript(config, true)}
+${this.buildInitBootstrapScript(contextId)}
   </script>
 </body>
 </html>`;
   }
 
+  // =========================================================================
+  // Building / error pages
+  // =========================================================================
+
   /**
    * Serve a "building" placeholder page for a pending panel.
    */
-  private serveBuildingPage(res: import("http").ServerResponse, subdomain: string, setCookie?: string): void {
+  private serveBuildingPage(res: import("http").ServerResponse, subdomain: string): void {
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -908,36 +842,39 @@ ${this.buildOpfsBootstrapScript(config, true)}
 </body>
 </html>`;
 
-    const headers: Record<string, string> = { "Content-Type": "text/html; charset=utf-8" };
-    if (setCookie) {
-      headers["Set-Cookie"] = setCookie;
-    }
-    res.writeHead(202, headers);
+    res.writeHead(202, { "Content-Type": "text/html; charset=utf-8" });
     res.end(html);
   }
 
   /**
-   * Serve building page and set a session cookie for the pending panel.
-   * This ensures the browser has a valid session by the time the build
-   * completes and the page auto-refreshes to the real panel.
+   * Serve a build error page instead of looping on a failed build.
    */
-  private serveBuildingPageWithSession(
-    req: import("http").IncomingMessage,
-    res: import("http").ServerResponse,
-    subdomain: string,
-    panelId: string,
-  ): void {
-    // Only set a cookie if the browser doesn't already have a valid session
-    const cookies = parseCookies(req.headers.cookie);
-    const existingSid = cookies["_ns_session"];
-    const existingSession = existingSid ? this.sessions.get(existingSid) : undefined;
+  private serveBuildErrorPage(res: import("http").ServerResponse, source: string, error: string): void {
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Build Error — NatStack</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 600px; margin: 4rem auto; padding: 0 1rem; text-align: center; color: #e0e0e0; background: #1a1a2e; }
+    h1 { color: #e94560; font-size: 1.5rem; }
+    p { color: #888; line-height: 1.6; }
+    pre { background: #16213e; padding: 1rem; border-radius: 6px; text-align: left; overflow-x: auto; font-size: 0.85rem; color: #ffa0a0; }
+    a { color: #0a84ff; }
+  </style>
+</head>
+<body>
+  <h1>Build Failed</h1>
+  <p>The panel <code>${escapeHtml(source)}</code> failed to build:</p>
+  <pre>${escapeHtml(error)}</pre>
+  <p><a href="http://127.0.0.1:${this.port}/">View active panels</a></p>
+</body>
+</html>`;
 
-    if (existingSession && existingSession.panelId === panelId) {
-      this.serveBuildingPage(res, subdomain);
-    } else {
-      const sid = this.createPanelSession(panelId, subdomain);
-      this.serveBuildingPage(res, subdomain, `_ns_session=${sid}; HttpOnly; SameSite=Strict; Path=/`);
-    }
+    res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(html);
   }
 
   // =========================================================================
@@ -946,45 +883,43 @@ ${this.buildOpfsBootstrapScript(config, true)}
 
   private servePanelResource(
     res: import("http").ServerResponse,
-    panel: StoredPanel,
-    resourcePath: string,
-    subdomainMode: boolean,
+    build: CachedBuild,
+    resource: string,
   ): void {
-    // ── HTML ──
-    if (resourcePath === "/" || resourcePath === "/index.html") {
-      const html = this.buildPanelHtml(panel, subdomainMode);
+    // ── HTML (static — no per-panel injection) ──
+    if (resource === "/" || resource === "/index.html") {
       res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",
       });
-      res.end(html);
+      res.end(build.html);
       return;
     }
 
     // ── JS bundle ──
-    if (resourcePath === "/bundle.js") {
+    if (resource === "/bundle.js") {
       res.writeHead(200, {
         "Content-Type": "application/javascript; charset=utf-8",
         "Cache-Control": "public, max-age=31536000, immutable",
       });
-      res.end(panel.bundle);
+      res.end(build.bundle);
       return;
     }
 
     // ── CSS bundle ──
-    if (resourcePath === "/bundle.css" && panel.css) {
+    if (resource === "/bundle.css" && build.css) {
       res.writeHead(200, {
         "Content-Type": "text/css; charset=utf-8",
         "Cache-Control": "public, max-age=31536000, immutable",
       });
-      res.end(panel.css);
+      res.end(build.css);
       return;
     }
 
     // ── Static assets ──
-    if (panel.assets) {
-      const normalized = resourcePath.startsWith("/") ? resourcePath : `/${resourcePath}`;
-      const asset = panel.assets[normalized] ?? panel.assets[normalized.slice(1)];
+    if (build.assets) {
+      const normalized = resource.startsWith("/") ? resource : `/${resource}`;
+      const asset = build.assets[normalized] ?? build.assets[normalized.slice(1)];
       if (asset) {
         const ext = path.extname(normalized).toLowerCase();
         const contentType = ASSET_MIME_TYPES[ext] ?? "application/octet-stream";
@@ -1008,148 +943,40 @@ ${this.buildOpfsBootstrapScript(config, true)}
       }
     }
 
-    // ── SPA catch-all (subdomain mode only) ──
-    // Unknown paths on a panel's subdomain get the panel HTML so client-side
-    // routing (pushState) works.
-    if (subdomainMode) {
-      const html = this.buildPanelHtml(panel, true);
-      res.writeHead(200, {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store",
-      });
-      res.end(html);
-      return;
-    }
-
-    res.writeHead(404, { "Content-Type": "text/plain" });
-    res.end(`Not found: ${resourcePath}`);
+    // ── SPA catch-all ──
+    // Unknown paths on a panel's source prefix get the panel HTML so
+    // client-side routing (pushState) works.
+    res.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    res.end(build.html);
   }
 
   // =========================================================================
-  // HTML generation with injected globals and inline transport
+  // HTML generation (init page only — panel HTML is now static)
   // =========================================================================
 
-  private buildPanelHtml(panel: StoredPanel, subdomainMode: boolean): string {
-    const { config } = panel;
-
-    const globalsScript = this.buildGlobalsScript(config);
-    const transportScript = this.buildTransportScript(config);
-    const bootstrapScript = this.buildOpfsBootstrapScript(config, false);
-
-    let html = panel.html;
-
-    // ── Title + favicon injection ──
-    const titleTag = `<title>${escapeHtml(panel.title)}</title>`;
-    if (html.includes("<title>")) {
-      html = html.replace(/<title>[^<]*<\/title>/, titleTag);
-    } else {
-      html = html.replace("</head>", `${titleTag}\n</head>`);
-    }
-    if (!html.includes('rel="icon"')) {
-      html = html.replace("</head>", `<link rel="icon" type="image/svg+xml" href="/favicon.svg">\n</head>`);
-    }
-
-    // ── Globals + transport + context bootstrap injection ──
-    const injection = `<script>\n${globalsScript}\n${transportScript}\n${bootstrapScript}\n</script>`;
-    const firstScriptIdx = html.indexOf("<script");
-    if (firstScriptIdx !== -1) {
-      html = html.slice(0, firstScriptIdx) + injection + "\n" + html.slice(firstScriptIdx);
-    } else {
-      html = html.replace("</head>", `${injection}\n</head>`);
-    }
-
-    // ── Bundle / CSS URL rewriting ──
-    if (subdomainMode) {
-      // Cookie handles auth — use simple root-relative URLs
-      html = html.replace(/src="\.\/bundle\.js"/g, `src="/bundle.js"`);
-      html = html.replace(/href="\.\/bundle\.css"/g, `href="/bundle.css"`);
-    } else {
-      // Legacy mode: full path with token
-      const encodedPanelId = encodeURIComponent(config.panelId);
-      const encodedToken = encodeURIComponent(panel.httpToken);
-      html = html.replace(/src="\.\/bundle\.js"/g, `src="/panels/${encodedPanelId}/bundle.js?token=${encodedToken}"`);
-      html = html.replace(/href="\.\/bundle\.css"/g, `href="/panels/${encodedPanelId}/bundle.css?token=${encodedToken}"`);
-    }
-
-    return html;
-  }
-
   /**
-   * Generate the globals injection script that replaces Electron's
-   * preload/contextBridge.
+   * Generate the context bootstrap injection for the init page.
+   * Uses OPFS bootstrap script loaded from file.
    */
-  private buildGlobalsScript(config: PanelConfig): string {
-    const parentId = config.parentId !== null ? JSON.stringify(config.parentId) : "null";
-    const subdomain = config.subdomain;
-    const gitConfig = JSON.stringify({
-      serverUrl: config.gitBaseUrl,
-      token: config.gitToken,
-      sourceRepo: config.sourceRepo,
-      resolvedRepoArgs: config.resolvedRepoArgs,
-    });
-    const pubsubConfig = JSON.stringify({
-      serverUrl: `ws://${subdomain}.localhost:${config.pubsubPort}`,
-      token: config.pubsubToken,
-    });
-    const env = JSON.stringify({
-      ...config.env,
-      PARENT_ID: config.parentId ?? "",
-      __GIT_CONFIG: JSON.stringify({
-        serverUrl: config.gitBaseUrl,
-        token: config.gitToken,
-        sourceRepo: config.sourceRepo,
-        resolvedRepoArgs: config.resolvedRepoArgs,
-      }),
-      __PUBSUB_CONFIG: JSON.stringify({
-        serverUrl: `ws://${subdomain}.localhost:${config.pubsubPort}`,
-        token: config.pubsubToken,
-      }),
-    });
-    const stateArgs = JSON.stringify(config.stateArgs);
-
-    return [
-      `// NatStack globals — replaces Electron preload/contextBridge`,
-      `globalThis.__natstackId = ${JSON.stringify(config.panelId)};`,
-      `globalThis.__natstackContextId = ${JSON.stringify(config.contextId)};`,
-      `globalThis.__natstackKind = "panel";`,
-      `globalThis.__natstackParentId = ${parentId};`,
-      `globalThis.__natstackInitialTheme = ${JSON.stringify(config.theme)};`,
-      `globalThis.__natstackGitConfig = ${gitConfig};`,
-      `globalThis.__natstackPubSubConfig = ${pubsubConfig};`,
-      `globalThis.__natstackEnv = ${env};`,
-      `globalThis.__natstackStateArgs = ${stateArgs};`,
-      `globalThis.__natstackRpcPort = ${JSON.stringify(config.rpcPort)};`,
-      `globalThis.__natstackRpcToken = ${JSON.stringify(config.rpcToken)};`,
-      // Server-process transport for AI/DB/build (Electron dual-process only)
-      ...(config.serverRpcPort ? [
-        `globalThis.__natstackServerRpcPort = ${JSON.stringify(config.serverRpcPort)};`,
-        `globalThis.__natstackServerRpcToken = ${JSON.stringify(config.serverRpcToken)};`,
-      ] : []),
-      `globalThis.process = { env: ${env} };`,
-    ].join("\n");
-  }
-
-  private buildTransportScript(_config: PanelConfig): string {
-    return BROWSER_TRANSPORT_JS;
-  }
-
-  /**
-   * Generate the context bootstrap injection.
-   *
-   * Injects minimal signaling config and the bootstrap script.
-   * Context filesystem is now server-side; this only handles init-page signaling.
-   */
-  private buildOpfsBootstrapScript(config: PanelConfig, isInitPage: boolean): string {
-    if (!isInitPage) {
-      return `globalThis.__natstackContextReady = true;`;
-    }
-
+  private buildInitBootstrapScript(contextId: string): string {
+    const opfsBootstrapJs = this.loadOpfsBootstrap();
     const configBlock = `globalThis.__opfsBootstrapConfig = ${JSON.stringify({
-      contextId: config.contextId,
-      isInitPage,
+      contextId,
+      isInitPage: true,
     })};`;
+    return `${configBlock}\n${opfsBootstrapJs}`;
+  }
 
-    return `${configBlock}\n${OPFS_BOOTSTRAP_JS}`;
+  private loadOpfsBootstrap(): string {
+    const bootstrapPath = path.join(__dirname, "opfsBootstrap.js");
+    try {
+      return fs.readFileSync(bootstrapPath, "utf-8");
+    } catch {
+      return `console.warn("[NatStack] Context bootstrap not available.");`;
+    }
   }
 
   // =========================================================================
@@ -1157,48 +984,32 @@ ${this.buildOpfsBootstrapScript(config, true)}
   // =========================================================================
 
   private serveIndex(res: import("http").ServerResponse): void {
-    // Build a set of subdomains that are currently running (stored or pending)
-    const runningSubdomains = new Set<string>();
-    for (const panel of this.panels.values()) {
-      runningSubdomains.add(panel.config.subdomain);
-    }
-    for (const pending of this.pendingPanels.values()) {
-      runningSubdomains.add(pending.subdomain);
-    }
+    // Use callbacks for running panels
+    const runningPanels = this.callbacks?.listPanels() ?? [];
+    const runningSubdomains = new Set(runningPanels.map(p => p.subdomain));
 
     // Active panels: currently running with direct links
-    const activeEntries = Array.from(this.panels.entries()).map(([id, panel]) => {
-      const origin = this.getPanelOrigin(panel.config.subdomain);
-      const url = `${origin}/?token=${encodeURIComponent(panel.httpToken)}`;
+    const activeEntries = runningPanels.map(p => {
+      const url = `http://${p.subdomain}.localhost:${this.port}/${p.source}/`;
       return `<li>
-  <a href="${url}">${escapeHtml(panel.title)}</a>
+  <a href="${url}">${escapeHtml(p.title)}</a>
   <span class="badge running">running</span>
-  <small class="sub">${escapeHtml(panel.config.subdomain)}.localhost</small>
+  <small class="sub">${escapeHtml(p.subdomain)}.localhost/${escapeHtml(p.source)}</small>
 </li>`;
     });
 
     // Available panels: from source registry, not currently running
     const availableEntries = Array.from(this.sourceRegistry.entries())
       .filter(([subdomain]) => !runningSubdomains.has(subdomain))
-      .map(([subdomain, { name }]) => {
+      .map(([subdomain, { source, name }]) => {
         const origin = this.getPanelOrigin(subdomain);
         return `<li>
-  <a href="${origin}/">${escapeHtml(name)}</a>
-  <small class="sub">${escapeHtml(subdomain)}.localhost</small>
+  <a href="${origin}/${escapeHtml(source)}/">${escapeHtml(name)}</a>
+  <small class="sub">${escapeHtml(subdomain)}.localhost/${escapeHtml(source)}</small>
 </li>`;
       });
 
-    // Building panels: currently pending
-    const buildingEntries = Array.from(this.pendingPanels.values()).map((pending) => {
-      const origin = this.getPanelOrigin(pending.subdomain);
-      return `<li>
-  <a href="${origin}/">${escapeHtml(pending.panelId)}</a>
-  <span class="badge building">building</span>
-  <small class="sub">${escapeHtml(pending.subdomain)}.localhost</small>
-</li>`;
-    });
-
-    const allEntries = [...activeEntries, ...buildingEntries, ...availableEntries];
+    const allEntries = [...activeEntries, ...availableEntries];
 
     const html = `<!DOCTYPE html>
 <html lang="en">
@@ -1219,7 +1030,6 @@ ${this.buildOpfsBootstrapScript(config, true)}
     .empty { color: #888; }
     .badge { font-size: 0.7em; padding: 0.15em 0.5em; border-radius: 3px; margin-left: 0.5em; text-transform: uppercase; font-weight: 600; }
     .badge.running { background: #1b5e20; color: #81c784; }
-    .badge.building { background: #4a3800; color: #ffd54f; }
   </style>
 </head>
 <body>

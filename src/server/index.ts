@@ -295,7 +295,7 @@ async function main() {
   // Project scaffolding service
   dispatcher.register("project", async (_ctx, method, serviceArgs) => {
     const { handleProjectCall } = await import("../main/services/projectService.js");
-    return handleProjectCall(contextFolderManager, handle.gitServer, method, serviceArgs as unknown[]);
+    return handleProjectCall(contextFolderManager, handle.gitServer, getTokenManager(), method, serviceArgs as unknown[]);
   });
 
   // Admin token: use NATSTACK_ADMIN_TOKEN env var if set, otherwise generate random.
@@ -348,7 +348,6 @@ async function main() {
     }
 
     const headlessPanelManager = new HeadlessPanelManager({
-      getBuild: (unitPath) => buildSystem.getBuild(unitPath),
       createToken: (callerId, kind) => getTokenManager().createToken(callerId, kind),
       revokeToken: (callerId) => getTokenManager().revokeToken(callerId),
       panelHttpServer,
@@ -417,8 +416,33 @@ async function main() {
       }
 
       panelHttpServer.populateSourceRegistry(rawEntries);
-      panelHttpServer.setOnDemandCreate((source, subdomain) => {
-        return headlessPanelManager.createPanelOnDemand(source, subdomain);
+
+      // Wire callbacks: all panel data flows through these — zero per-panel state on server
+      panelHttpServer.setCallbacks({
+        onDemandCreate: (source, subdomain) => headlessPanelManager.createPanelOnDemand(source, subdomain),
+        listPanels: () => headlessPanelManager.listPanels(),
+        onBuildComplete: (source, error) => {
+          // Per-panel fan-out: notify all panels using this source
+          for (const panel of headlessPanelManager.listPanels()) {
+            if (panel.source === source) {
+              panelHttpServer?.broadcastEvent({
+                type: error ? "panel:build-error" : "panel:built",
+                panelId: panel.panelId,
+                title: panel.title,
+                subdomain: panel.subdomain,
+                source,
+                error,
+              });
+            }
+          }
+        },
+        getBuild: (source) => buildSystem.getBuild(source),
+      });
+
+      // When the push trigger builds something, invalidate the HTTP serving
+      // cache so the next request serves fresh content instead of stale cache.
+      buildSystem.onPushBuild((source) => {
+        panelHttpServer.invalidateBuild(source);
       });
 
       console.log(`  On-demand panels: ${rawEntries.map((e) => e.subdomain).join(", ") || "(none)"}`);

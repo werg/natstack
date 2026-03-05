@@ -136,7 +136,7 @@ export interface WorkspaceConfig {
   git?: GitConfig;
   /**
    * Default panel to open when workspace loads (fresh install / empty panel tree).
-   * If set, this panel opens directly instead of the shell:new launcher.
+   * If set, this panel opens directly instead of the shell/new launcher.
    * Example: "panels/chat"
    */
   rootPanel?: string;

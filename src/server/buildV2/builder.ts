@@ -570,8 +570,11 @@ function escapeHtml(str: string): string {
 function generatePanelHtml(
   title: string,
   sourcePath: string,
+  relativePath: string,
   options: { hasCss: boolean; externals?: Record<string, string> },
 ): string {
+  const baseHref = `/${relativePath}/`;
+
   // Check for custom index.html
   const customHtmlPath = path.join(sourcePath, "index.html");
   if (fs.existsSync(customHtmlPath)) {
@@ -594,6 +597,15 @@ function generatePanelHtml(
     ) {
       html = html.replace(/(<head\b[^>]*>)/i, `$1\n  ${PANEL_CSP_META}`);
     }
+    // Inject base href if not present
+    if (!/<base\b/i.test(html)) {
+      html = html.replace(/(<head\b[^>]*>)/i, `$1\n  <base href="${escapeHtml(baseHref)}">`);
+    }
+    // Replace bundle.js script with loader (matches ./bundle.js, /bundle.js, bundle.js, with optional query string)
+    html = html.replace(
+      /<script\b[^>]*\bsrc\s*=\s*["'](?:\.\/)?bundle\.js(?:\?[^"']*)?["'][^>]*><\/script>/i,
+      `<script src="/__loader.js"></script>`,
+    );
     return html;
   }
 
@@ -609,6 +621,7 @@ function generatePanelHtml(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <base href="${escapeHtml(baseHref)}">
   ${PANEL_CSP_META}
   <title>${escapeHtml(title)}</title>
   ${importMapScript}<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/themes@3.2.1/styles.css">${cssLink}
@@ -619,7 +632,7 @@ function generatePanelHtml(
 </head>
 <body>
   <div id="root"></div>
-  <script type="module" src="./bundle.js"></script>
+  <script src="/__loader.js"></script>
 </body>
 </html>`;
 }
@@ -920,7 +933,7 @@ async function buildPanel(
 
     // Generate HTML from extracted source (for custom index.html)
     const title = node.manifest.title ?? node.name;
-    const html = generatePanelHtml(title, sourcePath, {
+    const html = generatePanelHtml(title, sourcePath, node.relativePath, {
       hasCss: !!css,
       externals: manifestExternals,
     });

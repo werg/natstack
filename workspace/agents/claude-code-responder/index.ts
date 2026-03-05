@@ -912,11 +912,7 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
 
       // Discover pubsub tools
       pubsubRegistry = await discoverPubsubTools(client, {
-        allowlist: [
-          "feedback_form", "feedback_custom", "eval",
-          "check_types", "get_type_info", "get_completions",
-          "create_project", "launch_panel", "run_tests", "git",
-        ],
+        allowlist: ["feedback_form", "feedback_custom", "eval"],
         timeoutMs: 1500,
         log: (msg) => this.log.debug(msg),
       });

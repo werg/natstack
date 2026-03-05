@@ -4,7 +4,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as fsPromises from "fs/promises";
 import * as http from "http";
-import { spawn, spawnSync } from "child_process";
+import { execFile, spawn, spawnSync } from "child_process";
 import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("GitServer");
@@ -138,7 +138,19 @@ export class GitServer {
       fs.mkdirSync(reposPath, { recursive: true });
     }
 
-    this.git = new Git(reposPath, {
+    // Pass a custom dirMap function instead of a plain string.
+    // node-git-server's create() always appends ".git" to repo names internally,
+    // but our system (package graph, build system, panel manager) expects
+    // directories without the .git suffix. The constructor accepts a function
+    // as first argument (documented API) — we use it to strip the suffix.
+    this.git = new Git(
+      (dir?: string): string => {
+        const cleaned = dir ? dir.replace(/\.git$/, "") : dir;
+        return path.normalize(
+          cleaned ? path.join(reposPath, cleaned) : reposPath
+        );
+      },
+      {
       autoCreate: true,
       checkout: true, // Use working directories instead of bare repos
       authenticate: ({ type, repo, headers }, next) => {
@@ -165,12 +177,45 @@ export class GitServer {
 
     // Handle push events
     this.git.on("push", (push) => {
+      // Ensure repo allows pushes to checked-out branches (may be auto-created
+      // by node-git-server, which doesn't set this config)
+      const pushRepo = push.repo.replace(/^\/+/, "").replace(/\.git(\/.*)?$/, "").replace(/\/+$/, "");
+      const pushRepoDir = path.join(reposPath, pushRepo);
+      spawnSync("git", ["config", "receive.denyCurrentBranch", "ignore"], {
+        cwd: pushRepoDir,
+        stdio: "ignore",
+      });
+
       push.accept();
-      const repo = push.repo.replace(/^\/+/, "").replace(/\.git(\/.*)$/, "").replace(/\/+$/, "");
-      const branch = push.branch.replace(/^refs\/heads\//, "");
-      log.verbose(` Push to ${repo}/${branch} (${push.commit})`);
-      const event: GitPushEvent = { repo, branch, commit: push.commit };
-      for (const fn of this.pushListeners) fn(event);
+
+      // Wait for git-receive-pack to finish writing refs before post-push
+      // operations. The push event fires when the HTTP request arrives, but
+      // git-receive-pack runs asynchronously. The "exit" event fires after
+      // the process completes and refs are on disk.
+      push.on("exit", () => {
+        const repo = push.repo.replace(/^\/+/, "").replace(/\.git(\/.*)?$/, "").replace(/\/+$/, "");
+        const branch = push.branch.replace(/^refs\/heads\//, "");
+        log.verbose(` Push to ${repo}/${branch} (${push.commit})`);
+
+        // Update working tree: node-git-server creates repos with `git init`
+        // (default branch: master), but pushes target `main`. Switch HEAD to
+        // the pushed branch and checkout files.
+        const repoDir = path.join(reposPath, repo);
+        const pushedRef = `refs/heads/${branch}`;
+        execFile("git", ["symbolic-ref", "HEAD", pushedRef], { cwd: repoDir }, (symErr) => {
+          if (symErr) {
+            log.verbose(` symbolic-ref failed for ${repo}: ${symErr.message}`);
+          }
+          execFile("git", ["reset", "--hard", "HEAD"], { cwd: repoDir }, (resetErr) => {
+            if (resetErr) {
+              log.verbose(` Post-push checkout failed for ${repo}: ${resetErr.message}`);
+            }
+            // Emit push event after checkout so listeners see the updated working tree
+            const event: GitPushEvent = { repo, branch, commit: push.commit };
+            for (const fn of this.pushListeners) fn(event);
+          });
+        });
+      });
     });
 
     // Handle fetch events
@@ -331,6 +376,9 @@ export class GitServer {
   private async ensureGitRepo(dirPath: string): Promise<void> {
     const gitDir = path.join(dirPath, ".git");
     if (fs.existsSync(gitDir)) {
+      // Ensure existing repos allow pushes to checked-out branches
+      // (required for non-bare repos served via node-git-server)
+      this.ensureDenyCurrentBranch(dirPath);
       return; // Already a git repo
     }
 
@@ -351,6 +399,13 @@ export class GitServer {
         stdio: "ignore",
       });
 
+      // Allow pushes to checked-out branches — the post-push handler
+      // updates the working tree via git reset --hard
+      spawnSync("git", ["config", "receive.denyCurrentBranch", "ignore"], {
+        cwd: dirPath,
+        stdio: "ignore",
+      });
+
       // Add all files and create initial commit
       spawnSync("git", ["add", "-A"], { cwd: dirPath, stdio: "ignore" });
       spawnSync("git", ["commit", "-m", "Initial commit"], {
@@ -362,6 +417,26 @@ export class GitServer {
     } catch (error) {
       console.error(`[GitServer] Failed to initialize git repo ${dirName}:`, error);
     }
+  }
+
+  /**
+   * Ensure receive.denyCurrentBranch=ignore is set on an existing repo.
+   * Only writes if not already configured.
+   */
+  private ensureDenyCurrentBranch(dirPath: string): void {
+    try {
+      const result = spawnSync("git", ["config", "receive.denyCurrentBranch"], {
+        cwd: dirPath,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      if (result.stdout?.trim() !== "ignore") {
+        spawnSync("git", ["config", "receive.denyCurrentBranch", "ignore"], {
+          cwd: dirPath,
+          stdio: "ignore",
+        });
+      }
+    } catch { /* ignore — non-critical */ }
   }
 
   // ===========================================================================

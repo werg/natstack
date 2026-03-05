@@ -132,9 +132,12 @@ export type CreateProjectArgs = z.infer<typeof CreateProjectArgsSchema>;
  */
 export const LaunchPanelArgsSchema = z.object({
   source: z.string().describe('Panel path (e.g. "panels/my-app") or URL for browser panels'),
-  name: z.string().optional().describe("Stable child name for reuse"),
+  name: z.string().optional().describe("Stable child name (same name = reuse existing panel)"),
   browser: z.boolean().optional().describe("If true, launch as a browser child"),
-  context_id: z.string().optional().describe("Shared storage context (defaults to current chat context)"),
+  contextId: z.string().optional().describe("Shared storage context (defaults to current chat context)"),
+  stateArgs: z.record(z.unknown()).optional().describe("Initial state arguments to pass to the panel"),
+  env: z.record(z.string()).optional().describe("Environment variables to pass to the child"),
+  focus: z.boolean().optional().describe("If true, immediately focus the new panel after creation"),
 });
 export type LaunchPanelArgs = z.infer<typeof LaunchPanelArgsSchema>;
 
@@ -152,9 +155,11 @@ export type RunTestsArgs = z.infer<typeof RunTestsArgsSchema>;
  * git - Git operations on the workspace context folder
  */
 export const GitArgsSchema = z.object({
-  operation: z.enum(["status", "diff", "commit", "log", "push"]).describe("Git operation to perform"),
+  operation: z.enum(["status", "diff", "commit", "log", "push", "commit_and_push"]).describe(
+    "Git operation to perform. Use commit_and_push to commit and push in one step (triggers auto-build)."
+  ),
   path: z.string().optional().describe("Relative path within workspace (default: repository root)"),
-  message: z.string().optional().describe('Commit message (required for "commit" operation)'),
+  message: z.string().optional().describe('Commit message (required for "commit" and "commit_and_push")'),
   files: z.array(z.string()).optional().describe("Files to stage (default: all changed files)"),
 });
 export type GitArgs = z.infer<typeof GitArgsSchema>;

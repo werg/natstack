@@ -4,12 +4,15 @@
  *
  * Replaces the chokidar-based BuildWatcher. Concurrent pushes are serialized
  * via a promise queue to ensure consistent EV map and ref state updates.
+ *
+ * Immutability: the push trigger never mutates the PackageGraph. Content hashes
+ * are tracked in a separate ContentHashMap, and EV maps are value types.
  */
 
 import { EventEmitter } from "events";
 import { execFileSync } from "child_process";
 import { discoverPackageGraph, type PackageGraph } from "./packageGraph.js";
-import type { EffectiveVersionMap } from "./effectiveVersion.js";
+import type { ContentHashMap, EffectiveVersionMap } from "./effectiveVersion.js";
 import {
   recomputeFromNode,
   diffEvMaps,
@@ -35,7 +38,7 @@ export interface PushTriggerEvents {
   "build-complete": { name: string; buildKey: string };
   "build-error": { name: string; error: string };
   "change-detected": { names: string[] };
-  "graph-updated": { graph: PackageGraph; evMap: EffectiveVersionMap };
+  "graph-updated": { graph: PackageGraph; evMap: EffectiveVersionMap; contentHashes: ContentHashMap };
 }
 
 // ---------------------------------------------------------------------------
@@ -48,17 +51,20 @@ export class PushTrigger extends EventEmitter {
   private queue: Promise<void> = Promise.resolve();
   private graph: PackageGraph;
   private evMap: EffectiveVersionMap;
+  private contentHashes: ContentHashMap;
   private workspaceRoot: string;
   private unsubscribe: (() => void) | null = null;
 
   constructor(
     graph: PackageGraph,
     evMap: EffectiveVersionMap,
+    contentHashes: ContentHashMap,
     workspaceRoot: string,
   ) {
     super();
     this.graph = graph;
     this.evMap = evMap;
+    this.contentHashes = contentHashes;
     this.workspaceRoot = workspaceRoot;
   }
 
@@ -75,17 +81,27 @@ export class PushTrigger extends EventEmitter {
     }
   }
 
-  updateGraph(graph: PackageGraph): void {
+  updateState(graph: PackageGraph, evMap: EffectiveVersionMap, contentHashes: ContentHashMap): void {
     this.graph = graph;
-  }
-
-  updateEvMap(evMap: EffectiveVersionMap): void {
     this.evMap = evMap;
+    this.contentHashes = contentHashes;
   }
 
   private handlePush(event: GitPushEvent): void {
     const nodeName = this.findNodeByRepoPath(event.repo);
-    if (!nodeName) return;
+    if (!nodeName) {
+      // Unknown repo — likely a newly created project not yet in the package graph.
+      // Trigger full rediscovery so it gets picked up and built.
+      console.log(
+        `[PushTrigger] Push from unknown repo "${event.repo}", triggering full rediscovery`,
+      );
+      this.queue = this.queue
+        .then(() => this.fullRediscovery())
+        .catch((error) =>
+          console.error(`[PushTrigger] Error during rediscovery for ${event.repo}:`, error),
+        );
+      return;
+    }
     if (!this.shouldProcessPush(nodeName, event)) return;
 
     const isMainLike = MAIN_BRANCHES.has(event.branch);
@@ -173,14 +189,18 @@ export class PushTrigger extends EventEmitter {
       }
     }
 
-    // 2. Recompute EVs using the pushed node's pinned commit
-    const newEvMap = recomputeFromNode(this.graph, nodeName, this.evMap, commitSha);
-    const changeset = diffEvMaps(this.evMap, newEvMap);
+    // 2. Recompute EVs using the pushed node's pinned commit (no graph mutation)
+    const result = recomputeFromNode(this.graph, nodeName, this.evMap, this.contentHashes, commitSha);
+    const changeset = diffEvMaps(this.evMap, result.evMap);
 
-    // Update stored EV map and ref state
-    this.evMap = newEvMap;
-    persistEvMap(newEvMap);
+    // Update state and persist
+    this.evMap = result.evMap;
+    this.contentHashes = result.contentHashes;
+    persistEvMap(result.evMap);
     persistRefState(snapshotRefState(this.graph));
+
+    // Sync to build system closure
+    this.emit("graph-updated", { graph: this.graph, evMap: result.evMap, contentHashes: result.contentHashes });
 
     const allChanged = [...changeset.changed, ...changeset.added];
     if (allChanged.length === 0) return;
@@ -193,7 +213,7 @@ export class PushTrigger extends EventEmitter {
       if (!node) continue;
       if (node.kind === "package") continue; // Packages are libraries, not buildable
 
-      const ev = newEvMap[name]!;
+      const ev = result.evMap[name]!;
       const sourcemap = node.manifest.sourcemap !== false;
       const buildKey = computeBuildKey(name, ev, sourcemap);
 
@@ -249,33 +269,34 @@ export class PushTrigger extends EventEmitter {
     // 1. Fresh graph from disk
     const newGraph = discoverPackageGraph(this.workspaceRoot);
 
-    // 2. Snapshot commit SHAs for all nodes
+    // 2. Snapshot commit SHAs and pre-compute content hashes
     const commitMap = new Map<string, string>();
+    const preHashes: ContentHashMap = {};
     for (const node of newGraph.allNodes()) {
       const sha = getCommitAt(node.path);
       if (sha) {
         commitMap.set(node.name, sha);
-        // Pre-set contentHash so computeEffectiveVersions skips the git call
         try {
-          node.contentHash = computeGitTreeHash(node.path, sha);
+          preHashes[node.name] = computeGitTreeHash(node.path, sha);
         } catch {
           // Skip — computeEffectiveVersions will handle it
         }
       }
     }
 
-    // 3. Compute EVs using pre-set contentHashes
-    const newEvMap = computeEffectiveVersions(newGraph);
-    const changeset = diffEvMaps(this.evMap, newEvMap);
+    // 3. Compute EVs using pre-computed hashes (no graph mutation)
+    const result = computeEffectiveVersions(newGraph, preHashes);
+    const changeset = diffEvMaps(this.evMap, result.evMap);
 
     // 4. Update state and persist
     this.graph = newGraph;
-    this.evMap = newEvMap;
-    persistEvMap(newEvMap);
+    this.evMap = result.evMap;
+    this.contentHashes = result.contentHashes;
+    persistEvMap(result.evMap);
     persistRefState(snapshotRefState(newGraph));
 
     // 5. Emit graph-updated so index.ts can sync
-    this.emit("graph-updated", { graph: newGraph, evMap: newEvMap });
+    this.emit("graph-updated", { graph: newGraph, evMap: result.evMap, contentHashes: result.contentHashes });
 
     // 6. Build changed units using the same commitMap
     const allChanged = [...changeset.changed, ...changeset.added];
@@ -288,7 +309,7 @@ export class PushTrigger extends EventEmitter {
       if (!node) continue;
       if (node.kind === "package") continue;
 
-      const ev = newEvMap[name]!;
+      const ev = result.evMap[name]!;
       const sourcemap = node.manifest.sourcemap !== false;
       const buildKey = computeBuildKey(name, ev, sourcemap);
 

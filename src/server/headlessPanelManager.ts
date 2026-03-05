@@ -3,13 +3,12 @@
  *
  * Manages the panel tree (create, close, tree traversal, state args) using the
  * same ID generation and context resolution as the Electron PanelManager, but
- * without creating WebContentsView instances. Panels are built by the build
- * system and their artifacts are stored in the PanelHttpServer for browser
- * access.
+ * without creating WebContentsView instances. Panels are registered in the
+ * PanelHttpServer, which handles build-on-demand and serving.
  *
- * Panels sharing a contextId are assigned the same subdomain, giving them a
- * shared browser origin and therefore shared localStorage, IndexedDB,
- * cookies, and service workers.
+ * Subdomain = contextIdToSubdomain(contextId). Panels sharing a contextId get
+ * the same subdomain (= shared browser origin = shared localStorage, IndexedDB,
+ * cookies, service workers). URL path = source (e.g., panels/my-app).
  *
  * Panel types use the canonical PanelType ("app" | "browser" | "shell") from
  * src/shared/types.ts. Only "app" panels are created in headless mode —
@@ -22,10 +21,9 @@
  * later using the same schema as src/main/db/panelPersistence.ts.
  */
 
-import { randomBytes } from "crypto";
 import type { PanelType, ChildCreationResult, CreateChildOptions, RepoArgSpec } from "../shared/types.js";
-import type { BuildResult } from "./buildV2/buildStore.js";
 import type { PanelHttpServer, PanelLifecycleEvent } from "./panelHttpServer.js";
+import { contextIdToSubdomain } from "./panelHttpServer.js";
 import type { WsServerMessage } from "../shared/ws/protocol.js";
 import { computePanelId } from "../shared/panelIdUtils.js";
 import { loadPanelManifest } from "../main/panelTypes.js";
@@ -74,8 +72,6 @@ export interface HeadlessPanelTree {
 }
 
 interface CreatePanelDeps {
-  /** Resolve a build for a panel source path */
-  getBuild: (unitPath: string) => Promise<BuildResult>;
   /** Create an RPC auth token for a panel */
   createToken: (callerId: string, kind: "panel") => string;
   /** Revoke an RPC auth token */
@@ -104,15 +100,13 @@ interface CreatePanelDeps {
 
 export class HeadlessPanelManager {
   private panels = new Map<string, HeadlessPanel>();
-  private activeSubdomains = new Set<string>();
-  /** Reverse lookup: contextId → subdomain (for shared-context subdomain reuse) */
-  private contextSubdomains = new Map<string, string>();
   private deps: CreatePanelDeps;
   private fsService: import("../main/fsService.js").FsService | null = null;
   private currentTheme: "light" | "dark" = "dark";
 
   constructor(deps: CreatePanelDeps) {
     this.deps = deps;
+    // Build and panel callbacks are wired via panelHttpServer.setCallbacks() in index.ts.
   }
 
   setFsService(service: import("../main/fsService.js").FsService): void {
@@ -121,57 +115,8 @@ export class HeadlessPanelManager {
 
   setCurrentTheme(theme: "light" | "dark"): void {
     this.currentTheme = theme;
-
-    // Update stored HTTP configs so page reloads pick up the new theme
-    if (this.deps.panelHttpServer) {
-      for (const [panelId, panel] of this.panels) {
-        if (panel.buildState === "built") {
-          this.deps.panelHttpServer.updatePanelConfig(panelId, this.buildPanelConfig(panel));
-        }
-      }
-    }
-  }
-
-  /**
-   * Generate a short, human-readable DNS subdomain slug for a panel.
-   * Format: {name}-{hex3} (e.g., "editor-a4f", "chat-3b2")
-   */
-  private generateSubdomain(source: string): string {
-    const baseName = (source.split("/").pop() ?? source)
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "")
-      .slice(0, 50) || "panel";
-
-    let slug: string;
-    do {
-      const suffix = randomBytes(2).toString("hex").slice(0, 3);
-      slug = `${baseName}-${suffix}`;
-    } while (this.activeSubdomains.has(slug));
-
-    this.activeSubdomains.add(slug);
-    return slug;
-  }
-
-  /**
-   * Get or create a subdomain for a context ID.
-   *
-   * Panels sharing the same contextId MUST share the same subdomain so they
-   * get the same browser origin (= shared localStorage, IndexedDB,
-   * cookies, service workers). This mirrors Electron's persist:{contextId}
-   * partition sharing.
-   */
-  private getOrCreateSubdomain(contextId: string, source: string): string {
-    const existing = this.contextSubdomains.get(contextId);
-    if (existing && this.activeSubdomains.has(existing)) {
-      log.info(`[Context] Reusing subdomain "${existing}" for shared context ${contextId}`);
-      return existing;
-    }
-
-    const subdomain = this.generateSubdomain(source);
-    this.contextSubdomains.set(contextId, subdomain);
-    return subdomain;
+    // Theme changes are picked up via getBootstrapConfig RPC on next load.
+    // No per-panel HTTP server state to update.
   }
 
   private emitEvent(event: PanelLifecycleEvent): void {
@@ -188,22 +133,34 @@ export class HeadlessPanelManager {
   /**
    * Create a panel on-demand when a browser visits a registered subdomain.
    *
-   * Idempotent: if a panel already exists on this subdomain, returns its ID.
+   * Idempotent: if a panel already exists on this subdomain, returns its data.
    * Concurrent calls for the same subdomain are coalesced into a single create.
    *
    * @param source  Workspace-relative panel source path (e.g., "panels/chat")
    * @param subdomain  The deterministic subdomain from the source registry
-   * @returns The panel ID
+   * @returns Bootstrap credentials for the panel
    */
-  async createPanelOnDemand(source: string, subdomain: string): Promise<string> {
+  async createPanelOnDemand(source: string, subdomain: string): Promise<{
+    panelId: string;
+    rpcPort: number;
+    rpcToken: string;
+    serverRpcPort: number;
+    serverRpcToken: string;
+  }> {
     // Already running on this subdomain?
     for (const panel of this.panels.values()) {
-      if (panel.subdomain === subdomain) return panel.id;
+      if (panel.subdomain === subdomain) {
+        return { panelId: panel.id, rpcPort: this.deps.rpcPort, rpcToken: panel.rpcToken!, serverRpcPort: this.deps.rpcPort, serverRpcToken: panel.rpcToken! };
+      }
     }
 
     // Already being created?
     const inFlight = this.onDemandInFlight.get(subdomain);
-    if (inFlight) return inFlight;
+    if (inFlight) {
+      const id = await inFlight;
+      const panel = this.panels.get(id);
+      return { panelId: id, rpcPort: this.deps.rpcPort, rpcToken: panel?.rpcToken ?? "", serverRpcPort: this.deps.rpcPort, serverRpcToken: panel?.rpcToken ?? "" };
+    }
 
     let timer: ReturnType<typeof setTimeout>;
     const timeout = new Promise<never>((_, reject) => {
@@ -226,7 +183,9 @@ export class HeadlessPanelManager {
       });
 
     this.onDemandInFlight.set(subdomain, promise);
-    return promise;
+    const id = await promise;
+    const panel = this.panels.get(id);
+    return { panelId: id, rpcPort: this.deps.rpcPort, rpcToken: panel?.rpcToken ?? "", serverRpcPort: this.deps.rpcPort, serverRpcToken: panel?.rpcToken ?? "" };
   }
 
   // =========================================================================
@@ -238,14 +197,12 @@ export class HeadlessPanelManager {
     source: string,
     options?: CreateChildOptions,
     stateArgs?: Record<string, unknown>,
-    /** Use this subdomain instead of generating a random one (for on-demand creation) */
+    /** Use this subdomain instead of deriving from contextId (for on-demand creation) */
     subdomainOverride?: string,
   ): Promise<ChildCreationResult> {
     const parent = callerId ? this.panels.get(callerId) : null;
 
     // Guard: reject URL sources early — browser panels are not supported in headless mode.
-    // In Electron, PanelManager detects URLs and creates browser panels; here we fail
-    // with a clear error instead of a confusing build failure.
     if (/^https?:\/\//i.test(source)) {
       throw new Error(
         `Browser panels are not supported in headless mode (source: "${source}"). ` +
@@ -267,9 +224,7 @@ export class HeadlessPanelManager {
 
     // ── Context resolution ──
     let contextId: string;
-
     if (options?.contextId) {
-      // Explicit context ID provided — use as-is (enables context sharing)
       contextId = options.contextId;
     } else {
       contextId = `ctx_${panelId.replace(/[/:]/g, "~")}`;
@@ -279,27 +234,15 @@ export class HeadlessPanelManager {
     this.fsService?.registerPanelContext(panelId, contextId);
 
     let rpcToken: string | null = null;
-    let subdomain: string | null = null;
     try {
       // ── Subdomain assignment ──
-      // On-demand creation provides a predetermined subdomain; otherwise generate one.
-      // Panels sharing a contextId share a subdomain (= same origin = shared storage)
-      if (subdomainOverride) {
-        subdomain = subdomainOverride;
-        this.activeSubdomains.add(subdomain);
-        this.contextSubdomains.set(contextId, subdomain);
-      } else {
-        subdomain = this.getOrCreateSubdomain(contextId, source);
-      }
+      // Derive from contextId (deterministic). On-demand creation provides override.
+      const subdomain = subdomainOverride ?? contextIdToSubdomain(contextId);
 
       // Create RPC token for this panel
       rpcToken = this.deps.createToken(panelId, "panel");
 
       // ── StateArgs validation + defaults ──
-      // Match Electron's creation-time behavior: validate against manifest
-      // schema and apply defaults (e.g. boolean fields default to false).
-      // Only the manifest load is in a try-catch (expected to fail for dynamic
-      // sources); validation errors always propagate.
       let validatedStateArgs: Record<string, unknown> = stateArgs ?? {};
       let manifest;
       try {
@@ -339,15 +282,7 @@ export class HeadlessPanelManager {
         parent.children.push(panelId);
       }
 
-      // ── Early registration for pre-warming ──
-      // Register the subdomain in PanelHttpServer BEFORE the build starts
-      // so the extension can open /__init__ immediately for context bootstrap.
-      let initToken: string | undefined;
-      if (this.deps.panelHttpServer) {
-        initToken = this.deps.panelHttpServer.registerPendingPanel(panelId, this.buildPanelConfig(panel));
-      }
-
-      log.info(`[Panel] Created: ${panelId} (${subdomain}.localhost, ctx=${contextId})`);
+      log.info(`[Panel] Created: ${panelId} (${subdomain}.localhost/${source}, ctx=${contextId})`);
 
       this.emitEvent({
         type: "panel:created",
@@ -355,32 +290,20 @@ export class HeadlessPanelManager {
         title: panel.title,
         subdomain,
         contextId,
-        initToken,
         parentId: panel.parentId,
         source,
       });
 
-      // Trigger async build + serve
-      void this.buildAndServePanel(panel).catch((err) => {
-        log.info(`[Panel] Build failed for ${panelId}: ${err}`);
-      });
+      // Update build state once HTTP server has the build cached
+      // (the HTTP server triggers the build on-demand when a request arrives)
+      panel.buildState = "built";
 
       return { id: panelId, type: "app" };
     } catch (err) {
-      // Rollback: unregister context mapping, revoke token, release subdomain on failure
+      // Rollback: unregister context mapping, revoke token on failure
       this.fsService?.unregisterPanelContext(panelId);
       if (rpcToken) {
         this.deps.revokeToken(panelId);
-      }
-      if (subdomain) {
-        // Release subdomain only if no other panel already uses this context
-        const otherPanelsWithContext = Array.from(this.panels.values()).some(
-          (p) => p.contextId === contextId,
-        );
-        if (!otherPanelsWithContext) {
-          this.activeSubdomains.delete(subdomain);
-          this.contextSubdomains.delete(contextId);
-        }
       }
       throw err;
     }
@@ -417,18 +340,14 @@ export class HeadlessPanelManager {
     }
     this.deps.revokeGitToken?.(panelId);
 
-    // Remove from HTTP server
+    // Clear subdomain sessions if no panels remain on this subdomain
     if (this.deps.panelHttpServer) {
-      this.deps.panelHttpServer.removePanel(panelId);
-    }
-
-    // Release subdomain only if no other panels use this context
-    const otherPanelsWithContext = Array.from(this.panels.values()).some(
-      (p) => p.id !== panelId && p.contextId === panel.contextId,
-    );
-    if (!otherPanelsWithContext) {
-      this.activeSubdomains.delete(panel.subdomain);
-      this.contextSubdomains.delete(panel.contextId);
+      const remainingOnSubdomain = [...this.panels.values()].some(
+        p => p.id !== panelId && p.subdomain === panel.subdomain,
+      );
+      if (!remainingOnSubdomain) {
+        this.deps.panelHttpServer.clearSubdomainSessions(panel.subdomain);
+      }
     }
 
     this.emitEvent({
@@ -578,10 +497,8 @@ export class HeadlessPanelManager {
 
     panel.stateArgs = validation.data!;
 
-    // Update stored config in HTTP server so page reloads get fresh stateArgs
-    if (this.deps.panelHttpServer) {
-      this.deps.panelHttpServer.updatePanelConfig(panelId, this.buildPanelConfig(panel));
-    }
+    // StateArgs changes are picked up via getBootstrapConfig RPC on next load.
+    // No per-panel HTTP server state to update.
 
     // Broadcast to panel for reactive update (mirrors Electron's sendToClient)
     if (this.deps.sendToClient) {
@@ -596,95 +513,79 @@ export class HeadlessPanelManager {
   }
 
   // =========================================================================
-  // Internals
+  // Callback interface methods (used by PanelHttpCallbacks)
   // =========================================================================
 
   /**
-   * Build a PanelConfig from a HeadlessPanel.
-   * Called during both early registration and final storePanel.
+   * List all panels for the management API.
    */
-  private buildPanelConfig(panel: HeadlessPanel): import("./panelHttpServer.js").PanelConfig {
-    return {
-      panelId: panel.id,
-      contextId: panel.contextId,
-      subdomain: panel.subdomain,
-      parentId: panel.parentId,
-      rpcPort: this.deps.rpcPort,
-      rpcToken: panel.rpcToken!,
-      gitBaseUrl: this.deps.gitBaseUrl,
-      gitToken: this.deps.getGitTokenForPanel(panel.id),
-      pubsubPort: this.deps.pubsubPort,
-      pubsubToken: panel.rpcToken!,
-      title: panel.title,
-      stateArgs: panel.stateArgs,
-      sourceRepo: panel.source,
-      resolvedRepoArgs: panel.repoArgs ?? {},
-      env: panel.env,
-      theme: this.currentTheme,
-    };
+  listPanels(): Array<{
+    panelId: string;
+    title: string;
+    subdomain: string;
+    source: string;
+    parentId: string | null;
+    contextId: string;
+  }> {
+    return [...this.panels.values()].map(p => ({
+      panelId: p.id,
+      title: p.title,
+      subdomain: p.subdomain,
+      source: p.source,
+      parentId: p.parentId,
+      contextId: p.contextId,
+    }));
   }
 
   /**
-   * Build a panel and store its artifacts in the HTTP panel server.
+   * Get the HTTP URL for a panel.
+   * Computes from panel data + known HTTP port.
    */
-  private async buildAndServePanel(panel: HeadlessPanel): Promise<void> {
-    panel.buildState = "building";
+  getPanelUrl(panelId: string): string | null {
+    const panel = this.panels.get(panelId);
+    if (!panel || !this.deps.panelHttpServer?.getPort()) return null;
+    return `http://${panel.subdomain}.localhost:${this.deps.panelHttpServer.getPort()}/${panel.source}/`;
+  }
 
-    try {
-      const buildResult = await this.deps.getBuild(panel.source);
+  // =========================================================================
+  // Bootstrap config (RPC delivery)
+  // =========================================================================
 
-      // Guard against build-close race: if the panel was closed (or closed
-      // and recreated with the same deterministic ID) while the build was
-      // in-flight, don't apply stale results. Object identity (===) catches
-      // both "closed" and "closed+reopened" — the latter puts a new object
-      // in the map under the same key.
-      if (this.panels.get(panel.id) !== panel) {
-        log.info(`[Panel] Build completed for ${panel.id} but panel was closed or replaced — discarding`);
-        return;
-      }
+  /**
+   * Return bootstrap config for a panel, delivered via RPC.
+   * Called by bridge.getBootstrapConfig handler.
+   */
+  getBootstrapConfig(callerId: string): unknown {
+    const panel = this.panels.get(callerId);
+    if (!panel) throw new Error(`Panel not found: ${callerId}`);
 
-      panel.buildState = "built";
-      panel.title = buildResult.metadata.name ?? panel.title;
+    const gitBaseUrl = this.deps.gitBaseUrl;
+    const gitToken = this.deps.getGitTokenForPanel(panel.id);
+    const repoArgs = panel.repoArgs ?? {};
+    const pubsubUrl = `ws://${panel.subdomain}.localhost:${this.deps.pubsubPort}`;
 
-      if (this.deps.panelHttpServer && buildResult.html && buildResult.bundle) {
-        this.deps.panelHttpServer.storePanel(panel.id, buildResult, this.buildPanelConfig(panel));
+    const gitConfig = { serverUrl: gitBaseUrl, token: gitToken, sourceRepo: panel.source, resolvedRepoArgs: repoArgs };
+    const pubsubConfig = { serverUrl: pubsubUrl, token: panel.rpcToken! };
 
-        const panelUrl = this.deps.panelHttpServer.getPanelUrl(panel.id);
-        this.emitEvent({
-          type: "panel:built",
-          panelId: panel.id,
-          title: panel.title,
-          subdomain: panel.subdomain,
-          url: panelUrl ?? undefined,
-          source: panel.source,
-          parentId: panel.parentId,
-        });
-
-        log.info(`[Panel] Built and served: ${panel.id}`);
-      } else {
-        log.info(`[Panel] Built (no HTTP serving): ${panel.id}`);
-      }
-    } catch (err) {
-      // Don't emit errors for panels closed (or replaced) during build
-      if (this.panels.get(panel.id) !== panel) {
-        log.info(`[Panel] Build failed for ${panel.id} but panel was closed or replaced — suppressing`);
-        return;
-      }
-
-      panel.buildState = "failed";
-      panel.buildError = err instanceof Error ? err.message : String(err);
-
-      this.emitEvent({
-        type: "panel:build-error",
-        panelId: panel.id,
-        title: panel.title,
-        subdomain: panel.subdomain,
-        error: panel.buildError,
-        source: panel.source,
-        parentId: panel.parentId,
-      });
-
-      throw err;
-    }
+    return {
+      panelId: panel.id,
+      contextId: panel.contextId,
+      parentId: panel.parentId,
+      theme: this.currentTheme,
+      rpcPort: this.deps.rpcPort,
+      rpcToken: panel.rpcToken!,
+      // In headless mode, server services live on the same RPC port
+      serverRpcPort: this.deps.rpcPort,
+      serverRpcToken: panel.rpcToken!,
+      gitConfig,
+      pubsubConfig,
+      env: {
+        ...panel.env,
+        PARENT_ID: panel.parentId ?? "",
+        __GIT_CONFIG: JSON.stringify(gitConfig),
+        __PUBSUB_CONFIG: JSON.stringify(pubsubConfig),
+      },
+      stateArgs: panel.stateArgs,
+    };
   }
 }
