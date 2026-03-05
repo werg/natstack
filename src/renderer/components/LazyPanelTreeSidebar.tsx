@@ -471,7 +471,7 @@ export function LazyPanelTreeSidebar({
   }, [ancestorIds, collapsedIds, expandIds]);
 
   const handleNewPanel = useCallback(async () => {
-    const result = await panel.createShellPanel("new");
+    const result = await panel.createAboutPanel("new");
     window.dispatchEvent(new CustomEvent("shell-panel-created", {
       detail: { panelId: result.id }
     }));

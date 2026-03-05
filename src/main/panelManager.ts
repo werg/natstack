@@ -254,7 +254,7 @@ export class PanelManager {
 
       // Fall back to launcher on error
       try {
-        await this.createShellPanel("new");
+        await this.createAboutPanel("new");
       } catch (launcherError) {
         console.error("[PanelManager] Failed to create launcher panel:", launcherError);
       }
@@ -298,7 +298,7 @@ export class PanelManager {
     }
 
     // Fallback: show the launcher
-    await this.createShellPanel("new");
+    await this.createAboutPanel("new");
   }
 
   /**
@@ -1233,9 +1233,6 @@ export class PanelManager {
           snapshot: currentSnapshot,
         });
 
-        // Log created event
-        persistence.logEvent(panel.id, "created", {});
-
         // Set parent's selected_child_id to this new child
         // This ensures breadcrumbs show the newly created child as selected
         if (parentId) {
@@ -1409,18 +1406,6 @@ export class PanelManager {
     this.viewManager.reload(panelId);
   }
 
-  /**
-   * Force a repaint of a panel view.
-   * Used to recover from compositor stalls where content exists but isn't painted.
-   */
-  forceRepaint(panelId: string): boolean {
-    if (!this.viewManager) {
-      console.warn(`[PanelManager] ViewManager not set - cannot force repaint for ${panelId}`);
-      return false;
-    }
-
-    return this.viewManager.forceRepaint(panelId);
-  }
 
 
   /**
@@ -1501,7 +1486,7 @@ export class PanelManager {
    * Most pages are singletons (navigating to existing shows it, not creates new).
    * The "new" page supports multiple instances for launching different panels.
    */
-  async createShellPanel(
+  async createAboutPanel(
     page: SharedPanel.ShellPage
   ): Promise<{ id: string; title: string }> {
     // "new" pages can have multiple instances, others are singletons

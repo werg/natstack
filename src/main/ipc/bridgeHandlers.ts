@@ -52,12 +52,6 @@ export async function handleBridgeCall(
       const [repoPath, ref, limit] = args as [string, string?, number?];
       return pm.listCommits(repoPath, ref, limit);
     }
-    case "unloadSelf": {
-      return pm.unloadPanel(callerId);
-    }
-    case "forceRepaint": {
-      return pm.forceRepaint(callerId);
-    }
     case "openFolderDialog": {
       const [options] = (args ?? []) as [{ title?: string }?];
       const result = await dialog.showOpenDialog({

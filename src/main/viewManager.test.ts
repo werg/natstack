@@ -104,7 +104,6 @@ describe("ViewManager", () => {
       const vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
 
@@ -117,7 +116,6 @@ describe("ViewManager", () => {
       const vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
         devTools: true,
       });
@@ -134,7 +132,6 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
@@ -190,7 +187,6 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
@@ -221,7 +217,6 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
@@ -263,7 +258,6 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
@@ -303,7 +297,6 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
@@ -366,7 +359,6 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
@@ -393,7 +385,6 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
@@ -458,7 +449,6 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
@@ -580,7 +570,6 @@ describe("ViewManager", () => {
       vm = new ViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
     });
@@ -669,7 +658,6 @@ describe("ViewManager", () => {
       const vm = initViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
 
@@ -682,7 +670,6 @@ describe("ViewManager", () => {
       initViewManager({
         window: mockWindow,
         shellPreload: "/path/to/preload.js",
-        adblockPreload: "/path/to/adblockPreload.js",
         shellHtmlPath: "/path/to/index.html",
       });
 
@@ -690,8 +677,7 @@ describe("ViewManager", () => {
         initViewManager({
           window: mockWindow,
           shellPreload: "/path/to/preload.js",
-          adblockPreload: "/path/to/adblockPreload.js",
-          shellHtmlPath: "/path/to/index.html",
+            shellHtmlPath: "/path/to/index.html",
         });
       }).toThrow("ViewManager already initialized");
     });

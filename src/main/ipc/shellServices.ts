@@ -224,7 +224,6 @@ export async function handlePanelService(
         // Persist to database
         const persistence = getPanelPersistence();
         persistence.updateSelectedPath(panelId);
-        persistence.logEvent(panelId, "focused");
         getPanelSearchIndex().incrementAccessCount(panelId);
         // Notify UI of the selected path change
         pm.notifyPanelTreeUpdate();
@@ -308,9 +307,9 @@ export async function handlePanelService(
       return;
     }
 
-    case "createShellPanel": {
+    case "createAboutPanel": {
       const page = args[0] as ShellPage;
-      return pm.createShellPanel(page);
+      return pm.createAboutPanel(page);
     }
 
     case "movePanel": {

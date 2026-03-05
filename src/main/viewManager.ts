@@ -87,7 +87,6 @@ export class ViewManager {
   private window: BaseWindow;
   private views = new Map<string, ManagedView>();
   private shellView: WebContentsView;
-  private adblockPreloadPath: string;
   private currentThemeCss: string | null = null;
   /** Per-view locks to prevent concurrent withViewVisible operations */
   private visibilityLocks = new Map<string, Promise<unknown>>();
@@ -114,14 +113,11 @@ export class ViewManager {
   constructor(options: {
     window: BaseWindow;
     shellPreload: string;
-    adblockPreload: string;
     shellHtmlPath: string;
     shellAdditionalArguments?: string[];
     devTools?: boolean;
   }) {
     this.window = options.window;
-    this.adblockPreloadPath = options.adblockPreload;
-
     // Create shell view (React UI) - fills entire window
     // nodeIntegration enabled for direct fs/git access (shell is trusted app UI)
     this.shellView = new WebContentsView({
@@ -211,13 +207,6 @@ export class ViewManager {
    */
   getShellWebContents(): WebContents {
     return this.shellView.webContents;
-  }
-
-  /**
-   * Get the adblock preload path for browser panels.
-   */
-  getAdblockPreloadPath(): string {
-    return this.adblockPreloadPath;
   }
 
   /**
@@ -1131,7 +1120,6 @@ let viewManager: ViewManager | null = null;
 export function initViewManager(options: {
   window: BaseWindow;
   shellPreload: string;
-  adblockPreload: string;
   shellHtmlPath: string;
   shellAdditionalArguments?: string[];
   devTools?: boolean;

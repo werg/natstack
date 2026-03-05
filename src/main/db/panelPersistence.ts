@@ -23,7 +23,6 @@ import {
   initializePanelSchema,
   PANEL_QUERIES,
   type DbPanelRow,
-  type DbPanelEventType,
 } from "./panelSchema.js";
 import type {
   Panel,
@@ -624,69 +623,6 @@ export class PanelPersistence {
       total,
       hasMore: offset + rows.length < total,
     };
-  }
-
-  // =========================================================================
-  // Event Logging
-  // =========================================================================
-
-  /**
-   * Log a panel event.
-   */
-  logEvent(panelId: string, eventType: DbPanelEventType, context?: Record<string, unknown>): void {
-    const db = this.ensureOpen();
-    const workspaceId = this.getWorkspaceId();
-
-    db.prepare(`
-      INSERT INTO panel_events (panel_id, event_type, context, timestamp, workspace_id)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(
-      panelId,
-      eventType,
-      context ? JSON.stringify(context) : null,
-      Date.now(),
-      workspaceId
-    );
-  }
-
-  /**
-   * Get recent events for analytics.
-   */
-  getRecentEvents(limit = 100): Array<{
-    id: number;
-    panelId: string;
-    eventType: DbPanelEventType;
-    context: Record<string, unknown> | null;
-    timestamp: number;
-  }> {
-    const db = this.ensureOpen();
-    const workspaceId = this.getWorkspaceId();
-
-    const rows = db
-      .prepare(
-        `
-      SELECT id, panel_id, event_type, context, timestamp
-      FROM panel_events
-      WHERE workspace_id = ?
-      ORDER BY timestamp DESC
-      LIMIT ?
-    `
-      )
-      .all(workspaceId, limit) as Array<{
-      id: number;
-      panel_id: string;
-      event_type: DbPanelEventType;
-      context: string | null;
-      timestamp: number;
-    }>;
-
-    return rows.map((row) => ({
-      id: row.id,
-      panelId: row.panel_id,
-      eventType: row.event_type,
-      context: row.context ? (JSON.parse(row.context) as Record<string, unknown>) : null,
-      timestamp: row.timestamp,
-    }));
   }
 
   // =========================================================================

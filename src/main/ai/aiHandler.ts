@@ -19,7 +19,7 @@ import type {
   StreamTextEvent,
 } from "../../shared/types.js";
 import { createAIError } from "../../shared/errors.js";
-import { Logger, generateRequestId } from "../../shared/logging.js";
+import { createDevLogger } from "../devLog.js";
 import { validateToolDefinitions } from "../../shared/validation.js";
 import { MAX_STREAM_DURATION_MS } from "../../shared/constants.js";
 import {
@@ -56,6 +56,10 @@ type AISDKProvider = (modelId: string) => LanguageModel;
 // Utilities
 // =============================================================================
 
+function generateRequestId(): string {
+  return `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+}
+
 function decodeBinary(data: string, context: string): Uint8Array {
   try {
     return new Uint8Array(Buffer.from(data, "base64"));
@@ -90,14 +94,14 @@ function safeJsonParse(jsonString: string, fallback?: unknown): unknown {
 class AIStreamManager {
   private activeStreams = new Map<string, AbortController>();
   private streamTimeouts = new Map<string, NodeJS.Timeout>();
-  private readonly logger = new Logger("AIStreamManager");
+  private readonly logger = createDevLogger("AIStreamManager");
 
   startTracking(streamId: string, abortController: AbortController, requestId: string): void {
     this.activeStreams.set(streamId, abortController);
 
     // Set timeout to prevent runaway streams
     const timeout = setTimeout(() => {
-      this.logger.warn(requestId, "Stream exceeded maximum duration", { streamId });
+      this.logger.warn(`[${requestId}] Stream exceeded maximum duration ${JSON.stringify({ streamId })}`);
       this.cancelStream(streamId);
     }, MAX_STREAM_DURATION_MS);
 
@@ -157,14 +161,11 @@ interface InternalModelInfo {
  */
 class AIProviderRegistry {
   private providers = new Map<string, AIProviderConfig>();
-  private logger = new Logger("AIProviderRegistry");
+  private logger = createDevLogger("AIProviderRegistry");
 
   registerProvider(config: AIProviderConfig, requestId: string): void {
     this.providers.set(config.id, config);
-    this.logger.info(requestId, "Provider registered", {
-      providerId: config.id,
-      modelCount: config.models.length,
-    });
+    this.logger.info(`[${requestId}] Provider registered ${JSON.stringify({ providerId: config.id, modelCount: config.models.length })}`);
   }
 
   getAvailableModels(): InternalModelInfo[] {
@@ -233,7 +234,7 @@ class AIProviderRegistry {
 export class AIHandler {
   private registry = new AIProviderRegistry();
   private streamManager = new AIStreamManager();
-  private logger = new Logger("AIHandler");
+  private logger = createDevLogger("AIHandler");
   private modelRoleResolver: import("./modelRoles.js").ModelRoleResolver | null = null;
   private ccConversationManager: ClaudeCodeConversationManager;
 
@@ -252,7 +253,7 @@ export class AIHandler {
   clearProviders(): void {
     this.registry = new AIProviderRegistry();
     const requestId = generateRequestId();
-    this.logger.info(requestId, "All providers cleared");
+    this.logger.info(`[${requestId}] All providers cleared`);
   }
 
   /**
@@ -262,7 +263,7 @@ export class AIHandler {
    */
   async initialize(): Promise<void> {
     const requestId = generateRequestId();
-    this.logger.info(requestId, "Initializing AI handler");
+    this.logger.info(`[${requestId}] Initializing AI handler`);
 
     // Clear existing providers
     this.clearProviders();
@@ -294,10 +295,10 @@ export class AIHandler {
 
     // Log skipped providers in one line (cleaner than per-provider logging)
     if (skippedProviders.length > 0) {
-      this.logger.debug(requestId, `Providers skipped (no API key): ${skippedProviders.join(", ")}`);
+      this.logger.verbose(`[${requestId}] Providers skipped (no API key): ${skippedProviders.join(", ")}`);
     }
 
-    this.logger.info(requestId, "AI handler initialization complete", { registeredCount });
+    this.logger.info(`[${requestId}] AI handler initialization complete ${JSON.stringify({ registeredCount })}`);
   }
 
   /**
@@ -425,13 +426,7 @@ export class AIHandler {
     streamId: string,
     requestId: string = generateRequestId()
   ): void {
-    this.logger.info(requestId, "[Main AI] stream-text-start for target", {
-      targetId: target.targetId,
-      model: options.model,
-      messageCount: options.messages?.length,
-      toolCount: options.tools?.length,
-      streamId,
-    });
+    this.logger.info(`[${requestId}] [Main AI] stream-text-start for target ${JSON.stringify({ targetId: target.targetId, model: options.model, messageCount: options.messages?.length, toolCount: options.tools?.length, streamId })}`);
 
     const resolvedModelId = this.resolveModelId(options.model);
 
@@ -453,20 +448,13 @@ export class AIHandler {
     const hasTools = options.tools && options.tools.length > 0;
     const maxSteps = options.maxSteps ?? 10;
 
-    this.logger.info(requestId, "streamText started", {
-      targetId: target.targetId,
-      modelId,
-      streamId,
-      hasTools,
-      maxSteps,
-      isClaudeCode,
-    });
+    this.logger.info(`[${requestId}] streamText started ${JSON.stringify({ targetId: target.targetId, modelId, streamId, hasTools, maxSteps, isClaudeCode })}`);
 
     const abortController = new AbortController();
     this.streamManager.startTracking(streamId, abortController, requestId);
 
     const unsubscribe = target.onUnavailable?.(() => {
-      this.logger.info(requestId, "Target unavailable, cancelling streamText", { streamId });
+      this.logger.info(`[${requestId}] Target unavailable, cancelling streamText ${JSON.stringify({ streamId })}`);
       this.streamManager.cleanup(streamId);
     });
 
@@ -494,9 +482,9 @@ export class AIHandler {
       }
 
       target.sendEnd();
-      this.logger.info(requestId, "streamText completed", { streamId });
+      this.logger.info(`[${requestId}] streamText completed ${JSON.stringify({ streamId })}`);
     } catch (error) {
-      this.logger.error(requestId, "streamText error", { streamId }, error as Error);
+      this.logger.error(`[${requestId}] streamText error ${JSON.stringify({ streamId })} ${error instanceof Error ? error.stack : String(error)}`);
       target.sendChunk({
         type: "error",
         error: error instanceof Error ? error.message : String(error),
@@ -898,12 +886,7 @@ export class AIHandler {
 
     conversationRef.id = conversationHandle.conversationId;
 
-    this.logger.info(requestId, "Created streamText Claude Code conversation", {
-      conversationId: conversationRef.id,
-      streamId,
-      targetId: target.targetId,
-      toolCount: validatedTools.length,
-    });
+    this.logger.info(`[${requestId}] Created streamText Claude Code conversation ${JSON.stringify({ conversationId: conversationRef.id, streamId, targetId: target.targetId, toolCount: validatedTools.length })}`);
 
     const totalUsage = { promptTokens: 0, completionTokens: 0 };
 

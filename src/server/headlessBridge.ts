@@ -40,8 +40,7 @@ export async function handleHeadlessBridgeCall(
     // =========================================================================
 
     case "openDevtools":
-    case "forceRepaint":
-      // Silently succeed — these are no-ops without a GUI
+      // Silently succeed — no-op without a GUI
       return;
 
     case "openFolderDialog":
@@ -49,10 +48,6 @@ export async function handleHeadlessBridgeCall(
         "Folder dialogs are not available in headless mode. " +
         "Pass folder paths via stateArgs or CLI arguments."
       );
-
-    case "unloadSelf":
-      // No-op
-      return;
 
     default:
       throw new Error(`Unknown bridge method: ${method}`);

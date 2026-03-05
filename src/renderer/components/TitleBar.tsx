@@ -99,7 +99,7 @@ export function TitleBar({ title, onNavigateToId, onPanelAction, onArchive }: Ti
               variant="ghost"
               size="1"
               onClick={async () => {
-                const result = await panel.createShellPanel("new");
+                const result = await panel.createAboutPanel("new");
                 window.dispatchEvent(new CustomEvent("shell-panel-created", {
                   detail: { panelId: result.id }
                 }));

@@ -62,9 +62,9 @@ export function insertTestPanel(db: Database.Database, options: TestPanelOptions
     `
     INSERT INTO panels (
       id, title, workspace_id, parent_id, position,
-      created_at, updated_at, history, history_index, artifacts
+      created_at, updated_at, history, history_index
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, '{}')
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
   `
   ).run(
     options.id,
@@ -174,7 +174,6 @@ export function createSinglePanelFixture(
   insertTestPanel(db, {
     id,
     source: options?.source ?? "panels/launcher",
-    type: options?.type ?? "app",
     title: options?.title ?? "Test Panel",
     workspaceId: options?.workspaceId ?? "test-workspace",
     parentId: options?.parentId ?? null,
@@ -198,6 +197,5 @@ export function archiveTestPanel(db: Database.Database, id: string): void {
  */
 export function clearAllTestPanels(db: Database.Database): void {
   db.prepare("DELETE FROM panel_search_metadata").run();
-  db.prepare("DELETE FROM panel_events").run();
   db.prepare("DELETE FROM panels").run();
 }

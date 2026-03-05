@@ -13,7 +13,7 @@ import {
   getMcpToolNames,
   type ToolExecuteCallback,
 } from "./claudeCodeToolProxy.js";
-import { Logger } from "../../shared/logging.js";
+import { createDevLogger } from "../devLog.js";
 import { findExecutable } from "./providerFactory.js";
 import { getActiveWorkspace } from "../paths.js";
 
@@ -73,13 +73,13 @@ export class ClaudeCodeConversationManager {
   private conversations = new Map<string, ConversationState>();
   private panelConversations = new Map<string, Set<string>>(); // panelId -> conversationIds
   private claudeExecutable: string | undefined;
-  private logger = new Logger("ClaudeCodeConversationManager");
+  private logger = createDevLogger("ClaudeCodeConversationManager");
   private endListeners = new Set<(conversationId: string, panelId: string) => void>();
 
   constructor() {
     this.claudeExecutable = findExecutable("claude");
     if (!this.claudeExecutable) {
-      this.logger.warn("init", "Claude Code CLI not found in PATH");
+      this.logger.warn("Claude Code CLI not found in PATH");
     }
   }
 
@@ -105,11 +105,7 @@ export class ClaudeCodeConversationManager {
     const { panelId, modelId, tools, executeCallback, settings } = options;
     const conversationId = crypto.randomUUID();
 
-    this.logger.info(conversationId, "Creating conversation", {
-      panelId,
-      modelId,
-      toolCount: tools.length,
-    });
+    this.logger.info(`[${conversationId}] Creating conversation ${JSON.stringify({ panelId, modelId, toolCount: tools.length })}`);
 
     // Create the MCP server that proxies tool calls
     const mcpServer = createToolProxyMcpServer({
@@ -163,9 +159,7 @@ export class ClaudeCodeConversationManager {
     }
     panelConvs.add(conversationId);
 
-    this.logger.info(conversationId, "Conversation created", {
-      mcpToolNames,
-    });
+    this.logger.info(`[${conversationId}] Conversation created ${JSON.stringify({ mcpToolNames })}`);
 
     return {
       conversationId,
@@ -195,14 +189,11 @@ export class ClaudeCodeConversationManager {
   endConversation(conversationId: string): void {
     const state = this.conversations.get(conversationId);
     if (!state) {
-      this.logger.warn(conversationId, "Attempted to end non-existent conversation");
+      this.logger.warn(`[${conversationId}] Attempted to end non-existent conversation`);
       return;
     }
 
-    this.logger.info(conversationId, "Ending conversation", {
-      panelId: state.panelId,
-      durationMs: Date.now() - state.createdAt,
-    });
+    this.logger.info(`[${conversationId}] Ending conversation ${JSON.stringify({ panelId: state.panelId, durationMs: Date.now() - state.createdAt })}`);
 
     // Remove from panel tracking
     const panelConvs = this.panelConversations.get(state.panelId);
@@ -221,7 +212,7 @@ export class ClaudeCodeConversationManager {
       try {
         listener(conversationId, state.panelId);
       } catch (error) {
-        this.logger.warn(conversationId, "Conversation end listener threw", { error });
+        this.logger.warn(`[${conversationId}] Conversation end listener threw ${JSON.stringify({ error })}`);
       }
     }
   }
@@ -235,10 +226,7 @@ export class ClaudeCodeConversationManager {
 
     const ids = Array.from(conversationIds);
 
-    this.logger.info("cleanup", "Ending all conversations for panel", {
-      panelId,
-      count: ids.length,
-    });
+    this.logger.info(`Ending all conversations for panel ${JSON.stringify({ panelId, count: ids.length })}`);
 
     for (const conversationId of ids) {
       this.endConversation(conversationId);

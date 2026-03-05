@@ -61,7 +61,7 @@ export function App() {
   // Listen for navigate-about menu event via shell event
   const handleNavigateAbout = useCallback(async (payload: { page: ShellPage }) => {
     try {
-      const result = await panel.createShellPanel(payload.page);
+      const result = await panel.createAboutPanel(payload.page);
       window.dispatchEvent(new CustomEvent("shell-panel-created", { detail: { panelId: result.id } }));
     } catch (error) {
       console.error(`[App] Failed to create shell panel for ${payload.page}:`, error);

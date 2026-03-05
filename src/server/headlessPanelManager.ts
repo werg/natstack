@@ -20,7 +20,7 @@
  */
 
 import type { ChildCreationResult, CreateChildOptions, RepoArgSpec } from "../shared/types.js";
-import type { PanelHttpServer, PanelLifecycleEvent } from "./panelHttpServer.js";
+import type { PanelHttpServer } from "./panelHttpServer.js";
 import { contextIdToSubdomain } from "./panelHttpServer.js";
 import type { WsServerMessage } from "../shared/ws/protocol.js";
 import { computePanelId } from "../shared/panelIdUtils.js";
@@ -84,8 +84,6 @@ interface CreatePanelDeps {
   pubsubPort: number;
   /** Send a WS event to a connected panel (for reactive updates) */
   sendToClient?: (callerId: string, msg: WsServerMessage) => void;
-  /** Lifecycle event callback (panel created, built, closed, error) */
-  onPanelEvent?: (event: PanelLifecycleEvent) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,10 +109,6 @@ export class HeadlessPanelManager {
     this.currentTheme = theme;
     // Theme changes are picked up via getBootstrapConfig RPC on next load.
     // No per-panel HTTP server state to update.
-  }
-
-  private emitEvent(event: PanelLifecycleEvent): void {
-    this.deps.onPanelEvent?.(event);
   }
 
   // =========================================================================
@@ -268,16 +262,6 @@ export class HeadlessPanelManager {
 
       log.info(`[Panel] Created: ${panelId} (${subdomain}.localhost/${source}, ctx=${contextId})`);
 
-      this.emitEvent({
-        type: "panel:created",
-        panelId,
-        title: panel.title,
-        subdomain,
-        contextId,
-        parentId: null,
-        source,
-      });
-
       // Update build state once HTTP server has the build cached
       // (the HTTP server triggers the build on-demand when a request arrives)
       panel.buildState = "built";
@@ -320,15 +304,6 @@ export class HeadlessPanelManager {
         this.deps.panelHttpServer.clearSubdomainSessions(panel.subdomain);
       }
     }
-
-    this.emitEvent({
-      type: "panel:closed",
-      panelId,
-      title: panel.title,
-      subdomain: panel.subdomain,
-      parentId: panel.parentId,
-      source: panel.source,
-    });
 
     this.panels.delete(panelId);
     log.info(`[Panel] Closed: ${panelId}`);

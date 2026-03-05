@@ -11,7 +11,7 @@
  * new panel bootstraps with contextId = channel contextId.
  */
 
-import { pubsubConfig, id as panelClientId, contextId, focusPanel, useStateArgs, buildPanelLink, forceRepaint } from "@workspace/runtime";
+import { pubsubConfig, id as panelClientId, contextId, focusPanel, useStateArgs, buildPanelLink } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Flex, Theme } from "@radix-ui/themes";
@@ -75,7 +75,6 @@ export default function ChatPanel() {
     onAddAgent: handleAddAgent,
     onFocusPanel: handleFocusPanel,
     onReloadPanel: handleReloadPanel,
-    onBecomeVisible: forceRepaint,
   }), [handleNewConversation, handleAddAgent, handleFocusPanel, handleReloadPanel]);
 
   // Tool provider: only eval tool — all other operations use eval + runtime APIs

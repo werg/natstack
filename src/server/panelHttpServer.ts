@@ -23,14 +23,12 @@
  * **Zero per-panel state**: The HTTP server stores ONLY:
  * - `servingCache` + `buildInFlight` + `buildErrors` (source-keyed)
  * - `sessions` (subdomain-scoped cookie auth)
- * - `sseConnections` (SSE transport)
  * - `sourceRegistry` (static catalog from package graph)
  *
  * All panel-specific data comes via `PanelHttpCallbacks`.
  *
  * Endpoints:
  * - `GET /api/panels`       — JSON list of active panels (Bearer token auth)
- * - `GET /api/events`       — SSE stream of lifecycle events (Bearer token auth)
  * - `?_fresh` on navigation — Force re-bootstrap (missing/stale sessionStorage or cross-source nav)
  * - `GET /__loader.js`      — Config loader script (no auth)
  * - `GET /__transport.js`   — Browser RPC transport (no auth)
@@ -73,18 +71,6 @@ const DEFAULT_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-export interface PanelLifecycleEvent {
-  type: "panel:created" | "panel:built" | "panel:closed" | "panel:build-error";
-  panelId: string;
-  title: string;
-  subdomain: string;
-  contextId?: string;
-  url?: string;
-  error?: string;
-  parentId?: string | null;
-  source?: string;
-}
 
 /**
  * Callback interface for panel-related data.
@@ -229,9 +215,6 @@ export class PanelHttpServer {
 
   /** Cookie-based sessions: sessionId → session data */
   private sessions = new Map<string, SubdomainSession>();
-
-  /** Active SSE connections for /api/events */
-  private sseConnections = new Set<import("http").ServerResponse>();
 
   /** Builds currently in flight (dedup concurrent requests) */
   private buildInFlight = new Map<string, Promise<void>>();
@@ -403,30 +386,7 @@ export class PanelHttpServer {
     }
   }
 
-  // =========================================================================
-  // SSE events
-  // =========================================================================
-
-  /**
-   * Push a lifecycle event to all connected SSE clients.
-   */
-  broadcastEvent(event: PanelLifecycleEvent): void {
-    const data = `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
-    for (const res of this.sseConnections) {
-      try {
-        res.write(data);
-      } catch {
-        this.sseConnections.delete(res);
-      }
-    }
-  }
-
   async stop(): Promise<void> {
-    for (const res of this.sseConnections) {
-      try { res.end(); } catch { /* already closed */ }
-    }
-    this.sseConnections.clear();
-
     if (this.wss) {
       this.wss.close();
       this.wss = null;
@@ -696,9 +656,6 @@ export class PanelHttpServer {
       case "/api/panels":
         this.serveApiPanels(res);
         break;
-      case "/api/events":
-        this.serveApiEvents(req, res);
-        break;
       default:
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Not found" }));
@@ -721,33 +678,6 @@ export class PanelHttpServer {
 
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ panels }));
-  }
-
-  private serveApiEvents(
-    req: import("http").IncomingMessage,
-    res: import("http").ServerResponse,
-  ): void {
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
-    });
-
-    // Send current state as initial snapshot
-    const panels = (this.callbacks?.listPanels() ?? []).map(p => ({
-      panelId: p.panelId,
-      title: p.title,
-      subdomain: p.subdomain,
-      url: `http://${p.subdomain}.localhost:${this.port}/${p.source}/`,
-      source: p.source,
-      parentId: p.parentId,
-    }));
-    res.write(`event: snapshot\ndata: ${JSON.stringify({ panels })}\n\n`);
-
-    this.sseConnections.add(res);
-    req.on("close", () => {
-      this.sseConnections.delete(res);
-    });
   }
 
   // =========================================================================

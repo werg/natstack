@@ -56,8 +56,6 @@ export const {
   onConnectionError,
   getInfo,
   closeSelf,
-  unloadSelf,
-  forceRepaint,
   focusPanel,
   getWorkspaceTree,
   listBranches,

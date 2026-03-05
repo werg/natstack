@@ -363,7 +363,6 @@ async function main() {
       revokeGitToken: (panelId) => handle.gitServer.revokeTokenForPanel(panelId),
       pubsubPort: handle.pubsubPort,
       sendToClient: (callerId, msg) => rpcServer.sendToClient(callerId, msg),
-      onPanelEvent: (event) => panelHttpServer?.broadcastEvent(event),
     });
 
     panelManagerRef = headlessPanelManager;
@@ -429,21 +428,6 @@ async function main() {
       panelHttpServer.setCallbacks({
         onDemandCreate: (source, subdomain) => headlessPanelManager.createPanelOnDemand(source, subdomain),
         listPanels: () => headlessPanelManager.listPanels(),
-        onBuildComplete: (source, error) => {
-          // Per-panel fan-out: notify all panels using this source
-          for (const panel of headlessPanelManager.listPanels()) {
-            if (panel.source === source) {
-              panelHttpServer?.broadcastEvent({
-                type: error ? "panel:build-error" : "panel:built",
-                panelId: panel.panelId,
-                title: panel.title,
-                subdomain: panel.subdomain,
-                source,
-                error,
-              });
-            }
-          }
-        },
         getBuild: (source) => buildSystem.getBuild(source),
       });
 
@@ -548,7 +532,6 @@ async function main() {
     if (panelHttpPort) {
       console.log(`  Panels:    http://127.0.0.1:${panelHttpPort}`);
       console.log(`  Panel API: http://127.0.0.1:${panelHttpPort}/api/panels`);
-      console.log(`  Panel SSE: http://127.0.0.1:${panelHttpPort}/api/events`);
     }
     console.log(`  Admin token: ${adminToken}`);
   }

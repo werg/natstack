@@ -78,8 +78,8 @@ export const panel = {
   initGitRepo: (panelId: string) => rpc.call<void>("main", "panel.initGitRepo", panelId),
   updatePanelState: (panelId: string, state: { url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean }) =>
     rpc.call<void>("main", "panel.updatePanelState", panelId, state),
-  createShellPanel: (page: ShellPage) =>
-    rpc.call<{ id: string; title: string }>("main", "panel.createShellPanel", page),
+  createAboutPanel: (page: ShellPage) =>
+    rpc.call<{ id: string; title: string }>("main", "panel.createAboutPanel", page),
   // Drag-and-drop and tree management
   movePanel: (request: MovePanelRequest) =>
     rpc.call<void>("main", "panel.movePanel", request),

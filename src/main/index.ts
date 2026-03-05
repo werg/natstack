@@ -213,7 +213,6 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
   viewManager = initViewManager({
     window: mainWindow,
     shellPreload: path.join(__dirname, "preload.cjs"),
-    adblockPreload: path.join(__dirname, "adblockPreload.cjs"),
     shellHtmlPath: path.join(__dirname, "index.html"),
     shellAdditionalArguments: [
       `--natstack-ws-port=${wsArgs.rpcPort}`,

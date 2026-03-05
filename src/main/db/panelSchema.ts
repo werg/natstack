@@ -17,11 +17,6 @@ import type Database from "better-sqlite3";
 export const PANEL_SCHEMA_VERSION = 3;
 
 /**
- * Panel event types for audit log.
- */
-export type DbPanelEventType = "created" | "focused";
-
-/**
  * Panel row from the database.
  * Note: artifacts/buildState are NOT persisted - they're runtime-only.
  */
@@ -39,18 +34,6 @@ export interface DbPanelRow {
   /** Current position in history (0-indexed) */
   history_index: number;
   archived_at: number | null; // Timestamp when archived, null = active
-}
-
-/**
- * Panel event row from the database.
- */
-export interface DbPanelEventRow {
-  id: number;
-  panel_id: string;
-  event_type: DbPanelEventType;
-  context: string | null; // JSON
-  timestamp: number;
-  workspace_id: string;
 }
 
 /**
@@ -99,19 +82,6 @@ CREATE TABLE IF NOT EXISTS panels (
 
 CREATE INDEX IF NOT EXISTS idx_panels_parent ON panels(parent_id);
 CREATE INDEX IF NOT EXISTS idx_panels_workspace ON panels(workspace_id);
-
--- Audit log for panel events (optional)
-CREATE TABLE IF NOT EXISTS panel_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    panel_id TEXT NOT NULL,
-    event_type TEXT NOT NULL CHECK (event_type IN ('created', 'focused')),
-    context TEXT,
-    timestamp INTEGER NOT NULL,
-    workspace_id TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_events_panel ON panel_events(panel_id, timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_events_workspace ON panel_events(workspace_id, timestamp DESC);
 
 -- Search metadata for full-text search
 CREATE TABLE IF NOT EXISTS panel_search_metadata (

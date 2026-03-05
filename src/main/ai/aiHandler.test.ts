@@ -24,14 +24,13 @@ vi.mock("../../shared/errors.js", () => ({
   }),
 }));
 
-vi.mock("../../shared/logging.js", () => ({
-  Logger: vi.fn().mockImplementation(() => ({
+vi.mock("../devLog.js", () => ({
+  createDevLogger: vi.fn().mockReturnValue({
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    debug: vi.fn(),
-  })),
-  generateRequestId: vi.fn().mockReturnValue("req_test_123"),
+    verbose: vi.fn(),
+  }),
 }));
 
 vi.mock("../../shared/validation.js", () => ({
