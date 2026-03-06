@@ -177,22 +177,6 @@ export type AgentConnectOptions = Omit<
   "serverUrl" | "token" | "channel" | "handle"
 >;
 
-/**
- * @deprecated Use `this.ctx` instead. initInfo is kept for backward compatibility
- * but ctx now provides the same information consistently.
- */
-export interface AgentInitInfo {
-  /** Agent type ID (from manifest) */
-  agentId: string;
-  /** Channel this agent is bound to */
-  channel: string;
-  /** Agent handle in the channel */
-  handle: string;
-  /** Agent configuration passed at spawn */
-  config: Record<string, unknown>;
-  /** Absolute path to the per-context folder on the server filesystem */
-  contextFolderPath: string;
-}
 
 /**
  * Internal interface for runtime-injected agent properties.
@@ -206,8 +190,6 @@ export interface AgentRuntimeInjection<S extends AgentState, M extends AgenticPa
   setState: (partial: Partial<S>) => void;
   /** Injected by runtime - unified agent context */
   ctx: AgentContext<M>;
-  /** Injected by runtime - deprecated init info */
-  initInfo: AgentInitInfo;
   /** Optional migration function for state upgrades */
   migrateState?: (oldState: AgentState, oldVersion: number) => S;
   /** Optional initialization hook */
@@ -299,13 +281,6 @@ export abstract class Agent<
    * @default 1
    */
   readonly stateVersion: number = 1;
-
-  /**
-   * @deprecated Use `this.ctx` directly - it's now available from getConnectOptions() onward.
-   * Kept for backward compatibility. Both initInfo and ctx.{agentId,channel,handle,config}
-   * will have the same values.
-   */
-  protected initInfo!: AgentInitInfo;
 
   /**
    * Unified agent context - available from getConnectOptions() onward.

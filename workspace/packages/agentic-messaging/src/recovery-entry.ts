@@ -13,7 +13,6 @@ export {
   readSdkTranscript,
   findCommonAncestor,
   computeSyncDeltas,
-  findMissingMessages,
   extractMessageText,
   prepareRecoveredMessages,
   formatContextForSdk,

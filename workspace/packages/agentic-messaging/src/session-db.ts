@@ -202,54 +202,24 @@ export class SessionDb {
       );
     `);
 
-    // Get current schema version (0 if not set)
-    const versionRow = await this.db.get<{ version: number }>(
-      "SELECT version FROM schema_version WHERE id = 1"
-    );
-    const currentVersion = versionRow?.version ?? 0;
-
-    // Version 1: Initial schema with sessions table
-    if (currentVersion < 1) {
-      await this.db.exec(`
-        CREATE TABLE IF NOT EXISTS agentic_sessions (
-          session_key TEXT PRIMARY KEY,
-          context_id TEXT NOT NULL,
-          channel TEXT NOT NULL,
-          handle TEXT NOT NULL,
-          checkpoint_pubsub_id INTEGER,
-          sdk_session_id TEXT,
-          status TEXT NOT NULL,
-          settings TEXT,
-          created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_agentic_sessions_context
-          ON agentic_sessions(context_id, channel, handle);
-      `);
-    }
-
-    // Version 2: Remove legacy agentic_history table (no longer used)
-    // The history is now derived from pubsub replay instead of being stored separately.
-    if (currentVersion < 2) {
-      // Check if the table exists before logging about removal
-      const tableExists = await this.db.get<{ name: string }>(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='agentic_history'"
+    await this.db.exec(`
+      CREATE TABLE IF NOT EXISTS agentic_sessions (
+        session_key TEXT PRIMARY KEY,
+        context_id TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        handle TEXT NOT NULL,
+        checkpoint_pubsub_id INTEGER,
+        sdk_session_id TEXT,
+        status TEXT NOT NULL,
+        settings TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
       );
-      if (tableExists) {
-        console.info("[SessionDb] Migrating schema v1 → v2: removing legacy agentic_history table");
-      }
-      await this.db.exec(`DROP TABLE IF EXISTS agentic_history;`);
-      await this.db.exec(`DROP INDEX IF EXISTS idx_agentic_history_session;`);
-    }
 
-    // Update schema version to latest
-    const latestVersion = 2;
-    if (currentVersion < latestVersion) {
-      await this.db.run(
-        "INSERT OR REPLACE INTO schema_version (id, version) VALUES (1, ?)",
-        [latestVersion]
-      );
-    }
+      CREATE INDEX IF NOT EXISTS idx_agentic_sessions_context
+        ON agentic_sessions(context_id, channel, handle);
+
+      INSERT OR REPLACE INTO schema_version (id, version) VALUES (1, 2);
+    `);
   }
 }

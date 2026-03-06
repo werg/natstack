@@ -1,42 +1,10 @@
 /**
  * Shared utilities for AI responder workers.
  *
- * Protocol-level types, content constants, tracker factories, and action descriptions
- * have moved to @workspace/agentic-protocol. This file retains responder-specific
- * utilities: logging, formatting, and message targeting.
+ * Provides logging, formatting, and message targeting helpers.
  */
 
-import type { IncomingNewMessage } from "./types.js";
-
-// Re-export everything that moved to protocol for backward compatibility
-export {
-  // Content type constants
-  CONTENT_TYPE_THINKING,
-  CONTENT_TYPE_ACTION,
-  CONTENT_TYPE_INLINE_UI,
-  CONTENT_TYPE_TYPING,
-  // Tracker types
-  type ChatParticipantMetadata,
-  type InlineUiData,
-  type ActionData,
-  type TrackerClient,
-  type TypingData,
-  type ThinkingTrackerState,
-  type ThinkingTrackerOptions,
-  type ThinkingTracker,
-  type ActionTrackerState,
-  type ActionTrackerOptions,
-  type ActionTracker,
-  type TypingTrackerState,
-  type TypingTrackerOptions,
-  type TypingTracker,
-  // Tracker factories
-  createThinkingTracker,
-  createActionTracker,
-  createTypingTracker,
-  // Action descriptions
-  getDetailedActionDescription,
-} from "@workspace/agentic-protocol";
+import type { IncomingNewMessage } from "@workspace/agentic-protocol/types";
 
 /**
  * Create a prefixed logger function for responder workers.

@@ -39,8 +39,8 @@ import type {
   JsonSchema,
   MissedContext,
   FormatOptions,
-} from "./types.js";
-import { AgenticError, ValidationError } from "./types.js";
+} from "@workspace/agentic-protocol/types";
+import { AgenticError, ValidationError } from "@workspace/agentic-protocol/types";
 import { aggregateReplayEvents, formatMissedContext } from "./missed-context.js";
 // SessionDb is lazily imported to reduce bundle size when session persistence is not used
 import type { SessionDb, SessionRow } from "./session-db.js";

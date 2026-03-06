@@ -1,16 +1,14 @@
 /**
  * TODO List UI utilities for inline_ui rendering.
  *
- * TodoItem, getTodoListCode, and getCachedTodoListCode have moved to
- * @workspace/agentic-protocol. This file retains the implementation
- * utilities that depend on TrackerClient.
+ * Types and code generation are in @workspace/agentic-protocol.
+ * This file provides TrackerClient-dependent utilities.
  */
 
 import { CONTENT_TYPE_INLINE_UI } from "@workspace/agentic-protocol/content-types";
 import { type InlineUiData, type TrackerClient } from "@workspace/agentic-protocol/tracker-types";
 import { type TodoItem, getCachedTodoListCode } from "@workspace/agentic-protocol/todo-types";
 
-// Re-export protocol types for backward compatibility
 export { type TodoItem, getTodoListCode, getCachedTodoListCode } from "@workspace/agentic-protocol/todo-types";
 
 /**

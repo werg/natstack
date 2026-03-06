@@ -190,7 +190,7 @@ export class ModelRoleResolver {
   }
 
   /**
-   * Resolve a standard role to a model ID string (for backwards compatibility).
+   * Resolve a standard role to a model ID string.
    * Returns null if no model is available for this role (even after fallbacks).
    */
   resolve(role: StandardModelRole): string | null {
@@ -222,8 +222,7 @@ export class ModelRoleResolver {
       };
     }
 
-    // Fallback: assume it's a model name without provider prefix
-    // Default to anthropic for backwards compatibility
+    // Fallback: assume it's a model name without provider prefix — default to anthropic
     console.warn(
       `[ModelRoles] Model ID without provider prefix: ${roleOrId}, defaulting to anthropic`
     );
@@ -235,7 +234,7 @@ export class ModelRoleResolver {
   }
 
   /**
-   * Get a model ID by role or direct model ID (for backwards compatibility).
+   * Get a model ID by role or direct model ID.
    *
    * If the input is a standard role name, resolves it to a model ID.
    * Otherwise, returns the input as-is (assuming it's a direct model ID).

@@ -11,7 +11,7 @@
 
 import { getAgentIpcChannel } from "../ipc-channel.js";
 import { createIpcTransport } from "../ipc-transport.js";
-import { isParentPortEnvelope, type ParentPortEnvelope } from "../transport.js";
+import { isParentPortEnvelope, type ParentPortEnvelope } from "@natstack/rpc";
 import type { RpcMessage } from "@natstack/rpc";
 
 const SELF_ID = "agent:test-fork:handle";

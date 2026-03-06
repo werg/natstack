@@ -80,8 +80,6 @@ function createAgentLogger(
       console.error(prefix, ...args);
       const { message, stack } = formatMessage(args);
       sendToHost({ type: "log", level: "error", message, stack });
-      // Also send legacy error message for backward compatibility during spawn
-      sendToHost({ type: "error", error: message, stack });
     },
   };
 }
@@ -251,15 +249,6 @@ export async function runAgent<S extends AgentState>(
 
   // Inject ctx first (unified context model) via the internal interface
   agentInternal.ctx = ctx;
-
-  // Also inject initInfo for backward compatibility (deprecated, same values as ctx)
-  agentInternal.initInfo = {
-    agentId,
-    channel,
-    handle,
-    config: agentConfig,
-    contextFolderPath,
-  };
 
   // Step 6: Connect to pubsub (NOW getConnectOptions can use lastCheckpoint AND ctx)
   log.debug(`Connecting to pubsub at ${pubsubUrl}...`);

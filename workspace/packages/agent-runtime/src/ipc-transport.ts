@@ -7,7 +7,7 @@
  */
 
 import type { RpcTransport, RpcMessage } from "@natstack/rpc";
-import { isParentPortEnvelope, type ParentPortEnvelope } from "./transport.js";
+import { isParentPortEnvelope, type ParentPortEnvelope } from "@natstack/rpc";
 import type { AgentIpcChannel } from "./ipc-channel.js";
 
 /**

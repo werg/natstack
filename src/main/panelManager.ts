@@ -87,7 +87,6 @@ export class PanelManager {
   private currentTheme: "light" | "dark" = nativeTheme.shouldUseDarkColors ? "dark" : "light";
   private panelsRoot: string;
   private serverInfo: ServerInfo;
-  // pendingBrowserNavigations removed — navigation is URL-based
   private rpcServer: import("../server/rpcServer.js").RpcServer | null = null;
   private rpcPort: number | null = null;
   private panelHttpServer: PanelHttpServer | null = null;
@@ -348,7 +347,6 @@ export class PanelManager {
 
     // Clear accumulated maps to prevent memory leaks
     this.crashHistory.clear();
-    // pendingBrowserNavigations removed — navigation is URL-based
     this.browserStateCleanup.clear();
     this.linkInterceptionHandlers.clear();
     this.contentLoadHandlers.clear();
@@ -1509,7 +1507,7 @@ export class PanelManager {
 
   /**
    * Find a shell panel by its page type.
-   * Note: Returns the unified Panel type, not the legacy ShellPanel.
+   * Note: Returns the unified Panel type.
    */
   findShellPanel(page: SharedPanel.ShellPage): Panel | null {
     const panelId = `about/${page}`;
@@ -2028,9 +2026,6 @@ export class PanelManager {
 
     // Unregister panel→context mapping (permanent removal only)
     this.fsService?.unregisterPanelContext(panel.id);
-
-    // Clean up other ID-keyed structures not covered by unloadPanelResources
-    // pendingBrowserNavigations removed — navigation is URL-based
 
     // Remove from panels map
     this.panels.delete(panel.id);

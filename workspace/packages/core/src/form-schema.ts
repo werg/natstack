@@ -1,8 +1,7 @@
 /**
  * Form Schema - Data-driven UI definition system
  *
- * Types are canonical in @natstack/types. Re-exported here for backward compat.
- * Runtime functions (evaluateCondition, isFieldVisible, etc.) live here.
+ * Types are defined in @natstack/types. Runtime functions live here.
  */
 
 import type { FieldCondition, FieldValue, FieldDefinition, FieldWarning, PrimitiveFieldValue } from "@natstack/types";

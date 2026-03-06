@@ -5,12 +5,10 @@
  * Provides common patterns for permission prompts via feedback_form.
  */
 
-import type { AgenticClient } from "./types.js";
-import type { ChatParticipantMetadata } from "./responder-utils.js";
-import {
-  hasRichPreview,
-} from "./tool-schemas.js";
-import { normalizeToolName, getCanonicalToolName } from "./tool-name-utils.js";
+import type { AgenticClient } from "@workspace/agentic-protocol/types";
+import type { ChatParticipantMetadata } from "@workspace/agentic-protocol/tracker-types";
+import { hasRichPreview } from "@workspace/agentic-protocol/tool-schemas";
+import { normalizeToolName, getCanonicalToolName } from "@workspace/agentic-protocol/tool-name-utils";
 import type { FieldDefinition } from "@natstack/types";
 
 // ============================================================================

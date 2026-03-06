@@ -5,7 +5,7 @@
  */
 
 import { Card, Flex, Text } from "@radix-ui/themes";
-import { ParameterEditor } from "@workspace/react";
+import { FormRenderer } from "@workspace/react";
 import type { FieldValue } from "@natstack/types";
 import { SESSION_PARAMETERS } from "@workspace/agentic-messaging/config";
 import type { SessionConfig } from "../hooks/useAgentSelection";
@@ -28,8 +28,9 @@ export function SessionSettings({ config, onChange }: SessionSettingsProps) {
           </Text>
         </Flex>
 
-        <ParameterEditor
-          parameters={SESSION_PARAMETERS}
+        <FormRenderer
+          showDescriptions
+          schema={SESSION_PARAMETERS}
           values={config as unknown as Record<string, FieldValue>}
           onChange={(key, value) => onChange({ ...config, [key]: value } as SessionConfig)}
           size="1"

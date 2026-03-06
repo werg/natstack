@@ -5,7 +5,7 @@
  * Used by responder workers to support user interruption.
  */
 
-import type { AgenticClient, AgenticParticipantMetadata, EventStreamItem } from "./types.js";
+import type { AgenticClient, AgenticParticipantMetadata, EventStreamItem } from "@workspace/agentic-protocol/types";
 
 export interface InterruptHandlerOptions<T extends AgenticParticipantMetadata = AgenticParticipantMetadata> {
   client: AgenticClient<T>;

@@ -15,7 +15,7 @@ import path from "path";
 import {
   isParentPortEnvelope,
   type ParentPortEnvelope,
-} from "../transport.js";
+} from "@natstack/rpc";
 import type { RpcMessage } from "@natstack/rpc";
 
 const AGENT_SELF_ID = "agent:test-fork:handle";

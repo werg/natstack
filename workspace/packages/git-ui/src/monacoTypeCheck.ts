@@ -176,8 +176,8 @@ export async function configureMonacoTypeCheck(config: MonacoTypeCheckConfig = {
     "file:///node_modules/@types/node/path.d.ts"
   );
 
-  // TODO: Add @workspace/runtime types from real package (currently broken)
-  // The virtual NATSTACK_RUNTIME_TYPES was removed - need to load real .d.ts files
+  // @workspace/runtime types are not yet available in the Monaco editor.
+  // Real .d.ts files need to be loaded from the built package.
 
   // Add global NatStack types
   typescriptDefaults.addExtraLib(

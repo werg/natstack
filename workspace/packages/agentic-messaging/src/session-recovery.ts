@@ -306,31 +306,6 @@ function isSdkSubagentMessage(msg: SdkTranscriptMessage): boolean {
   return !!msg.parent_tool_use_id;
 }
 
-/**
- * Identifies messages in the SDK transcript that are not in pubsub history.
- *
- * Uses the sdkUuid stored in pubsub message metadata to correlate messages.
- *
- * @param sdkMessages - Messages from the SDK transcript
- * @param pubsubMessages - Messages from pubsub with metadata
- * @returns SDK messages that are missing from pubsub
- * @deprecated Use computeSyncDeltas for bidirectional sync
- */
-export function findMissingMessages(
-  sdkMessages: SdkTranscriptMessage[],
-  pubsubMessages: PubsubMessageWithMetadata[]
-): SdkTranscriptMessage[] {
-  // Build a set of SDK UUIDs that are already in pubsub
-  const knownSdkUuids = new Set<string>();
-  for (const msg of pubsubMessages) {
-    if (msg.metadata?.sdkUuid) {
-      knownSdkUuids.add(msg.metadata.sdkUuid);
-    }
-  }
-
-  // Find SDK messages not in pubsub
-  return sdkMessages.filter((msg) => !knownSdkUuids.has(msg.uuid));
-}
 
 /**
  * Extracts the text content from an SDK transcript message.

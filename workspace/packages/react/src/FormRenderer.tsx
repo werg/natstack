@@ -34,7 +34,32 @@ import {
   getFieldWarning,
   groupFields,
 } from "@workspace/core";
-import { formatSliderValue } from "./ParameterEditor.js";
+/**
+ * Format slider value for display based on field definition hints.
+ * Supports notched sliders, temperature-like decimals, and token counts.
+ */
+export function formatSliderValue(value: number, field: FieldDefinition): string {
+  // If we have notches, find the matching notch label
+  if (field.notches) {
+    const notch = field.notches.find((n) => n.value === value);
+    if (notch) return notch.label;
+  }
+
+  // Temperature-like slider (decimal step)
+  if (field.step !== undefined && field.step < 1) {
+    return value.toFixed(1);
+  }
+
+  // Token counts or large numbers
+  if (field.max !== undefined && field.max >= 1000) {
+    if (value === 0 && field.sliderLabels?.min === "Off") {
+      return "Disabled";
+    }
+    return `${value.toLocaleString()} tokens`;
+  }
+
+  return String(value);
+}
 
 /**
  * Get the icon for a warning severity

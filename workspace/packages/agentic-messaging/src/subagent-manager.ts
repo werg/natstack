@@ -19,7 +19,7 @@ import {
   type SubagentConnectionConfig,
   type SDKStreamEvent,
 } from "./subagent-connection.js";
-import type { AgenticClient } from "./types.js";
+import type { AgenticClient } from "@workspace/agentic-protocol/types";
 
 /** Default timeout for subagents (10 minutes) */
 const DEFAULT_SUBAGENT_TIMEOUT_MS = 10 * 60 * 1000;

@@ -29,11 +29,6 @@ export function _initFsWithRpc(rpc: RpcBridge): void {
 }
 
 /**
- * Promise that resolves when fs is ready (RPC connected).
- */
-export const fsReady: Promise<void> = _ready;
-
-/**
  * Proxy-based fs that waits for RPC initialization on each call.
  * Ensures the correct implementation is used regardless of import timing.
  */

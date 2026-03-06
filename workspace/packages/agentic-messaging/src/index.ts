@@ -1,5 +1,5 @@
 // Core types and protocol
-export * from "./types.js";
+export * from "@workspace/agentic-protocol/types";
 export * from "./protocol.js";
 export { connect, createToolsForAgentSDK, type AgentSDKToolDefinition } from "./client.js";
 
@@ -18,17 +18,21 @@ export {
   type QueuedMessageBase,
   type QueuePositionTextOptions,
 } from "./message-queue.js";
-export type { AgenticClient } from "./types.js";
+export type { AgenticClient } from "@workspace/agentic-protocol/types";
 
 // JSON Schema utilities
 export { jsonSchemaToZod, jsonSchemaToZodRawShape, isRecord } from "./json-schema-to-zod.js";
 
-// Responder utilities
+// Responder utilities (logging, formatting, message targeting)
 export {
-  type ChatParticipantMetadata,
   createLogger,
   formatArgsForLog,
   isMessageTargetedAt,
+} from "./responder-utils.js";
+
+// Protocol types and tracker factories (canonical source: @workspace/agentic-protocol)
+export {
+  type ChatParticipantMetadata,
   // Thinking/reasoning message tracker
   CONTENT_TYPE_THINKING,
   createThinkingTracker,
@@ -55,14 +59,14 @@ export {
   type InlineUiData,
   // Shared tracker client interface
   type TrackerClient,
-} from "./responder-utils.js";
+} from "@workspace/agentic-protocol";
 
 // Context window usage data types (implementation in @workspace/agent-patterns)
 export type {
   ContextWindowUsage,
   TokenUsage,
   NormalizedUsage,
-} from "./context-tracker.js";
+} from "@workspace/agentic-protocol/context-tracker";
 
 // Execution pause/resume utilities
 export {
@@ -84,11 +88,11 @@ export {
 } from "./missed-context.js";
 
 // Tool approval utilities
-export { needsApprovalForTool, isReadOnlyTool, APPROVAL_LEVELS } from "./tool-approval.js";
-export type { ApprovalLevel } from "./tool-approval.js";
+export { needsApprovalForTool, isReadOnlyTool, APPROVAL_LEVELS } from "@workspace/agentic-protocol/tool-approval";
+export type { ApprovalLevel } from "@workspace/agentic-protocol/tool-approval";
 
 // Tool schemas for pubsub RPC tools
-export * from "./tool-schemas.js";
+export * from "@workspace/agentic-protocol/tool-schemas";
 
 // Image processing utilities
 export {
@@ -139,8 +143,7 @@ export {
   type SubagentConfig,
 } from "./subagent-manager.js";
 
-
-// Feedback UI types (formerly in broker-protocol.ts)
+// Feedback UI types
 export {
   FeedbackFormArgs,
   FeedbackFormArgsSchema,
@@ -166,4 +169,3 @@ export {
 
 // For agent configs, use: import { ... } from "@workspace/agentic-messaging/config"
 // For session persistence, use: import { ... } from "@workspace/agentic-messaging/session"
-

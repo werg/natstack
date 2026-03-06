@@ -22,7 +22,7 @@ import {
   ScrollArea,
 } from "@radix-ui/themes";
 import { rpc } from "@workspace/runtime";
-import { usePanelTheme, ParameterEditor } from "@workspace/react";
+import { usePanelTheme, FormRenderer } from "@workspace/react";
 import { filterPerAgentParameters } from "@workspace/agentic-messaging/config";
 import { AgentSelector } from "@workspace/agentic-components";
 import type { AgentInfo } from "@workspace/agentic-components";
@@ -258,8 +258,9 @@ function AgentsConfigPage() {
                         <Text size="2" weight="medium" color="gray">
                           Default Parameters
                         </Text>
-                        <ParameterEditor
-                          parameters={filterPerAgentParameters(agent.parameters)}
+                        <FormRenderer
+                          showDescriptions
+                          schema={filterPerAgentParameters(agent.parameters)}
                           values={settings as Record<string, FieldValue>}
                           onChange={(key: string, value: FieldValue) =>
                             updateAgentSetting(agent.id, key, value)

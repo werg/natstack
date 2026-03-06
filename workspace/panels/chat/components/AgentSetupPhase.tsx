@@ -11,7 +11,7 @@ import {
   TextField,
 } from "@radix-ui/themes";
 import { InfoCircledIcon, ChevronDownIcon, ChevronRightIcon } from "@radix-ui/react-icons";
-import { ParameterEditor } from "@workspace/react";
+import { FormRenderer } from "@workspace/react";
 import type { FieldValue } from "@natstack/types";
 import type {
   AgentSelectionWithRequirements,
@@ -214,8 +214,9 @@ function AgentCard({ agent, isMultiAgent, onToggle, onUpdateConfig }: AgentCardP
               <>
                 {/* Non-autonomy params shown directly if any */}
                 {hasNonAutonomyParams && (
-                  <ParameterEditor
-                    parameters={perAgentParams.filter((p) => p.key !== "autonomyLevel")}
+                  <FormRenderer
+                    showDescriptions
+                    schema={perAgentParams.filter((p) => p.key !== "autonomyLevel")}
                     values={agent.config}
                     onChange={onUpdateConfig}
                     size="1"
@@ -242,8 +243,9 @@ function AgentCard({ agent, isMultiAgent, onToggle, onUpdateConfig }: AgentCardP
                 </Flex>
                 {showAdvanced && (
                   <Flex pl="4">
-                    <ParameterEditor
-                      parameters={perAgentParams.filter((p) => p.key === "autonomyLevel")}
+                    <FormRenderer
+                    showDescriptions
+                      schema={perAgentParams.filter((p) => p.key === "autonomyLevel")}
                       values={agent.config}
                       onChange={onUpdateConfig}
                       size="1"
@@ -256,8 +258,9 @@ function AgentCard({ agent, isMultiAgent, onToggle, onUpdateConfig }: AgentCardP
               </>
             ) : (
               /* Single agent mode or no autonomy param - show all params directly */
-              <ParameterEditor
-                parameters={perAgentParams}
+              <FormRenderer
+                    showDescriptions
+                schema={perAgentParams}
                 values={agent.config}
                 onChange={onUpdateConfig}
                 size="1"

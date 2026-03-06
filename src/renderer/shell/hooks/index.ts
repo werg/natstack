@@ -27,7 +27,6 @@ export {
 // Drag-and-drop context for panel tree
 export {
   PanelDndProvider,
-  usePanelDnd,
   usePanelDndTree,
   usePanelDndDrag,
   INDENTATION_WIDTH,

@@ -377,21 +377,23 @@ export class AgentHost extends EventEmitter {
         log.verbose(`[spawn] Agent ${agentId} sent ready signal`);
         agentReady = true;
         readyResolve();
-      } else if (msg.type === "error") {
-        const errorMsg = (msg["error"] as string) || "Agent initialization error";
-        // Log at both verbose and error level so it's visible without verbose mode
-        log.verbose(`[spawn] Agent ${agentId} sent error: ${errorMsg}`);
-        console.error(`[AgentHost] Agent ${agentId} initialization error: ${errorMsg}`);
-        if (msg["stack"]) {
-          log.verbose(`[spawn] Stack: ${msg["stack"]}`);
-          console.error(`[AgentHost] Stack:\n${msg["stack"]}`);
-        }
-        readyReject(new Error(errorMsg));
       } else if (msg.type === "log") {
         // Forward structured log messages to pubsub channel
         const level = (msg["level"] as "debug" | "info" | "warn" | "error") || "info";
         const message = (msg["message"] as string) || "";
         const stack = msg["stack"] as string | undefined;
+
+        // During initialization, error-level logs abort the spawn
+        if (!agentReady && level === "error") {
+          log.verbose(`[spawn] Agent ${agentId} sent error: ${message}`);
+          console.error(`[AgentHost] Agent ${agentId} initialization error: ${message}`);
+          if (stack) {
+            log.verbose(`[spawn] Stack: ${stack}`);
+            console.error(`[AgentHost] Stack:\n${stack}`);
+          }
+          readyReject(new Error(message));
+        }
+
         this.emit("agentLog", {
           channel: options.channel,
           handle: options.handle,

@@ -130,7 +130,7 @@ export interface RpcBridgeInternal extends RpcBridge {
 }
 
 // =============================================================================
-// IPC Envelope Types (absorbed from @workspace/agent-runtime/transport)
+// IPC Envelope Types
 // =============================================================================
 
 /**

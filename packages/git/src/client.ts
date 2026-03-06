@@ -1652,19 +1652,6 @@ export class GitClient {
     };
   }
 
-  // ===========================================================================
-  // Public API (backwards compatible)
-  // ===========================================================================
-
-  /**
-   * Get file content at a specific ref (for diff "old" side)
-   * @deprecated Use readFromRef internally; kept for backwards compatibility
-   */
-  async show(dir: string, filepath: string, ref: string = "HEAD"): Promise<string> {
-    const result = await this.readFromRef(dir, filepath, ref);
-    return result.content;
-  }
-
   /**
    * Get diff for a file (unstaged changes - working tree vs index/HEAD)
    */

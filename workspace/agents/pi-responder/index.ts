@@ -157,7 +157,7 @@ class PiResponderAgent extends Agent<PiAgentState, ChatParticipantMetadata> {
 
   /**
    * Context folder path used as cwd for Pi.
-   * Set from initInfo.contextFolderPath in onWake (fail fast if missing).
+   * Set from ctx.contextFolderPath in onWake (fail fast if missing).
    */
   private contextFolderPath!: string;
 
@@ -319,9 +319,9 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     await this.settingsMgr.load();
 
     // Fail fast if contextFolderPath is not available
-    const contextFolderPath = this.initInfo.contextFolderPath;
+    const contextFolderPath = this.ctx.contextFolderPath;
     if (!contextFolderPath) {
-      throw new Error("contextFolderPath is required but was not provided in initInfo");
+      throw new Error("contextFolderPath is required but was not provided");
     }
     this.contextFolderPath = contextFolderPath;
     this.log.info(`Context folder path: ${this.contextFolderPath}`);

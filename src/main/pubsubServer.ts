@@ -563,19 +563,6 @@ class SqliteMessageStore extends BaseMessageStore {
     `
     );
 
-    // Migration: add sender_metadata column if it doesn't exist (for existing databases)
-    try {
-      dbManager.exec(this.dbHandle, `ALTER TABLE messages ADD COLUMN sender_metadata TEXT`);
-    } catch {
-      // Column already exists, ignore
-    }
-
-    // Migration: add config column to channels if it doesn't exist
-    try {
-      dbManager.exec(this.dbHandle, `ALTER TABLE channels ADD COLUMN config TEXT`);
-    } catch {
-      // Column already exists, ignore
-    }
   }
 
   createChannel(channel: string, contextId: string, createdBy: string, config?: ChannelConfig): void {

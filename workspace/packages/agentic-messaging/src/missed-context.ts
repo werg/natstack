@@ -1,8 +1,8 @@
 /**
  * Missed context utilities.
  *
- * formatMissedContext and related formatting has moved to @workspace/agentic-protocol.
- * This file retains aggregateReplayEvents (implementation-scope event aggregation).
+ * Formatting is in @workspace/agentic-protocol. This file provides
+ * aggregateReplayEvents for event aggregation during replay.
  */
 
 import type {
@@ -15,7 +15,7 @@ import type {
   IncomingMethodCallEvent,
   IncomingMethodResultEvent,
   IncomingUpdateMessage,
-} from "./types.js";
+} from "@workspace/agentic-protocol/types";
 
 // Re-export formatting utilities from protocol
 export {

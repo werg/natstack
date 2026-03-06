@@ -6,7 +6,7 @@ if (typeof globalThis.Buffer === "undefined") {
 }
 
 import { createPanelTransport, createServerTransport } from "./transport.js";
-import { fs, fsReady } from "./fs.js"; // RPC-backed fs (server-side per-context folders)
+import { fs } from "./fs.js"; // RPC-backed fs (server-side per-context folders)
 import { initRuntime } from "../setup/initRuntime.js";
 export type { ThemeAppearance, RuntimeFs, FileStats, MkdirOptions, RmOptions } from "../types.js";
 
@@ -67,7 +67,7 @@ export const {
 
 export { runtimeParentId as parentId };
 
-export { fs, fsReady, gitConfig, pubsubConfig, env, aiClient as ai };
+export { fs, gitConfig, pubsubConfig, env, aiClient as ai };
 
 // Path utilities for cross-platform path handling
 export { normalizePath, getFileName, resolvePath } from "../shared/pathUtils.js";

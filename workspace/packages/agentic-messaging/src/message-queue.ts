@@ -7,7 +7,7 @@
  */
 
 import { AsyncQueue } from "./async-queue.js";
-import type { TypingTracker } from "./responder-utils.js";
+import type { TypingTracker } from "@workspace/agentic-protocol";
 
 /**
  * Base interface for queued messages.

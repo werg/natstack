@@ -94,9 +94,6 @@ interface PanelDndDragContextValue {
   showIndicatorBelow: boolean;
 }
 
-/** Combined type for backward-compatible usePanelDnd() hook */
-type PanelDndContextValue = PanelDndTreeContextValue & PanelDndDragContextValue;
-
 const PanelDndTreeCtx = createContext<PanelDndTreeContextValue | null>(null);
 const PanelDndDragCtx = createContext<PanelDndDragContextValue | null>(null);
 
@@ -122,16 +119,6 @@ export function usePanelDndDrag(): PanelDndDragContextValue {
     throw new Error("usePanelDndDrag must be used within a PanelDndProvider");
   }
   return context;
-}
-
-/**
- * Backward-compatible hook that merges both contexts.
- * Prefer usePanelDndTree() / usePanelDndDrag() for selective re-renders.
- */
-export function usePanelDnd(): PanelDndContextValue {
-  const tree = usePanelDndTree();
-  const drag = usePanelDndDrag();
-  return useMemo(() => ({ ...tree, ...drag }), [tree, drag]);
 }
 
 // ============================================================================

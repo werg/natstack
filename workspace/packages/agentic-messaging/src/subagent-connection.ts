@@ -8,13 +8,13 @@
  */
 
 import { connect } from "./client.js";
-import type { AgenticClient, AgenticParticipantMetadata } from "./types.js";
+import type { AgenticClient, AgenticParticipantMetadata } from "@workspace/agentic-protocol/types";
 import {
   createThinkingTracker,
   createActionTracker,
   getDetailedActionDescription,
   type TrackerClient,
-} from "./responder-utils.js";
+} from "@workspace/agentic-protocol";
 
 /**
  * Configuration for creating a subagent connection.

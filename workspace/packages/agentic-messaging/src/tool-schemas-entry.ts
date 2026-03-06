@@ -6,4 +6,4 @@
  * Contains all Zod tool schemas, type mappings, prettifyToolName, and related utilities.
  * Use this subpath instead of the main barrel when only tool schema definitions are needed.
  */
-export * from "./tool-schemas.js";
+export * from "@workspace/agentic-protocol/tool-schemas";

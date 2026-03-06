@@ -74,7 +74,6 @@ export type {
   AgentContext,
   AgentLogger,
   AgentConnectOptions,
-  AgentInitInfo,
   AgentRuntimeInjection,
 } from "./agent.js";
 
@@ -104,8 +103,8 @@ export type { AgentIpcChannel } from "./ipc-channel.js";
 export { createIpcTransport } from "./ipc-transport.js";
 
 // Transport envelope types (shared between agent and host)
-export { isParentPortEnvelope } from "./transport.js";
-export type { ParentPortEnvelope } from "./transport.js";
+export { isParentPortEnvelope } from "@natstack/rpc";
+export type { ParentPortEnvelope } from "@natstack/rpc";
 
 // Re-export database client for convenience
 export { createDbClient } from "./database.js";

@@ -205,8 +205,8 @@ Examples: "Debug React Hooks", "Refactor Auth Module", "Setup CI Pipeline"`,
     const config = this.config as unknown as AgentConfig;
 
     // Fail fast if contextFolderPath is not available
-    if (!this.initInfo.contextFolderPath) {
-      throw new Error("contextFolderPath is required but was not provided in initInfo");
+    if (!this.ctx.contextFolderPath) {
+      throw new Error("contextFolderPath is required but was not provided");
     }
 
     // Initialize settings manager with 3-way merge
