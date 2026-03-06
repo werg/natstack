@@ -8,8 +8,8 @@ import { isDev } from "./utils.js";
 import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("App");
-import { PanelManager, setGlobalPanelManager } from "./panelManager.js";
-import { setupMenu } from "./menu.js";
+import { PanelManager } from "./panelManager.js";
+import { setupMenu, setMenuPanelManager } from "./menu.js";
 import { setActiveWorkspace, getAppRoot } from "./paths.js";
 import {
   parseCliWorkspacePath,
@@ -42,7 +42,7 @@ import { startMemoryMonitor } from "./memoryMonitor.js";
 import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
 import { createServerClient, type ServerClient } from "./serverClient.js";
 import type { ServerInfo } from "./serverInfo.js";
-import { getServerInfo, setServerInfo } from "./serverInfoState.js";
+import { setServerInfo } from "./serverInfoState.js";
 
 // =============================================================================
 // Early Diagnostics (enabled via NATSTACK_DEBUG_PATHS=1)
@@ -113,8 +113,6 @@ function requireServerClient(): ServerClient {
   return serverClient;
 }
 
-// Re-export for any remaining consumers (prefer importing from serverInfoState directly)
-export { getServerInfo };
 
 // =============================================================================
 // Main Mode Initialization
@@ -330,11 +328,10 @@ app.on("ready", async () => {
     const serverInfo = buildServerInfo(ports);
     setServerInfo(serverInfo);
     panelManager = new PanelManager(serverInfo);
-    setGlobalPanelManager(panelManager);
-
     // Set up test API for E2E testing (only when NATSTACK_TEST_MODE=1)
     setupTestApi(panelManager);
     setShellServicesPanelManager(panelManager);
+    setMenuPanelManager(panelManager);
 
     // CDP server (Electron-local)
     cdpServer = getCdpServer();

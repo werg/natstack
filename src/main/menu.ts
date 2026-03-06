@@ -1,14 +1,21 @@
 import { app, Menu, MenuItemConstructorOptions, type WebContents } from "electron";
 import { eventService } from "./services/eventsService.js";
 import { getViewManager, isViewManagerInitialized } from "./viewManager.js";
-import { getPanelManager } from "./panelManager.js";
+import type { PanelManager } from "./panelManager.js";
+
+// Set during initialization — always non-null after startup
+let _menuPanelManager: PanelManager | null = null;
+
+/** Set the panel manager for menu operations. Called from index.ts. */
+export function setMenuPanelManager(pm: PanelManager): void {
+  _menuPanelManager = pm;
+}
 
 /** Archive the currently focused panel (Cmd+W / Ctrl+W). Falls back to window close if no panel is focused. */
 async function archiveFocusedPanel(mainWindow: Electron.BaseWindow): Promise<void> {
-  const pm = getPanelManager();
-  const focusedId = pm?.getFocusedPanelId();
-  if (focusedId) {
-    await pm!.closePanel(focusedId);
+  const focusedId = _menuPanelManager?.getFocusedPanelId();
+  if (focusedId && _menuPanelManager) {
+    await _menuPanelManager.closePanel(focusedId);
   } else {
     mainWindow.close();
   }

@@ -2485,21 +2485,3 @@ export class PanelManager {
 
 }
 
-// Global PanelManager instance for internal use
-let _globalPanelManager: PanelManager | null = null;
-
-/**
- * Set the global PanelManager instance.
- * Called during app initialization.
- */
-export function setGlobalPanelManager(pm: PanelManager): void {
-  _globalPanelManager = pm;
-}
-
-/**
- * Get the global PanelManager instance.
- * Returns null if not yet initialized.
- */
-export function getPanelManager(): PanelManager | null {
-  return _globalPanelManager;
-}
