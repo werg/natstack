@@ -178,12 +178,6 @@ export interface Panel {
 // Workspace & Settings Types
 // =============================================================================
 
-/**
- * Application mode for startup flow:
- * - chooser: Show workspace chooser (with setup modal if no providers)
- * - main: Has workspace - show main panel UI
- */
-export type AppMode = "chooser" | "main";
 
 export interface RecentWorkspace {
   path: string;

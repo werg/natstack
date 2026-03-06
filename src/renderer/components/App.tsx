@@ -1,18 +1,15 @@
 import { useEffect, useCallback, useState, lazy, Suspense } from "react";
-import { useAtomValue, useSetAtom } from "jotai";
+import { useSetAtom } from "jotai";
 import { Theme, Flex, Spinner } from "@radix-ui/themes";
 
 import {
-  appModeAtom,
-  loadAppModeAtom,
   workspaceChooserDialogOpenAtom,
 } from "../state/appModeAtoms";
 import { effectiveThemeAtom, loadThemePreferenceAtom } from "../state/themeAtoms";
+import { useAtomValue } from "jotai";
 import { useShellEvent } from "../shell/useShellEvent";
 import { panel } from "../shell/client";
 import type { ShellPage } from "../../shared/types";
-import { WorkspaceChooser } from "./WorkspaceChooser";
-import { WorkspaceWizard } from "./WorkspaceWizard";
 import { ChunkErrorBoundary } from "./ChunkErrorBoundary";
 
 // Lazy-load MainMode — this creates a separate chunk containing PanelApp,
@@ -29,22 +26,19 @@ function LoadingSpinner() {
 }
 
 /**
- * Root App component that routes between workspace chooser and main panel app.
+ * Root App component that renders the main panel app.
  */
 export function App() {
-  const appMode = useAtomValue(appModeAtom);
   const effectiveTheme = useAtomValue(effectiveThemeAtom);
-  const loadAppMode = useSetAtom(loadAppModeAtom);
   const loadThemePreference = useSetAtom(loadThemePreferenceAtom);
   const setWorkspaceChooserOpen = useSetAtom(workspaceChooserDialogOpenAtom);
   // Counter to force remount of lazy component after a chunk load failure.
   const [lazyRetryKey, setLazyRetryKey] = useState(0);
 
-  // Load app mode and theme preference on mount
+  // Load theme preference on mount
   useEffect(() => {
-    void loadAppMode();
     loadThemePreference();
-  }, [loadAppMode, loadThemePreference]);
+  }, [loadThemePreference]);
 
   // Listen for system theme changes via shell event
   const handleThemeChanged = useCallback(() => {
@@ -52,11 +46,11 @@ export function App() {
   }, [loadThemePreference]);
   useShellEvent("system-theme-changed", handleThemeChanged);
 
-  // Listen for workspace chooser menu event via shell event
-  const handleOpenWorkspaceChooser = useCallback(() => {
+  // Listen for workspace switcher menu event via shell event
+  const handleOpenWorkspaceSwitcher = useCallback(() => {
     setWorkspaceChooserOpen(true);
   }, [setWorkspaceChooserOpen]);
-  useShellEvent("open-workspace-chooser", handleOpenWorkspaceChooser);
+  useShellEvent("open-workspace-switcher", handleOpenWorkspaceSwitcher);
 
   // Listen for navigate-about menu event via shell event
   const handleNavigateAbout = useCallback(async (payload: { page: ShellPage }) => {
@@ -71,31 +65,15 @@ export function App() {
 
   return (
     <Theme appearance={effectiveTheme} radius="none">
-      {appMode === "chooser" ? (
-        <ChooserMode />
-      ) : (
-        <ChunkErrorBoundary onRetry={() => {
-          // Reassign to create a fresh lazy() with a new import() promise
-          LazyMainMode = lazy(() => import("./MainMode"));
-          setLazyRetryKey((k) => k + 1);
-        }}>
-          <Suspense key={lazyRetryKey} fallback={<LoadingSpinner />}>
-            <LazyMainMode />
-          </Suspense>
-        </ChunkErrorBoundary>
-      )}
+      <ChunkErrorBoundary onRetry={() => {
+        // Reassign to create a fresh lazy() with a new import() promise
+        LazyMainMode = lazy(() => import("./MainMode"));
+        setLazyRetryKey((k) => k + 1);
+      }}>
+        <Suspense key={lazyRetryKey} fallback={<LoadingSpinner />}>
+          <LazyMainMode />
+        </Suspense>
+      </ChunkErrorBoundary>
     </Theme>
-  );
-}
-
-/**
- * Chooser mode: shows workspace selector.
- */
-function ChooserMode() {
-  return (
-    <>
-      <WorkspaceChooser />
-      <WorkspaceWizard />
-    </>
   );
 }

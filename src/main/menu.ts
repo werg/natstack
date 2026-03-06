@@ -47,7 +47,7 @@ export function buildCommonMenuItems(
       label: "Switch Workspace...",
       accelerator: "CmdOrCtrl+Shift+O",
       click: () => {
-        eventService.emit("open-workspace-chooser");
+        eventService.emit("open-workspace-switcher");
       },
     },
     { type: "separator" },
@@ -240,7 +240,7 @@ export function setupMenu(
           label: "Switch Workspace...",
           accelerator: "CmdOrCtrl+Shift+O",
           click: () => {
-            eventService.emit("open-workspace-chooser");
+            eventService.emit("open-workspace-switcher");
           },
         },
         { type: "separator" },

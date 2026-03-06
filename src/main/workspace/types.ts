@@ -196,7 +196,6 @@ export type {
   RecentWorkspace,
   WorkspaceValidation,
   SettingsData,
-  AppMode,
 } from "../../shared/types.js";
 
 // Import for use in CentralData

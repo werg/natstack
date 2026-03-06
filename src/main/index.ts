@@ -17,7 +17,7 @@ import {
   createWorkspace,
   loadCentralEnv,
 } from "./workspace/loader.js";
-import type { Workspace, AppMode } from "./workspace/types.js";
+import type { Workspace } from "./workspace/types.js";
 import { getCentralData } from "./centralData.js";
 import { getCdpServer, type CdpServer } from "./cdpServer.js";
 import { getTokenManager } from "./tokenManager.js";
@@ -40,7 +40,6 @@ import {
   handleCentralService,
   handleSettingsService,
   setShellServicesPanelManager,
-  setShellServicesAppMode,
   setShellServicesServerClient,
 } from "./ipc/shellServices.js";
 import { handleEventsService } from "./services/eventsService.js";
@@ -100,15 +99,14 @@ const discoveredWorkspacePath = discoverWorkspace(cliWorkspacePath);
 const configPath = path.join(discoveredWorkspacePath, "natstack.yml");
 const hasWorkspaceConfig = fs.existsSync(configPath);
 
-// If CLI path was explicitly provided but has no config, error and exit
-if (cliWorkspacePath && !hasWorkspaceConfig) {
+// Workspace is always required — fail fast if not found
+if (!hasWorkspaceConfig) {
   console.error(`[Error] Workspace config not found at ${discoveredWorkspacePath}`);
   console.error(`[Error] Expected natstack.yml at: ${configPath}`);
   app.quit();
   process.exit(1);
 }
 
-let appMode: AppMode = hasWorkspaceConfig ? "main" : "chooser";
 let workspace: Workspace | null = null;
 let cdpServer: CdpServer | null = null;
 let panelManager: PanelManager | null = null;
@@ -133,26 +131,21 @@ export { getServerInfo };
 // Main Mode Initialization
 // =============================================================================
 
-if (appMode === "main" && hasWorkspaceConfig) {
-  try {
-    workspace = createWorkspace(discoveredWorkspacePath);
-    setActiveWorkspace(workspace);
-    log.info(`[Workspace] Loaded: ${workspace.path} (id: ${workspace.config.id})`);
+try {
+  workspace = createWorkspace(discoveredWorkspacePath);
+  setActiveWorkspace(workspace);
+  log.info(`[Workspace] Loaded: ${workspace.path} (id: ${workspace.config.id})`);
 
-    // Add to recent workspaces
-    const centralData = getCentralData();
-    centralData.addRecentWorkspace(workspace.path, workspace.config.id);
-  } catch (error) {
-    console.error(
-      "[Workspace] Failed to initialize workspace, falling back to chooser mode:",
-      error
-    );
-    appMode = "chooser";
-  }
+  // Add to recent workspaces
+  const centralData = getCentralData();
+  centralData.addRecentWorkspace(workspace.path, workspace.config.id);
+} catch (error) {
+  console.error("[Workspace] Failed to initialize workspace:", error);
+  app.quit();
+  process.exit(1);
 }
 
-setShellServicesAppMode(appMode);
-log.info(` Starting in ${appMode} mode`);
+log.info(` Starting in main mode`);
 
 // =============================================================================
 // ServerInfo Builder
@@ -199,7 +192,7 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
   // Start hidden to avoid layout flash - shown after shell content loads
   mainWindow = new BaseWindow({
     width: 1200,
-    height: appMode === "main" ? 600 : 500,
+    height: 600,
     show: false,
     titleBarStyle: "hidden",
     ...(process.platform !== "darwin"
@@ -256,14 +249,6 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
       }
     },
   });
-}
-
-// Helper to ensure we're in main mode with panel manager
-function requirePanelManager(): PanelManager {
-  if (!panelManager) {
-    throw new Error("Panel operations not available in workspace chooser mode");
-  }
-  return panelManager;
 }
 
 // =============================================================================
@@ -334,222 +319,189 @@ app.on("ready", async () => {
   dispatcher.register("git", async (ctx, serviceMethod, serviceArgs) => {
     return handleGitServiceCall(ctx, serviceMethod, serviceArgs as unknown[]);
   });
-  setShellServicesAppMode(appMode);
 
   performance.mark("startup:services-registered");
 
-  // Initialize services only in main mode
-  if (appMode === "main" && workspace) {
-    try {
-      performance.mark("startup:server-spawn-begin");
-      // Spawn server as child process
-      serverProcessManager = new ServerProcessManager({
-        workspacePath: workspace.path,
-        appRoot: getAppRoot(),
-        onCrash: (code) => {
-          console.error(`[App] Server process crashed with code ${code}`);
-          dialog.showErrorBox(
-            "Server Process Crashed",
-            "The NatStack server process exited unexpectedly. The app will now restart."
-          );
-          app.relaunch();
-          app.exit(1);
-        },
-      });
-
-      const ports = await serverProcessManager.start();
-      performance.mark("startup:server-spawned");
-      log.info(`[Server] Child process started (RPC: ${ports.rpcPort}, Git: ${ports.gitPort}, PubSub: ${ports.pubsubPort})`);
-
-      // Connect to server as admin
-      serverClient = await createServerClient(ports.rpcPort, ports.adminToken);
-      performance.mark("startup:server-connected");
-      log.info("[Server] Admin WS client connected");
-
-      // Wire shell services
-      setShellServicesServerClient(serverClient);
-
-      // Create panel manager with server info
-      const serverInfo = buildServerInfo(ports);
-      setServerInfo(serverInfo);
-      panelManager = new PanelManager(serverInfo);
-      setGlobalPanelManager(panelManager);
-
-      // Set up test API for E2E testing (only when NATSTACK_TEST_MODE=1)
-      setupTestApi(panelManager);
-
-      // Electron-only registrations
-      dispatcher.register("panel", handlePanelService);
-      setShellServicesPanelManager(panelManager);
-
-      // CDP server (Electron-local)
-      cdpServer = getCdpServer();
-      const cdpPort = await cdpServer.start();
-      log.info(`[CDP] Server started on port ${cdpPort}`);
-
-      dispatcher.register("bridge", async (ctx, serviceMethod, serviceArgs) => {
-        return handleBridgeCall(panelManager!, getCdpServer(), ctx.callerId, serviceMethod, serviceArgs);
-      });
-
-      dispatcher.register("browser", async (ctx, serviceMethod, serviceArgs) => {
-        return handleBrowserCall(
-          getCdpServer(),
-          getViewManager(),
-          requirePanelManager(),
-          ctx.callerId,
-          ctx.callerKind,
-          serviceMethod,
-          serviceArgs
+  try {
+    performance.mark("startup:server-spawn-begin");
+    // Spawn server as child process
+    serverProcessManager = new ServerProcessManager({
+      workspacePath: workspace!.path,
+      appRoot: getAppRoot(),
+      onCrash: (code) => {
+        console.error(`[App] Server process crashed with code ${code}`);
+        dialog.showErrorBox(
+          "Server Process Crashed",
+          "The NatStack server process exited unexpectedly. The app will now restart."
         );
-      });
+        app.relaunch();
+        app.exit(1);
+      },
+    });
 
-      // Filesystem service — per-context sandboxed fs via RPC
-      const contextFolderManager = new ContextFolderManager({
-        workspacePath: workspace!.path,
-        getWorkspaceTree: () =>
-          requireServerClient().call("git", "getWorkspaceTree", []) as Promise<any>,
-      });
-      const fsService = new FsService(contextFolderManager);
-      panelManager.setFsService(fsService);
+    const ports = await serverProcessManager.start();
+    performance.mark("startup:server-spawned");
+    log.info(`[Server] Child process started (RPC: ${ports.rpcPort}, Git: ${ports.gitPort}, PubSub: ${ports.pubsubPort})`);
 
-      dispatcher.register("fs", async (ctx, serviceMethod, serviceArgs) => {
-        return handleFsCall(fsService, ctx, serviceMethod, serviceArgs as unknown[]);
-      });
+    // Connect to server as admin
+    serverClient = await createServerClient(ports.rpcPort, ports.adminToken);
+    performance.mark("startup:server-connected");
+    log.info("[Server] Admin WS client connected");
 
-      dispatcher.markInitialized();
+    // Wire shell services
+    setShellServicesServerClient(serverClient);
 
-      const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
-      rpcServer = new RpcServerClass({
-        tokenManager: getTokenManager(),
-        panelManager: panelManager ?? undefined,
-        onClientDisconnect: (callerId, callerKind) => {
-          const handleKey = callerKind === "panel" ? callerId : `server:${callerId}`;
-          fsService.closeHandlesForPanel(handleKey);
-        },
-      });
-      const rpcPort = await rpcServer.start();
-      log.info(`[RPC] Server started on port ${rpcPort}`);
+    // Create panel manager with server info
+    const serverInfo = buildServerInfo(ports);
+    setServerInfo(serverInfo);
+    panelManager = new PanelManager(serverInfo);
+    setGlobalPanelManager(panelManager);
 
-      // Wire RPC server into panel manager
-      panelManager.setRpcServer(rpcServer);
-      panelManager.setRpcPort(rpcPort);
+    // Set up test API for E2E testing (only when NATSTACK_TEST_MODE=1)
+    setupTestApi(panelManager);
 
-      // Start PanelHttpServer for HTTP subdomain panel serving in Electron
-      const { PanelHttpServer } = await import("../server/panelHttpServer.js");
-      const { randomBytes } = await import("crypto");
-      panelHttpServer = new PanelHttpServer("127.0.0.1", randomBytes(32).toString("hex"));
-      const panelHttpPort = await panelHttpServer.start(0);
-      log.info(`[PanelHTTP] Panel HTTP server started on port ${panelHttpPort}`);
-      panelManager.setPanelHttpServer(panelHttpServer, panelHttpPort);
+    // Electron-only registrations
+    dispatcher.register("panel", handlePanelService);
+    setShellServicesPanelManager(panelManager);
 
-      // Generate shell token and create window
-      const shellToken = getTokenManager().ensureToken("shell", "shell");
-      void createWindow({ rpcPort, shellToken });
-      performance.mark("startup:window-created");
+    // CDP server (Electron-local)
+    cdpServer = getCdpServer();
+    const cdpPort = await cdpServer.start();
+    log.info(`[CDP] Server started on port ${cdpPort}`);
 
-      // Log startup timing in dev mode
-      if (isDev()) {
-        performance.measure("startup:total", "startup:ready", "startup:window-created");
-        performance.measure("startup:server-spawn", "startup:server-spawn-begin", "startup:server-spawned");
-        performance.measure("startup:server-connect", "startup:server-spawned", "startup:server-connected");
-        performance.measure("startup:post-connect", "startup:server-connected", "startup:window-created");
-        const entries = performance.getEntriesByType("measure").filter((e) => e.name.startsWith("startup:"));
-        for (const entry of entries) {
-          console.log(`[Perf] ${entry.name}: ${Math.round(entry.duration)}ms`);
-        }
-      }
+    dispatcher.register("bridge", async (ctx, serviceMethod, serviceArgs) => {
+      return handleBridgeCall(panelManager!, getCdpServer(), ctx.callerId, serviceMethod, serviceArgs);
+    });
 
-      // Defer ad-block initialization (non-critical, ~500-1000ms).
-      // The onBeforeRequest handler has a !this.engine fast path that passes requests through.
-      setTimeout(async () => {
-        try {
-          const adBlockManager = getAdBlockManager();
-          await adBlockManager.initialize();
-          adBlockManager.enableForSession(session.defaultSession);
-          console.log("[AdBlock] Initialized and enabled for default session");
-        } catch (error) {
-          console.warn("[AdBlock] Failed to initialize (non-fatal):", error);
-        }
-      }, 100);
-    } catch (error) {
-      console.error("[App] Startup failed:", error);
-
-      // Fail-fast: clean up all partial state, show error, and exit.
-      // Await each cleanup to avoid orphaned child processes or leaked ports.
-      const cleanupPromises: Promise<void>[] = [];
-
-      if (serverClient) {
-        cleanupPromises.push(
-          serverClient.close().catch((e) => console.error("[App] serverClient cleanup error:", e))
-        );
-        serverClient = null;
-      }
-      if (serverProcessManager) {
-        cleanupPromises.push(
-          serverProcessManager.shutdown().catch((e) => console.error("[App] serverProcess cleanup error:", e))
-        );
-        serverProcessManager = null;
-      }
-      if (rpcServer) {
-        cleanupPromises.push(
-          rpcServer.stop().catch((e) => console.error("[App] rpcServer cleanup error:", e))
-        );
-        rpcServer = null;
-      }
-      if (cdpServer) {
-        cleanupPromises.push(
-          cdpServer.stop().catch((e) => console.error("[App] cdpServer cleanup error:", e))
-        );
-        cdpServer = null;
-      }
-      if (panelHttpServer) {
-        cleanupPromises.push(
-          panelHttpServer.stop().catch((e) => console.error("[App] panelHttpServer cleanup error:", e))
-        );
-        panelHttpServer = null;
-      }
-      setServerInfo(null);
-
-      // Reset shell service refs
-      setShellServicesServerClient(null);
-      setShellServicesPanelManager(null);
-
-      await Promise.all(cleanupPromises);
-
-      dialog.showErrorBox(
-        "Startup Failed",
-        error instanceof Error ? error.message : String(error)
+    dispatcher.register("browser", async (ctx, serviceMethod, serviceArgs) => {
+      return handleBrowserCall(
+        getCdpServer(),
+        getViewManager(),
+        panelManager!,
+        ctx.callerId,
+        ctx.callerKind,
+        serviceMethod,
+        serviceArgs
       );
-      app.exit(1);
-    }
-  } else {
-    // Chooser mode
-    try {
-      dispatcher.markInitialized();
+    });
 
-      const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
-      rpcServer = new RpcServerClass({
-        tokenManager: getTokenManager(),
-      });
-      const rpcPort = await rpcServer.start();
-      log.info(`[RPC] Server started on port ${rpcPort}`);
+    // Filesystem service — per-context sandboxed fs via RPC
+    const contextFolderManager = new ContextFolderManager({
+      workspacePath: workspace!.path,
+      getWorkspaceTree: () =>
+        requireServerClient().call("git", "getWorkspaceTree", []) as Promise<any>,
+    });
+    const fsService = new FsService(contextFolderManager);
+    panelManager.setFsService(fsService);
 
-      const shellToken = getTokenManager().ensureToken("shell", "shell");
-      void createWindow({ rpcPort, shellToken });
-    } catch (error) {
-      console.error("[App] Chooser startup failed:", error);
+    dispatcher.register("fs", async (ctx, serviceMethod, serviceArgs) => {
+      return handleFsCall(fsService, ctx, serviceMethod, serviceArgs as unknown[]);
+    });
 
-      if (rpcServer) {
-        await rpcServer.stop().catch((e) => console.error("[App] rpcServer cleanup error:", e));
-        rpcServer = null;
+    dispatcher.markInitialized();
+
+    const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
+    rpcServer = new RpcServerClass({
+      tokenManager: getTokenManager(),
+      panelManager,
+      onClientDisconnect: (callerId, callerKind) => {
+        const handleKey = callerKind === "panel" ? callerId : `server:${callerId}`;
+        fsService.closeHandlesForPanel(handleKey);
+      },
+    });
+    const rpcPort = await rpcServer.start();
+    log.info(`[RPC] Server started on port ${rpcPort}`);
+
+    // Wire RPC server into panel manager
+    panelManager.setRpcServer(rpcServer);
+    panelManager.setRpcPort(rpcPort);
+
+    // Start PanelHttpServer for HTTP subdomain panel serving in Electron
+    const { PanelHttpServer } = await import("../server/panelHttpServer.js");
+    const { randomBytes } = await import("crypto");
+    panelHttpServer = new PanelHttpServer("127.0.0.1", randomBytes(32).toString("hex"));
+    const panelHttpPort = await panelHttpServer.start(0);
+    log.info(`[PanelHTTP] Panel HTTP server started on port ${panelHttpPort}`);
+    panelManager.setPanelHttpServer(panelHttpServer, panelHttpPort);
+
+    // Generate shell token and create window
+    const shellToken = getTokenManager().ensureToken("shell", "shell");
+    void createWindow({ rpcPort, shellToken });
+    performance.mark("startup:window-created");
+
+    // Log startup timing in dev mode
+    if (isDev()) {
+      performance.measure("startup:total", "startup:ready", "startup:window-created");
+      performance.measure("startup:server-spawn", "startup:server-spawn-begin", "startup:server-spawned");
+      performance.measure("startup:server-connect", "startup:server-spawned", "startup:server-connected");
+      performance.measure("startup:post-connect", "startup:server-connected", "startup:window-created");
+      const entries = performance.getEntriesByType("measure").filter((e) => e.name.startsWith("startup:"));
+      for (const entry of entries) {
+        console.log(`[Perf] ${entry.name}: ${Math.round(entry.duration)}ms`);
       }
-
-      dialog.showErrorBox(
-        "Startup Failed",
-        error instanceof Error ? error.message : String(error)
-      );
-      app.exit(1);
     }
+
+    // Defer ad-block initialization (non-critical, ~500-1000ms).
+    // The onBeforeRequest handler has a !this.engine fast path that passes requests through.
+    setTimeout(async () => {
+      try {
+        const adBlockManager = getAdBlockManager();
+        await adBlockManager.initialize();
+        adBlockManager.enableForSession(session.defaultSession);
+        console.log("[AdBlock] Initialized and enabled for default session");
+      } catch (error) {
+        console.warn("[AdBlock] Failed to initialize (non-fatal):", error);
+      }
+    }, 100);
+  } catch (error) {
+    console.error("[App] Startup failed:", error);
+
+    // Fail-fast: clean up all partial state, show error, and exit.
+    const cleanupPromises: Promise<void>[] = [];
+
+    if (serverClient) {
+      cleanupPromises.push(
+        serverClient.close().catch((e) => console.error("[App] serverClient cleanup error:", e))
+      );
+      serverClient = null;
+    }
+    if (serverProcessManager) {
+      cleanupPromises.push(
+        serverProcessManager.shutdown().catch((e) => console.error("[App] serverProcess cleanup error:", e))
+      );
+      serverProcessManager = null;
+    }
+    if (rpcServer) {
+      cleanupPromises.push(
+        rpcServer.stop().catch((e) => console.error("[App] rpcServer cleanup error:", e))
+      );
+      rpcServer = null;
+    }
+    if (cdpServer) {
+      cleanupPromises.push(
+        cdpServer.stop().catch((e) => console.error("[App] cdpServer cleanup error:", e))
+      );
+      cdpServer = null;
+    }
+    if (panelHttpServer) {
+      cleanupPromises.push(
+        panelHttpServer.stop().catch((e) => console.error("[App] panelHttpServer cleanup error:", e))
+      );
+      panelHttpServer = null;
+    }
+    setServerInfo(null);
+
+    // Reset shell service refs
+    setShellServicesServerClient(null);
+    setShellServicesPanelManager(null);
+
+    await Promise.all(cleanupPromises);
+
+    dialog.showErrorBox(
+      "Startup Failed",
+      error instanceof Error ? error.message : String(error)
+    );
+    app.exit(1);
   }
 });
 

@@ -41,7 +41,6 @@ import type {
   RecentWorkspace,
   WorkspaceValidation,
   SettingsData,
-  AppMode,
   ShellPage,
   MovePanelRequest,
   GetChildrenPaginatedRequest,
@@ -58,7 +57,6 @@ export const app = {
   getSystemTheme: () => rpc.call<ThemeAppearance>("main", "app.getSystemTheme"),
   setThemeMode: (mode: ThemeMode) => rpc.call<void>("main", "app.setThemeMode", mode),
   openDevTools: () => rpc.call<void>("main", "app.openDevTools"),
-  getMode: () => rpc.call<AppMode>("main", "app.getMode"),
   clearBuildCache: () => rpc.call<void>("main", "app.clearBuildCache"),
 };
 

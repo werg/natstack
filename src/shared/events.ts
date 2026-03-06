@@ -13,7 +13,7 @@ import type { ShellPage } from "./types.js";
 export type EventName =
   | "system-theme-changed"
   | "panel-tree-updated"
-  | "open-workspace-chooser"
+  | "open-workspace-switcher"
   | "toggle-panel-devtools"
   | "panel-initialization-error"
   | "navigate-about"
@@ -25,7 +25,7 @@ export type EventName =
 export interface EventPayloads {
   "system-theme-changed": "light" | "dark";
   "panel-tree-updated": unknown[]; // Panel tree array
-  "open-workspace-chooser": void;
+  "open-workspace-switcher": void;
   "toggle-panel-devtools": void;
   "panel-initialization-error": { path: string; error: string };
   "navigate-about": { page: ShellPage };
@@ -38,7 +38,7 @@ export interface EventPayloads {
 export const VALID_EVENT_NAMES: EventName[] = [
   "system-theme-changed",
   "panel-tree-updated",
-  "open-workspace-chooser",
+  "open-workspace-switcher",
   "toggle-panel-devtools",
   "panel-initialization-error",
   "navigate-about",

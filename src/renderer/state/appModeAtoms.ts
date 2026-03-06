@@ -1,27 +1,6 @@
 import { atom } from "jotai";
-import type { AppMode, RecentWorkspace, SettingsData } from "../../shared/types.js";
-import { app, central, settings, workspace } from "../shell/client.js";
-
-// =============================================================================
-// App Mode State
-// =============================================================================
-
-/**
- * Current application mode: "chooser" or "main"
- */
-export const appModeAtom = atom<AppMode>("chooser");
-
-/**
- * Load app mode from main process
- */
-export const loadAppModeAtom = atom(null, async (_get, set) => {
-  try {
-    const mode = await app.getMode();
-    set(appModeAtom, mode);
-  } catch (error) {
-    console.error("Failed to load app mode:", error);
-  }
-});
+import type { RecentWorkspace, SettingsData } from "../../shared/types.js";
+import { central, settings, workspace } from "../shell/client.js";
 
 // =============================================================================
 // Recent Workspaces State
@@ -202,11 +181,11 @@ export const disableProviderAtom = atom(null, async (_get, set, providerId: stri
 });
 
 // =============================================================================
-// Workspace Chooser State (for main mode)
+// Workspace Chooser State (for switch workspace dialog)
 // =============================================================================
 
 /**
- * Whether workspace chooser dialog is open (in main mode)
+ * Whether workspace chooser dialog is open
  */
 export const workspaceChooserDialogOpenAtom = atom(false);
 

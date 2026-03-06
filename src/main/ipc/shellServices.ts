@@ -27,7 +27,6 @@ import type {
   WorkspaceValidation,
   SettingsData,
   PanelContextMenuAction,
-  AppMode,
   ProviderInfo,
   AvailableProvider,
   ModelRoleConfig,
@@ -58,7 +57,6 @@ import { fetchModelsForProvider, type FetchedModel } from "../ai/modelFetcher.js
 
 // These will be set during initialization to avoid circular dependencies
 let _panelManager: import("../panelManager.js").PanelManager | null = null;
-let _currentAppMode: AppMode = "chooser";
 let _serverClient: import("../serverClient.js").ServerClient | null = null;
 
 /**
@@ -66,13 +64,6 @@ let _serverClient: import("../serverClient.js").ServerClient | null = null;
  */
 export function setShellServicesPanelManager(pm: import("../panelManager.js").PanelManager | null): void {
   _panelManager = pm;
-}
-
-/**
- * Set the current app mode (called during mode transitions).
- */
-export function setShellServicesAppMode(mode: AppMode): void {
-  _currentAppMode = mode;
 }
 
 /**
@@ -84,7 +75,7 @@ export function setShellServicesServerClient(client: import("../serverClient.js"
 
 function requirePanelManager(): import("../panelManager.js").PanelManager {
   if (!_panelManager) {
-    throw new Error("Panel operations not available in workspace chooser mode");
+    throw new Error("PanelManager not initialized");
   }
   return _panelManager;
 }
@@ -175,9 +166,6 @@ export async function handleAppService(
       }
       return;
     }
-
-    case "getMode":
-      return _currentAppMode;
 
     case "getShellPages":
       // Return shell pages available for the launcher via build service
