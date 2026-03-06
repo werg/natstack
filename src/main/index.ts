@@ -22,8 +22,6 @@ import { getCentralData } from "./centralData.js";
 import { getCdpServer, type CdpServer } from "./cdpServer.js";
 import { getTokenManager } from "./tokenManager.js";
 import { eventService } from "./services/eventsService.js";
-import { handleBridgeCall } from "./ipc/bridgeHandlers.js";
-import { handleBrowserCall } from "./ipc/browserHandlers.js";
 import {
   initViewManager,
   getViewManager,
@@ -32,23 +30,14 @@ import {
 import { getServiceDispatcher } from "./serviceDispatcher.js";
 import type { RpcServer } from "../server/rpcServer.js";
 import {
-  handleAppService,
-  handlePanelService,
-  handleViewService,
-  handleMenuService,
-  handleWorkspaceService,
-  handleCentralService,
-  handleSettingsService,
   setShellServicesPanelManager,
   setShellServicesServerClient,
 } from "./ipc/shellServices.js";
-import { handleEventsService } from "./services/eventsService.js";
+import { registerElectronServices } from "./electronServiceRegistry.js";
 import { setupTestApi } from "./testApi.js";
 import { getAdBlockManager } from "./adblock/index.js";
-import { handleAdBlockServiceCall } from "./ipc/adblockHandlers.js";
-import { handleGitServiceCall } from "./ipc/gitServiceHandler.js";
 import { ContextFolderManager } from "./contextFolderManager.js";
-import { FsService, handleFsCall } from "./fsService.js";
+import { FsService } from "./fsService.js";
 import { startMemoryMonitor } from "./memoryMonitor.js";
 import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
 import { createServerClient, type ServerClient } from "./serverClient.js";
@@ -304,21 +293,7 @@ app.on("ready", async () => {
     }
   }
 
-  // Register shell services (available in both modes)
   const dispatcher = getServiceDispatcher();
-  dispatcher.register("app", handleAppService);
-  dispatcher.register("view", handleViewService);
-  dispatcher.register("menu", handleMenuService);
-  dispatcher.register("workspace", handleWorkspaceService);
-  dispatcher.register("central", handleCentralService);
-  dispatcher.register("settings", handleSettingsService);
-  dispatcher.register("events", handleEventsService);
-  dispatcher.register("adblock", async (_ctx, serviceMethod, serviceArgs) => {
-    return handleAdBlockServiceCall(serviceMethod, serviceArgs as unknown[]);
-  });
-  dispatcher.register("git", async (ctx, serviceMethod, serviceArgs) => {
-    return handleGitServiceCall(ctx, serviceMethod, serviceArgs as unknown[]);
-  });
 
   performance.mark("startup:services-registered");
 
@@ -359,31 +334,12 @@ app.on("ready", async () => {
 
     // Set up test API for E2E testing (only when NATSTACK_TEST_MODE=1)
     setupTestApi(panelManager);
-
-    // Electron-only registrations
-    dispatcher.register("panel", handlePanelService);
     setShellServicesPanelManager(panelManager);
 
     // CDP server (Electron-local)
     cdpServer = getCdpServer();
     const cdpPort = await cdpServer.start();
     log.info(`[CDP] Server started on port ${cdpPort}`);
-
-    dispatcher.register("bridge", async (ctx, serviceMethod, serviceArgs) => {
-      return handleBridgeCall(panelManager!, getCdpServer(), ctx.callerId, serviceMethod, serviceArgs);
-    });
-
-    dispatcher.register("browser", async (ctx, serviceMethod, serviceArgs) => {
-      return handleBrowserCall(
-        getCdpServer(),
-        getViewManager(),
-        panelManager!,
-        ctx.callerId,
-        ctx.callerKind,
-        serviceMethod,
-        serviceArgs
-      );
-    });
 
     // Filesystem service — per-context sandboxed fs via RPC
     const contextFolderManager = new ContextFolderManager({
@@ -394,8 +350,13 @@ app.on("ready", async () => {
     const fsService = new FsService(contextFolderManager);
     panelManager.setFsService(fsService);
 
-    dispatcher.register("fs", async (ctx, serviceMethod, serviceArgs) => {
-      return handleFsCall(fsService, ctx, serviceMethod, serviceArgs as unknown[]);
+    // Register all Electron-main services via registry
+    registerElectronServices(dispatcher, {
+      panelManager,
+      cdpServer,
+      fsService,
+      eventService,
+      getViewManager,
     });
 
     dispatcher.markInitialized();
