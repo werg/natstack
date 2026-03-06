@@ -27,12 +27,8 @@ import {
   getViewManager,
   type ViewManager,
 } from "./viewManager.js";
-import { getServiceDispatcher } from "./serviceDispatcher.js";
+import { ServiceDispatcher } from "./serviceDispatcher.js";
 import type { RpcServer } from "../server/rpcServer.js";
-import {
-  setShellServicesPanelManager,
-  setShellServicesServerClient,
-} from "./ipc/shellServices.js";
 import { registerElectronServices } from "./electronServiceRegistry.js";
 import { setupTestApi } from "./testApi.js";
 import { getAdBlockManager } from "./adblock/index.js";
@@ -291,7 +287,7 @@ app.on("ready", async () => {
     }
   }
 
-  const dispatcher = getServiceDispatcher();
+  const dispatcher = new ServiceDispatcher();
 
   performance.mark("startup:services-registered");
 
@@ -321,16 +317,12 @@ app.on("ready", async () => {
     performance.mark("startup:server-connected");
     log.info("[Server] Admin WS client connected");
 
-    // Wire shell services
-    setShellServicesServerClient(serverClient);
-
     // Create panel manager with server info
     const serverInfo = buildServerInfo(ports);
     setServerInfo(serverInfo);
     panelManager = new PanelManager(serverInfo);
     // Set up test API for E2E testing (only when NATSTACK_TEST_MODE=1)
     setupTestApi(panelManager);
-    setShellServicesPanelManager(panelManager);
     setMenuPanelManager(panelManager);
 
     // CDP server (Electron-local)
@@ -353,6 +345,7 @@ app.on("ready", async () => {
       cdpServer,
       fsService,
       eventService,
+      serverClient,
       getViewManager,
     });
 
@@ -361,6 +354,7 @@ app.on("ready", async () => {
     const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
     rpcServer = new RpcServerClass({
       tokenManager: getTokenManager(),
+      dispatcher,
       panelManager,
       onClientDisconnect: (callerId, callerKind) => {
         const handleKey = callerKind === "panel" ? callerId : `server:${callerId}`;
@@ -448,10 +442,6 @@ app.on("ready", async () => {
       panelHttpServer = null;
     }
     setServerInfo(null);
-
-    // Reset shell service refs
-    setShellServicesServerClient(null);
-    setShellServicesPanelManager(null);
 
     await Promise.all(cleanupPromises);
 

@@ -1,5 +1,5 @@
 /**
- * Tests for bridge service handlers.
+ * Tests for bridge service.
  */
 
 import { handleCommonBridgeMethod } from "../../shared/bridgeHandlersCommon.js";
@@ -15,9 +15,11 @@ vi.mock("../../shared/bridgeHandlersCommon.js", () => ({
   handleCommonBridgeMethod: vi.fn(),
 }));
 
-import { handleBridgeCall } from "./bridgeHandlers.js";
+import { createBridgeService } from "../services/bridgeService.js";
+import type { ServiceContext } from "../serviceDispatcher.js";
+import { getViewManager } from "../viewManager.js";
 
-describe("handleBridgeCall", () => {
+describe("bridgeService", () => {
   const pm = {
     getWorkspaceTree: vi.fn(),
     listBranches: vi.fn(),
@@ -26,10 +28,25 @@ describe("handleBridgeCall", () => {
     focusPanel: vi.fn(),
     listAgents: vi.fn(),
     reloadPanel: vi.fn(),
+    closePanel: vi.fn(),
+    getInfo: vi.fn(),
+    handleSetStateArgs: vi.fn(),
+    getBootstrapConfig: vi.fn(),
+    getPanel: vi.fn(),
+    findParentId: vi.fn(),
+    isDescendantOf: vi.fn(),
   };
   const cdpServer = {
     panelOwnsBrowser: vi.fn(),
   };
+
+  const svc = createBridgeService({
+    panelManager: pm as any,
+    cdpServer: cdpServer as any,
+    getViewManager: getViewManager as any,
+  });
+  const handler = svc.handler;
+  const ctx: ServiceContext = { callerId: "panel-1", callerKind: "panel" };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -41,25 +58,13 @@ describe("handleBridgeCall", () => {
       handled: true,
       result: { id: "child-1" },
     });
-    const result = await handleBridgeCall(
-      pm as any,
-      cdpServer as any,
-      "panel-1",
-      "createChild",
-      [{ type: "chat" }],
-    );
+    const result = await handler(ctx, "createChild", [{ type: "chat" }]);
     expect(result).toEqual({ id: "child-1" });
   });
 
   it("throws on unknown method not handled by common handler", async () => {
-    await expect(
-      handleBridgeCall(
-        pm as any,
-        cdpServer as any,
-        "panel-1",
-        "totallyUnknownMethod",
-        [],
-      ),
-    ).rejects.toThrow("Unknown bridge method: totallyUnknownMethod");
+    await expect(handler(ctx, "totallyUnknownMethod", [])).rejects.toThrow(
+      "Unknown bridge method: totallyUnknownMethod",
+    );
   });
 });

@@ -18,8 +18,39 @@ export function createDbService(deps: {
       close: { args: z.tuple([z.string()]) },
     },
     handler: async (ctx, method, args) => {
-      const { handleDbCall } = await import("../../main/ipc/dbHandlers.js");
-      return handleDbCall(deps.databaseManager, ctx.callerId, method, args as unknown[]);
+      const ownerId = ctx.callerId;
+      const dbManager = deps.databaseManager;
+
+      switch (method) {
+        case "open": {
+          const [dbName, readOnly] = args as [string, boolean?];
+          return dbManager.open(ownerId, dbName, readOnly ?? false);
+        }
+        case "query": {
+          const [handle, sql, params] = args as [string, string, unknown[]?];
+          return dbManager.query(handle, sql, params);
+        }
+        case "run": {
+          const [handle, sql, params] = args as [string, string, unknown[]?];
+          return dbManager.run(handle, sql, params);
+        }
+        case "get": {
+          const [handle, sql, params] = args as [string, string, unknown[]?];
+          return dbManager.get(handle, sql, params);
+        }
+        case "exec": {
+          const [handle, sql] = args as [string, string];
+          dbManager.exec(handle, sql);
+          return;
+        }
+        case "close": {
+          const [handle] = args as [string];
+          dbManager.close(handle);
+          return;
+        }
+        default:
+          throw new Error(`Unknown db method: ${method}`);
+      }
     },
   };
 }

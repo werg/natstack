@@ -7,23 +7,47 @@
  */
 
 import type { HeadlessPanelManager } from "./headlessPanelManager.js";
+import type { GitServer } from "../main/gitServer.js";
 import { handleCommonBridgeMethod } from "../shared/bridgeHandlersCommon.js";
+
+export type HeadlessBridgeDeps = {
+  pm: HeadlessPanelManager;
+  gitServer: GitServer;
+};
 
 /**
  * Handle a bridge service call in headless mode.
  */
 export async function handleHeadlessBridgeCall(
-  pm: HeadlessPanelManager,
+  deps: HeadlessBridgeDeps,
   callerId: string,
   method: string,
   args: unknown[],
 ): Promise<unknown> {
+  const { pm, gitServer } = deps;
   // Try common handlers first (shared with Electron mode)
   const common = await handleCommonBridgeMethod(pm, callerId, method, args);
   if (common.handled) return common.result;
 
   // Headless-specific handlers
   switch (method) {
+    // =========================================================================
+    // Repo discovery (delegates to git server)
+    // =========================================================================
+
+    case "getWorkspaceTree":
+      return gitServer.getWorkspaceTree();
+
+    case "listBranches": {
+      const [repoPath] = args as [string];
+      return gitServer.listBranches(repoPath);
+    }
+
+    case "listCommits": {
+      const [repoPath, ref, limit] = args as [string, string?, number?];
+      return gitServer.listCommits(repoPath, ref ?? "HEAD", limit ?? 50);
+    }
+
     // =========================================================================
     // Agent listing (portable)
     // =========================================================================

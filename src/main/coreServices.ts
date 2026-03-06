@@ -12,12 +12,9 @@ import { initAgentDiscovery, shutdownAgentDiscovery } from "./agentDiscovery.js"
 import { initAgentSettingsService, shutdownAgentSettingsService } from "./agentSettings.js";
 import { initAgentHost, shutdownAgentHost, setAgentHostAiHandler } from "./agentHost.js";
 import { getTokenManager } from "./tokenManager.js";
-import { getServiceDispatcher } from "./serviceDispatcher.js";
-import { handleAiServiceCall } from "./ipc/aiHandlers.js";
 import type { Workspace } from "./workspace/types.js";
 import type { GitServer } from "./gitServer.js";
 import type { AIHandler } from "./ai/aiHandler.js";
-import type { RpcServer } from "../server/rpcServer.js";
 import type { ContextFolderManager } from "./contextFolderManager.js";
 
 const log = createDevLogger("CoreServices");
@@ -27,8 +24,6 @@ export interface CoreServicesHandle {
   gitServer: GitServer;
   gitWatcher: GitWatcher;
   pubsubPort: number;
-  /** Register the "ai" dispatcher service (deferred — caller creates rpcServer first). */
-  registerAiService(rpcServer: RpcServer): void;
   /** Stop core services only (not rpcServer, cdpServer, or global singletons). */
   shutdown(): Promise<void>;
 }
@@ -97,34 +92,11 @@ export async function startCoreServices({
     await aiHandler.initialize();
     setAgentHostAiHandler(aiHandler);
 
-    const dispatcher = getServiceDispatcher();
-
     return {
       aiHandler,
       gitServer,
       gitWatcher,
       pubsubPort,
-
-      registerAiService(rpcServer: RpcServer) {
-        dispatcher.register("ai", async (ctx, method, serviceArgs) => {
-          return handleAiServiceCall(
-            aiHandler,
-            method,
-            serviceArgs,
-            (handler, options, streamId) => {
-              if (!ctx.wsClient) {
-                throw new Error("AI streaming requires a WS connection");
-              }
-              const target = rpcServer.createWsStreamTarget(
-                ctx.wsClient,
-                streamId
-              );
-              handler.startTargetStream(target, options, streamId);
-            },
-            ctx.callerKind
-          );
-        });
-      },
 
       async shutdown() {
         shutdownAgentSettingsService();

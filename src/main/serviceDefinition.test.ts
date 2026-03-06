@@ -112,9 +112,6 @@ describe("ServiceDispatcher.registerService", () => {
       handler: async () => {},
     });
 
-    // Legacy register should not appear in definitions
-    sd.register("c", async () => {});
-
     const defs = sd.getServiceDefinitions();
     expect(defs).toHaveLength(2);
     expect(defs.map(d => d.name).sort()).toEqual(["a", "b"]);

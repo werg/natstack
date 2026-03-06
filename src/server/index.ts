@@ -162,7 +162,8 @@ async function main() {
   const { setActiveWorkspace } = await import("../main/paths.js");
   const { GitServer } = await import("../main/gitServer.js");
   const { getTokenManager } = await import("../main/tokenManager.js");
-  const { getServiceDispatcher } = await import("../main/serviceDispatcher.js");
+  const { z } = await import("zod");
+  const { ServiceDispatcher } = await import("../main/serviceDispatcher.js");
   const { eventService } = await import("../main/services/eventsService.js");
   const { RpcServer } = await import("./rpcServer.js");
   const { startCoreServices } = await import("../main/coreServices.js");
@@ -232,7 +233,7 @@ async function main() {
   // Service registration + RPC server
   // ===========================================================================
 
-  const dispatcher = getServiceDispatcher();
+  const dispatcher = new ServiceDispatcher();
 
   // Resolve testSetup.ts relative to this module's location. The path differs
   // between dev mode (src/server/ → ../main/services/) and dist mode
@@ -328,13 +329,32 @@ async function main() {
     panelManagerRef = headlessPanelManager;
 
     // Register bridge service for headless panel lifecycle
-    dispatcher.register("bridge", async (ctx, method, serviceArgs) => {
-      return handleHeadlessBridgeCall(
-        headlessPanelManager,
-        ctx.callerId,
-        method,
-        serviceArgs as unknown[],
-      );
+    const headlessBridgeDeps = { pm: headlessPanelManager, gitServer };
+    dispatcher.registerService({
+      name: "bridge",
+      description: "Panel lifecycle (headless mode)",
+      policy: { allowed: ["panel", "shell", "server"] },
+      methods: {
+        closeSelf: { args: z.tuple([]) },
+        getInfo: { args: z.tuple([]) },
+        setStateArgs: { args: z.tuple([z.record(z.unknown())]) },
+        focusPanel: { args: z.tuple([z.string().optional()]) },
+        getBootstrapConfig: { args: z.tuple([]) },
+        getWorkspaceTree: { args: z.tuple([]) },
+        listBranches: { args: z.tuple([z.string()]) },
+        listCommits: { args: z.tuple([z.string(), z.string().optional(), z.number().optional()]) },
+        listAgents: { args: z.tuple([]) },
+        openDevtools: { args: z.tuple([]) },
+        openFolderDialog: { args: z.tuple([z.object({ title: z.string().optional() }).optional()]) },
+      },
+      handler: async (ctx, method, serviceArgs) => {
+        return handleHeadlessBridgeCall(
+          headlessBridgeDeps,
+          ctx.callerId,
+          method,
+          serviceArgs as unknown[],
+        );
+      },
     });
 
     // ── On-demand panel creation: populate source registry ───────────
@@ -416,31 +436,49 @@ async function main() {
       cdpBridgeInstance = cdpBridge;
 
       // Register browser service for CDP + navigation
-      dispatcher.register("browser", async (ctx, method, serviceArgs) => {
-        const a = serviceArgs as unknown[];
-        switch (method) {
-          case "getCdpEndpoint": {
-            const endpoint = cdpBridge.getCdpEndpoint(a[0] as string, ctx.callerId);
-            if (!endpoint) throw new Error(`Access denied or browser not found: ${a[0]}`);
-            return endpoint;
+      dispatcher.registerService({
+        name: "browser",
+        description: "CDP/browser automation (headless mode)",
+        policy: { allowed: ["shell", "panel", "server"] },
+        methods: {
+          getCdpEndpoint: { args: z.tuple([z.string()]) },
+          navigate: { args: z.tuple([z.string(), z.string()]) },
+          goBack: { args: z.tuple([z.string()]) },
+          goForward: { args: z.tuple([z.string()]) },
+          reload: { args: z.tuple([z.string()]) },
+          stop: { args: z.tuple([z.string()]) },
+        },
+        handler: async (ctx, method, serviceArgs) => {
+          const a = serviceArgs as unknown[];
+          switch (method) {
+            case "getCdpEndpoint": {
+              const endpoint = cdpBridge.getCdpEndpoint(a[0] as string, ctx.callerId);
+              if (!endpoint) throw new Error(`Access denied or browser not found: ${a[0]}`);
+              return endpoint;
+            }
+            case "navigate":
+            case "goBack":
+            case "goForward":
+            case "reload":
+            case "stop":
+              return cdpBridge.sendBrowserCommand(a[0] as string, ctx.callerId, method, a.slice(1));
+            default:
+              throw new Error(`Unknown browser method: ${method}`);
           }
-          case "navigate":
-          case "goBack":
-          case "goForward":
-          case "reload":
-          case "stop": {
-            return cdpBridge.sendBrowserCommand(a[0] as string, ctx.callerId, method, a.slice(1));
-          }
-          default:
-            throw new Error(`Unknown browser method: ${method}`);
-        }
+        },
       });
     }
 
     // Stub browser service when --serve-panels is off
     if (!panelHttpServer) {
-      dispatcher.register("browser", async () => {
-        throw new Error("browser service requires --serve-panels mode");
+      dispatcher.registerService({
+        name: "browser",
+        description: "CDP/browser automation (headless mode - unavailable)",
+        policy: { allowed: ["shell", "panel", "server"] },
+        methods: {},
+        handler: async () => {
+          throw new Error("browser service requires --serve-panels mode");
+        },
       });
     }
 
@@ -450,8 +488,25 @@ async function main() {
     fsServiceRef = fsService;
     headlessPanelManager.setFsService(fsService);
 
-    dispatcher.register("fs", async (ctx, method, serviceArgs) => {
-      return handleFsCall(fsService, ctx, method, serviceArgs as unknown[]);
+    const fsMethodSchema = { args: z.tuple([z.string()]).rest(z.unknown()) };
+    dispatcher.registerService({
+      name: "fs",
+      description: "Per-context filesystem operations (sandboxed to context folder)",
+      policy: { allowed: ["panel", "server"] },
+      methods: {
+        readFile: fsMethodSchema,
+        writeFile: fsMethodSchema,
+        readdir: fsMethodSchema,
+        mkdir: fsMethodSchema,
+        stat: fsMethodSchema,
+        open: fsMethodSchema,
+        close: fsMethodSchema,
+        read: fsMethodSchema,
+        write: fsMethodSchema,
+      },
+      handler: async (ctx, method, serviceArgs) => {
+        return handleFsCall(fsService, ctx, method, serviceArgs as unknown[]);
+      },
     });
   }
 

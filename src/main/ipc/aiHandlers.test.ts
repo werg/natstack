@@ -1,92 +1,76 @@
 /**
- * Tests for AI service handler.
+ * Tests for AI service.
  */
 
-import { handleAiServiceCall } from "./aiHandlers.js";
+import { createAiService } from "../../server/services/aiService.js";
+import type { ServiceContext } from "../serviceDispatcher.js";
 
-describe("handleAiServiceCall", () => {
+describe("aiService", () => {
   const mockAiHandler = {
     getAvailableRoles: vi.fn().mockResolvedValue({ editor: true }),
     cancelStream: vi.fn(),
     initialize: vi.fn().mockResolvedValue(undefined),
+    startTargetStream: vi.fn(),
   };
-  const mockStartStream = vi.fn();
+  const mockRpcServer = {
+    createWsStreamTarget: vi.fn().mockReturnValue({ write: vi.fn(), end: vi.fn() }),
+  };
+
+  const svc = createAiService({
+    aiHandler: mockAiHandler as any,
+    rpcServer: mockRpcServer as any,
+  });
+  const handler = svc.handler;
+
+  const shellCtx: ServiceContext = { callerId: "shell", callerKind: "shell" };
+  const panelCtx: ServiceContext = { callerId: "panel-1", callerKind: "panel" };
+  const serverCtx: ServiceContext = { callerId: "srv", callerKind: "server" };
 
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("throws when aiHandler is null", async () => {
-    await expect(
-      handleAiServiceCall(null, "listRoles", [], mockStartStream),
-    ).rejects.toThrow("AI handler not initialized");
-  });
-
   it("listRoles calls aiHandler.getAvailableRoles()", async () => {
-    const result = await handleAiServiceCall(
-      mockAiHandler as any,
-      "listRoles",
-      [],
-      mockStartStream,
-    );
+    const result = await handler(shellCtx, "listRoles", []);
     expect(mockAiHandler.getAvailableRoles).toHaveBeenCalled();
     expect(result).toEqual({ editor: true });
   });
 
   it("streamCancel calls aiHandler.cancelStream(streamId)", async () => {
-    await handleAiServiceCall(
-      mockAiHandler as any,
-      "streamCancel",
-      ["stream-42"],
-      mockStartStream,
-    );
+    await handler(shellCtx, "streamCancel", ["stream-42"]);
     expect(mockAiHandler.cancelStream).toHaveBeenCalledWith("stream-42");
   });
 
-  it("streamTextStart calls startStream with handler, options, and streamId", async () => {
+  it("streamTextStart requires wsClient", async () => {
     const options = { model: "claude-3", messages: [] };
-    await handleAiServiceCall(
-      mockAiHandler as any,
-      "streamTextStart",
-      [options, "stream-99"],
-      mockStartStream,
-    );
-    expect(mockStartStream).toHaveBeenCalledWith(
-      mockAiHandler,
-      options,
-      "stream-99",
+    await expect(handler(shellCtx, "streamTextStart", [options, "stream-99"])).rejects.toThrow(
+      "AI streaming requires a WS connection",
     );
   });
 
-  it("reinitialize throws for non-server callers and succeeds for server callers", async () => {
-    await expect(
-      handleAiServiceCall(
-        mockAiHandler as any,
-        "reinitialize",
-        [],
-        mockStartStream,
-        "panel",
-      ),
-    ).rejects.toThrow("ai.reinitialize is restricted to server callers");
+  it("streamTextStart calls startTargetStream with wsClient", async () => {
+    const options = { model: "claude-3", messages: [] };
+    const wsCtx: ServiceContext = {
+      ...panelCtx,
+      wsClient: { ws: {}, callerId: "p1", callerKind: "panel" } as any,
+    };
+    await handler(wsCtx, "streamTextStart", [options, "stream-99"]);
+    expect(mockRpcServer.createWsStreamTarget).toHaveBeenCalled();
+    expect(mockAiHandler.startTargetStream).toHaveBeenCalled();
+  });
 
-    await handleAiServiceCall(
-      mockAiHandler as any,
-      "reinitialize",
-      [],
-      mockStartStream,
-      "server",
+  it("reinitialize throws for non-server callers and succeeds for server", async () => {
+    await expect(handler(panelCtx, "reinitialize", [])).rejects.toThrow(
+      "ai.reinitialize is restricted to server callers",
     );
+
+    await handler(serverCtx, "reinitialize", []);
     expect(mockAiHandler.initialize).toHaveBeenCalled();
   });
 
   it("throws on unknown method", async () => {
-    await expect(
-      handleAiServiceCall(
-        mockAiHandler as any,
-        "unknownMethod",
-        [],
-        mockStartStream,
-      ),
-    ).rejects.toThrow("Unknown AI method: unknownMethod");
+    await expect(handler(shellCtx, "unknownMethod", [])).rejects.toThrow(
+      "Unknown AI method: unknownMethod",
+    );
   });
 });

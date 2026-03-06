@@ -20,7 +20,7 @@ import { TOOL_EXECUTION_TIMEOUT_MS } from "../shared/constants.js";
 import { findServicePort } from "../main/portUtils.js";
 import {
   parseServiceMethod,
-  getServiceDispatcher,
+
   ServiceDispatcher,
   type CallerKind,
   type ServiceContext,
@@ -65,13 +65,13 @@ export class RpcServer {
   constructor(
     private deps: {
       tokenManager: TokenManager;
+      dispatcher: ServiceDispatcher;
       panelManager?: PanelManagerLike;
-      dispatcher?: ServiceDispatcher;
       /** Called when an authenticated client disconnects (e.g., for fs handle cleanup) */
       onClientDisconnect?: (callerId: string, callerKind: CallerKind) => void;
     }
   ) {
-    this.dispatcher = deps.dispatcher ?? getServiceDispatcher();
+    this.dispatcher = deps.dispatcher;
   }
 
   async start(): Promise<number> {

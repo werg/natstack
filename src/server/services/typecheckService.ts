@@ -1,8 +1,7 @@
-import * as path from "path";
 import { z } from "zod";
 import type { ServiceDefinition } from "../../main/serviceDefinition.js";
 import type { ContextFolderManager } from "../../main/contextFolderManager.js";
-import { resolveWithinContext, validateFilePathWithinRoot } from "../../main/services/contextPaths.js";
+import { resolveContextScope } from "../../main/services/contextMiddleware.js";
 
 export function createTypecheckService(deps: {
   contextFolderManager: ContextFolderManager;
@@ -26,18 +25,22 @@ export function createTypecheckService(deps: {
         ctxId: string | undefined,
       ): Promise<string> => {
         if (ctxId) {
-          if (path.isAbsolute(panelPath)) {
-            throw new Error("Absolute panel_path is not allowed when contextId is set — use a relative path");
-          }
-          const ctxRoot = await deps.contextFolderManager.ensureContextFolder(ctxId);
-          return resolveWithinContext(ctxRoot, panelPath);
+          const scope = await resolveContextScope(deps.contextFolderManager, ctxId);
+          return scope.resolvePath(panelPath);
         }
         return panelPath;
       };
 
-      const validateFilePath = (resolvedPanelPath: string, filePath: string | undefined): void => {
+      const validateFilePath = async (
+        resolvedPanelPath: string,
+        filePath: string | undefined,
+        ctxId: string | undefined,
+      ): Promise<void> => {
         if (!filePath) return;
-        validateFilePathWithinRoot(resolvedPanelPath, filePath);
+        if (ctxId) {
+          const scope = await resolveContextScope(deps.contextFolderManager, ctxId);
+          scope.validatePath(filePath);
+        }
       };
 
       switch (method) {
@@ -53,17 +56,17 @@ export function createTypecheckService(deps: {
           );
         case "check": {
           const panelPath = await resolvePanelPath(args[0] as string, args[3] as string | undefined);
-          validateFilePath(panelPath, args[1] as string | undefined);
+          await validateFilePath(panelPath, args[1] as string | undefined, args[3] as string | undefined);
           return typeCheckRpcMethods["typecheck.check"](panelPath, args[1] as string | undefined, args[2] as string | undefined);
         }
         case "getTypeInfo": {
           const panelPath = await resolvePanelPath(args[0] as string, args[5] as string | undefined);
-          validateFilePath(panelPath, args[1] as string | undefined);
+          await validateFilePath(panelPath, args[1] as string | undefined, args[5] as string | undefined);
           return typeCheckRpcMethods["typecheck.getTypeInfo"](panelPath, args[1] as string, args[2] as number, args[3] as number, args[4] as string | undefined);
         }
         case "getCompletions": {
           const panelPath = await resolvePanelPath(args[0] as string, args[5] as string | undefined);
-          validateFilePath(panelPath, args[1] as string | undefined);
+          await validateFilePath(panelPath, args[1] as string | undefined, args[5] as string | undefined);
           return typeCheckRpcMethods["typecheck.getCompletions"](panelPath, args[1] as string, args[2] as number, args[3] as number, args[4] as string | undefined);
         }
         default:

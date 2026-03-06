@@ -1,31 +1,34 @@
 /**
  * Tests for ServiceDispatcher and parseServiceMethod.
- *
- * Since the ServiceDispatcher class is not exported, we use vi.resetModules()
- * and dynamic imports to get a fresh singleton for each test group.
  */
 
-import { ServiceError, parseServiceMethod } from "./serviceDispatcher.js";
+import { z } from "zod";
+import {
+  ServiceDispatcher,
+  ServiceError,
+  parseServiceMethod,
+} from "./serviceDispatcher.js";
 import type { ServiceContext, ServiceHandler } from "./serviceDispatcher.js";
-
-/**
- * Helper: dynamically import a fresh getServiceDispatcher (resets the singleton).
- */
-async function freshDispatcher() {
-  vi.resetModules();
-  const mod = await import("./serviceDispatcher.js");
-  return mod.getServiceDispatcher();
-}
+import type { ServiceDefinition } from "./serviceDefinition.js";
 
 const ctx: ServiceContext = {
   callerId: "test",
   callerKind: "shell",
 };
 
+function makeService(name: string, handler: ServiceHandler): ServiceDefinition {
+  return {
+    name,
+    policy: { allowed: ["shell", "panel", "server"] },
+    methods: {},
+    handler,
+  };
+}
+
 describe("ServiceDispatcher", () => {
   it("dispatch throws ServiceError when not initialized", async () => {
-    const sd = await freshDispatcher();
-    sd.register("echo", (async (_ctx, method, args) => ({ method, args })) as ServiceHandler);
+    const sd = new ServiceDispatcher();
+    sd.registerService(makeService("echo", async (_ctx, method, args) => ({ method, args })));
 
     await expect(sd.dispatch(ctx, "echo", "hello", [])).rejects.toThrow(
       "Services not yet initialized"
@@ -33,7 +36,7 @@ describe("ServiceDispatcher", () => {
   });
 
   it("dispatch throws ServiceError for unknown service", async () => {
-    const sd = await freshDispatcher();
+    const sd = new ServiceDispatcher();
     sd.markInitialized();
 
     await expect(sd.dispatch(ctx, "nope", "foo", [])).rejects.toThrow(
@@ -42,8 +45,8 @@ describe("ServiceDispatcher", () => {
   });
 
   it("dispatch calls registered handler and returns result", async () => {
-    const sd = await freshDispatcher();
-    sd.register("echo", (async (_ctx, method, args) => ({ method, args })) as ServiceHandler);
+    const sd = new ServiceDispatcher();
+    sd.registerService(makeService("echo", async (_ctx, method, args) => ({ method, args })));
     sd.markInitialized();
 
     const result = await sd.dispatch(ctx, "echo", "hello", ["world"]);
@@ -51,32 +54,27 @@ describe("ServiceDispatcher", () => {
   });
 
   it("dispatch wraps non-ServiceError exceptions in ServiceError", async () => {
-    const sd = await freshDispatcher();
-    sd.register("fail", (async () => {
-      throw new Error("boom");
-    }) as ServiceHandler);
+    const sd = new ServiceDispatcher();
+    sd.registerService(makeService("fail", async () => { throw new Error("boom"); }));
     sd.markInitialized();
 
     try {
       await sd.dispatch(ctx, "fail", "run", []);
       expect.fail("should have thrown");
     } catch (err: any) {
-      // Cannot use toBeInstanceOf(ServiceError) here because vi.resetModules()
-      // causes the dynamically-imported class to differ from the static import.
-      expect(err.name).toBe("ServiceError");
+      expect(err).toBeInstanceOf(ServiceError);
       expect(err.service).toBe("fail");
       expect(err.method).toBe("run");
       expect(err.message).toContain("boom");
     }
   });
 
-  it("register warns on overwrite", async () => {
-    const sd = await freshDispatcher();
+  it("registerService warns on overwrite", async () => {
+    const sd = new ServiceDispatcher();
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    const handler = (async () => {}) as ServiceHandler;
-    sd.register("svc", handler);
-    sd.register("svc", handler);
+    sd.registerService(makeService("svc", async () => {}));
+    sd.registerService(makeService("svc", async () => {}));
 
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining("Overwriting handler for service: svc")
@@ -85,14 +83,75 @@ describe("ServiceDispatcher", () => {
   });
 
   it("hasService and getServices reflect registrations", async () => {
-    const sd = await freshDispatcher();
-    const handler = (async () => {}) as ServiceHandler;
-    sd.register("alpha", handler);
-    sd.register("beta", handler);
+    const sd = new ServiceDispatcher();
+    sd.registerService(makeService("alpha", async () => {}));
+    sd.registerService(makeService("beta", async () => {}));
 
     expect(sd.hasService("alpha")).toBe(true);
     expect(sd.hasService("gamma")).toBe(false);
     expect(sd.getServices()).toEqual(expect.arrayContaining(["alpha", "beta"]));
+  });
+
+  it("getServiceDefinitions returns all definitions", () => {
+    const sd = new ServiceDispatcher();
+    sd.registerService(makeService("a", async () => {}));
+    sd.registerService(makeService("b", async () => {}));
+
+    const defs = sd.getServiceDefinitions();
+    expect(defs).toHaveLength(2);
+    expect(defs.map((d) => d.name).sort()).toEqual(["a", "b"]);
+  });
+
+  it("getPolicy returns policy from definition", () => {
+    const sd = new ServiceDispatcher();
+    sd.registerService({
+      name: "restricted",
+      policy: { allowed: ["shell"] },
+      methods: {},
+      handler: async () => {},
+    });
+
+    expect(sd.getPolicy("restricted")).toEqual({ allowed: ["shell"] });
+    expect(sd.getPolicy("nonexistent")).toBeUndefined();
+  });
+
+  it("validates args against Zod schema when method is defined", async () => {
+    const sd = new ServiceDispatcher();
+    sd.registerService({
+      name: "typed",
+      policy: { allowed: ["shell"] },
+      methods: {
+        greet: { args: z.tuple([z.string()]) },
+      },
+      handler: async (_ctx, _method, args) => `hello ${args[0]}`,
+    });
+    sd.markInitialized();
+
+    // Valid args
+    const result = await sd.dispatch(ctx, "typed", "greet", ["world"]);
+    expect(result).toBe("hello world");
+
+    // Invalid args
+    await expect(sd.dispatch(ctx, "typed", "greet", [42])).rejects.toThrow(
+      "Invalid args"
+    );
+  });
+
+  it("getMethodSchema returns method definition", () => {
+    const sd = new ServiceDispatcher();
+    sd.registerService({
+      name: "svc",
+      policy: { allowed: ["shell"] },
+      methods: {
+        doStuff: { args: z.tuple([z.string()]), description: "does stuff" },
+      },
+      handler: async () => {},
+    });
+
+    const schema = sd.getMethodSchema("svc", "doStuff");
+    expect(schema).toBeDefined();
+    expect(schema?.description).toBe("does stuff");
+    expect(sd.getMethodSchema("svc", "nope")).toBeUndefined();
   });
 });
 

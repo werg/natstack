@@ -1,8 +1,8 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "../../main/serviceDefinition.js";
 import type { AIHandler } from "../../main/ai/aiHandler.js";
-import type { RpcServer } from "../rpcServer.js";
 import type { StreamTextOptions } from "../../shared/types.js";
+import type { RpcServer } from "../rpcServer.js";
 
 export function createAiService(deps: {
   aiHandler: AIHandler;
@@ -19,20 +19,38 @@ export function createAiService(deps: {
       reinitialize: { args: z.tuple([]) },
     },
     handler: async (ctx, method, args) => {
-      const { handleAiServiceCall } = await import("../../main/ipc/aiHandlers.js");
-      return handleAiServiceCall(
-        deps.aiHandler,
-        method,
-        args as unknown[],
-        (handler, options, streamId) => {
+      const aiHandler = deps.aiHandler;
+
+      switch (method) {
+        case "listRoles":
+          return aiHandler.getAvailableRoles();
+
+        case "streamCancel": {
+          const [streamId] = args as [string];
+          aiHandler.cancelStream(streamId);
+          return;
+        }
+
+        case "streamTextStart": {
+          const [options, streamId] = args as [StreamTextOptions, string];
           if (!ctx.wsClient) {
             throw new Error("AI streaming requires a WS connection");
           }
           const target = deps.rpcServer.createWsStreamTarget(ctx.wsClient, streamId);
-          handler.startTargetStream(target, options, streamId);
-        },
-        ctx.callerKind,
-      );
+          aiHandler.startTargetStream(target, options, streamId);
+          return;
+        }
+
+        case "reinitialize":
+          if (ctx.callerKind !== "server") {
+            throw new Error("ai.reinitialize is restricted to server callers");
+          }
+          await aiHandler.initialize();
+          return;
+
+        default:
+          throw new Error(`Unknown AI method: ${method}`);
+      }
     },
   };
 }

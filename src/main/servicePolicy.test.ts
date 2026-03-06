@@ -1,98 +1,74 @@
 /**
- * Tests for service access policies.
+ * Tests for service access policy checking.
  */
 
-import {
-  checkServiceAccess,
-  hasServicePolicy,
-  getAccessibleServices,
-  SERVICE_POLICIES,
-} from "./servicePolicy.js";
+import { checkServiceAccess, type PolicyRegistry } from "./servicePolicy.js";
+
+function makeRegistry(policies: Record<string, { allowed: string[] }>): PolicyRegistry {
+  return {
+    getPolicy: (service) => {
+      const p = policies[service];
+      return p ? { allowed: p.allowed as any[] } : undefined;
+    },
+  };
+}
 
 describe("checkServiceAccess", () => {
+  const registry = makeRegistry({
+    app: { allowed: ["shell"] },
+    panel: { allowed: ["shell"] },
+    view: { allowed: ["shell"] },
+    workspace: { allowed: ["shell"] },
+    central: { allowed: ["shell"] },
+    settings: { allowed: ["shell"] },
+    menu: { allowed: ["shell"] },
+    bridge: { allowed: ["panel", "shell", "server"] },
+    ai: { allowed: ["shell", "panel", "server"] },
+    db: { allowed: ["shell", "panel", "server"] },
+    tokens: { allowed: ["server"] },
+    fs: { allowed: ["panel", "server"] },
+  });
+
   it("allows shell to access shell-only services", () => {
     for (const svc of ["app", "panel", "view", "workspace", "central", "settings", "menu"]) {
-      expect(() => checkServiceAccess(svc, "shell")).not.toThrow();
+      expect(() => checkServiceAccess(svc, "shell", registry)).not.toThrow();
     }
   });
 
   it("denies panel access to shell-only services", () => {
-    expect(() => checkServiceAccess("app", "panel")).toThrow(
+    expect(() => checkServiceAccess("app", "panel", registry)).toThrow(
       "not accessible to panel callers"
     );
   });
 
   it("allows panel, shell, and server to access bridge", () => {
-    expect(() => checkServiceAccess("bridge", "panel")).not.toThrow();
-    expect(() => checkServiceAccess("bridge", "shell")).not.toThrow();
-    expect(() => checkServiceAccess("bridge", "server")).not.toThrow();
+    expect(() => checkServiceAccess("bridge", "panel", registry)).not.toThrow();
+    expect(() => checkServiceAccess("bridge", "shell", registry)).not.toThrow();
+    expect(() => checkServiceAccess("bridge", "server", registry)).not.toThrow();
   });
 
   it("allows server to access tokens and denies others", () => {
-    expect(() => checkServiceAccess("tokens", "server")).not.toThrow();
-    expect(() => checkServiceAccess("tokens", "shell")).toThrow(
+    expect(() => checkServiceAccess("tokens", "server", registry)).not.toThrow();
+    expect(() => checkServiceAccess("tokens", "shell", registry)).toThrow(
       "not accessible to shell callers"
     );
-    expect(() => checkServiceAccess("tokens", "panel")).toThrow(
+    expect(() => checkServiceAccess("tokens", "panel", registry)).toThrow(
       "not accessible to panel callers"
     );
   });
 
   it("returns void (no throw) for unknown services", () => {
-    expect(() => checkServiceAccess("nonexistent", "panel")).not.toThrow();
+    expect(() => checkServiceAccess("nonexistent", "panel", registry)).not.toThrow();
   });
 
-  it("checks registry before falling back to SERVICE_POLICIES", () => {
-    const registry = {
-      getPolicy: (service: string) => {
-        if (service === "custom") return { allowed: ["server" as const] };
-        return undefined;
-      },
-    };
+  it("uses registry for policy lookup", () => {
+    const customRegistry = makeRegistry({
+      custom: { allowed: ["server"] },
+    });
 
-    // Registry-defined policy: only server allowed
-    expect(() => checkServiceAccess("custom", "server", registry)).not.toThrow();
-    expect(() => checkServiceAccess("custom", "panel", registry)).toThrow(
+    expect(() => checkServiceAccess("custom", "server", customRegistry)).not.toThrow();
+    expect(() => checkServiceAccess("custom", "panel", customRegistry)).toThrow(
       "not accessible to panel callers"
     );
-
-    // Falls back to SERVICE_POLICIES for services not in registry
-    expect(() => checkServiceAccess("app", "shell", registry)).not.toThrow();
-  });
-});
-
-describe("hasServicePolicy", () => {
-  it("returns true for known services", () => {
-    expect(hasServicePolicy("ai")).toBe(true);
-    expect(hasServicePolicy("db")).toBe(true);
-  });
-
-  it("returns false for unknown services", () => {
-    expect(hasServicePolicy("unknown-svc")).toBe(false);
-  });
-});
-
-describe("getAccessibleServices", () => {
-  it("returns the correct services for each caller kind", () => {
-    const shellServices = getAccessibleServices("shell");
-    // Shell can access shell-only services
-    expect(shellServices).toContain("app");
-    expect(shellServices).toContain("settings");
-    // Shell can also access shared services
-    expect(shellServices).toContain("ai");
-    expect(shellServices).toContain("bridge");
-    // Shell cannot access server-only
-    expect(shellServices).not.toContain("tokens");
-
-    const panelServices = getAccessibleServices("panel");
-    expect(panelServices).toContain("bridge");
-    expect(panelServices).toContain("ai");
-    expect(panelServices).not.toContain("app");
-    expect(panelServices).not.toContain("tokens");
-
-    const serverServices = getAccessibleServices("server");
-    expect(serverServices).toContain("tokens");
-    expect(serverServices).toContain("bridge");
-    expect(serverServices).not.toContain("app");
   });
 });

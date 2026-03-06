@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "../../main/serviceDefinition.js";
 import type { GlobalAgentSettings, AgentSettings } from "@natstack/types";
+import { getAgentSettingsService } from "../../main/agentSettings.js";
+import { getAgentDiscovery } from "../../main/agentDiscovery.js";
 
 export function createAgentSettingsService(): ServiceDefinition {
   return {
@@ -16,8 +18,48 @@ export function createAgentSettingsService(): ServiceDefinition {
       listAgents: { args: z.tuple([]) },
     },
     handler: async (_ctx, method, args) => {
-      const { handleAgentSettingsCall } = await import("../../main/ipc/agentSettingsHandlers.js");
-      return handleAgentSettingsCall(method, args as unknown[]);
+      if (method === "listAgents") {
+        const discovery = getAgentDiscovery();
+        if (!discovery) return [];
+        return discovery.listValid().map((agent) => agent.manifest);
+      }
+
+      const service = getAgentSettingsService();
+      if (!service) {
+        throw new Error("AgentSettingsService not initialized");
+      }
+
+      switch (method) {
+        case "getGlobalSettings":
+          return service.getGlobalSettings();
+
+        case "setGlobalSetting": {
+          const [key, value] = args as [keyof GlobalAgentSettings, GlobalAgentSettings[keyof GlobalAgentSettings]];
+          if (!key) throw new Error("Missing key argument");
+          service.setGlobalSetting(key, value);
+          return;
+        }
+
+        case "getAgentSettings": {
+          const [agentId] = args as [string];
+          if (!agentId) throw new Error("Missing agentId argument");
+          return service.getAgentSettings(agentId);
+        }
+
+        case "getAllAgentSettings":
+          return service.getAllAgentSettings();
+
+        case "setAgentSettings": {
+          const [agentId, settings] = args as [string, AgentSettings];
+          if (!agentId) throw new Error("Missing agentId argument");
+          if (!settings || typeof settings !== "object") throw new Error("Invalid settings argument");
+          service.setAgentSettings(agentId, settings);
+          return;
+        }
+
+        default:
+          throw new Error(`Unknown agentSettings method: ${method}`);
+      }
     },
   };
 }

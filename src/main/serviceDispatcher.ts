@@ -6,8 +6,47 @@
  * and dispatch mechanism that all code paths use.
  */
 
+import { z } from "zod";
 import type { ServiceDefinition, MethodDef } from "./serviceDefinition.js";
 import type { ServicePolicy } from "./servicePolicy.js";
+
+/**
+ * Normalize an args array for wire compatibility with a Zod tuple schema.
+ *
+ * RPC args arrive as JSON arrays where:
+ * - Trailing optional args may be omitted entirely (shorter array)
+ * - `undefined` values become `null` after JSON round-trip
+ *
+ * This function pads short arrays to the expected tuple length and replaces
+ * trailing `null` with `undefined` so Zod's `.optional()` accepts them.
+ */
+function normalizeArgs(args: unknown[], schema: z.ZodType): unknown[] {
+  if (!(schema instanceof z.ZodTuple)) return args;
+
+  const items = (schema as z.ZodTuple)._def.items as z.ZodType[];
+  if (args.length >= items.length) {
+    // Full-length array — just fix null→undefined for optional positions
+    return args.map((arg, i) => {
+      if (arg === null && i < items.length && items[i]!.isOptional()) {
+        return undefined;
+      }
+      return arg;
+    });
+  }
+
+  // Short array — pad with undefined for missing optional trailing args
+  const padded = [...args];
+  for (let i = args.length; i < items.length; i++) {
+    padded.push(undefined);
+  }
+  // Also fix null→undefined in the provided args
+  return padded.map((arg, i) => {
+    if (arg === null && i < items.length && items[i]!.isOptional()) {
+      return undefined;
+    }
+    return arg;
+  });
+}
 
 export type CallerKind = "panel" | "shell" | "server";
 
@@ -39,7 +78,7 @@ export class ServiceError extends Error {
 }
 
 /**
- * Service dispatcher with both legacy register() and new registerService() support.
+ * Service dispatcher — all services registered via registerService().
  */
 export class ServiceDispatcher {
   private handlers = new Map<string, ServiceHandler>();
@@ -51,16 +90,6 @@ export class ServiceDispatcher {
    */
   markInitialized(): void {
     this.initialized = true;
-  }
-
-  /**
-   * Register a service handler (legacy path — will be replaced by registerService).
-   */
-  register(service: string, handler: ServiceHandler): void {
-    if (this.handlers.has(service)) {
-      console.warn(`[ServiceDispatcher] Overwriting handler for service: ${service}`);
-    }
-    this.handlers.set(service, handler);
   }
 
   /**
@@ -92,12 +121,18 @@ export class ServiceDispatcher {
       throw new ServiceError(service, method, "Unknown service");
     }
 
-    // Validate args against schema if service was registered via registerService
+    // Validate args against schema if method has a definition
     const def = this.definitions.get(service);
     if (def) {
       const methodDef = def.methods[method];
       if (methodDef) {
-        const parsed = methodDef.args.safeParse(args);
+        // Normalize args for wire compatibility: RPC args arrive as JSON arrays
+        // where trailing optional args may be omitted (shorter array) or null
+        // (JSON serialization of undefined). Pad short arrays to match the
+        // tuple length and replace null with undefined so Zod's .optional()
+        // accepts them.
+        const normalized = normalizeArgs(args, methodDef.args);
+        const parsed = methodDef.args.safeParse(normalized);
         if (!parsed.success) {
           throw new ServiceError(
             service,
@@ -105,6 +140,8 @@ export class ServiceDispatcher {
             `Invalid args: ${parsed.error.message}`
           );
         }
+        // Use normalized args so handlers see undefined (not null) for optional params
+        args = normalized;
       }
     }
 
@@ -151,21 +188,11 @@ export class ServiceDispatcher {
   }
 
   /**
-   * Get the policy for a service (from ServiceDefinition if registered via registerService).
+   * Get the policy for a service (from ServiceDefinition).
    */
   getPolicy(service: string): ServicePolicy | undefined {
     return this.definitions.get(service)?.policy;
   }
-}
-
-// Singleton instance
-let instance: ServiceDispatcher | null = null;
-
-export function getServiceDispatcher(): ServiceDispatcher {
-  if (!instance) {
-    instance = new ServiceDispatcher();
-  }
-  return instance;
 }
 
 /**
