@@ -5,10 +5,7 @@
  * and returns a handle for deferred AI service registration and shutdown.
  */
 
-import * as path from "path";
-import { resolveWithinContext, validateFilePathWithinRoot } from "./services/contextPaths.js";
 import { createDevLogger } from "./devLog.js";
-import { getTypeDefinitionService, typeCheckRpcMethods } from "./typecheck/service.js";
 import { createGitWatcher, type GitWatcher } from "./workspace/gitWatcher.js";
 import { getPubSubServer } from "./pubsubServer.js";
 import { initAgentDiscovery, shutdownAgentDiscovery } from "./agentDiscovery.js";
@@ -16,9 +13,6 @@ import { initAgentSettingsService, shutdownAgentSettingsService } from "./agentS
 import { initAgentHost, shutdownAgentHost, setAgentHostAiHandler } from "./agentHost.js";
 import { getTokenManager } from "./tokenManager.js";
 import { getServiceDispatcher } from "./serviceDispatcher.js";
-import { handleAgentSettingsCall } from "./ipc/agentSettingsHandlers.js";
-import { handleDbCall } from "./ipc/dbHandlers.js";
-import { getDatabaseManager } from "./db/databaseManager.js";
 import { handleAiServiceCall } from "./ipc/aiHandlers.js";
 import type { Workspace } from "./workspace/types.js";
 import type { GitServer } from "./gitServer.js";
@@ -103,111 +97,7 @@ export async function startCoreServices({
     await aiHandler.initialize();
     setAgentHostAiHandler(aiHandler);
 
-    // Register shared dispatcher services
     const dispatcher = getServiceDispatcher();
-
-    dispatcher.register(
-      "agentSettings",
-      async (_ctx, serviceMethod, serviceArgs) => {
-        return handleAgentSettingsCall(
-          serviceMethod,
-          serviceArgs as unknown[]
-        );
-      }
-    );
-
-    dispatcher.register("db", async (ctx, serviceMethod, serviceArgs) => {
-      return handleDbCall(
-        getDatabaseManager(),
-        ctx.callerId,
-        serviceMethod,
-        serviceArgs
-      );
-    });
-
-    dispatcher.register(
-      "typecheck",
-      async (_ctx, serviceMethod, serviceArgs) => {
-        const args = serviceArgs as unknown[];
-
-        // Helper: resolve panel paths when contextId is provided.
-        // Rejects absolute paths when contextId is set (agents must use relative paths).
-        const resolvePanelPath = async (
-          panelPath: string,
-          ctxId: string | undefined,
-        ): Promise<string> => {
-          if (ctxId) {
-            if (path.isAbsolute(panelPath)) {
-              throw new Error("Absolute panel_path is not allowed when contextId is set — use a relative path");
-            }
-            const ctxRoot = await contextFolderManager.ensureContextFolder(ctxId);
-            return resolveWithinContext(ctxRoot, panelPath);
-          }
-          return panelPath;
-        };
-
-        // Helper: validate filePath stays within the resolved panelPath.
-        const validateFilePath = (resolvedPanelPath: string, filePath: string | undefined): void => {
-          if (!filePath) return;
-          validateFilePathWithinRoot(resolvedPanelPath, filePath);
-        };
-
-        switch (serviceMethod) {
-          case "getPackageTypes":
-            return typeCheckRpcMethods["typecheck.getPackageTypes"](
-              args[0] as string,
-              args[1] as string
-            );
-          case "getPackageTypesBatch":
-            return typeCheckRpcMethods["typecheck.getPackageTypesBatch"](
-              args[0] as string,
-              args[1] as string[]
-            );
-          case "check": {
-            const panelPath = await resolvePanelPath(
-              args[0] as string,
-              args[3] as string | undefined,
-            );
-            validateFilePath(panelPath, args[1] as string | undefined);
-            return typeCheckRpcMethods["typecheck.check"](
-              panelPath,
-              args[1] as string | undefined,
-              args[2] as string | undefined
-            );
-          }
-          case "getTypeInfo": {
-            const panelPath = await resolvePanelPath(
-              args[0] as string,
-              args[5] as string | undefined,
-            );
-            validateFilePath(panelPath, args[1] as string | undefined);
-            return typeCheckRpcMethods["typecheck.getTypeInfo"](
-              panelPath,
-              args[1] as string,
-              args[2] as number,
-              args[3] as number,
-              args[4] as string | undefined
-            );
-          }
-          case "getCompletions": {
-            const panelPath = await resolvePanelPath(
-              args[0] as string,
-              args[5] as string | undefined,
-            );
-            validateFilePath(panelPath, args[1] as string | undefined);
-            return typeCheckRpcMethods["typecheck.getCompletions"](
-              panelPath,
-              args[1] as string,
-              args[2] as number,
-              args[3] as number,
-              args[4] as string | undefined
-            );
-          }
-          default:
-            throw new Error(`Unknown typecheck method: ${serviceMethod}`);
-        }
-      }
-    );
 
     return {
       aiHandler,

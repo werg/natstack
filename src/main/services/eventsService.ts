@@ -74,7 +74,7 @@ export class WsSubscriber implements Subscriber {
 /**
  * Event service for managing subscriptions and emitting events.
  */
-class EventService {
+export class EventService {
   private subscribers = new Map<EventName, Map<string, Subscriber>>();
   private subscribersByCallerId = new Map<string, Subscriber>();
 

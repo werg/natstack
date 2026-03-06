@@ -163,10 +163,12 @@ async function main() {
   const { GitServer } = await import("../main/gitServer.js");
   const { getTokenManager } = await import("../main/tokenManager.js");
   const { getServiceDispatcher } = await import("../main/serviceDispatcher.js");
-  const { handleEventsService } = await import("../main/services/eventsService.js");
+  const { eventService } = await import("../main/services/eventsService.js");
   const { RpcServer } = await import("./rpcServer.js");
   const { startCoreServices } = await import("../main/coreServices.js");
-  const { initBuildSystemV2, createBuildServiceHandler } = await import("./buildV2/index.js");
+  const { initBuildSystemV2 } = await import("./buildV2/index.js");
+  const { registerServerServices } = await import("./serverServiceRegistry.js");
+  const { getDatabaseManager } = await import("../main/db/databaseManager.js");
 
   // In IPC mode, dataDir comes from NATSTACK_USER_DATA_PATH env var
   const dataDir = args.dataDir ?? process.env["NATSTACK_USER_DATA_PATH"];
@@ -231,49 +233,7 @@ async function main() {
   // ===========================================================================
 
   const dispatcher = getServiceDispatcher();
-  dispatcher.register("events", handleEventsService);
 
-  // Build service
-  dispatcher.register("build", createBuildServiceHandler(buildSystem));
-
-  // Server-only services: tokens, git
-  dispatcher.register("tokens", async (_ctx, method, serviceArgs) => {
-    const tm = getTokenManager();
-    const a = serviceArgs as unknown[];
-    switch (method) {
-      case "create": return tm.createToken(a[0] as string, a[1] as import("../main/serviceDispatcher.js").CallerKind);
-      case "ensure": return tm.ensureToken(a[0] as string, a[1] as import("../main/serviceDispatcher.js").CallerKind);
-      case "revoke": tm.revokeToken(a[0] as string); return;
-      case "get": try { return tm.getToken(a[0] as string); } catch { return null; }
-      default: throw new Error(`Unknown tokens method: ${method}`);
-    }
-  });
-
-  dispatcher.register("git", async (_ctx, method, serviceArgs) => {
-    const g = handle.gitServer;
-    const a = serviceArgs as unknown[];
-
-    // Context-scoped git operations (from agentic tools)
-    if (method.startsWith("context")) {
-      const { handleGitContextCall } = await import("../main/services/gitContextService.js");
-      return handleGitContextCall(
-        contextFolderManager, g, getTokenManager(), method, a,
-      );
-    }
-
-    switch (method) {
-      case "getWorkspaceTree": return g.getWorkspaceTree();
-      case "listBranches": return g.listBranches(a[0] as string);
-      case "listCommits": return g.listCommits(a[0] as string, a[1] as string, a[2] as number);
-      case "getBaseUrl": return g.getBaseUrl();
-      case "getTokenForPanel": return g.getTokenForPanel(a[0] as string);
-      case "revokeTokenForPanel": g.revokeTokenForPanel(a[0] as string); return;
-      case "resolveRef": return g.resolveRef(a[0] as string, a[1] as string);
-      default: throw new Error(`Unknown git method: ${method}`);
-    }
-  });
-
-  // Test runner service
   // Resolve testSetup.ts relative to this module's location. The path differs
   // between dev mode (src/server/ → ../main/services/) and dist mode
   // (dist/ → ../src/main/services/) so we check both candidates.
@@ -283,19 +243,16 @@ async function main() {
     path.resolve(serverDir, "../src/main/services/testSetup.ts"),  // dist: dist → src/main
   ];
   const panelTestSetupPath: string = setupCandidates.find(p => fs.existsSync(p)) ?? setupCandidates[0]!;
-  dispatcher.register("test", async (_ctx, method, serviceArgs) => {
-    const { handleTestCall } = await import("../main/services/testRunnerService.js");
-    return handleTestCall(
-      { contextFolderManager, workspaceRoot: workspacePath, panelTestSetupPath },
-      method,
-      serviceArgs as unknown[],
-    );
-  });
 
-  // Project scaffolding service
-  dispatcher.register("project", async (_ctx, method, serviceArgs) => {
-    const { handleProjectCall } = await import("../main/services/projectService.js");
-    return handleProjectCall(contextFolderManager, handle.gitServer, getTokenManager(), method, serviceArgs as unknown[]);
+  registerServerServices(dispatcher, {
+    buildSystem,
+    gitServer: handle.gitServer,
+    tokenManager: getTokenManager(),
+    contextFolderManager,
+    eventService,
+    databaseManager: getDatabaseManager(),
+    workspacePath,
+    panelTestSetupPath,
   });
 
   // Admin token: use NATSTACK_ADMIN_TOKEN env var if set, otherwise generate random.
@@ -309,6 +266,7 @@ async function main() {
 
   const rpcServer = new RpcServer({
     tokenManager: getTokenManager(),
+    dispatcher,
     onClientDisconnect: (callerId, callerKind) => {
       const handleKey = callerKind === "panel" ? callerId : `server:${callerId}`;
       fsServiceRef?.closeHandlesForPanel(handleKey);
@@ -320,7 +278,9 @@ async function main() {
     },
   });
 
-  handle.registerAiService(rpcServer);
+  // AI service must be registered after RpcServer (needs createWsStreamTarget)
+  const { createAiService } = await import("./services/aiService.js");
+  dispatcher.registerService(createAiService({ aiHandler: handle.aiHandler, rpcServer }));
 
   const rpcPort = await rpcServer.start();
 
