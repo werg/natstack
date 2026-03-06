@@ -40,7 +40,6 @@ import {
   useContextId,       // Context ID for storage grouping
   usePanelFocus,      // Whether panel is focused
   usePanelParent,     // Parent handle (null if root)
-  useBootstrap,       // Bootstrap state for repoArgs
 } from "@workspace/react";
 ```
 
@@ -132,24 +131,6 @@ function SessionLauncher() {
 ```
 
 **Important:** Pass `contextId` in both the link options (for storage) and stateArgs (for app logic).
-
-### Bootstrap State
-
-When your panel declares `repoArgs`, use `useBootstrap` to track cloning progress:
-
-```tsx
-import { useBootstrap } from "@workspace/react";
-
-function App() {
-  const { loading, result, error } = useBootstrap();
-
-  if (loading) return <div>Cloning repositories...</div>;
-  if (error) return <div>Bootstrap failed: {error}</div>;
-
-  // result.argPaths contains { argName: "/args/argName" }
-  return <div>Ready! Repos at: {JSON.stringify(result?.argPaths)}</div>;
-}
-```
 
 ---
 

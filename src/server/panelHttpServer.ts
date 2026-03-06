@@ -531,7 +531,7 @@ export class PanelHttpServer {
       if (result.serverRpcPort) bootData["serverRpcPort"] = result.serverRpcPort;
       if (result.serverRpcToken) bootData["serverRpcToken"] = result.serverRpcToken;
 
-      // Preserve user query params (stateArgs, env, repoArgs, etc.) through the redirect.
+      // Preserve user query params (stateArgs, etc.) through the redirect.
       // Remove internal bootstrap params (_fresh, _bk) and add the new _bk.
       const redirectParams = new URLSearchParams(originalUrl.searchParams);
       redirectParams.delete("_fresh");

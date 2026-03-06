@@ -3,12 +3,10 @@ import * as path from "path";
 
 // Re-export types from shared types (canonical definitions)
 export type {
-  RepoArgSpec,
   Panel,
   PanelSnapshot,
   PanelManifest,
   ChildSpec,
-  EnvArgSchema,
   ShellPage,
 } from "../shared/types.js";
 
@@ -71,7 +69,6 @@ export {
   getPanelSource,
   getPanelOptions,
   getPanelEnv,
-  getPanelRepoArgs,
   getPanelContextId,
   getInjectHostThemeVariables,
   getSourcePage,

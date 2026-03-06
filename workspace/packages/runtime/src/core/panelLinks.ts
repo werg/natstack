@@ -4,10 +4,8 @@
  * Panels are served at `http://{subdomain}.localhost:{port}/{source}/`.
  * These builders produce relative paths for same-context navigation or
  * absolute URLs for cross-context navigation (different subdomain).
- * Query parameters carry options like contextId, repoArgs, etc.
+ * Query parameters carry options like contextId, stateArgs, etc.
  */
-
-import type { RepoArgSpec } from "./types.js";
 
 export interface BuildPanelLinkOptions {
   /**
@@ -16,10 +14,6 @@ export interface BuildPanelLinkOptions {
    * subdomain for cross-context navigation. Omit for same-context (relative URL).
    */
   contextId?: string;
-  /** Repo arguments required by the target manifest */
-  repoArgs?: Record<string, RepoArgSpec>;
-  /** Environment variables to pass to the panel (system config) */
-  env?: Record<string, string>;
   /** State arguments for the panel (user state, validated against manifest schema) */
   stateArgs?: Record<string, unknown>;
   /** Panel name/ID */
@@ -70,8 +64,6 @@ export function buildPanelLink(source: string, options?: BuildPanelLinkOptions):
   const params = new URLSearchParams();
 
   if (options?.contextId !== undefined) params.set("contextId", String(options.contextId));
-  if (options?.repoArgs) params.set("repoArgs", JSON.stringify(options.repoArgs));
-  if (options?.env) params.set("env", JSON.stringify(options.env));
   if (options?.stateArgs) params.set("stateArgs", JSON.stringify(options.stateArgs));
   if (options?.name) params.set("name", options.name);
   if (options?.focus) params.set("focus", "true");

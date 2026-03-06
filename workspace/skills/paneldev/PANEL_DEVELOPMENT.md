@@ -35,7 +35,6 @@ import {
   useContextId,       // Context ID for storage
   usePanelFocus,      // Focus state
   usePanelParent,     // Parent handle
-  useBootstrap,       // Bootstrap state for repoArgs
 } from "@workspace/react";
 ```
 

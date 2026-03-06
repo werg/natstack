@@ -19,7 +19,7 @@
  * later using the same schema as src/main/db/panelPersistence.ts.
  */
 
-import type { ChildCreationResult, CreateChildOptions, RepoArgSpec } from "../shared/types.js";
+import type { ChildCreationResult, CreateChildOptions } from "../shared/types.js";
 import type { PanelHttpServer } from "./panelHttpServer.js";
 import { contextIdToSubdomain } from "./panelHttpServer.js";
 import type { WsServerMessage } from "../shared/ws/protocol.js";
@@ -43,7 +43,6 @@ export interface HeadlessPanel {
   subdomain: string;
   title: string;
   stateArgs: Record<string, unknown>;
-  repoArgs?: Record<string, RepoArgSpec>;
   env: Record<string, string>;
   /** RPC auth token for this panel */
   rpcToken: string | null;
@@ -251,7 +250,6 @@ export class HeadlessPanelManager {
         subdomain,
         title: source.split("/").pop() ?? source,
         stateArgs: validatedStateArgs,
-        repoArgs: options?.repoArgs,
         env: options?.env ?? {},
         rpcToken,
         buildState: "pending",
@@ -468,10 +466,9 @@ export class HeadlessPanelManager {
 
     const gitBaseUrl = this.deps.gitBaseUrl;
     const gitToken = this.deps.getGitTokenForPanel(panel.id);
-    const repoArgs = panel.repoArgs ?? {};
     const pubsubUrl = `ws://${panel.subdomain}.localhost:${this.deps.pubsubPort}`;
 
-    const gitConfig = { serverUrl: gitBaseUrl, token: gitToken, sourceRepo: panel.source, resolvedRepoArgs: repoArgs };
+    const gitConfig = { serverUrl: gitBaseUrl, token: gitToken, sourceRepo: panel.source };
     const pubsubConfig = { serverUrl: pubsubUrl, token: panel.rpcToken! };
 
     return {

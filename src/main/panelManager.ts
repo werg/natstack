@@ -44,7 +44,6 @@ import { logMemorySnapshot } from "./memoryMonitor.js";
 type PanelCreateOptions = {
   name?: string;
   env?: Record<string, string>;
-  repoArgs?: Record<string, SharedPanel.RepoArgSpec>;
   /**
    * Explicit context ID for storage partition sharing.
    * If provided, the panel will use this context ID instead of generating a new one.
@@ -61,7 +60,6 @@ type ParsedPanelUrl = {
   isShell: boolean;
   contextId?: string;
   options: PanelCreateOptions;
-  env?: Record<string, string>;
   stateArgs?: Record<string, unknown>;
 };
 
@@ -764,12 +762,9 @@ export class PanelManager {
         contextId: u.searchParams.get("contextId") ?? undefined,
         options: {
           contextId: u.searchParams.get("contextId") ?? undefined,
-          repoArgs: u.searchParams.has("repoArgs") ? JSON.parse(u.searchParams.get("repoArgs")!) : undefined,
-          env: u.searchParams.has("env") ? JSON.parse(u.searchParams.get("env")!) : undefined,
           name: u.searchParams.get("name") ?? undefined,
           focus: u.searchParams.get("focus") === "true" || undefined,
         },
-        env: u.searchParams.has("env") ? JSON.parse(u.searchParams.get("env")!) : undefined,
         stateArgs: u.searchParams.has("stateArgs") ? JSON.parse(u.searchParams.get("stateArgs")!) : undefined,
       };
     } catch { return null; }
@@ -940,19 +935,17 @@ export class PanelManager {
     baseEnv: Record<string, string> | null | undefined,
     gitInfo?: {
       sourceRepo: string;
-      resolvedRepoArgs?: Record<string, SharedPanel.RepoArgSpec>;
     }
   ): Promise<Record<string, string> | undefined> {
     const gitToken = await this.serverInfo.getGitTokenForPanel(panelId);
     const serverUrl = this.serverInfo.gitBaseUrl;
 
-    // Build full git config for bootstrap (eliminates need for RPC during bootstrap)
+    // Build git config for panel environment
     const gitConfig = gitInfo
       ? JSON.stringify({
           serverUrl,
           token: gitToken,
           sourceRepo: gitInfo.sourceRepo,
-          resolvedRepoArgs: gitInfo.resolvedRepoArgs ?? {},
         })
       : "";
 
@@ -1019,41 +1012,6 @@ export class PanelManager {
   }): Promise<{ id: string; title: string }> {
     const { manifest, relativePath, parent, options, isRoot, addAsRoot, stateArgs } = params;
 
-    // Validate repoArgs: caller must provide exactly the args declared in manifest
-    const declaredArgs = manifest.repoArgs ?? [];
-    const providedArgs = options?.repoArgs ? Object.keys(options.repoArgs) : [];
-
-    if (declaredArgs.length > 0 || providedArgs.length > 0) {
-      const missingArgs = declaredArgs.filter((arg) => !providedArgs.includes(arg));
-      const extraArgs = providedArgs.filter((arg) => !declaredArgs.includes(arg));
-
-      if (missingArgs.length > 0) {
-        throw new Error(
-          `Panel "${relativePath}" requires repoArgs: ${missingArgs.join(", ")}`
-        );
-      }
-      if (extraArgs.length > 0) {
-        throw new Error(
-          `Panel "${relativePath}" does not accept repoArgs: ${extraArgs.join(", ")}` +
-          (declaredArgs.length === 0 ? " (manifest declares no repoArgs)" : "")
-        );
-      }
-    }
-
-    // Validate envArgs: required env vars must be provided
-    const declaredEnvArgs = manifest.envArgs ?? [];
-    const providedEnv = options?.env ?? {};
-    const missingEnvArgs = declaredEnvArgs
-      .filter((arg) => arg.required !== false && !arg.default)
-      .filter((arg) => !providedEnv[arg.name])
-      .map((arg) => arg.name);
-
-    if (missingEnvArgs.length > 0) {
-      throw new Error(
-        `Panel "${relativePath}" requires env vars: ${missingEnvArgs.join(", ")}`
-      );
-    }
-
     // Validate stateArgs against manifest schema (applies defaults even if stateArgs undefined)
     let validatedStateArgs: StateArgsValue | undefined;
     if (stateArgs || manifest.stateArgs) {
@@ -1090,7 +1048,6 @@ export class PanelManager {
 
       const panelEnv = await this.buildPanelEnv(panelId, options?.env, {
         sourceRepo: relativePath,
-        resolvedRepoArgs: options?.repoArgs,
       });
 
       // Create the initial snapshot with all options and stateArgs
@@ -1099,7 +1056,6 @@ export class PanelManager {
         contextId,
         {
           env: panelEnv,
-          repoArgs: options.repoArgs,
         },
         validatedStateArgs
       );
@@ -1607,7 +1563,6 @@ export class PanelManager {
     const snapshot = getCurrentSnapshot(panel);
     const env = snapshot.options.env ?? {};
     const stateArgs = getPanelStateArgs(panel) ?? {};
-    const repoArgs = snapshot.options.repoArgs ?? {};
     const pubsubPort = parseInt(new URL(this.serverInfo.pubsubUrl).port, 10);
 
     // Ensure the panel has a server-side token for direct server RPC + PubSub auth
@@ -1618,7 +1573,6 @@ export class PanelManager {
       serverUrl: this.serverInfo.gitBaseUrl,
       token: gitToken,
       sourceRepo: getPanelSource(panel),
-      resolvedRepoArgs: repoArgs,
     };
     const pubsubConfig = {
       serverUrl: `ws://${subdomain}.localhost:${pubsubPort}`,

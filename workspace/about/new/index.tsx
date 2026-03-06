@@ -22,7 +22,7 @@ import {
 } from "@radix-ui/themes";
 import { getWorkspaceTree, buildPanelLink, buildShellLink, onFocus, rpc } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
-import type { WorkspaceTree, WorkspaceNode, EnvArgSchema } from "@workspace/runtime";
+import type { WorkspaceTree, WorkspaceNode } from "@workspace/runtime";
 
 /** About page name string (e.g., "about", "keyboard-shortcuts") */
 type AboutPage = string;
@@ -46,122 +46,6 @@ interface ShellPageMeta {
   page: AboutPage;
   title: string;
   description?: string;
-}
-
-interface LaunchFormProps {
-  node: WorkspaceNode;
-  onLaunch: (node: WorkspaceNode, repoArgs: Record<string, string>, envArgs: Record<string, string>) => void;
-}
-
-function LaunchForm({ node, onLaunch }: LaunchFormProps) {
-  const [repoArgValues, setRepoArgValues] = useState<Record<string, string>>({});
-  const [envArgValues, setEnvArgValues] = useState<Record<string, string>>({});
-
-  const hasRepoArgs = (node.launchable?.repoArgs?.length ?? 0) > 0;
-  const hasEnvArgs = (node.launchable?.envArgs?.length ?? 0) > 0;
-
-  const canLaunch = useMemo(() => {
-    // Check all repoArgs are provided (all required)
-    const repoArgs = node.launchable?.repoArgs ?? [];
-    const repoOk = repoArgs.every((name) => repoArgValues[name]);
-
-    // Check required envArgs are provided (or have defaults)
-    const envArgs = node.launchable?.envArgs ?? [];
-    const envOk = envArgs
-      .filter((e) => e.required !== false)
-      .every((e) => envArgValues[e.name] || e.default);
-
-    return repoOk && envOk;
-  }, [node, repoArgValues, envArgValues]);
-
-  const handleLaunch = useCallback(() => {
-    // Merge defaults with provided values for envArgs
-    const envArgs = node.launchable?.envArgs ?? [];
-    const mergedEnv: Record<string, string> = {};
-    for (const arg of envArgs) {
-      const value = envArgValues[arg.name] ?? arg.default;
-      if (value !== undefined) {
-        mergedEnv[arg.name] = value;
-      }
-    }
-    onLaunch(node, repoArgValues, mergedEnv);
-  }, [node, repoArgValues, envArgValues, onLaunch]);
-
-  // If no args required, show launch button
-  if (!hasRepoArgs && !hasEnvArgs) {
-    return (
-      <Flex mt="2">
-        <Button size="1" onClick={handleLaunch}>
-          Launch
-        </Button>
-      </Flex>
-    );
-  }
-
-  return (
-    <Card mt="2">
-      <Flex direction="column" gap="3">
-        {hasRepoArgs && (
-          <Box>
-            <Text size="2" weight="medium" mb="2" as="div">
-              Repository Arguments
-            </Text>
-            {node.launchable?.repoArgs?.map((argName) => (
-              <Box key={argName} mb="2">
-                <Text size="1" color="gray" mb="1" as="div">
-                  {argName} (required)
-                </Text>
-                <RepoSelector
-                  value={repoArgValues[argName] ?? ""}
-                  onChange={(value) =>
-                    setRepoArgValues((prev) => ({
-                      ...prev,
-                      [argName]: value,
-                    }))
-                  }
-                  placeholder={`Select repo for ${argName}...`}
-                />
-              </Box>
-            ))}
-          </Box>
-        )}
-
-        {hasEnvArgs && (
-          <Box>
-            <Text size="2" weight="medium" mb="2" as="div">
-              Environment Variables
-            </Text>
-            {node.launchable?.envArgs?.map((arg: EnvArgSchema) => (
-              <Box key={arg.name} mb="2">
-                <Text size="1" color="gray" mb="1" as="div">
-                  {arg.name}
-                  {arg.required === false ? " (optional)" : " (required)"}
-                  {arg.description && ` - ${arg.description}`}
-                </Text>
-                <TextField.Root
-                  size="1"
-                  placeholder={arg.default ?? ""}
-                  value={envArgValues[arg.name] ?? ""}
-                  onChange={(e) =>
-                    setEnvArgValues((prev) => ({
-                      ...prev,
-                      [arg.name]: e.target.value,
-                    }))
-                  }
-                />
-              </Box>
-            ))}
-          </Box>
-        )}
-
-        <Flex justify="end">
-          <Button size="1" disabled={!canLaunch} onClick={handleLaunch}>
-            Launch
-          </Button>
-        </Flex>
-      </Flex>
-    </Card>
-  );
 }
 
 function NewPanelPage() {
@@ -200,19 +84,8 @@ function NewPanelPage() {
   }, [fetchData]);
 
   const handleLaunch = useCallback(
-    (
-      node: WorkspaceNode,
-      repoArgs: Record<string, string>,
-      env: Record<string, string>
-    ) => {
-      const hasRepoArgs = Object.keys(repoArgs).length > 0;
-      const hasEnv = Object.keys(env).length > 0;
-
-      const url = buildPanelLink(node.path, {
-        repoArgs: hasRepoArgs ? repoArgs : undefined,
-        env: hasEnv ? env : undefined,
-      });
-
+    (node: WorkspaceNode) => {
+      const url = buildPanelLink(node.path);
       window.location.href = url;
     },
     []
@@ -223,12 +96,7 @@ function NewPanelPage() {
   }, []);
 
   const handleSimpleLaunch = useCallback((node: WorkspaceNode) => {
-    // For items without args, launch directly
-    const hasArgs =
-      (node.launchable?.repoArgs?.length ?? 0) > 0 ||
-      (node.launchable?.envArgs?.length ?? 0) > 0;
-
-    if (!hasArgs && node.launchable) {
+    if (node.launchable) {
       const url = buildPanelLink(node.path);
       window.location.href = url;
     } else {
@@ -249,7 +117,13 @@ function NewPanelPage() {
   const renderNodeExtra = useCallback(
     (node: WorkspaceNode) => {
       if (!node.launchable) return null;
-      return <LaunchForm node={node} onLaunch={handleLaunch} />;
+      return (
+        <Flex mt="2">
+          <Button size="1" onClick={() => handleLaunch(node)}>
+            Launch
+          </Button>
+        </Flex>
+      );
     },
     [handleLaunch]
   );

@@ -4,11 +4,9 @@
  * eventSchemas is typed as `unknown` here to avoid a zod dependency.
  * The app never uses this field directly.
  */
-import type { RepoArgSpec } from "./git-types.js";
 export interface CreateChildOptions {
     name?: string;
     env?: Record<string, string>;
-    repoArgs?: Record<string, RepoArgSpec>;
     /** Typed as unknown to avoid zod dependency. At runtime this is EventSchemaMap (Record<string, ZodType>). */
     eventSchemas?: unknown;
     focus?: boolean;
@@ -22,6 +20,5 @@ export interface ChildSpec {
     env?: Record<string, string>;
     source: string;
     eventSchemas?: unknown;
-    repoArgs?: Record<string, RepoArgSpec>;
 }
 //# sourceMappingURL=runtime-types.d.ts.map

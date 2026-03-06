@@ -1,7 +1,3 @@
-// Canonical source for these types is @natstack/types
-import type { RepoArgSpec, NormalizedRepoArg } from "@natstack/types";
-export type { RepoArgSpec, NormalizedRepoArg };
-
 /**
  * Options for git operations
  */

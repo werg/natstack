@@ -5,7 +5,6 @@ import type {
   ChildCreationResult,
   ChildSpec,
 } from "@natstack/types";
-import type { RepoArgSpec } from "@natstack/types";
 import type { StateArgsSchema, StateArgsValue } from "./stateArgs.js";
 
 // Re-export types for consumers of this module
@@ -13,7 +12,6 @@ export type {
   CreateChildOptions,
   ChildCreationResult,
   ChildSpec,
-  RepoArgSpec,
   StateArgsSchema,
   StateArgsValue,
 };
@@ -23,29 +21,12 @@ export type {
 // =============================================================================
 
 /**
- * Schema for declaring environment variable requirements in panel manifests.
- * Enables launcher UI to show appropriate input fields.
- */
-export interface EnvArgSchema {
-  /** The environment variable name (e.g., "API_KEY") */
-  name: string;
-  /** Human-readable description for the UI */
-  description?: string;
-  /** Whether this env var is required (default: true) */
-  required?: boolean;
-  /** Default value if optional and not provided */
-  default?: string;
-}
-
-/**
  * Panel manifest from package.json natstack section.
  */
 export interface PanelManifest {
   title: string;
   entry?: string;
   dependencies?: Record<string, string>;
-  repoArgs?: string[];
-  envArgs?: EnvArgSchema[];
   /** JSON Schema for validating panel state arguments */
   stateArgs?: StateArgsSchema;
   externals?: Record<string, string>;
@@ -363,8 +344,6 @@ export interface WorkspaceNode {
    */
   launchable?: {
     title: string;
-    repoArgs?: string[];
-    envArgs?: EnvArgSchema[];
   };
   /**
    * Package metadata if this repo has a package.json with a name.

@@ -1,7 +1,5 @@
 export type ThemeAppearance = "light" | "dark";
 
-export type BootstrapResult = import("@natstack/git").BootstrapResult;
-
 export interface FileStats {
   isFile(): boolean;
   isDirectory(): boolean;

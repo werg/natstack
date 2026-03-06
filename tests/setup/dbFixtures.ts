@@ -127,7 +127,7 @@ export function createPanelTreeFixture(
     id: editorId,
     workspaceId,
     parentId: rootId,
-    source: "panels/code-editor",
+    source: "panels/test-editor",
 
     title: "Editor",
     position: 0,

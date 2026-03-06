@@ -20,7 +20,7 @@ declare global {
   var __natstackParentId: string | null | undefined;
   /** Initial theme appearance */
   var __natstackInitialTheme: "light" | "dark" | undefined;
-  /** Git configuration for bootstrap */
+  /** Git configuration */
   var __natstackGitConfig: GitConfig | null | undefined;
   /** PubSub configuration for real-time messaging */
   var __natstackPubSubConfig: PubSubConfig | null | undefined;

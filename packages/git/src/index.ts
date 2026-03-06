@@ -30,12 +30,9 @@
  */
 
 export { GitClient, GitAuthError, type FsPromisesLike } from "./client.js";
-export { bootstrap } from "./bootstrap.js";
 export { initAndPush, type InitAndPushOptions } from "./convenience.js";
 
 export type {
-  RepoArgSpec,
-  NormalizedRepoArg,
   GitClientOptions,
   CloneOptions,
   PullOptions,
@@ -61,5 +58,3 @@ export type {
   ConflictMarker,
   ConflictResolution,
 } from "./types.js";
-
-export type { BootstrapConfig, BootstrapResult } from "./bootstrap.js";

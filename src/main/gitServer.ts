@@ -739,8 +739,6 @@ export class GitServer {
         const ns = packageJson.natstack;
         result.launchable = {
           title: ns.title || packageJson.name || path.basename(absolutePath),
-          repoArgs: ns.repoArgs,
-          envArgs: ns.envArgs,
         };
       }
     } catch {

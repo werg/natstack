@@ -10,7 +10,6 @@ NatStack panels are TypeScript apps running in isolated webviews.
   "natstack": {
     "title": "My Panel",
     "entry": "index.tsx",
-    "repoArgs": ["history"],
     "exposeModules": ["@radix-ui/colors"]
   },
   "dependencies": {
@@ -26,7 +25,6 @@ NatStack panels are TypeScript apps running in isolated webviews.
 |-------|------|---------|-------------|
 | `title` | string | Required | Display name |
 | `entry` | string | `index.tsx` | Entry point |
-| `repoArgs` | string[] | `[]` | Named repo slots for bootstrap |
 | `exposeModules` | string[] | `[]` | Extra modules to bundle |
 
 ## Runtime API

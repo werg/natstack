@@ -64,7 +64,6 @@ export interface FullPanel {
   page?: string;
   sourceRepo?: string;
   injectHostThemeVariables?: boolean;
-  resolvedRepoArgs?: Record<string, unknown>;
 }
 
 // ============================================================================
@@ -353,7 +352,6 @@ function panelToFull(panel: Panel, parentId: string | null, position: number): F
     sourceRepo: source,
     page: getSourcePage(panel),
     injectHostThemeVariables: true,
-    resolvedRepoArgs: options.repoArgs,
   };
 }
 

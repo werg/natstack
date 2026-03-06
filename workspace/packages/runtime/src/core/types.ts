@@ -6,10 +6,6 @@
 import type { ZodType } from "zod";
 import type * as Rpc from "./rpc.js";
 
-// Re-export RepoArgSpec from @natstack/git (canonical source for git-related types)
-import type { RepoArgSpec } from "@natstack/git";
-export type { RepoArgSpec };
-
 // =============================================================================
 // Event Schema Types (zod-based validation)
 // =============================================================================
@@ -62,8 +58,6 @@ export interface GitConfig {
   sourceRepo: string;
   /** Optional git ref (branch/tag/commit) to check out */
   gitRef?: string;
-  /** Resolved repo args (name -> spec) provided by parent at createChild time */
-  resolvedRepoArgs: Record<string, RepoArgSpec>;
 }
 
 // PubSubConfig canonical source: @natstack/types
@@ -208,25 +202,6 @@ export type ParentHandleFromContract<C extends PanelContract> =
     : never;
 
 // =============================================================================
-// Environment Arguments Schema
-// =============================================================================
-
-/**
- * Schema for declaring environment variable requirements in panel manifests.
- * Enables launcher UI to show appropriate input fields.
- */
-export interface EnvArgSchema {
-  /** The environment variable name (e.g., "API_KEY") */
-  name: string;
-  /** Human-readable description for the UI */
-  description?: string;
-  /** Whether this env var is required (default: true) */
-  required?: boolean;
-  /** Default value if optional and not provided */
-  default?: string;
-}
-
-// =============================================================================
 // Workspace Discovery Types (for git repos and launchable panels)
 // =============================================================================
 
@@ -253,8 +228,6 @@ export interface WorkspaceNode {
   launchable?: {
     type: "app";
     title: string;
-    repoArgs?: string[];
-    envArgs?: EnvArgSchema[];
   };
   /**
    * Package metadata if this repo has a package.json with a name.

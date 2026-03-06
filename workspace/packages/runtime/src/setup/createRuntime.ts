@@ -14,7 +14,7 @@ import {
 } from "../core/index.js";
 import { createParentHandle, createParentHandleFromContract } from "../shared/handles.js";
 import type { ParentHandle, ParentHandleFromContract } from "../core/index.js";
-import type { BootstrapResult, RuntimeFs, ThemeAppearance } from "../types.js";
+import type { RuntimeFs, ThemeAppearance } from "../types.js";
 import { _initStateArgsBridge } from "../panel/stateArgs.js";
 
 export interface RuntimeDeps {
@@ -29,8 +29,6 @@ export interface RuntimeDeps {
   setupGlobals?: () => void;
   gitConfig?: GitConfig | null;
   pubsubConfig?: PubSubConfig | null;
-  /** Promise that resolves when bootstrap completes (or null if no bootstrap needed) */
-  bootstrapPromise?: Promise<BootstrapResult | null> | null;
 }
 
 export function createRuntime(deps: RuntimeDeps) {
@@ -172,8 +170,6 @@ export function createRuntime(deps: RuntimeDeps) {
     pubsubConfig: deps.pubsubConfig ?? null,
     /** Context ID for storage partition (format: {mode}_{type}_{identifier}) */
     contextId: deps.contextId,
-    /** Promise that resolves when bootstrap completes. Resolves to null if no bootstrap needed. */
-    bootstrapPromise: deps.bootstrapPromise ?? Promise.resolve(null),
   };
 }
 

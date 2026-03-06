@@ -23,7 +23,6 @@ my-panel/
   "natstack": {
     "title": "My Panel",
     "entry": "index.tsx",
-    "repoArgs": ["history"],
     "exposeModules": ["@radix-ui/colors"],
     "injectHostThemeVariables": true
   },
@@ -40,7 +39,6 @@ my-panel/
 |-------|------|---------|-------------|
 | `title` | string | **Required** | Display name |
 | `entry` | string | `index.tsx` | Entry point file |
-| `repoArgs` | string[] | `[]` | Named repo slots for bootstrap |
 | `exposeModules` | string[] | `[]` | Extra modules to bundle |
 | `injectHostThemeVariables` | boolean | `true` | Inherit theme CSS variables |
 
@@ -75,8 +73,6 @@ import {
   gitConfig,             // Git server config
   pubsubConfig,          // PubSub config
   env,                   // Environment variables (Record<string, string>)
-  bootstrapPromise,      // Resolves when repoArgs cloned
-
   // Lifecycle
   closeSelf,             // Close this panel
   getInfo,               // Get panel info

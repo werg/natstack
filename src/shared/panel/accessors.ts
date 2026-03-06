@@ -5,7 +5,7 @@
  * single current snapshot.
  */
 
-import type { CreateChildOptions, RepoArgSpec } from "@natstack/types";
+import type { CreateChildOptions } from "@natstack/types";
 import type { Panel, PanelSnapshot, PanelManifest, StateArgsValue } from "../types.js";
 
 /**
@@ -34,13 +34,6 @@ export function getPanelOptions(panel: Panel): PanelSnapshot["options"] {
  */
 export function getPanelEnv(panel: Panel): Record<string, string> | undefined {
   return getPanelOptions(panel).env;
-}
-
-/**
- * Get repo args from the current snapshot.
- */
-export function getPanelRepoArgs(panel: Panel): Record<string, RepoArgSpec> | undefined {
-  return getPanelOptions(panel).repoArgs;
 }
 
 /**

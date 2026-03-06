@@ -85,12 +85,6 @@ export type {
   ChildSpec,
 } from "./runtime-types.js";
 
-// Git types
-export type {
-  RepoArgSpec,
-  NormalizedRepoArg,
-} from "./git-types.js";
-
 // PubSub types
 export type {
   AgentBuildError,
