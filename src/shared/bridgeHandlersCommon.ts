@@ -6,17 +6,10 @@
  * DevTools) remain in the environment-specific files.
  */
 
-/**
- * Minimal panel manager interface — the subset of PanelManager /
- * HeadlessPanelManager that common bridge handlers need.
- */
-export interface BridgePanelManager {
-  closePanel(panelId: string): void;
-  getInfo(panelId: string): unknown;
-  handleSetStateArgs(panelId: string, updates: Record<string, unknown>): Promise<unknown> | void;
-  focusPanel?(panelId: string): void;
-  getBootstrapConfig?(callerId: string): Promise<unknown> | unknown;
-}
+import type { BridgePanelManager } from "./panelManagerInterface.js";
+
+// Re-export for consumers that import from this module
+export type { BridgePanelManager } from "./panelManagerInterface.js";
 
 /**
  * Try to handle a bridge method that is portable across Electron and headless.

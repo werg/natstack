@@ -21,6 +21,7 @@ import { findServicePort } from "../main/portUtils.js";
 import {
   parseServiceMethod,
   getServiceDispatcher,
+  ServiceDispatcher,
   type CallerKind,
   type ServiceContext,
 } from "../main/serviceDispatcher.js";
@@ -42,11 +43,9 @@ interface PendingToolCall {
   clientWs: WebSocket;
 }
 
-interface PanelManagerLike {
-  getPanel(panelId: string): unknown | undefined;
-  findParentId(childId: string): string | null;
-  isDescendantOf(childId: string, ancestorId: string): boolean;
-}
+import type { PanelRelationshipProvider } from "../shared/panelManagerInterface.js";
+
+type PanelManagerLike = PanelRelationshipProvider;
 
 export class RpcServer {
   private wss: WebSocketServer | null = null;
@@ -61,14 +60,19 @@ export class RpcServer {
 
   private static readonly DISCONNECT_GRACE_MS = 3000;
 
+  private dispatcher: ServiceDispatcher;
+
   constructor(
     private deps: {
       tokenManager: TokenManager;
       panelManager?: PanelManagerLike;
+      dispatcher?: ServiceDispatcher;
       /** Called when an authenticated client disconnects (e.g., for fs handle cleanup) */
       onClientDisconnect?: (callerId: string, callerKind: CallerKind) => void;
     }
-  ) {}
+  ) {
+    this.dispatcher = deps.dispatcher ?? getServiceDispatcher();
+  }
 
   async start(): Promise<number> {
     const port = await findServicePort("rpc");
@@ -245,7 +249,7 @@ export class RpcServer {
     const { service, method } = parsed;
 
     try {
-      checkServiceAccess(service, client.callerKind);
+      checkServiceAccess(service, client.callerKind, this.dispatcher);
     } catch (error) {
       this.sendToWs(client.ws, {
         type: "ws:rpc",
@@ -264,7 +268,7 @@ export class RpcServer {
       wsClient: client,
     };
 
-    const dispatcher = getServiceDispatcher();
+    const dispatcher = this.dispatcher;
 
     try {
       const result = await dispatcher.dispatch(ctx, service, method, request.args);

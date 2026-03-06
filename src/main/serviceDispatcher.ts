@@ -6,6 +6,9 @@
  * and dispatch mechanism that all code paths use.
  */
 
+import type { ServiceDefinition, MethodDef } from "./serviceDefinition.js";
+import type { ServicePolicy } from "./servicePolicy.js";
+
 export type CallerKind = "panel" | "shell" | "server";
 
 export type ServiceContext = {
@@ -36,10 +39,11 @@ export class ServiceError extends Error {
 }
 
 /**
- * Singleton service dispatcher.
+ * Service dispatcher with both legacy register() and new registerService() support.
  */
-class ServiceDispatcher {
+export class ServiceDispatcher {
   private handlers = new Map<string, ServiceHandler>();
+  private definitions = new Map<string, ServiceDefinition>();
   private initialized = false;
 
   /**
@@ -50,13 +54,24 @@ class ServiceDispatcher {
   }
 
   /**
-   * Register a service handler.
+   * Register a service handler (legacy path — will be replaced by registerService).
    */
   register(service: string, handler: ServiceHandler): void {
     if (this.handlers.has(service)) {
       console.warn(`[ServiceDispatcher] Overwriting handler for service: ${service}`);
     }
     this.handlers.set(service, handler);
+  }
+
+  /**
+   * Register a service with full definition (schema, policy, handler).
+   */
+  registerService(def: ServiceDefinition): void {
+    if (this.handlers.has(def.name) || this.definitions.has(def.name)) {
+      console.warn(`[ServiceDispatcher] Overwriting handler for service: ${def.name}`);
+    }
+    this.definitions.set(def.name, def);
+    this.handlers.set(def.name, def.handler);
   }
 
   /**
@@ -75,6 +90,22 @@ class ServiceDispatcher {
     const handler = this.handlers.get(service);
     if (!handler) {
       throw new ServiceError(service, method, "Unknown service");
+    }
+
+    // Validate args against schema if service was registered via registerService
+    const def = this.definitions.get(service);
+    if (def) {
+      const methodDef = def.methods[method];
+      if (methodDef) {
+        const parsed = methodDef.args.safeParse(args);
+        if (!parsed.success) {
+          throw new ServiceError(
+            service,
+            method,
+            `Invalid args: ${parsed.error.message}`
+          );
+        }
+      }
     }
 
     try {
@@ -103,6 +134,27 @@ class ServiceDispatcher {
    */
   getServices(): string[] {
     return Array.from(this.handlers.keys());
+  }
+
+  /**
+   * Get all registered service definitions (for introspection/extension discovery).
+   */
+  getServiceDefinitions(): ServiceDefinition[] {
+    return Array.from(this.definitions.values());
+  }
+
+  /**
+   * Get the Zod schema for a specific method.
+   */
+  getMethodSchema(service: string, method: string): MethodDef | undefined {
+    return this.definitions.get(service)?.methods[method];
+  }
+
+  /**
+   * Get the policy for a service (from ServiceDefinition if registered via registerService).
+   */
+  getPolicy(service: string): ServicePolicy | undefined {
+    return this.definitions.get(service)?.policy;
   }
 }
 

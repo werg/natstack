@@ -15,6 +15,14 @@ export type ServicePolicy = {
 };
 
 /**
+ * Registry interface for looking up service policies.
+ * ServiceDispatcher implements this via getPolicy().
+ */
+export interface PolicyRegistry {
+  getPolicy(service: string): ServicePolicy | undefined;
+}
+
+/**
  * Service permission policies.
  *
  * - Shell-only services: app, panel, view, workspace, central, settings, menu
@@ -130,9 +138,16 @@ export const SERVICE_POLICIES: Record<string, ServicePolicy> = {
 /**
  * Check if a caller kind can access a service.
  * Throws an error if access is denied.
+ *
+ * Checks the registry first (for services registered via registerService),
+ * then falls back to SERVICE_POLICIES (for legacy register() services).
  */
-export function checkServiceAccess(service: string, callerKind: CallerKind): void {
-  const policy = SERVICE_POLICIES[service];
+export function checkServiceAccess(
+  service: string,
+  callerKind: CallerKind,
+  registry?: PolicyRegistry,
+): void {
+  const policy = registry?.getPolicy(service) ?? SERVICE_POLICIES[service];
 
   if (!policy) {
     // Unknown service - let the dispatcher handle it
