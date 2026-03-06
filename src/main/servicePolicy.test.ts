@@ -41,6 +41,24 @@ describe("checkServiceAccess", () => {
   it("returns void (no throw) for unknown services", () => {
     expect(() => checkServiceAccess("nonexistent", "panel")).not.toThrow();
   });
+
+  it("checks registry before falling back to SERVICE_POLICIES", () => {
+    const registry = {
+      getPolicy: (service: string) => {
+        if (service === "custom") return { allowed: ["server" as const] };
+        return undefined;
+      },
+    };
+
+    // Registry-defined policy: only server allowed
+    expect(() => checkServiceAccess("custom", "server", registry)).not.toThrow();
+    expect(() => checkServiceAccess("custom", "panel", registry)).toThrow(
+      "not accessible to panel callers"
+    );
+
+    // Falls back to SERVICE_POLICIES for services not in registry
+    expect(() => checkServiceAccess("app", "shell", registry)).not.toThrow();
+  });
 });
 
 describe("hasServicePolicy", () => {
