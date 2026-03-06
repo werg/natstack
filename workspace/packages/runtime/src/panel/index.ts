@@ -15,7 +15,6 @@ const { runtime, config } = initRuntime({
   createTransport: createPanelTransport,
   createServerTransport,
   fs,
-  fsReady,
 });
 
 // Configure dependency injection for shared packages

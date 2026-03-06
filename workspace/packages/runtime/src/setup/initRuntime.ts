@@ -17,8 +17,6 @@ export interface InitRuntimeOptions {
   createServerTransport?: () => RpcTransport | null;
   /** Filesystem implementation (RPC-backed proxy) */
   fs: RuntimeFs;
-  /** Promise that resolves when fs is ready (resolves when RPC connects) */
-  fsReady?: Promise<void>;
   /** Optional function to set up globals before runtime initialization */
   setupGlobals?: () => void;
 }
