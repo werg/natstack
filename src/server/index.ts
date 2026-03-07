@@ -163,12 +163,12 @@ async function main() {
   const { TokenManager } = await import("../shared/tokenManager.js");
   const { z } = await import("zod");
   const { ServiceDispatcher } = await import("../shared/serviceDispatcher.js");
-  const { EventService } = await import("../shared/eventsService.js");
+  const { EventService, createEventsServiceDefinition } = await import("../shared/eventsService.js");
   const eventService = new EventService();
   const { RpcServer } = await import("./rpcServer.js");
-  const { startCoreServices } = await import("../shared/coreServices.js");
+  const { ServiceContainer } = await import("../shared/serviceContainer.js");
+  const { rpcService } = await import("../shared/managedService.js");
   const { initBuildSystemV2 } = await import("./buildV2/index.js");
-  const { registerServerServices } = await import("./serverServiceRegistry.js");
   const { DatabaseManager } = await import("../shared/db/databaseManager.js");
 
   // In IPC mode, dataDir comes from NATSTACK_USER_DATA_PATH env var
@@ -225,43 +225,169 @@ async function main() {
 
   const databaseManager = new DatabaseManager(workspacePath);
 
-  const handle = await startCoreServices({
-    workspace,
-    gitServer,
-    getBuild: (unitPath) => buildSystem.getBuild(unitPath),
-    contextFolderManager,
-    tokenManager,
-    databaseManager,
-  });
-
   // ===========================================================================
-  // Service registration + RPC server
+  // Unified ServiceContainer — lifecycle + RPC services in one container
   // ===========================================================================
 
   const dispatcher = new ServiceDispatcher();
+  const container = new ServiceContainer(dispatcher);
 
-  // Resolve testSetup.ts relative to this module's location. The path differs
-  // between dev mode (src/server/ → ../main/services/) and dist mode
-  // (dist/ → ../src/main/services/) so we check both candidates.
+  // ── Lifecycle services (replacing managedServices.ts wrapper classes) ──
+
+  // Foundation: pre-created instances wrapped for container participation
+  container.register({
+    name: "tokenManager",
+    async start() { return tokenManager; },
+  });
+  container.register({
+    name: "databaseManager",
+    async start() { return databaseManager; },
+  });
+  container.register({
+    name: "gitServer",
+    async start() {
+      await gitServer.start();
+      return gitServer;
+    },
+    async stop() { await gitServer.stop(); },
+  });
+
+  // Agent discovery + settings (combined lifecycle + RPC)
+  let agentDiscoveryRef: import("../shared/agentDiscovery.js").AgentDiscovery | null = null;
+  let agentSettingsRef: import("../shared/agentSettings.js").AgentSettingsService | null = null;
+
+  container.register({
+    name: "agentDiscovery",
+    async start() {
+      const { initAgentDiscovery } = await import("../shared/agentDiscovery.js");
+      agentDiscoveryRef = await initAgentDiscovery(workspacePath);
+      return agentDiscoveryRef;
+    },
+    async stop() { agentDiscoveryRef?.stopWatching(); },
+  });
+  container.register({
+    name: "agentSettings",
+    dependencies: ["agentDiscovery"],
+    async start(resolve) {
+      const { AgentSettingsService } = await import("../shared/agentSettings.js");
+      const agentDiscovery = resolve<import("../shared/agentDiscovery.js").AgentDiscovery>("agentDiscovery");
+      agentSettingsRef = new AgentSettingsService();
+      await agentSettingsRef.initialize(workspacePath, agentDiscovery!);
+      return agentSettingsRef;
+    },
+    async stop() { agentSettingsRef?.shutdown(); },
+    getServiceDefinition() {
+      return createAgentSettingsServiceDef({ agentSettingsService: agentSettingsRef!, agentDiscovery: agentDiscoveryRef });
+    },
+  });
+
+  // Git watcher
+  let gitWatcherRef: import("../shared/workspace/gitWatcher.js").GitWatcher | null = null;
+  container.register({
+    name: "gitWatcher",
+    dependencies: ["gitServer"],
+    async start() {
+      const { createGitWatcher } = await import("../shared/workspace/gitWatcher.js");
+      gitWatcherRef = createGitWatcher(workspace);
+      gitServer.subscribeToGitWatcher(gitWatcherRef);
+      return gitWatcherRef;
+    },
+    async stop() { await gitWatcherRef?.close(); },
+  });
+
+  // PubSub server
+  let pubsubServerRef: import("../shared/pubsubServer.js").PubSubServer | null = null;
+  let pubsubPortRef = 0;
+  container.register({
+    name: "pubsub",
+    dependencies: ["tokenManager", "databaseManager"],
+    async start() {
+      const { PubSubServer, SqliteMessageStore } = await import("../shared/pubsubServer.js");
+      pubsubServerRef = new PubSubServer({
+        tokenValidator: tokenManager,
+        messageStore: new SqliteMessageStore(databaseManager),
+      });
+      pubsubPortRef = await pubsubServerRef.start();
+      return { server: pubsubServerRef, port: pubsubPortRef };
+    },
+    async stop() { await pubsubServerRef?.stop(); },
+  });
+
+  // Agent host
+  let agentHostRef: import("../shared/agentHost.js").AgentHost | null = null;
+  container.register({
+    name: "agentHost",
+    dependencies: ["pubsub", "agentDiscovery", "tokenManager", "databaseManager"],
+    async start(resolve) {
+      const { AgentHost } = await import("../shared/agentHost.js");
+      const { server: pubsubServer, port: pubsubPort } = resolve<{ server: import("../shared/pubsubServer.js").PubSubServer; port: number }>("pubsub")!;
+      const agentDiscovery = resolve<import("../shared/agentDiscovery.js").AgentDiscovery>("agentDiscovery")!;
+
+      agentHostRef = new AgentHost({
+        workspaceRoot: workspace.path,
+        pubsubUrl: `ws://127.0.0.1:${pubsubPort}`,
+        messageStore: pubsubServer.getMessageStore(),
+        createToken: (instanceId) => tokenManager.createToken(instanceId, "server"),
+        revokeToken: (instanceId) => tokenManager.revokeToken(instanceId),
+        getBuild: (unitPath) => buildSystem.getBuild(unitPath) as Promise<{ bundlePath: string; dir: string; metadata: { kind: string; name: string } }>,
+        contextFolderManager,
+        databaseManager,
+        agentDiscovery,
+      });
+
+      await agentHostRef.initialize();
+      pubsubServer.setAgentHost(agentHostRef);
+      pubsubServer.setContextFolderManager(contextFolderManager);
+      return agentHostRef;
+    },
+    async stop() { agentHostRef?.shutdown(); },
+  });
+
+  // AI handler (lifecycle only — RPC registered separately because it needs rpcServer)
+  let aiHandlerRef: import("../shared/ai/aiHandler.js").AIHandler | null = null;
+  container.register({
+    name: "ai",
+    dependencies: ["agentHost"],
+    async start(resolve) {
+      const { AIHandler: AIHandlerClass } = await import("../shared/ai/aiHandler.js");
+      const agentHost = resolve<import("../shared/agentHost.js").AgentHost>("agentHost")!;
+      aiHandlerRef = new AIHandlerClass(workspacePath);
+      await aiHandlerRef.initialize();
+      agentHost.setAiHandler(aiHandlerRef);
+      return aiHandlerRef;
+    },
+  });
+
+  // ── RPC-only services (replacing serverServiceRegistry.ts) ──
+
+  const { createBuildService } = await import("./services/buildService.js");
+  const { createTokensService } = await import("./services/tokensService.js");
+  const { createGitService } = await import("./services/gitService.js");
+  const { createTestService } = await import("./services/testService.js");
+  const { createProjectService } = await import("./services/projectService.js");
+  const { createAgentSettingsService: createAgentSettingsServiceDef } = await import("./services/agentSettingsService.js");
+  const { createDbService } = await import("./services/dbService.js");
+  const { createTypecheckService } = await import("./services/typecheckService.js");
+
+  // Resolve testSetup.ts relative to this module's location
   const serverDir = path.dirname(__filename);
   const setupCandidates = [
-    path.resolve(serverDir, "../main/services/testSetup.ts"),      // dev: src/server → src/main
-    path.resolve(serverDir, "../src/main/services/testSetup.ts"),  // dist: dist → src/main
+    path.resolve(serverDir, "../main/services/testSetup.ts"),
+    path.resolve(serverDir, "../src/main/services/testSetup.ts"),
   ];
   const panelTestSetupPath: string = setupCandidates.find(p => fs.existsSync(p)) ?? setupCandidates[0]!;
 
-  registerServerServices(dispatcher, {
-    buildSystem,
-    gitServer: handle.gitServer,
-    tokenManager: tokenManager,
-    contextFolderManager,
-    eventService,
-    databaseManager,
-    agentSettingsService: handle.agentSettingsService,
-    agentDiscovery: handle.agentDiscovery,
-    workspacePath,
-    panelTestSetupPath,
-  });
+  container.register(rpcService(createBuildService({ buildSystem })));
+  container.register(rpcService(createTokensService({ tokenManager }), ["tokenManager"]));
+  container.register(rpcService(createGitService({ gitServer, tokenManager, contextFolderManager }), ["gitServer"]));
+  container.register(rpcService(createTestService({ contextFolderManager, workspacePath, panelTestSetupPath })));
+  container.register(rpcService(createProjectService({ contextFolderManager, gitServer, tokenManager }), ["gitServer"]));
+  container.register(rpcService(createDbService({ databaseManager }), ["databaseManager"]));
+  container.register(rpcService(createTypecheckService({ contextFolderManager })));
+  container.register(rpcService(createEventsServiceDefinition(eventService)));
+
+  // ── Start all services in dependency order ──
+  await container.startAll();
 
   // Admin token: use NATSTACK_ADMIN_TOKEN env var if set, otherwise generate random.
   // A fixed token (e.g. in ~/.config/natstack/.env) avoids having to copy a new
@@ -286,9 +412,9 @@ async function main() {
     },
   });
 
-  // AI service must be registered after RpcServer (needs createWsStreamTarget)
+  // AI RPC service must be registered after RpcServer (needs createWsStreamTarget)
   const { createAiService } = await import("./services/aiService.js");
-  dispatcher.registerService(createAiService({ aiHandler: handle.aiHandler, rpcServer }));
+  dispatcher.registerService(createAiService({ aiHandler: aiHandlerRef!, rpcServer }));
 
   const rpcPort = await rpcServer.start();
 
@@ -342,14 +468,14 @@ async function main() {
       panelsRoot: workspacePath,
       serverInfo: {
         rpcPort,
-        gitBaseUrl: `http://127.0.0.1:${handle.gitServer.getPort()}`,
-        pubsubUrl: `ws://127.0.0.1:${handle.pubsubPort}`,
+        gitBaseUrl: `http://127.0.0.1:${gitServer.getPort()}`,
+        pubsubUrl: `ws://127.0.0.1:${pubsubPortRef}`,
         createPanelToken: (panelId, kind) => tokenManager.createToken(panelId, kind as import("../shared/serviceDispatcher.js").CallerKind),
         ensurePanelToken: (panelId, kind) => tokenManager.ensureToken(panelId, kind as import("../shared/serviceDispatcher.js").CallerKind),
         revokePanelToken: (panelId) => { tokenManager.revokeToken(panelId); },
         getPanelToken: (panelId) => { try { return tokenManager.getToken(panelId); } catch { return null; } },
-        getGitTokenForPanel: (panelId) => handle.gitServer.getTokenForPanel(panelId),
-        revokeGitToken: (panelId) => { handle.gitServer.revokeTokenForPanel(panelId); },
+        getGitTokenForPanel: (panelId) => gitServer.getTokenForPanel(panelId),
+        revokeGitToken: (panelId) => { gitServer.revokeTokenForPanel(panelId); },
       },
       panelHttpServer: panelHttpServer as import("../shared/panelLifecycle.js").PanelHttpServerLike | null,
       panelHttpPort: panelHttpPort ?? undefined,
@@ -359,7 +485,7 @@ async function main() {
     panelManagerRef = headlessLifecycle;
 
     // Register bridge service for headless panel lifecycle
-    const headlessBridgeDeps = { pm: headlessLifecycle, gitServer, agentDiscovery: handle.agentDiscovery };
+    const headlessBridgeDeps = { pm: headlessLifecycle, gitServer, agentDiscovery: agentDiscoveryRef };
     dispatcher.registerService({
       name: "bridge",
       description: "Panel lifecycle (headless mode)",
@@ -549,8 +675,8 @@ async function main() {
     ipcChannel.postMessage({
       type: "ready",
       rpcPort,
-      gitPort: handle.gitServer.getPort(),
-      pubsubPort: handle.pubsubPort,
+      gitPort: gitServer.getPort(),
+      pubsubPort: pubsubPortRef,
       adminToken,
     });
   } else {
@@ -561,8 +687,8 @@ async function main() {
       registerHeadlessService(configDir, {
         rpcPort,
         panelPort: panelHttpPort,
-        gitPort: handle.gitServer.getPort(),
-        pubsubPort: handle.pubsubPort,
+        gitPort: gitServer.getPort(),
+        pubsubPort: pubsubPortRef,
         adminToken,
       });
     } catch (err) {
@@ -570,8 +696,8 @@ async function main() {
     }
 
     console.log("natstack-server ready:");
-    console.log(`  Git:       http://127.0.0.1:${handle.gitServer.getPort()}`);
-    console.log(`  PubSub:    ws://127.0.0.1:${handle.pubsubPort}`);
+    console.log(`  Git:       http://127.0.0.1:${gitServer.getPort()}`);
+    console.log(`  PubSub:    ws://127.0.0.1:${pubsubPortRef}`);
     console.log(`  RPC:       ws://127.0.0.1:${rpcPort}`);
     if (panelHttpPort) {
       console.log(`  Panels:    http://127.0.0.1:${panelHttpPort}`);
@@ -598,7 +724,7 @@ async function main() {
 
     const shutdownTasks = [
       buildSystem.shutdown().then(() => console.log("[Server] BuildV2 stopped")).catch((e) => console.error("[Server] BuildV2 stop error:", e)),
-      handle.shutdown().catch((e) => console.error("[Server] Core shutdown error:", e)),
+      container.stopAll().then(() => console.log("[Server] Services stopped")).catch((e) => console.error("[Server] Service shutdown error:", e)),
       rpcServer.stop().then(() => console.log("[Server] RPC stopped")).catch((e) => console.error("[Server] RPC stop error:", e)),
     ];
     if (cdpBridgeInstance) {

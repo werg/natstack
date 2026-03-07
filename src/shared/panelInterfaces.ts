@@ -1,16 +1,15 @@
 /**
- * Shared interfaces for panel manager implementations.
+ * Shared panel interfaces.
  *
- * BridgePanelManager: minimal surface used by bridge handlers (shared between
- * Electron PanelManager and HeadlessPanelManager).
+ * BridgePanelManager: minimal surface used by bridge handlers (implemented by
+ * PanelLifecycle).
  *
  * PanelRelationshipProvider: panel tree relationship queries used by RpcServer
- * for panel-to-panel authorization.
+ * for panel-to-panel authorization (implemented by PanelRegistry).
  */
 
 /**
- * Minimal panel manager interface — the subset of PanelManager /
- * HeadlessPanelManager that common bridge handlers need.
+ * Minimal panel lifecycle interface — the subset that common bridge handlers need.
  */
 export interface BridgePanelManager {
   closePanel(panelId: string): void;

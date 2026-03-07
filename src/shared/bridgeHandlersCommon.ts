@@ -6,10 +6,10 @@
  * DevTools) remain in the environment-specific files.
  */
 
-import type { BridgePanelManager } from "./panelManagerInterface.js";
+import type { BridgePanelManager } from "./panelInterfaces.js";
 
 // Re-export for consumers that import from this module
-export type { BridgePanelManager } from "./panelManagerInterface.js";
+export type { BridgePanelManager } from "./panelInterfaces.js";
 
 /**
  * Try to handle a bridge method that is portable across Electron and headless.

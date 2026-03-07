@@ -21,7 +21,7 @@ import type { PanelPersistence } from "./db/panelPersistence.js";
 import type { PanelSearchIndex } from "./db/panelSearchIndex.js";
 import type { EventService } from "./eventsService.js";
 import type { Workspace } from "./workspace/types.js";
-import type { PanelRelationshipProvider } from "./panelManagerInterface.js";
+import type { PanelRelationshipProvider } from "./panelInterfaces.js";
 
 const log = createDevLogger("PanelRegistry");
 

@@ -6,7 +6,7 @@
  * are delegated to src/shared/bridgeHandlersCommon.ts.
  */
 
-import type { BridgePanelManager } from "../shared/panelManagerInterface.js";
+import type { BridgePanelManager } from "../shared/panelInterfaces.js";
 import type { GitServer } from "../shared/gitServer.js";
 import type { AgentDiscovery } from "../shared/agentDiscovery.js";
 import { handleCommonBridgeMethod } from "../shared/bridgeHandlersCommon.js";

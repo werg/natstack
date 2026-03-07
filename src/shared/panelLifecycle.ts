@@ -31,12 +31,12 @@ import { loadPanelManifest } from "./panelTypes.js";
 import { validateStateArgs } from "./stateArgsValidator.js";
 import { computePanelId } from "./panelIdUtils.js";
 import { contextIdToSubdomain } from "./panelIdUtils.js";
-import { normalizeRelativePanelPath } from "../main/pathUtils.js";
+import { normalizeRelativePanelPath } from "./pathUtils.js";
 import type { PanelRegistry } from "./panelRegistry.js";
 import type { TokenManager } from "./tokenManager.js";
 import type { FsService } from "./fsService.js";
 import type { EventService } from "./eventsService.js";
-import type { BridgePanelManager } from "./panelManagerInterface.js";
+import type { BridgePanelManager } from "./panelInterfaces.js";
 
 const log = createDevLogger("PanelLifecycle");
 

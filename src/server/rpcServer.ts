@@ -43,7 +43,7 @@ interface PendingToolCall {
   clientWs: WebSocket;
 }
 
-import type { PanelRelationshipProvider } from "../shared/panelManagerInterface.js";
+import type { PanelRelationshipProvider } from "../shared/panelInterfaces.js";
 
 type PanelManagerLike = PanelRelationshipProvider;
 

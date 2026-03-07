@@ -29,7 +29,9 @@ const eventService = new EventService();
 import { ViewManager } from "./viewManager.js";
 import { ServiceDispatcher } from "../shared/serviceDispatcher.js";
 import type { RpcServer } from "../server/rpcServer.js";
-import { registerElectronServices } from "./electronServiceRegistry.js";
+import { ServiceContainer } from "../shared/serviceContainer.js";
+import { rpcService } from "../shared/managedService.js";
+import { createEventsServiceDefinition } from "../shared/eventsService.js";
 import { setupTestApi } from "./testApi.js";
 import { AdBlockManager } from "./adblock/index.js";
 import { ContextFolderManager } from "../shared/contextFolderManager.js";
@@ -451,45 +453,59 @@ app.on("ready", async () => {
       },
     });
 
-    // Now create PanelView (needs viewManager, which is created in createWindow)
-    // PanelView will be created inside createWindow after viewManager exists.
-    // For now, register services with a deferred PanelView.
-
-    // We'll create a temporary PanelView placeholder and update it in createWindow.
-    // Actually, the services need PanelView at registration time, so let's defer
-    // service registration until after createWindow... but that breaks the flow.
-    //
-    // Better approach: register services now, but PanelView is created inside
-    // createWindow. The panelShellService and others reference panelView via
-    // a getter pattern. Let's use the same getViewManager pattern.
-
-    // Create a shell PanelView that will be fully initialized in createWindow
-    // For now, services that need PanelView will get it lazily.
-
-    // Register all Electron-main services
+    // Register all Electron-main RPC services via ServiceContainer
     // PanelView needs viewManager which doesn't exist yet, so we use a lazy wrapper
     const getPanelView = (): PanelView => {
       if (!panelView) throw new Error("PanelView not initialized yet");
       return panelView;
     };
+    const getViewManager = () => viewManager!;
 
-    registerElectronServices(dispatcher, {
-      panelLifecycle,
-      panelRegistry,
-      // PanelView is created lazily in createWindow. Services that need it
-      // (like panelShellService) will call methods on it during handler
-      // execution, by which time createWindow has already run.
+    const { createAppService } = await import("./services/appService.js");
+    const { createPanelShellService } = await import("./services/panelShellService.js");
+    const { createViewService } = await import("./services/viewService.js");
+    const { createMenuService } = await import("./services/menuService.js");
+    const { createWorkspaceService } = await import("./services/workspaceService.js");
+    const { createCentralService } = await import("./services/centralService.js");
+    const { createSettingsService } = await import("./services/settingsService.js");
+    const { createAdblockService } = await import("./services/adblockService.js");
+    const { createBridgeService } = await import("./services/bridgeService.js");
+    const { createBrowserService } = await import("./services/browserService.js");
+    const { createFsServiceDefinition } = await import("./services/fsServiceDef.js");
+    const { createGitLocalService } = await import("./services/gitLocalService.js");
+
+    const electronContainer = new ServiceContainer(dispatcher);
+
+    // Shell-only services
+    electronContainer.register(rpcService(createAppService({
+      panelLifecycle, serverClient, getViewManager,
+    })));
+    electronContainer.register(rpcService(createPanelShellService({
+      panelLifecycle, panelRegistry,
       get panelView(): PanelView { return getPanelView(); },
-      cdpServer,
-      fsService,
-      eventService,
-      serverClient,
-      serverInfo,
-      getViewManager: () => viewManager!,
-      centralData: centralData!,
-      adBlockManager,
-      workspace,
-    });
+      getViewManager,
+    })));
+    electronContainer.register(rpcService(createViewService({ getViewManager })));
+    electronContainer.register(rpcService(createMenuService({
+      panelLifecycle, panelRegistry, getViewManager, serverClient,
+    })));
+    electronContainer.register(rpcService(createWorkspaceService({ centralData: centralData! })));
+    electronContainer.register(rpcService(createCentralService({ centralData: centralData! })));
+    electronContainer.register(rpcService(createSettingsService({ serverClient })));
+    electronContainer.register(rpcService(createAdblockService({ adBlockManager })));
+
+    // Locally-hosted services
+    electronContainer.register(rpcService(createBridgeService({
+      panelLifecycle, cdpServer, getViewManager, workspace, serverInfo,
+    })));
+    electronContainer.register(rpcService(createBrowserService({
+      cdpServer, getViewManager, panelRegistry,
+    })));
+    electronContainer.register(rpcService(createFsServiceDefinition({ fsService })));
+    electronContainer.register(rpcService(createGitLocalService()));
+    electronContainer.register(rpcService(createEventsServiceDefinition(eventService)));
+
+    await electronContainer.startAll();
 
     dispatcher.markInitialized();
 
