@@ -66,8 +66,12 @@ export class ServiceContainer {
         };
 
         log.info(`[${name}] Starting`);
-        const instance = await service.start(resolve);
-        this.instances.set(name, instance);
+        if (service.start) {
+          const instance = await service.start(resolve);
+          this.instances.set(name, instance);
+        } else {
+          this.instances.set(name, undefined);
+        }
         started.push(name);
 
         // Auto-register RPC service definition if available

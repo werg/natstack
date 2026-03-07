@@ -25,7 +25,7 @@ export interface ManagedService<T = unknown> {
    *   of throwing when the service is absent).
    * @returns The service instance (stored for later resolution).
    */
-  start(resolve: <D>(name: string, optional?: boolean) => D | undefined): Promise<T>;
+  start?(resolve: <D>(name: string, optional?: boolean) => D | undefined): Promise<T>;
 
   /**
    * Stop the service. Called before any of its dependents are stopped.
@@ -37,4 +37,16 @@ export interface ManagedService<T = unknown> {
    * If provided, registered after start() completes.
    */
   getServiceDefinition?(): ServiceDefinition;
+}
+
+/**
+ * Create a ManagedService from a ServiceDefinition.
+ * For services that only need RPC registration without lifecycle.
+ */
+export function rpcService(def: ServiceDefinition, deps?: string[]): ManagedService {
+  return {
+    name: def.name,
+    dependencies: deps,
+    getServiceDefinition: () => def,
+  };
 }

@@ -173,48 +173,6 @@ export class EventService {
   }
 }
 
-// Singleton instance
-export const eventService = new EventService();
-
-/**
- * Service handler for the "events" service.
- * Called via service dispatcher.
- */
-export async function handleEventsService(
-  ctx: ServiceContext,
-  method: string,
-  args: unknown[]
-): Promise<unknown> {
-  switch (method) {
-    case "subscribe": {
-      const eventName = args[0] as EventName;
-      if (!isValidEventName(eventName)) {
-        throw new Error(`Unknown event: ${eventName}`);
-      }
-      const subscriber = eventService.getOrCreateSubscriber(ctx);
-      eventService.subscribe(eventName, ctx.callerId, subscriber);
-      return;
-    }
-
-    case "unsubscribe": {
-      const eventName = args[0] as EventName;
-      if (!isValidEventName(eventName)) {
-        throw new Error(`Unknown event: ${eventName}`);
-      }
-      eventService.unsubscribe(eventName, ctx.callerId);
-      return;
-    }
-
-    case "unsubscribeAll": {
-      eventService.unsubscribeAll(ctx.callerId);
-      return;
-    }
-
-    default:
-      throw new Error(`Unknown events method: ${method}`);
-  }
-}
-
 /**
  * Create a ServiceDefinition that wraps an existing EventService instance.
  * The same EventService instance is used for both RPC handling and in-process emit().

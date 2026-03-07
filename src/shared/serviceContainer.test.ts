@@ -5,6 +5,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { ServiceContainer } from "./serviceContainer.js";
 import type { ManagedService } from "./managedService.js";
+import { rpcService } from "./managedService.js";
 
 vi.mock("./devLog.js", () => ({
   createDevLogger: vi.fn().mockReturnValue({
@@ -176,5 +177,45 @@ describe("ServiceContainer", () => {
 
     await container.startAll();
     expect(container.get("a")).toBe("a");
+  });
+
+  it("handles services without start() (definition-only)", async () => {
+    const registerService = vi.fn();
+    const dispatcher = { registerService } as any;
+    const container = new ServiceContainer(dispatcher);
+
+    const serviceDef = { name: "myRpc", methods: {}, handler: vi.fn(), policy: { allowed: ["shell" as const] } };
+    container.register({
+      name: "noStart",
+      getServiceDefinition: () => serviceDef,
+    });
+
+    await container.startAll();
+
+    expect(container.has("noStart")).toBe(true);
+    expect(container.get("noStart")).toBeUndefined();
+    expect(registerService).toHaveBeenCalledWith(serviceDef);
+  });
+
+  it("rpcService() creates a definition-only ManagedService", async () => {
+    const registerService = vi.fn();
+    const dispatcher = { registerService } as any;
+    const container = new ServiceContainer(dispatcher);
+
+    const def = { name: "events", methods: {}, handler: vi.fn(), policy: { allowed: ["shell" as const] } };
+    const service = rpcService(def, ["db"]);
+
+    expect(service.name).toBe("events");
+    expect(service.dependencies).toEqual(["db"]);
+    expect(service.start).toBeUndefined();
+    expect(service.getServiceDefinition!()).toBe(def);
+
+    // Works in container with dependency
+    container.register(createService("db"));
+    container.register(service);
+    await container.startAll();
+
+    expect(container.has("events")).toBe(true);
+    expect(registerService).toHaveBeenCalledWith(def);
   });
 });

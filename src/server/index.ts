@@ -163,7 +163,8 @@ async function main() {
   const { TokenManager } = await import("../shared/tokenManager.js");
   const { z } = await import("zod");
   const { ServiceDispatcher } = await import("../shared/serviceDispatcher.js");
-  const { eventService } = await import("../shared/eventsService.js");
+  const { EventService } = await import("../shared/eventsService.js");
+  const eventService = new EventService();
   const { RpcServer } = await import("./rpcServer.js");
   const { startCoreServices } = await import("../shared/coreServices.js");
   const { initBuildSystemV2 } = await import("./buildV2/index.js");

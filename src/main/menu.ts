@@ -1,5 +1,5 @@
 import { app, Menu, MenuItemConstructorOptions, type WebContents } from "electron";
-import { eventService } from "../shared/eventsService.js";
+import type { EventService } from "../shared/eventsService.js";
 import type { ViewManager } from "./viewManager.js";
 import type { PanelLifecycle } from "../shared/panelLifecycle.js";
 import type { PanelRegistry } from "../shared/panelRegistry.js";
@@ -8,6 +8,18 @@ import type { PanelRegistry } from "../shared/panelRegistry.js";
 let _menuPanelLifecycle: PanelLifecycle | null = null;
 let _menuPanelRegistry: PanelRegistry | null = null;
 let _menuViewManager: ViewManager | null = null;
+let _menuEventService: EventService | null = null;
+
+/** Set the event service for menu operations. Called from index.ts. */
+export function setMenuEventService(es: EventService): void {
+  _menuEventService = es;
+}
+
+/** Guard — throws if eventService not set yet */
+function eventService(): EventService {
+  if (!_menuEventService) throw new Error("Menu eventService not initialized");
+  return _menuEventService;
+}
 
 /** Set the view manager for menu operations. Called from index.ts. */
 export function setMenuViewManager(vm: ViewManager): void {
@@ -59,7 +71,7 @@ export function buildCommonMenuItems(
       label: "New Panel",
       accelerator: "CmdOrCtrl+T",
       click: () => {
-        eventService.emit("navigate-about", { page: "new" });
+        eventService().emit("navigate-about", { page: "new" });
       },
     },
     { type: "separator" },
@@ -67,7 +79,7 @@ export function buildCommonMenuItems(
       label: "Switch Workspace...",
       accelerator: "CmdOrCtrl+Shift+O",
       click: () => {
-        eventService.emit("open-workspace-switcher");
+        eventService().emit("open-workspace-switcher");
       },
     },
     { type: "separator" },
@@ -75,13 +87,13 @@ export function buildCommonMenuItems(
       label: "Model Provider Config...",
       accelerator: "CmdOrCtrl+Shift+M",
       click: () => {
-        eventService.emit("navigate-about", { page: "model-provider-config" });
+        eventService().emit("navigate-about", { page: "model-provider-config" });
       },
     },
     {
       label: "Agent Settings...",
       click: () => {
-        eventService.emit("navigate-about", { page: "agents" });
+        eventService().emit("navigate-about", { page: "agents" });
       },
     },
   ];
@@ -134,7 +146,7 @@ export function buildCommonMenuItems(
       label: "Toggle Panel DevTools",
       accelerator: "CmdOrCtrl+Shift+I",
       click: () => {
-        eventService.emit("toggle-panel-devtools");
+        eventService().emit("toggle-panel-devtools");
       },
     },
     {
@@ -252,7 +264,7 @@ export function setupMenu(
           label: "New Panel",
           accelerator: "CmdOrCtrl+T",
           click: () => {
-            eventService.emit("navigate-about", { page: "new" });
+            eventService().emit("navigate-about", { page: "new" });
           },
         },
         { type: "separator" },
@@ -260,7 +272,7 @@ export function setupMenu(
           label: "Switch Workspace...",
           accelerator: "CmdOrCtrl+Shift+O",
           click: () => {
-            eventService.emit("open-workspace-switcher");
+            eventService().emit("open-workspace-switcher");
           },
         },
         { type: "separator" },
@@ -268,13 +280,13 @@ export function setupMenu(
           label: "Model Provider Config...",
           accelerator: "CmdOrCtrl+Shift+M",
           click: () => {
-            eventService.emit("navigate-about", { page: "model-provider-config" });
+            eventService().emit("navigate-about", { page: "model-provider-config" });
           },
         },
         {
           label: "Agent Settings...",
           click: () => {
-            eventService.emit("navigate-about", { page: "agents" });
+            eventService().emit("navigate-about", { page: "agents" });
           },
         },
         { type: "separator" },
@@ -340,7 +352,7 @@ export function setupMenu(
           label: "Toggle Panel Developer Tools",
           accelerator: "CmdOrCtrl+Shift+I",
           click: () => {
-            eventService.emit("toggle-panel-devtools");
+            eventService().emit("toggle-panel-devtools");
           },
         },
         {
@@ -378,20 +390,20 @@ export function setupMenu(
           label: "Keyboard Shortcuts",
           accelerator: "CmdOrCtrl+/",
           click: () => {
-            eventService.emit("navigate-about", { page: "keyboard-shortcuts" });
+            eventService().emit("navigate-about", { page: "keyboard-shortcuts" });
           },
         },
         { type: "separator" },
         {
           label: "Documentation",
           click: () => {
-            eventService.emit("navigate-about", { page: "help" });
+            eventService().emit("navigate-about", { page: "help" });
           },
         },
         {
           label: "About NatStack",
           click: () => {
-            eventService.emit("navigate-about", { page: "about" });
+            eventService().emit("navigate-about", { page: "about" });
           },
         },
       ],

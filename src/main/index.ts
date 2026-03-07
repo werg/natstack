@@ -11,7 +11,7 @@ const log = createDevLogger("App");
 import { PanelRegistry } from "../shared/panelRegistry.js";
 import { PanelLifecycle } from "../shared/panelLifecycle.js";
 import { PanelView } from "./panelView.js";
-import { setupMenu, setMenuPanelLifecycle, setMenuPanelRegistry, setMenuViewManager } from "./menu.js";
+import { setupMenu, setMenuPanelLifecycle, setMenuPanelRegistry, setMenuViewManager, setMenuEventService } from "./menu.js";
 import { getAppRoot } from "./paths.js";
 import {
   parseCliWorkspacePath,
@@ -23,7 +23,9 @@ import type { Workspace } from "../shared/workspace/types.js";
 import { CentralDataManager } from "./centralData.js";
 import { CdpServer } from "./cdpServer.js";
 import { TokenManager } from "../shared/tokenManager.js";
-import { eventService } from "../shared/eventsService.js";
+import { EventService } from "../shared/eventsService.js";
+
+const eventService = new EventService();
 import { ViewManager } from "./viewManager.js";
 import { ServiceDispatcher } from "../shared/serviceDispatcher.js";
 import type { RpcServer } from "../server/rpcServer.js";
@@ -376,6 +378,7 @@ app.on("ready", async () => {
     setupTestApi(panelLifecycle, panelRegistry, null);
     setMenuPanelLifecycle(panelLifecycle);
     setMenuPanelRegistry(panelRegistry);
+    setMenuEventService(eventService);
 
     // Register all Electron-main services via registry
     // PanelView is created later after ViewManager exists, but we need a
