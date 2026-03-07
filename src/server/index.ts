@@ -398,295 +398,315 @@ async function main() {
   container.register(rpcService(createTypecheckService({ contextFolderManager })));
   container.register(rpcService(createEventsServiceDefinition(eventService)));
 
-  // ── Start all services in dependency order ──
-  await container.startAll();
-
-  // Extract commonly needed values from started services
-  const pubsubPort = container.get<{ port: number }>("pubsub").port;
-  const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
-
   // Admin token: use NATSTACK_ADMIN_TOKEN env var if set, otherwise generate random.
-  // A fixed token (e.g. in ~/.config/natstack/.env) avoids having to copy a new
-  // token every time the server restarts.
   const adminToken = process.env["NATSTACK_ADMIN_TOKEN"] || randomBytes(32).toString("hex");
   tokenManager.setAdminToken(adminToken);
 
-  let fsServiceRef: { closeHandlesForPanel(panelId: string): void } | null = null;
-  let panelManagerRef: { closePanel(panelId: string): void } | null = null;
+  // ── RPC server (always present) ──
 
-  const rpcServer = new RpcServer({
-    tokenManager: tokenManager,
-    dispatcher,
-    onClientDisconnect: (callerId, callerKind) => {
-      const handleKey = callerKind === "panel" ? callerId : `server:${callerId}`;
-      fsServiceRef?.closeHandlesForPanel(handleKey);
-      // In headless mode, remove the panel from the tree on disconnect.
-      // The grace period in rpcServer ensures normal reloads don't trigger this.
-      if (callerKind === "panel") {
-        panelManagerRef?.closePanel(callerId);
-      }
-    },
-  });
-
-  // AI RPC service must be registered after RpcServer (needs createWsStreamTarget)
-  const { createAiService } = await import("./services/aiService.js");
-  dispatcher.registerService(createAiService({
-    aiHandler: container.get<import("../shared/ai/aiHandler.js").AIHandler>("ai"),
-    rpcServer,
-  }));
-
-  const rpcPort = await rpcServer.start();
-
-  // ===========================================================================
-  // Headless panel management + HTTP panel serving (standalone mode only)
-  // ===========================================================================
-
-  let panelHttpPort: number | null = null;
-  let panelHttpServerInstance: { stop(): Promise<void> } | null = null;
-  let cdpBridgeInstance: { stop(): Promise<void> } | null = null;
-
-  if (!ipcChannel) {
-    const { PanelHttpServer } = await import("./panelHttpServer.js");
-    const { PanelRegistry } = await import("../shared/panelRegistry.js");
-    const { PanelLifecycle } = await import("../shared/panelLifecycle.js");
-    const { handleHeadlessBridgeCall } = await import("./headlessBridge.js");
-
-    // Start HTTP panel server if requested
-    let panelHttpServer: InstanceType<typeof PanelHttpServer> | null = null;
-    if (args.servePanels) {
-      panelHttpServer = new PanelHttpServer("127.0.0.1", adminToken);
-      let envPanelPort: number | undefined;
-      if (process.env["NATSTACK_PANEL_PORT"]) {
-        envPanelPort = parseInt(process.env["NATSTACK_PANEL_PORT"], 10);
-        if (isNaN(envPanelPort)) {
-          console.warn("[Server] NATSTACK_PANEL_PORT is not a valid number, ignoring");
-          envPanelPort = undefined;
-        }
-      }
-      panelHttpPort = await panelHttpServer.start(args.panelPort ?? envPanelPort ?? 0);
-      panelHttpServerInstance = panelHttpServer;
-    }
-
-    // Filesystem service — per-context sandboxed fs via RPC
-    const { FsService, handleFsCall } = await import("../shared/fsService.js");
-    const fsService = new FsService(contextFolderManager);
-    fsServiceRef = fsService;
-
-    // Create PanelRegistry (no persistence in headless mode)
-    const headlessRegistry = new PanelRegistry({
-      workspace,
-      eventService,
-    });
-
-    // Create PanelLifecycle with headless deps
-    const headlessLifecycle = new PanelLifecycle({
-      registry: headlessRegistry,
-      tokenManager,
-      fsService,
-      eventService,
-      panelsRoot: workspacePath,
-      serverInfo: {
-        rpcPort,
-        gitBaseUrl: `http://127.0.0.1:${gitServer.getPort()}`,
-        pubsubUrl: `ws://127.0.0.1:${pubsubPort}`,
-        createPanelToken: (panelId, kind) => tokenManager.createToken(panelId, kind as import("../shared/serviceDispatcher.js").CallerKind),
-        ensurePanelToken: (panelId, kind) => tokenManager.ensureToken(panelId, kind as import("../shared/serviceDispatcher.js").CallerKind),
-        revokePanelToken: (panelId) => { tokenManager.revokeToken(panelId); },
-        getPanelToken: (panelId) => { try { return tokenManager.getToken(panelId); } catch { return null; } },
-        getGitTokenForPanel: (panelId) => gitServer.getTokenForPanel(panelId),
-        revokeGitToken: (panelId) => { gitServer.revokeTokenForPanel(panelId); },
-      },
-      panelHttpServer: panelHttpServer as import("../shared/panelLifecycle.js").PanelHttpServerLike | null,
-      panelHttpPort: panelHttpPort ?? undefined,
-      sendToClient: (callerId, msg) => rpcServer.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage),
-    });
-
-    panelManagerRef = headlessLifecycle;
-
-    // Register bridge service for headless panel lifecycle
-    const headlessBridgeDeps = {
-      pm: headlessLifecycle,
-      gitServer,
-      agentDiscovery: container.get<import("../shared/agentDiscovery.js").AgentDiscovery | null>("agentDiscovery"),
-    };
-    dispatcher.registerService({
-      name: "bridge",
-      description: "Panel lifecycle (headless mode)",
-      policy: { allowed: ["panel", "shell", "server"] },
-      methods: {
-        closeSelf: { args: z.tuple([]) },
-        getInfo: { args: z.tuple([]) },
-        setStateArgs: { args: z.tuple([z.record(z.unknown())]) },
-        focusPanel: { args: z.tuple([z.string().optional()]) },
-        getBootstrapConfig: { args: z.tuple([]) },
-        getWorkspaceTree: { args: z.tuple([]) },
-        listBranches: { args: z.tuple([z.string()]) },
-        listCommits: { args: z.tuple([z.string(), z.string().optional(), z.number().optional()]) },
-        listAgents: { args: z.tuple([]) },
-        openDevtools: { args: z.tuple([]) },
-        openFolderDialog: { args: z.tuple([z.object({ title: z.string().optional() }).optional()]) },
-      },
-      handler: async (ctx, method, serviceArgs) => {
-        return handleHeadlessBridgeCall(
-          headlessBridgeDeps,
-          ctx.callerId,
-          method,
-          serviceArgs as unknown[],
-        );
-      },
-    });
-
-    // ── On-demand panel creation: populate source registry ───────────
-    // Scan the package graph for available panels and register them with
-    // deterministic subdomains. When a browser visits one of these subdomains,
-    // PanelHttpServer triggers on-demand creation via PanelLifecycle.
-    if (panelHttpServer) {
-      const graph = buildSystem.getGraph();
-      const panelNodes = graph.allNodes().filter((n) => n.kind === "panel");
-
-      // Compute deterministic subdomains from base names
-      const sanitize = (s: string) =>
-        s.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
-
-      const rawEntries = panelNodes.map((n) => ({
-        subdomain: sanitize(n.relativePath.split("/").pop() ?? n.relativePath) || "panel",
-        source: n.relativePath,
-        name: n.manifest.title ?? n.name,
-      }));
-
-      // Resolve collisions: use full path for any duplicated base names
-      const counts = new Map<string, number>();
-      for (const e of rawEntries) {
-        counts.set(e.subdomain, (counts.get(e.subdomain) ?? 0) + 1);
-      }
-      for (const e of rawEntries) {
-        if ((counts.get(e.subdomain) ?? 0) > 1) {
-          e.subdomain = sanitize(e.source);
-        }
-      }
-
-      // Truncate to DNS label max (63 chars) and deduplicate final subdomains.
-      const assigned = new Set<string>();
-      for (const e of rawEntries) {
-        let candidate = e.subdomain.slice(0, 63).replace(/-$/, "");
-        let suffix = 1;
-        while (assigned.has(candidate)) {
-          const tag = `-${suffix}`;
-          candidate = e.subdomain.slice(0, 63 - tag.length).replace(/-$/, "") + tag;
-          suffix++;
-        }
-        e.subdomain = candidate;
-        assigned.add(candidate);
-      }
-
-      panelHttpServer.populateSourceRegistry(rawEntries);
-
-      // Wire callbacks: all panel data flows through these — zero per-panel state on server
-      panelHttpServer.setCallbacks({
-        onDemandCreate: async (source, subdomain) => {
-          const panelId = await headlessLifecycle.createPanelOnDemand(source, subdomain);
-          const rpcToken = tokenManager.ensureToken(panelId, "panel");
-          return { panelId, rpcPort, rpcToken, serverRpcPort: rpcPort, serverRpcToken: rpcToken };
-        },
-        listPanels: () => headlessLifecycle.listPanels(),
-        getBuild: (source) => buildSystem.getBuild(source),
-      });
-
-      // When the push trigger builds something, invalidate the HTTP serving
-      // cache so the next request serves fresh content instead of stale cache.
-      buildSystem.onPushBuild((source) => {
-        panelHttpServer.invalidateBuild(source);
-      });
-
-      console.log(`  On-demand panels: ${rawEntries.map((e) => e.subdomain).join(", ") || "(none)"}`);
-
-      // CDP bridge for browser extension automation
-      const { CdpBridge } = await import("./cdpBridge.js");
-      const cdpBridge = new CdpBridge({
-        tokenManager: tokenManager,
-        adminToken,
-        canAccessBrowser: (requestingPanelId, browserId) => {
-          // In headless mode, panels are flat (no parent/child tree)
-          // so cross-panel access is not supported
-          return headlessRegistry.isDescendantOf(browserId, requestingPanelId) ||
-                 headlessRegistry.isDescendantOf(requestingPanelId, browserId);
-        },
-        panelOwnsBrowser: (requestingPanelId, browserId) => {
-          return headlessRegistry.findParentId(browserId) === requestingPanelId;
-        },
-        port: panelHttpPort!,
-      });
-      panelHttpServer.setCdpBridge(cdpBridge);
-      cdpBridgeInstance = cdpBridge;
-
-      // Register browser service for CDP + navigation
-      dispatcher.registerService({
-        name: "browser",
-        description: "CDP/browser automation (headless mode)",
-        policy: { allowed: ["shell", "panel", "server"] },
-        methods: {
-          getCdpEndpoint: { args: z.tuple([z.string()]) },
-          navigate: { args: z.tuple([z.string(), z.string()]) },
-          goBack: { args: z.tuple([z.string()]) },
-          goForward: { args: z.tuple([z.string()]) },
-          reload: { args: z.tuple([z.string()]) },
-          stop: { args: z.tuple([z.string()]) },
-        },
-        handler: async (ctx, method, serviceArgs) => {
-          const a = serviceArgs as unknown[];
-          switch (method) {
-            case "getCdpEndpoint": {
-              const endpoint = cdpBridge.getCdpEndpoint(a[0] as string, ctx.callerId);
-              if (!endpoint) throw new Error(`Access denied or browser not found: ${a[0]}`);
-              return endpoint;
-            }
-            case "navigate":
-            case "goBack":
-            case "goForward":
-            case "reload":
-            case "stop":
-              return cdpBridge.sendBrowserCommand(a[0] as string, ctx.callerId, method, a.slice(1));
-            default:
-              throw new Error(`Unknown browser method: ${method}`);
+  container.register({
+    name: "rpcServer",
+    dependencies: ["tokenManager"],
+    optionalDependencies: ["fsService", "panelLifecycle"],
+    async start(resolve) {
+      const fsService = resolve<import("../shared/fsService.js").FsService>("fsService", true);
+      const lifecycle = resolve<import("../shared/panelLifecycle.js").PanelLifecycle>("panelLifecycle", true);
+      const server = new RpcServer({
+        tokenManager,
+        dispatcher,
+        onClientDisconnect: (callerId, callerKind) => {
+          const handleKey = callerKind === "panel" ? callerId : `server:${callerId}`;
+          fsService?.closeHandlesForPanel(handleKey);
+          if (callerKind === "panel") {
+            lifecycle?.closePanel(callerId);
           }
         },
       });
-    }
+      const port = await server.start();
+      return { server, port };
+    },
+    async stop(instance: { server: import("./rpcServer.js").RpcServer; port: number }) {
+      await instance?.server?.stop();
+    },
+  });
 
-    // Stub browser service when --serve-panels is off
-    if (!panelHttpServer) {
-      dispatcher.registerService({
-        name: "browser",
-        description: "CDP/browser automation (headless mode - unavailable)",
-        policy: { allowed: ["shell", "panel", "server"] },
-        methods: {},
-        handler: async () => {
-          throw new Error("browser service requires --serve-panels mode");
+  // ── AI RPC (depends on rpcServer + ai) ──
+
+  const { createAiService } = await import("./services/aiService.js");
+  container.register({
+    name: "aiRpc",
+    dependencies: ["rpcServer", "ai"],
+    async start(resolve) {
+      const { server: rpcServer } = resolve<{ server: import("./rpcServer.js").RpcServer; port: number }>("rpcServer")!;
+      const aiHandler = resolve<import("../shared/ai/aiHandler.js").AIHandler>("ai")!;
+      const def = createAiService({ aiHandler, rpcServer });
+      dispatcher.registerService(def);
+    },
+  });
+
+  // ===========================================================================
+  // Standalone-mode services (conditionally registered)
+  // ===========================================================================
+
+  if (!ipcChannel) {
+    const { handleHeadlessBridgeCall } = await import("./headlessBridge.js");
+
+    // PanelHttpServer (optional — only when --serve-panels)
+    if (args.servePanels) {
+      const { PanelHttpServer } = await import("./panelHttpServer.js");
+      container.register({
+        name: "panelHttpServer",
+        async start() {
+          const server = new PanelHttpServer("127.0.0.1", adminToken);
+          let envPanelPort: number | undefined;
+          if (process.env["NATSTACK_PANEL_PORT"]) {
+            envPanelPort = parseInt(process.env["NATSTACK_PANEL_PORT"], 10);
+            if (isNaN(envPanelPort)) {
+              console.warn("[Server] NATSTACK_PANEL_PORT is not a valid number, ignoring");
+              envPanelPort = undefined;
+            }
+          }
+          const port = await server.start(args.panelPort ?? envPanelPort ?? 0);
+          return { server, port };
+        },
+        async stop(instance: { server: import("./panelHttpServer.js").PanelHttpServer; port: number }) {
+          await instance?.server?.stop();
         },
       });
     }
 
-    const fsMethodSchema = { args: z.tuple([z.string()]).rest(z.unknown()) };
-    dispatcher.registerService({
-      name: "fs",
-      description: "Per-context filesystem operations (sandboxed to context folder)",
-      policy: { allowed: ["panel", "server"] },
-      methods: {
-        readFile: fsMethodSchema,
-        writeFile: fsMethodSchema,
-        readdir: fsMethodSchema,
-        mkdir: fsMethodSchema,
-        stat: fsMethodSchema,
-        open: fsMethodSchema,
-        close: fsMethodSchema,
-        read: fsMethodSchema,
-        write: fsMethodSchema,
+    // Filesystem service
+    const { FsService, handleFsCall } = await import("../shared/fsService.js");
+    container.register({
+      name: "fsService",
+      async start() {
+        return new FsService(contextFolderManager);
       },
-      handler: async (ctx, method, serviceArgs) => {
-        return handleFsCall(fsService, ctx, method, serviceArgs as unknown[]);
+    });
+
+    // PanelRegistry (no persistence in headless mode)
+    const { PanelRegistry } = await import("../shared/panelRegistry.js");
+    container.register({
+      name: "panelRegistry",
+      async start() {
+        return new PanelRegistry({ workspace, eventService });
+      },
+    });
+
+    // PanelLifecycle
+    const { PanelLifecycle } = await import("../shared/panelLifecycle.js");
+    container.register({
+      name: "panelLifecycle",
+      dependencies: ["panelRegistry", "fsService", "rpcServer"],
+      optionalDependencies: ["panelHttpServer"],
+      async start(resolve) {
+        const registry = resolve<import("../shared/panelRegistry.js").PanelRegistry>("panelRegistry")!;
+        const fsService = resolve<import("../shared/fsService.js").FsService>("fsService")!;
+        const { server: rpcServer, port: rpcPort } = resolve<{ server: import("./rpcServer.js").RpcServer; port: number }>("rpcServer")!;
+        const pubsubPort = resolve<{ port: number }>("pubsub")!.port;
+        const httpResult = resolve<{ server: import("./panelHttpServer.js").PanelHttpServer; port: number }>("panelHttpServer", true);
+
+        return new PanelLifecycle({
+          registry,
+          tokenManager,
+          fsService,
+          eventService,
+          panelsRoot: workspacePath,
+          serverInfo: {
+            rpcPort,
+            gitBaseUrl: `http://127.0.0.1:${gitServer.getPort()}`,
+            pubsubUrl: `ws://127.0.0.1:${pubsubPort}`,
+            createPanelToken: (panelId, kind) => tokenManager.createToken(panelId, kind as import("../shared/serviceDispatcher.js").CallerKind),
+            ensurePanelToken: (panelId, kind) => tokenManager.ensureToken(panelId, kind as import("../shared/serviceDispatcher.js").CallerKind),
+            revokePanelToken: (panelId) => { tokenManager.revokeToken(panelId); },
+            getPanelToken: (panelId) => { try { return tokenManager.getToken(panelId); } catch { return null; } },
+            getGitTokenForPanel: (panelId) => gitServer.getTokenForPanel(panelId),
+            revokeGitToken: (panelId) => { gitServer.revokeTokenForPanel(panelId); },
+          },
+          panelHttpServer: httpResult?.server as import("../shared/panelInterfaces.js").PanelHttpServerLike | null ?? null,
+          panelHttpPort: httpResult?.port,
+          sendToClient: (callerId, msg) => rpcServer.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage),
+        });
+      },
+    });
+
+    // Bridge RPC service
+    container.register({
+      name: "bridge",
+      dependencies: ["panelLifecycle", "agentDiscovery"],
+      async start(resolve) {
+        const lifecycle = resolve<import("../shared/panelLifecycle.js").PanelLifecycle>("panelLifecycle")!;
+        const agentDiscovery = resolve<import("../shared/agentDiscovery.js").AgentDiscovery>("agentDiscovery")!;
+        const deps = { pm: lifecycle, gitServer, agentDiscovery };
+        dispatcher.registerService({
+          name: "bridge",
+          description: "Panel lifecycle (headless mode)",
+          policy: { allowed: ["panel", "shell", "server"] },
+          methods: {
+            closeSelf: { args: z.tuple([]) },
+            getInfo: { args: z.tuple([]) },
+            setStateArgs: { args: z.tuple([z.record(z.unknown())]) },
+            focusPanel: { args: z.tuple([z.string().optional()]) },
+            getBootstrapConfig: { args: z.tuple([]) },
+            getWorkspaceTree: { args: z.tuple([]) },
+            listBranches: { args: z.tuple([z.string()]) },
+            listCommits: { args: z.tuple([z.string(), z.string().optional(), z.number().optional()]) },
+            listAgents: { args: z.tuple([]) },
+            openDevtools: { args: z.tuple([]) },
+            openFolderDialog: { args: z.tuple([z.object({ title: z.string().optional() }).optional()]) },
+          },
+          handler: async (ctx, method, serviceArgs) => {
+            return handleHeadlessBridgeCall(deps, ctx.callerId, method, serviceArgs as unknown[]);
+          },
+        });
+      },
+    });
+
+    // On-demand panel wiring + CDP bridge + browser service (when --serve-panels)
+    if (args.servePanels) {
+      container.register({
+        name: "panelServing",
+        dependencies: ["panelHttpServer", "panelLifecycle", "panelRegistry", "buildSystem"],
+        async start(resolve) {
+          const { server: panelHttpServer, port: panelHttpPort } = resolve<{ server: import("./panelHttpServer.js").PanelHttpServer; port: number }>("panelHttpServer")!;
+          const lifecycle = resolve<import("../shared/panelLifecycle.js").PanelLifecycle>("panelLifecycle")!;
+          const registry = resolve<import("../shared/panelRegistry.js").PanelRegistry>("panelRegistry")!;
+          const buildSystem = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
+          const { server: rpcServer, port: rpcPort } = resolve<{ server: import("./rpcServer.js").RpcServer; port: number }>("rpcServer")!;
+
+          // Compute deterministic subdomains
+          const graph = buildSystem.getGraph();
+          const panelNodes = graph.allNodes().filter((n) => n.kind === "panel");
+          const sanitize = (s: string) =>
+            s.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+          const rawEntries = panelNodes.map((n) => ({
+            subdomain: sanitize(n.relativePath.split("/").pop() ?? n.relativePath) || "panel",
+            source: n.relativePath,
+            name: n.manifest.title ?? n.name,
+          }));
+          const counts = new Map<string, number>();
+          for (const e of rawEntries) counts.set(e.subdomain, (counts.get(e.subdomain) ?? 0) + 1);
+          for (const e of rawEntries) {
+            if ((counts.get(e.subdomain) ?? 0) > 1) e.subdomain = sanitize(e.source);
+          }
+          const assigned = new Set<string>();
+          for (const e of rawEntries) {
+            let candidate = e.subdomain.slice(0, 63).replace(/-$/, "");
+            let suffix = 1;
+            while (assigned.has(candidate)) {
+              const tag = `-${suffix}`;
+              candidate = e.subdomain.slice(0, 63 - tag.length).replace(/-$/, "") + tag;
+              suffix++;
+            }
+            e.subdomain = candidate;
+            assigned.add(candidate);
+          }
+          panelHttpServer.populateSourceRegistry(rawEntries);
+
+          panelHttpServer.setCallbacks({
+            onDemandCreate: async (source, subdomain) => {
+              const panelId = await lifecycle.createPanelOnDemand(source, subdomain);
+              const rpcToken = tokenManager.ensureToken(panelId, "panel");
+              return { panelId, rpcPort, rpcToken, serverRpcPort: rpcPort, serverRpcToken: rpcToken };
+            },
+            listPanels: () => lifecycle.listPanels(),
+            getBuild: (source) => buildSystem.getBuild(source),
+          });
+
+          buildSystem.onPushBuild((source) => { panelHttpServer.invalidateBuild(source); });
+          console.log(`  On-demand panels: ${rawEntries.map((e) => e.subdomain).join(", ") || "(none)"}`);
+
+          // CDP bridge
+          const { CdpBridge } = await import("./cdpBridge.js");
+          const cdpBridge = new CdpBridge({
+            tokenManager,
+            adminToken,
+            canAccessBrowser: (requestingPanelId, browserId) =>
+              registry.isDescendantOf(browserId, requestingPanelId) ||
+              registry.isDescendantOf(requestingPanelId, browserId),
+            panelOwnsBrowser: (requestingPanelId, browserId) =>
+              registry.findParentId(browserId) === requestingPanelId,
+            port: panelHttpPort,
+          });
+          panelHttpServer.setCdpBridge(cdpBridge);
+
+          // Browser RPC service
+          dispatcher.registerService({
+            name: "browser",
+            description: "CDP/browser automation (headless mode)",
+            policy: { allowed: ["shell", "panel", "server"] },
+            methods: {
+              getCdpEndpoint: { args: z.tuple([z.string()]) },
+              navigate: { args: z.tuple([z.string(), z.string()]) },
+              goBack: { args: z.tuple([z.string()]) },
+              goForward: { args: z.tuple([z.string()]) },
+              reload: { args: z.tuple([z.string()]) },
+              stop: { args: z.tuple([z.string()]) },
+            },
+            handler: async (ctx, method, serviceArgs) => {
+              const a = serviceArgs as unknown[];
+              switch (method) {
+                case "getCdpEndpoint": {
+                  const endpoint = cdpBridge.getCdpEndpoint(a[0] as string, ctx.callerId);
+                  if (!endpoint) throw new Error(`Access denied or browser not found: ${a[0]}`);
+                  return endpoint;
+                }
+                case "navigate": case "goBack": case "goForward": case "reload": case "stop":
+                  return cdpBridge.sendBrowserCommand(a[0] as string, ctx.callerId, method, a.slice(1));
+                default: throw new Error(`Unknown browser method: ${method}`);
+              }
+            },
+          });
+
+          return { cdpBridge };
+        },
+        async stop(instance: { cdpBridge: { stop(): Promise<void> } } | undefined) {
+          await instance?.cdpBridge?.stop();
+        },
+      });
+    } else {
+      // Stub browser service when --serve-panels is off
+      container.register({
+        name: "browserStub",
+        async start() {
+          dispatcher.registerService({
+            name: "browser",
+            description: "CDP/browser automation (headless mode - unavailable)",
+            policy: { allowed: ["shell", "panel", "server"] },
+            methods: {},
+            handler: async () => { throw new Error("browser service requires --serve-panels mode"); },
+          });
+        },
+      });
+    }
+
+    // FS RPC service
+    container.register({
+      name: "fsRpc",
+      dependencies: ["fsService"],
+      async start(resolve) {
+        const fsService = resolve<import("../shared/fsService.js").FsService>("fsService")!;
+        const fsMethodSchema = { args: z.tuple([z.string()]).rest(z.unknown()) };
+        dispatcher.registerService({
+          name: "fs",
+          description: "Per-context filesystem operations (sandboxed to context folder)",
+          policy: { allowed: ["panel", "server"] },
+          methods: {
+            readFile: fsMethodSchema, writeFile: fsMethodSchema,
+            readdir: fsMethodSchema, mkdir: fsMethodSchema,
+            stat: fsMethodSchema, open: fsMethodSchema,
+            close: fsMethodSchema, read: fsMethodSchema, write: fsMethodSchema,
+          },
+          handler: async (ctx, method, serviceArgs) => {
+            return handleFsCall(fsService, ctx, method, serviceArgs as unknown[]);
+          },
+        });
       },
     });
   }
+
+  // ── Start all services in dependency order ──
+  await container.startAll();
 
   dispatcher.markInitialized();
 
@@ -694,15 +714,22 @@ async function main() {
   // Report ready
   // ===========================================================================
 
+  const rpcPort = container.get<{ port: number }>("rpcServer").port;
+  const pubsubPort = container.get<{ port: number }>("pubsub").port;
+
   if (ipcChannel) {
     ipcChannel.postMessage({
       type: "ready",
       rpcPort,
       gitPort: gitServer.getPort(),
-      pubsubPort: pubsubPort,
+      pubsubPort,
       adminToken,
     });
   } else {
+    const panelHttpPort = container.has("panelHttpServer")
+      ? container.get<{ port: number }>("panelHttpServer").port
+      : null;
+
     // Register for browser extension auto-discovery (idempotent file writes)
     const { registerHeadlessService } = await import("./headlessServiceRegistration.js");
     try {
@@ -711,7 +738,7 @@ async function main() {
         rpcPort,
         panelPort: panelHttpPort,
         gitPort: gitServer.getPort(),
-        pubsubPort: pubsubPort,
+        pubsubPort,
         adminToken,
       });
     } catch (err) {
@@ -730,7 +757,7 @@ async function main() {
   }
 
   // ===========================================================================
-  // Graceful shutdown
+  // Graceful shutdown — container.stopAll() handles everything
   // ===========================================================================
 
   let isShuttingDown = false;
@@ -745,26 +772,14 @@ async function main() {
       process.exit(1);
     }, 5000);
 
-    const shutdownTasks = [
-      container.stopAll().then(() => console.log("[Server] Services stopped")).catch((e) => console.error("[Server] Service shutdown error:", e)),
-      rpcServer.stop().then(() => console.log("[Server] RPC stopped")).catch((e) => console.error("[Server] RPC stop error:", e)),
-    ];
-    if (cdpBridgeInstance) {
-      shutdownTasks.push(
-        cdpBridgeInstance.stop().then(() => console.log("[Server] CDP bridge stopped")).catch((e) => console.error("[Server] CDP bridge stop error:", e)),
-      );
-    }
-    if (panelHttpServerInstance) {
-      shutdownTasks.push(
-        panelHttpServerInstance.stop().then(() => console.log("[Server] Panel HTTP stopped")).catch((e) => console.error("[Server] Panel HTTP stop error:", e)),
-      );
-    }
-
-    await Promise.all(shutdownTasks).finally(() => {
-      clearTimeout(forceExit);
-      console.log("[Server] Shutdown complete");
-      process.exit(0);
-    });
+    await container.stopAll()
+      .then(() => console.log("[Server] All services stopped"))
+      .catch((e) => console.error("[Server] Service shutdown error:", e))
+      .finally(() => {
+        clearTimeout(forceExit);
+        console.log("[Server] Shutdown complete");
+        process.exit(0);
+      });
   }
 
   if (ipcChannel) {
