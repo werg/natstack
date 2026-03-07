@@ -209,12 +209,10 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
   mainWindow.on("closed", () => {
     mainWindow = null;
     viewManager = null;
+    panelView = null;  // Clear so getPanelView() returns null until recreated
   });
 
-  // Set ViewManager reference in PanelView and PanelLifecycle
-  if (panelLifecycle && viewManager && panelView) {
-    panelLifecycle.setPanelView(panelView);
-  }
+  // PanelView is resolved lazily by PanelLifecycle via getPanelView()
   if (cdpServer && viewManager) {
     cdpServer.setViewManager(viewManager);
   }
@@ -367,30 +365,7 @@ app.on("ready", async () => {
       searchIndex,
     });
 
-    // Create PanelLifecycle (orchestration layer)
-    panelLifecycle = new PanelLifecycle({
-      registry: panelRegistry,
-      tokenManager,
-      fsService,
-      eventService,
-      panelsRoot: workspace!.path,
-      serverInfo,
-      cdpServer,
-    });
-
-    // Set up test API for E2E testing (only when NATSTACK_TEST_MODE=1)
-    setupTestApi(panelLifecycle, panelRegistry, null);
-    setMenuPanelLifecycle(panelLifecycle);
-    setMenuPanelRegistry(panelRegistry);
-    setMenuEventService(eventService);
-
-    // Register all Electron-main services via registry
-    // PanelView is created later after ViewManager exists, but we need a
-    // placeholder for the service registry. We'll create PanelView with a
-    // deferred viewManager pattern.
-    const adBlockManager = new AdBlockManager();
-
-    // We need the RPC server before PanelView (for port), so create RPC first
+    // Create RpcServer (needed by PanelLifecycle for sendToClient)
     const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
     rpcServer = new RpcServerClass({
       tokenManager: tokenManager,
@@ -404,18 +379,36 @@ app.on("ready", async () => {
     const rpcPort = await rpcServer.start();
     log.info(`[RPC] Server started on port ${rpcPort}`);
 
-    // Wire sendToClient into PanelLifecycle
-    panelLifecycle.setSendToClient((callerId, msg) => rpcServer!.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage));
-
-    // Start PanelHttpServer for HTTP subdomain panel serving in Electron
+    // Create PanelHttpServer (needed by PanelLifecycle for build state)
     const { PanelHttpServer } = await import("../server/panelHttpServer.js");
     const { randomBytes } = await import("crypto");
     panelHttpServer = new PanelHttpServer("127.0.0.1", randomBytes(32).toString("hex"));
     const panelHttpPort = await panelHttpServer.start(0);
     log.info(`[PanelHTTP] Panel HTTP server started on port ${panelHttpPort}`);
 
-    // Wire PanelHttpServer into PanelLifecycle
-    panelLifecycle.setPanelHttpServer(panelHttpServer, panelHttpPort);
+    // Create PanelLifecycle (orchestration layer) — fully initialized at construction
+    // getPanelView resolves lazily: PanelView is created after createWindow()
+    panelLifecycle = new PanelLifecycle({
+      registry: panelRegistry,
+      tokenManager,
+      fsService,
+      eventService,
+      panelsRoot: workspace!.path,
+      serverInfo,
+      cdpServer,
+      getPanelView: () => panelView,
+      panelHttpServer,
+      panelHttpPort,
+      sendToClient: (callerId, msg) => rpcServer!.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage),
+    });
+
+    // Set up test API for E2E testing (only when NATSTACK_TEST_MODE=1)
+    setupTestApi(panelLifecycle, panelRegistry, null);
+    setMenuPanelLifecycle(panelLifecycle);
+    setMenuPanelRegistry(panelRegistry);
+    setMenuEventService(eventService);
+
+    const adBlockManager = new AdBlockManager();
 
     // Wire PanelHttpServer callbacks
     panelHttpServer.setCallbacks({
@@ -531,8 +524,7 @@ app.on("ready", async () => {
         sendToClient: (callerId, msg) => rpcServer!.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage),
       });
 
-      // Wire PanelView into PanelLifecycle
-      panelLifecycle.setPanelView(panelView);
+      // PanelView is resolved lazily by PanelLifecycle via getPanelView()
 
       // Register crash handler
       viewManager.onViewCrashed((viewId, reason) => {

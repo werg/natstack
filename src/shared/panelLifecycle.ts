@@ -64,7 +64,8 @@ export interface PanelLifecycleDeps {
   serverInfo: ServerInfoLike;
 
   // Optional Electron-only deps (absent in headless)
-  panelView?: PanelViewLike | null;
+  /** Lazy getter for PanelView — resolved on each access. Absent in headless. */
+  getPanelView?: () => PanelViewLike | null;
   cdpServer?: { revokeTokenForPanel(panelId: string): void } | null;
   ccConversationManager?: { endPanelConversations(panelId: string): void } | null;
   panelHttpServer?: PanelHttpServerLike | null;
@@ -86,12 +87,12 @@ export class PanelLifecycle implements BridgePanelManager {
   private readonly panelsRoot: string;
   private readonly serverInfo: ServerInfoLike;
 
-  private panelView: PanelViewLike | null;
-  private cdpServer: { revokeTokenForPanel(panelId: string): void } | null;
-  private ccConversationManager: { endPanelConversations(panelId: string): void } | null;
-  private panelHttpServer: PanelHttpServerLike | null;
-  private panelHttpPort: number | undefined;
-  private sendToClient: ((callerId: string, msg: unknown) => void) | undefined;
+  private readonly getPanelView: () => PanelViewLike | null;
+  private readonly cdpServer: { revokeTokenForPanel(panelId: string): void } | null;
+  private readonly ccConversationManager: { endPanelConversations(panelId: string): void } | null;
+  private readonly panelHttpServer: PanelHttpServerLike | null;
+  private readonly panelHttpPort: number | undefined;
+  private readonly sendToClient: ((callerId: string, msg: unknown) => void) | undefined;
 
   private currentTheme: "light" | "dark" = "dark";
 
@@ -105,29 +106,12 @@ export class PanelLifecycle implements BridgePanelManager {
     this.eventService = deps.eventService;
     this.panelsRoot = deps.panelsRoot;
     this.serverInfo = deps.serverInfo;
-    this.panelView = deps.panelView ?? null;
+    this.getPanelView = deps.getPanelView ?? (() => null);
     this.cdpServer = deps.cdpServer ?? null;
     this.ccConversationManager = deps.ccConversationManager ?? null;
     this.panelHttpServer = deps.panelHttpServer ?? null;
     this.panelHttpPort = deps.panelHttpPort;
     this.sendToClient = deps.sendToClient;
-  }
-
-  // =========================================================================
-  // Setters for late-bound dependencies
-  // =========================================================================
-
-  setPanelView(view: PanelViewLike): void {
-    this.panelView = view;
-  }
-
-  setSendToClient(fn: (callerId: string, msg: unknown) => void): void {
-    this.sendToClient = fn;
-  }
-
-  setPanelHttpServer(server: PanelHttpServerLike, port: number): void {
-    this.panelHttpServer = server;
-    this.panelHttpPort = port;
   }
 
   // =========================================================================
@@ -405,8 +389,9 @@ export class PanelLifecycle implements BridgePanelManager {
 
       // Create view if PanelView is available (Electron mode)
       const panelUrl = this.getPanelUrl(panel.id);
-      if (panelUrl && this.panelView) {
-        await this.panelView.createViewForPanel(panel.id, panelUrl, contextId);
+      const viewForCreate = this.getPanelView();
+      if (panelUrl && viewForCreate) {
+        await viewForCreate.createViewForPanel(panel.id, panelUrl, contextId);
       }
 
       // Update build state based on cache
@@ -457,7 +442,7 @@ export class PanelLifecycle implements BridgePanelManager {
     this.fsService?.unregisterPanelContext(panelId);
 
     // Destroy view
-    this.panelView?.destroyView(panelId);
+    this.getPanelView()?.destroyView(panelId);
 
     // Remove from registry and archive in DB
     this.registry.removePanel(panelId);
@@ -542,8 +527,9 @@ export class PanelLifecycle implements BridgePanelManager {
     }
 
     // Destroy view (but keep panel in tree)
-    if (this.panelView?.hasView(panelId)) {
-      this.panelView.destroyView(panelId);
+    const viewForUnload = this.getPanelView();
+    if (viewForUnload?.hasView(panelId)) {
+      viewForUnload.destroyView(panelId);
     }
   }
 
@@ -555,8 +541,9 @@ export class PanelLifecycle implements BridgePanelManager {
    * Reload a panel: if view exists, reload it; otherwise rebuild.
    */
   async reloadPanel(panelId: string): Promise<void> {
-    if (this.panelView?.hasView(panelId)) {
-      this.panelView.reloadView(panelId);
+    const viewForReload = this.getPanelView();
+    if (viewForReload?.hasView(panelId)) {
+      viewForReload.reloadView(panelId);
     } else {
       await this.rebuildUnloadedPanel(panelId);
     }
@@ -592,8 +579,9 @@ export class PanelLifecycle implements BridgePanelManager {
     this.panelHttpServer?.invalidateBuild(source);
 
     const panelUrl = this.getPanelUrl(panelId);
-    if (panelUrl && this.panelView) {
-      await this.panelView.createViewForPanel(panelId, panelUrl, getPanelContextId(panel));
+    const viewForRebuild = this.getPanelView();
+    if (panelUrl && viewForRebuild) {
+      await viewForRebuild.createViewForPanel(panelId, panelUrl, getPanelContextId(panel));
     }
   }
 
@@ -768,7 +756,7 @@ export class PanelLifecycle implements BridgePanelManager {
     this.registry.notifyPanelTreeUpdate();
 
     // Emit focus event to the panel only if it has a view
-    if (this.panelView?.hasView(targetPanelId)) {
+    if (this.getPanelView()?.hasView(targetPanelId)) {
       this.sendPanelEvent(targetPanelId, { type: "focus" });
     }
 
@@ -838,7 +826,7 @@ export class PanelLifecycle implements BridgePanelManager {
   broadcastTheme(theme: "light" | "dark"): void {
     const allPanels = this.registry.listPanels();
     for (const entry of allPanels) {
-      if (this.panelView?.hasView(entry.panelId)) {
+      if (this.getPanelView()?.hasView(entry.panelId)) {
         this.sendPanelEvent(entry.panelId, { type: "theme", theme });
       }
     }
