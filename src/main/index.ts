@@ -108,6 +108,7 @@ let panelView: PanelView | null = null;
 let rpcServer: import("../server/rpcServer.js").RpcServer | null = null;
 let serverProcessManager: ServerProcessManager | null = null;
 let serverClient: ServerClient | null = null;
+let serverInfo: ServerInfo | null = null;
 let panelHttpServer: import("../server/panelHttpServer.js").PanelHttpServer | null = null;
 let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
@@ -215,6 +216,27 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
   // PanelView is resolved lazily by PanelLifecycle via getPanelView()
   if (cdpServer && viewManager) {
     cdpServer.setViewManager(viewManager);
+  }
+
+  if (viewManager && panelRegistry && panelLifecycle && panelHttpServer && cdpServer && serverInfo && rpcServer) {
+    panelView = new PanelView({
+      viewManager,
+      panelRegistry,
+      tokenManager,
+      panelHttpServer,
+      panelHttpPort: panelHttpServer.getPort(),
+      rpcPort: wsArgs.rpcPort,
+      serverInfo,
+      cdpServer,
+      panelLifecycle,
+      sendToClient: (callerId, msg) => rpcServer!.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage),
+    });
+
+    viewManager.onViewCrashed((viewId, reason) => {
+      panelView!.handleViewCrashed(viewId, reason);
+    });
+
+    setupTestApi(panelLifecycle, panelRegistry, panelView);
   }
 
   // Optional memory diagnostics (env-driven).
@@ -339,7 +361,7 @@ app.on("ready", async () => {
     performance.mark("startup:server-connected");
     log.info("[Server] Admin WS client connected");
 
-    const serverInfo = buildServerInfo(ports);
+    serverInfo = buildServerInfo(ports);
 
     // CDP server (Electron-local) — must start before panel services
     cdpServer = new CdpServer(tokenManager);
@@ -508,32 +530,6 @@ app.on("ready", async () => {
     const shellToken = tokenManager.ensureToken("shell", "shell");
     // createWindow will create ViewManager, PanelView, and initialize panel tree
     void createWindow({ rpcPort, shellToken });
-
-    // Create PanelView now that viewManager exists (set in createWindow)
-    if (viewManager) {
-      panelView = new PanelView({
-        viewManager,
-        panelRegistry,
-        tokenManager,
-        panelHttpServer,
-        panelHttpPort,
-        rpcPort,
-        serverInfo,
-        cdpServer,
-        panelLifecycle,
-        sendToClient: (callerId, msg) => rpcServer!.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage),
-      });
-
-      // PanelView is resolved lazily by PanelLifecycle via getPanelView()
-
-      // Register crash handler
-      viewManager.onViewCrashed((viewId, reason) => {
-        panelView!.handleViewCrashed(viewId, reason);
-      });
-
-      // Update test API with PanelView
-      setupTestApi(panelLifecycle, panelRegistry, panelView);
-    }
 
     performance.mark("startup:window-created");
 
