@@ -197,6 +197,51 @@ describe("ServiceContainer", () => {
     expect(registerService).toHaveBeenCalledWith(serviceDef);
   });
 
+  it("handles optional dependencies — present", async () => {
+    const container = new ServiceContainer();
+    const order: string[] = [];
+
+    container.register(createService("a", [], "a", { onStart: () => order.push("a") }));
+    container.register({
+      name: "b",
+      optionalDependencies: ["a"],
+      start: vi.fn(async (resolve: <D>(name: string, optional?: boolean) => D | undefined) => {
+        order.push("b");
+        const a = resolve<string>("a", true);
+        return `b+${a}`;
+      }),
+    });
+
+    await container.startAll();
+
+    // "a" should start before "b" (ordering respected)
+    expect(order).toEqual(["a", "b"]);
+    // "b" should have received "a"'s instance
+    expect(container.get("b")).toBe("b+a");
+  });
+
+  it("handles optional dependencies — absent", async () => {
+    const container = new ServiceContainer();
+    const order: string[] = [];
+
+    container.register({
+      name: "b",
+      optionalDependencies: ["a"],
+      start: vi.fn(async (resolve: <D>(name: string, optional?: boolean) => D | undefined) => {
+        order.push("b");
+        const a = resolve<string>("a", true);
+        return `b+${a}`;
+      }),
+    });
+
+    await container.startAll();
+
+    // "b" should start even though "a" is absent
+    expect(order).toEqual(["b"]);
+    // "a" resolved as undefined
+    expect(container.get("b")).toBe("b+undefined");
+  });
+
   it("rpcService() creates a definition-only ManagedService", async () => {
     const registerService = vi.fn();
     const dispatcher = { registerService } as any;
