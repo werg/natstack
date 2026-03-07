@@ -11,7 +11,7 @@ import * as path from "path";
 import * as crypto from "crypto";
 import Arborist from "@npmcli/arborist";
 import { createTypeDefinitionLoader, loadNatstackPackageTypes, clearNatstackTypesCache, preloadNatstackTypesAsync, type NatstackPackageTypes } from "@natstack/typecheck";
-import { getUserDataPath } from "../envPaths.js";
+import { getUserDataPath } from "@natstack/env-paths";
 
 const NPM_REGISTRY = "https://registry.npmjs.org";
 

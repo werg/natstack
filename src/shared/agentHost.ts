@@ -15,7 +15,7 @@ import * as path from "path";
 import { randomUUID } from "crypto";
 import { EventEmitter } from "events";
 import type { AgentInitConfig, AgentInstanceInfo } from "@natstack/types";
-import type { MessageStore } from "./pubsubServer.js";
+import type { MessageStore } from "@natstack/pubsub-server";
 import {
   createRpcBridge,
   type RpcBridge,
@@ -26,7 +26,7 @@ import {
 } from "@natstack/rpc";
 import type { AgentDiscovery } from "./agentDiscovery.js";
 import type { DatabaseManager } from "./db/databaseManager.js";
-import { createDevLogger } from "./devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 import type { AIHandler, StreamTarget } from "./ai/aiHandler.js";
 import type { StreamTextOptions, StreamTextEvent } from "./types.js";
 import type { ToolExecutionResult } from "./ai/claudeCodeToolProxy.js";
@@ -34,7 +34,7 @@ import {
   type ProcessAdapter,
   hasElectronUtilityProcess,
   createNodeProcessAdapter,
-} from "../shared/processAdapter.js";
+} from "@natstack/process-adapter";
 import type { ContextFolderManager } from "../shared/contextFolderManager.js";
 
 const log = createDevLogger("AgentHost");

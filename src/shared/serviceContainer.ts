@@ -11,7 +11,7 @@
 
 import type { ManagedService } from "./managedService.js";
 import type { ServiceDispatcher } from "./serviceDispatcher.js";
-import { createDevLogger } from "./devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("ServiceContainer");
 

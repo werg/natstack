@@ -1,10 +1,10 @@
 import { Git } from "node-git-server";
-import { getUserDataPath } from "./envPaths.js";
+import { getUserDataPath } from "@natstack/env-paths";
 import * as path from "path";
 import * as fs from "fs";
 import * as http from "http";
 import { execFile, spawn, spawnSync } from "child_process";
-import { createDevLogger } from "./devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("GitServer");
 import type { WorkspaceTree, BranchInfo, CommitInfo } from "./types.js";

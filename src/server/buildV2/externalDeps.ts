@@ -14,7 +14,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import { execSync } from "child_process";
-import { getUserDataPath } from "../../shared/envPaths.js";
+import { getUserDataPath } from "@natstack/env-paths";
 import type { PackageGraph, GraphNode } from "./packageGraph.js";
 
 // ---------------------------------------------------------------------------

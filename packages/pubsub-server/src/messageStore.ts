@@ -7,9 +7,23 @@
  * - TestTokenValidator: Simple token validator for tests
  */
 
-import type { DatabaseManager } from "../db/databaseManager.js";
+import type { DbRunResult } from "@natstack/types";
 
-const DB_NAME = "pubsub-messages";
+// =============================================================================
+// Injectable dependency interfaces
+// =============================================================================
+
+/**
+ * Minimal database manager interface — the subset that SqliteMessageStore needs.
+ * Implemented by DatabaseManager in the main app.
+ */
+export interface DatabaseManagerLike {
+  open(ownerId: string, dbName: string, readOnly?: boolean): string;
+  exec(handle: string, sql: string): void;
+  run(handle: string, sql: string, params?: unknown[]): DbRunResult;
+  query<T>(handle: string, sql: string, params?: unknown[]): T[];
+  close(handle: string): void;
+}
 
 // =============================================================================
 // Dependency interfaces for testability
@@ -249,14 +263,16 @@ abstract class BaseMessageStore implements MessageStore {
 // Concrete implementations
 // =============================================================================
 
+const DB_NAME = "pubsub-messages";
+
 /**
  * SQLite-backed message store using DatabaseManager.
  */
 export class SqliteMessageStore extends BaseMessageStore {
   private dbHandle: string | null = null;
-  private dbManager: DatabaseManager;
+  private dbManager: DatabaseManagerLike;
 
-  constructor(dbManager: DatabaseManager) {
+  constructor(dbManager: DatabaseManagerLike) {
     super();
     this.dbManager = dbManager;
   }

@@ -13,7 +13,7 @@
  * - State-arg validation against manifests (PanelLifecycle)
  */
 
-import { createDevLogger } from "./devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 import type { Panel, PanelArtifacts, PanelInfo, PanelSummary } from "./types.js";
 import { getCurrentSnapshot, getPanelSource, getPanelContextId } from "./panel/accessors.js";
 import { contextIdToSubdomain } from "./panelIdUtils.js";

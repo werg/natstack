@@ -1,0 +1,25 @@
+{
+  "name": "@natstack/process-adapter",
+  "version": "0.1.0",
+  "description": "Process spawning abstraction (Electron utilityProcess / Node.js child_process)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "dev": "tsc --project tsconfig.build.json --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  },
+  "files": [
+    "dist"
+  ]
+}

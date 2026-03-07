@@ -16,7 +16,7 @@ import * as path from "path";
 import { session, ipcMain } from "electron";
 import { parse } from "tldts";
 import { getCentralConfigDirectory } from "../paths.js";
-import { createDevLogger } from "../../shared/devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("AdBlock");
 

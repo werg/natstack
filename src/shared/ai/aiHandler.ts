@@ -19,7 +19,7 @@ import type {
   StreamTextEvent,
 } from "../types.js";
 import { createAIError } from "../errors.js";
-import { createDevLogger } from "../devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 import { validateToolDefinitions } from "../validation.js";
 import { MAX_STREAM_DURATION_MS } from "../constants.js";
 import {

@@ -39,7 +39,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { randomBytes } from "crypto";
 import { WebSocketServer } from "ws";
-import { createDevLogger } from "../shared/devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 import type { BuildResult, BuildMetadata } from "./buildV2/buildStore.js";
 import type { CdpBridge } from "./cdpBridge.js";
 import { CONFIG_LOADER_JS } from "./configLoader.js";

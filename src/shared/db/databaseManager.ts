@@ -10,7 +10,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as crypto from "crypto";
 import type { DbRunResult } from "@natstack/types";
-import { createDevLogger } from "../devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("DatabaseManager");
 

@@ -11,7 +11,7 @@ import {
   PubSubServer,
   InMemoryMessageStore,
   TestTokenValidator,
-} from "./pubsubServer.js";
+} from "./index.js";
 
 describe("PubSub Server", () => {
   let server: PubSubServer;

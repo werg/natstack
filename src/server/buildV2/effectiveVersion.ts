@@ -16,7 +16,7 @@ import * as path from "path";
 import * as crypto from "crypto";
 import { execFile, execFileSync } from "child_process";
 import type { InternalDepRef, PackageGraph } from "./packageGraph.js";
-import { getUserDataPath } from "../../shared/envPaths.js";
+import { getUserDataPath } from "@natstack/env-paths";
 
 // ---------------------------------------------------------------------------
 // Types

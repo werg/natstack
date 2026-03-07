@@ -8,7 +8,7 @@
 import type Database from "better-sqlite3";
 import { getPanelPersistence } from "./panelPersistence.js";
 import type { DbPanelRow } from "./panelSchema.js";
-import { createDevLogger } from "../devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("PanelSearchIndex");
 

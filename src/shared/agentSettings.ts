@@ -14,7 +14,7 @@ import * as path from "path";
 import * as fs from "fs";
 import type { GlobalAgentSettings, AgentSettings } from "@natstack/types";
 import type { AgentDiscovery } from "./agentDiscovery.js";
-import { createDevLogger } from "./devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("AgentSettings");
 

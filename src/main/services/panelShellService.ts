@@ -7,7 +7,7 @@ import type { ViewManager } from "../viewManager.js";
 import type { ThemeAppearance } from "../../shared/types.js";
 import { getPanelPersistence } from "../../shared/db/panelPersistence.js";
 import { getPanelSearchIndex } from "../../shared/db/panelSearchIndex.js";
-import { createDevLogger } from "../../shared/devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("PanelShellService");
 

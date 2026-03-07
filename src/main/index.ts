@@ -5,7 +5,7 @@ import * as fs from "fs";
 process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
 
 import { isDev } from "./utils.js";
-import { createDevLogger } from "../shared/devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("App");
 import { PanelRegistry } from "../shared/panelRegistry.js";

@@ -17,7 +17,7 @@ import * as path from "path";
 import chokidar from "chokidar";
 import { EventEmitter } from "events";
 import type { AgentManifest as CoreAgentManifest } from "@natstack/types";
-import { createDevLogger } from "./devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("AgentDiscovery");
 

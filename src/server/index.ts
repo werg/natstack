@@ -157,7 +157,7 @@ if (!ipcChannel) {
 // =============================================================================
 
 async function main() {
-  const { setUserDataPath, getUserDataPath } = await import("../shared/envPaths.js");
+  const { setUserDataPath, getUserDataPath } = await import("@natstack/env-paths");
   const { loadCentralEnv, discoverWorkspace, createWorkspace } = await import("../shared/workspace/loader.js");
   const { GitServer } = await import("../shared/gitServer.js");
   const { TokenManager } = await import("../shared/tokenManager.js");
@@ -302,15 +302,17 @@ async function main() {
     name: "pubsub",
     dependencies: ["tokenManager", "databaseManager"],
     async start() {
-      const { PubSubServer, SqliteMessageStore } = await import("../shared/pubsubServer.js");
+      const { PubSubServer, SqliteMessageStore } = await import("@natstack/pubsub-server");
+      const { findServicePort } = await import("@natstack/port-utils");
       const server = new PubSubServer({
         tokenValidator: tokenManager,
         messageStore: new SqliteMessageStore(databaseManager),
+        findPort: () => findServicePort("pubsub"),
       });
       const port = await server.start();
       return { server, port };
     },
-    async stop(instance: { server: import("../shared/pubsubServer.js").PubSubServer; port: number }) { await instance?.server?.stop(); },
+    async stop(instance: { server: import("@natstack/pubsub-server").PubSubServer; port: number }) { await instance?.server?.stop(); },
   });
 
   // Agent host
@@ -319,7 +321,7 @@ async function main() {
     dependencies: ["pubsub", "agentDiscovery", "tokenManager", "databaseManager", "buildSystem"],
     async start(resolve) {
       const { AgentHost } = await import("../shared/agentHost.js");
-      const { server: pubsubServer, port: pubsubPort } = resolve<{ server: import("../shared/pubsubServer.js").PubSubServer; port: number }>("pubsub")!;
+      const { server: pubsubServer, port: pubsubPort } = resolve<{ server: import("@natstack/pubsub-server").PubSubServer; port: number }>("pubsub")!;
       const agentDiscovery = resolve<import("../shared/agentDiscovery.js").AgentDiscovery>("agentDiscovery")!;
       const buildSystem = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
 

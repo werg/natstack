@@ -14,7 +14,7 @@ import chokidar from "chokidar";
 import { EventEmitter } from "events";
 import * as path from "path";
 import type { Workspace } from "./types.js";
-import { createDevLogger } from "../devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("GitWatcher");
 

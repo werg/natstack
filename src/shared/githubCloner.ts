@@ -13,7 +13,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs";
 import * as path from "path";
-import { createDevLogger } from "./devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 
 const execFileAsync = promisify(execFile);
 const log = createDevLogger("GitHubCloner");

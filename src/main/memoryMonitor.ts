@@ -1,5 +1,5 @@
 import type { ViewManager } from "./viewManager.js";
-import { createDevLogger } from "../shared/devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("MemoryMonitor");
 

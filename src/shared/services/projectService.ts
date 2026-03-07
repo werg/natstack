@@ -11,7 +11,7 @@ import * as fs from "fs";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { validateProjectName, resolveWithinContext } from "../contextPaths.js";
-import { createDevLogger } from "../devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 import type { ContextFolderManager } from "../contextFolderManager.js";
 import type { GitServer } from "../gitServer.js";
 import type { TokenManager } from "../tokenManager.js";

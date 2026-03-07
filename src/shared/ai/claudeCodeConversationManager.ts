@@ -13,7 +13,7 @@ import {
   getMcpToolNames,
   type ToolExecuteCallback,
 } from "./claudeCodeToolProxy.js";
-import { createDevLogger } from "../devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 import { findExecutable } from "./providerFactory.js";
 
 

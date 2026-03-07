@@ -16,7 +16,7 @@ import Database from "better-sqlite3";
 import * as path from "path";
 import * as fs from "fs";
 import type { Workspace } from "../workspace/types.js";
-import { createDevLogger } from "../devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("PanelPersistence");
 import {

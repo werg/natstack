@@ -11,7 +11,7 @@
  */
 
 import * as path from "path";
-import { createDevLogger } from "./devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 import type {
   Panel,
   PanelManifest,

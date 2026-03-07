@@ -7,13 +7,8 @@
 
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer, type Server as HttpServer, type IncomingMessage } from "http";
-import { findServicePort } from "./portUtils.js";
-import { createDevLogger } from "./devLog.js";
-import type { AgentHost } from "./agentHost.js";
-import { AgentSpawnError } from "./agentHost.js";
 import type { AgentManifest } from "@natstack/types";
 import type { AgentBuildError } from "@natstack/types";
-import type { ContextFolderManager } from "./contextFolderManager.js";
 import {
   type TokenValidator,
   type ChannelConfig,
@@ -25,13 +20,84 @@ import {
   metadataEquals,
   deserializeAttachments,
   serializeMetadata,
-} from "./pubsub/messageStore.js";
+} from "./messageStore.js";
 
-// Re-export message store types and classes for backward compatibility
-export { SqliteMessageStore, InMemoryMessageStore, TestTokenValidator } from "./pubsub/messageStore.js";
-export type { TokenValidator, ChannelConfig, ChannelInfo, ChannelAgentRow, MessageStore, MessageRow, ServerAttachment } from "./pubsub/messageStore.js";
+// Re-export message store types and classes for convenience
+export { SqliteMessageStore, InMemoryMessageStore, TestTokenValidator } from "./messageStore.js";
+export type { TokenValidator, ChannelConfig, ChannelInfo, ChannelAgentRow, MessageStore, MessageRow, ServerAttachment, DatabaseManagerLike } from "./messageStore.js";
 
-const log = createDevLogger("PubSubServer");
+// =============================================================================
+// Injectable dependency interfaces
+// =============================================================================
+
+/**
+ * Minimal AgentHost interface — the subset that PubSubServer needs.
+ */
+export interface AgentHostLike {
+  listAvailableAgents(): AgentManifest[];
+  spawn(agentId: string, options: {
+    channel: string;
+    handle?: string;
+    contextFolderPath?: string;
+    config?: Record<string, unknown>;
+  }): Promise<{ id: string; agentId: string; handle: string; startedAt: number }>;
+  kill(instanceId: string): Promise<boolean>;
+  getChannelAgents(channel: string): Array<{ id: string; agentId: string; handle: string; startedAt: number }>;
+  markChannelActivity(channel: string): void;
+  wakeChannelAgents(channel: string): Promise<void>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  on(event: string, listener: (...args: any[]) => void): void;
+}
+
+/**
+ * Error thrown when agent spawn fails due to build/type errors.
+ */
+export class AgentSpawnError extends Error {
+  constructor(
+    message: string,
+    public readonly buildLog?: string,
+    public readonly typeErrors?: Array<{ file: string; line: number; column: number; message: string }>,
+    public readonly dirtyRepo?: { modified: string[]; untracked: string[]; staged: string[] }
+  ) {
+    super(message);
+    this.name = "AgentSpawnError";
+  }
+}
+
+/**
+ * Minimal ContextFolderManager interface — the subset that PubSubServer needs.
+ */
+export interface ContextFolderManagerLike {
+  ensureContextFolder(contextId: string): Promise<string>;
+}
+
+/** Logger interface matching createDevLogger() output shape. */
+export interface Logger {
+  verbose(message: string, ...args: unknown[]): void;
+  info(message: string, ...args: unknown[]): void;
+  warn(message: string, ...args: unknown[]): void;
+  error(message: string, ...args: unknown[]): void;
+}
+
+/** Stored spawn config shape for auto-wake registration. */
+export interface StoredSpawnConfig {
+  channel: string;
+  handle: string;
+  config: Record<string, unknown>;
+  contextId: string;
+}
+
+/** Function that finds an available port. */
+export type PortFinder = () => Promise<number>;
+
+const defaultLogger: Logger = {
+  verbose: () => {},
+  info: (msg, ...args) => console.log(`[PubSubServer] ${msg}`, ...args),
+  warn: (msg, ...args) => console.warn(`[PubSubServer] ${msg}`, ...args),
+  error: (msg, ...args) => console.error(`[PubSubServer] ${msg}`, ...args),
+};
+
+let log: Logger = defaultLogger;
 
 /**
  * Server configuration options.
@@ -43,6 +109,10 @@ export interface PubSubServerOptions {
   messageStore: MessageStore;
   /** Port to listen on (defaults to dynamic allocation) */
   port?: number;
+  /** Custom logger (defaults to console-based) */
+  logger?: Logger;
+  /** Port finder for dynamic allocation (required if port is not set) */
+  findPort?: PortFinder;
 }
 
 interface ClientConnection {
@@ -237,16 +307,20 @@ export class PubSubServer {
   private tokenValidator: TokenValidator;
   private messageStore: MessageStore;
   private requestedPort: number | undefined;
+  private findPort: PortFinder | undefined;
 
   constructor(options: PubSubServerOptions) {
     this.tokenValidator = options.tokenValidator;
     this.messageStore = options.messageStore;
     this.requestedPort = options.port;
+    this.findPort = options.findPort;
+    if (options.logger) log = options.logger;
   }
 
   async start(): Promise<number> {
     if (this.requestedPort === undefined) {
-      this.port = await findServicePort("pubsub");
+      if (!this.findPort) throw new Error("PubSubServer requires either a port or a findPort function");
+      this.port = await this.findPort();
     }
 
     // Create HTTP server for WebSocket upgrade
@@ -991,7 +1065,7 @@ export class PubSubServer {
         handle,
         config,
         contextId: channelInfo.contextId,
-      } satisfies import("./agentHost.js").StoredSpawnConfig);
+      } satisfies StoredSpawnConfig);
       this.messageStore.registerChannelAgent(
         client.channel,
         msg.agentId,
@@ -1434,13 +1508,13 @@ export class PubSubServer {
   // AgentHost Integration (Phase 4)
   // ===========================================================================
 
-  private agentHost: AgentHost | null = null;
-  private contextFolderManager: ContextFolderManager | null = null;
+  private agentHost: AgentHostLike | null = null;
+  private contextFolderManager: ContextFolderManagerLike | null = null;
 
   /**
    * Set the ContextFolderManager for resolving context folder paths.
    */
-  setContextFolderManager(manager: ContextFolderManager): void {
+  setContextFolderManager(manager: ContextFolderManagerLike): void {
     this.contextFolderManager = manager;
   }
 
@@ -1448,7 +1522,7 @@ export class PubSubServer {
    * Set the AgentHost reference for agent lifecycle management.
    * The full pubsub protocol (invite-agent, list-agents, etc.) is Phase 5.
    */
-  setAgentHost(host: AgentHost): void {
+  setAgentHost(host: AgentHostLike): void {
     this.agentHost = host;
 
     // Listen for agent events and broadcast as ephemeral debug messages
@@ -1509,7 +1583,7 @@ export class PubSubServer {
   /**
    * Get the AgentHost reference.
    */
-  getAgentHost(): AgentHost | null {
+  getAgentHost(): AgentHostLike | null {
     return this.agentHost;
   }
 

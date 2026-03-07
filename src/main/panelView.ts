@@ -7,7 +7,7 @@
  */
 
 import { randomBytes } from "crypto";
-import { createDevLogger } from "../shared/devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 import type { ViewManager } from "./viewManager.js";
 import type { PanelRegistry } from "../shared/panelRegistry.js";
 import type { TokenManager } from "../shared/tokenManager.js";

@@ -2,10 +2,10 @@ import { WebSocketServer, WebSocket } from "ws";
 import { webContents } from "electron";
 import * as http from "http";
 import { URL } from "url";
-import { findServicePort } from "./portUtils.js";
+import { findServicePort } from "@natstack/port-utils";
 import type { TokenManager } from "../shared/tokenManager.js";
 import type { ViewManager } from "./viewManager.js";
-import { createDevLogger } from "../shared/devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("CdpServer");
 

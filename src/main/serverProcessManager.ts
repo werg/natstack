@@ -14,7 +14,7 @@ import {
   type ProcessAdapter,
   hasElectronUtilityProcess,
   createNodeProcessAdapter,
-} from "../shared/processAdapter.js";
+} from "@natstack/process-adapter";
 
 export interface ServerPorts {
   rpcPort: number;

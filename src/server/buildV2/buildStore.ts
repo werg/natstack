@@ -13,7 +13,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { getUserDataPath } from "../../shared/envPaths.js";
+import { getUserDataPath } from "@natstack/env-paths";
 
 // ---------------------------------------------------------------------------
 // Types

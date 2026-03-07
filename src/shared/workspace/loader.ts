@@ -14,10 +14,10 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { getUserDataPath } from "../envPaths.js";
+import { getUserDataPath } from "@natstack/env-paths";
 import YAML from "yaml";
 import dotenv from "dotenv";
-import { createDevLogger } from "../devLog.js";
+import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("Workspace");
 import type { Workspace, WorkspaceConfig, CentralConfig, CentralConfigPaths } from "./types.js";
