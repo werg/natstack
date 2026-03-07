@@ -28,7 +28,9 @@ import { EventService } from "../shared/eventsService.js";
 const eventService = new EventService();
 import { ViewManager } from "./viewManager.js";
 import { ServiceDispatcher } from "../shared/serviceDispatcher.js";
-import type { RpcServerLike } from "../shared/panelInterfaces.js";
+// RpcServer type: inline import("...") used intentionally — main/ constructs
+// server objects via dynamic import at runtime; inline types are acceptable
+// in entry points per the boundary rule (no static module-level imports).
 import { ServiceContainer } from "../shared/serviceContainer.js";
 import { rpcService } from "../shared/managedService.js";
 import { createEventsServiceDefinition } from "../shared/eventsService.js";
@@ -103,7 +105,7 @@ let cdpServer: CdpServer | null = null;
 let panelRegistry: PanelRegistry | null = null;
 let panelLifecycle: PanelLifecycle | null = null;
 let panelView: PanelView | null = null;
-let rpcServer: RpcServerLike | null = null;
+let rpcServer: import("../server/rpcServer.js").RpcServer | null = null;
 let serverProcessManager: ServerProcessManager | null = null;
 let serverClient: ServerClient | null = null;
 let panelHttpServer: import("../server/panelHttpServer.js").PanelHttpServer | null = null;

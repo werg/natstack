@@ -6,9 +6,6 @@
  *
  * PanelRelationshipProvider: panel tree relationship queries used by RpcServer
  * for panel-to-panel authorization (implemented by PanelRegistry).
- *
- * RpcServerLike: minimal RPC server surface used by main/ entry point
- * (implemented by RpcServer in server/).
  */
 
 /**
@@ -30,15 +27,4 @@ export interface PanelRelationshipProvider {
   getPanel(panelId: string): unknown | undefined;
   findParentId(panelId: string): string | null;
   isDescendantOf(panelId: string, ancestorId: string): boolean;
-}
-
-/**
- * Minimal RPC server interface — the subset that main/ needs for wiring.
- * Implemented by RpcServer in server/.
- */
-export interface RpcServerLike {
-  start(): Promise<number>;
-  stop(): Promise<void>;
-  getPort(): number | null;
-  sendToClient(callerId: string, msg: unknown): void;
 }
