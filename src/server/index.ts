@@ -159,7 +159,7 @@ if (!ipcChannel) {
 async function main() {
   const { setUserDataPath, getUserDataPath } = await import("@natstack/env-paths");
   const { loadCentralEnv, discoverWorkspace, createWorkspace } = await import("../shared/workspace/loader.js");
-  const { GitServer } = await import("../shared/gitServer.js");
+  const { GitServer } = await import("@natstack/git-server");
   const { TokenManager } = await import("../shared/tokenManager.js");
   const { z } = await import("zod");
   const { ServiceDispatcher } = await import("../shared/serviceDispatcher.js");
@@ -320,7 +320,7 @@ async function main() {
     name: "agentHost",
     dependencies: ["pubsub", "agentDiscovery", "tokenManager", "databaseManager", "buildSystem"],
     async start(resolve) {
-      const { AgentHost } = await import("../shared/agentHost.js");
+      const { AgentHost } = await import("@natstack/agent-host");
       const { server: pubsubServer, port: pubsubPort } = resolve<{ server: import("@natstack/pubsub-server").PubSubServer; port: number }>("pubsub")!;
       const agentDiscovery = resolve<import("../shared/agentDiscovery.js").AgentDiscovery>("agentDiscovery")!;
       const buildSystem = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
@@ -342,7 +342,7 @@ async function main() {
       pubsubServer.setContextFolderManager(contextFolderManager);
       return host;
     },
-    async stop(instance: import("../shared/agentHost.js").AgentHost) { instance?.shutdown(); },
+    async stop(instance: import("@natstack/agent-host").AgentHost) { instance?.shutdown(); },
   });
 
   // AI handler (lifecycle only — RPC registered separately because it needs rpcServer)
@@ -351,7 +351,7 @@ async function main() {
     dependencies: ["agentHost"],
     async start(resolve) {
       const { AIHandler: AIHandlerClass } = await import("../shared/ai/aiHandler.js");
-      const agentHost = resolve<import("../shared/agentHost.js").AgentHost>("agentHost")!;
+      const agentHost = resolve<import("@natstack/agent-host").AgentHost>("agentHost")!;
       const aiHandler = new AIHandlerClass(workspacePath);
       await aiHandler.initialize();
       agentHost.setAiHandler(aiHandler);

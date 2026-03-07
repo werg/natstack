@@ -12,7 +12,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { resolveWithinContext } from "../contextPaths.js";
 import type { ContextFolderManager } from "../contextFolderManager.js";
-import type { GitServer } from "../gitServer.js";
+import type { GitServer } from "@natstack/git-server";
 import type { TokenManager } from "../tokenManager.js";
 
 const execFileAsync = promisify(execFile);

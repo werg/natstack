@@ -27,7 +27,7 @@ import {
 } from "./effectiveVersion.js";
 import * as buildStore from "./buildStore.js";
 import { buildUnit } from "./builder.js";
-import type { GitPushEvent, GitServer } from "../../shared/gitServer.js";
+import type { GitPushEvent, GitServer } from "@natstack/git-server";
 
 // ---------------------------------------------------------------------------
 // Types

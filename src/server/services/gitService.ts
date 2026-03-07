@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { GitServer } from "../../shared/gitServer.js";
+import type { GitServer } from "@natstack/git-server";
 import type { TokenManager } from "../../shared/tokenManager.js";
 import type { ContextFolderManager } from "../../shared/contextFolderManager.js";
 

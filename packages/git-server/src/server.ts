@@ -7,11 +7,9 @@ import { execFile, spawn, spawnSync } from "child_process";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("GitServer");
-import type { WorkspaceTree, BranchInfo, CommitInfo } from "./types.js";
-import { GitAuthManager, type TokenManager } from "./tokenManager.js";
+import type { WorkspaceTree, BranchInfo, CommitInfo, GitWatcherLike, GitHubProxyConfig, TokenManagerLike } from "./types.js";
+import { GitAuthManager } from "./auth.js";
 import * as net from "net";
-import type { GitWatcher } from "./workspace/gitWatcher.js";
-import type { GitHubProxyConfig } from "./workspace/types.js";
 import {
   parseGitHubPath,
   isGitHubPath,
@@ -73,7 +71,7 @@ export class GitServer {
     depth: 1,
   };
 
-  constructor(tokenManager: TokenManager, config?: GitServerConfig) {
+  constructor(tokenManager: TokenManagerLike, config?: GitServerConfig) {
     this.configuredPort = config?.port ?? DEFAULT_GIT_SERVER_PORT;
     this.configuredReposPath = config?.reposPath ?? null;
     this.initPatterns = config?.initPatterns ?? ["panels/*", "packages/*"];
@@ -448,7 +446,7 @@ export class GitServer {
    * This ensures the workspace tree is always up-to-date when repos are added/removed
    * or when commits are made (which might change package.json).
    */
-  subscribeToGitWatcher(watcher: GitWatcher): void {
+  subscribeToGitWatcher(watcher: GitWatcherLike): void {
     watcher.on("repoAdded", () => {
       console.log("[GitServer] Invalidating tree cache (repo added)");
       this.invalidateTreeCache();

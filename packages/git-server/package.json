@@ -1,0 +1,31 @@
+{
+  "name": "@natstack/git-server",
+  "version": "0.1.0",
+  "description": "Internal git server with GitHub proxy for NatStack",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "dev": "tsc --project tsconfig.build.json --watch"
+  },
+  "dependencies": {
+    "@natstack/dev-log": "workspace:*",
+    "@natstack/env-paths": "workspace:*",
+    "@natstack/port-utils": "workspace:*",
+    "node-git-server": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  },
+  "files": [
+    "dist"
+  ]
+}

@@ -437,8 +437,8 @@ app.on("ready", async () => {
       onDemandCreate: async (source, subdomain) => {
         const panelId = await panelLifecycle!.createPanelOnDemand(source, subdomain);
         const rpcToken = tokenManager.ensureToken(panelId, "panel");
-        const serverRpcToken = await serverInfo.ensurePanelToken(panelId, "panel");
-        return { panelId, rpcPort, rpcToken, serverRpcPort: serverInfo.rpcPort, serverRpcToken };
+        const serverRpcToken = await serverInfo!.ensurePanelToken(panelId, "panel");
+        return { panelId, rpcPort, rpcToken, serverRpcPort: serverInfo!.rpcPort, serverRpcToken };
       },
       listPanels: () => panelLifecycle!.listPanels(),
       onBuildComplete: (source, error) => {
@@ -464,7 +464,7 @@ app.on("ready", async () => {
         panelRegistry!.notifyPanelTreeUpdate();
       },
       getBuild: async (source) => {
-        return serverInfo.call("build", "getBuild", [source]) as Promise<
+        return serverInfo!.call("build", "getBuild", [source]) as Promise<
           import("../server/buildV2/buildStore.js").BuildResult
         >;
       },

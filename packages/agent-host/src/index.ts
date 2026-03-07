@@ -14,7 +14,7 @@
 import * as path from "path";
 import { randomUUID } from "crypto";
 import { EventEmitter } from "events";
-import type { AgentInitConfig, AgentInstanceInfo } from "@natstack/types";
+import type { AgentInitConfig, AgentInstanceInfo, AgentManifest, Message as AIMessage } from "@natstack/types";
 import type { MessageStore } from "@natstack/pubsub-server";
 import {
   createRpcBridge,
@@ -24,18 +24,103 @@ import {
   isParentPortEnvelope,
   type ParentPortEnvelope,
 } from "@natstack/rpc";
-import type { AgentDiscovery } from "./agentDiscovery.js";
-import type { DatabaseManager } from "./db/databaseManager.js";
 import { createDevLogger } from "@natstack/dev-log";
-import type { AIHandler, StreamTarget } from "./ai/aiHandler.js";
-import type { StreamTextOptions, StreamTextEvent } from "./types.js";
-import type { ToolExecutionResult } from "./ai/claudeCodeToolProxy.js";
 import {
   type ProcessAdapter,
   hasElectronUtilityProcess,
   createNodeProcessAdapter,
 } from "@natstack/process-adapter";
-import type { ContextFolderManager } from "../shared/contextFolderManager.js";
+
+// =============================================================================
+// Injectable dependency interfaces
+// =============================================================================
+
+/** Minimal AgentDiscovery interface — subset used by AgentHost. */
+export interface AgentDiscoveryLike {
+  get(agentId: string): { manifest: AgentManifest; valid: boolean; error?: string } | null;
+  listValid(): Array<{ manifest: AgentManifest }>;
+}
+
+/** Minimal DatabaseManager interface — subset used by AgentHost. */
+export interface DatabaseManagerLike {
+  open(ownerId: string, dbName: string, readOnly?: boolean): string;
+  exec(handle: string, sql: string): void;
+  run(handle: string, sql: string, params?: unknown[]): { changes: number; lastInsertRowid: number | bigint };
+  get<T>(handle: string, sql: string, params?: unknown[]): T | null;
+  query<T>(handle: string, sql: string, params?: unknown[]): T[];
+  close(handle: string): void;
+  closeAllForOwner(ownerId: string): void;
+}
+
+/** Minimal ContextFolderManager interface — subset used by AgentHost. */
+export interface ContextFolderManagerLike {
+  ensureContextFolder(contextId: string): Promise<string>;
+}
+
+/** Message type for AI streaming — uses AI SDK message format. */
+export type StreamTextMessage = AIMessage;
+
+/** Tool definition for AI streaming. */
+export interface StreamTextToolDefinition {
+  name: string;
+  description?: string;
+  parameters: Record<string, unknown>;
+}
+
+/** AI streaming text options (passed through to AIHandler). */
+export interface StreamTextOptions {
+  model: string;
+  messages: StreamTextMessage[];
+  tools?: StreamTextToolDefinition[];
+  maxSteps?: number;
+  maxOutputTokens?: number;
+  temperature?: number;
+  system?: string;
+  thinking?: { type: "enabled" | "disabled"; budgetTokens?: number };
+}
+
+/** AI streaming text event chunk. */
+export interface StreamTextEvent {
+  type: string;
+  text?: string;
+  toolCallId?: string;
+  toolName?: string;
+  args?: unknown;
+  result?: unknown;
+  isError?: boolean;
+  stepNumber?: number;
+  finishReason?: string;
+  totalSteps?: number;
+  usage?: { promptTokens: number; completionTokens: number };
+  error?: string;
+}
+
+/** Tool execution result from agent. */
+export interface ToolExecutionResult {
+  content: Array<{ type: "text"; text: string }>;
+  isError?: boolean;
+  data?: unknown;
+}
+
+/** Target for AI streaming — routes chunks to a specific agent. */
+export interface StreamTarget {
+  targetId: string;
+  isAvailable(): boolean;
+  sendChunk(event: StreamTextEvent): void;
+  sendEnd(): void;
+  executeTool(toolName: string, args: Record<string, unknown>): Promise<ToolExecutionResult>;
+  onUnavailable?(listener: () => void): () => void;
+}
+
+/** AI role record. */
+export type AIRoleRecord = Record<string, unknown>;
+
+/** Minimal AIHandler interface — subset used by AgentHost. */
+export interface AIHandlerLike {
+  getAvailableRoles(): AIRoleRecord;
+  cancelStream(streamId: string): void;
+  startTargetStream(target: StreamTarget, options: StreamTextOptions, streamId: string, requestId?: string): void;
+}
 
 const log = createDevLogger("AgentHost");
 
@@ -99,9 +184,9 @@ interface AgentHostOptions {
   revokeToken: (instanceId: string) => boolean;
   /** Build an agent via V2 build service */
   getBuild: (unitPath: string) => Promise<AgentBuildResult>;
-  contextFolderManager: ContextFolderManager;
-  databaseManager: DatabaseManager;
-  agentDiscovery: AgentDiscovery | null;
+  contextFolderManager: ContextFolderManagerLike;
+  databaseManager: DatabaseManagerLike;
+  agentDiscovery: AgentDiscoveryLike| null;
 }
 
 /**
@@ -268,14 +353,14 @@ export class AgentHost extends EventEmitter {
   private messageStore: MessageStore;
   /** Tracks consecutive wake failures per (channel, agentId) to implement exponential backoff. */
   private wakeFailures = new Map<string, { count: number; backoffUntil: number }>();
-  private aiHandler: AIHandler | null = null;
+  private aiHandler: AIHandlerLike| null = null;
 
   constructor(private options: AgentHostOptions) {
     super();
     this.messageStore = options.messageStore;
   }
 
-  setAiHandler(handler: AIHandler | null): void {
+  setAiHandler(handler: AIHandlerLike| null): void {
     this.aiHandler = handler;
   }
 
@@ -297,7 +382,7 @@ export class AgentHost extends EventEmitter {
     // 1. Validate agent exists
     const discovery = this.options.agentDiscovery;
     if (!discovery) {
-      log.verbose(`[spawn] Error: AgentDiscovery not initialized`);
+      log.verbose(`[spawn] Error: AgentDiscoveryLikenot initialized`);
       throw new Error("AgentDiscovery not initialized");
     }
     const agent = discovery.get(agentId);
