@@ -91,12 +91,13 @@ export class ServiceContainer {
         const service = this.services.get(name);
         if (service?.stop) {
           try {
-            await service.stop();
+            await service.stop(this.instances.get(name));
           } catch (e) {
             console.error(`[ServiceContainer] Cleanup error for "${name}":`, e);
           }
         }
       }
+      this.instances.clear();
       throw error;
     }
   }
@@ -114,7 +115,7 @@ export class ServiceContainer {
       if (service?.stop) {
         try {
           log.info(`[${name}] Stopping`);
-          await service.stop();
+          await service.stop(this.instances.get(name));
         } catch (e) {
           console.error(`[ServiceContainer] Stop error for "${name}":`, e);
         }

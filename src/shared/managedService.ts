@@ -29,8 +29,9 @@ export interface ManagedService<T = unknown> {
 
   /**
    * Stop the service. Called before any of its dependents are stopped.
+   * Receives the instance returned by start() (or undefined if start() was not defined).
    */
-  stop?(): Promise<void>;
+  stop?(instance: T): Promise<void>;
 
   /**
    * Optional RPC service definition to register on the dispatcher.

@@ -29,7 +29,7 @@ function createService(
       hooks?.onStart?.();
       return value;
     }),
-    stop: vi.fn(async () => {
+    stop: vi.fn(async (_instance: unknown) => {
       hooks?.onStop?.();
     }),
   };
@@ -240,6 +240,37 @@ describe("ServiceContainer", () => {
     expect(order).toEqual(["b"]);
     // "a" resolved as undefined
     expect(container.get("b")).toBe("b+undefined");
+  });
+
+  it("clears instances after partial startup failure", async () => {
+    const container = new ServiceContainer();
+
+    container.register(createService("a", [], "a-value"));
+    container.register({
+      name: "b",
+      dependencies: ["a"],
+      start: vi.fn(async () => { throw new Error("boom"); }),
+    });
+
+    await expect(container.startAll()).rejects.toThrow("boom");
+    expect(container.has("a")).toBe(false);
+    expect(() => container.get("a")).toThrow(/not available/);
+  });
+
+  it("passes instance to stop()", async () => {
+    const container = new ServiceContainer();
+    const stoppedInstances: unknown[] = [];
+
+    container.register({
+      name: "a",
+      start: vi.fn(async () => ({ id: "instance-a" })),
+      stop: vi.fn(async (instance: unknown) => { stoppedInstances.push(instance); }),
+    });
+
+    await container.startAll();
+    await container.stopAll();
+
+    expect(stoppedInstances).toEqual([{ id: "instance-a" }]);
   });
 
   it("rpcService() creates a definition-only ManagedService", async () => {

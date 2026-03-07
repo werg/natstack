@@ -247,28 +247,26 @@ async function main() {
   });
 
   // Build system (must init before agents — they need build access)
-  let buildSystemRef: import("./buildV2/index.js").BuildSystemV2 | null = null;
   container.register({
     name: "buildSystem",
     async start() {
-      buildSystemRef = await initBuildSystemV2(workspacePath, gitServer);
-      return buildSystemRef;
+      return await initBuildSystemV2(workspacePath, gitServer);
     },
-    async stop() { await buildSystemRef?.shutdown(); },
+    async stop(instance: import("./buildV2/index.js").BuildSystemV2) { await instance?.shutdown(); },
   });
 
   // Agent discovery + settings (combined lifecycle + RPC)
-  let agentDiscoveryRef: import("../shared/agentDiscovery.js").AgentDiscovery | null = null;
-  let agentSettingsRef: import("../shared/agentSettings.js").AgentSettingsService | null = null;
+  // agentSettings.getServiceDefinition() needs both instances, so we capture
+  // the agentDiscovery reference in a closure scoped to the registration pair.
+  let agentSettingsStarted: { service: import("../shared/agentSettings.js").AgentSettingsService; discovery: import("../shared/agentDiscovery.js").AgentDiscovery | null } | null = null;
 
   container.register({
     name: "agentDiscovery",
     async start() {
       const { initAgentDiscovery } = await import("../shared/agentDiscovery.js");
-      agentDiscoveryRef = await initAgentDiscovery(workspacePath);
-      return agentDiscoveryRef;
+      return await initAgentDiscovery(workspacePath);
     },
-    async stop() { agentDiscoveryRef?.stopWatching(); },
+    async stop(instance: import("../shared/agentDiscovery.js").AgentDiscovery) { instance?.stopWatching(); },
   });
   container.register({
     name: "agentSettings",
@@ -276,49 +274,47 @@ async function main() {
     async start(resolve) {
       const { AgentSettingsService } = await import("../shared/agentSettings.js");
       const agentDiscovery = resolve<import("../shared/agentDiscovery.js").AgentDiscovery>("agentDiscovery");
-      agentSettingsRef = new AgentSettingsService();
-      await agentSettingsRef.initialize(workspacePath, agentDiscovery!);
-      return agentSettingsRef;
+      const service = new AgentSettingsService();
+      await service.initialize(workspacePath, agentDiscovery!);
+      agentSettingsStarted = { service, discovery: agentDiscovery ?? null };
+      return service;
     },
-    async stop() { agentSettingsRef?.shutdown(); },
+    async stop(instance: import("../shared/agentSettings.js").AgentSettingsService) { instance?.shutdown(); },
     getServiceDefinition() {
-      return createAgentSettingsServiceDef({ agentSettingsService: agentSettingsRef!, agentDiscovery: agentDiscoveryRef });
+      return createAgentSettingsServiceDef({ agentSettingsService: agentSettingsStarted!.service, agentDiscovery: agentSettingsStarted?.discovery ?? null });
     },
   });
 
   // Git watcher
-  let gitWatcherRef: import("../shared/workspace/gitWatcher.js").GitWatcher | null = null;
   container.register({
     name: "gitWatcher",
     dependencies: ["gitServer"],
     async start() {
       const { createGitWatcher } = await import("../shared/workspace/gitWatcher.js");
-      gitWatcherRef = createGitWatcher(workspace);
-      gitServer.subscribeToGitWatcher(gitWatcherRef);
-      return gitWatcherRef;
+      const watcher = createGitWatcher(workspace);
+      gitServer.subscribeToGitWatcher(watcher);
+      return watcher;
     },
-    async stop() { await gitWatcherRef?.close(); },
+    async stop(instance: import("../shared/workspace/gitWatcher.js").GitWatcher) { await instance?.close(); },
   });
 
   // PubSub server
-  let pubsubServerRef: import("../shared/pubsubServer.js").PubSubServer | null = null;
   container.register({
     name: "pubsub",
     dependencies: ["tokenManager", "databaseManager"],
     async start() {
       const { PubSubServer, SqliteMessageStore } = await import("../shared/pubsubServer.js");
-      pubsubServerRef = new PubSubServer({
+      const server = new PubSubServer({
         tokenValidator: tokenManager,
         messageStore: new SqliteMessageStore(databaseManager),
       });
-      const port = await pubsubServerRef.start();
-      return { server: pubsubServerRef, port };
+      const port = await server.start();
+      return { server, port };
     },
-    async stop() { await pubsubServerRef?.stop(); },
+    async stop(instance: { server: import("../shared/pubsubServer.js").PubSubServer; port: number }) { await instance?.server?.stop(); },
   });
 
   // Agent host
-  let agentHostRef: import("../shared/agentHost.js").AgentHost | null = null;
   container.register({
     name: "agentHost",
     dependencies: ["pubsub", "agentDiscovery", "tokenManager", "databaseManager", "buildSystem"],
@@ -328,7 +324,7 @@ async function main() {
       const agentDiscovery = resolve<import("../shared/agentDiscovery.js").AgentDiscovery>("agentDiscovery")!;
       const buildSystem = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
 
-      agentHostRef = new AgentHost({
+      const host = new AgentHost({
         workspaceRoot: workspace.path,
         pubsubUrl: `ws://127.0.0.1:${pubsubPort}`,
         messageStore: pubsubServer.getMessageStore(),
@@ -340,12 +336,12 @@ async function main() {
         agentDiscovery,
       });
 
-      await agentHostRef.initialize();
-      pubsubServer.setAgentHost(agentHostRef);
+      await host.initialize();
+      pubsubServer.setAgentHost(host);
       pubsubServer.setContextFolderManager(contextFolderManager);
-      return agentHostRef;
+      return host;
     },
-    async stop() { agentHostRef?.shutdown(); },
+    async stop(instance: import("../shared/agentHost.js").AgentHost) { instance?.shutdown(); },
   });
 
   // AI handler (lifecycle only — RPC registered separately because it needs rpcServer)
@@ -381,13 +377,19 @@ async function main() {
   ];
   const panelTestSetupPath: string = setupCandidates.find(p => fs.existsSync(p)) ?? setupCandidates[0]!;
 
-  container.register({
-    name: "build",
-    dependencies: ["buildSystem"],
-    getServiceDefinition() {
-      return createBuildService({ buildSystem: buildSystemRef! });
-    },
-  });
+  {
+    let buildSystemInstance: import("./buildV2/index.js").BuildSystemV2 | null = null;
+    container.register({
+      name: "build",
+      dependencies: ["buildSystem"],
+      start: async (resolve) => {
+        buildSystemInstance = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
+      },
+      getServiceDefinition() {
+        return createBuildService({ buildSystem: buildSystemInstance! });
+      },
+    });
+  }
   container.register(rpcService(createTokensService({ tokenManager }), ["tokenManager"]));
   container.register(rpcService(createGitService({ gitServer, tokenManager, contextFolderManager }), ["gitServer"]));
   container.register(rpcService(createTestService({ contextFolderManager, workspacePath, panelTestSetupPath })));
