@@ -16,13 +16,16 @@ import type { ServiceDefinition } from "./serviceDefinition.js";
 export interface ManagedService<T = unknown> {
   readonly name: string;
   readonly dependencies?: string[];
+  readonly optionalDependencies?: string[];
 
   /**
    * Start the service. Called after all dependencies have started.
-   * @param resolve - Look up a started dependency by name.
+   * @param resolve - Look up a started dependency by name. Pass `true` as
+   *   second argument for optional resolution (returns `undefined` instead
+   *   of throwing when the service is absent).
    * @returns The service instance (stored for later resolution).
    */
-  start(resolve: <D>(name: string) => D): Promise<T>;
+  start(resolve: <D>(name: string, optional?: boolean) => D | undefined): Promise<T>;
 
   /**
    * Stop the service. Called before any of its dependents are stopped.

@@ -57,8 +57,9 @@ export class ServiceContainer {
     try {
       for (const name of order) {
         const service = this.services.get(name)!;
-        const resolve = <D>(depName: string): D => {
+        const resolve = <D>(depName: string, optional?: boolean): D | undefined => {
           if (!this.instances.has(depName)) {
+            if (optional) return undefined;
             throw new Error(`Service "${name}" depends on "${depName}" which is not started`);
           }
           return this.instances.get(depName) as D;
@@ -161,6 +162,12 @@ export class ServiceContainer {
       visiting.add(name);
       for (const dep of service.dependencies ?? []) {
         visit(dep, [...path, name]);
+      }
+      // Optional deps: include in ordering if registered, skip if absent
+      for (const dep of service.optionalDependencies ?? []) {
+        if (this.services.has(dep)) {
+          visit(dep, [...path, name]);
+        }
       }
       visiting.delete(name);
       visited.add(name);
