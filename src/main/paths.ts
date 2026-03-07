@@ -1,7 +1,7 @@
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
-import { getUserDataPath } from "./envPaths.js";
+import { getUserDataPath } from "../shared/envPaths.js";
 import { isDev } from "./utils.js";
 
 // Derive __dirname in a way that works in CJS builds

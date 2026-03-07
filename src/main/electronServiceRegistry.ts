@@ -4,17 +4,17 @@
  * Called from src/main/index.ts after all Electron infrastructure is initialized.
  */
 
-import type { ServiceDispatcher } from "./serviceDispatcher.js";
+import type { ServiceDispatcher } from "../shared/serviceDispatcher.js";
 import type { PanelManager } from "./panelManager.js";
 import type { CdpServer } from "./cdpServer.js";
-import type { FsService } from "./fsService.js";
-import type { EventService } from "./services/eventsService.js";
+import type { FsService } from "../shared/fsService.js";
+import type { EventService } from "../shared/eventsService.js";
 import type { ServerClient } from "./serverClient.js";
 import type { ViewManager } from "./viewManager.js";
 import type { CentralDataManager } from "./centralData.js";
 import type { AdBlockManager } from "./adblock/index.js";
-import type { Workspace } from "./workspace/types.js";
-import { createEventsServiceDefinition } from "../server/services/eventsServiceDef.js";
+import type { Workspace } from "../shared/workspace/types.js";
+import { createEventsServiceDefinition } from "../shared/eventsService.js";
 
 import { createAppService } from "./services/appService.js";
 import { createPanelShellService } from "./services/panelShellService.js";

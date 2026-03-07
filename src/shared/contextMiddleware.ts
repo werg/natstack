@@ -5,7 +5,7 @@
  * resolve contextId → ensureContextFolder → validate paths within root.
  */
 
-import type { ContextFolderManager } from "../main/contextFolderManager.js";
+import type { ContextFolderManager } from "./contextFolderManager.js";
 import { resolveWithinContext, validateFilePathWithinRoot } from "./contextPaths.js";
 
 export interface ContextScope {

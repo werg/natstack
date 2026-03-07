@@ -1,7 +1,7 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../serviceDefinition.js";
-import type { FsService } from "../fsService.js";
-import { handleFsCall } from "../fsService.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
+import type { FsService } from "../../shared/fsService.js";
+import { handleFsCall } from "../../shared/fsService.js";
 
 export function createFsServiceDefinition(deps: {
   fsService: FsService;

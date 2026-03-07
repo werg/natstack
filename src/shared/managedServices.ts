@@ -6,7 +6,7 @@
  * startup/shutdown ordering.
  */
 
-import type { ManagedService } from "../shared/managedService.js";
+import type { ManagedService } from "./managedService.js";
 import { createDevLogger } from "./devLog.js";
 import type { Workspace } from "./workspace/types.js";
 import type { TokenManager } from "./tokenManager.js";

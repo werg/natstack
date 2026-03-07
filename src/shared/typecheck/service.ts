@@ -11,7 +11,6 @@ import * as path from "path";
 import * as crypto from "crypto";
 import Arborist from "@npmcli/arborist";
 import { createTypeDefinitionLoader, loadNatstackPackageTypes, clearNatstackTypesCache, preloadNatstackTypesAsync, type NatstackPackageTypes } from "@natstack/typecheck";
-import { getPackagesDir } from "../paths.js";
 import { getUserDataPath } from "../envPaths.js";
 
 const NPM_REGISTRY = "https://registry.npmjs.org";
@@ -76,14 +75,20 @@ export class TypeDefinitionService {
   /** Installation lock to prevent concurrent Arborist runs */
   private installLock: Promise<void> | null = null;
 
+  /** Path to the packages directory (for @workspace/* types) */
+  private readonly packagesDir: string | null;
+
+  constructor(packagesDir: string | null = null) {
+    this.packagesDir = packagesDir;
+  }
+
   /**
    * Get @natstack package types from the local packages directory.
    */
   private getNatstackTypes(packageName: string): Record<string, string> {
     if (this.natstackTypes === null) {
-      const packagesDir = getPackagesDir();
-      if (packagesDir) {
-        this.natstackTypes = loadNatstackPackageTypes(packagesDir);
+      if (this.packagesDir) {
+        this.natstackTypes = loadNatstackPackageTypes(this.packagesDir);
       } else {
         this.natstackTypes = {};
       }
@@ -310,9 +315,8 @@ export class TypeDefinitionService {
     this.natstackTypes = null;
     clearNatstackTypesCache();
     // Re-preload the cache so subsequent sync reads work
-    const packagesDir = getPackagesDir();
-    if (packagesDir) {
-      await preloadNatstackTypesAsync(packagesDir);
+    if (this.packagesDir) {
+      await preloadNatstackTypesAsync(this.packagesDir);
     }
   }
 
@@ -327,9 +331,9 @@ export class TypeDefinitionService {
 // Singleton
 let serviceInstance: TypeDefinitionService | null = null;
 
-export function getTypeDefinitionService(): TypeDefinitionService {
+export function getTypeDefinitionService(packagesDir?: string | null): TypeDefinitionService {
   if (!serviceInstance) {
-    serviceInstance = new TypeDefinitionService();
+    serviceInstance = new TypeDefinitionService(packagesDir ?? null);
   }
   return serviceInstance;
 }

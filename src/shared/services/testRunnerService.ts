@@ -8,7 +8,7 @@
 
 import * as path from "path";
 import * as fs from "fs";
-import { resolveWithinContext } from "./contextPaths.js";
+import { resolveWithinContext } from "../contextPaths.js";
 import type { ContextFolderManager } from "../contextFolderManager.js";
 
 interface TestResult {

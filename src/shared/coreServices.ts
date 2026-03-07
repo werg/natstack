@@ -6,7 +6,7 @@
  * dependency order, and returns a handle for accessing instances.
  */
 
-import { ServiceContainer } from "../shared/serviceContainer.js";
+import { ServiceContainer } from "./serviceContainer.js";
 import {
   ManagedTokenService,
   ManagedDatabaseService,

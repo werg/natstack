@@ -14,8 +14,8 @@ import type {
   WsServerMessage,
 } from "../shared/ws/protocol.js";
 import type { StreamTextEvent } from "../shared/types.js";
-import type { StreamTarget } from "../main/ai/aiHandler.js";
-import type { ToolExecutionResult } from "../main/ai/claudeCodeToolProxy.js";
+import type { StreamTarget } from "../shared/ai/aiHandler.js";
+import type { ToolExecutionResult } from "../shared/ai/claudeCodeToolProxy.js";
 import { TOOL_EXECUTION_TIMEOUT_MS } from "../shared/constants.js";
 import { findServicePort } from "../shared/portUtils.js";
 import {
@@ -26,7 +26,7 @@ import {
   type ServiceContext,
 } from "../shared/serviceDispatcher.js";
 import { checkServiceAccess } from "../shared/servicePolicy.js";
-import type { TokenManager } from "../main/tokenManager.js";
+import type { TokenManager } from "../shared/tokenManager.js";
 
 /** Server-side state for a connected WS client */
 export interface WsClientState {

@@ -5,7 +5,7 @@ import * as fs from "fs";
 process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
 
 import { isDev } from "./utils.js";
-import { createDevLogger } from "./devLog.js";
+import { createDevLogger } from "../shared/devLog.js";
 
 const log = createDevLogger("App");
 import { PanelManager } from "./panelManager.js";
@@ -16,20 +16,20 @@ import {
   discoverWorkspace,
   createWorkspace,
   loadCentralEnv,
-} from "./workspace/loader.js";
-import type { Workspace } from "./workspace/types.js";
+} from "../shared/workspace/loader.js";
+import type { Workspace } from "../shared/workspace/types.js";
 import { CentralDataManager } from "./centralData.js";
 import { CdpServer } from "./cdpServer.js";
-import { TokenManager } from "./tokenManager.js";
-import { eventService } from "./services/eventsService.js";
+import { TokenManager } from "../shared/tokenManager.js";
+import { eventService } from "../shared/eventsService.js";
 import { ViewManager } from "./viewManager.js";
-import { ServiceDispatcher } from "./serviceDispatcher.js";
+import { ServiceDispatcher } from "../shared/serviceDispatcher.js";
 import type { RpcServer } from "../server/rpcServer.js";
 import { registerElectronServices } from "./electronServiceRegistry.js";
 import { setupTestApi } from "./testApi.js";
 import { AdBlockManager } from "./adblock/index.js";
-import { ContextFolderManager } from "./contextFolderManager.js";
-import { FsService } from "./fsService.js";
+import { ContextFolderManager } from "../shared/contextFolderManager.js";
+import { FsService } from "../shared/fsService.js";
 import { startMemoryMonitor, setMemoryMonitorViewManager } from "./memoryMonitor.js";
 import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
 import { createServerClient, type ServerClient } from "./serverClient.js";

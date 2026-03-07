@@ -1,7 +1,7 @@
 import * as path from "path";
 import { app, nativeTheme } from "electron";
 import { z } from "zod";
-import type { ServiceDefinition } from "../serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { ThemeMode } from "../../shared/types.js";
 import type { PanelManager } from "../panelManager.js";
 import type { ServerClient } from "../serverClient.js";

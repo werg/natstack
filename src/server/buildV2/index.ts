@@ -35,7 +35,7 @@ import * as buildStore from "./buildStore.js";
 import type { BuildResult } from "./buildStore.js";
 import { buildUnit } from "./builder.js";
 import { PushTrigger } from "./pushTrigger.js";
-import type { GitServer } from "../../main/gitServer.js";
+import type { GitServer } from "../../shared/gitServer.js";
 
 // ---------------------------------------------------------------------------
 // Types

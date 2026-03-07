@@ -1,11 +1,11 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { PanelManager } from "../panelManager.js";
 import type { ViewManager } from "../viewManager.js";
 import type { ThemeAppearance, ShellPage } from "../../shared/types.js";
-import { getPanelPersistence } from "../db/panelPersistence.js";
-import { getPanelSearchIndex } from "../db/panelSearchIndex.js";
-import { createDevLogger } from "../devLog.js";
+import { getPanelPersistence } from "../../shared/db/panelPersistence.js";
+import { getPanelSearchIndex } from "../../shared/db/panelSearchIndex.js";
+import { createDevLogger } from "../../shared/devLog.js";
 
 const log = createDevLogger("PanelShellService");
 

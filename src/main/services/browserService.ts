@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { CdpServer } from "../cdpServer.js";
 import type { ViewManager } from "../viewManager.js";
 import type { PanelManager } from "../panelManager.js";

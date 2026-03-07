@@ -21,7 +21,7 @@
 
 import type { ChildCreationResult, CreateChildOptions } from "../shared/types.js";
 import type { PanelHttpServer } from "./panelHttpServer.js";
-import { contextIdToSubdomain } from "./panelHttpServer.js";
+import { contextIdToSubdomain } from "../shared/panelIdUtils.js";
 import type { WsServerMessage } from "../shared/ws/protocol.js";
 import { computePanelId } from "../shared/panelIdUtils.js";
 import { loadPanelManifest } from "../shared/panelTypes.js";
@@ -92,7 +92,7 @@ interface CreatePanelDeps {
 export class HeadlessPanelManager {
   private panels = new Map<string, HeadlessPanel>();
   private deps: CreatePanelDeps;
-  private fsService: import("../main/fsService.js").FsService | null = null;
+  private fsService: import("../shared/fsService.js").FsService | null = null;
   private currentTheme: "light" | "dark" = "dark";
 
   constructor(deps: CreatePanelDeps) {
@@ -100,7 +100,7 @@ export class HeadlessPanelManager {
     // Build and panel callbacks are wired via panelHttpServer.setCallbacks() in index.ts.
   }
 
-  setFsService(service: import("../main/fsService.js").FsService): void {
+  setFsService(service: import("../shared/fsService.js").FsService): void {
     this.fsService = service;
   }
 

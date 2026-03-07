@@ -1,4 +1,4 @@
-import { validateStateArgs } from "./stateArgsValidator.js";
+import { validateStateArgs } from "../shared/stateArgsValidator.js";
 
 describe("validateStateArgs", () => {
   it("rejects non-JSON-serializable input (function)", () => {

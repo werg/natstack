@@ -3,9 +3,9 @@ import { webContents } from "electron";
 import * as http from "http";
 import { URL } from "url";
 import { findServicePort } from "./portUtils.js";
-import type { TokenManager } from "./tokenManager.js";
+import type { TokenManager } from "../shared/tokenManager.js";
 import type { ViewManager } from "./viewManager.js";
-import { createDevLogger } from "./devLog.js";
+import { createDevLogger } from "../shared/devLog.js";
 
 const log = createDevLogger("CdpServer");
 

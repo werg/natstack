@@ -1,6 +1,6 @@
 import * as path from "path";
 import { z } from "zod";
-import type { ServiceDefinition } from "../serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { CentralDataManager } from "../centralData.js";
 
 export function createCentralService(deps: {

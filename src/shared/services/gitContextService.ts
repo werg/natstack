@@ -10,7 +10,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { resolveWithinContext } from "./contextPaths.js";
+import { resolveWithinContext } from "../contextPaths.js";
 import type { ContextFolderManager } from "../contextFolderManager.js";
 import type { GitServer } from "../gitServer.js";
 import type { TokenManager } from "../tokenManager.js";

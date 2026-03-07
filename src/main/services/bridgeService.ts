@@ -4,11 +4,11 @@ import { mkdir, writeFile } from "fs/promises";
 import { join, resolve } from "path";
 import { execSync } from "child_process";
 import { z } from "zod";
-import type { ServiceDefinition } from "../serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { PanelManager } from "../panelManager.js";
 import type { CdpServer } from "../cdpServer.js";
 import type { ViewManager } from "../viewManager.js";
-import type { Workspace } from "../workspace/types.js";
+import type { Workspace } from "../../shared/workspace/types.js";
 import { handleCommonBridgeMethod } from "../../shared/bridgeHandlersCommon.js";
 
 export function createBridgeService(deps: {

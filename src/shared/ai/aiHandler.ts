@@ -17,11 +17,11 @@ import type { AIRoleRecord, AIModelInfo, AIToolDefinition } from "@natstack/type
 import type {
   StreamTextOptions,
   StreamTextEvent,
-} from "../../shared/types.js";
-import { createAIError } from "../../shared/errors.js";
+} from "../types.js";
+import { createAIError } from "../errors.js";
 import { createDevLogger } from "../devLog.js";
-import { validateToolDefinitions } from "../../shared/validation.js";
-import { MAX_STREAM_DURATION_MS } from "../../shared/constants.js";
+import { validateToolDefinitions } from "../validation.js";
+import { MAX_STREAM_DURATION_MS } from "../constants.js";
 import {
   ClaudeCodeConversationManager,
 } from "./claudeCodeConversationManager.js";
@@ -274,7 +274,7 @@ export class AIHandler {
       "./providerFactory.js"
     );
     const { ModelRoleResolver } = await import("./modelRoles.js");
-    const { loadCentralConfig } = await import("../workspace/loader.js");
+    const { loadCentralConfig } = await import("../../shared/workspace/loader.js");
 
     // Load model roles from central config
     const centralConfig = loadCentralConfig();

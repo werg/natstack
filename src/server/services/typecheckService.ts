@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { ContextFolderManager } from "../../main/contextFolderManager.js";
+import type { ContextFolderManager } from "../../shared/contextFolderManager.js";
 import { resolveContextScope } from "../../shared/contextMiddleware.js";
 
 export function createTypecheckService(deps: {
@@ -18,7 +18,7 @@ export function createTypecheckService(deps: {
       getCompletions: { args: z.tuple([z.string()]).rest(z.unknown()) },
     },
     handler: async (_ctx, method, args) => {
-      const { typeCheckRpcMethods } = await import("../../main/typecheck/service.js");
+      const { typeCheckRpcMethods } = await import("../../shared/typecheck/service.js");
 
       const resolvePanelPath = async (
         panelPath: string,

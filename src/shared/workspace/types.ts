@@ -196,10 +196,10 @@ export type {
   RecentWorkspace,
   WorkspaceValidation,
   SettingsData,
-} from "../../shared/types.js";
+} from "../types.js";
 
 // Import for use in CentralData
-import type { RecentWorkspace } from "../../shared/types.js";
+import type { RecentWorkspace } from "../types.js";
 
 /**
  * Central data persisted in ~/.config/natstack/data.json

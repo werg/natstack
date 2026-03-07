@@ -68,3 +68,22 @@ export function computePanelId(params: {
   const autoSegment = generatePanelNonce();
   return `${parentPrefix}/${escapedPath}/${autoSegment}`;
 }
+
+/**
+ * Convert a contextId to a valid DNS subdomain label.
+ *
+ * Modern browsers (Chrome 73+, Firefox 84+) resolve *.localhost → 127.0.0.1
+ * per the WHATWG URL Standard, giving each subdomain a distinct origin. This
+ * means panels on different contexts get browser-enforced isolation of
+ * localStorage, IndexedDB, cookies, and service workers — matching
+ * Electron's persist:{contextId} partition behaviour.
+ */
+export function contextIdToSubdomain(contextId: string): string {
+  const label = contextId
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 63);
+  return label || "default";
+}

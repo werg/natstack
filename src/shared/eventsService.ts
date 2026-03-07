@@ -14,12 +14,14 @@
  *   rpc.on("event:panel-tree-updated", (data) => { ... });
  */
 
+import { z } from "zod";
 import type { WebSocket } from "ws";
-import type { ServiceContext, CallerKind } from "../serviceDispatcher.js";
-import { isValidEventName, type EventName, type EventPayloads } from "../../shared/events.js";
+import type { ServiceDefinition } from "./serviceDefinition.js";
+import type { ServiceContext, CallerKind } from "./serviceDispatcher.js";
+import { isValidEventName, type EventName, type EventPayloads } from "./events.js";
 
 // Re-export for consumers
-export type { EventName, EventPayloads } from "../../shared/events.js";
+export type { EventName, EventPayloads } from "./events.js";
 
 // =============================================================================
 // Subscriber interface
@@ -211,4 +213,48 @@ export async function handleEventsService(
     default:
       throw new Error(`Unknown events method: ${method}`);
   }
+}
+
+/**
+ * Create a ServiceDefinition that wraps an existing EventService instance.
+ * The same EventService instance is used for both RPC handling and in-process emit().
+ */
+export function createEventsServiceDefinition(eventService: EventService): ServiceDefinition {
+  return {
+    name: "events",
+    description: "Event subscriptions",
+    policy: { allowed: ["shell", "panel", "server"] },
+    methods: {
+      subscribe: { args: z.tuple([z.string()]) },
+      unsubscribe: { args: z.tuple([z.string()]) },
+      unsubscribeAll: { args: z.tuple([]) },
+    },
+    handler: async (ctx, method, args) => {
+      switch (method) {
+        case "subscribe": {
+          const eventName = args[0] as EventName;
+          if (!isValidEventName(eventName)) {
+            throw new Error(`Unknown event: ${eventName}`);
+          }
+          const subscriber = eventService.getOrCreateSubscriber(ctx);
+          eventService.subscribe(eventName, ctx.callerId, subscriber);
+          return;
+        }
+        case "unsubscribe": {
+          const eventName = args[0] as EventName;
+          if (!isValidEventName(eventName)) {
+            throw new Error(`Unknown event: ${eventName}`);
+          }
+          eventService.unsubscribe(eventName, ctx.callerId);
+          return;
+        }
+        case "unsubscribeAll": {
+          eventService.unsubscribeAll(ctx.callerId);
+          return;
+        }
+        default:
+          throw new Error(`Unknown events method: ${method}`);
+      }
+    },
+  };
 }

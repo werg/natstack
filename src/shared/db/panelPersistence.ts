@@ -28,7 +28,7 @@ import type {
   Panel,
   PanelSnapshot,
   PanelSummary,
-} from "../../shared/types.js";
+} from "../types.js";
 
 // Re-export PanelSummary from shared types
 export type { PanelSummary };

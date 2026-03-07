@@ -3,7 +3,7 @@
  */
 
 import { createAgentSettingsService } from "../../server/services/agentSettingsService.js";
-import type { ServiceContext } from "../serviceDispatcher.js";
+import type { ServiceContext } from "../../shared/serviceDispatcher.js";
 
 const ctx: ServiceContext = { callerId: "test", callerKind: "shell" };
 

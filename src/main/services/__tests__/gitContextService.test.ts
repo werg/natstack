@@ -22,7 +22,7 @@ vi.mock("fs", () => ({
   statSync: mockStatSync,
 }));
 
-import { handleGitContextCall } from "../gitContextService";
+import { handleGitContextCall } from "../../../shared/services/gitContextService";
 
 describe("handleGitContextCall", () => {
   const mockContextFolderManager = {

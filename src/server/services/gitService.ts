@@ -1,8 +1,8 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { GitServer } from "../../main/gitServer.js";
-import type { TokenManager } from "../../main/tokenManager.js";
-import type { ContextFolderManager } from "../../main/contextFolderManager.js";
+import type { GitServer } from "../../shared/gitServer.js";
+import type { TokenManager } from "../../shared/tokenManager.js";
+import type { ContextFolderManager } from "../../shared/contextFolderManager.js";
 
 export function createGitService(deps: {
   gitServer: GitServer;
@@ -27,7 +27,7 @@ export function createGitService(deps: {
 
       // Context-scoped git operations (from agentic tools)
       if (method.startsWith("context")) {
-        const { handleGitContextCall } = await import("../../main/services/gitContextService.js");
+        const { handleGitContextCall } = await import("../../shared/services/gitContextService.js");
         return handleGitContextCall(
           deps.contextFolderManager, g, deps.tokenManager, method, args as unknown[],
         );

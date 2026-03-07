@@ -7,8 +7,8 @@
  */
 
 import type { HeadlessPanelManager } from "./headlessPanelManager.js";
-import type { GitServer } from "../main/gitServer.js";
-import type { AgentDiscovery } from "../main/agentDiscovery.js";
+import type { GitServer } from "../shared/gitServer.js";
+import type { AgentDiscovery } from "../shared/agentDiscovery.js";
 import { handleCommonBridgeMethod } from "../shared/bridgeHandlersCommon.js";
 
 export type HeadlessBridgeDeps = {

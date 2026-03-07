@@ -1,7 +1,7 @@
 import * as path from "path";
 import { randomBytes } from "crypto";
 import { nativeTheme } from "electron";
-import { createDevLogger } from "./devLog.js";
+import { createDevLogger } from "../shared/devLog.js";
 
 const log = createDevLogger("PanelManager");
 import type { PanelEventPayload, Panel, PanelManifest } from "./panelTypes.js";
@@ -14,30 +14,28 @@ import {
   getSourcePage,
   getPanelStateArgs,
 } from "./panelTypes.js";
-import { validateStateArgs } from "./stateArgsValidator.js";
+import { validateStateArgs } from "../shared/stateArgsValidator.js";
 import type { StateArgsValue } from "../shared/stateArgs.js";
 import type { ServerInfo } from "./serverInfo.js";
-import type { Workspace } from "./workspace/types.js";
+import type { Workspace } from "../shared/workspace/types.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
-import type { FsService } from "./fsService.js";
+import type { FsService } from "../shared/fsService.js";
 import {
   computePanelId as _computePanelId,
   sanitizePanelIdSegment as _sanitizePanelIdSegment,
   generatePanelNonce as _generatePanelNonce,
 } from "../shared/panelIdUtils.js";
 import * as SharedPanel from "../shared/types.js";
-import type { ClaudeCodeConversationManager } from "./ai/claudeCodeConversationManager.js";
-import {
-  contextIdToSubdomain,
-  PanelHttpServer,
-} from "../server/panelHttpServer.js";
+import type { ClaudeCodeConversationManager } from "../shared/ai/claudeCodeConversationManager.js";
+import { contextIdToSubdomain } from "../shared/panelIdUtils.js";
+import { PanelHttpServer } from "../server/panelHttpServer.js";
 import type { CdpServer } from "./cdpServer.js";
-import type { TokenManager } from "./tokenManager.js";
+import type { TokenManager } from "../shared/tokenManager.js";
 import type { ViewManager } from "./viewManager.js";
 import { checkWorktreeClean, checkGitRepository } from "./gitChecks.js";
-import { eventService } from "./services/eventsService.js";
-import { getPanelPersistence, type PanelPersistence } from "./db/panelPersistence.js";
-import { getPanelSearchIndex } from "./db/panelSearchIndex.js";
+import { eventService } from "../shared/eventsService.js";
+import { getPanelPersistence, type PanelPersistence } from "../shared/db/panelPersistence.js";
+import { getPanelSearchIndex } from "../shared/db/panelSearchIndex.js";
 import { logMemorySnapshot } from "./memoryMonitor.js";
 
 type PanelCreateOptions = {

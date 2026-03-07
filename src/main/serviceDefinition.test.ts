@@ -3,8 +3,8 @@
  */
 
 import { z } from "zod";
-import { ServiceDispatcher, type ServiceContext } from "./serviceDispatcher.js";
-import type { ServiceDefinition } from "./serviceDefinition.js";
+import { ServiceDispatcher, type ServiceContext } from "../shared/serviceDispatcher.js";
+import type { ServiceDefinition } from "../shared/serviceDefinition.js";
 
 const ctx: ServiceContext = {
   callerId: "test",

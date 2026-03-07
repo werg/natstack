@@ -2,7 +2,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import { z } from "zod";
 import { GitClient, type FsPromisesLike } from "@natstack/git";
-import type { ServiceDefinition } from "../serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 
 function createServiceGitClient(): GitClient {
   return new GitClient(fs as unknown as FsPromisesLike, {

@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { contextIdToSubdomain } from "./panelHttpServer.js";
+import { contextIdToSubdomain } from "../shared/panelIdUtils.js";
 
 // ---------------------------------------------------------------------------
 // extractSourcePath is module-private, so we test the regex logic directly.

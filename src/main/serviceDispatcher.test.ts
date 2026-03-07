@@ -7,9 +7,9 @@ import {
   ServiceDispatcher,
   ServiceError,
   parseServiceMethod,
-} from "./serviceDispatcher.js";
-import type { ServiceContext, ServiceHandler } from "./serviceDispatcher.js";
-import type { ServiceDefinition } from "./serviceDefinition.js";
+} from "../shared/serviceDispatcher.js";
+import type { ServiceContext, ServiceHandler } from "../shared/serviceDispatcher.js";
+import type { ServiceDefinition } from "../shared/serviceDefinition.js";
 
 const ctx: ServiceContext = {
   callerId: "test",

@@ -7,13 +7,13 @@
 
 import type { ServiceDispatcher } from "../shared/serviceDispatcher.js";
 import type { BuildSystemV2 } from "./buildV2/index.js";
-import type { GitServer } from "../main/gitServer.js";
-import type { TokenManager } from "../main/tokenManager.js";
-import type { ContextFolderManager } from "../main/contextFolderManager.js";
-import type { EventService } from "../main/services/eventsService.js";
-import type { DatabaseManager } from "../main/db/databaseManager.js";
-import type { AgentSettingsService } from "../main/agentSettings.js";
-import type { AgentDiscovery } from "../main/agentDiscovery.js";
+import type { GitServer } from "../shared/gitServer.js";
+import type { TokenManager } from "../shared/tokenManager.js";
+import type { ContextFolderManager } from "../shared/contextFolderManager.js";
+import type { EventService } from "../shared/eventsService.js";
+import type { DatabaseManager } from "../shared/db/databaseManager.js";
+import type { AgentSettingsService } from "../shared/agentSettings.js";
+import type { AgentDiscovery } from "../shared/agentDiscovery.js";
 
 import { createBuildService } from "./services/buildService.js";
 import { createTokensService } from "./services/tokensService.js";
@@ -23,7 +23,7 @@ import { createProjectService } from "./services/projectService.js";
 import { createAgentSettingsService } from "./services/agentSettingsService.js";
 import { createDbService } from "./services/dbService.js";
 import { createTypecheckService } from "./services/typecheckService.js";
-import { createEventsServiceDefinition } from "./services/eventsServiceDef.js";
+import { createEventsServiceDefinition } from "../shared/eventsService.js";
 
 export function registerServerServices(
   dispatcher: ServiceDispatcher,

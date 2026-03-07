@@ -5,7 +5,7 @@
 
 import * as path from "path";
 import * as fsPromises from "fs/promises";
-import type { WorkspaceNode, WorkspaceTree } from "../../shared/types.js";
+import type { WorkspaceNode, WorkspaceTree } from "../types.js";
 
 /**
  * Manages workspace tree scanning, caching, and repo path discovery.

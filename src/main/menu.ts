@@ -1,5 +1,5 @@
 import { app, Menu, MenuItemConstructorOptions, type WebContents } from "electron";
-import { eventService } from "./services/eventsService.js";
+import { eventService } from "../shared/eventsService.js";
 import type { ViewManager } from "./viewManager.js";
 import type { PanelManager } from "./panelManager.js";
 

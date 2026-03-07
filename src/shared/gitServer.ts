@@ -7,7 +7,7 @@ import { execFile, spawn, spawnSync } from "child_process";
 import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("GitServer");
-import type { WorkspaceTree, BranchInfo, CommitInfo } from "../shared/types.js";
+import type { WorkspaceTree, BranchInfo, CommitInfo } from "./types.js";
 import { GitAuthManager, type TokenManager } from "./tokenManager.js";
 import * as net from "net";
 import type { GitWatcher } from "./workspace/gitWatcher.js";

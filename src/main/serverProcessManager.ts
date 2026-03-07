@@ -14,7 +14,7 @@ import {
   type ProcessAdapter,
   hasElectronUtilityProcess,
   createNodeProcessAdapter,
-} from "./processAdapter.js";
+} from "../shared/processAdapter.js";
 
 export interface ServerPorts {
   rpcPort: number;

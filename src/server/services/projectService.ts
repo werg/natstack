@@ -1,8 +1,8 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { ContextFolderManager } from "../../main/contextFolderManager.js";
-import type { GitServer } from "../../main/gitServer.js";
-import type { TokenManager } from "../../main/tokenManager.js";
+import type { ContextFolderManager } from "../../shared/contextFolderManager.js";
+import type { GitServer } from "../../shared/gitServer.js";
+import type { TokenManager } from "../../shared/tokenManager.js";
 
 export function createProjectService(deps: {
   contextFolderManager: ContextFolderManager;
@@ -17,7 +17,7 @@ export function createProjectService(deps: {
       create: { args: z.tuple([z.string()]).rest(z.unknown()) },
     },
     handler: async (_ctx, method, args) => {
-      const { handleProjectCall } = await import("../../main/services/projectService.js");
+      const { handleProjectCall } = await import("../../shared/services/projectService.js");
       return handleProjectCall(
         deps.contextFolderManager,
         deps.gitServer,

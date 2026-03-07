@@ -29,7 +29,7 @@ vi.mock("fs", () => ({
   writeFileSync: mockWriteFileSync,
 }));
 
-import { handleProjectCall } from "../projectService";
+import { handleProjectCall } from "../../../shared/services/projectService";
 
 describe("handleProjectCall", () => {
   const mockContextFolderManager = {

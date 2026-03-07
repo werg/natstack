@@ -2,9 +2,9 @@ import * as path from "path";
 import * as fs from "fs";
 import { app, dialog } from "electron";
 import { z } from "zod";
-import type { ServiceDefinition } from "../serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { WorkspaceValidation } from "../../shared/types.js";
-import { loadWorkspaceConfig } from "../workspace/loader.js";
+import { loadWorkspaceConfig } from "../../shared/workspace/loader.js";
 import type { CentralDataManager } from "../centralData.js";
 
 export function createWorkspaceService(deps: {

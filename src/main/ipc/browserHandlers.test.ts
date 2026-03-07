@@ -6,7 +6,7 @@ import {
   getCdpEndpointForCaller,
   createBrowserService,
 } from "../services/browserService.js";
-import type { ServiceContext } from "../serviceDispatcher.js";
+import type { ServiceContext } from "../../shared/serviceDispatcher.js";
 
 describe("getCdpEndpointForCaller", () => {
   it("returns endpoint when cdpServer.getCdpEndpoint succeeds", () => {

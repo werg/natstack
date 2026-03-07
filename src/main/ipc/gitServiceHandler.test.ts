@@ -38,7 +38,7 @@ vi.mock("fs/promises", () => ({
 }));
 
 import { createGitLocalService } from "../services/gitLocalService.js";
-import type { ServiceContext } from "../serviceDispatcher.js";
+import type { ServiceContext } from "../../shared/serviceDispatcher.js";
 
 describe("gitLocalService", () => {
   const svc = createGitLocalService();

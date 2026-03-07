@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { DatabaseManager } from "../../main/db/databaseManager.js";
+import type { DatabaseManager } from "../../shared/db/databaseManager.js";
 
 export function createDbService(deps: {
   databaseManager: DatabaseManager;

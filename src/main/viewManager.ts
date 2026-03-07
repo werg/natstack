@@ -25,7 +25,7 @@ import {
   session,
 } from "electron";
 
-import { createDevLogger } from "./devLog.js";
+import { createDevLogger } from "../shared/devLog.js";
 
 const log = createDevLogger("ViewManager");
 

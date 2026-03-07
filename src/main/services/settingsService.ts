@@ -1,19 +1,19 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type {
   SettingsData,
   ProviderInfo,
   AvailableProvider,
   ModelRoleConfig,
 } from "../../shared/types.js";
-import type { SupportedProvider } from "../workspace/types.js";
+import type { SupportedProvider } from "../../shared/workspace/types.js";
 import type { ServerClient } from "../serverClient.js";
 import {
   loadCentralConfig,
   saveCentralConfig,
   loadSecrets,
   saveSecrets,
-} from "../workspace/loader.js";
+} from "../../shared/workspace/loader.js";
 import {
   getSupportedProviders,
   getProviderEnvVars,
@@ -21,8 +21,8 @@ import {
   getDefaultModelsForProvider,
   hasProviderApiKey,
   usesCliAuth,
-} from "../ai/providerFactory.js";
-import { fetchModelsForProvider, type FetchedModel } from "../ai/modelFetcher.js";
+} from "../../shared/ai/providerFactory.js";
+import { fetchModelsForProvider, type FetchedModel } from "../../shared/ai/modelFetcher.js";
 
 function getApiKeyForProvider(
   providerId: SupportedProvider,

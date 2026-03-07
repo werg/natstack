@@ -14,7 +14,7 @@ vi.mock("../../shared/bridgeHandlersCommon.js", () => ({
 }));
 
 import { createBridgeService } from "../services/bridgeService.js";
-import type { ServiceContext } from "../serviceDispatcher.js";
+import type { ServiceContext } from "../../shared/serviceDispatcher.js";
 
 const mockGetViewManager = vi.fn();
 

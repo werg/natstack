@@ -6,8 +6,8 @@
  */
 
 import * as fs from "fs";
-import { getCentralConfigPaths } from "./workspace/loader.js";
-import type { CentralData, RecentWorkspace } from "./workspace/types.js";
+import { getCentralConfigPaths } from "../shared/workspace/loader.js";
+import type { CentralData, RecentWorkspace } from "../shared/workspace/types.js";
 
 const MAX_RECENT_WORKSPACES = 10;
 

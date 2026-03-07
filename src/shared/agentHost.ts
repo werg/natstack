@@ -28,14 +28,14 @@ import type { AgentDiscovery } from "./agentDiscovery.js";
 import type { DatabaseManager } from "./db/databaseManager.js";
 import { createDevLogger } from "./devLog.js";
 import type { AIHandler, StreamTarget } from "./ai/aiHandler.js";
-import type { StreamTextOptions, StreamTextEvent } from "../shared/types.js";
+import type { StreamTextOptions, StreamTextEvent } from "./types.js";
 import type { ToolExecutionResult } from "./ai/claudeCodeToolProxy.js";
 import {
   type ProcessAdapter,
   hasElectronUtilityProcess,
   createNodeProcessAdapter,
-} from "./processAdapter.js";
-import type { ContextFolderManager } from "./contextFolderManager.js";
+} from "../shared/processAdapter.js";
+import type { ContextFolderManager } from "../shared/contextFolderManager.js";
 
 const log = createDevLogger("AgentHost");
 

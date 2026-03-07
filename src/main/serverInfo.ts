@@ -5,7 +5,7 @@
  * delegate to the server process via RPC.
  */
 
-import type { CallerKind } from "./serviceDispatcher.js";
+import type { CallerKind } from "../shared/serviceDispatcher.js";
 
 export interface ServerInfo {
   /** Server's RPC port for direct client connections */

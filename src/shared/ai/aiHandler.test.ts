@@ -15,7 +15,7 @@ vi.mock("./claudeCodeConversationManager.js", () => ({
 
 vi.mock("./claudeCodeToolProxy.js", () => ({}));
 
-vi.mock("../../shared/errors.js", () => ({
+vi.mock("../errors.js", () => ({
   createAIError: vi.fn((code: string, message: string) => {
     const err = new Error(message);
     (err as any).code = code;
@@ -33,11 +33,11 @@ vi.mock("../devLog.js", () => ({
   }),
 }));
 
-vi.mock("../../shared/validation.js", () => ({
+vi.mock("../validation.js", () => ({
   validateToolDefinitions: vi.fn((tools: unknown) => tools),
 }));
 
-vi.mock("../../shared/constants.js", () => ({
+vi.mock("../constants.js", () => ({
   MAX_STREAM_DURATION_MS: 600_000,
 }));
 

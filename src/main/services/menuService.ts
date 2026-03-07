@@ -1,6 +1,6 @@
 import { Menu, type MenuItemConstructorOptions } from "electron";
 import { z } from "zod";
-import type { ServiceDefinition } from "../serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { PanelManager } from "../panelManager.js";
 import type { ViewManager } from "../viewManager.js";
 import type { ServerClient } from "../serverClient.js";

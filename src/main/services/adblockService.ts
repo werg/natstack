@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { AdBlockManager, AdBlockListConfig } from "../adblock/index.js";
 
 export function createAdblockService(deps: {

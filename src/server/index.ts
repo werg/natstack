@@ -158,17 +158,17 @@ if (!ipcChannel) {
 
 async function main() {
   const { setUserDataPath, getUserDataPath } = await import("../shared/envPaths.js");
-  const { loadCentralEnv, discoverWorkspace, createWorkspace } = await import("../main/workspace/loader.js");
-  const { GitServer } = await import("../main/gitServer.js");
-  const { TokenManager } = await import("../main/tokenManager.js");
+  const { loadCentralEnv, discoverWorkspace, createWorkspace } = await import("../shared/workspace/loader.js");
+  const { GitServer } = await import("../shared/gitServer.js");
+  const { TokenManager } = await import("../shared/tokenManager.js");
   const { z } = await import("zod");
   const { ServiceDispatcher } = await import("../shared/serviceDispatcher.js");
-  const { eventService } = await import("../main/services/eventsService.js");
+  const { eventService } = await import("../shared/eventsService.js");
   const { RpcServer } = await import("./rpcServer.js");
-  const { startCoreServices } = await import("../main/coreServices.js");
+  const { startCoreServices } = await import("../shared/coreServices.js");
   const { initBuildSystemV2 } = await import("./buildV2/index.js");
   const { registerServerServices } = await import("./serverServiceRegistry.js");
-  const { DatabaseManager } = await import("../main/db/databaseManager.js");
+  const { DatabaseManager } = await import("../shared/db/databaseManager.js");
 
   // In IPC mode, dataDir comes from NATSTACK_USER_DATA_PATH env var
   const dataDir = args.dataDir ?? process.env["NATSTACK_USER_DATA_PATH"];
@@ -216,7 +216,7 @@ async function main() {
   const buildSystem = await initBuildSystemV2(workspacePath, gitServer);
 
   // Create ContextFolderManager before core services so agents get context folder paths
-  const { ContextFolderManager } = await import("../main/contextFolderManager.js");
+  const { ContextFolderManager } = await import("../shared/contextFolderManager.js");
   const contextFolderManager = new ContextFolderManager({
     workspacePath: workspacePath,
     getWorkspaceTree: () => gitServer.getWorkspaceTree(),
@@ -489,7 +489,7 @@ async function main() {
     }
 
     // Filesystem service — per-context sandboxed fs via RPC
-    const { FsService, handleFsCall } = await import("../main/fsService.js");
+    const { FsService, handleFsCall } = await import("../shared/fsService.js");
     const fsService = new FsService(contextFolderManager);
     fsServiceRef = fsService;
     headlessPanelManager.setFsService(fsService);

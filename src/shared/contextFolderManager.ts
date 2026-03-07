@@ -12,7 +12,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import { createDevLogger } from "./devLog.js";
 
-import type { WorkspaceNode } from "../shared/types.js";
+import type { WorkspaceNode } from "./types.js";
 
 const log = createDevLogger("ContextFolderManager");
 

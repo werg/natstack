@@ -1,5 +1,5 @@
 import type { ViewManager } from "./viewManager.js";
-import { createDevLogger } from "./devLog.js";
+import { createDevLogger } from "../shared/devLog.js";
 
 const log = createDevLogger("MemoryMonitor");
 

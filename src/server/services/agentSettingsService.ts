@@ -1,8 +1,8 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { GlobalAgentSettings, AgentSettings } from "@natstack/types";
-import type { AgentSettingsService } from "../../main/agentSettings.js";
-import type { AgentDiscovery } from "../../main/agentDiscovery.js";
+import type { AgentSettingsService } from "../../shared/agentSettings.js";
+import type { AgentDiscovery } from "../../shared/agentDiscovery.js";
 
 export function createAgentSettingsService(deps: {
   agentSettingsService: AgentSettingsService;
