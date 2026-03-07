@@ -37,7 +37,6 @@ interface PanelLifecycleLike {
 
 type ParsedPanelUrl = {
   source: string;
-  isShell: boolean;
   contextId?: string;
   options: { name?: string; contextId?: string; focus?: boolean };
   stateArgs?: Record<string, unknown>;
@@ -383,7 +382,6 @@ export class PanelView implements PanelViewLike {
 
       return {
         source,
-        isShell: source.startsWith("about/"),
         contextId: u.searchParams.get("contextId") ?? undefined,
         options: {
           contextId: u.searchParams.get("contextId") ?? undefined,

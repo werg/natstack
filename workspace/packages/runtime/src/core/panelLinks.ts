@@ -82,13 +82,3 @@ export function buildPanelLink(source: string, options?: BuildPanelLinkOptions):
 
   return relativePath;
 }
-
-/**
- * Build a relative URL path for navigating to a shell page.
- *
- * @param page - The shell page name (e.g., "about", "model-provider-config")
- * @returns Relative path (e.g., "/about/about/")
- */
-export function buildShellLink(page: string): string {
-  return `/about/${encodeURIComponent(page)}/`;
-}

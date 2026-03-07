@@ -30,7 +30,7 @@ const aiClient: AiClient = createAiClient(runtime.rpc);
 export * as Rpc from "../core/rpc.js";
 export { z } from "../core/zod.js";
 export { defineContract, noopParent } from "../core/defineContract.js";
-export { buildPanelLink, buildShellLink, contextIdToSubdomain } from "../core/panelLinks.js";
+export { buildPanelLink, contextIdToSubdomain } from "../core/panelLinks.js";
 export {
   parseContextId,
   isValidContextId,

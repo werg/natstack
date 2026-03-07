@@ -7,7 +7,6 @@ export type {
   PanelSnapshot,
   PanelManifest,
   ChildSpec,
-  ShellPage,
 } from "./types.js";
 
 import type { PanelManifest } from "./types.js";
@@ -71,7 +70,6 @@ export {
   getPanelEnv,
   getPanelContextId,
   getInjectHostThemeVariables,
-  getSourcePage,
   getBrowserResolvedUrl,
   getPanelStateArgs,
   createSnapshot,

@@ -306,18 +306,15 @@ export function PanelStack({
     }
     previousVisiblePanelId.current = panelId;
 
-    // Only interact with view if it exists (htmlPath set after build, or shell about/ pages)
+    // Only interact with view if it exists (htmlPath set after build)
     // Panels with errors, still building, or unloaded (pending) have no view to show
     const buildState = visiblePanel?.artifacts?.buildState;
     const isUnloaded = buildState === "pending" || buildState === "building" || buildState === "error";
-    const hasView = !isUnloaded && (!!visiblePanel?.page || !!htmlPath);
-    if (!hasView) {
-      return;
+    if (!isUnloaded && htmlPath) {
+      // Show current panel's view - main process handles bounds calculation
+      void view.setVisible(panelId, true);
     }
-
-    // Show current panel's view - main process handles bounds calculation
-    void view.setVisible(panelId, true);
-  }, [visiblePanel?.id, visiblePanel?.page, visiblePanel?.artifacts?.htmlPath, visiblePanel?.artifacts?.buildState]);
+  }, [visiblePanel?.id, visiblePanel?.artifacts?.htmlPath, visiblePanel?.artifacts?.buildState]);
 
   // Notify main process of layout changes (sidebar visibility and width)
   const sidebarVisible = navigationMode === "tree";
@@ -411,15 +408,7 @@ export function PanelStack({
       );
     }
 
-    // Dirty/not-git-repo states are now handled by navigating to shell pages
-    // (dirty-repo and git-init) in the build pipeline
-
     if (!artifacts?.htmlPath) {
-      // Shell about/ pages - WebContentsView is managed by main process
-      if (visiblePanel.page) {
-        return <Box style={{ flex: 1, position: "relative", height: "100%" }} />;
-      }
-
       // Panel loading state (while build is in progress)
       return (
         <Flex

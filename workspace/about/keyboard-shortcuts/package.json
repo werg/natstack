@@ -7,7 +7,8 @@
     "title": "Keyboard Shortcuts",
     "description": "View and customize keyboard shortcuts",
     "shell": true,
-    "hiddenInLauncher": false
+    "hiddenInLauncher": false,
+    "autoArchiveWhenEmpty": true
   },
   "dependencies": {
     "@workspace/react": "*"

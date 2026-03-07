@@ -4,7 +4,7 @@ import type { PanelLifecycle } from "../../shared/panelLifecycle.js";
 import type { PanelRegistry } from "../../shared/panelRegistry.js";
 import type { PanelView } from "../panelView.js";
 import type { ViewManager } from "../viewManager.js";
-import type { ThemeAppearance, ShellPage } from "../../shared/types.js";
+import type { ThemeAppearance } from "../../shared/types.js";
 import { getPanelPersistence } from "../../shared/db/panelPersistence.js";
 import { getPanelSearchIndex } from "../../shared/db/panelSearchIndex.js";
 import { createDevLogger } from "../../shared/devLog.js";
@@ -139,7 +139,7 @@ export function createPanelShellService(deps: {
         }
 
         case "createAboutPanel": {
-          const page = args[0] as ShellPage;
+          const page = args[0] as string;
           return lifecycle.createAboutPanel(page);
         }
 

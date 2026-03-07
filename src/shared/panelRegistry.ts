@@ -14,8 +14,8 @@
  */
 
 import { createDevLogger } from "./devLog.js";
-import type { Panel, PanelArtifacts, PanelInfo, PanelSummary, ShellPage } from "./types.js";
-import { getCurrentSnapshot, getPanelSource, getPanelContextId, getSourcePage } from "./panel/accessors.js";
+import type { Panel, PanelArtifacts, PanelInfo, PanelSummary } from "./types.js";
+import { getCurrentSnapshot, getPanelSource, getPanelContextId } from "./panel/accessors.js";
 import { contextIdToSubdomain } from "./panelIdUtils.js";
 import type { PanelPersistence } from "./db/panelPersistence.js";
 import type { PanelSearchIndex } from "./db/panelSearchIndex.js";
@@ -158,18 +158,6 @@ export class PanelRegistry implements PanelRelationshipProvider {
 
   getFocusedPanelId(): string | null {
     return this.focusedPanelId;
-  }
-
-  /**
-   * Find a shell panel by its page type (e.g. "new", "about").
-   */
-  findShellPanel(page: ShellPage): Panel | null {
-    const panelId = `about/${page}`;
-    const panel = this.panels.get(panelId);
-    if (panel && getPanelSource(panel).startsWith("about/")) {
-      return panel;
-    }
-    return null;
   }
 
   /**
@@ -537,7 +525,7 @@ export class PanelRegistry implements PanelRelationshipProvider {
     if (existingPanels.length === 0) return;
 
     // Clean up childless shell panels from previous session
-    this.cleanupChildlessShellPanels(existingPanels, this.persistence);
+    this.cleanupChildlessAutoArchivePanels(existingPanels, this.persistence);
 
     // Filter out panels that were archived during cleanup
     const remaining = existingPanels.filter((p) => !this.persistence!.isArchived(p.id));
@@ -565,7 +553,7 @@ export class PanelRegistry implements PanelRelationshipProvider {
   runShutdownCleanup(): void {
     if (!this.persistence) return;
     log.verbose(` Running shutdown cleanup`);
-    this.cleanupChildlessShellPanels(this.rootPanels, this.persistence);
+    this.cleanupChildlessAutoArchivePanels(this.rootPanels, this.persistence);
   }
 
   /**
@@ -646,36 +634,25 @@ export class PanelRegistry implements PanelRelationshipProvider {
   }
 
   /**
-   * Archive shell panels (about/* sources) that have no children.
-   * Shell panels are launcher UIs that exist primarily to launch other panels.
-   * A childless shell panel indicates the user opened a launcher but never
-   * launched anything from it.
+   * Archive panels with autoArchiveWhenEmpty that have no children.
+   * These are typically launcher UIs — a childless launcher was never used.
    */
-  private cleanupChildlessShellPanels(
+  private cleanupChildlessAutoArchivePanels(
     panels: Panel[],
     persistence: PanelPersistence,
   ): void {
     for (const panel of panels) {
-      // Recurse into children first (depth-first)
       if (panel.children.length > 0) {
-        this.cleanupChildlessShellPanels(panel.children, persistence);
-        // Re-check children after recursive cleanup
+        this.cleanupChildlessAutoArchivePanels(panel.children, persistence);
         panel.children = panel.children.filter((c) => !persistence.isArchived(c.id));
       }
 
-      // Archive childless shell panels (except blocking pages like dirty-repo/git-init)
-      const shellPage = getSourcePage(panel);
-      if (
-        shellPage &&
-        shellPage !== "dirty-repo" &&
-        shellPage !== "git-init" &&
-        panel.children.length === 0
-      ) {
-        log.verbose(` Archiving childless shell panel: ${panel.id}`);
+      if (panel.snapshot.autoArchiveWhenEmpty && panel.children.length === 0) {
+        log.verbose(` Archiving childless auto-archive panel: ${panel.id}`);
         try {
           persistence.archivePanel(panel.id);
         } catch (e) {
-          console.error(`[PanelRegistry] Failed to archive shell panel ${panel.id}:`, e);
+          console.error(`[PanelRegistry] Failed to archive panel ${panel.id}:`, e);
         }
       }
     }

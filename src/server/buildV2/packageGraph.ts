@@ -21,7 +21,7 @@ export interface GraphNode {
   /** Package name from package.json (e.g., "@workspace/core") */
   name: string;
   /** Unit kind */
-  kind: "package" | "panel" | "about" | "agent";
+  kind: "package" | "panel" | "agent";
   /** All dependencies from package.json (name → version) */
   dependencies: Record<string, string>;
   /** Resolved internal dependency names */
@@ -52,6 +52,7 @@ export interface PackageManifest {
   entry?: string;
   shell?: boolean;
   hiddenInLauncher?: boolean;
+  autoArchiveWhenEmpty?: boolean;
   sourcemap?: boolean;
   externals?: Record<string, string>;
   exposeModules?: string[];
@@ -286,7 +287,7 @@ export function discoverPackageGraph(workspaceRoot: string): PackageGraph {
   for (const node of scanDirectory(panelsDir, workspaceRoot, "panel")) {
     graph.addNode(node);
   }
-  for (const node of scanDirectory(aboutDir, workspaceRoot, "about")) {
+  for (const node of scanDirectory(aboutDir, workspaceRoot, "panel")) {
     graph.addNode(node);
   }
   for (const node of scanDirectory(agentsDir, workspaceRoot, "agent")) {

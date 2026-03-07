@@ -34,6 +34,8 @@ export interface PanelManifest {
   dedupeModules?: string[];
   injectHostThemeVariables?: boolean;
   template?: "html" | "react";
+  /** If true, panel is auto-archived when it has no children at startup */
+  autoArchiveWhenEmpty?: boolean;
 }
 
 export type ThemeMode = "light" | "dark" | "system";
@@ -130,11 +132,6 @@ export interface ToolExecutionResult {
 // Panel Type Discriminated Unions
 // =============================================================================
 
-/**
- * Shell panel page name. Dynamically discovered from workspace about-page manifests.
- */
-export type ShellPage = string;
-
 // =============================================================================
 // PanelSnapshot - Unified Panel State (New Architecture)
 // =============================================================================
@@ -154,6 +151,8 @@ export interface PanelSnapshot {
   stateArgs?: StateArgsValue;
   /** Actual URL after redirects (when applicable) */
   resolvedUrl?: string;
+  /** If true, panel is auto-archived when it has no children (e.g., launcher panels) */
+  autoArchiveWhenEmpty?: boolean;
 }
 
 /**

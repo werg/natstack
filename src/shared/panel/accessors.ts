@@ -51,15 +51,6 @@ export function getInjectHostThemeVariables(panel: Panel, manifest?: PanelManife
 }
 
 /**
- * Get the about-page name from a panel's source, if it starts with "about/".
- * Returns undefined for non-about sources.
- */
-export function getSourcePage(panel: Panel): string | undefined {
-  const src = panel.snapshot.source;
-  return src.startsWith("about/") ? src.slice(6) : undefined;
-}
-
-/**
  * Get the resolved URL for a panel.
  */
 export function getBrowserResolvedUrl(panel: Panel): string | undefined {

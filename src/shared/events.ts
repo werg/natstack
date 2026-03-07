@@ -5,8 +5,6 @@
  * Keep them in sync by importing from this single source of truth.
  */
 
-import type { ShellPage } from "./types.js";
-
 /**
  * Known event names that can be subscribed to.
  */
@@ -28,7 +26,7 @@ export interface EventPayloads {
   "open-workspace-switcher": void;
   "toggle-panel-devtools": void;
   "panel-initialization-error": { path: string; error: string };
-  "navigate-about": { page: ShellPage };
+  "navigate-about": { page: string };
   "navigate-to-panel": { panelId: string };
 }
 

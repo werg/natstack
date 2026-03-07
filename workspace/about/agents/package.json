@@ -7,7 +7,8 @@
     "title": "Agents",
     "description": "Manage running agents and view logs",
     "shell": true,
-    "hiddenInLauncher": false
+    "hiddenInLauncher": false,
+    "autoArchiveWhenEmpty": true
   },
   "dependencies": {
     "@workspace/react": "*",

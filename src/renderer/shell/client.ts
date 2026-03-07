@@ -41,7 +41,6 @@ import type {
   RecentWorkspace,
   WorkspaceValidation,
   SettingsData,
-  ShellPage,
   MovePanelRequest,
   GetChildrenPaginatedRequest,
   PaginatedChildren,
@@ -76,7 +75,7 @@ export const panel = {
   initGitRepo: (panelId: string) => rpc.call<void>("main", "panel.initGitRepo", panelId),
   updatePanelState: (panelId: string, state: { url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean }) =>
     rpc.call<void>("main", "panel.updatePanelState", panelId, state),
-  createAboutPanel: (page: ShellPage) =>
+  createAboutPanel: (page: string) =>
     rpc.call<{ id: string; title: string }>("main", "panel.createAboutPanel", page),
   // Drag-and-drop and tree management
   movePanel: (request: MovePanelRequest) =>

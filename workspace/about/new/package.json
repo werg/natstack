@@ -6,7 +6,8 @@
     "type": "app",
     "title": "New Panel",
     "shell": true,
-    "hiddenInLauncher": true
+    "hiddenInLauncher": true,
+    "autoArchiveWhenEmpty": true
   },
   "dependencies": {
     "@workspace/react": "*",

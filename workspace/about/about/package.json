@@ -7,7 +7,8 @@
     "title": "About NatStack",
     "description": "Version info and credits",
     "shell": true,
-    "hiddenInLauncher": false
+    "hiddenInLauncher": false,
+    "autoArchiveWhenEmpty": true
   },
   "dependencies": {
     "@workspace/about-shared": "workspace:*",

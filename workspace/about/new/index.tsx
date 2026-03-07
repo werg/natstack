@@ -20,7 +20,7 @@ import {
   Separator,
   Tabs,
 } from "@radix-ui/themes";
-import { getWorkspaceTree, buildPanelLink, buildShellLink, onFocus, rpc } from "@workspace/runtime";
+import { getWorkspaceTree, buildPanelLink, onFocus, rpc } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import type { WorkspaceTree, WorkspaceNode } from "@workspace/runtime";
 
@@ -111,7 +111,7 @@ function NewPanelPage() {
   }, [urlInput]);
 
   const handleShellPageClick = useCallback((page: AboutPage) => {
-    window.location.href = buildShellLink(page);
+    window.location.href = buildPanelLink(`about/${page}`);
   }, []);
 
   const renderNodeExtra = useCallback(

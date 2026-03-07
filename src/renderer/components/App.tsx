@@ -9,7 +9,6 @@ import { effectiveThemeAtom, loadThemePreferenceAtom } from "../state/themeAtoms
 import { useAtomValue } from "jotai";
 import { useShellEvent } from "../shell/useShellEvent";
 import { panel } from "../shell/client";
-import type { ShellPage } from "../../shared/types";
 import { ChunkErrorBoundary } from "./ChunkErrorBoundary";
 
 // Lazy-load MainMode — this creates a separate chunk containing PanelApp,
@@ -53,7 +52,7 @@ export function App() {
   useShellEvent("open-workspace-switcher", handleOpenWorkspaceSwitcher);
 
   // Listen for navigate-about menu event via shell event
-  const handleNavigateAbout = useCallback(async (payload: { page: ShellPage }) => {
+  const handleNavigateAbout = useCallback(async (payload: { page: string }) => {
     try {
       const result = await panel.createAboutPanel(payload.page);
       window.dispatchEvent(new CustomEvent("shell-panel-created", { detail: { panelId: result.id } }));

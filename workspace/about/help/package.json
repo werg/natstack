@@ -7,7 +7,8 @@
     "title": "Help",
     "description": "Documentation and getting started",
     "shell": true,
-    "hiddenInLauncher": false
+    "hiddenInLauncher": false,
+    "autoArchiveWhenEmpty": true
   },
   "dependencies": {
     "@workspace/react": "*"

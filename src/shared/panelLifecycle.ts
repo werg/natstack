@@ -16,7 +16,6 @@ import type {
   Panel,
   PanelManifest,
   PanelSnapshot,
-  ShellPage,
   PanelArtifacts,
 } from "./types.js";
 import type { StateArgsValue } from "./stateArgs.js";
@@ -120,7 +119,6 @@ export class PanelLifecycle implements BridgePanelManager {
 
   /**
    * Create a child panel under the caller.
-   * Source can be a workspace-relative path or an "about/{page}" shell page.
    */
   async createPanel(
     callerId: string,
@@ -134,19 +132,6 @@ export class PanelLifecycle implements BridgePanelManager {
     }
 
     const parent: Panel = caller;
-
-    // Shell pages (about/*) use minimal manifests
-    if (source.startsWith("about/")) {
-      const page = source.slice(6);
-      const manifest: PanelManifest = { title: page };
-      return this.createPanelFromManifest({
-        manifest,
-        relativePath: source,
-        parent,
-        options: options ?? {},
-        stateArgs,
-      });
-    }
 
     const { relativePath, absolutePath } = normalizeRelativePanelPath(source, this.panelsRoot);
 
@@ -174,28 +159,23 @@ export class PanelLifecycle implements BridgePanelManager {
   }
 
   /**
-   * Create a shell panel for system pages (about/new, about/about, etc.).
-   * Most pages are singletons; "new" supports multiple instances.
+   * Create an about panel as a root panel. Always creates a new instance.
    */
-  async createAboutPanel(page: ShellPage): Promise<{ id: string; title: string }> {
-    const isMultiInstance = page === "new";
-
-    if (!isMultiInstance) {
-      const panelId = `about/${page}`;
-      const existing = this.registry.getPanel(panelId);
-      if (existing) {
-        this.focusPanel(existing.id);
-        return { id: existing.id, title: existing.title };
-      }
-    }
-
+  async createAboutPanel(page: string): Promise<{ id: string; title: string }> {
     const source = `about/${page}`;
-    const manifest: PanelManifest = { title: page };
-    const name = isMultiInstance ? `${page}~${Date.now().toString(36)}` : undefined;
+    const { relativePath, absolutePath } = normalizeRelativePanelPath(source, this.panelsRoot);
+    const name = `${page}~${Date.now().toString(36)}`;
+
+    let manifest: PanelManifest;
+    try {
+      manifest = loadPanelManifest(absolutePath);
+    } catch {
+      manifest = { title: page };
+    }
 
     return this.createPanelFromManifest({
       manifest,
-      relativePath: source,
+      relativePath,
       parent: null,
       options: { name, focus: true },
       isRoot: true,
@@ -362,6 +342,9 @@ export class PanelLifecycle implements BridgePanelManager {
         { env: panelEnv },
         validatedStateArgs,
       );
+      if (manifest.autoArchiveWhenEmpty) {
+        initialSnapshot.autoArchiveWhenEmpty = true;
+      }
 
       const panel: Panel = {
         id: panelId,

@@ -31,7 +31,7 @@ export interface BuildArtifacts {
 }
 
 export interface BuildMetadata {
-  kind: "panel" | "about" | "agent" | "package";
+  kind: "panel" | "agent" | "package";
   name: string;
   ev: string;
   sourcemap: boolean;

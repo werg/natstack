@@ -32,7 +32,6 @@ import {
   getPanelContextId,
   getPanelSource,
   getPanelOptions,
-  getSourcePage,
 } from "../../../shared/panel/accessors.js";
 
 // Re-export types for consumers
@@ -61,7 +60,6 @@ export interface FullPanel {
     buildLog?: string;
   };
   path?: string;
-  page?: string;
   sourceRepo?: string;
   injectHostThemeVariables?: boolean;
 }
@@ -350,7 +348,6 @@ function panelToFull(panel: Panel, parentId: string | null, position: number): F
     artifacts: panel.artifacts ?? {},
     path: source,
     sourceRepo: source,
-    page: getSourcePage(panel),
     injectHostThemeVariables: true,
   };
 }
