@@ -6,13 +6,13 @@
  * are delegated to src/shared/bridgeHandlersCommon.ts.
  */
 
-import type { HeadlessPanelManager } from "./headlessPanelManager.js";
+import type { BridgePanelManager } from "../shared/panelManagerInterface.js";
 import type { GitServer } from "../shared/gitServer.js";
 import type { AgentDiscovery } from "../shared/agentDiscovery.js";
 import { handleCommonBridgeMethod } from "../shared/bridgeHandlersCommon.js";
 
 export type HeadlessBridgeDeps = {
-  pm: HeadlessPanelManager;
+  pm: BridgePanelManager;
   gitServer: GitServer;
   agentDiscovery: AgentDiscovery | null;
 };

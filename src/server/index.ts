@@ -301,7 +301,8 @@ async function main() {
 
   if (!ipcChannel) {
     const { PanelHttpServer } = await import("./panelHttpServer.js");
-    const { HeadlessPanelManager } = await import("./headlessPanelManager.js");
+    const { PanelRegistry } = await import("../shared/panelRegistry.js");
+    const { PanelLifecycle } = await import("../shared/panelLifecycle.js");
     const { handleHeadlessBridgeCall } = await import("./headlessBridge.js");
 
     // Start HTTP panel server if requested
@@ -320,22 +321,44 @@ async function main() {
       panelHttpServerInstance = panelHttpServer;
     }
 
-    const headlessPanelManager = new HeadlessPanelManager({
-      createToken: (callerId, kind) => tokenManager.createToken(callerId, kind),
-      revokeToken: (callerId) => tokenManager.revokeToken(callerId),
-      panelHttpServer,
-      rpcPort,
-      gitBaseUrl: `http://127.0.0.1:${handle.gitServer.getPort()}`,
-      getGitTokenForPanel: (panelId) => handle.gitServer.getTokenForPanel(panelId),
-      revokeGitToken: (panelId) => handle.gitServer.revokeTokenForPanel(panelId),
-      pubsubPort: handle.pubsubPort,
-      sendToClient: (callerId, msg) => rpcServer.sendToClient(callerId, msg),
+    // Filesystem service — per-context sandboxed fs via RPC
+    const { FsService, handleFsCall } = await import("../shared/fsService.js");
+    const fsService = new FsService(contextFolderManager);
+    fsServiceRef = fsService;
+
+    // Create PanelRegistry (no persistence in headless mode)
+    const headlessRegistry = new PanelRegistry({
+      workspace,
+      eventService,
     });
 
-    panelManagerRef = headlessPanelManager;
+    // Create PanelLifecycle with headless deps
+    const headlessLifecycle = new PanelLifecycle({
+      registry: headlessRegistry,
+      tokenManager,
+      fsService,
+      eventService,
+      panelsRoot: workspacePath,
+      serverInfo: {
+        rpcPort,
+        gitBaseUrl: `http://127.0.0.1:${handle.gitServer.getPort()}`,
+        pubsubUrl: `ws://127.0.0.1:${handle.pubsubPort}`,
+        createPanelToken: (panelId, kind) => tokenManager.createToken(panelId, kind as import("../shared/serviceDispatcher.js").CallerKind),
+        ensurePanelToken: (panelId, kind) => tokenManager.ensureToken(panelId, kind as import("../shared/serviceDispatcher.js").CallerKind),
+        revokePanelToken: (panelId) => { tokenManager.revokeToken(panelId); },
+        getPanelToken: (panelId) => { try { return tokenManager.getToken(panelId); } catch { return null; } },
+        getGitTokenForPanel: (panelId) => handle.gitServer.getTokenForPanel(panelId),
+        revokeGitToken: (panelId) => { handle.gitServer.revokeTokenForPanel(panelId); },
+      },
+      panelHttpServer: panelHttpServer as import("../shared/panelLifecycle.js").PanelHttpServerLike | null,
+      panelHttpPort: panelHttpPort ?? undefined,
+      sendToClient: (callerId, msg) => rpcServer.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage),
+    });
+
+    panelManagerRef = headlessLifecycle;
 
     // Register bridge service for headless panel lifecycle
-    const headlessBridgeDeps = { pm: headlessPanelManager, gitServer, agentDiscovery: handle.agentDiscovery };
+    const headlessBridgeDeps = { pm: headlessLifecycle, gitServer, agentDiscovery: handle.agentDiscovery };
     dispatcher.registerService({
       name: "bridge",
       description: "Panel lifecycle (headless mode)",
@@ -366,7 +389,7 @@ async function main() {
     // ── On-demand panel creation: populate source registry ───────────
     // Scan the package graph for available panels and register them with
     // deterministic subdomains. When a browser visits one of these subdomains,
-    // PanelHttpServer triggers on-demand creation via HeadlessPanelManager.
+    // PanelHttpServer triggers on-demand creation via PanelLifecycle.
     if (panelHttpServer) {
       const graph = buildSystem.getGraph();
       const panelNodes = graph.allNodes().filter((n) => n.kind === "panel");
@@ -393,8 +416,6 @@ async function main() {
       }
 
       // Truncate to DNS label max (63 chars) and deduplicate final subdomains.
-      // Must check renamed candidates against the full set of assigned names
-      // to avoid collisions (e.g. [panel, panel, panel-1] → panel-1 clash).
       const assigned = new Set<string>();
       for (const e of rawEntries) {
         let candidate = e.subdomain.slice(0, 63).replace(/-$/, "");
@@ -412,8 +433,12 @@ async function main() {
 
       // Wire callbacks: all panel data flows through these — zero per-panel state on server
       panelHttpServer.setCallbacks({
-        onDemandCreate: (source, subdomain) => headlessPanelManager.createPanelOnDemand(source, subdomain),
-        listPanels: () => headlessPanelManager.listPanels(),
+        onDemandCreate: async (source, subdomain) => {
+          const panelId = await headlessLifecycle.createPanelOnDemand(source, subdomain);
+          const rpcToken = tokenManager.ensureToken(panelId, "panel");
+          return { panelId, rpcPort, rpcToken, serverRpcPort: rpcPort, serverRpcToken: rpcToken };
+        },
+        listPanels: () => headlessLifecycle.listPanels(),
         getBuild: (source) => buildSystem.getBuild(source),
       });
 
@@ -431,10 +456,13 @@ async function main() {
         tokenManager: tokenManager,
         adminToken,
         canAccessBrowser: (requestingPanelId, browserId) => {
-          return headlessPanelManager.canAccessPanel(requestingPanelId, browserId);
+          // In headless mode, panels are flat (no parent/child tree)
+          // so cross-panel access is not supported
+          return headlessRegistry.isDescendantOf(browserId, requestingPanelId) ||
+                 headlessRegistry.isDescendantOf(requestingPanelId, browserId);
         },
         panelOwnsBrowser: (requestingPanelId, browserId) => {
-          return headlessPanelManager.panelOwnsBrowser(requestingPanelId, browserId);
+          return headlessRegistry.findParentId(browserId) === requestingPanelId;
         },
         port: panelHttpPort!,
       });
@@ -487,12 +515,6 @@ async function main() {
         },
       });
     }
-
-    // Filesystem service — per-context sandboxed fs via RPC
-    const { FsService, handleFsCall } = await import("../shared/fsService.js");
-    const fsService = new FsService(contextFolderManager);
-    fsServiceRef = fsService;
-    headlessPanelManager.setFsService(fsService);
 
     const fsMethodSchema = { args: z.tuple([z.string()]).rest(z.unknown()) };
     dispatcher.registerService({

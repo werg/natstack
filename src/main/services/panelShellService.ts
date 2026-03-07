@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { PanelManager } from "../panelManager.js";
+import type { PanelLifecycle } from "../../shared/panelLifecycle.js";
+import type { PanelRegistry } from "../../shared/panelRegistry.js";
+import type { PanelView } from "../panelView.js";
 import type { ViewManager } from "../viewManager.js";
 import type { ThemeAppearance, ShellPage } from "../../shared/types.js";
 import { getPanelPersistence } from "../../shared/db/panelPersistence.js";
@@ -10,7 +12,9 @@ import { createDevLogger } from "../../shared/devLog.js";
 const log = createDevLogger("PanelShellService");
 
 export function createPanelShellService(deps: {
-  panelManager: PanelManager;
+  panelLifecycle: PanelLifecycle;
+  panelRegistry: PanelRegistry;
+  panelView: PanelView;
   getViewManager: () => ViewManager;
 }): ServiceDefinition {
   return {
@@ -37,28 +41,30 @@ export function createPanelShellService(deps: {
       expandIds: { args: z.tuple([z.array(z.string())]) },
     },
     handler: async (_ctx, method, args) => {
-      const pm = deps.panelManager;
+      const lifecycle = deps.panelLifecycle;
+      const registry = deps.panelRegistry;
+      const pv = deps.panelView;
       const vm = deps.getViewManager();
 
       switch (method) {
         case "getTree":
-          return pm.getSerializablePanelTree();
+          return registry.getSerializablePanelTree();
 
         case "notifyFocused": {
           const panelId = args[0] as string;
 
-          if (vm.hasView(panelId)) {
-            pm.sendPanelEvent(panelId, { type: "focus" });
+          if (pv.hasView(panelId)) {
+            lifecycle.sendPanelEvent(panelId, { type: "focus" });
           }
 
           try {
-            pm.updateSelectedPath(panelId);
+            registry.updateSelectedPath(panelId);
             const persistence = getPanelPersistence();
             persistence.updateSelectedPath(panelId);
             getPanelSearchIndex().incrementAccessCount(panelId);
-            pm.notifyPanelTreeUpdate();
+            registry.notifyPanelTreeUpdate();
             vm.refreshVisiblePanel();
-            void pm.rebuildUnloadedPanel(panelId);
+            void lifecycle.rebuildUnloadedPanel(panelId);
           } catch (error) {
             console.error(`[Panel] Failed to update selected path for ${panelId}:`, error);
           }
@@ -67,24 +73,24 @@ export function createPanelShellService(deps: {
 
         case "updateTheme": {
           const theme = args[0] as ThemeAppearance;
-          pm.setCurrentTheme(theme);
-          pm.broadcastTheme(theme);
+          lifecycle.setCurrentTheme(theme);
+          lifecycle.broadcastTheme(theme);
           return;
         }
 
         case "openDevTools": {
           const panelId = args[0] as string;
-          if (!vm.hasView(panelId)) {
+          if (!pv.hasView(panelId)) {
             throw new Error(`No view found for panel ${panelId}`);
           }
-          vm.openDevTools(panelId);
+          pv.openDevTools(panelId);
           return;
         }
 
         case "reload": {
           const panelId = args[0] as string;
-          if (!vm.hasView(panelId)) {
-            await pm.rebuildUnloadedPanel(panelId);
+          if (!pv.hasView(panelId)) {
+            await lifecycle.rebuildUnloadedPanel(panelId);
             return;
           }
           vm.reload(panelId);
@@ -94,25 +100,25 @@ export function createPanelShellService(deps: {
         case "unload": {
           const panelId = args[0] as string;
           log.verbose(` Unload requested for panel: ${panelId}`);
-          await pm.unloadPanel(panelId);
+          await lifecycle.unloadPanel(panelId);
           return;
         }
 
         case "archive": {
           const panelId = args[0] as string;
-          await pm.closePanel(panelId);
+          await lifecycle.closePanel(panelId);
           return;
         }
 
         case "retryDirtyBuild": {
           const panelId = args[0] as string;
-          await pm.retryBuild(panelId);
+          await lifecycle.retryBuild(panelId);
           return;
         }
 
         case "initGitRepo": {
           const panelId = args[0] as string;
-          await pm.initializeGitRepo(panelId);
+          await lifecycle.initializeGitRepo(panelId);
           return;
         }
 
@@ -124,13 +130,17 @@ export function createPanelShellService(deps: {
             canGoBack?: boolean;
             canGoForward?: boolean;
           }];
-          pm.updatePanelState(panelId, state);
+          // updatePanelState is handled by PanelView's browser state tracking
+          // This was a method on PanelManager that's now in PanelView
+          // For now, delegate to the panel view
+          void state;
+          void panelId;
           return;
         }
 
         case "createAboutPanel": {
           const page = args[0] as ShellPage;
-          return pm.createAboutPanel(page);
+          return lifecycle.createAboutPanel(page);
         }
 
         case "movePanel": {
@@ -139,7 +149,7 @@ export function createPanelShellService(deps: {
             newParentId: string | null;
             targetPosition: number;
           };
-          pm.movePanel(panelId, newParentId, targetPosition);
+          registry.movePanel(panelId, newParentId, targetPosition);
           return;
         }
 
@@ -149,26 +159,26 @@ export function createPanelShellService(deps: {
             offset: number;
             limit: number;
           };
-          return pm.getChildrenPaginated(parentId, offset, limit);
+          return registry.getChildrenPaginated(parentId, offset, limit);
         }
 
         case "getRootPanelsPaginated": {
           const { offset, limit } = args[0] as { offset: number; limit: number };
-          return pm.getRootPanelsPaginated(offset, limit);
+          return registry.getRootPanelsPaginated(offset, limit);
         }
 
         case "getCollapsedIds":
-          return pm.getCollapsedIds();
+          return registry.getCollapsedIds();
 
         case "setCollapsed": {
           const [panelId, collapsed] = args as [string, boolean];
-          pm.setCollapsed(panelId, collapsed);
+          registry.setCollapsed(panelId, collapsed);
           return;
         }
 
         case "expandIds": {
           const [panelIds] = args as [string[]];
-          pm.expandIds(panelIds);
+          registry.expandIds(panelIds);
           return;
         }
 

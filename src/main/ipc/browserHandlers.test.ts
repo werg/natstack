@@ -48,7 +48,7 @@ describe("browserService handler", () => {
   const svc = createBrowserService({
     cdpServer: cdpServer as any,
     getViewManager: () => viewManager as any,
-    panelManager: panelManager as any,
+    panelRegistry: panelManager as any,
   });
   const handler = svc.handler;
   const ctx: ServiceContext = { callerId: "panel-1", callerKind: "panel" };

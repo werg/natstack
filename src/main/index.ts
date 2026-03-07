@@ -8,8 +8,10 @@ import { isDev } from "./utils.js";
 import { createDevLogger } from "../shared/devLog.js";
 
 const log = createDevLogger("App");
-import { PanelManager } from "./panelManager.js";
-import { setupMenu, setMenuPanelManager, setMenuViewManager } from "./menu.js";
+import { PanelRegistry } from "../shared/panelRegistry.js";
+import { PanelLifecycle } from "../shared/panelLifecycle.js";
+import { PanelView } from "./panelView.js";
+import { setupMenu, setMenuPanelLifecycle, setMenuPanelRegistry, setMenuViewManager } from "./menu.js";
 import { getAppRoot } from "./paths.js";
 import {
   parseCliWorkspacePath,
@@ -34,6 +36,9 @@ import { startMemoryMonitor, setMemoryMonitorViewManager } from "./memoryMonitor
 import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
 import { createServerClient, type ServerClient } from "./serverClient.js";
 import type { ServerInfo } from "./serverInfo.js";
+import { getPanelPersistence } from "../shared/db/panelPersistence.js";
+import { getPanelSearchIndex } from "../shared/db/panelSearchIndex.js";
+import { getPanelSource } from "../shared/panelTypes.js";
 
 // =============================================================================
 // Early Diagnostics (enabled via NATSTACK_DEBUG_PATHS=1)
@@ -91,7 +96,9 @@ let workspace: Workspace | null = null;
 let centralData: CentralDataManager | null = null;
 const tokenManager = new TokenManager();
 let cdpServer: CdpServer | null = null;
-let panelManager: PanelManager | null = null;
+let panelRegistry: PanelRegistry | null = null;
+let panelLifecycle: PanelLifecycle | null = null;
+let panelView: PanelView | null = null;
 let rpcServer: RpcServer | null = null;
 let serverProcessManager: ServerProcessManager | null = null;
 let serverClient: ServerClient | null = null;
@@ -198,9 +205,9 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
     viewManager = null;
   });
 
-  // Set ViewManager reference in panel manager and CDP server (if in main mode)
-  if (panelManager && viewManager) {
-    panelManager.setViewManager(viewManager);
+  // Set ViewManager reference in PanelView and PanelLifecycle
+  if (panelLifecycle && viewManager && panelView) {
+    panelLifecycle.setPanelView(panelView);
   }
   if (cdpServer && viewManager) {
     cdpServer.setViewManager(viewManager);
@@ -211,12 +218,11 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
   startMemoryMonitor();
 
   // Setup application menu (uses shell webContents for menu events)
-  // Guard callbacks: panelManager is null in chooser mode — early return instead of throwing.
   if (viewManager) setMenuViewManager(viewManager);
   setupMenu(mainWindow, viewManager.getShellWebContents(), {
     onHistoryBack: () => {
-      if (!panelManager || !viewManager) return;
-      const panelId = panelManager.getFocusedPanelId();
+      if (!panelRegistry || !viewManager) return;
+      const panelId = panelRegistry.getFocusedPanelId();
       if (!panelId) return;
       const contents = viewManager.getWebContents(panelId);
       if (contents && !contents.isDestroyed() && contents.canGoBack()) {
@@ -224,8 +230,8 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
       }
     },
     onHistoryForward: () => {
-      if (!panelManager || !viewManager) return;
-      const panelId = panelManager.getFocusedPanelId();
+      if (!panelRegistry || !viewManager) return;
+      const panelId = panelRegistry.getFocusedPanelId();
       if (!panelId) return;
       const contents = viewManager.getWebContents(panelId);
       if (contents && !contents.isDestroyed() && contents.canGoForward()) {
@@ -233,6 +239,17 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
       }
     },
   });
+
+  // Initialize panel tree after window is ready
+  if (panelLifecycle) {
+    panelLifecycle.initializePanelTree().catch((error) => {
+      console.error("[App] Failed to initialize panel tree:", error);
+      eventService.emit("panel-initialization-error", {
+        path: "",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
 }
 
 // =============================================================================
@@ -318,20 +335,13 @@ app.on("ready", async () => {
     performance.mark("startup:server-connected");
     log.info("[Server] Admin WS client connected");
 
-    // Create panel manager with server info
     const serverInfo = buildServerInfo(ports);
 
-
-    // CDP server (Electron-local) — must start before PanelManager
+    // CDP server (Electron-local) — must start before panel services
     cdpServer = new CdpServer(tokenManager);
     if (viewManager) cdpServer.setViewManager(viewManager);
     const cdpPort = await cdpServer.start();
     log.info(`[CDP] Server started on port ${cdpPort}`);
-
-    panelManager = new PanelManager(serverInfo, cdpServer, tokenManager, workspace);
-    // Set up test API for E2E testing (only when NATSTACK_TEST_MODE=1)
-    setupTestApi(panelManager);
-    setMenuPanelManager(panelManager);
 
     // Filesystem service — per-context sandboxed fs via RPC
     const contextFolderManager = new ContextFolderManager({
@@ -340,29 +350,45 @@ app.on("ready", async () => {
         requireServerClient().call("git", "getWorkspaceTree", []) as Promise<any>,
     });
     const fsService = new FsService(contextFolderManager);
-    panelManager.setFsService(fsService);
 
-    // Register all Electron-main services via registry
-    const adBlockManager = new AdBlockManager();
-    registerElectronServices(dispatcher, {
-      panelManager,
-      cdpServer,
-      fsService,
-      eventService,
-      serverClient,
-      getViewManager: () => viewManager!,
-      centralData: centralData!,
-      adBlockManager,
+    // Create PanelRegistry (data layer)
+    const persistence = getPanelPersistence();
+    const searchIndex = getPanelSearchIndex();
+    panelRegistry = new PanelRegistry({
       workspace,
+      eventService,
+      persistence,
+      searchIndex,
     });
 
-    dispatcher.markInitialized();
+    // Create PanelLifecycle (orchestration layer)
+    panelLifecycle = new PanelLifecycle({
+      registry: panelRegistry,
+      tokenManager,
+      fsService,
+      eventService,
+      panelsRoot: workspace!.path,
+      serverInfo,
+      cdpServer,
+    });
 
+    // Set up test API for E2E testing (only when NATSTACK_TEST_MODE=1)
+    setupTestApi(panelLifecycle, panelRegistry, null);
+    setMenuPanelLifecycle(panelLifecycle);
+    setMenuPanelRegistry(panelRegistry);
+
+    // Register all Electron-main services via registry
+    // PanelView is created later after ViewManager exists, but we need a
+    // placeholder for the service registry. We'll create PanelView with a
+    // deferred viewManager pattern.
+    const adBlockManager = new AdBlockManager();
+
+    // We need the RPC server before PanelView (for port), so create RPC first
     const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
     rpcServer = new RpcServerClass({
       tokenManager: tokenManager,
       dispatcher,
-      panelManager,
+      panelManager: panelRegistry, // PanelRegistry implements PanelRelationshipProvider
       onClientDisconnect: (callerId, callerKind) => {
         const handleKey = callerKind === "panel" ? callerId : `server:${callerId}`;
         fsService.closeHandlesForPanel(handleKey);
@@ -371,9 +397,8 @@ app.on("ready", async () => {
     const rpcPort = await rpcServer.start();
     log.info(`[RPC] Server started on port ${rpcPort}`);
 
-    // Wire RPC server into panel manager
-    panelManager.setRpcServer(rpcServer);
-    panelManager.setRpcPort(rpcPort);
+    // Wire sendToClient into PanelLifecycle
+    panelLifecycle.setSendToClient((callerId, msg) => rpcServer!.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage));
 
     // Start PanelHttpServer for HTTP subdomain panel serving in Electron
     const { PanelHttpServer } = await import("../server/panelHttpServer.js");
@@ -381,11 +406,122 @@ app.on("ready", async () => {
     panelHttpServer = new PanelHttpServer("127.0.0.1", randomBytes(32).toString("hex"));
     const panelHttpPort = await panelHttpServer.start(0);
     log.info(`[PanelHTTP] Panel HTTP server started on port ${panelHttpPort}`);
-    panelManager.setPanelHttpServer(panelHttpServer, panelHttpPort);
+
+    // Wire PanelHttpServer into PanelLifecycle
+    panelLifecycle.setPanelHttpServer(panelHttpServer, panelHttpPort);
+
+    // Wire PanelHttpServer callbacks
+    panelHttpServer.setCallbacks({
+      onDemandCreate: async (source, subdomain) => {
+        const panelId = await panelLifecycle!.createPanelOnDemand(source, subdomain);
+        const rpcToken = tokenManager.ensureToken(panelId, "panel");
+        const serverRpcToken = await serverInfo.ensurePanelToken(panelId, "panel");
+        return { panelId, rpcPort, rpcToken, serverRpcPort: serverInfo.rpcPort, serverRpcToken };
+      },
+      listPanels: () => panelLifecycle!.listPanels(),
+      onBuildComplete: (source, error) => {
+        // Per-panel fan-out: notify all panels using this source
+        const allPanels = panelRegistry!.listPanels();
+        for (const entry of allPanels) {
+          const panel = panelRegistry!.getPanel(entry.panelId);
+          if (panel && getPanelSource(panel) === source) {
+            if (error) {
+              panelRegistry!.updateArtifacts(entry.panelId, {
+                buildState: "error",
+                error,
+                buildProgress: error,
+              });
+            } else {
+              panelRegistry!.updateArtifacts(entry.panelId, {
+                htmlPath: panelLifecycle!.getPanelUrl(entry.panelId) ?? undefined,
+                buildState: "ready",
+              });
+            }
+          }
+        }
+        panelRegistry!.notifyPanelTreeUpdate();
+      },
+      getBuild: async (source) => {
+        return serverInfo.call("build", "getBuild", [source]) as Promise<
+          import("../server/buildV2/buildStore.js").BuildResult
+        >;
+      },
+    });
+
+    // Now create PanelView (needs viewManager, which is created in createWindow)
+    // PanelView will be created inside createWindow after viewManager exists.
+    // For now, register services with a deferred PanelView.
+
+    // We'll create a temporary PanelView placeholder and update it in createWindow.
+    // Actually, the services need PanelView at registration time, so let's defer
+    // service registration until after createWindow... but that breaks the flow.
+    //
+    // Better approach: register services now, but PanelView is created inside
+    // createWindow. The panelShellService and others reference panelView via
+    // a getter pattern. Let's use the same getViewManager pattern.
+
+    // Create a shell PanelView that will be fully initialized in createWindow
+    // For now, services that need PanelView will get it lazily.
+
+    // Register all Electron-main services
+    // PanelView needs viewManager which doesn't exist yet, so we use a lazy wrapper
+    const getPanelView = (): PanelView => {
+      if (!panelView) throw new Error("PanelView not initialized yet");
+      return panelView;
+    };
+
+    registerElectronServices(dispatcher, {
+      panelLifecycle,
+      panelRegistry,
+      // PanelView is created lazily in createWindow. Services that need it
+      // (like panelShellService) will call methods on it during handler
+      // execution, by which time createWindow has already run.
+      get panelView(): PanelView { return getPanelView(); },
+      cdpServer,
+      fsService,
+      eventService,
+      serverClient,
+      serverInfo,
+      getViewManager: () => viewManager!,
+      centralData: centralData!,
+      adBlockManager,
+      workspace,
+    });
+
+    dispatcher.markInitialized();
 
     // Generate shell token and create window
     const shellToken = tokenManager.ensureToken("shell", "shell");
+    // createWindow will create ViewManager, PanelView, and initialize panel tree
     void createWindow({ rpcPort, shellToken });
+
+    // Create PanelView now that viewManager exists (set in createWindow)
+    if (viewManager) {
+      panelView = new PanelView({
+        viewManager,
+        panelRegistry,
+        tokenManager,
+        panelHttpServer,
+        panelHttpPort,
+        rpcPort,
+        serverInfo,
+        cdpServer,
+        panelLifecycle,
+        sendToClient: (callerId, msg) => rpcServer!.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage),
+      });
+
+      // Wire PanelView into PanelLifecycle
+      panelLifecycle.setPanelView(panelView);
+
+      // Register crash handler
+      viewManager.onViewCrashed((viewId, reason) => {
+        panelView!.handleViewCrashed(viewId, reason);
+      });
+
+      // Update test API with PanelView
+      setupTestApi(panelLifecycle, panelRegistry, panelView);
+    }
+
     performance.mark("startup:window-created");
 
     // Log startup timing in dev mode
@@ -471,9 +607,9 @@ app.on("will-quit", (event) => {
   }
 
   // Run panel cleanup (archive childless shell panels)
-  if (panelManager) {
+  if (panelRegistry) {
     try {
-      panelManager.runShutdownCleanup();
+      panelRegistry.runShutdownCleanup();
     } catch (e) {
       console.error("[App] Failed to run shutdown cleanup:", e);
     }

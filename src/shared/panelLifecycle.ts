@@ -84,7 +84,7 @@ export interface PanelHttpServerLike {
   clearSubdomainSessions(subdomain: string): void;
   hasBuild(source: string): boolean;
   invalidateBuild(source: string): void;
-  getPort?(): number;
+  getPort?(): number | null;
 }
 
 // =============================================================================

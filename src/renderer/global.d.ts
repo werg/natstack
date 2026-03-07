@@ -16,4 +16,4 @@ declare namespace JSX {
   }
 }
 
-type Panel = import("main/panelTypes").Panel;
+type Panel = import("shared/types").Panel;

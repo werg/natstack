@@ -1,27 +1,34 @@
 import { app, Menu, MenuItemConstructorOptions, type WebContents } from "electron";
 import { eventService } from "../shared/eventsService.js";
 import type { ViewManager } from "./viewManager.js";
-import type { PanelManager } from "./panelManager.js";
+import type { PanelLifecycle } from "../shared/panelLifecycle.js";
+import type { PanelRegistry } from "../shared/panelRegistry.js";
 
 // Set during initialization — always non-null after startup
-let _menuPanelManager: PanelManager | null = null;
+let _menuPanelLifecycle: PanelLifecycle | null = null;
+let _menuPanelRegistry: PanelRegistry | null = null;
 let _menuViewManager: ViewManager | null = null;
 
-/** Set the panel manager for menu operations. Called from index.ts. */
+/** Set the view manager for menu operations. Called from index.ts. */
 export function setMenuViewManager(vm: ViewManager): void {
   _menuViewManager = vm;
 }
 
-/** Set the panel manager for menu operations. Called from index.ts. */
-export function setMenuPanelManager(pm: PanelManager): void {
-  _menuPanelManager = pm;
+/** Set the panel lifecycle for menu operations. Called from index.ts. */
+export function setMenuPanelLifecycle(lc: PanelLifecycle): void {
+  _menuPanelLifecycle = lc;
+}
+
+/** Set the panel registry for menu operations. Called from index.ts. */
+export function setMenuPanelRegistry(reg: PanelRegistry): void {
+  _menuPanelRegistry = reg;
 }
 
 /** Archive the currently focused panel (Cmd+W / Ctrl+W). Falls back to window close if no panel is focused. */
 async function archiveFocusedPanel(mainWindow: Electron.BaseWindow): Promise<void> {
-  const focusedId = _menuPanelManager?.getFocusedPanelId();
-  if (focusedId && _menuPanelManager) {
-    await _menuPanelManager.closePanel(focusedId);
+  const focusedId = _menuPanelRegistry?.getFocusedPanelId();
+  if (focusedId && _menuPanelLifecycle) {
+    await _menuPanelLifecycle.closePanel(focusedId);
   } else {
     mainWindow.close();
   }

@@ -5,7 +5,9 @@
  */
 
 import type { ServiceDispatcher } from "../shared/serviceDispatcher.js";
-import type { PanelManager } from "./panelManager.js";
+import type { PanelLifecycle } from "../shared/panelLifecycle.js";
+import type { PanelRegistry } from "../shared/panelRegistry.js";
+import type { PanelView } from "./panelView.js";
 import type { CdpServer } from "./cdpServer.js";
 import type { FsService } from "../shared/fsService.js";
 import type { EventService } from "../shared/eventsService.js";
@@ -14,6 +16,7 @@ import type { ViewManager } from "./viewManager.js";
 import type { CentralDataManager } from "./centralData.js";
 import type { AdBlockManager } from "./adblock/index.js";
 import type { Workspace } from "../shared/workspace/types.js";
+import type { ServerInfo } from "./serverInfo.js";
 import { createEventsServiceDefinition } from "../shared/eventsService.js";
 
 import { createAppService } from "./services/appService.js";
@@ -32,11 +35,14 @@ import { createGitLocalService } from "./services/gitLocalService.js";
 export function registerElectronServices(
   dispatcher: ServiceDispatcher,
   deps: {
-    panelManager: PanelManager;
+    panelLifecycle: PanelLifecycle;
+    panelRegistry: PanelRegistry;
+    panelView: PanelView;
     cdpServer: CdpServer;
     fsService: FsService;
     eventService: EventService;
     serverClient: ServerClient | null;
+    serverInfo: ServerInfo;
     getViewManager: () => ViewManager;
     centralData: CentralDataManager;
     adBlockManager: AdBlockManager;
@@ -45,19 +51,22 @@ export function registerElectronServices(
 ): void {
   // Shell-only services
   dispatcher.registerService(createAppService({
-    panelManager: deps.panelManager,
+    panelLifecycle: deps.panelLifecycle,
     serverClient: deps.serverClient,
     getViewManager: deps.getViewManager,
   }));
   dispatcher.registerService(createPanelShellService({
-    panelManager: deps.panelManager,
+    panelLifecycle: deps.panelLifecycle,
+    panelRegistry: deps.panelRegistry,
+    panelView: deps.panelView,
     getViewManager: deps.getViewManager,
   }));
   dispatcher.registerService(createViewService({
     getViewManager: deps.getViewManager,
   }));
   dispatcher.registerService(createMenuService({
-    panelManager: deps.panelManager,
+    panelLifecycle: deps.panelLifecycle,
+    panelRegistry: deps.panelRegistry,
     getViewManager: deps.getViewManager,
     serverClient: deps.serverClient,
   }));
@@ -70,15 +79,16 @@ export function registerElectronServices(
 
   // Locally-hosted services (depend on main-process objects)
   dispatcher.registerService(createBridgeService({
-    panelManager: deps.panelManager,
+    panelLifecycle: deps.panelLifecycle,
     cdpServer: deps.cdpServer,
     getViewManager: deps.getViewManager,
     workspace: deps.workspace,
+    serverInfo: deps.serverInfo,
   }));
   dispatcher.registerService(createBrowserService({
     cdpServer: deps.cdpServer,
     getViewManager: deps.getViewManager,
-    panelManager: deps.panelManager,
+    panelRegistry: deps.panelRegistry,
   }));
   dispatcher.registerService(createFsServiceDefinition({
     fsService: deps.fsService,

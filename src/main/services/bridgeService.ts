@@ -5,17 +5,19 @@ import { join, resolve } from "path";
 import { execSync } from "child_process";
 import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { PanelManager } from "../panelManager.js";
+import type { PanelLifecycle } from "../../shared/panelLifecycle.js";
 import type { CdpServer } from "../cdpServer.js";
 import type { ViewManager } from "../viewManager.js";
 import type { Workspace } from "../../shared/workspace/types.js";
+import type { ServerInfo } from "../serverInfo.js";
 import { handleCommonBridgeMethod } from "../../shared/bridgeHandlersCommon.js";
 
 export function createBridgeService(deps: {
-  panelManager: PanelManager;
+  panelLifecycle: PanelLifecycle;
   cdpServer: CdpServer;
   getViewManager: () => ViewManager;
   workspace: Workspace | null;
+  serverInfo: ServerInfo;
 }): ServiceDefinition {
   return {
     name: "bridge",
@@ -36,26 +38,26 @@ export function createBridgeService(deps: {
       openDevtools: { args: z.tuple([]) },
     },
     handler: async (ctx, method, args) => {
-      const pm = deps.panelManager;
+      const lifecycle = deps.panelLifecycle;
       const callerId = ctx.callerId;
 
       // Try common handlers first (shared with headless mode)
-      const common = await handleCommonBridgeMethod(pm, callerId, method, args as unknown[]);
+      const common = await handleCommonBridgeMethod(lifecycle, callerId, method, args as unknown[]);
       if (common.handled) return common.result;
 
       // Electron-specific handlers
       switch (method) {
         case "getWorkspaceTree":
-          return pm.getWorkspaceTree();
+          return deps.serverInfo.getWorkspaceTree();
 
         case "listBranches": {
           const [repoPath] = args as [string];
-          return pm.listBranches(repoPath);
+          return deps.serverInfo.listBranches(repoPath);
         }
 
         case "listCommits": {
           const [repoPath, ref, limit] = args as [string, string?, number?];
-          return pm.listCommits(repoPath, ref, limit);
+          return deps.serverInfo.listCommits(repoPath, ref ?? "HEAD", limit ?? 50);
         }
 
         case "openFolderDialog": {
@@ -68,7 +70,7 @@ export function createBridgeService(deps: {
         }
 
         case "listAgents":
-          return pm.listAgents();
+          return deps.serverInfo.listAgents();
 
         case "createRepo": {
           const [repoPath] = args as [string];

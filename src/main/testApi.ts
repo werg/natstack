@@ -1,13 +1,14 @@
 /**
  * Test API for E2E testing.
  *
- * Exposes PanelManager methods to Playwright tests via Electron's evaluate().
+ * Exposes PanelLifecycle + PanelRegistry methods to Playwright tests via Electron's evaluate().
  * Only loaded when NATSTACK_TEST_MODE=1 environment variable is set.
  */
 
-import type { PanelManager } from "./panelManager.js";
-import type { Panel } from "./panelTypes.js";
-import type * as SharedPanel from "../shared/types.js";
+import type { PanelLifecycle } from "../shared/panelLifecycle.js";
+import type { PanelRegistry } from "../shared/panelRegistry.js";
+import type { PanelView } from "./panelView.js";
+import type { Panel } from "../shared/types.js";
 
 export interface TestApi {
   /** Get the full panel tree as a flat array */
@@ -54,7 +55,11 @@ declare global {
  * Set up the test API on the global object.
  * This is only called when NATSTACK_TEST_MODE=1.
  */
-export function setupTestApi(panelManager: PanelManager): void {
+export function setupTestApi(
+  panelLifecycle: PanelLifecycle,
+  panelRegistry: PanelRegistry,
+  panelView: PanelView | null,
+): void {
   if (process.env["NATSTACK_TEST_MODE"] !== "1") {
     return;
   }
@@ -70,48 +75,48 @@ export function setupTestApi(panelManager: PanelManager): void {
           traverse(child);
         }
       };
-      for (const root of panelManager.getRootPanels()) {
+      for (const root of panelRegistry.getRootPanels()) {
         traverse(root);
       }
       return result;
     },
 
     getRootPanels(): Panel[] {
-      return panelManager.getRootPanels();
+      return panelRegistry.getRootPanels();
     },
 
     getPanel(id: string): Panel | undefined {
-      return panelManager.getPanel(id);
+      return panelRegistry.getPanel(id);
     },
 
     getFocusedPanelId(): string | null {
-      return panelManager.getFocusedPanelId();
+      return panelRegistry.getFocusedPanelId();
     },
 
     async createPanel(parentId, source, options) {
-      return panelManager.createPanel(parentId, source, options ?? {});
+      return panelLifecycle.createPanel(parentId, source, options ?? {});
     },
 
     async closePanel(id) {
-      return panelManager.closePanel(id);
+      return panelLifecycle.closePanel(id);
     },
 
     isPanelLoaded(panelId): boolean {
-      const wc = panelManager.getWebContentsForPanel(panelId);
-      return wc !== undefined && !wc.isDestroyed();
+      if (!panelView) return false;
+      const wc = panelView.getWebContents(panelId);
+      return wc !== null && !wc.isDestroyed();
     },
 
     unloadPanel(panelId): void {
-      // Get the webContents and close it to simulate a crash
-      const wc = panelManager.getWebContentsForPanel(panelId);
+      if (!panelView) return;
+      const wc = panelView.getWebContents(panelId);
       if (wc && !wc.isDestroyed()) {
         wc.close();
       }
     },
 
     focusPanel(panelId): void {
-      // Use updateSelectedPath which is public and handles focus state
-      panelManager.updateSelectedPath(panelId);
+      panelRegistry.updateSelectedPath(panelId);
     },
   };
 }

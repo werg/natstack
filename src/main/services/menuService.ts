@@ -1,14 +1,16 @@
 import { Menu, type MenuItemConstructorOptions } from "electron";
 import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { PanelManager } from "../panelManager.js";
+import type { PanelLifecycle } from "../../shared/panelLifecycle.js";
+import type { PanelRegistry } from "../../shared/panelRegistry.js";
 import type { ViewManager } from "../viewManager.js";
 import type { ServerClient } from "../serverClient.js";
 import type { PanelContextMenuAction } from "../../shared/types.js";
 import { buildHamburgerMenuTemplate } from "../menu.js";
 
 export function createMenuService(deps: {
-  panelManager: PanelManager;
+  panelLifecycle: PanelLifecycle;
+  panelRegistry: PanelRegistry;
   getViewManager: () => ViewManager;
   serverClient: ServerClient | null;
 }): ServiceDefinition {
@@ -23,7 +25,8 @@ export function createMenuService(deps: {
     },
     handler: async (_ctx, method, args) => {
       const vm = deps.getViewManager();
-      const pm = deps.panelManager;
+      const lifecycle = deps.panelLifecycle;
+      const registry = deps.panelRegistry;
 
       switch (method) {
         case "showHamburger": {
@@ -35,7 +38,7 @@ export function createMenuService(deps: {
               try { await deps.serverClient.call("build", "recompute", []); } catch {}
             }
             try {
-              pm.invalidateReadyPanels();
+              lifecycle.invalidateReadyPanels();
             } catch (error) {
               console.warn("[App] Failed to invalidate panel states:", error);
             }
@@ -44,13 +47,13 @@ export function createMenuService(deps: {
 
           const template = buildHamburgerMenuTemplate(shellContents, clearBuildCache, {
             onHistoryBack: () => {
-              const panelId = pm.getFocusedPanelId();
-              if (!panelId || !pm.getPanel(panelId)) return;
+              const panelId = registry.getFocusedPanelId();
+              if (!panelId || !registry.getPanel(panelId)) return;
               vm.getWebContents(panelId)?.goBack();
             },
             onHistoryForward: () => {
-              const panelId = pm.getFocusedPanelId();
-              if (!panelId || !pm.getPanel(panelId)) return;
+              const panelId = registry.getFocusedPanelId();
+              if (!panelId || !registry.getPanel(panelId)) return;
               vm.getWebContents(panelId)?.goForward();
             },
           });

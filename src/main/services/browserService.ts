@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { CdpServer } from "../cdpServer.js";
 import type { ViewManager } from "../viewManager.js";
-import type { PanelManager } from "../panelManager.js";
+import type { PanelRegistry } from "../../shared/panelRegistry.js";
 
 export function getCdpEndpointForCaller(cdpServer: CdpServer, browserId: string, callerId: string): string {
   const endpoint = cdpServer.getCdpEndpoint(browserId, callerId);
@@ -15,7 +15,7 @@ export function getCdpEndpointForCaller(cdpServer: CdpServer, browserId: string,
 export function createBrowserService(deps: {
   cdpServer: CdpServer;
   getViewManager: () => ViewManager;
-  panelManager: PanelManager;
+  panelRegistry: PanelRegistry;
 }): ServiceDefinition {
   return {
     name: "browser",

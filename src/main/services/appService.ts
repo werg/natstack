@@ -3,12 +3,12 @@ import { app, nativeTheme } from "electron";
 import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { ThemeMode } from "../../shared/types.js";
-import type { PanelManager } from "../panelManager.js";
+import type { PanelLifecycle } from "../../shared/panelLifecycle.js";
 import type { ServerClient } from "../serverClient.js";
 import type { ViewManager } from "../viewManager.js";
 
 export function createAppService(deps: {
-  panelManager: PanelManager;
+  panelLifecycle: PanelLifecycle;
   serverClient: ServerClient | null;
   getViewManager: () => ViewManager;
 }): ServiceDefinition {
@@ -53,7 +53,7 @@ export function createAppService(deps: {
             try { await deps.serverClient.call("build", "recompute", []); } catch {}
           }
           try {
-            deps.panelManager.invalidateReadyPanels();
+            deps.panelLifecycle.invalidateReadyPanels();
           } catch (error) {
             console.warn("[App] Failed to invalidate panel states:", error);
           }
