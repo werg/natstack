@@ -356,7 +356,7 @@ app.on("ready", async () => {
     const fsService = new FsService(contextFolderManager);
 
     // Create PanelRegistry (data layer)
-    const persistence = getPanelPersistence();
+    const persistence = getPanelPersistence(workspace);
     const searchIndex = getPanelSearchIndex();
     panelRegistry = new PanelRegistry({
       workspace,

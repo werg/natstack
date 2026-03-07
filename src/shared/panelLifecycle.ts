@@ -191,7 +191,7 @@ export class PanelLifecycle implements BridgePanelManager {
 
     const source = `about/${page}`;
     const manifest: PanelManifest = { title: page };
-    const name = isMultiInstance ? `about/${page}~${Date.now().toString(36)}` : undefined;
+    const name = isMultiInstance ? `${page}~${Date.now().toString(36)}` : undefined;
 
     return this.createPanelFromManifest({
       manifest,
