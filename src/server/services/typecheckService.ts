@@ -1,7 +1,7 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../main/serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { ContextFolderManager } from "../../main/contextFolderManager.js";
-import { resolveContextScope } from "../../main/services/contextMiddleware.js";
+import { resolveContextScope } from "../../shared/contextMiddleware.js";
 
 export function createTypecheckService(deps: {
   contextFolderManager: ContextFolderManager;

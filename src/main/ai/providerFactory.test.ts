@@ -18,10 +18,6 @@ vi.mock("child_process", () => ({
   execSync: vi.fn(),
 }));
 
-// Avoid pulling in heavy workspace loader / electron paths
-vi.mock("../paths.js", () => ({
-  getActiveWorkspace: vi.fn().mockReturnValue(undefined),
-}));
 
 import { execSync } from "child_process";
 

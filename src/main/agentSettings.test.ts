@@ -25,16 +25,13 @@ const mockWorkspace = {
 // Mutable list of "discovered" agents for the mock
 let mockValidAgents: Array<{ manifest: AgentManifest }> = [];
 
-vi.mock("./paths.js", () => ({
-  getActiveWorkspace: () => mockWorkspace,
-}));
-
-vi.mock("./agentDiscovery.js", () => ({
-  getAgentDiscovery: () => ({
-    listValid: () => mockValidAgents,
-    on: () => () => {},
-  }),
-}));
+const mockDiscovery = {
+  listValid: () => mockValidAgents,
+  on: () => () => {},
+  list: () => [],
+  startWatching: () => {},
+  stopWatching: () => {},
+} as any;
 
 vi.mock("./devLog.js", () => ({
   createDevLogger: () => ({
@@ -67,7 +64,7 @@ describe("AgentSettingsService - defaultAgent", () => {
     mockValidAgents = [makeAgent("agent-a"), makeAgent("agent-b")];
 
     service = new AgentSettingsService();
-    await service.initialize();
+    await service.initialize(testDir, mockDiscovery);
   });
 
   afterEach(() => {

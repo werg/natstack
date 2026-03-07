@@ -2,17 +2,8 @@
  * Tests for agent settings service.
  */
 
-import { getAgentSettingsService } from "../agentSettings.js";
-import { getAgentDiscovery } from "../agentDiscovery.js";
 import { createAgentSettingsService } from "../../server/services/agentSettingsService.js";
 import type { ServiceContext } from "../serviceDispatcher.js";
-
-vi.mock("../agentSettings.js", () => ({
-  getAgentSettingsService: vi.fn(),
-}));
-vi.mock("../agentDiscovery.js", () => ({
-  getAgentDiscovery: vi.fn(),
-}));
 
 const ctx: ServiceContext = { callerId: "test", callerKind: "shell" };
 
@@ -25,20 +16,14 @@ describe("agentSettingsService", () => {
     setAgentSettings: vi.fn(),
   };
 
-  const svc = createAgentSettingsService();
+  const svc = createAgentSettingsService({
+    agentSettingsService: mockService as any,
+    agentDiscovery: null,
+  });
   const handler = svc.handler;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(getAgentSettingsService).mockReturnValue(mockService as any);
-    vi.mocked(getAgentDiscovery).mockReturnValue(null as any);
-  });
-
-  it("throws when service is not initialized", async () => {
-    vi.mocked(getAgentSettingsService).mockReturnValue(null as any);
-    await expect(handler(ctx, "getGlobalSettings", [])).rejects.toThrow(
-      "AgentSettingsService not initialized",
-    );
   });
 
   it("getGlobalSettings calls service.getGlobalSettings()", async () => {
@@ -97,19 +82,22 @@ describe("agentSettingsService", () => {
   it("listAgents delegates to agentDiscovery", async () => {
     const manifest1 = { id: "a1", name: "Agent 1" };
     const manifest2 = { id: "a2", name: "Agent 2" };
-    vi.mocked(getAgentDiscovery).mockReturnValue({
+    const mockDiscovery = {
       listValid: vi.fn().mockReturnValue([
         { manifest: manifest1 },
         { manifest: manifest2 },
       ]),
-    } as any);
+    } as any;
 
-    const result = await handler(ctx, "listAgents", []);
+    const svcWithDiscovery = createAgentSettingsService({
+      agentSettingsService: mockService as any,
+      agentDiscovery: mockDiscovery,
+    });
+    const result = await svcWithDiscovery.handler(ctx, "listAgents", []);
     expect(result).toEqual([manifest1, manifest2]);
   });
 
   it("listAgents returns empty array when discovery is null", async () => {
-    vi.mocked(getAgentDiscovery).mockReturnValue(null as any);
     const result = await handler(ctx, "listAgents", []);
     expect(result).toEqual([]);
   });

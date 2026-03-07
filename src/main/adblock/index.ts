@@ -4,7 +4,6 @@
 
 export {
   AdBlockManager,
-  getAdBlockManager,
   type AdBlockConfig,
   type AdBlockListConfig,
   type AdBlockStats,

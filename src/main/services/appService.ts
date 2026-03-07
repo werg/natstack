@@ -5,11 +5,12 @@ import type { ServiceDefinition } from "../serviceDefinition.js";
 import type { ThemeMode } from "../../shared/types.js";
 import type { PanelManager } from "../panelManager.js";
 import type { ServerClient } from "../serverClient.js";
-import { getViewManager } from "../viewManager.js";
+import type { ViewManager } from "../viewManager.js";
 
 export function createAppService(deps: {
   panelManager: PanelManager;
   serverClient: ServerClient | null;
+  getViewManager: () => ViewManager;
 }): ServiceDefinition {
   return {
     name: "app",
@@ -39,7 +40,7 @@ export function createAppService(deps: {
         }
 
         case "openDevTools": {
-          const vm = getViewManager();
+          const vm = deps.getViewManager();
           vm.openDevTools("shell");
           return;
         }

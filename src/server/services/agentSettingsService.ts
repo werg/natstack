@@ -1,10 +1,13 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../main/serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { GlobalAgentSettings, AgentSettings } from "@natstack/types";
-import { getAgentSettingsService } from "../../main/agentSettings.js";
-import { getAgentDiscovery } from "../../main/agentDiscovery.js";
+import type { AgentSettingsService } from "../../main/agentSettings.js";
+import type { AgentDiscovery } from "../../main/agentDiscovery.js";
 
-export function createAgentSettingsService(): ServiceDefinition {
+export function createAgentSettingsService(deps: {
+  agentSettingsService: AgentSettingsService;
+  agentDiscovery: AgentDiscovery | null;
+}): ServiceDefinition {
   return {
     name: "agentSettings",
     description: "Agent preferences and configuration",
@@ -19,15 +22,12 @@ export function createAgentSettingsService(): ServiceDefinition {
     },
     handler: async (_ctx, method, args) => {
       if (method === "listAgents") {
-        const discovery = getAgentDiscovery();
+        const discovery = deps.agentDiscovery;
         if (!discovery) return [];
         return discovery.listValid().map((agent) => agent.manifest);
       }
 
-      const service = getAgentSettingsService();
-      if (!service) {
-        throw new Error("AgentSettingsService not initialized");
-      }
+      const service = deps.agentSettingsService;
 
       switch (method) {
         case "getGlobalSettings":

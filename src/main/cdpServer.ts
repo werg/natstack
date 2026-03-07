@@ -3,8 +3,8 @@ import { webContents } from "electron";
 import * as http from "http";
 import { URL } from "url";
 import { findServicePort } from "./portUtils.js";
-import { getTokenManager, type TokenManager } from "./tokenManager.js";
-import { isViewManagerInitialized, getViewManager } from "./viewManager.js";
+import type { TokenManager } from "./tokenManager.js";
+import type { ViewManager } from "./viewManager.js";
 import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("CdpServer");
@@ -42,8 +42,14 @@ export class CdpServer {
   // browserId -> debugger attach in progress (prevents race condition)
   private debuggerAttaching = new Map<string, Promise<void>>();
 
-  constructor() {
-    this.tokenManager = getTokenManager();
+  private viewManager: ViewManager | null = null;
+
+  constructor(tokenManager: TokenManager) {
+    this.tokenManager = tokenManager;
+  }
+
+  setViewManager(viewManager: ViewManager): void {
+    this.viewManager = viewManager;
   }
 
   /**
@@ -169,10 +175,10 @@ export class CdpServer {
    * Get the webContents for a browser panel (for navigation control).
    */
   getBrowserWebContents(browserId: string): Electron.WebContents | null {
-    if (!isViewManagerInitialized()) {
+    if (!this.viewManager) {
       return null;
     }
-    return getViewManager().getWebContents(browserId);
+    return this.viewManager.getWebContents(browserId);
   }
 
   /**
@@ -266,8 +272,8 @@ export class CdpServer {
         // Intercept Page.captureScreenshot - temporarily show hidden views for capture
         if (msg.method === "Page.captureScreenshot") {
           const capture = () => contents.debugger.sendCommand(msg.method, msg.params, sessionId);
-          if (isViewManagerInitialized()) {
-            const vm = getViewManager();
+          if (this.viewManager) {
+            const vm = this.viewManager;
             // withViewVisible returns null if view not found, so fallback to direct capture
             result = await vm.withViewVisible(browserId, capture) ?? await capture();
           } else {
@@ -448,12 +454,3 @@ export class CdpServer {
   }
 }
 
-// Singleton instance
-let cdpServer: CdpServer | null = null;
-
-export function getCdpServer(): CdpServer {
-  if (!cdpServer) {
-    cdpServer = new CdpServer();
-  }
-  return cdpServer;
-}

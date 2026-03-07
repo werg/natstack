@@ -5,9 +5,11 @@ import { z } from "zod";
 import type { ServiceDefinition } from "../serviceDefinition.js";
 import type { WorkspaceValidation } from "../../shared/types.js";
 import { loadWorkspaceConfig } from "../workspace/loader.js";
-import { getCentralData } from "../centralData.js";
+import type { CentralDataManager } from "../centralData.js";
 
-export function createWorkspaceService(): ServiceDefinition {
+export function createWorkspaceService(deps: {
+  centralData: CentralDataManager;
+}): ServiceDefinition {
   return {
     name: "workspace",
     description: "Workspace CRUD, folder dialogs",
@@ -123,7 +125,7 @@ git:
 
         case "select": {
           const workspacePath = args[0] as string;
-          const centralData = getCentralData();
+          const centralData = deps.centralData;
           try {
             const config = loadWorkspaceConfig(workspacePath, { createIfMissing: false });
             centralData.addRecentWorkspace(workspacePath, config.id);

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../main/serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { BuildSystemV2 } from "../buildV2/index.js";
 
 export function createBuildService(deps: {

@@ -24,8 +24,8 @@ import {
   isParentPortEnvelope,
   type ParentPortEnvelope,
 } from "@natstack/rpc";
-import { getAgentDiscovery } from "./agentDiscovery.js";
-import { getDatabaseManager } from "./db/databaseManager.js";
+import type { AgentDiscovery } from "./agentDiscovery.js";
+import type { DatabaseManager } from "./db/databaseManager.js";
 import { createDevLogger } from "./devLog.js";
 import type { AIHandler, StreamTarget } from "./ai/aiHandler.js";
 import type { StreamTextOptions, StreamTextEvent } from "../shared/types.js";
@@ -39,8 +39,6 @@ import type { ContextFolderManager } from "./contextFolderManager.js";
 
 const log = createDevLogger("AgentHost");
 
-// Module-level AI handler reference (set via setAgentHostAiHandler)
-let _aiHandler: AIHandler | null = null;
 
 /**
  * Custom error class for agent spawn failures with full build diagnostics.
@@ -58,12 +56,6 @@ export class AgentSpawnError extends Error {
   }
 }
 
-/**
- * Set the AI handler instance for agents (called during initialization).
- */
-export function setAgentHostAiHandler(handler: AIHandler | null): void {
-  _aiHandler = handler;
-}
 
 // ===========================================================================
 // Types
@@ -108,6 +100,8 @@ interface AgentHostOptions {
   /** Build an agent via V2 build service */
   getBuild: (unitPath: string) => Promise<AgentBuildResult>;
   contextFolderManager: ContextFolderManager;
+  databaseManager: DatabaseManager;
+  agentDiscovery: AgentDiscovery | null;
 }
 
 /**
@@ -274,10 +268,15 @@ export class AgentHost extends EventEmitter {
   private messageStore: MessageStore;
   /** Tracks consecutive wake failures per (channel, agentId) to implement exponential backoff. */
   private wakeFailures = new Map<string, { count: number; backoffUntil: number }>();
+  private aiHandler: AIHandler | null = null;
 
   constructor(private options: AgentHostOptions) {
     super();
     this.messageStore = options.messageStore;
+  }
+
+  setAiHandler(handler: AIHandler | null): void {
+    this.aiHandler = handler;
   }
 
   async initialize(): Promise<void> {
@@ -296,7 +295,7 @@ export class AgentHost extends EventEmitter {
     log.verbose(`[spawn] Starting spawn for agent=${agentId}, channel=${options.channel}, handle=${options.handle}`);
 
     // 1. Validate agent exists
-    const discovery = getAgentDiscovery();
+    const discovery = this.options.agentDiscovery;
     if (!discovery) {
       log.verbose(`[spawn] Error: AgentDiscovery not initialized`);
       throw new Error("AgentDiscovery not initialized");
@@ -683,7 +682,7 @@ export class AgentHost extends EventEmitter {
    * List all available agents from discovery.
    */
   listAvailableAgents() {
-    const discovery = getAgentDiscovery();
+    const discovery = this.options.agentDiscovery;
     return discovery?.listValid().map((a) => a.manifest) ?? [];
   }
 
@@ -781,7 +780,7 @@ export class AgentHost extends EventEmitter {
    * Set up database RPC handlers for an agent.
    */
   private setupDbHandlers(bridge: RpcBridge, instanceId: string): void {
-    const dbManager = getDatabaseManager();
+    const dbManager = this.options.databaseManager;
 
     bridge.exposeMethod("db.open", (name: string, readOnly?: boolean) => {
       return dbManager.open(instanceId, name, readOnly);
@@ -819,25 +818,25 @@ export class AgentHost extends EventEmitter {
   private setupAiHandlers(bridge: RpcBridge, instanceId: string, agentSelfId: string): void {
     // ai.listRoles - returns available AI roles/models
     bridge.exposeMethod("ai.listRoles", () => {
-      if (!_aiHandler) {
+      if (!this.aiHandler) {
         throw new Error("AI handler not initialized");
       }
-      return _aiHandler.getAvailableRoles();
+      return this.aiHandler.getAvailableRoles();
     });
 
     // ai.streamCancel - cancel an active stream
     bridge.exposeMethod("ai.streamCancel", (streamId: string) => {
-      if (!_aiHandler) {
+      if (!this.aiHandler) {
         throw new Error("AI handler not initialized");
       }
-      _aiHandler.cancelStream(streamId);
+      this.aiHandler.cancelStream(streamId);
     });
 
     // ai.streamTextStart - start a streaming AI request
     bridge.exposeMethod(
       "ai.streamTextStart",
       (options: StreamTextOptions, streamId: string) => {
-        if (!_aiHandler) {
+        if (!this.aiHandler) {
           throw new Error("AI handler not initialized");
         }
 
@@ -891,7 +890,7 @@ export class AgentHost extends EventEmitter {
         };
 
         // Start streaming to the agent target
-        _aiHandler.startTargetStream(target, options, streamId);
+        this.aiHandler.startTargetStream(target, options, streamId);
       }
     );
   }
@@ -948,7 +947,7 @@ export class AgentHost extends EventEmitter {
     const instance = this.instances.get(instanceId);
     if (instance) {
       // Close all DB connections owned by this agent
-      getDatabaseManager().closeAllForOwner(instanceId);
+      this.options.databaseManager.closeAllForOwner(instanceId);
       this.options.revokeToken(instanceId);
       this.instances.delete(instanceId);
     }
@@ -968,7 +967,7 @@ export class AgentHost extends EventEmitter {
     // Clean up all agents (closes DB connections, revokes tokens)
     for (const instance of this.instances.values()) {
       instance.process.kill();
-      getDatabaseManager().closeAllForOwner(instance.id);
+      this.options.databaseManager.closeAllForOwner(instance.id);
       this.options.revokeToken(instance.id);
     }
 
@@ -980,36 +979,3 @@ export class AgentHost extends EventEmitter {
   }
 }
 
-// ===========================================================================
-// Singleton Management
-// ===========================================================================
-
-let agentHostInstance: AgentHost | null = null;
-
-/**
- * Get the AgentHost singleton (null if not initialized).
- */
-export function getAgentHost(): AgentHost | null {
-  return agentHostInstance;
-}
-
-/**
- * Initialize the AgentHost singleton.
- */
-export function initAgentHost(options: AgentHostOptions): AgentHost {
-  if (agentHostInstance) {
-    agentHostInstance.shutdown();
-  }
-  agentHostInstance = new AgentHost(options);
-  return agentHostInstance;
-}
-
-/**
- * Shutdown the AgentHost singleton.
- */
-export function shutdownAgentHost(): void {
-  if (agentHostInstance) {
-    agentHostInstance.shutdown();
-    agentHostInstance = null;
-  }
-}

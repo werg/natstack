@@ -13,7 +13,6 @@ import { createClaudeCode } from "ai-sdk-provider-claude-code";
 import { execSync } from "child_process";
 import type { AIProviderConfig } from "./aiHandler.js";
 import type { SupportedProvider } from "../workspace/types.js";
-import { getActiveWorkspace } from "../paths.js";
 
 /**
  * Find an executable in the system PATH.
@@ -270,7 +269,7 @@ function getApiKey(providerId: SupportedProvider): string | undefined {
  * Returns null if the provider cannot be created (e.g., missing API key).
  * Note: Claude Code uses CLI authentication and doesn't require an API key.
  */
-export function createProviderFromConfig(providerId: SupportedProvider): AIProviderConfig | null {
+export function createProviderFromConfig(providerId: SupportedProvider, workspacePath?: string): AIProviderConfig | null {
   const models = DEFAULT_MODELS[providerId] ?? [];
 
   // Claude Code uses CLI authentication, not API keys.
@@ -291,7 +290,7 @@ export function createProviderFromConfig(providerId: SupportedProvider): AIProvi
         createClaudeCode()(modelId as "sonnet" | "opus" | "haiku", {
           allowedTools: [], // No tools for basic provider
           pathToClaudeCodeExecutable: claudeExecutable,
-          cwd: getActiveWorkspace()?.path ?? process.cwd(),
+          cwd: workspacePath ?? process.cwd(),
           permissionMode: "default",
         }),
       models,

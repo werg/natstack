@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../main/serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { ContextFolderManager } from "../../main/contextFolderManager.js";
 import type { GitServer } from "../../main/gitServer.js";
 import type { TokenManager } from "../../main/tokenManager.js";

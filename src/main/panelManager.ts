@@ -16,8 +16,8 @@ import {
 } from "./panelTypes.js";
 import { validateStateArgs } from "./stateArgsValidator.js";
 import type { StateArgsValue } from "../shared/stateArgs.js";
-import { getActiveWorkspace } from "./paths.js";
 import type { ServerInfo } from "./serverInfo.js";
+import type { Workspace } from "./workspace/types.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
 import type { FsService } from "./fsService.js";
 import {
@@ -26,18 +26,17 @@ import {
   generatePanelNonce as _generatePanelNonce,
 } from "../shared/panelIdUtils.js";
 import * as SharedPanel from "../shared/types.js";
-import { getClaudeCodeConversationManager } from "./ai/claudeCodeConversationManager.js";
+import type { ClaudeCodeConversationManager } from "./ai/claudeCodeConversationManager.js";
 import {
   contextIdToSubdomain,
   PanelHttpServer,
 } from "../server/panelHttpServer.js";
-import { getCdpServer } from "./cdpServer.js";
-// getPubSubServer no longer imported — pubsub config comes via ServerInfo
-import { getTokenManager } from "./tokenManager.js";
+import type { CdpServer } from "./cdpServer.js";
+import type { TokenManager } from "./tokenManager.js";
 import type { ViewManager } from "./viewManager.js";
 import { checkWorktreeClean, checkGitRepository } from "./gitChecks.js";
 import { eventService } from "./services/eventsService.js";
-import { getPanelPersistence } from "./db/panelPersistence.js";
+import { getPanelPersistence, type PanelPersistence } from "./db/panelPersistence.js";
 import { getPanelSearchIndex } from "./db/panelSearchIndex.js";
 import { logMemorySnapshot } from "./memoryMonitor.js";
 
@@ -103,12 +102,26 @@ export class PanelManager {
   private readonly MAX_CRASHES = 3;
   private readonly CRASH_WINDOW_MS = 60000; // 1 minute
 
-  constructor(serverInfo: ServerInfo) {
+  private cdpServer: CdpServer;
+  private tokenManager: TokenManager;
+  private workspace: Workspace | null;
+  private persistence: PanelPersistence | null;
+  private ccConversationManager: ClaudeCodeConversationManager | null;
+
+  constructor(serverInfo: ServerInfo, cdpServer: CdpServer, tokenManager: TokenManager, workspace: Workspace | null, ccConversationManager?: ClaudeCodeConversationManager) {
     this.serverInfo = serverInfo;
-    const workspace = getActiveWorkspace();
+    this.cdpServer = cdpServer;
+    this.tokenManager = tokenManager;
+    this.workspace = workspace;
     this.panelsRoot = workspace?.path ?? path.resolve(process.cwd());
+    this.persistence = workspace ? getPanelPersistence(workspace) : null;
+    this.ccConversationManager = ccConversationManager ?? null;
   }
 
+
+  setClaudeCodeConversationManager(mgr: ClaudeCodeConversationManager): void {
+    this.ccConversationManager = mgr;
+  }
 
   /** Set the RPC server for WS-based communication */
   setFsService(service: FsService): void {
@@ -134,7 +147,7 @@ export class PanelManager {
       onDemandCreate: async (source, subdomain) => {
         const panelId = await this.createPanelOnDemand(source, subdomain);
         // Ensure token exists — it may have been revoked if panel was previously unloaded
-        const rpcToken = getTokenManager().ensureToken(panelId, "panel");
+        const rpcToken = this.tokenManager.ensureToken(panelId, "panel");
         const serverRpcToken = await this.serverInfo.ensurePanelToken(panelId, "panel");
         return { panelId, rpcPort: this.rpcPort!, rpcToken, serverRpcPort: this.serverInfo.rpcPort, serverRpcToken };
       },
@@ -190,7 +203,7 @@ export class PanelManager {
    * Initialize the panel tree - load from DB if exists, otherwise show about/new launcher.
    */
   private async initializePanelTree(): Promise<void> {
-    const persistence = getPanelPersistence();
+    const persistence = this.persistence!;
 
     try {
       // Try to load existing panels from database
@@ -201,7 +214,7 @@ export class PanelManager {
         this.cleanupChildlessShellPanels(existingPanels, persistence);
 
         // Filter out panels that were archived during cleanup
-        const remainingPanels = existingPanels.filter((p) => !persistence.isArchived(p.id));
+        const remainingPanels = existingPanels.filter((p: Panel) => !persistence.isArchived(p.id));
 
         if (remainingPanels.length > 0) {
           // Restore panels from database
@@ -265,8 +278,7 @@ export class PanelManager {
    * Called when panel tree is empty (fresh install or after cleanup).
    */
   private async runInitPanelsAndLauncher(): Promise<void> {
-    const workspace = getActiveWorkspace();
-    const initPanels = workspace?.config.initPanels ?? [];
+    const initPanels = this.workspace?.config.initPanels ?? [];
 
     // Create init panels first (they run in background, seeding data etc.)
     if (initPanels.length > 0) {
@@ -283,7 +295,7 @@ export class PanelManager {
     }
 
     // If workspace defines a rootPanel, open it directly instead of the launcher
-    const rootPanelSource = workspace?.config.rootPanel;
+    const rootPanelSource = this.workspace?.config.rootPanel;
     if (rootPanelSource) {
       try {
         const result = await this.createInitPanel(rootPanelSource);
@@ -311,7 +323,7 @@ export class PanelManager {
    */
   private cleanupChildlessShellPanels(
     panels: Panel[],
-    persistence: ReturnType<typeof getPanelPersistence>
+    persistence: PanelPersistence
   ): void {
     for (const panel of panels) {
       // Recurse into children first (depth-first)
@@ -342,7 +354,7 @@ export class PanelManager {
    */
   public runShutdownCleanup(): void {
     console.log("[PanelManager] Running shutdown cleanup...");
-    const persistence = getPanelPersistence();
+    const persistence = this.persistence!;
     this.cleanupChildlessShellPanels(this.rootPanels, persistence);
 
     // Clear accumulated maps to prevent memory leaks
@@ -437,7 +449,7 @@ export class PanelManager {
       const ctxId = getPanelContextId(panel);
       const subdomain = contextIdToSubdomain(ctxId);
       const source = getPanelSource(panel);
-      const rpcToken = getTokenManager().ensureToken(panelId, "panel");
+      const rpcToken = this.tokenManager.ensureToken(panelId, "panel");
       const origin = `http://${subdomain}.localhost:${this.panelHttpPort}`;
       const bk = randomBytes(8).toString("hex");
 
@@ -489,7 +501,7 @@ export class PanelManager {
     // Use named handler for cleanup
     if (parentId) {
       const domReadyHandler = () => {
-        getCdpServer().registerBrowser(panelId, view.webContents.id, parentId);
+        this.cdpServer.registerBrowser(panelId, view.webContents.id, parentId);
       };
       view.webContents.on("dom-ready", domReadyHandler);
       this.contentLoadHandlers.set(panelId, { domReady: domReadyHandler });
@@ -826,7 +838,7 @@ export class PanelManager {
 
     try {
       // 1. Set auth cookies for the new subdomain (same pattern as createViewForPanel)
-      const rpcToken = getTokenManager().ensureToken(panelId, "panel");
+      const rpcToken = this.tokenManager.ensureToken(panelId, "panel");
       const origin = `http://${targetSubdomain}.localhost:${this.panelHttpPort}`;
       const bk = randomBytes(8).toString("hex");
 
@@ -897,7 +909,7 @@ export class PanelManager {
     }
 
     this.updateSelectedPath(targetPanelId);
-    getPanelPersistence().updateSelectedPath(targetPanelId);
+    this.persistence!.updateSelectedPath(targetPanelId);
     this.notifyPanelTreeUpdate();
 
     // Emit focus event to the panel only if it has a view
@@ -955,7 +967,7 @@ export class PanelManager {
           token: serverToken,
         })
       : "";
-    const workspacePath = getActiveWorkspace()?.path;
+    const workspacePath = this.workspace?.path;
 
     // Pass critical environment variables that Node.js APIs depend on
     // (e.g., os.homedir() needs HOME, child processes need PATH)
@@ -1034,7 +1046,7 @@ export class PanelManager {
     this.reservedPanelIds.add(panelId);
 
     // Create auth tokens before resolveContext — it needs a git token via getGitTokenForPanel
-    getTokenManager().createToken(panelId, "panel");              // Electron WS auth
+    this.tokenManager.createToken(panelId, "panel");              // Electron WS auth
 
     try {
       await this.serverInfo.createPanelToken(panelId, "panel");     // Server git/pubsub auth
@@ -1141,7 +1153,7 @@ export class PanelManager {
       return { id: panel.id, title: panel.title };
     } catch (err) {
       // If panel creation fails after token was created, clean up
-      getTokenManager().revokeToken(panelId);
+      this.tokenManager.revokeToken(panelId);
       void this.serverInfo.revokePanelToken(panelId);
       this.fsService?.unregisterPanelContext(panelId);
       throw err;
@@ -1155,7 +1167,7 @@ export class PanelManager {
    */
   private persistPanel(panel: Panel, parentId: string | null): void {
     try {
-      const persistence = getPanelPersistence();
+      const persistence = this.persistence!;
       const currentSnapshot = getCurrentSnapshot(panel);
       // Check if panel already exists (e.g., on app restart)
       const existingPanel = persistence.getPanel(panel.id);
@@ -1319,7 +1331,7 @@ export class PanelManager {
       if (parent.selectedChildId === panelId) {
         parent.selectedChildId = null;
         // Persist the cleared selection
-        const persistence = getPanelPersistence();
+        const persistence = this.persistence!;
         persistence.setSelectedChild(parent.id, null);
       }
     } else {
@@ -1337,7 +1349,7 @@ export class PanelManager {
     this.panels.delete(panelId);
 
     // Archive in DB
-    const persistence = getPanelPersistence();
+    const persistence = this.persistence!;
     persistence.archivePanel(panelId);
 
     // Notify tree update
@@ -1419,7 +1431,7 @@ export class PanelManager {
     if (state.pageTitle !== undefined) {
       panel.title = state.pageTitle;
       try {
-        const persistence = getPanelPersistence();
+        const persistence = this.persistence!;
         persistence.setTitle(browserId, state.pageTitle);
       } catch (error) {
         console.error(`[PanelManager] Failed to persist title for ${browserId}:`, error);
@@ -1556,7 +1568,7 @@ export class PanelManager {
     const contextId = getPanelContextId(panel);
     const subdomain = contextIdToSubdomain(contextId);
     const parentId = this.findParentId(panel.id) ?? null;
-    const rpcToken = getTokenManager().ensureToken(panel.id, "panel");
+    const rpcToken = this.tokenManager.ensureToken(panel.id, "panel");
     const gitToken = await this.serverInfo.getGitTokenForPanel(panel.id);
     const snapshot = getCurrentSnapshot(panel);
     const env = snapshot.options.env ?? {};
@@ -1785,7 +1797,7 @@ export class PanelManager {
 
     // Ensure auth tokens exist — they don't persist across restarts and are
     // revoked on unload, so we must recreate them before serving the panel.
-    getTokenManager().ensureToken(panelId, "panel");
+    this.tokenManager.ensureToken(panelId, "panel");
     await this.serverInfo.ensurePanelToken(panelId, "panel");
 
     // Set building state
@@ -1961,7 +1973,7 @@ export class PanelManager {
     this.fsService?.closeHandlesForPanel(panelId);
 
     // Revoke auth token (disconnects WS connections via onRevoke listener)
-    getTokenManager().revokeToken(panelId);
+    this.tokenManager.revokeToken(panelId);
 
     // Clean up crash history for this panel
     this.crashHistory.delete(panelId);
@@ -1979,10 +1991,10 @@ export class PanelManager {
     void this.serverInfo.revokeGitToken(panelId);
 
     // Revoke CDP token for this panel (cleans up browser ownership)
-    getCdpServer().revokeTokenForPanel(panelId);
+    this.cdpServer.revokeTokenForPanel(panelId);
 
     // Clean up any Claude Code conversations for this panel
-    getClaudeCodeConversationManager().endPanelConversations(panelId);
+    this.ccConversationManager?.endPanelConversations(panelId);
 
     // Clear subdomain sessions if no panels remain on this subdomain
     this.clearSubdomainSessionsIfEmpty(panelId);
@@ -2018,9 +2030,9 @@ export class PanelManager {
     // Note: unloadPanelResources handles:
     //   - browserStateCleanup and linkInterceptionHandlers cleanup
     //   - viewManager.destroyView (which triggers cleanup via 'destroyed' event)
-    //   - getCdpServer().revokeTokenForPanel
+    //   - this.cdpServer.revokeTokenForPanel
     //   - gitServer.revokeTokenForPanel
-    //   - getClaudeCodeConversationManager().endPanelConversations
+    //   - ccConversationManager.endPanelConversations
     //   - clearSubdomainSessionsIfEmpty (cleans up HTTP sessions when last panel on subdomain closes)
     this.unloadPanelResources(panel.id);
 
@@ -2031,7 +2043,7 @@ export class PanelManager {
     this.panels.delete(panel.id);
 
     // Archive in persistence
-    const persistence = getPanelPersistence();
+    const persistence = this.persistence!;
     persistence.archivePanel(panel.id);
   }
 
@@ -2127,7 +2139,7 @@ export class PanelManager {
     }
 
     // Persist to database
-    const persistence = getPanelPersistence();
+    const persistence = this.persistence!;
     persistence.movePanel(panelId, newParentId, targetPosition);
 
     // Notify renderer
@@ -2142,21 +2154,21 @@ export class PanelManager {
    * Get all collapsed panel IDs for the current workspace.
    */
   getCollapsedIds(): string[] {
-    return getPanelPersistence().getCollapsedIds();
+    return this.persistence!.getCollapsedIds();
   }
 
   /**
    * Set collapse state for a single panel.
    */
   setCollapsed(panelId: string, collapsed: boolean): void {
-    getPanelPersistence().setCollapsed(panelId, collapsed);
+    this.persistence!.setCollapsed(panelId, collapsed);
   }
 
   /**
    * Expand multiple panels (set collapsed = false).
    */
   expandIds(panelIds: string[]): void {
-    getPanelPersistence().setCollapsedBatch(panelIds, false);
+    this.persistence!.setCollapsedBatch(panelIds, false);
   }
 
   /**
@@ -2389,11 +2401,11 @@ export class PanelManager {
     offset: number,
     limit: number
   ): { children: SharedPanel.PanelSummary[]; total: number; hasMore: boolean } {
-    const persistence = getPanelPersistence();
+    const persistence = this.persistence!;
     const result = persistence.getChildrenPaginated(parentId, offset, limit);
 
     // Enrich summaries with runtime buildState from in-memory panels
-    const enrichedChildren = result.children.map((summary) => {
+    const enrichedChildren = result.children.map((summary: SharedPanel.PanelSummary) => {
       const panel = this.panels.get(summary.id);
       return {
         ...summary,
@@ -2415,11 +2427,11 @@ export class PanelManager {
     offset: number,
     limit: number
   ): { panels: SharedPanel.PanelSummary[]; total: number; hasMore: boolean } {
-    const persistence = getPanelPersistence();
+    const persistence = this.persistence!;
     const result = persistence.getRootPanelsPaginated(offset, limit);
 
     // Enrich summaries with runtime buildState from in-memory panels
-    const enrichedPanels = result.panels.map((summary) => {
+    const enrichedPanels = result.panels.map((summary: SharedPanel.PanelSummary) => {
       const panel = this.panels.get(summary.id);
       return {
         ...summary,

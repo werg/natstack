@@ -41,7 +41,7 @@ interface IndexablePanel {
  * PanelSearchIndex class for managing FTS5 index.
  */
 export class PanelSearchIndex {
-  private persistence = getPanelPersistence();
+  private get persistence() { return getPanelPersistence(); }
 
   /**
    * Index a panel for full-text search.

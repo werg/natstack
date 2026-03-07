@@ -24,9 +24,9 @@ import type { PanelHttpServer } from "./panelHttpServer.js";
 import { contextIdToSubdomain } from "./panelHttpServer.js";
 import type { WsServerMessage } from "../shared/ws/protocol.js";
 import { computePanelId } from "../shared/panelIdUtils.js";
-import { loadPanelManifest } from "../main/panelTypes.js";
-import { validateStateArgs } from "../main/stateArgsValidator.js";
-import { createDevLogger } from "../main/devLog.js";
+import { loadPanelManifest } from "../shared/panelTypes.js";
+import { validateStateArgs } from "../shared/stateArgsValidator.js";
+import { createDevLogger } from "../shared/devLog.js";
 
 const log = createDevLogger("HeadlessPanelManager");
 

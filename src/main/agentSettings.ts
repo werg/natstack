@@ -13,8 +13,7 @@ import Database from "better-sqlite3";
 import * as path from "path";
 import * as fs from "fs";
 import type { GlobalAgentSettings, AgentSettings } from "@natstack/types";
-import { getActiveWorkspace } from "./paths.js";
-import { getAgentDiscovery } from "./agentDiscovery.js";
+import type { AgentDiscovery } from "./agentDiscovery.js";
 import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("AgentSettings");
@@ -28,57 +27,19 @@ const DEFAULT_GLOBAL_SETTINGS: GlobalAgentSettings = {
   defaultAgent: null,
 };
 
-/**
- * Singleton instance
- */
-let instance: AgentSettingsService | null = null;
-
-/**
- * Get the singleton AgentSettingsService instance.
- */
-export function getAgentSettingsService(): AgentSettingsService | null {
-  return instance;
-}
-
-/**
- * Initialize the AgentSettingsService.
- * Call this after AgentDiscovery has completed its initial scan.
- */
-export async function initAgentSettingsService(): Promise<AgentSettingsService> {
-  if (instance) {
-    return instance;
-  }
-
-  instance = new AgentSettingsService();
-  await instance.initialize();
-  return instance;
-}
-
-/**
- * Shutdown the AgentSettingsService.
- */
-export function shutdownAgentSettingsService(): void {
-  if (instance) {
-    instance.shutdown();
-    instance = null;
-  }
-}
-
 export class AgentSettingsService {
+  private agentDiscovery: AgentDiscovery | null = null;
   private db: Database.Database | null = null;
   private unsubscribeDiscovery: (() => void)[] = [];
 
   /**
    * Initialize the service - open database and sync with discovery.
    */
-  async initialize(): Promise<void> {
-    const workspace = getActiveWorkspace();
-    if (!workspace) {
-      throw new Error("No active workspace - cannot initialize AgentSettingsService");
-    }
+  async initialize(workspacePath: string, agentDiscovery: AgentDiscovery | null): Promise<void> {
+    this.agentDiscovery = agentDiscovery;
 
     // Open database
-    const dbDir = path.join(workspace.path, ".databases");
+    const dbDir = path.join(workspacePath, ".databases");
     fs.mkdirSync(dbDir, { recursive: true });
 
     const dbPath = path.join(dbDir, `${DATABASE_NAME}.db`);
@@ -113,7 +74,7 @@ export class AgentSettingsService {
     await this.syncWithDiscovery();
 
     // Subscribe to discovery events for live updates
-    const discovery = getAgentDiscovery();
+    const discovery = this.agentDiscovery;
     if (discovery) {
       const safeSync = () => {
         this.syncWithDiscovery().catch((err) => {
@@ -136,7 +97,7 @@ export class AgentSettingsService {
   async syncWithDiscovery(): Promise<void> {
     if (!this.db) return;
 
-    const discovery = getAgentDiscovery();
+    const discovery = this.agentDiscovery;
     if (!discovery) {
       log.verbose("AgentDiscovery not available - skipping sync");
       return;

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../main/serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { ContextFolderManager } from "../../main/contextFolderManager.js";
 
 export function createTestService(deps: {

@@ -1,8 +1,10 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "../serviceDefinition.js";
-import { getAdBlockManager, type AdBlockListConfig } from "../adblock/index.js";
+import type { AdBlockManager, AdBlockListConfig } from "../adblock/index.js";
 
-export function createAdblockService(): ServiceDefinition {
+export function createAdblockService(deps: {
+  adBlockManager: AdBlockManager;
+}): ServiceDefinition {
   return {
     name: "adblock",
     description: "Ad blocking configuration and stats",
@@ -26,7 +28,7 @@ export function createAdblockService(): ServiceDefinition {
       getPanelUrl: { args: z.tuple([z.number()]) },
     },
     handler: async (_ctx, method, args) => {
-      const manager = getAdBlockManager();
+      const manager = deps.adBlockManager;
 
       switch (method) {
         case "getConfig":

@@ -299,43 +299,15 @@ export function createAgentDiscovery(workspacePath: string): AgentDiscovery {
   };
 }
 
-// ===========================================================================
-// Singleton Management
-// ===========================================================================
-
-let discoveryInstance: AgentDiscovery | null = null;
-
-/**
- * Get the current discovery instance (null if not initialized).
- */
-export function getAgentDiscovery(): AgentDiscovery | null {
-  return discoveryInstance;
-}
-
 /**
  * Initialize agent discovery for a workspace.
  * Performs initial scan and starts file watching.
  */
 export async function initAgentDiscovery(workspacePath: string): Promise<AgentDiscovery> {
-  if (discoveryInstance) {
-    discoveryInstance.stopWatching();
-  }
-
-  discoveryInstance = createAgentDiscovery(workspacePath);
-  await discoveryInstance.scan();
-  discoveryInstance.startWatching();
+  const discovery = createAgentDiscovery(workspacePath);
+  await discovery.scan();
+  discovery.startWatching();
 
   log.verbose(`Initialized for workspace: ${workspacePath}`);
-  return discoveryInstance;
-}
-
-/**
- * Shutdown discovery (stop watching, clear instance).
- */
-export function shutdownAgentDiscovery(): void {
-  if (discoveryInstance) {
-    discoveryInstance.stopWatching();
-    discoveryInstance = null;
-    log.verbose("Shutdown complete");
-  }
+  return discovery;
 }

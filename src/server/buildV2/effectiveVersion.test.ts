@@ -6,7 +6,7 @@ vi.mock("child_process", () => ({
   execFileSync: vi.fn(),
 }));
 
-vi.mock("../../main/envPaths.js", () => ({
+vi.mock("../../shared/envPaths.js", () => ({
   getUserDataPath: vi.fn().mockReturnValue("/tmp/test-ev"),
 }));
 

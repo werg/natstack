@@ -10,24 +10,9 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 
-// Mock the paths module before importing DatabaseManager
-// These values are updated in beforeEach to point to the real temp directory
-const mockWorkspace = {
-  config: { id: "test-workspace" },
-  path: "",  // Will be set to testDir in beforeEach
-  cachePath: "",
-  gitReposPath: "",
-};
-
 let testDir: string;
 
-vi.mock("../paths.js", () => ({
-  getCentralConfigDirectory: () => testDir,
-  getActiveWorkspace: () => mockWorkspace,
-}));
-
-// Import after mocks are set up
-import { DatabaseManager, getDatabaseManager } from "./databaseManager.js";
+import { DatabaseManager } from "./databaseManager.js";
 
 describe("DatabaseManager", () => {
   let dbManager: DatabaseManager;
@@ -35,11 +20,7 @@ describe("DatabaseManager", () => {
   beforeEach(() => {
     // Create a unique temp directory for each test
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-db-test-"));
-    // Update mock to use the real temp directory
-    mockWorkspace.path = testDir;
-    mockWorkspace.cachePath = path.join(testDir, ".cache");
-    mockWorkspace.gitReposPath = path.join(testDir, ".git-repos");
-    dbManager = new DatabaseManager();
+    dbManager = new DatabaseManager(testDir);
   });
 
   afterEach(() => {
@@ -343,18 +324,5 @@ describe("DatabaseManager", () => {
       expect(() => dbManager.open("test-owner", "")).toThrow("Invalid database name");
     });
 
-    it("throws when no workspace is active", async () => {
-      // This test would require modifying the mock, so we skip implementation details
-      // The actual error is thrown in openDatabase when getActiveWorkspace returns null
-    });
-  });
-
-  describe("singleton getDatabaseManager", () => {
-    it("returns same instance", () => {
-      const instance1 = getDatabaseManager();
-      const instance2 = getDatabaseManager();
-
-      expect(instance1).toBe(instance2);
-    });
   });
 });

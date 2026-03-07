@@ -1,10 +1,16 @@
 import { app, Menu, MenuItemConstructorOptions, type WebContents } from "electron";
 import { eventService } from "./services/eventsService.js";
-import { getViewManager, isViewManagerInitialized } from "./viewManager.js";
+import type { ViewManager } from "./viewManager.js";
 import type { PanelManager } from "./panelManager.js";
 
 // Set during initialization — always non-null after startup
 let _menuPanelManager: PanelManager | null = null;
+let _menuViewManager: ViewManager | null = null;
+
+/** Set the panel manager for menu operations. Called from index.ts. */
+export function setMenuViewManager(vm: ViewManager): void {
+  _menuViewManager = vm;
+}
 
 /** Set the panel manager for menu operations. Called from index.ts. */
 export function setMenuPanelManager(pm: PanelManager): void {
@@ -107,8 +113,8 @@ export function buildCommonMenuItems(
     {
       label: "Refresh Panel Display",
       click: () => {
-        if (isViewManagerInitialized()) {
-          const vm = getViewManager();
+        if (_menuViewManager) {
+          const vm = _menuViewManager!;
           vm.refreshVisiblePanel();
           vm.forceRepaintVisiblePanel();
         }
@@ -309,8 +315,8 @@ export function setupMenu(
         {
           label: "Refresh Panel Display",
           click: () => {
-            if (isViewManagerInitialized()) {
-              const vm = getViewManager();
+            if (_menuViewManager) {
+              const vm = _menuViewManager!;
               vm.refreshVisiblePanel();
               vm.forceRepaintVisiblePanel();
             }

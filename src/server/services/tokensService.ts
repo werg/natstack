@@ -1,7 +1,7 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../main/serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { TokenManager } from "../../main/tokenManager.js";
-import type { CallerKind } from "../../main/serviceDispatcher.js";
+import type { CallerKind } from "../../shared/serviceDispatcher.js";
 
 export function createTokensService(deps: {
   tokenManager: TokenManager;

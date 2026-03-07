@@ -1,4 +1,4 @@
-import { getViewManager, isViewManagerInitialized } from "./viewManager.js";
+import type { ViewManager } from "./viewManager.js";
 import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("MemoryMonitor");
@@ -7,6 +7,11 @@ const DEFAULT_LOG_INTERVAL_MS = 60_000;
 
 let monitorTimer: ReturnType<typeof setInterval> | null = null;
 let monitorStarted = false;
+let _viewManager: ViewManager | null = null;
+
+export function setMemoryMonitorViewManager(vm: ViewManager | null): void {
+  _viewManager = vm;
+}
 
 type MemorySnapshotOptions = {
   reason?: string;
@@ -19,19 +24,14 @@ function parsePositiveInt(value: string | undefined): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-function formatMb(kb: number | null | undefined): string {
-  if (!kb || !Number.isFinite(kb)) return "n/a";
-  return `${(kb / 1024).toFixed(1)} MB`;
-}
-
-function truncate(value: string, max = 96): string {
+function truncate(value: string, max = 60): string {
   if (value.length <= max) return value;
   return `${value.slice(0, max - 1)}…`;
 }
 
 export async function logMemorySnapshot(options: MemorySnapshotOptions = {}): Promise<void> {
-  if (!isViewManagerInitialized()) return;
-  const vm = getViewManager();
+  if (!_viewManager) return;
+  const vm = _viewManager;
   const viewIds = vm.getViewIds();
   if (viewIds.length === 0) return;
 
@@ -48,52 +48,39 @@ export async function logMemorySnapshot(options: MemorySnapshotOptions = {}): Pr
     viewIds.map(async (id) => {
       const contents = vm.getWebContents(id);
       if (!contents) return null;
+
       const pid = contents.getOSProcessId();
-      const viewInfo = vm.getViewInfo(id);
+      const metric = metricsByPid.get(pid);
+      if (!metric) return null;
+
+      const memKb = metric.memory.workingSetSize;
+      const memMb = memKb / 1024;
+
+      if (options.thresholdMb && memMb < options.thresholdMb) return null;
+
       return {
-        id,
-        pid,
-        type: viewInfo?.type ?? "unknown",
-        visible: vm.isViewVisible(id),
-        url: contents.getURL(),
-        metric: metricsByPid.get(pid),
+        id: truncate(id, 40),
+        mb: Math.round(memMb * 10) / 10,
+        url: truncate(contents.getURL() || "(empty)", 80),
       };
-    })
+    }),
   );
 
-  const filtered = entries.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
-  if (filtered.length === 0) return;
+  const nonNull = entries.filter(Boolean);
+  if (nonNull.length === 0) return;
 
-  const thresholdMb = options.thresholdMb ?? 0;
-  if (thresholdMb > 0) {
-    const anyOver = filtered.some((entry) => {
-      const workingSet = entry.metric?.memory.workingSetSize ?? 0;
-      return workingSet / 1024 >= thresholdMb;
-    });
-    if (!anyOver) return;
-  }
+  const sortedByMem = nonNull.sort((a, b) => (b?.mb ?? 0) - (a?.mb ?? 0));
 
-  const reason = options.reason ?? "snapshot";
-  const timestamp = new Date().toISOString();
-  log.verbose(`[Memory] Snapshot (${reason}) @ ${timestamp}`);
+  const mainMetric = metrics.find((m) => m.type === "Browser");
+  const mainMb = mainMetric ? Math.round(mainMetric.memory.workingSetSize / 1024 * 10) / 10 : "?";
 
-  const sorted = filtered.slice().sort((a, b) => {
-    const aWorkingSet = a.metric?.memory.workingSetSize ?? 0;
-    const bWorkingSet = b.metric?.memory.workingSetSize ?? 0;
-    return bWorkingSet - aWorkingSet;
-  });
-
-  for (const entry of sorted) {
-    const workingSet = formatMb(entry.metric?.memory.workingSetSize ?? null);
-    const peakWorkingSet = formatMb(entry.metric?.memory.peakWorkingSetSize ?? null);
-    const privateBytes = formatMb(entry.metric?.memory.privateBytes ?? null);
-    const url = entry.url ? truncate(entry.url) : "about:blank";
-    console.log(
-      `[Memory] view=${entry.id} type=${entry.type} visible=${entry.visible} pid=${entry.pid}` +
-        ` workingSet=${workingSet} peakWorkingSet=${peakWorkingSet} privateBytes=${privateBytes}` +
-        ` url=${url}`
-    );
-  }
+  const reason = options.reason ? `[${options.reason}]` : "";
+  const lines = sortedByMem.map(
+    (e) => `  ${e!.mb.toString().padStart(7)}MB  ${e!.id.padEnd(42)} ${e!.url}`,
+  );
+  log.info(
+    `Memory snapshot ${reason}\n  Main: ${mainMb}MB\n${lines.join("\n")}`,
+  );
 }
 
 export function startMemoryMonitor(): void {

@@ -2,14 +2,13 @@ import { Git } from "node-git-server";
 import { getUserDataPath } from "./envPaths.js";
 import * as path from "path";
 import * as fs from "fs";
-import * as fsPromises from "fs/promises";
 import * as http from "http";
 import { execFile, spawn, spawnSync } from "child_process";
 import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("GitServer");
-import type { WorkspaceNode, WorkspaceTree, BranchInfo, CommitInfo } from "../shared/types.js";
-import { GitAuthManager, getTokenManager } from "./tokenManager.js";
+import type { WorkspaceTree, BranchInfo, CommitInfo } from "../shared/types.js";
+import { GitAuthManager, type TokenManager } from "./tokenManager.js";
 import * as net from "net";
 import type { GitWatcher } from "./workspace/gitWatcher.js";
 import type { GitHubProxyConfig } from "./workspace/types.js";
@@ -22,6 +21,7 @@ import {
   errorTypeToHttpStatus,
   isGitRepo,
 } from "./githubCloner.js";
+import { WorkspaceTreeManager } from "./git/workspaceTree.js";
 
 const DEFAULT_GIT_SERVER_PORT = 63524;
 
@@ -60,12 +60,8 @@ export class GitServer {
   private actualPort: number | null = null;
   private initPatterns: string[];
 
-  // Workspace tree discovery
-  private cachedTree: WorkspaceTree | null = null;
-  private treeCacheTime: number = 0;
-  private readonly CACHE_TTL_MS = 5000; // 5 second cache
-  // Track discovered repo paths for validation (normalized with forward slashes)
-  private discoveredRepoPaths: Set<string> = new Set();
+  // Workspace tree discovery (delegated to WorkspaceTreeManager)
+  private treeManager: WorkspaceTreeManager | null = null;
 
   // Push event listeners
   private pushListeners: Set<(event: GitPushEvent) => void> = new Set();
@@ -77,15 +73,12 @@ export class GitServer {
     depth: 1,
   };
 
-  constructor(config?: GitServerConfig) {
+  constructor(tokenManager: TokenManager, config?: GitServerConfig) {
     this.configuredPort = config?.port ?? DEFAULT_GIT_SERVER_PORT;
     this.configuredReposPath = config?.reposPath ?? null;
-    // Note: initPatterns is for auto-init of NEW directories as git repos.
-    // scanDirectory() is already recursive and discovers repos at any depth.
     this.initPatterns = config?.initPatterns ?? ["panels/*", "packages/*"];
-    this.authManager = new GitAuthManager(getTokenManager());
+    this.authManager = new GitAuthManager(tokenManager);
 
-    // Apply GitHub proxy config
     if (config?.github) {
       this.githubConfig = {
         enabled: config.github.enabled ?? true,
@@ -93,6 +86,13 @@ export class GitServer {
         depth: config.github.depth ?? 1,
       };
     }
+  }
+
+  private getTreeManager(): WorkspaceTreeManager {
+    if (!this.treeManager) {
+      this.treeManager = new WorkspaceTreeManager(this.ensureReposPath());
+    }
+    return this.treeManager;
   }
 
   private ensureReposPath(): string {
@@ -458,75 +458,33 @@ export class GitServer {
       this.invalidateTreeCache();
     });
     watcher.on("commitAdded", () => {
-      // Commits might change package.json, so invalidate cache
       console.log("[GitServer] Invalidating tree cache (commit added)");
       this.invalidateTreeCache();
     });
   }
 
   // ===========================================================================
-  // Workspace Tree Discovery
+  // Workspace Tree Discovery (delegated to WorkspaceTreeManager)
   // ===========================================================================
 
-  /**
-   * Normalize a path to use forward slashes.
-   */
-  private normalizePath(repoPath: string): string {
-    return repoPath.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
-  }
-
-  /**
-   * Get the workspace tree of all git repos.
-   * Caches result for performance.
-   */
   async getWorkspaceTree(): Promise<WorkspaceTree> {
-    const now = Date.now();
-    if (this.cachedTree && now - this.treeCacheTime < this.CACHE_TTL_MS) {
-      return this.cachedTree;
-    }
-
-    this.discoveredRepoPaths.clear();
-
-    const reposPath = this.ensureReposPath();
-    const children = await this.scanDirectory(reposPath, "");
-
-    this.cachedTree = { children };
-    this.treeCacheTime = now;
-    return this.cachedTree;
+    return this.getTreeManager().getWorkspaceTree();
   }
 
-  /**
-   * Invalidate the cached tree (call after repo operations).
-   * Also clears discovered paths to ensure consistency.
-   */
   invalidateTreeCache(): void {
-    this.cachedTree = null;
-    this.discoveredRepoPaths.clear();
+    this.treeManager?.invalidateTreeCache();
   }
 
-  /**
-   * Check if a path is a valid discovered repo.
-   * Validates against the cached tree to prevent directory traversal.
-   */
   private isValidRepoPath(repoPath: string): boolean {
-    const normalized = this.normalizePath(repoPath);
-    if (!normalized) {
-      return false;
-    }
-    // Check for traversal attempts
-    if (normalized.includes("..") || path.isAbsolute(repoPath)) {
-      return false;
-    }
-    // Must be in the discovered set
-    return this.discoveredRepoPaths.has(normalized);
+    return this.getTreeManager().isValidRepoPath(repoPath);
   }
 
-  /**
-   * Convert a relative repo path to absolute path.
-   */
   private toAbsolutePath(repoPath: string): string {
-    const normalized = this.normalizePath(repoPath);
-    return path.join(this.ensureReposPath(), normalized);
+    return this.getTreeManager().toAbsolutePath(repoPath);
+  }
+
+  private normalizePath(p: string): string {
+    return this.getTreeManager().normalizePath(p);
   }
 
   // ===========================================================================
@@ -557,13 +515,13 @@ export class GitServer {
     const targetPath = path.join(this.ensureReposPath(), relPath);
 
     // Fast path: already cloned and discovered
-    if (this.discoveredRepoPaths.has(relPath)) {
+    if (this.getTreeManager().discoveredRepoPaths.has(relPath)) {
       return true;
     }
 
     // Check if it exists on disk but wasn't discovered yet
     if (isGitRepo(targetPath)) {
-      this.discoveredRepoPaths.add(relPath);
+      this.getTreeManager().discoveredRepoPaths.add(relPath);
       return true;
     }
 
@@ -586,181 +544,15 @@ export class GitServer {
     }
 
     // Add to discovered paths so validation passes
-    this.discoveredRepoPaths.add(relPath);
+    this.getTreeManager().discoveredRepoPaths.add(relPath);
 
     // Invalidate tree cache so the new repo appears in workspace tree
     this.invalidateTreeCache();
     // Re-add since invalidate clears the set
-    this.discoveredRepoPaths.add(relPath);
+    this.getTreeManager().discoveredRepoPaths.add(relPath);
 
     log.verbose(` GitHub repo ready: ${relPath}`);
     return true;
-  }
-
-  /**
-   * Check if a directory is a git repo (async).
-   */
-  private async isGitRepoAsync(absolutePath: string): Promise<boolean> {
-    try {
-      await fsPromises.access(path.join(absolutePath, ".git"));
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Recursively scan a directory, stopping at git repo boundaries.
-   * Uses async fs operations to avoid blocking main process.
-   */
-  private async scanDirectory(absolutePath: string, relativePath: string): Promise<WorkspaceNode[]> {
-    const nodes: WorkspaceNode[] = [];
-
-    try {
-      const entries = await fsPromises.readdir(absolutePath, { withFileTypes: true });
-
-      for (const entry of entries) {
-        // Skip hidden directories and node_modules
-        if (!entry.isDirectory() || entry.name.startsWith(".") || entry.name === "node_modules") {
-          continue;
-        }
-
-        const childAbsPath = path.join(absolutePath, entry.name);
-        // Always use forward slashes for consistency
-        const childRelPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
-
-        // Check if this is a git repo
-        const isGitRepo = await this.isGitRepoAsync(childAbsPath);
-
-        const node: WorkspaceNode = {
-          name: entry.name,
-          path: childRelPath,
-          isGitRepo,
-          children: [],
-        };
-
-        if (isGitRepo) {
-          // Track discovered repo (already uses forward slashes)
-          this.discoveredRepoPaths.add(childRelPath);
-          // Extract metadata (launchable info, package info, skill info)
-          const metadata = await this.extractMetadata(childAbsPath);
-          node.launchable = metadata.launchable;
-          node.packageInfo = metadata.packageInfo;
-          node.skillInfo = metadata.skillInfo;
-          // Git repos are leaves - don't recurse into them
-        } else {
-          // Recurse into non-git directories
-          node.children = await this.scanDirectory(childAbsPath, childRelPath);
-          // Skip empty non-repo folders
-          if (node.children.length === 0) continue;
-        }
-
-        nodes.push(node);
-      }
-    } catch (error) {
-      console.warn(`[GitServer] Failed to scan ${absolutePath}:`, error);
-    }
-
-    // Sort: folders first, then repos; alphabetically within each
-    return nodes.sort((a, b) => {
-      const aIsFolder = !a.isGitRepo && a.children.length > 0;
-      const bIsFolder = !b.isGitRepo && b.children.length > 0;
-      if (aIsFolder !== bIsFolder) return aIsFolder ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-  }
-
-  /**
-   * Parse YAML frontmatter from a markdown file.
-   * Returns the parsed frontmatter object or undefined if not present/invalid.
-   */
-  private parseYamlFrontmatter(content: string): Record<string, string> | undefined {
-    if (!content.startsWith("---\n")) {
-      return undefined;
-    }
-    const endIndex = content.indexOf("\n---", 4);
-    if (endIndex === -1) {
-      return undefined;
-    }
-    const yamlContent = content.slice(4, endIndex);
-
-    // Simple YAML parser for key: value pairs
-    const result: Record<string, string> = {};
-    for (const line of yamlContent.split("\n")) {
-      const colonIndex = line.indexOf(":");
-      if (colonIndex === -1) continue;
-      const key = line.slice(0, colonIndex).trim();
-      let value = line.slice(colonIndex + 1).trim();
-      // Remove quotes if present
-      if ((value.startsWith('"') && value.endsWith('"')) ||
-          (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1);
-      }
-      if (key && value) {
-        result[key] = value;
-      }
-    }
-    return Object.keys(result).length > 0 ? result : undefined;
-  }
-
-  /**
-   * Extract metadata from a directory's package.json and SKILL.md.
-   * Returns launchable info (natstack config), package info (npm package), and skill info.
-   * Intentionally permissive - returns info even with missing fields so the
-   * UI can show the entry and the build system can report proper errors later.
-   */
-  private async extractMetadata(absolutePath: string): Promise<{
-    launchable?: WorkspaceNode["launchable"];
-    packageInfo?: WorkspaceNode["packageInfo"];
-    skillInfo?: WorkspaceNode["skillInfo"];
-  }> {
-    const result: {
-      launchable?: WorkspaceNode["launchable"];
-      packageInfo?: WorkspaceNode["packageInfo"];
-      skillInfo?: WorkspaceNode["skillInfo"];
-    } = {};
-
-    // Extract package.json metadata
-    const packageJsonPath = path.join(absolutePath, "package.json");
-    try {
-      const content = await fsPromises.readFile(packageJsonPath, "utf-8");
-      const packageJson = JSON.parse(content);
-
-      // Extract package info (if it has a name, it's a publishable package)
-      if (packageJson.name) {
-        result.packageInfo = {
-          name: packageJson.name as string,
-          version: packageJson.version as string | undefined,
-        };
-      }
-
-      // Extract natstack launchable info
-      if (packageJson.natstack) {
-        const ns = packageJson.natstack;
-        result.launchable = {
-          title: ns.title || packageJson.name || path.basename(absolutePath),
-        };
-      }
-    } catch {
-      // No package.json or invalid JSON
-    }
-
-    // Extract SKILL.md metadata (skill info) - only repos with SKILL.md are skills
-    const skillMdPath = path.join(absolutePath, "SKILL.md");
-    try {
-      const content = await fsPromises.readFile(skillMdPath, "utf-8");
-      const frontmatter = this.parseYamlFrontmatter(content);
-      if (frontmatter && frontmatter["name"] && frontmatter["description"]) {
-        result.skillInfo = {
-          name: frontmatter["name"],
-          description: frontmatter["description"],
-        };
-      }
-    } catch {
-      // No SKILL.md - not a skill (intentionally no fallback)
-    }
-
-    return result;
   }
 
   /**
@@ -910,8 +702,8 @@ export class GitServer {
     // Already cloned?
     if (isGitRepo(targetPath)) {
       // Ensure it's in discovered paths
-      if (!this.discoveredRepoPaths.has(relPath)) {
-        this.discoveredRepoPaths.add(relPath);
+      if (!this.getTreeManager().discoveredRepoPaths.has(relPath)) {
+        this.getTreeManager().discoveredRepoPaths.add(relPath);
       }
       return;
     }
@@ -930,10 +722,10 @@ export class GitServer {
     }
 
     // Add to discovered paths and invalidate cache
-    this.discoveredRepoPaths.add(relPath);
+    this.getTreeManager().discoveredRepoPaths.add(relPath);
     this.invalidateTreeCache();
     // Re-add since invalidate clears the set
-    this.discoveredRepoPaths.add(relPath);
+    this.getTreeManager().discoveredRepoPaths.add(relPath);
 
     log.verbose(` GitHub repo ready for ref resolution: ${relPath}`);
   }

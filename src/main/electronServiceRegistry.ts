@@ -11,6 +11,9 @@ import type { FsService } from "./fsService.js";
 import type { EventService } from "./services/eventsService.js";
 import type { ServerClient } from "./serverClient.js";
 import type { ViewManager } from "./viewManager.js";
+import type { CentralDataManager } from "./centralData.js";
+import type { AdBlockManager } from "./adblock/index.js";
+import type { Workspace } from "./workspace/types.js";
 import { createEventsServiceDefinition } from "../server/services/eventsServiceDef.js";
 
 import { createAppService } from "./services/appService.js";
@@ -35,12 +38,16 @@ export function registerElectronServices(
     eventService: EventService;
     serverClient: ServerClient | null;
     getViewManager: () => ViewManager;
+    centralData: CentralDataManager;
+    adBlockManager: AdBlockManager;
+    workspace: Workspace | null;
   },
 ): void {
   // Shell-only services
   dispatcher.registerService(createAppService({
     panelManager: deps.panelManager,
     serverClient: deps.serverClient,
+    getViewManager: deps.getViewManager,
   }));
   dispatcher.registerService(createPanelShellService({
     panelManager: deps.panelManager,
@@ -54,18 +61,19 @@ export function registerElectronServices(
     getViewManager: deps.getViewManager,
     serverClient: deps.serverClient,
   }));
-  dispatcher.registerService(createWorkspaceService());
-  dispatcher.registerService(createCentralService());
+  dispatcher.registerService(createWorkspaceService({ centralData: deps.centralData }));
+  dispatcher.registerService(createCentralService({ centralData: deps.centralData }));
   dispatcher.registerService(createSettingsService({
     serverClient: deps.serverClient,
   }));
-  dispatcher.registerService(createAdblockService());
+  dispatcher.registerService(createAdblockService({ adBlockManager: deps.adBlockManager }));
 
   // Locally-hosted services (depend on main-process objects)
   dispatcher.registerService(createBridgeService({
     panelManager: deps.panelManager,
     cdpServer: deps.cdpServer,
     getViewManager: deps.getViewManager,
+    workspace: deps.workspace,
   }));
   dispatcher.registerService(createBrowserService({
     cdpServer: deps.cdpServer,

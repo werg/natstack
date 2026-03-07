@@ -1,30 +1,41 @@
 /**
  * Shared service orchestration for Electron and headless entry points.
  *
- * `startCoreServices` runs the service init sequence in dependency order
- * and returns a handle for deferred AI service registration and shutdown.
+ * Uses ServiceContainer for topological startup/shutdown ordering.
+ * `startCoreServices` registers all core services, starts them in
+ * dependency order, and returns a handle for accessing instances.
  */
 
-import { createDevLogger } from "./devLog.js";
-import { createGitWatcher, type GitWatcher } from "./workspace/gitWatcher.js";
-import { getPubSubServer } from "./pubsubServer.js";
-import { initAgentDiscovery, shutdownAgentDiscovery } from "./agentDiscovery.js";
-import { initAgentSettingsService, shutdownAgentSettingsService } from "./agentSettings.js";
-import { initAgentHost, shutdownAgentHost, setAgentHostAiHandler } from "./agentHost.js";
-import { getTokenManager } from "./tokenManager.js";
+import { ServiceContainer } from "../shared/serviceContainer.js";
+import {
+  ManagedTokenService,
+  ManagedDatabaseService,
+  ManagedAgentDiscoveryService,
+  ManagedAgentSettingsServiceWrapper,
+  ManagedGitServerService,
+  ManagedGitWatcherService,
+  ManagedPubSubService,
+  ManagedAgentHostService,
+  ManagedAiService,
+} from "./managedServices.js";
+import type { TokenManager } from "./tokenManager.js";
+import type { DatabaseManager } from "./db/databaseManager.js";
 import type { Workspace } from "./workspace/types.js";
 import type { GitServer } from "./gitServer.js";
 import type { AIHandler } from "./ai/aiHandler.js";
 import type { ContextFolderManager } from "./contextFolderManager.js";
-
-const log = createDevLogger("CoreServices");
+import type { AgentDiscovery } from "./agentDiscovery.js";
+import type { AgentSettingsService } from "./agentSettings.js";
+import type { GitWatcher } from "./workspace/gitWatcher.js";
 
 export interface CoreServicesHandle {
   aiHandler: AIHandler;
   gitServer: GitServer;
   gitWatcher: GitWatcher;
   pubsubPort: number;
-  /** Stop core services only (not rpcServer, cdpServer, or global singletons). */
+  agentDiscovery: AgentDiscovery;
+  agentSettingsService: AgentSettingsService;
+  /** Stop core services in reverse dependency order. */
   shutdown(): Promise<void>;
 }
 
@@ -33,107 +44,46 @@ export async function startCoreServices({
   gitServer,
   getBuild,
   contextFolderManager,
+  tokenManager,
+  databaseManager,
 }: {
   workspace: Workspace;
   gitServer: GitServer;
-  /** V2 build service — getBuild(unitPath) returns build result */
   getBuild: (unitPath: string) => Promise<unknown>;
   contextFolderManager: ContextFolderManager;
+  tokenManager: TokenManager;
+  databaseManager: DatabaseManager;
 }): Promise<CoreServicesHandle> {
-  const cleanups: (() => void | Promise<void>)[] = [];
+  const container = new ServiceContainer();
 
-  try {
-    // Step 1: Agent discovery + settings
-    await initAgentDiscovery(workspace.path);
-    cleanups.push(() => shutdownAgentDiscovery());
-    log.info("[AgentDiscovery] Initialized");
+  // Foundation (no deps — pre-created instances wrapped for container participation)
+  container.register(new ManagedTokenService(tokenManager));
+  container.register(new ManagedDatabaseService(databaseManager));
+  container.register(new ManagedAgentDiscoveryService(workspace.path));
+  container.register(new ManagedGitServerService(gitServer));
 
-    await initAgentSettingsService();
-    cleanups.push(() => shutdownAgentSettingsService());
-    log.info("[AgentSettingsService] Initialized");
+  // Infrastructure (depend on foundation)
+  container.register(new ManagedAgentSettingsServiceWrapper(workspace.path));
+  container.register(new ManagedGitWatcherService(workspace));
+  container.register(new ManagedPubSubService());
 
-    // Step 2: GitServer
-    await gitServer.start();
-    cleanups.push(() => gitServer.stop());
-    log.info(`[Git] Server started on port ${gitServer.getPort()}`);
+  // Core services (depend on infrastructure)
+  container.register(new ManagedAgentHostService({
+    workspace,
+    contextFolderManager,
+    getBuild,
+  }));
+  container.register(new ManagedAiService(workspace.path));
 
-    // Step 3: GitWatcher + subscriptions
-    const gitWatcher = createGitWatcher(workspace);
-    cleanups.push(() => gitWatcher.close());
-    log.info("[GitWatcher] Started watching workspace for git changes");
-    gitServer.subscribeToGitWatcher(gitWatcher);
+  await container.startAll();
 
-    // Step 4: PubSub
-    const pubsubServer = getPubSubServer();
-    const pubsubPort = await pubsubServer.start();
-    cleanups.push(() => pubsubServer.stop());
-    log.info(`[PubSub] Server started on port ${pubsubPort}`);
-
-    // Step 5: AgentHost (uses "server" tokens)
-    const agentHost = initAgentHost({
-      workspaceRoot: workspace.path,
-      pubsubUrl: `ws://127.0.0.1:${pubsubPort}`,
-      messageStore: pubsubServer.getMessageStore(),
-      createToken: (instanceId) =>
-        getTokenManager().createToken(instanceId, "server"),
-      revokeToken: (instanceId) => getTokenManager().revokeToken(instanceId),
-      getBuild: getBuild as (unitPath: string) => Promise<{ bundlePath: string; dir: string; metadata: { kind: string; name: string } }>,
-      contextFolderManager,
-    });
-    await agentHost.initialize();
-    cleanups.push(() => shutdownAgentHost());
-    pubsubServer.setAgentHost(agentHost);
-    pubsubServer.setContextFolderManager(contextFolderManager);
-    log.info("[AgentHost] Initialized");
-
-    // Step 6: AI handler
-    const { AIHandler: AIHandlerClass } = await import("./ai/aiHandler.js");
-    const aiHandler = new AIHandlerClass();
-    await aiHandler.initialize();
-    setAgentHostAiHandler(aiHandler);
-
-    return {
-      aiHandler,
-      gitServer,
-      gitWatcher,
-      pubsubPort,
-
-      async shutdown() {
-        shutdownAgentSettingsService();
-        shutdownAgentDiscovery();
-        shutdownAgentHost();
-
-        await Promise.all([
-          gitServer
-            .stop()
-            .then(() => log.info("[Git] Server stopped"))
-            .catch((e) =>
-              console.error("[CoreServices] Git stop error:", e)
-            ),
-          gitWatcher
-            .close()
-            .then(() => log.info("[GitWatcher] Stopped"))
-            .catch((e) =>
-              console.error("[CoreServices] GitWatcher stop error:", e)
-            ),
-          pubsubServer
-            .stop()
-            .then(() => log.info("[PubSub] Server stopped"))
-            .catch((e) =>
-              console.error("[CoreServices] PubSub stop error:", e)
-            ),
-        ]);
-      },
-    };
-  } catch (error) {
-    log.info("[CoreServices] Partial init failure, cleaning up started resources...");
-    for (const fn of cleanups.reverse()) {
-      try {
-        await fn();
-      } catch (e) {
-        console.error("[CoreServices] Cleanup error:", e);
-      }
-    }
-    throw error;
-  }
+  return {
+    aiHandler: container.get<AIHandler>("ai"),
+    gitServer: container.get<GitServer>("gitServer"),
+    gitWatcher: container.get<GitWatcher>("gitWatcher"),
+    pubsubPort: container.get<{ port: number }>("pubsub").port,
+    agentDiscovery: container.get<AgentDiscovery>("agentDiscovery"),
+    agentSettingsService: container.get<AgentSettingsService>("agentSettings"),
+    shutdown: () => container.stopAll(),
+  };
 }

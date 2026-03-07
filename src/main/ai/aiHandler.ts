@@ -23,8 +23,7 @@ import { createDevLogger } from "../devLog.js";
 import { validateToolDefinitions } from "../../shared/validation.js";
 import { MAX_STREAM_DURATION_MS } from "../../shared/constants.js";
 import {
-  getClaudeCodeConversationManager,
-  type ClaudeCodeConversationManager,
+  ClaudeCodeConversationManager,
 } from "./claudeCodeConversationManager.js";
 import { type ToolExecutionResult } from "./claudeCodeToolProxy.js";
 
@@ -236,10 +235,12 @@ export class AIHandler {
   private streamManager = new AIStreamManager();
   private logger = createDevLogger("AIHandler");
   private modelRoleResolver: import("./modelRoles.js").ModelRoleResolver | null = null;
-  private ccConversationManager: ClaudeCodeConversationManager;
+  readonly ccConversationManager: ClaudeCodeConversationManager;
+  private workspacePath: string | undefined;
 
-  constructor() {
-    this.ccConversationManager = getClaudeCodeConversationManager();
+  constructor(workspacePath?: string, ccConversationManager?: ClaudeCodeConversationManager) {
+    this.workspacePath = workspacePath;
+    this.ccConversationManager = ccConversationManager ?? new ClaudeCodeConversationManager(workspacePath);
   }
 
   registerProvider(config: AIProviderConfig): void {
@@ -284,7 +285,7 @@ export class AIHandler {
     let registeredCount = 0;
     const skippedProviders: string[] = [];
     for (const providerId of getSupportedProviders()) {
-      const providerRegistration = createProviderFromConfig(providerId);
+      const providerRegistration = createProviderFromConfig(providerId, this.workspacePath);
       if (providerRegistration) {
         this.registerProvider(providerRegistration);
         registeredCount++;

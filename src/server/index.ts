@@ -157,19 +157,18 @@ if (!ipcChannel) {
 // =============================================================================
 
 async function main() {
-  const { setUserDataPath, getUserDataPath } = await import("../main/envPaths.js");
+  const { setUserDataPath, getUserDataPath } = await import("../shared/envPaths.js");
   const { loadCentralEnv, discoverWorkspace, createWorkspace } = await import("../main/workspace/loader.js");
-  const { setActiveWorkspace } = await import("../main/paths.js");
   const { GitServer } = await import("../main/gitServer.js");
-  const { getTokenManager } = await import("../main/tokenManager.js");
+  const { TokenManager } = await import("../main/tokenManager.js");
   const { z } = await import("zod");
-  const { ServiceDispatcher } = await import("../main/serviceDispatcher.js");
+  const { ServiceDispatcher } = await import("../shared/serviceDispatcher.js");
   const { eventService } = await import("../main/services/eventsService.js");
   const { RpcServer } = await import("./rpcServer.js");
   const { startCoreServices } = await import("../main/coreServices.js");
   const { initBuildSystemV2 } = await import("./buildV2/index.js");
   const { registerServerServices } = await import("./serverServiceRegistry.js");
-  const { getDatabaseManager } = await import("../main/db/databaseManager.js");
+  const { DatabaseManager } = await import("../main/db/databaseManager.js");
 
   // In IPC mode, dataDir comes from NATSTACK_USER_DATA_PATH env var
   const dataDir = args.dataDir ?? process.env["NATSTACK_USER_DATA_PATH"];
@@ -193,14 +192,15 @@ async function main() {
     process.exit(1);
   }
   const workspace = createWorkspace(workspacePath);
-  setActiveWorkspace(workspace);
 
   // ===========================================================================
   // Service initialization
   // ===========================================================================
 
   const githubConfig = workspace.config.git?.github;
-  const gitServer = new GitServer({
+  const tokenManager = new TokenManager();
+
+  const gitServer = new GitServer(tokenManager, {
     port: workspace.config.git?.port,
     reposPath: workspace.gitReposPath,
     github: {
@@ -222,11 +222,15 @@ async function main() {
     getWorkspaceTree: () => gitServer.getWorkspaceTree(),
   });
 
+  const databaseManager = new DatabaseManager(workspacePath);
+
   const handle = await startCoreServices({
     workspace,
     gitServer,
     getBuild: (unitPath) => buildSystem.getBuild(unitPath),
     contextFolderManager,
+    tokenManager,
+    databaseManager,
   });
 
   // ===========================================================================
@@ -248,10 +252,12 @@ async function main() {
   registerServerServices(dispatcher, {
     buildSystem,
     gitServer: handle.gitServer,
-    tokenManager: getTokenManager(),
+    tokenManager: tokenManager,
     contextFolderManager,
     eventService,
-    databaseManager: getDatabaseManager(),
+    databaseManager,
+    agentSettingsService: handle.agentSettingsService,
+    agentDiscovery: handle.agentDiscovery,
     workspacePath,
     panelTestSetupPath,
   });
@@ -260,13 +266,13 @@ async function main() {
   // A fixed token (e.g. in ~/.config/natstack/.env) avoids having to copy a new
   // token every time the server restarts.
   const adminToken = process.env["NATSTACK_ADMIN_TOKEN"] || randomBytes(32).toString("hex");
-  getTokenManager().setAdminToken(adminToken);
+  tokenManager.setAdminToken(adminToken);
 
   let fsServiceRef: { closeHandlesForPanel(panelId: string): void } | null = null;
   let panelManagerRef: { closePanel(panelId: string): void } | null = null;
 
   const rpcServer = new RpcServer({
-    tokenManager: getTokenManager(),
+    tokenManager: tokenManager,
     dispatcher,
     onClientDisconnect: (callerId, callerKind) => {
       const handleKey = callerKind === "panel" ? callerId : `server:${callerId}`;
@@ -315,8 +321,8 @@ async function main() {
     }
 
     const headlessPanelManager = new HeadlessPanelManager({
-      createToken: (callerId, kind) => getTokenManager().createToken(callerId, kind),
-      revokeToken: (callerId) => getTokenManager().revokeToken(callerId),
+      createToken: (callerId, kind) => tokenManager.createToken(callerId, kind),
+      revokeToken: (callerId) => tokenManager.revokeToken(callerId),
       panelHttpServer,
       rpcPort,
       gitBaseUrl: `http://127.0.0.1:${handle.gitServer.getPort()}`,
@@ -329,7 +335,7 @@ async function main() {
     panelManagerRef = headlessPanelManager;
 
     // Register bridge service for headless panel lifecycle
-    const headlessBridgeDeps = { pm: headlessPanelManager, gitServer };
+    const headlessBridgeDeps = { pm: headlessPanelManager, gitServer, agentDiscovery: handle.agentDiscovery };
     dispatcher.registerService({
       name: "bridge",
       description: "Panel lifecycle (headless mode)",
@@ -422,7 +428,7 @@ async function main() {
       // CDP bridge for browser extension automation
       const { CdpBridge } = await import("./cdpBridge.js");
       const cdpBridge = new CdpBridge({
-        tokenManager: getTokenManager(),
+        tokenManager: tokenManager,
         adminToken,
         canAccessBrowser: (requestingPanelId, browserId) => {
           return headlessPanelManager.canAccessPanel(requestingPanelId, browserId);

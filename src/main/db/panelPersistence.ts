@@ -15,7 +15,7 @@
 import Database from "better-sqlite3";
 import * as path from "path";
 import * as fs from "fs";
-import { getActiveWorkspace } from "../paths.js";
+import type { Workspace } from "../workspace/types.js";
 import { createDevLogger } from "../devLog.js";
 
 const log = createDevLogger("PanelPersistence");
@@ -73,10 +73,14 @@ let instance: PanelPersistence | null = null;
 
 /**
  * Get the singleton PanelPersistence instance.
+ * Must be called with workspace on first invocation.
  */
-export function getPanelPersistence(): PanelPersistence {
+export function getPanelPersistence(workspace?: Workspace): PanelPersistence {
   if (!instance) {
-    instance = new PanelPersistence();
+    if (!workspace) {
+      throw new Error("PanelPersistence requires workspace on first initialization");
+    }
+    instance = new PanelPersistence(workspace);
   }
   return instance;
 }
@@ -100,15 +104,17 @@ export function resetPanelPersistence(): void {
 export class PanelPersistence {
   private db: Database.Database | null = null;
   private workspaceId: string | null = null;
+  private workspace: Workspace;
+
+  constructor(workspace: Workspace) {
+    this.workspace = workspace;
+  }
 
   /**
    * Ensure the database is open and initialized.
    */
   private ensureOpen(): Database.Database {
-    const workspace = getActiveWorkspace();
-    if (!workspace) {
-      throw new Error("No active workspace");
-    }
+    const workspace = this.workspace;
 
     // Check if workspace changed
     if (this.workspaceId !== workspace.config.id) {
@@ -141,11 +147,7 @@ export class PanelPersistence {
    * Get the current workspace ID.
    */
   getWorkspaceId(): string {
-    const workspace = getActiveWorkspace();
-    if (!workspace) {
-      throw new Error("No active workspace");
-    }
-    return workspace.config.id;
+    return this.workspace.config.id;
   }
 
   /**

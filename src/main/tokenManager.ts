@@ -230,18 +230,3 @@ export class GitAuthManager {
   }
 }
 
-// =============================================================================
-// Singleton instance
-// =============================================================================
-
-let tokenManager: TokenManager | null = null;
-
-/**
- * Get the global token manager singleton.
- */
-export function getTokenManager(): TokenManager {
-  if (!tokenManager) {
-    tokenManager = new TokenManager();
-  }
-  return tokenManager;
-}

@@ -7,10 +7,10 @@
  */
 
 vi.mock("./claudeCodeConversationManager.js", () => ({
-  getClaudeCodeConversationManager: vi.fn().mockReturnValue({
+  ClaudeCodeConversationManager: vi.fn().mockImplementation(() => ({
     createConversation: vi.fn(),
     endConversation: vi.fn(),
-  }),
+  })),
 }));
 
 vi.mock("./claudeCodeToolProxy.js", () => ({}));

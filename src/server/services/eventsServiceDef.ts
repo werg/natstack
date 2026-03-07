@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../main/serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { EventService } from "../../main/services/eventsService.js";
 import { isValidEventName, type EventName } from "../../shared/events.js";
 

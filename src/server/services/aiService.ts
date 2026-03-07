@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../main/serviceDefinition.js";
+import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { AIHandler } from "../../main/ai/aiHandler.js";
 import type { StreamTextOptions } from "../../shared/types.js";
 import type { RpcServer } from "../rpcServer.js";

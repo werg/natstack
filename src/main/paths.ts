@@ -2,7 +2,6 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import { getUserDataPath } from "./envPaths.js";
-import type { Workspace } from "./workspace/types.js";
 import { isDev } from "./utils.js";
 
 // Derive __dirname in a way that works in CJS builds
@@ -57,27 +56,6 @@ const __dirnameResolved: string = (() => {
 })();
 
 /**
- * Active workspace, if one is set.
- * When set, paths resolve to workspace-relative locations.
- */
-let activeWorkspace: Workspace | null = null;
-
-/**
- * Set the active workspace. Once set, getPanelCacheDirectory()
- * will return the workspace cache path.
- */
-export function setActiveWorkspace(workspace: Workspace): void {
-  activeWorkspace = workspace;
-}
-
-/**
- * Get the currently active workspace, if any.
- */
-export function getActiveWorkspace(): Workspace | null {
-  return activeWorkspace;
-}
-
-/**
  * Get the central NatStack config directory based on the platform.
  * This directory is used for app-wide configuration.
  *
@@ -101,40 +79,6 @@ export function getCentralConfigDirectory(): string {
     console.warn("Failed to create config directory, using temp dir:", error);
     return ensureDir(path.join(os.tmpdir(), "natstack"));
   }
-}
-
-/**
- * Get the panel cache directory.
- * If a workspace is active, returns the workspace's cache directory.
- * Otherwise returns a cache directory in the central config location.
- */
-export function getPanelCacheDirectory(): string {
-  // If workspace is active, use workspace cache directory
-  if (activeWorkspace) {
-    fs.mkdirSync(activeWorkspace.cachePath, { recursive: true });
-    return activeWorkspace.cachePath;
-  }
-
-  const configDir = getCentralConfigDirectory();
-  const cacheDir = path.join(configDir, "panel-cache");
-
-  fs.mkdirSync(cacheDir, { recursive: true });
-
-  return cacheDir;
-}
-
-/**
- * Get the NatStack state root directory.
- * - With an active workspace: <workspace>/.cache/
- * - Otherwise: platform userData directory (or platform fallback)
- */
-export function getNatstackStateRootDirectory(): string {
-  if (activeWorkspace) {
-    fs.mkdirSync(activeWorkspace.cachePath, { recursive: true });
-    return activeWorkspace.cachePath;
-  }
-
-  return getCentralConfigDirectory();
 }
 
 /**

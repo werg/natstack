@@ -783,15 +783,3 @@ export class AdBlockManager {
   }
 }
 
-// Singleton instance
-let instance: AdBlockManager | null = null;
-
-/**
- * Get the singleton AdBlockManager instance.
- */
-export function getAdBlockManager(): AdBlockManager {
-  if (!instance) {
-    instance = new AdBlockManager();
-  }
-  return instance;
-}

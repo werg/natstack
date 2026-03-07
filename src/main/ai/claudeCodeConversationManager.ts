@@ -15,7 +15,7 @@ import {
 } from "./claudeCodeToolProxy.js";
 import { createDevLogger } from "../devLog.js";
 import { findExecutable } from "./providerFactory.js";
-import { getActiveWorkspace } from "../paths.js";
+
 
 /**
  * Language model interface (minimal for our needs)
@@ -75,8 +75,10 @@ export class ClaudeCodeConversationManager {
   private claudeExecutable: string | undefined;
   private logger = createDevLogger("ClaudeCodeConversationManager");
   private endListeners = new Set<(conversationId: string, panelId: string) => void>();
+  private workspacePath: string | undefined;
 
-  constructor() {
+  constructor(workspacePath?: string) {
+    this.workspacePath = workspacePath;
     this.claudeExecutable = findExecutable("claude");
     if (!this.claudeExecutable) {
       this.logger.warn("Claude Code CLI not found in PATH");
@@ -124,7 +126,7 @@ export class ClaudeCodeConversationManager {
     const provider = createClaudeCode({
       defaultSettings: {
         pathToClaudeCodeExecutable: this.claudeExecutable,
-        cwd: getActiveWorkspace()?.path ?? process.cwd(),
+        cwd: this.workspacePath ?? process.cwd(),
         allowedTools: mcpToolNames,
         mcpServers: {
           [`proxy-${conversationId}`]: mcpServer,
@@ -259,15 +261,3 @@ export class ClaudeCodeConversationManager {
   }
 }
 
-// Singleton instance
-let instance: ClaudeCodeConversationManager | null = null;
-
-/**
- * Get the singleton conversation manager instance
- */
-export function getClaudeCodeConversationManager(): ClaudeCodeConversationManager {
-  if (!instance) {
-    instance = new ClaudeCodeConversationManager();
-  }
-  return instance;
-}

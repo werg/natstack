@@ -5,13 +5,15 @@
  * AI service is registered separately (deferred until RpcServer exists).
  */
 
-import type { ServiceDispatcher } from "../main/serviceDispatcher.js";
+import type { ServiceDispatcher } from "../shared/serviceDispatcher.js";
 import type { BuildSystemV2 } from "./buildV2/index.js";
 import type { GitServer } from "../main/gitServer.js";
 import type { TokenManager } from "../main/tokenManager.js";
 import type { ContextFolderManager } from "../main/contextFolderManager.js";
 import type { EventService } from "../main/services/eventsService.js";
 import type { DatabaseManager } from "../main/db/databaseManager.js";
+import type { AgentSettingsService } from "../main/agentSettings.js";
+import type { AgentDiscovery } from "../main/agentDiscovery.js";
 
 import { createBuildService } from "./services/buildService.js";
 import { createTokensService } from "./services/tokensService.js";
@@ -32,6 +34,8 @@ export function registerServerServices(
     contextFolderManager: ContextFolderManager;
     eventService: EventService;
     databaseManager: DatabaseManager;
+    agentSettingsService: AgentSettingsService;
+    agentDiscovery: AgentDiscovery | null;
     workspacePath: string;
     panelTestSetupPath: string;
   },
@@ -53,7 +57,10 @@ export function registerServerServices(
     gitServer: deps.gitServer,
     tokenManager: deps.tokenManager,
   }));
-  dispatcher.registerService(createAgentSettingsService());
+  dispatcher.registerService(createAgentSettingsService({
+    agentSettingsService: deps.agentSettingsService,
+    agentDiscovery: deps.agentDiscovery,
+  }));
   dispatcher.registerService(createDbService({ databaseManager: deps.databaseManager }));
   dispatcher.registerService(createTypecheckService({
     contextFolderManager: deps.contextFolderManager,

@@ -17,15 +17,15 @@ import type { StreamTextEvent } from "../shared/types.js";
 import type { StreamTarget } from "../main/ai/aiHandler.js";
 import type { ToolExecutionResult } from "../main/ai/claudeCodeToolProxy.js";
 import { TOOL_EXECUTION_TIMEOUT_MS } from "../shared/constants.js";
-import { findServicePort } from "../main/portUtils.js";
+import { findServicePort } from "../shared/portUtils.js";
 import {
   parseServiceMethod,
 
   ServiceDispatcher,
   type CallerKind,
   type ServiceContext,
-} from "../main/serviceDispatcher.js";
-import { checkServiceAccess } from "../main/servicePolicy.js";
+} from "../shared/serviceDispatcher.js";
+import { checkServiceAccess } from "../shared/servicePolicy.js";
 import type { TokenManager } from "../main/tokenManager.js";
 
 /** Server-side state for a connected WS client */

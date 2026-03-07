@@ -13,7 +13,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { getUserDataPath } from "../../main/envPaths.js";
+import { getUserDataPath } from "../../shared/envPaths.js";
 
 // ---------------------------------------------------------------------------
 // Types

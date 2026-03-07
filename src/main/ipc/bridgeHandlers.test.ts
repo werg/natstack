@@ -9,15 +9,14 @@ vi.mock("electron", () => ({
 }));
 vi.mock("../panelManager.js");
 vi.mock("../cdpServer.js");
-vi.mock("../viewManager.js", () => ({ getViewManager: vi.fn() }));
-vi.mock("../paths.js", () => ({ getActiveWorkspace: vi.fn() }));
 vi.mock("../../shared/bridgeHandlersCommon.js", () => ({
   handleCommonBridgeMethod: vi.fn(),
 }));
 
 import { createBridgeService } from "../services/bridgeService.js";
 import type { ServiceContext } from "../serviceDispatcher.js";
-import { getViewManager } from "../viewManager.js";
+
+const mockGetViewManager = vi.fn();
 
 describe("bridgeService", () => {
   const pm = {
@@ -43,7 +42,8 @@ describe("bridgeService", () => {
   const svc = createBridgeService({
     panelManager: pm as any,
     cdpServer: cdpServer as any,
-    getViewManager: getViewManager as any,
+    getViewManager: mockGetViewManager as any,
+    workspace: null,
   });
   const handler = svc.handler;
   const ctx: ServiceContext = { callerId: "panel-1", callerKind: "panel" };

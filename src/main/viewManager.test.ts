@@ -77,10 +77,6 @@ vi.mock("electron", () => {
 // Import after mocks are set up
 import {
   ViewManager,
-  initViewManager,
-  getViewManager,
-  isViewManagerInitialized,
-  _resetViewManagerForTesting,
 } from "./viewManager.js";
 import { BaseWindow, WebContentsView, session } from "electron";
 
@@ -92,8 +88,6 @@ describe("ViewManager", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Reset singleton for each test
-    _resetViewManagerForTesting();
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     mockWindow = new (BaseWindow as any)();
@@ -645,41 +639,4 @@ describe("ViewManager", () => {
     });
   });
 
-  describe("singleton functions", () => {
-    it("isViewManagerInitialized returns false before init", () => {
-      expect(isViewManagerInitialized()).toBe(false);
-    });
-
-    it("getViewManager throws before init", () => {
-      expect(() => getViewManager()).toThrow("ViewManager not initialized");
-    });
-
-    it("initViewManager creates and returns singleton", () => {
-      const vm = initViewManager({
-        window: mockWindow,
-        shellPreload: "/path/to/preload.js",
-        shellHtmlPath: "/path/to/index.html",
-      });
-
-      expect(vm).toBeInstanceOf(ViewManager);
-      expect(isViewManagerInitialized()).toBe(true);
-      expect(getViewManager()).toBe(vm);
-    });
-
-    it("initViewManager throws if called twice", () => {
-      initViewManager({
-        window: mockWindow,
-        shellPreload: "/path/to/preload.js",
-        shellHtmlPath: "/path/to/index.html",
-      });
-
-      expect(() => {
-        initViewManager({
-          window: mockWindow,
-          shellPreload: "/path/to/preload.js",
-            shellHtmlPath: "/path/to/index.html",
-        });
-      }).toThrow("ViewManager already initialized");
-    });
-  });
 });

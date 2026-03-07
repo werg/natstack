@@ -9,8 +9,8 @@ import { createDevLogger } from "./devLog.js";
 
 const log = createDevLogger("App");
 import { PanelManager } from "./panelManager.js";
-import { setupMenu, setMenuPanelManager } from "./menu.js";
-import { setActiveWorkspace, getAppRoot } from "./paths.js";
+import { setupMenu, setMenuPanelManager, setMenuViewManager } from "./menu.js";
+import { getAppRoot } from "./paths.js";
 import {
   parseCliWorkspacePath,
   discoverWorkspace,
@@ -18,27 +18,22 @@ import {
   loadCentralEnv,
 } from "./workspace/loader.js";
 import type { Workspace } from "./workspace/types.js";
-import { getCentralData } from "./centralData.js";
-import { getCdpServer, type CdpServer } from "./cdpServer.js";
-import { getTokenManager } from "./tokenManager.js";
+import { CentralDataManager } from "./centralData.js";
+import { CdpServer } from "./cdpServer.js";
+import { TokenManager } from "./tokenManager.js";
 import { eventService } from "./services/eventsService.js";
-import {
-  initViewManager,
-  getViewManager,
-  type ViewManager,
-} from "./viewManager.js";
+import { ViewManager } from "./viewManager.js";
 import { ServiceDispatcher } from "./serviceDispatcher.js";
 import type { RpcServer } from "../server/rpcServer.js";
 import { registerElectronServices } from "./electronServiceRegistry.js";
 import { setupTestApi } from "./testApi.js";
-import { getAdBlockManager } from "./adblock/index.js";
+import { AdBlockManager } from "./adblock/index.js";
 import { ContextFolderManager } from "./contextFolderManager.js";
 import { FsService } from "./fsService.js";
-import { startMemoryMonitor } from "./memoryMonitor.js";
+import { startMemoryMonitor, setMemoryMonitorViewManager } from "./memoryMonitor.js";
 import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
 import { createServerClient, type ServerClient } from "./serverClient.js";
 import type { ServerInfo } from "./serverInfo.js";
-import { setServerInfo } from "./serverInfoState.js";
 
 // =============================================================================
 // Early Diagnostics (enabled via NATSTACK_DEBUG_PATHS=1)
@@ -93,6 +88,8 @@ if (!hasWorkspaceConfig) {
 }
 
 let workspace: Workspace | null = null;
+let centralData: CentralDataManager | null = null;
+const tokenManager = new TokenManager();
 let cdpServer: CdpServer | null = null;
 let panelManager: PanelManager | null = null;
 let rpcServer: RpcServer | null = null;
@@ -116,11 +113,10 @@ function requireServerClient(): ServerClient {
 
 try {
   workspace = createWorkspace(discoveredWorkspacePath);
-  setActiveWorkspace(workspace);
   log.info(`[Workspace] Loaded: ${workspace.path} (id: ${workspace.config.id})`);
 
   // Add to recent workspaces
-  const centralData = getCentralData();
+  centralData = new CentralDataManager();
   centralData.addRecentWorkspace(workspace.path, workspace.config.id);
 } catch (error) {
   console.error("[Workspace] Failed to initialize workspace:", error);
@@ -186,7 +182,7 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
   });
 
   // Initialize ViewManager with shell view (pass WS connection args to shell preload)
-  viewManager = initViewManager({
+  viewManager = new ViewManager({
     window: mainWindow,
     shellPreload: path.join(__dirname, "preload.cjs"),
     shellHtmlPath: path.join(__dirname, "index.html"),
@@ -202,16 +198,21 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
     viewManager = null;
   });
 
-  // Set ViewManager reference in panel manager (if in main mode)
+  // Set ViewManager reference in panel manager and CDP server (if in main mode)
   if (panelManager && viewManager) {
     panelManager.setViewManager(viewManager);
   }
+  if (cdpServer && viewManager) {
+    cdpServer.setViewManager(viewManager);
+  }
 
   // Optional memory diagnostics (env-driven).
+  if (viewManager) setMemoryMonitorViewManager(viewManager);
   startMemoryMonitor();
 
   // Setup application menu (uses shell webContents for menu events)
   // Guard callbacks: panelManager is null in chooser mode — early return instead of throwing.
+  if (viewManager) setMenuViewManager(viewManager);
   setupMenu(mainWindow, viewManager.getShellWebContents(), {
     onHistoryBack: () => {
       if (!panelManager || !viewManager) return;
@@ -319,16 +320,18 @@ app.on("ready", async () => {
 
     // Create panel manager with server info
     const serverInfo = buildServerInfo(ports);
-    setServerInfo(serverInfo);
-    panelManager = new PanelManager(serverInfo);
+
+
+    // CDP server (Electron-local) — must start before PanelManager
+    cdpServer = new CdpServer(tokenManager);
+    if (viewManager) cdpServer.setViewManager(viewManager);
+    const cdpPort = await cdpServer.start();
+    log.info(`[CDP] Server started on port ${cdpPort}`);
+
+    panelManager = new PanelManager(serverInfo, cdpServer, tokenManager, workspace);
     // Set up test API for E2E testing (only when NATSTACK_TEST_MODE=1)
     setupTestApi(panelManager);
     setMenuPanelManager(panelManager);
-
-    // CDP server (Electron-local)
-    cdpServer = getCdpServer();
-    const cdpPort = await cdpServer.start();
-    log.info(`[CDP] Server started on port ${cdpPort}`);
 
     // Filesystem service — per-context sandboxed fs via RPC
     const contextFolderManager = new ContextFolderManager({
@@ -340,20 +343,24 @@ app.on("ready", async () => {
     panelManager.setFsService(fsService);
 
     // Register all Electron-main services via registry
+    const adBlockManager = new AdBlockManager();
     registerElectronServices(dispatcher, {
       panelManager,
       cdpServer,
       fsService,
       eventService,
       serverClient,
-      getViewManager,
+      getViewManager: () => viewManager!,
+      centralData: centralData!,
+      adBlockManager,
+      workspace,
     });
 
     dispatcher.markInitialized();
 
     const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
     rpcServer = new RpcServerClass({
-      tokenManager: getTokenManager(),
+      tokenManager: tokenManager,
       dispatcher,
       panelManager,
       onClientDisconnect: (callerId, callerKind) => {
@@ -377,7 +384,7 @@ app.on("ready", async () => {
     panelManager.setPanelHttpServer(panelHttpServer, panelHttpPort);
 
     // Generate shell token and create window
-    const shellToken = getTokenManager().ensureToken("shell", "shell");
+    const shellToken = tokenManager.ensureToken("shell", "shell");
     void createWindow({ rpcPort, shellToken });
     performance.mark("startup:window-created");
 
@@ -397,7 +404,6 @@ app.on("ready", async () => {
     // The onBeforeRequest handler has a !this.engine fast path that passes requests through.
     setTimeout(async () => {
       try {
-        const adBlockManager = getAdBlockManager();
         await adBlockManager.initialize();
         adBlockManager.enableForSession(session.defaultSession);
         console.log("[AdBlock] Initialized and enabled for default session");
@@ -441,8 +447,6 @@ app.on("ready", async () => {
       );
       panelHttpServer = null;
     }
-    setServerInfo(null);
-
     await Promise.all(cleanupPromises);
 
     dialog.showErrorBox(
@@ -546,7 +550,7 @@ app.on("will-quit", (event) => {
 
 app.on("activate", () => {
   if (mainWindow === null && rpcServer) {
-    const shellToken = getTokenManager().ensureToken("shell", "shell");
+    const shellToken = tokenManager.ensureToken("shell", "shell");
     const rpcPort = rpcServer.getPort();
     if (rpcPort) {
       void createWindow({ rpcPort, shellToken });

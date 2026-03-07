@@ -8,11 +8,13 @@
 
 import type { HeadlessPanelManager } from "./headlessPanelManager.js";
 import type { GitServer } from "../main/gitServer.js";
+import type { AgentDiscovery } from "../main/agentDiscovery.js";
 import { handleCommonBridgeMethod } from "../shared/bridgeHandlersCommon.js";
 
 export type HeadlessBridgeDeps = {
   pm: HeadlessPanelManager;
   gitServer: GitServer;
+  agentDiscovery: AgentDiscovery | null;
 };
 
 /**
@@ -53,10 +55,7 @@ export async function handleHeadlessBridgeCall(
     // =========================================================================
 
     case "listAgents": {
-      const { getAgentDiscovery } = await import(
-        "../main/agentDiscovery.js"
-      );
-      return getAgentDiscovery()?.list() ?? [];
+      return deps.agentDiscovery?.list() ?? [];
     }
 
     // =========================================================================

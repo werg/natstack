@@ -8,13 +8,14 @@ import type { ServiceDefinition } from "../serviceDefinition.js";
 import type { PanelManager } from "../panelManager.js";
 import type { CdpServer } from "../cdpServer.js";
 import type { ViewManager } from "../viewManager.js";
-import { getActiveWorkspace } from "../paths.js";
+import type { Workspace } from "../workspace/types.js";
 import { handleCommonBridgeMethod } from "../../shared/bridgeHandlersCommon.js";
 
 export function createBridgeService(deps: {
   panelManager: PanelManager;
   cdpServer: CdpServer;
   getViewManager: () => ViewManager;
+  workspace: Workspace | null;
 }): ServiceDefinition {
   return {
     name: "bridge",
@@ -72,7 +73,7 @@ export function createBridgeService(deps: {
         case "createRepo": {
           const [repoPath] = args as [string];
           if (!repoPath?.trim()) throw new Error("Repo path is required");
-          const workspace = getActiveWorkspace();
+          const workspace = deps.workspace;
           if (!workspace) throw new Error("No active workspace");
           const absolutePath = resolve(workspace.path, repoPath);
           if (!absolutePath.startsWith(workspace.path + "/") && absolutePath !== workspace.path) {

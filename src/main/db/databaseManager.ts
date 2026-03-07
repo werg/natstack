@@ -9,28 +9,13 @@ import Database from "better-sqlite3";
 import * as path from "path";
 import * as fs from "fs";
 import * as crypto from "crypto";
-import { getActiveWorkspace } from "../paths.js";
 import type { DbRunResult } from "@natstack/types";
 import { createDevLogger } from "../devLog.js";
 
 const log = createDevLogger("DatabaseManager");
 
-/**
- * Singleton DatabaseManager instance.
- */
-let instance: DatabaseManager | null = null;
-
-/**
- * Get the singleton DatabaseManager instance.
- */
-export function getDatabaseManager(): DatabaseManager {
-  if (!instance) {
-    instance = new DatabaseManager();
-  }
-  return instance;
-}
-
 export class DatabaseManager {
+  private workspacePath: string;
   /** Connection pool: path → actual database connection */
   private pathToConnection = new Map<string, Database.Database>();
 
@@ -42,6 +27,10 @@ export class DatabaseManager {
 
   /** Map handle to owner (worker/panel ID) for cleanup tracking */
   private handleToOwner = new Map<string, string>();
+
+  constructor(workspacePath: string) {
+    this.workspacePath = workspacePath;
+  }
 
   /**
    * Open a database.
@@ -55,14 +44,9 @@ export class DatabaseManager {
    * @param readOnly - Whether to open in read-only mode
    */
   open(ownerId: string, dbName: string, readOnly = false): string {
-    const workspace = getActiveWorkspace();
-    if (!workspace) {
-      throw new Error("No active workspace");
-    }
-
     // Store databases in workspace .databases directory, not in .cache/
     // Databases are persistent data, not temporary cache
-    const dbDir = path.join(workspace.path, ".databases");
+    const dbDir = path.join(this.workspacePath, ".databases");
     fs.mkdirSync(dbDir, { recursive: true });
 
     const dbPath = path.join(dbDir, this.sanitizeDbName(dbName) + ".db");
@@ -80,7 +64,7 @@ export class DatabaseManager {
         // Ignore stat errors
       }
     }
-    log.verbose(`Opening database: path=${dbPath}, workspaceId=${workspace.config.id}, owner=${ownerId}, fileExisted=${fileExisted}, birthTime=${birthTime?.toISOString()}, size=${fileSize}`);
+    log.verbose(`Opening database: path=${dbPath}, workspace=${this.workspacePath}, owner=${ownerId}, fileExisted=${fileExisted}, birthTime=${birthTime?.toISOString()}, size=${fileSize}`);
 
     return this.openDatabase(dbPath, ownerId, readOnly);
   }

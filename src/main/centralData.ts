@@ -123,15 +123,3 @@ export class CentralDataManager {
   }
 }
 
-// Singleton instance
-let centralDataInstance: CentralDataManager | null = null;
-
-/**
- * Get the singleton CentralDataManager instance
- */
-export function getCentralData(): CentralDataManager {
-  if (!centralDataInstance) {
-    centralDataInstance = new CentralDataManager();
-  }
-  return centralDataInstance;
-}
