@@ -74,6 +74,11 @@ export class RpcServer {
     this.dispatcher = deps.dispatcher;
   }
 
+  /** Register a callback for client disconnect events. */
+  setOnClientDisconnect(handler: (callerId: string, callerKind: CallerKind) => void): void {
+    this.deps.onClientDisconnect = handler;
+  }
+
   async start(): Promise<number> {
     const port = await findServicePort("rpc");
 

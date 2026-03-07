@@ -47,9 +47,9 @@ export class PanelView implements PanelViewLike {
   private viewManager: ViewManager;
   private readonly panelRegistry: PanelRegistry;
   private readonly tokenManager: TokenManager;
-  private panelHttpServer: PanelHttpServerLike | null;
-  private panelHttpPort: number | null;
-  private rpcPort: number | null;
+  private readonly panelHttpServer: PanelHttpServerLike | null;
+  private readonly panelHttpPort: number | null;
+  private readonly rpcPort: number | null;
   private readonly serverInfo: ServerInfoLike;
   private readonly cdpServer: CdpServerLike;
   private readonly panelLifecycle: PanelLifecycleLike;
@@ -84,13 +84,6 @@ export class PanelView implements PanelViewLike {
     this.cdpServer = deps.cdpServer;
     this.panelLifecycle = deps.panelLifecycle;
     this.sendToClient = deps.sendToClient;
-  }
-
-  // Late-binding setters
-  setRpcPort(port: number): void { this.rpcPort = port; }
-  setPanelHttpServer(server: PanelHttpServerLike, port: number): void {
-    this.panelHttpServer = server;
-    this.panelHttpPort = port;
   }
 
   // ==== PanelViewLike implementation ========================================

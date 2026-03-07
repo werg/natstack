@@ -256,10 +256,6 @@ async function main() {
   });
 
   // Agent discovery + settings (combined lifecycle + RPC)
-  // agentSettings.getServiceDefinition() needs both instances, so we capture
-  // the agentDiscovery reference in a closure scoped to the registration pair.
-  let agentSettingsStarted: { service: import("../shared/agentSettings.js").AgentSettingsService; discovery: import("../shared/agentDiscovery.js").AgentDiscovery | null } | null = null;
-
   container.register({
     name: "agentDiscovery",
     async start() {
@@ -276,12 +272,15 @@ async function main() {
       const agentDiscovery = resolve<import("../shared/agentDiscovery.js").AgentDiscovery>("agentDiscovery");
       const service = new AgentSettingsService();
       await service.initialize(workspacePath, agentDiscovery!);
-      agentSettingsStarted = { service, discovery: agentDiscovery ?? null };
       return service;
     },
     async stop(instance: import("../shared/agentSettings.js").AgentSettingsService) { instance?.shutdown(); },
+    // getServiceDefinition() is called after start(), so both instances are in the container.
     getServiceDefinition() {
-      return createAgentSettingsServiceDef({ agentSettingsService: agentSettingsStarted!.service, agentDiscovery: agentSettingsStarted?.discovery ?? null });
+      return createAgentSettingsServiceDef({
+        agentSettingsService: container.get<import("../shared/agentSettings.js").AgentSettingsService>("agentSettings"),
+        agentDiscovery: container.has("agentDiscovery") ? container.get<import("../shared/agentDiscovery.js").AgentDiscovery>("agentDiscovery") : null,
+      });
     },
   });
 
@@ -407,21 +406,8 @@ async function main() {
   container.register({
     name: "rpcServer",
     dependencies: ["tokenManager"],
-    optionalDependencies: ["fsService", "panelLifecycle"],
-    async start(resolve) {
-      const fsService = resolve<import("../shared/fsService.js").FsService>("fsService", true);
-      const lifecycle = resolve<import("../shared/panelLifecycle.js").PanelLifecycle>("panelLifecycle", true);
-      const server = new RpcServer({
-        tokenManager,
-        dispatcher,
-        onClientDisconnect: (callerId, callerKind) => {
-          const handleKey = callerKind === "panel" ? callerId : `server:${callerId}`;
-          fsService?.closeHandlesForPanel(handleKey);
-          if (callerKind === "panel") {
-            lifecycle?.closePanel(callerId);
-          }
-        },
-      });
+    async start() {
+      const server = new RpcServer({ tokenManager, dispatcher });
       const port = await server.start();
       return { server, port };
     },
@@ -506,7 +492,7 @@ async function main() {
         const pubsubPort = resolve<{ port: number }>("pubsub")!.port;
         const httpResult = resolve<{ server: import("./panelHttpServer.js").PanelHttpServer; port: number }>("panelHttpServer", true);
 
-        return new PanelLifecycle({
+        const lifecycle = new PanelLifecycle({
           registry,
           tokenManager,
           fsService,
@@ -527,6 +513,18 @@ async function main() {
           panelHttpPort: httpResult?.port,
           sendToClient: (callerId, msg) => rpcServer.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage),
         });
+
+        // Wire disconnect handler: panelLifecycle (high-level) subscribes to
+        // rpcServer (low-level) events — dependency flows in the right direction.
+        rpcServer.setOnClientDisconnect((callerId, callerKind) => {
+          const handleKey = callerKind === "panel" ? callerId : `server:${callerId}`;
+          fsService.closeHandlesForPanel(handleKey);
+          if (callerKind === "panel") {
+            lifecycle.closePanel(callerId);
+          }
+        });
+
+        return lifecycle;
       },
     });
 
