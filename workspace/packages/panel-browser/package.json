@@ -1,0 +1,28 @@
+{
+  "name": "@workspace/panel-browser",
+  "version": "0.1.0",
+  "description": "Typed convenience API for browser data operations from panel eval context",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "dev": "tsc --project tsconfig.build.json --watch"
+  },
+  "peerDependencies": {
+    "@workspace/runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@natstack/rpc": "workspace:*",
+    "typescript": "^5.9.3"
+  }
+}

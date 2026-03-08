@@ -78,7 +78,7 @@ Execute TypeScript/JavaScript code in the panel runtime. Runtime APIs are availa
 
 ### Runtime APIs
 
-Available via `import { ... } from "@workspace/runtime"`:
+Available via `import { ... } from "@workspace/runtime"` and `import { ... } from "@workspace/panel-browser"`:
 
 | API | Description |
 |-----|-------------|
@@ -165,6 +165,82 @@ eval({ code: `
   const result = await rpc.call("main", "test.run", contextId, "panels/my-app");
   console.log(result);
 `, timeout: 60000 })
+```
+
+### Browser Data
+
+Available via `import { browserData } from "@workspace/panel-browser"`:
+
+| Method | Description |
+|--------|-------------|
+| `browserData.detectBrowsers()` | Detect all installed browsers and their profiles |
+| `browserData.startImport(request)` | Import data from a browser profile |
+| `browserData.getImportHistory()` | Get log of past imports |
+| `browserData.getBookmarks(folderPath?)` | Get bookmarks in a folder |
+| `browserData.searchBookmarks(query)` | Search bookmarks by title/URL |
+| `browserData.addBookmark(bookmark)` | Add a bookmark |
+| `browserData.deleteBookmark(id)` | Delete a bookmark |
+| `browserData.getHistory(query)` | Query browsing history (search, time range, limit) |
+| `browserData.searchHistory(query, limit?)` | Full-text search history |
+| `browserData.clearAllHistory()` | Clear all history |
+| `browserData.getPasswords()` | Get all stored passwords |
+| `browserData.getPasswordForSite(url)` | Get passwords for a specific site |
+| `browserData.addPassword(pw)` | Add a password |
+| `browserData.getCookies(domain?)` | Get cookies, optionally filtered by domain |
+| `browserData.clearCookies(domain?)` | Clear cookies |
+| `browserData.syncCookiesToSession(domain?)` | Push stored cookies into the Electron session |
+| `browserData.syncCookiesFromSession(domain?)` | Pull Electron session cookies into the store |
+| `browserData.getSearchEngines()` | Get configured search engines |
+| `browserData.setDefaultEngine(id)` | Set the default search engine |
+| `browserData.getAutofillSuggestions(field, prefix?)` | Get autofill suggestions |
+| `browserData.getPermissions(origin?)` | Get site permissions |
+| `browserData.setPermission(origin, perm, setting)` | Set a site permission |
+| `browserData.exportBookmarks(format)` | Export bookmarks (`"html"`, `"json"`, `"chrome-json"`) |
+| `browserData.exportPasswords(format)` | Export passwords (`"csv-chrome"`, `"csv-firefox"`, `"json"`) |
+| `browserData.exportCookies(format)` | Export cookies (`"json"`, `"netscape-txt"`) |
+| `browserData.exportAll()` | Full JSON export of all data |
+
+#### Detect and import
+
+```
+eval({ code: `
+  import { browserData } from "@workspace/panel-browser";
+  const browsers = await browserData.detectBrowsers();
+  console.log(browsers.map(b => b.displayName + ": " + b.profiles.length + " profiles"));
+`, timeout: 15000 })
+```
+
+#### Import from Chrome
+
+```
+eval({ code: `
+  import { browserData } from "@workspace/panel-browser";
+  const browsers = await browserData.detectBrowsers();
+  const chrome = browsers.find(b => b.name === "chrome");
+  if (!chrome) { console.log("Chrome not found"); return; }
+  const profile = chrome.profiles.find(p => p.isDefault) || chrome.profiles[0];
+  const results = await browserData.startImport({
+    browser: "chrome",
+    profilePath: profile.path,
+    dataTypes: ["bookmarks", "history", "cookies"],
+  });
+  for (const r of results) {
+    console.log(r.dataType + ": " + r.itemCount + " imported, " + r.skippedCount + " skipped");
+    if (r.warnings.length) console.log("  warnings:", r.warnings);
+  }
+`, timeout: 60000 })
+```
+
+#### Search and export
+
+```
+eval({ code: `
+  import { browserData } from "@workspace/panel-browser";
+  const bookmarks = await browserData.searchBookmarks("github");
+  console.log("Found", bookmarks.length, "bookmarks");
+  const html = await browserData.exportBookmarks("html");
+  console.log("Exported", html.length, "bytes of HTML");
+`, timeout: 15000 })
 ```
 
 ### Panel Lifecycle

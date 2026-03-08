@@ -490,6 +490,9 @@ app.on("ready", async () => {
     const { createBrowserService } = await import("./services/browserService.js");
     const { createFsServiceDefinition } = await import("./services/fsServiceDef.js");
     const { createGitLocalService } = await import("./services/gitLocalService.js");
+    const { createBrowserDataService } = await import("./services/browserDataService.js");
+    const { BrowserDataStore } = await import("@natstack/browser-data");
+    const { getCentralConfigDirectory } = await import("./paths.js");
 
     const electronContainer = new ServiceContainer(dispatcher);
 
@@ -520,6 +523,22 @@ app.on("ready", async () => {
     })));
     electronContainer.register(rpcService(createFsServiceDefinition({ fsService })));
     electronContainer.register(rpcService(createGitLocalService()));
+    {
+      let browserDataStore: InstanceType<typeof BrowserDataStore>;
+      electronContainer.register({
+        name: "browser-data",
+        async start() {
+          browserDataStore = new BrowserDataStore(getCentralConfigDirectory());
+          return browserDataStore;
+        },
+        async stop(store: InstanceType<typeof BrowserDataStore>) {
+          store.close();
+        },
+        getServiceDefinition() {
+          return createBrowserDataService({ eventService, browserDataStore });
+        },
+      });
+    }
     electronContainer.register(rpcService(createEventsServiceDefinition(eventService)));
 
     await electronContainer.startAll();

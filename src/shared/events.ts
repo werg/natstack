@@ -15,7 +15,10 @@ export type EventName =
   | "toggle-panel-devtools"
   | "panel-initialization-error"
   | "navigate-about"
-  | "navigate-to-panel";
+  | "navigate-to-panel"
+  | "browser-import-progress"
+  | "browser-import-complete"
+  | "browser-data-changed";
 
 /**
  * Event payloads for type safety.
@@ -28,6 +31,23 @@ export interface EventPayloads {
   "panel-initialization-error": { path: string; error: string };
   "navigate-about": { page: string };
   "navigate-to-panel": { panelId: string };
+  "browser-import-progress": {
+    requestId: string;
+    dataType: string;
+    phase: string;
+    itemsProcessed: number;
+    totalItems?: number;
+    error?: string;
+  };
+  "browser-import-complete": {
+    dataType: string;
+    success: boolean;
+    itemCount: number;
+    skippedCount: number;
+    error?: string;
+    warnings: string[];
+  }[];
+  "browser-data-changed": { dataType: string };
 }
 
 /**
@@ -41,6 +61,9 @@ export const VALID_EVENT_NAMES: EventName[] = [
   "panel-initialization-error",
   "navigate-about",
   "navigate-to-panel",
+  "browser-import-progress",
+  "browser-import-complete",
+  "browser-data-changed",
 ];
 
 /**

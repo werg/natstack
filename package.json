@@ -94,6 +94,7 @@
     "@ghostery/adblocker": "^2.13.4",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@natstack/agent-host": "workspace:*",
+    "@natstack/browser-data": "workspace:*",
     "@natstack/dev-log": "workspace:*",
     "@natstack/env-paths": "workspace:*",
     "@natstack/git": "workspace:*",

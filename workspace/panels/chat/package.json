@@ -27,11 +27,13 @@
       "@radix-ui/themes",
       "@radix-ui/react-icons",
       "isomorphic-git",
-      "@workspace/runtime"
+      "@workspace/runtime",
+      "@workspace/panel-browser"
     ]
   },
   "dependencies": {
     "@workspace/runtime": "workspace:*",
+    "@workspace/panel-browser": "workspace:*",
     "@workspace/react": "workspace:*",
     "@workspace/agentic-messaging": "workspace:*",
     "@workspace/agentic-chat": "workspace:*",
