@@ -79,79 +79,65 @@ const roles = await ai.listRoles();
 
 ## Browser Automation
 
-Control browser panels via Playwright over CDP. Browser automation is available in Electron mode only.
+Create and control browser panels via Playwright/CDP. Works in both Electron and headless (with extension) modes.
 
-### Creating a Browser Panel
-
-From panel code, use `window.open` with an external URL. The host intercepts this and creates a browser panel:
+### Typed API (recommended)
 
 ```typescript
-// Opens a browser child panel navigated to the URL
+import { createBrowserPanel, openExternal } from "@workspace/runtime";
+import { chromium } from "playwright-core";
+
+// 1. Create a browser panel — returns a BrowserHandle
+const handle = await createBrowserPanel("https://example.com", { focus: true });
+
+// 2. Connect Playwright via CDP
+const cdpUrl = await handle.getCdpEndpoint();
+const browser = await chromium.connectOverCDP(cdpUrl);
+const page = browser.contexts()[0].pages()[0];
+
+// 3. Interact with the page
+await page.fill("input[name=query]", "NatStack");
+await page.click(".search-button");
+const text = await page.textContent(".results .first");
+
+// 4. Navigate and control
+await handle.navigate("https://other.com");
+await handle.goBack();
+await handle.reload();
+
+// 5. Close when done
+await handle.close();
+
+// Open in system browser (no CDP access)
+await openExternal("https://docs.example.com");
+```
+
+### Fire-and-forget (window.open)
+
+In Electron mode, `window.open("https://...")` also creates browser panels. Discover the child via event:
+
+```typescript
+import { onChildCreated, getBrowserHandle } from "@workspace/runtime";
+
+onChildCreated(({ childId, url }) => {
+  const handle = getBrowserHandle(childId);
+  // handle.getCdpEndpoint(), handle.navigate(), etc.
+});
 window.open("https://example.com");
 ```
 
-### Getting the CDP Endpoint
+### BrowserHandle Methods
 
-The browser panel's CDP endpoint is accessible via the `browser` RPC service. You need the browser panel's ID (returned as a child ID):
+| Method | Description |
+|--------|-------------|
+| `getCdpEndpoint()` | Get CDP WebSocket URL for Playwright |
+| `navigate(url)` | Load a URL |
+| `goBack()` | Navigate back |
+| `goForward()` | Navigate forward |
+| `reload()` | Reload page |
+| `stop()` | Stop loading |
+| `close()` | Close browser panel |
 
-```typescript
-import { rpc } from "@workspace/runtime";
-
-// Get the CDP WebSocket endpoint for a browser panel
-const cdpUrl = await rpc.call("main", "browser.getCdpEndpoint", browserId);
-```
-
-### Connecting Playwright
-
-Once you have the CDP endpoint, connect Playwright:
-
-```typescript
-import { chromium } from "playwright-core";
-import { rpc } from "@workspace/runtime";
-
-// 1. Get CDP endpoint for the browser panel
-const cdpUrl = await rpc.call("main", "browser.getCdpEndpoint", browserId);
-
-// 2. Connect Playwright to the running browser
-const browser = await chromium.connectOverCDP(cdpUrl);
-const context = browser.contexts()[0];
-const page = context.pages()[0];
-
-// 3. Interact with the page
-await page.click(".search-button");
-await page.fill("input[name=query]", "NatStack");
-await page.waitForSelector(".results");
-const text = await page.textContent(".results .first");
-
-// 4. Clean up
-await browser.close();
-```
-
-### Browser Navigation via RPC
-
-You can also control navigation directly via the `browser` RPC service:
-
-```typescript
-import { rpc } from "@workspace/runtime";
-
-await rpc.call("main", "browser.navigate", browserId, "https://other-site.com");
-await rpc.call("main", "browser.goBack", browserId);
-await rpc.call("main", "browser.goForward", browserId);
-await rpc.call("main", "browser.reload", browserId);
-await rpc.call("main", "browser.stop", browserId);
-```
-
-### Browser Service Methods
-
-| Method | Args | Description |
-|--------|------|-------------|
-| `browser.getCdpEndpoint` | `(browserId)` | Get CDP WebSocket URL |
-| `browser.navigate` | `(browserId, url)` | Load a URL |
-| `browser.goBack` | `(browserId)` | Navigate back |
-| `browser.goForward` | `(browserId)` | Navigate forward |
-| `browser.reload` | `(browserId)` | Reload page |
-| `browser.stop` | `(browserId)` | Stop loading |
-
-**Security:** Panels can only control browser panels they own. Calling `getCdpEndpoint` for a browser you don't own throws an access denied error.
+**Security:** Panels can only control browser panels they own.
 
 

@@ -65,7 +65,7 @@ export interface PanelLifecycleDeps {
   // Optional Electron-only deps (absent in headless)
   /** Lazy getter for PanelView — resolved on each access. Absent in headless. */
   getPanelView?: () => PanelViewLike | null;
-  cdpServer?: { revokeTokenForPanel(panelId: string): void } | null;
+  cdpServer?: { revokeTokenForPanel(panelId: string): void; unregisterBrowser?(panelId: string): void } | null;
   ccConversationManager?: { endPanelConversations(panelId: string): void } | null;
   panelHttpServer?: PanelHttpServerLike | null;
   panelHttpPort?: number;
@@ -87,7 +87,7 @@ export class PanelLifecycle implements BridgePanelManager {
   private readonly serverInfo: ServerInfoLike;
 
   private readonly getPanelView: () => PanelViewLike | null;
-  private readonly cdpServer: { revokeTokenForPanel(panelId: string): void } | null;
+  private readonly cdpServer: { revokeTokenForPanel(panelId: string): void; unregisterBrowser?(panelId: string): void } | null;
   private readonly ccConversationManager: { endPanelConversations(panelId: string): void } | null;
   private readonly panelHttpServer: PanelHttpServerLike | null;
   private readonly panelHttpPort: number | undefined;
@@ -273,6 +273,124 @@ export class PanelLifecycle implements BridgePanelManager {
   }
 
   // =========================================================================
+  // Browser panel creation
+  // =========================================================================
+
+  /**
+   * Create a browser panel that loads an external URL.
+   * Lightweight version of createPanelFromManifest — no manifest, no build.
+   */
+  async createBrowserPanel(
+    callerId: string,
+    url: string,
+    options?: { name?: string; focus?: boolean },
+  ): Promise<{ id: string; title: string }> {
+    const caller = this.registry.getPanel(callerId);
+    if (!caller) {
+      throw new Error(`Caller panel not found: ${callerId}`);
+    }
+
+    // Validate URL
+    if (!/^https?:\/\//i.test(url)) {
+      throw new Error(`Invalid browser panel URL (must be http/https): ${url}`);
+    }
+
+    let hostname: string;
+    try {
+      hostname = new URL(url).hostname;
+    } catch {
+      throw new Error(`Invalid URL: ${url}`);
+    }
+
+    const title = hostname;
+    const relativePath = `browser~${hostname.replace(/[^a-z0-9.-]/gi, "-")}`;
+
+    const panelId = computePanelId({
+      relativePath,
+      parent: { id: caller.id },
+      requestedId: options?.name,
+    });
+
+    if (!this.registry.reservePanelId(panelId)) {
+      throw new Error(`A panel with id "${panelId}" is already running`);
+    }
+
+    // Create auth tokens
+    this.tokenManager.createToken(panelId, "panel");
+
+    try {
+      await this.serverInfo.createPanelToken(panelId, "panel");
+
+      // Generate contextId for session partitioning (NOT registered with fsService)
+      const contextId = `ctx-${panelId
+        .replace(/[^a-z0-9]/gi, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "")
+        .toLowerCase()
+        .slice(0, 59)}`;
+
+      const initialSnapshot = createSnapshot(
+        `browser:${url}`,
+        contextId,
+        {},
+      );
+
+      const panel: Panel = {
+        id: panelId,
+        title,
+        children: [],
+        selectedChildId: null,
+        snapshot: initialSnapshot,
+        artifacts: {
+          buildState: "ready",
+        },
+      };
+
+      // Add to registry as child of caller
+      this.registry.addPanel(panel, caller.id);
+
+      // Focus if requested
+      if (options?.focus) {
+        this.focusPanel(panel.id);
+      }
+
+      // Create view if PanelView is available (Electron mode)
+      const view = this.getPanelView();
+      if (view?.createViewForBrowser) {
+        await view.createViewForBrowser(panelId, url, contextId);
+      }
+
+      this.registry.notifyPanelTreeUpdate();
+      return { id: panel.id, title: panel.title };
+    } catch (err) {
+      // Rollback on failure
+      this.tokenManager.revokeToken(panelId);
+      void this.serverInfo.revokePanelToken(panelId);
+      throw err;
+    } finally {
+      this.registry.releasePanelId(panelId);
+    }
+  }
+
+  /**
+   * Close a child panel (caller must be the direct parent).
+   */
+  async closeChild(callerId: string, childId: string): Promise<void> {
+    const parentId = this.registry.findParentId(childId);
+    if (parentId !== callerId) {
+      throw new Error(`Panel ${callerId} is not the parent of ${childId}`);
+    }
+    await this.closePanel(childId);
+  }
+
+  /**
+   * Check if a panel is a browser panel (external URL).
+   */
+  private isBrowserPanel(panel: Panel): boolean {
+    return getPanelSource(panel).startsWith("browser:");
+  }
+
+  // =========================================================================
   // Core creation logic
   // =========================================================================
 
@@ -421,8 +539,10 @@ export class PanelLifecycle implements BridgePanelManager {
     // Release resources (tokens, FS, CDP, CC, subdomain, view)
     this.unloadPanelResources(panelId);
 
-    // Unregister FS context mapping (permanent removal)
-    this.fsService?.unregisterPanelContext(panelId);
+    // Unregister FS context mapping (permanent removal, skip browser panels)
+    if (!this.isBrowserPanel(panel)) {
+      this.fsService?.unregisterPanelContext(panelId);
+    }
 
     // Destroy view
     this.getPanelView()?.destroyView(panelId);
@@ -480,8 +600,10 @@ export class PanelLifecycle implements BridgePanelManager {
     const panel = this.registry.getPanel(panelId);
     if (!panel) return;
 
-    // Close open file handles
-    this.fsService?.closeHandlesForPanel(panelId);
+    // Close open file handles (skip for browser panels — no FS context)
+    if (!panel || !this.isBrowserPanel(panel)) {
+      this.fsService?.closeHandlesForPanel(panelId);
+    }
 
     // Revoke local auth token
     this.tokenManager.revokeToken(panelId);
@@ -492,6 +614,7 @@ export class PanelLifecycle implements BridgePanelManager {
 
     // CDP cleanup
     this.cdpServer?.revokeTokenForPanel(panelId);
+    this.cdpServer?.unregisterBrowser?.(panelId);
 
     // Claude Code conversation cleanup
     this.ccConversationManager?.endPanelConversations(panelId);
@@ -550,6 +673,18 @@ export class PanelLifecycle implements BridgePanelManager {
     this.tokenManager.ensureToken(panelId, "panel");
     await this.serverInfo.ensurePanelToken(panelId, "panel");
 
+    // Browser panels: skip build, re-create view directly
+    if (this.isBrowserPanel(panel)) {
+      const url = getPanelSource(panel).slice("browser:".length);
+      const view = this.getPanelView();
+      if (view?.createViewForBrowser) {
+        await view.createViewForBrowser(panelId, url, getPanelContextId(panel));
+      }
+      this.registry.updateArtifacts(panelId, { buildState: "ready" });
+      this.registry.notifyPanelTreeUpdate();
+      return;
+    }
+
     // Set building state
     this.registry.updateArtifacts(panelId, {
       buildState: "building",
@@ -583,6 +718,8 @@ export class PanelLifecycle implements BridgePanelManager {
 
       const buildState = panel.artifacts?.buildState;
       if (buildState === "ready" || buildState === "error") {
+        // Skip browser panels — they don't have builds to invalidate
+        if (this.isBrowserPanel(panel)) continue;
         const source = getPanelSource(panel);
         this.panelHttpServer?.invalidateBuild(source);
         this.unloadPanelResources(entry.panelId);
@@ -761,12 +898,12 @@ export class PanelLifecycle implements BridgePanelManager {
 
     const roots = this.registry.getRootPanels();
     if (roots.length > 0) {
-      // Register FS context mappings for restored panels
+      // Register FS context mappings for restored panels (skip browser panels)
       if (this.fsService) {
         const allPanels = this.registry.listPanels();
         for (const entry of allPanels) {
           const panel = this.registry.getPanel(entry.panelId);
-          if (panel) {
+          if (panel && !this.isBrowserPanel(panel)) {
             const ctxId = getPanelContextId(panel);
             if (ctxId) {
               this.fsService.registerPanelContext(panel.id, ctxId);
@@ -851,11 +988,16 @@ export class PanelLifecycle implements BridgePanelManager {
     const panel = this.registry.getPanel(panelId);
     if (!panel) return null;
 
+    // Browser panels store the URL directly in source as "browser:{url}"
+    const source = getPanelSource(panel);
+    if (source.startsWith("browser:")) {
+      return source.slice("browser:".length);
+    }
+
     const port = this.panelHttpPort ?? (this.panelHttpServer as any)?.getPort?.();
     if (!port) return null;
 
     const subdomain = contextIdToSubdomain(getPanelContextId(panel));
-    const source = getPanelSource(panel);
     return `http://${subdomain}.localhost:${port}/${source}/`;
   }
 

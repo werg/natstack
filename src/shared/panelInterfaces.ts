@@ -15,11 +15,13 @@
  * Minimal panel lifecycle interface — the subset that common bridge handlers need.
  */
 export interface BridgePanelManager {
-  closePanel(panelId: string): void;
+  closePanel(panelId: string): void | Promise<void>;
   getInfo(panelId: string): unknown;
   handleSetStateArgs(panelId: string, updates: Record<string, unknown>): Promise<unknown> | void;
   focusPanel?(panelId: string): void;
   getBootstrapConfig?(callerId: string): Promise<unknown> | unknown;
+  createBrowserPanel?(callerId: string, url: string, options?: { name?: string; focus?: boolean }): Promise<{ id: string; title: string }>;
+  closeChild?(callerId: string, childId: string): Promise<void>;
 }
 
 /**
@@ -59,6 +61,7 @@ export interface ServerInfoLike {
  */
 export interface PanelViewLike {
   createViewForPanel(panelId: string, url: string, contextId?: string): Promise<void>;
+  createViewForBrowser?(panelId: string, url: string, contextId: string): Promise<void>;
   hasView(panelId: string): boolean;
   destroyView(panelId: string): void;
   reloadView(panelId: string): boolean;

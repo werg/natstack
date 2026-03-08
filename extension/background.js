@@ -183,6 +183,7 @@ function connectCdpBridge() {
       if (msg.type === "cdp:command") await handleCdpCommand(msg);
       else if (msg.type === "cdp:detach") await detachDebugger(msg.browserId);
       else if (msg.type === "nav:command") await handleNavCommand(msg);
+      else if (msg.type === "cdp:register-rejected") await handleRegisterRejected(msg);
     } catch (err) {
       console.error("[NatStack] CDP bridge message error:", err);
     }
@@ -240,6 +241,23 @@ async function detachDebugger(browserId) {
 }
 
 /**
+ * Handle a cdp:register-rejected message from the server.
+ * The server rejected a registration because the panel no longer exists
+ * (e.g. rolled back after open-tab timeout). Clean up stale state.
+ * @param {object} msg
+ */
+async function handleRegisterRejected(msg) {
+  const { browserId, tabId } = msg;
+  console.log(`[NatStack] Registration rejected for ${browserId}, cleaning up`);
+  panelTabs.delete(browserId);
+  if (tabId != null) {
+    tabPanels.delete(tabId);
+    await chrome.tabs.remove(tabId).catch(() => {});
+  }
+  await detachDebugger(browserId);
+}
+
+/**
  * Handle a CDP command from the server bridge.
  * Lazy-attaches the debugger on first command.
  * @param {object} msg
@@ -275,6 +293,54 @@ async function handleCdpCommand(msg) {
  */
 async function handleNavCommand(msg) {
   const { requestId, browserId, action, url } = msg;
+
+  // Actions that CREATE tabs (no existing tabId required)
+  if (action === "open-tab") {
+    try {
+      const tab = await chrome.tabs.create({ url });
+      panelTabs.set(browserId, tab.id);
+      tabPanels.set(tab.id, browserId);
+      // Attach debugger so CDP works, then notify server
+      try {
+        await chrome.debugger.attach({ tabId: tab.id }, "1.3");
+      } catch (attachErr) {
+        // Attach failed — clean up the tab and mappings before reporting error
+        panelTabs.delete(browserId);
+        tabPanels.delete(tab.id);
+        await chrome.tabs.remove(tab.id).catch(() => {});
+        cdpWs?.send(JSON.stringify({ type: "nav:error", requestId, browserId, error: attachErr.message }));
+        return;
+      }
+      debuggerAttached.set(browserId, true);
+      if (cdpWs && cdpWs.readyState === WebSocket.OPEN) {
+        cdpWs.send(JSON.stringify({ type: "cdp:register", browserId, tabId: tab.id }));
+      } else {
+        // WS dropped after attach but before register — clean up immediately.
+        // The server will time out and roll back the panel, so close the tab too.
+        console.warn("[NatStack] CDP bridge gone before cdp:register, cleaning up open-tab");
+        panelTabs.delete(browserId);
+        tabPanels.delete(tab.id);
+        debuggerAttached.delete(browserId);
+        chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
+        chrome.tabs.remove(tab.id).catch(() => {});
+      }
+    } catch (err) {
+      cdpWs?.send(JSON.stringify({ type: "nav:error", requestId, browserId, error: err.message }));
+    }
+    return;
+  }
+
+  if (action === "open-external") {
+    try {
+      await chrome.tabs.create({ url });  // No tracking, no browserId mapping
+      cdpWs?.send(JSON.stringify({ type: "nav:result", requestId, browserId }));
+    } catch (err) {
+      cdpWs?.send(JSON.stringify({ type: "nav:error", requestId, browserId, error: err.message }));
+    }
+    return;
+  }
+
+  // Actions that CONTROL existing tabs (require tabId)
   const tabId = panelTabs.get(browserId);
   if (tabId == null) {
     cdpWs?.send(JSON.stringify({ type: "nav:error", requestId, browserId, error: "Tab not found" }));

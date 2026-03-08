@@ -36,6 +36,9 @@ export function createBridgeService(deps: {
       listAgents: { args: z.tuple([]) },
       createRepo: { args: z.tuple([z.string()]) },
       openDevtools: { args: z.tuple([]) },
+      createBrowserPanel: { args: z.tuple([z.string(), z.object({ name: z.string().optional(), focus: z.boolean().optional() }).optional()]) },
+      closeChild: { args: z.tuple([z.string()]) },
+      openExternal: { args: z.tuple([z.string()]) },
     },
     handler: async (ctx, method, args) => {
       const lifecycle = deps.panelLifecycle;
@@ -94,6 +97,21 @@ export function createBridgeService(deps: {
         case "openDevtools": {
           const vm = deps.getViewManager();
           vm.openDevTools(callerId);
+          return;
+        }
+
+        case "createBrowserPanel": {
+          const [url, opts] = args as [string, { name?: string; focus?: boolean }?];
+          return lifecycle.createBrowserPanel(callerId, url, opts);
+        }
+
+        case "openExternal": {
+          const [url] = args as [string];
+          if (!/^https?:\/\//i.test(url)) {
+            throw new Error("openExternal only supports http/https URLs");
+          }
+          const { shell } = await import("electron");
+          await shell.openExternal(url);
           return;
         }
 

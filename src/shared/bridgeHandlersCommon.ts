@@ -30,6 +30,12 @@ export async function handleCommonBridgeMethod(
     case "closeSelf":
       return { handled: true, result: pm.closePanel(callerId) };
 
+    case "closeChild": {
+      if (!pm.closeChild) return { handled: false };
+      const [childId] = args as [string];
+      return { handled: true, result: await pm.closeChild(callerId, childId) };
+    }
+
     // =========================================================================
     // Panel queries
     // =========================================================================

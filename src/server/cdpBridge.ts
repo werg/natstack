@@ -28,6 +28,8 @@ interface CdpBridgeOptions {
   adminToken: string;
   canAccessBrowser: (requestingPanelId: string, browserId: string) => boolean;
   panelOwnsBrowser: (requestingPanelId: string, browserId: string) => boolean;
+  /** Check if a browserId corresponds to a known panel in the registry. */
+  isPanelKnown?: (browserId: string) => boolean;
   port: number;
 }
 
@@ -49,6 +51,7 @@ export class CdpBridge {
   private adminToken: string;
   private canAccessBrowser: (requestingPanelId: string, browserId: string) => boolean;
   private panelOwnsBrowser: (requestingPanelId: string, browserId: string) => boolean;
+  private isPanelKnown: (browserId: string) => boolean;
   private port: number;
 
   /** Extension WebSocket connection (single connection, one extension at a time) */
@@ -66,6 +69,9 @@ export class CdpBridge {
   /** Pending navigation commands: requestId → {resolve, reject, timer} */
   private pendingNavCommands = new Map<string, PendingNavCommand>();
 
+  /** Pending browser tab creations: browserId → {resolve, reject} */
+  private pendingBrowserCreations = new Map<string, { resolve: () => void; reject: (e: Error) => void }>();
+
   /** Counter for unique bridge request IDs (shared across CDP and nav) */
   private nextRequestId = 1;
 
@@ -74,6 +80,7 @@ export class CdpBridge {
     this.adminToken = options.adminToken;
     this.canAccessBrowser = options.canAccessBrowser;
     this.panelOwnsBrowser = options.panelOwnsBrowser;
+    this.isPanelKnown = options.isPanelKnown ?? (() => true);
     this.port = options.port;
   }
 
@@ -225,6 +232,67 @@ export class CdpBridge {
   }
 
   /**
+   * Create a new browser tab via extension. Resolves when cdp:register arrives
+   * (browser ready for CDP).
+   */
+  async openBrowserTab(browserId: string, url: string): Promise<void> {
+    if (!this.extensionWs || this.extensionWs.readyState !== WebSocket.OPEN) {
+      throw new Error("Browser extension not connected");
+    }
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingBrowserCreations.delete(browserId);
+        reject(new Error("open-tab timed out waiting for cdp:register"));
+      }, NAV_COMMAND_TIMEOUT_MS);
+
+      this.pendingBrowserCreations.set(browserId, {
+        resolve: () => { clearTimeout(timer); resolve(); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      });
+
+      const requestId = String(this.nextRequestId++);
+      this.extensionWs!.send(JSON.stringify({
+        type: "nav:command",
+        requestId,
+        browserId,
+        action: "open-tab",
+        url,
+      }));
+    });
+  }
+
+  /**
+   * Open URL in a new tab without CDP tracking (system browser equivalent
+   * in headless mode).
+   */
+  async openExternalTab(url: string): Promise<void> {
+    if (!this.extensionWs || this.extensionWs.readyState !== WebSocket.OPEN) {
+      throw new Error("Browser extension not connected");
+    }
+
+    const requestId = String(this.nextRequestId++);
+    const dummyBrowserId = `external-${requestId}`;
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingNavCommands.delete(requestId);
+        reject(new Error("open-external timed out"));
+      }, NAV_COMMAND_TIMEOUT_MS);
+
+      this.pendingNavCommands.set(requestId, { resolve: () => { clearTimeout(timer); resolve(); }, reject: (e) => { clearTimeout(timer); reject(e); }, timer });
+
+      this.extensionWs!.send(JSON.stringify({
+        type: "nav:command",
+        requestId,
+        browserId: dummyBrowserId,
+        action: "open-external",
+        url,
+      }));
+    });
+  }
+
+  /**
    * Shut down the CDP bridge: close all connections, reject pending commands.
    */
   async stop(): Promise<void> {
@@ -233,6 +301,12 @@ export class CdpBridge {
       clearTimeout(pending.timer);
       pending.reject(new Error("CDP bridge shutting down"));
       this.pendingNavCommands.delete(requestId);
+    }
+
+    // Reject all pending browser creations
+    for (const [browserId, pending] of this.pendingBrowserCreations) {
+      pending.reject(new Error("CDP bridge shutting down"));
+      this.pendingBrowserCreations.delete(browserId);
     }
 
     // Flush pending CDP commands with errors
@@ -277,6 +351,11 @@ export class CdpBridge {
         pending.reject(new Error("Extension reconnected"));
         this.pendingNavCommands.delete(requestId);
       }
+      // Reject pending browser creations
+      for (const [browserId, pending] of this.pendingBrowserCreations) {
+        pending.reject(new Error("Extension reconnected"));
+        this.pendingBrowserCreations.delete(browserId);
+      }
       this.browserRegistry.clear();
       this.extensionWs.close(1000, "Replaced by new extension connection");
     }
@@ -311,6 +390,12 @@ export class CdpBridge {
           this.pendingNavCommands.delete(requestId);
         }
 
+        // Reject all pending browser creations
+        for (const [browserId, pending] of this.pendingBrowserCreations) {
+          pending.reject(new Error("Extension disconnected"));
+          this.pendingBrowserCreations.delete(browserId);
+        }
+
         // Clear browser registry (extension owns the tab tracking)
         this.browserRegistry.clear();
       }
@@ -324,8 +409,27 @@ export class CdpBridge {
   private handleExtensionMessage(msg: any): void {
     switch (msg.type) {
       case "cdp:register": {
+        // Reject registrations for panels that don't exist (e.g. rolled back
+        // after open-tab timeout, or stale mappings from a previous session)
+        if (!this.isPanelKnown(msg.browserId)) {
+          log.info(`Rejecting cdp:register for unknown panel: ${msg.browserId}`);
+          if (this.extensionWs && this.extensionWs.readyState === WebSocket.OPEN) {
+            this.extensionWs.send(JSON.stringify({
+              type: "cdp:register-rejected",
+              browserId: msg.browserId,
+              tabId: msg.tabId,
+            }));
+          }
+          break;
+        }
         this.browserRegistry.set(msg.browserId, { tabId: msg.tabId });
         log.info(`Browser registered: ${msg.browserId} (tab ${msg.tabId})`);
+        // Resolve pending browser creation if this was an open-tab request
+        const pendingCreation = this.pendingBrowserCreations.get(msg.browserId);
+        if (pendingCreation) {
+          this.pendingBrowserCreations.delete(msg.browserId);
+          pendingCreation.resolve();
+        }
         break;
       }
 
@@ -406,6 +510,14 @@ export class CdpBridge {
           clearTimeout(pending.timer);
           pending.reject(new Error(msg.error));
           this.pendingNavCommands.delete(msg.requestId);
+        }
+        // Also check pending browser creations (open-tab failures)
+        if (msg.browserId) {
+          const pendingCreation = this.pendingBrowserCreations.get(msg.browserId);
+          if (pendingCreation) {
+            this.pendingBrowserCreations.delete(msg.browserId);
+            pendingCreation.reject(new Error(msg.error));
+          }
         }
         break;
       }

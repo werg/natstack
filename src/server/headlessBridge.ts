@@ -9,12 +9,14 @@
 import type { BridgePanelManager } from "../shared/panelInterfaces.js";
 import type { GitServer } from "@natstack/git-server";
 import type { AgentDiscovery } from "../shared/agentDiscovery.js";
+import type { CdpBridge } from "./cdpBridge.js";
 import { handleCommonBridgeMethod } from "../shared/bridgeHandlersCommon.js";
 
 export type HeadlessBridgeDeps = {
   pm: BridgePanelManager;
   gitServer: GitServer;
   agentDiscovery: AgentDiscovery | null;
+  cdpBridge: CdpBridge | null;
 };
 
 /**
@@ -71,6 +73,42 @@ export async function handleHeadlessBridgeCall(
         "Folder dialogs are not available in headless mode. " +
         "Pass folder paths via stateArgs or CLI arguments."
       );
+
+    // =========================================================================
+    // Browser panel creation
+    // =========================================================================
+
+    case "createBrowserPanel": {
+      if (!pm.createBrowserPanel) {
+        throw new Error("Browser panel creation not available");
+      }
+      if (!deps.cdpBridge) {
+        throw new Error("Browser automation requires --serve-panels");
+      }
+      const [url, opts] = args as [string, { name?: string; focus?: boolean }?];
+      const result = await pm.createBrowserPanel(callerId, url, opts);
+      // In headless mode, open the tab via extension
+      try {
+        await deps.cdpBridge.openBrowserTab(result.id, url);
+      } catch (err) {
+        // Rollback: remove the panel if extension fails
+        await pm.closePanel(result.id);
+        throw err;
+      }
+      return result;
+    }
+
+    case "openExternal": {
+      if (!deps.cdpBridge) {
+        throw new Error("Browser automation requires --serve-panels");
+      }
+      const [url] = args as [string];
+      if (!/^https?:\/\//i.test(url)) {
+        throw new Error("openExternal only supports http/https URLs");
+      }
+      await deps.cdpBridge.openExternalTab(url);
+      return;
+    }
 
     default:
       throw new Error(`Unknown bridge method: ${method}`);

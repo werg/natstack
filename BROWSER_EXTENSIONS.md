@@ -87,6 +87,18 @@ a separate browser process, it connects through the extension:
 This allows the server (and agents) to inspect, interact with, and test panels
 running in the user's existing browser session.
 
+### Tab creation via extension
+
+The extension supports creating new tabs on behalf of the server:
+
+- **`open-tab`**: Creates a new tab, attaches the debugger, and registers it with
+  the CDP bridge for automation. Used by `createBrowserPanel()` in headless mode.
+- **`open-external`**: Creates a new tab without CDP tracking (system browser
+  equivalent in headless mode). Used by `openExternal()`.
+
+Both are sent via the `nav:command` protocol. For `open-tab`, the extension
+responds with `cdp:register` (not `nav:result`) once the debugger is attached.
+
 ---
 
 ## What the Server Injects into Panel HTML

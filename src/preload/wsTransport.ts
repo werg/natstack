@@ -85,6 +85,13 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
       deliver("main", { type: "event", fromId: "main", event: "runtime:focus", payload: null });
     } else if (payload["type"] === "theme") {
       deliver("main", { type: "event", fromId: "main", event: "runtime:theme", payload: payload["theme"] });
+    } else if (payload["type"] === "child-created") {
+      deliver("main", {
+        type: "event",
+        fromId: "main",
+        event: "runtime:child-created",
+        payload: { childId: payload["childId"], url: payload["url"] },
+      });
     } else if (payload["type"] === "child-creation-error") {
       deliver("main", {
         type: "event",

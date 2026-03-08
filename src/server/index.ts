@@ -534,10 +534,13 @@ async function main() {
     container.register({
       name: "bridge",
       dependencies: ["panelLifecycle", "agentDiscovery"],
+      optionalDependencies: ["panelServing"],
       async start(resolve) {
         const lifecycle = resolve<import("../shared/panelLifecycle.js").PanelLifecycle>("panelLifecycle")!;
         const agentDiscovery = resolve<import("../shared/agentDiscovery.js").AgentDiscovery>("agentDiscovery")!;
-        const deps = { pm: lifecycle, gitServer, agentDiscovery };
+        const panelServingResult = resolve<{ cdpBridge: import("./cdpBridge.js").CdpBridge }>("panelServing", true);
+        const cdpBridge = panelServingResult?.cdpBridge ?? null;
+        const deps = { pm: lifecycle, gitServer, agentDiscovery, cdpBridge };
         dispatcher.registerService({
           name: "bridge",
           description: "Panel lifecycle (headless mode)",
@@ -554,6 +557,9 @@ async function main() {
             listAgents: { args: z.tuple([]) },
             openDevtools: { args: z.tuple([]) },
             openFolderDialog: { args: z.tuple([z.object({ title: z.string().optional() }).optional()]) },
+            createBrowserPanel: { args: z.tuple([z.string(), z.object({ name: z.string().optional(), focus: z.boolean().optional() }).optional()]) },
+            closeChild: { args: z.tuple([z.string()]) },
+            openExternal: { args: z.tuple([z.string()]) },
           },
           handler: async (ctx, method, serviceArgs) => {
             return handleHeadlessBridgeCall(deps, ctx.callerId, method, serviceArgs as unknown[]);
@@ -626,6 +632,7 @@ async function main() {
               registry.isDescendantOf(requestingPanelId, browserId),
             panelOwnsBrowser: (requestingPanelId, browserId) =>
               registry.findParentId(browserId) === requestingPanelId,
+            isPanelKnown: (browserId) => registry.getPanel(browserId) != null,
             port: panelHttpPort,
           });
           panelHttpServer.setCdpBridge(cdpBridge);

@@ -24,6 +24,7 @@ const log = createDevLogger("PanelView");
 // Narrow interfaces for dependencies
 interface CdpServerLike {
   registerBrowser(panelId: string, contentsId: number, parentId: string): void;
+  unregisterBrowser(panelId: string): void;
   revokeTokenForPanel(panelId: string): void;
 }
 
@@ -32,6 +33,10 @@ interface PanelLifecycleLike {
     callerId: string, source: string,
     options?: { name?: string; contextId?: string; focus?: boolean; env?: Record<string, string> },
     stateArgs?: Record<string, unknown>,
+  ): Promise<{ id: string; title: string }>;
+  createBrowserPanel(
+    callerId: string, url: string,
+    options?: { name?: string; focus?: boolean },
   ): Promise<{ id: string; title: string }>;
 }
 
@@ -129,6 +134,7 @@ export class PanelView implements PanelViewLike {
     this.cleanupBrowserStateTracking(panelId, contents ?? undefined);
     this.cleanupLinkInterception(panelId, contents ?? undefined);
     this.cdpServer.revokeTokenForPanel(panelId);
+    this.cdpServer.unregisterBrowser(panelId);
     this.crashHistory.delete(panelId);
     this.viewManager.destroyView(panelId);
   }
@@ -149,6 +155,39 @@ export class PanelView implements PanelViewLike {
 
   setProtectedViews(lineage: Set<string>): void {
     this.viewManager.setProtectedViews(lineage);
+  }
+
+  /**
+   * Create a view for a browser panel (external URL).
+   * No auth cookies, no link interception — browser panels navigate freely.
+   */
+  async createViewForBrowser(panelId: string, url: string, contextId: string): Promise<void> {
+    if (this.viewManager.hasView(panelId)) {
+      const currentUrl = this.viewManager.getViewUrl(panelId);
+      if (currentUrl !== url) void this.viewManager.navigateView(panelId, url);
+      return;
+    }
+
+    const parentId = this.panelRegistry.findParentId(panelId);
+
+    const view = this.viewManager.createView({
+      id: panelId, type: "panel", preload: null,
+      url, parentId: parentId ?? undefined,
+      partition: `persist:${contextId}`,
+      injectHostThemeVariables: false,
+    });
+
+    this.setupBrowserStateTracking(panelId, view.webContents);
+
+    if (parentId) {
+      const domReadyHandler = () => {
+        this.cdpServer.registerBrowser(panelId, view.webContents.id, parentId);
+      };
+      view.webContents.on("dom-ready", domReadyHandler);
+      this.contentLoadHandlers.set(panelId, { domReady: domReadyHandler });
+    }
+
+    // No setupLinkInterception — browser panels navigate freely
   }
 
   // ==== Additional public methods ===========================================
@@ -334,7 +373,14 @@ export class PanelView implements PanelViewLike {
         return { action: "deny" as const };
       }
       if (/^https?:\/\//i.test(url)) {
-        import("electron").then(({ shell }) => shell.openExternal(url));
+        void this.panelLifecycle.createBrowserPanel(panelId, url, { focus: true })
+          .then(({ id }) => {
+            this.sendToClient?.(panelId, {
+              type: "ws:event", event: "panel:event",
+              payload: { panelId, type: "child-created", childId: id, url },
+            });
+          })
+          .catch((err: unknown) => this.handleChildCreationError(panelId, err, url));
         return { action: "deny" as const };
       }
       return { action: "deny" as const };
@@ -344,7 +390,14 @@ export class PanelView implements PanelViewLike {
       if (!url.includes(".localhost:") && !url.includes("//localhost:")) {
         if (/^https?:\/\//i.test(url)) {
           event.preventDefault();
-          import("electron").then(({ shell }) => shell.openExternal(url));
+          void this.panelLifecycle.createBrowserPanel(panelId, url, { focus: true })
+            .then(({ id }) => {
+              this.sendToClient?.(panelId, {
+                type: "ws:event", event: "panel:event",
+                payload: { panelId, type: "child-created", childId: id, url },
+              });
+            })
+            .catch((err: unknown) => this.handleChildCreationError(panelId, err, url));
         }
         return;
       }

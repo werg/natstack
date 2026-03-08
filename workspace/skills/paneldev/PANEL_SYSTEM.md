@@ -62,7 +62,11 @@ import {
   parseContextId, isValidContextId, getInstanceId,
   normalizePath, getFileName, resolvePath,
   getStateArgs, useStateArgs, setStateArgs,
+
+  // Browser panels
+  createBrowserPanel, openExternal, onChildCreated, getBrowserHandle,
 } from "@workspace/runtime";
+export type { BrowserHandle } from "@workspace/runtime";
 ```
 
 ## Navigation

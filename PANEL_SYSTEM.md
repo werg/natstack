@@ -106,7 +106,14 @@ import {
   getStateArgs,          // Get panel state arguments
   useStateArgs,          // React hook for state arguments
   setStateArgs,          // Set panel state arguments
+
+  // Browser panels
+  createBrowserPanel,    // Create browser panel → BrowserHandle
+  openExternal,          // Open URL in system browser
+  onChildCreated,        // Subscribe to child-created events (window.open flow)
+  getBrowserHandle,      // Get BrowserHandle for existing browser panel
 } from "@workspace/runtime";
+export type { BrowserHandle } from "@workspace/runtime";
 ```
 
 ## Navigation

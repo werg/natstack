@@ -363,34 +363,66 @@ const roles = await ai.listRoles();
 
 ### Browser Automation
 
-Control browser panels via Playwright over CDP (Electron mode only):
+Create browser panels that load external URLs and control them via Playwright/CDP. Works in both Electron and headless modes.
+
+#### Typed API (recommended for automation)
 
 ```typescript
+import { createBrowserPanel, openExternal } from "@workspace/runtime";
 import { chromium } from "playwright-core";
-import { rpc } from "@workspace/runtime";
 
-// 1. Open a browser child (host intercepts and creates a browser panel)
-window.open("https://example.com");
+// 1. Create a browser panel — returns a BrowserHandle
+const handle = await createBrowserPanel("https://example.com", { focus: true });
 
-// 2. Get the CDP endpoint for the browser panel
-const cdpUrl = await rpc.call("main", "browser.getCdpEndpoint", browserId);
-
-// 3. Connect Playwright
+// 2. Get CDP endpoint and connect Playwright
+const cdpUrl = await handle.getCdpEndpoint();
 const browser = await chromium.connectOverCDP(cdpUrl);
 const page = browser.contexts()[0].pages()[0];
 
-// 4. Interact with the page
+// 3. Interact with the page
 await page.fill("input[name=query]", "NatStack");
 await page.click(".search-button");
 const text = await page.textContent(".results .first");
 
-// 5. Or use RPC for simple navigation
-await rpc.call("main", "browser.navigate", browserId, "https://other.com");
-await rpc.call("main", "browser.goBack", browserId);
-await rpc.call("main", "browser.reload", browserId);
+// 4. Navigate via handle
+await handle.navigate("https://other.com");
+await handle.goBack();
+await handle.reload();
+
+// 5. Close when done
+await handle.close();
+
+// Or open in system browser (no CDP access)
+await openExternal("https://docs.example.com");
 ```
 
-Browser service methods: `getCdpEndpoint`, `navigate`, `goBack`, `goForward`, `reload`, `stop` — all take `browserId` as the first argument. Panels can only control browser panels they own.
+#### Fire-and-forget (window.open)
+
+In Electron mode, `window.open("https://...")` also creates browser panels. Discover the child ID via event:
+
+```typescript
+import { onChildCreated, getBrowserHandle } from "@workspace/runtime";
+
+onChildCreated(({ childId, url }) => {
+  const handle = getBrowserHandle(childId);
+  // Now use handle.getCdpEndpoint(), handle.navigate(), etc.
+});
+window.open("https://example.com");
+```
+
+#### BrowserHandle methods
+
+| Method | Description |
+|--------|-------------|
+| `getCdpEndpoint()` | Get CDP WebSocket URL for Playwright |
+| `navigate(url)` | Load a URL |
+| `goBack()` | Navigate back |
+| `goForward()` | Navigate forward |
+| `reload()` | Reload page |
+| `stop()` | Stop loading |
+| `close()` | Close browser panel |
+
+**Security:** Panels can only control browser panels they own.
 
 ---
 
