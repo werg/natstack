@@ -81,6 +81,8 @@ export interface LayoutState {
   titleBarHeight: number;
   sidebarVisible: boolean;
   sidebarWidth: number;
+  /** Height of save-password bar (0 when hidden) */
+  saveBarHeight: number;
 }
 
 export class ViewManager {
@@ -95,6 +97,7 @@ export class ViewManager {
     titleBarHeight: 32,
     sidebarVisible: false,
     sidebarWidth: 260,
+    saveBarHeight: 0,
   };
   /** ID of the currently visible panel (to apply bounds updates) */
   private visiblePanelId: string | null = null;
@@ -103,6 +106,10 @@ export class ViewManager {
   private protectedViewIds = new Set<string>();
   private crashCallback: ((viewId: string, reason: string) => void) | null = null;
   private windowVisible = true;
+  /** Callbacks invoked after view z-order changes */
+  private viewOrderChangedCallbacks: Array<() => void> = [];
+  /** Callbacks invoked when a panel view is hidden */
+  private viewHiddenCallbacks: Array<(viewId: string) => void> = [];
   /** Timer for periodic gentle compositor keepalive */
   private compositorKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
   /** Timer for periodic compositor stall detection via capturePage */
@@ -435,6 +442,10 @@ export class ViewManager {
       this.bringToFront(id);
     } else if (!visible && this.visiblePanelId === id) {
       this.visiblePanelId = null;
+      // Notify listeners (e.g., autofill overlay dismissal)
+      for (const cb of this.viewHiddenCallbacks) {
+        cb(id);
+      }
     }
   }
 
@@ -445,14 +456,15 @@ export class ViewManager {
     const size = this.window.getContentSize();
     const windowWidth = size[0] ?? 0;
     const windowHeight = size[1] ?? 0;
-    const { titleBarHeight, sidebarVisible, sidebarWidth } = this.layoutState;
+    const { titleBarHeight, sidebarVisible, sidebarWidth, saveBarHeight } = this.layoutState;
     const effectiveSidebarWidth = sidebarVisible ? sidebarWidth : 0;
+    const topOffset = titleBarHeight + saveBarHeight;
 
     return {
       x: effectiveSidebarWidth,
-      y: titleBarHeight,
+      y: topOffset,
       width: Math.max(0, windowWidth - effectiveSidebarWidth),
-      height: Math.max(0, windowHeight - titleBarHeight),
+      height: Math.max(0, windowHeight - topOffset),
     };
   }
 
@@ -513,9 +525,26 @@ export class ViewManager {
     this.window.contentView.removeChildView(managed.view);
     this.window.contentView.addChildView(managed.view);
 
-    // Ensure shell stays on top for UI overlay elements
-    // Actually, shell should be behind content views so panels show on top
-    // This is correct - panels render above shell
+    // Notify listeners (e.g., autofill overlay) to re-establish z-order
+    for (const cb of this.viewOrderChangedCallbacks) {
+      cb();
+    }
+  }
+
+  /**
+   * Register a callback invoked after every bringToFront() call.
+   * Used by AutofillManager to re-add the dropdown overlay on top.
+   */
+  onViewOrderChanged(callback: () => void): void {
+    this.viewOrderChangedCallbacks.push(callback);
+  }
+
+  /**
+   * Register a callback invoked when a panel view is hidden.
+   * Used by AutofillManager to dismiss overlays on panel switch.
+   */
+  onViewHidden(callback: (viewId: string) => void): void {
+    this.viewHiddenCallbacks.push(callback);
   }
 
   /**

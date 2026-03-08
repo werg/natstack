@@ -108,7 +108,7 @@ export const view = {
   setVisible: (viewId: string, visible: boolean) =>
     rpc.call<void>("main", "view.setVisible", viewId, visible),
   setThemeCss: (css: string) => rpc.call<void>("main", "view.setThemeCss", css),
-  updateLayout: (layout: { titleBarHeight?: number; sidebarVisible?: boolean; sidebarWidth?: number }) =>
+  updateLayout: (layout: { titleBarHeight?: number; sidebarVisible?: boolean; sidebarWidth?: number; saveBarHeight?: number }) =>
     rpc.call<void>("main", "view.updateLayout", layout),
   browserNavigate: (browserId: string, url: string) =>
     rpc.call<void>("main", "view.browserNavigate", browserId, url),
@@ -183,6 +183,15 @@ export const settings = {
     rpc.call<void>("main", "settings.enableProvider", providerId),
   disableProvider: (providerId: string) =>
     rpc.call<void>("main", "settings.disableProvider", providerId),
+};
+
+// =============================================================================
+// Autofill Service
+// =============================================================================
+
+export const autofill = {
+  confirmSave: (panelId: string, action: "save" | "never" | "dismiss") =>
+    rpc.call<void>("main", "autofill.confirmSave", panelId, action),
 };
 
 // =============================================================================

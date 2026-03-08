@@ -320,6 +320,58 @@ describe("PasswordStore", () => {
     expect(all).toHaveLength(1);
     expect(all[0]!.password).toBe("s3cret!");
   });
+
+  it("getForOrigin matches exact origin", () => {
+    store.add({ url: "https://example.com", username: "u1", password: "p1" });
+    store.add({ url: "https://other.com", username: "u2", password: "p2" });
+
+    const results = store.getForOrigin("https://example.com");
+    expect(results).toHaveLength(1);
+    expect(results[0]!.username).toBe("u1");
+  });
+
+  it("getForOrigin matches origin with path prefix", () => {
+    store.add({ url: "https://example.com/login", username: "u1", password: "p1" });
+    store.add({ url: "https://example.com/settings", username: "u2", password: "p2" });
+
+    const results = store.getForOrigin("https://example.com");
+    expect(results).toHaveLength(2);
+  });
+
+  it("updateLastUsed increments times_used and sets date", () => {
+    const id = store.add({ url: "https://example.com", username: "u", password: "p" });
+    expect(store.getAll()[0]!.times_used).toBe(0);
+
+    store.updateLastUsed(id);
+    const updated = store.getAll()[0]!;
+    expect(updated.times_used).toBe(1);
+    expect(updated.date_last_used).toBeGreaterThan(0);
+
+    store.updateLastUsed(id);
+    expect(store.getAll()[0]!.times_used).toBe(2);
+  });
+
+  it("addNeverSave and isNeverSave persist origin blocklist", () => {
+    expect(store.isNeverSave("https://example.com")).toBe(false);
+
+    store.addNeverSave("https://example.com");
+    expect(store.isNeverSave("https://example.com")).toBe(true);
+    expect(store.isNeverSave("https://other.com")).toBe(false);
+  });
+
+  it("addNeverSave is idempotent", () => {
+    store.addNeverSave("https://example.com");
+    store.addNeverSave("https://example.com"); // should not throw
+    expect(store.isNeverSave("https://example.com")).toBe(true);
+  });
+
+  it("removeNeverSave unblocks an origin", () => {
+    store.addNeverSave("https://example.com");
+    expect(store.isNeverSave("https://example.com")).toBe(true);
+
+    store.removeNeverSave("https://example.com");
+    expect(store.isNeverSave("https://example.com")).toBe(false);
+  });
 });
 
 describe("CookieStore", () => {

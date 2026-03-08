@@ -31,6 +31,7 @@ import { ServiceDispatcher } from "../shared/serviceDispatcher.js";
 // RpcServer type: inline import("...") used intentionally — main/ constructs
 // server objects via dynamic import at runtime; inline types are acceptable
 // in entry points per the boundary rule (no static module-level imports).
+import { z } from "zod";
 import { ServiceContainer } from "../shared/serviceContainer.js";
 import { rpcService } from "../shared/managedService.js";
 import { createEventsServiceDefinition } from "../shared/eventsService.js";
@@ -113,6 +114,7 @@ let panelHttpServer: import("../server/panelHttpServer.js").PanelHttpServer | nu
 let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
 let isCleaningUp = false; // Prevent re-entry in will-quit handler
+let autofillManager: import("./autofill/autofillManager.js").AutofillManager | null = null;
 
 /** Guard — throws controlled error instead of raw TypeError */
 function requireServerClient(): ServerClient {
@@ -230,7 +232,16 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
       cdpServer,
       panelLifecycle,
       sendToClient: (callerId, msg) => rpcServer!.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage),
+      autofillManager: autofillManager ?? undefined,
+      autofillPreloadPath: path.join(__dirname, "autofillPreload.cjs"),
     });
+
+    // Wire autofill overlay to window, z-order changes, and panel switches
+    if (autofillManager && mainWindow && viewManager) {
+      autofillManager.setWindow(mainWindow);
+      viewManager.onViewOrderChanged(() => autofillManager?.onViewOrderChanged());
+      viewManager.onViewHidden((viewId) => autofillManager?.onPanelHidden(viewId));
+    }
 
     viewManager.onViewCrashed((viewId, reason) => {
       panelView!.handleViewCrashed(viewId, reason);
@@ -432,6 +443,9 @@ app.on("ready", async () => {
 
     const adBlockManager = new AdBlockManager();
 
+    // Autofill manager — password auto-fill for browser panels
+    const { AutofillManager } = await import("./autofill/autofillManager.js");
+
     // Wire PanelHttpServer callbacks
     panelHttpServer.setCallbacks({
       onDemandCreate: async (source, subdomain) => {
@@ -529,9 +543,22 @@ app.on("ready", async () => {
         name: "browser-data",
         async start() {
           browserDataStore = new BrowserDataStore(getCentralConfigDirectory());
+
+          // Initialize autofill manager with password store
+          autofillManager = new AutofillManager({
+            passwordStore: browserDataStore.passwords,
+            eventService,
+            getViewManager: () => viewManager!,
+            autofillOverlayPreloadPath: path.join(__dirname, "autofillOverlayPreload.cjs"),
+          });
+
           return browserDataStore;
         },
         async stop(store: InstanceType<typeof BrowserDataStore>) {
+          if (autofillManager) {
+            autofillManager.destroy();
+            autofillManager = null;
+          }
           store.close();
         },
         getServiceDefinition() {
@@ -539,6 +566,23 @@ app.on("ready", async () => {
         },
       });
     }
+
+    // Register autofill service (uses lazy resolution since autofillManager is created in browser-data start)
+    electronContainer.register(rpcService({
+      name: "autofill",
+      description: "Password autofill management",
+      policy: { allowed: ["shell"] },
+      methods: {
+        confirmSave: {
+          args: z.tuple([z.string(), z.enum(["save", "never", "dismiss"])]),
+        },
+      },
+      handler: async (_ctx, method, args) => {
+        if (!autofillManager) throw new Error("Autofill not initialized");
+        const def = autofillManager.getServiceDefinition();
+        return def.handler(_ctx, method, args);
+      },
+    }));
     electronContainer.register(rpcService(createEventsServiceDefinition(eventService)));
 
     await electronContainer.startAll();

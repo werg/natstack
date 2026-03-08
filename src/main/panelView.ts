@@ -40,6 +40,11 @@ interface PanelLifecycleLike {
   ): Promise<{ id: string; title: string }>;
 }
 
+interface AutofillManagerLike {
+  attachToWebContents(webContentsId: number, webContents: Electron.WebContents): void;
+  detachFromWebContents(webContentsId: number, webContents?: Electron.WebContents): void;
+}
+
 type ParsedPanelUrl = {
   source: string;
   contextId?: string;
@@ -58,6 +63,8 @@ export class PanelView implements PanelViewLike {
   private readonly cdpServer: CdpServerLike;
   private readonly panelLifecycle: PanelLifecycleLike;
   private sendToClient?: (callerId: string, msg: unknown) => void;
+  private autofillManager?: AutofillManagerLike;
+  private autofillPreloadPath?: string;
 
   private browserStateCleanup = new Map<string, { cleanup: () => void; destroyedHandler: () => void }>();
   private linkInterceptionHandlers = new Map<string, (event: Electron.Event, url: string) => void>();
@@ -77,6 +84,8 @@ export class PanelView implements PanelViewLike {
     cdpServer: CdpServerLike;
     panelLifecycle: PanelLifecycleLike;
     sendToClient?: (callerId: string, msg: unknown) => void;
+    autofillManager?: AutofillManagerLike;
+    autofillPreloadPath?: string;
   }) {
     this.viewManager = deps.viewManager;
     this.panelRegistry = deps.panelRegistry;
@@ -88,6 +97,8 @@ export class PanelView implements PanelViewLike {
     this.cdpServer = deps.cdpServer;
     this.panelLifecycle = deps.panelLifecycle;
     this.sendToClient = deps.sendToClient;
+    this.autofillManager = deps.autofillManager;
+    this.autofillPreloadPath = deps.autofillPreloadPath;
   }
 
   // ==== PanelViewLike implementation ========================================
@@ -131,6 +142,9 @@ export class PanelView implements PanelViewLike {
 
   destroyView(panelId: string): void {
     const contents = this.viewManager.getWebContents(panelId);
+    if (this.autofillManager && contents && !contents.isDestroyed()) {
+      this.autofillManager.detachFromWebContents(contents.id, contents);
+    }
     this.cleanupBrowserStateTracking(panelId, contents ?? undefined);
     this.cleanupLinkInterception(panelId, contents ?? undefined);
     this.cdpServer.revokeTokenForPanel(panelId);
@@ -171,7 +185,8 @@ export class PanelView implements PanelViewLike {
     const parentId = this.panelRegistry.findParentId(panelId);
 
     const view = this.viewManager.createView({
-      id: panelId, type: "panel", preload: null,
+      id: panelId, type: "panel",
+      preload: this.autofillPreloadPath ?? null,
       url, parentId: parentId ?? undefined,
       partition: `persist:${contextId}`,
       injectHostThemeVariables: false,
@@ -185,6 +200,11 @@ export class PanelView implements PanelViewLike {
       };
       view.webContents.on("dom-ready", domReadyHandler);
       this.contentLoadHandlers.set(panelId, { domReady: domReadyHandler });
+    }
+
+    // Attach autofill for browser panels
+    if (this.autofillManager) {
+      this.autofillManager.attachToWebContents(view.webContents.id, view.webContents);
     }
 
     // No setupLinkInterception — browser panels navigate freely

@@ -18,7 +18,8 @@ export type EventName =
   | "navigate-to-panel"
   | "browser-import-progress"
   | "browser-import-complete"
-  | "browser-data-changed";
+  | "browser-data-changed"
+  | "autofill:save-prompt";
 
 /**
  * Event payloads for type safety.
@@ -48,6 +49,7 @@ export interface EventPayloads {
     warnings: string[];
   }[];
   "browser-data-changed": { dataType: string };
+  "autofill:save-prompt": { panelId: string; origin: string; username: string; isUpdate: boolean };
 }
 
 /**
@@ -64,6 +66,7 @@ export const VALID_EVENT_NAMES: EventName[] = [
   "browser-import-progress",
   "browser-import-complete",
   "browser-data-changed",
+  "autofill:save-prompt",
 ];
 
 /**

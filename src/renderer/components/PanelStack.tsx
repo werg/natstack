@@ -21,6 +21,7 @@ import { panel as panelService, view } from "../shell/client";
 import { useNavigation } from "./NavigationContext";
 import { LazyPanelTreeSidebar } from "./LazyPanelTreeSidebar";
 import { useShellEvent } from "../shell/useShellEvent";
+import { SavePasswordBar } from "./SavePasswordBar";
 
 interface PanelStackProps {
   onTitleChange?: (title: string) => void;
@@ -487,6 +488,7 @@ export function PanelStack({
 
         {/* Current Panel Content */}
         <Flex direction="column" flexGrow="1" gap="0" minHeight="0">
+          <SavePasswordBar visiblePanelId={visiblePanelId} />
           <Card size="3" style={{ flex: 1, minHeight: 0, overflow: "hidden", padding: 0, display: "flex", flexDirection: "column" }}>
             <Box style={{ flex: 1, minHeight: 0, position: "relative" }}>
               {renderPanelContent()}

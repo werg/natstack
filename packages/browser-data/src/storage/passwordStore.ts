@@ -170,6 +170,42 @@ export class PasswordStore {
     }));
   }
 
+  getForOrigin(origin: string): StoredPassword[] {
+    const rows = this.db
+      .prepare("SELECT * FROM passwords WHERE origin_url = @origin OR origin_url LIKE @originPrefix")
+      .all({ origin, originPrefix: origin + "/%" }) as Array<{
+      id: number;
+      origin_url: string;
+      username_encrypted: Buffer;
+      password_encrypted: Buffer;
+      action_url: string;
+      realm: string;
+      date_created: number | null;
+      date_last_used: number | null;
+      date_password_changed: number | null;
+      times_used: number;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      origin_url: row.origin_url,
+      username: this.decrypt(row.username_encrypted),
+      password: this.decrypt(row.password_encrypted),
+      action_url: row.action_url,
+      realm: row.realm,
+      date_created: row.date_created,
+      date_last_used: row.date_last_used,
+      date_password_changed: row.date_password_changed,
+      times_used: row.times_used,
+    }));
+  }
+
+  updateLastUsed(id: number): void {
+    this.db.prepare(
+      "UPDATE passwords SET date_last_used = @now, times_used = times_used + 1 WHERE id = @id"
+    ).run({ id, now: Date.now() });
+  }
+
   getForSite(url: string): StoredPassword[] {
     const rows = this.db
       .prepare("SELECT * FROM passwords WHERE origin_url = ?")
@@ -198,6 +234,23 @@ export class PasswordStore {
       date_password_changed: row.date_password_changed,
       times_used: row.times_used,
     }));
+  }
+
+  addNeverSave(origin: string): void {
+    this.db.prepare(
+      "INSERT OR IGNORE INTO password_never_save (origin, date_added) VALUES (@origin, @now)"
+    ).run({ origin, now: Date.now() });
+  }
+
+  isNeverSave(origin: string): boolean {
+    const row = this.db.prepare(
+      "SELECT 1 FROM password_never_save WHERE origin = ?"
+    ).get(origin);
+    return row !== undefined;
+  }
+
+  removeNeverSave(origin: string): void {
+    this.db.prepare("DELETE FROM password_never_save WHERE origin = ?").run(origin);
   }
 
   addBatch(passwords: ImportedPassword[]): number {

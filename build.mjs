@@ -173,6 +173,32 @@ const preloadConfig = {
   logOverride,
 };
 
+const autofillPreloadConfig = {
+  entryPoints: ["src/preload/autofillPreload.ts"],
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "cjs",
+  outfile: "dist/autofillPreload.cjs",
+  external: ["electron"],
+  sourcemap: isDev,
+  minify: !isDev,
+  logOverride,
+};
+
+const autofillOverlayPreloadConfig = {
+  entryPoints: ["src/preload/autofillOverlayPreload.ts"],
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "cjs",
+  outfile: "dist/autofillOverlayPreload.cjs",
+  external: ["electron"],
+  sourcemap: isDev,
+  minify: !isDev,
+  logOverride,
+};
+
 // Browser transport IIFE — used by PanelHttpServer to inject into panel HTML.
 // Reuses createWsTransport from the preload, compiled for the browser.
 const browserTransportConfig = {
@@ -418,6 +444,8 @@ async function build() {
     // Required by: None (final outputs)
     await esbuild.build(mainConfig);
     await esbuild.build(preloadConfig);
+    await esbuild.build(autofillPreloadConfig);
+    await esbuild.build(autofillOverlayPreloadConfig);
     await esbuild.build(browserTransportConfig);
     // Clean stale renderer artifacts before ESM build (prevents accidental loading of old CJS bundle)
     try { fs.unlinkSync("dist/renderer.js"); } catch {}

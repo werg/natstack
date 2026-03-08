@@ -72,6 +72,12 @@ CREATE TABLE IF NOT EXISTS passwords (
   UNIQUE(origin_url, username_hash, action_url, realm)
 );
 
+CREATE TABLE IF NOT EXISTS password_never_save (
+  id INTEGER PRIMARY KEY,
+  origin TEXT NOT NULL UNIQUE,
+  date_added INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS cookies (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
